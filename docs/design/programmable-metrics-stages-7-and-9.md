@@ -150,13 +150,14 @@ stage adds a component, an edge, a health registration, or an admission point af
 |---|---|---|---|
 | Programs, kernels, state bindings | generation | one schedule store; each admission point switches at its next stamp | reference counting on headers |
 | Output bindings (protocol variants, series payload limits, recipient set) | lease, in an encode host | none: a batch names its lease | drained and released after its last user generation retires |
-| Recipients (endpoint, credential reference, protocol, payload classes, delivery policy) | recipient, in a delivery host | none for metrics: a payload names its recipients; the native set for other payloads is published by a resource transaction that follows the current configuration (4.10) | drained (at most `DRAIN_DEADLINE`, 30 s) after every lease naming it is released and the published native set no longer names it |
+| Recipients (endpoint, credential reference, protocol, payload classes, delivery policy) | recipient, in a delivery host | none for metrics: a payload names its recipients; the native set for other payloads, every recipient's settings, and the recipients a removal withdraws are published by a resource transaction that follows the current configuration (4.10) | withdrawn at once (nothing reaches it after the publish); drained (at most `DRAIN_DEADLINE`, 30 s) after every lease naming it is released and the published native set no longer names it |
 | Host settings (client profile, retry, concurrency) | host binding | published by a resource transaction | replaced in place |
 | Credential values | live configuration view | not a plan change: rotation is a cell store | with the last recipient using the reference |
 
-Changes that still need a restart: lane counts, the global pool size, the retry storage root, the stop timeout, the
-Cluster Agent endpoint host fact, the encoder keys the logs, events, service-check, and trace encoders share (F23,
-4.3), and structure upstream of the policy region that no binding makes live (4.3).
+Changes that still need a restart: lane counts, the global pool size, the retry storage root, turning disk persistence
+on or off (`forwarder_storage_max_size_in_bytes` crossing 0), the stop timeout, the Cluster Agent endpoint host fact,
+the encoder keys the logs, events, service-check, and trace encoders share (F23, 4.3), and structure upstream of the
+policy region that no binding makes live (4.3).
 
 ### 3.2 Lanes
 
@@ -241,7 +242,7 @@ the declared output `resources_team_d` as well as to the main output.
    a gated tick, and admits the events into its instance of the lineage `(dsd_agg, 10 s)`. A new context takes one unit
    of the global budget and one of the node's; an existing one takes nothing.
 7. **Flush.** Lane 1's deadline for tick `k` fires at the instant the lineage's shared tick record holds for it. The
-   record gives the tick's second `s` (the first lane to fire `k` recorded it); the gate waits for lane 1's own
+   record gives the tick's second `s` (the first lane at `k`'s deadline recorded it); the gate waits for lane 1's own
    watermark to reach `s`; the shared flush log gives the idle-counter back-fill start once every lane resolved tick
    `k − 1`. The drain emits closed buckets in bounded steps, stamped with lane 1's output point, and spreads them over
    the six `metrics_enrich` lanes, one buffer at a time.
@@ -271,9 +272,9 @@ the declared output `resources_team_d` as well as to the main output.
    `header.entry`. A binding change creates a new lease; the old one drains after its last generation retires.
 3. **The commit is still one schedule store.** A batch names its lease and a payload names the recipients of its own
    protocol variant, so metrics need no commit step. State that outlives generations, the native recipient set for
-   non-plan payloads (logs, events, service checks, traces, APM stats) and host settings, follows the current
-   configuration through **resource transactions** (prepare the recipients a native set adds, then publish), which wait
-   for no metrics prepare and no cut (4.10).
+   non-plan payloads (logs, events, service checks, traces, APM stats), host and recipient settings, and the recipients
+   a removal withdraws, follows the current configuration through **resource transactions** (prepare the recipients a
+   native set adds, then publish), which wait for no metrics prepare and no cut (4.10).
 4. **The defunctionalized forwarder.** A delivery host interprets a recipient table (endpoint, credential reference,
    protocol, payload classes, delivery policy) with per-recipient prepare, publication of settings, drain, retire, and
    reopen. One new ordering mechanism, the **input barrier**, guarantees that a lease's final flush reaches a recipient
@@ -289,9 +290,11 @@ the declared output `resources_team_d` as well as to the main output.
 7. **Removal by the resource authority wins, and fails closed.** An artifact in effect whose recorded output
    disappears, or now delivers elsewhere, keeps running with every emit to that output replaced by a counted drop, and
    reports `degraded` until the output returns or the artifact is rebased; a new artifact waits `pending` (output
-   missing) or is rejected (output rebound); a kept last-known-good that uses a resource the committed plan no longer
-   declares is released. A removed endpoint therefore stops receiving, which fixes today's behavior (F17), and nothing
-   an artifact kept out of an output returns to it.
+   missing) or is rejected (output rebound); a kept last-known-good that uses a resource the latest lowering no longer
+   declares is released. The delivery host enforces removal itself: the resource transaction that follows the change
+   **withdraws** the removed recipients, and the host drops and counts every payload send to them, so removal never
+   waits for, or depends on, a metrics generation committing. A removed endpoint therefore stops receiving, which fixes
+   today's behavior (F17), and nothing an artifact kept out of an output returns to it.
 8. **Retiring recipients:** queued work is attempted for up to 30 s, then closed as at shutdown. Persistence stays
    native: queue directories keep native names, so a recipient that returns adopts its backlog, and persisted retries
    keep the native format (stripping credentials at rest is a follow-up, [A18](#91-stage-7-assumptions)). Health stays
@@ -299,8 +302,9 @@ the declared output `resources_team_d` as well as to the main output.
    released when a recipient retires.
 9. **Budgets stay native at boot; what changes after boot is admitted.** Per-recipient limits and the forwarder's
    declared bound are unchanged (a known underestimate). Everything a generation or a resource transaction adds after
-   boot (leases, an idle host's queue bound, declared recipients, new kernel instances times their lanes) is admitted
-   against the memory limit's headroom in the boot verification's own mode (4.12).
+   boot (leases, an idle host's queue bound, declared recipients, a recipient's bound raised in place, new kernel
+   instances times their lanes) is admitted against the memory limit's headroom in the boot verification's own mode, as
+   credits per resource that return when that resource ends, however it ends (4.12).
 10. **Delivery policy, minimal:** a resources artifact can shrink a recipient's queue, turn off disk spill, and choose
     the closure at retirement. Nothing can raise a native bound.
 
@@ -319,8 +323,9 @@ the declared output `resources_team_d` as well as to the main output.
 | Declared output IDs | `resources_<name>`, an ordinary identifier (`name` at most 53 bytes); lowering reserves the prefix `resources_`, which no native output uses | never collides with a native output, now or later, and needs no change to the identifier grammar of the IR or to the surface syntax (`emit resources_team_d`); its encoder telemetry reports under the same string as `component_id` |
 | Declared recipient IDs | the digest rule of amendment 13 for an unprintable or long endpoint | a URL or credential change is another recipient with another queue, as the specification's identity rule implies |
 | Lease IDs | `EntryId` per encode host, allocated by the installer core, reused only after the lease retired; a draining lease is never reused | carried by every batch at no header cost |
-| Recipient slots | `u16` per delivery host, allocated by the core, reused only after retirement | payload routing indexes a table instead of comparing strings |
-| Control addressing | every host message names `(slot, RecipientId)` or `(EntryId, LeaseKey)`; a host ignores and logs a message whose pair does not match its table | a release or drain repeated after an installer worker restart never reaches a reused slot or entry |
+| Recipient slots | `u16` per delivery host, allocated by the core, reused only after retirement; a failed recipient's next incarnation keeps its slot | payload routing indexes a table instead of comparing strings |
+| Recipient incarnations | `u64` per recipient prepare, allocated by the core; `RecipientRef { slot, id, incarnation }` names one loop on one queue | a reopened recipient, the one that just retired on the same slot and ID, and a failed loop's replacement are told apart |
+| Control addressing | every recipient message and acknowledgment, host events included, names a `RecipientRef`, and every lease message `(EntryId, LeaseKey)`; a host ignores and logs a message whose reference does not match its table, and acknowledges a prepare of the reference it already holds as done; the core ignores acknowledgments and events of an older incarnation | a release, drain, or prepare repeated after an installer worker restart never reaches a reused slot, entry, or a newer incarnation, and credits return once per incarnation |
 | Queue directory | native: `generate_retry_queue_id` (`io.rs:901-920`), `{component}/{host}/{hash}`; a declared recipient hashes `(dd_out, canonical endpoint, credential name)` the same way | a recipient added live gets the directory a restart would give it, and one that returns adopts its backlog ([4.9](#49-queued-and-persisted-work)) |
 
 ### 4.3 Who declares resources
@@ -334,9 +339,9 @@ current configuration instead of the startup one (F18). These keys become live:
 | Routing | `experimental.metrics_endpoint_routing.*` (groups appear, disappear, and change) |
 | Multi-Region Failover | `multi_region_failover.{enabled, site, dd_url}`; the gateway's `enabled` binding becomes `Live` |
 | Autoscaling failover | `autoscaling_failover.{enabled, metrics}`, `cluster_agent.{enabled, auth_token}`; the endpoint stays a host fact (an `https` endpoint resolves from `cluster_agent.url` or the Kubernetes service environment at boot, whether or not `cluster_agent.enabled` is set), and the recipient exists only while forwarding is enabled, a token is set, and the branch is requested |
-| Forwarder | `forwarder_*` except the storage root and stop timeout; proxies; TLS settings; `skip_ssl_validation`; HTTP protocol; connection reset; validation interval; `allow_arbitrary_tags` (a request header every payload class gets, `middleware.rs:64`) |
+| Forwarder | `forwarder_*` except the storage root and stop timeout, and `forwarder_storage_max_size_in_bytes` only between nonzero values (crossing 0 creates or removes a queue's directory, `io.rs:765-782`, which a live setting cannot); proxies; TLS settings; `skip_ssl_validation`; HTTP protocol; connection reset; validation interval; `allow_arbitrary_tags` (a request header every payload class gets, `middleware.rs:64`) |
 | Encoder, metrics only | `use_v2_api.series`, `use_v3_api.*`, `serializer_experimental_use_v3_api.*`, `serializer_max_series_payload_size`, `serializer_max_series_points_per_payload`, `serializer_max_series_uncompressed_payload_size` |
-| Stays restart-only | `serializer_compressor_kind`, `serializer_zstd_compressor_level`, `data_plane.serializer_zstd_compressor_level`, `serializer_max_payload_size`, `serializer_max_uncompressed_payload_size`, `flush_timeout_secs`: the logs, events, service-check, and trace encoders read them too and are built once (F23), so a live change would split behavior by payload type |
+| Stays restart-only | `serializer_compressor_kind`, `serializer_zstd_compressor_level`, `data_plane.serializer_zstd_compressor_level`, `serializer_max_payload_size`, `serializer_max_uncompressed_payload_size`, `flush_timeout_secs`: the logs, events, service-check, and trace encoders read them too and are built once (F23), so a live change would split behavior by payload type; `forwarder_storage_max_size_in_bytes` changing to or from 0 |
 
 Structure that follows these keys (a routing group's branch, the failover branches) follows them live: the default
 program gains or loses the branch, and artifacts see a stale base, which is the behavior the specification designs for a
@@ -401,34 +406,53 @@ over the configuration view itself is the remedy if this proves common ([A14](#9
 
 **Who does what for the resources product.** The core stays I/O-free; ADP validates and resolves:
 
-1. On a resources snapshot, ADP runs `resources::validate` and resolves every credential reference against its
-   configuration views, then calls `core.on_resources(revision, Result<ResourcesArtifact, Reason>,
-   missing_credentials)`.
-2. The core applies the revision rules of the policy product (its own high-water mark, redelivery, revocation), keeps
-   the accepted document, and returns `Action::InstallDefaultProgram` when what lowering should see changed.
-3. ADP lowers with `core.accepted_resources()`, which is `None` while the config is rejected, pending, or revoked.
-4. The core records which generation carries which resources revision, so it can report `active` and `retired`, and a
-   prepare failure attributed to a declared resource (4.16) marks the config `rejected`.
-5. `config_states()` returns the acknowledgments of both products. On every configuration change ADP calls
-   `on_resources` again with the current `missing_credentials`, which is how `pending` is re-evaluated.
+1. On a resources snapshot, ADP checks the snapshot's shape (one config, transport hash, envelope) and runs
+   `resources::validate`, then calls `core.on_resources(event)` with one `ResourcesEvent`:
+
+   ```rust
+   // saluki-metric-plan::install::resources
+   pub enum ResourcesEvent {
+       Revoked,                                                // an empty snapshot, or a missing `resources` member
+       Refused { config: ArtifactConfigId, version: u64, reason: Reason },   // several configs, a bad hash or envelope
+       Delivered {
+           config: ArtifactConfigId, version: u64, revision: ResourcesRevision, artifact_hash: PlanHash,
+           document: Result<ResourcesArtifact, Reason>,         // `Err`: the document failed validation
+       },
+   }
+   ```
+
+2. The core applies the revision rules of the policy product: its own high-water mark, acknowledgments kept per
+   `ArtifactConfigId`, a redelivery recognized by its artifact hash, revocation. It keeps the accepted document and
+   returns `Action::InstallDefaultProgram` when what lowering should see changed.
+3. On every configuration change, before lowering, ADP resolves every credential the accepted documents reference
+   against its configuration views and calls `core.credentials_changed(missing)` with the names that are not
+   configured; the core re-evaluates `pending` from it, so a change is lowered once.
+4. ADP lowers with `core.accepted_resources()`: the newest accepted revision that is neither rejected nor pending (the
+   one installing, else the one active), or `None` once revoked. A newer revision that is refused, rejected, or
+   pending leaves the revision installed before it in place, as a refused policy delivery does not hide what an
+   earlier one installed (`install/core/artifacts.rs:35-37`): declared resources are removed only by a revocation, or
+   when the installed revision itself becomes pending (its own credential removed).
+5. The core records which resources revision each lowering, generation, and resource transaction carries, so it can
+   report `installing`, `active`, and `retired`, and a prepare failure attributed to a declared resource (4.16) marks
+   that revision `rejected`. `config_states()` returns the acknowledgments of both products.
 
 | State | Set by | When |
 |---|---|---|
-| `rejected` | ADP (validation), or the core (a prepare failure a declared resource caused) | invalid document; a declared recipient that failed to prepare, with the slot's reason |
-| `pending` | the core, from `missing_credentials` | a referenced credential is not configured; re-evaluated on every configuration change |
-| `active` | the core | the committed generation carries this revision |
-| `retired` | the core | a newer revision or a revocation replaced it, and the last generation carrying it retired |
+| `rejected` | ADP (validation), or the core (a prepare failure a declared resource caused) | invalid document; a declared recipient that failed to prepare, with the slot's reason; the revision installed before it, if any, keeps running |
+| `pending` | the core, from `credentials_changed` | a referenced credential is not configured; re-evaluated on every configuration change; the revision installed before it keeps running |
+| `installing` | the core | accepted; the generation or resource transaction lowered with it waits, prepares, or retries (as policy's `pending` while it waits or prepares) |
+| `active` | the core | the committed generation was lowered with this revision |
+| `retired` | the core | a newer revision installed, or a revocation, and the last generation lowered with it retired |
 
 **Policy artifacts** keep their shape: an artifact emits to an output by ID and records the output's fingerprint in its
 base. It cannot declare outputs, bindings, recipients, credentials, or delivery policies; composition takes every output
 declaration from the default program.
-
 **Privilege summary.** A destination enters ADP only through operator-controlled native configuration or through the
 resources product. A credential leaves the host only toward an endpoint native configuration names, or toward a declared
-endpoint with a credential the operator explicitly made available to resources artifacts. Revoking the product retires
-everything it declared within the drain deadline and leaves behind only its recipients' queue directories, as removing
-an endpoint from native configuration does (4.9). Signed resources and endpoint allowlists per credential wait for
-stage 8.
+endpoint with a credential the operator explicitly made available to resources artifacts. Revoking the product withdraws
+everything it declared at the resource transaction that follows, retires it within the drain deadline, and leaves behind
+only its recipients' queue directories, as removing an endpoint from native configuration does (4.9). Signed resources
+and endpoint allowlists per credential wait for stage 8.
 
 ### 4.4 Output bindings as plan parameters
 
@@ -452,7 +476,7 @@ pub struct OutputBinding {
     pub selector: Selector,
     pub encoder: Params,                       // protocol variants, compression, limits, flush timeout
     pub telemetry: NativeComponentId,          // the component_id its encoder telemetry reports under
-    pub provenance: Provenance,                // native, or the resources artifact's revision
+    pub provenance: Provenance,                // native, or the resources revision; not in the lease's binding digest
 }
 pub enum Selector {
     Role(RoleName),                            // main, multi_region_failover, autoscaling_failover
@@ -469,7 +493,7 @@ pub struct RecipientDecl {
     pub classes: PayloadClasses,               // MetricsOnly | All (4.7)
     pub protocol: Params,                      // V3 acceptance; request mapper kind (Datadog intake or Cluster Agent)
     pub delivery: DeliveryPolicy,              // a recipient's only knobs beyond its host's settings (4.13)
-    pub provenance: Provenance,
+    pub provenance: Provenance,                // not compared when deciding whether a recipient was reconfigured
 }
 ```
 
@@ -489,10 +513,15 @@ pub struct RecipientDecl {
   the lease's `ResolvedRecipients` holds one slot list per variant, so no recipient filters a payload it was resolved
   for.
 - **Credentials stay references** (specification, Lowering). Proxy URLs appear without user information, which becomes a
-  credential reference (`native:proxy.http`, `native:proxy.https`), so a proxy password is followed live like an API key
-  and never enters a plan.
-- **Hashing.** The plan hash covers `resources` and every `binding` with resolved values, so any change produces a
-  candidate; an equal candidate is `Unchanged`, as today.
+  credential reference (`native:proxy.http`, `native:proxy.https`). The proxy is built into the client
+  (`proxy.rs:123-126`), so the delivery host follows each proxy reference's view itself: when the value changes, it
+  builds a new client off its routing loop and swaps it in at a request boundary, keeping the old client and reporting
+  the failure if the build fails. A proxy password rotation therefore applies without a plan change, like an API key
+  rotation, and never enters a plan.
+- **Hashing.** The plan hash covers `resources` and every `binding` with resolved values, provenance included (so
+  `explain` shows it), so any change produces a candidate; an equal candidate is `Unchanged`, as today. A lease's
+  binding digest (`LeaseKey`, 4.10) and the comparison that decides whether a recipient was reconfigured leave
+  provenance out, so a resources revision whose content is unchanged rebinds no output and flushes nothing early.
 - **Validation** adds the specification's capability-binding rule: every output binding names a host the catalog
   declares (`Catalog::host`), with parameters its schema accepts, and recipients the plan declares on that host; every
   recipient of an output accepts its protocol (a Cluster Agent recipient only V2 series of scalar kinds); declared
@@ -559,8 +588,10 @@ node ID, whose loss counts as policy loss of that node, and the scope's status n
 removed destination stops receiving, and nothing the artifact kept out of an output reaches it. When X returns with the
 recorded fingerprint, the next re-composition restores the emits; a rebound X needs a rebase. When the routing groups
 are renumbered (trace F), the reason names the output that now carries the recorded fingerprint ("output renumbered:
-the recorded group is now `metrics_routing_encode_0`; rebase"). A removal that waits for an in-flight cut (4.10) takes
-effect for metrics when the cut finalizes, at most `lcm` + 1 s later (301 s at a 300 s width), plus the drain.
+the recorded group is now `metrics_routing_encode_0`; rebase"). A removed recipient stops receiving metrics at the
+resource transaction that withdraws it (4.10), whether a cut is in flight or the re-composition fails to prepare or
+compose; the composition-level drop, which names the output in status, follows when the re-composition commits (after
+an in-flight cut, at most `lcm` + 1 s later, 301 s at a 300 s width).
 
 ### 4.6 The multiplexed encode host
 
@@ -645,7 +676,7 @@ interprets:
 | retry policy, concurrency, timeouts, queue sizes from `ForwarderConfiguration` | `DeliverySettings` (the host binding) and a declared recipient's `DeliveryPolicy`, swapped at a request boundary |
 | `ApiKeyRefresher` bound to configured `(url, index)` positions (`api_key.rs:222-280`) | one credential cell per recipient, fed by the view its `CredentialRef` resolves to (4.8) |
 | `ApiKeyValidator` over the startup set (`validation.rs:24-70`) | validation targets: the native `DatadogIntake` recipients of the table, following it |
-| one `HttpClient` (`io.rs:386-410`) | one client per host binding, rebuilt at prepare when the client profile changes, swapped at publish |
+| one `HttpClient` (`io.rs:386-410`) | one client per host binding, built at a resource transaction's prepare when the client profile changes and swapped at its publish; rebuilt by the host itself when a proxy credential it follows changes (4.4) |
 
 `DatadogForwarderConfiguration` and `ClusterAgentForwarderConfiguration` become configurations of the one `DeliveryHost`
 (protocol defaults, telemetry names, which validation runs). `build_routable_endpoints` must allow an empty table (it
@@ -659,15 +690,22 @@ waits, and a prepare or a release, including the one that removes a stuck recipi
 ```text
 select! {
   health, validation,
-  control mailbox -> Prepare | Publish | Release | Reopen | Abort,
+  control mailbox -> Prepare | Publish | Release | Reopen | Abort | AbortResources,
   pending send    -> the next slot of the payload being routed (sends stay in slot order, one at a time),
   payload input   -> transaction; route(payload) becomes the pending sends   (only while no send is pending)
 }
 ```
 
 - Metrics payloads from leases carry their variant's `ResolvedRecipients` and go exactly there, in slot order, awaited
-  in turn (native head-of-line behavior). Lowering already applied the native rule to resolve them, including the
-  metrics override replacing the primary for metrics (`metrics_recipients`, `config.rs:471-506`).
+  in turn (native head-of-line behavior), except to a **withdrawn** recipient (below). Lowering already applied the
+  native rule to resolve them, including the metrics override replacing the primary for metrics
+  (`metrics_recipients`, `config.rs:471-506`).
+- **Withdrawal.** Each publish carries the recipients of this host that the current lowering no longer declares, by
+  `RecipientId`. The routing loop drops every send of a payload to a withdrawn recipient, whatever lease or generation
+  stamped it, and counts it in `plan_recipient_withdrawn_payloads_total{host}`; a later publish that no longer lists the
+  recipient restores it. Removal is therefore enforced where delivery happens: a generation that never commits (an
+  addition that keeps failing to prepare, a re-composition that fails, a cut in flight, a candidate queued behind
+  another) cannot keep a removed destination receiving, and neither can a rollback.
 - Payloads without a resolved set (logs, events, service checks, traces, APM stats, any legacy encoder's) route over the
   published native set with `should_route_to_endpoint`, unchanged; a legacy `MetricsEndpointRouting` is still honored.
 - **Payload classes.** Native recipients keep native classes (an additional endpoint receives every class, the metrics
@@ -690,11 +728,12 @@ with that configuration would.
 
 | Phase | Delivery host does |
 |---|---|
-| Prepare | receives `RecipientPrepare { slot, id, decl, built }` whose pieces the installer built through the host's `RecipientFactory` (credential cell bound to its view, retry queue opened with its persisted directory listed but not read, request mapper, telemetry handles); spawns the I/O loop as a dynamic child in its own `scope::nested` scope; inserts it, addressable only by slot; acknowledges. A failure (client, directory, bounds, duplicate key) is the slot's failed acknowledgment, naming the recipient. |
-| Publish | on `Publish { revision, native_set, settings }` from a resource transaction: swaps the native set, stores each recipient's settings version into its watch, updates the validation targets |
-| Drain | on `Release { recipients: [(slot, id)] }`: waits for the **input barrier**, removes the slots from routing, and sets each loop's close request to `CloseRequest::Retire { deadline: DRAIN_DEADLINE }`. The loop keeps dispatching queued work (dispatch enabled while `!done || draining`, ported from the spike's `drain_on_close`; a readiness error during a drain is returned rather than ending the loop). It exits when its queue and in-flight set are empty, or, at the deadline, closes as at shutdown: in-flight requests finish, queued work persists where disk is configured, otherwise it is dropped and counted (`io.rs:881-899`). At most `MAX_DRAINING_RECIPIENTS` (16) drain per host; one more closes the oldest early with its closure. |
-| Retire | when the loop exits: drops the scope, the credential cell, the telemetry handles, and the per-domain cache entries it held (4.11); frees the slot; acknowledges with `DrainReport { delivered, persisted, dropped, deadline_reached }` |
-| Reopen | `Reopen { recipients: [(slot, id)], decls, built }` for a recipient declared again while its release waits at the barrier or its loop drains: cancels the removal or clears the close request, applies the new declaration's settings, and the loop continues with the same queue and directory; an abort that returns it to draining keeps the original deadline. If the loop already exited, the host spawns a fresh loop from the pieces the reopen carries, which adopts the directory (same identity, same directory, 4.9). |
+| Prepare | receives `RecipientPrepare { recipient: RecipientRef, decl, built }` whose pieces the installer built through the host's `RecipientFactory` (credential cell bound to its view, retry queue opened on its persisted directory, request mapper, telemetry handles); spawns the I/O loop as a dynamic child in its own `scope::nested` scope; inserts it, addressable only by slot; acknowledges. Opening a queue on disk is not read-only: it creates the directory, lists it, deletes the oldest files beyond the maximum size, and removes outdated ones (`queue/persisted.rs:121-166`, `queue/mod.rs:140-160`), reading no file contents. So a queue is opened on a directory only while no loop owns it: the core prepares an identity's next incarnation only after the previous one's exit was reported, and the host serializes prepares per directory and fails one whose directory a live loop still owns. A failure (client, directory, bounds, duplicate key) is the slot's failed acknowledgment, naming the recipient; a prepare of the reference the host already holds is acknowledged as done. |
+| Publish | on `Publish { revision, native_set, settings, withdrawn }` from a resource transaction: swaps the native set, stores each recipient's settings version into its watch (the only path that changes a live recipient's settings, 4.10), replaces the withdrawn set, updates the validation targets |
+| Drain | on `Release { recipients: [RecipientRef] }`, acknowledged once accepted: waits for the **input barrier**, removes the slots from routing, and sets each loop's close request to `CloseRequest::Retire { deadline: DRAIN_DEADLINE }`. The loop keeps dispatching queued work (dispatch enabled while `!done || draining`, ported from the spike's `drain_on_close`; a readiness error during a drain is returned rather than ending the loop). It exits when its queue and in-flight set are empty, or, at the deadline, closes as at shutdown: in-flight requests finish, queued work persists where disk is configured, otherwise it is dropped and counted (`io.rs:881-899`). At most `MAX_DRAINING_RECIPIENTS` (16) drain per host; one more closes the oldest early with its closure. |
+| Retire | when the loop exits: drops the scope, the credential cell, the telemetry handles, and the per-domain cache entries it held (4.11); frees the slot; reports `RecipientExited { recipient, outcome: Retired(DrainReport { delivered, persisted, dropped, deadline_reached }) }` on the host's event channel |
+| Reopen | `Reopen { recipients: [RecipientRef], decls }` (a declaration only, no built pieces) for a recipient declared again while its release waits at the barrier or its loop drains: cancels the removal or clears the close request, applies the new declaration's settings, and the loop continues with the same queue and directory; replies `ReopenReply::Reopened`, and the cancelled release reports no exit. An abort that returns it to draining keeps the original deadline. If the loop already exited, the host replies `ReopenReply::Exited`: the core waits for that incarnation's exit event and then prepares the next incarnation, whose queue adopts the directory (same identity, same directory, 4.9). |
+| Fail | a loop that ends on an error outside a drain (`io.rs:853-858`) finishes its native closure (`io.rs:881-899`) and then reports `RecipientExited { recipient, outcome: Failed(reason) }`. Its slot stays allocated, and payloads naming it are dropped and counted, until the core's next incarnation for it, prepared into the same slot, is live (4.10) |
 
 The drain-on-close mechanism exists only on the local branch `experiment/programmable-metrics-spike` (head
 `e61e9b2ad6`, `lib/saluki-components/src/common/datadog/config.rs:279-372`, with the test
@@ -704,17 +743,24 @@ copy.
 **The input barrier.** A lease's last payloads enter the delivery host's input before the encode host acknowledges the
 lease's drain (the `LeaseClosed` markers, 4.6), but the release arrives later on another channel, the control mailbox.
 On `Release`, the routing loop records `target = received + input.queued()` and keeps routing to the releasing slots
-until it has received `target` payloads: by FIFO on its single input, every payload enqueued before the release has
-then been routed. This needs one accessor, `Consumer::queued()` over `mpsc::Receiver::len` (tokio 1.53,
-`topology/interconnect/consumer.rs:24-44`), and no extra message. A `debug_assert!` checks that no payload names a
-retired slot.
+until it has received `target` payloads and no send is pending: by FIFO on its single input, every payload enqueued
+before the release has then been routed to every slot it names, one send at a time. This needs one accessor,
+`Consumer::queued()` over `mpsc::Receiver::len` (tokio 1.53, `topology/interconnect/consumer.rs:24-44`), and no extra
+message. A `debug_assert!` checks that no payload names a retired slot.
 
 **Process shutdown** keeps native closure: the input closes, every loop's close request becomes `Shutdown`, and loops
 stop popping, finish in-flight work, and persist or drop, within the shutdown budget (`built.rs:641-663`). A loop
 draining for retirement switches to shutdown closure. **A recipient loop that fails** stays native (later transactions
-to it count as permanently failed) and is reported in status and in `plan_recipients{state=failed}`; the next
-candidate or resource transaction that declares it prepares a fresh loop with the same identity, which adopts the
-directory, instead of reusing the failed one.
+to it count as permanently failed), is reported in status and in `plan_recipients{state=failed}`, and reports its exit
+on the event channel. The core marks it `Failed` and, with backoff (1 to 30 s), prepares its next incarnation into the
+same slot through a resource transaction, which adopts the directory once the failed loop has exited. Leases keep
+naming the slot, so recovery needs no plan change and no unrelated configuration edit.
+
+**Host events.** The control mailbox is request and reply, so loop exits travel on a channel of their own:
+`DeliveryHostConfiguration::with_events(mpsc::Sender<DeliveryEvent>)`, bounded at the table's size plus
+`MAX_DRAINING_RECIPIENTS`, so a send never waits. Each incarnation's exit is sent exactly once, retired or failed. ADP
+keeps the receiver in the installer's state outside the worker, as it keeps `acks`, so an exit reported during a worker
+restart is not lost.
 
 **Failover hosts.** `mrf_dd_out` is built with an empty table whenever the metrics pipeline is. Enabling Multi-Region
 Failover is then a recipient prepare (`mrf_dd_out/primary/0/<url>`, credential `native:multi_region_failover.api_key`),
@@ -749,14 +795,24 @@ traces-only deployments. Every existing forwarder test runs against this mode.
   (`DD_EXPERIMENTAL_PROGRAMMABLE_METRICS_RESOURCES_CREDENTIALS='{"team_d":"..."}'`). ADP resolves no secrets itself:
   `ENC[...]` handles are resolved by the Core Agent in connected mode only, and a value that still reads `ENC[...]`
   when ADP sees it counts as not configured.
+- **Liveness depends on the source, and one source is unverified.** Saluki-only keys reach ADP through the same merged
+  map as Datadog keys (`saluki_only.rs:5-8`), and updates fold only the Agent's stream over a base fixed at boot
+  (`system.rs:260-301`). The environment form lives in that base, so it never changes after boot: restart-only. From
+  `datadog.yaml` in connected mode the key is live only if the Core Agent streams a key its schema does not publish,
+  and resolves `ENC[...]` in it, which nothing in this repository shows. P7.5 pins which holds with a test against the
+  Core Agent's configuration stream ([A36](#91-stage-7-assumptions)); if it does not stream the key, declared
+  credentials are restart-only in every mode (rotation and removal included), every `ENC[...]` credential counts as
+  not configured, and the overlay, the release note, and the live tests of 6.11 say so.
 - **`CredentialSource`** (a `saluki-components` trait; ADP implements it over the configuration system's live views)
   resolves a reference to a view of `Option<MetaString>`. Each recipient's cell follows its view through one refresher
   per distinct reference, with the native `ApiKeyCell` store rules (trim; keep the last usable key on a blank or invalid
   update, `api_key.rs:68-92`). Rotation is not a plan change.
 - **Removing a declared credential.** A `credentials/<name>` whose entry is absent from the map is not configured: the
-  resources config that references it goes `pending` at the next lowering, which retires its recipients within the
-  drain deadline. An entry that is present but blank or invalid keeps the last usable key, as natively, and is reported
-  in status. So removing a credential stops its use, and a transient bad value does not.
+  resources revision that references it goes `pending` at the next lowering, which withdraws and retires its
+  recipients. An entry that is present but blank or invalid keeps the last usable key, as natively, and is reported in
+  status. So removing a credential stops new payloads from using it at once, though a retiring recipient keeps sending
+  its queued work with the last key until its drain ends (at most `DRAIN_DEADLINE`, less under a `discard` closure,
+  `api_key.rs:63-92`); a transient bad value stops nothing.
 - **F17 goes away**: an additional endpoint removed from configuration is a recipient that retires. Reordering keys
   within the key list of one URL keeps the native quirk: identity is by position, so the recipient at index 0, with its
   queued payloads (including, now live, its in-memory retries), continues under the key now at index 0, and data queued
@@ -796,97 +852,139 @@ state, and is I/O-free:
 
 ```rust
 // saluki-metric-plan::install::resources
-pub struct ResourceTable { hosts: BTreeMap<HostId, HostResources>, revision: ResourcesRevision }
+pub struct ResourceTable { hosts: BTreeMap<HostId, HostResources>, revision: ResourcesRevision, next_incarnation: u64 }
 struct HostResources {
-    leases: BTreeMap<LeaseKey, Lease>,                 // LeaseKey = (OutputId, binding digest)
-    recipients: BTreeMap<RecipientId, Recipient>,
-    published: Option<ResourcesRevision>,              // the native set and settings the host runs
+    leases: BTreeMap<EntryId, Lease>,                  // every lease, draining ones included
+    live: BTreeMap<LeaseKey, EntryId>,                 // LeaseKey = (OutputId, binding digest), to its Live lease
+    recipients: BTreeMap<RecipientId, Recipient>,      // one per identity; a successor waits for its exit
+    published: Option<ResourcesRevision>,              // the native set, settings, and withdrawn set the host runs
+    transaction: Option<InFlight>,                     // at most one resource transaction per host (below)
 }
 enum User { Generation(GenerationId), NativeSet }      // the published native set holds the recipients it names
-struct Lease { id: EntryId, users: BTreeSet<GenerationId>, state: LeaseState }          // Preparing | Live | Draining
-struct Recipient { slot: u16, users: BTreeSet<User>, decl: RecipientDecl, state: RecipientState }
-                                                       // Preparing | Live | Releasing | Draining | Failed
+struct Lease { key: LeaseKey, users: BTreeSet<GenerationId>, state: LeaseState }        // Preparing | Live | Draining
+struct Recipient { reference: RecipientRef, users: BTreeSet<User>, decl: RecipientDecl, state: RecipientState }
+    // Preparing | Live | Releasing | Draining | Failed; `successor`: declared again after its loop exited
+pub struct RecipientRef { pub slot: u16, pub id: RecipientId, pub incarnation: u64 }
+pub enum CreditKey {                                   // one entry of the resource budget's ledger (4.12)
+    Lease(HostId, EntryId, u64), Recipient(HostId, RecipientRef), HostQueue(HostId), Instances(GenerationId, SlotId),
+}
 impl ResourceTable {
-    /// Per host: leases to reuse or create, recipients to reuse, reconfigure, reopen, or create, the lease table of
-    /// every slot's preparation, and the bytes the preparation adds to the resource budget (4.12).
+    /// Per host: leases to reuse or create, recipients to require (reused), reopen, or create, never to reconfigure
+    /// (only resource transactions change a live recipient's settings), the lease table of every slot's preparation,
+    /// and the credits the preparation adds, per resource (4.12).
     pub fn plan(&self, candidate: &Plan) -> ResourcePlan;
-    /// The resource transaction a lowering needs: the native recipients to prepare, then what each host publishes.
+    /// The resource transaction a lowering needs: the native recipients its native set adds, then what each host
+    /// publishes (the native set, every recipient's settings, native and declared, and the recipients it withdraws),
+    /// with the credits a bound raised in place adds.
     pub fn transaction(&self, lowered: &Resources) -> Option<ResourceTransaction>;
 }
 ```
 
-A generation whose plan binds an output exactly as a live lease does (equal `LeaseKey`) reuses that lease, so unchanged
-outputs keep their builders, open payloads, and flush timers across installs (specification: "Generations reuse a
-resource only when its stream, batching, and lifecycle contracts permit it"). A lease's users are the live or kept
-generations whose plan uses it; a recipient's are the generations whose plan declares it, and the published native set
-when it names the recipient. A failed recipient is never reused: the next declaration prepares a fresh loop (4.7).
+A generation whose plan binds an output exactly as a `Live` lease does (equal `LeaseKey`, provenance excluded) reuses
+that lease, so unchanged outputs keep their builders, open payloads, and flush timers across installs (specification:
+"Generations reuse a resource only when its stream, batching, and lifecycle contracts permit it"). A `Draining` lease is
+never reused: an equal binding declared again gets a new lease, under a new `EntryId`, beside it. A lease's users are
+the live or kept generations whose plan uses it; a recipient's are the generations whose plan declares it, and the
+published native set when it names the recipient. A failed recipient is never reused: its next incarnation is prepared
+into the same slot once the failed loop's exit is reported (4.7), and a recipient declared again after its loop exited
+waits as a `successor` the same way.
 
 ```text
 lowered(configuration)              every lowering, independent of the metrics candidate below
-  a resource transaction, when a host's native set or settings differ from what it published:
-    PrepareResources { revision, hosts: [HostPrepare { host, recipients, reopen }] }
-       each host acknowledges: resources_prepared(revision, host, result)
-    PublishResources { revision, hosts }        native sets and settings versions; the NativeSet user moves
+  a resource transaction per host whose native set, recipient or host settings, withdrawn set, or failed recipients
+  differ from what it published; at most one in flight per host, for the newest lowering:
+    PrepareResources { revision, hosts: [HostPrepare { host, create, reopen }] }   the recipients the native set adds
+       each host acknowledges within PREPARE_TIMEOUT: resources_prepared(revision, host, result), else AbortResources
+    PublishResources { revision, hosts }        native sets without the additions that failed, settings, withdrawn sets
+    ReleaseRecipients { host, recipients }      at once, for recipients the publish left without a user
 propose(candidate)                  the metrics generation, as in stage 6
-  Prepare { generation, slots, hosts: [HostPrepare { host, leases, recipients, reopen }] }
-     each acknowledges: prepare_acknowledged(generation, PrepareSite::{Slot, Host, Budget}, result)
+  Prepare { generation, slots, hosts: [HostPrepare { host, leases, create, reopen, requires }] }
+     each acknowledges: prepare_acknowledged(generation, PrepareSite::{Slot, Host, Budget { resource }}, result)
      barrier: every acknowledgment within PREPARE_TIMEOUT (10 s), else Abort { generation, slots, hosts }
   Commit { generation }               or, for a cut: ArmCut, WatchCut, then FinalizeCut or CancelCut (stage 6)
 retired(g)
   ReleaseLeases { host, leases }                leases no live or kept generation uses  -> lease_released(..)
   ReleaseRecipients { host, recipients }        once no lease names them and no user holds them
-                                                -> recipient_retired(.., DrainReport)
+host events (4.7)                   recipient_retired(RecipientRef, DrainReport), recipient_failed(RecipientRef, reason)
+whenever a creation ends            ReleaseCredits { credits }  (retired, released, aborted, refused, or superseded)
 ```
 
-- **Resource transactions** carry only state that outlives generations: the native set for non-plan payloads and host
-  settings. An addition prepares its recipients first and then publishes; a removal publishes first (the `NativeSet`
-  user drops at the publish), and the recipient is released once no generation uses it either. A transaction never
-  waits for a cut or a metrics prepare, and a metrics prepare failure does not hold it back, so a logs dual-ship
-  endpoint follows its configuration within one prepare. A recipient that fails to prepare in a transaction is retried
-  with backoff (1 to 30 s) and reported; a metrics candidate that declares the same recipient fails the same way.
-  `ResourcesRevision` (`u64`) grows with every publication, and a host ignores an older one. A short window in which a
-  generation's payloads meet older settings is harmless: settings change how a recipient sends, never which payloads
-  reach it (that is the resolved sets', 4.6).
+- **Resource transactions** carry only state that outlives generations: the native set for non-plan payloads, host
+  settings, every recipient's settings (native and declared), and the withdrawn set. A transaction prepares the
+  recipients its native set adds (a declared recipient, which no native set names, is created by the generation that
+  first declares it), then publishes whatever those prepares returned: an addition that failed is left out of
+  the native set, reported, and retried with backoff (1 to 30 s) by a later transaction, while the removals and the
+  withdrawn set publish regardless, so a failed addition never keeps a removed destination receiving. A removal
+  publishes first (the `NativeSet` user drops at the publish, and a recipient left without a user is released right
+  after it, since the host handles its mailbox in order), and a recipient still named by a generation's lease is
+  released once none uses it. A transaction never waits for a cut or a metrics prepare, and a metrics prepare failure
+  does not hold it back, so a logs dual-ship endpoint follows its configuration within one prepare.
+- **Withdrawal.** The withdrawn set of a host is every recipient of its table that the latest lowering does not declare,
+  native or declared (4.7). Metrics to a removed recipient therefore stop at the transaction that follows the change,
+  not when a generation without it commits: one edit that removes endpoint A and adds an endpoint B that fails to
+  prepare, a re-composition that fails to compose, an artifact still preparing when its resources are revoked, and a
+  rollback to a plan that used A all leave A withdrawn. The last payloads of A's old leases are dropped and counted
+  rather than delivered, which is the removal's meaning.
+- **Only transactions reconfigure.** A live recipient's settings (protocol, `DeliveryPolicy`, and its host's settings)
+  change only through a resource transaction, versioned by `ResourcesRevision`: a generation's prepare creates,
+  reopens, or requires recipients and never reconfigures one, so an aborted generation or a cancelled cut leaves no
+  setting behind, and a generation lowered earlier cannot overwrite settings a newer transaction published.
+- **One transaction per host at a time, for the newest lowering.** A newer lowering replaces a transaction that has not
+  published: `AbortResources { revision, hosts }` releases what it prepared that the newer one does not need, and
+  returns its credits. A host that does not acknowledge `PrepareResources` within `PREPARE_TIMEOUT` gets
+  `AbortResources`, and the transaction is retried with backoff. Prepares and publishes are idempotent per revision and
+  `RecipientRef`. `ResourcesRevision` (`u64`) grows with every publication, and a host ignores an older one. A short
+  window in which a generation's payloads meet older settings is harmless: settings change how a recipient sends,
+  never which payloads reach it (that is the resolved sets' and the withdrawn set's, 4.6, 4.7).
 - **Prepare** builds every new lease's builders and every new recipient's pieces in the installer task, off the data
-  path, through the factories each host exposed at build. A recipient prepare lists its persisted directory and builds a
-  client; it reads no file contents. Before dispatching a `Prepare` or a `PrepareResources`, ADP acquires the bytes the
-  plan lists from the resource budget (4.12); a `Strict` refusal is the failed acknowledgment of `PrepareSite::Budget`.
-- **Abort** releases only what the aborted generation created; a recipient it reopened goes back to draining with its
-  original deadline, so repeated prepares and aborts cannot keep a drain from ending.
+  path, through the factories each host exposed at build. A recipient prepare opens its persisted directory as 4.7
+  describes and builds a client; it reads no file contents. A generation's `HostPrepare` lists in `requires` every
+  recipient its leases name that it neither creates nor reopens; the host fails the acknowledgment when one is not
+  `Live`, so a generation never commits over a recipient whose transaction failed to prepare it, and it is retried
+  after that transaction is. Before dispatching a `Prepare` or a `PrepareResources`, ADP acquires the credits the plan
+  lists that it does not hold yet (4.12); a `Strict` refusal is the failed acknowledgment of
+  `PrepareSite::Budget { resource }`, which names the resource, so the core attributes it (4.16).
+- **Abort** releases only what the aborted generation created, and returns those credits; a recipient it reopened goes
+  back to draining with its original deadline, so repeated prepares and aborts cannot keep a drain from ending.
 - **Commit** is unchanged and publishes nothing.
 - **Retirement is two-phase per host**: leases, then recipients, because a recipient may be released only after the last
-  payload addressed to it has been routed (the encode host's drain acknowledgment, then the input barrier).
+  payload addressed to it has been routed (the encode host's drain acknowledgment, then the input barrier), so no
+  payload ever names a slot that was freed and reused.
 - **Cuts.** A cut generation's leases and recipients are prepared with its `Prepare`, like any generation's, and nothing
   is published for it: metrics payloads name their recipients, and the native set follows resource transactions. A
   cancelled cut therefore leaves nothing behind: `Abort` releases what its generation created, and no native set names a
   recipient only that generation held. Leases switch with the generation a batch carries, and time-driven output belongs
   to the lineage's newest committed generation (amendment 69), so flushes after a commit use the new leases: the
   specification's "changed destination" trace (`retain`, flushes go to `B`). A native endpoint removed while a cut is
-  in flight stops receiving logs, events, and traces at the resource transaction; metrics reach it until the cut
-  finalizes (amendment 79 makes the candidate wait, at most `lcm` + 1 s, 301 s at a 300 s width), then for the drain.
-- **The overlap budget** (4 live generations) bounds leases to four per output, and recipients to the union of four
-  plans' declarations, the published native set, and at most 16 draining per host.
+  in flight stops receiving everything at the resource transaction, which withdraws it; the cut's candidate waits as in
+  stage 6 (amendment 79, at most `lcm` + 1 s, 301 s at a 300 s width), and the recipient drains after it.
+- **The overlap budget** (4 live generations) bounds leases to four per output plus those draining, and recipients to
+  the union of four plans' declarations, the published native set, and at most 16 draining per host.
 - **Last-known-good.** A kept generation is live for resource purposes: its leases and recipients stay prepared, so a
-  rollback is still one store. At every commit the core keeps a generation, the one it replaces or the one kept before,
-  only while every output its plan declares is declared by the committed plan with an equal fingerprint, and every
-  recipient its plan declares is declared by the committed plan; otherwise it releases it. Additions therefore keep it,
-  and a removal or a rebinding releases it at the very commit that removes the resource, so a rollback never resurrects
-  a removed destination ([amendment 100](#10-proposed-spec-amendments)). A rollback publishes nothing: the native sets
-  and settings stay those the resource transactions published from the current configuration, and until the
-  re-composition (`InstallDefaultProgram`, as today) commits, metrics follow the kept generation's bindings, so an
-  endpoint added since then misses them for that time.
+  rollback is still one store. At every commit, and whenever a lowering arrives (`on_default_program`, which every
+  configuration change and resources event leads to), the core keeps a generation (the one it replaces or the one kept
+  before) and a cut's rollback plan only while every output its plan declares is declared by the latest lowered plan
+  with an equal fingerprint, and every recipient its plan declares is declared there with the same protocol;
+  otherwise it releases the generation, or drops the rollback plan in favor of the re-composition. Additions therefore
+  keep it, and a removal, a rebinding, or a protocol flip releases it as soon as it is lowered, so a rollback never
+  resurrects a removed destination ([amendment 100](#10-proposed-spec-amendments)), and the withdrawn set covers the
+  time before the core sees the lowering. A rollback publishes nothing: the native sets, settings, and withdrawn sets
+  stay those the resource transactions published from the current configuration, and until the re-composition
+  (`InstallDefaultProgram`, as today) commits, metrics follow the kept generation's bindings, so an endpoint added
+  since then misses them for that time.
 
 **The ADP side.** `Installer` (`programmable_metrics/installer.rs`) gains the hosts' `ControlSender`s, created at boot
 with `execution::control::control_mailbox` like the regions' (take-once receivers passed to the host builders through
-the `MetricsWiring` hooks; `dd_out` is built in `run.rs` for every pipeline, so the plan hook supplies its mailbox).
-Boot waits for every host's `running()` as it does for regions; hosts mark their mailbox running when they start
-(F22). `InstallerCore::new` returns the boot generation's resources (lease IDs, slots, the first published revision),
-and the topology builds the hosts with them, so `dd_out` routes logs from its first payload. Resource actions are
-queued and performed one at a time, like every other action, but a release is not awaited: ADP sends `Release`, pushes
-its `DrainReport` acknowledgment into the installer's `acks` (`FuturesUnordered`) and continues, and the core advances
-when `recipient_retired` reports it, so a 30 s drain never stalls a commit or a candidate. `PlanStatus` gains
-`resources: { declared: { active, revision }, outputs, recipients: [{ id, host, state, draining_since }], pending,
-degraded, conflicts }`, also on the stub poll.
+the `MetricsWiring` hooks; `dd_out` is built in `run.rs` for every pipeline, so the plan hook supplies its mailbox),
+and the receiving ends of their event channels (4.7). Boot waits for every host's `running()` as it does for regions;
+hosts mark their mailbox running when they start (F22). `InstallerCore::new` returns the boot generation's resources
+(lease IDs, slots and incarnations, the first published revision), and the topology builds the hosts with them, so
+`dd_out` routes logs from its first payload. Resource actions are queued and performed one at a time, like every other
+action, but a release is not awaited: ADP sends `Release`, which the host acknowledges once accepted, and the core
+advances when the host's event channel reports the exit (`recipient_retired`), so a 30 s drain never stalls a commit
+or a candidate. `PlanStatus` gains `resources: { declared: { state, revision, installed_revision }, outputs,
+recipients: [{ id, host, state, incarnation, draining_since }], pending, degraded, conflicts, withdrawn }`, also on the
+stub poll.
 
 ### 4.11 Scoped registration
 
@@ -899,7 +997,7 @@ degraded, conflicts }`, also on the stub poll.
 | Validation targets | native `DatadogIntake` recipients, following the table | at retire |
 | Credentials | a cell per recipient, a refresher per reference | at retire, and with the reference's last user |
 | Diagnostics | the HTTP inspection layer per recipient | at retire |
-| Memory bounds | 4.12 | credits returned at retire |
+| Memory bounds | 4.12 | credits returned once per resource, when it ends, however it ends |
 | Tasks | native names for native recipients (`endpoint_io_loop_<host>`); `recipient_io_loop_<declared name>` for declared ones (at most 16, names sanitized); `request_builder` per shard. The component's `io_loop` task disappears: its loop is the routing loop | end with the task |
 
 **The specification's exit gate, "resources reclaimed after repeated installs":** after N add-and-remove cycles of a
@@ -914,16 +1012,24 @@ test).
 | Per-recipient limits (`forwarder_retry_queue_payloads_max_size`, the high-priority buffer, `forwarder_storage_max_size_in_bytes`) | native: each recipient has its own bounds | the specification's "configured limits ... mean the same thing" holds: a value means the same for every recipient however many outputs feed it |
 | A delivery host's boot bound | unchanged for a host with boot recipients: one queue per host (`forwarders/datadog/mod.rs:140-166`); an idle host (no recipient at boot) declares only its minimum | correcting it to per recipient would make existing multi-endpoint configurations fail strict boot verification (about 320 MiB per recipient); a known underestimate. An idle `mrf_dd_out` counting its queue would add about 335 MiB to every deployment's boot bound |
 | The resource budget | one `StateBudget` per process, separate from the context budget, with capacity `grant − boot firm total + boot resource bounds`; the boot generation then acquires its own resource bounds, so every release returns what was acquired (`budget.rs:63-77` treats releasing more as a bug) | boot verification stays exactly native; later changes are checked against the same grant |
-| What a prepare admits | its new leases (two `Metric` arrays of `max_metrics_per_payload` per shard, `metrics/mod.rs:502-524`, plus S × `LEASE_QUEUE_BUFFERS` full buffers); an idle host's native queue bound with its first recipient (what a restart with that configuration would count); each declared recipient's own bound (its `queue_bytes`, else the native retry queue bound, plus the high-priority buffer × the largest compressed payload); the generation's new kernel instances and memos times their lanes (each operator's declared bounds, `ConfiguredOperator::specify_bounds`; retained instances add nothing) | the status document's "bounds cover the boot program only" closes: every later generation's memory is counted |
+| What a prepare admits | its new leases (two `Metric` arrays of `max_metrics_per_payload` per shard, `metrics/mod.rs:502-524`, plus S × `LEASE_QUEUE_BUFFERS` full buffers); an idle host's native queue bound while it has any live or draining recipient (acquired with the first, returned when the last retires: what a restart with that configuration would count); each declared recipient's own bound (its `queue_bytes`, else the native retry queue bound, plus the high-priority buffer × the largest compressed payload); the generation's new kernel instances and memos times their lanes (each operator's declared bounds, `ConfiguredOperator::specify_bounds`; retained instances add nothing) | the status document's "bounds cover the boot program only" closes: every later generation's memory is counted |
+| Growth in place | a resource transaction that raises a live recipient's bound (a declared `queue_bytes`, or `forwarder_retry_queue_payloads_max_size`, every declared recipient's default) admits the growth before it publishes (`ResourceTransaction::admitted`); a shrink returns its credits after the publish | a bound raised live is counted as a restart would count it |
 | Mode | the boot verification's own (`lib/saluki-app/src/accounting.rs:81-120`, which P7.5 changes to return the verified grant, firm total, and mode): `Strict` refuses the prepare, `Permissive` warns and proceeds, `Disabled` or no limit skips | a live change that adds nothing old resources do not free succeeds when a restart with the same configuration would; overlap (below) is the exception |
 | Overlap | a rebound output's old and new leases, and a replaced kernel's old and new instances, hold credits until the old one retires | the specification's "overlapping generations draw from a declared, bounded budget"; near the limit, a live change can be refused where a restart, which has no overlap, would pass |
 | Declared resources | at most 16 recipients and 16 outputs; a declared recipient's queue at most the native bound (4.13) | a resources artifact adds at most 16 recipient queues within native bounds and 16 leases, each admitted like a live native change |
 | Draining recipients | at most `MAX_DRAINING_RECIPIENTS` (16) per host; one more closes the oldest draining recipient early with its closure | flapping configuration cannot grow them without bound |
 | Artifact memory | `ARTIFACT_MEMORY` (64 MiB) stays a validation limit per instance, which is lane-independent; the real total, times lanes, is what the prepare admits | validation and plan hashes stay free of lane counts |
 
-The core computes the bytes per prepare (`ResourcePlan::admitted`) from the compiled program and the resource table;
-ADP holds the budget, acquires with `try_acquire` before dispatching, and releases at `lease_released`,
-`recipient_retired`, and the retirement of a generation's instances.
+**The credit ledger.** The core computes the credits per resource, `ResourcePlan::admitted` and
+`ResourceTransaction::admitted` as `Vec<(CreditKey, u64)>` (`CreditKey` names a lease, a recipient incarnation, an idle
+host's queue, or a generation's kernel instances in one slot, 4.10), from the compiled program and the resource table.
+ADP holds the budget and a ledger of the credits it holds, in the installer's state outside the worker. Before
+dispatching it acquires, with `try_acquire`, every listed credit it does not hold yet, so an action repeated after a
+worker restart acquires nothing twice; a refusal names its `CreditKey` in `PrepareSite::Budget { resource }`. It
+releases on `Action::ReleaseCredits`, which the core emits whenever a creation ends, however it ends: a lease released,
+a recipient incarnation retired or failed, a generation's instances retired, and whatever an `Abort`, an
+`AbortResources`, a refused or failed prepare, a cancelled cut, or a superseded transaction created. Default-program
+candidates that retry every 1 to 30 s therefore never accumulate credits, and every credit returns exactly once.
 
 ### 4.13 The delivery-policy slot
 
@@ -944,10 +1050,11 @@ pub enum Closure { Native, Attempt, Persist, Discard }
 A dual-ship destination added for an experiment should not take the primary's memory, should not fill the disk, and may
 not deserve 30 s of retries when removed: these three knobs cover that. `queue_bytes` above the native bound and spill
 for a host without storage are validation errors. `explain` shows each recipient's policy; the diff shows a policy
-change as a reconfiguration, applied in place at publish (a shrinking queue evicts its oldest entries, counted as
-`queue_limit` drops). Priorities, other overflow rules, and reactive policies stay reserved (stage 10). Delivery queues
-take no credits from a budget in stage 7, though the specification has them do so from stage 7: they keep native
-limits, and a declared recipient's bound is admitted at prepare (4.12; [amendment 102](#10-proposed-spec-amendments)).
+change as a reconfiguration, applied in place at a resource transaction's publish (a shrinking queue evicts its oldest
+entries, counted as `queue_limit` drops; a growing one is admitted first, 4.12). Priorities, other overflow rules, and
+reactive policies stay reserved (stage 10). Delivery queues take no credits from a budget in stage 7, though the
+specification has them do so from stage 7: they keep native limits, and a declared recipient's bound is admitted at
+prepare (4.12; [amendment 102](#10-proposed-spec-amendments)).
 
 ### 4.14 Pending and degraded
 
@@ -983,7 +1090,7 @@ limits, and a declared recipient's bound is admitted at prepare (4.12; [amendmen
 | `component_events_dropped_total{drop_reason:payload_too_large}` of an encode host's leases | uncounted (a TODO) | counted per lease | new |
 | `component_data_points_sent_total{domain}` (`points.sent`) | a running total for the process | restarts from 0 when a domain returns more than 3 s after its last recipient retired | yes |
 | Declared outputs | none | encoder telemetry under `component_id:resources_<name>` | new |
-| Plan-level | | `plan_live_leases{host}`, `plan_recipients{host, state}` (`active`, `draining`, `failed`), `plan_recipient_retirements_total{host, outcome}` (`drained`, `deadline`, `discarded`), `plan_resource_conflicts`, `plan_resource_budget_bytes{state}` (`granted`, `used`) | new |
+| Plan-level | | `plan_live_leases{host}`, `plan_recipients{host, state}` (`active`, `draining`, `failed`), `plan_recipient_retirements_total{host, outcome}` (`drained`, `deadline`, `discarded`), `plan_recipient_withdrawn_payloads_total{host}`, `plan_resource_conflicts`, `plan_resource_budget_bytes{state}` (`granted`, `used`) | new |
 
 The Agent remaps key on names and on `domain` and `endpoint`, never on encoder component IDs
 (`bin/agent-data-plane/src/state/metrics/rules/serializer.rs`, `transaction.rs:10-50`), so remapped output is unchanged.
@@ -997,17 +1104,18 @@ restart, and what it persists is what native configuration would persist for the
 
 | Failure | Behavior | Recovery |
 |---|---|---|
-| A native resource fails to prepare (invalid proxy, unreadable directory, a strict bounds refusal) | the barrier fails; `Abort` everywhere; the active generation keeps running; default-program candidates and resource transactions retry with backoff (1 to 30 s); `status.degraded` names the resource and the reason; artifacts composed with it are not rejected (they compose again with the next candidate) | fix the configuration |
-| A declared resource fails to prepare (unreadable directory, a duplicate key, a strict bounds refusal), attributed by the slot's failed acknowledgment, which names the recipient | the core marks the resources config `rejected` with the reason and asks for a lowering without it, so native configuration changes keep applying; policies emitting to its outputs go `pending` (new) or degraded (in effect); no retry | republish a corrected resources artifact |
+| A native resource fails to prepare (invalid proxy, unreadable directory, a strict bounds refusal) | in a resource transaction: the addition is left out of the native set and retried, while the transaction's removals and withdrawals publish; in a generation: the barrier fails (directly, or through `requires`), `Abort` everywhere, and the active generation keeps running, with removed recipients already withdrawn; default-program candidates and resource transactions retry with backoff (1 to 30 s); `status.degraded` names the resource and the reason; artifacts composed with it are not rejected (they compose again with the next candidate) | fix the configuration |
+| A declared resource fails to prepare (unreadable directory, a duplicate key, a strict bounds refusal), attributed by the slot's failed acknowledgment, which names the recipient, or by `PrepareSite::Budget { resource }` | the core marks that resources revision `rejected` with the reason and asks for a lowering without it (the revision installed before it, if any, keeps running), so native configuration changes keep applying; policies emitting to outputs only it declares go `pending` (new) or degraded (in effect); no retry. A budget refusal by an artifact's kernel instances is that artifact's prepare failure, never the resources revision's | republish a corrected resources artifact |
 | An unresolved credential | never a prepare failure: detected at lowering; the resources config is `pending` and excluded (4.8) | configure the credential |
 | A host does not acknowledge in time | as any slot: abort, retry | automatic |
 | A builder task panics | the encode host fails and the process ends, as a native encoder failure does (amendment 1) | restart; a panic a declared resource causes recurs after the restart, when the resources are redelivered, until the product is revoked |
-| A recipient loop ends on an error | native: later transactions to it fail permanently; reported in status and `plan_recipients{state=failed}` | the next candidate or resource transaction that declares it prepares a fresh loop, which adopts the directory; or a restart |
+| A recipient loop ends on an error | native: later transactions to it fail permanently; reported on the host's event channel, in status, and in `plan_recipients{state=failed}` | automatic: the core prepares its next incarnation into the same slot with backoff (1 to 30 s), which adopts the directory once the failed loop exited |
+| A resource transaction is superseded, or its host does not acknowledge in time | `AbortResources` releases what it prepared that the newer lowering does not need, and its credits | automatic: the transaction for the newest lowering runs, retried with backoff |
 | An artifact generation fails under supervision | rollback to last-known-good (one store), or to the default program if the keep rule released it | automatic |
 | The resource authority removes a resource an artifact uses | the artifact in effect keeps running with emits to it dropped and counted, degraded (4.5); a new one is `pending` | the resource returns, or the artifact is rebased |
-| The installer worker panics mid-action | restarts with the core's state; at most the action in progress repeats (prepares are idempotent per generation, releases per slot and recipient ID, which hosts check) | automatic |
+| The installer worker panics mid-action | restarts with the core's state; at most the action in progress repeats (prepares are idempotent per generation or revision and `RecipientRef`, releases per `RecipientRef`, which hosts check; credits per `CreditKey`; host events wait in the channel) | automatic |
 | ADP restarts | persisted queues are adopted by native directory naming; declared resources return with the stub's redelivery; meanwhile the default program runs and policies that use declared outputs are pending | automatic |
-| A mistaken resources artifact | it can send metrics (not logs or traces) to a declared endpoint with an operator-declared credential; revoking the product retires everything it declared within the drain deadline | revoke |
+| A mistaken resources artifact | it can send metrics (not logs or traces) to a declared endpoint with an operator-declared credential; revoking the product withdraws everything it declared at the next resource transaction and retires it within the drain deadline | revoke |
 | Disk full while a retiring recipient persists | dropped and counted, as at native shutdown | none needed |
 
 ### 4.17 Worked traces
@@ -1023,11 +1131,12 @@ artifact in effect re-composes, neither stale nor invalid; `dd_metrics_encode` p
 one store. The previous generation retires within milliseconds; lease 1 drains with one early flush to the old
 recipient set and is released.
 
-**B. That endpoint removed again.** The reverse: a resource transaction publishes a native set without slot 3 (logs and
-traces stop going there at once); the metrics generation without it commits, and a kept last-known-good that used slot
-3 is released at that commit. Lease 5 drains; the input barrier lets its last payloads through to slot 3; the recipient,
-held by nothing now, is released; its loop drains its queue for at most 30 s and retires; its series disappear 3 s
-later; its directory stays, as natively, and is adopted if the endpoint returns.
+**B. That endpoint removed again.** The reverse: a resource transaction publishes a native set without slot 3 and
+withdraws its recipient, so logs, traces, and metrics stop going there at once; lease 5's payloads that still name slot
+3 are dropped there and counted. The metrics generation without it commits, and a kept last-known-good that used slot 3
+was released when the core saw the lowering. Lease 5 drains; the input barrier routes its last payloads (slot 3's sends
+dropped); the recipient, held by nothing now, is released; its loop drains its queue for at most 30 s and retires; its
+series disappear 3 s later; its directory stays, as natively, and is adopted if the endpoint returns.
 
 **C. A declared endpoint and a policy routed to it, policy first.** Policy revision 7 emits to `resources_team_d` with
 the fingerprint the editor computed: not declared, so `pending`, and whatever ran keeps running. Resources revision 1
@@ -1035,9 +1144,10 @@ validates; lowering adds the declared output and recipient; the default program'
 `on_default_program` re-composes the pending policy, which now composes, and proposes one candidate: a new recipient
 (its queue bound admitted against the headroom), a new lease, new region programs. After the commit Team D receives the
 platform family; resources and policy are both acknowledged `active`. An empty resources snapshot then drops the
-declared output: the policy in effect re-composes with its emit to `resources_team_d` turned into a counted drop,
-`active` and degraded, while the primary keeps receiving what the policy sends it; the team D lease drains, and its
-recipient retires. Publishing the resources again restores the emit.
+declared output: the resource transaction that follows withdraws team D's recipient, so team D stops receiving at
+once; the policy in effect re-composes with its emit to `resources_team_d` turned into a counted drop, `active` and
+degraded, while the primary keeps receiving what the policy sends it; the team D lease drains, and its recipient
+retires. Publishing the resources again restores the emit.
 
 **D. V3 series turned on live for one endpoint.** `use_v3_api.series.endpoints` gains the dual-ship endpoint of trace
 A. Its recipient's protocol now accepts V3 series and not V2 series (F21), so the main output's binding produces both
@@ -1097,7 +1207,7 @@ tick. Parallelism then comes from lanes, so R1's cost model goes.
 | D5 | **Coalescing** at keyed exits: per target lane, consecutive events with equal generation, epoch, exit entry, point, and admission second share one buffer of at most B events, held across batches and across idle input for at most `COALESCE_HOLD` (5 ms). | 1/B of a send once buffers fill within the hold (at saturation); below that, at most one send per target lane per 5 ms | 0 | 0 |
 | D6 | **State lanes.** `dsd_agg` stays one component and runs P lanes, each owning a disjoint share of every lineage; one exact global budget and an exact, bounded node count ([5.5](#55-state-lanes)). | 0 | 2 compare-and-swap operations, as today; no shared gauge write | 0 |
 | D7 | **Shared lineage rules**: per lineage instance, a tick record by ordinal (the instants, each tick's second, which lanes resolved it, a reset mark), a flush log (back-fill start, flush counted once), a breach flag, a shutdown time. No barrier, no merge, no message. | 0 | 0 | 2 short lock sections per lane |
-| D8 | **A reset window** per state lane, with instances per (lineage, epoch), the exact final old-epoch watermark at every lane, and a shared reset mark that stops old-epoch ticks in every lane at once, replaces "a reset at one of several points drains everything" ([5.6](#56-time-watermarks-progress-ticks-resets-shutdown)). | 0 | 0 | 0 (work only on a reset) |
+| D8 | **A reset window** per state lane, with instances per (lineage, epoch), the exact final old-epoch watermark at every lane, a shared reset mark that stops old-epoch ticks in every lane at once, and a successor record that every lane's instances of a lineage join at the window's close, replaces "a reset at one of several points drains everything" ([5.6](#56-time-watermarks-progress-ticks-resets-shutdown)). | 0 | 0 | 0 (work only on a reset) |
 | D9 | **Post-aggregation lanes**: `metrics_enrich` runs M lanes; passthrough by affinity, flush output and single-task sources spread per buffer. The isolation fence stays (its removal is stage 10). | 0 | 0 | 0 |
 | D10 | **Lanes in `saluki-core`**: a slot component with lanes has one bounded channel per lane, a coordinator for control and health, and a resource group per lane ([5.4](#54-lanes-in-saluki-core-kernels-and-caches)). | 0 | 0 | 0 |
 | D11 | **No shared telemetry handle is written per event on a lane's data path**; kernel and cache counters accumulate per instance and publish deltas every second. | removes shared writes | removes 3 shared gauge updates | 0 |
@@ -1150,10 +1260,12 @@ impl OwnedAdmission {
   lock, and a stamp waits for them; a transaction waits at most for a stamp in progress, never for a fan-out blocked on
   a full channel, so arming over D points does not time out under backpressure.
 - **Heartbeats move into the lane.** A separate heartbeat task sending on the lane's channels would break FIFO without
-  the fan-out lock. The lane host arms a heartbeat timer on period boundaries and, when it fires, re-checks
-  `heartbeat_due()` (last stamp + period), so a batch never resets the timer: if the point stamped nothing for the
-  period, the host stamps a header-only batch and processes it, and the driver forwards it on its progress exits, as it
-  forwards any heartbeat today. The period is stage 6's: `min(1 s, smallest boot flush interval downstream)`.
+  the fan-out lock. The lane host arms a heartbeat timer at `heartbeat_due()` (last stamp + period) and, when it fires,
+  re-checks it: if a stamp moved it, the host re-arms the timer at the new instant (one reset per firing, none per
+  batch); if the point stamped nothing for the period, the host stamps a header-only batch and processes it, and the
+  driver forwards it on its progress exits, as it forwards any heartbeat today. An idle point's next stamp therefore
+  comes one period after its last, as stage 6's `run_heartbeats` gives (`admission.rs:589-607`), never up to two. The
+  period is stage 6's: `min(1 s, smallest boot flush interval downstream)`.
 - **Resets reach every lane at once, and no wake is lost.** The check is level-triggered: after every batch the lane
   compares `SourceClock::epoch()` (an atomic mirror) with the epoch of its own last stamp, and stamps a heartbeat at
   once when the clock is newer, so its first new-epoch header follows its last old-epoch batch within queueing delay.
@@ -1269,7 +1381,9 @@ the region input's, so it is comparable with an open buffer's.
    (5 ms). `RegionDriver::end_turn(turn, input_idle, exits) -> Option<Instant>`, called by the host after its
    `WORK_PER_TURN` loop, sends the buffers whose hold expired and returns the earliest remaining deadline; the host arms
    a timer for it only when its input is idle with buffers open, so no timer is reset per batch under backlog.
-4. **Finish**: everything is sent before `finish` returns.
+4. **Finish**: before `finish` returns, every open buffer is sent, and then the exit's last header goes header-only to
+   every target lane whose `last_sent` is older (on a `One` exit toward a state owner with several upstream points,
+   likewise), so every state lane's tracker holds each point's true last stamp when its input closes (5.6).
 
 At saturation buffers fill within the hold: at W = 8 (D = 6, P = 4, B = 512) a producer lane taking 1.6 M events per
 second fills each target's buffer in about 1.3 ms (est.), so a routed buffer carries B events and per-buffer costs at
@@ -1295,16 +1409,27 @@ the call's header as sent (`driver.rs:1199-1228`), which holds only because ever
 header. With coalescing a sent buffer can carry an older header (rule 2), so progress is judged against what was
 actually sent. After the call's sends, for every target lane `j` with no open buffer, the exit compares `h` with
 `last_sent[j]` as this call left it, and sends a header-only copy of `h` (entry cleared) when `h` is header-only and
-`h.t_a > last_sent[j].t_a`, or `h`'s epoch or generation differs from `last_sent[j]`'s, or `h.t_a >= last_sent[j].t_a
-+ PROGRESS_PERIOD` (100 ms). A generation change therefore reaches every state lane at once (today progress forwards
-only on an epoch change or after 100 ms, `driver.rs:1216-1219`), so a cut's crossing never waits for the throttle, a
-reset window closes within queueing delay, and a heartbeat's watermark advance is never lost. A lane with an open buffer
-gets `h` with that buffer, at most `COALESCE_HOLD` later.
+`h.t_a > last_sent[j].t_a`, or `h`'s epoch or generation differs from `last_sent[j]`'s, or `h.t_a >= last_sent[j].t_a +
+PROGRESS_PERIOD` (100 ms). A generation change therefore reaches every state lane at once (today progress forwards only
+on an epoch change or after 100 ms, `driver.rs:1216-1219`), so a cut's crossing never waits for the throttle, a reset
+window closes within queueing delay, and a heartbeat's watermark advance is never lost. A lane with an open buffer gets
+no copy of `h`: the buffer carries the header of its last append, so until a later call's progress rule or a heartbeat
+reaches that lane, its view of the point lags as it does in stage 6, bounded by the throttle and the heartbeat period,
+not by `COALESCE_HOLD`.
 
-**The final old-epoch latest.** On an epoch change (`h` is in a newer epoch than the previous header this exit
-handled, `prev`), the exit first sends, after the open buffers rule 2 sends, a header-only copy of `prev` to every
-target lane `j` whose `last_sent[j]` is older than `prev`, and then applies the progress rule to `h`. Every state lane
-then holds the exact final old-epoch latest of every point, which the reset window's drain time needs (5.6).
+**The final old-epoch latest.** At the start of a call whose header `h` is in a newer epoch than the previous header
+this exit handled (`prev`), before routing any of `h`'s events, the exit sends every open buffer (each holds `prev`'s
+epoch or an older one), then a header-only copy of `prev` to every target lane `j` whose `last_sent[j]` is older than
+`prev`, and only then routes `h`, applying the progress rule to it after its sends. No lane therefore receives an `e +
+1` buffer before the final `e` header, even when the call's first `e + 1` events fill a buffer (rule 1) or move a
+whole register, and every state lane holds the exact final old-epoch latest of every point, which the reset window's
+drain time needs (5.6). The rule applies equally to an `ExitRouting::One` exit toward a state owner with more than one
+upstream point (P = 1 with D > 1, increment 9.3): stage 6's `forward_progress` sends only a throttled `h`
+(`driver.rs:1199-1226`), so on an epoch change it first sends `prev` header-only when the last header it forwarded or
+wrote is older. With one upstream point nothing changes. An older-epoch header after a newer one from the same point is
+then a wiring fault: `WatermarkTracker::observe` compares epochs with `epoch_newer` and returns `Observation::Fault`
+(with a `debug_assert!`), and the batch counts as invalid loss, where today any epoch difference reads as a reset
+(`rules.rs:135-139`).
 
 ### 5.4 Lanes in `saluki-core`, kernels, and caches
 
@@ -1419,9 +1544,9 @@ runs P lanes. Each lane runs today's isolation driver (`runtime/driver/isolation
   `find`, `rules.rs:117-157`), and without the per-batch clone (F8): `Observation::EpochSwitched` carries the point's
   previous epoch, and `WatermarkTracker::in_publication_epoch_with(cut, point, epoch)` evaluates the predicate as it was
   before the observation;
-- one instance per lineage and admission epoch (two only inside a reset window, 5.6), holding the contexts whose key
-  group the lane owns; the instances of one logical lineage instance across lanes share one `LineageLanes` record
-  (below);
+- one instance per lineage and admission epoch (more than one only inside a reset window, one per open epoch, 5.6),
+  holding the contexts whose key group the lane owns; the instances of one logical lineage instance across lanes share
+  one `LineageLanes` record (below);
 - its own output point (`SlotKind::Isolation::output_points[lane]`) and output latch;
 - its own drain cursor and stash; drains stay bounded (`DRAIN_STEP_EVENTS` 1,024, `DRAIN_STEP_CONTEXTS` 4,096).
 
@@ -1461,40 +1586,65 @@ early ([amendment 117](#10-proposed-spec-amendments)).
 **Shared lineage records.** Natively, five rules couple the contexts of one aggregation: the flush time of a tick (one
 wall-clock read), the idle-counter back-fill start (`last_flush`, which advances only on a non-empty flush, F12), the
 flush count (`aggregator.number_of_flush`), the breach warning (once per episode), and the shutdown close time. One
-`LineageLanes` record per logical lineage instance makes each node-wide. Ticks are identified by their ordinal `k`
-(the k-th tick of the logical instance), never by an `Instant`, which a skip or an interval change would move apart
-across lanes:
+`LineageLanes` record per logical lineage instance, (lineage, epoch), makes the time rules node-wide, and one
+operator record per lineage, shared by its records of every epoch, makes the flush rules node-wide. Ticks are
+identified by their ordinal `k` (the k-th tick of the logical instance), never by an `Instant`, which a skip or an
+interval change would move apart across lanes:
 
 ```rust
 // saluki-metric-plan::runtime::state::lanes
-pub struct SlotLanes { lineages: Mutex<HashMap<LogicalInstance, Weak<LineageLanes>>> }  // one per slot with lanes
-pub struct LogicalInstance { key: LineageKey, created_by: GenerationId, epoch: u32 }   // the source clock's epoch
+pub struct SlotLanes {                                // one per slot with lanes
+    lineages: Mutex<HashMap<LogicalInstance, Weak<LineageLanes>>>,
+    resets_counted: AtomicU32,                        // the newest epoch whose reset was counted (5.11)
+}
+pub struct LogicalInstance { key: LineageKey, created_by: GenerationId, epoch: u32 }
+    // `created_by`: the lineage's creator, never a batch's generation; `epoch`: of the source clock (5.6)
 pub struct LineageLanes {
-    phase: OnceLock<Instant>,                 // set by its creator; a reset's successor inherits its predecessor's
+    first_at: OnceLock<Instant>,                      // the instant of ordinal 1 (below)
     ticks: Mutex<TickRecord>,
     shutdown_at: OnceLock<AdmissionTime>,
-    kernel: Arc<dyn Any + Send + Sync>,       // the operator's shared record: aggregate::LaneShared
+    share: Arc<dyn LaneShare>,                        // the lineage's operator record: aggregate::LaneShared
 }
 struct TickRecord {
-    recent: VecDeque<SharedTick>,             // the last TICK_RECORD_DEPTH (4) ordinals
-    resolved_through: Vec<Option<u64>>,       // per lane, the newest ordinal it resolved
-    reset: Option<ResetMark>,                 // set by the first lane to open a reset window (5.6)
+    recent: VecDeque<SharedTick>,                     // the last TICK_RECORD_DEPTH (4) ordinals
+    resolved_through: Vec<Option<u64>>,               // per lane, the newest ordinal it resolved; None: not a member
+    reset: Option<ResetMark>,                         // set by the first lane to open a reset window (5.6)
 }
-struct SharedTick { ordinal: u64, at: Instant, second: u64, next_at: Instant }
-struct ResetMark { target: u32, cutoff: u64 }  // no ordinal after `cutoff` fires on this instance, in any lane
+struct SharedTick { ordinal: u64, at: Instant, second: u64, next_at: Option<Instant>, grace_counted: bool }
+struct ResetMark { target: u32, cutoff: u64 }  // no ordinal after `cutoff` fires on an instance holding this epoch
+
+// saluki-core::execution::kernel (generic: which shared time-driven call of a lineage a call is, among lanes)
+pub struct LaneTick { pub epoch: u32, pub flush: LaneFlush, pub lane: u16 }
+pub enum LaneFlush { Ordinal(u64), Closing }  // a tick, or the instance's reset drain, final retirement, or shutdown
+pub trait LaneShare: Send + Sync + 'static {
+    fn join(&self, epoch: u32, lane: u16, through: u64);   // the lane holds an instance in `epoch` from now on
+    fn leave(&self, epoch: u32, lane: u16);                // it holds none: Empty at every later ordinal
+    fn skipped(&self, epoch: u32, ordinal: u64, lane: u16); // resolved without a pass (skip, drop, mark): Empty
+}
+impl Turn<'_> {
+    pub fn with_lane_tick(self, tick: LaneTick) -> Self;   // a second per-call slot, beside `with_param`
+    pub fn lane_tick(&self) -> Option<LaneTick>;
+}
+
+// saluki-metric-plan::operators: every lane's instance of one lineage is built against one cell
+impl KernelBuildContext {
+    pub fn with_lanes(self, lanes: LaneBinding) -> Self;   // LaneBinding { cell: Arc<LaneCell>, lane: u16, lanes: u16 }
+    pub fn lane_share<T: LaneShare>(&self, make: impl FnOnce(u16) -> T) -> Option<Arc<T>>;   // get or create
+}
 
 // saluki-metric-kernels::aggregate::lanes
-pub struct LaneShared {
-    flushes: Mutex<FlushLog>,                 // per output epoch and recent ordinal: the latest flush with contexts
+pub struct LaneShared {                               // implements LaneShare
+    flushes: Mutex<FlushLog>,                         // per epoch: members, and per recent flush each lane's outcome
     breached: AtomicBool,
 }
-pub enum Resolution { Flushed(u64), Empty }   // a lane's outcome at an ordinal: a flush at F holding contexts, or none
+pub enum Resolution { Flushed(u64), Empty }   // a lane's outcome: a flush at F holding contexts, or none
 pub enum Previous { Known(Option<u64>), Unresolved }
 pub struct FlushRecord { pub first: bool, pub previous: Previous }
 impl LaneShared {
-    /// Records this lane's outcome at `ordinal`. `first` is true for the first lane to record a flush at the ordinal;
-    /// `previous`, the latest flush time before it in any lane, is known once every lane resolved `ordinal − 1`.
-    pub fn resolve(&self, epoch: u32, ordinal: u64, lane: u16, outcome: Resolution) -> FlushRecord;
+    /// Records this lane's outcome of `tick`. `first` is true for the first lane to record a flush holding contexts
+    /// at it; `previous`, the latest flush time before it at which any lane held contexts in its epoch, is known once
+    /// every member lane resolved the ordinal before (for a closing flush, the newest ordinal any lane resolved).
+    pub fn resolve(&self, tick: LaneTick, outcome: Resolution) -> FlushRecord;
     pub fn try_breach(&self) -> bool;                                   // false to true: the caller warns
     pub fn clear_breach(&self) -> bool;                                 // true to false: the caller logs the recovery
 }
@@ -1502,20 +1652,33 @@ impl LaneShared {
 
 | Rule | Lane does | Coordination |
 |---|---|---|
-| Tick instants | an instance's first tick is one interval after its record's phase; tick `k + 1` is at `next_at` of ordinal `k`, which the first lane to fire `k` sets to `at_k + interval(g)` for the generation `g` its flush is stamped with. Every lane, a lane that skipped `k` included, takes its next deadline from the record, so a skip, an interval change, or a late lane never moves a lane off the record's instants. An instance created later takes its record's phase | once per instance, and per tick |
-| The tick's second | at its deadline for ordinal `k`, under the record's lock: the first lane at `k` sets `second = floor(wall.now())` and `next_at`, and later lanes take them; a lane whose `k` is older than the four ordinals the record keeps is a straggler: it uses its own second and counts `plan_lane_tick_straggler_total`. The gate is then `TickGate::due_at_second(bound, W_lane, second, last_F)`; grace expiry stays per lane (`F = floor(W_lane)`), counted by `plan_lane_tick_divergence_total` | one lock per lane per tick |
-| Back-fill start | every lane resolves ordinal `k` when it fires it, before the pass: `Flushed(F)` when it holds contexts, `Empty` when it holds none or skipped. A lane flushing at `k` starts idle-counter zeros at `align(previous)`, the latest flush time before `k` at which **any** lane held contexts, in this output epoch, once every lane resolved `k − 1`. Until then (a lane still gated at `k − 1`), it uses its own `last_flush`, counts `plan_lane_tick_divergence_total`, and the arrival replay excludes the case | one lock per lane per tick |
-| Flush count | the first lane to resolve an ordinal as `Flushed` counts `aggregate_flushes_total`: once per non-empty ordinal, however many lanes flush it late, as stragglers, or at a grace expiry; every lane adds its own `aggregate_flushed_total` | none |
+| Tick instants | ordinal 1 is at the record's `first_at`; ordinal `k + 1` at `next_at` of `k`, which the first lane to resolve `k` sets, under the record's lock, to `at_k + interval`, with the interval its resolution moves its deadline by: the stamping generation's for a fire, as stage 6's completion does (`isolation.rs:1311-1320`), the instance's for a skip or a drop. Every lane, one that skipped `k` included, takes its next deadline from the record, so a skip, an interval change, or a late lane never moves a lane off the record's instants; a lane gated at `k` waits on its own gate, as stage 6 does, and takes `k + 1`'s instant once `k` resolved. `first_at` is set once: at boot, the first lane's start plus the interval, which every lane's `start_isolated` reads (stage 6 starts each instance at its own `now`, `isolation.rs:288-298`); for a cut's `New` lineage, the replaced record's current deadline (the instant of its newest ordinal no lane has resolved, else its newest `next_at`), as stage 6's `insert_instance` takes the replaced instance's scheduled or gated deadline (`isolation.rs:1057-1080`); for a reset's successor, the predecessor's current deadline, as a stage 6 reset keeps the instance's schedule. An instance that joins a record later takes its next deadline from the record, never a burst of past ones | once per instance, and per tick |
+| The tick's second | at its deadline for ordinal `k`, under the record's lock: the first lane at `k` sets `second = floor(wall.now())`, and later lanes take it; a lane whose `k` is older than the four ordinals the record keeps is a straggler: it uses its own second and counts `plan_lane_tick_straggler_total`. The gate is then `TickGate::due_at_second(bound, W_lane, second, last_F)`; grace expiry stays per lane (`F = floor(W_lane)`), counted by `plan_lane_tick_divergence_total`, and in `plan_state_tick_grace_expired_total` once per ordinal, by the first lane whose grace expired (`grace_counted`) | one lock per lane per tick |
+| Resolution | a lane resolves ordinal `k` in one critical section of the record: it checks the reset mark (an ordinal after the cutoff is forbidden on an instance holding the mark's epoch) and sets `resolved_through`. That section is the point at which a fire takes effect (taken when the tick is queued: at its deadline, at the gate's release, or at a grace expiry, never when the second is taken), a skip, or a drop, so a mark's cutoff, the newest ordinal any lane resolved, always covers an ordinal a lane queued, and a queued drain step never fires past it (a `debug_assert!` re-checks when the step starts). The kernel's `LaneShared::resolve`, at the pass, or `LaneShare::skipped`, follows. A lane that skips `k` while its instance holds contexts (a window still open, 5.6) counts `plan_lane_tick_divergence_total` | one lock per lane per tick |
+| Back-fill start | a lane flushing at `k` starts idle-counter zeros at `align(previous)`, the latest flush time before `k` at which **any** lane held contexts, in this epoch, once every member lane resolved `k − 1`; until then (a lane still gated at `k − 1`), it uses its own `last_flush`, counts `plan_lane_tick_divergence_total`, and the arrival replay excludes the case. Every closed pass takes its start this way, the closing ones too: a reset drain, a cut's final retirement, and a shutdown flush call `begin_flush_with(F, previous)` with `previous` as of the newest ordinal any lane resolved, so no lane back-fills from its own `last_flush` at a cut, a reset, or a shutdown (`kernel.rs:143-160` starts all three with the core's own `begin_flush`) | one lock per lane per tick |
+| Flush count | the first lane to record a flush holding contexts, at an ordinal or at the instance's closing flush, counts `aggregate_flushes_total`: once per non-empty ordinal and once per non-empty closing flush, however many lanes flush it late or at a grace expiry; a straggler beyond the four ordinals the log keeps never counts, since it cannot know whether its ordinal was counted, and telemetry parity excludes it; every lane adds its own `aggregate_flushed_total` | none |
 | Breach warning | a rejection calls `try_breach`; the winner logs "Context limit reached"; any lane's pass that ends below both budgets calls `clear_breach`, and the winner logs the recovery | one atomic on the slow path |
-| Shutdown close time | the first lane to finish sets `shutdown_at = max(its tracker's max latest, wall.now())`; the others use `max(shutdown_at, their own max latest)` | once |
-| Reset mark | the first lane to open a reset window sets the old-epoch record's `ResetMark { target, cutoff }`, with the newest ordinal any lane resolved as `cutoff` (5.6) | once per reset |
+| Shutdown close time | per record: the first lane to finish sets `shutdown_at = max(its tracker's max latest in the record's epoch, wall.now())` (`WatermarkTracker::max_latest_in`), and the others use `max(shutdown_at, their own max latest in that epoch)`; a newer or older epoch's latest never enters it | once |
+| Reset mark | the first lane to open a reset window sets the old-epoch record's `ResetMark { target, cutoff }`, with the newest ordinal any lane resolved as `cutoff` (5.6); the reset itself is counted once per (slot, epoch), through `SlotLanes::resets_counted`, by the first lane to open a window into it, whether or not it holds instances | once per reset |
+
+**Membership and the kernel side.** A lane is a member of a record while it holds an instance in it, and the driver
+keeps membership equal in both records: it joins the lane (`resolved_through` and `LaneShare::join`, both at the
+record's newest ordinal) when it binds an instance to the record, and leaves it (`None`, `LaneShare::leave`) when the
+instance is freed, retires, or moves to a successor (5.6). A lane that is not a member counts as `Empty` at every
+ordinal, so a lane without instances never holds `previous` back. The kernel learns which shared flush a call is from
+the turn's `LaneTick`, which the driver sets on every time-driven call of an instance with lanes; the aggregate kernel
+resolves it in its `LaneShared`, passes `previous` to `begin_flush_with`, and counts the flush when `first`. Every
+lane's instance of one lineage is built against one `LaneCell`: the installer creates it with the `New` binding's
+kernel sets, and the aggregate factory gets or creates the lineage's `LaneShared` in it through
+`KernelBuildContext::lane_share`; a reset's fresh instance and a panic's rebuilt one are built against the same cell,
+so they share the lineage's `LaneShared`, keyed by epoch inside, and never an older record's flush log.
 
 `AggregateCore::begin_flush_with(now, start_from: Option<u64>)` takes the back-fill start from outside; with one lane it
 equals the core's own `last_flush`, so the legacy core and the frozen references are untouched. `SlotLanes` is looked up
-only when an instance is created (a `New` binding at prepare, or a reset window) and dropped with its last lane
-instance. A straggler beyond the four ordinals the record keeps, or a lane gated past the next ordinal, takes the
-per-lane behavior and is counted, as single-core native under the same stall bursts its ticks (amendment 86's class);
-the exclusions are listed in the [exactness ledger](#61-the-exactness-ledger).
+only when an instance is bound to a record (a `New` binding applied by a lane, a reset window's fresh instance or close)
+and a record is dropped with its last member. A straggler beyond the four ordinals the record keeps, or a lane gated
+past the next ordinal, takes the per-lane behavior and is counted, as single-core native under the same stall bursts
+its ticks (amendment 86's class); the exclusions are listed in the [exactness ledger](#61-the-exactness-ledger).
 
 **Per-kind semantics** under lanes are in the [exactness ledger](#61-the-exactness-ledger). Arrival order at a lane
 decides gauges, first-seen metadata, and kind conflicts, as arrival order at `dsd_agg` decides them natively: natively
@@ -1541,9 +1704,11 @@ clock" ([amendment 127](#10-proposed-spec-amendments)); `StateOwnerPaths` stays,
 
 **Progress and heartbeats** follow 5.2 and 5.3: at most 10 header-only buffers per second per (producer lane, state
 lane), and only toward state lanes with no open buffer; heartbeats from idle lanes (at most one per second per lane,
-forwarded to every state lane), and at once on a reset or a generation change, preceded on a reset by the final
-old-epoch header. With D = 14 and P = 8 that is at most 1,120 header-only buffers per second (est. a few hundred
-nanoseconds each with sampled accounting: well under 1% of a core), and none while data flows.
+forwarded to every state lane); and at once on a reset or a generation change, preceded on a reset by the final
+old-epoch header. With D = 14 and P = 8 the throttle and the heartbeats give at most 1,120 header-only buffers per
+second (est. a few hundred nanoseconds each with sampled accounting: well under 1% of a core), none while data flows;
+each commit adds one header per (producer lane, state lane), D × P = 112 at that size, which the gate's live change
+every 50 ms makes 2,240 per second while it runs.
 
 **Coupling through `W`.** A producer lane blocked on a full state lane `k` sends nothing to lane `j` either, so `j`'s
 watermark stalls, its tick gates, and after the 2 s grace it fires at `floor(W)`. Closure is late, never wrong, as along
@@ -1559,15 +1724,17 @@ driver and the interpreter share:
 // saluki-metric-plan::runtime::state::rules
 pub enum Observation {
     Ok,
-    Fault,
+    Fault,                                    // also an older-epoch header after a newer one from the same point
     /// The point's header is in a later epoch than its previous one: `previous` closed at `final_latest`.
     EpochSwitched { point: AdmissionPointId, previous: u32, final_latest: AdmissionTime, pre: Option<AdmissionTime> },
 }
 impl WatermarkTracker {
     pub fn observe(&mut self, header: &BatchHeader) -> Observation;
     /// The watermark of the instances holding `epoch`: per point, its latest in `epoch` (its current one, or the final
-    /// latest it recorded when it switched away); `None` if a point has not reached `epoch` yet.
+    /// latest it recorded when it switched away); `None` if a point has not reached `epoch` yet. A point that went past
+    /// `epoch` without stamping in it is left out of the minimum.
     pub fn watermark_in(&self, epoch: u32) -> Option<AdmissionTime>;
+    pub fn max_latest_in(&self, epoch: u32) -> Option<AdmissionTime>;   // the latest any point stamped in `epoch`
     pub fn switched_epoch(&self, epoch: u32) -> bool;   // every point's current epoch is `epoch` or newer
 }
 pub struct ResetWindow { older: Vec<u32>, target: u32 }   // the epochs not yet closed at this lane, oldest first
@@ -1586,75 +1753,104 @@ pub fn epoch_newer(a: u32, b: u32) -> bool;
 ```
 
 Per point the tracker keeps its current `PointProgress` and, for each earlier epoch not yet closed at this lane, the
-final latest it recorded when the point switched: at most `MAX_OPEN_EPOCHS` (4) per point. A reset that would leave
-a fifth earlier epoch open at a lane (five resets before every point switched, a clock flapping by more than 300 s that
-often) closes the oldest epoch at once with its watermark so far, counted by `plan_lane_reset_overflow_total`.
+final latest it recorded when the point switched: at most `MAX_OPEN_EPOCHS` (4) per point. A point whose first stamp
+after epoch `e` is in `e + 2` (two resets while it was blocked) records nothing for `e + 1`, and `watermark_in(e + 1)`
+is the minimum over the points that stamped in it. A reset that would leave a fifth earlier epoch open at a lane (five
+resets before every point switched, a clock flapping by more than 300 s that often) closes the oldest epoch at once with
+its watermark so far, counted by `plan_lane_reset_overflow_total`; a later batch of that epoch has no instance, counts
+as invalid loss, and the arrival replay excludes the case.
 
-1. **Identity.** Instances are per lineage and epoch: `LogicalInstance` carries the source clock's epoch, which is
-   global (one `SourceClock`), so every lane's instances of one epoch share one record, whatever order the lanes see
-   the resets in.
+1. **Identity.** Instances are per lineage and epoch: `LogicalInstance` is the lineage's key and creator (never a
+   batch's generation) with the source clock's epoch, which is global (one `SourceClock`), so every lane's instances of
+   one lineage and epoch share one record, whatever order the lanes see the resets in. A lane binds a `New` instance to
+   its own newest epoch when it applies the binding: its window's target while one is open, otherwise its current epoch.
 2. **Open** at the first header of a newer epoch from any point at this lane. For every older-epoch logical instance
    the lane holds, it takes the record's lock and, if no lane has yet, sets `ResetMark { target, cutoff }` with the
-   newest ordinal any lane resolved as `cutoff` (a later reset moves the target, never the cutoff); then it first
-   resolves, on its own instance, every ordinal up to the cutoff it has not resolved: their deadlines have passed, since
-   another lane resolved them at the same instant, and one the gate holds is dropped, as stage 6 drops a gated tick at a
-   reset (`isolation.rs:350-358`). From then on no lane fires an ordinal after the cutoff on that instance; a lane
-   whose own window is not open yet skips it. Every instance holding older-epoch data becomes reset-retiring, whatever
-   created it, a cut's new instance included.
-3. **Fresh instances.** The first newer-epoch **data** batch for a lineage gets a fresh, empty instance in this lane: a
-   new slab entry built from the slot's kernel spec as `insert_instance` builds a `New` binding's instance
+   newest ordinal any lane resolved as `cutoff` (a later reset moves the target, never the cutoff); then it resolves,
+   on its own instance, every ordinal up to the cutoff it has not resolved: their deadlines have passed, since another
+   lane resolved them at the same instant, and one the gate holds is dropped, as stage 6 drops a gated tick at a reset
+   (`isolation.rs:350-358`). From then on no lane fires an ordinal after the cutoff on an instance holding that epoch's
+   data (5.5, Resolution); a lane whose own window is not open yet resolves such an ordinal as a skip. Every instance
+   holding older-epoch data becomes reset-retiring, whatever created it, a cut's new instance included. When the
+   opening header also closes the window (every point is already in the newer epoch, as always at D = 1), the lane
+   closes it (rule 5) right away, before routing the header's batch, which then goes to the instance that continues:
+   D = 1 builds no fresh instance, and at P = 1 it is stage 6 exactly.
+3. **Fresh instances.** The first newer-epoch **data** batch for a lineage that has no instance in that epoch at this
+   lane gets a fresh, empty instance: a new slab entry built from the lineage's kernel spec and build context (so
+   against the lineage's `LaneCell`, 5.5), as `insert_instance` builds a `New` binding's instance
    (`isolation.rs:1054-1090`), never `rebuild_instance`, which replaces a kernel in place (`kernels.rs:136-154`) and
-   would destroy the retiring state. Its record is `(key, created_by, e + 1)`, shared by every lane's fresh instance of
-   that lineage, and inherits its predecessor's phase. A header-only first newer header opens the window without a
-   fresh instance; if none exists at close, the drained instance continues, as stage 6's does.
-4. **During the window** a batch goes to the instance of its own epoch. Bindings resolve per (key, from, epoch): a
-   `Retain { key, from }` in a prepare (`install/core.rs:191-202`) binds every epoch's instance of `from`'s lineage,
-   each batch routed by its epoch; `New` creates its instance in the target epoch; a cut's `Retire` marks every epoch's
-   instance of `from`; `Release` releases all of them. Both sides draw on the global budget, so a context seen on both
-   is held twice for the window's length (capacity behavior). The fresh instance cannot tick: `watermark_in(e + 1)` is
-   `None` until every point switched, and a deadline meanwhile is skipped as stage 6 skips a tick with no watermark.
+   would destroy the retiring state. It joins the record `(key, created_by, e + 1)`, creating it if no lane has, with
+   `first_at` from its predecessor's record (5.5). It inherits its predecessor's bindings: its users in every live
+   generation (each generation binding the predecessor's lineage binds it too) and the `Retiring { owner, by }` mark of
+   a cut that retires the lineage, so it crosses as the lineage does and is never freed with its data counted as
+   invalid loss (`isolation.rs:916-938` frees an unbound instance that is not retiring). A header-only first newer
+   header opens the window without a fresh instance.
+4. **During the window** a batch goes to the instance of its own epoch. Bindings name lineages, never instance
+   handles, and resolve per (key, from, epoch), instances created later included: a `Retain { key, from }` in a prepare
+   (`install/core.rs:191-202`) binds every epoch's instance of `from`'s lineage, each batch routed by its epoch; `New`
+   creates its instance in the lane's newest epoch (rule 1); a cut's `Retire` marks every epoch's instance of `from`,
+   present and later; `Release` releases all of them. Both sides draw on the global budget, so a context seen on both
+   is held once per open epoch for the window's length (capacity behavior). The fresh instance cannot tick:
+   `watermark_in(e + 1)` is `None` until every point switched, and a deadline meanwhile is skipped as stage 6 skips a
+   tick with no watermark, resolved `Empty`, and counted as divergence when the instance holds contexts (5.5).
 5. **Close** when `switched_epoch(target)`: each older-epoch instance, oldest epoch first, runs the stage 6 reset drain
-   (a flush at `floor(W_pre)` with `W_pre = watermark_in(e)`, the minimum of the points' final old-epoch latest times,
-   then everything it holds), stamped in its output epoch; then the lane's output epoch increments, the fresh instances
-   take the bindings, and they tick from their record's instants. `W_pre` is exact at every lane, not the lane's lagging
-   view, because every producer lane forwards its final old-epoch header to every state lane before its first new one
-   (5.3).
+   (a closing flush at `floor(W_pre)` with `W_pre = watermark_in(e)`, the minimum of the points' final old-epoch latest
+   times, its back-fill start from the flush log, 5.5, then everything it holds), stamped in its output epoch; then the
+   lane's output epoch increments, and each lineage at this lane continues in the successor record `(key, the
+   lineage's created_by, e + 1)`, which the first lane to need it creates: through its fresh instance when one exists
+   (the drained one leaves its record and is freed), otherwise through the drained instance itself, which the drain
+   left empty and as if it had never flushed, as stage 6's continues (it leaves the older record and joins the
+   successor at its newest ordinal), unless that drain was its final retirement (a cut-retiring instance, below). The
+   joined instances tick from the successor's instants, and the reset mark, which applies only while an instance holds
+   the older epoch's data, no longer concerns them. `W_pre` is exact at every lane, not the lane's lagging view,
+   because every producer lane forwards its final old-epoch header to every state lane before anything newer (5.3).
 
 Properties: with one point the window opens and closes on one header, which is stage 6 exactly. The window holds
 aggregated state, not stashed input: a stash would grow while a point blocked on another lane holds its new header back,
 and refusing to read would deadlock (producer lanes block on full state lanes). The window is lane-count invariant:
-every lane drains at the same `W_pre`, and the reset mark makes every lane fire the same old-epoch ordinals, those up to
-the cutoff, so the arrival replay places the reset between ordinals `cutoff` and `cutoff + 1`. One case stays outside,
-counted by `plan_lane_tick_divergence_total` and excluded as a grace expiry is: an ordinal up to the cutoff that one
-lane fired and another, still gated, dropped at its opening.
+every lane drains at the same `W_pre`, the reset mark makes every lane fire the same old-epoch ordinals, those up to
+the cutoff, so the arrival replay places the reset between ordinals `cutoff` and `cutoff + 1`, and every lane's
+instances of a lineage continue in one successor record however many lanes received newer-epoch data before their
+window closed (at low cardinality, most lanes receive none). One case stays outside, counted by
+`plan_lane_tick_divergence_total` and excluded as a grace expiry is: an ordinal up to the cutoff that one lane fired and
+another, still gated, dropped at its opening.
 
 **With a cut in flight**, a reset after publication stamps `new` (amendment 42), and with D points a point can also
 stamp `new` in epoch `e`, at `t_a >= T`, before the reset (`admission.rs:63-74`), so the cut's new instance may already
 hold epoch-`e` data. Instances per lineage and epoch cover both: every instance holding epoch-`e` data reset-drains at
 close, the cut-retiring old instance at `min(W_pre, T)` when `W_pre` is in the publication epoch (its reset drain is
 also its final retirement), and the cut's new instance at `floor(W_pre)`, not clamped to `T`, since it does not retire
-by the cut. The first epoch-`e + 1` data of the new lineage always gets a fresh instance, which takes the new lineage's
-binding at close. The fresh instance is built on the data path, which amends stage 6's "no rebuild on the data path" for
-this rare event: an empty table, no I/O, no compilation, with credits and gauges continuous through the shared budget
-and per-instance accumulation ([amendment 115](#10-proposed-spec-amendments)).
+by the cut. While the old lineage's instance is reset-retiring, `switched(new)` does not cross it: its crossing waits
+for the window's close, where its reset drain is its final retirement, so its last flush time does not depend on
+whether a lane receives a point's `e + 1` header or another point's `new` header first, and equals stage 6's at one
+point. The first epoch-`e + 1` data of the new lineage always gets a fresh instance, which takes the new lineage's
+binding at close; the first epoch-`e + 1` data of the old lineage gets a fresh instance that inherits the cut's
+`Retiring` mark (rule 3) and crosses at `T`. The fresh instance is built on the data path, which amends stage 6's "no
+rebuild on the data path" for this rare event: an empty table, no I/O, no compilation, with credits and gauges
+continuous through the shared budget and per-instance accumulation ([amendment 115](#10-proposed-spec-amendments)).
 
-**Shutdown.** Each lane finishes when its input closes (every producer lane dropped its senders), with the shared
-`shutdown_at` of 5.5, so no bucket is flushed in one lane and discarded in another. The bucket open at the close time is
+**Shutdown.** Each lane finishes when its input closes (every producer lane dropped its senders, after forwarding its
+last header to every state lane, 5.3), with the shared `shutdown_at` of each record (5.5), taken from that record's
+epoch only, so no bucket is flushed in one lane and discarded in another, and after a jump back the new timeline's open
+buckets are discarded at the new timeline's time, not closed at the old one's. The bucket open at the close time is
 discarded as `shutdown` loss, as natively (amendment 63). A lane that finishes inside a reset window closes the window
-first (each older-epoch instance reset-drains at its watermark so far, oldest first), then runs the shutdown drain on
-its fresh instances.
+first (each older-epoch instance reset-drains at its watermark so far, which is exact, since every point's last header
+reached it, oldest first), then runs the shutdown drain on the successor instances.
 
 ### 5.7 Generations, prepare, commit, retirement, cuts
 
 - **Commit is unchanged**: one schedule store; each of the D lane points switches at its next stamp, and every lane runs
   a batch by its header's generation. Each routed buffer carries one generation (it is in the coalescing key).
 - **Prepare.** The installer sends one `Prepare` per slot carrying one kernel set per lane (built on a blocking thread
-  from shared specs, 5.4) and, for `dsd_agg`, per-lane state bindings (`Retain`, `New`, `Retire` with that lane's
-  instance handles); for a `New` lineage it creates the `LineageLanes` record that every lane's new instance shares. The
-  coordinator splits, each lane applies at a batch boundary (control is served before input, as today), and the slot
-  acknowledges once. The core's barrier, `PREPARE_TIMEOUT` (10 s), and the overlap budget are unchanged. Per change: D +
-  P + M lane prepares behind the same three slot acknowledgments as today, and the new instances' declared bounds,
-  times the lanes that build them, admitted against the resource budget before the `Prepare` is sent (4.12).
+  from shared specs, 5.4) and, for `dsd_agg`, per-lane state bindings (`Retain`, `New`, `Retire`, `Release`), which name
+  lineages, never instance handles, so they also bind instances a reset window creates later (5.6); for a `New` lineage
+  it creates one `LaneCell` that every lane's new instance is built against, so they share the operator's `LaneShared`
+  (5.5). Each lane binds its new instance to the record of its own newest epoch when it applies the binding (get or
+  create through `SlotLanes`, with `first_at` from the replaced record). The coordinator splits, each lane applies at a
+  batch boundary (control is served before input, as today), and the slot acknowledges once. The core's barrier,
+  `PREPARE_TIMEOUT` (10 s), and the overlap budget are unchanged. Per change: D + P + M lane prepares behind the same
+  three slot acknowledgments as today, and the new instances' declared bounds, times the lanes that build them, admitted
+  against the resource budget before the `Prepare` is sent (4.12).
 - **Retirement** waits for every lane by itself: a generation token retires when the last header referencing it drops,
   in any lane. `Release` fans out to every lane.
 - **Cuts** (`installer/cut.rs`). `Frame::affected_points` is the D lane points. Arming is one transaction over their
@@ -1666,12 +1862,16 @@ its fresh instances.
   sources first and the lanes last, as stage 6 orders it.
 - **Crossing per state lane.** Each state lane's tracker reaches `switched(new)` when every point's `new` header reached
   it (forwarded at once on the generation change, 5.3); that lane then makes its retiring instance's final flush at `T`
-  and admits the crossing batch. Lanes cross independently. Values stay exact: a `new` batch has `t_a >= T` (or a
-  post-reset epoch) and an `old` one `t_a < T`, so the two instances hold disjoint buckets. Units do not: with D points,
-  between the first and the last point's switch at lane `j`, `new` batches from the points that switched are admitted
-  into the new instance (`isolation.rs:430-446`) while `old` batches from the others still feed the retiring one
-  (`isolation.rs:366-391` waits for every point), so a context on both sides holds two global units and two node units
-  at lane `j` for that spread, longer under backpressure. That is capacity behavior: near the limit a context may be
+  (a closing flush, its back-fill start from the flush log, 5.5) and admits the crossing batch. Lanes cross
+  independently. A retiring instance that is reset-retiring does not cross on its own: its reset drain at the window's
+  close is its final retirement (5.6). Values stay exact: a `new` batch has `t_a >= T` (or a post-reset epoch) and an
+  `old` one `t_a < T`, so the two instances hold disjoint buckets. Units do not: with D points, between the first and
+  the last point's switch at lane `j`, `new` batches from the points that switched are admitted into the new instance
+  (`isolation.rs:430-446`) while `old` batches from the others still feed the retiring one (`isolation.rs:366-391` waits
+  for every point), so a context on both sides holds two global units and two node units at lane `j` for that spread,
+  longer under backpressure. With a reset inside the spread, a lane can also hold the context in the new lineage's
+  instances of both epochs: at most one instance per (lineage, open epoch), for the switch spread or the window, so up
+  to `MAX_OPEN_EPOCHS + 1` instances per lineage at one lane. That is capacity behavior: near the limit a context may be
   refused during the spread, at lane `j` or at another lane. The new instance counts such contexts while a retiring
   instance exists (one lookup into the retiring instance per new context, only during the spread) in
   `plan_lane_crossing_overlap_contexts`. Stashing `new` batches until the crossing would avoid the overlap, but the
@@ -1780,8 +1980,8 @@ which pipelines with the lane, and may be bound by decoding; M1 measures it, and
 |---|---|
 | Component IDs, `component_type`, health (`dsd_pre_aggregation`, `dsd_agg`, `metrics_enrich`) | one per slot, unchanged; a stuck lane reads as a stuck component |
 | `component_events_received_total{component_id:dsd_agg}` (`aggregator.processed`) | lane consumers share the handle (a per-buffer write); sub-buffers sum to the same events; header-only buffers count 0 |
-| The 17 aggregation kernel series (`aggregator.*` remaps) | per-instance accumulation under `component_id:dsd_agg`, published as deltas: gauges and counters sum (each context is in one lane); `aggregate_flushes_total` once per non-empty ordinal, by the first lane to record a flush; the breach log once per episode |
-| `plan_clock_resets_total`, `plan_state_tick_grace_expired_total` (counted per isolation slot, `runtime/telemetry.rs:35-40`) | a reset is counted once, by the first state lane to open a window for it (it sets the reset mark); a grace expiry once per ordinal, by the first lane whose grace expired |
+| The 17 aggregation kernel series (`aggregator.*` remaps) | per-instance accumulation under `component_id:dsd_agg`, published as deltas: gauges and counters sum (each context is in one lane); `aggregate_flushes_total` once per non-empty ordinal and closing flush, by the first lane to record it; the breach log once per episode |
+| `plan_clock_resets_total`, `plan_state_tick_grace_expired_total` (counted per isolation slot, `runtime/telemetry.rs:35-40`) | a reset is counted once per (slot, epoch), by the first state lane to open a window into it, through `SlotLanes::resets_counted`, whether or not that lane holds instances (a reset mark is per record, so it cannot count); a grace expiry once per ordinal, by the first lane whose grace expired (`SharedTick::grace_counted`) |
 | Region driver counters (`plan_node_events_total`, port events, loss) | plain integers per lane, published each second as deltas, as today per region |
 | `plan_state_watermark_lag_seconds{component_id}` | the coordinator publishes the maximum over lanes |
 | `plan_state_lineages{component_id}` | logical lineage instances, not instances times P |
@@ -1814,11 +2014,11 @@ the growth over one lane per slot, at default cache sizes (est.):
 | Decision memos, per post-aggregation lane | 96 KiB per memoized decision per generation, up to 4 generations | 0.4 MiB | 1.9 MiB | 2.6 MiB | 2.6 MiB |
 | Open routed buffers, per producer lane | `P × B × 336 B` = 672 KiB (at most 2,048 events at any automatic P), allocated only while open; none with one state lane | 1.3 MiB | 3.9 MiB | 9.2 MiB | 10.5 MiB |
 | Drain steps, per state lane | about 380 KiB | 0.4 MiB | 1.1 MiB | 2.6 MiB | 2.6 MiB |
-| Reset window | up to two instances per lineage per lane during the window, bounded by the global budget | 0 normally | 0 | 0 | 0 |
+| Reset window | one instance per (lineage, open epoch) per lane during the window (two for one reset, at most `MAX_OPEN_EPOCHS + 1`), bounded by the global budget | 0 normally | 0 | 0 | 0 |
 | Total (est.) | | about 2 to 3 MiB | 8 to 11 MiB | 17 to 23 MiB | 19 to 27 MiB |
 
-With configured cache sizes, a producer lane's kernel row is `mapper_cache_bound(dogstatsd_mapper_cache_size) + 64 KiB
-+ the memo bound`, times D: an operator who set `dogstatsd_mapper_cache_size: 100000` on a 16-vCPU host pays it 14
+With configured cache sizes, a producer lane's kernel row is `mapper_cache_bound(dogstatsd_mapper_cache_size) + 64
+KiB + the memo bound`, times D: an operator who set `dogstatsd_mapper_cache_size: 100000` on a 16-vCPU host pays it 14
 times. Lane counts are fixed at boot, so the boot verification counts all of it. **In `Strict` mode the automatic
 counts fit the grant:** if the boot bound with automatic lanes exceeds the grant while the stage 6 layout fits, ADP
 lowers the automatic M, then P, then D (decoder `d` still feeds lane `d mod D`), down to one lane each, logs the choice,
@@ -1872,10 +2072,10 @@ Against stage 6 as built.
 | **Per routed buffer** (B events at saturation; below it, at most one per 5 ms per producer and state lane) | one channel send into a state lane's channel (D producers per channel), with the dispatcher's shared counter and two `Instant::now` calls; a wake of the state lane when it was parked (microseconds of parking and waking on Linux); a buffer allocated on the producer's core and freed on the state lane's, whose allocator write lands in the producer lane's group (F6); one increment and one decrement of the generation's reference count, one `Arc` that every lane of every slot touches (taken once when the buffer opens, 5.3) | — |
 | **Per new context** | the global and node compare-and-swap operations, now contended across P lanes under churn | three shared gauge updates per new and per removed context |
 | **Per flush tick** | per state lane: one tick-record lock and one flush-log lock; the breach flag only on a rejection or recovery; no barrier, no merge, no message | the 0.21 s serial drain at 1M contexts (P drains in parallel), though the stall stays bound by the builder (5.8) |
-| **Progress** | at most 10 header-only buffers per second per (producer lane, state lane) without data, and immediately on a generation or epoch change (two on an epoch change: the final old-epoch header, then the new one); heartbeats only from idle lanes | — |
+| **Progress** | at most 10 header-only buffers per second per (producer lane, state lane) without data, and immediately on a generation or epoch change (two on an epoch change: the final old-epoch header, then the new one); heartbeats only from idle lanes; per commit, D × P headers (2,240 per second at D = 14, P = 8 during the gate's change every 50 ms) | — |
 | **Per configuration change** | D + P + M lane prepares inside three slot acknowledgments; kernels built per lane from shared specs on a blocking thread, their bounds times lanes admitted against the resource budget (4.12) | — |
 | **Per cut** | an arm over D locks, each held only for a stamp; D status reads per poll; P independent crossings, each with a spread in which a context may hold units in both instances | — |
-| **Per reset** | one reset decision per source; one heartbeat per lane; the final old-epoch header per (producer lane, state lane); one reset mark per lineage instance; per state lane one fresh instance per lineage for the window | — |
+| **Per reset** | one reset decision per source; one heartbeat per lane; the final old-epoch header per (producer lane, state lane); one reset mark per lineage instance; per state lane one fresh instance per lineage that receives newer-epoch data during the window; one successor record per lineage, which every lane's instance joins at its close | — |
 | **Per task poll and kernel call** (Linux) | — | 15 of 16 CPU-time system call pairs (D12) |
 
 ### 5.16 Alternatives considered
@@ -1909,28 +2109,30 @@ kernel sets for `dsd_pre_aggregation`, `Retain` bindings for each of `dsd_agg`'s
 `g + 1` from its next batch. Generation `g`'s token drops with its last header in any lane, and `Release` fans out to
 every lane.
 
-**A cut (an artifact changes the window from 10 s to 30 s).** Prepare carries, per state lane, `Retire { from }` for
-that lane's instance and `New { key }` with that lane's empty instance; the installer creates the new `LineageLanes`
-record, which the four new instances share. Arm: one transaction over the six lane locks in ID order, each held only for
-a stamp; `T` = the next 30 s boundary at least 1 s after `max(clock.latest, wall)`; the boundary records the clock's
-epoch for each point; publish; release. Each lane stamps `new` from the first stamp with `t_a >= T`, and its progress
-carries the generation change to every state lane at once. Between the first and the last point's `new` header at
-state lane 0, `new` batches go to its new instance while `old` ones still feed the retiring one, so a context both sides
-see holds two units there for those milliseconds (`plan_lane_crossing_overlap_contexts`). State lane 0 reaches
-`switched(new)` when all six points delivered a `new` header, makes its old instance's final flush at `T`, releases its
-units, and admits; lane 1 does the same, perhaps 50 ms later. When all six points passed, `FinalizeCut` stores
-`Steady(new)`.
+**A cut (an artifact changes the window from 10 s to 30 s).** Prepare carries, per state lane, `Retire { from }` for the
+old lineage and `New { key }` with that lane's empty instance, built against the new lineage's `LaneCell`; the first
+lane to apply the binding creates the new `LineageLanes` record, its `first_at` the old record's current deadline, which
+the four new instances share. Arm: one transaction over the six lane locks in ID order, each held only for a stamp; `T`
+= the next 30 s boundary at least 1 s after `max(clock.latest, wall)`; the boundary records the clock's epoch for each
+point; publish; release. Each lane stamps `new` from the first stamp with `t_a >= T`, and its progress carries the
+generation change to every state lane at once. Between the first and the last point's `new` header at state lane 0,
+`new` batches go to its new instance while `old` ones still feed the retiring one, so a context both sides see holds two
+units there for those milliseconds (`plan_lane_crossing_overlap_contexts`). State lane 0 reaches `switched(new)` when
+all six points delivered a `new` header, makes its old instance's final flush at `T`, releases its units, and admits;
+lane 1 does the same, perhaps 50 ms later. When all six points passed, `FinalizeCut` stores `Steady(new)`.
 
 **A clock reset (the wall clock steps back 600 s).** Lane 2's next stamp on the shared clock detects the jump: epoch
-`e + 1`; the other five lanes see the clock's new epoch at their next batch, or at once while idle, and stamp
-heartbeats in `e + 1`. Each producer lane's keyed exit first sends its last `e` header to every state lane that has not
-seen it, then the `e + 1` one. State lane 0 receives point 2's first `e + 1` buffer and opens its window: it sets the
-lineage record's reset mark (cutoff: the newest tick any lane resolved), its instance becomes reset-retiring, and the
-buffer goes to a fresh instance with the record `(key, created_by, e + 1)`. From now on no lane fires a later tick on
-the epoch-`e` instance. Old-epoch buffers still queued from points 0, 1, 3, 4, 5 go to the retiring instance; their `e +
-1` headers then arrive. When the last point switched, lane 0 runs the reset drain at `floor(watermark_in(e))`, the same
-second every lane computes, emits everything held, increments its output epoch, and continues on the fresh instance.
-Lane 1 does the same on its own schedule.
+`e + 1`; the other five lanes see the clock's new epoch at their next batch, or at once while idle, and stamp heartbeats
+in `e + 1`. Before routing anything newer, each producer lane's keyed exit sends its open `e` buffers and its last `e`
+header to every state lane that has not seen it, then the `e + 1` one. State lane 0 receives point 2's first `e + 1`
+buffer and opens its window: it sets the lineage record's reset mark (cutoff: the newest tick any lane resolved), its
+instance becomes reset-retiring, and the buffer goes to a fresh instance with the record `(key, created_by, e + 1)`.
+From now on no lane fires a later tick on the epoch-`e` instance. Old-epoch buffers still queued from points 0, 1, 3, 4,
+5 go to the retiring instance; their `e + 1` headers then arrive. When the last point switched, lane 0 runs the reset
+drain at `floor(watermark_in(e))`, the same second every lane computes, emits everything held, increments its output
+epoch, and continues on the fresh instance, which joins the successor record. Lane 1, which received no `e + 1` data for
+the lineage before its own window closed, does the same on its own schedule, and its drained instance itself joins the
+same successor record, so both lanes tick the successor's ordinals together.
 
 ## 6. Semantics and verification
 
@@ -1940,13 +2142,14 @@ Lane 1 does the same on its own schedule.
    every lane count, bit for bit, and equal to the interpreter's: routing, budgets below capacity, the shared lineage
    records, ticks, coalescing, the values of crossings, and reset windows fall in this class. The cases where a lane's
    timing decides an outcome (a grace expiry, a lane still gated when another needs its tick resolved, a tick one lane
-   fired and another dropped at a reset's opening) are counted by `plan_lane_tick_divergence_total` and excluded, as
-   amendment 86 excludes a grace expiry.
+   fired and another dropped at a reset's opening, a lane that skipped a tick while holding contexts in an open window)
+   are counted by `plan_lane_tick_divergence_total` and excluded, as amendment 86 excludes a grace expiry.
 2. **The producer race is native.** Natively D decoders race for one mutex, so two decoders' batches carrying one gauge
    reach aggregation in an order the client does not control. With lanes the same race is the interleaving of lane
    streams at a state lane. Order within a batch and per connection is kept exactly.
-3. **Capacity behavior** (which contexts win at the limit, and the units a context holds twice during a cut's
-   crossing or a reset window) is reported, not promised (specification, Equivalence).
+3. **Capacity behavior** (which contexts win at the limit, and the units a context holds in more than one instance,
+   one per lineage and open epoch, during a cut's crossing or a reset window) is reported, not promised
+   (specification, Equivalence).
 
 The specification's stage 9 ordering promise (inputs with the same pre-mapping context go to the same worker) cannot be
 kept without context-affine decoding (a datagram holds many contexts, and any decoder may take it), and native ADP never
@@ -1966,15 +2169,15 @@ kept it. This design keeps the order native has: per lane, per connection, withi
 | Context limit (count) | the global and node budgets (`state.rs:89-114`), check then act on the node (F10) | bounded node acquire, then the global compare-and-swap: never exceeded at any lane count, counting held units | capacity oracle; loom model |
 | Which contexts win at the limit | first come in stamp order | the compare-and-swap race across lanes (capacity behavior) | capacity oracle; equivalence below capacity only |
 | Breach warning and recovery | once per core per episode (`kernel.rs:341-347`) | once per lineage instance across lanes | fixture X2; loom model |
-| Idle-counter zeros and back-fill start | from `align(last_flush)`, which advances only on a non-empty flush | from the lineage's latest non-empty flush in any lane, per output epoch, once every lane resolved the previous ordinal; otherwise the lane's own `last_flush`, counted and excluded | fixture X1; idle-counter property test at 8 lanes with one lane delayed past an interval |
+| Idle-counter zeros and back-fill start | from `align(last_flush)`, which advances only on a non-empty flush | from the lineage's latest non-empty flush in any lane, per epoch, once every member lane resolved the previous ordinal, for ticks and for closing flushes (reset drains, final retirements, shutdown) alike; otherwise the lane's own `last_flush`, counted and excluded | fixture X1 with cut, reset, and shutdown cases; idle-counter property test at 8 lanes with one lane delayed past an interval |
 | Flush time of a tick | one wall-clock read | the shared tick record's second, by ordinal; expired graces and stragglers per lane, counted and excluded | lane tick agreement assertion; `plan_lane_tick_divergence_total`, `plan_lane_tick_straggler_total` |
-| `aggregate_flushes_total` (`aggregator.number_of_flush`) | once per non-empty tick | once per non-empty ordinal, by the first lane to record a flush, whatever later lanes, stragglers, or lanes whose grace expired record | fixture X3; telemetry parity |
-| Shutdown close time | `max(latest t_a, wall)`; the bucket open then is discarded | one per lineage instance, set by the first lane to finish | trace T-L6 |
+| `aggregate_flushes_total` (`aggregator.number_of_flush`) | once per non-empty tick and per non-empty closing flush | the same, by the first lane to record a flush, whatever later lanes or lanes whose grace expired record; a straggler beyond the record's depth never counts (excluded from telemetry parity) | fixture X3; telemetry parity |
+| Shutdown close time | `max(latest t_a, wall)`; the bucket open then is discarded | one per lineage instance, set by the first lane to finish, from that instance's epoch only | trace T-L6; the shutdown-inside-a-window fault test |
 | R5b emission suppression | per instance, per flush, with the stamping generation's predicate | per lane, the same rule; suppressed counts add up | the R5b property test with lanes |
 | Bucket by `t_a` | one `t_a` per batch | per routed buffer; coalescing merges only one second | coalescing property test; trace-order exactness |
 | Watermark and closure | minimum over one point on one path | minimum over D points, one path per (point, state lane) | the monotonicity assertion per (point, lane); tick parity |
-| Clock resets | one point resets; the core drains and continues empty (amendment 64) | one decision per source; instances per lineage and epoch; a reset window per state lane, draining at the exact final old-epoch watermark; a shared reset mark, so every lane fires the same old-epoch ticks | multi-point reset property test; traces T-L2, T-L3 |
-| Cuts | armed under one point's lock; crossing on that point; the two lineages never hold one context at once | armed over D lane locks (stamp only); each state lane crosses on its own; values exact; between the first and the last point's switch at a lane, a context may hold units in both instances (capacity behavior, amendment 128) | cut property test; trace T-L1; `plan_lane_crossing_overlap_contexts` |
+| Clock resets | one point resets; the core drains and continues empty (amendment 64) | one decision per source; instances per lineage and epoch; a reset window per state lane, draining at the exact final old-epoch watermark; a shared reset mark, so every lane fires the same old-epoch ticks; at the close every lane's instances of a lineage join one successor record | multi-point reset property test; traces T-L2, T-L3, and stage 6's trace 11 at D = 3, P = 2 |
+| Cuts | armed under one point's lock; crossing on that point; the two lineages never hold one context at once | armed over D lane locks (stamp only); each state lane crosses on its own, a reset-retiring instance at its window's close; values exact; between the first and the last point's switch at a lane, or during a reset window, a context may hold units in one instance per (lineage, open epoch) (capacity behavior, amendment 128) | cut property test; trace T-L1; `plan_lane_crossing_overlap_contexts` |
 | Time-driven output generation | one rule per drain | per lane; during a cut's window one lane may stamp `old` and another `new` | transition traces |
 | Admission time | stamped at the source's dispatcher, before the pre-aggregation queue | stamped at the lane, after it (amendment 109) | bucket property tests extended to the lane stamp |
 
@@ -1989,10 +2192,11 @@ kept it. This design keeps the order native has: per lane, per connection, withi
   old-epoch tick fires; `last_seen` is a maximum; the crossing is over every lane point.
 - **No lanes inside the interpreter.** It stays the lane-less oracle: one instance per state owner, delivery in trace
   order. The shared lineage records are designed so that the union of the lanes equals that one instance. The
-  interpreter shares one output latch per set of upstream points, where each state lane stamps with its own output
-  point and latch; the oracles therefore compare delivered records (output, context, kind, timestamp, value), never
-  output points or latch values, and two distinct isolated owners over one set of points stay unsupported, as in stage
-  6. `AdmissionPointSnapshot`'s optional heartbeat recipients stay deferred.
+  interpreter shares one output latch per set of upstream points, where each state lane stamps with its own output point
+  and latch; the oracles therefore compare delivered records (output, context, kind, timestamp, value), never output
+  points or latch values, and two distinct isolated owners over one set of points stay unsupported, as in stage 6.
+  (Stage 6's transition traces also compare each record's flush time, which the lanes give exactly under their mapping,
+  6.7.) `AdmissionPointSnapshot`'s optional heartbeat recipients stay deferred.
 - **Candidate mode** (`Interpreter::with_candidates`): for every emitted gauge point it records the last value each
   point admitted to the bucket, and for every entry the kinds and metadata admitted while it lived, carried with the
   emitted record through the downstream program to the outputs (`equivalence::Candidates`).
@@ -2000,11 +2204,14 @@ kept it. This design keeps the order native has: per lane, per connection, withi
   (each admitted routed buffer with the header the lane observed, each header-only observation, each tick fired with its
   flush time), it builds one trace: per scheduled tick, every lane's events before its own firing go before one tick
   event, and its events after go after; each routed buffer is a separate admit at the header the lane saw (one second,
-  one bucket); a reset's opening goes between the mark's `cutoff` ordinal and the next. A consistent merge always
-  exists, since flush times never decrease and contexts are disjoint. A replay is valid only when every lane fired each
-  ordinal at the same flush time and took its back-fill start from the shared log; otherwise (a grace expiry, a
-  straggler, an unresolved previous ordinal, a tick dropped at a reset's opening in one lane only) the case is counted
-  and excluded, as amendment 86 excludes a grace expiry.
+  one bucket); a reset's opening goes between the mark's `cutoff` ordinal and the next. Every old-epoch admit of a
+  source goes before that source's first newer-epoch admit (they feed disjoint instances, and the old-epoch instance
+  fires no tick after the cutoff), so the interpreter, which infers resets from jumps in `t_a`, sees one reset per jump,
+  never an old-epoch admit after a newer one read as a second jump. A consistent merge always exists, since flush times
+  never decrease and contexts are disjoint. A replay is valid only when every lane fired each ordinal at the same flush
+  time and took its back-fill start from the shared log; otherwise (a grace expiry, a straggler, an unresolved previous
+  ordinal, a tick dropped at a reset's opening in one lane only, a tick skipped by a lane holding contexts, a reset
+  overflow beyond `MAX_OPEN_EPOCHS`) the case is counted and excluded, as amendment 86 excludes a grace expiry.
 
 ### 6.3 Oracles
 
@@ -2025,10 +2232,12 @@ kept it. This design keeps the order native has: per lane, per connection, withi
    | Kind conflict across points | the emitted kind is one of the per-point last kinds; values not compared; the loss balance must hold |
 
 3. **`check_capacity(trace)`** under pressure, from the budget operations a harness records (`test-util`): held units at
-   most the limit after every admit, counting a context once per instance that holds it (twice during a crossing's
-   spread or a reset window); every refusal happened while `global.used() == capacity` or the node was at its limit, in
-   held units; emitted contexts are a subset of admitted ones; delivered points plus capacity loss plus policy loss
-   equal admitted points.
+   most the limit after every admit, counting a context once per instance that holds it (one per lineage and open epoch
+   during a crossing's spread or a reset window); every refusal justified by the refused operation itself, from the
+   `used` value its own compare-and-swap observed (recorded inside the loop, since recordings from several threads are
+   not in the order the operations took effect), with outstanding node units counted as held (a unit acquired and not
+   yet returned on a global refusal still occupies the node); emitted contexts are a subset of admitted ones; delivered
+   points plus capacity loss plus policy loss equal admitted points.
 
 ### 6.4 Property tests
 
@@ -2038,14 +2247,14 @@ Release mode, named `property_test_*`, in the crate that owns the code.
 |---|---|---|
 | `property_test_lanes_equal_interpreter_in_trace_order` | random pre-aggregation scope plans (mapper, projection, `aggregate` with expiry), multi-point traces with idle gaps, low and high cardinality; D in {1, 2, 4}, P in {1, 2, 3, 4, 8}, M in {1, 3}; open buffers flushed before every trace tick | exact against the interpreter |
 | `property_test_lanes_equal_interpreter_in_arrival_order` | the same plans; seeded schedules: interleaved deliveries respecting FIFO per channel, per-channel delays, the coalescing hold, the progress throttle | exact against the arrival replay |
-| `property_test_lane_count_invariance` | one trace, one fixed schedule per point | bit-equal outputs at P = 1 and P = k; equal deltas of `aggregate_flushes_total`, breach logs, R5b counts |
+| `property_test_lane_count_invariance` | one trace, one fixed schedule that fixes, per context, the order its events from several points reach the state slot, identically at P = 1 and P = k (at P = 1 the exit holds nothing, so the schedule, not coalescing, decides the order); cuts and resets included | bit-equal outputs at P = 1 and P = k, ticks at the same seconds across a cut and a reset; equal deltas of `aggregate_flushes_total`, breach logs, R5b counts |
 | `property_test_lanes_under_interleaving` | seeded schedules | `compare_partitioned` against the interpreter in candidate mode on the original trace |
-| `property_test_idle_counters_across_lanes` | 1 to 3 counters over 8 lanes, so most lanes are empty at most ticks; gaps; expiry 0 and 300 s; one lane delayed by more than one interval | exact at P = 1 and against the interpreter; the delayed case falls back, is counted, and is excluded from the replay |
-| `property_test_multi_point_reset` | resets with straggler points, in-flight old-epoch buffers, a point's last old-epoch batch routed to one state lane only, ticks due inside the spread of window openings, a reset inside a window, a reset during a cut whose new instance already holds epoch-`e` data | exact in trace order; exact in arrival replay whenever every lane resolved each ordinal up to the reset mark's cutoff alike (otherwise counted and excluded); every lane drains at the same `W_pre`; window rule identical in driver and interpreter |
-| `property_test_cut_with_lanes` | cuts with delay schedules so lanes cross at different times; a reset during a cut | exact values; a context is held by at most the retiring and the new instance of one lane, and only between the first and the last point's switch at that lane; the ID invariant |
+| `property_test_idle_counters_across_lanes` | 1 to 3 counters over 8 lanes, so most lanes are empty at most ticks; gaps; expiry 0 and 300 s; one lane delayed by more than one interval; a cut, a reset, and a shutdown between ticks | exact at P = 1 and against the interpreter, closing flushes included (no idle zeros a single core would not emit); the delayed case falls back, is counted, and is excluded from the replay |
+| `property_test_multi_point_reset` | resets with straggler points, in-flight old-epoch buffers, a point's last old-epoch batch routed to one state lane only, the first `e + 1` call filling B for one lane, ticks due inside the spread of window openings, windows that close before any `e + 1` data reaches a lane, low cardinality (most lanes without fresh instances), a reset inside a window, a point skipping an epoch, a reset during a cut whose new instance already holds epoch-`e` data, with both arrival orders of a point's `e + 1` header and another point's `new` header, shutdown inside a window | exact in trace order; exact in arrival replay whenever every lane resolved each ordinal up to the reset mark's cutoff alike (otherwise counted and excluded); every lane drains at the same `W_pre`; after the close every lane's instances tick the successor's ordinals; window rule identical in driver and interpreter |
+| `property_test_cut_with_lanes` | cuts with delay schedules so lanes cross at different times; a reset during a cut | exact values; a context is held by at most one instance per (lineage, open epoch) of one lane, and more than one only between the first and the last point's switch at that lane or inside a reset window; the ID invariant |
 | `property_test_partitioned_capacity` | contexts beyond limits 0 to 3 and 1,000, node limits below the global capacity, churn; P in {2, 4, 8} | `check_capacity` |
 | `property_test_keyed_exit_routes_each_context_to_one_lane` | random keys and P | one lane per key; contiguous table; order kept within a lane |
-| `property_test_coalescing_is_exact` | buffer streams crossing seconds, generations, epochs, entries, with idle input and expired holds | equal output with and without coalescing, for aggregation, the tracker, and the gate; every state lane's observed watermark per point equals the one without coalescing after each call's sends, within `COALESCE_HOLD` for lanes with an open buffer. A unit test pins the progress case: an open buffer of second `s − 1` for lane `j`, then a generation change with no data for `j`, delivers the buffer and then the new header |
+| `property_test_coalescing_is_exact` | buffer streams crossing seconds, generations, epochs, entries, with idle input and expired holds; the first `e + 1` call filling B for one lane | equal output with and without coalescing, for aggregation, the tracker, and the gate; every state lane's observed watermark per point equals the one without coalescing after each call's sends, within `COALESCE_HOLD` for lanes with an open buffer; no lane receives an `e + 1` buffer before the final `e` header. A unit test pins the progress case: an open buffer of second `s − 1` for lane `j`, then a generation change with no data for `j`, delivers the buffer and then the new header |
 | `property_test_frames_fuse_maximally_between_fences` | random plans and lane policies | slots follow fences only; decisions whole; one path per (point, state lane) |
 | `saluki-metric-kernels`: `property_test_last_seen_is_max_under_reordering`, `property_test_lane_flush_log_matches_one_core`, `property_test_bounded_node_acquire_never_exceeds_the_limit` | kernel-level | against the frozen reference with one lane |
 | `saluki-core`: `property_test_owned_admission_keeps_stamp_order`, `property_test_source_clock_resets_once_per_jump` | stamps and sends from one task with transactions interleaved; jumps near the threshold from several points | per-channel stamp order; one epoch per jump |
@@ -2064,8 +2273,8 @@ be modeled, so the models transcribe each protocol with loom primitives, as `sal
 |---|---|---|
 | `SourceClock` | 3 stampers across a backward jump beyond the threshold, with the epoch mirror | exactly one reset; every later stamp in the new epoch; `latest` never decreases within an epoch; the mirror never shows an epoch the clock has not reached |
 | `StateBudget::try_acquire_below` with the global budget | 3 lanes admitting new contexts of one node and one of another node, limit below capacity | never above the node limit or the capacity; the node unit returned on a global refusal; a node at its limit never holds a global unit |
-| `TickRecord` | 3 lanes firing one ordinal in any order, one skipping it, one opening a reset window | one second and one next instant per ordinal; every lane's next deadline from the record; no ordinal after the mark's cutoff fires |
-| `LaneShared::resolve` | 3 lanes resolving consecutive ordinals, one lagging | exactly one `first` per non-empty ordinal; `previous` is known only once every lane resolved the ordinal before, and is then the latest earlier flush time |
+| `TickRecord` | 3 lanes firing one ordinal in any order, one skipping it, one opening a reset window; a lane that takes an ordinal's second at its deadline, gates, and fires after another lane set the mark; a lane joining the successor record while others tick it | one second and one next instant per ordinal; every lane's next deadline from the record; no ordinal after the mark's cutoff fires on an instance holding the mark's epoch; the cutoff covers every ordinal a lane queued; a joining lane never holds `previous` back |
+| `LaneShared::resolve` | 3 lanes resolving consecutive ordinals, one lagging, one leaving and one joining between ordinals, and a closing flush | exactly one `first` per non-empty ordinal and closing flush; `previous` is known only once every member lane resolved the ordinal before, and is then the latest earlier flush time |
 | Breach flag | rejections and pass ends interleaved | one warning and one recovery per episode |
 | `shutdown_at` | 3 lanes finishing | one close time |
 | `OwnedAdmission` with a transaction | a stamp and an arm interleaved, with the point's lock modeled as a `std` mutex | a transaction never sees a half-written stamp; no stamp while it holds the lock |
@@ -2073,7 +2282,8 @@ be modeled, so the models transcribe each protocol with loom primitives, as `sal
 **ADP stress run** (`programmable_metrics::topology::lane_stress_tests`): the test topology with D = 4, P = 4, M = 2 on
 a 4-worker runtime, 30 s of datagram traffic over 10,000 to 100,000 contexts near the context limit, a live install
 every second, and a width cut every 10 s. Checks: `check_capacity` over the recorded budget operations,
-`plan_lane_misrouted_total` zero, the canary balance (every admitted point delivered once), and no debug assertion.
+`plan_lane_misrouted_total` zero, the canary balance (every admitted canary point delivered once, or counted as
+capacity loss, which a crossing near the limit may cause), and no debug assertion.
 
 ### 6.6 Differential tests against legacy
 
@@ -2090,14 +2300,20 @@ every second, and a width cut every 10 s. Checks: `check_capacity` over the reco
 ### 6.7 Transition traces
 
 Stage 6's traces 1 to 15 replay through the harness at D = 3 and P = 2 with their hand-written expectations under trace
-order (trace 14 still needs two sources and stays interpreter-only). New traces, at both levels
-(`interpret/transition_tests.rs`, `runtime/transition_tests.rs`):
+order (trace 14 still needs two sources and stays interpreter-only). Each stage 6 trace stamps one point, so the
+mapping is fixed: the trace's `i`-th stamp (an admit or a heartbeat) is stamped at point `i mod 3`, and mirrored at
+the same `t_a` as a heartbeat on the other two points, right after it and before the trace's next event. Every state
+lane's watermark then equals the single point's latest after each event, so ticks, gates, expired graces, `W_pre`, and
+cut crossings happen at the stage 6 instants and seconds, and a reset is one jump on the shared clock. The
+expectations' flush times are compared too: each lane's output latch is max-latched over flush times that never
+decrease within an output epoch, and every lane's latch resets at the same window closes, so every record's stamp
+equals the single latch's. New traces, at both levels (`interpret/transition_tests.rs`, `runtime/transition_tests.rs`):
 
 | Trace | What it pins |
 |---|---|
 | T-L1 | a cut with state lane 1 delayed by three progress periods: lanes cross separately; values equal P = 1; a context seen on both sides of lane 1's spread holds two units until its crossing |
-| T-L2 | a reset with one idle point (its heartbeat closes the window) and one point with five queued old-epoch buffers, whose last one goes to state lane 0 only: lane 1 learns its final latest from the forwarded header and drains at the same second as lane 0; a tick due between the two lanes' openings fires in neither |
-| T-L3 | a reset after a cut's publication: new-epoch data reaches a fresh instance of the new lineage, and the old lineage's reset drain is its final retirement; and a reset after one point already stamped `new` in epoch `e`: the cut's new instance reset-drains at `floor(W_pre)`, and the first `e + 1` data gets a fresh instance, which takes the new lineage's binding |
+| T-L2 | a reset with one idle point (its heartbeat closes the window) and one point with five queued old-epoch buffers, whose last one goes to state lane 0 only: lane 1 learns its final latest from the forwarded header and drains at the same second as lane 0; a tick due between the two lanes' openings fires in neither; stage 6's trace 11 at D = 3, P = 2, whose mapping closes every lane's window before any `e + 1` data arrives: the drained 5 s instance of the lane owning `c` joins the successor record, takes `c = 2`, and delivers `(2, 3_606_000, "c rate/5s [3600:2]")` at the successor's first tick |
+| T-L3 | a reset after a cut's publication: new-epoch data reaches a fresh instance of the new lineage, and the old lineage's reset drain is its final retirement, in both arrival orders of a point's `e + 1` header and another point's `new` header; a reset after one point already stamped `new` in epoch `e`: the cut's new instance reset-drains at `floor(W_pre)`, and the first `e + 1` data gets a fresh instance, which takes the new lineage's binding; stage 6's queued trace 11 at D = 3, P = 2, the cut prepared while both batches wait: the fresh old-lineage instance inherits the cut's retiring mark, crosses at 3,610.5, and delivers `(1, 3_610_000, "c rate/10s [3600:1]")` |
 | T-L4 | a prepare in which one of sixteen lanes rejects: every lane aborts; the generation is never stamped |
 | T-L5 | a panic in state lane 1 under an artifact: only lane 1's contexts are lost; the panic budget counts once |
 | T-L6 | shutdown with lanes finishing 200 ms apart across a bucket boundary: one close time, one consistent discard |
@@ -2111,7 +2327,9 @@ panic under the default program fails the component, and under an artifact budge
 blocked encoder shard, so one lease waits and the region lanes back up; shutdown with open routed buffers loses nothing;
 a stalled lane reads dead to liveness; a lane task that ends fails the component; a stream connection whose lane failed
 stops; an artifact generation that exhausts its panic budget in one lane stops in every lane; shutdown inside a reset
-window closes it first; a `Strict` grant too small for the automatic lanes boots with fewer lanes and logs it, and
+window closes it first, drains the older epoch at the exact final watermark although a point never switched (its last
+header forwarded at finish), and, after a jump back from 7,201 to 3,600, closes the new timeline at its own time, not
+at 7,201; a `Strict` grant too small for the automatic lanes boots with fewer lanes and logs it, and
 refuses to boot when `lanes.*` was set explicitly.
 
 ### 6.9 Hand-written fixtures
@@ -2120,7 +2338,7 @@ Independent of the code under test.
 
 | Fixture | Content |
 |---|---|
-| X1 | lane 0 holds counter `a`; lane 1 is empty at ticks 15 and 30; counter `b` arrives in lane 1 at 31: `b`'s zeros start at `align(30)`, not lane 1's never |
+| X1 | lane 0 holds counter `a`; lane 1 is empty at ticks 15 and 30; counter `b` arrives in lane 1 at 31: `b`'s zeros start at `align(30)`, not lane 1's never. The same for a closing flush: 10 s buckets, 15 s ticks; lane 0 holds `a` and flushes at 30 and 45; lane 1 last held contexts at 15, and `b` arrives in lane 1 at 47; a cut with `T = 60` retires the lineage (or a reset drains it, or shutdown closes it): lane 1's closing flush starts `b`'s zeros at `align(45)`, so it emits a zero for `b` at 50 only, never at 10, 20, or 30 |
 | X2 | 4 lanes, limit 3, 5 new contexts at once: exactly one warning; recovery after the flush |
 | X3 | `aggregate_flushes_total` +1 per tick with 4 lanes; +0 when every lane is empty |
 | X4 | gauge `g` from points 0 and 1 in one bucket: the last value of one of them; never point 0's first value when it sent two |
@@ -2136,7 +2354,8 @@ Independent of the code under test.
 - The lanes' flush times agree for one ordinal unless the grace expired or a lane straggled (`debug_assert!` plus
   `plan_lane_tick_divergence_total` and `plan_lane_tick_straggler_total`); no old-epoch ordinal after a reset mark's
   cutoff fires.
-- During a crossing, a context is held by at most the retiring and the new instance of one lane.
+- A context is held by at most one instance per (lineage, open epoch) of one lane, and by more than one only during a
+  crossing's switch spread or a reset window (at most `MAX_OPEN_EPOCHS + 1` per lineage).
 - No payload names a retired recipient slot (stage 7, 4.7).
 - Antithesis `always!`: a context is in at most one lane per lineage instance (debug builds, through the routing check).
 
@@ -2146,14 +2365,22 @@ Independent of the code under test.
 fingerprint and base unchanged; renumbering changes a routing output's; a declared output's changes with its
 recipients), and version 1 bases accepted while they match; composition, every row of 4.5's table, pending in both
 product orders, re-composition with dropped emits (degraded) and their restoration when the output returns; resources
-validation and canonicalization fixtures, hand-written; `ResourceTable` (reuse by binding digest, two-phase release
-order, abort releases only what it created and keeps a reopened recipient's original deadline, reopen of a draining
-recipient, resource transactions ordering prepare before publish for additions and publish before release for
-removals, the keep rule at a commit that removes a resource the replaced generation uses, the admitted bytes per
-prepare) and `property_test_resource_table_never_releases_what_a_generation_uses` (random candidates, resource
-transactions, commits, aborts, cuts and their cancellations, failures, and retirements, across several scopes, never
-release a lease or recipient a live or kept generation or the published native set uses, never keep a generation that
-uses a recipient or output the committed plan does not declare, and eventually release everything else); frame and
+validation and canonicalization fixtures, hand-written; `ResourceTable` (reuse by binding digest without provenance,
+never of a draining lease, two-phase release order, abort releases only what it created and keeps a reopened
+recipient's original deadline, reopen of a draining recipient, a reopen answered `Exited` followed by the next
+incarnation only after the exit event, a failed recipient's next incarnation in the same slot, acknowledgments of an
+older incarnation ignored, resource transactions ordering prepare before publish for additions and publish before
+release for removals, a failed addition that still publishes the transaction's removals and withdrawals, a superseded
+transaction aborted, a transaction timeout, `requires` failing a generation over a recipient whose transaction failed,
+the keep rule when a lowering removes a resource the kept generation or the cut's rollback plan uses or flips a
+recipient's protocol, a newer refused or pending resources revision that leaves the installed one in place, the
+credits per resource, each released once by `ReleaseCredits` however its creation ends) and
+`property_test_resource_table_never_releases_what_a_generation_uses` (random candidates, resource transactions and
+their supersession, commits, aborts, cuts and their cancellations, failures, recipient failures, worker restarts that
+repeat an action, and retirements, across several scopes, never release a lease or recipient a live or kept generation
+or the published native set uses, never keep a generation or rollback plan that uses a recipient or output the latest
+lowering does not declare, withdraw every recipient the latest lowering does not declare, release every credit exactly
+once, and eventually release everything else); frame and
 placement (exits to every encode host, outputs placing by host, the remaining capability errors with their two
 messages); explain golden files with the resources section.
 
@@ -2163,12 +2390,17 @@ only after they are dispatched (the `LeaseClosed` markers); a prepare and a drai
 room in a full shard; an unknown lease is counted; builder channel backpressure; per-variant resolved sets; the
 shutdown row of 4.6; a **differential test**: one lease per native output against the native `DatadogMetrics` on the
 same buffers gives identical payload bodies and metadata. The delivery host: table add and remove; routing by resolved
-slots (unfiltered) and by the native set with classes (filtered); **the input barrier** (a release racing a lease's last
-payloads delivers them); control served while a send waits for a full recipient; a retiring loop dispatches queued work
-(the spike's `queue_drain_dispatches_accepted_transactions_after_input_closes`, generalized); the deadline persists or
-drops and counts; reopen during a drain and while a release waits at the barrier; messages with a stale (slot, ID) pair
-ignored; at most 16 draining recipients; a settings swap at a request boundary; a client rebuild; credential rotation
-and conflict reporting, with draining recipients excluded; Cluster Agent token rotation inserted at dispatch;
+slots (unfiltered) and by the native set with classes (filtered); **withdrawal** (sends to a withdrawn recipient
+dropped and counted, whatever lease stamped them, and restored by a later publish); **the input barrier** (a release
+racing a lease's last payloads, with a send still pending, routes them all); control served while a send waits for a
+full recipient; a retiring loop dispatches queued work (the spike's
+`queue_drain_dispatches_accepted_transactions_after_input_closes`, generalized); the deadline persists or drops and
+counts; reopen during a drain and while a release waits at the barrier, and `Exited` after the loop ended; messages
+with a stale `RecipientRef` ignored, and a repeated prepare of the held reference acknowledged; a prepare for a
+directory a live loop still owns fails; a failed loop reports its exit once, and payloads to its slot are dropped and
+counted until its next incarnation is live; at most 16 draining recipients; a settings swap at a request boundary; a
+client rebuild, and one driven by a proxy credential change; credential rotation and conflict reporting, with draining
+recipients excluded; Cluster Agent token rotation inserted at dispatch;
 validation for native recipients only, an idle host ready without a warning, a declared credential never affecting
 readiness; static mode passes every existing forwarder test. F20's claims pinned by tests of today's behavior (a
 persisted file holds the key it was sent with, the mapper overwrites it at dispatch, directory names follow
@@ -2182,21 +2414,25 @@ remove an additional endpoint (it receives from the commit, stops after its drai
 invalid); add a routing group (stale artifact, the default program delivers the selection); enable Multi-Region
 Failover; enable autoscaling failover and set `cluster_agent.enabled` and a token after boot; flip
 `use_v3_api.series.endpoints` for one endpoint under continuous input; change series payload limits, forwarder timeout,
-concurrency, and proxy. Continuous-input counts are exact across every change (no loss, no duplication), per recipient,
-by recording intakes. **Non-metrics delivery:** logs, events, and traces follow a live `additional_endpoints` add and
-remove with no loss, including while a cut is in flight and while a metrics prepare fails. The resources product:
-declare, route, revoke (degraded, then restored), pending in both orders, a duplicate, an unresolved and a removed
-credential, a declared recipient that fails to prepare (rejected, re-lowered without it, native changes still apply),
-redelivery idempotency, restart with redelivery; resources and policy snapshots published back to back (neither lost).
-**Fault tests:** a blocked recipient during retirement (deadline, then persisted or dropped and counted); a prepare
-failure per resource kind (the current generation keeps running); a host's prepare timeout; a worker restart during a
-resource prepare and during a two-phase release; shutdown during a drain; disk full during a retirement's persist; a
-generation failure with and without a kept last-known-good after a removal, with two scopes; a cancelled cut whose
-generation adds an additional endpoint. **Reclamation:** 1,000 cycles of adding and removing a recipient and an output
-(native and declared): tasks, metric handles, cache entries, refreshers, scopes, budget credits, and resource-group live
-bytes return to baseline. Telemetry parity: remapped output equals that of the legacy topology for unchanged
-configurations. The differential against the legacy topology, with routing groups and failover added to its
-configuration matrix: identical delivered series multisets per recipient.
+concurrency, proxy, and the proxy password; remove an endpoint in the same edit that adds one which fails to prepare
+(the removed one stops at the transaction while the candidate retries). Continuous-input counts are exact across every
+change (no loss, no duplication), per recipient, by recording intakes, a removed recipient's up to the transaction that
+withdraws it. A recipient loop that fails is replaced without a configuration change. A test against the Core Agent's
+configuration stream pins whether `experimental.programmable_metrics.resources.credentials` from `datadog.yaml` changes
+live in connected mode, `ENC[...]` values included (A36). **Non-metrics delivery:** logs, events, and traces follow a
+live `additional_endpoints` add and remove with no loss, including while a cut is in flight and while a metrics prepare
+fails. The resources product: declare, route, revoke (degraded, then restored), pending in both orders, a duplicate, an
+unresolved and a removed credential, a declared recipient that fails to prepare (rejected, re-lowered without it, native
+changes still apply), redelivery idempotency, restart with redelivery; resources and policy snapshots published back to
+back (neither lost). **Fault tests:** a blocked recipient during retirement (deadline, then persisted or dropped and
+counted); a prepare failure per resource kind (the current generation keeps running); a host's prepare timeout; a worker
+restart during a resource prepare and during a two-phase release; shutdown during a drain; disk full during a
+retirement's persist; a generation failure with and without a kept last-known-good after a removal, with two scopes; a
+cancelled cut whose generation adds an additional endpoint. **Reclamation:** 1,000 cycles of adding and removing a
+recipient and an output (native and declared): tasks, metric handles, cache entries, refreshers, scopes, budget credits,
+and resource-group live bytes return to baseline. Telemetry parity: remapped output equals that of the legacy topology
+for unchanged configurations. The differential against the legacy topology, with routing groups and failover added to
+its configuration matrix: identical delivered series multisets per recipient.
 
 **Correctness suites:** Panoramic runs (the `/panoramic` skill) of `dsd-events`, `dsd-service-checks`, `dsd-forwarding`,
 `dsd-forwarding-burst`, `otlp-traces`, and `otlp-metrics` against the `main` image as baseline (`--image-override
@@ -2212,18 +2448,18 @@ baseline=<main image>`), since `dd_out` is rewritten under every pipeline and th
 | `saluki-core` | [7] | `execution::control` (moved from `execution::region::mailbox`, which re-exports it): `control_mailbox`, `ControlSender`, `ControlMailbox::{into_receiver, mark_running}` (public), `ControlReceiver<C>::recv() -> Option<(C, ControlReply)>`, `ControlReply::{ack, reject(GenericError), panicked(String)}`, `ControlError`; the region host ported to it; `topology::interconnect::Consumer::queued(&self) -> usize`; `runtime::worker(..).with_resource_group(name)`; `execution::EntryId` documentation: an encode host's entries are lease IDs, stable for the lease's life | additive; F22. Health, supervision, and topology are otherwise untouched by stage 7 |
 | `saluki-core` | [9] | `execution::clock::SourceClock` (epoch mirror and `subscribe`); `AdmissionPointConfig::{with_source_clock, owned}`, `Stamper`, `OwnedAdmission::{stamp, heartbeat_due, stamp_heartbeat}`; `PointState::last` and the boundary-epoch rule in `observe_cut`; `StateBudget::try_acquire_below` (P9.F) | the epoch rule equals today's with one point |
 | `saluki-core` | [9] | `TransformBuilder::input_lanes`; `TransformContext::take_lane_inputs`; `LaneEdge`, `LaneRoute`, and `TopologyBlueprint::connect_components_with`; `EventsDispatcher::dispatch_named_to_lane(output, LaneRoute, buffer)` with spread by first lane with room; lane input bounds (`TransformBuilder::input_buffer_events`, default 1,024); the gated tap sender (P9.F) | one bounded channel per lane |
-| `saluki-core` | [9] | `RegionHostBuilder::{with_lanes, with_lane_admission}`, `LaneContext`, `trait LaneSplit`, the coordinator; `ExitSink::emit_to_lane`; `RegionDriver::end_turn(&mut self, turn, input_idle: bool, exits) -> Option<Instant>` (default `None`); `health::{Health::next_probe, Probe::respond}`; `Kernel::publish_telemetry` (default no-op, P9.F); `WorkerPoolConfiguration::Dedicated { threads }`; `cache::{CacheBuilder::with_accumulated_telemetry, Cache::publish_telemetry}` (P9.F) | additive; with one lane, today's host |
-| `saluki-io` | [7] | `RetryQueue` and `PersistedQueue`: `set_max_size_bytes`, `set_disk_limits` (live settings) | persistence format and directory naming unchanged |
-| `saluki-components` | [7] | `common::datadog::delivery::{DeliveryHost, DeliveryHostConfiguration, RecipientFactory, DeliveryControl::{Prepare, Publish, Release, Reopen, Abort}, CloseRequest::{None, Retire { deadline }, Shutdown}, DrainReport, CredentialSource}`; the shared typed specs (I7): `EncoderSettings`, `EncodeLeaseSpec`, `RecipientSpec`, `RecipientProtocol`, `DeliverySettings`, `PayloadClasses`, `ResolvedRecipients` (per variant), `RecipientSlot`, the payload-metadata key, `HostPayload::{Payload, LeaseClosed { lease, shard }}` | `ResolvedRecipients` rides in payload and transaction metadata, `#[serde(skip)]`; every message names (slot, `RecipientId`) or (`EntryId`, `LeaseKey`) |
+| `saluki-core` | [9] | `RegionHostBuilder::{with_lanes, with_lane_admission}`, `LaneContext`, `trait LaneSplit`, the coordinator; `ExitSink::emit_to_lane`; `RegionDriver::end_turn(&mut self, turn, input_idle: bool, exits) -> Option<Instant>` (default `None`); `health::{Health::next_probe, Probe::respond}`; `Kernel::publish_telemetry` (default no-op, P9.F); `execution::kernel::{LaneTick, LaneFlush, LaneShare}` and `Turn::{with_lane_tick, lane_tick}` (5.5); `WorkerPoolConfiguration::Dedicated { threads }`; `cache::{CacheBuilder::with_accumulated_telemetry, Cache::publish_telemetry}` (P9.F) | additive; with one lane, today's host |
+| `saluki-io` | [7] | `RetryQueue` and `PersistedQueue`: `set_max_size_bytes`, `set_disk_limits` (live settings between nonzero disk sizes) | persistence format and directory naming unchanged; turning persistence on or off stays restart-only |
+| `saluki-components` | [7] | `common::datadog::delivery::{DeliveryHost, DeliveryHostConfiguration::with_events, RecipientFactory, RecipientRef { slot, id, incarnation }, DeliveryControl::{Prepare, Publish { revision, native_set, settings, withdrawn }, Release, Reopen { recipients, decls }, Abort, AbortResources { revision }}, ReopenReply::{Reopened, Exited}, DeliveryEvent::RecipientExited { recipient, outcome }, RecipientExit::{Retired(DrainReport), Failed(String)}, CloseRequest::{None, Retire { deadline }, Shutdown}, DrainReport, CredentialSource}`; the shared typed specs (I7): `EncoderSettings`, `EncodeLeaseSpec`, `RecipientSpec`, `RecipientProtocol`, `DeliverySettings` (each proxy as a URL without user information and a credential reference the host follows), `PayloadClasses`, `ResolvedRecipients` (per variant), `RecipientSlot`, the payload-metadata key, `HostPayload::{Payload, LeaseClosed { lease, shard }}` | `ResolvedRecipients` rides in payload and transaction metadata, `#[serde(skip)]`; every recipient message, acknowledgment, and event names a `RecipientRef`, every lease message (`EntryId`, `LeaseKey`) |
 | `saluki-components` | [7] | `encoders::datadog::metrics::host::{MetricsEncodeHost, EncodeLeaseFactory, EncodeControl::{Prepare, Drain}}`; `MetricsRecipient` gains classes and protocol (in I7); the `encode_host` bench | `builders` is 1 in stage 7 |
 | `saluki-components` | [9] | DogStatsD source `with_metric_lanes(D)`: outputs `metrics_<d>`, decoder `d` on lane `d mod D`, stream connections to the lane with the fewest live connections | conditional: the datagram queue (O4) |
-| `saluki-metric-kernels` | [9] | `aggregate::lanes::{LaneShared, Resolution, Previous, FlushRecord}`; `AggregateCore::{with_budget(.., lanes: Option<Arc<LaneShared>>), begin_flush_with}`; `last_seen` as a maximum; `ContextLimit::try_admit` with the bounded node acquire first; per-instance accumulation of the aggregation gauges (`AggregateTelemetry::accumulating`, published through `Kernel::publish_telemetry`); the mapper's and tag projection's shared immutable parts for `KernelSpec::with_shared` | reference property tests at one lane |
+| `saluki-metric-kernels` | [9] | `aggregate::lanes::{LaneShared, Resolution, Previous, FlushRecord}`, `LaneShared` implementing `saluki-core`'s `LaneShare`, `LaneShared::resolve(LaneTick, Resolution)`; `AggregateCore::{with_budget(.., lanes: Option<Arc<LaneShared>>), begin_flush_with}`, with every closed pass (tick, reset drain, final retirement, shutdown) of an instance with lanes starting from the turn's `LaneTick`; `last_seen` as a maximum; `ContextLimit::try_admit` with the bounded node acquire first; per-instance accumulation of the aggregation gauges (`AggregateTelemetry::accumulating`, published through `Kernel::publish_telemetry`); the mapper's and tag projection's shared immutable parts for `KernelSpec::with_shared` | reference property tests at one lane |
 | `saluki-metric-plan` | [7] | `ir::{OutputBinding, Selector, Resources, HostBinding, RecipientDecl, PayloadClasses, HostId}`, the reserved `resources_` output prefix, a schema version bump; `extension::{DeliveryPolicy::Bounded, BoundedDelivery, Spill, Overflow::EvictOldest, Closure}`; `resources::{ResourcesArtifact, validate, canonical_endpoint, fingerprint}`; `channel`: the `resources` product (`ResourcesSnapshot`, its own high-water mark and acknowledgments), one feed slot per product (`ArtifactFeed::changed() -> (ArtifactProduct, Arc<ArtifactSnapshot>)`, `mark_unseen(product)`); `validate::Catalog::host`, and a catalog output's optional version 1 digest (`legacy_fingerprint`) | no change to the identifier grammar or the surface syntax |
-| `saluki-metric-plan` | [7] | `compose`: dropped emits for removed or rebound outputs (`ComposeOutcome::Degraded`), `ComposeError::{PendingOutput, ReboundOutput}`, version 1 bases, the outcomes of 4.5; `install::resources::{ResourceTable, ResourcePlan, ResourceTransaction, ResourcesRevision}`, `PrepareSite::{Slot, Host, Budget}`, `HostPrepare`, `Action::{PrepareResources, PublishResources, ReleaseLeases, ReleaseRecipients}`, `InstallerCore::{resources_prepared, lease_released, recipient_retired, on_resources, accepted_resources}`, the keep rule; `compile::{FrameHosts, FrameTarget::{EncodeHost, Destination}}`, placement by host, `EntrySource::Lease` and lease tables in `PrepareRegion` and `runtime::code`; the `MissingCapability` messages; `explain` and `diff` resources sections; limits `MAX_DECLARED_RECIPIENTS` (16), `MAX_DECLARED_OUTPUTS` (16), `RESOURCES_ARTIFACT_SIZE` (64 KiB), `LEASE_QUEUE_BUFFERS` (8), `MAX_DRAINING_RECIPIENTS` (16) | |
-| `saluki-metric-plan` | [9] | `compile::frame::{LanePolicy { dogstatsd: u16, state: u16, post: u16 }, FrameOptions { pipelining: bool }, KeyGroups, ExitRouting::{One, Keyed, Affinity, Spread}}`; `Frame::compute(plan, registry, namer, &FrameHosts, &LanePolicy, FrameOptions)`, which computes the lane layout in I9; `AdmissionPointInfo::lanes`, `Slot::lanes`, `Exit::routing`, `SlotKind::Isolation::{output_points, upstream}`; `OperatorDef::partition_key`, `PartitionKey`; `KernelSpec::with_shared`; `PrepareRegion` with one kernel set and binding list per lane; `KernelControl::lane` | lane layout never enters the plan hash or the logical explain |
-| `saluki-metric-plan` | [9] | `runtime`: `RegionConfig::with_lane(LaneContext, Arc<SlotLanes>)`, keyed exits with coalescing, the final old-epoch header, and per-lane progress; `state::lanes::{SlotLanes, LineageLanes, LogicalInstance, ResetMark}`; `state::rules::{ResetWindow, WindowStep, EpochSide, Observation::EpochSwitched, epoch_newer}`, `WatermarkTracker::{watermark_in, switched_epoch, in_publication_epoch_with}`, `TickGate::due_at_second`; `harness::{LanedFrameHarness, DeliverySchedule::{TraceOrder, Seeded(u64), Delay { point, lane, by }}}` (`test-util`) | the interpreter and the driver share `rules` |
+| `saluki-metric-plan` | [7] | `compose`: dropped emits for removed or rebound outputs (`ComposeOutcome::Degraded`), `ComposeError::{PendingOutput, ReboundOutput}`, version 1 bases, the outcomes of 4.5; `install::resources::{ResourceTable, ResourcePlan, ResourceTransaction, ResourcesRevision, RecipientRef, CreditKey, ResourcesEvent}`, `PrepareSite::{Slot, Host, Budget { resource: CreditKey }}`, `HostPrepare { host, leases, create, reopen, requires }`, `Action::{PrepareResources, PublishResources, AbortResources, ReleaseLeases, ReleaseRecipients, ReleaseCredits}`, `InstallerCore::{resources_prepared, lease_released, recipient_retired, recipient_failed, on_resources(ResourcesEvent), credentials_changed, accepted_resources}`, the keep rule at every lowering; `compile::{FrameHosts, FrameTarget::{EncodeHost, Destination}}`, placement by host, `EntrySource::Lease` and lease tables in `PrepareRegion` and `runtime::code`; the `MissingCapability` messages; `explain` and `diff` resources sections; limits `MAX_DECLARED_RECIPIENTS` (16), `MAX_DECLARED_OUTPUTS` (16), `RESOURCES_ARTIFACT_SIZE` (64 KiB), `LEASE_QUEUE_BUFFERS` (8), `MAX_DRAINING_RECIPIENTS` (16) | |
+| `saluki-metric-plan` | [9] | `compile::frame::{LanePolicy { dogstatsd: u16, state: u16, post: u16 }, FrameOptions { pipelining: bool }, KeyGroups, ExitRouting::{One, Keyed, Affinity, Spread}}`; `Frame::compute(plan, registry, namer, &FrameHosts, &LanePolicy, FrameOptions)`, which computes the lane layout in I9; `AdmissionPointInfo::lanes`, `Slot::lanes`, `Exit::routing`, `SlotKind::Isolation::{output_points, upstream}`; `OperatorDef::partition_key`, `PartitionKey`; `KernelSpec::with_shared`; `KernelBuildContext::{with_lanes, lane_share}`, `LaneBinding`, `LaneCell`; `PrepareRegion` with one kernel set and binding list per lane, bindings by lineage; `KernelControl::lane` | lane layout never enters the plan hash or the logical explain |
+| `saluki-metric-plan` | [9] | `runtime`: `RegionConfig::with_lane(LaneContext, Arc<SlotLanes>)`, keyed exits with coalescing, the final old-epoch header, and per-lane progress; `state::lanes::{SlotLanes, LineageLanes, LogicalInstance, ResetMark}`; `state::rules::{ResetWindow, WindowStep, EpochSide, Observation::EpochSwitched, epoch_newer}`, `WatermarkTracker::{watermark_in, max_latest_in, switched_epoch, in_publication_epoch_with}`, `TickGate::due_at_second`; `harness::{LanedFrameHarness, DeliverySchedule::{TraceOrder, Seeded(u64), Delay { point, lane, by }}}` (`test-util`) | the interpreter and the driver share `rules` |
 | `saluki-metric-plan` | [9] | `interpret`: `TraceEvent::Admit { source, lane, at, batch }`, `Interpreter::with_candidates`, `replay::ArrivalReplay`; `equivalence::{Candidates, compare_partitioned, check_capacity}`; lanes per slot and routing per exit in the physical explain; R1's cost model removed (P9.7); limits `KEY_GROUPS`, `MAX_LANES`, `PRODUCER_LANES_MAX`, `ROUTE_BUFFER_EVENTS`, `COALESCE_HOLD`, `TICK_RECORD_DEPTH`, `MAX_OPEN_EPOCHS`, `LANE_FLUSH_STAGGER` | |
-| `agent-data-plane` | [7] | `programmable_metrics::resources` (from `outputs.rs`): `NativeResources::resolve(current, startup, facts, declared)` producing output bindings, recipients, and host bindings, fingerprint versions 2 and 1; `resources::params`: the `Params` codec for the typed specs; `credentials.rs`: `AdpCredentialSource` over configuration views; `host_facts.rs`: the Cluster Agent endpoint fact without `enabled` or a token; `catalog.rs`: declared outputs with labels, host schemas, each native output's version 1 digest; `topology.rs`: the fixed hosts (idle MRF, Cluster Agent by fact) with mailboxes and `FrameHosts`; `installer.rs`: resource actions and transactions, the resource budget, status; `channel_stub.rs`: both products, one slot each; `api.rs`: status additions; `bindings.rs`: the newly live keys (its "liveness follows native behavior" comment revised, amendment 104); `telemetry_profiles.rs`: lease identities; `lib/saluki-app/src/accounting.rs`: the verified bounds returned; `agent-data-plane-config`, `config-overlay-model` (a string-map value type), `agent-data-plane-config-system/src/saluki_only.rs`, `schema_overlay.yaml`, and the generated `docs/agent-data-plane/configuration/configuration.md`: the credentials key and the support levels of the newly live keys | |
+| `agent-data-plane` | [7] | `programmable_metrics::resources` (from `outputs.rs`): `NativeResources::resolve(current, startup, facts, declared)` producing output bindings, recipients, and host bindings, fingerprint versions 2 and 1; `resources::params`: the `Params` codec for the typed specs; `credentials.rs`: `AdpCredentialSource` over configuration views; `host_facts.rs`: the Cluster Agent endpoint fact without `enabled` or a token; `catalog.rs`: declared outputs with labels, host schemas, each native output's version 1 digest; `topology.rs`: the fixed hosts (idle MRF, Cluster Agent by fact) with mailboxes and `FrameHosts`; `installer.rs`: resource actions and transactions, the resource budget and its credit ledger, the hosts' event channels, `ResourcesEvent` and `credentials_changed` from snapshots and configuration changes, status; `channel_stub.rs`: both products, one slot each; `api.rs`: status additions; `bindings.rs`: the newly live keys (its "liveness follows native behavior" comment revised, amendment 104); `telemetry_profiles.rs`: lease identities; `lib/saluki-app/src/accounting.rs`: the verified bounds returned; `agent-data-plane-config`, `config-overlay-model` (a string-map value type), `agent-data-plane-config-system/src/saluki_only.rs`, `schema_overlay.yaml`, and the generated `docs/agent-data-plane/configuration/configuration.md`: the credentials key and the support levels of the newly live keys | |
 | `agent-data-plane` | [9] | `LaneCounts`, `lane_counts(&SalukiConfiguration, workers, grant) -> LaneCounts` (with the `Strict` fit); `PlanTopology` with lanes (D source outputs, slot components with lanes, lane edges, lane admission configurations, per-lane capacities, heartbeat periods); per-lane prepares with builds on a blocking thread; the snapshot bridge's request per lane; `plan_lane_*` telemetry; CPU-time sampling (`SALUKI_CPU_TIME_SAMPLING`) and the global pool size at startup; overlay entries for `dogstatsd_pipeline_*` and `dogstatsd_workers_count`; the measurement harness through the decoder pool; the stress test | |
 | `programmable-metrics-demo` | [7] | the Team D intake, the `resources` product in the stub, the Resources tab, editor fingerprints for declared outputs, the Recipients panel, steps S8 to S11 | a first pass behind the stub protocol and the export catalog |
 | `programmable-metrics-demo` | [9] | new flags `--decoders`, `--state-lanes`, `--post-lanes` (`--traffic-rate`, `--contexts`, and `--aggregate-window-secs` exist); the Lanes panel; steps S12 to S14 in a second launch; pre-aggregation scope support in the headless check | reads the `plan_lane_*` series through the telemetry viewer |
@@ -2289,12 +2525,12 @@ Exit: the workspace compiles, every existing test passes, and behavior is unchan
 
 | Part | Scope and files | Size (est.) | Tests | Exit evidence |
 |---|---|---|---|---|
-| P7.1a recipient loops and persistence | `lib/saluki-components/src/common/datadog/{io.rs, retry.rs, validation.rs, telemetry.rs, transaction.rs}`; `lib/saluki-io/src/net/util/retry/` (live limits); the spike's drain-on-close port | 1,500 | close requests and the drain to the deadline, live retry limits, validation for native recipients only, per-domain cache release; F20's claims pinned by tests of today's behavior | every existing forwarder test passes in static mode |
-| P7.1b delivery host | `lib/saluki-components/src/common/datadog/{delivery/, config.rs, api_key.rs, endpoints.rs, middleware.rs, protocol.rs, proxy.rs}`, `forwarders/{datadog, cluster_agent}/` | 2,000 | table, routing by slots and by native set, the barrier race, control during a blocked send, reopen, settings swap, client rebuild, rotation and conflicts, Cluster Agent token at dispatch, static mode | every existing forwarder test passes in static mode |
+| P7.1a recipient loops and persistence | `lib/saluki-components/src/common/datadog/{io.rs, retry.rs, validation.rs, telemetry.rs, transaction.rs}`; `lib/saluki-io/src/net/util/retry/` (live limits); the spike's drain-on-close port | 1,500 | close requests and the drain to the deadline, a loop's exit outcome (retired or failed) reported once, live retry limits (persistence turned on or off stays restart-only), validation for native recipients only, per-domain cache release; F20's claims, and the trimming and outdated-file removal a queue does when opened, pinned by tests of today's behavior | every existing forwarder test passes in static mode |
+| P7.1b delivery host | `lib/saluki-components/src/common/datadog/{delivery/, config.rs, api_key.rs, endpoints.rs, middleware.rs, protocol.rs, proxy.rs}`, `forwarders/{datadog, cluster_agent}/` | 2,000 | table, routing by slots and by native set, withdrawal, the barrier race with pending sends, control during a blocked send, reopen and `Exited`, `RecipientRef` checks, the event channel, prepares serialized per directory, a failed slot's next incarnation, `AbortResources`, settings swap, client rebuild (and on a proxy credential change), rotation and conflicts, Cluster Agent token at dispatch, static mode | every existing forwarder test passes in static mode |
 | P7.2 encode host | `lib/saluki-components/src/encoders/datadog/metrics/{host.rs, mod.rs}`; `lib/saluki-components/benches/encode_host.rs` | 1,500 | routing by lease, the drain race with `LeaseClosed`, control during a full shard, unknown lease, shard backpressure, per-variant sets, shutdown, the differential against `DatadogMetrics` | identical payload bodies and metadata; the bench within its threshold (8.3) |
 | P7.3 plan crate | `lib/saluki-metric-plan/src/{ir/, extension/, resources/, channel/ (beyond the feed), compose.rs, compile/{frame.rs, placement.rs, program.rs}, runtime/{code.rs, harness.rs}, validate/, export*, explain/, install/diff.rs, limits.rs}`, `schema/`, `fixtures/` | 2,000 | fingerprint digests (both versions), composition outcomes with dropped emits, validation and canonicalization fixtures, the capability-binding rule, frame and placement, explain golden files | golden files regenerated and reviewed; schemas current |
-| P7.4 installer core | `lib/saluki-metric-plan/src/install/{resources.rs, core.rs, core/artifacts.rs}` | 2,000 | `ResourceTable` unit tests; `property_test_resource_table_never_releases_what_a_generation_uses`; resource transactions; pending and degraded re-evaluation; the keep rule; admitted bytes | the property test and every existing installer test pass |
-| P7.5 ADP | `bin/agent-data-plane/src/programmable_metrics/{resources.rs (from outputs.rs), resources/params.rs, credentials.rs, host_facts.rs, catalog.rs, topology.rs, installer.rs, channel_stub.rs, api.rs, bindings.rs, telemetry_profiles.rs, lowering/, test_hosts.rs}`, `cli/run.rs` (the MRF warning text); `lib/saluki-app/src/accounting.rs`; `lib/agent-data-plane-config`, `lib/datadog-agent/config-overlay-model`, `lib/agent-data-plane-config-system/src/saluki_only.rs`, `schema_overlay.yaml`, `docs/agent-data-plane/configuration/configuration.md` (generated) | 2,000 | against the host fakes in its work tree: lowering, credentials, the resource budget, status; at I7-Z: live configuration, resources product, fault, reclamation, telemetry parity, differential (6.11) | the work-tree tests and the overlay check pass; the real tests at I7-Z |
+| P7.4 installer core | `lib/saluki-metric-plan/src/install/{resources.rs, core.rs, core/artifacts.rs}` | 2,000 | `ResourceTable` unit tests; `property_test_resource_table_never_releases_what_a_generation_uses`; incarnations and successors; resource transactions (one per host, supersession, timeout, `AbortResources`, withdrawal, failed additions); `requires`; pending and degraded re-evaluation; `ResourcesEvent` and revision retention; the keep rule at every lowering; the credit ledger and `ReleaseCredits` | the property test and every existing installer test pass |
+| P7.5 ADP | `bin/agent-data-plane/src/programmable_metrics/{resources.rs (from outputs.rs), resources/params.rs, credentials.rs, host_facts.rs, catalog.rs, topology.rs, installer.rs, channel_stub.rs, api.rs, bindings.rs, telemetry_profiles.rs, lowering/, test_hosts.rs}`, `cli/run.rs` (the MRF warning text); `lib/saluki-app/src/accounting.rs`; `lib/agent-data-plane-config`, `lib/datadog-agent/config-overlay-model`, `lib/agent-data-plane-config-system/src/saluki_only.rs`, `schema_overlay.yaml`, `docs/agent-data-plane/configuration/configuration.md` (generated) | 2,000 | against the host fakes in its work tree: lowering, credentials and `credentials_changed`, `ResourcesEvent`, the resource budget's credit ledger across worker restarts, the hosts' event channels, status; at I7-Z: live configuration, resources product, fault, reclamation, telemetry parity, differential, the connected-mode credentials key (6.11, A36) | the work-tree tests and the overlay check pass; the real tests at I7-Z |
 | P7.6 demo | `bin/programmable-metrics-demo/src/{intake/, stub/, ui/, scenario/, launcher/, checks.rs}` | 1,000 | against the stub and a recorded ADP status; S8 to S11 (8.8) at I7-Z | the headless check passes S0 to S11 twice, at I7-Z |
 
 Dependencies: P7.1a, P7.1b, P7.2, P7.3, and P7.4 build and test in their own work trees against I7; P7.5 and P7.6
@@ -2303,6 +2539,24 @@ encode host, the non-metrics delivery test, the Panoramic suites).
 
 **I7-Z** merges the parts, replaces the fakes, runs the live, fault, reclamation, differential, correctness, and
 measurement tests, regenerates golden files, runs the demo check, and writes the release notes (8.9).
+
+#### Changes after I7 started
+
+A review that ran after I7 began changed these I7 interfaces. Each is a type or signature change that
+I7's fix step applies, or the integration step if I7 already merged; the parts named then build on the changed form.
+Sections 4.2, 4.3, 4.7, 4.10, 4.12, and 7 give the full text.
+
+| # | What changed | I7 item it changes | Absorbed by |
+|---|---|---|---|
+| C1 | Recipient addressing: `RecipientRef { slot, id, incarnation }` (`saluki-components` `delivery::RecipientRef`; the plan crate's `install::resources::RecipientRef`, which ADP converts) replaces `(slot, RecipientId)` in `RecipientPrepare`, `Release`, `Reopen`, `HostPrepare`, `ReleaseRecipients`, and `recipient_retired`; the core allocates an incarnation per recipient prepare | the hosts' control messages; the core's actions and events | I7's fix step (types); P7.1b (a host ignores a mismatched reference and acknowledges a repeated prepare of the one it holds); P7.4 (allocation, ignoring older incarnations) |
+| C2 | `DeliveryControl::Reopen { recipients: [RecipientRef], decls }` carries no built pieces; its reply is `ReopenReply::{Reopened, Exited}`; `Release` is acknowledged when accepted, and its outcome arrives as an event (C3) | `DeliveryControl` | I7's fix step; P7.1b; P7.4 (after `Exited`, the next incarnation only once the exit event arrived) |
+| C3 | Host events: `DeliveryHostConfiguration::with_events(mpsc::Sender<DeliveryEvent>)`, `DeliveryEvent::RecipientExited { recipient: RecipientRef, outcome: RecipientExit::{Retired(DrainReport), Failed(String)} }`; the new core event `InstallerCore::recipient_failed(RecipientRef, reason)`, and `recipient_retired(RecipientRef, DrainReport)` fed from the channel; `RecipientLoop::spawn`'s `exited` resolves with the `RecipientExit` | the hosts' control messages; the core's events; the recipient loop interface between P7.1a and P7.1b | I7's fix step; P7.1a (exit outcome); P7.1b (the channel); P7.4 (`Failed`, the next incarnation in the same slot with backoff); P7.5 (the receivers kept in the installer's state outside the worker) |
+| C4 | `DeliveryControl::Publish { revision, native_set, settings, withdrawn: BTreeSet<RecipientId> }`, and `PublishResources` carries each host's withdrawn set; `ResourceTable::transaction` covers declared recipients' settings and withdrawal | `DeliveryControl`; `PublishResources` | I7's fix step; P7.1b (drop and count sends to withdrawn recipients); P7.4 |
+| C5 | `HostPrepare { host, leases, create, reopen, requires: [RecipientRef] }` (was `{ host, leases, recipients, reopen }`); a generation's prepare never reconfigures a recipient | `HostPrepare` | I7's fix step; P7.4 (`plan()` lists `requires`, drops reconfiguration); P7.1b (fails the acknowledgment when a required recipient is not live) |
+| C6 | `Action::AbortResources { revision, hosts }` and `DeliveryControl::AbortResources { revision }`; one transaction per host, superseded by the newest lowering, timed out after `PREPARE_TIMEOUT` | the core's actions; `DeliveryControl` | I7's fix step; P7.4; P7.1b; P7.5 (dispatch and timeout) |
+| C7 | `InstallerCore::on_resources(ResourcesEvent)` with `ResourcesEvent::{Revoked, Refused { config, version, reason }, Delivered { config, version, revision, artifact_hash, document: Result<ResourcesArtifact, Reason> }}` (was `on_resources(revision, Result, missing_credentials)`), and `InstallerCore::credentials_changed(missing)`; `accepted_resources()` keeps the installed revision while a newer one is refused, rejected, or pending | `on_resources`, `accepted_resources` | I7's fix step; P7.4 (revision rules per `ArtifactConfigId`, revision retention); P7.5 (builds the event from the snapshot; calls `credentials_changed` before lowering) |
+| C8 | `PrepareSite::Budget { resource: CreditKey }` (was a unit variant); `CreditKey`; `ResourcePlan::admitted` and `ResourceTransaction::admitted` as `Vec<(CreditKey, u64)>`; `Action::ReleaseCredits { credits }` | `PrepareSite`; the core's actions | I7's fix step; P7.4 (the ledger's entries and releases); P7.5 (acquisition idempotent per key, held across worker restarts) |
+| C9 | `DeliverySettings` carries each proxy as a URL without user information plus a credential reference, which the delivery host follows through `CredentialSource`, rebuilding and swapping its client on a change | the shared typed specs | I7's fix step (the field, and its row in the `Params` name table); P7.1b (the rebuild); P7.5 (the codec) |
 
 ### 8.3 Stage 7 gate
 
@@ -2364,23 +2618,37 @@ behind a `measurement` feature):
 | the tracker clone removed, with 5.6's `Observation::EpochSwitched` shape | `lib/saluki-metric-plan/src/runtime/{driver/isolation.rs, state/rules.rs}`, `interpret/{installation.rs, mod.rs, drains.rs, state.rs}` | every stage 6 runtime, interpreter, and transition test |
 | `KernelSpec::with_shared` | `lib/saluki-metric-plan/src/operators/mod.rs`, mapper and tag projection specs | built instances equal; shared part computed once |
 
+**Changes after P9.F started.** Two rules of the same review reach P9.F's work in progress; neither changes behavior
+at one lane:
+
+1. `WatermarkTracker::observe` compares epochs with `epoch_newer` and returns `Observation::Fault` for an older-epoch
+   header after a newer one from the same point (a `debug_assert!`, the batch counted as invalid loss), where today any
+   epoch difference reads as a reset (`rules.rs:135-139`). One FIFO path never delivers it, so stage 6 never sees it.
+   It is part of the `Observation::EpochSwitched` change.
+2. The budget's `test-util` recording, which `check_capacity` reads (6.3), records the `used` value each
+   compare-and-swap of `try_acquire_below` and `try_acquire` observed, and a node unit acquired but not yet returned
+   counts as held. It is part of the bounded node acquire change; P9.4 consumes it.
+
 **I9 (short, serial, on the stage 7 commit, about 1,500 lines):** every [9] signature of section 7 with stub bodies,
 except the lane layout, which `Frame::compute` computes for real from `LanePolicy` (lane points, per-lane output points,
 exit routing), so P9.3 and P9.4 can build frames with lanes (`Frame`'s fields are private, `compile/frame.rs:538-548`,
 and `FrameHarness` takes `Frame::compute`'s output); `FrameOptions` threaded through; the interfaces between the halves
 of P9.1 (the lane task's control queue and probe forwarding) and of P9.3 (`KeyedExit`, the state lane's admission API,
-and the shared panic ledger's hooks in `runtime/driver.rs`, so that P9.3a alone edits that file); host fakes for P9.5 in
-`bin/agent-data-plane/src/programmable_metrics/test_hosts.rs`; the source's `with_metric_lanes(1)` equal to today. Exit:
-the workspace compiles, and every existing test passes at D = P = M = 1, which is stage 6 behavior (with stage 7).
+and the shared panic ledger's hooks in `runtime/driver.rs`, so that P9.3a alone edits that file); the kernel side of the
+lineage records (`LaneTick`, `LaneFlush`, `LaneShare`, `Turn::with_lane_tick`, `KernelBuildContext::{with_lanes,
+lane_share}`, and the aggregate factory's call to `lane_share` in `operators/aggregate.rs`, before P9.2 edits that
+file), so P9.3b's driver and kernel halves meet at a fixed interface; I9 starts after P9.F merged; host fakes for P9.5
+in `bin/agent-data-plane/src/programmable_metrics/test_hosts.rs`; the source's `with_metric_lanes(1)` equal to today.
+Exit: the workspace compiles, and every existing test passes at D = P = M = 1, which is stage 6 behavior (with stage 7).
 
 | Part | Scope and files | Size (est.) | Tests | Exit evidence |
 |---|---|---|---|---|
 | P9.1a lanes in the topology | `lib/saluki-core/src/topology/{blueprint.rs, graph.rs, built.rs, interconnect/{dispatcher.rs, consumer.rs}}`, `components/transforms/`, `runtime/builder.rs` (the pool size) | 1,500 | lane channels and edges, `LaneRoute` dispatch with spread by first lane with room, per-lane capacities and bounds, the pool size | the topology suites pass, with lanes and at one lane |
 | P9.1b coordinator and admission | `lib/saluki-core/src/execution/{clock.rs, admission.rs, region/{host.rs, driver.rs}}`, `health/mod.rs` | 1,800 | owned admission (stamp order, transactions, heartbeats on period boundaries, the level-triggered reset check), `SourceClock`, the coordinator (split and joined acknowledgments, kernel requests by lane, probe forwarding, failure), `ExitSink::emit_to_lane`, `end_turn`'s deadline; loom models for the clock and owned admission | `property_test_owned_admission_keeps_stamp_order`, `property_test_source_clock_resets_once_per_jump`, loom clean |
 | P9.2 frame and compile | `lib/saluki-metric-plan/src/compile/{frame.rs, placement.rs, program.rs}`, `operators/{mod.rs, aggregate.rs}`, `explain/`, `fixtures/explain/` | 1,200 | routing per exit, one path per (point, state lane), `partition_key`, `pipelining: false`, placement with lanes; golden files of the physical explain at `LanePolicy { 2, 2, 2 }` | `property_test_frames_fuse_maximally_between_fences`; golden files reviewed |
-| P9.3a keyed exits | `lib/saluki-metric-plan/src/runtime/{driver.rs (`RegionConfig::with_lane`, progress), driver/keyed.rs}` | 1,200 | coalescing with the hold, per-lane progress, the final old-epoch header, whole-register moves through rule 1 | `property_test_coalescing_is_exact`, `property_test_keyed_exit_routes_each_context_to_one_lane` |
-| P9.3b state lanes | `lib/saluki-metric-plan/src/runtime/{driver/isolation.rs, state/{lanes.rs, rules.rs}, supervision.rs (the shared panic ledger, whose hooks in `driver.rs` I9 adds)}` | 2,000 | the O(1) tracker, the tick record by ordinal, the flush log, breach, close time, the reset window with the mark and per-epoch instances, the crossing overlap count, the shared panic ledger; loom models for the shared records | runtime state tests with lanes |
-| P9.4 semantics | `lib/saluki-metric-plan/src/{interpret/, equivalence.rs}`, `interpret/replay.rs`, `runtime/harness.rs` (`LanedFrameHarness`, `DeliverySchedule`), transition tests at both levels | 2,000 | interpreter lane traces, the shared reset window, candidate mode, the arrival replay, `compare_partitioned`, `check_capacity`; fixtures X1 to X7; in its work tree against hand-built lane logs; every 6.4 property and traces T-L1 to T-L7 and stage 6's at D = 3, P = 2 at I9-Z | the oracles' own tests in its work tree; all of 6.4 and 6.7 at I9-Z |
+| P9.3a keyed exits | `lib/saluki-metric-plan/src/runtime/{driver.rs (`RegionConfig::with_lane`, progress), driver/keyed.rs}` | 1,200 | coalescing with the hold, per-lane progress, the final old-epoch header sent before anything newer is routed (keyed and `One` exits), the last header forwarded at finish, whole-register moves through rule 1 | `property_test_coalescing_is_exact`, `property_test_keyed_exit_routes_each_context_to_one_lane` |
+| P9.3b state lanes | `lib/saluki-metric-plan/src/runtime/{driver/isolation.rs, state/{lanes.rs, rules.rs}, supervision.rs (the shared panic ledger, whose hooks in `driver.rs` I9 adds)}`; `lib/saluki-metric-kernels/src/aggregate/{lanes.rs, mod.rs (`begin_flush_with`), kernel.rs (the turn's `LaneTick` on every closed pass, `first`, `try_breach`)}`, after P9.F's change to `kernel.rs` merged | 2,000 | the O(1) tracker, the tick record by ordinal with `first_at`, membership, and the fire's critical section, the flush log for ticks and closing flushes, breach, close time per epoch, the reset window with the mark, per-epoch instances, inherited bindings, deferred crossings, and successor records, the crossing overlap count, the shared panic ledger; loom models for the shared records | runtime state tests with lanes; `property_test_lane_flush_log_matches_one_core` |
+| P9.4 semantics | `lib/saluki-metric-plan/src/{interpret/, equivalence.rs}`, `interpret/replay.rs`, `runtime/harness.rs` (`LanedFrameHarness`, `DeliverySchedule`), transition tests at both levels | 2,000 | interpreter lane traces, the shared reset window, candidate mode, the arrival replay (old-epoch admits first), `compare_partitioned`, `check_capacity` (from each operation's observed `used`); fixtures X1 to X7; in its work tree against hand-built lane logs; every 6.4 property and traces T-L1 to T-L7 and stage 6's at D = 3, P = 2 under 6.7's point mapping at I9-Z | the oracles' own tests in its work tree; all of 6.4 and 6.7 at I9-Z |
 | P9.5 ADP and DogStatsD | `lib/saluki-components/src/sources/dogstatsd/mod.rs`; `bin/agent-data-plane/src/programmable_metrics/{topology.rs, installer.rs, snapshot_bridge.rs, telemetry.rs, telemetry_profiles.rs}`, `lib/agent-data-plane-config/src/domains/` (the `lanes.*` keys), `lib/agent-data-plane-config-system/src/saluki_only.rs`, `schema_overlay.yaml`, `cli/run.rs` | 1,500 | lane counts and keys with the `Strict` fit, the source's lane outputs and stream lane assignment, `PlanTopology` with lanes, installer fan-out with blocking builds, the snapshot requests per lane, `plan_lane_*` telemetry, capacities; differential, lifecycle, stress, fault, and measurement tests with D producers | 6.5, 6.6, 6.8 pass; telemetry parity; lifecycle leaves registrations as they were |
 | P9.6 demo | `bin/programmable-metrics-demo/src/{launcher/, ui/, scenario/, traffic.rs, telemetry/, checks.rs}` | 800 | flags, the Lanes panel, S12 to S14 in a second launch, pre-aggregation scope support in the check | the headless check passes S0 to S14 twice |
 | P9.7 R1 removal | `compile/{frame.rs, decision.rs, program.rs, tests.rs, isolation_tests.rs}`, `operators/{mod.rs, routing.rs, dogstatsd.rs, enrich.rs, tests.rs}`, `explain/{physical.rs, text.rs}`, `testing/fixtures.rs`, `runtime/frame_tests.rs`, ADP `topology.rs` and its tests, benches | 800 | 5.10's replacements; the memo floor's tests and the split estimate move to decision compilation | runs only after the gate passed; the gate rerun after it |
@@ -2522,8 +2790,11 @@ for 10 s to 30 s).
   for every node whose Cluster Agent endpoint resolves, and the MRF warning that no longer asks for a restart (`run.rs`
   says "Restart ADP after configuring the static MRF endpoint settings"); an idle encode host's smaller burst slack
   until a restart; version 1 fingerprints accepted while they match; removal of a used output failing closed
-  (degraded); declared recipients never validated; the native key-reordering quirk now reachable live; the `resources`
-  product and the credentials key (experimental).
+  (degraded), and a removed endpoint receiving nothing after the resource transaction that withdraws it, its last
+  metrics payloads dropped and counted; proxy password rotation applied live; `forwarder_storage_max_size_in_bytes`
+  live only between nonzero values; declared recipients never validated; the native key-reordering quirk now reachable
+  live; the `resources` product and the credentials key (experimental), with its liveness as the connected-mode test
+  found it (A36).
 - **Stage 9:** the lane keys and the new meaning of `dogstatsd_workers_count`; the slot names R1's removal retires;
   per-lane resource groups and accounting paths; `dsd_in`'s outputs `metrics_<d>` and points `dsd_in.metrics#d`; the
   `plan_lane_*` series; resource-group CPU series sampled on Linux; admission time stamped at the lane; per-lane input
@@ -2552,7 +2823,7 @@ Each was chosen on the owner's behalf for the least operator and contributor sur
 | A5 | Logical output identity on batches | the lease ID in `header.entry` | no header growth; the exit op already writes it; lanes need nothing | entries are needed for something else at encode hosts |
 | A6 | Output IDs | native IDs unchanged (routing groups positional); declared `resources_<name>`, a reserved prefix | native IDs and telemetry stay; declared IDs never collide and need no syntax change; a renumbering degrades an artifact with a reason naming the new position | live routing edits turn out common (key-based IDs) |
 | A7 | Fingerprints | the selector: roles, group keys, declared recipient lists | dual-ship additions change nothing for artifacts; pointing an explicit list elsewhere is caught | an artifact needs to pin the main output's endpoints |
-| A8 | Removal of a used resource | the artifact in effect keeps running with its emits to the removed output dropped and counted (degraded); a new artifact is `pending`; for metrics, a removal waits for an in-flight cut (at most `lcm` + 1 s) plus the drain | the operator's removal takes effect, and nothing the artifact kept out of an output reaches it; recovery is automatic when the output returns | authors would rather fall back to the default program |
+| A8 | Removal of a used resource | the resource transaction that follows withdraws a removed recipient, and its delivery host drops and counts every payload to it, its old leases' last payloads included; the artifact in effect keeps running with its emits to the removed output dropped and counted (degraded) once its re-composition commits; a new artifact is `pending` | the operator's removal takes effect at once, whatever happens to metrics generations, and nothing the artifact kept out of an output reaches it; recovery is automatic when the output returns | authors would rather fall back to the default program, or operators expect a removed endpoint to get the final flush of data accepted before the removal |
 | A9 | A rebound output | a new artifact is `rejected`; the artifact in effect degrades, its emits to the output dropped; a rebase is needed | an output that now means something else never receives a policy written for its old meaning | never expected |
 | A10 | Recipient identity | native for configured endpoints (amendment 13); host, credential, and canonical URL for declared ones | native queues and duplicates unchanged; a declared URL change gets a fresh queue | stage 8 introduces resource identities of its own |
 | A11 | Who may declare | native configuration, or the `resources` product; policy artifacts never | separate authority, as the specification says, without stage 8 | stage 8 (resource authority, audit) |
@@ -2560,7 +2831,7 @@ Each was chosen on the owner's behalf for the least operator and contributor sur
 | A13 | Declared recipients' reach | `dd_out` only; metrics only; the host's client profile; declared outputs only | a resources artifact cannot divert logs or traces or extend native outputs | per-recipient proxies, or declared recipients on native outputs, are needed |
 | A14 | Non-metrics routing on `dd_out` | follows the native set that resource transactions publish from the current configuration, independent of metrics generations and cuts; each partial update applies as it arrives | the endpoint list means the same for every payload, as after a restart, and a metrics cut or prepare failure never delays it; a `site` and `api_key` change pairs old and new briefly | the logs and traces owners want restart semantics, or partial updates need a quiet period |
 | A15 | Retiring recipients | attempt queued work up to `DRAIN_DEADLINE` (30 s), then native shutdown closure | the specification's default closure; nothing is lost beyond native shutdown | the deadline needs its own decision-log entry or setting (amendment 20) |
-| A16 | Declared again while draining | reopen the same loop and queue | no duplicate loops, no waiting | never expected |
+| A16 | Declared again while draining | reopen the same loop and queue; once the loop exited, a new incarnation, whose queue opens only after the exit is reported | no duplicate loops, never two queues on one directory | never expected |
 | A17 | Without a metrics pipeline | `dd_out` static, native | logs-only deployments see no change | live endpoints are wanted without metrics |
 | A18 | Persisted credentials | native: retries persist with their headers; the mapper overwrites the credential at dispatch | the owner does not ask for hardening yet; no persisted-format change for logs, events, and traces | a follow-up strips `DD-API-KEY` and `Authorization` at rest (recorded in the status document) |
 | A19 | Queue directories | native naming (`generate_retry_queue_id`); orphans stay, as after a restart that removes an endpoint | a live change gets the directory a restart would; no upgrade migration | the follow-up adds version-stable names, upgrade adoption, and a janitor that deletes orphans by age |
@@ -2568,18 +2839,19 @@ Each was chosen on the owner's behalf for the least operator and contributor sur
 | A21 | The forwarder's declared bound | unchanged (one queue per host) for hosts with boot recipients; an idle host declares only its minimum | existing configurations keep passing strict verification, and idle failover hosts add almost nothing | accounting moves to measured in-flight bytes |
 | A22 | Live admission of bounds | everything a prepare adds (leases, an idle host's queue bound, declared recipients, new kernel instances times lanes) checked against the memory limit in the boot verification's mode | a live change that adds what a restart would count is admitted when the restart would pass, except near the limit during overlap | never expected |
 | A23 | Delivery-policy slot | minimal: queue bytes (shrink only), no spill, retirement closure | only native mechanisms; nothing can raise a bound | richer policies (stage 10) |
-| A24 | Last-known-good | kept generations hold their resources; at every commit, a generation (the replaced one or the one kept before) is kept only while the committed plan declares every output (with equal fingerprints) and recipient it uses; a rollback publishes nothing | rollback stays one store; a removed destination is never resurrected | rollback after resource changes proves important |
+| A24 | Last-known-good | kept generations hold their resources; at every commit and every lowering, a generation (the replaced one or the one kept before) and a cut's rollback plan are kept only while the latest lowered plan declares every output (with equal fingerprints) and recipient (with the same protocol) they use; a rollback publishes nothing | rollback stays one store; a removed destination is never resurrected | rollback after resource changes proves important |
 | A25 | Pending | re-evaluated on every configuration change and resources snapshot; holds no generation; one per scope | artifact order is not guaranteed, as the specification says | Remote Config delivery semantics (stage 8) |
-| A26 | Resources configs | one config in the product; an empty snapshot revokes | mirrors the policy product's rules | several teams need separate resources configs (a merge with conflict rules) |
+| A26 | Resources configs | one config in the product; an empty snapshot revokes; a newer revision that is refused, rejected, or pending leaves the installed one running | mirrors the policy product's rules: a mistyped credential name never tears down what runs | several teams need separate resources configs (a merge with conflict rules) |
 | A27 | Health | per host only | readiness semantics unchanged | per-recipient readiness is wanted |
 | A28 | Resource groups | native output names for leases; one shared group per host for declared outputs | bounded names; no leak | resource groups gain release |
 | A29 | An encoder setting change | replace every affected lease (one early flush each) | simple, lossless, rare | frequent tuning changes |
-| A30 | A forwarder setting change | applied in place at publish; the storage root fixed at boot | no duplicate loops; queues keep identity | the storage root must move live |
-| A31 | A recipient loop that fails | native (not restarted on its own), reported; the next declaration prepares a fresh loop | no new failure semantics in this stage, and a configuration change recovers it | a restart policy is designed |
+| A30 | A forwarder setting change | applied in place at a resource transaction's publish, the only path that changes a live recipient's settings; the storage root fixed at boot, and turning persistence on or off restart-only | no duplicate loops; queues keep identity; an aborted generation leaves no setting behind | the storage root must move live |
+| A31 | A recipient loop that fails | native closure, reported on the host's event channel; the core prepares its next incarnation into the same slot with backoff (1 to 30 s) | the failure is visible and recovers by itself, without a plan change or an unrelated configuration edit, and no two loops share its directory | a restart policy with its own limits is designed |
 | A32 | Standalone mode | native configuration not live; the resources product works | standalone never applied updates | configuration file reload in standalone mode |
 | A33 | Cluster Agent liveness | the endpoint is a host fact; `cluster_agent.{enabled, auth_token}` and autoscaling failover are live inputs | the pair exists for every Cluster Agent user, idle and cheap, so turning failover on never needs a restart | the idle pair's series surprise operators |
 | A34 | Encoder keys shared with other encoders | restart-only | one meaning for every payload type | the logs, events, and trace encoders become live too |
-| A35 | A declared resource that fails to prepare | its resources config is rejected and lowering continues without it | a lower authority can never block native configuration changes | never expected |
+| A35 | A declared resource that fails to prepare | its resources revision is rejected and lowering continues without it (with the revision installed before, if any) | a lower authority can never block native configuration changes | never expected |
+| A36 | The credentials key's liveness | live from `datadog.yaml` in connected mode only if the Core Agent streams keys its schema lacks; restart-only from the environment; a P7.5 test against the Agent's stream decides, and the overlay and release note follow it | the doc promises nothing the configuration system has not been shown to do | the Agent's stream carries Saluki-only keys, or a Saluki-only source becomes live |
 
 ### 9.2 Stage 9 assumptions
 
@@ -2603,13 +2875,13 @@ Each was chosen on the owner's behalf for the least operator and contributor sur
 | B16 | Upstream of the lanes | the datagram receiver mutex and the shared resolver unchanged | native, and shared with legacy, so the gate compares like with like | M2 shows them capping both curves (O4, O5) |
 | B17 | Encode builders | S = 1 per lease | native payloads and compression ratio | M3 shows a builder saturating (O6) |
 | B18 | The global pool | `max(8, W)` threads | compression never capped below today's 8 | a host shows contention between the pool and the primary runtime |
-| B19 | The reset window's fresh instance | built in the lane from the lineage's spec, an empty table | bounded memory, no stash, no deadlock; resets are rare | resets turn out frequent |
+| B19 | The reset window's fresh instance | built in the lane from the lineage's spec and build context, an empty table, only for a lineage that receives newer-epoch data while the window is open; otherwise the drained instance continues into the successor record | bounded memory, no stash, no deadlock; at one point no build at all; resets are rare | resets turn out frequent |
 | B20 | Panics | a state lane loses only its instance; the panic budget is shared per artifact generation | less loss than native; an artifact's allowance does not grow with P | never expected |
 | B21 | R1 | off whenever `lanes.mode` is `auto`; deleted after the gate | no lanes built for pipelined slots; the escape hatch keeps stage 6 until deletion | never expected |
 | B22 | Accounting paths | per-lane resource groups and kernel groups; unchanged names with one lane | no contended counters for a lane's own allocations; bounded names. Frees of upstream allocations still write the allocating group (F6), and every decoder shares `dsd_in`'s group | M2 and M6 show allocator writes contending (per-decoder groups) |
 | B23 | Per-lane input capacity | `ceil(native / lanes)` buffers for stateless slots; events-equivalent for state lanes | burst slack and firm bounds keep their native totals | bursts into one lane show loss earlier than natively |
 | B24 | Health and identity | one component, one health registration per slot | `component_id:dsd_agg` and every `aggregator.*` remap unchanged | per-lane readiness is wanted |
-| B25 | Units during a crossing | a context may hold units in both instances of a lane between the first and the last point's switch | no stash, no unbounded memory; values stay exact | M4 or the stress run shows refusals at the crossing that matter |
+| B25 | Units during a crossing | a context may hold units in both instances of a lane between the first and the last point's switch, and in one instance per (lineage, open epoch) when a reset falls inside the spread | no stash, no unbounded memory; values stay exact | M4 or the stress run shows refusals at the crossing that matter |
 | B26 | Lanes in a tight `Strict` grant | automatic counts shrink to fit; explicit ones refuse to boot | an upgrade does not stop a deployment that fits today | operators want lanes to refuse instead |
 
 ## 10. Proposed spec amendments
@@ -2636,8 +2908,10 @@ index](programmable-metrics-status.md#spec-amendments-index): themes EXE, FRM, N
 91. **Removal by the resource authority wins, and fails closed** (ART, D). When the artifact in effect is re-composed
     after an output it records disappeared or was rebound, every emit to that output becomes a counted drop and the
     artifact runs degraded until the output returns or it is rebased; a new artifact whose recorded output is missing
-    is pending, and one whose output was rebound is rejected. Replaces "the current generation keeps running" for these
-    cases; falling back to the default program was rejected, since it undoes everything else the artifact does.
+    is pending, and one whose output was rebound is rejected. A removed recipient stops receiving at the resource
+    transaction that withdraws it, enforced by its delivery host, whatever becomes of metrics generations. Replaces
+    "the current generation keeps running" for these cases; falling back to the default program was rejected, since it
+    undoes everything else the artifact does.
 92. **Pending and degraded** (ART, C). Pending covers new artifacts whose recorded outputs are not declared, and
     resources configs whose credentials are not configured; it is a held state with a reason. Degraded covers the
     artifact in effect with dropped emits, and native configuration that cannot be re-resolved (the specification's
@@ -2645,18 +2919,22 @@ index](programmable-metrics-status.md#spec-amendments-index): themes EXE, FRM, N
     artifact holds no generation; one per scope. An emitted output that the base does not record is rejected at once.
 93. **Resources artifacts** (ART, D). A separate `resources` product with its own revision mark and one config,
     declaring recipients (endpoint, credential reference, protocol, delivery policy) and outputs; an empty snapshot or a
-    missing member revokes; policy artifacts reference outputs only. A declared recipient that fails to prepare
-    rejects its config, and lowering continues without it, so a resources artifact never blocks native configuration.
+    missing member revokes; policy artifacts reference outputs only. A newer revision that is refused, rejected, or
+    pending leaves the installed one running. A declared recipient that fails to prepare rejects its revision, and
+    lowering continues without it, so a resources artifact never blocks native configuration.
 94. **Declared recipient identity** (NAT, C). `<host>/declared/<credential>/<canonical endpoint>`; native identity stays
     (amendment 13); a declared recipient equal to another live, non-draining one by canonical endpoint and key
     fingerprint fails its prepare; native configuration wins over a declared recipient, with the conflict reported; an
     equality a rotation causes is reported.
 95. **Credentials** (IR, C). References name native positions (lowering only) or operator-declared credentials
     (`credentials/<name>`, the only ones resources artifacts may use, from one string-map key); a proxy's user
-    information is a credential reference. An absent declared credential makes its config pending; a blank one keeps the
-    last usable key, as natively. Persisted retries keep the native format in this stage.
+    information is a credential reference, which the delivery host follows live by rebuilding its client. An absent
+    declared credential makes its revision pending; a blank one keeps the last usable key, as natively. Persisted
+    retries keep the native format in this stage.
 96. **Retirement closure for recipients** (INS, C). Queued work is attempted until the drain deadline, then native
-    shutdown closure applies; a recipient declared again while it drains is reopened, keeping its original deadline.
+    shutdown closure applies; a recipient declared again while it drains is reopened, keeping its original deadline,
+    and one declared again after its loop exited is a new incarnation, opened only after the exit is reported. A loop
+    that fails is replaced by its next incarnation, with backoff, without a plan change.
 97. **The delivery-policy slot, first opening** (EXE, D). Resources artifacts may shrink a recipient's queue, forbid
     spilling, and choose its closure at retirement (`attempt`, `persist`, `discard`); outputs keep `wait`; no policy
     exceeds a native bound. This replaces the specification's "requires policy authority" for recipients: the
@@ -2666,19 +2944,24 @@ index](programmable-metrics-status.md#spec-amendments-index): themes EXE, FRM, N
     are a recorded follow-up.
 99. **Declared output IDs** (IR, C). Declared outputs are `resources_<name>`, a prefix native output IDs never use, in
     the existing identifier grammar of the IR; native output IDs are unchanged.
-100. **Last-known-good and resources** (INS, D). A kept generation keeps its resources prepared. At every commit a
-     generation, the one replaced or the one kept before, is kept only while the committed plan declares every output
-     (with an equal fingerprint) and every recipient its plan uses; a rollback publishes nothing, and the native sets
-     stay the current configuration's.
+100. **Last-known-good and resources** (INS, D). A kept generation keeps its resources prepared. At every commit and
+     every lowering a generation, the one replaced or the one kept before, and a cut's rollback plan, are kept only
+     while the latest lowered plan declares every output (with an equal fingerprint) and every recipient (with the same
+     protocol) they use; a rollback publishes nothing, and the native sets and withdrawn sets stay the current
+     configuration's.
 101. **Payload classes and resource transactions** (NAT, C). Native recipients keep native payload classes (additional
      endpoints receive every class); declared recipients receive metrics only; the native recipient set for non-plan
-     payloads, and host settings, follow the current configuration through resource transactions (prepare what is added,
-     then publish; publish before releasing what is removed), which wait for no metrics prepare and no cut.
+     payloads, host and recipient settings, and the withdrawn recipients follow the current configuration through
+     resource transactions (prepare what is added, then publish, removals and withdrawals even when an addition failed;
+     publish before releasing what is removed), one per host at a time, for the newest lowering, which wait for no
+     metrics prepare and no cut. Only resource transactions change a live recipient's settings.
 102. **Budgets for resources** (EXE, C). Delivery limits are per recipient, as natively, and delivery queues take no
      credits in stage 7 (the specification has them do so from stage 7; deferred). Everything a prepare adds after boot
-     (leases, an idle host's queue bound, declared recipients, a generation's new kernel instances times their lanes) is
-     admitted against the memory limit in the boot verification's mode; overlap counts both sides. Reads the
-     Concurrency section's "delivery queue bytes ... are global" (its words) as meaning the same for every recipient.
+     (leases, an idle host's queue bound, declared recipients, a recipient's bound raised in place, a generation's new
+     kernel instances times their lanes) is admitted against the memory limit in the boot verification's mode, as
+     credits per resource that return exactly once when the resource ends, however it ends; overlap counts both sides.
+     Reads the Concurrency section's "delivery queue bytes ... are global" (its words) as meaning the same for every
+     recipient.
 103. **Encoder streams per binding** (EXE, C). An output has one encoder stream per live binding (and per builder shard,
      amendment 125); a rebinding flushes the old stream early. "Each output has exactly one encoder stream" holds per
      binding.
@@ -2720,8 +3003,8 @@ index](programmable-metrics-status.md#spec-amendments-index): themes EXE, FRM, N
      totals.
 113. **Watermarks and progress under lanes** (STA, C). FIFO holds per (point, lane path); a state lane's watermark is
      the minimum over its points; progress is judged per (exit, target lane) against the last buffer actually sent,
-     forwarded at once on an epoch or generation change, and an epoch change first forwards the point's final
-     old-epoch header to every state lane.
+     forwarded at once on an epoch or generation change; an epoch change first sends the open buffers and the point's
+     final old-epoch header to every state lane, before anything newer, and finishing forwards the last header.
 114. **Coalescing into a state lane** (STA, D). Consecutive events of one lane with equal generation, epoch, exit entry,
      point, and admission second may share a buffer under the latest of their stamps, across batches; a buffer waits at
      most `COALESCE_HOLD`. Exact for state owners that read admission seconds; amendment 86's exclusions extend to a
@@ -2729,13 +3012,15 @@ index](programmable-metrics-status.md#spec-amendments-index): themes EXE, FRM, N
 115. **The reset window** (STA, D). Per state lane, instances are per lineage and epoch: older-epoch input feeds the
      older instances and newer-epoch input fresh ones, built as new instances, never by rebuilding in place; every
      older instance, a cut's new one included, reset-drains at the minimum of the points' exact final old-epoch times
-     once every point switched; a shared reset mark stops old-epoch ticks in every lane at once. Replaces the rule that
-     a reset at one of several points drains everything, and amends stage 6's choice of no rebuild on the data path for
-     the window's empty instance.
-116. **Node-level aggregation rules under lanes** (STA, D). Per lineage instance, ticks by ordinal: one phase, one
-     instant and one flush time per tick; the idle-counter back-fill start is the latest non-empty flush in any lane,
-     once every lane resolved the previous tick; the flush is counted once per non-empty tick; the breach warning fires
-     once per episode; one shutdown close time.
+     once every point switched, and a cut-retiring one crosses only there; a shared reset mark stops old-epoch ticks in
+     every lane at once; at the close every lane's instances of a lineage join one successor record. Replaces the rule
+     that a reset at one of several points drains everything, and amends stage 6's choice of no rebuild on the data path
+     for the window's empty instance.
+116. **Node-level aggregation rules under lanes** (STA, D). Per lineage instance, ticks by ordinal: one first instant,
+     one instant and one flush time per tick; the idle-counter back-fill start is the latest non-empty flush in any
+     lane, once every member lane resolved the previous tick, for ticks and closing flushes alike; the flush is counted
+     once per non-empty tick or closing flush; the breach warning fires once per episode; one shutdown close time,
+     from the instance's own epoch.
 117. **`last_seen` is the latest admission second seen** (STA, N): a maximum, identical with one admission point.
 118. **The context limit under lanes** (STA, D). One global budget and exact per-node counts (a bounded acquire, node
      first) keep every limit's meaning at any lane count; which contexts win across lanes is capacity behavior. The
@@ -2772,9 +3057,10 @@ index](programmable-metrics-status.md#spec-amendments-index): themes EXE, FRM, N
 127. **Several sources into one state owner** (FRM, L). A state owner fed by points of more than one source clock stays
      unsupported (stage 10), as does one fed through a spread edge; `StateOwnerPoints` then requires one source clock.
 128. **A cut's crossing under lanes** (STA, D; amends 70 for more than one upstream point). Each state lane crosses when
-     every point's `new` header reached it; between the first and the last point's switch at a lane, a context may hold
-     units in both the retiring and the new instance of that lane (capacity behavior), while values stay exact, since
-     the two instances hold buckets on either side of `T`. Amendment 70's "the two lineages' contexts never overlap"
+     every point's `new` header reached it, and a reset-retiring instance at its window's close; between the first and
+     the last point's switch at a lane, or during a reset window, a context may hold units in one instance per
+     (lineage, open epoch) of that lane (capacity behavior), while values stay exact, since the instances hold buckets
+     on either side of `T` and of the reset. Amendment 70's "the two lineages' contexts never overlap"
      holds with one upstream point.
 
 ## 11. Risks
@@ -2796,7 +3082,9 @@ index](programmable-metrics-status.md#spec-amendments-index): themes EXE, FRM, N
    Precedent exists (stages 3 and 4); remapped output is unchanged.
 5. **Removal wins, and fails closed**, departing from the specification's text: the artifact in effect keeps running
    with its emits to a removed output dropped (amendment 91, Q3). When the removal is a renumbering, data the artifact
-   meant for a group that still exists is dropped, counted and named in status, until the author rebases.
+   meant for a group that still exists is dropped, counted and named in status, until the author rebases. A removed
+   recipient is withdrawn at the resource transaction, so the last payloads its old leases still address to it are
+   dropped and counted rather than delivered.
 6. **Positional routing-output IDs** make live routing edits degrade or reject artifacts that emit to a later group
    (trace F). Key-based IDs would avoid it but break "node ID equals native component ID"; revisit if live routing
    edits are common.
@@ -2814,9 +3102,11 @@ index](programmable-metrics-status.md#spec-amendments-index): themes EXE, FRM, N
     moves the index-0 recipient, with its queued payloads, to the next key's organization, so data queued for one
     organization is delivered under the key of another. Recorded and release-noted, not changed; retiring a positional
     recipient whose key fingerprint moves to another position is the remedy if it matters.
-14. **Resource transactions are a second installer path** beside generations. Mitigation: they carry only the native
-    set and settings, metrics never depend on them (payloads name their recipients), and the resource-table property
-    test interleaves both.
+14. **Resource transactions are a second installer path** beside generations, now carrying recipient settings and the
+    withdrawn sets too. Mitigation: one transaction per host at a time, superseded by the newest lowering and aborted
+    on a timeout; metrics never depend on them for delivery (payloads name their recipients), a generation names the
+    recipients it requires, and the resource-table property test interleaves both, with worker restarts and recipient
+    failures.
 
 **Stage 9:**
 
@@ -2831,8 +3121,9 @@ index](programmable-metrics-status.md#spec-amendments-index): themes EXE, FRM, N
 17. **One saturated stream connection** runs its whole pre-aggregation chain on one lane once R1 goes, where legacy
     pipelined it over five tasks (0.68 to 0.72 of legacy before R1, with a scripted feed). Mitigation: M1; the gate's
     one-connection case; Q1.
-18. **The reset window is new protocol**, and resets are rare in production, so bugs would hide. It depends on three
-    mechanisms working together: per-epoch instances, the forwarded final old-epoch header, and the shared reset mark.
+18. **The reset window is new protocol**, and resets are rare in production, so bugs would hide. It depends on four
+    mechanisms working together: per-epoch instances, the final old-epoch header sent before anything newer, the
+    shared reset mark, and the successor record that every lane's instances join at the close.
     Mitigation: one rule in `runtime::state::rules` shared by the driver and the interpreter; the multi-point reset
     property with ticks inside the spread and a reset during a cut, traces T-L2 and T-L3, the clock's and the tick
     record's loom models; with one point it reduces to stage 6 exactly.
@@ -2864,7 +3155,8 @@ index](programmable-metrics-status.md#spec-amendments-index): themes EXE, FRM, N
 28. **Two stages, shared files.** Stage 7 and stage 9 both change the frame, the installer, and ADP's topology.
     Mitigation: stage 7 integrates first; stage 9's overlapping parts (P9.0, P9.F) touch disjoint files.
 29. **Units held twice during a crossing.** Near the context limit, a cut's crossing spread at a lane holds a context
-    in two instances, so contexts may be refused for those milliseconds, longer under backpressure (amendment 128).
+    in two instances (one per lineage and open epoch when a reset falls inside it), so contexts may be refused for
+    those milliseconds, longer under backpressure (amendment 128).
     Mitigation: `plan_lane_crossing_overlap_contexts`; the capacity oracle counts held units; the stress run cuts every
     10 s near the limit.
 30. **The gate host.** Items 1 to 4 need a Linux host with at least 20 homogeneous cores for W = 16, and an A/A series
@@ -2879,7 +3171,7 @@ gate can be called; the others are confirmations of documented defaults, each of
 |---|---|---|---|
 | Q1 | If M1 shows one saturated stream connection below 0.93 of legacy once R1's pipelining is gone, does the owner accept the gap, or keep a narrow pipelining fallback for lanes fed by a single connection? Decoding may dominate, in which case the question disappears. | nothing now; it arrives with M1 and is gate item 4 | build without a fallback; measure |
 | Q2 | **The gate needs a Linux host with at least 20 homogeneous cores** (W = 16 plus four for lading and the blackhole, on disjoint CPU sets), and 36 for W = 32. Can the owner provide or approve one? Docker on this Mac runs a VM whose vCPUs float over performance and efficiency cores, so it can check F7 and M6 but not homogeneous scaling, and on macOS the CPU-time reads that partitioning multiplies do not exist. | **calling the stage 9 gate** (not implementation) | P9.0 builds the container harness and its A/A series; in-process curves are reported with the caveat; the automatic lane counts stay at their caps until a gate run passes |
-| Q3 | Confirm amendment 91: when its authority removes or rebinds an output the artifact in effect uses, the artifact keeps running with its emits to that output dropped and counted (degraded), instead of the specification's "the current generation keeps running" (which keeps the removed destination receiving) or a fallback to the default program (which undoes the artifact's other routing and drops). | nothing | as designed |
+| Q3 | Confirm amendment 91: when its authority removes or rebinds an output the artifact in effect uses, the artifact keeps running with its emits to that output dropped and counted (degraded), instead of the specification's "the current generation keeps running" (which keeps the removed destination receiving) or a fallback to the default program (which undoes the artifact's other routing and drops); and that a removed recipient stops receiving at the resource transaction that withdraws it, the last payloads its old leases address to it dropped and counted rather than delivered (A8). | nothing | as designed |
 | Q4 | Confirm amendments 108 and 109: across producers, a gauge's last value, first metadata, and kind conflicts follow arrival order at a lane (the race native has at its admission mutex); admission time is taken at the lane, one queue later than stage 6. | nothing | as designed |
 | Q5 | Confirm assumption A14: a live change to `additional_endpoints` also changes where logs, events, and traces go, through a resource transaction that waits for no metrics cut or prepare, as a restart would. | nothing | as designed |
 | Q6 | Accept decision-log entries for the new limits that change behavior: `COALESCE_HOLD` (5 ms), `KEY_GROUPS` (256), `MAX_LANES` (64), `PRODUCER_LANES_MAX` (16), `ROUTE_BUFFER_EVENTS` (2,048), `TICK_RECORD_DEPTH` (4), `MAX_OPEN_EPOCHS` (4), CPU-time sampling (16), `LEASE_QUEUE_BUFFERS` (8), `MAX_DRAINING_RECIPIENTS` (16), and `DRAIN_DEADLINE` (30 s) now applied to recipients (already open under amendment 20). | nothing | the values above, each with a note in `limits.rs` |
