@@ -144,9 +144,14 @@ impl<'a> DataPlaneConfiguration<'a> {
         self.config.domains.otlp.proxy.traces_enabled
     }
 
+    /// Returns `true` if the APM pipeline is enabled.
+    pub const fn apm_enabled(&self) -> bool {
+        self.config.control.apm
+    }
+
     /// Returns `true` if any data pipelines are enabled.
     pub const fn data_pipelines_enabled(&self) -> bool {
-        self.checks_enabled() || self.dogstatsd_enabled() || self.otlp_enabled()
+        self.checks_enabled() || self.dogstatsd_enabled() || self.otlp_enabled() || self.apm_enabled()
     }
 
     /// Returns `true` if the metrics pipeline is required.

@@ -8,6 +8,7 @@ env:
   DD_API_KEY: "00000000000000000000000000000000"
   DD_HOSTNAME: "integration-test-services"
   DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_EXPERIMENTAL_APM_ENABLED: "true"
 
 container:
   exposed_ports:

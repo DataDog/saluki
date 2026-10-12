@@ -79,6 +79,7 @@ impl ApmRelayConfiguration {
             let listen_address = if config.non_local_traffic {
                 "0.0.0.0"
             } else {
+                // TODO: resolve `bind_host` instead of hardcoding
                 "127.0.0.1"
             };
             format!("{}:{}", listen_address, config.receiver_port)
@@ -123,7 +124,9 @@ impl ApmRelayConfiguration {
 }
 
 impl MemoryBounds for ApmRelayConfiguration {
-    fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {
+        // TODO: find size of ApmRelay/RelayState
+    }
 }
 
 #[async_trait]

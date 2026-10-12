@@ -398,6 +398,10 @@ async fn create_topology(
         add_otlp_pipeline_to_blueprint(&mut blueprint, config_system, env_provider).await?;
     }
 
+    if dp.apm_enabled() {
+        add_apm_pipeline_to_blueprint(&mut blueprint, config_system).await?;
+    }
+
     Ok((blueprint, control_surfaces))
 }
 
@@ -718,15 +722,11 @@ async fn add_baseline_traces_pipeline_to_blueprint(
             .with_environment_provider(env_provider.clone())
             .await?;
 
-    let dd_traces_relay = ApmRelayConfiguration::from_configuration(&config.domains.apm);
-
     blueprint
         .add_transform("traces_enrich", dd_traces_enrich_config)?
         .add_transform("dd_apm_stats", apm_stats_transform_config)?
         .add_encoder("dd_stats_encode", dd_apm_stats_encoder)?
         .add_encoder("dd_traces_encode", dd_traces_config)?
-        .add_relay("dd_traces_relay", dd_traces_relay)?
-        .connect_components("dd_traces_relay", "dd_out")?
         .connect_components("traces_enrich", ["dd_apm_stats", "dd_traces_encode"])?
         .connect_components("dd_apm_stats", "dd_stats_encode")?
         .connect_components(["dd_traces_encode", "dd_stats_encode"], "dd_out")?;
@@ -1071,6 +1071,21 @@ async fn add_dsd_pipeline_to_blueprint(
         replay_api_handler,
         context_dump_api_handler,
     })
+}
+
+async fn add_apm_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
+) -> Result<(), GenericError> {
+    let config = config_system.config();
+    let dd_traces_relay = ApmRelayConfiguration::from_configuration(&config.domains.apm);
+    blueprint
+        .add_relay("dd_traces_relay", dd_traces_relay)?
+    // FIXME: for now, encoded traces are outputed from dd_traces_relay but they are not processed
+        // .add_decoder("dd_traces_decode", todo!())?
+        // .connect_components_in_order(["dd_traces_relay.traces", "dd_traces_decode", "dd_traces_enrich"])?;
+        .connect_components("dd_traces_relay", "dd_out")? // FIXME: these are not really connected, this is a workaround to bypass the disconnected components check
+    ;
+    Ok(())
 }
 
 async fn add_otlp_pipeline_to_blueprint(
