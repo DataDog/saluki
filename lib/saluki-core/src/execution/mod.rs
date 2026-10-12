@@ -16,6 +16,8 @@
 //! - [`RegionDriver`] and [`RegionHostBuilder`]: a region, which fuses a chain of processing steps into one topology
 //!   transform, split into its synchronous driver and the asynchronous host that runs it, with a non-blocking
 //!   [control mailbox][control_mailbox] and supervision of every call into the driver.
+//! - [`control`]: the control mailbox itself, which any component a controller changes while it runs can serve, not
+//!   only a region host.
 //!
 //! Apart from admission points, which stamp batches inside the dispatchers of a topology, and the region host, which
 //! is a topology component, nothing here performs I/O or depends on a running topology, so a kernel or a region driver
@@ -37,6 +39,11 @@ mod clock;
 pub use self::clock::ManualWallClock;
 pub use self::clock::{AdmissionClock, ClockStamp, SystemWallClock, WallClock};
 
+pub mod control;
+pub use self::control::{
+    control_mailbox, ControlAck, ControlError, ControlMailbox, ControlReceiver, ControlReply, ControlSender,
+};
+
 mod generation;
 pub use self::generation::{
     CutBoundary, GenerationId, GenerationIdAllocator, GenerationRef, GenerationToken, RetireNotifier,
@@ -53,6 +60,5 @@ pub use self::kernel::{
 
 mod region;
 pub use self::region::{
-    control_mailbox, ControlAck, ControlError, ControlMailbox, ControlSender, ExitId, ExitSink, PanicOutcome,
-    PanicSite, RegionDriver, RegionFailure, RegionHostBuilder, RegionPanic, RegionTurn,
+    ExitId, ExitSink, PanicOutcome, PanicSite, RegionDriver, RegionFailure, RegionHostBuilder, RegionPanic, RegionTurn,
 };

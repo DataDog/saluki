@@ -1,5 +1,5 @@
-//! Plan diffs: what an installation changes, node by node, how each state owner moves, and which kernels and state
-//! instances each slot keeps.
+//! Plan diffs: what an installation changes, node by node and resource by resource, how each state owner moves, and
+//! which kernels and state instances each slot keeps.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
@@ -15,7 +15,7 @@ use crate::{
         Frame, KernelKey, LineageKey, MissingCapability, PlacementError, PlacementProblem, RegionProgram, SlotId,
     },
     extension::TransitionClass,
-    ir::{Edge, Node, NodeId, OutputDecl, OutputId, Plan, PortRef},
+    ir::{Edge, HostId, Node, NodeId, OutputDecl, OutputId, Plan, PortRef, RecipientId},
     operators::{ConfiguredOperator, OperatorRegistry, StateContract, StateTime},
 };
 
@@ -106,10 +106,12 @@ pub struct StateOwnerDiff {
 /// How one declared output differs between the active plan and a candidate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OutputChange {
-    /// Both plans declare it alike: the candidate reuses its encoder stream.
+    /// Both plans bind it alike ([`Plan::binds_alike`]), but perhaps for who declared its binding: the candidate reuses
+    /// its encoder stream.
     Reused,
 
-    /// Both plans declare it, with different bindings.
+    /// Both plans declare it, with different bindings, or with a recipient whose protocol changed: the candidate gets a
+    /// new encoder stream (a lease), and the old one flushes early and drains.
     Rebound,
 
     /// Only the candidate declares it.
@@ -127,6 +129,54 @@ pub struct OutputDiff {
 
     /// How it differs.
     pub change: OutputChange,
+}
+
+/// How one recipient, or one delivery host's settings, differ between the active plan and a candidate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResourceChange {
+    /// Both plans declare it alike, but perhaps for who declared it: the candidate reuses it as it runs.
+    Reused,
+
+    /// Both plans declare it, with other settings: a resource transaction applies them in place.
+    Reconfigured,
+
+    /// Only the candidate declares it.
+    Added,
+
+    /// Only the active plan declares it.
+    Removed,
+}
+
+impl ResourceChange {
+    /// Returns the change's name, as tools show it: `reused`, `reconfigured`, `added`, or `removed`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Reused => "reused",
+            Self::Reconfigured => "reconfigured",
+            Self::Added => "added",
+            Self::Removed => "removed",
+        }
+    }
+}
+
+/// One recipient of a plan diff.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecipientDiff {
+    /// The recipient.
+    pub id: RecipientId,
+
+    /// How it differs.
+    pub change: ResourceChange,
+}
+
+/// One delivery host's settings in a plan diff.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HostDiff {
+    /// The delivery host.
+    pub host: HostId,
+
+    /// How its settings differ.
+    pub change: ResourceChange,
 }
 
 /// What a candidate plan changes relative to the active one.
@@ -147,6 +197,13 @@ pub struct PlanDiff {
 
     /// Every output either plan declares: the candidate's in its order, then the removed ones.
     pub outputs: Vec<OutputDiff>,
+
+    /// Every recipient either plan's resources declare: the candidate's in its order, then the removed ones.
+    pub recipients: Vec<RecipientDiff>,
+
+    /// The settings of every delivery host either plan's resources declare: the candidate's in its order, then the
+    /// removed ones.
+    pub hosts: Vec<HostDiff>,
 }
 
 impl PlanDiff {
@@ -156,6 +213,11 @@ impl PlanDiff {
             && self.edges_added.is_empty()
             && self.edges_removed.is_empty()
             && self.outputs.iter().all(|output| output.change == OutputChange::Reused)
+            && self
+                .recipients
+                .iter()
+                .all(|recipient| recipient.change == ResourceChange::Reused)
+            && self.hosts.iter().all(|host| host.change == ResourceChange::Reused)
     }
 
     /// Returns the nodes that are not unchanged.
@@ -369,7 +431,7 @@ pub fn diff(active: &Plan, candidate: &Plan, registry: &OperatorRegistry) -> Pla
     for output in &candidate.outputs {
         let change = match old_outputs.get(&output.id) {
             None => OutputChange::Added,
-            Some(old) if *old == output => OutputChange::Reused,
+            Some(_) if active.binds_alike(candidate, &output.id) => OutputChange::Reused,
             Some(_) => OutputChange::Rebound,
         };
         result.outputs.push(OutputDiff {
@@ -390,7 +452,61 @@ pub fn diff(active: &Plan, candidate: &Plan, registry: &OperatorRegistry) -> Pla
             });
         }
     }
+
+    let (recipients, hosts) = resource_changes(active, candidate);
+    result.recipients = recipients;
+    result.hosts = hosts;
     result
+}
+
+/// Returns how every recipient, and every delivery host's settings, differ between the active plan and a candidate:
+/// the candidate's in its order, then those only the active plan declares, in its order.
+///
+/// A recipient declared alike but for its provenance is reused, as it runs: the resources revision that declares it
+/// changed, not the recipient.
+pub fn resource_changes(active: &Plan, candidate: &Plan) -> (Vec<RecipientDiff>, Vec<HostDiff>) {
+    let mut recipients = Vec::new();
+    for recipient in &candidate.resources.recipients {
+        let change = match active.resources.recipient(&recipient.id) {
+            None => ResourceChange::Added,
+            Some(old) if old.same_settings(recipient) => ResourceChange::Reused,
+            Some(_) => ResourceChange::Reconfigured,
+        };
+        recipients.push(RecipientDiff {
+            id: recipient.id.clone(),
+            change,
+        });
+    }
+    for recipient in &active.resources.recipients {
+        if candidate.resources.recipient(&recipient.id).is_none() {
+            recipients.push(RecipientDiff {
+                id: recipient.id.clone(),
+                change: ResourceChange::Removed,
+            });
+        }
+    }
+
+    let mut hosts = Vec::new();
+    for binding in &candidate.resources.hosts {
+        let change = match active.resources.host(&binding.host) {
+            None => ResourceChange::Added,
+            Some(old) if old == binding => ResourceChange::Reused,
+            Some(_) => ResourceChange::Reconfigured,
+        };
+        hosts.push(HostDiff {
+            host: binding.host.clone(),
+            change,
+        });
+    }
+    for binding in &active.resources.hosts {
+        if candidate.resources.host(&binding.host).is_none() {
+            hosts.push(HostDiff {
+                host: binding.host.clone(),
+                change: ResourceChange::Removed,
+            });
+        }
+    }
+    (recipients, hosts)
 }
 
 /// Returns how one node moves as a state owner, from its configured operator in the active plan to the one in the
@@ -585,3 +701,6 @@ pub(super) fn bind_lineages(
     }
     bindings
 }
+
+#[cfg(test)]
+mod tests;

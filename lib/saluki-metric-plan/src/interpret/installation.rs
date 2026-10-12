@@ -169,7 +169,7 @@ impl Run<'_, '_> {
                                          its state",
                                         node.id
                                     ),
-                                    7,
+                                    10,
                                 );
                             }
                             transition.retained.push((to, index));
@@ -186,7 +186,7 @@ impl Run<'_, '_> {
                                 "moving state owner `{}` into or out of an isolation fence at an installation",
                                 node.id
                             ),
-                            7,
+                            10,
                         )
                     }
                     None => {
@@ -209,13 +209,13 @@ impl Run<'_, '_> {
                             transition.carried_local.push((from, to));
                         }
                         TransitionClass::Retain | TransitionClass::Cut => {
-                            return unsupported(format!("changing {} while it keeps its state", local(node)), 7)
+                            return unsupported(format!("changing {} while it keeps its state", local(node)), 10)
                         }
                     }
                 }
                 Some(_) => {}
                 None if node.is_stateful() => {
-                    return unsupported(format!("adding {} at an installation", local(node)), 7);
+                    return unsupported(format!("adding {} at an installation", local(node)), 10);
                 }
                 None => {}
             }
@@ -230,7 +230,7 @@ impl Run<'_, '_> {
                     transition.widths.extend(node.bucket_width());
                 }
                 None => {
-                    return unsupported(format!("removing {} at an installation", local(node)), 7);
+                    return unsupported(format!("removing {} at an installation", local(node)), 10);
                 }
             }
         }
@@ -404,7 +404,7 @@ impl Run<'_, '_> {
                     "a cut while `{}`, a state owner that runs in a host component, is in either plan,",
                     node.id
                 ),
-                stage: 7,
+                stage: 10,
             });
         }
         let old = old.generation.clone();

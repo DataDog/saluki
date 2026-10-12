@@ -41,11 +41,13 @@ dependencies = [
  "http",
  "http-body-util",
  "hyper",
+ "libc",
  "metrics",
  "ottl",
  "process-memory",
  "prost",
  "prost-types",
+ "protobuf",
  "rcgen",
  "rustls",
  "saluki-antithesis",
@@ -67,6 +69,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "stele",
  "stringtheory",
  "tempfile",
  "tikv-jemallocator",
@@ -75,6 +78,7 @@ dependencies = [
  "tonic",
  "tower",
  "tracing",
+ "url",
  "uuid",
  "zstd",
 ]
@@ -5596,6 +5600,7 @@ dependencies = [
  "bytes",
  "bytesize",
  "chrono",
+ "criterion",
  "datadog-agent-commons",
  "datadog-agent-metrics-v3",
  "datadog-protos",
@@ -5610,6 +5615,7 @@ dependencies = [
  "http-serde-ext",
  "hyper",
  "hyper-http-proxy",
+ "libc",
  "libdd-trace-obfuscation",
  "lru-slab",
  "memchr",
@@ -5867,6 +5873,7 @@ dependencies = [
  "stringtheory",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]

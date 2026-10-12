@@ -70,7 +70,7 @@ impl IncrementalEncoderBuilder for DatadogLogsConfiguration {
         let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_level);
 
         let mut request_builder =
-            RequestBuilder::new(LogsEndpointEncoder::new(), compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
+            RequestBuilder::new(LogsEndpointEncoder::new(), compression_scheme, RB_BUFFER_CHUNK_SIZE)?;
         request_builder.with_max_inputs_per_payload(MAX_LOGS_PER_PAYLOAD);
 
         Ok(DatadogLogs {

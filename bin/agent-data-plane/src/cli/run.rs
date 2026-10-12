@@ -34,7 +34,7 @@ use saluki_components::{
         DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration,
         DatadogTraceConfiguration, MetricsEndpointRouting,
     },
-    forwarders::{ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration, OtlpForwarderConfiguration},
+    forwarders::{DatadogForwarderConfiguration, OtlpForwarderConfiguration},
     relays::otlp::OtlpRelayConfiguration,
     sources::{
         ChecksIPCConfiguration, DogStatsDCaptureAPIHandler, DogStatsDCaptureControl, DogStatsDConfiguration,
@@ -265,7 +265,12 @@ pub async fn handle_run_command(
             },
         }
     };
-    let memory_limiter = initialize_memory_bounds(bounds_config, component_registry.root())?;
+    let memory_bounds = initialize_memory_bounds(bounds_config, component_registry.root())?;
+    let memory_limiter = memory_bounds.limiter;
+    // What a generation or a resource transaction adds after boot is admitted against what verification left.
+    if let Some(programmable_metrics) = programmable_metrics.as_mut() {
+        programmable_metrics.admit_against(memory_bounds.verified);
+    }
 
     if let Ok(val) = std::env::var("DD_ADP_WRITE_SIZING_GUIDE") {
         if val != "false" {
@@ -429,6 +434,23 @@ enum MetricsWiring<'a> {
 }
 
 impl MetricsWiring<'_> {
+    /// Returns the configuration of `dd_out`, which every pipeline sends through: on the plan-driven metrics path, the
+    /// delivery host the installer controls, and otherwise the native forwarder of the startup configuration's
+    /// endpoints, as for a deployment without a metrics pipeline.
+    fn dd_forwarder(
+        &mut self, config_system: &ConfigurationSystem, shared: &SharedConfiguration, metrics: bool,
+    ) -> Result<DatadogForwarderConfiguration, GenericError> {
+        match self {
+            Self::Plan(plan) if metrics => plan.dd_forwarder(shared, config_system),
+            _ => Ok(DatadogForwarderConfiguration::from_configuration(
+                shared,
+                config_system.live(|config| &config.shared.endpoints.api_key),
+                config_system.live(|config| &config.shared.endpoints.additional_endpoints),
+                config_system.live(|config| &config.shared.secrets),
+            )),
+        }
+    }
+
     /// Adds the metrics outputs, before the pipelines that feed the metrics path are added.
     async fn add_baseline(
         &mut self, blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, shared: &SharedConfiguration,
@@ -540,12 +562,7 @@ async fn assemble_topology(
         || dp.service_checks_pipeline_required()
         || dp.traces_pipeline_required()
     {
-        let dd_forwarder_config = DatadogForwarderConfiguration::from_configuration(
-            &shared,
-            config_system.live(|config| &config.shared.endpoints.api_key),
-            config_system.live(|config| &config.shared.endpoints.additional_endpoints),
-            config_system.live(|config| &config.shared.secrets),
-        );
+        let dd_forwarder_config = metrics.dd_forwarder(config_system, &shared, dp.metrics_pipeline_required())?;
         blueprint.add_forwarder("dd_out", dd_forwarder_config)?;
     }
 
@@ -667,6 +684,7 @@ pub(crate) fn routing_group_encoder(
 /// The native components of a metrics branch behind a gateway: the branch's encoder and its forwarder.
 ///
 /// The gateway, which selects what reaches the branch, is part of the metrics path, in front of the encoder.
+#[cfg(test)]
 pub(crate) struct MetricsBranch<F> {
     /// The branch's encoder.
     pub(crate) encoder: DatadogMetricsConfiguration,
@@ -675,26 +693,32 @@ pub(crate) struct MetricsBranch<F> {
     pub(crate) forwarder: F,
 }
 
+/// Returns the Multi-Region Failover metrics endpoint and key, if its static endpoint override resolves.
+///
+/// Logs a warning when Multi-Region Failover is enabled but the endpoint cannot be resolved: the plan-driven path's
+/// `mrf_dd_out` has no recipient, and the legacy path no branch, until it can.
+pub(crate) fn mrf_metrics_endpoint(mrf: &multi_region_failover::Domain) -> Option<(String, String)> {
+    let mrf_config = MrfConfiguration::from_configuration(mrf);
+    let endpoint = mrf_config.metrics_endpoint_override();
+    if endpoint.is_none() && mrf_config.is_enabled() {
+        warn!(
+            "Multi-Region Failover is enabled, but multi_region_failover.api_key and one of \
+             multi_region_failover.dd_url or multi_region_failover.site are required for metrics forwarding. The MRF \
+             metrics branch is not wired, and primary forwarding continues. The branch is wired as soon as the MRF \
+             endpoint settings are configured; no restart is needed."
+        );
+    }
+    endpoint
+}
+
 /// Returns the Multi-Region Failover metrics branch, if it is wired: when its static endpoint override resolves.
 ///
 /// Logs a warning when Multi-Region Failover is enabled but the branch cannot be wired.
+#[cfg(test)]
 pub(crate) fn mrf_metrics_branch(
     config_system: &ConfigurationSystem, shared: &SharedConfiguration, mrf: &multi_region_failover::Domain,
 ) -> Option<MetricsBranch<DatadogForwarderConfiguration>> {
-    let mrf_config = MrfConfiguration::from_configuration(mrf);
-
-    let Some((mrf_dd_url, mrf_api_key)) = mrf_config.metrics_endpoint_override() else {
-        if mrf_config.is_enabled() {
-            warn!(
-                "Multi-Region Failover is enabled, but multi_region_failover.api_key and one of \
-                 multi_region_failover.dd_url or multi_region_failover.site are required for metrics forwarding. The \
-                 MRF metrics branch will not be wired, and primary forwarding will continue. Restart ADP after \
-                 configuring the static MRF endpoint settings."
-            );
-        }
-
-        return None;
-    };
+    let (mrf_dd_url, mrf_api_key) = mrf_metrics_endpoint(mrf)?;
 
     let encoder =
         DatadogMetricsConfiguration::from_configuration(shared).with_metrics_endpoint_override(mrf_dd_url.clone());
@@ -709,6 +733,39 @@ pub(crate) fn mrf_metrics_branch(
     Some(MetricsBranch { encoder, forwarder })
 }
 
+/// Returns whether autoscaling failover requests its metrics branch, and the Cluster Agent's endpoint and token,
+/// `cluster_agent`, are known.
+///
+/// Logs a warning when the branch is requested but the Cluster Agent cannot be reached: the plan-driven path's
+/// `cluster_agent_out` has no recipient, and the legacy path no branch, until it can. `endpoint_at_startup` says
+/// whether a Cluster Agent endpoint resolved at startup, which only a restart changes: with one, the branch is wired
+/// as soon as forwarding to the Cluster Agent is enabled with a token; without one, only after a restart.
+pub(crate) fn autoscaling_failover_wired(
+    shared: &SharedConfiguration, cluster_agent: Option<&(String, String)>, endpoint_at_startup: bool,
+) -> bool {
+    let af_config = AutoscalingFailoverConfiguration::new(
+        shared.autoscaling_failover.enabled,
+        shared.autoscaling_failover.metrics.clone(),
+    );
+    if cluster_agent.is_none() && af_config.is_branch_requested() {
+        if endpoint_at_startup {
+            warn!(
+                "autoscaling.failover is enabled, but cluster_agent.enabled and cluster_agent.auth_token are required. \
+                 The autoscaling failover metrics branch is not wired, and primary forwarding continues. The branch \
+                 is wired as soon as both are set; no restart is needed."
+            );
+        } else {
+            warn!(
+                "autoscaling.failover is enabled, but no Cluster Agent endpoint resolved at startup. Set \
+                 cluster_agent.url, or provide Kubernetes service env vars for cluster_agent.kubernetes_service_name, \
+                 and restart: the endpoint is resolved once, at startup. Until then the autoscaling failover metrics \
+                 branch is not wired, and primary forwarding continues."
+            );
+        }
+    }
+    cluster_agent.is_some() && af_config.is_branch_requested()
+}
+
 /// Returns the autoscaling failover metrics branch, if it is wired: when autoscaling failover requests it, and the
 /// Cluster Agent's endpoint and token, `cluster_agent`, are known.
 ///
@@ -717,34 +774,21 @@ pub(crate) fn mrf_metrics_branch(
 /// # Errors
 ///
 /// Returns an error if the Cluster Agent forwarder cannot be configured, such as for a token that cannot be sent.
+#[cfg(test)]
 pub(crate) fn autoscaling_failover_branch(
     shared: &SharedConfiguration, cluster_agent: Option<(String, String)>,
-) -> Result<Option<MetricsBranch<ClusterAgentForwarderConfiguration>>, GenericError> {
-    let af_config = AutoscalingFailoverConfiguration::new(
-        shared.autoscaling_failover.enabled,
-        shared.autoscaling_failover.metrics.clone(),
-    );
-
+) -> Result<Option<MetricsBranch<saluki_components::forwarders::ClusterAgentForwarderConfiguration>>, GenericError> {
+    if !autoscaling_failover_wired(shared, cluster_agent.as_ref(), cluster_agent.is_some()) {
+        return Ok(None);
+    }
     let Some((ca_url, ca_token)) = cluster_agent else {
-        if af_config.is_branch_requested() {
-            warn!(
-                "autoscaling.failover is enabled, but cluster_agent.enabled, cluster_agent.auth_token, and a resolvable \
-                 Cluster Agent endpoint are required. Set cluster_agent.url or provide Kubernetes service env vars for \
-                 cluster_agent.kubernetes_service_name. The autoscaling failover metrics branch will not be wired, and \
-                 primary forwarding will continue."
-            );
-        }
-
         return Ok(None);
     };
 
-    if !af_config.is_branch_requested() {
-        return Ok(None);
-    }
-
     let encoder = DatadogMetricsConfiguration::from_configuration(shared).with_v2_series_only();
-    let forwarder = ClusterAgentForwarderConfiguration::from_configuration(shared, ca_url, ca_token)
-        .error_context("Failed to configure Cluster Agent forwarder.")?;
+    let forwarder =
+        saluki_components::forwarders::ClusterAgentForwarderConfiguration::from_configuration(shared, ca_url, ca_token)
+            .error_context("Failed to configure Cluster Agent forwarder.")?;
 
     Ok(Some(MetricsBranch { encoder, forwarder }))
 }

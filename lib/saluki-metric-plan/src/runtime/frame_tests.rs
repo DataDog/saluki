@@ -178,6 +178,54 @@ fn the_default_program_runs_through_a_frame_of_region_drivers_as_the_interpreter
     }
 }
 
+#[test]
+fn the_bound_default_program_delivers_through_its_encode_hosts_as_the_interpreter_delivers_to_its_outputs() {
+    // The outputs bound to `dd_out` share one exit of the enrichment slot to its encode host, and each buffer names its
+    // output's lease: what reaches each output is what the interpreter delivers to it.
+    let plan = Plan::from_value(crate::testing::with_resources(DEFAULT_PROGRAM_JSON)).unwrap();
+    let registry = OperatorRegistry::native();
+    let catalog = crate::testing::default_program_resources_catalog();
+    let report = Validator::new(&registry, &catalog).validate(&plan);
+    assert!(report.is_valid(), "{}", report);
+    let otlp = vec![
+        gauge_at("catalog.items", 4, 3.0),
+        counter_at("requests.count", 4, 4.0),
+        counter_at("checkout.requests", 4, 1.0),
+    ];
+    let trace = Trace::new()
+        .install(plan.clone())
+        .admit(id("otlp_in"), t(4), otlp.clone())
+        .admit(id("checks_ipc_in"), t(5), vec![gauge_at("system.cpu", 5, 0.5)]);
+    let run = Interpreter::new(&registry, &catalog).run(&trace).unwrap();
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    let _guard = runtime.enter();
+    let mut harness = FrameHarness::with_hosts(
+        &plan,
+        &report,
+        registry,
+        HarnessOptions::default(),
+        saluki_core::execution::AdmissionTime::from_unix_secs(1_700_000_000),
+        &crate::testing::default_program_hosts(),
+    );
+    harness.admit("otlp_in", t(4), otlp);
+    harness.admit("checks_ipc_in", t(5), vec![gauge_at("system.cpu", 5, 0.5)]);
+
+    let expected = OutputPoints::from_run(&run);
+    assert!(
+        expected.count(&out("dd_metrics_encode")) > 0,
+        "the trace delivers to the main output"
+    );
+    assert!(
+        expected.count(&out("metrics_routing_encode_0")) + expected.count(&out("metrics_routing_encode_1")) > 0,
+        "the trace delivers to a routing group, through the main output's encode host"
+    );
+    assert_matches_interpreter(&mut harness, &plan, &run);
+}
+
 // Random plans.
 
 /// The stateless kernels random plans use.
@@ -570,6 +618,7 @@ fn random_plan_catalog() -> MemoryCatalog {
                 accepts: PortType::ANY,
                 fingerprint: fingerprint(&output),
                 recipients: vec![RecipientId::new(format!("out/{}", output)).unwrap()],
+                legacy_fingerprint: None,
             },
         )
     })

@@ -65,7 +65,7 @@ impl ApiKeyCell {
     /// `api_key` is trimmed here so that a caller cannot install a key that differs from the
     /// configured one only by surrounding whitespace. A missing, blank, or header-invalid key leaves
     /// the cell alone, so the last usable key stays in place.
-    fn store(&self, endpoint: &str, api_key: Option<&str>) -> StoreOutcome {
+    pub(crate) fn store(&self, endpoint: &str, api_key: Option<&str>) -> StoreOutcome {
         let Some(api_key) = api_key else {
             warn!(endpoint, reason = "missing", "Ignoring an invalid API key update.");
             return StoreOutcome::InvalidKey;
@@ -99,7 +99,7 @@ fn shared(api_key: &str) -> MetaString {
 
 /// What a store did to the cell.
 #[derive(Debug, Eq, PartialEq)]
-enum StoreOutcome {
+pub(crate) enum StoreOutcome {
     /// The cell rejected an invalid key.
     InvalidKey,
 
@@ -121,6 +121,13 @@ pub(crate) struct ApiKeyChanges {
 }
 
 impl ApiKeyChanges {
+    /// Creates a handle that reports each value `changed` sees.
+    ///
+    /// Whoever holds the sender signals it after it stored a new key in a cell, as a refresher does.
+    pub(crate) fn new(changed: watch::Receiver<()>) -> Self {
+        Self { changed }
+    }
+
     /// Waits until at least one endpoint holds a new API key.
     ///
     /// Once the refresher stops, no key can change again, so this never returns.

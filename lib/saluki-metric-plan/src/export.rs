@@ -12,8 +12,11 @@
 //!   syntax's canonical order, so printing an export and parsing the text gives back the same document and hash;
 //! - `ir_versions`: the IR version written, and the range of IR versions accepted;
 //! - `catalog`: the host's [`MemoryCatalog`] document: scope inputs with their port types, outputs with what they
-//!   accept, their fingerprints and recipients, and bindings with their types, liveness, and current values;
-//! - `labels`: display labels of outputs, by output ID, left out when there are none.
+//!   accept, their fingerprints, their recipients, and, for a native output that had one, its version 1 fingerprint,
+//!   and bindings with their types, liveness, and current values. Outputs a resources artifact declares are listed
+//!   like native ones; delivery hosts and their settings are not;
+//! - `labels`: display labels of outputs, by output ID, such as those a resources artifact gives its outputs, left
+//!   out when there are none.
 //!
 //! Readers ignore members they do not know.
 //!
@@ -117,7 +120,7 @@ struct BundleDocument {
 const CATALOG_MEMBERS: &[&str] = &["outputs", "bindings", "scopes", "state_budget"];
 
 /// The members of a catalog output that [`MemoryCatalog`] reads.
-const CATALOG_OUTPUT_MEMBERS: &[&str] = &["accepts", "fingerprint", "recipients"];
+const CATALOG_OUTPUT_MEMBERS: &[&str] = &["accepts", "fingerprint", "recipients", "legacy_fingerprint"];
 
 /// The members of a catalog binding that [`MemoryCatalog`] reads.
 const CATALOG_BINDING_MEMBERS: &[&str] = &["type", "liveness", "value"];

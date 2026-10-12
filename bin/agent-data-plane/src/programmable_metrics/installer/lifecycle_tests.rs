@@ -1100,27 +1100,8 @@ fn refused() -> Vec<Refused> {
                 vec![config(revision, &with_fingerprint(export, MAIN, Some(other)))]
             },
             error: |_, _| {
-                "The artifact emits to output `dd_metrics_encode`, which the host now declares with another binding. \
-                 Rebase the artifact on the current export."
-                    .to_string()
-            },
-            read: true,
-            authentic: true,
-        },
-        Refused {
-            what: "an output the host does not declare",
-            configs: |export, revision| {
-                let mut artifact = with_fingerprint(export, "gone_encode", Some(PlanHash::of_bytes(b"gone")));
-                let emit = nodes(&mut artifact)
-                    .iter_mut()
-                    .find(|node| node["id"] == "metrics_routing_filter_0_true")
-                    .expect("the routing group's emit");
-                emit["params"]["output"] = json!("gone_encode");
-                vec![config(revision, &artifact)]
-            },
-            error: |_, _| {
-                "The artifact emits to output `gone_encode`, which the host no longer declares. Rebase the artifact \
-                 on the current export."
+                "The artifact emits to output `dd_metrics_encode`, which now delivers elsewhere than the artifact's \
+                 base records. Rebase the artifact on the current export."
                     .to_string()
             },
             read: true,
@@ -1190,11 +1171,11 @@ fn refused() -> Vec<Refused> {
                 vec![config(revision, &artifact)]
             },
             error: |_, _| {
-                "The candidate plan cannot run in the physical structure built at boot, and needs a restart: node \
-                 `policy/agg`: it is a state owner, which runs only in an isolation slot that the region its input \
-                 comes from has an exit to, and the topology built at boot has no such isolation slot for \
-                 `metrics_enrich`: a new exit from a region to an isolation slot requires stage 7 resource \
-                 generations, which change physical structure without a restart."
+                "The candidate plan cannot run in the physical structure built at boot: node `policy/agg`: it is a \
+                 state owner, which runs only in an isolation slot that the region its input comes from has an exit \
+                 to, and the topology built at boot has no such isolation slot for `metrics_enrich`: a new exit from \
+                 a region to an isolation slot requires stage 10 frame changes: the physical structure is built from \
+                 the default program at boot, so a restart does not add it."
                     .to_string()
             },
             read: true,
@@ -1347,6 +1328,53 @@ async fn deliveries_the_core_refuses_are_acknowledged_with_the_reason_and_leave_
         1 => default_routing(),
         _ => routing(&FAMILIES, &[APP]),
     });
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_delivery_whose_recorded_output_is_not_declared_waits_for_it_and_leaves_what_runs() {
+    let mut harness = Lifecycle::start().await;
+    let mut artifact = with_fingerprint(&harness.export, "gone_encode", Some(PlanHash::of_bytes(b"gone")));
+    let emit = nodes(&mut artifact)
+        .iter_mut()
+        .find(|node| node["id"] == "metrics_routing_filter_0_true")
+        .expect("the routing group's emit");
+    emit["params"]["output"] = json!("gone_encode");
+    harness.deliver(vec![config(1, &artifact)]);
+    // A new artifact whose base records an output the host does not declare waits for it, as one published before the
+    // resources artifact declaring its output does: its revision is seen, and what runs keeps running.
+    let waiting = harness
+        .status_where(|status| {
+            ack(status, CONFIG_ID).is_some_and(|ack| ack.version == 1 && ack.state == ApplyState::Pending)
+        })
+        .await;
+    let acknowledged = ack(&waiting, CONFIG_ID).unwrap();
+    assert_eq!(
+        (
+            acknowledged.revision,
+            acknowledged.generation,
+            acknowledged.error.as_deref()
+        ),
+        (
+            Some(1),
+            None,
+            Some(
+                "waiting for output `gone_encode`: the artifact's base records it, and the host does not declare \
+                 it; the artifact is installed once the output is declared"
+            )
+        )
+    );
+    assert_eq!(
+        (
+            active(&waiting),
+            active_revision(&waiting),
+            waiting.installer.revision_high_water
+        ),
+        (Some(1), None, Some(1))
+    );
+    assert!(waiting.installer.preparing.is_none() && record(&waiting, 2).is_none());
+    assert_eq!(harness.send().await, Some(1));
+    let finished = harness.finish().await;
+    finished.check(&BTreeSet::new(), |_| default_routing());
 }
 
 /// How an in-process stub server answers a poll: a status and a body.
@@ -1756,7 +1784,13 @@ async fn a_native_node_that_panics_beside_an_artifact_fails_the_topology_and_is_
     harness.deliver(vec![config(1, &artifact)]);
     let installed = harness.status_where(|status| active(status) == Some(2)).await;
     let plan = &installed.active.as_ref().expect("a generation is active").plan;
-    let frame = Frame::compute(&harness.default_program.0, &operators(), &slot_name).expect("the boot plan lays out");
+    let frame = Frame::compute_with_hosts(
+        &harness.default_program.0,
+        &operators(),
+        &slot_name,
+        &crate::programmable_metrics::test_support::frame_hosts(),
+    )
+    .expect("the boot plan lays out");
     let placement = place_unvalidated(plan, &operators(), &frame).expect("the plan places");
     let slot_of = |node: &str| {
         placement

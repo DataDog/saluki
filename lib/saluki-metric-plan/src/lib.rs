@@ -25,6 +25,8 @@
 //!   a transport and the installer.
 //! - [`export`]: the default program's policy scope exported as an artifact, with the catalog it is checked against.
 //! - [`compose`]: the checks an artifact passes on receipt, and its composition into the default program.
+//! - [`resources`]: resources artifacts, which declare recipients and outputs apart from native configuration, and
+//!   output fingerprints.
 //! - [`runtime`]: the region driver, which runs the region programs of every live generation in one slot.
 //!
 //! With the `test-util` feature, the `testing` module provides property-testing strategies for metrics and predicates.
@@ -46,6 +48,7 @@ pub mod limits;
 pub mod model;
 pub mod operators;
 pub mod predicate;
+pub mod resources;
 pub mod runtime;
 pub mod validate;
 

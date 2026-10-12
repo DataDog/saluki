@@ -223,8 +223,7 @@ impl EncoderBuilder for DatadogTraceConfiguration {
             ),
             compression_scheme,
             RB_BUFFER_CHUNK_SIZE,
-        )
-        .await?;
+        )?;
         trace_rb.with_max_inputs_per_payload(MAX_TRACES_PER_PAYLOAD);
 
         let flush_timeout = if self.flush_timeout.is_zero() {

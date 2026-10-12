@@ -120,15 +120,16 @@ where
 {
     /// Creates a new `PersistedQueue` instance from the given arguments.
     ///
-    /// The root path is created if it doesn't already exist, and is scanned for existing persisted entries. Entries
-    /// are removed (oldest first) until the total size of all scanned entries is within the given maximum size.
+    /// The root path is created if it doesn't already exist, with permissions for its owner only, and is scanned for
+    /// existing persisted entries by their file names and sizes, without reading any file. Entries beyond the given
+    /// maximum size are not removed here: the next [`push`][Self::push] removes them, oldest first, until the new
+    /// entry fits.
     ///
     /// To remove stale retry files on startup, call [`remove_stale_files`][Self::remove_stale_files] after construction.
     ///
     /// # Errors
     ///
-    /// If there is an error creating the root directory, or scanning it for existing entries, or deleting entries to
-    /// shrink the directory to fit the given maximum size, an error is returned.
+    /// If there is an error creating the root directory, or scanning it for existing entries, an error is returned.
     pub async fn from_root_path(args: PersistedQueueArgs) -> Result<Self, GenericError> {
         let PersistedQueueArgs {
             root_path,
@@ -214,6 +215,22 @@ where
         let removed = remove_outdated_retry_files(&self.root_path, self.max_age_days).await?;
         self.refresh_entry_state().await.map_err(GenericError::from)?;
         Ok(removed)
+    }
+
+    /// Changes the queue's size and disk usage limits, then removes persisted entries, oldest first, until the rest fit
+    /// within them.
+    ///
+    /// # Errors
+    ///
+    /// If there is an error while reading the disk's usage, or while removing entries, an error is returned. The new
+    /// limits apply regardless, from the next push.
+    pub async fn set_limits(
+        &mut self, max_on_disk_bytes: u64, storage_max_disk_ratio: f64,
+    ) -> Result<PushResult, GenericError> {
+        self.max_on_disk_bytes = max_on_disk_bytes;
+        self.storage_max_disk_ratio = storage_max_disk_ratio;
+
+        self.remove_until_available_space(0).await
     }
 
     /// Enqueues an entry and persists it to disk.

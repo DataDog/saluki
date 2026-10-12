@@ -471,6 +471,22 @@ mod tests {
         assert_eq!(parsed.data_plane.checks.enabled, Some(true));
     }
 
+    #[test]
+    fn the_resources_credentials_are_one_leaf_read_from_the_environment_as_a_json_object() {
+        let path = ["experimental", "programmable_metrics", "resources", "credentials"];
+        let decode = leaf_specs()
+            .iter()
+            .find(|(leaf, _)| leaf.iter().map(String::as_str).eq(path))
+            .map(|(_, decode)| *decode);
+        assert_eq!(decode, Some(EnvDecode::JsonValue));
+        assert!(
+            !leaf_specs()
+                .iter()
+                .any(|(leaf, _)| leaf.len() > path.len() && leaf.iter().map(String::as_str).take(path.len()).eq(path)),
+            "the credentials map is not split into sub-fields"
+        );
+    }
+
     /// Every nested Saluki-only key in the canonical inventory must exist as a `SalukiOnly` leaf.
     ///
     /// A flat key survives without one: Figment's prefix scan turns `DD_FOO_BAR` into the key

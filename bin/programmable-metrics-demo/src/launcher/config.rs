@@ -12,6 +12,10 @@
 //!   `false`, so mirroring is off.
 //! - Saluki-only: `experimental.programmable_metrics.artifact_channel.{stub_url, poll_interval}`, the stub, which ADP
 //!   polls from stage 5 (earlier builds ignore these keys).
+//! - Saluki-only: `experimental.programmable_metrics.resources.credentials`, the credentials resources artifacts may
+//!   use, read from stage 7 (earlier builds ignore it): `team_d`, the API key team D's intake expects. Nothing uses it
+//!   until a resources artifact declares team D's endpoint with `credentials/team_d`; team D's endpoint is not in the
+//!   file otherwise.
 //! - Saluki-only: `data_plane.standalone_mode: true`.
 //! - Datadog: `data_plane.{api_listen_address, secure_api_listen_address, log_file}` (loopback ports and a run-local
 //!   log) and `ipc_cert_file_path` (the generated certificate).
@@ -33,7 +37,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use crate::settings::{DemoPorts, RunSettings};
+use crate::settings::{DemoPorts, RunSettings, TEAM_D_CREDENTIAL, TEAM_D_CREDENTIAL_VALUE};
 
 /// The comment written at the top of the generated file.
 const HEADER: &str = "\
@@ -41,6 +45,7 @@ const HEADER: &str = "\
 #
 # experimental.programmable_metrics.artifact_channel.* is read by ADP from stage 5 of the programmable metrics
 # implementation; earlier ADP builds ignore it, and the demo then reports that the control surface is not exposed.
+# experimental.programmable_metrics.resources.credentials is read from stage 7: only a resources artifact uses it.
 ";
 
 /// Returns the ADP configuration for a run, as a JSON value with the configuration file's structure.
@@ -67,6 +72,9 @@ pub fn adp_config(settings: &RunSettings) -> Value {
                 "artifact_channel": {
                     "stub_url": DemoPorts::http_url(ports.stub),
                     "poll_interval": duration_string(settings.poll_interval),
+                },
+                "resources": {
+                    "credentials": { TEAM_D_CREDENTIAL: TEAM_D_CREDENTIAL_VALUE },
                 },
             },
         },
@@ -136,6 +144,7 @@ mod tests {
 #
 # experimental.programmable_metrics.artifact_channel.* is read by ADP from stage 5 of the programmable metrics
 # implementation; earlier ADP builds ignore it, and the demo then reports that the control surface is not exposed.
+# experimental.programmable_metrics.resources.credentials is read from stage 7: only a resources artifact uses it.
 additional_endpoints:
   http://127.0.0.1:17102:
   - demo-team-b
@@ -165,6 +174,9 @@ experimental:
     artifact_channel:
       poll_interval: 1s
       stub_url: http://127.0.0.1:17100
+    resources:
+      credentials:
+        team_d: demo-team-d-key
 flush_timeout_secs: 1
 hostname: adp-demo
 ipc_cert_file_path: /tmp/pm-demo/run-1/ipc_cert.pem

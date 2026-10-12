@@ -1,10 +1,12 @@
 //! Lowering: native configuration into the default program.
 //!
-//! [`Lowering::lower`] is a pure function of the startup configuration, the current configuration, and the [host
-//! facts](HostFacts). It produces the default program: the logical plan of the native metrics path that `run.rs`
-//! builds for the same configuration, node for node. [`Lowering::new`] prepares it once per process, from the startup
-//! configuration and the host facts: it checks what the native topology build checks, and resolves the native
-//! outputs, which depend on nothing else. Re-lowering on a configuration change reuses both.
+//! [`Lowering::lower_with`] is a pure function of the startup configuration, the current configuration, the [host
+//! facts](HostFacts), and the accepted resources artifact. It produces the default program: the logical plan of the
+//! native metrics path that `run.rs` builds for the same configuration, node for node, with every output's binding
+//! and every resource its outputs deliver through ([`resources`](super::resources)). [`Lowering::new`] prepares it once
+//! per process, from the startup configuration and the host facts: it checks what the native topology build checks,
+//! fixes the delivery hosts, and resolves the outputs the process boots with. Re-lowering on a configuration change
+//! reuses all three.
 //!
 //! # Shape
 //!
@@ -20,30 +22,33 @@
 //!
 //! - an endpoint routing group's filter, `metrics_routing_filter_{i}`, selects the metrics whose intake name is one of
 //!   the group's names or starts with one of its prefixes (both lists bound to the group, by its key);
-//! - the multi-region failover gateway selects every metric while failover is enabled (a startup flag) and metric
-//!   mirroring is on (a live flag), and only the metrics its live allowlist names when that allowlist is not empty;
+//! - the multi-region failover gateway selects every metric while failover is enabled and metric mirroring is on (both
+//!   live flags), and only the metrics its live allowlist names when that allowlist is not empty;
 //! - the autoscaling failover gateway selects the scalar series (counters, rates, gauges, and sets) whose name is one
-//!   of the startup list of metrics.
+//!   of the configured list of metrics.
 //!
 //! Each predicate matches as the gateway's native component does: routing groups compare the intake name (normalized
 //! as the intake stores it), the failover gateways the raw name, and nothing but a metric is selected.
 //!
-//! Every branch exists only when `run.rs` builds it, decided from the startup configuration by the same predicates and
-//! helpers. The metrics enrichment merge (`metrics_enrich_in`) and the tees (`metrics_policy`,
-//! `dsd_post_agg_filter_fanout`) are present even with one input or output, so that their IDs never depend on which
-//! other branches exist. The merge in front of the post-aggregation filter (`dsd_post_agg_filter_in`) exists only with
-//! the no-aggregation pipeline, whose passthrough is its second input, as natively that filter has a second input
-//! only then.
+//! Every branch exists only when `run.rs` builds it for the same configuration, decided by the same predicates and
+//! helpers. The DogStatsD pipeline and the sources follow the startup configuration; the output branches (endpoint
+//! routing groups, the failover branches) follow the current one, so a routing group or a failover branch appears and
+//! disappears live, which an artifact composed against an earlier export sees as a stale base. Outputs a resources
+//! artifact declares have no branch: only artifacts emit to them. The metrics enrichment merge (`metrics_enrich_in`)
+//! and the tees (`metrics_policy`, `dsd_post_agg_filter_fanout`) are present even with one input or output, so that
+//! their IDs never depend on which other branches exist. The merge in front of the post-aggregation filter
+//! (`dsd_post_agg_filter_in`) exists only with the no-aggregation pipeline, whose passthrough is its second input, as
+//! natively that filter has a second input only then.
 //!
 //! # Parameters
 //!
 //! Every configuration-derived parameter is bound to a [binding](super::bindings) and carries its resolved value:
-//! `Startup` bindings from the startup configuration, `Live` ones from the current configuration. Structure always
-//! comes from the startup configuration. So re-lowering with a changed live input changes only the parameters bound to
-//! it, and re-lowering with a changed startup-only input changes nothing, as natively. Host facts (the host tags and
-//! their deadline) and structural parameters (port counts, source bindings, the kinds a gateway selects, and whether a
-//! list holds names or prefixes) are literals. A flag or an emptiness test over a bound value stays in the program as
-//! written; only compiled programs fold it.
+//! `Startup` bindings from the startup configuration, `Live` ones from the current configuration. So re-lowering with
+//! a changed live input changes only the parameters bound to it and the structure that follows it, and re-lowering
+//! with a changed startup-only input changes nothing, as natively. Host facts (the host tags and their deadline) and
+//! structural parameters (port counts, source bindings, the kinds a gateway selects, and whether a list holds names or
+//! prefixes) are literals. A flag or an emptiness test over a bound value stays in the program as written; only
+//! compiled programs fold it.
 //!
 //! # Errors
 //!
@@ -88,9 +93,9 @@ use super::{
         POST_ENRICH_INPUT, POST_ENRICH_SCOPE,
     },
     host_facts::{host_tags_enabled, HostFacts},
-    outputs::{
-        cluster_agent_forwarder, NativeOutputs, OutputKind, RoutingGroup, DSD_CLIENT_TELEMETRY,
-        DSD_CLIENT_TELEMETRY_OUT,
+    resources::{
+        cluster_agent_forwarder, Declared, FixedHosts, NativeOutputs, NativeResources, OutputKind, RoutingGroup,
+        DSD_CLIENT_TELEMETRY, DSD_CLIENT_TELEMETRY_OUT,
     },
 };
 use crate::{
@@ -167,16 +172,20 @@ pub struct Lowered {
 
     /// Where lowering departs from the configuration as written.
     pub notes: Vec<LoweringNote>,
+
+    /// The outputs, recipients, and host settings the program delivers through, as resolved for it.
+    pub resources: NativeResources,
 }
 
 /// Lowering for one process: its startup configuration and host facts, checked as native construction checks them,
-/// and its native outputs.
+/// its delivery hosts, and the outputs it boots with.
 ///
-/// Build it once at boot, and [lower](Self::lower) whenever the configuration changes.
+/// Build it once at boot, and [lower](Self::lower_with) whenever the configuration or the accepted resources change.
 #[derive(Clone, Debug)]
 pub struct Lowering {
     startup: Arc<SalukiConfiguration>,
     facts: HostFacts,
+    hosts: FixedHosts,
     outputs: NativeOutputs,
 }
 
@@ -184,8 +193,8 @@ impl Lowering {
     /// Prepares lowering for a process that started with the configuration `startup` and the host facts `facts`.
     ///
     /// Returns `None` when the configuration requires no metrics pipeline, so there is no metrics path to describe.
-    /// Otherwise it checks the configuration as native construction of the metrics path does, and resolves the native
-    /// outputs, which depend only on the startup configuration and the host facts.
+    /// Otherwise it checks the configuration as native construction of the metrics path does, fixes the delivery hosts
+    /// from the host facts, and resolves the outputs the process boots with.
     ///
     /// # Errors
     ///
@@ -201,30 +210,75 @@ impl Lowering {
         if dp.dogstatsd_enabled() {
             check_plan_durations(&startup)?;
         }
-        let outputs = NativeOutputs::from_configuration(&startup, &facts)?;
+        let hosts = FixedHosts::at_boot(&facts);
+        let outputs = NativeResources::resolve(&startup, &startup, &facts, &hosts, None)?.outputs;
         Ok(Some(Self {
             startup,
             facts,
+            hosts,
             outputs,
         }))
     }
 
-    /// Returns the native outputs the program delivers to.
+    /// Returns the outputs the process boots with, which the metrics path's frame is built for.
     pub fn outputs(&self) -> &NativeOutputs {
         &self.outputs
     }
 
-    /// Lowers native configuration into the default program.
-    ///
-    /// Structure and `Startup` bindings come from the startup configuration; `Live` bindings from `current`, the
-    /// configuration now.
+    /// Returns the delivery hosts, fixed at boot.
+    pub fn hosts(&self) -> &FixedHosts {
+        &self.hosts
+    }
+
+    /// Lowers native configuration into the default program, with no declared resources.
     ///
     /// # Errors
     ///
     /// Returns an error for the configurations that run natively but cannot be lowered; see the [module
     /// documentation](self#errors).
     pub fn lower(&self, current: &SalukiConfiguration) -> Result<Lowered, GenericError> {
+        self.lower_with(current, None)
+    }
+
+    /// Lowers native configuration, and the resources `declared` declares, into the default program.
+    ///
+    /// The DogStatsD pipeline, the sources, and `Startup` bindings come from the startup configuration; the outputs,
+    /// their bindings, the recipients, the host settings, and `Live` bindings from `current`, the configuration now.
+    /// Declared outputs and recipients enter the program's declarations; no node of the default program emits to a
+    /// declared output.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for the configurations that run natively but cannot be lowered; see the [module
+    /// documentation](self#errors).
+    pub fn lower_with(
+        &self, current: &SalukiConfiguration, declared: Option<Declared<'_>>,
+    ) -> Result<Lowered, GenericError> {
+        self.lower_after(current, declared, &NativeResources::default())
+    }
+
+    /// Lowers native configuration, and the resources `declared` declares, into the default program that follows the
+    /// one lowered before it, whose resources were `previous`.
+    ///
+    /// The program is the one [`lower_with`][Self::lower_with] lowers, except that a native recipient `previous`
+    /// declares stays while its endpoint and key position stay configured, whatever its key now holds: a key is a
+    /// credential, which its recipient follows (see [`NativeResources::resolve_after`]).
+    ///
+    /// # Errors
+    ///
+    /// As for [`lower_with`][Self::lower_with].
+    pub fn lower_after(
+        &self, current: &SalukiConfiguration, declared: Option<Declared<'_>>, previous: &NativeResources,
+    ) -> Result<Lowered, GenericError> {
         let startup = &*self.startup;
+        let resolved = NativeResources::resolve_after(
+            startup,
+            current,
+            &self.facts,
+            &self.hosts,
+            declared,
+            &previous.resources,
+        )?;
         let dp = DataPlaneConfiguration::from_configuration(startup);
         let snapshots = Snapshots { startup, current };
         let mut program = Program::new(snapshots);
@@ -257,15 +311,16 @@ impl Lowering {
         }
 
         let enriched = program.enrichment(startup, &self.facts, enrichment_inputs)?;
-        program.policy(enriched.clone(), &self.outputs)?;
+        program.policy(enriched.clone(), &resolved.outputs)?;
 
         let mut plan = Plan {
             ir_version: IR_VERSION,
             provenance: None,
             nodes: program.nodes,
             edges: program.edges,
-            outputs: self.outputs.decls(),
+            outputs: resolved.outputs.decls(),
             scopes: Default::default(),
+            resources: resolved.resources.clone(),
         };
         if let Some(scope) = dogstatsd_scope {
             plan.scopes.insert(
@@ -293,8 +348,13 @@ impl Lowering {
             .get(&pre_aggregation)
             .map(|scope| scope.exits.keys().cloned().collect())
             .unwrap_or_default();
-        let catalog = AdpCatalog::new(&self.outputs, snapshots).with_pre_aggregation_exits(exits);
-        Ok(Lowered { plan, catalog, notes })
+        let catalog = AdpCatalog::new(&resolved.outputs, snapshots, self.hosts).with_pre_aggregation_exits(exits);
+        Ok(Lowered {
+            plan,
+            catalog,
+            notes,
+            resources: resolved,
+        })
     }
 }
 
@@ -306,7 +366,7 @@ impl Lowering {
 fn check_native_construction(startup: &SalukiConfiguration, facts: &HostFacts) -> Result<(), GenericError> {
     // Assembling the blueprint.
     bindings::routing_groups(startup)?;
-    cluster_agent_forwarder(startup, facts)?;
+    cluster_agent_forwarder(&startup.shared, facts)?;
     let dp = DataPlaneConfiguration::from_configuration(startup);
     if dp.dogstatsd_enabled() {
         let dogstatsd = &startup.domains.dogstatsd;
@@ -679,10 +739,12 @@ impl<'a> Program<'a> {
     }
 
     /// Lowers the policy region fed by `enriched`: one branch per output other than the client telemetry tap.
+    ///
+    /// Outputs a resources artifact declares get no branch: only artifacts emit to them.
     fn policy(&mut self, enriched: PortRef, outputs: &NativeOutputs) -> Result<(), GenericError> {
         let branches = outputs
             .iter()
-            .filter(|output| output.kind != OutputKind::ClientTelemetry)
+            .filter(|output| !matches!(output.kind, OutputKind::ClientTelemetry | OutputKind::Declared { .. }))
             .collect::<Vec<_>>();
         let policy = self.node(
             ids::METRICS_POLICY,
@@ -698,7 +760,7 @@ impl<'a> Program<'a> {
             // The gateway that selects what reaches the output, as a `split` whose `true` port leads to the output and
             // whose `false` port drops, and the predicate its native component applies.
             let (gateway, predicate) = match &output.kind {
-                OutputKind::ClientTelemetry => continue,
+                OutputKind::ClientTelemetry | OutputKind::Declared { .. } => continue,
                 OutputKind::Main => {
                     self.terminal(&policy, &branch, names::EMIT, emit, &output.component);
                     continue;
@@ -727,7 +789,7 @@ impl<'a> Program<'a> {
         ]}))
     }
 
-    /// Returns the predicate of the multi-region failover gateway: failover is enabled (read at startup, as the branch
+    /// Returns the predicate of the multi-region failover gateway: failover is enabled (live, as the branch is, which
     /// exists only then), metric mirroring is on, and the raw name is in the mirroring allowlist, unless the allowlist
     /// is empty, which mirrors everything. Mirroring and its allowlist are live, as natively.
     fn multi_region_failover(&self) -> Result<Value, GenericError> {

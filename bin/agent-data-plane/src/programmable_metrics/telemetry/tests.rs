@@ -29,8 +29,9 @@ use super::{
 use crate::{
     programmable_metrics::{
         telemetry_profiles::TelemetryProfile,
+        test_intake::{Intake, ZSTD},
         test_support::{configuration, layered_configuration_system, programmable_metrics, ConfigCell},
-        test_topology::{Aggregation, MetricsPath, Options, TestTopology},
+        test_topology::{Aggregation, Encoders, MetricsPath, Options, Recipients, TestTopology},
     },
     state::metrics::{get_compat_remappings, get_datadog_agent_remappings},
 };
@@ -94,6 +95,11 @@ async fn telemetry_with(options: Options, config: &str) -> BTreeMap<Series, Stri
         }
         topology.stop().await;
     }
+    recorded(&recorder)
+}
+
+/// Returns every series `recorder` registered, with its value: a counter's or a gauge's, or `histogram`.
+fn recorded(recorder: &TestRecorder) -> BTreeMap<Series, String> {
     let series = |key: &metrics::Key| {
         let mut labels = key
             .labels()
@@ -170,9 +176,16 @@ fn series(name: &str, tags: &[&str]) -> Series {
 /// Returns everything the topology reports about the transform `id` as a component of its own, with the given outputs:
 /// its interconnects, its health, and its task.
 fn component_series(id: &str, outputs: &[&str]) -> BTreeSet<Series> {
+    framework_series(("transforms", "transform"), id, outputs)
+}
+
+/// Returns everything the topology reports about the component `id`, of the given kind (as its identity names it) and
+/// type (as its `component_type` label does), with the given outputs: its interconnects, its health, and its task.
+fn framework_series((kind, component_type): (&str, &str), id: &str, outputs: &[&str]) -> BTreeSet<Series> {
     let mut found = BTreeSet::new();
     let component = format!("component_id:{}", id);
-    let labels = [component.as_str(), "component_type:transform"];
+    let component_type = format!("component_type:{}", component_type);
+    let labels = [component.as_str(), component_type.as_str()];
     found.insert(series("component_events_received_total", &labels));
     found.insert(series("component_events_received_size", &labels));
     for output in outputs {
@@ -184,7 +197,7 @@ fn component_series(id: &str, outputs: &[&str]) -> BTreeSet<Series> {
             found.insert(series(name, &[labels[0], labels[1], output]));
         }
     }
-    let identity = format!("topology.primary.transforms.{}", id);
+    let identity = format!("topology.primary.{}.{}", kind, id);
     for name in [
         "health_component_live",
         "health_component_ready",
@@ -192,7 +205,8 @@ fn component_series(id: &str, outputs: &[&str]) -> BTreeSet<Series> {
     ] {
         found.insert(series(name, &[format!("component_id:{}", identity).as_str()]));
     }
-    for task in [identity.clone(), format!("{}.transform", identity)] {
+    let subtask = kind.strip_suffix('s').unwrap_or(kind);
+    for task in [identity.clone(), format!("{}.{}", identity, subtask)] {
         for name in ["runtime_task_poll_count", "runtime_task_poll_duration_seconds"] {
             found.insert(series(name, &[format!("task_name:{}", task).as_str()]));
         }
@@ -271,6 +285,57 @@ fn expected_addition(new_regions: &[&str], (name, tags): &Series) -> bool {
         || has("task_name:topology.primary.sources.dsd_in.admission_heartbeat")
 }
 
+/// The encode hosts and delivery hosts the plan-driven topology runs for [`CONFIG`] and [`GATEWAYS`], at the IDs of the
+/// metrics encoders and forwarders of the legacy topology.
+const HOSTS: [&str; 6] = [
+    "dd_metrics_encode",
+    "dd_out",
+    "mrf_metrics_encode",
+    "mrf_dd_out",
+    "af_metrics_encode",
+    "cluster_agent_out",
+];
+
+/// Returns `true` if `series` is one an encode host or a delivery host reports: under its `component_id`, or a lease's
+/// under its output's (a routing group's, as its native encoder's), as a component of the topology (its health), or as
+/// a task of its own or below it.
+fn host_series((_, tags): &Series) -> bool {
+    let lease = tags.iter().any(|tag| {
+        tag.strip_prefix("component_id:metrics_routing_encode_")
+            .is_some_and(|index| !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()))
+    });
+    lease
+        || tags.iter().any(|tag| {
+            HOSTS.iter().any(|host| {
+                tag.strip_prefix("component_id:") == Some(host)
+                    || ["encoders", "forwarders"].iter().any(|kind| {
+                        let identity = format!("topology.primary.{}.{}", kind, host);
+                        let task = tag.strip_prefix("task_name:");
+                        tag.strip_prefix("component_id:") == Some(identity.as_str())
+                            || task == Some(identity.as_str())
+                            || task.is_some_and(|task| task.starts_with(&format!("{}.", identity)))
+                    })
+            })
+        })
+}
+
+/// Returns `plan` without the series of its hosts that `legacy` does not report.
+///
+/// These tests replace the encoders and forwarders of the legacy topology with doubles, which report only what the
+/// topology reports about every component, and the hosts of the plan-driven topology run as in production with doubles
+/// only at their edges (their leases' payloads and their recipients' sends): the hosts also report the encoder and
+/// forwarder telemetry the native encoders and forwarders report in production, which
+/// [`the_hosts_report_the_telemetry_of_the_native_encoders_and_forwarders_and_remap_to_what_they_did`] compares with
+/// theirs, and the failover host, which the legacy topology builds only with failover configured, runs idle.
+fn without_host_additions(
+    plan: &BTreeMap<Series, String>, legacy: &BTreeMap<Series, String>,
+) -> BTreeMap<Series, String> {
+    plan.iter()
+        .filter(|(series, _)| legacy.contains_key(*series) || !host_series(series))
+        .map(|(series, value)| (series.clone(), value.clone()))
+        .collect()
+}
+
 /// Returns the value of a series, which must exist.
 #[track_caller]
 fn value<'a>(telemetry: &'a BTreeMap<Series, String>, name: &str, tags: &[&str]) -> &'a str {
@@ -285,6 +350,13 @@ fn value<'a>(telemetry: &'a BTreeMap<Series, String>, name: &str, tags: &[&str])
 async fn the_fused_components_keep_their_native_metrics_and_lose_only_their_component_series() {
     let legacy = telemetry(MetricsPath::Legacy, CONFIG).await;
     let plan = telemetry(MetricsPath::Plan, CONFIG).await;
+    // The idle failover host is ready, and reports its health, as every component does (plan 4.15).
+    for host in ["encoders.mrf_metrics_encode", "forwarders.mrf_dd_out"] {
+        let health = format!("component_id:topology.primary.{}", host);
+        assert!(!legacy.contains_key(&series("health_component_ready", &[health.as_str()])));
+        assert!(plan.contains_key(&series("health_component_ready", &[health.as_str()])));
+    }
+    let plan = without_host_additions(&plan, &legacy);
 
     let removed = legacy
         .keys()
@@ -402,9 +474,10 @@ const GATEWAY_REGIONS: [&str; 2] = ["dsd_pre_aggregation", "dsd_post_agg_filter_
 async fn the_gateways_keep_their_native_metrics_and_lose_only_their_component_series() {
     let legacy = telemetry(MetricsPath::Legacy, GATEWAYS).await;
     let plan = telemetry(MetricsPath::Plan, GATEWAYS).await;
+    let plan = without_host_additions(&plan, &legacy);
 
-    // Removed: the DogStatsD transforms' component series, as above, and the gateways', each a transform with one
-    // output.
+    // Removed: the DogStatsD transforms' component series, as above, the gateways', each a transform with one output,
+    // and the routing groups' encoders', whose streams are leases of `dd_metrics_encode` (plan 4.15).
     let removed = legacy
         .keys()
         .filter(|series| !plan.contains_key(*series))
@@ -413,6 +486,9 @@ async fn the_gateways_keep_their_native_metrics_and_lose_only_their_component_se
     let mut expected = removed_series();
     for gateway in GATEWAY_COMPONENTS {
         expected.extend(component_series(gateway, &["output:_default"]));
+    }
+    for encoder in ["metrics_routing_encode_0", "metrics_routing_encode_1"] {
+        expected.extend(framework_series(("encoders", "encoder"), encoder, &["output:_default"]));
     }
     assert_eq!(removed, expected);
     let unexpected = plan
@@ -505,6 +581,7 @@ fn rendered_names(rendered: &str) -> BTreeSet<String> {
 async fn the_datadog_agent_and_the_compatibility_endpoint_see_the_fused_components_as_before() {
     let legacy = telemetry(MetricsPath::Legacy, CONFIG).await;
     let plan = telemetry(MetricsPath::Plan, CONFIG).await;
+    let plan = without_host_additions(&plan, &legacy);
 
     // Through the remappings for the Datadog Agent, the plan-driven topology reports every remapped metric the fused
     // components report natively, with the same values but the one the passthrough batching changes.
@@ -974,4 +1051,223 @@ async fn aggregated_metrics_a_live_filterlist_update_filters_count_in_the_post_a
         ),
         2
     );
+}
+
+/// The batches of the delivery telemetry test: timestamped counters only, which pass aggregation, so that everything
+/// reaches the intakes while the topology runs, and none of it depends on how a shutdown races a flush.
+fn timestamped_batches() -> Vec<Vec<Metric>> {
+    let context = Context::from_static_parts;
+    vec![
+        vec![
+            Metric::counter(context("orders.total", &[]), (1_700_000_000, 1.0)),
+            Metric::counter(context("orders.count", &[]), (1_700_000_000, 2.0)),
+        ],
+        vec![Metric::counter(context("orders.total", &[]), (1_700_000_010, 1.0))],
+    ]
+}
+
+/// Runs a topology started with `options` on `layers`, feeds it [`timestamped_batches`] and waits until `intakes`
+/// received what `done` says, then stops it, and returns every series it registered, with its value.
+async fn delivered_telemetry(
+    options: Options, layers: &[&str], intakes: &[&Intake], done: impl Fn(&Intake) -> bool,
+) -> BTreeMap<Series, String> {
+    let recorder = TestRecorder::default();
+    {
+        let _recorder = metrics::set_default_local_recorder(&recorder);
+        let system = layered_configuration_system(layers).await;
+        let topology = TestTopology::start(&system, options, |_| {}).await;
+        for batch in timestamped_batches() {
+            topology.feed("dsd_in.metrics", batch);
+        }
+        for intake in intakes {
+            intake.wait_for("the batches", &done).await;
+        }
+        topology.stop().await;
+    }
+    recorded(&recorder)
+}
+
+#[tokio::test]
+async fn the_hosts_report_the_telemetry_of_the_native_encoders_and_forwarders_and_remap_to_what_they_did() {
+    let mut runs = Vec::new();
+    for path in [MetricsPath::Legacy, MetricsPath::Plan] {
+        let primary = Intake::start().await;
+        let additional = Intake::start().await;
+        let endpoints = format!(
+            "dd_url: \"{}\"\nadditional_endpoints: {{\"{}\": [key-b]}}",
+            primary.url(),
+            additional.url()
+        );
+        let mut options = Options::new(path, Aggregation::Clocked);
+        options.encoders = Encoders::Real;
+        options.recipients = Recipients::Sending;
+        let telemetry = delivered_telemetry(options, &[ZSTD, &endpoints], &[&primary, &additional], |intake| {
+            let points = intake.points();
+            points.get(&("orders.total".to_string(), Vec::new())) == Some(&2)
+                && points.get(&("orders.count".to_string(), Vec::new())) == Some(&1)
+        })
+        .await;
+        // Each run has intakes of its own: their addresses are named by their roles.
+        let named = |tag: &str| {
+            tag.replace(&primary.url(), "http://primary")
+                .replace(&additional.url(), "http://additional")
+        };
+        runs.push(
+            telemetry
+                .into_iter()
+                .map(|((name, tags), value)| {
+                    let mut tags = tags.iter().map(|tag| named(tag)).collect::<Vec<_>>();
+                    tags.sort();
+                    ((name, tags), value)
+                })
+                .collect::<BTreeMap<_, _>>(),
+        );
+    }
+    let (legacy, plan) = (&runs[0], &runs[1]);
+    let hosts = |telemetry: &BTreeMap<Series, String>| {
+        telemetry
+            .iter()
+            .filter(|(series, _)| host_series(series))
+            .map(|(series, value)| (series.clone(), value.clone()))
+            .collect::<BTreeMap<_, _>>()
+    };
+    let (legacy_hosts, plan_hosts) = (hosts(legacy), hosts(plan));
+
+    // What the hosts no longer report (plan 4.15), written by hand: the forwarder's I/O loop task, whose work the
+    // routing loop does, and its API key refreshers' tasks, whose work the credential followers do inside it; and the
+    // native request builder's task, which a lease's builder task, below the encoder's own, replaces.
+    let task = |name: &str| {
+        let task = format!("task_name:topology.primary.{}", name);
+        [
+            series("runtime_task_poll_count", &[task.as_str()]),
+            series("runtime_task_poll_duration_seconds", &[task.as_str()]),
+        ]
+    };
+    let mut gone = BTreeSet::new();
+    for name in [
+        "forwarders.dd_out.io_loop",
+        "forwarders.dd_out.api_key_refresher_primary",
+        "forwarders.dd_out.api_key_refresher_additional",
+        "encoders.dd_metrics_encode.request_builder",
+    ] {
+        gone.extend(task(name));
+    }
+    let missing = legacy_hosts
+        .keys()
+        .filter(|series| !plan_hosts.contains_key(*series))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    assert_eq!(missing, gone);
+
+    // What they report besides: the lease builder's task, the count of payloads too large to send under each lease,
+    // the plan-level series of each host, and everything of the idle failover host.
+    let mut new = BTreeSet::new();
+    new.extend(task("encoders.dd_metrics_encode.encoder.request_builder"));
+    new.insert(series(
+        "component_events_dropped_total",
+        &[
+            "component_id:dd_metrics_encode",
+            "component_type:encoder",
+            "drop_reason:payload_too_large",
+            "intentional:false",
+        ],
+    ));
+    let added = plan_hosts
+        .keys()
+        .filter(|series| !legacy_hosts.contains_key(*series))
+        .filter(|(name, tags)| {
+            !name.starts_with("plan_")
+                && !tags
+                    .iter()
+                    .any(|tag| tag.contains("mrf_metrics_encode") || tag.contains("mrf_dd_out"))
+        })
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    assert_eq!(added, new);
+    let plan_level = plan_hosts
+        .keys()
+        .filter(|(name, _)| name.starts_with("plan_"))
+        .map(|(name, _)| name.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        plan_level,
+        BTreeSet::from([
+            "plan_loss_total",
+            "plan_recipient_retirements_total",
+            "plan_recipient_withdrawn_payloads_total",
+            "plan_recipients",
+            "plan_resource_conflicts",
+        ])
+    );
+
+    // Every other series of the native encoder and forwarder keeps its name, labels, and value: what was sent, to
+    // which domain and endpoint, the API key validation, and the queues; only how often tasks were polled differs.
+    for (series, value) in &legacy_hosts {
+        if gone.contains(series) || series.0.starts_with("runtime_task_poll_count") {
+            continue;
+        }
+        assert_eq!(plan_hosts.get(series), Some(value), "{:?}", series);
+    }
+
+    // So the Datadog Agent, and the compatibility endpoint, see what they saw, but the passthrough flushes, which the
+    // timestamp split counts per batch where the native batcher flushed once (see above), and the sign of a zero: a
+    // rate the compatibility endpoint sums over forwarders is `-0` natively, and the idle failover host's `0` added
+    // to it makes it `0`.
+    for (consumer, rules) in [
+        (
+            "the Datadog Agent",
+            get_datadog_agent_remappings as fn() -> Vec<RemapperRule>,
+        ),
+        ("the compatibility endpoint", get_compat_remappings),
+    ] {
+        let without_flushes = |rendered: String| {
+            rendered
+                .lines()
+                .filter(|line| !line.starts_with("no_aggregation__flush "))
+                .map(|line| match line.strip_suffix(" -0") {
+                    Some(zero) => format!("{} 0", zero),
+                    None => line.to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let (plan, legacy) = (
+            without_flushes(render(rules(), plan)),
+            without_flushes(render(rules(), legacy)),
+        );
+        let lines = |rendered: &str| rendered.lines().map(str::to_string).collect::<BTreeSet<_>>();
+        let (plan_lines, legacy_lines) = (lines(&plan), lines(&legacy));
+        assert!(
+            plan == legacy,
+            "{}: only through the hosts {:#?}, only natively {:#?}",
+            consumer,
+            plan_lines.difference(&legacy_lines).collect::<Vec<_>>(),
+            legacy_lines.difference(&plan_lines).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_installer_reports_the_live_leases_of_each_host() {
+    // The main output's lease and the routing group's on `dd_out`; none on the idle failover host.
+    let routing = r#"
+dd_url: https://primary.example.com
+additional_endpoints: {https://b.example.com: [key-b]}
+experimental: {metrics_endpoint_routing: {metric_allowlist: {https://b.example.com: [orders.total]}}}
+"#;
+    let recorder = TestRecorder::default();
+    let _recorder = metrics::set_default_local_recorder(&recorder);
+    let system = layered_configuration_system(&[routing]).await;
+    let topology = TestTopology::start(&system, Options::new(MetricsPath::Plan, Aggregation::Clocked), |_| {}).await;
+    // The installer sets the gauges as it publishes its status, once it runs.
+    let leases = |host: &str| value(&recorded(&recorder), "plan_live_leases", &[host]).to_string();
+    let waited = tokio::time::timeout(crate::programmable_metrics::test_topology::PATIENCE, async {
+        while leases("host:dd_out") != "gauge 2" {
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+    })
+    .await;
+    assert!(waited.is_ok(), "{}", leases("host:dd_out"));
+    assert_eq!(leases("host:mrf_dd_out"), "gauge 0");
+    topology.stop().await;
 }

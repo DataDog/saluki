@@ -1,0 +1,3 @@
+# The default configuration of a scaling run (`SCALING_PROFILE=defaults`): nothing beyond what `compose.yaml` and the
+# profile's environment files set.
+{}

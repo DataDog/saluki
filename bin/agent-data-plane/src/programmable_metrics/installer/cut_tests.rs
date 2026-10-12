@@ -612,10 +612,13 @@ async fn a_boundary_that_can_no_longer_be_published_is_reported_abandoned_and_it
         origin: Origin::DefaultProgram { config_change: 1 },
     };
     let (_, actions) = installing.installer().core.propose(candidate);
-    let new = actions
+    let (new, hosts) = actions
         .iter()
         .find_map(|action| match action {
-            Action::Prepare(prepare) => Some(prepare.generation.clone()),
+            Action::Prepare(prepare) => Some((
+                prepare.generation.clone(),
+                prepare.hosts.iter().map(|part| part.host.clone()).collect::<Vec<_>>(),
+            )),
             _ => None,
         })
         .expect("the change is prepared");
@@ -624,6 +627,14 @@ async fn a_boundary_that_can_no_longer_be_published_is_reported_abandoned_and_it
     for slot in 0..slots {
         let slot = SlotId::new(u16::try_from(slot).unwrap());
         actions.extend(installing.installer().core.prepare_acknowledged(new.id(), slot, Ok(())));
+    }
+    // Each delivery host whose recipients the generation requires acknowledges its part too.
+    for host in hosts {
+        actions.extend(installing.installer().core.prepare_acknowledged(
+            new.id(),
+            saluki_metric_plan::install::PrepareSite::Host(host),
+            Ok(()),
+        ));
     }
     let mut arming = actions
         .into_iter()
@@ -1235,6 +1246,7 @@ async fn a_preparation_hands_each_region_how_its_state_owners_bind_to_instances_
         reuse: Vec::new(),
         build: Vec::new(),
         state,
+        leases: Default::default(),
     };
     let artifact_nodes = BTreeSet::new();
 

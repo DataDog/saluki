@@ -221,8 +221,71 @@ identifier!(
 
 identifier!(
     /// The identifier of a declared output.
+    ///
+    /// Identifiers starting with [`DECLARED_OUTPUT_PREFIX`] are reserved for outputs that a resources artifact
+    /// declares: lowering never gives a native output one.
     OutputId,
     "An" "output ID"
+);
+
+/// The prefix of the identifiers of outputs a resources artifact declares, as in `resources_team_d`.
+///
+/// Lowering reserves it: no native output identifier starts with it, so a declared output never collides with a native
+/// one, now or later. A declared output's identifier is an ordinary identifier, so the identifier grammar and the
+/// surface syntax are unchanged (`emit resources_team_d`).
+pub const DECLARED_OUTPUT_PREFIX: &str = "resources_";
+
+/// The longest name of a declared output, in bytes: what fits after [`DECLARED_OUTPUT_PREFIX`] in an identifier.
+pub const MAX_DECLARED_OUTPUT_NAME_LEN: usize = MAX_IDENTIFIER_LEN - DECLARED_OUTPUT_PREFIX.len();
+
+impl OutputId {
+    /// Returns the identifier of the output a resources artifact declares as `name`: `resources_<name>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `resources_<name>` does not follow the identifier grammar, as when `name` is empty, longer
+    /// than [`MAX_DECLARED_OUTPUT_NAME_LEN`], or not itself an identifier.
+    pub fn declared(name: &str) -> Result<Self, IdError> {
+        if !is_identifier(name) {
+            return Err(invalid("declared output name", name, IDENTIFIER_RULE));
+        }
+        Self::new(format!("{}{}", DECLARED_OUTPUT_PREFIX, name))
+            .map_err(|_| invalid("declared output name", name, DECLARED_OUTPUT_NAME_RULE))
+    }
+
+    /// Returns `true` if the identifier is reserved for outputs a resources artifact declares.
+    pub fn is_declared(&self) -> bool {
+        self.declared_name().is_some()
+    }
+
+    /// Returns the name a resources artifact declared the output under, if the identifier is reserved for declared
+    /// outputs: `team_d` for `resources_team_d`.
+    pub fn declared_name(&self) -> Option<&str> {
+        self.0
+            .strip_prefix(DECLARED_OUTPUT_PREFIX)
+            .filter(|name| !name.is_empty())
+    }
+}
+
+const DECLARED_OUTPUT_NAME_RULE: &str = "declared output names are identifiers of at most 53 characters, so that \
+                                         `resources_<name>` is an identifier";
+
+identifier!(
+    /// The identifier of a delivery host: a fixed component that multiplexes recipients, such as `dd_out`.
+    ///
+    /// Output bindings, recipients, and host settings name the delivery host they run in. Each delivery host has one
+    /// encode host, which runs the leases of the outputs bound to it.
+    HostId,
+    "A" "delivery host ID"
+);
+
+identifier!(
+    /// The name of a role an output plays for its delivery host, such as `main` or `multi_region_failover`.
+    ///
+    /// A role delivers to whatever native configuration resolves for it, so an output selected by its role keeps its
+    /// fingerprint when its recipients change.
+    RoleName,
+    "A" "role name"
 );
 
 identifier!(

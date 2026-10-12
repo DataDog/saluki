@@ -137,6 +137,63 @@ async fn start(yaml: &str) -> (TestTopology, mpsc::Sender<saluki_config::dynamic
 }
 
 #[tokio::test]
+async fn buffers_reach_the_main_output_with_its_lease_in_the_boot_generation_and_in_the_ones_after_it() {
+    let (system, updates, stream) = connected_configuration_system("").await;
+    let lease = Arc::new(std::sync::Mutex::new(None));
+    let mut options = Options::new(MetricsPath::Plan, Aggregation::Native);
+    let captured = Arc::clone(&lease);
+    options.before_topology = Some(Box::new(move |boot| {
+        let main = OutputId::new("dd_metrics_encode").unwrap();
+        let bound = boot.plan.output(&main).is_some_and(|output| output.binding.is_some());
+        *captured.lock().unwrap() = Some((boot.leases.lease(&main), bound));
+    }));
+    let mut topology = TestTopology::start(&system, options, |supervisor| {
+        supervisor.add_worker(ConfigUpdatesWorker::new(updates))
+    })
+    .await;
+    let (lease, bound) = lease.lock().unwrap().expect("the boot topology was built");
+    let lease = lease.expect("the boot generation leases the main output");
+    // A buffer to an encode host names its output's lease; one to a fixed destination, a component of its own, names
+    // none. The main output is a fixed destination until lowering binds it to `dd_out` (stage 7 part P7.5).
+    let expected = bound.then_some(lease);
+
+    // Generation 1 processes a batch, then a filterlist change installs generation 2, whose preparation carries its
+    // own lease table.
+    let names = [KEPT[0], "blocked"];
+    assert_eq!(send(&mut topology, 0, &names, &KEPT[..1]).await, Some(1));
+    stream
+        .send(update("metric_filterlist", json!(["blocked"])))
+        .await
+        .unwrap();
+    let mut sent = 1;
+    while send(&mut topology, sent, &names, &KEPT[..1]).await != Some(2) {
+        sent += 1;
+        assert!(sent < 10_000, "generation 2 never processed a batch");
+    }
+    let deliveries = topology.stop().await;
+
+    // The output keeps its lease across generations, and every buffer the regions send its encode host carries it.
+    let main = deliveries
+        .iter()
+        .filter(|delivery| delivery.output == "dd_metrics_encode")
+        .collect::<Vec<_>>();
+    for generation in [1, 2] {
+        assert!(
+            main.iter().any(|delivery| delivery.generation == Some(generation)),
+            "no buffer of generation {} reached the main output",
+            generation
+        );
+    }
+    for delivery in main {
+        assert_eq!(
+            delivery.entry, expected,
+            "a buffer of generation {:?}",
+            delivery.generation
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_live_filterlist_change_installs_a_generation_that_applies_at_a_batch_boundary_without_loss() {
     let (mut topology, stream) = start("").await;
     let status = topology.status().expect("the plan-driven path has an installer");

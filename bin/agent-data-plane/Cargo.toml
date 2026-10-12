@@ -12,6 +12,10 @@ workspace = true
 default = []
 fips = ["saluki-app/tls-fips", "saluki-components/fips"]
 antithesis = ["saluki-antithesis/antithesis", "dep:antithesis-instrumentation"]
+# Compiles the measurement probes of saluki-core and of the DogStatsD source, which the source-fed measurements in
+# `programmable_metrics::topology::measurement_tests` read. Not enabled in production builds, nor in the workspace's
+# test builds: `make test-measurement` runs the probes' and the harness's own tests with it.
+measurement = ["saluki-core/measurement", "saluki-components/measurement"]
 
 [dependencies]
 agent-data-plane-config = { workspace = true }
@@ -66,6 +70,7 @@ tokio = { workspace = true, features = [
 tokio-util = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
+url = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 zstd = { workspace = true }
 
@@ -81,6 +86,8 @@ tikv-jemallocator = { workspace = true, features = [
 axum = { workspace = true, features = ["http1", "tokio"] }
 datadog-agent-config-testing = { workspace = true }
 derive-where = { workspace = true }
+libc = { workspace = true }
+protobuf = { workspace = true }
 rcgen = { workspace = true, features = ["crypto", "pem"] }
 saluki-components = { workspace = true, features = ["test-util"] }
 saluki-config = { workspace = true, features = ["test-util"] }
@@ -88,8 +95,9 @@ saluki-core = { workspace = true, features = ["test-util"] }
 saluki-metric-plan = { workspace = true, features = ["test-util"] }
 saluki-metric-plan-syntax = { workspace = true }
 saluki-metrics = { workspace = true, features = ["test"] }
-saluki-tls = { workspace = true }
+saluki-tls = { workspace = true, features = ["test-util"] }
 serde_yaml = { workspace = true }
+stele = { workspace = true }
 tokio = { workspace = true, features = ["process", "test-util"] }
 tower = { workspace = true, features = ["util"] }
 

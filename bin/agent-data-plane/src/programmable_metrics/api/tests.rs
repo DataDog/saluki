@@ -18,6 +18,7 @@ use saluki_core::{
 };
 use saluki_io::net::{client::http::HttpClient, BoundListenAddress, ListenAddress};
 use saluki_metric_plan::{
+    canonical::PlanHash,
     channel::ApplyStates,
     export::{ExportBundle, IrVersions, EXPORT_VERSION},
     ir::{OutputId, Plan, PolicyArtifact},
@@ -28,7 +29,10 @@ use tokio::sync::oneshot;
 use tower::ServiceExt as _;
 
 use super::*;
-use crate::programmable_metrics::test_support::{configuration, programmable_metrics, ConfigCell};
+use crate::programmable_metrics::{
+    installer::status::{LastDrain, Provenance, RecipientEntry, RecipientEntryState},
+    test_support::{configuration, programmable_metrics, ConfigCell},
+};
 
 /// The longest a test waits for the privileged API.
 const PATIENCE: Duration = Duration::from_secs(10);
@@ -97,17 +101,130 @@ async fn the_status_route_serves_the_status_summary_and_acknowledgments_as_the_s
     let status = booted_status().await;
     let (code, content_type, body) = get(status.clone(), "/programmable-metrics/status").await;
     assert_eq!((code, content_type), (StatusCode::OK, json_type()));
-    let body: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(body, serde_json::to_value(&status.apply_states).unwrap());
-    // The boot generation is active, and the default program runs.
+    let mut body: Value = serde_json::from_str(&body).unwrap();
+    // The boot generation is active, and the default program runs: `dd_out`'s primary recipient is live from boot,
+    // and no recipient retired yet.
     assert_eq!(body["active_generation"], 1);
     assert_eq!(body["active_artifact"], Value::Null);
     assert_eq!(body["live_generations"], 1);
     assert_eq!(body["config_states"], json!([]));
     assert_eq!(
+        body["recipients"],
+        json!([{
+            "host": "dd_out",
+            "id": "dd_out/primary/0/https://app.datadoghq.com",
+            "slot": 0,
+            "incarnation": 1,
+            "state": "live",
+            "provenance": "native",
+        }])
+    );
+    // Every other member is the apply states', as a poll reports them.
+    body.as_object_mut().unwrap().remove("recipients");
+    assert_eq!(body, serde_json::to_value(&status.apply_states).unwrap());
+    assert_eq!(
         serde_json::from_value::<ApplyStates>(body).unwrap(),
         status.apply_states
     );
+}
+
+#[tokio::test]
+async fn the_status_route_lists_each_retired_recipient_incarnation_with_its_drain_report() {
+    let mut status = booted_status().await;
+    status.recipients = vec![RecipientEntry {
+        host: "dd_out".to_string(),
+        id: "dd_out/declared/team_d/http://127.0.0.1:17105".to_string(),
+        slot: 3,
+        incarnation: 2,
+        state: RecipientEntryState::Retired,
+        provenance: Some(Provenance::Declared {
+            revision: 2,
+            hash: PlanHash::of_bytes(b"team d"),
+        }),
+        draining_since_ms: None,
+        last_drain: Some(LastDrain {
+            delivered: 0,
+            persisted: 0,
+            dropped: 7,
+            deadline_reached: true,
+            retired_ms: 1_791_726_956_032,
+        }),
+    }];
+    let (code, _, body) = get(status, "/programmable-metrics/status").await;
+    assert_eq!(code, StatusCode::OK);
+    let body: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        body["recipients"],
+        json!([{
+            "host": "dd_out",
+            "id": "dd_out/declared/team_d/http://127.0.0.1:17105",
+            "slot": 3,
+            "incarnation": 2,
+            "state": "retired",
+            "provenance": {"declared": {"revision": 2, "hash": PlanHash::of_bytes(b"team d").to_string()}},
+            "last_drain": {
+                "delivered": 0,
+                "persisted": 0,
+                "dropped": 7,
+                "deadline_reached": true,
+                "retired_ms": 1_791_726_956_032u64,
+            },
+        }])
+    );
+}
+
+#[tokio::test]
+async fn the_resources_route_serves_the_hosts_outputs_and_recipients_with_credentials_by_reference() {
+    let status = booted_status().await;
+    let (code, content_type, body) = get(status, "/programmable-metrics/resources").await;
+    assert_eq!((code, content_type), (StatusCode::OK, json_type()));
+    let body: Value = serde_json::from_str(&body).unwrap();
+    // No resources config was delivered, and nothing is counted without a verified memory limit.
+    assert_eq!(body["declared"], Value::Null);
+    assert_eq!(body["missing_credentials"], json!([]));
+    assert_eq!(body["budget"], json!({"granted": null, "used": 0}));
+    assert_eq!(
+        body["hosts"],
+        json!([
+            {
+                "host": "dd_out", "encoder": "dd_metrics_encode", "declared_recipients": true,
+                // The main output's lease runs from boot; the topology was not built, so no host reports its table.
+                "leases": [{"lease": 0, "output": "dd_metrics_encode", "state": "live"}],
+                "withdrawn": [], "conflicts": [],
+            },
+            {
+                "host": "mrf_dd_out", "encoder": "mrf_metrics_encode", "declared_recipients": false,
+                "leases": [], "withdrawn": [], "conflicts": [],
+            },
+        ])
+    );
+    let main = body["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|output| output["id"] == "dd_metrics_encode")
+        .expect("the main output is listed");
+    assert_eq!(main["label"], "Main metrics output");
+    assert_eq!(main["host"], "dd_out");
+    assert_eq!(main["provenance"], "native");
+    assert_eq!(
+        main["recipients"],
+        json!(["dd_out/primary/0/https://app.datadoghq.com"])
+    );
+    assert_eq!(
+        body["recipients"],
+        json!([{
+            "id": "dd_out/primary/0/https://app.datadoghq.com",
+            "host": "dd_out",
+            "endpoint": "https://app.datadoghq.com",
+            "credential": "native:api_key",
+            "classes": "all",
+            "delivery": "native",
+            "provenance": "native",
+        }])
+    );
+    // The test configuration's API key appears nowhere.
+    assert!(!body.to_string().contains("lowering-primary-key"));
 }
 
 #[tokio::test]
@@ -389,7 +506,7 @@ async fn the_routes_are_served_on_the_privileged_api_to_a_client_with_the_ipc_ce
     .await
     .expect("the privileged API serves the status route");
     let body: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(body, serde_json::to_value(&status.apply_states).unwrap());
+    assert_eq!(body, serde_json::to_value(StatusDocument::of(&status)).unwrap());
 
     let _ = shutdown.send(());
     let _ = tokio::time::timeout(PATIENCE, server).await;

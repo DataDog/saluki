@@ -136,7 +136,7 @@ impl Run<'_, '_> {
                             self.points.name(point),
                             node.id
                         ),
-                        stage: 7,
+                        stage: 10,
                     });
                 }
             }

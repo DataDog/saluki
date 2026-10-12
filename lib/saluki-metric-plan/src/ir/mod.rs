@@ -7,7 +7,7 @@
 //!
 //! The IR is serialized as JSON. Every object rejects unknown members, and [`plan_schema`],
 //! [`policy_artifact_schema`], and [`predicate_schema`] generate its JSON Schema, which is checked into the crate's
-//! `schema` directory. Documents
+//! `schema` directory, beside that of the `resources` product's document ([`resources_artifact_schema`]). Documents
 //! carry an `ir_version`; [`migrate`] brings documents of older [accepted versions][ACCEPTED_IR_VERSIONS] up to
 //! [`IR_VERSION`].
 //!
@@ -24,9 +24,10 @@ pub(crate) use self::document::parse_document;
 
 mod id;
 pub use self::id::{
-    derived_terminal_id, is_identifier, ArtifactNodeId, ArtifactPortRef, BindingName, CredentialRef, ExitName, IdError,
-    InputName, LocalId, Namespace, NativeComponentId, NodeId, OperatorName, OutputId, ParamName, PortName, PortRef,
-    RecipientId, ScopeName, SignalName, IDENTIFIER_PATTERN, MAX_IDENTIFIER_LEN, SCOPE_EXIT_NODE, SCOPE_INPUT_NODE,
+    derived_terminal_id, is_identifier, ArtifactNodeId, ArtifactPortRef, BindingName, CredentialRef, ExitName, HostId,
+    IdError, InputName, LocalId, Namespace, NativeComponentId, NodeId, OperatorName, OutputId, ParamName, PortName,
+    PortRef, RecipientId, RoleName, ScopeName, SignalName, DECLARED_OUTPUT_PREFIX, IDENTIFIER_PATTERN,
+    MAX_DECLARED_OUTPUT_NAME_LEN, MAX_IDENTIFIER_LEN, SCOPE_EXIT_NODE, SCOPE_INPUT_NODE,
 };
 
 mod operand;
@@ -44,8 +45,13 @@ pub use self::plan::{
     PlanProvenance, PolicyArtifact, Provenance, ReceivedArtifact, ScopeDecl, Scopes, BLOB_MEMBER,
 };
 
+mod resources;
+pub use self::resources::{
+    GroupKey, HostBinding, OutputBinding, PayloadClasses, RecipientDecl, ResourceProvenance, Resources, Selector,
+};
+
 mod schema;
-pub use self::schema::{plan_schema, policy_artifact_schema, predicate_schema};
+pub use self::schema::{plan_schema, policy_artifact_schema, predicate_schema, resources_artifact_schema};
 
 mod value_type;
 pub use self::value_type::{MemberType, ValueType};

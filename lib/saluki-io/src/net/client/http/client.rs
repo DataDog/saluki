@@ -1,8 +1,13 @@
 #[cfg(unix)]
 use std::path::PathBuf;
 use std::{
+    fmt,
     future::Future,
     pin::Pin,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex, PoisonError,
+    },
     task::{Context, Poll},
     time::Duration,
 };
@@ -71,7 +76,7 @@ where
 /// An HTTP client.
 #[derive(Clone)]
 pub struct HttpClient {
-    inner: BoxCloneService<Request<ClientBody>, Response<Incoming>, BoxError>,
+    inner: ClientService,
 }
 
 impl HttpClient {
@@ -130,6 +135,123 @@ impl Service<Request<ClientBody>> for HttpClient {
 
             result
         })
+    }
+}
+
+/// The type-erased service an [`HttpClient`] sends through.
+type ClientService = BoxCloneService<Request<ClientBody>, Response<Incoming>, BoxError>;
+
+impl HttpClient {
+    /// Returns a client that sends each request through whichever client its switch holds when the request is sent,
+    /// together with the switch.
+    ///
+    /// Clones of the returned client share the switch, so a client [replaced][HttpClientSwitch::replace] through it is
+    /// used by every clone from its next request on, while requests already sent finish on the client they were sent
+    /// through. A component whose client settings change while it runs, such as its proxies, builds a new client and
+    /// switches to it this way, without rebuilding what sends through the client.
+    ///
+    /// Each clone sends through one copy of the switched client from request to request, and takes a new copy only once
+    /// the switch changes, so what the client keeps between requests, such as its per-endpoint telemetry handles, lives
+    /// as long as it would in a client that is never switched.
+    pub fn switchable(initial: HttpClient) -> (HttpClient, HttpClientSwitch) {
+        let shared = Arc::new(Switched {
+            replaced: AtomicU64::new(0),
+            current: Mutex::new((0, initial.inner)),
+        });
+        let client = HttpClient {
+            inner: BoxCloneService::new(SwitchingService {
+                shared: Arc::clone(&shared),
+                client: None,
+            }),
+        };
+        (client, HttpClientSwitch { shared })
+    }
+}
+
+/// What a switchable client's clones share: the client the switch holds, and how many times it was replaced.
+struct Switched {
+    /// How many times the switch replaced its client, which a clone compares with the count its copy was taken at.
+    replaced: AtomicU64,
+
+    /// The client the switch holds, with the count of replacements it was put in at.
+    current: Mutex<(u64, ClientService)>,
+}
+
+impl Switched {
+    fn current(&self) -> (u64, ClientService) {
+        let current = self.current.lock().unwrap_or_else(PoisonError::into_inner);
+        (current.0, current.1.clone())
+    }
+}
+
+/// Replaces the client that a [switchable][HttpClient::switchable] client, and every clone of it, sends through.
+#[derive(Clone)]
+pub struct HttpClientSwitch {
+    shared: Arc<Switched>,
+}
+
+impl HttpClientSwitch {
+    /// Makes every clone of the switchable client send its next requests through `client`.
+    pub fn replace(&self, client: HttpClient) {
+        let mut current = self.shared.current.lock().unwrap_or_else(PoisonError::into_inner);
+        let replaced = current.0.wrapping_add(1);
+        *current = (replaced, client.inner);
+        // Published while the lock is held, so a clone that sees the new count takes the new client.
+        self.shared.replaced.store(replaced, Ordering::Release);
+    }
+}
+
+impl fmt::Debug for HttpClientSwitch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HttpClientSwitch").finish_non_exhaustive()
+    }
+}
+
+/// The service of a switchable client: each request goes through the copy of the switched client the clone took last,
+/// which it takes again when the request is readied after the switch changed.
+struct SwitchingService {
+    shared: Arc<Switched>,
+
+    /// The copy of the switched client this clone sends through, with the count of replacements it was taken at.
+    client: Option<(u64, ClientService)>,
+}
+
+impl SwitchingService {
+    /// Returns the copy of the switched client to send through, taking a new one if the switch changed since the copy
+    /// was taken.
+    fn client(&mut self) -> &mut ClientService {
+        let replaced = self.shared.replaced.load(Ordering::Acquire);
+        if self.client.as_ref().is_some_and(|(taken, _)| *taken != replaced) {
+            self.client = None;
+        }
+        &mut self.client.get_or_insert_with(|| self.shared.current()).1
+    }
+}
+
+impl Clone for SwitchingService {
+    fn clone(&self) -> Self {
+        // A clone keeps the copy, which shares its per-endpoint telemetry, but readies its own requests.
+        Self {
+            shared: Arc::clone(&self.shared),
+            client: self.client.clone(),
+        }
+    }
+}
+
+impl Service<Request<ClientBody>> for SwitchingService {
+    type Response = Response<Incoming>;
+    type Error = BoxError;
+    type Future = <ClientService as Service<Request<ClientBody>>>::Future;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.client().poll_ready(cx)
+    }
+
+    fn call(&mut self, req: Request<ClientBody>) -> Self::Future {
+        // A request is sent through the copy readied for it: the switch is read again only when the next request is
+        // readied. One sent without being readied, which the `Service` contract does not allow, takes a copy.
+        let shared = &self.shared;
+        self.client.get_or_insert_with(|| shared.current()).1.call(req)
     }
 }
 
@@ -609,6 +731,165 @@ mod tests {
         );
 
         proxy_task.abort();
+    }
+
+    /// Starts a plain HTTP server that answers every request with `200 OK` after `delay`, and returns its URL.
+    async fn start_slow_http_server(delay: Duration) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("should bind listener");
+        let url = format!("http://{}/", listener.local_addr().expect("should have local address"));
+        let task = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.expect("server should accept a connection");
+                tokio::spawn(async move {
+                    let mut request = [0; 4096];
+                    while let Ok(read) = stream.read(&mut request).await {
+                        if read == 0 {
+                            return;
+                        }
+                        tokio::time::sleep(delay).await;
+                        if stream
+                            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        (url, task)
+    }
+
+    fn client_with_request_timeout(request_timeout: Duration) -> HttpClient {
+        HttpClient::builder()
+            .with_request_timeout(request_timeout)
+            .with_http_protocol(HttpProtocol::Http1)
+            .with_tls_config(|builder| builder.with_root_cert_store(RootCertStore::empty()))
+            .build()
+            .expect("client should build")
+    }
+
+    #[tokio::test]
+    async fn a_switchable_client_and_its_clones_send_through_the_client_it_was_last_switched_to() {
+        initialize_crypto_provider();
+        let (url, server) = start_slow_http_server(Duration::from_millis(300)).await;
+        let request = || {
+            Request::get(url.as_str())
+                .body(Empty::<Bytes>::new())
+                .expect("request should build")
+        };
+
+        // The first client gives up before the server answers; the second waits for it.
+        let (mut client, switch) = HttpClient::switchable(client_with_request_timeout(Duration::from_millis(50)));
+        let mut clone = client.clone();
+        assert!(
+            client.send(request()).await.is_err(),
+            "the initial client should time out"
+        );
+
+        switch.replace(client_with_request_timeout(Duration::from_secs(5)));
+        let response = clone
+            .send(request())
+            .await
+            .expect("the clone should use the new client");
+        assert_eq!(response.status(), http::StatusCode::OK);
+        let response = client
+            .send(request())
+            .await
+            .expect("the original should use the new client");
+        assert_eq!(response.status(), http::StatusCode::OK);
+
+        // A clone made after the switch shares it too, and so does a later switch back.
+        let mut later = client.clone();
+        switch.replace(client_with_request_timeout(Duration::from_millis(50)));
+        assert!(
+            later.send(request()).await.is_err(),
+            "a later switch reaches clones made before it"
+        );
+
+        server.abort();
+    }
+
+    /// Counts how often each counter is registered, by name, and keeps the counters it hands out.
+    #[derive(Default)]
+    struct RegistrationCounter {
+        counters: Mutex<std::collections::HashMap<String, (usize, Arc<AtomicU64>)>>,
+    }
+
+    impl RegistrationCounter {
+        /// Returns how often the counter `name` was registered, and its value.
+        fn counter(&self, name: &str) -> (usize, u64) {
+            let counters = self.counters.lock().unwrap();
+            counters.get(name).map_or((0, 0), |(registered, value)| {
+                (*registered, value.load(Ordering::Relaxed))
+            })
+        }
+    }
+
+    impl metrics::Recorder for RegistrationCounter {
+        fn describe_counter(&self, _: metrics::KeyName, _: Option<metrics::Unit>, _: metrics::SharedString) {}
+
+        fn describe_gauge(&self, _: metrics::KeyName, _: Option<metrics::Unit>, _: metrics::SharedString) {}
+
+        fn describe_histogram(&self, _: metrics::KeyName, _: Option<metrics::Unit>, _: metrics::SharedString) {}
+
+        fn register_counter(&self, key: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Counter {
+            let mut counters = self.counters.lock().unwrap();
+            let (registered, value) = counters.entry(key.name().to_string()).or_default();
+            *registered += 1;
+            metrics::Counter::from_arc(Arc::clone(value))
+        }
+
+        fn register_gauge(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Gauge {
+            metrics::Gauge::noop()
+        }
+
+        fn register_histogram(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Histogram {
+            metrics::Histogram::noop()
+        }
+    }
+
+    fn client_with_endpoint_telemetry() -> HttpClient {
+        HttpClient::builder()
+            .with_http_protocol(HttpProtocol::Http1)
+            .with_tls_config(|builder| builder.with_root_cert_store(RootCertStore::empty()))
+            .with_endpoint_telemetry(MetricsBuilder::default(), None::<fn(&Uri) -> Option<MetaString>>)
+            .build()
+            .expect("client should build")
+    }
+
+    #[tokio::test]
+    async fn a_switchable_clients_clone_keeps_its_endpoint_telemetry_from_request_to_request_until_it_is_switched() {
+        initialize_crypto_provider();
+        let (url, server) = start_slow_http_server(Duration::ZERO).await;
+        let request = || {
+            Request::get(url.as_str())
+                .body(Empty::<Bytes>::new())
+                .expect("request should build")
+        };
+        let recorder = RegistrationCounter::default();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        // A sender of the switchable client registers its per-endpoint telemetry at its first request and keeps it, as
+        // a client that is never switched does: a registry that evicts handles nothing holds keeps counting.
+        let (mut client, switch) = HttpClient::switchable(client_with_endpoint_telemetry());
+        for _ in 0..3 {
+            let response = client.send(request()).await.expect("the request should succeed");
+            assert_eq!(response.status(), http::StatusCode::OK);
+        }
+        assert_eq!(recorder.counter("network_http_requests_failed_total"), (1, 0));
+        assert_eq!(recorder.counter("network_http_requests_success_total"), (1, 3));
+
+        // Once switched, it takes the new client, and keeps that one's telemetry in turn.
+        switch.replace(client_with_endpoint_telemetry());
+        for _ in 0..2 {
+            client.send(request()).await.expect("the request should succeed");
+        }
+        assert_eq!(recorder.counter("network_http_requests_failed_total"), (2, 0));
+        assert_eq!(recorder.counter("network_http_requests_success_total"), (2, 5));
+
+        server.abort();
     }
 
     fn mutual_tls_configs() -> (ServerConfig, ClientConfig) {

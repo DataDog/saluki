@@ -32,6 +32,9 @@ pub struct DemoPorts {
     /// The recording intake for the multi-region failover endpoint.
     pub mrf: u16,
 
+    /// The recording intake for team D's endpoint, which only a resources artifact declares.
+    pub team_d: u16,
+
     /// ADP's unprivileged API (`/ready`, `/metrics`).
     pub api: u16,
 
@@ -51,6 +54,7 @@ impl Default for DemoPorts {
             team_b: 17102,
             team_c: 17103,
             mrf: 17104,
+            team_d: 17105,
             api: 17110,
             secure_api: 17111,
             dogstatsd: 17125,
@@ -70,6 +74,7 @@ impl DemoPorts {
             team_b: up(ports.team_b)?,
             team_c: up(ports.team_c)?,
             mrf: up(ports.mrf)?,
+            team_d: up(ports.team_d)?,
             api: up(ports.api)?,
             secure_api: up(ports.secure_api)?,
             dogstatsd: up(ports.dogstatsd)?,
@@ -86,36 +91,39 @@ impl DemoPorts {
         format!("http://127.0.0.1:{}", port)
     }
 
-    /// Returns the recipients the demo records, in the order the UI shows them.
+    /// Returns the recipients the demo records, in the order the UI shows them: the four ADP's configuration names,
+    /// then team D, which only a resources artifact declares.
     pub fn recipients(&self) -> Vec<Recipient> {
+        let configured = |name, label, port, api_key| Recipient {
+            name,
+            label,
+            port,
+            api_key,
+            declared: false,
+        };
         vec![
+            configured("primary", "Primary", self.primary, "demo-primary"),
+            configured("team-b", "Team B", self.team_b, "demo-team-b"),
+            configured("team-c", "Team C", self.team_c, "demo-team-c"),
+            configured("mrf", "Failover (MRF)", self.mrf, "demo-mrf"),
             Recipient {
-                name: "primary",
-                label: "Primary",
-                port: self.primary,
-                api_key: "demo-primary",
-            },
-            Recipient {
-                name: "team-b",
-                label: "Team B",
-                port: self.team_b,
-                api_key: "demo-team-b",
-            },
-            Recipient {
-                name: "team-c",
-                label: "Team C",
-                port: self.team_c,
-                api_key: "demo-team-c",
-            },
-            Recipient {
-                name: "mrf",
-                label: "Failover (MRF)",
-                port: self.mrf,
-                api_key: "demo-mrf",
+                name: "team-d",
+                label: "Team D",
+                port: self.team_d,
+                api_key: TEAM_D_CREDENTIAL_VALUE,
+                declared: true,
             },
         ]
     }
 }
+
+/// The name of the credential the launcher declares for resources artifacts, which the team D template refers to as
+/// `credentials/team_d`.
+pub const TEAM_D_CREDENTIAL: &str = "team_d";
+
+/// The value of [`TEAM_D_CREDENTIAL`]: the API key ADP sends to team D's endpoint once a resources artifact declares
+/// it.
+pub const TEAM_D_CREDENTIAL_VALUE: &str = "demo-team-d-key";
 
 /// One endpoint ADP sends metrics to, and the recording intake that stands in for it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -129,8 +137,13 @@ pub struct Recipient {
     /// The loopback port the recording intake listens on.
     pub port: u16,
 
-    /// The API key ADP is configured to send to this endpoint.
+    /// The API key ADP is configured to send to this endpoint: for a declared recipient, the value of the credential
+    /// its resources artifact names.
     pub api_key: &'static str,
+
+    /// Whether a resources artifact declares the recipient, rather than ADP's configuration file: ADP sends it nothing
+    /// until one does.
+    pub declared: bool,
 }
 
 impl Recipient {

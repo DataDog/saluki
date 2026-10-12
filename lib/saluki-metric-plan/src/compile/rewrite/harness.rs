@@ -339,6 +339,7 @@ pub(crate) fn catalog() -> MemoryCatalog {
                     accepts: PortType::ANY,
                     fingerprint: fingerprint(&output),
                     recipients: vec![RecipientId::new(format!("out/{}", output)).expect("valid recipient")],
+                    legacy_fingerprint: None,
                 },
             )
         },

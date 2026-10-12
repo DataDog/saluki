@@ -74,16 +74,16 @@ pub use self::decision::{
     COUNTED_EXIT_SETS, EXIT_SET_CAPACITY, MEMO_COST_FLOOR,
 };
 pub use self::frame::{
-    AdmissionPointInfo, Exit, ExitIndex, FixedComponent, Frame, FrameEdge, FrameError, FrameSource, FrameTarget,
-    FusionDecision, FusionVerdict, Site, Slot, SlotId, SlotKind, SlotNamer,
+    AdmissionPointInfo, Exit, ExitIndex, FixedComponent, Frame, FrameEdge, FrameError, FrameHost, FrameHosts,
+    FrameSource, FrameTarget, FusionDecision, FusionVerdict, Site, Slot, SlotId, SlotKind, SlotNamer,
 };
 pub use self::placement::{
     place, place_unvalidated, EntryKey, MissingCapability, PlacedEntry, Placement, PlacementError, PlacementProblem,
     SlotPlacement,
 };
 pub use self::program::{
-    CompileError, DecisionIndex, EntryProgram, KernelIndex, KernelKey, LineageInfo, LineageKey, ProgramKernel,
-    RegionProgram, RegisterId, Route, StateParamsEntry, StateParamsIndex, Step,
+    CompileError, DecisionIndex, EntryProgram, EntrySource, KernelIndex, KernelKey, LeaseTable, LineageInfo,
+    LineageKey, ProgramKernel, RegionProgram, RegisterId, Route, StateParamsEntry, StateParamsIndex, Step,
 };
 pub use self::rewrite::{
     optimize, r5b::PushedFilterSite, Optimized, Rewrite, RewriteContext, RewriteId, RewriteOutcome, RewriteRecord,
@@ -381,6 +381,8 @@ pub(crate) fn resolve<'p>(plan: &'p Plan, registry: &OperatorRegistry) -> Result
 
 #[cfg(test)]
 mod execution_tests;
+#[cfg(test)]
+mod host_tests;
 #[cfg(test)]
 mod isolation_tests;
 #[cfg(test)]

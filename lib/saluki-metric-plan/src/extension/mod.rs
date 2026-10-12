@@ -5,7 +5,7 @@
 //! opens. Richer designs plug into a slot later without changing the core.
 //!
 //! - [`DeliveryPolicy`]: what an output or recipient does when it cannot keep up ([`Overflow`]), and when it closes
-//!   ([`Closure`]).
+//!   ([`Closure`]). Open to resources artifacts for the recipients they declare ([`BoundedDelivery`]).
 //! - [`AdmissionPolicy`]: whether new keys enter a stateful operator's state.
 //! - Signals ([`SignalDecl`]): named, typed state that the host publishes and operators may read.
 //! - [`TransitionStrategy`] and [`TransitionClass`]: how state moves between generations.
@@ -23,9 +23,13 @@ use crate::ir::SignalName;
 
 /// What an output or recipient does when it is full, and when it closes.
 ///
-/// Only the native policy exists until the slot opens to artifacts.
+/// The slot is open to resources artifacts for the recipients they declare, mapping onto native mechanisms only: a
+/// [`Bounded`][Self::Bounded] policy can shrink a recipient's queue, forbid spilling it to disk, and choose what
+/// happens to its queued work when it retires. Nothing can raise a native bound. Outputs keep the native policy.
+///
+/// Serialized as `"native"`, or as `{"bounded": {...}}` with the members of [`BoundedDelivery`].
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeliveryPolicy {
     /// The native behavior.
     ///
@@ -35,6 +39,9 @@ pub enum DeliveryPolicy {
     /// configured and otherwise dropped.
     #[default]
     Native,
+
+    /// Native mechanisms within tighter bounds, for a recipient a resources artifact declares.
+    Bounded(BoundedDelivery),
 }
 
 impl DeliveryPolicy {
@@ -44,28 +51,82 @@ impl DeliveryPolicy {
     }
 
     /// Returns what an output with this policy does when its downstream cannot accept more.
+    ///
+    /// Outputs always wait: a bounded policy only bounds a recipient's queue, which evicts its oldest entries as the
+    /// native retry queue does ([`Overflow::EvictOldest`]).
     pub const fn overflow(self) -> Overflow {
         match self {
-            Self::Native => Overflow::Wait,
+            Self::Native | Self::Bounded(_) => Overflow::Wait,
         }
     }
 
-    /// Returns what an output with this policy does with queued work when it closes.
+    /// Returns what a recipient or output with this policy does with queued work when it closes.
     pub const fn closure(self) -> Closure {
         match self {
             Self::Native => Closure::Native,
+            Self::Bounded(bounded) => bounded.on_retire,
         }
     }
 }
 
-/// What an output does when its downstream cannot accept more.
+/// A recipient's delivery within bounds tighter than its host's native ones.
 ///
-/// Shedding and spilling are reserved for the stage that opens the delivery-policy slot.
+/// A dual-ship destination added for an experiment should not take the primary's memory, should not fill the disk, and
+/// may not deserve the whole drain deadline of retries when it is removed: these knobs cover that.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoundedDelivery {
+    /// The bound of the recipient's in-memory retry queue, in bytes, at most the native configured bound; `None`
+    /// keeps the native bound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_bytes: Option<u64>,
+
+    /// Whether the recipient's queue spills to disk.
+    #[serde(default, skip_serializing_if = "Spill::is_native")]
+    pub spill: Spill,
+
+    /// What the recipient does with its queued work when it retires.
+    #[serde(default, skip_serializing_if = "Closure::is_native")]
+    pub on_retire: Closure,
+}
+
+/// Whether a recipient's queue spills to disk.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Spill {
+    /// As configured for the host: to disk where disk storage is configured.
+    #[default]
+    Native,
+
+    /// Never: queued work beyond the in-memory bound is dropped and counted.
+    Never,
+}
+
+impl Spill {
+    /// Returns `true` if this is the native behavior, the default, which serialization leaves out.
+    pub fn is_native(&self) -> bool {
+        *self == Self::Native
+    }
+
+    /// Returns the behavior's name, as `explain` shows it.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::Never => "never",
+        }
+    }
+}
+
+/// What an output or recipient does when it cannot keep up.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Overflow {
     /// The sender waits until the downstream accepts more, as native components do: a region host awaits each exit's
-    /// send in exit order, so one slow output delays the others, as native fan-out does. Nothing is lost.
+    /// send in exit order, so one slow output delays the others, as native fan-out does. Nothing is lost. Every
+    /// output waits.
     Wait,
+
+    /// The oldest queued entries are evicted to make room, and counted: what a recipient's native retry queue does.
+    EvictOldest,
 }
 
 impl Overflow {
@@ -73,27 +134,46 @@ impl Overflow {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Wait => "wait",
+            Self::EvictOldest => "evict_oldest",
         }
     }
 }
 
-/// What an output does with queued work when it closes, at process shutdown or when its generation retires.
+/// What an output or recipient does with queued work when it closes, at process shutdown or when it retires.
 ///
-/// Attempting, persisting, or discarding within a policy's own deadline is reserved for the stage that opens the
-/// delivery-policy slot.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// Serialized as its name, such as `"attempt"`.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Closure {
     /// Native shutdown: in-flight requests finish within the shutdown timeout, and queued work is persisted where
     /// configured, and otherwise dropped. A retiring generation's batches finish in the shared encoder streams, which
     /// do not close, so a live update loses nothing beyond what a native shutdown would.
+    #[default]
     Native,
+
+    /// Queued work is attempted until the drain deadline, then closed as at native shutdown.
+    Attempt,
+
+    /// Queued work is persisted where disk storage is configured, without further attempts, and otherwise dropped.
+    Persist,
+
+    /// Queued work is dropped and counted.
+    Discard,
 }
 
 impl Closure {
+    /// Returns `true` if this is the native behavior, the default, which serialization leaves out.
+    pub fn is_native(&self) -> bool {
+        *self == Self::Native
+    }
+
     /// Returns the behavior's name, as `explain` shows it.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Native => "native",
+            Self::Attempt => "attempt",
+            Self::Persist => "persist",
+            Self::Discard => "discard",
         }
     }
 }
@@ -241,6 +321,32 @@ mod tests {
             serde_json::to_value(AuthorityScope::WholeArtifact).unwrap(),
             json!("whole_artifact")
         );
+    }
+
+    #[test]
+    fn a_bounded_delivery_policy_writes_only_what_departs_from_native() {
+        let policy = DeliveryPolicy::Bounded(BoundedDelivery {
+            queue_bytes: Some(4_194_304),
+            spill: Spill::Never,
+            on_retire: Closure::Attempt,
+        });
+        let value = json!({"bounded": {"queue_bytes": 4_194_304, "spill": "never", "on_retire": "attempt"}});
+        assert_eq!(serde_json::to_value(policy).unwrap(), value);
+        assert_eq!(serde_json::from_value::<DeliveryPolicy>(value).unwrap(), policy);
+        assert!(!policy.is_native());
+        assert_eq!(policy.overflow(), Overflow::Wait);
+        assert_eq!(policy.closure(), Closure::Attempt);
+
+        let defaults = DeliveryPolicy::Bounded(BoundedDelivery {
+            queue_bytes: None,
+            spill: Spill::Native,
+            on_retire: Closure::Native,
+        });
+        assert_eq!(serde_json::to_value(defaults).unwrap(), json!({"bounded": {}}));
+        assert_eq!(defaults.closure(), Closure::Native);
+        assert!(serde_json::from_value::<DeliveryPolicy>(json!({"bounded": {"priority": 1}})).is_err());
+        assert_eq!(Overflow::EvictOldest.as_str(), "evict_oldest");
+        assert_eq!(Closure::Discard.as_str(), "discard");
     }
 
     #[test]

@@ -6,8 +6,11 @@
 //! siblings):
 //!
 //! - every source, and the trace sampler, which emits metrics of its own, with a scripted component that sends each
-//!   batch the test feeds it, as one buffer, on its `metrics` output, and counts the sends that completed
-//!   ([`TestTopology::sent`]);
+//!   batch the test feeds it, as one buffer, on its output of the batch's type (a source's `metrics`, `events`,
+//!   `service_checks`, or `logs`; the sampler's `metrics`), and counts the sends that completed
+//!   ([`TestTopology::sent`]); except the sources and the trace sampler the options keep real
+//!   ([`Options::real_sources`], [`Options::real_trace_sampler`]), such as the DogStatsD source listening on a socket
+//!   for a measurement;
 //! - DogStatsD aggregation, when asked, with native aggregation on a test clock ([`Aggregation::Clocked`]): it admits
 //!   every metric at [`ADMITTED_AT`] and flushes once, when its input ends, at [`FLUSHED_AT`], past every bucket, so
 //!   that what it emits does not depend on when a test runs; or with a transform that reads nothing until its gate
@@ -19,8 +22,14 @@
 //!   region, as they replace the native component on the legacy path: the scripted stand-in stamps what it sends as
 //!   the slot stamps its time-driven output, so the regions after it take it as aggregation's;
 //! - every metrics encoder, and the DogStatsD client telemetry destination, with a collector that records each buffer
-//!   it receives and encodes nothing;
-//! - every forwarder with one that drops what it receives, so nothing leaves the process.
+//!   it receives and encodes nothing; or, with [`Encoders::Real`], the metrics encoders are kept, and the collector
+//!   observes what each receives before it encodes it (see the `test-util` helpers `TopologyBlueprint::wrap_encoder`
+//!   and `Consumer::observe`);
+//! - every forwarder with one that drops what it receives, so nothing leaves the process, counting the metrics the
+//!   payloads it drops carry ([`TestTopology::forwarded`]); on the plan-driven path, the delivery hosts' recipients
+//!   with ones that send nothing and count the events they would have sent. With [`Recipients::Sending`], the
+//!   forwarders and the recipients send as in production, to the endpoints the configuration names, such as recording
+//!   intakes.
 //!
 //! Everything else runs as it does in production: the regions (with the gateways, on the plan-driven path), the native
 //! transforms (with the gateways, on the legacy path), aggregation unless replaced, and, for the plan-driven path, the
@@ -29,7 +38,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex as StdMutex,
     },
     time::Duration,
@@ -39,7 +48,7 @@ use agent_data_plane_config::SalukiConfiguration;
 use agent_data_plane_config_system::ConfigurationSystem;
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
-use saluki_components::transforms::AggregateContextSnapshotEntry;
+use saluki_components::{encoders::encode_host::LeaseObserver, transforms::AggregateContextSnapshotEntry};
 use saluki_core::{
     accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder, MemoryLimiter},
     components::{
@@ -52,9 +61,9 @@ use saluki_core::{
     },
     data_model::{
         event::{metric::Metric, Event, EventType},
-        payload::PayloadType,
+        payload::{Payload, PayloadType},
     },
-    execution::{AdmissionTime, BatchHeader, ManualWallClock, WallClock as _},
+    execution::{AdmissionTime, BatchHeader, EntryId, ManualWallClock, WallClock as _},
     health::{Health, HealthRegistry},
     observability::ComponentMetricsExt as _,
     runtime::{state::ResourceRegistry, Supervisor, SupervisorError},
@@ -70,6 +79,7 @@ use saluki_metric_plan::{
 };
 use saluki_metrics::MetricsBuilder;
 use tokio::{
+    runtime::Handle,
     sync::{mpsc, oneshot, Semaphore},
     task::JoinHandle,
     time::Instant,
@@ -77,8 +87,8 @@ use tokio::{
 
 use super::{
     installer::{BootTopology, InstallerWorker, PlanStatus, ProgrammableMetrics},
-    test_support::{environment_provider, programmable_metrics_with_operators},
-    topology::aggregation_slot,
+    test_support::{environment_provider, init_test_tls, programmable_metrics_with_operators},
+    topology::{aggregation_slot, HostDoubles},
 };
 use crate::{
     cli::run::{create_legacy_topology, create_topology, dogstatsd_aggregate_configuration},
@@ -134,6 +144,31 @@ pub(super) enum Aggregation {
     Scripted,
 }
 
+/// What runs in place of the metrics encoders.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Encoders {
+    /// Collectors that record what each encoder would receive and encode nothing.
+    Collecting,
+
+    /// The real encoders, which encode and compress into payloads that the dropping forwarders discard; the collector
+    /// observes what each encoder receives, recording only buffers with metrics the options keep, so that a
+    /// measurement sees when a marker reaches an encoder while every encoder does its work.
+    Real,
+}
+
+/// What the forwarders do with the payloads they receive: on the legacy path, the native forwarders; on the plan-driven
+/// path, the delivery hosts' recipients.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Recipients {
+    /// Forwarders that discard every payload and count its metrics; the delivery hosts run as in production, with
+    /// recipients that send nothing.
+    Discarding,
+
+    /// The native forwarders, and the delivery hosts' recipients, sending every payload to the endpoints the
+    /// configuration names, as in production: with [`Encoders::Real`], for tests that run recording intakes.
+    Sending,
+}
+
 /// The component DogStatsD aggregation runs as, which also names the gate of gated aggregation and the feed of scripted
 /// aggregation.
 pub(super) const DSD_AGG: &str = "dsd_agg";
@@ -149,6 +184,9 @@ pub(super) struct Delivery {
 
     /// The generation the buffer's header carries.
     pub generation: Option<u64>,
+
+    /// The entry the buffer's header carries: for an encoder that one of an output's leases feeds, the lease.
+    pub entry: Option<EntryId>,
 
     /// The buffer's metrics that the options say to keep: all of them, unless a test only needs some.
     pub metrics: Vec<Metric>,
@@ -206,6 +244,24 @@ pub(super) struct Options {
     /// ticks needs. The plan-driven path's clocks are those of the boot topology (see
     /// [`before_topology`][Self::before_topology]).
     pub aggregation_clock: Option<ManualWallClock>,
+
+    /// The sources that run as built, such as `dsd_in` listening on its configured sockets, rather than as scripted
+    /// sources: they have no feed. None by default.
+    pub real_sources: BTreeSet<String>,
+
+    /// What runs in place of the metrics encoders: collectors by default.
+    pub encoders: Encoders,
+
+    /// Whether the trace sampler runs as built, sampling the traces fed to the OTLP source and sending them on to the
+    /// traces encoder, rather than as a scripted transform that drops them: `false` by default.
+    pub real_trace_sampler: bool,
+
+    /// What the forwarders do with their payloads: discard them by default.
+    pub recipients: Recipients,
+
+    /// The runtime the topology runs compute-heavy subtasks of components on, such as the encoders' request builders,
+    /// as ADP's global thread pool; the test's runtime by default.
+    pub worker_pool: Option<Handle>,
 }
 
 impl Options {
@@ -225,11 +281,17 @@ impl Options {
             environment_ready: None,
             operators: OperatorRegistry::native(),
             aggregation_clock: None,
+            real_sources: BTreeSet::new(),
+            encoders: Encoders::Collecting,
+            recipients: Recipients::Discarding,
+            real_trace_sampler: false,
+            worker_pool: None,
         }
     }
 }
 
 /// The input a test feeds into one component output, and how many of the batches fed the component has sent.
+#[derive(Clone)]
 struct Feed {
     batches: mpsc::UnboundedSender<Vec<Event>>,
     sent: Arc<AtomicUsize>,
@@ -252,6 +314,8 @@ impl Feed {
 /// A running test topology.
 pub(super) struct TestTopology {
     feeds: BTreeMap<String, Feed>,
+    forwarded: Arc<AtomicU64>,
+    outputs: BTreeSet<String>,
     deliveries: mpsc::UnboundedReceiver<Delivery>,
     received: Vec<Delivery>,
     status: Option<Arc<ArcSwap<PlanStatus>>>,
@@ -284,9 +348,35 @@ impl TestTopology {
             environment_ready,
             operators,
             aggregation_clock,
+            real_sources,
+            encoders,
+            recipients,
+            real_trace_sampler,
+            worker_pool,
         } = options;
+        assert!(
+            recipients == Recipients::Discarding || encoders == Encoders::Real,
+            "recipients send only payloads that real encoders build"
+        );
+        init_test_tls();
         let config = SalukiConfiguration::clone(&system.config());
         let env = environment_provider(&config).await;
+        let (deliveries_tx, deliveries) = mpsc::unbounded_channel();
+        let forwarded = Arc::new(AtomicU64::new(0));
+        // The gates of the outputs that wait before they read: an output's own collector's, or, on the plan-driven
+        // path, the gate of the encode host that runs the output's lease.
+        let mut gates = gated
+            .iter()
+            .map(|output| (output.clone(), Arc::new(Semaphore::new(0))))
+            .collect::<BTreeMap<_, _>>();
+        if aggregation == Aggregation::Gated {
+            gates.insert(DSD_AGG.to_string(), Arc::new(Semaphore::new(0)));
+        }
+        // The plan-driven path's outputs: its encode hosts' leases, which the hosts name, and its fixed destinations.
+        let mut plan_outputs = None;
+        // The encode hosts and delivery hosts the plan-driven path builds, which run as in production with doubles at
+        // their edges, so that the installer controls them.
+        let mut hosts = BTreeSet::new();
         let mut isolated_aggregation = false;
         // How the isolation slot of aggregation stamps its time-driven output, for a scripted stand-in.
         let mut aggregation_stamp = None;
@@ -325,6 +415,30 @@ impl TestTopology {
                 if let Some(before_topology) = before_topology {
                     before_topology(metrics.boot_topology());
                 }
+                let boot = metrics.boot_topology();
+                let mut host_gates = BTreeMap::new();
+                for output in &gated {
+                    if let Some(encoder) = encode_host_of(boot, output) {
+                        let gate = host_gates
+                            .entry(encoder.to_string())
+                            .or_insert_with(|| Arc::new(Semaphore::new(0)));
+                        gates.insert(output.clone(), Arc::clone(gate));
+                    }
+                }
+                for host in boot.hosts_at_boot.iter() {
+                    hosts.insert(host.delivery.to_string());
+                    hosts.insert(host.encoder.to_string());
+                }
+                plan_outputs = Some(frame_outputs(boot));
+                boot.host_doubles = Some(HostDoubles {
+                    observer: Arc::new(LeaseCollector {
+                        deliveries: deliveries_tx.clone(),
+                        keep,
+                    }),
+                    encode: encoders == Encoders::Real,
+                    delivered: (recipients == Recipients::Discarding).then(|| Arc::clone(&forwarded)),
+                    gates: host_gates,
+                });
                 let (blueprint, control_surfaces) = create_topology(system, &env, &registry, Some(&mut metrics))
                     .await
                     .expect("the plan-driven topology builds");
@@ -337,14 +451,8 @@ impl TestTopology {
         };
 
         let snapshot = blueprint.snapshot().expect("the blueprint is not running yet");
-        let (deliveries_tx, deliveries) = mpsc::unbounded_channel();
+        let outputs = plan_outputs.unwrap_or_else(|| collected_outputs(&snapshot));
         let mut feeds = BTreeMap::new();
-        let gated_aggregation = (aggregation == Aggregation::Gated).then(|| DSD_AGG.to_string());
-        let gates = gated
-            .into_iter()
-            .chain(gated_aggregation)
-            .map(|output| (output, Arc::new(Semaphore::new(0))))
-            .collect::<BTreeMap<_, _>>();
         let collector = |id: &str| Collector {
             output: id.to_string(),
             deliveries: deliveries_tx.clone(),
@@ -354,13 +462,22 @@ impl TestTopology {
         for component in snapshot.components() {
             let id = component.id().to_string();
             match component.component_type() {
+                // The plan-driven path's hosts run with doubles at their edges.
+                ComponentType::Encoder | ComponentType::Forwarder if hosts.contains(&id) => {}
+                ComponentType::Source if real_sources.contains(&id) => {}
                 ComponentType::Source => {
                     let (feed, batches, sent) = Feed::new();
-                    blueprint
-                        .replace_source(&id, ScriptedSourceBuilder::new(component, batches, sent))
-                        .expect("a scripted source declares what it replaces");
+                    let source = ScriptedSourceBuilder::new(component, batches, sent);
+                    // One feed for every output: the source sends each batch on the output of its events' type.
+                    for name in source.outputs.iter().filter_map(OutputDefinition::output_name) {
+                        feeds.insert(format!("{}.{}", id, name), feed.clone());
+                    }
                     feeds.insert(format!("{}.metrics", id), feed);
+                    blueprint
+                        .replace_source(&id, source)
+                        .expect("a scripted source declares what it replaces");
                 }
+                ComponentType::Transform if id == "trace_sampler" && real_trace_sampler => {}
                 ComponentType::Transform if METRIC_EMITTING_TRANSFORMS.contains(&id.as_str()) => {
                     let (feed, batches, sent) = Feed::new();
                     let output = OutputName::Given("metrics".into());
@@ -425,6 +542,19 @@ impl TestTopology {
                         feeds.insert(DSD_AGG.to_string(), feed);
                     }
                 },
+                ComponentType::Encoder
+                    if encoders == Encoders::Real && component.input() == Some(DataType::Event(EventType::Metric)) =>
+                {
+                    let collector = Arc::new(collector(&id));
+                    blueprint
+                        .wrap_encoder(&id, move |inner| {
+                            Box::new(ObservedEncoder {
+                                inner,
+                                collector: Arc::clone(&collector),
+                            })
+                        })
+                        .expect("the encoder exists");
+                }
                 ComponentType::Encoder if component.input() == Some(DataType::Event(EventType::Metric)) => {
                     let payloads = match component.outputs().first().map(|output| output.data_type()) {
                         Some(DataType::Payload(payloads)) => payloads,
@@ -450,13 +580,15 @@ impl TestTopology {
                         )
                         .expect("a collecting destination declares what it replaces");
                 }
+                ComponentType::Forwarder if recipients == Recipients::Sending => {}
                 ComponentType::Forwarder => {
                     let payloads = match component.input() {
                         Some(DataType::Payload(payloads)) => payloads,
                         other => panic!("forwarder `{}` accepts {:?}", id, other),
                     };
+                    let forwarded = Arc::clone(&forwarded);
                     blueprint
-                        .replace_forwarder(&id, DroppingForwarderBuilder { payloads })
+                        .replace_forwarder(&id, DroppingForwarderBuilder { payloads, forwarded })
                         .expect("a dropping forwarder declares what it replaces");
                 }
                 _ => {}
@@ -467,8 +599,11 @@ impl TestTopology {
         blueprint
             .with_health_registry(health.clone())
             .with_memory_limiter(MemoryLimiter::noop())
-            .with_resource_registry(ResourceRegistry::new())
-            .with_ambient_worker_pool();
+            .with_resource_registry(ResourceRegistry::new());
+        match worker_pool {
+            Some(pool) => blueprint.with_explicit_worker_pool(pool),
+            None => blueprint.with_ambient_worker_pool(),
+        };
         if let Some(ready) = environment_ready {
             blueprint.with_environment_readiness(ready);
         }
@@ -492,6 +627,8 @@ impl TestTopology {
 
         Self {
             feeds,
+            forwarded,
+            outputs,
             deliveries,
             received: Vec::new(),
             status,
@@ -514,6 +651,13 @@ impl TestTopology {
     /// Returns the blueprint of the topology, as it was built, before any component was replaced.
     pub(super) fn snapshot(&self) -> &BlueprintSnapshot {
         &self.snapshot
+    }
+
+    /// Returns the outputs whose deliveries the topology records: on the legacy path, every metrics encoder and the
+    /// DogStatsD client telemetry destination ([`collected_outputs`]); on the plan-driven path, every output bound to
+    /// an encode host, as its leases name it, and the client telemetry destination.
+    pub(super) fn outputs(&self) -> BTreeSet<String> {
+        self.outputs.clone()
     }
 
     /// Returns the component outputs a test can feed metrics into, such as `dsd_in.metrics`.
@@ -558,6 +702,28 @@ impl TestTopology {
             .expect("the scripted component runs until its feed closes");
     }
 
+    /// Returns `true` if the topology has the feed `feed`.
+    pub(super) fn has_feed(&self, feed: &str) -> bool {
+        self.feeds.contains_key(feed)
+    }
+
+    /// Feeds one batch of events, of one type, into `feed`: a scripted source sends it on its output of that type, as
+    /// [`feed`][Self::feed] does metrics.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the topology has no such feed.
+    pub(super) fn feed_events(&self, feed: &str, events: Vec<Event>) {
+        let sender = self
+            .feeds
+            .get(feed)
+            .unwrap_or_else(|| panic!("the topology has no feed `{}`; it has {:?}", feed, self.feeds.keys()));
+        sender
+            .batches
+            .send(events)
+            .expect("the scripted component runs until its feed closes");
+    }
+
     /// Returns how many of the batches fed on `feed` its scripted component has sent so far. A send completes once
     /// every component the output is connected to has taken the batch into its input.
     ///
@@ -570,6 +736,11 @@ impl TestTopology {
             .unwrap_or_else(|| panic!("the topology has no feed `{}`; it has {:?}", feed, self.feeds.keys()))
             .sent
             .load(Ordering::SeqCst)
+    }
+
+    /// Returns how many metrics the payloads the dropping forwarders discarded so far carried, in all.
+    pub(super) fn forwarded(&self) -> u64 {
+        self.forwarded.load(Ordering::Relaxed)
     }
 
     /// Returns the next buffer an output receives, without recording it, or `None` once the outputs have stopped.
@@ -672,6 +843,29 @@ pub(super) fn output_points(deliveries: &[Delivery]) -> OutputPoints {
     points
 }
 
+/// Returns the outputs of the boot plan as the plan-driven path's doubles record them: every output bound to a
+/// delivery host, by its ID, which its lease in the encode host names, and every fixed destination, by its component.
+fn frame_outputs(boot: &BootTopology) -> BTreeSet<String> {
+    boot.frame
+        .outputs()
+        .iter()
+        .map(|output| match &output.binding {
+            Some(_) => output.id.to_string(),
+            None => boot
+                .outputs
+                .get(output.id.as_str())
+                .map_or_else(|| output.id.to_string(), |native| native.component.clone()),
+        })
+        .collect()
+}
+
+/// Returns the encode host that runs the lease of the boot plan's `output`, if the output is bound to a delivery host.
+fn encode_host_of(boot: &BootTopology, output: &str) -> Option<&'static str> {
+    let output = boot.frame.outputs().iter().find(|decl| decl.id.as_str() == output)?;
+    let host = output.binding.as_ref()?.host.as_str();
+    boot.hosts_at_boot.get(host).map(|host| host.encoder)
+}
+
 /// Returns the outputs a topology declares in its snapshot as test doubles collect them: every metrics encoder, and
 /// the DogStatsD client telemetry destination.
 pub(super) fn collected_outputs(snapshot: &BlueprintSnapshot) -> BTreeSet<String> {
@@ -712,7 +906,6 @@ fn event_outputs(component: &ComponentSnapshot) -> Vec<OutputDefinition<EventTyp
         .collect()
 }
 
-/// Returns the metrics as one buffer, sized to them.
 /// Returns the name of a component's first output, which the stand-ins that replace it send on.
 fn first_output(component: &ComponentSnapshot) -> OutputName {
     component
@@ -736,7 +929,7 @@ fn time_driven_stamp(boot: &BootTopology) -> BatchHeader {
         .filter(|entry| matches!(entry.key, EntryKey::StateOutput(_)))
         .flat_map(|entry| &entry.steps)
         .find_map(|step| match step {
-            Step::Exit { entry, .. } => *entry,
+            Step::Exit { entry, .. } => entry.region(),
             _ => None,
         })
         .expect("aggregation's time-driven output leads to a region");
@@ -749,6 +942,7 @@ fn time_driven_stamp(boot: &BootTopology) -> BatchHeader {
     }
 }
 
+/// Returns the events as one buffer, sized to them.
 fn buffer_of(events: Vec<Event>) -> EventsBuffer {
     let mut buffer = EventsBuffer::with_capacity(events.len());
     for event in events {
@@ -757,8 +951,9 @@ fn buffer_of(events: Vec<Event>) -> EventsBuffer {
     buffer
 }
 
-/// Builds a source that sends each batch it is fed on its `metrics` output, counting each send once it completes in
-/// `sent`, and declares the outputs of the source it replaces.
+/// Builds a source that sends each batch it is fed on its output of the batch's event type (`metrics`, `events`,
+/// `service_checks`, `logs`, or `traces`), counting each send once it completes in `sent`, and declares the outputs of
+/// the source it replaces.
 struct ScriptedSourceBuilder {
     outputs: Vec<OutputDefinition<EventType>>,
     batches: StdMutex<Option<mpsc::UnboundedReceiver<Vec<Event>>>>,
@@ -818,7 +1013,14 @@ impl Source for ScriptedSource {
                 _ = health.live() => {}
                 batch = self.batches.recv() => match batch {
                     Some(events) => {
-                        context.dispatcher().dispatch_named("metrics", buffer_of(events)).await?;
+                        let output = match events.first() {
+                            Some(Event::EventD(_)) => "events",
+                            Some(Event::ServiceCheck(_)) => "service_checks",
+                            Some(Event::Log(_)) => "logs",
+                            Some(Event::Trace(_)) => "traces",
+                            _ => "metrics",
+                        };
+                        context.dispatcher().dispatch_named(output, buffer_of(events)).await?;
                         self.sent.fetch_add(1, Ordering::SeqCst);
                     }
                     None => break,
@@ -1108,9 +1310,30 @@ impl Collector {
         }
     }
 
+    /// Records the metrics of `buffer` that the options keep, without taking the buffer, if there are any.
+    fn observe(&self, buffer: &EventsBuffer) {
+        let metrics = buffer
+            .into_iter()
+            .filter_map(Event::try_as_metric)
+            .filter(|metric| (self.keep)(metric))
+            .cloned()
+            .collect::<Vec<_>>();
+        if metrics.is_empty() {
+            return;
+        }
+        let _ = self.deliveries.send(Delivery {
+            output: self.output.clone(),
+            at: Instant::now(),
+            generation: buffer.header().generation_id().map(|generation| generation.get()),
+            entry: buffer.header().entry,
+            metrics,
+        });
+    }
+
     fn collect(&self, buffer: EventsBuffer) {
         let at = Instant::now();
         let generation = buffer.header().generation_id().map(|generation| generation.get());
+        let entry = buffer.header().entry;
         let metrics = buffer
             .into_iter()
             .filter_map(Event::try_into_metric)
@@ -1120,6 +1343,31 @@ impl Collector {
             output: self.output.clone(),
             at,
             generation,
+            entry,
+            metrics,
+        });
+    }
+}
+
+/// Records what the plan-driven path's encode hosts route to each lease, as the delivery of the lease's output.
+struct LeaseCollector {
+    deliveries: mpsc::UnboundedSender<Delivery>,
+    keep: fn(&Metric) -> bool,
+}
+
+impl LeaseObserver for LeaseCollector {
+    fn observe(&self, output: &str, buffer: &EventsBuffer) {
+        let metrics = buffer
+            .into_iter()
+            .filter_map(Event::try_as_metric)
+            .filter(|metric| (self.keep)(metric))
+            .cloned()
+            .collect::<Vec<_>>();
+        let _ = self.deliveries.send(Delivery {
+            output: output.to_string(),
+            at: Instant::now(),
+            generation: buffer.header().generation_id().map(|generation| generation.get()),
+            entry: buffer.header().entry,
             metrics,
         });
     }
@@ -1174,6 +1422,22 @@ impl Encoder for CollectingEncoder {
     }
 }
 
+/// A real encoder whose input a collector observes: the encoder receives every buffer as it would, after the collector
+/// has recorded the metrics of it that the options keep.
+struct ObservedEncoder {
+    inner: Box<dyn Encoder + Send>,
+    collector: Arc<Collector>,
+}
+
+#[async_trait]
+impl Encoder for ObservedEncoder {
+    async fn run(self: Box<Self>, mut context: EncoderContext) -> Result<(), GenericError> {
+        let collector = self.collector;
+        context.events().observe(move |buffer| collector.observe(buffer));
+        self.inner.run(context).await
+    }
+}
+
 /// Builds a destination that records every buffer it receives.
 struct CollectingDestinationBuilder {
     collector: Collector,
@@ -1218,9 +1482,11 @@ impl Destination for CollectingDestination {
     }
 }
 
-/// Builds a forwarder that drops every payload it receives.
+/// Builds a forwarder that drops every payload it receives, adding the metrics each HTTP payload carries to
+/// `forwarded`.
 struct DroppingForwarderBuilder {
     payloads: PayloadType,
+    forwarded: Arc<AtomicU64>,
 }
 
 #[async_trait]
@@ -1230,7 +1496,9 @@ impl ForwarderBuilder for DroppingForwarderBuilder {
     }
 
     async fn build(&self, _context: BuildContext) -> Result<Box<dyn Forwarder + Send>, GenericError> {
-        Ok(Box::new(DroppingForwarder))
+        Ok(Box::new(DroppingForwarder {
+            forwarded: Arc::clone(&self.forwarded),
+        }))
     }
 }
 
@@ -1238,7 +1506,9 @@ impl MemoryBounds for DroppingForwarderBuilder {
     fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
 }
 
-struct DroppingForwarder;
+struct DroppingForwarder {
+    forwarded: Arc<AtomicU64>,
+}
 
 #[async_trait]
 impl Forwarder for DroppingForwarder {
@@ -1248,8 +1518,13 @@ impl Forwarder for DroppingForwarder {
         loop {
             tokio::select! {
                 _ = health.live() => {}
-                payloads = context.payloads().next() => if payloads.is_none() {
-                    return Ok(());
+                payload = context.payloads().next() => match payload {
+                    Some(Payload::Http(payload)) => {
+                        let (metadata, _) = payload.into_parts();
+                        self.forwarded.fetch_add(metadata.event_count() as u64, Ordering::Relaxed);
+                    }
+                    Some(_) => {}
+                    None => return Ok(()),
                 },
             }
         }

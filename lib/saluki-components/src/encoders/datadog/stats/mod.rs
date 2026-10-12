@@ -104,8 +104,7 @@ impl EncoderBuilder for DatadogApmStatsEncoderConfiguration {
             StatsEndpointEncoder::new(agent_hostname, agent_version, agent_env),
             compression_scheme,
             RB_BUFFER_CHUNK_SIZE,
-        )
-        .await?;
+        )?;
         stats_rb.with_max_inputs_per_payload(MAX_STATS_PER_PAYLOAD);
 
         let flush_timeout = if self.flush_timeout.is_zero() {

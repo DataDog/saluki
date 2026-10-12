@@ -3,6 +3,13 @@
 mod artifacts;
 
 mod cut;
+
+mod declared;
+
+mod resources;
+
+mod retry;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
@@ -19,6 +26,15 @@ use saluki_core::execution::{
 use self::artifacts::{ArtifactState, Settle};
 use self::cut::CutSetup;
 pub use self::cut::{AfterCancel, ArmCut, CutDeferReason, CutInFlight, CutPhase, CutProgress, CutStatus};
+#[cfg(test)]
+pub(super) use self::declared::keeps;
+use self::declared::DeclaredState;
+use self::resources::TransactionState;
+use self::retry::{Wait, Waits};
+use super::resources::{
+    Creator, CreditKey, HostPrepare, HostPublish, LeaseRef, NoResourceBounds, RecipientRef, ResourceBounds,
+    ResourceTable, ResourcesRevision,
+};
 use super::{
     diff::{diff, kernel_reuse, state_bindings, CutPlan},
     lifecycle::{GenerationState, LifecycleEvent},
@@ -26,11 +42,11 @@ use super::{
 use crate::{
     canonical::{PlanHash, ResolvedValues},
     compile::{
-        compile, compile_unvalidated, CompileError, CompiledPlan, Frame, KernelKey, LineageKey, PlacementError,
-        RegionProgram, RewriteRecord, SlotId,
+        compile, compile_unvalidated, CompileError, CompiledPlan, Frame, KernelKey, LeaseTable, LineageKey,
+        PlacementError, RegionProgram, RewriteRecord, SlotId,
     },
     extension::TransitionClass,
-    ir::{NodeId, Plan},
+    ir::{HostId, NodeId, Plan},
     limits::{self, values::MAX_TRANSITION_LCM},
     operators::OperatorRegistry,
     runtime::state::rules::{lcm_secs, CutError},
@@ -184,6 +200,10 @@ pub struct SlotPrepare {
     /// generation's instances retire at the cut (see [`state_bindings`][super::diff::state_bindings]): empty for a
     /// slot without state owners.
     pub state: Vec<StateBinding>,
+
+    /// The generation's lease table: the lease of every output its plan declares, which the slot's exits to outputs
+    /// write into each buffer's header. Every slot of a generation shares one table.
+    pub leases: Arc<LeaseTable>,
 }
 
 /// How a region binds one state owner of a prepared generation to an instance of its state.
@@ -237,8 +257,78 @@ pub struct Prepare {
     /// What each slot prepares, in slot order: every slot of the frame, unchanged ones included.
     pub slots: Vec<SlotPrepare>,
 
-    /// How long the regions have to acknowledge, after which the caller reports [`InstallerCore::prepare_timed_out`].
+    /// What each host prepares for the generation: the leases and recipients it creates, reopens, or requires. Each
+    /// host acknowledges its part with [`PrepareSite::Host`], and the barrier waits for every host listed as for every
+    /// region.
+    pub hosts: Vec<HostPrepare>,
+
+    /// The credits the preparation adds to the resource budget, per resource, in bytes: its new leases and recipients,
+    /// an idle host's queue, and its new kernel instances in each slot. The caller acquires every one it does not hold
+    /// yet before it sends anything, and reports a refusal as the failed acknowledgment of
+    /// [`PrepareSite::Budget`].
+    pub admitted: Vec<(CreditKey, u64)>,
+
+    /// How long the regions and hosts have to acknowledge, after which the caller reports
+    /// [`InstallerCore::prepare_timed_out`].
     pub timeout: Duration,
+}
+
+/// Where a part of a preparation was prepared, which acknowledges it.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum PrepareSite {
+    /// A slot's region, with the slot's program.
+    Slot(SlotId),
+
+    /// A delivery host and its encode host, with the leases and recipients the preparation lists for them.
+    Host(HostId),
+
+    /// The caller's resource budget, from which the caller acquires the credits the preparation adds before it sends
+    /// anything: a refusal is this site's failed acknowledgment, naming the credit refused, so the core attributes it
+    /// to its resource.
+    Budget {
+        /// The credit the budget refused.
+        resource: CreditKey,
+    },
+}
+
+impl From<SlotId> for PrepareSite {
+    fn from(slot: SlotId) -> Self {
+        Self::Slot(slot)
+    }
+}
+
+/// What a site answered for its part of a preparation, or a host for its part of a resource transaction.
+///
+/// `Result<(), String>` converts into it: `Ok` is [`Prepared`][Self::Prepared], and `Err` [`Failed`][Self::Failed].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PrepareOutcome {
+    /// The site holds its part: a region the generation's program; a host every lease and recipient its part lists,
+    /// with every recipient the part requires live; the budget every credit the preparation adds.
+    Prepared,
+
+    /// A delivery host holds its part, except recipients it was asked to reopen whose I/O loops had already exited:
+    /// it answered their reopen with `Exited`, which is a race with their drains ending, not a failure. Each one's
+    /// exit arrives on the host's event channel ([`InstallerCore::recipient_retired`] or
+    /// [`InstallerCore::recipient_failed`]), after which the core prepares its next incarnation, whose queue adopts
+    /// the directory.
+    ///
+    /// Only a host answers this; from a region or the budget, it is a failure.
+    ReopenExited {
+        /// The recipients whose loops had exited.
+        recipients: Vec<RecipientRef>,
+    },
+
+    /// The site failed to prepare its part, with why: a host's error names the lease or recipient.
+    Failed(String),
+}
+
+impl From<Result<(), String>> for PrepareOutcome {
+    fn from(outcome: Result<(), String>) -> Self {
+        match outcome {
+            Ok(()) => Self::Prepared,
+            Err(message) => Self::Failed(message),
+        }
+    }
 }
 
 /// Something the caller must do.
@@ -249,13 +339,21 @@ pub enum Action {
     Prepare(Prepare),
 
     /// Tell each listed region to drop the generation's programs, the state instances built for it, and the
-    /// retirements it marked. Only a generation the schedule never stamped is aborted.
+    /// retirements it marked, and each listed delivery host to drop the recipients the generation created that no
+    /// other preparation holds and to return the recipients it reopened to draining, with their original deadlines.
+    /// Only a generation the schedule never stamped is aborted.
+    ///
+    /// An encode host has no abort: the leases the generation created follow as [`Action::ReleaseLeases`], which
+    /// drains a lease nothing addressed at once.
     Abort {
         /// The generation.
         generation: GenerationId,
 
         /// The slots whose regions were sent the preparation.
         slots: Vec<SlotId>,
+
+        /// The delivery hosts that were sent a part of the preparation.
+        hosts: Vec<HostId>,
     },
 
     /// Store `AdmissionSchedule::Steady(generation)` in the schedule handle of the topology, before handling anything
@@ -327,6 +425,80 @@ pub enum Action {
         /// The generation whose cut completes.
         generation: GenerationRef,
     },
+
+    /// Prepare, in each listed host, the native recipients a resource transaction adds or reopens and the next
+    /// incarnations of failed recipients, under the transaction's creator ([`Creator::Transaction`]), and report each
+    /// host's acknowledgment with [`InstallerCore::resources_prepared`].
+    ///
+    /// A resource transaction carries only state that outlives generations: it waits for no metrics preparation and
+    /// no cut, and a metrics preparation failure does not hold it back. The caller acquires the credits the
+    /// transaction lists before it sends anything; a refusal of a credit of one host's part is that host's failed
+    /// acknowledgment, and that host is sent nothing.
+    PrepareResources {
+        /// The revision the transaction publishes once every host prepared its part.
+        revision: ResourcesRevision,
+
+        /// What each host prepares.
+        hosts: Vec<HostPrepare>,
+
+        /// How long the hosts have to acknowledge, after which the caller reports
+        /// [`InstallerCore::resources_timed_out`].
+        timeout: Duration,
+
+        /// The credits the transaction adds to the resource budget, per resource, in bytes.
+        admitted: Vec<(CreditKey, u64)>,
+    },
+
+    /// Publish, in each listed host, its native recipient set, its settings, every recipient's settings, and the
+    /// recipients it withdraws. A host ignores a publication older than the one it runs. Nothing is reported back.
+    PublishResources {
+        /// The revision published.
+        revision: ResourcesRevision,
+
+        /// What each host publishes.
+        hosts: Vec<HostPublish>,
+    },
+
+    /// Tell each listed host to drop what a resource transaction that has not published prepared and no other
+    /// preparation holds, and to return what it reopened to draining: a newer lowering replaced it, or a host did not
+    /// acknowledge its part in time.
+    AbortResources {
+        /// The revision the transaction would have published.
+        revision: ResourcesRevision,
+
+        /// The hosts that were sent a part of the transaction.
+        hosts: Vec<HostId>,
+    },
+
+    /// Drain the listed leases of an encode host, which no live or kept generation uses any more or whose generation
+    /// was aborted, and report each lease's release with [`InstallerCore::lease_released`] once its last payload is in
+    /// the delivery host's input, or at once if the encode host does not hold it.
+    ReleaseLeases {
+        /// The delivery host whose encode host runs the leases.
+        host: HostId,
+
+        /// The leases.
+        leases: Vec<LeaseRef>,
+    },
+
+    /// Release the listed recipients of a delivery host, which no lease names and no user holds any more: each drains
+    /// its queued work for at most the drain deadline, then retires. The host reports each exit on its event channel,
+    /// which the caller hands to [`InstallerCore::recipient_retired`]; the caller does not wait for it before
+    /// performing the next action.
+    ReleaseRecipients {
+        /// The delivery host.
+        host: HostId,
+
+        /// The recipients.
+        recipients: Vec<RecipientRef>,
+    },
+
+    /// Return the listed credits to the resource budget: the creations they were acquired for ended, however they
+    /// ended (retired, released, aborted, refused, or superseded). Credits the caller does not hold are ignored.
+    ReleaseCredits {
+        /// The credits.
+        credits: Vec<CreditKey>,
+    },
 }
 
 /// What happened to a candidate.
@@ -397,6 +569,12 @@ pub enum PendingReason {
         /// The number of the next attempt, from 2.
         attempt: u32,
     },
+
+    /// It needs a recipient whose incarnation's fate is not known yet: its loop is exiting, and the candidate is
+    /// prepared once the host reports the exit, with the recipient's next incarnation, whose queue adopts the
+    /// directory; or its loop failed before the preparation that created it committed, and the candidate is prepared
+    /// once that preparation commits or aborts.
+    RecipientsExiting,
 
     /// Another candidate's preparation failed, and it waits for that candidate's retry delay, so that a preparation
     /// that keeps failing is not tried in a tight loop.
@@ -520,6 +698,27 @@ pub struct Boot {
     /// The program of every slot, in slot order, which each region host starts with, its kernels built from their
     /// specs.
     pub programs: Vec<Arc<RegionProgram>>,
+
+    /// The boot generation's lease table, which every region host starts with.
+    pub leases: Arc<LeaseTable>,
+
+    /// What each host is built with: the leases and recipients the boot generation needs, with their identifiers and
+    /// slots.
+    pub hosts: Vec<HostPrepare>,
+
+    /// What each delivery host publishes from its start: its native recipient set and its settings, at
+    /// [`revision`][Self::revision].
+    pub publish: Vec<HostPublish>,
+
+    /// The revision of [`publish`][Self::publish], the first published revision: each delivery host runs it from its
+    /// start, and ignores any later publication older than it.
+    pub revision: ResourcesRevision,
+
+    /// The credits the boot generation's resources hold, per resource, in bytes: its leases, its recipients' own
+    /// bounds, and its kernel instances. The boot verification counts them in the boot bound, so the caller adds them
+    /// to the resource budget's capacity and acquires them at once; each returns when its resource ends, as every
+    /// later credit does.
+    pub admitted: Vec<(CreditKey, u64)>,
 }
 
 /// What the installer knows about one generation.
@@ -622,7 +821,8 @@ struct Preparation {
     installed: Installed,
     compiled: CompiledPlan,
     attempts: u32,
-    waiting: BTreeSet<SlotId>,
+    /// The regions and hosts that have not acknowledged the preparation yet.
+    waiting: BTreeSet<PrepareSite>,
     /// The cut, for a cut installation: at the barrier, the generation is armed at a cut instead of committed.
     cut: Option<CutSetup>,
 }
@@ -728,7 +928,21 @@ type CutOverride = dyn Fn(&Plan, &Plan) -> Option<(CutPlan, Vec<AdmissionPointId
 /// Snapshots from the artifact channel arrive through [`on_snapshot`][Self::on_snapshot], and configuration changes
 /// through [`on_default_program`][Self::on_default_program], which composes the policy in effect again. Every event
 /// keeps each config's acknowledgment ([`config_states`][Self::config_states]) and the status summary
-/// ([`status_summary`][Self::status_summary]) current.
+/// ([`status_summary`][Self::status_summary]) current. The resources product arrives through
+/// [`on_resources`][Self::on_resources], and lowering declares resources from
+/// [`accepted_resources`][Self::accepted_resources].
+///
+/// # Resources
+///
+/// Each generation's preparation also prepares, in the fixed encode and delivery hosts, the leases and recipients its
+/// plan needs ([`ResourceTable`]), and the barrier waits for every host as for every region. Every lowering is followed
+/// by a resource transaction that publishes what outlives generations: native sets, settings, and withdrawn sets
+/// ([`resources_prepared`][Self::resources_prepared]). Leases drain after the last generation using them retires
+/// ([`lease_released`][Self::lease_released]), recipients after every lease naming them is released and nothing else
+/// holds them, and each recipient's exit arrives from its host ([`recipient_retired`][Self::recipient_retired],
+/// [`recipient_failed`][Self::recipient_failed]). At every lowering, the generation kept to roll back to, and the plan
+/// a cut replaced, are kept only while the latest lowering declares every output they declare with an equal
+/// fingerprint, and every recipient with the same protocol, so a rollback never resurrects a removed destination.
 pub struct InstallerCore {
     frame: Arc<Frame>,
     registry: OperatorRegistry,
@@ -741,7 +955,8 @@ pub struct InstallerCore {
     last_known_good: Option<Installed>,
     preparing: Option<Preparation>,
     pending: Option<Queued>,
-    retry_scheduled: bool,
+    /// What waits for a delay, on the caller's one retry timer.
+    waits: Waits,
     live: BTreeSet<GenerationId>,
     records: BTreeMap<GenerationId, GenerationRecord>,
     artifacts: ArtifactState,
@@ -757,6 +972,14 @@ pub struct InstallerCore {
     /// The latest default program handed to the core: an artifact's bucket widths must line up with its, so that it
     /// can always replace the artifact at a cut.
     default_program: Option<Arc<Plan>>,
+    /// The leases and recipients the hosts run for live generations.
+    resources: ResourceTable,
+    /// The retry and the failures of resource transactions.
+    transactions: TransactionState,
+    /// The resources product: its revisions, acknowledgments, and the revision lowering declares resources from.
+    declared: DeclaredState,
+    /// The credits the event being handled released, which its last action returns.
+    released_credits: Vec<CreditKey>,
     #[cfg(test)]
     cut_override: Option<Box<CutOverride>>,
 }
@@ -785,6 +1008,23 @@ impl InstallerCore {
     where
         N: Fn(GenerationId) -> RetireNotifier + Send + Sync + 'static,
     {
+        Self::with_resource_bounds(frame, registry, config, Arc::new(NoResourceBounds), notifier, boot)
+    }
+
+    /// Creates the core and the boot generation, as [`new`][Self::new] does, with the bounds that size each resource's
+    /// credit of the resource budget: the host's, which can read the parameters of leases and recipients.
+    ///
+    /// # Errors
+    ///
+    /// Returns the rejection if the boot candidate cannot be compiled into the frame, or if it is an artifact that is
+    /// not valid.
+    pub fn with_resource_bounds<N>(
+        frame: Arc<Frame>, registry: OperatorRegistry, config: InstallerConfig, bounds: Arc<dyn ResourceBounds>,
+        notifier: N, boot: Candidate,
+    ) -> Result<(Self, Boot), Rejection>
+    where
+        N: Fn(GenerationId) -> RetireNotifier + Send + Sync + 'static,
+    {
         let mut core = Self {
             frame,
             registry,
@@ -797,7 +1037,7 @@ impl InstallerCore {
             last_known_good: None,
             preparing: None,
             pending: None,
-            retry_scheduled: false,
+            waits: Waits::default(),
             live: BTreeSet::new(),
             records: BTreeMap::new(),
             artifacts: ArtifactState::default(),
@@ -806,6 +1046,10 @@ impl InstallerCore {
             rollbacks: BTreeSet::new(),
             finalized: None,
             default_program: (!boot.origin.can_roll_back()).then(|| Arc::clone(&boot.plan)),
+            resources: ResourceTable::with_bounds(bounds),
+            transactions: TransactionState::default(),
+            declared: DeclaredState::default(),
+            released_credits: Vec::new(),
             #[cfg(test)]
             cut_override: None,
         };
@@ -820,6 +1064,20 @@ impl InstallerCore {
             core.transition(id, event, None);
         }
         let programs = queued.compiled.programs.clone();
+        // The boot generation builds every kernel, and its resources and the boot transaction are built with the
+        // topology: nothing is prepared or published after its start.
+        let reuse = kernel_reuse(None, &programs);
+        let resources = core.resources.plan(&queued.plan);
+        let kernels = reuse
+            .iter()
+            .map(|slot| {
+                let held = slot.build.iter().map(|key| (key.clone(), id)).collect::<Vec<_>>();
+                let bytes = self::resources::instance_bytes(&queued.plan, &core.registry, &slot.build);
+                (slot.slot, (held, bytes))
+            })
+            .collect();
+        let (hosts, publish, admitted) = core.resources.boot(id, &queued.plan, &resources, kernels);
+        let revision = core.resources.revision();
         core.active = Some(Installed {
             generation: generation.clone(),
             candidate,
@@ -830,7 +1088,18 @@ impl InstallerCore {
             programs: programs.clone(),
             rewrites: queued.compiled.rewrites.into(),
         });
-        Ok((core, Boot { generation, programs }))
+        Ok((
+            core,
+            Boot {
+                generation,
+                programs,
+                leases: resources.leases,
+                hosts,
+                publish,
+                revision,
+                admitted,
+            },
+        ))
     }
 
     /// Returns the frame the core places candidates into.
@@ -897,17 +1166,27 @@ impl InstallerCore {
         let arrival = if origin.can_roll_back() {
             Arrival::Cancel
         } else {
-            self.default_program = Some(Arc::clone(&candidate.plan));
+            self.lowered(Arc::clone(&candidate.plan), &mut actions);
             Arrival::Queue
         };
         self.submit(id, candidate, arrival, &mut actions);
         (id, self.settle(actions, Settle::Quiet))
     }
 
+    /// Records the latest lowering of native configuration: later candidates are composed against it and lowered with
+    /// the resources artifact lowering declares resources from now, and a resource transaction follows it, before any
+    /// generation lowered with it is prepared.
+    fn lowered(&mut self, plan: Arc<Plan>, actions: &mut Vec<Action>) {
+        self.default_program = Some(plan);
+        self.declared.lowering = self.declared.installed_revision();
+        self.follow_lowering(actions);
+    }
+
     /// Proposes a candidate whose revision, if it is an artifact's, has been checked against the high-water mark.
     ///
     /// Returns `true` if the candidate is unchanged: it equals what the schedule will hold.
     fn submit(&mut self, id: CandidateId, candidate: Candidate, arrival: Arrival, actions: &mut Vec<Action>) -> bool {
+        self.declared.note_candidate(id);
         let origin = candidate.origin;
         let report = |outcome| {
             Action::Report(Report {
@@ -976,7 +1255,7 @@ impl InstallerCore {
             self.cancel_in_flight(actions);
             // A newer approval takes over at once: it does not wait out the retry delay of a candidate that failed to
             // prepare, which it replaces. A retry delay that passes later starts nothing that is not waiting.
-            self.retry_scheduled = false;
+            self.waits.cancel(&Wait::Candidate);
         } else if arrival == Arrival::Queue
             && self.cut.as_ref().is_some_and(|cut| {
                 cut.phase == CutPhase::Barrier && self.serve_same_artifact(id, cut.installed.candidate)
@@ -989,32 +1268,98 @@ impl InstallerCore {
         false
     }
 
-    /// Reports one region's acknowledgment of a preparation: `Ok` if it holds the generation's program, or the error it
-    /// failed with.
+    /// Reports one site's acknowledgment of a preparation: [`Prepared`][PrepareOutcome::Prepared] if a region holds
+    /// the generation's program, or a host the generation's leases and recipients; for a host, which recipients it
+    /// could not reopen because their loops had exited ([`ReopenExited`][PrepareOutcome::ReopenExited]); or the error
+    /// the site failed with.
     ///
+    /// A [`SlotId`] converts into [`PrepareSite::Slot`], and `Result<(), String>` into a [`PrepareOutcome`].
     /// Acknowledgments of a generation that is no longer being prepared are ignored.
     pub fn prepare_acknowledged(
-        &mut self, generation: GenerationId, slot: SlotId, outcome: Result<(), String>,
+        &mut self, generation: GenerationId, site: impl Into<PrepareSite>, outcome: impl Into<PrepareOutcome>,
     ) -> Vec<Action> {
+        let site = site.into();
+        let outcome = outcome.into();
         let mut actions = Vec::new();
         let Some(preparing) = self
             .preparing
             .as_mut()
             .filter(|preparing| preparing.installed.generation.id() == generation)
         else {
-            return actions;
-        };
-        match outcome {
-            Ok(()) => {
-                preparing.waiting.remove(&slot);
-                if preparing.waiting.is_empty() {
-                    self.pass_barrier(&mut actions);
+            // A host that holds a part of an aborted generation, which a worker restart sent it again, aborts it again.
+            if let (PrepareSite::Host(host), PrepareOutcome::Prepared | PrepareOutcome::ReopenExited { .. }) =
+                (&site, &outcome)
+            {
+                if self.resources.is_dropped_part(Creator::Generation(generation), host) {
+                    actions.push(Action::Abort {
+                        generation,
+                        slots: Vec::new(),
+                        hosts: vec![host.clone()],
+                    });
                 }
             }
-            Err(message) => {
-                let message = format!("region `{}` failed to prepare: {}", self.slot_name(slot), message);
-                self.fail_preparation(message, GenerationState::Rejected, &mut actions);
+            return actions;
+        };
+        // A failure a resource caused is not the candidate's: an artifact composed over it is tried again, as a default
+        // program is, and a declared resource's failure rejects its resources revision instead.
+        let mut resource_failure = false;
+        let failure = match (outcome, site) {
+            (PrepareOutcome::Prepared, site @ (PrepareSite::Slot(_) | PrepareSite::Host(_))) => {
+                if preparing.waiting.remove(&site) && preparing.waiting.is_empty() {
+                    self.pass_barrier(&mut actions);
+                }
+                None
             }
+            // The budget is acquired before anything is sent: its success is not waited for.
+            (PrepareOutcome::Prepared, PrepareSite::Budget { .. }) => None,
+            (PrepareOutcome::ReopenExited { recipients }, PrepareSite::Host(host)) => {
+                // The generation's leases name the slots of incarnations whose loops exited: it is prepared again once
+                // their exits are reported, with their next incarnations. A host that was sent no part has nothing to
+                // reopen, and its answer changes nothing.
+                if preparing.waiting.contains(&PrepareSite::Host(host.clone())) {
+                    let mut released = super::resources::Released::default();
+                    self.resources
+                        .reopen_exited(Creator::Generation(generation), &recipients, &mut released);
+                    self.push_released(released, &mut actions);
+                    self.restart_for_exits(&host, &mut actions);
+                }
+                None
+            }
+            (PrepareOutcome::ReopenExited { recipients }, PrepareSite::Slot(slot)) => Some(format!(
+                "region `{}` failed to prepare: it answered as a delivery host does, with {} recipients it could \
+                 not reopen; report a region's preparation as prepared or failed",
+                self.slot_name(slot),
+                recipients.len()
+            )),
+            (PrepareOutcome::ReopenExited { recipients }, PrepareSite::Budget { resource }) => Some(format!(
+                "the resource budget answered for {} as a delivery host does, with {} recipients it could not \
+                 reopen; report the budget's acquisition as prepared or failed",
+                resource,
+                recipients.len()
+            )),
+            (PrepareOutcome::Failed(message), PrepareSite::Slot(slot)) => Some(format!(
+                "region `{}` failed to prepare: {}",
+                self.slot_name(slot),
+                message
+            )),
+            (PrepareOutcome::Failed(message), PrepareSite::Host(host)) => {
+                resource_failure = true;
+                let message = format!("host `{}` failed to prepare: {}", host, message);
+                self.attribute_host_failure(generation, &host, &message, &mut actions);
+                Some(message)
+            }
+            (PrepareOutcome::Failed(message), PrepareSite::Budget { resource }) => {
+                let message = format!("the resource budget refused {}: {}", resource, message);
+                // A refusal of an artifact's kernel instances is that artifact's own failure.
+                if !matches!(resource, CreditKey::Instances(..)) {
+                    resource_failure = true;
+                    self.attribute_credit_failure(&resource, &message, &mut actions);
+                }
+                Some(message)
+            }
+        };
+        if let Some(message) = failure {
+            self.fail_preparation_with(message, GenerationState::Rejected, resource_failure, &mut actions);
         }
         self.settle(actions, Settle::AfterFailure { rolled_back: false })
     }
@@ -1032,42 +1377,84 @@ impl InstallerCore {
         else {
             return actions;
         };
-        let missing = preparing
+        // Every site acknowledged it: it waits only for the resource transaction in flight to publish, which that
+        // transaction's own timeout ends.
+        if preparing.waiting.is_empty() {
+            return actions;
+        }
+        let regions = preparing
             .waiting
             .iter()
-            .map(|slot| format!("`{}`", self.slot_name(*slot)))
+            .filter_map(|site| match site {
+                PrepareSite::Slot(slot) => Some(format!("`{}`", self.slot_name(*slot))),
+                PrepareSite::Host(_) | PrepareSite::Budget { .. } => None,
+            })
             .collect::<Vec<_>>();
+        let hosts = preparing
+            .waiting
+            .iter()
+            .filter_map(|site| match site {
+                PrepareSite::Host(host) => Some(format!("`{}`", host)),
+                PrepareSite::Slot(_) | PrepareSite::Budget { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        let missing = match (regions.is_empty(), hosts.is_empty()) {
+            (false, true) => format!("the regions {}", regions.join(", ")),
+            (true, false) => format!("the hosts {}", hosts.join(", ")),
+            _ => format!("the regions {} and the hosts {}", regions.join(", "), hosts.join(", ")),
+        };
         let message = format!(
-            "the regions {} did not acknowledge within {:?}",
-            missing.join(", "),
-            self.config.prepare_timeout
+            "{} did not acknowledge within {:?}",
+            missing, self.config.prepare_timeout
         );
         self.fail_preparation(message, GenerationState::Rejected, &mut actions);
         self.settle(actions, Settle::AfterFailure { rolled_back: false })
     }
 
-    /// Reports that the delay of an [`Action::RetryAfter`] passed.
+    /// Reports that the delay of the latest [`Action::RetryAfter`] passed.
     ///
-    /// A cut whose arming was put off is armed again.
+    /// What waited for its own delay, and waited that long, is tried again: a cut whose arming was put off is armed
+    /// again, a candidate that waited for the delay is prepared, and a resource transaction that left an addition out,
+    /// or a failed recipient's next incarnation, is tried again. What still waits asks for another
+    /// [`Action::RetryAfter`]: the caller keeps one timer, which each one replaces, and several things wait on it, each
+    /// for its own delay.
     pub fn retry(&mut self) -> Vec<Action> {
         let mut actions = Vec::new();
-        self.retry_scheduled = false;
-        if let Some(cut) = self
-            .cut
-            .as_mut()
-            .filter(|cut| cut.arm_due && cut.phase == CutPhase::Barrier)
-        {
-            cut.arm_due = false;
-            actions.extend(self.arm_action());
+        let (due, next) = self.waits.passed();
+        if let Some(delay) = next {
+            actions.push(Action::RetryAfter(delay));
+        }
+        self.retry_resources(&due, &mut actions);
+        if due.contains(&Wait::Cut) {
+            if let Some(cut) = self
+                .cut
+                .as_mut()
+                .filter(|cut| cut.arm_due && cut.phase == CutPhase::Barrier)
+            {
+                cut.arm_due = false;
+                actions.extend(self.arm_action());
+            }
         }
         self.try_start(&mut actions);
         self.settle(actions, Settle::Quiet)
     }
 
+    /// Starts a wait for `delay`, setting the caller's retry timer if the wait needs it set.
+    fn start_wait(&mut self, wait: Wait, delay: Duration, actions: &mut Vec<Action>) {
+        if let Some(delay) = self.waits.start(wait, delay) {
+            actions.push(Action::RetryAfter(delay));
+        }
+    }
+
     /// Reports that a generation's token was dropped: nothing references it any more.
+    ///
+    /// The leases no other live generation uses drain ([`Action::ReleaseLeases`]), the recipients nothing holds any
+    /// more are released ([`Action::ReleaseRecipients`]), and the credits of its kernel instances that no live
+    /// generation holds return.
     pub fn retired(&mut self, generation: GenerationId) -> Vec<Action> {
         let mut actions = Vec::new();
         self.live.remove(&generation);
+        self.release_retired(generation, &mut actions);
         if self.records.get(&generation).map(|record| record.state) == Some(GenerationState::Draining) {
             self.transition(generation, LifecycleEvent::Retired, None);
             if let Some(record) = self.records.get(&generation) {
@@ -1205,6 +1592,7 @@ impl InstallerCore {
         let Some(rollback) = self.rollback.take() else { return };
         let id = self.candidate_id();
         self.adopt_source(id, rollback.from);
+        self.declared.adopt(id, rollback.from);
         self.rollbacks.insert(id);
         let behind = self.lowered_after(rollback.from);
         self.submit(id, rollback.candidate, Arrival::Cancel, actions);
@@ -1302,7 +1690,7 @@ impl InstallerCore {
             Some(PendingReason::Preparing)
         } else if self.cut.is_some() {
             Some(PendingReason::CutInProgress)
-        } else if self.retry_scheduled {
+        } else if self.waits.waiting(&Wait::Candidate) {
             Some(if queued.attempts > 0 {
                 PendingReason::Retry {
                     attempt: queued.attempts + 1,
@@ -1310,6 +1698,8 @@ impl InstallerCore {
             } else {
                 PendingReason::Backoff
             })
+        } else if !self.resources.waiting_for(&queued.plan).is_empty() {
+            Some(PendingReason::RecipientsExiting)
         } else if self.live.len() >= self.config.overlap_budget {
             Some(PendingReason::OverlapBudget {
                 live: self.live.len(),
@@ -1354,17 +1744,17 @@ impl InstallerCore {
         }
 
         let generation = self.generation(&queued);
-        let active = self
-            .active
-            .as_ref()
-            .map(|active| (active.generation.id(), active.programs.as_slice()));
-        let active_programs = active.map(|(_, programs)| programs);
+        let active_programs = self.active.as_ref().map(|active| active.programs.clone());
+        let active_id = self.active.as_ref().map(|active| active.generation.id());
+        let active = active_id.zip(active_programs.as_deref());
+        let active_programs = active_programs.as_deref();
         let owners = cut
             .as_ref()
             .map(|cut: &CutSetup| cut.plan.owners.iter().cloned().collect::<BTreeSet<_>>())
             .unwrap_or_default();
         let bindings = state_bindings(active, &queued.compiled.programs, &owners);
         let reuse = kernel_reuse(active_programs, &queued.compiled.programs);
+        let resources = self.plan_generation(generation.id(), &queued.plan, active_id, &reuse);
         let slots = reuse
             .into_iter()
             .zip(&queued.compiled.programs)
@@ -1381,14 +1771,21 @@ impl InstallerCore {
                     reuse: kernels.reuse,
                     build: kernels.build,
                     state,
+                    leases: Arc::clone(&resources.leases),
                 }
             })
             .collect::<Vec<_>>();
         let programs = slots.iter().map(|slot| Arc::clone(&slot.program)).collect();
-        let waiting = slots.iter().map(|slot| slot.slot).collect::<BTreeSet<_>>();
+        let waiting = slots
+            .iter()
+            .map(|slot| PrepareSite::Slot(slot.slot))
+            .chain(resources.hosts.iter().map(|part| PrepareSite::Host(part.host.clone())))
+            .collect::<BTreeSet<_>>();
         actions.push(Action::Prepare(Prepare {
             generation: generation.clone(),
             slots,
+            hosts: resources.hosts,
+            admitted: resources.admitted,
             timeout: self.config.prepare_timeout,
         }));
         let id = generation.id();
@@ -1557,12 +1954,46 @@ impl InstallerCore {
     }
 
     /// Ends a preparation every region acknowledged: commits it, or, for a cut installation, arms its cut.
+    ///
+    /// A generation that uses a recipient its host withdraws while the latest lowering declares it again, as when an
+    /// endpoint removed is added back before the resource transaction that restores it published, waits for that
+    /// transaction: its leases would otherwise send to a recipient its host drops every payload for. The transaction
+    /// publishes once its hosts answer, or at its timeout.
     fn pass_barrier(&mut self, actions: &mut Vec<Action>) {
+        if self.waits_for_publication() {
+            tracing::debug!(
+                "A prepared generation waits for the resource transaction that restores a recipient it uses."
+            );
+            return;
+        }
         let is_cut = self.preparing.as_ref().is_some_and(|preparing| preparing.cut.is_some());
         if is_cut && self.active.is_some() {
             self.begin_cut(actions);
         } else {
             self.commit(actions);
+        }
+    }
+
+    /// Returns `true` if the preparation every site acknowledged waits for the resource transaction in flight to
+    /// publish a recipient it uses again ([`pass_barrier`][Self::pass_barrier]).
+    fn waits_for_publication(&self) -> bool {
+        let (Some(preparing), Some(lowered)) = (&self.preparing, &self.default_program) else {
+            return false;
+        };
+        self.resources.transaction_in_flight().is_some()
+            && self
+                .resources
+                .withdraws_declared(&preparing.installed.plan, &lowered.resources)
+    }
+
+    /// Passes the barrier of a preparation every site acknowledged, which waited for a publication.
+    pub(super) fn resume_barrier(&mut self, actions: &mut Vec<Action>) {
+        if self
+            .preparing
+            .as_ref()
+            .is_some_and(|preparing| preparing.waiting.is_empty())
+        {
+            self.pass_barrier(actions);
         }
     }
 
@@ -1573,6 +2004,9 @@ impl InstallerCore {
         let id = installed.generation.id();
         self.transition(id, LifecycleEvent::BarrierPassed, None);
         self.transition(id, LifecycleEvent::Committed, None);
+        self.resources.commit(id);
+        // A recipient the generation reopened may have failed meanwhile: its next incarnation follows.
+        self.after_exit(actions);
         self.finalized = None;
         actions.push(Action::Commit {
             generation: installed.generation.clone(),
@@ -1633,13 +2067,28 @@ impl InstallerCore {
     fn restart_preparation(&mut self, actions: &mut Vec<Action>) {
         let Some(preparing) = self.preparing.take() else { return };
         let id = preparing.installed.generation.id();
-        actions.push(Action::Abort {
-            generation: id,
-            slots: self.all_slots(),
-        });
+        self.push_abort(id, actions);
         self.transition(id, LifecycleEvent::Rejected, Some(PREPARED_AGAINST_FAILED.to_string()));
         self.report_generation(id, actions);
         self.requeue(preparing.into_queued(), Some(id), actions);
+    }
+
+    /// Cancels the preparation in flight because `host` answered that recipients it was asked to reopen had exited,
+    /// and queues its candidate to be prepared again, unless a newer candidate already waits: it waits for the exits,
+    /// and is then prepared with the recipients' next incarnations. It is not a failure, so nothing is retried.
+    fn restart_for_exits(&mut self, host: &HostId, actions: &mut Vec<Action>) {
+        let Some(preparing) = self.preparing.take() else { return };
+        let id = preparing.installed.generation.id();
+        self.push_abort(id, actions);
+        let reason = format!(
+            "host `{}` could not reopen recipients whose loops had exited, so it is prepared again once their exits \
+             are reported",
+            host
+        );
+        self.transition(id, LifecycleEvent::Rejected, Some(reason));
+        self.report_generation(id, actions);
+        self.requeue(preparing.into_queued(), Some(id), actions);
+        self.try_start(actions);
     }
 
     /// Queues a candidate whose generation was aborted to be prepared again, unless a newer candidate already waits.
@@ -1666,14 +2115,20 @@ impl InstallerCore {
         self.state_of(generation) == Some(GenerationState::Failed)
     }
 
-    /// Aborts the preparation in every region and decides what becomes of its candidate.
+    /// Aborts the preparation in every region and host, and decides what becomes of its candidate.
     fn fail_preparation(&mut self, message: String, state: GenerationState, actions: &mut Vec<Action>) {
+        self.fail_preparation_with(message, state, false, actions);
+    }
+
+    /// Aborts the preparation in every region and host, and decides what becomes of its candidate: with
+    /// `resource_failure`, a resource failed to prepare, which is no fault of the candidate, so an artifact is tried
+    /// again as a default program is.
+    fn fail_preparation_with(
+        &mut self, message: String, state: GenerationState, resource_failure: bool, actions: &mut Vec<Action>,
+    ) {
         let Some(preparing) = self.preparing.take() else { return };
         let id = preparing.installed.generation.id();
-        actions.push(Action::Abort {
-            generation: id,
-            slots: self.all_slots(),
-        });
+        self.push_abort(id, actions);
         let event = if state == GenerationState::Failed {
             LifecycleEvent::Failed
         } else {
@@ -1682,18 +2137,21 @@ impl InstallerCore {
         self.transition(id, event, Some(message.clone()));
         self.report_generation(id, actions);
         let attempts = preparing.attempts;
-        self.end_attempt(preparing.into_queued(), Some(id), state, message, attempts, actions);
+        let queued = preparing.into_queued();
+        // A default program, the re-composition of an artifact that was running when the configuration changed, and
+        // any candidate whose preparation failed on a resource, are tried again; a failure under supervision is not.
+        let retried = (!queued.origin.can_roll_back() || self.is_retried(queued.candidate) || resource_failure)
+            && state == GenerationState::Rejected;
+        self.end_attempt(queued, Some(id), message, attempts, retried, actions);
     }
 
-    /// Decides what becomes of a candidate whose generation was aborted after it failed to prepare, or to be armed: a
-    /// default program, or the re-composition of an artifact that was running when the configuration changed, is
-    /// tried again after a delay, so that configuration changes are applied eventually; any other is rejected.
+    /// Decides what becomes of a candidate whose generation was aborted after it failed to prepare, or to be armed: one
+    /// that is `retried` waits, and is tried again after a delay, so that configuration changes are applied
+    /// eventually; any other is rejected.
     fn end_attempt(
-        &mut self, queued: Queued, generation: Option<GenerationId>, state: GenerationState, message: String,
-        attempts: u32, actions: &mut Vec<Action>,
+        &mut self, queued: Queued, generation: Option<GenerationId>, message: String, attempts: u32, retried: bool,
+        actions: &mut Vec<Action>,
     ) {
-        let retried =
-            (!queued.origin.can_roll_back() || self.is_retried(queued.candidate)) && state == GenerationState::Rejected;
         let report = |outcome| {
             Action::Report(Report {
                 candidate: queued.candidate,
@@ -1711,8 +2169,7 @@ impl InstallerCore {
             self.pending = Some(queued);
         }
         if retried {
-            self.retry_scheduled = true;
-            actions.push(Action::RetryAfter(self.config.retry_delay(attempts)));
+            self.start_wait(Wait::Candidate, self.config.retry_delay(attempts), actions);
         }
         self.try_start(actions);
     }
@@ -1737,10 +2194,7 @@ impl InstallerCore {
         let Some(preparing) = self.preparing.take() else { return };
         let installed = preparing.installed;
         let id = installed.generation.id();
-        actions.push(Action::Abort {
-            generation: id,
-            slots: self.all_slots(),
-        });
+        self.push_abort(id, actions);
         self.transition(id, LifecycleEvent::Rejected, Some(Rejection::Cancelled.to_string()));
         actions.push(Action::Report(Report {
             candidate: installed.candidate,

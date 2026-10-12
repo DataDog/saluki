@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use http::StatusCode;
 use metrics::{Counter, Gauge, Histogram};
@@ -28,7 +28,7 @@ impl TransactionInputTelemetry {
     }
 }
 
-pub(super) struct TransactionRetryTelemetry {
+pub(crate) struct TransactionRetryTelemetry {
     builder: MetricsBuilder,
     domain: MetaString,
     counters_by_endpoint: FastHashMap<MetaString, TransactionRetryCounters>,
@@ -83,6 +83,43 @@ impl TransactionRetryTelemetry {
     }
 }
 
+/// The series a forwarder keeps per intake domain, and how many of its recipients send to the domain.
+#[derive(Default)]
+struct DomainSeries {
+    /// The registrations of recipients that send to the domain.
+    recipients: usize,
+
+    /// `component_data_points_sent_total` for the domain, registered at its first count.
+    data_points_sent: Option<Gauge>,
+
+    /// `component_data_points_dropped_total` for the domain, registered at its first count.
+    data_points_dropped: Option<Gauge>,
+}
+
+type DomainSeriesMap = Arc<Mutex<FastHashMap<String, DomainSeries>>>;
+
+/// A recipient's hold on the per-domain series of its forwarder.
+///
+/// The series of a domain are released with its last registration, so a domain no recipient sends to anymore stops
+/// being reported, and its running totals restart from zero once the metrics registry has evicted them, as after a
+/// restart. Dropping the registration releases it.
+pub(crate) struct DomainRegistration {
+    domains: DomainSeriesMap,
+    domain: String,
+}
+
+impl Drop for DomainRegistration {
+    fn drop(&mut self) {
+        let mut domains = self.domains.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(series) = domains.get_mut(&self.domain) {
+            series.recipients = series.recipients.saturating_sub(1);
+            if series.recipients == 0 {
+                domains.remove(&self.domain);
+            }
+        }
+    }
+}
+
 /// Component-specific telemetry.
 ///
 /// This type covers high-level component telemetry, such as events/bytes sent, tailored to the Datadog destinations and
@@ -93,8 +130,7 @@ pub struct ComponentTelemetry {
     events_sent: Counter,
     events_sent_batch_size: Histogram,
     bytes_sent: Counter,
-    data_points_sent_by_domain: Arc<Mutex<FastHashMap<String, Gauge>>>,
-    data_points_dropped_by_domain: Arc<Mutex<FastHashMap<String, Gauge>>>,
+    domains: DomainSeriesMap,
     events_dropped_http: Counter,
     events_dropped_encoder: Counter,
     events_dropped_queue: Counter,
@@ -112,8 +148,7 @@ impl ComponentTelemetry {
             events_sent: builder.register_counter("component_events_sent_total"),
             events_sent_batch_size: builder.register_trace_histogram("component_events_sent_batch_size"),
             bytes_sent: builder.register_counter("component_bytes_sent_total"),
-            data_points_sent_by_domain: Arc::new(Mutex::new(FastHashMap::default())),
-            data_points_dropped_by_domain: Arc::new(Mutex::new(FastHashMap::default())),
+            domains: Arc::new(Mutex::new(FastHashMap::default())),
             events_dropped_http: builder.register_counter_with_tags(
                 "component_events_dropped_total",
                 ["intentional:false", "drop_reason:http_failure"],
@@ -154,6 +189,27 @@ impl ComponentTelemetry {
         }
     }
 
+    /// Registers a recipient that sends to `domain`, which holds the domain's series until the returned registration is
+    /// dropped.
+    ///
+    /// A domain counted without a registration keeps its series, as every domain of a forwarder whose endpoints never
+    /// change does.
+    pub(crate) fn register_domain(&self, domain: &str) -> DomainRegistration {
+        let mut domains = self.domains.lock().unwrap_or_else(PoisonError::into_inner);
+        domains.entry(domain.to_string()).or_default().recipients += 1;
+
+        DomainRegistration {
+            domains: Arc::clone(&self.domains),
+            domain: domain.to_string(),
+        }
+    }
+
+    /// Returns how many domains the forwarder keeps series for.
+    #[cfg(test)]
+    pub(super) fn domain_count(&self) -> usize {
+        self.domains.lock().unwrap().len()
+    }
+
     /// Returns a reference to the "events dropped (encoder)" counter.
     pub fn events_dropped_encoder(&self) -> &Counter {
         &self.events_dropped_encoder
@@ -173,8 +229,9 @@ impl ComponentTelemetry {
             return;
         }
 
-        let mut gauges = self.data_points_sent_by_domain.lock().unwrap();
-        let gauge = gauges.entry(domain.to_string()).or_insert_with(|| {
+        let mut domains = self.domains.lock().unwrap();
+        let series = domains.entry(domain.to_string()).or_default();
+        let gauge = series.data_points_sent.get_or_insert_with(|| {
             self.builder
                 .register_gauge_with_tags("component_data_points_sent_total", [("domain", domain.to_string())])
         });
@@ -187,8 +244,9 @@ impl ComponentTelemetry {
             return;
         }
 
-        let mut gauges = self.data_points_dropped_by_domain.lock().unwrap();
-        let gauge = gauges.entry(domain.to_string()).or_insert_with(|| {
+        let mut domains = self.domains.lock().unwrap();
+        let series = domains.entry(domain.to_string()).or_default();
+        let gauge = series.data_points_dropped.get_or_insert_with(|| {
             self.builder
                 .register_gauge_with_tags("component_data_points_dropped_total", [("domain", domain.to_string())])
         });
@@ -243,16 +301,33 @@ impl ComponentTelemetry {
 /// Endpoint-specific transaction queue telemetry.
 ///
 /// This type covers high-level transaction queue telemetry, such as number of queued transactions, transactions pending
-/// retry, etc.
+/// retry, etc. The queue's share of the forwarder's shared retry queue series is keyed by its recipient, and is
+/// released when the last clone is dropped: the queue then stops counting in the totals, and a domain no other
+/// recipient sends to has its series released.
 #[derive(Clone)]
 pub struct TransactionQueueTelemetry {
-    endpoint_id: MetaString,
-    shared: SharedTransactionQueueTelemetry,
+    registration: Arc<QueueRegistration>,
     high_prio_queue_insertions: Counter,
     high_prio_queue_removals: Counter,
     low_prio_queue_insertions: Counter,
     low_prio_queue_removals: Counter,
     low_prio_queue_entries_dropped: Counter,
+}
+
+/// One recipient's share of the shared retry queue series, released when it is dropped.
+struct QueueRegistration {
+    recipient: MetaString,
+    shared: SharedTransactionQueueTelemetry,
+}
+
+impl Drop for QueueRegistration {
+    fn drop(&mut self) {
+        self.shared
+            .inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .release(&self.recipient);
+    }
 }
 
 /// Shared transaction queue telemetry.
@@ -338,6 +413,48 @@ impl SharedTransactionQueueTelemetryInner {
             disk_available_capacity_bytes,
         );
         self.retry_queue_bytes_per_sec.set(self.capacity.total_bytes_per_sec());
+        self.publish_capacity_gauges();
+    }
+
+    /// Forgets a recipient that stopped: its queue stops counting in the totals, and a domain that no other recipient
+    /// sends to has its series released.
+    fn release(&mut self, endpoint_id: &MetaString) {
+        let released = self.per_endpoint.remove(endpoint_id);
+        self.capacity.remove_endpoint(endpoint_id);
+
+        let total_size = self.per_endpoint.values().map(|stats| stats.size).sum::<usize>();
+        self.retry_queue_size.set(total_size as f64);
+        let total_bytes_per_sec = self.per_endpoint.values().map(|stats| stats.bytes_per_sec).sum::<f64>();
+        self.retry_queue_bytes_per_sec.set(total_bytes_per_sec);
+
+        if let Some(released) = released {
+            let mut remaining = self
+                .per_endpoint
+                .values()
+                .filter(|stats| stats.domain == released.domain)
+                .peekable();
+            if remaining.peek().is_some() {
+                let domain_size = remaining.map(|stats| stats.size).sum::<usize>();
+                if let Some(gauge) = self.retry_queue_size_by_domain.get(released.domain.as_ref()) {
+                    gauge.set(domain_size as f64);
+                }
+            } else {
+                self.retry_queue_size_by_domain.remove(released.domain.as_ref());
+            }
+        }
+        self.publish_capacity_gauges();
+    }
+
+    /// Sets the capacity gauges of every domain with a current estimate, and releases those of every domain no endpoint
+    /// sends to anymore. A domain whose rate fell to zero keeps its last values.
+    fn publish_capacity_gauges(&mut self) {
+        let capacity = &self.capacity;
+        self.retry_queue_bytes_per_sec_by_domain
+            .retain(|domain, _| capacity.covers_domain(domain));
+        self.retry_queue_capacity_secs_by_domain
+            .retain(|domain, _| capacity.covers_domain(domain));
+        self.retry_queue_capacity_bytes_by_domain
+            .retain(|domain, _| capacity.covers_domain(domain));
 
         let domain_stats = self
             .capacity
@@ -392,6 +509,12 @@ impl SharedTransactionQueueTelemetry {
         }
     }
 
+    /// Returns how many queues count in the shared series.
+    #[cfg(test)]
+    pub(super) fn queue_count(&self) -> usize {
+        self.inner.lock().unwrap().per_endpoint.len()
+    }
+
     fn record_retry_queue_size(&self, endpoint_id: &MetaString, domain: &MetaString, len: usize) {
         self.inner.lock().unwrap().record_size(endpoint_id, domain, len);
     }
@@ -420,12 +543,19 @@ impl SharedTransactionQueueTelemetry {
 impl TransactionQueueTelemetry {
     /// Creates a new `TransactionQueueTelemetry` instance with default tags derived from the given component context and the
     /// endpoint URL.
-    pub fn from_builder(builder: &MetricsBuilder, endpoint_url: &str, shared: SharedTransactionQueueTelemetry) -> Self {
+    ///
+    /// `recipient` identifies the queue among the forwarder's queues, so that two recipients on one URL, with different
+    /// keys, each count their own queue. It names no series.
+    pub fn from_builder(
+        builder: &MetricsBuilder, endpoint_url: &str, recipient: &str, shared: SharedTransactionQueueTelemetry,
+    ) -> Self {
         let builder = builder.clone().add_default_tag(("endpoint", endpoint_url.to_string()));
 
         Self {
-            endpoint_id: MetaString::from(endpoint_url),
-            shared,
+            registration: Arc::new(QueueRegistration {
+                recipient: MetaString::from(recipient),
+                shared,
+            }),
             high_prio_queue_insertions: builder.register_debug_counter("endpoint_high_prio_queue_insertions_total"),
             high_prio_queue_removals: builder.register_debug_counter("endpoint_high_prio_queue_removals_total"),
             low_prio_queue_insertions: builder.register_debug_counter("endpoint_low_prio_queue_insertions_total"),
@@ -456,20 +586,22 @@ impl TransactionQueueTelemetry {
     }
 
     pub fn record_retry_queue_size(&self, domain: &MetaString, len: usize) {
-        self.shared.record_retry_queue_size(&self.endpoint_id, domain, len);
+        let QueueRegistration { recipient, shared } = &*self.registration;
+        shared.record_retry_queue_size(recipient, domain, len);
     }
 
     pub fn record_retry_queue_bytes_per_sec(&self, bytes_per_sec: f64) {
-        self.shared
-            .record_retry_queue_bytes_per_sec(&self.endpoint_id, bytes_per_sec);
+        let QueueRegistration { recipient, shared } = &*self.registration;
+        shared.record_retry_queue_bytes_per_sec(recipient, bytes_per_sec);
     }
 
     pub fn record_retry_queue_capacity_stats(
         &self, domain: &MetaString, bytes_per_sec: f64, in_memory_capacity_bytes: u64,
         disk_available_capacity_bytes: u64,
     ) {
-        self.shared.record_retry_queue_capacity_stats(
-            &self.endpoint_id,
+        let QueueRegistration { recipient, shared } = &*self.registration;
+        shared.record_retry_queue_capacity_stats(
+            recipient,
             domain,
             bytes_per_sec,
             in_memory_capacity_bytes,
@@ -576,8 +708,8 @@ mod tests {
     fn shared_transaction_queue_telemetry_aggregates_endpoint_snapshots() {
         let builder = MetricsBuilder::default();
         let shared = SharedTransactionQueueTelemetry::from_builder(&builder);
-        let first = TransactionQueueTelemetry::from_builder(&builder, "https://one.example", shared.clone());
-        let second = TransactionQueueTelemetry::from_builder(&builder, "https://two.example", shared.clone());
+        let first = TransactionQueueTelemetry::from_builder(&builder, "https://one.example", "one", shared.clone());
+        let second = TransactionQueueTelemetry::from_builder(&builder, "https://two.example", "two", shared.clone());
 
         let domain = MetaString::from_static("https://example.com");
 
@@ -600,9 +732,10 @@ mod tests {
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let builder = MetricsBuilder::default();
         let shared = SharedTransactionQueueTelemetry::from_builder(&builder);
-        let first = TransactionQueueTelemetry::from_builder(&builder, "https://one.example/a", shared.clone());
-        let second = TransactionQueueTelemetry::from_builder(&builder, "https://one.example/b", shared.clone());
-        let third = TransactionQueueTelemetry::from_builder(&builder, "https://two.example", shared.clone());
+        let first = TransactionQueueTelemetry::from_builder(&builder, "https://one.example/a", "one-a", shared.clone());
+        let second =
+            TransactionQueueTelemetry::from_builder(&builder, "https://one.example/b", "one-b", shared.clone());
+        let third = TransactionQueueTelemetry::from_builder(&builder, "https://two.example", "two", shared.clone());
         let one = MetaString::from_static("https://one.example");
         let two = MetaString::from_static("https://two.example");
 
@@ -633,11 +766,119 @@ mod tests {
     fn shared_transaction_queue_telemetry_records_domain_capacity_snapshot() {
         let builder = MetricsBuilder::default();
         let shared = SharedTransactionQueueTelemetry::from_builder(&builder);
-        let telemetry = TransactionQueueTelemetry::from_builder(&builder, "https://example.com", shared.clone());
+        let telemetry =
+            TransactionQueueTelemetry::from_builder(&builder, "https://example.com", "example", shared.clone());
 
         telemetry.record_retry_queue_capacity_stats(&MetaString::from_static("domain"), 10.0, 20, 50);
 
         assert_eq!(domain_capacity_snapshot(&shared, "domain"), Some((10.0, 7.0, 70.0)));
+    }
+
+    #[test]
+    fn two_recipients_on_one_url_each_count_their_own_queue() {
+        // Two additional endpoint keys on one URL are two recipients: keyed by URL, the second's size would replace the
+        // first's in the totals.
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let builder = MetricsBuilder::default();
+        let shared = SharedTransactionQueueTelemetry::from_builder(&builder);
+        let domain = MetaString::from_static("https://one.example");
+        let first = TransactionQueueTelemetry::from_builder(&builder, "https://one.example", "key-0", shared.clone());
+        let second = TransactionQueueTelemetry::from_builder(&builder, "https://one.example", "key-1", shared.clone());
+
+        first.record_retry_queue_size(&domain, 3);
+        second.record_retry_queue_size(&domain, 4);
+
+        assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(7.0));
+        assert_eq!(
+            recorder.gauge(("network_http_retry_queue_size", &[("domain", "https://one.example")])),
+            Some(7.0)
+        );
+    }
+
+    #[test]
+    fn a_stopped_queue_stops_counting_and_releases_a_domain_no_other_queue_sends_to() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let builder = MetricsBuilder::default();
+        let shared = SharedTransactionQueueTelemetry::from_builder(&builder);
+        let one = MetaString::from_static("https://one.example");
+        let two = MetaString::from_static("https://two.example");
+        let first = TransactionQueueTelemetry::from_builder(&builder, "https://one.example", "first", shared.clone());
+        let second = TransactionQueueTelemetry::from_builder(&builder, "https://one.example", "second", shared.clone());
+        let third = TransactionQueueTelemetry::from_builder(&builder, "https://two.example", "third", shared.clone());
+        for (telemetry, domain, size, bytes_per_sec) in [
+            (&first, &one, 3, 10.0),
+            (&second, &one, 4, 20.0),
+            (&third, &two, 5, 30.0),
+        ] {
+            telemetry.record_retry_queue_size(domain, size);
+            telemetry.record_retry_queue_bytes_per_sec(bytes_per_sec);
+            telemetry.record_retry_queue_capacity_stats(domain, bytes_per_sec, 100, 0);
+        }
+        assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(12.0));
+
+        // A clone keeps the queue counted; the last one releases it.
+        let first_clone = first.clone();
+        drop(first);
+        assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(12.0));
+        drop(first_clone);
+        assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(9.0));
+        assert_eq!(recorder.gauge("network_http_retry_queue_bytes_per_sec"), Some(50.0));
+        assert_eq!(
+            recorder.gauge(("network_http_retry_queue_size", &[("domain", "https://one.example")])),
+            Some(4.0)
+        );
+        assert_eq!(
+            domain_capacity_snapshot(&shared, "https://one.example").map(|(rate, _, _)| rate),
+            Some(20.0)
+        );
+
+        // The last queue on a domain takes the domain's series with it, and leaves the other domains' alone.
+        drop(third);
+        assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(4.0));
+        let inner = shared.inner.lock().unwrap();
+        assert_eq!(inner.per_endpoint.len(), 1);
+        for domains in [
+            inner.retry_queue_size_by_domain.keys().collect::<Vec<_>>(),
+            inner.retry_queue_bytes_per_sec_by_domain.keys().collect(),
+            inner.retry_queue_capacity_secs_by_domain.keys().collect(),
+            inner.retry_queue_capacity_bytes_by_domain.keys().collect(),
+        ] {
+            assert_eq!(domains, ["https://one.example"]);
+        }
+        assert!(inner
+            .capacity
+            .domain_stats()
+            .all(|(domain, _)| domain != "https://two.example"));
+    }
+
+    #[test]
+    fn a_domain_releases_its_series_with_its_last_recipient_and_errors_by_status_code_stay() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let telemetry = component_telemetry();
+        let first = telemetry.register_domain("datadoghq.com");
+        let second = telemetry.register_domain("datadoghq.com");
+        telemetry.track_data_points_sent("datadoghq.com", 3);
+        telemetry.track_data_points_dropped("datadoghq.com", 2);
+        telemetry.track_failed_transaction(
+            &Metadata::from_event_and_data_point_count(1, 0),
+            Some(StatusCode::FORBIDDEN),
+        );
+
+        drop(first);
+        assert!(telemetry.domains.lock().unwrap().contains_key("datadoghq.com"));
+        drop(second);
+        assert!(telemetry.domains.lock().unwrap().is_empty());
+        assert_eq!(telemetry.http_errors_by_code.lock().unwrap().len(), 1);
+
+        // A domain counted again after its release starts over, with fresh handles.
+        telemetry.track_data_points_sent("datadoghq.com", 1);
+        let domains = telemetry.domains.lock().unwrap();
+        let series = &domains["datadoghq.com"];
+        assert_eq!(series.recipients, 0);
+        assert!(series.data_points_sent.is_some() && series.data_points_dropped.is_none());
     }
 
     fn component_telemetry() -> ComponentTelemetry {

@@ -130,6 +130,8 @@ impl ChildKey {
 pub(super) struct StartedChild {
     process_id: ProcessId,
     process_name: Arc<str>,
+    /// The resource group a worker is accounted in, in place of its supervisor's, if it has one.
+    resource_group: Option<Arc<str>>,
     at: Stamp,
 }
 
@@ -138,6 +140,7 @@ impl StartedChild {
         Self {
             process_id: *process.id(),
             process_name,
+            resource_group: process.worker_resource_group().cloned(),
             at: Stamp::now(),
         }
     }
@@ -857,6 +860,9 @@ impl Walk {
             PendingKind::Supervisor(node) => self.supervisor(&node, child.facts, depth),
 
             PendingKind::Worker { adopted, scope } => {
+                // A worker given a resource group of its own is accounted there, and so are the children it spawns.
+                let own_group = child.start.as_ref().and_then(|start| start.resource_group.clone());
+                let worker_group = own_group.as_ref().or(worker_group);
                 let mut snapshot = self.worker(child.facts, child.start, worker_group, depth);
 
                 // The worker was found to drive a supervisor of its own. The parent supervises the worker, so the
@@ -902,8 +908,9 @@ impl Walk {
                 started,
                 state,
                 resource_group: worker_group.cloned(),
-                // A worker owns no resource group: its allocations are counted against the supervisor named above.
-                // Reporting the supervisor's totals against each of its workers would count them many times over.
+                // A worker reports no figures: its allocations are counted against the group named above, its
+                // supervisor's or one it was given, which other workers may share. Reporting the group's totals against
+                // each of its workers would count them many times over.
                 resources: None,
             },
             depth,

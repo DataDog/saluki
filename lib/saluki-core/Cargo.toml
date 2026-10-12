@@ -10,6 +10,9 @@ workspace = true
 
 [features]
 loom = ["dep:loom"]
+# Compiles measurement probes (`probes`): lock-wait, send-wait, clone, and buffer-fill histograms at the serial points
+# of a topology. Not enabled in normal builds, nor in the workspace's test builds (`make test-measurement` enables it).
+measurement = []
 # Exposes test-only helpers (for example, `ComponentContext::test_source`) as plain `pub` items so downstream
 # crates can construct component contexts in their own tests. Not enabled in normal builds.
 test-util = []
@@ -68,6 +71,10 @@ tracing-subscriber = { workspace = true, features = ["ansi", "fmt"] }
 
 [[bench]]
 name = "region_host"
+harness = false
+
+[[bench]]
+name = "state_budget"
 harness = false
 
 [[bench]]

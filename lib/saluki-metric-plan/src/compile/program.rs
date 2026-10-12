@@ -27,7 +27,10 @@
 //!   [decisions](super::decision#grouping)); the group's other nodes are no steps of their own.
 //! - [`Step::Concat`] joins registers, as a `merge` does, in input port order.
 //! - [`Step::Exit`] hands a register's buffers to one of the slot's exits, with the consumer's entry set in their
-//!   header when the exit leads to another slot, and cleared otherwise. Exit buffers leave by value.
+//!   header ([`EntrySource`]): the consumer region's entry when the exit leads to another slot, the lease of the
+//!   output when it leads to the encode host of a bound output's delivery host, which the region resolves from its
+//!   generation's [`LeaseTable`], and none otherwise: a fixed component or a fixed destination reads none. Exit buffers
+//!   leave by value.
 //! - [`Step::Drop`] discards a register's buffers, counting their events and points as policy loss of the node.
 //! - [`Step::State`] hands a register's buffers to a state owner's kernel in an isolation slot, with the per-call
 //!   parameters of the batch's generation. What the kernel emits later, at its flush ticks, runs the steps of its
@@ -75,7 +78,7 @@ use super::{
 };
 use crate::{
     canonical::PlanHash,
-    ir::{Node, NodeId, Plan, PortName, PortRef},
+    ir::{Node, NodeId, OutputId, Plan, PortName, PortRef},
     operators::{names, ConfiguredOperator, KernelSpec, OperatorRegistry},
     predicate::{NoBindings, PredicateError},
     validate::graph::{emit_output, Graph},
@@ -314,6 +317,92 @@ pub enum Route {
     Drop(NodeId),
 }
 
+/// Where the entry an exit writes into each buffer's header comes from.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum EntrySource {
+    /// No entry: the exit leads to a fixed component or a fixed destination, which reads none.
+    None,
+
+    /// The entry of the consumer region, which the program fixes.
+    Region(EntryId),
+
+    /// The lease of the output the exit delivers to, in the encode host the exit leads to.
+    ///
+    /// Leases are resources that outlive generations, so the program names the output, and the region resolves the
+    /// lease from the [`LeaseTable`] its generation was prepared with: a rebinding changes only the lease table of an
+    /// otherwise unchanged program.
+    Lease(OutputId),
+}
+
+impl EntrySource {
+    /// Returns the consumer region's entry, if the exit leads to another slot.
+    pub fn region(&self) -> Option<EntryId> {
+        match self {
+            Self::Region(entry) => Some(*entry),
+            Self::None | Self::Lease(_) => None,
+        }
+    }
+
+    /// Returns the output whose lease the exit writes, if it leads to an encode host.
+    pub fn lease(&self) -> Option<&OutputId> {
+        match self {
+            Self::Lease(output) => Some(output),
+            Self::None | Self::Region(_) => None,
+        }
+    }
+}
+
+/// The lease of each output a generation's programs emit to: which logical encoder stream of an encode host a batch
+/// leaving by an exit belongs to.
+///
+/// The installer assigns leases, which outlive generations: a generation that binds an output as another live
+/// generation does reuses its lease. A region translates every [`EntrySource::Lease`] of a program through the table
+/// its generation was prepared with.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct LeaseTable {
+    leases: BTreeMap<OutputId, EntryId>,
+}
+
+impl LeaseTable {
+    /// Creates an empty lease table.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Records the lease of an output, replacing any lease it had in the table.
+    pub fn insert(&mut self, output: OutputId, lease: EntryId) {
+        self.leases.insert(output, lease);
+    }
+
+    /// Returns the lease of an output, if the table has one.
+    pub fn lease(&self, output: &OutputId) -> Option<EntryId> {
+        self.leases.get(output).copied()
+    }
+
+    /// Returns every output's lease, in output order.
+    pub fn iter(&self) -> impl Iterator<Item = (&OutputId, EntryId)> {
+        self.leases.iter().map(|(output, lease)| (output, *lease))
+    }
+
+    /// Returns the number of leases in the table.
+    pub fn len(&self) -> usize {
+        self.leases.len()
+    }
+
+    /// Returns `true` if the table has no lease.
+    pub fn is_empty(&self) -> bool {
+        self.leases.is_empty()
+    }
+}
+
+impl FromIterator<(OutputId, EntryId)> for LeaseTable {
+    fn from_iter<I: IntoIterator<Item = (OutputId, EntryId)>>(iter: I) -> Self {
+        Self {
+            leases: iter.into_iter().collect(),
+        }
+    }
+}
+
 /// One step of an entry program.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Step {
@@ -370,8 +459,8 @@ pub enum Step {
         /// The exit.
         exit: ExitIndex,
 
-        /// The consumer's entry, set in each buffer's header when the exit leads to another slot.
-        entry: Option<EntryId>,
+        /// The consumer's entry, set in each buffer's header.
+        entry: EntrySource,
     },
 
     /// Discards a register's buffers, as policy loss of a `drop` node.
@@ -611,6 +700,7 @@ pub(crate) fn compile_programs_with(
         }
     }
     let context = Context {
+        plan,
         graph: &graph,
         roles: &roles,
         slot_of: &slot_of,
@@ -623,6 +713,7 @@ pub(crate) fn compile_programs_with(
 }
 
 struct Context<'a, 'p> {
+    plan: &'p Plan,
     graph: &'a Graph<'p>,
     roles: &'a [Role],
     slot_of: &'a [Option<SlotId>],
@@ -1099,25 +1190,32 @@ impl Context<'_, '_> {
             })
     }
 
-    /// Returns the exit an edge from `slot` to the input port `(to, port)` leaves by, and the consumer's entry when it
-    /// leads to another slot.
-    fn exit_for(&self, slot: SlotId, to: usize, port: usize) -> Option<(ExitIndex, Option<EntryId>)> {
+    /// Returns the exit an edge from `slot` to the input port `(to, port)` leaves by, and where the consumer's entry
+    /// comes from: the consumer region's entry when it leads to another slot, and the output's lease when it leads to
+    /// the encode host of a bound output's delivery host. A fixed component or destination reads no entry.
+    fn exit_for(&self, slot: SlotId, to: usize, port: usize) -> Option<(ExitIndex, EntrySource)> {
         let graph = self.graph;
+        let mut lease = None;
         let target = match (self.roles[to], self.slot_of[to]) {
             (Role::Fixed, _) => FrameTarget::Fixed(graph.id(to).clone()),
             (_, Some(other)) if other != slot => FrameTarget::Slot(other),
-            _ => FrameTarget::Output(graph.op(to).and_then(emit_output)?.clone()),
+            _ => {
+                let output = graph.op(to).and_then(emit_output)?;
+                lease = Some(output.clone());
+                FrameTarget::of_emit(self.plan, output)
+            }
         };
         let exit = self.frame.slot(slot)?.exit_to(&target)?.index;
         let entry = match target {
             FrameTarget::Slot(other) => {
                 let input = PortRef::new(graph.id(to).clone(), graph.op(to)?.ports().inputs[port].name.clone());
                 match self.placement.slot(other)?.entry_at(&input)?.key {
-                    EntryKey::Region(entry) => Some(entry),
+                    EntryKey::Region(entry) => EntrySource::Region(entry),
                     EntryKey::Admission(_) | EntryKey::StateOutput(_) => return None,
                 }
             }
-            _ => None,
+            FrameTarget::EncodeHost(_) => EntrySource::Lease(lease?),
+            FrameTarget::Fixed(_) | FrameTarget::Destination(_) => EntrySource::None,
         };
         Some((exit, entry))
     }
@@ -1350,9 +1448,15 @@ fn fingerprint(
         Step::Concat { inputs, output } => json!({"concat": {
             "inputs": inputs.iter().map(|register| register.0).collect::<Vec<_>>(), "output": output.0
         }}),
-        Step::Exit { register, exit, entry } => json!({"exit": {
-            "register": register.0, "exit": exit.get(), "entry": entry.map(|entry| entry.get())
-        }}),
+        Step::Exit { register, exit, entry } => {
+            // A lease is named by its output, never by its identifier, so a rebinding leaves the fingerprint as it is.
+            let entry = match entry {
+                EntrySource::None => Value::Null,
+                EntrySource::Region(entry) => json!(entry.get()),
+                EntrySource::Lease(output) => json!({"lease": output.as_str()}),
+            };
+            json!({"exit": {"register": register.0, "exit": exit.get(), "entry": entry}})
+        }
         Step::Drop { register, node } => json!({"drop": {"register": register.0, "node": node.to_string()}}),
         Step::State {
             kernel,

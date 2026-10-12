@@ -1,6 +1,7 @@
 use serde_json::{json, Value};
 
 use super::*;
+use crate::validate::Catalog;
 use crate::{
     canonical::ResolvedValues,
     ir::ExitName,
@@ -126,6 +127,151 @@ fn bundles_are_read_ignoring_the_members_the_reader_does_not_know() {
         mutate(&mut document);
         assert!(serde_json::from_value::<ExportBundle>(document).is_err(), "{}", what);
     }
+}
+
+#[test]
+fn a_bound_default_programs_export_records_version_2_fingerprints_and_lists_declared_outputs_but_not_host_settings() {
+    let plan = Plan::from_value(crate::testing::with_resources(DEFAULT_PROGRAM_JSON)).unwrap();
+    let main = "dd_metrics_encode".parse::<OutputId>().unwrap();
+    let team_d = "resources_team_d".parse::<OutputId>().unwrap();
+    // The host's catalog: the main output's version 1 fingerprint too, as the host computes it from its configuration.
+    let legacy = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        .parse::<PlanHash>()
+        .unwrap();
+    let catalog = crate::testing::default_program_resources_catalog();
+    let mut declared = Catalog::output(&catalog, &main).unwrap().clone();
+    declared.legacy_fingerprint = Some(legacy);
+    let catalog = catalog.with_output(main.clone(), declared);
+    let labels = BTreeMap::from([(team_d.clone(), "Team D".to_string())]);
+    let bundle = export(&plan, &post_enrich(), &catalog, &labels).unwrap();
+
+    // The base records the version 2 fingerprint of every output the scope emits to (the main output's is the digest
+    // of its role, written out in `resources::tests`), and not the declared output, which the default program does
+    // not emit to.
+    assert_eq!(
+        bundle
+            .artifact
+            .base
+            .outputs
+            .get(&main)
+            .map(ToString::to_string)
+            .as_deref(),
+        Some("sha256:35b6c7483c20787a99a97a2a2bb2684fd1a0a8f0315e5bf73fad5b48b74595f7")
+    );
+    assert!(!bundle.artifact.base.outputs.contains_key(&team_d));
+
+    // The catalog lists the declared output with its fingerprint and recipients, and its label, which an author emits
+    // to by recording them.
+    let written = serde_json::to_value(&bundle).unwrap();
+    assert_eq!(
+        written["catalog"]["outputs"]["resources_team_d"],
+        json!({
+            "accepts": {"kinds": "all", "timestamps": "mixed"},
+            "fingerprint": "sha256:361f843bc9a6b25663cc6da865dd3af0daf04bb8890e3717ae98d7d30bb1c838",
+            "recipients": ["dd_out/declared/team_d/http://127.0.0.1:17105"]
+        })
+    );
+    assert_eq!(written["labels"]["resources_team_d"], json!("Team D"));
+    assert_eq!(
+        written["catalog"]["outputs"]["dd_metrics_encode"]["legacy_fingerprint"],
+        json!(legacy)
+    );
+    // Host settings and recipients' declarations, credential references included, stay on the host: the catalog names
+    // recipients by identity only.
+    let text = written.to_string();
+    for private in [
+        "request_timeout",
+        "endpoint_concurrency",
+        "credentials/team_d",
+        "datadog_intake",
+    ] {
+        assert!(!text.contains(private), "the export carries `{}`", private);
+    }
+
+    // A reader keeps what the writer writes, the version 1 fingerprint included.
+    let read = serde_json::from_value::<ExportBundle>(written).unwrap();
+    assert_eq!(read, bundle);
+    assert_eq!(
+        Catalog::output(&read.catalog, &main).unwrap().legacy_fingerprint,
+        Some(legacy)
+    );
+}
+
+#[test]
+fn a_dual_ship_endpoint_under_the_main_role_changes_no_base_and_renumbered_routing_groups_do() {
+    fn bound(edit: impl FnOnce(&mut Value)) -> Plan {
+        let mut value = crate::testing::with_resources(DEFAULT_PROGRAM_JSON);
+        edit(&mut value);
+        Plan::from_value(value).unwrap()
+    }
+    fn position(value: &Value, id: &str) -> usize {
+        value["outputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|output| output["id"] == id)
+            .unwrap()
+    }
+    let before = bound(|_| {});
+
+    // Native configuration gains a dual-ship endpoint: lowering resolves it under the main output's role, so the
+    // output's recipients change and its fingerprint, the digest of the role, does not. Neither does any base.
+    let dual = bound(|value| {
+        let main = value["outputs"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|output| output["id"] == "dd_metrics_encode")
+            .unwrap();
+        main["recipients"] = json!(["dd_out/additional_2/0", "dd_out/primary/0"]);
+        value["resources"]["recipients"].as_array_mut().unwrap().push(json!({
+            "id": "dd_out/additional_2/0", "host": "dd_out", "endpoint": "https://dual.example.com",
+            "credential": "native:additional/0000111122223333/0", "classes": "all", "provenance": "native"
+        }));
+    });
+    assert_ne!(
+        before.output(&"dd_metrics_encode".parse().unwrap()),
+        dual.output(&"dd_metrics_encode".parse().unwrap())
+    );
+    for scope in ["post_enrich", "dogstatsd_pre_aggregation"] {
+        let scope = scope.parse::<ScopeName>().unwrap();
+        assert_eq!(
+            base(&before, &scope).unwrap(),
+            base(&dual, &scope).unwrap(),
+            "{}",
+            scope
+        );
+    }
+
+    // The routing groups renumbered: the group with key `b...` is at position 0 now. The outputs at each position now
+    // deliver elsewhere, which their fingerprints say, and the policy scope's base changes.
+    let renumbered = bound(|value| {
+        let first = position(value, "metrics_routing_encode_0");
+        let second = position(value, "metrics_routing_encode_1");
+        let outputs = value["outputs"].as_array_mut().unwrap();
+        for member in ["fingerprint", "recipients"] {
+            let swapped = outputs[first][member].clone();
+            outputs[first][member] = outputs[second][member].clone();
+            outputs[second][member] = swapped;
+        }
+        let swapped = outputs[first]["binding"]["selector"].clone();
+        outputs[first]["binding"]["selector"] = outputs[second]["binding"]["selector"].clone();
+        outputs[second]["binding"]["selector"] = swapped;
+    });
+    let (was, is) = (
+        base(&before, &post_enrich()).unwrap(),
+        base(&renumbered, &post_enrich()).unwrap(),
+    );
+    assert_ne!(was.program_hash, is.program_hash);
+    let group = |base: &ArtifactBase, id: &str| base.outputs[&id.parse::<OutputId>().unwrap()].to_string();
+    assert_eq!(
+        group(&is, "metrics_routing_encode_0"),
+        "sha256:ccc6ed3c9012f1da6fe870fbf4a1c9e3357dfa31e85c0ba234a8d4ec7b740a99"
+    );
+    assert_eq!(
+        group(&is, "metrics_routing_encode_1"),
+        group(&was, "metrics_routing_encode_0")
+    );
 }
 
 /// Returns the fixtures' catalog with a value for every binding it declares, as a host's exported catalog has.

@@ -13,6 +13,10 @@ use crate::SalukiConfiguration;
 // only the final `T` when it needs an owned value.
 type Projection<T> = Arc<dyn for<'a> Fn(&'a SalukiConfiguration) -> &'a T + Send + Sync>;
 
+// Borrow-in, value-out, for a view whose value the configuration does not hold as such, such as one
+// converted to another type: computed from the configuration on every notification.
+type Mapping<T> = Arc<dyn Fn(&SalukiConfiguration) -> T + Send + Sync>;
+
 /// A typed view of one projection of the current configuration.
 ///
 /// A never-dynamic consumer can hold a plain `T`; a dynamic one holds `Live<T>` and never learns
@@ -38,12 +42,30 @@ enum Inner<T> {
         tick: watch::Receiver<()>,
 
         // Re-applied to the shared source whenever the view processes a notification.
-        project: Projection<T>,
+        read: Read<T>,
 
         // This value belongs to this Live<T>. It is what Deref returns and what changed() compares
         // against; a newer value in `cell` does not replace it until changed() processes a tick.
         snapshot: T,
     },
+}
+
+/// How a dynamic view reads its value from the shared configuration.
+enum Read<T> {
+    /// A projection into the configuration, cloned only when the value changed.
+    Projected(Projection<T>),
+
+    /// A value computed from the configuration.
+    Mapped(Mapping<T>),
+}
+
+impl<T> Clone for Read<T> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Projected(project) => Self::Projected(Arc::clone(project)),
+            Self::Mapped(map) => Self::Mapped(Arc::clone(map)),
+        }
+    }
 }
 
 impl<T: Clone + PartialEq + 'static> Live<T> {
@@ -62,7 +84,23 @@ impl<T: Clone + PartialEq + 'static> Live<T> {
             inner: Inner::Dynamic {
                 cell,
                 tick,
-                project: Arc::new(project),
+                read: Read::Projected(Arc::new(project)),
+                snapshot,
+            },
+        }
+    }
+
+    /// Creates a view whose value is computed from the shared configuration after accepted updates.
+    fn new_mapped(
+        cell: Arc<ArcSwap<SalukiConfiguration>>, tick: watch::Receiver<()>,
+        map: impl Fn(&SalukiConfiguration) -> T + Send + Sync + 'static,
+    ) -> Self {
+        let snapshot = map(&cell.load());
+        Self {
+            inner: Inner::Dynamic {
+                cell,
+                tick,
+                read: Read::Mapped(Arc::new(map)),
                 snapshot,
             },
         }
@@ -89,17 +127,28 @@ impl<T: Clone + PartialEq + 'static> Live<T> {
             Inner::Dynamic {
                 cell,
                 tick,
-                project,
+                read,
                 snapshot,
             } => loop {
                 if tick.changed().await.is_err() {
                     std::future::pending::<T>().await;
                 }
                 let guard = cell.load();
-                let latest = project(&guard);
-                if *latest != *snapshot {
-                    *snapshot = latest.clone();
-                    return snapshot.clone();
+                match read {
+                    Read::Projected(project) => {
+                        let latest = project(&guard);
+                        if *latest != *snapshot {
+                            *snapshot = latest.clone();
+                            return snapshot.clone();
+                        }
+                    }
+                    Read::Mapped(map) => {
+                        let latest = map(&guard);
+                        if latest != *snapshot {
+                            *snapshot = latest;
+                            return snapshot.clone();
+                        }
+                    }
                 }
             },
         }
@@ -118,12 +167,41 @@ impl<T: Clone + PartialEq + 'static> Live<T> {
     {
         match &self.inner {
             Inner::Fixed(value) => Live::new_fixed(f(value).clone()),
-            Inner::Dynamic {
-                cell, tick, project, ..
-            } => {
-                let parent = Arc::clone(project);
-                Live::new_dynamic(Arc::clone(cell), tick.clone(), move |c| f(parent(c)))
-            }
+            Inner::Dynamic { cell, tick, read, .. } => match read {
+                Read::Projected(project) => {
+                    let parent = Arc::clone(project);
+                    Live::new_dynamic(Arc::clone(cell), tick.clone(), move |c| f(parent(c)))
+                }
+                Read::Mapped(map) => {
+                    let parent = Arc::clone(map);
+                    Live::new_mapped(Arc::clone(cell), tick.clone(), move |c| f(&parent(c)).clone())
+                }
+            },
+        }
+    }
+
+    /// Creates a child view whose value is computed from this view's value by `f`, such as a value converted to
+    /// another type that the configuration does not hold.
+    ///
+    /// A dynamic child shares the source and receives its own notification cursor and snapshot; it computes its value
+    /// on every notification, and wakes only when the computed value changes. A fixed child is computed once and
+    /// remains fixed.
+    pub fn map<U>(&self, f: impl Fn(&T) -> U + Send + Sync + 'static) -> Live<U>
+    where
+        U: Clone + PartialEq + 'static,
+    {
+        match &self.inner {
+            Inner::Fixed(value) => Live::new_fixed(f(value)),
+            Inner::Dynamic { cell, tick, read, .. } => match read {
+                Read::Projected(project) => {
+                    let parent = Arc::clone(project);
+                    Live::new_mapped(Arc::clone(cell), tick.clone(), move |c| f(parent(c)))
+                }
+                Read::Mapped(map) => {
+                    let parent = Arc::clone(map);
+                    Live::new_mapped(Arc::clone(cell), tick.clone(), move |c| f(&parent(c)))
+                }
+            },
         }
     }
 }
@@ -145,12 +223,12 @@ impl<T: Clone> Clone for Live<T> {
             Inner::Dynamic {
                 cell,
                 tick,
-                project,
+                read,
                 snapshot,
             } => Inner::Dynamic {
                 cell: Arc::clone(cell),
                 tick: tick.clone(),
-                project: Arc::clone(project),
+                read: read.clone(),
                 snapshot: snapshot.clone(),
             },
         };
@@ -167,5 +245,88 @@ impl<T: fmt::Debug> fmt::Debug for Live<T> {
                 .field("snapshot", snapshot)
                 .finish_non_exhaustive(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        future::Future,
+        pin::pin,
+        task::{Context, Poll, Waker},
+    };
+
+    use super::*;
+
+    fn source() -> (Arc<ArcSwap<SalukiConfiguration>>, watch::Sender<()>) {
+        let (tick, _) = watch::channel(());
+        (Arc::new(ArcSwap::from_pointee(SalukiConfiguration::default())), tick)
+    }
+
+    fn update(
+        cell: &ArcSwap<SalukiConfiguration>, tick: &watch::Sender<()>, change: impl FnOnce(&mut SalukiConfiguration),
+    ) {
+        let mut config = SalukiConfiguration::clone(&cell.load());
+        change(&mut config);
+        cell.store(Arc::new(config));
+        tick.send_replace(());
+    }
+
+    /// Returns what `view.changed()` returns without waiting, or `None` if it would wait: every notification already
+    /// sent is processed before it would.
+    fn changed_now<T: Clone + PartialEq + 'static>(view: &mut Live<T>) -> Option<T> {
+        let mut changed = pin!(view.changed());
+        match changed.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+            Poll::Ready(value) => Some(value),
+            Poll::Pending => None,
+        }
+    }
+
+    #[test]
+    fn a_mapped_view_computes_its_value_and_wakes_only_when_the_value_changes() {
+        let (cell, tick) = source();
+        let base = Live::new_dynamic(Arc::clone(&cell), tick.subscribe(), |config| config);
+        let mut key = base.map(|config| {
+            config
+                .control
+                .programmable_metrics
+                .resources
+                .credentials
+                .get("team_d")
+                .map(|key| key.to_uppercase())
+        });
+        assert_eq!(*key, None);
+
+        // A change elsewhere in the configuration computes the same value: the view keeps waiting.
+        update(&cell, &tick, |config| config.control.standalone_mode = true);
+        assert_eq!(changed_now(&mut key), None);
+
+        update(&cell, &tick, |config| {
+            let credentials = &mut config.control.programmable_metrics.resources.credentials;
+            credentials.insert("team_d".to_string(), "key-d".to_string());
+        });
+        assert_eq!(changed_now(&mut key), Some(Some("KEY-D".to_string())));
+        assert_eq!(*key, Some("KEY-D".to_string()));
+        assert_eq!(changed_now(&mut key), None, "a notification is processed once");
+
+        // A clone keeps the snapshot and follows on its own; a mapping of the mapped view, and a mapping of a
+        // projection, compute from the current configuration.
+        let clone = key.clone();
+        assert_eq!(*clone, Some("KEY-D".to_string()));
+        let length = key.map(|key| key.as_ref().map(String::len));
+        assert_eq!(*length, Some(5));
+        let mut standalone = base
+            .project(|config| &config.control)
+            .map(|control| control.standalone_mode);
+        assert!(*standalone);
+        update(&cell, &tick, |config| config.control.standalone_mode = false);
+        assert_eq!(changed_now(&mut standalone), Some(false));
+    }
+
+    #[test]
+    fn a_fixed_view_maps_once() {
+        let fixed = Live::new_fixed(3_u64).map(|value| value * 2);
+        assert_eq!(*fixed, 6);
+        assert_eq!(*fixed.project(|value| value), 6);
     }
 }

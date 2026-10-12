@@ -22,6 +22,11 @@ pub const POLICY_SCOPE: &str = "post_enrich";
 #[serde(rename_all = "snake_case")]
 pub enum ApplyState {
     /// The artifact is waiting to be prepared, or is being prepared.
+    ///
+    /// With an error, it is held rather than in progress: it waits for something only another change provides, such
+    /// as a policy artifact waiting for an output a resources artifact declares ("waiting for output X"), or a
+    /// resources artifact waiting for a credential the operator has not configured. It is re-evaluated on every
+    /// configuration change and every resources snapshot.
     Pending,
 
     /// Every region holds the artifact's generation, which is not committed yet, or is kept to roll back to.
@@ -94,7 +99,10 @@ pub struct ConfigAcknowledgment {
     /// otherwise, and once the cut is finalized.
     pub cut_at: Option<u64>,
 
-    /// Why the config was rejected or failed, in plain text. Never contains secrets.
+    /// Why the config was rejected or failed, in plain text; for a config held `pending`, what it waits for ("waiting
+    /// for output X"); and for an `active` artifact composed with some emits dropped, why it runs degraded ("output X
+    /// is no longer declared; its emits are dropped until it returns"), with any note on rebasing it
+    /// ([`ScopeComposition::notes`][crate::compose::ScopeComposition::notes]). Never contains secrets.
     pub error: Option<String>,
 }
 
@@ -157,6 +165,22 @@ pub struct StatusSummary {
     /// form of a host with one scope in use is that of the first version of the protocol.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub scopes: BTreeMap<ScopeName, ScopeStatus>,
+
+    /// The status of the resources product, which has its own revisions: an additive member, left out while the host
+    /// has seen no resources config, so the wire form of a host that uses only policy artifacts is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resources: Option<ResourcesStatus>,
+}
+
+/// The status of the resources product.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ResourcesStatus {
+    /// The highest resources revision seen, if any: the product's own mark, apart from the policy product's. A
+    /// resources artifact at or below it is stale.
+    pub revision_high_water: Option<u64>,
+
+    /// The resources artifact whose declarations the active generation carries, or `None` when it carries none.
+    pub active_artifact: Option<ActiveArtifact>,
 }
 
 /// The status of one replaceable scope of the default program.
@@ -175,8 +199,8 @@ pub struct ScopeStatus {
 
 /// Everything the host reports through the channel: its status summary and the acknowledgment of every config.
 ///
-/// Serialized as the summary's members plus `config_states`, which is also the body of the host's privileged status
-/// route.
+/// Serialized as the summary's members plus `config_states`. A host's privileged status route may serve it with
+/// members of its own added, such as the recipient incarnations its delivery hosts run.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ApplyStates {
     /// The status summary.
@@ -214,6 +238,7 @@ mod tests {
                 degraded: None,
                 live_generations: 2,
                 scopes: BTreeMap::new(),
+                resources: None,
             },
             config_states: vec![ConfigAcknowledgment {
                 product: ArtifactProduct::Policy,
@@ -288,6 +313,35 @@ mod tests {
             serde_json::from_value::<StatusSummary>(document).unwrap(),
             StatusSummary::default()
         );
+    }
+
+    #[test]
+    fn the_resources_status_is_written_member_for_member_and_left_out_until_the_product_is_seen() {
+        let hash: PlanHash = HASH.parse().unwrap();
+        let summary = StatusSummary {
+            resources: Some(ResourcesStatus {
+                revision_high_water: Some(2),
+                active_artifact: Some(ActiveArtifact {
+                    id: ArtifactConfigId::new("demo-resources"),
+                    revision: 2,
+                    artifact_hash: hash,
+                }),
+            }),
+            ..StatusSummary::default()
+        };
+        let document = serde_json::to_value(&summary).unwrap();
+        assert_eq!(
+            document["resources"],
+            json!({
+                "revision_high_water": 2,
+                "active_artifact": {"id": "demo-resources", "revision": 2, "artifact_hash": HASH}
+            })
+        );
+        assert_eq!(serde_json::from_value::<StatusSummary>(document).unwrap(), summary);
+        assert!(serde_json::to_value(StatusSummary::default())
+            .unwrap()
+            .get("resources")
+            .is_none());
     }
 
     #[test]

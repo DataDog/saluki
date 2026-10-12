@@ -23,7 +23,7 @@ use bytesize::ByteSize;
 use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder, MemoryLimiter, UsageExpr},
-    components::{sources::*, BuildContext},
+    components::{sources::*, BuildContext, ComponentContext},
     data_model::{
         event::{
             eventd::EventD,
@@ -94,6 +94,9 @@ mod resolver;
 use self::resolver::ContextResolvers;
 
 mod tags;
+
+#[cfg(feature = "measurement")]
+pub mod measurement;
 
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
@@ -450,7 +453,7 @@ async fn resolve_bind_host(host: &str) -> Result<std::net::IpAddr, Error> {
         .ok_or_else(|| Error::BindHostHasNoAddresses { host: host.to_string() })
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "measurement"))]
 impl DogStatsDConfiguration {
     /// Creates a fixture configuration, for tests that exercise source behavior rather than configuration.
     ///
@@ -1708,19 +1711,68 @@ impl DogStatsDDecoder {
     }
 }
 
+/// The measurement probes of the datagram decoders' shared receiver, with the `measurement` feature (see
+/// `saluki_core::probes`): how long a decoder waits for the receiver's lock, and then, holding it, for a datagram.
+/// Without the feature, there are none.
+struct ReceiverProbes {
+    #[cfg(feature = "measurement")]
+    lock_wait: Arc<saluki_core::probes::Histogram>,
+    #[cfg(feature = "measurement")]
+    recv_wait: Arc<saluki_core::probes::Histogram>,
+}
+
+impl ReceiverProbes {
+    #[cfg_attr(
+        not(feature = "measurement"),
+        expect(unused_variables, reason = "only measurement builds name probes")
+    )]
+    fn new(context: &ComponentContext) -> Self {
+        Self {
+            #[cfg(feature = "measurement")]
+            lock_wait: saluki_core::probes::histogram(&format!(
+                "dogstatsd_receiver_lock_wait/{}",
+                context.component_id()
+            )),
+            #[cfg(feature = "measurement")]
+            recv_wait: saluki_core::probes::histogram(&format!(
+                "dogstatsd_receiver_recv_wait/{}",
+                context.component_id()
+            )),
+        }
+    }
+}
+
+/// Receives the next datagram from the receiver the datagram decoders share, holding its lock while waiting for one.
+#[cfg_attr(
+    not(feature = "measurement"),
+    expect(unused_variables, reason = "only measurement builds record probes")
+)]
+async fn receive_datagram(
+    receiver: &Mutex<mpsc::Receiver<QueuedDatagram>>, probes: &ReceiverProbes,
+) -> Option<QueuedDatagram> {
+    #[cfg(feature = "measurement")]
+    let lock_wait = saluki_core::probes::Span::start(&probes.lock_wait);
+    let mut receiver = receiver.lock().await;
+    #[cfg(feature = "measurement")]
+    let _recv_wait = {
+        drop(lock_wait);
+        saluki_core::probes::Span::start(&probes.recv_wait)
+    };
+    receiver.recv().await
+}
+
 async fn drive_datagram_decoder(
     datagram_receiver: Arc<Mutex<mpsc::Receiver<QueuedDatagram>>>, source_context: SourceContext,
     decoder_context: DecoderContext,
 ) {
+    let probes = ReceiverProbes::new(source_context.component_context());
     let mut decoder = DogStatsDDecoder::new(source_context, decoder_context);
     let mut buffer_flush = interval(Duration::from_millis(100));
     buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     loop {
         select! {
-            maybe_datagram = async {
-                datagram_receiver.lock().await.recv().await
-            } => {
+            maybe_datagram = receive_datagram(&datagram_receiver, &probes) => {
                 let Some(QueuedDatagram { result, socket_context }) = maybe_datagram else {
                     break;
                 };
@@ -2383,6 +2435,8 @@ mod tests {
     };
     #[cfg(unix)]
     use super::{receive_connected_stream, receive_connectionless_stream, received_payload};
+    #[cfg(feature = "measurement")]
+    use super::{receive_datagram, ReceiverProbes};
     #[cfg(target_os = "linux")]
     use super::{DogStatsDOriginTagResolver, Listener};
     use crate::sources::dogstatsd::PacketForwarder;
@@ -3327,6 +3381,34 @@ mod tests {
 
         assert!(first.expect("first worker should receive a packet").result.is_err());
         assert!(second.expect("second worker should receive a packet").result.is_err());
+    }
+
+    #[cfg(feature = "measurement")]
+    #[tokio::test]
+    async fn receiver_probes_record_the_lock_wait_and_the_receive_wait_of_each_datagram() {
+        let (sender, receiver) = mpsc::channel(2);
+        let receiver = Mutex::new(receiver);
+        let probes = ReceiverProbes::new(&test_component_context());
+        let socket_context = test_datagram_socket_context(udp_listen_address());
+        for _ in 0..2 {
+            sender
+                .send(QueuedDatagram {
+                    result: Err(std::io::Error::other("probed")),
+                    socket_context: socket_context.clone(),
+                })
+                .await
+                .expect("the datagram is queued");
+        }
+
+        // Nothing is timed until timing is turned on.
+        saluki_core::probes::set_timing(false);
+        assert!(receive_datagram(&receiver, &probes).await.is_some());
+        assert_eq!(probes.lock_wait.snapshot().count, 0);
+        saluki_core::probes::set_timing(true);
+        assert!(receive_datagram(&receiver, &probes).await.is_some());
+        saluki_core::probes::set_timing(false);
+        assert_eq!(probes.lock_wait.snapshot().count, 1);
+        assert_eq!(probes.recv_wait.snapshot().count, 1);
     }
 
     #[tokio::test]

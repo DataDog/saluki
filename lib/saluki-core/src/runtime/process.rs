@@ -2,7 +2,10 @@ use std::{
     future::Future,
     ops::Deref,
     pin::Pin,
-    sync::atomic::{AtomicUsize, Ordering::Relaxed},
+    sync::{
+        atomic::{AtomicUsize, Ordering::Relaxed},
+        Arc,
+    },
     task::{Context, Poll},
 };
 
@@ -94,6 +97,9 @@ pub struct Process {
     id: Id,
     name: Name,
     resource_group_token: ResourceGroupToken,
+    /// The name of the resource group a worker was given in place of its supervisor's, which the workers below it
+    /// inherit. `None` for a supervisor, and for a worker accounted in its supervisor's group.
+    worker_resource_group: Option<Arc<str>>,
     dataspace: DataspaceRegistry,
 }
 
@@ -104,7 +110,7 @@ impl Process {
             .or_else(|| Name::root(name))?;
         let resource_group_token = ResourceGroupRegistry::global().register_resource_group(&*name);
         let dataspace = parent.map(|p| p.dataspace.clone()).unwrap_or_default();
-        Some(Self::from_parts(Id::new(), name, resource_group_token, dataspace))
+        Some(Self::from_parts(Id::new(), name, resource_group_token, None, dataspace))
     }
 
     pub(crate) fn supervisor_with_dataspace<N: AsRef<str>>(
@@ -117,26 +123,48 @@ impl Process {
         let dataspace = dataspace
             .or_else(|| parent.map(|p| p.dataspace.clone()))
             .unwrap_or_default();
-        Some(Self::from_parts(Id::new(), name, resource_group_token, dataspace))
+        Some(Self::from_parts(Id::new(), name, resource_group_token, None, dataspace))
     }
 
-    pub(crate) fn worker<N: AsRef<str>>(name: N, parent: &Process) -> Option<Self> {
+    /// Creates the process of a worker under `parent`, accounted in the resource group `resource_group` if one is
+    /// given, and in its parent's resource group otherwise.
+    ///
+    /// Registering a resource group that already exists returns it, so workers given the same group name share it.
+    pub(crate) fn worker<N: AsRef<str>>(name: N, parent: &Process, resource_group: Option<&str>) -> Option<Self> {
         let name = Name::scoped(&parent.name, name)?;
+        let (resource_group_token, worker_resource_group) = match resource_group {
+            Some(group) => (
+                ResourceGroupRegistry::global().register_resource_group(group),
+                Some(Arc::from(group)),
+            ),
+            None => (parent.resource_group_token, parent.worker_resource_group.clone()),
+        };
         Some(Self::from_parts(
             Id::new(),
             name,
-            parent.resource_group_token,
+            resource_group_token,
+            worker_resource_group,
             parent.dataspace.clone(),
         ))
     }
 
-    fn from_parts(id: Id, name: Name, resource_group_token: ResourceGroupToken, dataspace: DataspaceRegistry) -> Self {
+    fn from_parts(
+        id: Id, name: Name, resource_group_token: ResourceGroupToken, worker_resource_group: Option<Arc<str>>,
+        dataspace: DataspaceRegistry,
+    ) -> Self {
         Self {
             id,
             name,
             resource_group_token,
+            worker_resource_group,
             dataspace,
         }
+    }
+
+    /// Returns the name of the resource group this worker was given in place of its supervisor's, or inherited from a
+    /// worker above it that was given one; `None` for a supervisor, or a worker accounted in its supervisor's group.
+    pub(crate) fn worker_resource_group(&self) -> Option<&Arc<str>> {
+        self.worker_resource_group.as_ref()
     }
 
     /// Returns the process identifier.

@@ -4,7 +4,11 @@ use serde_json::{json, Value};
 
 use crate::{
     canonical::{PlanHash, MAX_SAFE_INTEGER},
-    ir::{BindingName, InputName, NativeComponentId, NodeId, OutputId, ParamSpec, ParamType, RecipientId},
+    compile::FrameHosts,
+    ir::{
+        BindingName, HostId, InputName, NativeComponentId, NodeId, OutputDecl, OutputId, ParamSpec, ParamType,
+        RecipientId,
+    },
     model::{Kind, KindSet, PortType, TimestampForm},
     validate::{CatalogOutput, Liveness, MemoryCatalog},
 };
@@ -20,6 +24,68 @@ pub const DEFAULT_PROGRAM_JSON: &str = include_str!("../../fixtures/default-prog
 /// merge before the post-aggregation filter.
 pub const NO_AGGREGATION_PIPELINE_OFF_JSON: &str =
     include_str!("../../fixtures/default-program-no-aggregation-pipeline-off.json");
+
+/// The outputs and resources of the default program as stage 7 lowering resolves them, written by hand: every output
+/// but the client telemetry tap bound to a delivery host (the main output and the two routing groups to `dd_out`, the
+/// failover outputs each to its own), with fingerprints of version 2 derived by hand from each binding, every
+/// delivery host's settings, and every recipient; and the outputs `resources_team_d` and `resources_team_e`, each with
+/// its recipient, which a resources artifact declares and nothing in the default program emits to.
+///
+/// Encoder parameters and protocols are illustrative, since the fixtures' catalogs declare no host schema: an encoder's
+/// `series` is `v2` or `v3`, and a recipient whose protocol says `v3.series` takes V3 series and so no V2 series. Each
+/// output encodes the series variant its recipients take: team E's recipient takes V3 series, and its output encodes
+/// them so; every other recipient takes V2 series.
+///
+/// This is `fixtures/default-program-resources.json`: an object with the plan members `outputs` and `resources`, which
+/// [`with_resources`] puts in a default-program fixture.
+pub const DEFAULT_PROGRAM_RESOURCES_JSON: &str = include_str!("../../fixtures/default-program-resources.json");
+
+/// Returns a default-program fixture with its outputs bound and its resources declared as
+/// [`DEFAULT_PROGRAM_RESOURCES_JSON`] has them. It validates with no findings against
+/// [`default_program_resources_catalog`], and its frame has the delivery hosts of [`default_program_hosts`].
+pub fn with_resources(plan_json: &str) -> Value {
+    let mut value = serde_json::from_str::<Value>(plan_json).expect("default-program fixtures are JSON");
+    let resources =
+        serde_json::from_str::<Value>(DEFAULT_PROGRAM_RESOURCES_JSON).expect("the resources fixture is JSON");
+    value["outputs"] = resources["outputs"].clone();
+    value["resources"] = resources["resources"].clone();
+    value
+}
+
+/// Returns the delivery hosts of a default-program fixture with resources ([`with_resources`]), each with its encode
+/// host, as the host builds them: `dd_out` with `dd_metrics_encode`, `mrf_dd_out` with `mrf_metrics_encode`, and
+/// `cluster_agent_out` with `af_metrics_encode`.
+pub fn default_program_hosts() -> FrameHosts {
+    [
+        ("dd_out", "dd_metrics_encode"),
+        ("mrf_dd_out", "mrf_metrics_encode"),
+        ("cluster_agent_out", "af_metrics_encode"),
+    ]
+    .into_iter()
+    .fold(FrameHosts::new(), |hosts, (host, encoder)| {
+        hosts.with_host(HostId::new(host).unwrap(), NativeComponentId::new(encoder).unwrap())
+    })
+}
+
+/// Returns the catalog a default-program fixture with resources ([`with_resources`]) validates against:
+/// [`default_program_catalog`], with each output declared as the resources fixture binds it.
+pub fn default_program_resources_catalog() -> MemoryCatalog {
+    let resources =
+        serde_json::from_str::<Value>(DEFAULT_PROGRAM_RESOURCES_JSON).expect("the resources fixture is JSON");
+    let outputs = serde_json::from_value::<Vec<OutputDecl>>(resources["outputs"].clone())
+        .expect("the resources fixture declares outputs");
+    outputs.into_iter().fold(default_program_catalog(), |catalog, output| {
+        catalog.with_output(
+            output.id,
+            CatalogOutput {
+                accepts: output.accepts,
+                fingerprint: output.fingerprint,
+                recipients: output.recipients,
+                legacy_fingerprint: None,
+            },
+        )
+    })
+}
 
 /// Names the region host of a slot of a default-program fixture's frame, as the host names them.
 ///
@@ -251,24 +317,24 @@ pub fn default_program_catalog() -> MemoryCatalog {
         (
             "metrics_endpoint_routing.group.0123456789abcdef.names",
             STRINGS,
-            Liveness::Startup,
+            Liveness::Live,
         ),
         (
             "metrics_endpoint_routing.group.0123456789abcdef.prefixes",
             STRINGS,
-            Liveness::Startup,
+            Liveness::Live,
         ),
         (
             "metrics_endpoint_routing.group.fedcba9876543210.names",
             STRINGS,
-            Liveness::Startup,
+            Liveness::Live,
         ),
         (
             "metrics_endpoint_routing.group.fedcba9876543210.prefixes",
             STRINGS,
-            Liveness::Startup,
+            Liveness::Live,
         ),
-        ("multi_region_failover.enabled", ParamType::Bool, Liveness::Startup),
+        ("multi_region_failover.enabled", ParamType::Bool, Liveness::Live),
         (
             "multi_region_failover.metric_mirroring.enabled",
             ParamType::Bool,
@@ -279,7 +345,7 @@ pub fn default_program_catalog() -> MemoryCatalog {
             STRINGS,
             Liveness::Live,
         ),
-        ("autoscaling_failover.metrics", STRINGS, Liveness::Startup),
+        ("autoscaling_failover.metrics", STRINGS, Liveness::Live),
     ];
 
     let mut catalog = MemoryCatalog::new();
@@ -290,6 +356,7 @@ pub fn default_program_catalog() -> MemoryCatalog {
                 accepts,
                 fingerprint: hash(digit),
                 recipients: recipients.iter().map(|r| RecipientId::new(*r).unwrap()).collect(),
+                legacy_fingerprint: None,
             },
         );
     }

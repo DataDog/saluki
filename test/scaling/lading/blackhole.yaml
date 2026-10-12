@@ -1,0 +1,12 @@
+# The intake of a scaling run: HTTP blackholes that accept every request ADP's forwarders send and discard it, on CPUs
+# of their own, so that intake work never competes with ADP's. 9091 is the primary endpoint; the `gateways` profile
+# also sends to 9092 and 9093 (its two endpoint routing groups) and 9094 (Multi-Region Failover).
+blackhole:
+  - http:
+      binding_addr: 0.0.0.0:9091
+  - http:
+      binding_addr: 0.0.0.0:9092
+  - http:
+      binding_addr: 0.0.0.0:9093
+  - http:
+      binding_addr: 0.0.0.0:9094

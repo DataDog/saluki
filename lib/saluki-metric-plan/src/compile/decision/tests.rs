@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 
 use super::*;
 use crate::{
-    compile::{compile, CompileError, DecisionIndex, ExitIndex, Frame, RegisterId, Route, Step},
+    compile::{compile, CompileError, DecisionIndex, EntrySource, ExitIndex, Frame, RegisterId, Route, Step},
     ir::{NativeComponentId, NodeId, Operand, OutputId, Plan},
     model::{Kind, PortType},
     operators::OperatorRegistry,
@@ -565,6 +565,7 @@ fn compiled(plan: &Plan) -> Result<crate::compile::CompiledPlan, CompileError> {
             accepts: PortType::ANY,
             fingerprint: format!("sha256:{}", "7".repeat(64)).parse().unwrap(),
             recipients: Vec::new(),
+            legacy_fingerprint: None,
         },
     );
     let report = Validator::new(&registry, &catalog).validate(plan);
@@ -686,7 +687,7 @@ fn splits_and_tees_joined_by_edges_are_one_decision_and_a_map_ends_it() {
             Step::Exit {
                 register: RegisterId::new(2),
                 exit: ExitIndex::new(0),
-                entry: None,
+                entry: EntrySource::None,
             },
             Step::Map {
                 kernel: crate::compile::KernelIndex::new(0),

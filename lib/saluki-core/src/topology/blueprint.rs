@@ -1,3 +1,5 @@
+#[cfg(any(test, feature = "test-util"))]
+use std::sync::Arc;
 use std::{collections::HashMap, future::Future, num::NonZeroUsize, pin::Pin, sync::Mutex, time::Duration};
 
 use async_trait::async_trait;
@@ -14,9 +16,14 @@ use super::{
     snapshot::{AdmissionPointSnapshot, BlueprintSnapshot},
     ComponentId, ComponentOutputId,
 };
-#[cfg(any(test, feature = "test-util"))]
-use crate::accounting::MemoryBounds;
 use crate::accounting::{ComponentRegistry, MemoryLimiter, UsageExpr};
+#[cfg(any(test, feature = "test-util"))]
+use crate::accounting::{MemoryBounds, MemoryBoundsBuilder};
+#[cfg(any(test, feature = "test-util"))]
+use crate::{
+    components::encoders::Encoder,
+    data_model::{event::EventType, payload::PayloadType},
+};
 use crate::{
     components::{
         decoders::DecoderBuilder, destinations::DestinationBuilder, encoders::EncoderBuilder,
@@ -561,6 +568,38 @@ impl TopologyBlueprint {
         Ok(self)
     }
 
+    /// Wraps the encoder `component_id` in the encoder that `wrap` returns when the topology builds it, keeping the
+    /// encoder's builder, place, and memory bounds.
+    ///
+    /// `wrap` receives the encoder the blueprint's builder built, so a test can keep a real encoder and change only how
+    /// it runs, such as observing what it receives before running it.
+    ///
+    /// # Errors
+    ///
+    /// If the blueprint has no encoder `component_id`, an error is returned and the blueprint is unchanged.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn wrap_encoder<F>(&mut self, component_id: &str, wrap: F) -> Result<&mut Self, GenericError>
+    where
+        F: Fn(Box<dyn Encoder + Send>) -> Box<dyn Encoder + Send> + Send + Sync + 'static,
+    {
+        let state = self.state_mut();
+        let (id, inner) = ComponentId::try_from(component_id)
+            .ok()
+            .and_then(|id| state.encoders.remove_entry(&id))
+            .ok_or_else(|| {
+                generic_error!(
+                    "Cannot wrap encoder '{}': the blueprint has no such encoder. Add it before wrapping it.",
+                    component_id
+                )
+            })?;
+        let wrapped = WrappedEncoderBuilder {
+            inner,
+            wrap: Arc::new(wrap),
+        };
+        state.encoders.insert(id, Box::new(wrapped));
+        Ok(self)
+    }
+
     /// Replaces the builder of the forwarder `component_id` with `builder`, keeping the forwarder's place in the
     /// blueprint, as [`replace_source`][Self::replace_source] does for a source.
     ///
@@ -592,6 +631,50 @@ impl TopologyBlueprint {
     pub fn snapshot(&self) -> Option<BlueprintSnapshot> {
         let guard = self.build_state.lock().expect("topology blueprint mutex poisoned");
         guard.as_ref().map(TopologyBuildState::snapshot)
+    }
+}
+
+/// Wraps a built encoder in another.
+#[cfg(any(test, feature = "test-util"))]
+type EncoderWrapper = Arc<dyn Fn(Box<dyn Encoder + Send>) -> Box<dyn Encoder + Send> + Send + Sync>;
+
+/// An encoder builder that builds what the builder it wraps does, and wraps the encoder it builds.
+#[cfg(any(test, feature = "test-util"))]
+struct WrappedEncoderBuilder {
+    inner: Box<dyn EncoderBuilder + Send>,
+    wrap: EncoderWrapper,
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl EncoderBuilder for WrappedEncoderBuilder {
+    fn input_event_type(&self) -> EventType {
+        self.inner.input_event_type()
+    }
+
+    fn output_payload_type(&self) -> PayloadType {
+        self.inner.output_payload_type()
+    }
+
+    // Written out rather than with `async_trait`: the wrapped builder is `Send` but not `Sync`, so an `async fn` here
+    // could not hold `&self` across the build. The wrapped builder's own future is `Send`, and nothing else borrows
+    // `self`.
+    fn build<'life0, 'async_trait>(
+        &'life0 self, context: BuildContext,
+    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn Encoder + Send>, GenericError>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        let built = self.inner.build(context);
+        let wrap = Arc::clone(&self.wrap);
+        Box::pin(async move { Ok(wrap(built.await?)) })
+    }
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl MemoryBounds for WrappedEncoderBuilder {
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        self.inner.specify_bounds(builder);
     }
 }
 
@@ -3173,6 +3256,53 @@ mod tests {
             .replace_transform("fwd", ForwardingTransformBuilder::new())
             .unwrap();
         assert_eq!(blueprint.snapshot().unwrap(), before);
+    }
+
+    #[test]
+    fn wrapping_an_encoder_keeps_its_builder_and_place() {
+        let mut blueprint = blueprint_with_every_component_type();
+        let before = blueprint.snapshot().unwrap();
+
+        let missing = blueprint
+            .wrap_encoder("nowhere", |encoder| encoder)
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            missing,
+            "Cannot wrap encoder 'nowhere': the blueprint has no such encoder. Add it before wrapping it."
+        );
+
+        blueprint.wrap_encoder("enc", |encoder| encoder).unwrap();
+        assert_eq!(blueprint.snapshot().unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn a_wrapped_encoder_is_built_by_its_builder_and_then_wrapped() {
+        let mut blueprint = blueprint_with_every_component_type();
+        let wraps = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&wraps);
+        blueprint
+            .wrap_encoder("enc", move |encoder| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                encoder
+            })
+            .unwrap();
+
+        let id = ComponentId::try_from("enc").unwrap();
+        let builder = blueprint.state_mut().encoders.remove(&id).unwrap();
+        assert_eq!(
+            (builder.input_event_type(), builder.output_payload_type()),
+            (EventType::Metric, PayloadType::Http)
+        );
+        let context = BuildContext::new(ComponentContext::test_encoder("enc"), ResourceRegistry::new());
+        assert_eq!(
+            wraps.load(Ordering::SeqCst),
+            0,
+            "nothing is wrapped before the encoder is built"
+        );
+        assert!(builder.build(context).await.is_ok());
+        assert_eq!(wraps.load(Ordering::SeqCst), 1);
     }
 
     /// Returns each component of `blueprint`'s snapshot with the capacity of its input, if it has one.

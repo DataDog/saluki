@@ -4,7 +4,7 @@ mod client;
 
 pub use saluki_tls::TlsMinimumVersion;
 
-pub use self::client::{into_client_body, ClientBody, HttpClient, HttpClientBuilder};
+pub use self::client::{into_client_body, ClientBody, HttpClient, HttpClientBuilder, HttpClientSwitch};
 
 mod conn;
 pub use self::conn::{HttpProtocol, HttpsCapableConnector, HttpsCapableConnectorBuilder};

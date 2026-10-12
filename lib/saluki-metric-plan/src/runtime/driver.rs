@@ -31,8 +31,8 @@ use super::{
 };
 use crate::{
     compile::{
-        DecisionIndex, DecisionMemo, ExitSet, ExitSetCounts, KernelIndex, RegionProgram, Slot, SlotId, SlotKind,
-        StateParamsEntry, COUNTED_EXIT_SETS,
+        DecisionIndex, DecisionMemo, ExitSet, ExitSetCounts, KernelIndex, LeaseTable, RegionProgram, Slot, SlotId,
+        SlotKind, StateParamsEntry, COUNTED_EXIT_SETS,
     },
     install::StateBinding,
     ir::{NativeComponentId, NodeId},
@@ -209,6 +209,8 @@ pub struct PrepareRegion {
     budgeted: Option<BTreeSet<NodeId>>,
     /// How the program's state owners bind to instances of their state, in an isolation slot.
     state: Vec<StateBinding>,
+    /// The lease of each output the program delivers to, or `None` if exits to outputs write no entry.
+    leases: Option<Arc<LeaseTable>>,
     layout: Layout,
     telemetry: ProgramTelemetry,
 }
@@ -235,9 +237,29 @@ impl PrepareRegion {
             budget,
             budgeted: None,
             state: Vec::new(),
+            leases: None,
             layout,
             telemetry,
         }
+    }
+
+    /// Gives the preparation its generation's lease table: the lease of each output the program delivers to, which
+    /// each exit toward an encode host writes as the entry of every buffer it sends, so that the encode host knows
+    /// which encoder stream the buffer belongs to.
+    ///
+    /// A program with an exit toward an encode host needs a table with a lease for every output it delivers to there,
+    /// or the region rejects the preparation. A program whose exits lead only to regions and fixed destinations needs
+    /// none.
+    pub fn with_leases(mut self, leases: Arc<LeaseTable>) -> Self {
+        self.leases = Some(leases);
+        self
+    }
+
+    /// Returns the preparation's lease table ([`with_leases`]), if it has one.
+    ///
+    /// [`with_leases`]: Self::with_leases
+    pub fn leases(&self) -> Option<&Arc<LeaseTable>> {
+        self.leases.as_ref()
     }
 
     /// Says how the program's state owners bind to instances of their state, in an isolation slot: retain an instance
@@ -299,6 +321,7 @@ impl fmt::Debug for PrepareRegion {
             .field("budget", &self.budget)
             .field("budgeted", &self.budgeted)
             .field("state", &self.state)
+            .field("leases", &self.leases)
             .finish_non_exhaustive()
     }
 }
@@ -817,6 +840,7 @@ impl MetricRegionDriver {
             budget,
             budgeted,
             state: bindings,
+            leases,
             layout,
             telemetry,
         } = prepare;
@@ -833,7 +857,13 @@ impl MetricRegionDriver {
                 generation: id,
             });
         }
-        let code = ProgramCode::translate(&program, &layout, self.exit_count, self.state.is_some())?;
+        let code = ProgramCode::translate(
+            &program,
+            &layout,
+            self.exit_count,
+            self.state.is_some(),
+            leases.as_deref(),
+        )?;
         let state_error = |message: String| RegionError::StateBinding {
             region: self.name.to_string(),
             generation: id,

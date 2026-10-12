@@ -1030,3 +1030,367 @@ mod physical {
         assert_eq!(mirrored.idle, idle_exits("mrf_metrics_encode", &every_slot));
     }
 }
+
+/// The resources section and the encode hosts, on the default program with its outputs bound and its resources
+/// declared, as stage 7 lowers it (`fixtures/default-program-resources.json`).
+mod resources {
+    use super::*;
+    use crate::{
+        compile::{compile, Frame},
+        ir::NativeComponentId,
+        testing::{default_program_hosts, default_program_resources_catalog, with_resources},
+        validate::Catalog,
+    };
+
+    fn namer(nodes: &[NodeId]) -> Result<NativeComponentId, String> {
+        crate::testing::default_program_slot_name(nodes)
+    }
+
+    fn bound_default_program() -> Plan {
+        Plan::from_value(with_resources(DEFAULT_PROGRAM_JSON)).unwrap()
+    }
+
+    /// The bound default program after a configuration change and a new resources revision: a dual-ship endpoint
+    /// added under the main output's role, `dd_out`'s request timeout raised, team D declared again alike by revision
+    /// 2, and team E's output and recipient no longer declared.
+    fn changed_default_program() -> Plan {
+        let mut value = with_resources(DEFAULT_PROGRAM_JSON);
+        let dual = "dd_out/additional_2/0";
+        let revision_2 = json!({"declared": {"revision": 2, "hash": format!("sha256:{}", "d".repeat(64))}});
+        let outputs = value["outputs"].as_array_mut().unwrap();
+        outputs.retain(|output| output["id"] != "resources_team_e");
+        for output in outputs.iter_mut() {
+            if output["id"] == "dd_metrics_encode" {
+                output["recipients"] = json!(["dd_out/additional_2/0", "dd_out/primary/0"]);
+            }
+            if output["id"] == "resources_team_d" {
+                output["binding"]["provenance"] = revision_2.clone();
+            }
+        }
+        let resources = &mut value["resources"];
+        resources["hosts"][0]["settings"]["request_timeout"] = json!("30s");
+        let recipients = resources["recipients"].as_array_mut().unwrap();
+        recipients.retain(|recipient| recipient["id"] != "dd_out/declared/team_e/https://e.example.com");
+        for recipient in recipients.iter_mut() {
+            if recipient["provenance"] != "native" {
+                recipient["provenance"] = revision_2.clone();
+            }
+        }
+        recipients.push(json!({
+            "id": dual, "host": "dd_out", "endpoint": "https://dual.example.com",
+            "credential": "native:additional/0000111122223333/0", "classes": "all",
+            "protocol": {"kind": "datadog_intake", "v3": {"series": false, "sketches": false}},
+            "provenance": "native"
+        }));
+        Plan::from_value(value).unwrap()
+    }
+
+    /// The explain document of a bound default program placed into the bound default program's frame, against the
+    /// bound default program as the active plan.
+    fn explained(plan: &Plan) -> Explain {
+        let boot = bound_default_program();
+        let registry = OperatorRegistry::native();
+        let frame = Frame::compute_with_hosts(&boot, &registry, &namer, &default_program_hosts()).unwrap();
+        let catalog = changed_catalog(plan);
+        let report = Validator::new(&registry, &catalog).validate(plan);
+        assert!(report.is_valid(), "{}", report);
+        let compiled = compile(plan, &report, &registry, &frame).unwrap();
+        Explain::of(plan, &registry, &report)
+            .with_resource_changes(plan, &boot)
+            .with_rewrites(&compiled.rewrites)
+            .with_physical(&compiled.plan, &frame, &compiled.placement)
+    }
+
+    /// The catalog of the resources fixture, with the outputs of `plan` declared as it declares them.
+    fn changed_catalog(plan: &Plan) -> crate::validate::MemoryCatalog {
+        plan.outputs
+            .iter()
+            .fold(default_program_resources_catalog(), |catalog, output| {
+                catalog.with_output(
+                    output.id.clone(),
+                    crate::validate::CatalogOutput {
+                        accepts: output.accepts,
+                        fingerprint: output.fingerprint,
+                        recipients: output.recipients.clone(),
+                        legacy_fingerprint: None,
+                    },
+                )
+            })
+    }
+
+    #[test]
+    fn the_stage_7_default_programs_explain_matches_its_golden_files() {
+        let explain = explained(&changed_default_program());
+        assert_golden("default-program-stage7.json", &explain.to_json().unwrap());
+        assert_golden("default-program-stage7.txt", &explain.to_text());
+    }
+
+    #[test]
+    fn the_bound_default_program_validates_and_explains_its_resources_with_their_provenance() {
+        let plan = bound_default_program();
+        let registry = OperatorRegistry::native();
+        let report = Validator::new(&registry, &default_program_resources_catalog()).validate(&plan);
+        assert!(report.findings().is_empty(), "{}", report);
+
+        let explain = Explain::of(&plan, &registry, &report);
+        let resources = explain
+            .resources
+            .as_ref()
+            .expect("a plan with bound outputs explains its resources");
+        // Seven bound outputs (the client telemetry tap is a fixed destination), three hosts, eight recipients.
+        let bound = resources
+            .outputs
+            .iter()
+            .map(|output| output.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            bound,
+            vec![
+                "dd_metrics_encode",
+                "metrics_routing_encode_0",
+                "metrics_routing_encode_1",
+                "mrf_metrics_encode",
+                "af_metrics_encode",
+                "resources_team_d",
+                "resources_team_e"
+            ]
+        );
+        assert_eq!(resources.hosts.len(), 3);
+        assert_eq!(resources.recipients.len(), 8);
+        let team_d = &resources.recipients[6];
+        assert!(matches!(
+            team_d.provenance,
+            crate::ir::ResourceProvenance::Declared(ref revision) if revision.revision == 1
+        ));
+        assert_eq!(team_d.outputs, vec!["resources_team_d".parse::<OutputId>().unwrap()]);
+        assert_eq!(team_d.credential.as_str(), "credentials/team_d");
+        assert!(matches!(team_d.delivery, DeliveryPolicy::Bounded(_)));
+        // Nothing compared yet: no change is said.
+        assert!(resources.outputs.iter().all(|output| output.change.is_none()));
+        assert!(resources.removed.is_empty());
+
+        // A plan without bound outputs or resources has no section, so documents of earlier stages read as before.
+        let unbound = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
+        let report = Validator::new(&registry, &default_program_catalog()).validate(&unbound);
+        assert!(Explain::of(&unbound, &registry, &report).resources.is_none());
+    }
+
+    /// The resources fixture's catalog, refusing a recipient for an output whose series variant it does not take, in
+    /// the fixture's vocabulary: an encoder's `series` is `v2` or `v3`, and a recipient takes V3 series, and so no V2
+    /// series, when its protocol says `v3.series`.
+    struct ProtocolCatalog(crate::validate::MemoryCatalog);
+
+    impl Catalog for ProtocolCatalog {
+        fn output(&self, id: &OutputId) -> Option<&crate::validate::CatalogOutput> {
+            self.0.output(id)
+        }
+
+        fn binding(&self, name: &crate::ir::BindingName) -> Option<&crate::validate::CatalogBinding> {
+            self.0.binding(name)
+        }
+
+        fn scope_input(&self, scope: &crate::ir::ScopeName, input: &crate::ir::InputName) -> Option<PortType> {
+            self.0.scope_input(scope, input)
+        }
+
+        fn scope_exit(&self, scope: &crate::ir::ScopeName, exit: &crate::ir::ExitName) -> Option<PortType> {
+            self.0.scope_exit(scope, exit)
+        }
+
+        fn state_budget(&self) -> Option<u64> {
+            self.0.state_budget()
+        }
+
+        fn refuses(&self, output: &crate::ir::OutputDecl, recipient: &crate::ir::RecipientDecl) -> Option<String> {
+            let encodes_v3 = output.binding.as_ref()?.encoder.get("series") == Some(&json!("v3"));
+            let takes_v3 = recipient.protocol.get("v3").and_then(|v3| v3.get("series")) == Some(&json!(true));
+            (encodes_v3 != takes_v3).then(|| {
+                format!(
+                    "it takes series in {}, and the output encodes them in the other",
+                    if takes_v3 { "V3 only" } else { "V2 only" }
+                )
+            })
+        }
+    }
+
+    #[test]
+    fn the_resources_fixture_binds_every_recipient_to_outputs_encoding_the_series_variant_it_takes() {
+        let plan = bound_default_program();
+        let catalog = ProtocolCatalog(default_program_resources_catalog());
+        let report = Validator::new(&OperatorRegistry::native(), &catalog).validate(&plan);
+        assert!(report.findings().is_empty(), "{}", report);
+
+        // The catalog does refuse a recipient that takes V3 series only, for an output encoding V2 series.
+        let mut value = with_resources(DEFAULT_PROGRAM_JSON);
+        for recipient in value["resources"]["recipients"].as_array_mut().unwrap() {
+            if recipient["id"] == "dd_out/primary/0" {
+                recipient["protocol"]["v3"]["series"] = json!(true);
+            }
+        }
+        let flipped = Plan::from_value(value).unwrap();
+        let report = Validator::new(&OperatorRegistry::native(), &catalog).validate(&flipped);
+        assert!(!report.is_valid());
+        assert!(report.to_string().contains("it takes series in V3 only"), "{}", report);
+    }
+
+    #[test]
+    fn each_resource_is_explained_as_reused_rebound_reconfigured_new_or_removed_against_the_active_plan() {
+        let explain = explained(&changed_default_program());
+        let resources = explain.resources.as_ref().unwrap();
+        let changes = |entries: Vec<(String, Option<String>)>| {
+            entries
+                .into_iter()
+                .map(|(id, change)| (id, change.unwrap_or_default()))
+                .collect::<Vec<_>>()
+        };
+        let owned = |pairs: &[(&str, &str)]| {
+            pairs
+                .iter()
+                .map(|(id, change)| (id.to_string(), change.to_string()))
+                .collect::<Vec<_>>()
+        };
+        // The main output gained a recipient: rebound (a new lease), with its fingerprint unchanged; the others keep
+        // their encoder streams.
+        assert_eq!(
+            changes(
+                resources
+                    .outputs
+                    .iter()
+                    .map(|output| (output.id.to_string(), output.change.clone()))
+                    .collect()
+            ),
+            // Team D, declared again alike by another revision, keeps its encoder stream.
+            owned(&[
+                ("dd_metrics_encode", "rebound"),
+                ("metrics_routing_encode_0", "reused"),
+                ("metrics_routing_encode_1", "reused"),
+                ("mrf_metrics_encode", "reused"),
+                ("af_metrics_encode", "reused"),
+                ("resources_team_d", "reused"),
+            ])
+        );
+        assert_eq!(
+            changes(
+                resources
+                    .hosts
+                    .iter()
+                    .map(|host| (host.host.to_string(), host.change.clone()))
+                    .collect()
+            ),
+            owned(&[
+                ("dd_out", "reconfigured"),
+                ("mrf_dd_out", "reused"),
+                ("cluster_agent_out", "reused"),
+            ])
+        );
+        let dual = resources.recipients.last().unwrap();
+        assert_eq!(
+            (dual.id.as_str(), dual.change.as_deref()),
+            ("dd_out/additional_2/0", Some("new"))
+        );
+        // Every other recipient is reused, team D's whose provenance alone changed included.
+        assert_eq!(resources.recipients.len(), 8);
+        assert!(resources.recipients[..7]
+            .iter()
+            .all(|recipient| recipient.change.as_deref() == Some("reused")));
+        assert_eq!(
+            resources.removed.outputs,
+            vec!["resources_team_e".parse::<OutputId>().unwrap()]
+        );
+        assert_eq!(
+            resources.removed.recipients,
+            vec!["dd_out/declared/team_e/https://e.example.com"
+                .parse::<crate::ir::RecipientId>()
+                .unwrap()]
+        );
+        assert!(resources.removed.hosts.is_empty());
+    }
+
+    #[test]
+    fn an_output_whose_recipient_changes_its_protocol_is_explained_as_rebound() {
+        // The primary intake now takes V3 series: the main output's declaration is unchanged, but its stream resolves
+        // the recipient for another variant, so it gets a new lease.
+        let mut value = with_resources(DEFAULT_PROGRAM_JSON);
+        for recipient in value["resources"]["recipients"].as_array_mut().unwrap() {
+            if recipient["id"] == "dd_out/primary/0" {
+                recipient["protocol"]["v3"]["series"] = json!(true);
+            }
+        }
+        let explain = explained(&Plan::from_value(value).unwrap());
+        let resources = explain.resources.as_ref().unwrap();
+        let change = |output: &str| {
+            resources
+                .outputs
+                .iter()
+                .find(|entry| entry.id.as_str() == output)
+                .and_then(|entry| entry.change.clone())
+        };
+        assert_eq!(change("dd_metrics_encode").as_deref(), Some("rebound"));
+        assert_eq!(change("metrics_routing_encode_0").as_deref(), Some("reused"));
+        let primary = resources
+            .recipients
+            .iter()
+            .find(|recipient| recipient.id.as_str() == "dd_out/primary/0")
+            .unwrap();
+        assert_eq!(primary.change.as_deref(), Some("reconfigured"));
+    }
+
+    #[test]
+    fn bound_outputs_run_as_leases_in_their_hosts_encode_host_fed_by_the_exits_that_carry_their_emits() {
+        let explain = explained(&changed_default_program());
+        let physical = explain.physical.as_ref().unwrap();
+        let binding = |output: &str| {
+            physical
+                .output_bindings
+                .iter()
+                .find(|binding| binding.output.as_str() == output)
+                .unwrap_or_else(|| panic!("no binding of `{}`", output))
+        };
+        let main = binding("dd_metrics_encode");
+        assert_eq!(
+            main.encode_host.as_deref(),
+            Some("encode host dd_metrics_encode of dd_out")
+        );
+        // The main output's emit runs in the enrichment slot, whose exit to `dd_out`'s encode host carries it; the
+        // other slots' exits to it carry nothing of the main output's.
+        assert_eq!(main.fed_by, strings(&["metrics_enrich.dd_metrics_encode"]));
+        assert!(
+            main.idle.contains(&"dsd_pre_aggregation.dd_metrics_encode".to_string()),
+            "{:?}",
+            main.idle
+        );
+        // The routing groups share the exit with the main output: one exit per encode host.
+        assert_eq!(binding("metrics_routing_encode_0").fed_by, main.fed_by);
+        // The client telemetry tap is a fixed destination.
+        let tap = binding("dsd_client_telemetry");
+        assert_eq!(tap.encode_host, None);
+        assert!(!tap.removed && !main.removed);
+        // Team E's output, which the frame's boot plan binds and the explained plan no longer declares, runs no lease:
+        // it has no encode host, and the encode host's exits are not its own.
+        let team_e = binding("resources_team_e");
+        assert!(team_e.removed);
+        assert_eq!(team_e.encode_host, None);
+        assert!(team_e.fed_by.is_empty() && team_e.idle.is_empty(), "{:?}", team_e);
+        assert!(!binding("resources_team_d").removed);
+
+        // Every fused slot with an output downstream has one exit to every encode host, named after it, and none to
+        // the outputs bound to them; the isolation slot has only its boot edges' exits.
+        for slot in physical.slots.iter().filter(|slot| slot.isolation.is_none()) {
+            let names = slot.exits.iter().map(|exit| exit.name.as_str()).collect::<Vec<_>>();
+            for encoder in ["dd_metrics_encode", "mrf_metrics_encode", "af_metrics_encode"] {
+                let exits = names.iter().filter(|name| **name == encoder).count();
+                assert_eq!(exits, 1, "slot `{}`: {:?}", slot.name, names);
+            }
+            assert!(
+                !names.iter().any(|name| name.starts_with("metrics_routing_encode")),
+                "slot `{}`: {:?}",
+                slot.name,
+                names
+            );
+        }
+    }
+
+    fn strings(list: &[&str]) -> Vec<String> {
+        list.iter().map(ToString::to_string).collect()
+    }
+}

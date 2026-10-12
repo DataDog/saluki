@@ -11,6 +11,10 @@
 //!   summary](StatusSummary) beside them;
 //! - a transport failure delivers nothing, so the current snapshot stays in effect: it never revokes.
 //!
+//! Two products travel on the channel, each with its own configs, revisions, and authority: `policy`, whose artifacts
+//! replace scopes of the default program, and `resources`, whose one config declares recipients and outputs (see
+//! [`resources`](crate::resources)). Both products' configs carry the same [envelope](Envelope).
+//!
 //! The host persists nothing: persistence and redelivery belong to the channel. A transport, such as the local
 //! development stub, and the installer meet through [`artifact_channel`]: the transport publishes each snapshot it
 //! receives with its [`ArtifactPublisher`] and sends back what its [`ApplyStateReceiver`] holds; the installer reads
@@ -32,5 +36,6 @@ pub use self::snapshot::{
 
 mod state;
 pub use self::state::{
-    ActiveArtifact, ApplyState, ApplyStates, ConfigAcknowledgment, ScopeStatus, StatusSummary, POLICY_SCOPE,
+    ActiveArtifact, ApplyState, ApplyStates, ConfigAcknowledgment, ResourcesStatus, ScopeStatus, StatusSummary,
+    POLICY_SCOPE,
 };

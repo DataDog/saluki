@@ -23,7 +23,15 @@
   <div class="banner" id="banner" role="status" hidden></div>
 
   <main class="layout">
-    <section class="pane editor-pane" aria-labelledby="editor-title">
+    <section class="pane editor-pane" aria-label="Editors">
+      <div class="tabs" role="tablist">
+        <button type="button" class="tab active" id="tab-policy" role="tab" aria-selected="true"
+                aria-controls="policy-editor">Policy</button>
+        <button type="button" class="tab" id="tab-resources" role="tab" aria-selected="false"
+                aria-controls="resources-editor">Resources</button>
+      </div>
+
+      <div class="tab-panel" id="policy-editor" role="tabpanel" aria-labelledby="tab-policy">
       <div class="pane-head">
         <h2 id="editor-title">Program</h2>
         <div class="actions">
@@ -73,6 +81,14 @@
         </div>
       </div>
 
+      <details class="bindings" id="outputs" hidden>
+        <summary>Outputs <span class="hint" id="outputs-count"></span></summary>
+        <table>
+          <thead><tr><th>Output</th><th>Declared by</th><th>Reaches</th><th>Fingerprint</th></tr></thead>
+          <tbody id="outputs-rows"></tbody>
+        </table>
+      </details>
+
       <details class="bindings" id="bindings" hidden>
         <summary>Configuration bindings <span class="hint" id="bindings-count"></span></summary>
         <table>
@@ -80,6 +96,60 @@
           <tbody id="bindings-rows"></tbody>
         </table>
       </details>
+      </div>
+
+      <div class="tab-panel" id="resources-editor" role="tabpanel" aria-labelledby="tab-resources" hidden>
+        <div class="pane-head">
+          <h2>Resources</h2>
+          <div class="actions">
+            <button type="button" id="btn-resources-template"
+                    title="Replace the text with the team D template">Load template</button>
+            <button type="button" id="btn-resources-served"
+                    title="Replace the text with the document the stub serves">Load served</button>
+            <button type="button" id="btn-resources-check" class="primary">Check</button>
+          </div>
+        </div>
+        <p class="hint">A resources artifact declares recipients and the outputs that deliver to them, with its own
+          revisions and approval. Policies emit to a declared output as <code>resources_&lt;name&gt;</code>; the policy
+          editor takes its fingerprint from this draft until ADP declares it.</p>
+        <textarea id="resources-source" class="json-editor" spellcheck="false" wrap="off" autocomplete="off"
+                  autocapitalize="off" aria-label="Resources document"></textarea>
+        <div class="compile-status" id="resources-status">Load the template, then check and publish it.</div>
+        <ul class="declared-outputs" id="resources-outputs" hidden></ul>
+
+        <div class="publish-row">
+          <button type="button" id="btn-resources-publish" class="approve" disabled>Publish resources</button>
+          <span class="spacer"></span>
+          <button type="button" id="btn-resources-revoke" class="danger" disabled>Revoke resources</button>
+        </div>
+        <div class="publish-outcome" id="resources-outcome" aria-live="polite" hidden></div>
+
+        <div class="confirm" id="resources-confirm" hidden>
+          <p>Approve and publish these resources as resources revision
+            <strong id="resources-confirm-revision">?</strong>?</p>
+          <p class="hash-line"><code id="resources-confirm-hash"></code></p>
+          <ul class="confirm-warnings" id="resources-confirm-warnings" hidden></ul>
+          <div class="confirm-actions">
+            <button type="button" id="btn-resources-confirm" class="approve">Approve and publish</button>
+            <button type="button" id="btn-resources-cancel" class="quiet">Cancel</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>Resources acknowledgments</h3>
+            <span class="hint" id="resources-ack-summary"></span>
+          </div>
+          <div class="table-wrap">
+            <table class="acks">
+              <thead>
+                <tr><th>When</th><th>Rev</th><th>Hash</th><th>State</th><th>Gen</th></tr>
+              </thead>
+              <tbody id="resources-acks"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
     </section>
 
     <section class="pane viewer-pane" aria-label="Telemetry viewer">
@@ -121,6 +191,21 @@
           </div>
           <div class="stats" id="traffic-stats"></div>
           <div class="canary" id="canary"></div>
+        </div>
+      </div>
+
+      <div class="card" id="recipients-card">
+        <div class="card-head">
+          <h3>Recipients</h3>
+          <span class="hint" id="recipients-hint"></span>
+        </div>
+        <div class="table-wrap">
+          <table class="recipients">
+            <thead>
+              <tr><th>Host</th><th>Recipient</th><th>State</th><th>Queue</th><th>Last drain</th></tr>
+            </thead>
+            <tbody id="recipients"></tbody>
+          </table>
         </div>
       </div>
 

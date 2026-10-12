@@ -2,7 +2,7 @@
 //! status expected after each step written by hand.
 
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
     time::Duration,
@@ -20,7 +20,7 @@ use crate::{
     canonical::{PlanHash, ResolvedValues},
     channel::{ApplyState, ArtifactConfig, ArtifactConfigId, ArtifactProduct, ArtifactSnapshot, ConfigAcknowledgment},
     compile::SlotId,
-    compose::{Approval, ComposeError, Composed, Composer, ScopeComposition},
+    compose::{Approval, ComposeError, ComposeOutcome, Composed, Composer, DropReason, DroppedEmits, ScopeComposition},
     ir::{OutputId, Plan, ReceivedArtifact},
     operators::OperatorRegistry,
     runtime::PanicBudget,
@@ -78,12 +78,20 @@ fn marker_of(artifact: &ReceivedArtifact) -> String {
 /// `unmodified` composes to the default program itself, as an unmodified export does; `invalid` composes to a plan
 /// that does not validate; `uncomposable` cannot be composed; and `fragile` cannot be composed once the configuration
 /// changed, as an artifact whose output was removed.
+///
+/// Two markers stand for the outcomes of stage 7: `degradable` (or any marker it starts) records `af_metrics_encode`,
+/// which a changed configuration no longer declares, so that a new artifact waits for it and the artifact in effect
+/// composes with its emits dropped; and `legacy` records the main output with a version 1 fingerprint that still
+/// matches.
 pub(super) struct TestComposer {
     /// The post-aggregation filter of the default program the host last lowered.
     pub(super) configuration: Cell<&'static str>,
 
     /// Whether the default program changed structurally since the artifacts' export.
     structural: Cell<bool>,
+
+    /// The approval of every composition, by the artifact's marker, in order.
+    approvals: RefCell<Vec<(String, Approval)>>,
 }
 
 impl TestComposer {
@@ -91,8 +99,14 @@ impl TestComposer {
         Self {
             configuration: Cell::new(BOOT_POST_AGGREGATION),
             structural: Cell::new(false),
+            approvals: RefCell::new(Vec::new()),
         }
     }
+}
+
+/// The version 2 fingerprint the `legacy` artifact's composition reports for the main output.
+fn legacy_fingerprint() -> PlanHash {
+    PlanHash::of_bytes(b"the main output's version 2 fingerprint")
 }
 
 impl Composer for TestComposer {
@@ -104,6 +118,28 @@ impl Composer for TestComposer {
         };
         let configuration = self.configuration.get();
         let marker = marker_of(artifact);
+        self.approvals.borrow_mut().push((marker.clone(), (*approval).clone()));
+        let removed = OutputId::new("af_metrics_encode").unwrap();
+        let mut outcome = ComposeOutcome::Composed;
+        let mut legacy_outputs = BTreeMap::new();
+        let degradable = marker.starts_with("degradable");
+        match marker.as_str() {
+            _ if degradable && configuration != BOOT_POST_AGGREGATION && approval.in_effect => {
+                outcome = ComposeOutcome::Degraded(vec![DroppedEmits {
+                    output: removed.clone(),
+                    reason: DropReason::Removed,
+                    nodes: vec!["metrics_policy_true".parse().unwrap()],
+                }]);
+            }
+            _ if degradable && configuration != BOOT_POST_AGGREGATION => {
+                return Err(ComposeError::PendingOutput { output: removed });
+            }
+            "legacy" => {
+                let output = OutputId::new("dd_metrics_encode").unwrap();
+                legacy_outputs.insert(output, legacy_fingerprint());
+            }
+            _ => {}
+        }
         let (plan, catalog) = match marker.as_str() {
             "uncomposable" => {
                 return Err(ComposeError::Malformed {
@@ -111,9 +147,8 @@ impl Composer for TestComposer {
                 })
             }
             "fragile" if configuration != BOOT_POST_AGGREGATION => {
-                return Err(ComposeError::RemovedOutput {
+                return Err(ComposeError::PendingOutput {
                     output: OutputId::new("af_metrics_encode").unwrap(),
-                    declared: false,
                 })
             }
             "unmodified" => (program(BOOT_LISTENER, configuration), default_program_catalog()),
@@ -129,6 +164,8 @@ impl Composer for TestComposer {
             correspondence: Correspondence::new(),
             stale_base,
             stale_review,
+            outcome,
+            legacy_outputs,
         };
         Ok(Composed {
             plan,
@@ -552,6 +589,7 @@ fn error_kind(error: &str) -> &str {
         ("test refuses", "compose"),
         ("no longer declares", "removed"),
         ("replaced it before", "superseded"),
+        ("waiting for output", "waiting"),
     ];
     KINDS
         .iter()
@@ -569,6 +607,136 @@ struct Case {
 
 fn cases() -> Vec<Case> {
     vec![
+        Case {
+            name: "a new artifact whose base records an output the host does not declare waits for it, holding \
+                   nothing, and installs once a lowering declares the output",
+            steps: vec![
+                (Configure("other"), "g1 default hw- preparing g2"),
+                (Acknowledge, "g2 default hw-"),
+                // The test composer composes `fragile` only under the boot configuration, as an artifact whose
+                // recorded output only that configuration declares.
+                (
+                    Deliver(vec![policy(7, "fragile")]),
+                    "g2 default hw7 | demo v7 r7 pending g- (waiting)",
+                ),
+                (Redeliver, "g2 default hw7 | demo v7 r7 pending g- (waiting)"),
+                (
+                    Configure(BOOT_POST_AGGREGATION),
+                    "g2 default hw7 preparing g4 | demo v7 r7 pending g4",
+                ),
+                (Acknowledge, "g4 demo@7 hw7 kept g2 | demo v7 r7 active g4"),
+            ],
+        },
+        Case {
+            name: "a newer artifact for its scope replaces the artifact that waits for an output, which never \
+                   installs",
+            steps: vec![
+                (Configure("other"), "g1 default hw- preparing g2"),
+                (Acknowledge, "g2 default hw-"),
+                (
+                    Deliver(vec![policy(7, "fragile")]),
+                    "g2 default hw7 | demo v7 r7 pending g- (waiting)",
+                ),
+                (
+                    Deliver(vec![policy(8, "a")]),
+                    "g2 default hw8 preparing g3 | demo v8 r8 pending g3",
+                ),
+                (Acknowledge, "g3 demo@8 hw8 kept g2 | demo v8 r8 active g3"),
+                (
+                    Configure(BOOT_POST_AGGREGATION),
+                    "g3 demo@8 hw8 preparing g4 kept g2 | demo v8 r8 active g3",
+                ),
+                (Acknowledge, "g4 demo@8 hw8 kept g2 | demo v8 r8 active g4"),
+            ],
+        },
+        Case {
+            name: "a newer artifact for its scope replaces the artifact that waits for an output even when it is \
+                   rejected, so the older one never installs",
+            steps: vec![
+                (Configure("other"), "g1 default hw- preparing g2"),
+                (Acknowledge, "g2 default hw-"),
+                (
+                    Deliver(vec![policy(7, "fragile")]),
+                    "g2 default hw7 | demo v7 r7 pending g- (waiting)",
+                ),
+                (
+                    Deliver(vec![policy(8, "uncomposable")]),
+                    "g2 default hw8 | demo v8 r8 rejected g- (compose)",
+                ),
+                (
+                    Configure(BOOT_POST_AGGREGATION),
+                    "g2 default hw8 preparing g3 | demo v8 r8 rejected g- (compose)",
+                ),
+                (Acknowledge, "g3 default hw8 | demo v8 r8 rejected g- (compose)"),
+            ],
+        },
+        Case {
+            name: "a snapshot with more than one config for its scope drops the artifact that waits for an output",
+            steps: vec![
+                (Configure("other"), "g1 default hw- preparing g2"),
+                (Acknowledge, "g2 default hw-"),
+                (
+                    Deliver(vec![policy(7, "fragile")]),
+                    "g2 default hw7 | demo v7 r7 pending g- (waiting)",
+                ),
+                (
+                    Deliver(vec![policy(7, "fragile"), policy(8, "a").id("other")]),
+                    "g2 default hw7 | demo v7 r- rejected g- (configs) | other v8 r- rejected g- (configs)",
+                ),
+                (
+                    Configure(BOOT_POST_AGGREGATION),
+                    "g2 default hw7 preparing g3 | demo v7 r- rejected g- (configs) | other v8 r- rejected g- \
+                     (configs)",
+                ),
+                (
+                    Acknowledge,
+                    "g3 default hw7 | demo v7 r- rejected g- (configs) | other v8 r- rejected g- (configs)",
+                ),
+            ],
+        },
+        Case {
+            name: "the artifact that waits for an output, delivered again by its config under its own revision, keeps \
+                   waiting, and a stale delivery leaves it waiting",
+            steps: vec![
+                (Configure("other"), "g1 default hw- preparing g2"),
+                (Acknowledge, "g2 default hw-"),
+                (
+                    Deliver(vec![policy(7, "fragile")]),
+                    "g2 default hw7 | demo v7 r7 pending g- (waiting)",
+                ),
+                (
+                    Deliver(vec![policy(7, "fragile").version(9)]),
+                    "g2 default hw7 | demo v9 r7 pending g- (waiting)",
+                ),
+                // As for an installation in flight, a stale delivery does not hide what becomes of the artifact.
+                (
+                    Deliver(vec![policy(6, "a").version(10)]),
+                    "g2 default hw7 | demo v10 r6 rejected g- (stale)",
+                ),
+                (
+                    Configure(BOOT_POST_AGGREGATION),
+                    "g2 default hw7 preparing g4 | demo v9 r7 pending g4",
+                ),
+                (Acknowledge, "g4 demo@7 hw7 kept g2 | demo v9 r7 active g4"),
+            ],
+        },
+        Case {
+            name: "a revocation removes the artifact that waits for an output",
+            steps: vec![
+                (Configure("other"), "g1 default hw- preparing g2"),
+                (Acknowledge, "g2 default hw-"),
+                (
+                    Deliver(vec![policy(7, "fragile")]),
+                    "g2 default hw7 | demo v7 r7 pending g- (waiting)",
+                ),
+                (Revoke, "g2 default hw7 | demo v7 r7 rejected g- (revoked)"),
+                (
+                    Configure(BOOT_POST_AGGREGATION),
+                    "g2 default hw7 preparing g3 | demo v7 r7 rejected g- (revoked)",
+                ),
+                (Acknowledge, "g3 default hw7 | demo v7 r7 rejected g- (revoked)"),
+            ],
+        },
         Case {
             name: "an accepted artifact is pending while it is prepared, and active once it commits, keeping the \
                    generation it replaced to roll back to",
@@ -1502,6 +1670,88 @@ fn a_revoked_policy_leaves_effect_at_once_while_its_generation_runs_until_replac
     assert_eq!(host.summary(), "g3 default hw7 preparing g4 | demo v7 r7 retired g2");
     host.step(&Acknowledge);
     assert_eq!(host.summary(), "g4 default hw7 | demo v7 r7 retired g2");
+}
+
+#[test]
+fn the_artifact_in_effect_composes_with_its_emits_to_a_removed_output_dropped_and_is_acknowledged_degraded() {
+    // Plan 4.5 and 4.14: a re-composition of the artifact in effect, after its output was removed, drops its emits to
+    // it and runs, `active` with the reason; a new artifact recording the same output waits for it instead. The
+    // output returning restores the emits, and the reason goes.
+    let mut host = Host::new();
+    host.step(&Deliver(vec![policy(7, "degradable")]));
+    host.step(&Acknowledge);
+    assert_eq!(host.summary(), "g2 demo@7 hw7 kept g1 | demo v7 r7 active g2");
+
+    host.step(&Configure("other"));
+    host.step(&Acknowledge);
+    let ack = &host.core().config_states()[0];
+    assert_eq!((ack.state, ack.generation), (ApplyState::Active, Some(3)));
+    assert_eq!(
+        ack.error.as_deref(),
+        Some("output `af_metrics_encode` is no longer declared; its emits are dropped until it returns")
+    );
+    let approvals = host.composer.approvals.borrow();
+    let (marker, approval) = approvals.last().unwrap();
+    assert_eq!((marker.as_str(), approval.in_effect), ("degradable", true));
+    drop(approvals);
+
+    // A newer artifact recording the same output is new: it waits for the output, and the one in effect keeps running.
+    host.step(&Deliver(vec![policy(8, "degradable-b")]));
+    let ack = &host.core().config_states()[0];
+    assert_eq!((ack.revision, ack.state), (Some(8), ApplyState::Pending));
+    assert!(
+        ack.error.as_deref().unwrap().contains("af_metrics_encode"),
+        "{:?}",
+        ack.error
+    );
+    assert_eq!(host.core().policy_in_effect().unwrap().revision, 7);
+
+    // The output returns: the waiting revision installs, composed with every emit.
+    host.step(&Configure(BOOT_POST_AGGREGATION));
+    while host.core().status().preparing.is_some() {
+        host.step(&Acknowledge);
+    }
+    let ack = &host.core().config_states()[0];
+    assert_eq!(
+        (ack.revision, ack.state, ack.error.as_deref()),
+        (Some(8), ApplyState::Active, None)
+    );
+}
+
+#[test]
+fn a_version_1_base_that_composed_gives_its_kept_fingerprints_to_every_later_composition() {
+    // Plan 4.5 (P7.3 design note R2): the installer keeps the version 2 fingerprints a composition accepted for a
+    // version 1 base, and gives them back as `Approval::upgraded`, so that the base follows version 2 from then on.
+    let mut host = Host::new();
+    host.step(&Deliver(vec![policy(3, "legacy")]));
+    host.step(&Acknowledge);
+    let ack = &host.core().config_states()[0];
+    assert_eq!(ack.state, ApplyState::Active);
+    assert!(
+        ack.error
+            .as_deref()
+            .unwrap()
+            .contains("rebase to fingerprint version 2"),
+        "the rebase note is the acknowledgment's: {:?}",
+        ack.error
+    );
+    host.step(&Configure("other"));
+    let approvals = host.composer.approvals.borrow();
+    let upgraded = approvals
+        .iter()
+        .map(|(_, approval)| approval.upgraded.clone())
+        .collect::<Vec<_>>();
+    let main = OutputId::new("dd_metrics_encode").unwrap();
+    assert_eq!(
+        upgraded.first(),
+        Some(&BTreeMap::new()),
+        "the first composition has nothing kept"
+    );
+    assert_eq!(
+        upgraded.last(),
+        Some(&BTreeMap::from([(main, legacy_fingerprint())])),
+        "the re-composition gets what the first one accepted"
+    );
 }
 
 #[test]

@@ -24,8 +24,8 @@ authoritative.
 
 ## Where things stand
 
-Stages 1 to 6 of the specification are implemented, with a local demo (committed after stage 2, connected to ADP's
-artifact channel and given its headless check in stage 5, and extended in stage 6):
+Stages 1 to 7 of the specification are implemented, with a local demo (committed after stage 2, connected to ADP's
+artifact channel and given its headless check in stage 5, and extended in stages 6 and 7):
 
 - ADP's metrics path always runs from the plan. Lowering turns the native configuration into the default program, the
   frame lays it out once at boot, and region hosts run its regions. The legacy metrics path exists only under
@@ -37,12 +37,26 @@ artifact channel and given its headless check in stage 5, and extended in stage 
 - Policy artifacts arrive through a local development stub of the artifact channel, for two scopes: `post_enrich` (the
   policy region) and `dogstatsd_pre_aggregation` (DogStatsD processing up to and including aggregation). The privileged
   API serves the status, export, plan, explain, and default program.
-- Stages 7 to 10 are not built. Their extension-point types exist, only native defaults are accepted, and each
-  unsupported case is a capability error that names a stage (see [Deferred work by stage](#deferred-work-by-stage)).
+- Outputs and recipients are resources of hosts fixed at boot (stage 7): one encode host and one delivery host per
+  fixed delivery host, `dd_out`'s, the failover pair (idle until failover is enabled), and the Cluster Agent pair when
+  its endpoint resolves at boot. Each output runs as a lease of its encode host and each recipient as an I/O loop of
+  its delivery host; the installer prepares them, publishes each host's native set and settings, withdraws what the
+  configuration no longer declares, and drains and releases what no generation uses. So endpoints, routing groups,
+  failover, keys, proxies, and delivery settings change live, logs, events, and traces with them, and a resources
+  artifact (the stub channel's `resources` product) can declare recipients and outputs that policy artifacts route
+  to. The privileged API serves the resources and every recipient incarnation. See
+  [the stages 7 and 9 plan](programmable-metrics-stages-7-and-9.md), its "Stage 7 as built," and the
+  [implementation design's summary](programmable-metrics-implementation.md#stage-7-resource-generations-as-built).
+- Stage 9 is designed; its measurement harness (P9.0: probes behind ADP's `measurement` feature, the source-fed
+  measurements, the `dogstatsd_codec` bench, the container scaling curves in `test/scaling/`) is in place, and the rest
+  is not built (its foundations, P9.F, were built apart and are not in this tree). Stages 8 and 10 are not built. Their
+  extension-point types exist, only native defaults are accepted, and each unsupported case is a capability error that
+  names a stage (see [Deferred work by stage](#deferred-work-by-stage)).
 
-**Branch.** Nine commits on top of `main` (`b940bf1f8b`, the merge base). They are local only: the branch has no
-upstream and nothing is pushed. The spec commit is signed; the eight implementation commits are unsigned (made with
-`--no-gpg-sign`, since the repository sets `commit.gpgsign=true`). No CI pipeline has run on the branch.
+**Branch.** Eleven commits on top of `main` (`b940bf1f8b`, the merge base) before the stage 7 commit. They are local
+only: the branch has no upstream and nothing is pushed. The spec commit is signed; the implementation and document
+commits are unsigned (made with `--no-gpg-sign`, since the repository sets `commit.gpgsign=true`). No CI pipeline has
+run on the branch.
 
 | Commit | Stage | What it delivered |
 |---|---|---|
@@ -55,9 +69,12 @@ upstream and nothing is pushed. The spec commit is signed; the eight implementat
 | `4c64b4c522` | 4 | Endpoint routing, Multi-Region Failover, and autoscaling failover gateways lowered to routing operators, run as one memoized decision in `metrics_enrich`. Decisions, R2 to R4, R5a, R6, R7, and capacity semantics in the interpreter. |
 | `26af093620` | 5 | Channel types, the stub, the export bundle, composition with correspondence and provenance, the artifact lifecycle (revision high-water mark, redelivery, revocation, stale base, last-known-good, panic budgets with rollback), the control surface, and region input capacities that keep native burst slack. The demo's integration with ADP (the `default-program` route, preview composition, plan diff) and its headless check. The `saluki-io` proxy TLS change. |
 | `b01049372e` | 6 | Aggregation as a kernel in `dsd_agg`: admission-time bucketing, watermarks, heartbeats, progress, the tick gate, clock resets, lineages and transitions, the cut protocol, shared budgets, resumable drains, R5b as emission suppression, the `dogstatsd_pre_aggregation` scope, and allowed bucket widths. |
+| `2729a33271`, `d7316c474f` | docs | This document's status after stage 6, and the stages 7 and 9 design with its second review. |
+| (the stage 7 commit) | 7 | Resource generations: the encode host and the delivery host, recipient loops with drains, reopens, and live settings, the resource table and resource transactions, credentials, the resource budget, fingerprints version 2, pending and degraded artifacts, the `resources` product, the status and resources routes; stage 9's measurement harness (P9.0); the demo's scenarios S8 to S11. |
 
-**Next.** The next phase is stages 7 and 9, designed in
-[programmable-metrics-stages-7-and-9.md](programmable-metrics-stages-7-and-9.md). Stage 8, the real artifact channel,
+**Next.** Stage 9's parts, designed in
+[programmable-metrics-stages-7-and-9.md](programmable-metrics-stages-7-and-9.md) (section 8.4); stage 7's deferred
+items are [below](#stage-7-resource-generations). Stage 8, the real artifact channel,
 is not part of it beyond what stage 7 needs to settle who may declare endpoints. The owner's direction for this phase
 (October 10, 2026):
 
@@ -101,7 +118,7 @@ Release notes, one per stage that changed what operators see:
   `nightly-2026-01-18`, for `check-fmt`, `fmt`, and `generate-api-docs`), `cargo-sort`, `cargo-machete`, `cargo-hack`,
   `cargo-deny`, and `dd-rust-license-tool` (the `Makefile` installs these as needed), and `vale`.
 - The demo needs no Datadog Agent. ADP runs in standalone mode, every listener is on 127.0.0.1, and nothing leaves the
-  machine. TCP ports 17080, 17100 to 17104, 17110, and 17111 and UDP port 17125 must be free (each plus 10000 for the
+  machine. TCP ports 17080, 17100 to 17105, 17110, and 17111 and UDP port 17125 must be free (each plus 10000 for the
   check).
 
 ### The demo
@@ -126,6 +143,7 @@ ADP, the launcher names any port that is taken, which is usually such a leftover
   | Team B intake (additional endpoint) | 17102 | `--team-b-port` |
   | Team C intake (additional endpoint) | 17103 | `--team-c-port` |
   | Multi-Region Failover intake | 17104 | `--mrf-port` |
+  | Team D intake (declared only by a resources artifact) | 17105 | `--team-d-port` |
   | ADP unprivileged API | 17110 | `--api-port` |
   | ADP privileged API (mutual TLS) | 17111 | `--secure-api-port` |
   | ADP DogStatsD (UDP) | 17125 | `--dogstatsd-port` |
@@ -201,10 +219,18 @@ continuous-input tests check exactly).
 | S4 | Failover predicate `true and name in ["demo.checkout.requests"]`. | Mirroring: the failover intake receives only that family. |
 | S5a to S5d | A duplicate branch to the primary output; an emit to an undeclared output; an `aggregate` without parameters; a full `aggregate` in the policy scope. | ADP rejects each one naming the problem (`duplicate_contribution`, the undeclared output, `valid_parameters`, and placement's "runs only in an isolation slot" for S5d, which the editor cannot flag because it does not place), and S4 keeps running. |
 | S6 | Revoke (an empty snapshot). | The boot plan hash is active again and the default routing is back. |
+| S8a | Publish team D's resources (one recipient, `resources_team_d`). | The resources config is `active`, and ADP declares the output. |
+| S8b | Route `team:platform` to `resources_team_d`. | Team D's intake receives the platform family with team D's credential. |
+| S9a | Revoke the resources. | The policy stays `active`, degraded: its emits to team D are dropped and counted as policy loss at the route's node; team D's recipient retires with a drain report. |
+| S9b | Publish the resources again. | The emit returns, without a new policy revision. |
+| S10a to S10c | Revoke both; publish the route before the resources; then the resources. | The route waits, `pending` ("waiting for output `resources_team_d`"), and installs once the output is declared. |
+| S11 | Pause team D's intake, then revoke. | The recipient drains until its 30 s deadline and drops what it holds, and `dd_out`'s drop telemetry counts as many. |
 
-A run takes about 70 to 75 s (69.6 to 74.8 s in the recorded stage 6 runs): about 18 s waiting at the start for a
-whole canary range behind ADP's start, and about 10 s at the end for the rolling range to cover the last change. The
-check was added in stage 5 and passed in every recorded run of stages 5 and 6, deliberate mutation runs aside.
+A run took about 70 to 75 s through stage 6; with S8 to S11 it takes about 150 s (147.9 to 149.9 s in the four stage 7
+runs, S11's deadline included). About 18 s go to waiting at the start for a whole canary range behind ADP's start, and
+about 10 s at the end for the rolling range to cover the last change. The check was added in stage 5 and passed in every
+recorded run of stages 5 to 7, deliberate mutation runs aside; stage 7 ran it twice on one run directory, the second
+time with the first's `--run-dir`, before and again after its last code change.
 
 ### The stage gate
 
@@ -255,6 +281,13 @@ cargo nextest run -p agent-data-plane -E 'test(/programmable_metrics::(installer
 cargo nextest run -p agent-data-plane -E 'test(/burst_tests/)'
 cargo nextest run -p programmable-metrics-demo -p stele -p saluki-metric-plan-syntax
 
+# Stage 7: real encode and delivery hosts against recording intakes (live changes, faults, differential, reclamation).
+cargo nextest run -p agent-data-plane -E 'test(/delivery_tests|telemetry::tests::the_hosts_report/)'
+cargo nextest run -p saluki-components --test-threads 4 \
+  -E 'test(/common::datadog::(delivery|io)|encode_host|host::tests/)'
+# The 1,000-cycle reclamation test (about 11.5 minutes):
+cargo nextest run -p agent-data-plane --run-ignored only -E 'test(/a_thousand_cycles_of_adding/)'
+
 # Rewrite golden files, then review the diff line by line:
 SALUKI_METRIC_PLAN_UPDATE_EXPLAIN=1 cargo nextest run -p saluki-metric-plan -E 'test(/explain/)'
 SALUKI_METRIC_PLAN_UPDATE_SCHEMA=1 cargo nextest run -p saluki-metric-plan -E 'test(/checked_in_schemas_are_current/)'
@@ -286,6 +319,13 @@ medians of five rounds. Machine load above about 4 makes legacy fail its own tol
 configuration and the noise check, filter with `-E
 'test(/measurement_tests::(with_gateways|the_legacy_topology_against_itself)/)'`.
 
+Stage 7's gate ran them with P9.0's changes (process CPU, real encoders) on an 18-core Mac at load about 2.2 to 3.7.
+The noise check passed (a first run at load 2.5 to 3.9 failed on paced p99, 1.176, which is noise), and all four
+plan measurements passed: saturated throughput 1.11 to 1.21 of legacy's, process CPU per metric at most 1.011,
+allocated bytes 0.56 to 0.89, paced p99 0.27 to 0.65. `cargo bench -p saluki-components --bench encode_host`: one
+lease against native `DatadogMetrics` per metric, V2 series 0.4% and 2.0% slower in two reruns (a first, noisy run
+4.9%), V3 series 0.5%, sketches 1.2%; per buffer (`per_buffer`) 3.67 µs against 3.64 µs, 29 ns more.
+
 ## Code map
 
 The [code layout](programmable-metrics-implementation.md#code-layout) maps every module with the stage that added it,
@@ -298,6 +338,7 @@ and gives the dependency direction. This section is the orientation that layout 
 | [`lib/saluki-metric-plan/`](../../lib/saluki-metric-plan) | IR, operators and contracts, validator, interpreter, compiler (frame, placement, rewrites, decisions), region driver, installer core, channel, composition, export. No I/O. | `compile/frame.rs` (`Frame::compute`), `runtime/driver.rs` (`MetricRegionDriver`), `install/core.rs` (`InstallerCore`, `Action`), `interpret/mod.rs` (`Interpreter`) |
 | [`lib/saluki-metric-plan-syntax/`](../../lib/saluki-metric-plan-syntax) | Surface syntax for tools only; nothing that runs plans may depend on it. | `parse`, `print` |
 | [`bin/agent-data-plane/src/programmable_metrics/`](../../bin/agent-data-plane/src/programmable_metrics) | ADP integration: host facts, bindings, catalog, outputs, lowering, the plan topology, the installer worker, the stub worker, the control surface, the snapshot bridge, and the test topology. | `installer.rs` (`ProgrammableMetrics::boot`, `InstallerWorker`), `lowering/mod.rs` (`Lowering`), `topology.rs` (`PlanTopology`) |
+| [`lib/saluki-components/src/common/datadog/delivery/`](../../lib/saluki-components/src/common/datadog/delivery), [`encoders/datadog/metrics/host.rs`](../../lib/saluki-components/src/encoders/datadog/metrics/host.rs) | Stage 7's hosts: the delivery host (routing loop, recipient table, input barrier, withdrawal, reopen, client switch, credential followers, validation) and the multiplexed encode host (leases, shards, drain markers); the recipient loops are in `common/datadog/io.rs`. | `delivery/router.rs` (`Router`), `delivery/host.rs` (`DeliveryHostConfiguration`), `host.rs` (`MetricsEncodeHost`), `io.rs` (`RecipientLoop`) |
 | [`bin/agent-data-plane/src/cli/run.rs`](../../bin/agent-data-plane/src/cli/run.rs) | Topology assembly: `MetricsWiring` hooks, the workers on the internal supervisor; the legacy path in `run/legacy.rs` (tests only). | `handle_run_command`, `create_topology` |
 | [`bin/programmable-metrics-demo/`](../../bin/programmable-metrics-demo) | Demo server, embedded UI, recording intakes, traffic, preview, launcher, and the headless check. | `app.rs` (routes), `scenario/mod.rs` (S0 to S6) |
 
@@ -315,7 +356,12 @@ and gives the dependency direction. This section is the orientation that layout 
   generation the header carries, writing to exits that the host dispatches in order.
 - **Configuration change.** The installer worker sees `ConfigChanged`, lowers again, and passes the result to the core
   (`on_default_program`). The core's actions prepare every region (`RegionControl::Prepare`), wait for every
-  acknowledgment, commit with one store of the schedule, and release programs after the old generation retires.
+  acknowledgment, commit with one store of the schedule, and release programs after the old generation retires. When
+  the lowering changes resources (stage 7), the core first runs a resource transaction (`PrepareResources` to each
+  delivery host whose publication differs, then `PublishResources` with the native set, settings, and withdrawn set),
+  prepares the generation's leases and recipients with its regions (`PrepareSite::Host`), and, after the old
+  generation retires, drains its leases (`ReleaseLeases`) and then releases the recipients no generation uses
+  (`ReleaseRecipients`), whose exits the delivery hosts report on their event channels.
 - **Cut** (a state owner's transition that cannot share its instance). `Action::ArmCut` arms it in one transaction
   under the affected points' locks, `WatchCut` polls until a point stamps the new generation (then the cut is
   irrevocable), and `FinalizeCut` completes it once every affected point has crossed.
@@ -399,6 +445,23 @@ The release notes are the operator-facing record. This list adds what they leave
   named only in the stage 3 commit message), and `EventsBuffer` grew from 40 to 80 bytes, adding 40 bytes per channel
   slot to every pipeline's interconnect bounds, logs, traces, and events included.
 
+**Stage 7** (release-noted unless marked): endpoints, routing groups, failover, keys, proxies, and delivery settings
+change live, and logs, events, service checks, and traces follow `additional_endpoints`; a removed endpoint's payloads
+still on their way are dropped and counted from the transaction that withdraws it; restart-only settings are the ones
+other encoders share, plus the storage path and whether persistence is on; the idle failover hosts; the shared input
+of an encode host's outputs; the 4.15 task and series changes; the `resources` product; validation of endpoints added
+live; two static-mode telemetry fixes; the primary endpoint and the TLS and connection settings are live, the Cluster
+Agent endpoint restart-only (autoscaling failover and the Cluster Agent settings apply live only when one resolved at
+startup), and a queue bound raised live is not checked against the memory limit until a restart;
+`plan_recipient_retirements_total{outcome:persisted}`. **Not release-noted:** `/programmable-metrics/status` gains a
+`recipients` member and `/programmable-metrics/resources` is new (the experimental stub protocol documents both); API
+keys are validated once per change of the native endpoints, in the native order, where a forwarder's startup
+validation ran once; a recipient's `delivery.queue_bytes` above the host's bound is capped rather than refused; a
+configuration change whose preparation keeps failing shows in `last_error` and the status summary's degraded reason;
+a payload no recipient of a host's native set takes is counted in `component_errors_total{error_type:http_send}`; a
+primary endpoint's recipient identity spells its endpoint resolved (`dd_out/primary/0/http://h:p`, without a trailing
+slash), so a respelling is the same recipient.
+
 **Telemetry** (all release-noted): the fused components' and gateways' component, health, and task series are gone;
 `metrics_enrich` and `dsd_agg` report sent counts per output instead of `_default`; accounting paths nest under the
 slot; `dsd_agg` no longer counts sent metrics twice, no longer emits what R5b suppresses, and counts one extra flush
@@ -409,7 +472,9 @@ per cut and per reset; `aggregate_passthrough_flushes_total` counts incoming bat
 `plan_state_lineages`, `plan_clock_resets_total`, and `plan_state_tick_grace_expired_total`.
 
 **New surfaces** (experimental, release-noted): the `experimental.programmable_metrics.artifact_channel.{stub_url,
-poll_interval}` keys, and the privileged routes `/programmable-metrics/{status,export,plan,explain,default-program}`.
+poll_interval}` keys, the privileged routes `/programmable-metrics/{status,export,plan,explain,default-program}`, and,
+in stage 7, `experimental.programmable_metrics.resources.credentials`, the stub's `resources` product, and
+`/programmable-metrics/resources`.
 
 Native quirks are preserved on purpose and pinned by fixtures; see
 [native behavior: preserved and changed](programmable-metrics-implementation.md#native-behavior-preserved-and-changed)
@@ -498,6 +563,9 @@ the local `--test-threads 4` in the gate (see [Environment notes](#environment-n
 | **Strong `GenerationRef` in `Prepare`** | A region that stops reading its control mailbox keeps every preparation sent to it alive; that is what bounds the unbounded mailbox (retries stop at the overlap budget), pinned by a fault test. | Keep it, or carry a `Weak` in the message and bound the mailbox. |
 | **Release-note gaps** | The items marked not release-noted under [Changes users can see](#changes-users-can-see), and the stale stage 5 sentence on stateful artifacts. | Decide which to note before the notes ship. |
 | **Capability stage numbers** | Placement maps `MissingCapability::State` to stage 6, the frame names stage 10 for a state owner without an isolation fence, and the interpreter names stage 7 for a cut or reset with state in a host component or without a fence. | Settle the numbering in the stage 7, 9, and 10 plans. |
+| **Stage 7 changes against native** | Amendments 135 (a burst reaching several outputs of one encode host backs up sooner: 451 batches where native held 515 with one routing group) and 137 (a removed endpoint loses what its old generation's leases still build after the transaction that withdraws it), both release-noted. | Accept, or size the encode host's input by its boot leases (135), or withdraw after the generation without the recipient commits (137). |
+| **Stage 7 deferrals** | Static mode stays the native forwarder (not folded into the delivery host); platform roots load per client build; failures stay text-matched to declared resources; a declared recipient's directory does not include its name; growth in place is not admitted; 4.13's validation errors are caps at run time. See [Stage 7](#stage-7-resource-generations). | Decide which belong in a stage 7 follow-up. |
+| **The Core Agent and the credentials key (A36)** | ADP follows `experimental.programmable_metrics.resources.credentials` on the configuration stream over the boot base (pinned by `resources_credentials_follow_the_agent_stream_over_the_boot_base`); whether the Core Agent streams a Saluki-only map key is outside ADP. | Confirm with the Agent, or document the key as restart-only in connected mode. |
 | **The specification's Vale errors** | The specification, which only its author edits, adds 12 errors to `make check-docs`, a CI job (see [Environment notes](#environment-notes)). | Before CI runs: add the 11 flagged words to the Vale vocabulary, and edit or exempt the hyphenated `Exactly-once`. |
 
 ## Spec amendments index
@@ -608,6 +676,43 @@ the shutdown row, the expiry row, and the timestamped row.
 
 Totals: kinds C 49, D 26, N 9, L 3; themes STA 20, ART 16, NAT 12, INS 9, IR 8, VER 8, FRM 7, TEL 4, EXE 3.
 
+Amendments 88 to 138 are in [the stages 7 and 9 plan's section
+10](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments): 88 to 107 from its stage 7 design, 108 to 128
+from its stage 9 design, and 129 to 138 from stage 7's parts and integration; the next is 139. Stage 7's:
+
+| # | Short title | Theme | Kind | Owner |
+|---|---|---|---|---|
+| 88 | Fixed frame for resources | FRM | D | no |
+| 89 | Leases | INS | D | no |
+| 90 | Output fingerprints cover the selector | ART | D | no |
+| 91 | Removal by the resource authority wins, and fails closed | ART | D | yes: accept degraded over fallback |
+| 92 | Pending and degraded | ART | C | no |
+| 93 | Resources artifacts | ART | D | yes: endpoint privilege |
+| 94 | Declared recipient identity | NAT | C | no |
+| 95 | Credentials | IR | C | no |
+| 96 | Retirement closure for recipients | INS | C | no |
+| 97 | The delivery-policy slot, first opening | EXE | D | no |
+| 98 | Retry queue identity stays native | NAT | N | no |
+| 99 | Declared output IDs | IR | C | no |
+| 100 | Last-known-good and resources | INS | D | no |
+| 101 | Payload classes and resource transactions | NAT | C | no |
+| 102 | Budgets for resources | EXE | C | no |
+| 103 | Encoder streams per binding | EXE | C | no |
+| 104 | Encoder and forwarder settings are plan parameters | IR | D | no |
+| 105 | Standalone mode | NAT | N | no |
+| 106 | `dd_out` without the plan | NAT | N | no |
+| 107 | Capability numbering | FRM | C | no |
+| 129 | Renumbered outputs reject new artifacts | ART | C | no |
+| 130 | Who asks for missing structure | FRM | C | no |
+| 131 | Bound outputs carry their own fingerprint rule | IR | C | no |
+| 132 | Version 1 bases upgrade when they compose | ART | C | no |
+| 133 | A waiting artifact is the newest of its scope | ART | C | no |
+| 134 | Native recipients by configured position | NAT | C | no |
+| 135 | Burst slack per encode host | EXE | D | yes: accept the smaller slack |
+| 136 | Plan-level telemetry has owners | TEL | C | no |
+| 137 | Withdrawal precedes the generation that drops a recipient | INS | C | yes: accept the loss window |
+| 138 | Retirements are releases | INS | C | no |
+
 Wording proposed for adoption: amendment 49 ("under the reference interpreter's delivery order"), 51 ("a maximal
 group of `split` and `tee` operators joined directly by edges within one region"), and 52 ("operator parameters,
 other than the order of a pure `all` or `any`'s operands"). Amendment 76 proposes withdrawing two statements. The
@@ -625,14 +730,23 @@ estimates, memo costs, and the stage 6 risks. The gaps below are recorded there 
 **Verification the gate did not do:**
 
 - The gate is not CI. It never ran `make check-docs` (whole-tree Vale, a CI job: the specification adds 12 errors
-  there, see [Environment notes](#environment-notes)), `check-fips-module`, `check-aix-cross` (which type-checks ADP,
+  there, see [Environment notes](#environment-notes); since the stage 7 review the gate runs Vale on every file the
+  stage changes or adds, which has none), `check-fips-module`, `check-aix-cross` (which type-checks ADP,
   and so the new crates, for AIX), or `test-docs` (parts ran `cargo test --doc` on the crates they touched, the gate
   never did). Nor did it run the CI jobs outside `check-all`, such as `check-schema-overlay`, which fails if the
   generated configuration reference the branch changed is out of date. `test-miri` and `test-loom` never ran either,
-  but their targets (`stringtheory`, and `saluki-core`'s `observability::metrics`) are untouched.
-- No Panoramic correctness or integration run on the plan-driven path, and no correctness case exercises endpoint
-  allowlists, Multi-Region Failover, or autoscaling failover. A parity check without a mode flag: run the `dsd-*`
-  cases with `panoramic --image-override baseline=<upstream image>`.
+  but their targets (`stringtheory`, and `saluki-core`'s `observability::metrics`) are untouched. The measurement
+  probes' tests (`make test-measurement`) and every crate's integration test targets (`make test-integration-targets`,
+  among them `saluki-core`'s `worker_resource_group`, which pins a worker's resource-group accounting) ran in no CI job
+  before the stage 7 review: the gate runs both since, and CI has a job for each.
+- Through stage 6, no Panoramic correctness or integration run on the plan-driven path. Stage 7 ran the correctness
+  suite once, on an image built from the stage 7 tree (`make build-datadog-agent-image-release`), each case against
+  the same image's Agent without ADP as its baseline (`DOCKER_HOST` set to the local daemon's socket): 35 of 42 passed
+  and none failed; the 7 `dsd-origin-detection-matrix` cases need `kind`, which the machine lacks. `otlp-traces` is
+  disabled on `main` (#2723), so `otlp-traces-probabilistic` stood in for the gate's traces case. Not run: the
+  integration tests, a baseline built from `main` (`--image-override baseline=<main image>`), and any correctness case
+  that exercises endpoint allowlists, Multi-Region Failover, or autoscaling failover (none exists). A parity check
+  against upstream ADP: run the `dsd-*` cases with `panoramic --image-override baseline=<upstream image>`.
 - The runtime differential tests run standalone only. Connected mode's `liveness_in` and host tags are covered only by
   the structural comparison with the legacy blueprint.
 - The frame property test never generates candidates whose nodes differ from the boot plan's; one compile test covers
@@ -669,39 +783,36 @@ marked by capability errors that name a stage, and by the notes below.
 
 ### Stage 7: resource generations
 
-- **Capability errors in code.** `MissingCapability::ResourceGenerations` (`compile/placement.rs`, stage 7) is raised
-  for adding an output, changing an output's binding, adding or removing a host component, adding a region after a
-  host, a new physical edge, a new exit from a region, and a state owner whose input's region has no exit to an
-  isolation slot ("a new exit from a region to an isolation slot," or "adding an isolation slot" when the frame has
-  none; demo step S5d hits this one). The interpreter raises stage 7 for a cut while a state owner runs in a host
-  component (`interpret/installation.rs`) and a clock reset upstream of a state owner without an isolation fence
-  (`interpret/drains.rs`). Tests pin the messages in `compile/tests.rs`, `interpret/tests.rs`, and ADP's
-  `installer/lifecycle_tests.rs`. `outputs.rs` documents that outputs change only at restart until stage 7.
-- **Endpoint privilege today.** Artifacts emit only to native outputs that the catalog declares and the base records,
-  with matching fingerprints (`ComposeError::{UnrecordedOutput, UndeclaredOutput, RemovedOutput}` in `compose.rs`).
-  Endpoints come only from native configuration (`additional_endpoints`, `metric_prefix_allowlist`, Multi-Region
-  Failover), and outputs exist exactly when `run.rs` wires their branches from the startup configuration.
-  Routing-group renumbering after a restart invalidates an artifact by fingerprint, deliberately. The stub accepts only
-  loopback `http://` URLs, and the control routes are on the privileged API.
-- **The forwarder drops queued requests on close.** In `run_endpoint_io_loop`
-  ([`io.rs`](../../lib/saluki-components/src/common/datadog/io.rs)), once the input closes, `done` disables the dispatch
-  branch, so a transaction queued but not yet in flight is persisted (with a disk retry queue) or dropped, never sent.
-  At process shutdown this is native behavior; a retiring output generation would lose the encoder's final flush. The
-  spike branch `experiment/programmable-metrics-spike` has the fix; it is local, with no upstream configured, so this
-  clone may hold the only copy. The fix is an opt-in `drain_on_close` flag on the forwarder configuration
-  (`with_queue_drain()`, also on the Datadog forwarder's configuration), with dispatch enabled while `!done ||
-  drain_on_close`, a readiness error during a drain returned as an error rather than a `break`, the drain bounded by
-  the supervisor's shutdown timeout, and the test `queue_drain_dispatches_accepted_transactions_after_input_closes`.
-  This is the seam for the delivery policy's closure behavior.
-- **Registrations are never released.** `HealthRegistry::register_component` rejects duplicates and has no unregister,
-  and a dropped `Health` marks the component dead for good; resource groups are global and never freed. Through stage
-  6 this was avoided structurally (long-lived region hosts, policy nodes sharing a group per slot). Output generations
-  need a release API or must reuse registrations.
-- **Bounds cover the boot program only.** Later generations' kernels, memos, counts, and predicates are not accounted,
-  and `artifact_memory` is not tied to the host's bounds.
-- The encoder drops oversized V2 payloads without counting them (`flush_v2_metrics` ignores recoverable errors such as
-  `PayloadTooLarge`; a TODO in the metrics encoder), so this host loss is not reported, though the specification
-  assumes it is.
+Built (see [Where things stand](#where-things-stand)). What stage 6 left for it is resolved: the capability errors are
+renumbered (amendments 107 and 130: "needs a restart" or "requires stage 10 frame changes"); outputs and recipients
+change live; the drain-on-close mechanism was ported from the spike (P7.1a), so a retiring recipient sends what it
+holds; leases' and recipients' registrations are released at retirement, and the reclamation test shows tasks,
+resource groups' bounds and the hosts' live bytes, health registrations, the resource table, the resource budget
+(counted against a memory limit), and the metric handles the process holds back at their baseline after 1,000 cycles,
+each of which adds and removes an additional endpoint and declares and revokes a recipient and an output, on a domain
+of its own; later
+generations' resources are admitted against the resource budget; oversized V2 payloads are counted. Deferred, each with
+its reason in the plan's [Stage 7 as built](programmable-metrics-stages-7-and-9.md#stage-7-as-built):
+
+- Static mode folded into the delivery host (it stays the native forwarder, pinned against the host).
+- Platform root certificates loaded once per process across client rebuilds.
+- A structured prepare failure naming the recipient, in place of text matching; a declared recipient's directory
+  including its name. (Since the stage 7 review, a prepare whose directory a dropped loop owns waits for that loop's
+  exit, so the text matching no longer meets that race.)
+- Growth in place of a live recipient's bound (its credit keeps its creation's bytes).
+- 4.13's validation errors for a declared queue bound above the native one and for spilling without storage (capped at
+  run time instead).
+- The follow-up of the plan's A18 and A19: credentials at rest, version-stable directories, upgrade adoption, and a
+  janitor for orphaned directories.
+- Tests the plan's 6.11 lists that stage 7 did not build in ADP, each covered at a lower level: a recipient loop that
+  fails replaced without a configuration change (delivery host and core tests), a host's prepare timeout and worker
+  restarts during transactions (the installer's tests with fake hosts), disk full during a retirement's persist (the
+  recipient loop's flush tests), generation failures with and without a kept last-known-good across two scopes, and a
+  cancelled cut whose generation adds an endpoint (the core's property test); the resources product end to end (the
+  demo's S8 to S11 against the real binary); and autoscaling failover's delivery, whose Cluster Agent host needs an
+  `https` endpoint the recording intakes do not serve (the delivery host's Cluster Agent tests). Since the stage 7
+  review, the failed-prepare test checks events, logs, and traces too; not built: a routing-group add and remove in
+  the reclamation cycle, and the non-metrics delivery of an `additional_endpoints` change while a cut is in flight.
 
 ### Stage 8: production control plane
 

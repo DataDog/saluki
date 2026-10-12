@@ -15,16 +15,12 @@ use saluki_error::{generic_error, GenericError};
 use saluki_metrics::{Counter, MetricsBuilder};
 use tokio::{
     pin, select,
-    sync::{mpsc, watch},
     task::coop::consume_budget,
     time::{sleep_until, Instant},
 };
 use tracing::{debug, error, warn};
 
-use super::{
-    driver::{ExitId, ExitSink, PanicOutcome, PanicSite, RegionDriver, RegionPanic, RegionTurn},
-    mailbox::{ControlError, ControlMailbox, ControlRequest},
-};
+use super::driver::{ExitId, ExitSink, PanicOutcome, PanicSite, RegionDriver, RegionPanic, RegionTurn};
 use crate::{
     accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr},
     components::{
@@ -32,7 +28,10 @@ use crate::{
         BuildContext, ComponentContext,
     },
     data_model::event::{Event, EventType},
-    execution::{Budget, DrainPolicy, Progress},
+    execution::{
+        control::{ControlMailbox, ControlReceiver, ControlReply},
+        Budget, DrainPolicy, Progress,
+    },
     health::Health,
     observability::ComponentMetricsExt as _,
     topology::{ComponentId, EventsBuffer, EventsDispatcher, OutputDefinition, DEFAULT_EVENTS_BUFFER_CAPACITY},
@@ -42,7 +41,6 @@ use crate::{
 const PUBLISH_INTERVAL: Duration = Duration::from_secs(1);
 
 type DriverFactory<D> = Box<dyn Fn(&BuildContext) -> Result<D, GenericError> + Send + Sync>;
-type ControlReceiver<C> = mpsc::UnboundedReceiver<ControlRequest<C>>;
 
 /// Builds a region host: a transform that runs a [`RegionDriver`] in a topology.
 ///
@@ -117,8 +115,8 @@ where
     /// `exits` are the names of the region's exits, which become the names of the transform's outputs, in order.
     /// `work_per_turn` is the largest number of input batches the host processes before it checks for control
     /// messages and timers again. `mailbox` is the receiving side of the region's [control
-    /// mailbox][super::control_mailbox]. `factory` builds the driver when the topology builds the transform, with the
-    /// build context of the region's component.
+    /// mailbox][crate::execution::control_mailbox]. `factory` builds the driver when the topology builds the
+    /// transform, with the build context of the region's component.
     ///
     /// # Errors
     ///
@@ -291,14 +289,12 @@ where
                 )
             })?;
 
-        let (control, running) = mailbox.into_parts();
         Ok(Box::new(RegionHost {
             driver,
             exit_names: Arc::clone(&self.exit_names),
             work_per_turn: self.work_per_turn,
             turn_budget: self.turn_budget,
-            control,
-            running,
+            control: mailbox.into_receiver_for("region"),
             telemetry: HostTelemetry::new(context.component_context()),
         }))
     }
@@ -333,7 +329,6 @@ where
     work_per_turn: NonZeroUsize,
     turn_budget: Budget,
     control: ControlReceiver<D::Control>,
-    running: watch::Sender<bool>,
     telemetry: HostTelemetry,
 }
 
@@ -349,11 +344,11 @@ where
             work_per_turn,
             turn_budget,
             control,
-            running,
             telemetry,
         } = *self;
         let mut health = context.take_health_handle();
         let mut runner = Runner::new(driver, exit_names.len(), turn_budget, telemetry);
+        // The mailbox is read through an `Option`, which is `None` once every sender is gone.
         let mut control = Some(control);
 
         // Timers are armed from the driver's state before every wait, and only reset when what they wait for changes.
@@ -370,7 +365,9 @@ where
         health.mark_ready();
         runner.start();
         // From here on the mailbox is read: whoever controls the region can start timing its messages.
-        running.send_replace(true);
+        if let Some(control) = &control {
+            control.mark_running();
+        }
         debug!(exits = exit_names.len(), "Region host started.");
 
         loop {
@@ -491,7 +488,7 @@ where
 }
 
 /// Waits for the next control request, or forever once the mailbox is closed.
-async fn next_control<C>(control: &mut Option<ControlReceiver<C>>) -> Option<ControlRequest<C>> {
+async fn next_control<C>(control: &mut Option<ControlReceiver<C>>) -> Option<(C, ControlReply)> {
     match control {
         Some(receiver) => receiver.recv().await,
         None => std::future::pending().await,
@@ -779,25 +776,21 @@ where
     }
 
     /// Applies a control message, acknowledges it, and publishes telemetry.
-    fn control(&mut self, request: ControlRequest<D::Control>) -> Result<(), GenericError> {
-        let ControlRequest { message, reply } = request;
+    fn control(&mut self, (message, reply): (D::Control, ControlReply)) -> Result<(), GenericError> {
         let called = self.call(PanicSite::Control, None, |driver, turn, exits| {
             driver.control(turn, message, exits)
         });
 
-        // The sender may have stopped waiting for the acknowledgment, which is fine.
         match called {
-            Called::Returned(Ok(())) => {
-                let _ = reply.send(Ok(()));
-            }
+            Called::Returned(Ok(())) => reply.ack(),
             Called::Returned(Err(failure)) => {
                 warn!(error = %failure, "Region could not apply a control message.");
-                let _ = reply.send(Err(ControlError::Rejected { failure }));
+                reply.reject(failure.into_error());
             }
             Called::Panicked(panic) => {
                 let message = panic.message().to_owned();
                 let recovered = self.recover(panic);
-                let _ = reply.send(Err(ControlError::Panicked { message }));
+                reply.panicked(message);
                 recovered?;
             }
         }

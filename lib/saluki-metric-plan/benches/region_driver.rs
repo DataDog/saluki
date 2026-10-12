@@ -496,7 +496,7 @@ fn bench_post_aggregation(c: &mut Criterion) {
         .filter(|entry| matches!(entry.key, EntryKey::StateOutput(_)))
         .flat_map(|entry| &entry.steps)
         .find_map(|step| match step {
-            Step::Exit { entry, .. } => *entry,
+            Step::Exit { entry, .. } => entry.region(),
             _ => None,
         })
         .expect("aggregation's output leads to the post-aggregation filter's region");

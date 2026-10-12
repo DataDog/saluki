@@ -2,8 +2,9 @@
 //!
 //! When `experimental.programmable_metrics.artifact_channel.stub_url` is set, ADP polls `POST
 //! {stub_url}/v1/artifacts/poll` every `poll_interval` (1 second by default) with its acknowledgments and status
-//! summary, and receives a complete snapshot of the `policy` product, which it publishes to the installer through the
-//! [artifact channel](saluki_metric_plan::channel). The protocol is specified in
+//! summary, and receives a complete snapshot of the `policy` and `resources` products, which it publishes to the
+//! installer through the [artifact channel](saluki_metric_plan::channel), each product into its own slot, so that a
+//! snapshot of one never overwrites one of the other. The protocol is specified in
 //! `docs/design/programmable-metrics-stub-protocol.md`; the demo server (`bin/programmable-metrics-demo`) is the other
 //! side.
 //!
@@ -14,9 +15,11 @@
 //!   checks it.
 //! - A transport failure (a connection error, no complete answer within [`POLL_TIMEOUT`], a status other than `200
 //!   OK`, or a body that cannot be read, including one that states another protocol version or has no `products`)
-//!   publishes nothing, so the current snapshot stays in effect: it never revokes. The next poll retries.
+//!   publishes nothing, so the current snapshots stay in effect: it never revokes. The next poll retries.
 //! - Only the products ADP asks for are read from an answer: another product, whatever the shape of its entries, is
-//!   ignored, so that the stub can serve products this version does not know.
+//!   ignored, so that the stub can serve products this version does not know. A `policy` member that is not a list of
+//!   configs makes the whole answer unreadable; a `resources` member that is not one makes only that product
+//!   unreadable for the poll, whose current snapshot stays in effect, while the policy snapshot is still read.
 
 use std::{collections::BTreeMap, pin::pin, sync::Arc, time::Duration};
 
@@ -59,9 +62,13 @@ pub const POLL_TIMEOUT: Duration = Duration::from_secs(5);
 /// The largest answer read from the stub, in bytes.
 ///
 /// A policy snapshot holds at most one config to be installed, whose artifact is within the artifact size limit in its
-/// canonical form; the payload is that artifact as written, inside an envelope, escaped as a JSON string. An answer
-/// larger than this is unreadable, which is a transport failure.
+/// canonical form, and a resources snapshot one config, whose artifact is smaller still; each payload is its artifact
+/// as written, inside an envelope, escaped as a JSON string. An answer larger than this is unreadable, which is a
+/// transport failure.
 const MAX_ANSWER_SIZE: usize = 32 * limits::values::ARTIFACT_SIZE as usize;
+
+/// The products ADP asks the stub for, and reads from its answers.
+const PRODUCTS: &[ArtifactProduct] = &[ArtifactProduct::Policy, ArtifactProduct::Resources];
 
 /// The configuration key of the stub URL, as errors name it.
 const STUB_URL_KEY: &str = "experimental.programmable_metrics.artifact_channel.stub_url";
@@ -217,7 +224,7 @@ pub struct PollRequest<'a> {
     /// Who is polling.
     pub client: &'a ClientInfo,
 
-    /// The products asked for: `policy`.
+    /// The products asked for: `policy` and `resources`.
     pub products: &'a [ArtifactProduct],
 
     /// The latest acknowledgment of each config ADP has seen.
@@ -233,7 +240,7 @@ impl<'a> PollRequest<'a> {
         Self {
             protocol_version: PROTOCOL_VERSION,
             client,
-            products: &[ArtifactProduct::Policy],
+            products: PRODUCTS,
             config_states: &states.config_states,
             status: &states.status,
         }
@@ -246,43 +253,73 @@ pub struct PollResponse {
     /// The protocol version the stub speaks.
     pub protocol_version: u32,
 
-    /// The configs of each product ADP knows, by product name. An empty list, or a missing product, revokes.
+    /// The products ADP asks for, as the answer holds them.
     ///
     /// The member itself is required: an answer without it, such as an error object from a misbehaving stub, is
-    /// unreadable, which is a transport failure that never revokes. Products ADP does not know are left out when the
-    /// answer is read, whatever their entries look like. A known product whose member is not a list of configs makes
-    /// the whole answer unreadable.
+    /// unreadable, which is a transport failure that never revokes. Products ADP does not ask for are left out when the
+    /// answer is read, whatever their entries look like.
     #[serde(deserialize_with = "known_products")]
-    pub products: BTreeMap<String, Vec<ArtifactConfig>>,
+    pub products: Products,
+}
+
+/// The products of a poll answer that ADP asks for.
+#[derive(Debug, Default)]
+pub struct Products {
+    /// The configs of each product read, by product. An empty list, or a product missing here and from
+    /// [`unreadable`][Self::unreadable], revokes.
+    pub configs: BTreeMap<ArtifactProduct, Vec<ArtifactConfig>>,
+
+    /// The products whose member is not a list of configs, with why: their current snapshots stay in effect for the
+    /// poll. Only `resources` can be unreadable alone; an unreadable `policy` member makes the whole answer unreadable.
+    pub unreadable: BTreeMap<ArtifactProduct, String>,
 }
 
 impl PollResponse {
-    /// Returns the snapshot of the `policy` product the answer holds: empty, which revokes, when the product is
-    /// missing. Other products are ignored.
-    pub fn into_policy_snapshot(mut self) -> ArtifactSnapshot {
-        let configs = self
-            .products
-            .remove(ArtifactProduct::Policy.as_str())
-            .unwrap_or_default();
-        ArtifactSnapshot::new(ArtifactProduct::Policy, configs)
+    /// Returns the snapshot of each product ADP asks for that the answer holds, in product order: empty, which
+    /// revokes, for a product the answer leaves out; none for a product whose member could not be read.
+    pub fn into_snapshots(self) -> Vec<ArtifactSnapshot> {
+        let Products {
+            mut configs,
+            unreadable,
+        } = self.products;
+        PRODUCTS
+            .iter()
+            .filter(|product| !unreadable.contains_key(product))
+            .map(|product| ArtifactSnapshot::new(*product, configs.remove(product).unwrap_or_default()))
+            .collect()
     }
 }
 
-/// Reads the products of an answer that ADP knows, leaving out every other product unread.
-fn known_products<'de, D>(deserializer: D) -> Result<BTreeMap<String, Vec<ArtifactConfig>>, D::Error>
+/// Reads the products of an answer that ADP asks for, leaving out every other product unread.
+fn known_products<'de, D>(deserializer: D) -> Result<Products, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let products = BTreeMap::<String, serde_json::Value>::deserialize(deserializer)?;
-    products
-        .into_iter()
-        .filter(|(name, _)| name.parse::<ArtifactProduct>().is_ok())
-        .map(|(name, configs)| {
-            let configs = Vec::<ArtifactConfig>::deserialize(configs)
-                .map_err(|error| D::Error::custom(format!("product `{}`: {}", name, error)))?;
-            Ok((name, configs))
-        })
-        .collect()
+    let members = BTreeMap::<String, serde_json::Value>::deserialize(deserializer)?;
+    let mut products = Products::default();
+    for (name, configs) in members {
+        let Some(product) = name
+            .parse::<ArtifactProduct>()
+            .ok()
+            .filter(|product| PRODUCTS.contains(product))
+        else {
+            continue;
+        };
+        match Vec::<ArtifactConfig>::deserialize(configs) {
+            Ok(configs) => {
+                products.configs.insert(product, configs);
+            }
+            Err(error) => {
+                let error = format!("product `{}`: {}", name, error);
+                // Policy is what ADP always read: an answer it cannot read is not one to act on at all.
+                if product == ArtifactProduct::Policy {
+                    return Err(D::Error::custom(error));
+                }
+                products.unreadable.insert(product, error);
+            }
+        }
+    }
+    Ok(products)
 }
 
 /// The supervised worker that polls the stub and connects it to the installer.
@@ -323,8 +360,9 @@ impl Supervisable for StubChannelWorker {
         warn!(
             stub_url = %self.config.stub_url(),
             poll_interval = ?poll_interval,
-            "Polling the local stub of the programmable metrics artifact channel for policy artifacts. The stub is for \
-             development, tests, and demos only: it has no authentication. Do not use it in production."
+            "Polling the local stub of the programmable metrics artifact channel for policy and resources artifacts. \
+             The stub is for development, tests, and demos only: it has no authentication. Do not use it in \
+             production."
         );
         Ok(Box::pin(async move {
             poller.run(poll_interval, process_shutdown).await;
@@ -370,6 +408,7 @@ impl Poller {
         let mut ticks = interval(poll_interval);
         ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let mut failing: Option<String> = None;
+        let mut unreadable = BTreeMap::new();
         loop {
             select! {
                 _ = &mut shutdown => return,
@@ -384,10 +423,24 @@ impl Poller {
                     if let Some(error) = failing.take() {
                         info!(previous_error = %error, "The artifact channel stub answers polls again.");
                     }
-                    let snapshot = answer.into_policy_snapshot();
-                    let configs = snapshot.configs.len();
-                    if self.transport.publisher.publish(snapshot) {
-                        debug!(configs, "The artifact channel stub delivered a new policy snapshot.");
+                    // A product the answer holds unreadably keeps its current snapshot, logged when that starts or
+                    // changes.
+                    for (product, error) in &answer.products.unreadable {
+                        if unreadable.get(product) != Some(error) {
+                            warn!(
+                                product = %product,
+                                error = %error,
+                                "The artifact channel stub answered a product that cannot be read. Its current \
+                                 snapshot stays in effect; the other products are read."
+                            );
+                        }
+                    }
+                    unreadable = answer.products.unreadable.clone();
+                    for snapshot in answer.into_snapshots() {
+                        let (product, configs) = (snapshot.product, snapshot.configs.len());
+                        if self.transport.publisher.publish(snapshot) {
+                            debug!(%product, configs, "The artifact channel stub delivered a new snapshot.");
+                        }
                     }
                 }
                 Err(error) => {
@@ -396,7 +449,7 @@ impl Poller {
                         warn!(
                             poll_url = %self.poll_url,
                             error = %error,
-                            "Failed to poll the artifact channel stub. The current policy snapshot stays in effect, \
+                            "Failed to poll the artifact channel stub. The current snapshots stay in effect, \
                              and the next poll retries."
                         );
                     }

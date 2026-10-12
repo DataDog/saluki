@@ -48,7 +48,7 @@ fn to_slot(slot: u16) -> FrameTarget {
 }
 
 fn to_output(id: &str) -> FrameTarget {
-    FrameTarget::Output(output(id))
+    FrameTarget::Destination(output(id))
 }
 
 fn point(id: u32) -> AdmissionPointId {
@@ -596,7 +596,7 @@ fn with_gateways_as_routing_operators_enrichment_runs_the_whole_policy_region_as
     assert_eq!(fixed_nodes, ids(&FIXED[..5]));
     assert!(frame.edges().iter().all(|edge| !matches!(
         (edge.from, &edge.to),
-        (FrameSource::Admission(_), FrameTarget::Output(_))
+        (FrameSource::Admission(_), FrameTarget::Destination(_))
     )));
 
     // The policy fan-out and the four gateways below it are one decision, which R1 never cuts and prices as it runs:
@@ -660,6 +660,7 @@ fn synthetic_catalog() -> MemoryCatalog {
             accepts: PortType::ANY,
             fingerprint: format!("sha256:{}", "7".repeat(64)).parse().unwrap(),
             recipients: Vec::new(),
+            legacy_fingerprint: None,
         },
     )
 }
@@ -1343,7 +1344,7 @@ fn unplaceable(plan: &Plan, catalog: &MemoryCatalog, frame: &Frame) -> (Vec<Stri
 }
 
 #[test]
-fn adding_an_output_is_rejected_naming_resource_generations() {
+fn adding_a_fixed_destination_needs_a_restart() {
     let frame = frame_of(&stage3_default_program());
     let fingerprint = format!("sha256:{}", "8".repeat(64));
     let plan = edited(|value| {
@@ -1367,26 +1368,26 @@ fn adding_an_output_is_rejected_naming_resource_generations() {
             accepts: PortType::ANY,
             fingerprint: fingerprint.parse().unwrap(),
             recipients: vec!["new_out/primary/0".parse().unwrap()],
+            legacy_fingerprint: None,
         },
     );
+    // An output without a binding is a fixed destination, a component of its own: native configuration asks for it,
+    // and a restart builds it. The edge to it is reported with the output, once.
     let (problems, capabilities) = unplaceable(&plan, &catalog, &frame);
-    assert_eq!(capabilities, vec![MissingCapability::ResourceGenerations]);
+    assert_eq!(capabilities, vec![MissingCapability::Restart]);
     assert_eq!(
         problems,
         vec![
-            "output `new_encode` is not an output of the topology built at boot: adding an output requires stage 7 \
-             resource generations, which change physical structure without a restart"
-                .to_string(),
-            "node `metrics_policy_5`: the edge from `metrics_policy.5` to `metrics_policy_5.in` needs region \
-             `metrics_enrich` to send records to output new_encode, which it has no exit to: adding an output \
-             requires stage 7 resource generations, which change physical structure without a restart"
+            "output `new_encode` has no binding, and is not a fixed destination of the topology built at boot: adding \
+             a fixed destination needs a restart, since the physical structure is built from native configuration at \
+             boot"
                 .to_string(),
         ]
     );
 }
 
 #[test]
-fn a_new_fence_crossing_is_rejected_naming_resource_generations() {
+fn a_new_fence_crossing_native_configuration_asks_for_needs_a_restart() {
     let frame = frame_of(&stage3_default_program());
 
     // Processing after a gateway needs a region there; the topology connects the gateway straight to its encoder.
@@ -1405,13 +1406,13 @@ fn a_new_fence_crossing_is_rejected_naming_resource_generations() {
             .push(json!({"from": "mrf_metrics_gateway.out", "to": "mrf_metrics_gateway_enrich.in"}));
     });
     let (problems, capabilities) = unplaceable(&after_host, &default_program_catalog(), &frame);
-    assert_eq!(capabilities, vec![MissingCapability::ResourceGenerations]);
+    assert_eq!(capabilities, vec![MissingCapability::Restart]);
     assert_eq!(
         problems,
         vec![
             "node `mrf_metrics_gateway_enrich`: it is fed by `mrf_metrics_gateway.out`, which the topology built at \
              boot connects straight to output mrf_metrics_encode, with no region to run this node in: adding a region \
-             after a host requires stage 7 resource generations, which change physical structure without a restart"
+             after a host needs a restart, since the physical structure is built from native configuration at boot"
                 .to_string()
         ]
     );
@@ -1457,7 +1458,7 @@ fn a_new_fence_crossing_is_rejected_naming_resource_generations() {
         vec![
             "node `dsd_enrich_in`: it joins `dsd_in.metrics` (to `dsd_pre_aggregation`) and `otlp_in.metrics` (to \
              `metrics_enrich`), which the topology built at boot connects to different regions: a new physical edge \
-             requires stage 7 resource generations, which change physical structure without a restart"
+             needs a restart, since the physical structure is built from native configuration at boot"
                 .to_string()
         ]
     );
@@ -1478,12 +1479,12 @@ fn host_components_keep_their_boot_configuration() {
         placed(&stage3_default_program(), &frame).unwrap()
     );
 
-    // A gateway is an opaque host: reconfiguring it needs resource generations.
+    // A gateway is an opaque host: reconfiguring it needs a restart.
     let narrower = edited(|value| {
         node_mut(value, "metrics_routing_filter_0")["params"]["component"] = json!("other_filter");
     });
     let (_, capabilities) = unplaceable(&narrower, &catalog, &frame);
-    assert_eq!(capabilities, vec![MissingCapability::ResourceGenerations]);
+    assert_eq!(capabilities, vec![MissingCapability::Restart]);
 
     // A source cannot be left out: its host keeps producing.
     let without_source = edited(|value| {
@@ -1491,13 +1492,13 @@ fn host_components_keep_their_boot_configuration() {
         node_mut(value, "metrics_enrich_in")["params"]["inputs"] = json!(4);
     });
     let (problems, capabilities) = unplaceable(&without_source, &catalog, &frame);
-    assert_eq!(capabilities, vec![MissingCapability::ResourceGenerations]);
+    assert_eq!(capabilities, vec![MissingCapability::Restart]);
     assert_eq!(
         problems,
         vec![
             "node `trace_sampler`: the candidate leaves out this host-owned node, but its host component keeps \
-             producing records, which would have nowhere to go: removing a host component requires stage 7 resource \
-             generations, which change physical structure without a restart"
+             producing records, which would have nowhere to go: removing a host component needs a restart, since the \
+             physical structure is built from native configuration at boot"
                 .to_string()
         ]
     );
@@ -1553,11 +1554,20 @@ fn to(register: u16) -> Route {
     Route::Register(reg(register))
 }
 
-fn exit(register: u16, exit: u16) -> Step {
+fn to_fixed(register: u16, exit: u16) -> Step {
     Step::Exit {
         register: reg(register),
         exit: ExitIndex::new(exit),
-        entry: None,
+        entry: EntrySource::None,
+    }
+}
+
+/// An exit to a fixed destination, an output without a binding, which reads no entry, as a fixed component does.
+fn to_destination(register: u16, exit: u16) -> Step {
+    Step::Exit {
+        register: reg(register),
+        exit: ExitIndex::new(exit),
+        entry: EntrySource::None,
     }
 }
 
@@ -1584,7 +1594,7 @@ fn to_entry(register: u16, exit: u16, entry: u16) -> Step {
     Step::Exit {
         register: reg(register),
         exit: ExitIndex::new(exit),
-        entry: Some(EntryId::new(entry)),
+        entry: EntrySource::Region(EntryId::new(entry)),
     }
 }
 
@@ -1784,7 +1794,7 @@ fn the_enrichment_program_has_one_entry_per_logical_input() {
     let filtered = vec![
         decide(0, 0, vec![Route::Drop(id("dsd_post_agg_filter_true")), to(1), to(2)]),
         to_next(2, 1),
-        exit(1, 0),
+        to_destination(1, 0), // dsd_client_telemetry
     ];
     let filter_entries = filter
         .entries()
@@ -1827,11 +1837,11 @@ fn the_enrichment_program_has_one_entry_per_logical_input() {
         map(0, 0),
         map(1, 0),
         decide(0, 0, vec![to(1), to(2), to(3), to(4), to(5)]),
-        exit(2, 1),
-        exit(3, 2),
-        exit(4, 3),
-        exit(5, 4),
-        exit(1, 0),
+        to_fixed(2, 1),
+        to_fixed(3, 2),
+        to_fixed(4, 3),
+        to_fixed(5, 4),
+        to_destination(1, 0), // dd_metrics_encode
     ];
     let entries = program
         .entries()
@@ -1911,7 +1921,7 @@ fn a_split_rejoined_by_a_merge_concatenates_both_branches() {
                 inputs: vec![reg(1), reg(2)],
                 output: reg(3),
             },
-            exit(3, 0),
+            to_destination(3, 0), // out
         ]
     );
 }

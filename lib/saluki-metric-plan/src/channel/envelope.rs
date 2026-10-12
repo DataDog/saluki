@@ -16,10 +16,13 @@ pub struct ApprovedAgainst {
     pub active_plan_hash: PlanHash,
 }
 
-/// The envelope of one policy config: an approved artifact with its revision and the hash approval bound to.
+/// The envelope of one config: an approved artifact with its revision and the hash approval bound to.
 ///
 /// Serialized as `{"revision": <n>, "artifact_hash": "sha256:<hex>", "approved_against": {"active_plan_hash":
-/// "sha256:<hex>"}, "artifact": {...}}`, where `approved_against` is optional. Readers ignore unknown members.
+/// "sha256:<hex>"}, "artifact": {...}}`, where `approved_against` is optional. Readers ignore unknown members. A
+/// config of the resources product has the same envelope, without `approved_against`, around a resources artifact
+/// ([`ResourcesArtifact`][crate::resources::ResourcesArtifact]), and its revision is on that product's own
+/// high-water mark.
 ///
 /// The artifact is kept as the JSON value it was received as: the receipt checks
 /// ([`compose::receive_artifact`][crate::compose::receive_artifact]) read it, and `artifact_hash` must equal the

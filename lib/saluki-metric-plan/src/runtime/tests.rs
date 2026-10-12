@@ -34,9 +34,15 @@ use serde_json::{json, Value};
 use super::{harness::RecordingTelemetry, *};
 use crate::{
     canonical::PlanHash,
-    compile::{compile, CompiledPlan, EntryKey, Frame, FrameTarget, KernelKey, RegionProgram, SharedPredicate, SlotId},
+    compile::{
+        compile, CompiledPlan, EntryKey, Frame, FrameHosts, FrameTarget, KernelKey, LeaseTable, RegionProgram,
+        SharedPredicate, SlotId,
+    },
     install::kernel_reuse,
-    ir::{DecodedParams, NativeComponentId, NodeId, OutputId, ParamSpec, ParamType, Plan, RecipientId},
+    ir::{
+        DecodedParams, HostId, NativeComponentId, NodeId, OutputId, ParamSpec, ParamType, Plan, RecipientId, RoleName,
+        Selector,
+    },
     model::{Field, FieldSet, PortType},
     operators::{
         names, EffectContract, Identity, KernelBuildContext, KernelBuildError, KernelSpec, Loss, LossDecl, OperatorDef,
@@ -217,6 +223,7 @@ fn catalog() -> MemoryCatalog {
                     accepts: PortType::ANY,
                     fingerprint: fingerprint(output),
                     recipients: vec![RecipientId::new(format!("out/{}", output)).unwrap()],
+                    legacy_fingerprint: None,
                 },
             )
         })
@@ -505,6 +512,134 @@ fn exits_carry_the_batch_header_with_the_consumers_entry_set_only_between_slots(
     let from_host = process(&mut second, 1, batch(header(Some(&generation), 1), &["a.1"]));
     assert_eq!(summary(&from_host), vec![(0, strings(&["a.1"]))]);
     assert_eq!(from_host[0].header.admission_point, Some(AdmissionPointId::new(1)));
+}
+
+/// The detour plan with its output bound to delivery host `out_host`, whose encode host is `out_encode`; the catalog
+/// that declares the output so; and the frame's hosts.
+fn bound_detour_plan() -> (Plan, MemoryCatalog, FrameHosts) {
+    let host = HostId::new("out_host").unwrap();
+    let selector = Selector::Role(RoleName::new("main").unwrap());
+    let fingerprint = crate::resources::fingerprint(&host, PortType::ANY, &selector);
+    let mut value = serde_json::to_value(detour_plan()).unwrap();
+    value["outputs"][0]["fingerprint"] = json!(fingerprint);
+    value["outputs"][0]["binding"] = json!({
+        "host": host, "selector": selector, "telemetry": "out", "provenance": "native",
+    });
+    value["resources"] = json!({"recipients": [{
+        "id": "out/out", "host": host, "endpoint": "https://intake.example.com", "credential": "native:api_key",
+        "classes": "all", "provenance": "native",
+    }]});
+    let catalog = MemoryCatalog::new().with_output(
+        OutputId::new("out").unwrap(),
+        CatalogOutput {
+            accepts: PortType::ANY,
+            fingerprint,
+            recipients: vec![RecipientId::new("out/out").unwrap()],
+            legacy_fingerprint: None,
+        },
+    );
+    let hosts = FrameHosts::new().with_host(host, NativeComponentId::new("out_encode").unwrap());
+    (Plan::from_value(value).unwrap(), catalog, hosts)
+}
+
+#[test]
+fn exits_to_encode_hosts_write_the_lease_of_the_generations_lease_table_as_the_entry() {
+    let (plan, catalog, hosts) = bound_detour_plan();
+    let frame = Frame::compute_with_hosts(&plan, &registry(), &namer, &hosts).unwrap();
+    let report = Validator::new(&registry(), &catalog).validate(&plan);
+    assert!(report.is_valid(), "{}", report);
+    let programs = compile(&plan, &report, &registry(), &frame).unwrap().programs;
+    // `region_m`'s one exit leads to the output's encode host, named after it.
+    assert_eq!(frame.slots()[1].exits[0].name.as_str(), "out_encode");
+    assert_eq!(
+        frame.slots()[1].exits[0].target,
+        FrameTarget::EncodeHost(HostId::new("out_host").unwrap())
+    );
+    let region_entry = programs[1]
+        .entries()
+        .iter()
+        .find_map(|entry| match entry.key {
+            EntryKey::Region(entry) => Some(entry),
+            EntryKey::Admission(_) | EntryKey::StateOutput(_) => None,
+        })
+        .expect("region_m has an entry for region_d's batches");
+    let telemetry = RecordingTelemetry::default();
+    let generation: GenerationRef = Arc::new(GenerationToken::new(GenerationId::new(1)));
+    let lease = EntryId::new(41);
+    let table = |outputs: &[(&str, EntryId)]| {
+        Arc::new(
+            outputs
+                .iter()
+                .map(|(output, lease)| (OutputId::new(*output).unwrap(), *lease))
+                .collect::<LeaseTable>(),
+        )
+    };
+    let leased = |slot: usize, leases: Option<Arc<LeaseTable>>| {
+        let boot = prepare_all(&generation, &programs[slot], PanicBudget::DEFAULT_PROGRAM, &telemetry);
+        let boot = match leases {
+            Some(leases) => boot.with_leases(leases),
+            None => boot,
+        };
+        MetricRegionDriver::new(RegionConfig::for_slot(&frame.slots()[slot], &telemetry), boot)
+    };
+    let mut first = leased(0, Some(table(&[("out", lease)]))).unwrap();
+    let mut second = leased(1, Some(table(&[("out", lease), ("kept", EntryId::new(2))]))).unwrap();
+
+    // `region_d`'s exit to the opaque host, a fixed component, writes no entry, and its exit to `region_m` writes
+    // `region_m`'s entry: a lease table changes neither.
+    let mut written = process(&mut first, 3, batch(header(Some(&generation), 0), &["a.1", "b.1"]));
+    assert_eq!(summary(&written), vec![(0, strings(&["a.1"])), (1, strings(&["b.1"]))]);
+    assert_eq!(written[0].header.entry, None);
+    assert_eq!(written[1].header.entry, Some(region_entry));
+
+    // `region_m`'s exit to the encode host writes the output's lease, from the table of the generation the batch
+    // carries.
+    let from_region = process(&mut second, 1, written.remove(1).buffer);
+    assert_eq!(summary(&from_region), vec![(0, strings(&["b.1"]))]);
+    assert_eq!(from_region[0].header.entry, Some(lease));
+    let from_host = process(&mut second, 1, batch(header(Some(&generation), 1), &["a.1"]));
+    assert_eq!(from_host[0].header.entry, Some(lease));
+
+    // Without a table, the exit to the encode host could write no lease, and the host could only drop what it sends:
+    // a program the region cannot run. `region_d`, whose exits lead to no encode host, needs no table.
+    let Err(error) = leased(1, None) else {
+        panic!("a program delivering to an encode host is refused without a lease table");
+    };
+    assert!(matches!(error, RegionError::MalformedProgram { .. }), "{:?}", error);
+    assert!(
+        error.to_string().contains(
+            "a step delivers to the encode host of output `out`, but the generation was prepared without a lease table"
+        ),
+        "{}",
+        error
+    );
+    assert!(leased(0, None).is_ok());
+
+    // A table without a lease for an output the program delivers to is a program the region cannot run. `region_d`,
+    // whose exits lead to no output, needs no lease.
+    let Err(error) = leased(1, Some(table(&[("kept", EntryId::new(2))]))) else {
+        panic!("a lease table without the output's lease is refused");
+    };
+    assert!(matches!(error, RegionError::MalformedProgram { .. }), "{:?}", error);
+    assert!(
+        error
+            .to_string()
+            .contains("a step delivers to output `out`, but the generation's lease table has no lease for it"),
+        "{}",
+        error
+    );
+    assert!(leased(0, Some(table(&[]))).is_ok());
+
+    // An output without a binding is a fixed destination, which reads no entry, whatever the lease table holds.
+    let plan = detour_plan();
+    let frame = frame_of(&plan);
+    let programs = compiled(&plan, &frame).programs;
+    let boot = prepare_all(&generation, &programs[1], PanicBudget::DEFAULT_PROGRAM, &telemetry)
+        .with_leases(table(&[("out", lease)]));
+    let mut destination = MetricRegionDriver::new(RegionConfig::for_slot(&frame.slots()[1], &telemetry), boot).unwrap();
+    let from_host = process(&mut destination, 1, batch(header(Some(&generation), 1), &["a.1"]));
+    assert_eq!(summary(&from_host), vec![(0, strings(&["a.1"]))]);
+    assert_eq!(from_host[0].header.entry, None);
 }
 
 // Generations.

@@ -45,6 +45,7 @@ use saluki_core::execution::{AdmissionPointId, AdmissionTime, GenerationId, Gene
 
 use super::{
     artifacts::{Settle, REVOKED},
+    retry::Wait,
     Action, Installed, InstallerCore, Origin, Outcome, PendingReason, Preparation, Queued, Rejection, Report, Rollback,
     PREPARED_AGAINST_FAILED,
 };
@@ -411,7 +412,7 @@ impl InstallerCore {
             generation: Some(generation),
             outcome: Outcome::Pending(PendingReason::CutDeferred { reason, attempts }),
         }));
-        actions.push(Action::RetryAfter(CUT_ARM_RETRY));
+        self.start_wait(Wait::Cut, CUT_ARM_RETRY, &mut actions);
         self.settle(actions, Settle::Quiet)
     }
 
@@ -452,10 +453,7 @@ impl InstallerCore {
             return actions;
         }
         let Some(cut) = self.cut.take() else { return actions };
-        actions.push(Action::Abort {
-            generation,
-            slots: self.all_slots(),
-        });
+        self.push_abort(generation, &mut actions);
         let after = cut.after_cancel.clone();
         let candidate = cut.installed.candidate;
         let origin = cut.installed.origin;
@@ -558,10 +556,7 @@ impl InstallerCore {
             return actions;
         }
         let Some(cut) = self.cut.take() else { return actions };
-        actions.push(Action::Abort {
-            generation,
-            slots: self.all_slots(),
-        });
+        self.push_abort(generation, &mut actions);
         self.transition(generation, LifecycleEvent::Rejected, Some(STRANDED.to_string()));
         self.report_generation(generation, &mut actions);
         self.requeue(cut.into_queued(), Some(generation), &mut actions);
@@ -673,10 +668,7 @@ impl InstallerCore {
     pub(super) fn abort_cut(&mut self, rejection: Rejection, actions: &mut Vec<Action>) {
         let Some(cut) = self.cut.take() else { return };
         let id = cut.installed.generation.id();
-        actions.push(Action::Abort {
-            generation: id,
-            slots: self.all_slots(),
-        });
+        self.push_abort(id, actions);
         self.transition(id, LifecycleEvent::Rejected, Some(rejection.to_string()));
         actions.push(Action::Report(Report {
             candidate: cut.installed.candidate,
@@ -719,10 +711,7 @@ impl InstallerCore {
             match phase {
                 CutPhase::Barrier => {
                     self.cut = None;
-                    actions.push(Action::Abort {
-                        generation,
-                        slots: self.all_slots(),
-                    });
+                    self.push_abort(generation, actions);
                     self.transition(generation, LifecycleEvent::Failed, Some(reason.to_string()));
                     self.report_generation(generation, actions);
                 }
@@ -756,10 +745,7 @@ impl InstallerCore {
             // The cut was prepared against the failed generation: prepare it again against what it rolls back to,
             // which the failure of the active generation then decides.
             if let Some(cut) = self.cut.take() {
-                actions.push(Action::Abort {
-                    generation: cut_id,
-                    slots: self.all_slots(),
-                });
+                self.push_abort(cut_id, actions);
                 self.transition(
                     cut_id,
                     LifecycleEvent::Rejected,
@@ -796,6 +782,10 @@ impl InstallerCore {
         let installed = cut.installed.clone();
         let id = installed.generation.id();
         self.transition(id, LifecycleEvent::Committed, None);
+        // An admission point stamped the generation: its leases and recipients are committed, and a recipient it
+        // reopened that failed meanwhile has its next incarnation prepared.
+        self.resources.commit(id);
+        self.after_exit(actions);
         self.report_generation(id, actions);
 
         let keep = installed.origin.can_roll_back();

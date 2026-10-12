@@ -235,10 +235,13 @@ impl Executor {
         while let Some((target, buffer)) = queue.pop_front() {
             match target {
                 None => {}
-                Some(FrameTarget::Output(output)) => {
+                Some(FrameTarget::Destination(output)) => {
                     for event in buffer {
                         self.outputs.insert(&output, &event.try_into_metric().unwrap());
                     }
+                }
+                Some(FrameTarget::EncodeHost(host)) => {
+                    unreachable!("these plans bind no output to a delivery host, such as `{}`", host)
                 }
                 Some(FrameTarget::Slot(slot)) => {
                     for (target, buffer) in self.run_slot(slot, buffer) {
@@ -359,7 +362,7 @@ impl Executor {
                     let target = self.frame.slot(slot).unwrap().exits[exit.get()].target.clone();
                     for mut buffer in std::mem::take(&mut registers[register.get()]) {
                         let mut stamped = header.clone();
-                        stamped.entry = *entry;
+                        stamped.entry = entry.region();
                         buffer.set_header(stamped);
                         exits.push((target.clone(), buffer));
                     }

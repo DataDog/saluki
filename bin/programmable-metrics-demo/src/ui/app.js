@@ -48,12 +48,27 @@
     diff: $("plan-diff"), diffHead: $("plan-diff-head"), diffNodes: $("plan-diff-nodes"),
     diffEdges: $("plan-diff-edges"), diffEdgesSummary: $("plan-diff-edges-summary"),
     diffEdgeList: $("plan-diff-edge-list"), confirmDiff: $("confirm-diff"),
+    tabPolicy: $("tab-policy"), tabResources: $("tab-resources"), policyEditor: $("policy-editor"),
+    resourcesEditor: $("resources-editor"), resourcesSource: $("resources-source"),
+    resourcesStatus: $("resources-status"), resourcesOutputs: $("resources-outputs"),
+    resourcesTemplate: $("btn-resources-template"), resourcesServed: $("btn-resources-served"),
+    resourcesCheck: $("btn-resources-check"), resourcesPublish: $("btn-resources-publish"),
+    resourcesRevoke: $("btn-resources-revoke"), resourcesOutcome: $("resources-outcome"),
+    resourcesConfirm: $("resources-confirm"), resourcesConfirmButton: $("btn-resources-confirm"),
+    resourcesConfirmHash: $("resources-confirm-hash"), resourcesConfirmRevision: $("resources-confirm-revision"),
+    resourcesConfirmWarnings: $("resources-confirm-warnings"), resourcesAcks: $("resources-acks"),
+    resourcesAckSummary: $("resources-ack-summary"), recipients: $("recipients"), recipientsHint: $("recipients-hint"),
+    outputs: $("outputs"), outputsCount: $("outputs-count"), outputsRows: $("outputs-rows"),
   };
   const nodesTable = ui.nodes.closest("table");
+  const RESOURCES_PRODUCT = "resources";
+  const RESOURCES_DRAFT_KEY = "programmable-metrics-demo.resources-draft";
 
   let state = null; // the last /api/state answer
   let firstSeenMs = Infinity; // when the page first had a state: families arriving soon after are not news
   let compiled = null; // { source, outcome, published } of the last compile; `published` once its approval is used
+  // { text, outcome, published } of the last resources check; `published` once its approval is used.
+  let resourcesChecked = null;
   // Where the editor's text came from ("empty", "sample", "default", "draft", or "user" once edited), and the
   // default program hash it belongs to, which keys its draft.
   const editor = { origin: "empty", base: null, loading: false, loadFailed: false };
@@ -199,6 +214,7 @@
       if (label) button.textContent = text;
       button.disabled = false;
       renderPublish();
+      renderResourcesPublish();
     }
   }
 
@@ -336,7 +352,9 @@
     const source = ui.source.value;
     setStatus("", "Compiling…");
     try {
-      const { ok, data } = await api("POST", "/api/compile", { source });
+      // The Resources tab's draft gives the fingerprints of declared outputs ADP does not declare yet.
+      const resources = ui.resourcesSource.value.trim() ? ui.resourcesSource.value : undefined;
+      const { ok, data } = await api("POST", "/api/compile", { source, resources });
       if (!ok || !data) throw new Error("the demo server refused the compile request");
       compiled = { source, outcome: data, published: null };
     } catch (error) {
@@ -352,6 +370,15 @@
     renderDiagnostics();
     renderPreview();
     renderPublish();
+  }
+
+  // The declared outputs a compiled artifact waits for: their fingerprints came from the Resources draft, and every
+  // error is about one of them, so ADP holds the artifact pending rather than reject it.
+  function waitingOutputs(outcome) {
+    const fromDraft = outcome.draft_fingerprints || [];
+    const errors = outcome.diagnostics.filter((d) => d.severity === "error");
+    const waits = errors.length > 0 && errors.every((d) => fromDraft.some((output) => d.message.includes(output)));
+    return waits ? fromDraft : [];
   }
 
   function renderCompileStatus() {
@@ -373,11 +400,16 @@
     if (outcome.errors) found.push(plural(outcome.errors, "error"));
     if (outcome.warnings) found.push(plural(outcome.warnings, "warning"));
     let tone = "", verdict;
+    const waitsFor = waitingOutputs(outcome);
     if (!checked.available) {
       tone = "warn";
       verdict = "not checked: ADP's export is not available";
     } else if (checked.composed) {
-      if (outcome.errors) {
+      if (waitsFor.length) {
+        tone = "warn";
+        verdict = `composed as ADP will: it emits to ${waitsFor.join(", ")}, which ADP does not declare yet, so ADP `
+          + "holds it pending until the resources declare it";
+      } else if (outcome.errors) {
         tone = "err";
         verdict = `composed as ADP will: ${found.join(" and ")}, so ADP will reject it`;
       } else if (outcome.warnings) {
@@ -400,6 +432,10 @@
     if (outcome.restored_fingerprints.length) {
       notes.push(`${plural(outcome.restored_fingerprints.length, "output fingerprint")} from ADP's export.`);
     }
+    if (outcome.draft_fingerprints.length) {
+      notes.push(`Fingerprint of ${outcome.draft_fingerprints.join(", ")} from the Resources draft.`);
+    }
+    if (outcome.draft_note) notes.push(outcome.draft_note);
     if (checked.reason) notes.push(checked.reason);
     ui.status.className = tone ? `compile-status ${tone}` : "compile-status";
     ui.status.append(
@@ -643,7 +679,11 @@
     ui.confirmDiff.textContent = diffText || "";
     ui.confirmDiff.hidden = !diffText;
     const warnings = [];
-    if (outcome.errors) {
+    const waitsFor = waitingOutputs(outcome);
+    if (waitsFor.length) {
+      warnings.push(`It emits to ${waitsFor.join(", ")}, which ADP does not declare yet: ADP holds it pending, and `
+        + "installs it by itself once a resources artifact declares the output with the fingerprint it records.");
+    } else if (outcome.errors) {
       const first = outcome.diagnostics.find((d) => d.severity === "error");
       const how = outcome.checked_against.composed ? "Composed as ADP will" : "The structural checks";
       warnings.push(`${how}, it has ${plural(outcome.errors, "error")}: ADP will reject it and keep running its `
@@ -889,6 +929,36 @@
     ui.banner.hidden = !ui.banner.childNodes.length;
   }
 
+  // The outputs a policy can emit to: the native ones and those resources artifacts declare, from ADP's export, and
+  // those the Resources draft declares that ADP does not yet, whose fingerprints the compile takes from the draft.
+  function renderOutputs(s) {
+    const exported = s.legend ? s.legend.outputs : [];
+    const drafted = (freshResourcesCheck() ? resourcesChecked.outcome.outputs : [])
+      .filter((output) => !exported.some((known) => known.id === output.id));
+    const intakeLabel = (name) => {
+      const intake = s.intakes.find((i) => i.name === name);
+      return intake ? intake.label : "—";
+    };
+    const rows = exported.map((output) => el("tr", {},
+      el("td", { class: "mono", text: output.id, title: output.label || "" }),
+      el("td", { text: output.declared ? "resources artifact" : "configuration" }),
+      el("td", { text: output.intake ? intakeLabel(output.intake) : output.recipients.join(", ") }),
+      el("td", { class: "mono", text: shortHash(output.fingerprint), title: output.fingerprint })));
+    for (const output of drafted) {
+      rows.push(el("tr", { class: "drafted" },
+        el("td", { class: "mono", text: output.id, title: output.label || "" }),
+        el("td", { text: "Resources draft (not published)" }),
+        el("td", { text: output.recipients.join(", ") }),
+        el("td", { class: "mono", text: shortHash(output.fingerprint), title: output.fingerprint })));
+    }
+    ui.outputs.hidden = rows.length === 0;
+    const declared = exported.filter((output) => output.declared).length;
+    const counts = [`${exported.length - declared} native`, `${declared} declared`];
+    if (drafted.length) counts.push(`${drafted.length} only in the draft`);
+    ui.outputsCount.textContent = rows.length ? `(${counts.join(", ")})` : "";
+    ui.outputsRows.replaceChildren(...rows);
+  }
+
   function renderBindings(s) {
     const bindings = s.legend ? s.legend.bindings : [];
     ui.bindings.hidden = bindings.length === 0;
@@ -908,18 +978,52 @@
     let column = intakeColumns.get(intake.name);
     if (!column) {
       const name = el("div", { class: "intake-name", text: intake.label });
+      const declaration = el("div", { class: "intake-state" });
       const outputs = el("div", { class: "intake-outputs" });
       const alerts = el("div", {});
       const meta = el("div", { class: "intake-meta" });
       const list = el("ul", { class: "families" });
       const empty = el("div", { class: "empty", text: "Nothing in the last 5 s." });
-      const head = el("div", { class: "intake-head" }, name, outputs, alerts, meta);
+      // A declared endpoint's intake can be paused, so that its recipient's drain shows what it does at its deadline.
+      const pause = intake.declared ? el("button", { type: "button", class: "quiet intake-pause" }) : null;
+      if (pause) {
+        pause.addEventListener("click", () => busy(pause, null, async () => {
+          const paused = state && state.intakes.find((i) => i.name === intake.name);
+          await api("POST", `/api/intakes/${intake.name}/pause`, { paused: !(paused && paused.paused) });
+          await poll();
+        }));
+      }
+      const head = el("div", { class: "intake-head" }, name, declaration, outputs, alerts, meta, pause);
       const root = el("div", { class: "intake", "data-name": intake.name }, head, list, empty);
-      column = { root, outputs, alerts, meta, list, empty, families: new Map() };
+      column = { root, declaration, pause, outputs, alerts, meta, list, empty, families: new Map() };
       intakeColumns.set(intake.name, column);
       ui.intakes.append(root);
     }
     return column;
+  }
+
+  // What a declared endpoint's column says about its declaration and its intake.
+  function renderDeclaration(column, intake, feeding) {
+    column.declaration.className = "intake-state";
+    if (!intake.declared) {
+      column.declaration.textContent = "";
+      return;
+    }
+    if (intake.paused) {
+      column.declaration.classList.add("paused");
+      column.declaration.textContent = `paused: answering 503 (${intake.unavailable} so far)`;
+    } else if (feeding.length) {
+      column.declaration.textContent = "declared by the resources artifact";
+    } else {
+      column.declaration.classList.add("undeclared");
+      column.declaration.textContent = "not declared";
+    }
+    column.declaration.title = "A resources artifact declares this endpoint; ADP's configuration does not.";
+    if (!column.pause.dataset.busy) {
+      column.pause.textContent = intake.paused ? "Resume intake" : "Pause intake";
+      column.pause.title = intake.paused ? "Answer requests again"
+        : "Answer every request with 503 Service Unavailable, as an endpoint that is down";
+    }
   }
 
   function renderIntakes(s) {
@@ -930,7 +1034,11 @@
       // The outputs of the default program that feed this endpoint, from ADP's export.
       const feeding = outputs.filter((output) => output.intake === intake.name);
       column.outputs.replaceChildren(...feeding.map((output) => el("div", {}, "← ", ...breakable(output.id, "_"))));
-      column.outputs.title = feeding.map((output) => `${output.id}: ${output.label || "no label"}`).join("\n");
+      column.outputs.title = feeding.map((output) => {
+        const declared = output.declared ? ", declared by the resources artifact" : "";
+        return `${output.id}: ${output.label || "no label"}${declared}`;
+      }).join("\n");
+      renderDeclaration(column, intake, feeding);
 
       // Problems first, each on its own line, so that they are never cut off.
       const alerts = [];
@@ -1018,9 +1126,16 @@
       text = "waiting: ADP has never polled the artifact channel stub";
     } else if (!lastPoll || lastPoll.received_ms < current.published_ms) {
       text = "waiting for ADP's next poll";
+    } else if (ack && ack.state === "active" && isDegraded(ack)) {
+      // It runs without its emits to the outputs the error names: an output that is no longer declared, say.
+      tone = "pending";
+      text = `active in generation ${ack.generation ?? "?"}, degraded: ${ack.error}`;
     } else if (ack && ack.state === "active") {
+      // An error that drops nothing is a note, such as advice to rebase version 1 fingerprints that still match.
       tone = "ok";
-      text = `active in generation ${ack.generation ?? "?"}`;
+      text = `active in generation ${ack.generation ?? "?"}${ack.error ? ` (note: ${ack.error})` : ""}`;
+    } else if (ack && ack.state === "pending" && ack.error) {
+      text = `pending: ${ack.error}`;
     } else if (ack && ["rejected", "failed"].includes(ack.state)) {
       tone = "err";
       text = `${ack.state}: ${ack.error || "no reason given"}`;
@@ -1052,7 +1167,19 @@
 
   const expandedDetails = new Set(); // the acknowledgment details shown whole, by entry
 
-  function renderAcks(s) {
+  // The product of an acknowledgment: the one it names, or the policy product, which the first protocol had alone.
+  function productOf(cs) {
+    return cs.product || "policy";
+  }
+
+  // Whether an active artifact runs degraded: its error says that its emits to some output are dropped (the server
+  // reads which, as `dropped_outputs`). Any other error of an active artifact is a note.
+  function isDegraded(cs) {
+    return cs.state === "active" && Array.isArray(cs.dropped_outputs) && cs.dropped_outputs.length > 0;
+  }
+
+  // The rows of an acknowledgment timeline: of the policy product's configs, or of the resources product's.
+  function ackRows(s, product) {
     const timeline = s.channel.timeline;
     const rows = [];
     for (const [index, entry] of timeline.entries()) {
@@ -1067,32 +1194,40 @@
         rows.push([when, "—", null, "refused", "—", entry.error, "err"]);
         continue;
       }
-      const notes = [restarted, status.degraded, status.stale_base ? "stale base" : null,
-        status.stale_review ? "stale review" : null, unreadable]
+      const notes = (product === RESOURCES_PRODUCT
+        ? [restarted, unreadable]
+        : [restarted, status.degraded, status.stale_base ? "stale base" : null,
+          status.stale_review ? "stale review" : null, unreadable])
         .filter(Boolean).join(" · ");
       const tone = unreadable ? "warn" : "";
-      const states = entry.config_states.length ? entry.config_states : [null];
-      for (const cs of states) {
-        if (!cs) {
+      const own = entry.config_states.filter((cs) => productOf(cs) === product);
+      for (const cs of own.length ? own : [null]) {
+        if (!cs && product === RESOURCES_PRODUCT) {
+          rows.push([when, "—", null, "none", "—", notes || "no resources config", tone]);
+        } else if (!cs) {
           const generation = status.active_generation ?? "—";
           rows.push([when, "—", null, "default", generation, notes || "default program", tone]);
         } else {
           const generation = cs.generation ?? "—";
           const detail = [cs.error, notes].filter(Boolean).join(" · ");
-          rows.push([when, cs.revision ?? "—", cs.artifact_hash, cs.state || "?", generation, detail,
-            cs.error ? "err" : tone]);
+          // A degraded artifact runs without its emits to what the error names; an active one's other errors are
+          // notes, and any other state's error is a failure.
+          const ackTone = !cs.error ? tone : cs.state !== "active" ? "err" : isDegraded(cs) ? "warn" : tone;
+          rows.push([when, cs.revision ?? "—", cs.artifact_hash, cs.state || "?", generation, detail, ackTone]);
         }
       }
       if (rows.length >= 14) break;
     }
-    ui.acks.replaceChildren();
-    if (!rows.length) {
-      const text = "ADP has not polled the artifact channel stub yet.";
-      ui.acks.append(el("tr", {}, el("td", { colspan: "5", class: "detail", text })));
-    }
+    return rows;
+  }
+
+  // Renders an acknowledgment timeline's rows into a table body.
+  function renderAckRows(body, rows, emptyText) {
+    body.replaceChildren();
+    if (!rows.length) body.append(el("tr", {}, el("td", { colspan: "5", class: "detail", text: emptyText })));
     // The detail, when there is one, gets a row of its own under its entry, so that an error is never cut off.
     for (const [when, revision, hash, stateName, generation, detail, tone] of rows) {
-      ui.acks.append(el(
+      body.append(el(
         "tr", { class: detail ? "has-detail" : "" },
         el("td", {}, ...when),
         el("td", { class: "num", text: String(revision) }),
@@ -1101,7 +1236,7 @@
         el("td", { class: "num", text: String(generation) }),
       ));
       if (detail) {
-        const key = `${when[0]}:${revision}:${detail.length}`;
+        const key = `${body.id}:${when[0]}:${revision}:${detail.length}`;
         const text = el("div", {
           class: `clamp clamp-toggle${expandedDetails.has(key) ? " expanded" : ""}`,
           text: detail,
@@ -1111,10 +1246,14 @@
           if (!expandedDetails.delete(key)) expandedDetails.add(key);
           text.classList.toggle("expanded");
         });
-        ui.acks.append(el("tr", { class: "detail-row" },
+        body.append(el("tr", { class: "detail-row" },
           el("td", { colspan: "5", class: tone ? `detail ${tone}` : "detail" }, text)));
       }
     }
+  }
+
+  function renderAcks(s) {
+    renderAckRows(ui.acks, ackRows(s, "policy"), "ADP has not polled the artifact channel stub yet.");
     const current = s.channel.current;
     const configs = s.channel.configs || [];
     const parts = [`${s.channel.polls_total} polls`];
@@ -1263,6 +1402,305 @@
     }
   }
 
+  // ---- Recipients ---------------------------------------------------------------------------------------------------
+
+  function bytes(value) {
+    if (!Number.isFinite(value)) return "—";
+    if (value >= 1048576) return `${(value / 1048576).toFixed(1)} MiB`;
+    if (value >= 1024) return `${(value / 1024).toFixed(1)} KiB`;
+    return `${value} B`;
+  }
+
+  function drainText(drain) {
+    if (!drain) return "";
+    const parts = [`${drain.delivered ?? "?"} delivered`];
+    if (drain.persisted) parts.push(`${drain.persisted} persisted`);
+    parts.push(`${drain.dropped ?? "?"} dropped`);
+    return `${parts.join(", ")}${drain.deadline_reached ? " at its deadline" : ""}`;
+  }
+
+  // Each recipient of ADP's delivery hosts, with its state, queue, and last drain: one ADP no longer lists stays a
+  // while, so that a retirement and its drain report can be read after the recipient is gone.
+  function renderRecipients(s) {
+    const view = s.recipients;
+    ui.recipients.replaceChildren();
+    if (!view.reported) {
+      ui.recipientsHint.textContent = "ADP's status does not list recipients";
+      const text = "No recipients reported: ADP lists them in its status from stage 7.";
+      ui.recipients.append(el("tr", {}, el("td", { colspan: "5", class: "detail", text })));
+      return;
+    }
+    const listed = view.recipients.filter((recipient) => recipient.listed).length;
+    ui.recipientsHint.textContent = `${listed} listed by ADP · those it stops listing are kept 10 min`;
+    for (const recipient of view.recipients) {
+      const incarnation = recipient.incarnation ? ` #${recipient.incarnation}` : "";
+      const declaredBy = recipient.provenance;
+      const provenance = declaredBy === null || declaredBy === undefined ? ""
+        : ` · ${typeof declaredBy === "string" ? declaredBy : JSON.stringify(declaredBy)}`;
+      const id = el("td", { class: "id" }, ...breakable(recipient.id, "/"), incarnation);
+      id.title = `${recipient.declared ? "declared by a resources artifact" : "native"}${provenance}`
+        + `${recipient.slot === null || recipient.slot === undefined ? "" : ` · slot ${recipient.slot}`}`;
+      const stateCell = el("td", {}, el("span", { class: `pill ${recipient.state}`, text: recipient.state }));
+      stateCell.title = `${recipient.state} since ${clock(recipient.state_since_ms)}`
+        + (recipient.listed ? "" : `; last listed ${ago(recipient.last_seen_ms)}`);
+      const drain = recipient.last_drain;
+      ui.recipients.append(el("tr", { class: recipient.listed ? "" : "gone" },
+        el("td", { class: "mono", text: recipient.host }),
+        id,
+        stateCell,
+        el("td", { class: "num", text: bytes(recipient.queue_bytes) }),
+        el("td", { class: `drain${drain && drain.deadline_reached ? " deadline" : ""}`, text: drainText(drain) })));
+    }
+    if (!view.recipients.length) {
+      ui.recipients.append(el("tr", {}, el("td", { colspan: "5", class: "detail", text: "No recipients." })));
+    }
+  }
+
+  // ---- Resources ----------------------------------------------------------------------------------------------------
+
+  function showTab(name) {
+    const resources = name === "resources";
+    ui.policyEditor.hidden = resources;
+    ui.resourcesEditor.hidden = !resources;
+    ui.tabPolicy.classList.toggle("active", !resources);
+    ui.tabResources.classList.toggle("active", resources);
+    ui.tabPolicy.setAttribute("aria-selected", String(!resources));
+    ui.tabResources.setAttribute("aria-selected", String(resources));
+  }
+
+  ui.tabPolicy.addEventListener("click", () => showTab("policy"));
+  ui.tabResources.addEventListener("click", () => showTab("resources"));
+
+  function saveResourcesDraft() {
+    try { localStorage.setItem(RESOURCES_DRAFT_KEY, ui.resourcesSource.value); } catch (_) { /* may be unavailable */ }
+  }
+
+  function loadResourcesDraft() {
+    try { return localStorage.getItem(RESOURCES_DRAFT_KEY); } catch (_) { return null; }
+  }
+
+  // Puts the team D template, or the document the stub serves, in the resources editor.
+  async function loadResources(which, initial) {
+    const { data } = await api("GET", "/api/resources/template");
+    const text = which === "served" ? data && data.served && data.served.document : data && data.template;
+    if (!text) {
+      if (!initial) {
+        toast(which === "served" ? "The stub serves no resources document." : "There is no template.", true);
+      }
+      return;
+    }
+    const current = ui.resourcesSource.value;
+    if (!initial && current.trim() && current !== text && !window.confirm("Replace the resources editor's text?")) {
+      return;
+    }
+    ui.resourcesSource.value = text;
+    saveResourcesDraft();
+    renderResources();
+  }
+
+  async function checkResources() {
+    const text = ui.resourcesSource.value;
+    const { ok, data } = await api("POST", "/api/resources/check", { document: text });
+    resourcesChecked = ok && data ? { text, outcome: data, published: null } : null;
+    if (!resourcesChecked) toast("The demo server refused the check request.", true);
+    renderResources();
+  }
+
+  function freshResourcesCheck() {
+    const checked = resourcesChecked;
+    return checked && checked.outcome.ok && checked.text === ui.resourcesSource.value ? checked : null;
+  }
+
+  function activeResourcesHash() {
+    const latest = state && latestStatus(state);
+    const resources = latest && latest.status.resources;
+    return resources && resources.active_artifact ? resources.active_artifact.artifact_hash : null;
+  }
+
+  function renderResourcesCheck() {
+    const node = ui.resourcesStatus;
+    ui.resourcesOutputs.replaceChildren();
+    ui.resourcesOutputs.hidden = true;
+    const checked = resourcesChecked;
+    if (!checked) return;
+    if (checked.text !== ui.resourcesSource.value) {
+      node.className = "compile-status";
+      node.textContent = "Edited since the last check. Check again to publish.";
+      return;
+    }
+    const outcome = checked.outcome;
+    if (!outcome.ok) {
+      node.className = "compile-status err";
+      node.textContent = outcome.error;
+      return;
+    }
+    node.className = outcome.valid ? "compile-status ok" : "compile-status err";
+    const hash = el("code", { text: shortHash(outcome.artifact_hash), title: outcome.artifact_hash });
+    node.replaceChildren("Checked ", hash,
+      outcome.valid ? " · valid, as ADP validates resources artifacts."
+        : ` · refused as ADP will refuse it: ${outcome.validation_error}`);
+    for (const output of outcome.outputs) {
+      ui.resourcesOutputs.append(el("li", {},
+        el("code", { text: output.id }), ` ${output.label ? `(${output.label}) ` : ""}`,
+        el("span", { class: "what", text: `→ ${output.recipients.join(", ")} · ` }),
+        el("code", { text: shortHash(output.fingerprint), title: output.fingerprint })));
+    }
+    ui.resourcesOutputs.hidden = !outcome.outputs.length;
+  }
+
+  function resourcesPublishable() {
+    const fresh = freshResourcesCheck();
+    return Boolean(fresh && !fresh.published && fresh.outcome.artifact_hash !== activeResourcesHash());
+  }
+
+  function renderResourcesPublish() {
+    const fresh = freshResourcesCheck();
+    if (!ui.resourcesPublish.dataset.busy) {
+      ui.resourcesPublish.disabled = !resourcesPublishable();
+      if (!fresh) {
+        ui.resourcesPublish.textContent = "Publish resources";
+        ui.resourcesPublish.title = "Check the resources first";
+      } else if (fresh.published) {
+        ui.resourcesPublish.textContent = `Published as resources revision ${fresh.published.revision}`;
+        ui.resourcesPublish.title = "This check's approval was used. Check again to publish it as another revision.";
+      } else if (fresh.outcome.artifact_hash === activeResourcesHash()) {
+        ui.resourcesPublish.textContent = "Already active";
+        ui.resourcesPublish.title = `ADP runs with ${fresh.outcome.artifact_hash}`;
+      } else {
+        ui.resourcesPublish.textContent = `Publish resources ${shortHash(fresh.outcome.artifact_hash)}`;
+        ui.resourcesPublish.title = `Approve and publish ${fresh.outcome.artifact_hash}`;
+      }
+    }
+    if (ui.resourcesPublish.disabled && !ui.resourcesConfirmButton.dataset.busy) ui.resourcesConfirm.hidden = true;
+    if (!ui.resourcesRevoke.dataset.busy) ui.resourcesRevoke.disabled = !(state && state.channel.resources.current);
+  }
+
+  function renderResourcesOutcome(s) {
+    const current = s.channel.resources.current;
+    const node = ui.resourcesOutcome;
+    node.replaceChildren();
+    if (!current) {
+      const lastChange = s.channel.resources.history[0];
+      node.hidden = !(lastChange && lastChange.action === "revoke");
+      node.className = "publish-outcome";
+      node.append("Revoked: the stub serves an empty resources snapshot, so ADP declares no resources.");
+      return;
+    }
+    const ack = latestAcks(s).find((cs) => productOf(cs) === RESOURCES_PRODUCT && cs.revision === current.revision);
+    let tone = "pending", text;
+    if (!s.channel.last_poll || s.channel.last_poll.received_ms < current.published_ms) {
+      text = "waiting for ADP's next poll";
+    } else if (ack && ack.state === "active") {
+      tone = "ok";
+      text = `active in generation ${ack.generation ?? "?"}`;
+    } else if (ack && ["rejected", "failed"].includes(ack.state)) {
+      tone = "err";
+      text = `${ack.state}: ${ack.error || "no reason given"}`;
+    } else if (ack) {
+      text = `${ack.state || "acknowledged"}${ack.error ? `: ${ack.error}` : ""}`;
+    } else {
+      text = "delivered; ADP has not acknowledged it (an ADP before stage 7 does not ask for resources)";
+    }
+    node.className = `publish-outcome ${tone}`;
+    node.append(el("div", { class: "clamp two", title: text },
+      `Resources revision ${current.revision} (${tinyHash(current.artifact_hash)}): `,
+      el("span", { class: "state", text })));
+    node.hidden = false;
+  }
+
+  function renderResourcesAcks(s) {
+    renderAckRows(ui.resourcesAcks, ackRows(s, RESOURCES_PRODUCT), "ADP has not polled the artifact channel stub yet.");
+    const current = s.channel.resources.current;
+    const latest = latestStatus(s);
+    const mark = latest && latest.status.resources ? latest.status.resources.revision_high_water : null;
+    ui.resourcesAckSummary.textContent = [
+      current ? `serving rev ${current.revision}` : "serving an empty snapshot",
+      `next rev ${s.channel.resources.next_revision}`,
+      mark === null || mark === undefined ? null : `ADP's mark ${mark}`,
+    ].filter(Boolean).join(" · ");
+  }
+
+  function renderResources() {
+    renderResourcesCheck();
+    renderResourcesPublish();
+    if (state) {
+      renderResourcesOutcome(state);
+      renderResourcesAcks(state);
+      renderOutputs(state);
+    }
+  }
+
+  ui.resourcesSource.addEventListener("input", () => {
+    saveResourcesDraft();
+    renderResources();
+  });
+  ui.resourcesSource.addEventListener("keydown", (event) => {
+    if (event.key === "Tab" && !event.shiftKey && !event.altKey) {
+      event.preventDefault();
+      ui.resourcesSource.setRangeText("  ", ui.resourcesSource.selectionStart, ui.resourcesSource.selectionEnd, "end");
+      saveResourcesDraft();
+      renderResources();
+    }
+  });
+  ui.resourcesTemplate.addEventListener("click", () => busy(ui.resourcesTemplate, null,
+    () => loadResources("template", false)));
+  ui.resourcesServed.addEventListener("click", () => busy(ui.resourcesServed, null,
+    () => loadResources("served", false)));
+  ui.resourcesCheck.addEventListener("click", () => busy(ui.resourcesCheck, "Checking…", checkResources));
+
+  ui.resourcesPublish.addEventListener("click", () => {
+    if (!resourcesPublishable()) return;
+    const outcome = resourcesChecked.outcome;
+    ui.resourcesConfirmHash.textContent = outcome.artifact_hash;
+    ui.resourcesConfirmRevision.textContent = state ? String(state.channel.resources.next_revision) : "next";
+    const warnings = [];
+    if (!outcome.valid) {
+      warnings.push(`Validated as ADP validates it, it is refused: ADP will reject it and keep what it declared `
+        + `before. ${outcome.validation_error}`);
+    }
+    if (state && !state.channel.polls_total) {
+      warnings.push("ADP has never polled the artifact channel stub: the resources wait in the snapshot until it "
+        + "does.");
+    }
+    const warning = (text) => el("li", {}, el("div", { class: "clamp", text, title: text }));
+    ui.resourcesConfirmWarnings.replaceChildren(...warnings.map(warning));
+    ui.resourcesConfirmWarnings.hidden = warnings.length === 0;
+    ui.resourcesConfirm.hidden = false;
+    ui.resourcesConfirm.scrollIntoView({ block: "nearest" });
+  });
+
+  $("btn-resources-cancel").addEventListener("click", () => { ui.resourcesConfirm.hidden = true; });
+
+  const confirmResources = ui.resourcesConfirmButton;
+  confirmResources.addEventListener("click", () => busy(confirmResources, "Publishing…", async () => {
+    try {
+      if (!resourcesPublishable()) return;
+      const approved = resourcesChecked;
+      const hash = approved.outcome.artifact_hash;
+      const { ok, data } = await api("POST", "/api/resources/publish", { artifact_hash: hash });
+      if (ok) {
+        approved.published = { revision: data.revision, hash: data.artifact_hash };
+        toast(`Published resources revision ${data.revision} (${shortHash(data.artifact_hash)}).`);
+      } else {
+        toast(`Publish refused: ${(data && data.error) || "unknown error"}`, true);
+      }
+    } finally {
+      ui.resourcesConfirm.hidden = true;
+      poll();
+    }
+  }));
+
+  ui.resourcesRevoke.addEventListener("click", () => busy(ui.resourcesRevoke, "Revoking…", async () => {
+    const question = "Revoke the resources? The stub serves an empty resources snapshot: ADP withdraws everything they "
+      + "declared, and policies that emit to their outputs drop those emits until they return.";
+    if (!window.confirm(question)) return;
+    const { ok, data } = await api("POST", "/api/resources/revoke");
+    if (ok && data && data.revoked) toast("Revoked the resources: the resources snapshot is empty.");
+    else if (ok) toast((data && data.message) || "Nothing to revoke.");
+    else toast(`Revoke failed: ${(data && data.error) || "unknown error"}`, true);
+    poll();
+  }));
+
   function renderFoot(s) {
     const parts = [
       ["run directory", s.run_dir],
@@ -1276,15 +1714,18 @@
   function render(s) {
     renderBadges(s);
     renderBanner(s);
+    renderOutputs(s);
     renderBindings(s);
     renderIntakes(s);
     renderOutcome(s);
     renderAcks(s);
     renderTraffic(s);
+    renderRecipients(s);
     renderNodes(s);
     renderFoot(s);
     renderPreview();
     renderPublish();
+    renderResources();
     followExport(s);
   }
 
@@ -1313,6 +1754,10 @@
 
   renderEditor();
   loadDefault(true);
+  // The resources editor starts from the draft kept in the browser, or from the team D template.
+  const resourcesDraft = loadResourcesDraft();
+  if (resourcesDraft && resourcesDraft.trim()) ui.resourcesSource.value = resourcesDraft;
+  else loadResources("template", true).catch(() => { /* the poll reports a demo server that does not answer */ });
   poll();
   setInterval(poll, POLL_MS);
 })();

@@ -4,8 +4,11 @@ use std::sync::Arc;
 use agent_data_plane_config::shared;
 use headers::Authorization;
 use hyper_http_proxy::{Intercept, Proxy};
-use saluki_error::GenericError;
+use saluki_error::{generic_error, GenericError};
+use stringtheory::MetaString;
 use url::Url;
+
+use super::delivery::{ProxyEndpoint, ProxySettings};
 
 /// Proxy configuration.
 #[derive(Clone)]
@@ -71,6 +74,54 @@ impl ProxyConfiguration {
         }
     }
 
+    /// Creates a `ProxyConfiguration` from a delivery host's proxy settings, with the user information of each proxy's
+    /// credential, `<user>:<password>`, if it has one.
+    ///
+    /// # Errors
+    ///
+    /// If a proxy URL is invalid, or cannot carry user information, an error is returned.
+    pub(crate) fn from_settings(
+        settings: &ProxySettings, http_userinfo: Option<&str>, https_userinfo: Option<&str>,
+    ) -> Result<Self, GenericError> {
+        Ok(Self {
+            http: settings
+                .http
+                .as_ref()
+                .map(|proxy| with_userinfo(&proxy.url, http_userinfo))
+                .transpose()?,
+            https: settings
+                .https
+                .as_ref()
+                .map(|proxy| with_userinfo(&proxy.url, https_userinfo))
+                .transpose()?,
+            no_proxy: settings.no_proxy.clone(),
+            no_proxy_nonexact_match: settings.no_proxy_nonexact_match,
+            use_proxy_for_cloud_metadata: settings.use_proxy_for_cloud_metadata,
+        })
+    }
+
+    /// Returns these proxies as a delivery host's settings: each proxy's URL without its user information, and the
+    /// reference of the native credential that holds the user information.
+    pub(crate) fn settings(&self) -> ProxySettings {
+        let endpoint = |url: &str, credential: &'static str| ProxyEndpoint {
+            url: without_userinfo(url),
+            credential: MetaString::from_static(credential),
+        };
+        ProxySettings {
+            http: self
+                .http
+                .as_deref()
+                .map(|url| endpoint(url, ProxySettings::NATIVE_HTTP_CREDENTIAL)),
+            https: self
+                .https
+                .as_deref()
+                .map(|url| endpoint(url, ProxySettings::NATIVE_HTTPS_CREDENTIAL)),
+            no_proxy: self.no_proxy.clone(),
+            no_proxy_nonexact_match: self.no_proxy_nonexact_match,
+            use_proxy_for_cloud_metadata: self.use_proxy_for_cloud_metadata,
+        }
+    }
+
     /// Builds the configured proxies.
     ///
     /// Each proxy uses a custom intercept that forwards only requests matching the proxy's scheme
@@ -111,6 +162,36 @@ impl ProxyConfiguration {
 
         Ok(proxies)
     }
+}
+
+/// Returns `url` without its user information, or as it is if it does not parse.
+fn without_userinfo(url: &str) -> String {
+    match Url::parse(url) {
+        Ok(mut parsed) if !parsed.username().is_empty() || parsed.password().is_some() => {
+            // Neither fails for a URL that already carries user information.
+            let _ = parsed.set_username("");
+            let _ = parsed.set_password(None);
+            parsed.to_string()
+        }
+        _ => url.to_string(),
+    }
+}
+
+/// Returns `url` with the user information `userinfo`, `<user>:<password>` or `<user>`, if there is any.
+fn with_userinfo(url: &str, userinfo: Option<&str>) -> Result<String, GenericError> {
+    let Some(userinfo) = userinfo.filter(|userinfo| !userinfo.is_empty()) else {
+        return Ok(url.to_string());
+    };
+    let mut parsed = Url::parse(url)?;
+    let (user, password) = match userinfo.split_once(':') {
+        Some((user, password)) => (user, Some(password)),
+        None => (userinfo, None),
+    };
+    parsed
+        .set_username(user)
+        .and_then(|()| parsed.set_password(password))
+        .map_err(|()| generic_error!("Proxy URL '{}' cannot carry user information.", without_userinfo(url)))?;
+    Ok(parsed.to_string())
 }
 
 /// Returns the value unless it is empty, in which case the setting is not configured.
@@ -314,6 +395,41 @@ mod tests {
     use tracing::debug;
 
     use super::*;
+
+    #[test]
+    fn proxies_from_a_hosts_settings_carry_their_credentials_user_information() {
+        let settings = ProxySettings {
+            http: Some(ProxyEndpoint {
+                url: "http://proxy.example.com:3128/".to_string(),
+                credential: ProxySettings::NATIVE_HTTP_CREDENTIAL.into(),
+            }),
+            https: Some(ProxyEndpoint {
+                url: "http://proxy.example.com:3129/".to_string(),
+                credential: ProxySettings::NATIVE_HTTPS_CREDENTIAL.into(),
+            }),
+            ..Default::default()
+        };
+
+        let config = ProxyConfiguration::from_settings(&settings, Some("user:secret"), None).expect("proxies parse");
+        assert_eq!(
+            config.http.as_deref(),
+            Some("http://user:secret@proxy.example.com:3128/")
+        );
+        assert_eq!(config.https.as_deref(), Some("http://proxy.example.com:3129/"));
+        let proxies = config.build().expect("proxies build");
+        assert!(proxies[0].headers().contains_key(http::header::PROXY_AUTHORIZATION));
+        assert!(!proxies[1].headers().contains_key(http::header::PROXY_AUTHORIZATION));
+
+        // Named back as settings, the user information is left out again.
+        assert_eq!(config.settings(), settings);
+
+        // User information without a password, as natively, sends no authorization.
+        let config = ProxyConfiguration::from_settings(&settings, Some("user"), Some("")).expect("proxies parse");
+        assert_eq!(config.http.as_deref(), Some("http://user@proxy.example.com:3128/"));
+        assert!(!config.build().unwrap()[0]
+            .headers()
+            .contains_key(http::header::PROXY_AUTHORIZATION));
+    }
 
     fn proxy_configuration(proxy: shared::Proxy) -> ProxyConfiguration {
         ProxyConfiguration::from_configuration(&proxy)

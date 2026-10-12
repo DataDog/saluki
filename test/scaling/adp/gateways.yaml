@@ -1,0 +1,29 @@
+# The gateway configuration of a scaling run (`SCALING_PROFILE=gateways`): the mapper configuration with two endpoint
+# routing groups, one of names and one of prefixes, and Multi-Region Failover mirroring an allowlist, as the in-process
+# measurements' `GATEWAYS` (`measurement_tests.rs`), over the metric names `run-curves.sh` gives lading for this
+# profile. Every endpoint is a blackhole of its own (`lading/blackhole.yaml`); `gateways.env` turns on V3 series for
+# all of them, as `defaults.env` does for the primary one.
+dogstatsd_mapper_profiles:
+  - name: requests
+    prefix: raw.
+    mappings:
+      - match: raw.requests.*
+        name: requests
+        tags:
+          route: $1
+metric_filterlist: [raw.blocked]
+additional_endpoints:
+  "http://blackhole:9092": [key-b]
+  "http://blackhole:9093": [key-c]
+experimental:
+  metrics_endpoint_routing:
+    metric_allowlist:
+      "http://blackhole:9092": [checkout.latency, system.disk0, system.disk1]
+    metric_prefix_allowlist:
+      "http://blackhole:9093": [app.queue, requests.]
+multi_region_failover:
+  enabled: true
+  api_key: mrf-key
+  dd_url: http://blackhole:9094
+  failover_metrics: true
+  metric_allowlist: [checkout.latency]

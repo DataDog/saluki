@@ -1,14 +1,21 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, path::PathBuf, time::Duration};
 
-use agent_data_plane_config::shared::{self, Endpoints, SharedConfiguration, V3SeriesMode};
+use agent_data_plane_config::{
+    shared::{self, Endpoints, SharedConfiguration, V3SeriesMode},
+    ConfigValue,
+};
 use saluki_error::GenericError;
 use saluki_io::net::client::http::{HttpProtocol, TlsMinimumVersion};
 use tracing::warn;
 
 use super::{
+    delivery::{
+        DeliverySettings, IntakeAuthorities, PayloadClasses, RecipientProtocol, RecipientSpec, RetrySettings,
+        SpillPolicy, V3Acceptance,
+    },
     endpoints::{
-        EndpointConfiguration, EndpointRoute, MetricsRecipient, MetricsRecipientRoute, ResolvedEndpoint,
-        RoutableEndpoint, SingleDestination,
+        EndpointConfiguration, EndpointRoute, EndpointV3Settings, MetricsRecipient, MetricsRecipientRoute,
+        ResolvedEndpoint, RoutableEndpoint, SingleDestination, V3EndpointConfig,
     },
     io::should_route_to_endpoint,
     protocol::{MetricsEndpointRouting, UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig},
@@ -278,6 +285,16 @@ pub struct ForwarderConfiguration {
 
     /// How often API keys are checked for validity against the intake.
     api_key_validation_interval: Duration,
+
+    /// The forwarder settings this configuration was resolved from, which a hosted recipient's settings start from.
+    forwarder: shared::Forwarder,
+
+    /// The run path the retry queue's storage path is derived from when none is configured.
+    run_path: Option<PathBuf>,
+
+    /// The V3 acceptance of a recipient a delivery host runs, which replaces what V3 configuration resolves for its
+    /// endpoint.
+    v3_acceptance: Option<V3Acceptance>,
 }
 
 /// The endpoint and V3 routing settings that depend on a forwarder's destination.
@@ -365,6 +382,94 @@ impl ForwarderConfiguration {
             tls_handshake_timeout: endpoints.tls.handshake_timeout,
             allow_arbitrary_tags: endpoints.allow_arbitrary_tags,
             api_key_validation_interval: api_key_validation_interval(forwarder.apikey_validation_interval),
+            forwarder: forwarder.clone(),
+            run_path: shared.run_path.clone(),
+            v3_acceptance: None,
+        }
+    }
+
+    /// Returns the settings a delivery host runs with when it follows this configuration: its client profile, and
+    /// its retry and concurrency settings.
+    ///
+    /// Each proxy appears as its URL without user information and the reference of the credential that holds the
+    /// user information ([`ProxySettings::NATIVE_HTTP_CREDENTIAL`][super::delivery::ProxySettings], and the `https`
+    /// one).
+    pub(crate) fn delivery_settings(&self) -> DeliverySettings {
+        let forwarder = &self.forwarder;
+        DeliverySettings {
+            endpoint_concurrency: self.endpoint_concurrency,
+            endpoint_concurrency_multiplier: self.endpoint_concurrency_multiplier,
+            endpoint_buffer_size: self.endpoint_buffer_size,
+            request_timeout: self.request_timeout(),
+            retry: RetrySettings {
+                backoff_factor: forwarder.backoff_factor,
+                backoff_base: forwarder.backoff_base,
+                backoff_max: forwarder.backoff_max,
+                recovery_error_decrease_factor: forwarder.recovery_interval,
+                recovery_reset: forwarder.recovery_reset,
+                queue_max_size_bytes: self.retry.queue_max_size_bytes(),
+                storage_max_size_bytes: self.retry.storage_max_size_bytes(),
+                flush_to_disk_mem_ratio: self.retry.flush_to_disk_mem_ratio(),
+                storage_max_disk_ratio: self.retry.storage_max_disk_ratio(),
+                outdated_file_in_days: self.retry.outdated_file_in_days(),
+            },
+            proxy: self.proxy.settings(),
+            http_protocol: self.http_protocol,
+            connection_reset_interval: self.connection_reset_interval(),
+            skip_ssl_validation: self.skip_ssl_validation,
+            min_tls_version: self.min_tls_version,
+            tls_handshake_timeout: self.tls_handshake_timeout,
+            api_key_validation_interval: self.api_key_validation_interval,
+        }
+    }
+
+    /// Returns the forwarder settings of the I/O loop of one recipient a delivery host runs: `settings`, narrowed by
+    /// the recipient's delivery policy, with what stays fixed while the process runs taken from this configuration
+    /// (the retry queue's storage path, the TLS key log).
+    ///
+    /// The recipient's queue holds at most its policy's bound, never more than the host's; a recipient that never
+    /// spills has no persisted queue. Its endpoint's V3 settings are those its protocol accepts, whatever V3
+    /// configuration says of the endpoint, though the loop filters nothing by them: the host routes every payload by
+    /// the recipient's current protocol. The loop adds no `Allow-Arbitrary-Tag-Value` header itself: the hosted
+    /// request mapper adds it at dispatch while the recipient's live protocol asks for it.
+    pub(crate) fn for_recipient(&self, settings: &DeliverySettings, spec: &RecipientSpec) -> Self {
+        let retry = &settings.retry;
+        let queue_max_size_bytes = spec.policy.queue_bytes.map_or(retry.queue_max_size_bytes, |bound| {
+            bound.min(retry.queue_max_size_bytes)
+        });
+        let storage_max_size_bytes = match spec.policy.spill {
+            SpillPolicy::Native => retry.storage_max_size_bytes,
+            SpillPolicy::Never => 0,
+        };
+        let forwarder = shared::Forwarder {
+            backoff_base: retry.backoff_base,
+            backoff_factor: retry.backoff_factor,
+            backoff_max: retry.backoff_max,
+            recovery_interval: retry.recovery_error_decrease_factor,
+            recovery_reset: retry.recovery_reset,
+            retry_queue_payloads_max_size: ConfigValue::explicit(queue_max_size_bytes),
+            storage_max_size_in_bytes: storage_max_size_bytes,
+            flush_to_disk_mem_ratio: retry.flush_to_disk_mem_ratio,
+            storage_max_disk_ratio: retry.storage_max_disk_ratio,
+            outdated_file_in_days: retry.outdated_file_in_days,
+            ..self.forwarder.clone()
+        };
+        Self {
+            endpoint_concurrency: settings.endpoint_concurrency,
+            endpoint_concurrency_multiplier: settings.endpoint_concurrency_multiplier,
+            request_timeout_secs: settings.request_timeout.as_secs(),
+            endpoint_buffer_size: settings.endpoint_buffer_size,
+            retry: RetryConfiguration::from_configuration(&forwarder, self.run_path.as_deref()),
+            http_protocol: settings.http_protocol,
+            connection_reset_interval_secs: settings.connection_reset_interval.as_secs(),
+            skip_ssl_validation: settings.skip_ssl_validation,
+            min_tls_version: settings.min_tls_version,
+            tls_handshake_timeout: settings.tls_handshake_timeout,
+            allow_arbitrary_tags: false,
+            api_key_validation_interval: settings.api_key_validation_interval,
+            v3_acceptance: Some(spec.protocol.v3()),
+            forwarder,
+            ..self.clone()
         }
     }
 
@@ -501,8 +606,60 @@ impl ForwarderConfiguration {
                 },
                 configured_endpoint: endpoint.endpoint().configured_endpoint().to_string(),
                 api_key_index: endpoint.endpoint().api_key_index(),
+                classes: match endpoint.route() {
+                    EndpointRoute::Primary | EndpointRoute::Additional => PayloadClasses::All,
+                    EndpointRoute::MetricsPrimary => PayloadClasses::MetricsOnly,
+                },
+                protocol: self.datadog_intake_protocol(endpoint.route(), endpoint.endpoint()),
             })
             .collect())
+    }
+
+    /// Returns the protocol of a Datadog intake endpoint as this forwarder's I/O loop sends to it: its logs and traces
+    /// authorities, whether requests allow arbitrary tag values, and which metrics variants it takes in their V3 form.
+    pub(crate) fn datadog_intake_protocol(
+        &self, route: EndpointRoute, endpoint: &ResolvedEndpoint,
+    ) -> RecipientProtocol {
+        let v3 = self.endpoint_v3_settings(route, endpoint.configured_endpoint());
+        let authority = |authority: Option<&http::uri::Authority>| authority.map(|authority| authority.as_str().into());
+        RecipientProtocol::DatadogIntake {
+            authorities: IntakeAuthorities {
+                logs: authority(endpoint.logs_authority()),
+                traces: authority(endpoint.traces_authority()),
+            },
+            allow_arbitrary_tags: self.allow_arbitrary_tags,
+            v3: V3Acceptance {
+                series: v3.use_v3_series,
+                sketches: v3.use_v3_sketches,
+            },
+        }
+    }
+
+    /// Returns which metrics variants an endpoint of the given route takes in their V3 form: those its protocol accepts
+    /// for a recipient a delivery host runs; otherwise none when the serializer's compressor rules V3 out, the
+    /// alternate intake's own setting for the alternate metrics intake, and the endpoint's series mode and whether the
+    /// serializer lists it for V3 sketches.
+    ///
+    /// Matching uses the endpoint string from configuration, not the version-prefixed URL used for requests.
+    pub(crate) fn endpoint_v3_settings(&self, route: EndpointRoute, configured_endpoint: &str) -> EndpointV3Settings {
+        if let Some(v3) = self.v3_acceptance {
+            return EndpointV3Settings {
+                use_v3_series: v3.series,
+                use_v3_sketches: v3.sketches,
+            };
+        }
+        if self.compressor_disables_metrics_v3() {
+            return EndpointV3Settings::disabled();
+        }
+        let metrics_primary_v3_override = (route == EndpointRoute::MetricsPrimary)
+            .then(|| self.opw_metrics_v3_series_override())
+            .flatten();
+        EndpointV3Settings::from_v3_config(V3EndpointConfig {
+            configured_endpoint,
+            series_config: self.use_v3_api_series(),
+            metrics_primary_v3_override,
+            serializer_v3_sketches_endpoints: &self.v3_api().sketches.endpoints,
+        })
     }
 
     /// Returns a reference to the retry configuration.
@@ -958,6 +1115,103 @@ mod tests {
         // A destination that does not accept V3 series payloads gets none of the configured V3 routing.
         assert_eq!(V3SeriesMode::Disabled, config.use_v3_api_series().enabled);
         assert!(config.use_v3_api_series().endpoints.is_empty());
+    }
+
+    #[test]
+    fn delivery_settings_are_the_native_settings_with_each_proxy_named_without_its_user_information() {
+        let mut shared = shared_configuration();
+        shared.endpoints.proxy = Proxy {
+            http: "http://user:secret@proxy.example.com:3128".to_string(),
+            https: "http://proxy.example.com:3129".to_string(),
+            no_proxy: vec!["internal.example.com".to_string()],
+            no_proxy_nonexact_match: true,
+            use_proxy_for_cloud_metadata: false,
+        };
+        shared.endpoints.forwarder.storage_max_size_in_bytes = 4096;
+        let config = ForwarderConfiguration::from_configuration(&shared);
+        let settings = config.delivery_settings();
+
+        let http = settings.proxy.http.expect("the http proxy is configured");
+        assert_eq!(http.url, "http://proxy.example.com:3128/");
+        assert_eq!(&*http.credential, "native:proxy.http");
+        let https = settings.proxy.https.expect("the https proxy is configured");
+        assert_eq!(https.url, "http://proxy.example.com:3129");
+        assert_eq!(&*https.credential, "native:proxy.https");
+        assert_eq!(settings.proxy.no_proxy, vec!["internal.example.com".to_string()]);
+        assert!(settings.proxy.no_proxy_nonexact_match);
+        assert_eq!(settings.endpoint_concurrency, 10);
+        assert_eq!(settings.endpoint_buffer_size, 100);
+        assert_eq!(settings.request_timeout, Duration::from_secs(20));
+        assert_eq!(settings.retry.queue_max_size_bytes, 15 * 1024 * 1024);
+        assert_eq!(settings.retry.storage_max_size_bytes, 4096);
+        assert_eq!(settings.retry.backoff_max, 64.0);
+        assert_eq!(settings.api_key_validation_interval, Duration::from_mins(60));
+    }
+
+    #[test]
+    fn a_hosted_recipients_loop_runs_with_the_host_settings_narrowed_by_its_policy() {
+        use crate::common::datadog::delivery::{
+            RecipientOrigin, RecipientPolicy, RecipientProtocol, RecipientSpec, RetireClosure,
+        };
+
+        let mut shared = shared_configuration();
+        shared.endpoints.forwarder.storage_max_size_in_bytes = 4096;
+        shared.endpoints.allow_arbitrary_tags = true;
+        shared.run_path = Some("/run/agent".into());
+        let base = ForwarderConfiguration::from_configuration(&shared);
+        let mut settings = base.delivery_settings();
+        settings.endpoint_concurrency = 3;
+        settings.request_timeout = Duration::from_secs(7);
+        settings.retry.queue_max_size_bytes = 1000;
+        let spec = |queue_bytes, spill| RecipientSpec {
+            id: "dd_out/declared/team/http://team.example.com".into(),
+            endpoint: "http://team.example.com".to_string(),
+            credential: "credentials/team".into(),
+            classes: PayloadClasses::MetricsOnly,
+            protocol: RecipientProtocol::DatadogIntake {
+                authorities: IntakeAuthorities::default(),
+                allow_arbitrary_tags: true,
+                v3: V3Acceptance {
+                    series: true,
+                    sketches: false,
+                },
+            },
+            policy: RecipientPolicy {
+                queue_bytes,
+                spill,
+                on_retire: RetireClosure::Discard,
+            },
+            origin: RecipientOrigin::Declared {
+                name: "team".into(),
+                credential: "team".into(),
+            },
+        };
+
+        let narrowed = base.for_recipient(&settings, &spec(Some(400), SpillPolicy::Never));
+        assert_eq!(narrowed.endpoint_concurrency(), 3);
+        assert_eq!(narrowed.request_timeout(), Duration::from_secs(7));
+        assert_eq!(narrowed.retry().queue_max_size_bytes(), 400);
+        assert_eq!(
+            narrowed.retry().storage_max_size_bytes(),
+            0,
+            "a recipient that never spills has no disk"
+        );
+        assert_eq!(narrowed.retry().storage_path(), base.retry().storage_path());
+        assert!(
+            !narrowed.allow_arbitrary_tags(),
+            "the hosted request mapper adds the header"
+        );
+        // The protocol's V3 acceptance replaces what V3 configuration says of the endpoint.
+        let v3 = narrowed.endpoint_v3_settings(EndpointRoute::Additional, "http://team.example.com");
+        assert!(v3.use_v3_series);
+        assert!(!v3.use_v3_sketches);
+
+        // A policy never raises the host's bound, and a native spill keeps the host's disk.
+        let capped = base.for_recipient(&settings, &spec(Some(5000), SpillPolicy::Native));
+        assert_eq!(capped.retry().queue_max_size_bytes(), 1000);
+        assert_eq!(capped.retry().storage_max_size_bytes(), 4096);
+        let unbounded = base.for_recipient(&settings, &spec(None, SpillPolicy::Native));
+        assert_eq!(unbounded.retry().queue_max_size_bytes(), 1000);
     }
 
     #[tokio::test]

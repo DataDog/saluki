@@ -137,6 +137,8 @@ where
     PayloadTooLarge {
         compressed_size_bytes: usize,
         compressed_limit_bytes: usize,
+        /// The number of inputs the payload held, which are dropped with it.
+        inputs_dropped: usize,
     },
     #[snafu(display("failed to write/compress payload: {}", source))]
     Io { source: io::Error },
@@ -191,7 +193,12 @@ where
     /// Creates a new `RequestBuilder` with the given encoder and compression scheme.
     ///
     /// The encoder will be used to encode input events as well as help construct the resulting HTTP requests.
-    pub async fn new(
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the encoder's uncompressed size limit is too small to contain the endpoint framing and at
+    /// least one byte of input data.
+    pub fn new(
         encoder: E, compression_scheme: CompressionScheme, buffer_chunk_size: usize,
     ) -> Result<Self, RequestBuilderError<E>> {
         let compressed_len_limit = encoder.compressed_size_limit();
@@ -480,11 +487,12 @@ where
         if compressed_len > compressed_limit {
             // Single input is unable to be split.
             if self.encoded_inputs.len() == 1 {
-                let _ = self.clear_encoded_inputs();
+                let inputs_dropped = self.clear_encoded_inputs();
 
                 return vec![Err(RequestBuilderError::PayloadTooLarge {
                     compressed_size_bytes: compressed_len,
                     compressed_limit_bytes: compressed_limit,
+                    inputs_dropped,
                 })];
             }
 
@@ -688,6 +696,7 @@ where
             return Some(Err(RequestBuilderError::PayloadTooLarge {
                 compressed_size_bytes: compressed_len,
                 compressed_limit_bytes: compressed_limit,
+                inputs_dropped: inputs.len(),
             }));
         }
 
@@ -741,7 +750,6 @@ mod tests {
         encoder: TestEncoder, compression_scheme: CompressionScheme,
     ) -> RequestBuilder<TestEncoder> {
         RequestBuilder::new(encoder, compression_scheme, RB_BUFFER_CHUNK_SIZE)
-            .await
             .expect("should not fail to create request builder")
     }
 
@@ -897,6 +905,7 @@ mod tests {
         let recoverable: RequestBuilderError<TestEncoder> = RequestBuilderError::PayloadTooLarge {
             compressed_size_bytes: 100,
             compressed_limit_bytes: 10,
+            inputs_dropped: 1,
         };
         assert!(recoverable.is_recoverable());
 
@@ -1197,7 +1206,7 @@ mod tests {
             TestEncoder::new(usize::MAX, prefix.len() + suffix.len(), "/submit").with_delimiters(prefix, suffix, b"");
 
         let maybe_request_builder =
-            RequestBuilder::new(encoder, CompressionScheme::zstd_default(), RB_BUFFER_CHUNK_SIZE).await;
+            RequestBuilder::new(encoder, CompressionScheme::zstd_default(), RB_BUFFER_CHUNK_SIZE);
         match maybe_request_builder {
             Ok(_) => panic!("building request builder should not succeed"),
             Err(e) => match e {
@@ -1258,7 +1267,6 @@ mod tests {
 
         let encoder = TestEncoder::new(compressed_limit, uncompressed_limit, "/fake/endpoint");
         let mut request_builder = RequestBuilder::new(encoder, CompressionScheme::zstd_default(), 2048)
-            .await
             .expect("should not fail to create request builder");
 
         // Set our "maximum inputs per payload" limit to the average number of inputs to also ensure we have a good

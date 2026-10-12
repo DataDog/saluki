@@ -19,8 +19,11 @@
 //! the physical edges including direct ones, rewrite R1's fusion decision for every edge of the boot plan, the
 //! segments between admission points, and each output's binding with its recipients and delivery policy, and, for a
 //! compiled plan ([`Explain::with_rewrites`]), the rewrites the compiler considered, applied or skipped, each with its
-//! justification, whether it relies on the capacity rule, and its telemetry effects. Later stages add the plan diff,
-//! and state owners with their transitions.
+//! justification, whether it relies on the capacity rule, and its telemetry effects. Stage 7 adds, within version 1,
+//! the resources section: every output binding, delivery host setting, and recipient, with its provenance, and, against
+//! the active plan ([`Explain::with_resource_changes`]), whether each is reused or new; and, in the physical
+//! sections, the encode host each bound output's lease runs in. Later stages add the plan diff, and state owners with
+//! their transitions.
 
 use std::collections::BTreeMap;
 
@@ -46,6 +49,9 @@ pub use self::physical::{
     PhysicalPlan, SegmentEntry, SlotEntry, SlotInputEntry,
 };
 
+mod resources;
+pub use self::resources::{BoundOutputEntry, HostSettingsEntry, RecipientEntry, RemovedResources, ResourcesEntry};
+
 mod text;
 
 /// The version of the explain document this crate produces.
@@ -62,6 +68,12 @@ pub struct Explain {
 
     /// The logical graph.
     pub graph: LogicalGraph,
+
+    /// The resources the plan's outputs deliver through: every output binding, delivery host setting, and recipient,
+    /// with who declared it, and, once compared with the active plan ([`Explain::with_resource_changes`]), whether
+    /// each is reused or new. Left out for a plan without bound outputs or resources.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resources: Option<ResourcesEntry>,
 
     /// The resource bounds validation measured, against their limits.
     pub bounds: Vec<BoundEntry>,
@@ -515,6 +527,7 @@ impl Explain {
                 outputs,
                 scopes,
             },
+            resources: ResourcesEntry::of(plan),
             bounds,
             findings,
             rewrites: None,
@@ -526,6 +539,27 @@ impl Explain {
     /// it considered them, as [`CompiledPlan::rewrites`][crate::compile::CompiledPlan::rewrites] lists them.
     pub fn with_rewrites(mut self, records: &[RewriteRecord]) -> Self {
         self.rewrites = Some(records.iter().map(RewriteEntry::of).collect());
+        self
+    }
+
+    /// Marks each resource of `plan`, the plan this document describes, as reused or new against `active`, the plan
+    /// the active generation runs, and lists what only `active` declares: an output is `reused` when `active` binds it
+    /// alike but for who declared the binding, so that it keeps its encoder stream, `rebound` when it binds it
+    /// otherwise, and `new` when it declares no such output; a recipient or a host's settings are `reused`,
+    /// `reconfigured`, or `new` the same way.
+    pub fn with_resource_changes(mut self, plan: &Plan, active: &Plan) -> Self {
+        let active_has_resources =
+            !active.resources.is_empty() || active.outputs.iter().any(|output| output.binding.is_some());
+        if self.resources.is_none() && !active_has_resources {
+            return self;
+        }
+        let resources = self.resources.get_or_insert_with(|| ResourcesEntry {
+            outputs: Vec::new(),
+            hosts: Vec::new(),
+            recipients: Vec::new(),
+            removed: RemovedResources::default(),
+        });
+        resources.compare(active, plan);
         self
     }
 

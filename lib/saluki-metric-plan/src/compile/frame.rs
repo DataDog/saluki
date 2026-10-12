@@ -7,7 +7,9 @@
 //!   hosts (`opaque_host`). Each of their output ports is an **admission point**, where batches are stamped with their
 //!   admission time and generation: sources admit (they stamp what is not stamped yet), and opaque hosts readmit (they
 //!   stamp everything again, so nothing crosses them).
-//! - The declared **outputs**, each one encoder stream, are fixed too.
+//! - The **encode hosts** are fixed: one per delivery host the host builds ([`FrameHosts`]), each running, as leases,
+//!   the encoder streams of the outputs bound to its delivery host, which change live. An output without a binding is
+//!   a **fixed destination**, a component of its own, fixed too.
 //! - **Slots** hold the synchronous operators between fences. A slot is a connected set of synchronous nodes, as large
 //!   as fusion allows (rewrite R1): two synchronous neighbors share a slot unless some path leaves one of them through
 //!   a fence and comes back to the other, since fusing them would then form a cycle through that fence, or unless
@@ -18,13 +20,16 @@
 //!   ([`Boundary::Isolated`]), such as aggregation as a kernel: it is never fused, and its region owns its state, its
 //!   watermark, and its flush ticks (see [below](#isolation-slots)).
 //! - Each slot's **exits** are its outputs: one for every edge of the boot plan that leaves the slot, to a fixed
-//!   component or to another slot, and one for every output the boot plan delivers to downstream of the slot, whether
-//!   or not the boot plan emits to it from the slot. Exits nothing uses stay connected and idle, so that later
-//!   generations can use them without changing the topology. Exits are named after their target: the fixed
-//!   component, the slot, or the output.
+//!   component or to another slot, one for every output the boot plan delivers to downstream of the slot (to its
+//!   delivery host's encode host, or to its fixed destination), whether or not the boot plan emits to it from the
+//!   slot, and, for a slot with an output downstream, one to every encode host, so that an output bound later to any
+//!   delivery host has a path. Exits nothing uses stay connected and idle, so that later generations can use them
+//!   without changing the topology. Exits are named after their target: the fixed component, the slot, the encode
+//!   host, or the destination's output. A batch an exit sends to an encode host names its output's lease in its
+//!   header's entry.
 //! - The **edges** connect admission points and exits to their targets. An `emit` or `drop` whose only input comes
-//!   straight from a fence is not run in a slot: it becomes a direct edge from the admission point to the output, or
-//!   no edge at all.
+//!   straight from a fence is not run in a slot: it becomes a direct edge from the admission point to the fixed
+//!   destination, or no edge at all. A direct edge to an encode host is an error, since only a region writes a lease.
 //!
 //! The frame records every fusion decision ([`FusionDecision`]) so that `explain` can say why each edge of the boot
 //! plan is or is not inside a slot.
@@ -89,8 +94,8 @@ use super::{resolve, Role};
 use crate::{
     canonical::{PlanHash, ResolvedValues},
     ir::{
-        Namespace, NativeComponentId, NodeId, OperatorName, OutputDecl, OutputId, Params, Plan, PortName, PortRef,
-        Provenance,
+        HostId, Namespace, NativeComponentId, NodeId, OperatorName, OutputDecl, OutputId, Params, Plan, PortName,
+        PortRef, Provenance,
     },
     operators::{decision_cost, names, Boundary, OperatorRegistry, StateContract},
     validate::graph::{emit_output, Graph},
@@ -163,8 +168,83 @@ pub enum FrameTarget {
     /// The input of a slot's region host.
     Slot(SlotId),
 
-    /// An output's encoder.
-    Output(OutputId),
+    /// The encode host of a delivery host, by the delivery host: it runs the lease of every output bound to the
+    /// delivery host, and each batch names its output's lease in its header's entry.
+    EncodeHost(HostId),
+
+    /// A fixed destination: an output without a binding, run by a component of its own, such as an internal tap.
+    Destination(OutputId),
+}
+
+impl FrameTarget {
+    /// Returns where the records an output's `emit`s deliver go: the encode host of its delivery host when it is bound
+    /// to one, and the output's own component, a fixed destination, otherwise.
+    pub fn of_output(output: &OutputDecl) -> Self {
+        match &output.binding {
+            Some(binding) => Self::EncodeHost(binding.host.clone()),
+            None => Self::Destination(output.id.clone()),
+        }
+    }
+
+    /// Returns where the records an `emit` to `output` deliver go in `plan`: as [`of_output`][Self::of_output] says
+    /// for the plan's declaration, and a fixed destination for an output the plan does not declare, which validation
+    /// reports.
+    pub fn of_emit(plan: &Plan, output: &OutputId) -> Self {
+        plan.output(output)
+            .map_or_else(|| Self::Destination(output.clone()), Self::of_output)
+    }
+}
+
+/// The encode host of one delivery host: the fixed component that runs, as leases, the encoder streams of every output
+/// bound to the delivery host.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FrameHost {
+    /// The delivery host.
+    pub host: HostId,
+
+    /// The component ID of its encode host, which names the slots' exits that lead to it.
+    pub encoder: NativeComponentId,
+}
+
+/// The delivery hosts of a frame, each with its encode host: fixed at boot, as every component is.
+///
+/// The host supplies them. Every fused slot that has an output downstream gets an exit to every encode host, so that an
+/// output bound to any of them later, such as a failover output enabled live, has a physical path; an exit nothing uses
+/// carries nothing.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct FrameHosts {
+    hosts: Vec<FrameHost>,
+}
+
+impl FrameHosts {
+    /// Creates a set of frame hosts without any host: every output is then a fixed destination.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds a delivery host with the component ID of its encode host, replacing any encode host it had.
+    pub fn with_host(mut self, host: HostId, encoder: NativeComponentId) -> Self {
+        match self.hosts.iter_mut().find(|existing| existing.host == host) {
+            Some(existing) => existing.encoder = encoder,
+            None => self.hosts.push(FrameHost { host, encoder }),
+        }
+        self
+    }
+
+    /// Returns the delivery host with its encode host, if the frame has it.
+    pub fn get(&self, host: &HostId) -> Option<&FrameHost> {
+        self.hosts.iter().find(|existing| &existing.host == host)
+    }
+
+    /// Returns every delivery host with its encode host, in the order they were added.
+    pub fn iter(&self) -> impl Iterator<Item = &FrameHost> {
+        self.hosts.iter()
+    }
+
+    /// Returns `true` if the frame has no delivery host.
+    pub fn is_empty(&self) -> bool {
+        self.hosts.is_empty()
+    }
 }
 
 /// Where a physical edge starts.
@@ -469,6 +549,40 @@ pub enum FrameError {
         name: String,
     },
 
+    /// The boot plan binds an output to a delivery host the frame has no encode host for.
+    #[snafu(display(
+        "Output `{}` is bound to delivery host `{}`, which the frame has no encode host for; give the frame every \
+         delivery host its outputs deliver through.",
+        output,
+        host
+    ))]
+    UnknownHost {
+        /// The output.
+        output: OutputId,
+
+        /// The delivery host.
+        host: HostId,
+    },
+
+    /// An admission point's records would go straight to an encode host, with no region to write each batch's lease.
+    #[snafu(display(
+        "`{}` feeds `emit {}` directly, but the output is bound to delivery host `{}`, whose encode host needs each \
+         batch to name its lease, which only a region writes. Put a region between the host and the output.",
+        port,
+        output,
+        host
+    ))]
+    DirectToEncodeHost {
+        /// The admission point's port.
+        port: PortRef,
+
+        /// The output.
+        output: OutputId,
+
+        /// The delivery host.
+        host: HostId,
+    },
+
     /// An isolation slot has more than one admission point upstream of it.
     ///
     /// A state owner's watermark is the earliest latest admission time of the points upstream of it, and its clock
@@ -541,6 +655,7 @@ pub struct Frame {
     admission_points: Vec<AdmissionPointInfo>,
     slots: Vec<Slot>,
     outputs: Vec<OutputDecl>,
+    hosts: FrameHosts,
     edges: Vec<FrameEdge>,
     fusion: Vec<FusionDecision>,
     sites: BTreeMap<NodeId, Site>,
@@ -548,22 +663,47 @@ pub struct Frame {
 }
 
 impl Frame {
-    /// Computes the frame of a boot plan.
+    /// Computes the frame of a boot plan without delivery hosts: every output is a fixed destination.
+    ///
+    /// This is [`compute_with_hosts`][Self::compute_with_hosts] with no hosts; see there.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for any reason `compute_with_hosts` does, and so for a boot plan with a bound output.
+    pub fn compute(plan: &Plan, registry: &OperatorRegistry, namer: &SlotNamer<'_>) -> Result<Self, FrameError> {
+        Self::compute_with_hosts(plan, registry, namer, &FrameHosts::new())
+    }
+
+    /// Computes the frame of a boot plan, with the delivery hosts and encode hosts the host builds.
     ///
     /// The plan must be structurally sound: every operator known and configured, every edge resolved, and no cycle.
-    /// `namer` names each slot's region host component.
+    /// `namer` names each slot's region host component. A bound output delivers through the encode host of its
+    /// delivery host, which `hosts` must have; an output without a binding is a fixed destination.
     ///
     /// # Errors
     ///
     /// Returns an error if the plan has structural problems, if it has a node that keeps state without an isolation
     /// fence, one behind an isolation fence that keeps no keyed state, or one that reads a signal (no region runs one
     /// in this stage), if a state owner is fed by no admission point, by several, or by one over several paths, if the
-    /// namer refuses a slot or names two alike, if a slot's exits would share a name, or if the plan is too large to
-    /// number.
-    pub fn compute(plan: &Plan, registry: &OperatorRegistry, namer: &SlotNamer<'_>) -> Result<Self, FrameError> {
+    /// namer refuses a slot or names two alike, if a slot's exits would share a name, if an output is bound to a
+    /// delivery host `hosts` does not have, if an admission point would feed an encode host directly, or if the plan
+    /// is too large to number.
+    pub fn compute_with_hosts(
+        plan: &Plan, registry: &OperatorRegistry, namer: &SlotNamer<'_>, hosts: &FrameHosts,
+    ) -> Result<Self, FrameError> {
         let graph = resolve(plan, registry).map_err(|problems| FrameError::InvalidPlan { problems })?;
         let roles = super::roles(&graph);
         check_supported(&graph, &roles)?;
+        for output in &plan.outputs {
+            if let Some(binding) = &output.binding {
+                if hosts.get(&binding.host).is_none() {
+                    return Err(FrameError::UnknownHost {
+                        output: output.id.clone(),
+                        host: binding.host.clone(),
+                    });
+                }
+            }
+        }
 
         let layout = Layout::compute(plan, &graph, &roles);
         let mut slots = Vec::with_capacity(layout.slots.len());
@@ -596,7 +736,7 @@ impl Frame {
         let slot_of = |node: usize| layout.slot_of[node].map(|slot| SlotId(slot as u16));
         let slot_names = slots.iter().map(|slot| slot.name.clone()).collect::<Vec<_>>();
 
-        // Exits: the edges leaving each slot, in plan order, then every output downstream of it.
+        // Exits: the edges leaving each slot, in plan order, then every output downstream of it and every encode host.
         for slot in &mut slots {
             let members = &layout.slots[slot.id.get()];
             let mut targets = Vec::new();
@@ -608,7 +748,7 @@ impl Frame {
                     (Role::Fixed, _) => FrameTarget::Fixed(graph.id(to.0).clone()),
                     (_, Some(other)) if other != slot.id => FrameTarget::Slot(other),
                     _ => match graph.op(to.0).and_then(emit_output) {
-                        Some(output) => FrameTarget::Output(output.clone()),
+                        Some(output) => FrameTarget::of_emit(plan, output),
                         None => continue,
                     },
                 };
@@ -616,8 +756,9 @@ impl Frame {
                     targets.push(target);
                 }
             }
-            // A fused slot has an exit to every output downstream of it, so that later generations can emit to it; an
-            // isolation slot only those of its boot edges, since only its state owner runs in it.
+            // A fused slot has an exit to every output downstream of it, and, if it has any, to every encode host, so
+            // that later generations can emit to them, an output bound live included; an isolation slot only those of
+            // its boot edges, since only its state owner runs in it.
             let isolated = members.iter().any(|&node| roles[node] == Role::Isolated);
             let downstream = if isolated {
                 BTreeSet::new()
@@ -625,9 +766,17 @@ impl Frame {
                 downstream_outputs(&graph, members)
             };
             for output in &plan.outputs {
-                let target = FrameTarget::Output(output.id.clone());
+                let target = FrameTarget::of_output(output);
                 if downstream.contains(&output.id) && !targets.contains(&target) {
                     targets.push(target);
+                }
+            }
+            if !downstream.is_empty() {
+                for host in hosts.iter() {
+                    let target = FrameTarget::EncodeHost(host.host.clone());
+                    if !targets.contains(&target) {
+                        targets.push(target);
+                    }
                 }
             }
 
@@ -637,7 +786,11 @@ impl Frame {
                 let name = match &target {
                     FrameTarget::Fixed(node) => component_name(node),
                     FrameTarget::Slot(other) => slot_names[other.get()].to_string(),
-                    FrameTarget::Output(output) => output.to_string(),
+                    // Every bound output's host is a frame host, checked above.
+                    FrameTarget::EncodeHost(host) => hosts
+                        .get(host)
+                        .map_or_else(|| host.to_string(), |host| host.encoder.to_string()),
+                    FrameTarget::Destination(output) => output.to_string(),
                 };
                 if !exit_names.insert(name.clone()) {
                     return Err(FrameError::ExitNameCollision {
@@ -674,8 +827,21 @@ impl Frame {
                     Role::Terminal => graph
                         .op(to)
                         .and_then(emit_output)
-                        .map(|output| FrameTarget::Output(output.clone())),
+                        .map(|output| FrameTarget::of_emit(plan, output)),
                 });
+                if let Some(FrameTarget::EncodeHost(host)) = &route {
+                    // Only a region writes a batch's lease, so nothing would tell the encode host which output's.
+                    let (to, _) = graph.target(node, port).expect("a route has a target");
+                    return Err(FrameError::DirectToEncodeHost {
+                        port: PortRef::new(graph.id(node).clone(), output.name.clone()),
+                        output: graph
+                            .op(to)
+                            .and_then(emit_output)
+                            .cloned()
+                            .expect("a route to an encode host is an emit's"),
+                        host: host.clone(),
+                    });
+                }
                 point_of.insert((node, port), id);
                 points.push(id);
                 admission_points.push(AdmissionPointInfo {
@@ -843,11 +1009,22 @@ impl Frame {
             admission_points,
             slots,
             outputs: plan.outputs.clone(),
+            hosts: hosts.clone(),
             edges,
             fusion,
             sites,
             cost_budget: layout.budget,
         })
+    }
+
+    /// Returns the frame's delivery hosts, each with its encode host.
+    pub fn hosts(&self) -> &FrameHosts {
+        &self.hosts
+    }
+
+    /// Returns the delivery host with its encode host, if the frame has it.
+    pub fn encode_host(&self, host: &HostId) -> Option<&FrameHost> {
+        self.hosts.get(host)
     }
 
     /// Returns the budget of R1's cost model: the estimated cost per event, in nanoseconds, within which a region
@@ -922,7 +1099,8 @@ impl Frame {
         other.iter().chain(&state).map(|point| point.id).collect()
     }
 
-    /// Returns the boot plan's declared outputs, in plan order: the encoder streams of the topology.
+    /// Returns the boot plan's declared outputs, in plan order: its fixed destinations, which a candidate declares as
+    /// at boot, and the outputs bound to the frame's delivery hosts, whose leases later generations may change.
     pub fn outputs(&self) -> &[OutputDecl] {
         &self.outputs
     }
@@ -965,14 +1143,19 @@ impl Frame {
         }
     }
 
-    /// Returns the name of a physical edge's target: a fixed component's node, a slot's region host, or an output.
+    /// Returns the name of a physical edge's target: a fixed component's node, a slot's region host, an encode host,
+    /// or a fixed destination's output.
     pub fn describe_target(&self, target: &FrameTarget) -> String {
         match target {
             FrameTarget::Fixed(node) => node.to_string(),
             FrameTarget::Slot(slot) => self
                 .slot(*slot)
                 .map_or_else(|| format!("slot {}", slot), |slot| slot.name.to_string()),
-            FrameTarget::Output(output) => format!("output {}", output),
+            FrameTarget::EncodeHost(host) => self.encode_host(host).map_or_else(
+                || format!("the encode host of {}", host),
+                |found| format!("encode host {} of {}", found.encoder, host),
+            ),
+            FrameTarget::Destination(output) => format!("output {}", output),
         }
     }
 }

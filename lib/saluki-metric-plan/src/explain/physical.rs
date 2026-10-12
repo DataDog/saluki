@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use super::boundary_name;
 use crate::{
-    compile::{Frame, FrameSource, FrameTarget, FusionVerdict, Placement, Site, SlotId, SlotKind},
+    compile::{ExitIndex, Frame, FrameSource, FrameTarget, FusionVerdict, Placement, Site, SlotId, SlotKind},
     extension::DeliveryPolicy,
     ir::{NodeId, OperatorName, OutputId, Plan, PortName, PortRef, RecipientId},
     operators::names,
@@ -214,6 +214,17 @@ pub struct OutputBindingEntry {
     /// The output.
     pub output: OutputId,
 
+    /// The encode host its encoder stream runs in, as a lease, if it is bound to a delivery host: `<encode host> of
+    /// <delivery host>`. A fixed destination has none, nor has an output the explained plan no longer declares.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encode_host: Option<String>,
+
+    /// Whether the explained plan no longer declares the output, which the frame's boot plan does: it then runs no
+    /// lease, its recipients and delivery policy are those the boot plan declares, and only a fixed destination has
+    /// exits of its own, all idle.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub removed: bool,
+
     /// The physical recipients it delivers to.
     pub recipients: Vec<RecipientId>,
 
@@ -226,10 +237,12 @@ pub struct OutputBindingEntry {
     /// What it does with queued work when it closes.
     pub closure: String,
 
-    /// The physical edges that feed its encoder in the explained plan.
+    /// The physical edges that feed its encoder in the explained plan: for a bound output, the exits to its encode host
+    /// that carry its `emit`s.
     pub fed_by: Vec<String>,
 
-    /// The exits to it that the explained plan leaves idle.
+    /// The exits to it that the explained plan leaves idle: for a bound output, the exits to its encode host that carry
+    /// none of its `emit`s.
     pub idle: Vec<String>,
 }
 
@@ -396,17 +409,28 @@ impl PhysicalPlan {
 
         let segments = segments(plan, frame, placement);
 
-        let output_bindings = frame
-            .outputs()
+        // The explained plan's outputs, then those of the boot plan it no longer declares.
+        let declared = plan
+            .outputs
             .iter()
-            .map(|boot| {
-                let decl = plan.output(&boot.id).unwrap_or(boot);
-                let target = FrameTarget::Output(boot.id.clone());
+            .chain(frame.outputs().iter().filter(|boot| plan.output(&boot.id).is_none()));
+        let output_bindings = declared
+            .map(|decl| {
+                let target = FrameTarget::of_output(decl);
+                let removed = plan.output(&decl.id).is_none();
+                // The exits that carry the output's `emit`s, which, to an encode host, carry other outputs' too.
+                let emitting = emitting_exits(plan, frame, placement, &decl.id, &target);
                 let mut fed_by = Vec::new();
                 let mut idle = Vec::new();
-                for edge in frame.edges().iter().filter(|edge| edge.to == target) {
+                // An encode host's exits are the host's, shared by the outputs bound to it: an output the explained
+                // plan no longer declares has no lease there, and so no exit.
+                let own_exits = !(removed && matches!(target, FrameTarget::EncodeHost(_)));
+                for edge in frame.edges().iter().filter(|edge| own_exits && edge.to == target) {
                     let used = match edge.from {
-                        FrameSource::Exit { slot, exit } => !placement.is_idle(slot, exit),
+                        FrameSource::Exit { slot, exit } => match &target {
+                            FrameTarget::EncodeHost(_) => emitting.contains(&(slot, exit)),
+                            _ => !placement.is_idle(slot, exit),
+                        },
                         FrameSource::Admission(point) => frame
                             .admission_point(point)
                             .is_some_and(|point| present.contains(&point.node)),
@@ -419,7 +443,12 @@ impl PhysicalPlan {
                     }
                 }
                 OutputBindingEntry {
-                    output: boot.id.clone(),
+                    output: decl.id.clone(),
+                    encode_host: match &target {
+                        FrameTarget::EncodeHost(_) if !removed => Some(frame.describe_target(&target)),
+                        _ => None,
+                    },
+                    removed,
                     recipients: decl.recipients.clone(),
                     delivery: decl.delivery,
                     overflow: decl.delivery.overflow().as_str().to_string(),
@@ -439,6 +468,33 @@ impl PhysicalPlan {
             output_bindings,
         }
     }
+}
+
+/// Returns the exits, as `(slot, exit)`, by which the plan's edges into `emit`s to `output` leave their slots toward
+/// `target`, the output's encode host or fixed destination.
+fn emitting_exits(
+    plan: &Plan, frame: &Frame, placement: &Placement, output: &OutputId, target: &FrameTarget,
+) -> BTreeSet<(SlotId, ExitIndex)> {
+    let emits = plan
+        .nodes
+        .iter()
+        .filter(|node| {
+            node.op.as_str() == names::EMIT
+                && node.params.get("output").and_then(Value::as_str) == Some(output.as_str())
+        })
+        .map(|node| &node.id)
+        .collect::<BTreeSet<_>>();
+    plan.edges
+        .iter()
+        .filter(|edge| emits.contains(&edge.to.node))
+        .filter_map(|edge| match placement.site(&edge.from.node) {
+            Some(Site::Slot(slot)) => frame
+                .slot(slot)
+                .and_then(|found| found.exit_to(target))
+                .map(|exit| (slot, exit.index)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Returns the segment of every admission point of the frame whose fixed component the plan has, then the segment of

@@ -47,6 +47,14 @@
         }
       ]
     },
+    "resources": {
+      "description": "The resources the plan's outputs deliver through: each delivery host's settings, and every recipient.\n\nResources are plan parameters, so a change of any of them is a new plan, with a new hash. Only the host's own lowering declares them: an artifact cannot.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/Resources"
+        }
+      ]
+    },
     "scopes": {
       "description": "The replaceable regions of the plan, by name.",
       "type": "object",
@@ -82,8 +90,80 @@
       },
       "additionalProperties": false
     },
+    "BoundedDelivery": {
+      "description": "A recipient's delivery within bounds tighter than its host's native ones.\n\nA dual-ship destination added for an experiment should not take the primary's memory, should not fill the disk, and may not deserve the whole drain deadline of retries when it is removed: these knobs cover that.",
+      "type": "object",
+      "properties": {
+        "on_retire": {
+          "description": "What the recipient does with its queued work when it retires.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/Closure"
+            }
+          ]
+        },
+        "queue_bytes": {
+          "description": "The bound of the recipient's in-memory retry queue, in bytes, at most the native configured bound; `None` keeps the native bound.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "spill": {
+          "description": "Whether the recipient's queue spills to disk.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/Spill"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Closure": {
+      "description": "What an output or recipient does with queued work when it closes, at process shutdown or when it retires.\n\nSerialized as its name, such as `\"attempt\"`.",
+      "oneOf": [
+        {
+          "description": "Native shutdown: in-flight requests finish within the shutdown timeout, and queued work is persisted where configured, and otherwise dropped. A retiring generation's batches finish in the shared encoder streams, which do not close, so a live update loses nothing beyond what a native shutdown would.",
+          "type": "string",
+          "enum": [
+            "native"
+          ]
+        },
+        {
+          "description": "Queued work is attempted until the drain deadline, then closed as at native shutdown.",
+          "type": "string",
+          "enum": [
+            "attempt"
+          ]
+        },
+        {
+          "description": "Queued work is persisted where disk storage is configured, without further attempts, and otherwise dropped.",
+          "type": "string",
+          "enum": [
+            "persist"
+          ]
+        },
+        {
+          "description": "Queued work is dropped and counted.",
+          "type": "string",
+          "enum": [
+            "discard"
+          ]
+        }
+      ]
+    },
+    "CredentialRef": {
+      "description": "A credential reference.",
+      "type": "string",
+      "maxLength": 512,
+      "minLength": 1,
+      "pattern": "^[!-~]{1,512}$"
+    },
     "DeliveryPolicy": {
-      "description": "What an output or recipient does when it is full, and when it closes.\n\nOnly the native policy exists until the slot opens to artifacts.",
+      "description": "What an output or recipient does when it is full, and when it closes.\n\nThe slot is open to resources artifacts for the recipients they declare, mapping onto native mechanisms only: a [`Bounded`][Self::Bounded] policy can shrink a recipient's queue, forbid spilling it to disk, and choose what happens to its queued work when it retires. Nothing can raise a native bound. Outputs keep the native policy.\n\nSerialized as `\"native\"`, or as `{\"bounded\": {...}}` with the members of [`BoundedDelivery`].",
       "oneOf": [
         {
           "description": "The native behavior.\n\nAn output waits for its downstream to accept more. A recipient queues requests in a byte-bounded retry queue that evicts the oldest entries, or spills them to disk where configured, and sends fresh requests before retries. On close, in-flight requests finish within the shutdown timeout, and queued work is persisted where configured and otherwise dropped.",
@@ -91,6 +171,19 @@
           "enum": [
             "native"
           ]
+        },
+        {
+          "description": "Native mechanisms within tighter bounds, for a recipient a resources artifact declares.",
+          "type": "object",
+          "required": [
+            "bounded"
+          ],
+          "properties": {
+            "bounded": {
+              "$ref": "#/definitions/BoundedDelivery"
+            }
+          },
+          "additionalProperties": false
         }
       ]
     },
@@ -120,6 +213,39 @@
         }
       },
       "additionalProperties": false
+    },
+    "HostBinding": {
+      "description": "A delivery host's shared settings: its client profile (proxies, TLS, timeouts, HTTP protocol), and its retry and concurrency settings, as the host's schema declares them.",
+      "type": "object",
+      "required": [
+        "host"
+      ],
+      "properties": {
+        "host": {
+          "description": "The delivery host.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/HostId"
+            }
+          ]
+        },
+        "settings": {
+          "description": "The host's settings.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/Params"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "HostId": {
+      "description": "A delivery host ID.",
+      "type": "string",
+      "maxLength": 63,
+      "minLength": 1,
+      "pattern": "^[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}$"
     },
     "Kind": {
       "description": "The kind of a metric.\n\nEach kind corresponds to one variant of [`MetricValues`]. A rate's interval is part of its values, not of its kind: predicates and port types never distinguish rates by interval.",
@@ -250,6 +376,59 @@
       "minLength": 1,
       "pattern": "^[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}$"
     },
+    "OutputBinding": {
+      "description": "An output's resolved binding: where and how the records emitted to it are encoded and delivered.\n\nAn output with a binding runs as a **lease** in the encode host of its delivery host: one encoder stream with the binding's parameters. A binding change creates a new lease, and the old one drains once no generation uses it.",
+      "type": "object",
+      "required": [
+        "host",
+        "provenance",
+        "selector",
+        "telemetry"
+      ],
+      "properties": {
+        "encoder": {
+          "description": "The encoder's parameters, as the host's schema declares them: protocol variants, compression, payload limits, and flush timeout, for example.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/Params"
+            }
+          ]
+        },
+        "host": {
+          "description": "The delivery host the output delivers through.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/HostId"
+            }
+          ]
+        },
+        "provenance": {
+          "description": "Who declared the output: native configuration, or a resources artifact.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/ResourceProvenance"
+            }
+          ]
+        },
+        "selector": {
+          "description": "What the output's declaration says it delivers to, which its fingerprint covers.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/Selector"
+            }
+          ]
+        },
+        "telemetry": {
+          "description": "The component identifier the output's encoder telemetry reports under.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/NativeComponentId"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "OutputDecl": {
       "description": "A declared output: a destination that `emit` nodes deliver to, bound to one encoder stream and its recipients.",
       "type": "object",
@@ -267,6 +446,17 @@
             }
           ]
         },
+        "binding": {
+          "description": "The output's resolved binding to a delivery host, or `None` for a fixed destination, such as an internal tap, which runs in a component of its own.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/OutputBinding"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "delivery": {
           "description": "What the output does when it cannot keep up or when it closes. Defaults to the native policy.",
           "allOf": [
@@ -276,7 +466,7 @@
           ]
         },
         "fingerprint": {
-          "description": "A digest of the output's resolved binding: its encoder, recipient set, and forwarder.\n\nAn artifact records the fingerprint of every output it was written against, so that it is never silently applied to an output whose binding has changed.",
+          "description": "A digest of what the output's declaration says it delivers to.\n\nAn artifact records the fingerprint of every output it was written against, so that it is never silently applied to an output that now delivers elsewhere. A bound output's fingerprint is version 2 ([`resources::fingerprint`][crate::resources::fingerprint]): its delivery host, what it accepts, and its [selector](super::Selector), so that recipients added or removed under a role change nothing.",
           "allOf": [
             {
               "$ref": "#/definitions/PlanHash"
@@ -292,7 +482,7 @@
           ]
         },
         "recipients": {
-          "description": "The physical recipients the output delivers to. Outputs that share a recipient feed the same delivery queue.\n\nAn output without recipients, such as an internal tap, delivers to no endpoint.",
+          "description": "The physical recipients the output delivers to, sorted and without repeats. Outputs that share a recipient feed the same delivery queue.\n\nAn output without recipients, such as an internal tap, delivers to no endpoint. A bound output's recipients are those the plan's [resources](Plan::resources) declare on its delivery host.",
           "type": "array",
           "items": {
             "$ref": "#/definitions/RecipientId"
@@ -321,6 +511,25 @@
       "propertyNames": {
         "$ref": "#/definitions/ParamName"
       }
+    },
+    "PayloadClasses": {
+      "description": "Which payloads a recipient receives when a payload does not name its recipients itself.\n\nMetrics payloads from leases name their recipients, so classes decide where every other payload goes: logs, events, service checks, traces, and APM statistics, for example.",
+      "oneOf": [
+        {
+          "description": "Metrics only: a recipient that only metrics are routed to, such as one a resources artifact declares.",
+          "type": "string",
+          "enum": [
+            "metrics_only"
+          ]
+        },
+        {
+          "description": "Every class of payload, as an additional endpoint natively receives.",
+          "type": "string",
+          "enum": [
+            "all"
+          ]
+        }
+      ]
     },
     "PlanHash": {
       "description": "A SHA-256 digest: `sha256:` followed by 64 lowercase hexadecimal digits.",
@@ -415,12 +624,140 @@
         }
       ]
     },
+    "RecipientDecl": {
+      "description": "One recipient of a delivery host: one endpoint, with its credential, its queue, and its persisted directory.\n\nRecipients are shared by every output whose binding names them: outputs that share a recipient feed the same delivery queue.",
+      "type": "object",
+      "required": [
+        "classes",
+        "credential",
+        "endpoint",
+        "host",
+        "id",
+        "provenance"
+      ],
+      "properties": {
+        "classes": {
+          "description": "Which payloads the recipient receives when a payload does not name its recipients.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PayloadClasses"
+            }
+          ]
+        },
+        "credential": {
+          "description": "A reference to the credential the recipient sends with: never the credential's value.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/CredentialRef"
+            }
+          ]
+        },
+        "delivery": {
+          "description": "The recipient's delivery policy: its only knobs beyond its host's settings. Defaults to the native policy.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/DeliveryPolicy"
+            }
+          ]
+        },
+        "endpoint": {
+          "description": "The endpoint, as configured for a native recipient, or in canonical form for a declared one.",
+          "type": "string"
+        },
+        "host": {
+          "description": "The delivery host it belongs to.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/HostId"
+            }
+          ]
+        },
+        "id": {
+          "description": "The recipient's identity.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/RecipientId"
+            }
+          ]
+        },
+        "protocol": {
+          "description": "The recipient's protocol, as the host's schema declares it: which protocol variants it accepts, and how its requests are formed, for example.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/Params"
+            }
+          ]
+        },
+        "provenance": {
+          "description": "Who declared the recipient: native configuration, or a resources artifact.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/ResourceProvenance"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "RecipientId": {
       "description": "A recipient ID.",
       "type": "string",
       "maxLength": 512,
       "minLength": 1,
       "pattern": "^[!-~]{1,512}$"
+    },
+    "ResourceProvenance": {
+      "description": "Who declared a resource, which is also the authority that can remove it.\n\nSerialized as `\"native\"`, or as `{\"declared\": {\"revision\": <n>, \"hash\": \"<hash>\"}}`.",
+      "oneOf": [
+        {
+          "description": "Native configuration.",
+          "type": "string",
+          "enum": [
+            "native"
+          ]
+        },
+        {
+          "description": "A resources artifact, by its revision and hash.",
+          "type": "object",
+          "required": [
+            "declared"
+          ],
+          "properties": {
+            "declared": {
+              "$ref": "#/definitions/ArtifactRevision"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Resources": {
+      "description": "The resources of a plan: the settings of each delivery host, and every recipient the plan names.\n\nSerialized as the plan member `resources`, left out when empty.",
+      "type": "object",
+      "properties": {
+        "hosts": {
+          "description": "The shared settings of each delivery host, at most one per host.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/HostBinding"
+          }
+        },
+        "recipients": {
+          "description": "Every recipient the plan's outputs, and the native recipient sets of its delivery hosts, name, at most one per recipient ID.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RecipientDecl"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "RoleName": {
+      "description": "A role name.",
+      "type": "string",
+      "maxLength": 63,
+      "minLength": 1,
+      "pattern": "^[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}$"
     },
     "ScopeDecl": {
       "description": "A replaceable region of a plan.\n\nA scope is the region between its inputs and its exits: every node reachable from the ports its inputs name, without entering one of the ports its exits name. A policy artifact replaces that region. A scope without exits, such as `post_enrich`, extends to the `emit` and `drop` nodes that end its paths.\n\nValidation checks that a scope is closed, so that replacing it changes nothing outside it: nothing outside the region feeds a node inside it except through the scope's inputs, each exit is fed from inside the region and leads out of it, and no two scopes share a node.",
@@ -445,6 +782,72 @@
         }
       },
       "additionalProperties": false
+    },
+    "Selector": {
+      "description": "What an output's declaration says it delivers to.\n\nAn output's fingerprint covers its selector, not its resolved recipients: a role delivers to whatever native configuration resolves for it, so its recipients can change without changing its fingerprint, while an explicit recipient list is part of the declaration.\n\nSerialized as an object with one member: `{\"role\": \"main\"}`, `{\"group\": \"sha256:<hex>\"}`, or `{\"declared\": [<recipient ID>, ...]}`.",
+      "oneOf": [
+        {
+          "description": "A role of the delivery host, such as `main`, `multi_region_failover`, or `autoscaling_failover`.",
+          "type": "object",
+          "required": [
+            "role"
+          ],
+          "properties": {
+            "role": {
+              "$ref": "#/definitions/RoleName"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "A routing group, by its key.",
+          "type": "object",
+          "required": [
+            "group"
+          ],
+          "properties": {
+            "group": {
+              "$ref": "#/definitions/PlanHash"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "The recipients a resources artifact declared for the output, sorted and without duplicates.",
+          "type": "object",
+          "required": [
+            "declared"
+          ],
+          "properties": {
+            "declared": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/RecipientId"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Spill": {
+      "description": "Whether a recipient's queue spills to disk.",
+      "oneOf": [
+        {
+          "description": "As configured for the host: to disk where disk storage is configured.",
+          "type": "string",
+          "enum": [
+            "native"
+          ]
+        },
+        {
+          "description": "Never: queued work beyond the in-memory bound is dropped and counted.",
+          "type": "string",
+          "enum": [
+            "never"
+          ]
+        }
+      ]
     },
     "TimestampForm": {
       "description": "Which points on a port carry a timestamp.",

@@ -10,13 +10,17 @@ use saluki_error::{generic_error, GenericError};
 use saluki_io::net::client::http::HttpClient;
 use tokio::{
     select,
-    sync::mpsc,
+    sync::{mpsc, watch},
     time::{self, MissedTickBehavior},
 };
 use tracing::{debug, warn};
 use url::Url;
 
-use super::{api_key::ApiKeyChanges, endpoints::RoutableEndpoint};
+use super::{
+    api_key::ApiKeyChanges,
+    delivery::{RecipientOrigin, RecipientProtocol, RecipientSpec},
+    endpoints::ResolvedEndpoint,
+};
 
 const VALIDATE_PATH: &str = "/api/v1/validate";
 // TODO: Move the shared Datadog fake API key constant to `datadog-agent-commons`.
@@ -34,9 +38,102 @@ pub(crate) enum ValidationReadiness {
     NotReady,
 }
 
-/// API key validation for the startup endpoint set.
+/// The endpoints whose API keys validation checks: a forwarder's startup endpoint set, or the native Datadog intake
+/// recipients of a delivery host's table, which follow the table ([`RecipientValidationTargets`]).
+pub(crate) struct ValidationTargets {
+    endpoints: watch::Receiver<Vec<ResolvedEndpoint>>,
+
+    /// Whether a set without endpoints is reported with the native warning too: a forwarder's is, while a delivery
+    /// host without native intake recipients, such as an idle failover host, is ready without one.
+    warn_when_empty: bool,
+}
+
+impl ValidationTargets {
+    /// Returns a forwarder's startup endpoint set, which does not change.
+    ///
+    /// A set with no usable key is reported ready, with a warning.
+    pub(crate) fn startup(endpoints: Vec<ResolvedEndpoint>) -> Self {
+        // Nothing changes the set, so the sender goes at once, and the receiver keeps the set.
+        let (_, endpoints) = watch::channel(endpoints);
+
+        Self {
+            endpoints,
+            warn_when_empty: true,
+        }
+    }
+
+    /// Returns the endpoints to validate now, which [`changed`][Self::changed] then waits for a change of: a set
+    /// published before validation started is validated once.
+    fn endpoints(&mut self) -> Vec<ResolvedEndpoint> {
+        self.endpoints.borrow_and_update().clone()
+    }
+
+    /// Returns whether validating `endpoints` warns when none of them has a usable key: always for a forwarder's set,
+    /// and for a delivery host's once it holds a native intake recipient, whose key may be blank, as a forwarder's
+    /// primary key may.
+    fn warns_without_usable_keys(&self, endpoints: &[ResolvedEndpoint]) -> bool {
+        self.warn_when_empty || !endpoints.is_empty()
+    }
+
+    /// Waits until the endpoints to validate change, or forever when they cannot.
+    async fn changed(&mut self) {
+        if self.endpoints.changed().await.is_err() {
+            future::pending().await
+        }
+    }
+}
+
+/// Publishes a delivery host's validation targets: the native Datadog intake recipients of its table, as it stands.
+///
+/// A table with no such recipient, as an idle failover host's, is ready, and nothing is logged. A table whose such
+/// recipients have no usable key, such as a primary endpoint whose key is blank, is ready with a forwarder's warning.
+pub(crate) struct RecipientValidationTargets {
+    targets: watch::Sender<Vec<ResolvedEndpoint>>,
+}
+
+impl RecipientValidationTargets {
+    /// Creates a publisher with no targets, and the validation targets it feeds.
+    pub(crate) fn new() -> (Self, ValidationTargets) {
+        let (targets, endpoints) = watch::channel(Vec::new());
+        let validation_targets = ValidationTargets {
+            endpoints,
+            warn_when_empty: false,
+        };
+
+        (Self { targets }, validation_targets)
+    }
+
+    /// Returns whether validation checks a recipient's credential: only a native recipient of the Datadog intake's.
+    ///
+    /// A declared recipient's endpoint would otherwise receive its credential in a validation request, and its
+    /// credential never affects readiness; the Cluster Agent has nothing to validate a key against.
+    pub(crate) fn includes(spec: &RecipientSpec) -> bool {
+        matches!(spec.origin, RecipientOrigin::Native(_))
+            && matches!(spec.protocol, RecipientProtocol::DatadogIntake { .. })
+    }
+
+    /// Publishes the recipients of the host's table, each with its endpoint and credential cell, of which only those
+    /// [`includes`][Self::includes] says are validated.
+    ///
+    /// Validation runs again when the targets, or their keys, differ from those published before.
+    pub(crate) fn publish<'a>(&self, recipients: impl IntoIterator<Item = (&'a RecipientSpec, &'a ResolvedEndpoint)>) {
+        let targets = recipients
+            .into_iter()
+            .filter(|(spec, _)| Self::includes(spec))
+            .map(|(_, endpoint)| endpoint.clone())
+            .collect::<Vec<_>>();
+        self.targets.send_if_modified(|current| {
+            let identify = |endpoint: &ResolvedEndpoint| (endpoint.endpoint().clone(), endpoint.api_key());
+            let changed = !current.iter().map(identify).eq(targets.iter().map(identify));
+            *current = targets;
+            changed
+        });
+    }
+}
+
+/// API key validation for a forwarder's endpoints, or a delivery host's recipients.
 pub(crate) struct ApiKeyValidator {
-    endpoints: Vec<RoutableEndpoint>,
+    targets: ValidationTargets,
     client: HttpClient,
     api_key_changes: Option<ApiKeyChanges>,
     interval: Duration,
@@ -44,19 +141,20 @@ pub(crate) struct ApiKeyValidator {
 }
 
 impl ApiKeyValidator {
-    /// Creates API key validation for the given startup endpoint set.
+    /// Creates API key validation for the given targets.
     ///
-    /// Validation re-runs whenever `api_key_changes` reports a new key, and on `interval` regardless. A forwarder whose
-    /// keys configuration cannot change supplies no handle and is validated on the interval alone.
+    /// Validation re-runs whenever the targets change, whenever `api_key_changes` reports a new key, and on `interval`
+    /// regardless. A forwarder whose keys configuration cannot change supplies no handle and is validated on the
+    /// interval alone.
     ///
     /// `emitter` is used to surface a diagnostic event whenever validation determines that every configured API key is
     /// invalid.
     pub(crate) fn new(
-        endpoints: Vec<RoutableEndpoint>, client: HttpClient, api_key_changes: Option<ApiKeyChanges>,
-        interval: Duration, emitter: DiagnosticsEmitter,
+        targets: ValidationTargets, client: HttpClient, api_key_changes: Option<ApiKeyChanges>, interval: Duration,
+        emitter: DiagnosticsEmitter,
     ) -> Self {
         Self {
-            endpoints,
+            targets,
             client,
             api_key_changes,
             interval,
@@ -72,7 +170,7 @@ impl ApiKeyValidator {
     pub(crate) fn spawn(self) -> ApiKeyValidationHandle {
         let (readiness_tx, readiness_rx) = mpsc::channel(1);
         spawn_validation_task(
-            self.endpoints,
+            self.targets,
             self.client,
             self.api_key_changes,
             self.interval,
@@ -134,22 +232,22 @@ enum KeyValidationResult {
 }
 
 fn spawn_validation_task(
-    endpoints: Vec<RoutableEndpoint>, client: HttpClient, api_key_changes: Option<ApiKeyChanges>, interval: Duration,
+    targets: ValidationTargets, client: HttpClient, api_key_changes: Option<ApiKeyChanges>, interval: Duration,
     readiness_tx: mpsc::Sender<ValidationReadiness>, emitter: DiagnosticsEmitter,
 ) {
     runtime::worker(
         "api_key_validation",
-        run_validation_loop(endpoints, client, api_key_changes, interval, readiness_tx, emitter),
+        run_validation_loop(targets, client, api_key_changes, interval, readiness_tx, emitter),
     )
     .with_shutdown_strategy(ShutdownStrategy::Brutal)
     .spawn();
 }
 
 async fn run_validation_loop(
-    endpoints: Vec<RoutableEndpoint>, mut client: HttpClient, mut api_key_changes: Option<ApiKeyChanges>,
+    mut targets: ValidationTargets, mut client: HttpClient, mut api_key_changes: Option<ApiKeyChanges>,
     interval: Duration, readiness_tx: mpsc::Sender<ValidationReadiness>, emitter: DiagnosticsEmitter,
 ) {
-    if !validate_and_send_readiness(&endpoints, &mut client, &readiness_tx, &emitter).await {
+    if !validate_and_send_readiness(&mut targets, &mut client, &readiness_tx, &emitter).await {
         return;
     }
 
@@ -160,16 +258,12 @@ async fn run_validation_loop(
 
     loop {
         select! {
-            _ = interval.tick() => {
-                if !validate_and_send_readiness(&endpoints, &mut client, &readiness_tx, &emitter).await {
-                    return;
-                }
-            },
-            _ = wait_for_api_key_change(&mut api_key_changes) => {
-                if !validate_and_send_readiness(&endpoints, &mut client, &readiness_tx, &emitter).await {
-                    return;
-                }
-            },
+            _ = interval.tick() => {},
+            _ = wait_for_api_key_change(&mut api_key_changes) => {},
+            _ = targets.changed() => {},
+        }
+        if !validate_and_send_readiness(&mut targets, &mut client, &readiness_tx, &emitter).await {
+            return;
         }
     }
 }
@@ -183,11 +277,13 @@ async fn wait_for_api_key_change(api_key_changes: &mut Option<ApiKeyChanges>) {
 }
 
 async fn validate_and_send_readiness(
-    endpoints: &[RoutableEndpoint], client: &mut HttpClient, readiness_tx: &mpsc::Sender<ValidationReadiness>,
+    targets: &mut ValidationTargets, client: &mut HttpClient, readiness_tx: &mpsc::Sender<ValidationReadiness>,
     emitter: &DiagnosticsEmitter,
 ) -> bool {
-    let targets = collect_validation_targets(endpoints);
-    let readiness = validate_targets(client, &targets).await;
+    let endpoints = targets.endpoints();
+    let warn_when_empty = targets.warns_without_usable_keys(&endpoints);
+    let targets = collect_validation_targets(&endpoints);
+    let readiness = validate_targets(client, &targets, warn_when_empty).await;
 
     if readiness == ValidationReadiness::NotReady {
         emitter.emit(DiagnosticEvent::new(
@@ -204,9 +300,13 @@ async fn validate_and_send_readiness(
     true
 }
 
-async fn validate_targets(client: &mut HttpClient, targets: &[ValidationTarget]) -> ValidationReadiness {
+async fn validate_targets(
+    client: &mut HttpClient, targets: &[ValidationTarget], warn_when_empty: bool,
+) -> ValidationReadiness {
     if targets.is_empty() {
-        warn!("No Datadog API keys are available for validation; marking forwarder ready.");
+        if warn_when_empty {
+            warn!("No Datadog API keys are available for validation; marking forwarder ready.");
+        }
         return ValidationReadiness::Ready;
     }
 
@@ -227,14 +327,13 @@ async fn validate_targets(client: &mut HttpClient, targets: &[ValidationTarget])
     }
 }
 
-fn collect_validation_targets(endpoints: &[RoutableEndpoint]) -> Vec<ValidationTarget> {
+fn collect_validation_targets(endpoints: &[ResolvedEndpoint]) -> Vec<ValidationTarget> {
     let mut seen = HashSet::new();
     let mut targets = Vec::new();
 
-    for routable in endpoints {
+    for endpoint in endpoints {
         // `api_key()` returns the key the request path is using, so validation follows a rotation
         // without rebuilding the endpoint set.
-        let endpoint = routable.endpoint();
         let api_key = endpoint.api_key().to_string();
         if api_key.is_empty() {
             continue;
@@ -361,7 +460,8 @@ mod tests {
     use crate::common::datadog::{
         api_key::ApiKeyRefresher,
         config::ForwarderConfiguration,
-        endpoints::ResolvedEndpoint,
+        delivery::{IntakeAuthorities, PayloadClasses, RecipientPolicy, V3Acceptance},
+        endpoints::{MetricsRecipient, MetricsRecipientRoute, RoutableEndpoint},
         test_util::{shared_configuration, LiveConfiguration},
     };
 
@@ -371,6 +471,151 @@ mod tests {
         shared.endpoints.api_key = "primary-key".to_string();
         shared.endpoints.dd_url = ConfigValue::explicit(dd_url.to_string());
         shared
+    }
+
+    /// Returns the resolved endpoints of a forwarder's startup endpoint set.
+    fn resolved(endpoints: &[RoutableEndpoint]) -> Vec<ResolvedEndpoint> {
+        endpoints.iter().map(|routable| routable.endpoint().clone()).collect()
+    }
+
+    /// Returns a forwarder's startup endpoint set as validation targets.
+    fn startup_targets(endpoints: &[RoutableEndpoint]) -> ValidationTargets {
+        ValidationTargets::startup(resolved(endpoints))
+    }
+
+    /// Returns the specification of a recipient of the given origin and protocol.
+    fn recipient_spec(origin: RecipientOrigin, protocol: RecipientProtocol) -> RecipientSpec {
+        RecipientSpec {
+            id: "dd_out/recipient".into(),
+            endpoint: "http://127.0.0.1:1".to_string(),
+            credential: "credentials/recipient".into(),
+            classes: PayloadClasses::All,
+            protocol,
+            policy: RecipientPolicy::default(),
+            origin,
+        }
+    }
+
+    fn native_origin() -> RecipientOrigin {
+        RecipientOrigin::Native(MetricsRecipient {
+            route: MetricsRecipientRoute::Primary,
+            configured_endpoint: "http://127.0.0.1:1".to_string(),
+            api_key_index: None,
+            classes: PayloadClasses::All,
+            protocol: datadog_intake(),
+        })
+    }
+
+    fn datadog_intake() -> RecipientProtocol {
+        RecipientProtocol::DatadogIntake {
+            authorities: IntakeAuthorities::default(),
+            allow_arbitrary_tags: false,
+            v3: V3Acceptance::default(),
+        }
+    }
+
+    #[test]
+    fn only_native_datadog_intake_recipients_are_validated() {
+        let declared = RecipientOrigin::Declared {
+            name: "team_d".into(),
+            credential: "team_d".into(),
+        };
+        let cases = [
+            (native_origin(), datadog_intake(), true),
+            (declared.clone(), datadog_intake(), false),
+            (native_origin(), RecipientProtocol::ClusterAgent, false),
+            (declared, RecipientProtocol::ClusterAgent, false),
+        ];
+
+        let (publisher, mut targets) = RecipientValidationTargets::new();
+        for (origin, protocol, validated) in cases {
+            let spec = recipient_spec(origin, protocol);
+            assert_eq!(RecipientValidationTargets::includes(&spec), validated, "{spec:?}");
+
+            let endpoint = ResolvedEndpoint::from_raw_endpoint("http://127.0.0.1:1", "key").expect("endpoint resolves");
+            publisher.publish([(&spec, &endpoint)]);
+            assert_eq!(targets.endpoints().len(), usize::from(validated), "{spec:?}");
+        }
+    }
+
+    #[test]
+    fn a_host_warns_that_no_key_is_usable_only_once_it_holds_a_native_intake_recipient() {
+        // An idle host has nothing to validate, and nothing to warn about.
+        let (publisher, mut targets) = RecipientValidationTargets::new();
+        let endpoints = targets.endpoints();
+        assert!(!targets.warns_without_usable_keys(&endpoints));
+
+        // A primary endpoint whose key is blank, as when the key is not streamed yet: nothing can be validated, and the
+        // host warns as a forwarder with a blank primary key does.
+        let spec = recipient_spec(native_origin(), datadog_intake());
+        let blank = ResolvedEndpoint::from_raw_endpoint("http://127.0.0.1:1", " ").expect("endpoint resolves");
+        publisher.publish([(&spec, &blank)]);
+        let endpoints = targets.endpoints();
+        assert!(collect_validation_targets(&endpoints).is_empty());
+        assert!(targets.warns_without_usable_keys(&endpoints));
+
+        // A forwarder's startup set warns whenever no key is usable.
+        assert!(ValidationTargets::startup(Vec::new()).warns_without_usable_keys(&[]));
+    }
+
+    #[tokio::test]
+    async fn validation_follows_a_host_table_and_a_host_without_native_recipients_is_ready_without_requests() {
+        let _ = initialize_default_crypto_provider();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let url = start_counting_validation_server(StatusCode::FORBIDDEN, Arc::clone(&requests)).await;
+        let emitter = DiagnosticsEmitter::from_dataspace(
+            saluki_core::support::SubsystemIdentifier::from_segments(["test-forwarder"]),
+            saluki_core::runtime::state::DataspaceRegistry::new(),
+        );
+        let (publisher, targets) = RecipientValidationTargets::new();
+        let (readiness_tx, mut readiness_rx) = mpsc::channel(1);
+        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+        supervisor
+            .scope(async move {
+                // An interval no test can wait out, so only a change of the table can drive the next validation.
+                spawn_validation_task(
+                    targets,
+                    test_client(Duration::from_secs(1)),
+                    None,
+                    Duration::from_secs(3600),
+                    readiness_tx,
+                    emitter,
+                );
+            })
+            .await;
+
+        // An idle host is ready, without validating anything.
+        assert_eq!(await_readiness(&mut readiness_rx).await, ValidationReadiness::Ready);
+        assert_eq!(requests.load(Ordering::SeqCst), 0);
+
+        // A native recipient whose key the intake rejects makes the host not ready, as a restart with it would.
+        let native = recipient_spec(native_origin(), datadog_intake());
+        let endpoint = ResolvedEndpoint::from_raw_endpoint(&url, "rejected-key").expect("endpoint resolves");
+        publisher.publish([(&native, &endpoint)]);
+        assert_eq!(await_readiness(&mut readiness_rx).await, ValidationReadiness::NotReady);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+
+        // Publishing the same table again validates nothing more.
+        publisher.publish([(&native, &endpoint)]);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), readiness_rx.recv())
+                .await
+                .is_err(),
+            "an unchanged table is not validated again"
+        );
+
+        // A declared recipient with the same rejected key never affects readiness, and its endpoint never receives
+        // its credential.
+        let declared = recipient_spec(
+            RecipientOrigin::Declared {
+                name: "team_d".into(),
+                credential: "team_d".into(),
+            },
+            datadog_intake(),
+        );
+        publisher.publish([(&declared, &endpoint)]);
+        assert_eq!(await_readiness(&mut readiness_rx).await, ValidationReadiness::Ready);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
     }
 
     fn validation_url_for(raw_endpoint: &str) -> String {
@@ -440,7 +685,7 @@ mod tests {
 
                 // An interval no test can wait out, so only a key change can drive the second validation.
                 spawn_validation_task(
-                    endpoints,
+                    startup_targets(&endpoints),
                     test_client(Duration::from_secs(1)),
                     Some(api_key_changes),
                     Duration::from_secs(3600),
@@ -524,7 +769,7 @@ mod tests {
             .build_routable_endpoints()
             .expect("endpoints should resolve");
 
-        let targets = collect_validation_targets(&endpoints);
+        let targets = collect_validation_targets(&resolved(&endpoints));
         let mut target_pairs = targets
             .into_iter()
             .map(|target| (target.endpoint.to_string(), target.api_key))
@@ -578,7 +823,7 @@ mod tests {
 
         let targets = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
-                let targets = collect_validation_targets(&endpoints);
+                let targets = collect_validation_targets(&resolved(&endpoints));
                 if targets.iter().any(|target| target.api_key == "new-additional-key") {
                     return targets;
                 }
@@ -603,11 +848,11 @@ mod tests {
         let mut client = test_client(Duration::from_secs(1));
 
         assert_eq!(
-            validate_targets(&mut client, &[target_for(&invalid_url)]).await,
+            validate_targets(&mut client, &[target_for(&invalid_url)], true).await,
             ValidationReadiness::NotReady
         );
         assert_eq!(
-            validate_targets(&mut client, &[target_for(&error_url)]).await,
+            validate_targets(&mut client, &[target_for(&error_url)], true).await,
             ValidationReadiness::Ready
         );
     }
@@ -620,7 +865,7 @@ mod tests {
         let mut client = test_client(Duration::from_secs(1));
 
         assert_eq!(
-            validate_targets(&mut client, &[target_for(&valid_url), target_for(&later_url)]).await,
+            validate_targets(&mut client, &[target_for(&valid_url), target_for(&later_url)], true).await,
             ValidationReadiness::Ready
         );
         assert_eq!(later_requests.load(Ordering::SeqCst), 0);
@@ -649,7 +894,9 @@ mod tests {
         let mut client = test_client(Duration::from_secs(1));
         let (readiness_tx, mut readiness_rx) = mpsc::channel(1);
 
-        assert!(validate_and_send_readiness(&endpoints, &mut client, &readiness_tx, &emitter).await);
+        assert!(
+            validate_and_send_readiness(&mut startup_targets(&endpoints), &mut client, &readiness_tx, &emitter).await
+        );
         assert_eq!(readiness_rx.recv().await, Some(ValidationReadiness::NotReady));
 
         // The rejected key must have produced an `InvalidApiKey` diagnostic event.
@@ -683,7 +930,9 @@ mod tests {
         let mut client = test_client(Duration::from_secs(1));
         let (readiness_tx, mut readiness_rx) = mpsc::channel(1);
 
-        assert!(validate_and_send_readiness(&endpoints, &mut client, &readiness_tx, &emitter).await);
+        assert!(
+            validate_and_send_readiness(&mut startup_targets(&endpoints), &mut client, &readiness_tx, &emitter).await
+        );
         assert_eq!(readiness_rx.recv().await, Some(ValidationReadiness::Ready));
 
         // A valid key must not produce any diagnostic event.
@@ -701,7 +950,10 @@ mod tests {
         // so that a deployment without validatable keys does not wedge forwarder startup.
         let mut client = test_client(Duration::from_secs(1));
 
-        assert_eq!(validate_targets(&mut client, &[]).await, ValidationReadiness::Ready);
+        assert_eq!(
+            validate_targets(&mut client, &[], true).await,
+            ValidationReadiness::Ready
+        );
     }
 
     /// Returns the next readiness update, failing if none arrives.

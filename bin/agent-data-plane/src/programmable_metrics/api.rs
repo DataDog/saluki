@@ -2,7 +2,8 @@
 //!
 //! | Route | Body |
 //! |---|---|
-//! | `GET /programmable-metrics/status` | the status summary plus `config_states`, as the stub protocol writes them |
+//! | `GET /programmable-metrics/status` | the status summary and `config_states`, as the stub protocol writes them |
+//! | `GET /programmable-metrics/resources` | the resources product's state, hosts, outputs, recipients, and budget |
 //! | `GET /programmable-metrics/export?scope=post_enrich` | the export bundle of the scope |
 //! | `GET /programmable-metrics/plan` | the active composed logical plan, resolved values included |
 //! | `GET /programmable-metrics/default-program` | the default program last lowered, resolved values included |
@@ -11,6 +12,11 @@
 //! The contract is specified in `docs/design/programmable-metrics-stub-protocol.md`, section 3; the demo server reads
 //! it. Every body is read from the installer's published [`PlanStatus`], never from the installer itself, so a request
 //! never waits on an installation.
+//!
+//! The status route's body also lists, as `recipients`, the delivery hosts' recipient incarnations: those retired
+//! lately, each with its drain report as `last_drain` (see [`StatusDocument`]). A poll's status does not carry them.
+//! The resources route says what the default program delivers through: the outputs and recipients the configuration
+//! and the accepted resources artifact declare, credentials by reference only.
 //!
 //! A request the routes cannot answer gets a plain-text error: `400 Bad Request` for a missing or unknown query
 //! parameter value, `404 Not Found` for a scope the default program does not declare, `500 Internal Server Error` for a
@@ -33,12 +39,15 @@ use saluki_error::generic_error;
 use saluki_metric_plan::ir::ScopeName;
 use serde::{Deserialize, Serialize};
 
-use super::installer::PlanStatus;
+use super::installer::{status::StatusDocument, PlanStatus};
 
 /// The control surface's routes.
 pub mod routes {
-    /// The status summary and every config's acknowledgment.
+    /// The status summary, every config's acknowledgment, and the recipient incarnations.
     pub const STATUS: &str = "/programmable-metrics/status";
+
+    /// What the default program delivers through: hosts, outputs, recipients, and the resource budget.
+    pub const RESOURCES: &str = "/programmable-metrics/resources";
 
     /// The export bundle of a scope, named by the `scope` query parameter.
     pub const EXPORT: &str = "/programmable-metrics/export";
@@ -87,7 +96,11 @@ impl ControlSurfaceAPIHandler {
     }
 
     async fn status_handler(State(state): State<ControlSurfaceState>) -> Response {
-        json(&state.status.load().apply_states)
+        json(&StatusDocument::of(&state.status.load()))
+    }
+
+    async fn resources_handler(State(state): State<ControlSurfaceState>) -> Response {
+        json(&state.status.load().resources)
     }
 
     async fn export_handler(State(state): State<ControlSurfaceState>, Query(query): Query<ExportQuery>) -> Response {
@@ -207,6 +220,7 @@ impl APIHandler for ControlSurfaceAPIHandler {
     fn generate_routes(&self) -> Router<Self::State> {
         Router::new()
             .route(routes::STATUS, get(Self::status_handler))
+            .route(routes::RESOURCES, get(Self::resources_handler))
             .route(routes::EXPORT, get(Self::export_handler))
             .route(routes::PLAN, get(Self::plan_handler))
             .route(routes::DEFAULT_PROGRAM, get(Self::default_program_handler))

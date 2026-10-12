@@ -78,6 +78,7 @@ impl FakeAdp {
                 degraded: None,
                 live_generations: Some(1),
                 scopes: Default::default(),
+                resources: None,
             }),
         }
     }
@@ -110,6 +111,7 @@ impl FakeAdp {
             generation,
             cut_at: None,
             error: error.map(str::to_string),
+            dropped_outputs: Vec::new(),
         };
         // The transport hash covers the payload's exact bytes.
         if transport_hash(&config.payload) != config.sha256 {
@@ -189,7 +191,7 @@ async fn an_empty_store_serves_an_empty_policy_snapshot() {
     assert_eq!(response, json!({"protocol_version": 1, "products": {"policy": []}}));
     assert!(adp.active.is_none());
 
-    let view = channel.view(10, None);
+    let view = channel.view(10, None, None);
     assert_eq!(view.polls_total, 1);
     assert!(view.current.is_none());
     assert_eq!(view.next_revision, 1);
@@ -237,7 +239,7 @@ async fn a_published_artifact_reaches_adp_with_verifiable_hashes_and_repeats_byt
     assert_eq!(adp.generation, 2);
     assert_eq!(adp.config_states[0].state, "active");
 
-    let view = channel.view(10, None);
+    let view = channel.view(10, None, None);
     let current = view.current.unwrap();
     assert_eq!(current.revision, 1);
     assert_eq!(current.sha256, config.sha256);
@@ -260,7 +262,7 @@ async fn revoking_empties_the_snapshot_and_adp_returns_to_the_default_program() 
     assert!(adp.active.is_none());
 
     // Revoking does not consume a revision; the next publish continues the sequence.
-    let view = channel.view(10, None);
+    let view = channel.view(10, None, None);
     assert!(view.current.is_none());
     assert_eq!(view.revision_counter, 1);
     let history = view
@@ -284,7 +286,7 @@ async fn revoking_empties_the_snapshot_and_adp_returns_to_the_default_program() 
     assert!(channel.revoke(None, 4_000).unwrap());
     assert!(!channel.revoke(None, 5_000).unwrap());
     let actions = channel
-        .view(10, None)
+        .view(10, None, None)
         .history
         .iter()
         .map(|entry| entry.action)
@@ -309,7 +311,7 @@ async fn the_next_revision_is_above_both_the_local_counter_and_adps_high_water_m
     let mut adp = FakeAdp::new("adp-1");
     adp.revision_high_water = 41;
     poll(&channel, &mut adp).await;
-    assert_eq!(channel.view(10, None).next_revision, 42);
+    assert_eq!(channel.view(10, None, None).next_revision, 42);
     assert_eq!(channel.publish(artifact(), None, None, 1_000).unwrap().revision, 42);
     poll(&channel, &mut adp).await;
     assert_eq!(adp.config_states[0].state, "active");
@@ -345,8 +347,8 @@ async fn the_store_serves_the_same_snapshot_after_the_demo_restarts() {
     let second = poll(&reopened, &mut adp).await;
     assert_eq!(first, second);
     assert_eq!(adp.active.as_ref().map(|(revision, _)| *revision), Some(1));
-    assert_eq!(reopened.view(10, None).revision_counter, 1);
-    assert_eq!(reopened.view(10, None).history.len(), 1);
+    assert_eq!(reopened.view(10, None, None).revision_counter, 1);
+    assert_eq!(reopened.view(10, None, None).history.len(), 1);
     assert_eq!(
         reopened.publish(other_artifact(), None, None, 2_000).unwrap().revision,
         2
@@ -368,7 +370,7 @@ async fn polls_in_another_protocol_version_or_not_json_are_refused_and_recorded(
         .as_str()
         .unwrap()
         .contains("Unsupported stub protocol version 2"));
-    let last = channel.view(10, None).last_poll.unwrap();
+    let last = channel.view(10, None, None).last_poll.unwrap();
     assert!(last.error.unwrap().contains("version 2"));
     // A refused poll's status does not count as ADP's status.
     assert!(channel.latest_status().is_none());
@@ -387,7 +389,7 @@ async fn polls_in_another_protocol_version_or_not_json_are_refused_and_recorded(
     assert!(error["error"].as_str().unwrap().contains("not JSON"));
 
     // Every refused poll is recorded, so the timeline shows the problem.
-    let view = channel.view(10, None);
+    let view = channel.view(10, None, None);
     assert_eq!(view.polls_total, 3);
     let errors = view
         .timeline
@@ -420,7 +422,7 @@ async fn a_poll_with_mistyped_acknowledgments_still_gets_the_snapshot_and_is_rec
     let response: PollResponse = serde_json::from_slice(&body).unwrap();
     assert_eq!(response.products[POLICY_PRODUCT][0].sha256, published.sha256);
 
-    let view = channel.view(10, None);
+    let view = channel.view(10, None, None);
     assert_eq!(view.polls_total, 1);
     let entry = &view.timeline[0];
     assert_eq!(entry.error, None);
@@ -450,9 +452,9 @@ async fn the_next_revision_in_the_view_counts_the_privileged_high_water_mark_as_
     let mut adp = FakeAdp::new("adp-1");
     adp.revision_high_water = 4;
     poll(&channel, &mut adp).await;
-    assert_eq!(channel.view(10, None).next_revision, 5);
-    assert_eq!(channel.view(10, Some(9)).next_revision, 10);
-    assert_eq!(channel.view(10, Some(2)).next_revision, 5);
+    assert_eq!(channel.view(10, None, None).next_revision, 5);
+    assert_eq!(channel.view(10, Some(9), None).next_revision, 10);
+    assert_eq!(channel.view(10, Some(2), None).next_revision, 5);
     assert_eq!(channel.publish(artifact(), None, Some(9), 1_000).unwrap().revision, 10);
 }
 
@@ -514,7 +516,7 @@ async fn the_acknowledgment_timeline_folds_polls_that_report_the_same_state() {
         poll(&channel, &mut adp).await;
     }
 
-    let view = channel.view(10, None);
+    let view = channel.view(10, None, None);
     assert_eq!(view.polls_total, 7);
     let timeline = view
         .timeline
@@ -590,7 +592,7 @@ async fn each_scope_has_one_config_under_one_revision_counter() {
             ("demo".to_string(), 3)
         ]
     );
-    let view = channel.view(10, None);
+    let view = channel.view(10, None, None);
     assert_eq!(view.current.as_ref().map(|current| current.revision), Some(3));
     let configs = view
         .configs
@@ -607,7 +609,7 @@ async fn each_scope_has_one_config_under_one_revision_counter() {
     assert!(channel.revoke(None, 6_000).unwrap());
     assert!(served(&channel).await.is_empty());
     let history = channel
-        .view(10, None)
+        .view(10, None, None)
         .history
         .iter()
         .map(|entry| (entry.action, entry.scope.clone(), entry.revision))
@@ -664,4 +666,247 @@ fn a_store_the_first_version_of_the_demo_wrote_still_reads() {
         "{}",
         error
     );
+}
+
+/// The team D resources document, as the Resources tab's template has it.
+fn resources_document() -> Value {
+    json!({
+        "resources_version": 1,
+        "recipients": [{"name": "team_d", "host": "dd_out", "endpoint": "http://127.0.0.1:17105",
+                        "credential": "credentials/team_d"}],
+        "outputs": [{"name": "team_d", "recipients": ["team_d"], "label": "Team D"}]
+    })
+}
+
+/// Polls for the given products, with ADP's resources revision high-water mark, and returns the answer.
+async fn poll_products(channel: &StubChannel, products: &[&str], resources_high_water: Option<u64>) -> PollResponse {
+    let mut request = serde_json::to_value(FakeAdp::new("adp-1").poll_request()).unwrap();
+    request["products"] = json!(products);
+    if let Some(high_water) = resources_high_water {
+        request["status"]["resources"] = json!({"revision_high_water": high_water, "active_artifact": null});
+    }
+    let (status, body) = post_poll(channel, serde_json::to_vec(&request).unwrap()).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    serde_json::from_slice(&body).unwrap()
+}
+
+#[tokio::test]
+async fn the_resources_product_is_served_to_a_poll_that_asks_for_it_with_verifiable_hashes() {
+    let dir = tempfile::tempdir().unwrap();
+    let channel = channel_in(dir.path());
+    // Asked for, the product is a complete snapshot: empty before anything is published, which revokes.
+    let answer = poll_products(&channel, &["policy", "resources"], None).await;
+    assert_eq!(answer.products[RESOURCES_PRODUCT], Vec::new());
+
+    let published = channel.publish_resources(resources_document(), None, 1_000).unwrap();
+    assert_eq!((published.id.as_str(), published.revision), ("demo-resources", 1));
+    let answer = poll_products(&channel, &["policy", "resources"], None).await;
+    let [config] = answer.products[RESOURCES_PRODUCT].as_slice() else {
+        panic!("one resources config: {:?}", answer.products);
+    };
+    assert_eq!((config.id.as_str(), config.version), ("demo-resources", 1));
+    // As for policy: the transport hash covers the payload's bytes, and the artifact hash is the plan crate's hash of
+    // the document as received, the digest of its canonical form.
+    assert_eq!(transport_hash(&config.payload), config.sha256);
+    let envelope: Envelope = serde_json::from_str(&config.payload).unwrap();
+    assert_eq!(envelope.revision, 1);
+    assert_eq!(envelope.approved_against, None);
+    assert_eq!(envelope.artifact, resources_document());
+    assert_eq!(
+        envelope.artifact_hash,
+        saluki_metric_plan::canonical::PlanHash::of_value(&resources_document())
+            .unwrap()
+            .to_string()
+    );
+    assert!(!config.payload.contains("approved_against"));
+    // The policy product is served as before, and the resources config is not one of its configs.
+    assert_eq!(answer.products[POLICY_PRODUCT], Vec::new());
+
+    // A poll that does not ask for it gets no resources member, as ADP reads only what it asks for; one that names no
+    // products gets the policy product alone.
+    let answer = poll_products(&channel, &["policy"], None).await;
+    assert_eq!(answer.products.keys().collect::<Vec<_>>(), ["policy"]);
+    let answer = poll_products(&channel, &[], None).await;
+    assert_eq!(answer.products.keys().collect::<Vec<_>>(), ["policy"]);
+}
+
+#[tokio::test]
+async fn resources_revisions_count_apart_from_policy_revisions_and_above_adps_resources_mark() {
+    let dir = tempfile::tempdir().unwrap();
+    let channel = channel_in(dir.path());
+    assert_eq!(channel.publish(artifact(), None, None, 1_000).unwrap().revision, 1);
+    assert_eq!(
+        channel.publish(other_artifact(), None, None, 2_000).unwrap().revision,
+        2
+    );
+    // The resources product's first revision is 1, whatever the policy product's counter is.
+    assert_eq!(
+        channel
+            .publish_resources(resources_document(), None, 3_000)
+            .unwrap()
+            .revision,
+        1
+    );
+    assert_eq!(channel.view(10, None, None).resources.next_revision, 2);
+
+    // ADP's resources mark, from its latest poll or as the privileged status route reports it, moves the next
+    // resources revision, and not the policy product's.
+    poll_products(&channel, &["policy", "resources"], Some(6)).await;
+    let view = channel.view(10, None, None);
+    assert_eq!((view.resources.next_revision, view.next_revision), (7, 3));
+    assert_eq!(channel.view(10, None, Some(9)).resources.next_revision, 10);
+    let published = channel.publish_resources(resources_document(), Some(9), 4_000).unwrap();
+    assert_eq!(published.revision, 10);
+    assert_eq!(channel.publish(artifact(), None, None, 5_000).unwrap().revision, 3);
+
+    // The view shows each product's history apart.
+    let view = channel.view(10, None, None);
+    assert_eq!(view.resources.revision_counter, 10);
+    assert_eq!(view.resources.current.as_ref().map(|config| config.revision), Some(10));
+    let revisions = |history: &[HistoryEntry]| history.iter().map(|entry| entry.revision).collect::<Vec<_>>();
+    assert_eq!(revisions(&view.history), [Some(3), Some(2), Some(1)]);
+    assert_eq!(revisions(&view.resources.history), [Some(10), Some(1)]);
+}
+
+#[tokio::test]
+async fn revoking_the_resources_empties_their_snapshot_and_leaves_the_policy_configs() {
+    let dir = tempfile::tempdir().unwrap();
+    let channel = channel_in(dir.path());
+    channel.publish(artifact(), None, None, 1_000).unwrap();
+    assert!(!channel.revoke_resources(2_000).unwrap(), "nothing to revoke yet");
+    channel.publish_resources(resources_document(), None, 3_000).unwrap();
+    assert!(channel.revoke_resources(4_000).unwrap());
+    assert!(!channel.revoke_resources(5_000).unwrap());
+
+    let answer = poll_products(&channel, &["policy", "resources"], None).await;
+    assert_eq!(answer.products[RESOURCES_PRODUCT], Vec::new());
+    assert_eq!(answer.products[POLICY_PRODUCT].len(), 1);
+    // Revoking the policy configs leaves the resources config.
+    channel.publish_resources(resources_document(), None, 6_000).unwrap();
+    assert!(channel.revoke(None, 7_000).unwrap());
+    let answer = poll_products(&channel, &["policy", "resources"], None).await;
+    assert_eq!(
+        (
+            answer.products[POLICY_PRODUCT].len(),
+            answer.products[RESOURCES_PRODUCT].len()
+        ),
+        (0, 1)
+    );
+    let (config, document) = channel.resources().unwrap();
+    assert_eq!((config.revision, document), (2, resources_document()));
+    let actions = channel
+        .view(10, None, None)
+        .resources
+        .history
+        .iter()
+        .map(|entry| entry.action)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actions,
+        [
+            store::HistoryAction::Publish,
+            store::HistoryAction::Revoke,
+            store::HistoryAction::Publish
+        ]
+    );
+}
+
+#[test]
+fn the_resources_config_and_counter_survive_a_restart_and_a_missing_store_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let published = {
+        let mut store = ArtifactStore::open(dir.path()).unwrap();
+        store.publish(artifact(), None, None, 1_000).unwrap();
+        store.publish_resources(resources_document(), Some(4), 2_000).unwrap()
+    };
+    assert_eq!(published.revision, 5);
+    let store = ArtifactStore::open(dir.path()).unwrap();
+    assert_eq!(store.resources(), Some(&published));
+    assert_eq!(store.resources_snapshot(), vec![published.entry()]);
+    assert_eq!((store.resources_revision_counter(), store.revision_counter()), (5, 1));
+
+    // Without the store file, each counter continues from its own product's history.
+    std::fs::rename(dir.path().join("store.json"), dir.path().join("store.json.aside")).unwrap();
+    let mut store = ArtifactStore::open(dir.path()).unwrap();
+    assert_eq!(store.resources(), None);
+    assert_eq!((store.resources_revision_counter(), store.revision_counter()), (5, 1));
+    assert_eq!(
+        store
+            .publish_resources(resources_document(), None, 3_000)
+            .unwrap()
+            .revision,
+        6
+    );
+    assert_eq!(store.publish(artifact(), None, None, 4_000).unwrap().revision, 2);
+
+    // A failed write publishes nothing and revokes nothing.
+    std::fs::create_dir(dir.path().join("store.json.tmp")).unwrap();
+    assert!(store.publish_resources(resources_document(), None, 5_000).is_err());
+    assert!(store.revoke_resources(5_000).is_err());
+    assert_eq!(store.resources_revision_counter(), 6);
+    assert!(store.resources().is_some());
+}
+
+#[test]
+fn revoking_everything_leaves_both_products_unserved_after_a_restart_and_keeps_the_counters() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let mut store = ArtifactStore::open(dir.path()).unwrap();
+        // Nothing served: nothing revoked, nothing recorded.
+        assert!(!store.revoke_all(500).unwrap());
+        assert!(store.history().is_empty());
+        store.publish(artifact(), None, None, 1_000).unwrap();
+        store
+            .publish(pre_aggregation_artifact("demo.checkout."), None, None, 1_500)
+            .unwrap();
+        store.publish_resources(resources_document(), None, 2_000).unwrap();
+        assert!(store.revoke_all(3_000).unwrap());
+    }
+    let mut store = ArtifactStore::open(dir.path()).unwrap();
+    assert_eq!(store.configs().count(), 0);
+    assert!(store.snapshot().is_empty());
+    assert_eq!(store.resources(), None);
+    assert!(store.resources_snapshot().is_empty());
+    assert_eq!((store.revision_counter(), store.resources_revision_counter()), (2, 1));
+    // One revoke line per product.
+    let revokes = store
+        .history()
+        .iter()
+        .filter(|entry| entry.at_ms == 3_000)
+        .map(|entry| (entry.is_resources(), entry.scope.clone(), entry.revision))
+        .collect::<Vec<_>>();
+    assert_eq!(revokes, [(false, None, None), (true, None, None)]);
+    // Only the resources config served: it alone is revoked.
+    store.publish_resources(resources_document(), None, 4_000).unwrap();
+    assert!(store.revoke_all(5_000).unwrap());
+    assert_eq!(store.history().iter().filter(|entry| entry.at_ms == 5_000).count(), 1);
+    assert_eq!(store.resources_revision_counter(), 2);
+}
+
+#[test]
+fn a_store_written_before_the_resources_product_reads_with_no_resources() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = {
+        let mut store = ArtifactStore::open(dir.path()).unwrap();
+        store.publish(artifact(), None, None, 1_000).unwrap()
+    };
+    let file = json!({"format": 2, "revision_counter": 3, "configs": {"post_enrich": config}});
+    std::fs::write(dir.path().join("store.json"), file.to_string()).unwrap();
+    let store = ArtifactStore::open(dir.path()).unwrap();
+    assert_eq!(store.current(), Some(&config));
+    assert_eq!((store.revision_counter(), store.resources_revision_counter()), (3, 0));
+    assert!(store.resources().is_none());
+}
+
+#[test]
+fn a_resources_document_without_a_canonical_form_is_not_published() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = ArtifactStore::open(dir.path()).unwrap();
+    // Canonical JSON has no form for an integer beyond 2^53.
+    let error = store
+        .publish_resources(json!({"resources_version": u64::MAX}), None, 1_000)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("cannot be published"), "{}", error);
+    assert_eq!(store.resources_revision_counter(), 0);
 }

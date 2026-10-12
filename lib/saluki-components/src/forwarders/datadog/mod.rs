@@ -8,7 +8,7 @@ use saluki_common::buf::FrozenChunkedBytesBuffer;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_core::{
     components::{forwarders::*, BuildContext},
-    data_model::payload::{PayloadMetadata, PayloadType},
+    data_model::payload::PayloadType,
     observability::ComponentMetricsExt as _,
 };
 use saluki_error::GenericError;
@@ -20,11 +20,12 @@ use tracing::debug;
 use crate::common::datadog::{
     api_key::{ApiKeyView, LiveApiKeys},
     config::ForwarderConfiguration,
+    delivery::{transaction_metadata, DeliveryHostConfiguration, DeliverySettings, HostKind},
     endpoints::{MetricsRecipient, SingleDestination},
     io::{LiveForwarderConfiguration, TransactionForwarder},
-    protocol::{MetricsEndpointRouting, MetricsPayloadInfo},
+    protocol::MetricsEndpointRouting,
     telemetry::ComponentTelemetry,
-    transaction::{Metadata, Transaction},
+    transaction::Transaction,
     validation::ValidationReadiness,
     DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, METRICS_SERIES_V3_BETA_PATH, METRICS_SERIES_V3_PATH,
     METRICS_SKETCHES_V3_PATH,
@@ -35,17 +36,29 @@ use crate::common::datadog::{
 /// Forwards Datadog-specific payloads to the Datadog platform. Handles the standard Datadog Agent configuration,
 /// in terms of specifying additional endpoints, adding the necessary HTTP request headers for authentication,
 /// identification, and more.
+///
+/// A forwarder runs the endpoints its configuration resolves when it is built, natively, or, as a delivery host
+/// ([`controlled`][Self::controlled]), the recipients a controller prepares while it runs.
 pub struct DatadogForwarderConfiguration {
     /// Forwarder configuration settings.
     ///
     /// See [`ForwarderConfiguration`] for more information about the available settings.
     forwarder_config: ForwarderConfiguration,
 
-    /// Live views the endpoints take their API keys from.
-    api_keys: LiveApiKeys,
-
     /// Live view of the secrets settings the retry policy's gate reads.
     secrets: Live<Secrets>,
+
+    /// What the forwarder sends to.
+    mode: Mode,
+}
+
+/// What a Datadog forwarder sends to.
+enum Mode {
+    /// The endpoints its configuration resolves when it is built, with the live views their API keys follow.
+    Static(LiveApiKeys),
+
+    /// The recipients a controller prepares while it runs.
+    Controlled(DeliveryHostConfiguration),
 }
 
 impl DatadogForwarderConfiguration {
@@ -60,11 +73,25 @@ impl DatadogForwarderConfiguration {
     ) -> Self {
         Self {
             forwarder_config: ForwarderConfiguration::from_configuration(shared),
-            api_keys: LiveApiKeys {
+            secrets,
+            mode: Mode::Static(LiveApiKeys {
                 primary: Some(ApiKeyView::Required(api_key)),
                 additional: Some(additional_endpoints),
-            },
+            }),
+        }
+    }
+
+    /// Creates the configuration of a delivery host that sends Datadog payloads to the recipients a controller
+    /// prepares, publishes, and releases through `host`'s control mailbox while it runs.
+    ///
+    /// The host's endpoints, credentials, and settings are the controller's, never this configuration's: `shared`
+    /// supplies only what stays fixed while the process runs, the retry queue's storage path and the TLS key log.
+    /// `secrets` is the live view that decides whether a rejected API key is worth retrying.
+    pub fn controlled(shared: &SharedConfiguration, secrets: Live<Secrets>, host: DeliveryHostConfiguration) -> Self {
+        Self {
+            forwarder_config: ForwarderConfiguration::from_configuration(shared),
             secrets,
+            mode: Mode::Controlled(host),
         }
     }
 
@@ -86,16 +113,28 @@ impl DatadogForwarderConfiguration {
 
         Self {
             forwarder_config: ForwarderConfiguration::for_single_destination(shared, &destination),
-            api_keys: LiveApiKeys {
+            secrets,
+            mode: Mode::Static(LiveApiKeys {
                 primary: Some(ApiKeyView::Optional(api_key_view)),
                 additional: None,
-            },
-            secrets,
+            }),
         }
     }
 }
 
 impl DatadogForwarderConfiguration {
+    /// Returns the settings a delivery host runs with when it follows this configuration: its client profile, and its
+    /// retry and concurrency settings.
+    ///
+    /// Each proxy appears as its URL without user information, and the reference of the native credential that holds
+    /// the user information ([`ProxySettings::NATIVE_HTTP_CREDENTIAL`], [`ProxySettings::NATIVE_HTTPS_CREDENTIAL`]).
+    ///
+    /// [`ProxySettings::NATIVE_HTTP_CREDENTIAL`]: crate::forwarders::delivery::ProxySettings::NATIVE_HTTP_CREDENTIAL
+    /// [`ProxySettings::NATIVE_HTTPS_CREDENTIAL`]: crate::forwarders::delivery::ProxySettings::NATIVE_HTTPS_CREDENTIAL
+    pub fn delivery_settings(&self) -> DeliverySettings {
+        self.forwarder_config.delivery_settings()
+    }
+
     /// Returns the endpoints that receive the metrics payloads an encoder marks with the given endpoint routing, or
     /// that every metrics payload reaches when `routing` is `None`.
     ///
@@ -119,13 +158,23 @@ impl ForwarderBuilder for DatadogForwarderConfiguration {
     }
 
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Forwarder + Send>, GenericError> {
+        let api_keys = match &self.mode {
+            Mode::Static(api_keys) => api_keys,
+            Mode::Controlled(host) => {
+                let kind = HostKind {
+                    endpoint_name: Arc::new(get_dd_endpoint_name),
+                    secrets: Some(self.secrets.clone()),
+                };
+                return host.build(&context, self.forwarder_config.clone(), kind);
+            }
+        };
         let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let forwarder = TransactionForwarder::from_config(
             context.component_context().clone(),
             self.forwarder_config.clone(),
             LiveForwarderConfiguration {
-                api_keys: self.api_keys.clone(),
+                api_keys: api_keys.clone(),
                 secrets: self.secrets.clone(),
             },
             get_dd_endpoint_name,
@@ -143,6 +192,14 @@ impl MemoryBounds for DatadogForwarderConfiguration {
             .minimum()
             .with_single_value::<Datadog>("component struct")
             .with_array::<Transaction<FrozenChunkedBytesBuffer>>("requests channel", 8);
+
+        // A delivery host with no recipient at boot, such as an idle failover host, declares only its minimum: its
+        // controller admits its queue with its first recipient.
+        if let Mode::Controlled(host) = &self.mode {
+            if !host.has_boot_recipients() {
+                return;
+            }
+        }
 
         builder
             .firm()
@@ -200,8 +257,7 @@ impl Forwarder for Datadog {
                 maybe_payload = context.payloads().next() => match maybe_payload {
                     Some(payload) => if let Some(http_payload) = payload.try_into_http_payload() {
                         let (payload_meta, request) = http_payload.into_parts();
-                        let transaction_meta = transaction_metadata_from_payload_metadata(&payload_meta);
-                        let transaction = Transaction::from_original(transaction_meta, request);
+                        let transaction = Transaction::from_original(transaction_metadata(&payload_meta), request);
 
                         forwarder.send_transaction(transaction).await?;
                     }
@@ -219,14 +275,6 @@ impl Forwarder for Datadog {
 
         Ok(())
     }
-}
-
-fn transaction_metadata_from_payload_metadata(payload_meta: &PayloadMetadata) -> Metadata {
-    let mut transaction_meta =
-        Metadata::from_event_and_data_point_count(payload_meta.event_count(), payload_meta.data_point_count());
-    transaction_meta.payload_info = payload_meta.get::<MetricsPayloadInfo>().copied();
-    transaction_meta.metrics_endpoint_routing = payload_meta.get::<Arc<MetricsEndpointRouting>>().cloned();
-    transaction_meta
 }
 
 fn get_dd_endpoint_name(uri: &Uri) -> Option<MetaString> {
@@ -251,14 +299,15 @@ mod tests {
         shared::{AltMetricsIntake, Endpoints},
         ConfigValue, SalukiConfiguration,
     };
-    use saluki_core::components::test_util::TestComponentSupervisor;
+    use saluki_core::{components::test_util::TestComponentSupervisor, data_model::payload::PayloadMetadata};
 
     use super::*;
-    use crate::common::datadog::endpoints::MetricsRecipientRoute;
     use crate::common::datadog::{
         api_key::ApiKeyRefresher,
+        delivery::{IntakeAuthorities, PayloadClasses, RecipientProtocol, V3Acceptance},
         test_util::{shared_configuration, LiveConfiguration},
     };
+    use crate::common::datadog::{endpoints::MetricsRecipientRoute, protocol::MetricsPayloadInfo};
 
     #[test]
     fn dd_endpoint_names_map_from_request_path() {
@@ -296,7 +345,7 @@ mod tests {
     fn transaction_metadata_carries_counts_and_metrics_payload_info() {
         // A non-metrics payload propagates the counts and leaves metrics metadata unset.
         let payload_meta = PayloadMetadata::from_event_and_data_point_count(3, 11);
-        let transaction_meta = transaction_metadata_from_payload_metadata(&payload_meta);
+        let transaction_meta = transaction_metadata(&payload_meta);
         assert_eq!(3, transaction_meta.event_count);
         assert_eq!(11, transaction_meta.data_point_count);
         assert_eq!(None, transaction_meta.payload_info);
@@ -309,7 +358,7 @@ mod tests {
         let payload_meta = PayloadMetadata::from_event_and_data_point_count(2, 7)
             .with(MetricsPayloadInfo::v3_series())
             .with(Arc::clone(&endpoint_routing));
-        let transaction_meta = transaction_metadata_from_payload_metadata(&payload_meta);
+        let transaction_meta = transaction_metadata(&payload_meta);
         assert_eq!(2, transaction_meta.event_count);
         assert_eq!(7, transaction_meta.data_point_count);
         assert_eq!(Some(MetricsPayloadInfo::v3_series()), transaction_meta.payload_info);
@@ -338,11 +387,22 @@ mod tests {
         )
     }
 
+    /// A recipient of these tests' forwarders, whose endpoints take no V3 variant and have no logs or traces
+    /// authority.
     fn recipient(route: MetricsRecipientRoute, endpoint: &str, api_key_index: Option<usize>) -> MetricsRecipient {
         MetricsRecipient {
             route,
             configured_endpoint: endpoint.to_string(),
             api_key_index,
+            classes: match route {
+                MetricsRecipientRoute::MetricsOverride => PayloadClasses::MetricsOnly,
+                MetricsRecipientRoute::Primary | MetricsRecipientRoute::Additional => PayloadClasses::All,
+            },
+            protocol: RecipientProtocol::DatadogIntake {
+                authorities: IntakeAuthorities::default(),
+                allow_arbitrary_tags: false,
+                v3: V3Acceptance::default(),
+            },
         }
     }
 
@@ -498,8 +558,11 @@ mod tests {
         assert_eq!(endpoints.len(), 1);
         assert_eq!("mrf-api-key", &*endpoints[0].endpoint().api_key());
 
-        let refresher = ApiKeyRefresher::new(&endpoints, &config.api_keys)
-            .expect("the destination should follow the failover view");
+        let Mode::Static(api_keys) = &config.mode else {
+            unreachable!("an endpoint override is a static forwarder");
+        };
+        let refresher =
+            ApiKeyRefresher::new(&endpoints, api_keys).expect("the destination should follow the failover view");
 
         // The refresher spawns on the ambient supervisor, and the supervisor is what keeps it running for the rest of
         // the test.

@@ -16,7 +16,7 @@ Request body:
 {
   "protocol_version": 1,
   "client": { "id": "<random per ADP process>", "version": "<ADP version>" },
-  "products": ["policy"],
+  "products": ["policy", "resources"],
   "config_states": [
     {
       "product": "policy",
@@ -51,13 +51,22 @@ Request body:
         "active_artifact": { "id": "demo", "revision": 7, "artifact_hash": "sha256:<hex>" },
         "stale_base": false
       }
+    },
+    "resources": {
+      "revision_high_water": 2,
+      "active_artifact": { "id": "demo-resources", "revision": 2, "artifact_hash": "sha256:<hex>" }
     }
   }
 }
 ```
 
-- `config_states` lists the latest state per config ID ADP has seen (at most one per ID). `state` values are the
-  specification's acknowledgment states plus `failed` (supervision exhausted). `error` is plain text, never secrets.
+- `config_states` lists the latest state per config ID ADP has seen (at most one per ID), each under its `product`
+  (`policy` or `resources`, section 5). `state` values are the specification's acknowledgment states plus `failed`
+  (supervision exhausted). `error` is plain text, never secrets. On a `pending` state, `error` says what the config
+  waits for (an output its base records that the host does not declare yet, or a credential that is not configured);
+  on an `active` state, it is what composition said beside the state, or `null`: the reasons the artifact runs
+  degraded, each naming an output and saying that its emits are dropped (the output was removed, or now delivers
+  elsewhere), and notes such as the advice to rebase an artifact whose base records version 1 fingerprints.
 - `prepared` also means a cut installation waiting for its cut: an artifact that changes a state owner's time
   contract (such as an aggregation's window), or adds or removes one, installs at a bucket boundary rather than at once.
   While the cut is armed, `cut_at` is the admission time it takes effect at, in whole milliseconds since the Unix epoch;
@@ -90,6 +99,10 @@ Request body:
 - `config_states` is bounded: ADP keeps the acknowledgment of every config of the latest snapshot, of every config
   whose artifact is still being installed, active, or kept to roll back to, and of the 16 configs most recently
   finished (`rejected`, `failed`, or `retired`) beyond those; older ones are forgotten.
+- `status.resources` (additive, stage 7) describes the `resources` product, which has its own revisions: its
+  `revision_high_water`, and the `active_artifact` whose declarations the active generation carries (`null` when it
+  carries none). It is left out until ADP has seen a resources config, so a poll of a host that uses only policy
+  artifacts is unchanged.
 
 Response body (`200`):
 
@@ -99,6 +112,9 @@ Response body (`200`):
   "products": {
     "policy": [
       { "id": "demo", "version": 7, "sha256": "<hex of payload's UTF-8 bytes>", "payload": "<envelope JSON text>" }
+    ],
+    "resources": [
+      { "id": "demo-resources", "version": 2, "sha256": "<hex>", "payload": "<envelope JSON text>" }
     ]
   }
 }
@@ -128,7 +144,9 @@ Response body (`200`):
 - ADP reads only the products it asks for. Another product is ignored whatever its entries look like, so a stub can
   serve products a given ADP does not know.
 - An answer that states another `protocol_version`, whose `policy` member is not a list of configs (`null` included),
-  or that is larger than 8 MiB is unreadable: a transport failure, which keeps the current feed.
+  or that is larger than 8 MiB is unreadable: a transport failure, which keeps the current feed. A `resources` member
+  that is not a list of configs makes only that product unreadable for the poll: its current snapshot stays in effect,
+  and the `policy` snapshot is read as usual.
 - ADP sends the first poll at startup and then one every `poll_interval`, measured from when each poll was due; a poll
   that takes long delays the next one. A poll whose answer, body included, does not arrive in full within 5 seconds is
   a transport failure, and the next poll retries.
@@ -163,7 +181,8 @@ Response body (`200`):
 
 | Route | Body |
 |---|---|
-| `GET /programmable-metrics/status` | the `status` object above plus `config_states` |
+| `GET /programmable-metrics/status` | the `status` object above plus `config_states`, and `recipients` (below) |
+| `GET /programmable-metrics/resources` | the resources view (below) |
 | `GET /programmable-metrics/export?scope=<scope>` | export bundle (below) of `post_enrich` or `dogstatsd_pre_aggregation` |
 | `GET /programmable-metrics/plan` | the active composed logical plan, resolved values included |
 | `GET /programmable-metrics/default-program` | the default program ADP last lowered, resolved values included: the plan artifacts are composed into |
@@ -201,10 +220,146 @@ Export bundle:
   not declare (the body names the declared ones), `500` for a scope that cannot be exported (the body says why), and
   `503` from `/plan` and `/explain` while no generation is active.
 
+Recipient incarnations, the status route's `recipients` member (stage 7; a poll's status does not carry it):
+
+```json
+[
+  {
+    "host": "dd_out",
+    "id": "dd_out/declared/team_d/http://127.0.0.1:17105",
+    "slot": 2,
+    "incarnation": 5,
+    "state": "preparing | live | draining | failed | exiting | retired",
+    "provenance": "native",
+    "draining_since_ms": 1791740787505,
+    "last_drain": {
+      "delivered": 12,
+      "persisted": 0,
+      "dropped": 3,
+      "deadline_reached": true,
+      "retired_ms": 1791740817505
+    }
+  }
+]
+```
+
+- First the incarnations the installer holds, by host and slot, then the latest 16 that retired after a release, oldest
+  first, with state `retired` and `last_drain`, what the drain did. An incarnation an abort dropped, or a loop that
+  ended on its own, is not a retirement and is not listed. `provenance` is `"native"` or `{"declared": {"revision": 2,
+  "hash": "sha256:<hex>"}}`, the resources revision that declared the incarnation; it is left out when unknown.
+  `draining_since_ms` is present while the incarnation drains; times are milliseconds since the Unix epoch.
+- The recipient's delivery host counts each retirement in `plan_recipient_retirements_total{outcome}`, by what
+  `last_drain` says: `deadline` when `deadline_reached`, else `discarded` when `dropped` is not 0, else `persisted`
+  when `persisted` is not 0 (a close that wrote the queue to disk, such as a `persist` closure), else `drained`.
+
+The resources view, `GET /programmable-metrics/resources`:
+
+```json
+{
+  "declared": { "config": "demo-resources", "state": "active", "revision": 2, "error": null, "installed_revision": 2 },
+  "missing_credentials": [],
+  "hosts": [
+    {
+      "host": "dd_out",
+      "encoder": "dd_metrics_encode",
+      "declared_recipients": true,
+      "leases": [{ "lease": 3, "output": "resources_team_d", "state": "preparing | live | draining" }],
+      "withdrawn": [],
+      "conflicts": [{ "declared": "<recipient id>", "duplicates": "<recipient id>" }],
+      "client_failure": "<why the HTTP client its settings ask for could not be built>"
+    }
+  ],
+  "outputs": [
+    {
+      "id": "resources_team_d", "label": "Team D", "host": "dd_out",
+      "fingerprint": "sha256:<hex>", "legacy_fingerprint": null,
+      "recipients": ["dd_out/declared/team_d/http://127.0.0.1:17105"],
+      "provenance": { "declared": { "revision": 2, "hash": "sha256:<hex>" } }
+    }
+  ],
+  "recipients": [
+    {
+      "id": "dd_out/declared/team_d/http://127.0.0.1:17105", "host": "dd_out", "endpoint": "http://127.0.0.1:17105",
+      "credential": "credentials/team_d", "classes": "metrics_only",
+      "delivery": { "bounded": { "queue_bytes": 4194304, "spill": "never", "on_retire": "attempt" } },
+      "provenance": { "declared": { "revision": 2, "hash": "sha256:<hex>" } }
+    }
+  ],
+  "budget": { "granted": 268435456, "used": 3211264 }
+}
+```
+
+- `declared` is the resources config's acknowledgment, with the revision lowering declares resources from
+  (`installed_revision`), or `null` before a resources config was delivered; `missing_credentials` lists, by reference,
+  the credentials that held artifacts use and the configuration does not provide.
+- `hosts` lists every fixed delivery host with its encode host: its leases, the recipients its latest publication
+  withdrew (identities the current lowering no longer declares, until the next publication), conflicts (two recipients
+  sending with one key), and, while it sends through an older client, why it could not build the one its settings ask
+  for (also reported in `status.degraded`). `outputs` and `recipients` are the declarations of the latest lowering,
+  native and declared, credentials by reference only. `budget` is the resource budget: `granted` is `null` when nothing
+  is counted (no verified memory limit).
+
 ## 4. Demo server side
 
 - Holds the durable artifact store (on disk in its run directory): current snapshot, revision counter, history.
 - Serves one config per scope: `demo` for `post_enrich`, `demo-<scope>` for any other scope. A publish replaces the
   config of its artifact's scope; a revoke removes one scope's config, or empties the snapshot.
 - Next revision = `max(local counter, status.revision_high_water) + 1`, one counter for every scope.
+- Serves the `resources` product's one config as `demo-resources`, with a revision counter of its own, next revision
+  `max(local counter, status.resources.revision_high_water) + 1`.
 - Records every poll's `config_states` and `status` with a receive timestamp for the acknowledgment timeline.
+
+## 5. The `resources` product (stage 7)
+
+A resources artifact declares recipients (endpoints of a delivery host, with credentials the operator configured) and
+outputs that deliver to them, apart from native configuration. Policy artifacts then route to those outputs by ID.
+
+- The product holds **one config** (the demo's ID is `demo-resources`). A snapshot with more than one config refuses
+  them all; an empty snapshot, or a missing `resources` member, revokes every declared resource.
+- The envelope is the policy product's (section 2), without `approved_against`, with a resources document as `artifact`.
+  `artifact_hash` is the plan crate's hash of the document exactly as received.
+- Revisions follow the policy product's rules on a **mark of their own** (`status.resources.revision_high_water`): a
+  revision must exceed every authentic resources revision seen; a redelivery (same revision and hash) changes nothing;
+  the same document under a newer revision is approved again.
+- The document:
+
+  ```json
+  {
+    "resources_version": 1,
+    "recipients": [
+      {
+        "name": "team_d",
+        "host": "dd_out",
+        "endpoint": "http://127.0.0.1:17105",
+        "credential": "credentials/team_d",
+        "protocol": { "v3_series": false, "v3_sketches": false },
+        "delivery": { "queue_bytes": 4194304, "spill": "never", "on_retire": "attempt" }
+      }
+    ],
+    "outputs": [{ "name": "team_d", "recipients": ["team_d"], "accepts": "any", "label": "Team D" }]
+  }
+  ```
+
+  Unknown members are rejected. A recipient's `host` must accept declared recipients (`dd_out` only), its credential is
+  `credentials/<name>`, an entry of `experimental.programmable_metrics.resources.credentials`, and it receives metrics
+  only. Its endpoint is an `http` or `https` URL without user information, query, or fragment, which ADP puts in
+  canonical form (lowercase scheme and host, default port and trailing slash removed); its identity is
+  `<host>/declared/<credential name>/<canonical endpoint>`, the endpoint written as a digest when long. An output's ID
+  is `resources_<name>`; it names at least one recipient, all on one host. At most 16 recipients and 16 outputs.
+  `delivery` is optional: `queue_bytes` bounds the recipient's in-memory retry queue (at least 1 byte; ADP caps it at
+  the host's native bound), `spill` (`native` or `never`) says whether it may spill to disk as the host's storage
+  settings allow, and `on_retire` (`native`, `attempt`, `persist`, `discard`) says what its queued work becomes when it
+  is removed.
+- Acknowledgments: `rejected` (the document is not valid, its revision is stale, or a recipient it adds failed to
+  prepare; a corrected artifact is published as a new revision), `pending` with `error` naming the credentials it waits
+  for, `pending` while the generation lowered with it is not active yet, `active` once it is, `retired` once a newer
+  revision or a revocation replaced it and the last generation lowered with it retired.
+- A newer revision that is refused, rejected, or pending leaves the one in use in place; declared resources are removed
+  only by a revocation, or when the revision in use itself becomes pending (a credential it uses was removed).
+- A policy artifact whose base records a declared output the host does not declare yet is `pending` ("waiting for output
+  `resources_<name>`") and installs once a resources artifact declares it. The artifact in effect whose declared output
+  is removed (the resources revoked) stays `active`, degraded: its emits to the output are dropped and counted as its
+  policy loss, and they return when the output is declared again.
+- A removed recipient is withdrawn at the resource transaction that follows the change: payloads routed to it from then
+  on are dropped and counted (`plan_recipient_withdrawn_payloads_total`); what it already holds drains for at most 30
+  seconds, then its `on_retire` closure applies.

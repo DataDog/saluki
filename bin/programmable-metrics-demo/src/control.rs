@@ -2,9 +2,13 @@
 //! the default program, and the active plan current.
 //!
 //! The export is fetched again when the default program hash ADP's status reports changes from what it reported when
-//! the export in hand was fetched, and at least every [`EXPORT_MAX_AGE`] otherwise, so the editor's checks follow
-//! configuration changes. The watcher compares the reported hash with its own earlier value, never with the export's
-//! `base.program_hash`, since the protocol does not say that the two are computed alike.
+//! the export in hand was fetched, when the resources artifact its active generation was lowered with changes (the
+//! catalog then declares other outputs, which leaves the default program hash as it is), and at least every
+//! [`EXPORT_MAX_AGE`] otherwise, so the editor's checks follow configuration changes. The watcher compares the
+//! reported values with their own earlier values, never with the export's `base.program_hash`, since the protocol does
+//! not say that the two are computed alike.
+//!
+//! The recipients every status lists go into the Recipients panel's record ([`RecipientLog`]).
 //!
 //! The default program (`GET /programmable-metrics/default-program`), which the editor composes artifacts into, is
 //! fetched with every export, and kept only if it is the program the export was taken from: its base program hash is
@@ -37,6 +41,7 @@ use crate::{
     adp_api::{routes, AdpApi, Surface, SurfaceState},
     clock::unix_millis,
     export::ExportBundle,
+    recipients::{RecipientLog, RecipientsView},
     stub::protocol::{AdpStatus, POLICY_SCOPE},
 };
 
@@ -108,6 +113,10 @@ struct ControlState {
     export_fetched_ms: Option<u64>,
     /// The default program hash ADP's status reported when the export in hand was fetched.
     export_reported_hash: Option<String>,
+    /// The resources artifact ADP's status reported active when the export in hand was fetched.
+    export_reported_resources: Option<String>,
+    /// The recipients ADP's statuses listed.
+    recipients: RecipientLog,
     /// The default program the export in hand was taken from.
     default_program: Option<Arc<Plan>>,
     default_program_state: Option<SurfaceState>,
@@ -124,6 +133,23 @@ impl ControlState {
         self.status
             .as_ref()
             .and_then(|status| status.status.default_program_hash.clone())
+    }
+
+    /// Returns the resources artifact ADP's status reports active, as `<revision> <hash>`, or `None` when none is.
+    fn reported_resources(&self) -> Option<String> {
+        let artifact = self
+            .status
+            .as_ref()?
+            .status
+            .resources
+            .as_ref()?
+            .active_artifact
+            .as_ref()?;
+        Some(format!(
+            "{} {}",
+            artifact.revision.unwrap_or_default(),
+            artifact.artifact_hash.as_deref().unwrap_or_default()
+        ))
     }
 }
 
@@ -205,6 +231,11 @@ impl ControlSurface {
     /// Returns the export bundle in hand, if any.
     pub fn export(&self) -> Option<Arc<ExportBundle>> {
         self.lock().export.clone()
+    }
+
+    /// Returns the Recipients panel's record of the recipients ADP's statuses listed.
+    pub fn recipients(&self) -> RecipientsView {
+        self.lock().recipients.view()
     }
 
     /// Returns the export bundle in hand with the default program it was taken from, when ADP served that program.
@@ -324,6 +355,7 @@ impl ControlSurface {
                 if !notes.is_empty() && notes != state.status_notes {
                     tracing::warn!(notes = %notes.join("; "), "Parts of ADP's status could not be read.");
                 }
+                state.recipients.observe(status.recipients.as_deref(), at_ms);
                 state.status = Some(status);
                 state.status_notes = notes;
                 state.status_received_ms = Some(at_ms);
@@ -350,6 +382,7 @@ impl ControlSurface {
                 state.export = Some(Arc::clone(export));
                 state.export_fetched_ms = Some(at_ms);
                 state.export_reported_hash = state.reported_hash();
+                state.export_reported_resources = state.reported_resources();
                 state.export_error = None;
             }
             Surface::NotExposed => {
@@ -441,6 +474,7 @@ impl ControlSurface {
             (true, Some(fetched), _) => {
                 let reported = state.reported_hash();
                 (reported.is_some() && reported != state.export_reported_hash)
+                    || state.reported_resources() != state.export_reported_resources
                     || now_ms.saturating_sub(fetched) >= EXPORT_MAX_AGE
             }
             (_, _, Some(checked)) => now_ms.saturating_sub(checked) >= EXPORT_RETRY,
@@ -654,6 +688,53 @@ mod tests {
         assert_eq!(failed.state(), SurfaceState::Failed);
         assert!(control.view().export_error.unwrap().contains("export_version 9"));
         assert!(control.export().is_some());
+    }
+
+    #[test]
+    fn the_export_is_fetched_again_when_the_active_resources_artifact_changes() {
+        // Declaring an output changes the catalog, not the default program hash.
+        let reported = format!("sha256:{}", "b".repeat(64));
+        let with_resources = |active: Value| {
+            let mut status = status(&reported);
+            status["resources"] = serde_json::json!({ "revision_high_water": 2, "active_artifact": active });
+            status
+        };
+        let export = || Surface::Available(serde_json::from_str(DEMO_EXPORT).unwrap());
+        let control = ControlSurface::new();
+        control.record_status(Surface::Available(status(&reported)), 1_000);
+        control.record_export(export(), 1_000);
+        assert!(!control.export_wanted(1_100));
+
+        let team_d = serde_json::json!({ "id": "demo-resources", "revision": 2, "artifact_hash": "sha256:02" });
+        control.record_status(Surface::Available(with_resources(team_d.clone())), 2_000);
+        assert!(control.export_wanted(2_000));
+        control.record_export(export(), 2_100);
+        assert!(!control.export_wanted(2_200));
+        control.record_status(Surface::Available(with_resources(team_d)), 3_000);
+        assert!(!control.export_wanted(3_000));
+
+        // A revocation leaves no resources artifact active: fetch again.
+        control.record_status(Surface::Available(with_resources(Value::Null)), 4_000);
+        assert!(control.export_wanted(4_000));
+    }
+
+    #[test]
+    fn the_recipients_each_status_lists_go_into_the_panels_record() {
+        let control = ControlSurface::new();
+        control.record_status(Surface::Available(status("sha256:00")), 1_000);
+        assert!(!control.recipients().reported);
+        let listed = serde_json::json!({
+            "default_program_hash": "sha256:00",
+            "recipients": [{ "host": "dd_out", "id": "dd_out/primary/0", "slot": 0, "incarnation": 1, "state": "live",
+                             "provenance": "native", "queue_bytes": 512 }]
+        });
+        control.record_status(Surface::Available(listed), 2_000);
+        let view = control.recipients();
+        assert!(view.reported);
+        assert_eq!(
+            (view.recipients[0].state.as_str(), view.recipients[0].queue_bytes),
+            ("active", Some(512))
+        );
     }
 
     #[test]

@@ -489,3 +489,45 @@ async fn refused_requests_are_answered_and_recorded_with_their_reason() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::ACCEPTED);
 }
+
+#[tokio::test]
+async fn a_paused_intake_answers_unavailable_records_nothing_it_was_sent_and_refuses_nothing() {
+    let team_d = DemoPorts::default().recipients()[4];
+    assert_eq!((team_d.name, team_d.declared), ("team-d", true));
+    let recorder = IntakeRecorder::new(team_d);
+    let payload = {
+        let mut payload = MetricPayload::new();
+        payload.series.push(series(
+            "demo.platform.queue_depth",
+            MetricType::GAUGE,
+            &["team:platform"],
+            &[(1, 3.0)],
+        ));
+        payload.write_to_bytes().unwrap()
+    };
+    let key = Some("demo-team-d-key");
+
+    recorder.set_paused(true);
+    for _ in 0..2 {
+        let status = send(&recorder, "POST", "/api/v2/series", None, key, payload.clone()).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+    let summary = recorder.summary(unix_millis());
+    assert!(summary.paused && summary.declared);
+    assert_eq!(
+        (summary.requests_total, summary.unavailable, summary.refused),
+        (2, 2, 0)
+    );
+    assert!(summary.families.is_empty() && summary.points_total == 0);
+    assert_eq!(recorder.recent_requests(1)[0].status, 503);
+    assert!(summary.api_keys[0].expected);
+
+    // Resumed, the next attempt of the same payload is decoded and recorded.
+    recorder.set_paused(false);
+    let status = send(&recorder, "POST", "/api/v2/series", None, key, payload).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let summary = recorder.summary(unix_millis());
+    assert!(!summary.paused);
+    assert_eq!((summary.requests_total, summary.unavailable), (3, 2));
+    assert_eq!(summary.families[0].family, "demo.platform.queue_depth");
+}

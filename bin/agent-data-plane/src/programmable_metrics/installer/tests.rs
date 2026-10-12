@@ -2,7 +2,7 @@
 //! never answer or are gone; and the plan-driven metrics path running beside the legacy one on the same input.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     future::Future,
     sync::{Arc, Mutex as StdMutex},
     time::Duration,
@@ -12,6 +12,7 @@ use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use metrics::Key;
 use saluki_common::sync::shutdown::ShutdownHandle;
+use saluki_components::encoders::encode_host::LeaseObserver;
 use saluki_core::{
     accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder, MemoryLimiter},
     components::{
@@ -39,8 +40,9 @@ use crate::{
     cli::run::PRIMARY_TOPOLOGY,
     programmable_metrics::{
         telemetry::{PLAN_ACTIVE_GENERATION, PLAN_INSTALLS_TOTAL, PLAN_LIVE_GENERATIONS, PLAN_REWRITES_APPLIED},
+        test_hosts::FakeHost,
         test_support::{configuration, programmable_metrics, ConfigCell},
-        topology::{add_regions, connect_frame},
+        topology::{add_hosts, add_regions, connect_frame, HostDoubles},
     },
 };
 
@@ -288,17 +290,30 @@ impl Running {
         let (main, main_output) = mpsc::unbounded_channel();
         let (telemetry, telemetry_output) = mpsc::unbounded_channel();
         let (mirror, mirror_output) = mpsc::unbounded_channel();
-        for output in boot.outputs.iter() {
-            let metrics = match output.component.as_str() {
-                "dd_metrics_encode" => main.clone(),
-                "dsd_client_telemetry_out" => telemetry.clone(),
-                "mrf_metrics_encode" => mirror.clone(),
-                other => panic!("DogStatsD with Multi-Region Failover has no output `{}`", other),
-            };
-            blueprint
-                .add_destination(output.component.as_str(), DescribingDestinationBuilder { metrics })
-                .unwrap();
-        }
+        blueprint
+            .add_destination(
+                "dsd_client_telemetry_out",
+                DescribingDestinationBuilder { metrics: telemetry },
+            )
+            .unwrap();
+        // The encode hosts and delivery hosts run as in production, with what each output's lease receives described,
+        // nothing encoded, and nothing sent.
+        boot.host_doubles = Some(HostDoubles {
+            observer: Arc::new(DescribingObserver {
+                outputs: [
+                    ("dd_metrics_encode".to_string(), main),
+                    ("mrf_metrics_encode".to_string(), mirror),
+                ]
+                .into(),
+            }),
+            encode: false,
+            delivered: Some(Default::default()),
+            gates: Default::default(),
+        });
+        let secrets = cell
+            .live()
+            .map(|config: &SalukiConfiguration| config.shared.secrets.clone());
+        add_hosts(&mut blueprint, boot, &config.shared, secrets).unwrap();
         add_regions(&mut blueprint, boot).unwrap();
         connect_frame(&mut blueprint, boot).unwrap();
         replace_aggregation(&mut blueprint, aggregation);
@@ -573,13 +588,17 @@ fn run_installer(installer: &Arc<InstallerWorker>, shutdown: ShutdownHandle) -> 
     }
 }
 
-/// Takes the regions' mailboxes, and marks them running: they stand for regions that run and never read them.
-fn running_unread_mailboxes(metrics: &mut ProgrammableMetrics) -> Vec<Option<ControlMailbox<RegionControl>>> {
+/// What a test holds for as long as the installer runs: the regions' mailboxes, and the fakes serving the hosts.
+type HeldForTheInstaller = (Vec<Option<ControlMailbox<RegionControl>>>, Vec<(FakeHost, FakeHost)>);
+
+/// Takes the regions' mailboxes, marked running and never read, and serves the hosts with fakes that answer at once:
+/// what the test holds, for as long as the installer runs.
+fn running_unread_mailboxes(metrics: &mut ProgrammableMetrics) -> HeldForTheInstaller {
     let mailboxes = std::mem::take(&mut metrics.boot_topology().mailboxes);
     for mailbox in mailboxes.iter().flatten() {
         mailbox.mark_running();
     }
-    mailboxes
+    (mailboxes, FakeHost::serve_boot_hosts(metrics.boot_topology()))
 }
 
 #[tokio::test(start_paused = true)]
@@ -736,6 +755,8 @@ fn plan_status_describes_itself_for_the_logs() {
         exports: BTreeMap::new(),
         default_program: Arc::new(Plan::from_json(saluki_metric_plan::testing::DEFAULT_PROGRAM_JSON).unwrap()),
         active: None,
+        resources: Default::default(),
+        recipients: Vec::new(),
     };
     assert_eq!(
         status.to_string(),
@@ -818,6 +839,23 @@ fn describe(metric: &Metric) -> String {
         .collect::<Vec<_>>();
     tags.sort();
     format!("{} [{}] {:?}", metric.context().name(), tags.join(","), metric.values())
+}
+
+/// Reports every metric the encode hosts route to the lease of an output it knows, described, on that output's channel.
+struct DescribingObserver {
+    outputs: BTreeMap<String, mpsc::UnboundedSender<String>>,
+}
+
+impl LeaseObserver for DescribingObserver {
+    fn observe(&self, output: &str, buffer: &EventsBuffer) {
+        let metrics = self
+            .outputs
+            .get(output)
+            .unwrap_or_else(|| panic!("DogStatsD with Multi-Region Failover has no output `{}`", output));
+        for metric in buffer.into_iter().filter_map(Event::try_as_metric) {
+            let _ = metrics.send(describe(metric));
+        }
+    }
 }
 
 /// A destination that reports every metric it receives, described.

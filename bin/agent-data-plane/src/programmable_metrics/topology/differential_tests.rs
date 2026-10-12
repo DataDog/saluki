@@ -26,7 +26,7 @@ use stringtheory::MetaString;
 
 use crate::programmable_metrics::{
     test_support::layered_configuration_system,
-    test_topology::{collected_outputs, output_points, Aggregation, Delivery, MetricsPath, Options, TestTopology},
+    test_topology::{output_points, Aggregation, Delivery, MetricsPath, Options, TestTopology},
 };
 
 /// What every configuration of the matrix adds, so that the native no-aggregation split sends what it holds when it
@@ -291,7 +291,7 @@ async fn run_layers(
 ) -> (Vec<Delivery>, BTreeSet<String>) {
     let system = layered_configuration_system(layers).await;
     let topology = TestTopology::start(&system, Options::new(path, Aggregation::Clocked), |_| {}).await;
-    let outputs = collected_outputs(topology.snapshot());
+    let outputs = topology.outputs();
     for feed in topology.feeds() {
         for batch in batches(&feed) {
             topology.feed(&feed, batch);
@@ -341,7 +341,7 @@ async fn run_isolated(name: &str, yaml: &'static str) -> (Vec<Delivery>, BTreeSe
     let system = layered_configuration_system(&layers(name, yaml)).await;
     let options = Options::new(MetricsPath::Plan, Aggregation::Clocked);
     let topology = TestTopology::start(&system, options, |_| {}).await;
-    let outputs = collected_outputs(topology.snapshot());
+    let outputs = topology.outputs();
     for feed in topology.feeds() {
         for batch in differential_batches(&feed) {
             topology.feed(&feed, batch);
@@ -829,7 +829,7 @@ async fn run_ticks(yaml: &str, path: MetricsPath) -> (Vec<Delivery>, BTreeSet<St
         }
     }));
     let topology = TestTopology::start(&system, options, |_| {}).await;
-    let outputs = collected_outputs(topology.snapshot());
+    let outputs = topology.outputs();
     let mut sent = 0;
     for step in tick_script() {
         match step {

@@ -1,13 +1,121 @@
 use http::{
-    uri::{Authority, Scheme},
+    header::AUTHORIZATION,
+    uri::{Authority, PathAndQuery, Scheme},
     HeaderName, HeaderValue, Request, Uri,
 };
+use tracing::error;
 
-use super::endpoints::ResolvedEndpoint;
+use super::endpoints::{DispatchProtocol, ResolvedEndpoint};
 
 static ALLOW_ARBITRARY_TAG_VALUE_HEADER: HeaderName = HeaderName::from_static("allow-arbitrary-tag-value");
 static DD_AGENT_VERSION_HEADER: HeaderName = HeaderName::from_static("dd-agent-version");
 static DD_API_KEY_HEADER: HeaderName = HeaderName::from_static("dd-api-key");
+
+/// The path every request to the Cluster Agent is sent to, whatever intake path it was encoded for.
+pub(crate) const CLUSTER_AGENT_SERIES_PATH: &str = "/series";
+
+/// Returns the authority a request with the given path goes to: the logs or traces intake authority for logs, traces,
+/// and APM statistics payloads when there is one, and the endpoint's own authority otherwise.
+fn intake_authority(
+    path_and_query: &PathAndQuery, endpoint_authority: &Authority, logs_authority: Option<&Authority>,
+    traces_authority: Option<&Authority>,
+) -> Authority {
+    let path = path_and_query.as_str();
+    let intake = if path.starts_with("/api/v2/logs") {
+        logs_authority
+    } else if path.starts_with("/api/v0.2/traces") || path.starts_with("/api/v0.2/stats") {
+        traces_authority
+    } else {
+        None
+    };
+    intake.unwrap_or(endpoint_authority).clone()
+}
+
+/// Builds the request mapper of a recipient that a delivery host runs.
+///
+/// The mapper reads the recipient's protocol and credential at every dispatch, so a publication that changes the
+/// protocol, or a rotated credential, applies from the next request on, retries included:
+///
+/// - a Datadog intake recipient gets the endpoint's scheme and authority (or its logs or traces authority), the API key
+///   in `DD-API-KEY`, and `Allow-Arbitrary-Tag-Value: true` while its protocol asks for it;
+/// - a Cluster Agent recipient gets the endpoint's scheme and authority with the path forced to `/series`, no
+///   `DD-API-KEY`, and its credential as a bearer token in `Authorization`.
+///
+/// An endpoint without a live protocol, which only a static forwarder runs, is mapped as a Datadog intake recipient
+/// with the endpoint's own authorities and no arbitrary tag values.
+pub(crate) fn for_hosted_recipient<B>(endpoint: ResolvedEndpoint) -> impl FnMut(Request<B>) -> Request<B> {
+    let endpoint_authority = Authority::try_from(endpoint.endpoint().authority())
+        .expect("should not fail to construct new endpoint authority");
+    let endpoint_scheme =
+        Scheme::try_from(endpoint.endpoint().scheme()).expect("should not fail to construct new endpoint scheme");
+    let fixed = DispatchProtocol::DatadogIntake {
+        logs_authority: endpoint.logs_authority().cloned(),
+        traces_authority: endpoint.traces_authority().cloned(),
+        allow_arbitrary_tags: false,
+    };
+    move |mut request| {
+        let live = endpoint.protocol_cell().map(|cell| cell.load());
+        let protocol = live.as_deref().unwrap_or(&fixed);
+        let credential = endpoint.api_key();
+        match protocol {
+            DispatchProtocol::DatadogIntake {
+                logs_authority,
+                traces_authority,
+                allow_arbitrary_tags,
+            } => {
+                let path_and_query = request.uri().path_and_query().expect("request path must exist").clone();
+                let authority = intake_authority(
+                    &path_and_query,
+                    &endpoint_authority,
+                    logs_authority.as_ref(),
+                    traces_authority.as_ref(),
+                );
+                *request.uri_mut() = Uri::builder()
+                    .scheme(endpoint_scheme.clone())
+                    .authority(authority)
+                    .path_and_query(path_and_query)
+                    .build()
+                    .expect("should not fail to construct new URI");
+                let api_key =
+                    HeaderValue::from_str(&credential).expect("should not fail to construct API key header value");
+                let headers = request.headers_mut();
+                headers.insert(DD_API_KEY_HEADER.clone(), api_key);
+                // A request retried after the setting was turned off must not keep the header of its first attempt.
+                if *allow_arbitrary_tags {
+                    headers.insert(
+                        ALLOW_ARBITRARY_TAG_VALUE_HEADER.clone(),
+                        HeaderValue::from_static("true"),
+                    );
+                } else {
+                    headers.remove(&ALLOW_ARBITRARY_TAG_VALUE_HEADER);
+                }
+            }
+            DispatchProtocol::ClusterAgent => {
+                *request.uri_mut() = Uri::builder()
+                    .scheme(endpoint_scheme.clone())
+                    .authority(endpoint_authority.clone())
+                    .path_and_query(CLUSTER_AGENT_SERIES_PATH)
+                    .build()
+                    .expect("should not fail to construct Cluster Agent URI");
+                let headers = request.headers_mut();
+                headers.remove(&DD_API_KEY_HEADER);
+                headers.remove(&ALLOW_ARBITRARY_TAG_VALUE_HEADER);
+                match HeaderValue::from_str(&format!("Bearer {credential}")) {
+                    Ok(token) => {
+                        headers.insert(AUTHORIZATION, token);
+                    }
+                    Err(_) => {
+                        // A credential cell holds only header-safe values, so this is not reached; without a token,
+                        // the Cluster Agent rejects the request rather than a wrong one being sent.
+                        error!(endpoint = %endpoint.endpoint(), "Cluster Agent token cannot be sent in a header.");
+                        headers.remove(AUTHORIZATION);
+                    }
+                }
+            }
+        }
+        request
+    }
+}
 
 /// Builds a middleware function that will update the request's URI to use the resolved endpoint's URI, and add the API
 /// key as a header.
@@ -22,21 +130,12 @@ pub fn for_resolved_endpoint<B>(endpoint: ResolvedEndpoint) -> impl FnMut(Reques
     move |mut request| {
         let path_and_query = request.uri().path_and_query().expect("request path must exist").clone();
 
-        let authority = if path_and_query.as_str().starts_with("/api/v2/logs") {
-            endpoint
-                .logs_authority()
-                .cloned()
-                .unwrap_or_else(|| new_uri_authority.clone())
-        } else if path_and_query.as_str().starts_with("/api/v0.2/traces")
-            || path_and_query.as_str().starts_with("/api/v0.2/stats")
-        {
-            endpoint
-                .traces_authority()
-                .cloned()
-                .unwrap_or_else(|| new_uri_authority.clone())
-        } else {
-            new_uri_authority.clone()
-        };
+        let authority = intake_authority(
+            &path_and_query,
+            &new_uri_authority,
+            endpoint.logs_authority(),
+            endpoint.traces_authority(),
+        );
         // Build an updated URI by taking the endpoint URL and slapping the request's URI path on the end of it.
         let new_uri = Uri::builder()
             .scheme(new_uri_scheme.clone())
@@ -108,6 +207,22 @@ mod tests {
 
     use super::{for_resolved_endpoint, with_allow_arbitrary_tags, with_version_info};
     use crate::common::datadog::endpoints::ResolvedEndpoint;
+
+    #[test]
+    fn a_hosted_mapper_without_a_live_protocol_maps_as_the_native_one() {
+        // An endpoint a static forwarder resolved carries no live protocol: the hosted mapper then maps a request the
+        // way the native mapper does.
+        let endpoint = ResolvedEndpoint::from_raw_endpoint("https://app.datadoghq.com", "secret-api-key")
+            .expect("endpoint should resolve");
+        let mut native = for_resolved_endpoint(endpoint.clone());
+        let mut hosted = super::for_hosted_recipient(endpoint);
+        for path in ["/api/v2/series", "/api/v2/logs", "/api/v0.2/traces"] {
+            let request = || Request::builder().uri(path).body(()).unwrap();
+            let (native, hosted) = (native(request()), hosted(request()));
+            assert_eq!(native.uri(), hosted.uri(), "{path}");
+            assert_eq!(native.headers(), hosted.headers(), "{path}");
+        }
+    }
 
     #[test]
     fn for_resolved_endpoint_rewrites_scheme_authority_and_sets_api_key() {

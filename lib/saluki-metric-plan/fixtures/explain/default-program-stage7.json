@@ -1,0 +1,3771 @@
+{
+  "explain_version": 1,
+  "plan": {
+    "ir_version": 1,
+    "hash": "sha256:5bcb595ae3cc75602f6ad9cb20c063699d573c3565d241e81d700b29b23f4d1c",
+    "structural_hash": "sha256:4446c97c98c94fa51c808d6af2b9308c3897f49d9f989858decd56a3b0c2975e",
+    "valid": true
+  },
+  "graph": {
+    "nodes": [
+      {
+        "id": "dsd_in",
+        "op": "source",
+        "boundary": "io_host",
+        "state": "none",
+        "loss": [],
+        "provenance": {
+          "native": "dsd_in"
+        },
+        "params": {
+          "binding": "dogstatsd",
+          "timestamps": "mixed"
+        },
+        "bindings": [],
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "metrics",
+            "port_type": {
+              "kinds": [
+                "counter",
+                "gauge",
+                "set",
+                "histogram",
+                "distribution"
+              ],
+              "timestamps": "mixed"
+            },
+            "to": "dsd_enrich.in"
+          }
+        ]
+      },
+      {
+        "id": "dsd_enrich",
+        "op": "dogstatsd_mapper",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [],
+        "provenance": {
+          "native": "dsd_enrich"
+        },
+        "params": {
+          "cache_size": {
+            "config": "dogstatsd.mapper.cache_size",
+            "resolved": 1000
+          },
+          "profiles": {
+            "config": "dogstatsd.mapper.profiles",
+            "resolved": [
+              {
+                "mappings": [
+                  {
+                    "match": "raw.requests.*",
+                    "match_type": "wildcard",
+                    "name": "mapped.requests",
+                    "tags": [
+                      {
+                        "name": "route",
+                        "value": "$1"
+                      }
+                    ]
+                  }
+                ],
+                "name": "checkout",
+                "prefix": "raw."
+              }
+            ]
+          },
+          "string_interner_bytes": {
+            "config": "dogstatsd.mapper.string_interner_size_bytes",
+            "resolved": 65536
+          }
+        },
+        "bindings": [
+          {
+            "param": "profiles",
+            "binding": "dogstatsd.mapper.profiles",
+            "resolved": [
+              {
+                "mappings": [
+                  {
+                    "match": "raw.requests.*",
+                    "match_type": "wildcard",
+                    "name": "mapped.requests",
+                    "tags": [
+                      {
+                        "name": "route",
+                        "value": "$1"
+                      }
+                    ]
+                  }
+                ],
+                "name": "checkout",
+                "prefix": "raw."
+              }
+            ]
+          },
+          {
+            "param": "cache_size",
+            "binding": "dogstatsd.mapper.cache_size",
+            "resolved": 1000
+          },
+          {
+            "param": "string_interner_bytes",
+            "binding": "dogstatsd.mapper.string_interner_size_bytes",
+            "resolved": 65536
+          }
+        ],
+        "inputs": [
+          {
+            "name": "in",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "dsd_in.metrics"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "out",
+            "port_type": {
+              "kinds": [
+                "counter",
+                "gauge",
+                "set",
+                "histogram",
+                "distribution"
+              ],
+              "timestamps": "mixed"
+            },
+            "to": "dsd_prefix_filter.in"
+          }
+        ]
+      },
+      {
+        "id": "dsd_prefix_filter",
+        "op": "namespace_prefix",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [],
+        "provenance": {
+          "native": "dsd_prefix_filter"
+        },
+        "params": {
+          "exclusions": {
+            "config": "dogstatsd.prefix_filter.metric_namespace_blocklist",
+            "resolved": [
+              "internal.",
+              "system."
+            ]
+          },
+          "namespace": {
+            "config": "dogstatsd.prefix_filter.metric_namespace",
+            "resolved": "tenant"
+          }
+        },
+        "bindings": [
+          {
+            "param": "namespace",
+            "binding": "dogstatsd.prefix_filter.metric_namespace",
+            "resolved": "tenant"
+          },
+          {
+            "param": "exclusions",
+            "binding": "dogstatsd.prefix_filter.metric_namespace_blocklist",
+            "resolved": [
+              "internal.",
+              "system."
+            ]
+          }
+        ],
+        "inputs": [
+          {
+            "name": "in",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "dsd_enrich.out"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "out",
+            "port_type": {
+              "kinds": [
+                "counter",
+                "gauge",
+                "set",
+                "histogram",
+                "distribution"
+              ],
+              "timestamps": "mixed"
+            },
+            "to": "dsd_prefix_filter_blocklist.in"
+          }
+        ]
+      },
+      {
+        "id": "dsd_prefix_filter_blocklist",
+        "op": "split",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [],
+        "provenance": {
+          "native": "dsd_prefix_filter"
+        },
+        "params": {
+          "predicate": {
+            "intake_name": {
+              "matches": {
+                "prefix": {
+                  "config": "dogstatsd.metric_filter.match_prefix",
+                  "resolved": false
+                },
+                "values": {
+                  "config": "dogstatsd.metric_filter.values",
+                  "resolved": [
+                    "tenant.raw.blocked"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "bindings": [
+          {
+            "param": "predicate.intake_name.values",
+            "binding": "dogstatsd.metric_filter.values",
+            "resolved": [
+              "tenant.raw.blocked"
+            ]
+          },
+          {
+            "param": "predicate.intake_name.prefix",
+            "binding": "dogstatsd.metric_filter.match_prefix",
+            "resolved": false
+          }
+        ],
+        "inputs": [
+          {
+            "name": "in",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "dsd_prefix_filter.out"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "true",
+            "port_type": {
+              "kinds": [
+                "counter",
+                "gauge",
+                "set",
+                "histogram",
+                "distribution"
+              ],
+              "timestamps": "mixed"
+            },
+            "to": "dsd_prefix_filter_blocklist_true.in"
+          },
+          {
+            "name": "false",
+            "port_type": {
+              "kinds": [
+                "counter",
+                "gauge",
+                "set",
+                "histogram",
+                "distribution"
+              ],
+              "timestamps": "mixed"
+            },
+            "to": "dsd_no_agg_split.in"
+          }
+        ]
+      },
+      {
+        "id": "dsd_prefix_filter_blocklist_true",
+        "op": "drop",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [
+          "policy"
+        ],
+        "provenance": {
+          "native": "dsd_prefix_filter"
+        },
+        "params": {},
+        "bindings": [],
+        "inputs": [
+          {
+            "name": "in",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "dsd_prefix_filter_blocklist.true"
+          }
+        ],
+        "outputs": []
+      },
+      {
+        "id": "dsd_no_agg_split",
+        "op": "timestamp_split",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [],
+        "provenance": {
+          "native": "dsd_no_agg_split"
+        },
+        "params": {
+          "window": {
+            "config": "dogstatsd.aggregation.window_duration_seconds",
+            "resolved": "10s"
+          }
+        },
+        "bindings": [
+          {
+            "param": "window",
+            "binding": "dogstatsd.aggregation.window_duration_seconds",
+            "resolved": "10s"
+          }
+        ],
+        "inputs": [
+          {
+            "name": "in",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "dsd_prefix_filter_blocklist.false"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "default",
+            "port_type": {
+              "kinds": [
+                "counter",
+                "gauge",
+                "set",
+                "histogram",
+                "distribution"
+              ],
+              "timestamps": "untimestamped"
+            },
+            "to": "dsd_tag_filterlist.in"
+          },
+          {
+            "name": "passthrough",
+            "port_type": {
+              "kinds": [
+                "rate",
+                "gauge",
+                "set",
+                "histogram",
+                "distribution"
+              ],
+              "timestamps": "timestamped"
+            },
+            "to": "dsd_post_agg_filter_in.1"
+          }
+        ]
+      },
+      {
+        "id": "dsd_tag_filterlist",
+        "op": "tag_projection",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [
+          "policy"
+        ],
+        "provenance": {
+          "native": "dsd_tag_filterlist"
+        },
+        "params": {
+          "cache_capacity": {
+            "config": "dogstatsd.aggregation.aggregator_tag_filter_cache_capacity",
+            "resolved": 100000
+          },
+          "rules": {
+            "config": "dogstatsd.tag_filterlist",
+            "resolved": [
+              {
+                "action": "exclude",
+                "metric_name": "tenant.checkout.latency",
+                "tags": [
+                  "user_id"
+                ]
+              }
+            ]
+          },
+          "value_rules": {
+            "config": "dogstatsd.tag_value_allowlist",
+            "resolved": [
+              {
+                "metric_prefix": "tenant.checkout.",
+                "on_miss": "replace",
+                "replacement": "other",
+                "tag_name": "env",
+                "values": [
+                  "prod",
+                  "staging"
+                ]
+              }
+            ]
+          }
+        },
+        "bindings": [
+          {
+            "param": "rules",
+            "binding": "dogstatsd.tag_filterlist",
+            "resolved": [
+              {
+                "action": "exclude",
+                "metric_name": "tenant.checkout.latency",
+                "tags": [
+                  "user_id"
+                ]
+              }
+            ]
+          },
+          {
+            "param": "value_rules",
+            "binding": "dogstatsd.tag_value_allowlist",
+            "resolved": [
+              {
+                "metric_prefix": "tenant.checkout.",
+                "on_miss": "replace",
+                "replacement": "other",
+                "tag_name": "env",
+                "values": [
+                  "prod",
+                  "staging"
+                ]
+              }
+            ]
+          },
+          {
+            "param": "cache_capacity",
+            "binding": "dogstatsd.aggregation.aggregator_tag_filter_cache_capacity",
+            "resolved": 100000
+          }
+        ],
+        "inputs": [
+          {
+            "name": "in",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "dsd_no_agg_split.default"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "out",
+            "port_type": {
+              "kinds": [
+                "counter",
+                "gauge",
+                "set",
+                "histogram",
+                "distribution"
+              ],
+              "timestamps": "untimestamped"
+            },
+            "to": "dsd_agg.in"
+          }
+        ]
+      },
+      {
+        "id": "dsd_agg",
+        "op": "aggregate",
+        "boundary": "isolated",
+        "state": "keyed",
+        "loss": [
+          "policy",
+          "capacity",
+          "shutdown"
+        ],
+        "provenance": {
+          "native": "dsd_agg"
+        },
+        "params": {
+          "context_limit": {
+            "config": "dogstatsd.aggregation.context_limit",
+            "resolved": 1000000
+          },
+          "copy_to_distribution": {
+            "config": "metrics_encoding.histogram.copy_to_distribution",
+            "resolved": false
+          },
+          "copy_to_distribution_prefix": {
+            "config": "metrics_encoding.histogram.copy_to_distribution_prefix",
+            "resolved": ""
+          },
+          "counter_expiry": {
+            "config": "dogstatsd.aggregation.counter_expiry_seconds",
+            "resolved": "5m"
+          },
+          "flush_interval": {
+            "config": "dogstatsd.aggregation.flush_interval",
+            "resolved": "15s"
+          },
+          "flush_open_windows": {
+            "config": "dogstatsd.aggregation.flush_open_windows",
+            "resolved": false
+          },
+          "histogram_aggregates": {
+            "config": "metrics_encoding.histogram.aggregates",
+            "resolved": [
+              "max",
+              "median",
+              "avg",
+              "count"
+            ]
+          },
+          "histogram_percentiles": {
+            "config": "metrics_encoding.histogram.percentiles",
+            "resolved": [
+              95
+            ]
+          },
+          "window": {
+            "config": "dogstatsd.aggregation.window_duration_seconds",
+            "resolved": "10s"
+          }
+        },
+        "bindings": [
+          {
+            "param": "window",
+            "binding": "dogstatsd.aggregation.window_duration_seconds",
+            "resolved": "10s"
+          },
+          {
+            "param": "flush_interval",
+            "binding": "dogstatsd.aggregation.flush_interval",
+            "resolved": "15s"
+          },
+          {
+            "param": "context_limit",
+            "binding": "dogstatsd.aggregation.context_limit",
+            "resolved": 1000000
+          },
+          {
+            "param": "counter_expiry",
+            "binding": "dogstatsd.aggregation.counter_expiry_seconds",
+            "resolved": "5m"
+          },
+          {
+            "param": "flush_open_windows",
+            "binding": "dogstatsd.aggregation.flush_open_windows",
+            "resolved": false
+          },
+          {
+            "param": "histogram_aggregates",
+            "binding": "metrics_encoding.histogram.aggregates",
+            "resolved": [
+              "max",
+              "median",
+              "avg",
+              "count"
+            ]
+          },
+          {
+            "param": "histogram_percentiles",
+            "binding": "metrics_encoding.histogram.percentiles",
+            "resolved": [
+              95
+            ]
+          },
+          {
+            "param": "copy_to_distribution",
+            "binding": "metrics_encoding.histogram.copy_to_distribution",
+            "resolved": false
+          },
+          {
+            "param": "copy_to_distribution_prefix",
+            "binding": "metrics_encoding.histogram.copy_to_distribution_prefix",
+            "resolved": ""
+          }
+        ],
+        "inputs": [
+          {
+            "name": "in",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "dsd_tag_filterlist.out"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "out",
+            "port_type": {
+              "kinds": [
+                "rate",
+                "gauge",
+                "set",
+                "distribution"
+              ],
+              "timestamps": "timestamped"
+            },
+            "to": "dsd_post_agg_filter_in.0"
+          }
+        ]
+      },
+      {
+        "id": "dsd_post_agg_filter_in",
+        "op": "merge",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [],
+        "provenance": {
+          "native": "dsd_post_agg_filter"
+        },
+        "params": {
+          "inputs": 2
+        },
+        "bindings": [],
+        "inputs": [
+          {
+            "name": "0",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "dsd_agg.out"
+          },
+          {
+            "name": "1",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "dsd_no_agg_split.passthrough"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "out",
+            "port_type": {
+              "kinds": [
+                "rate",
+                "gauge",
+                "set",
+                "histogram",
+                "distribution"
+              ],
+              "timestamps": "timestamped"
+            },
+            "to": "dsd_post_agg_filter.in"
+          }
+        ]
+      },
+      {
+        "id": "dsd_post_agg_filter",
+        "op": "split",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [],
+        "provenance": {
+          "native": "dsd_post_agg_filter"
+        },
+        "params": {
+          "predicate": {
+            "all": [
+              {
+                "kind_in": [
+                  "counter",
+                  "rate",
+                  "gauge",
+                  "set"
+                ]
+              },
+              {
+                "intake_name": {
+                  "matches": {
+                    "prefix": {
+                      "config": "dogstatsd.metric_filter.match_prefix",
+                      "resolved": false
+                    },
+                    "values": {
+                      "config": "dogstatsd.post_aggregate_filter.values",
+                      "resolved": [
+                        "tenant.checkout.latency.max"
+                      ]
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "bindings": [
+          {
+            "param": "predicate.all[1].intake_name.values",
+            "binding": "dogstatsd.post_aggregate_filter.values",
+            "resolved": [
+              "tenant.checkout.latency.max"
+            ]
+          },
+          {
+            "param": "predicate.all[1].intake_name.prefix",
+            "binding": "dogstatsd.metric_filter.match_prefix",
+            "resolved": false
+          }
+        ],
+        "inputs": [
+          {
+            "name": "in",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "dsd_post_agg_filter_in.out"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "true",
+            "port_type": {
+              "kinds": [
+                "rate",
+                "gauge",
+                "set"
+              ],
+              "timestamps": "timestamped"
+            },
+            "to": "dsd_post_agg_filter_true.in"
+          },
+          {
+            "name": "false",
+            "port_type": {
+              "kinds": [
+                "rate",
+                "gauge",
+                "set",
+                "histogram",
+                "distribution"
+              ],
+              "timestamps": "timestamped"
+            },
+            "to": "dsd_post_agg_filter_fanout.in"
+          }
+        ]
+      },
+      {
+        "id": "dsd_post_agg_filter_true",
+        "op": "drop",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [
+          "policy"
+        ],
+        "provenance": {
+          "native": "dsd_post_agg_filter"
+        },
+        "params": {},
+        "bindings": [],
+        "inputs": [
+          {
+            "name": "in",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "dsd_post_agg_filter.true"
+          }
+        ],
+        "outputs": []
+      },
+      {
+        "id": "dsd_post_agg_filter_fanout",
+        "op": "tee",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [],
+        "provenance": {
+          "native": "dsd_client_telemetry_out"
+        },
+        "params": {
+          "ports": 2
+        },
+        "bindings": [],
+        "inputs": [
+          {
+            "name": "in",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "dsd_post_agg_filter.false"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "0",
+            "port_type": {
+              "kinds": [
+                "rate",
+                "gauge",
+                "set",
+                "histogram",
+                "distribution"
+              ],
+              "timestamps": "timestamped"
+            },
+            "to": "dsd_post_agg_filter_fanout_0.in"
+          },
+          {
+            "name": "1",
+            "port_type": {
+              "kinds": [
+                "rate",
+                "gauge",
+                "set",
+                "histogram",
+                "distribution"
+              ],
+              "timestamps": "timestamped"
+            },
+            "to": "metrics_enrich_in.0"
+          }
+        ]
+      },
+      {
+        "id": "dsd_post_agg_filter_fanout_0",
+        "op": "emit",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [],
+        "provenance": {
+          "native": "dsd_client_telemetry_out"
+        },
+        "params": {
+          "output": "dsd_client_telemetry"
+        },
+        "bindings": [],
+        "inputs": [
+          {
+            "name": "in",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "dsd_post_agg_filter_fanout.0"
+          }
+        ],
+        "outputs": []
+      },
+      {
+        "id": "otlp_in",
+        "op": "source",
+        "boundary": "io_host",
+        "state": "none",
+        "loss": [],
+        "provenance": {
+          "native": "otlp_in"
+        },
+        "params": {
+          "binding": "otlp"
+        },
+        "bindings": [],
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "metrics",
+            "port_type": {
+              "kinds": [
+                "counter",
+                "rate",
+                "gauge",
+                "distribution"
+              ],
+              "timestamps": "mixed"
+            },
+            "to": "metrics_enrich_in.1"
+          }
+        ]
+      },
+      {
+        "id": "checks_ipc_in",
+        "op": "source",
+        "boundary": "io_host",
+        "state": "none",
+        "loss": [],
+        "provenance": {
+          "native": "checks_ipc_in"
+        },
+        "params": {
+          "binding": "checks"
+        },
+        "bindings": [],
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "metrics",
+            "port_type": {
+              "kinds": [
+                "counter",
+                "rate",
+                "gauge",
+                "histogram"
+              ],
+              "timestamps": "mixed"
+            },
+            "to": "metrics_enrich_in.2"
+          }
+        ]
+      },
+      {
+        "id": "liveness_in",
+        "op": "source",
+        "boundary": "io_host",
+        "state": "none",
+        "loss": [],
+        "provenance": {
+          "native": "liveness_in"
+        },
+        "params": {
+          "binding": "liveness"
+        },
+        "bindings": [],
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "metrics",
+            "port_type": {
+              "kinds": [
+                "gauge"
+              ],
+              "timestamps": "timestamped"
+            },
+            "to": "metrics_enrich_in.3"
+          }
+        ]
+      },
+      {
+        "id": "trace_sampler",
+        "op": "source",
+        "boundary": "io_host",
+        "state": "none",
+        "loss": [],
+        "provenance": {
+          "native": "trace_sampler"
+        },
+        "params": {
+          "binding": "trace_sampler"
+        },
+        "bindings": [],
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "metrics",
+            "port_type": {
+              "kinds": [
+                "counter",
+                "gauge"
+              ],
+              "timestamps": "untimestamped"
+            },
+            "to": "metrics_enrich_in.4"
+          }
+        ]
+      },
+      {
+        "id": "metrics_enrich_in",
+        "op": "merge",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [],
+        "provenance": {
+          "native": "metrics_enrich"
+        },
+        "params": {
+          "inputs": 5
+        },
+        "bindings": [],
+        "inputs": [
+          {
+            "name": "0",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "dsd_post_agg_filter_fanout.1"
+          },
+          {
+            "name": "1",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "otlp_in.metrics"
+          },
+          {
+            "name": "2",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "checks_ipc_in.metrics"
+          },
+          {
+            "name": "3",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "liveness_in.metrics"
+          },
+          {
+            "name": "4",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "trace_sampler.metrics"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "out",
+            "port_type": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "to": "metrics_enrich.in"
+          }
+        ]
+      },
+      {
+        "id": "metrics_enrich",
+        "op": "host_enrichment",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [],
+        "provenance": {
+          "native": "metrics_enrich"
+        },
+        "params": {},
+        "bindings": [],
+        "inputs": [
+          {
+            "name": "in",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "metrics_enrich_in.out"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "out",
+            "port_type": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "to": "metrics_enrich_host_tags.in"
+          }
+        ]
+      },
+      {
+        "id": "metrics_enrich_host_tags",
+        "op": "host_tags",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [],
+        "provenance": {
+          "native": "metrics_enrich"
+        },
+        "params": {
+          "deadline": "1700000300s",
+          "tags": [
+            "cloud_provider:example",
+            "zone:a"
+          ]
+        },
+        "bindings": [],
+        "inputs": [
+          {
+            "name": "in",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "metrics_enrich.out"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "out",
+            "port_type": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "to": "metrics_policy.in"
+          }
+        ]
+      },
+      {
+        "id": "metrics_policy",
+        "op": "tee",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [],
+        "provenance": {
+          "native": "metrics_enrich"
+        },
+        "params": {
+          "ports": 5
+        },
+        "bindings": [],
+        "inputs": [
+          {
+            "name": "in",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "metrics_enrich_host_tags.out"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "0",
+            "port_type": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "to": "metrics_policy_0.in"
+          },
+          {
+            "name": "1",
+            "port_type": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "to": "metrics_routing_filter_0.in"
+          },
+          {
+            "name": "2",
+            "port_type": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "to": "metrics_routing_filter_1.in"
+          },
+          {
+            "name": "3",
+            "port_type": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "to": "mrf_metrics_gateway.in"
+          },
+          {
+            "name": "4",
+            "port_type": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "to": "af_metrics_gateway.in"
+          }
+        ]
+      },
+      {
+        "id": "metrics_policy_0",
+        "op": "emit",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [],
+        "provenance": {
+          "native": "dd_metrics_encode"
+        },
+        "params": {
+          "output": "dd_metrics_encode"
+        },
+        "bindings": [],
+        "inputs": [
+          {
+            "name": "in",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "metrics_policy.0"
+          }
+        ],
+        "outputs": []
+      },
+      {
+        "id": "metrics_routing_filter_0",
+        "op": "split",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [],
+        "provenance": {
+          "native": "metrics_routing_filter_0"
+        },
+        "params": {
+          "predicate": {
+            "any": [
+              {
+                "intake_name": {
+                  "matches": {
+                    "prefix": false,
+                    "values": {
+                      "config": "metrics_endpoint_routing.group.0123456789abcdef.names",
+                      "resolved": [
+                        "checkout.requests"
+                      ]
+                    }
+                  }
+                }
+              },
+              {
+                "intake_name": {
+                  "matches": {
+                    "prefix": true,
+                    "values": {
+                      "config": "metrics_endpoint_routing.group.0123456789abcdef.prefixes",
+                      "resolved": [
+                        "checkout."
+                      ]
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "bindings": [
+          {
+            "param": "predicate.any[0].intake_name.values",
+            "binding": "metrics_endpoint_routing.group.0123456789abcdef.names",
+            "resolved": [
+              "checkout.requests"
+            ]
+          },
+          {
+            "param": "predicate.any[1].intake_name.values",
+            "binding": "metrics_endpoint_routing.group.0123456789abcdef.prefixes",
+            "resolved": [
+              "checkout."
+            ]
+          }
+        ],
+        "inputs": [
+          {
+            "name": "in",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "metrics_policy.1"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "true",
+            "port_type": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "to": "metrics_routing_filter_0_true.in"
+          },
+          {
+            "name": "false",
+            "port_type": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "to": "metrics_routing_filter_0_false.in"
+          }
+        ]
+      },
+      {
+        "id": "metrics_routing_filter_0_true",
+        "op": "emit",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [],
+        "provenance": {
+          "native": "metrics_routing_encode_0"
+        },
+        "params": {
+          "output": "metrics_routing_encode_0"
+        },
+        "bindings": [],
+        "inputs": [
+          {
+            "name": "in",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "metrics_routing_filter_0.true"
+          }
+        ],
+        "outputs": []
+      },
+      {
+        "id": "metrics_routing_filter_0_false",
+        "op": "drop",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [
+          "policy"
+        ],
+        "provenance": {
+          "native": "metrics_routing_filter_0"
+        },
+        "params": {},
+        "bindings": [],
+        "inputs": [
+          {
+            "name": "in",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "metrics_routing_filter_0.false"
+          }
+        ],
+        "outputs": []
+      },
+      {
+        "id": "metrics_routing_filter_1",
+        "op": "split",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [],
+        "provenance": {
+          "native": "metrics_routing_filter_1"
+        },
+        "params": {
+          "predicate": {
+            "any": [
+              {
+                "intake_name": {
+                  "matches": {
+                    "prefix": false,
+                    "values": {
+                      "config": "metrics_endpoint_routing.group.fedcba9876543210.names",
+                      "resolved": []
+                    }
+                  }
+                }
+              },
+              {
+                "intake_name": {
+                  "matches": {
+                    "prefix": true,
+                    "values": {
+                      "config": "metrics_endpoint_routing.group.fedcba9876543210.prefixes",
+                      "resolved": [
+                        "catalog."
+                      ]
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "bindings": [
+          {
+            "param": "predicate.any[0].intake_name.values",
+            "binding": "metrics_endpoint_routing.group.fedcba9876543210.names",
+            "resolved": []
+          },
+          {
+            "param": "predicate.any[1].intake_name.values",
+            "binding": "metrics_endpoint_routing.group.fedcba9876543210.prefixes",
+            "resolved": [
+              "catalog."
+            ]
+          }
+        ],
+        "inputs": [
+          {
+            "name": "in",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "metrics_policy.2"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "true",
+            "port_type": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "to": "metrics_routing_filter_1_true.in"
+          },
+          {
+            "name": "false",
+            "port_type": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "to": "metrics_routing_filter_1_false.in"
+          }
+        ]
+      },
+      {
+        "id": "metrics_routing_filter_1_true",
+        "op": "emit",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [],
+        "provenance": {
+          "native": "metrics_routing_encode_1"
+        },
+        "params": {
+          "output": "metrics_routing_encode_1"
+        },
+        "bindings": [],
+        "inputs": [
+          {
+            "name": "in",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "metrics_routing_filter_1.true"
+          }
+        ],
+        "outputs": []
+      },
+      {
+        "id": "metrics_routing_filter_1_false",
+        "op": "drop",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [
+          "policy"
+        ],
+        "provenance": {
+          "native": "metrics_routing_filter_1"
+        },
+        "params": {},
+        "bindings": [],
+        "inputs": [
+          {
+            "name": "in",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "metrics_routing_filter_1.false"
+          }
+        ],
+        "outputs": []
+      },
+      {
+        "id": "mrf_metrics_gateway",
+        "op": "split",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [],
+        "provenance": {
+          "native": "mrf_metrics_gateway"
+        },
+        "params": {
+          "predicate": {
+            "all": [
+              {
+                "flag": {
+                  "config": "multi_region_failover.enabled",
+                  "resolved": true
+                }
+              },
+              {
+                "flag": {
+                  "config": "multi_region_failover.metric_mirroring.enabled",
+                  "resolved": true
+                }
+              },
+              {
+                "any": [
+                  {
+                    "is_empty": {
+                      "config": "multi_region_failover.metric_mirroring.allowlist",
+                      "resolved": []
+                    }
+                  },
+                  {
+                    "name": {
+                      "matches": {
+                        "prefix": false,
+                        "values": {
+                          "config": "multi_region_failover.metric_mirroring.allowlist",
+                          "resolved": []
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "bindings": [
+          {
+            "param": "predicate.all[0].flag",
+            "binding": "multi_region_failover.enabled",
+            "resolved": true
+          },
+          {
+            "param": "predicate.all[1].flag",
+            "binding": "multi_region_failover.metric_mirroring.enabled",
+            "resolved": true
+          },
+          {
+            "param": "predicate.all[2].any[0].is_empty",
+            "binding": "multi_region_failover.metric_mirroring.allowlist",
+            "resolved": []
+          },
+          {
+            "param": "predicate.all[2].any[1].name.values",
+            "binding": "multi_region_failover.metric_mirroring.allowlist",
+            "resolved": []
+          }
+        ],
+        "inputs": [
+          {
+            "name": "in",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "metrics_policy.3"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "true",
+            "port_type": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "to": "mrf_metrics_gateway_true.in"
+          },
+          {
+            "name": "false",
+            "port_type": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "to": "mrf_metrics_gateway_false.in"
+          }
+        ]
+      },
+      {
+        "id": "mrf_metrics_gateway_true",
+        "op": "emit",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [],
+        "provenance": {
+          "native": "mrf_metrics_encode"
+        },
+        "params": {
+          "output": "mrf_metrics_encode"
+        },
+        "bindings": [],
+        "inputs": [
+          {
+            "name": "in",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "mrf_metrics_gateway.true"
+          }
+        ],
+        "outputs": []
+      },
+      {
+        "id": "mrf_metrics_gateway_false",
+        "op": "drop",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [
+          "policy"
+        ],
+        "provenance": {
+          "native": "mrf_metrics_gateway"
+        },
+        "params": {},
+        "bindings": [],
+        "inputs": [
+          {
+            "name": "in",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "mrf_metrics_gateway.false"
+          }
+        ],
+        "outputs": []
+      },
+      {
+        "id": "af_metrics_gateway",
+        "op": "split",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [],
+        "provenance": {
+          "native": "af_metrics_gateway"
+        },
+        "params": {
+          "predicate": {
+            "all": [
+              {
+                "kind_in": [
+                  "counter",
+                  "rate",
+                  "gauge",
+                  "set"
+                ]
+              },
+              {
+                "name": {
+                  "matches": {
+                    "prefix": false,
+                    "values": {
+                      "config": "autoscaling_failover.metrics",
+                      "resolved": [
+                        "requests.count"
+                      ]
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "bindings": [
+          {
+            "param": "predicate.all[1].name.values",
+            "binding": "autoscaling_failover.metrics",
+            "resolved": [
+              "requests.count"
+            ]
+          }
+        ],
+        "inputs": [
+          {
+            "name": "in",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "metrics_policy.4"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "true",
+            "port_type": {
+              "kinds": [
+                "counter",
+                "rate",
+                "gauge",
+                "set"
+              ],
+              "timestamps": "mixed"
+            },
+            "to": "af_metrics_gateway_true.in"
+          },
+          {
+            "name": "false",
+            "port_type": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "to": "af_metrics_gateway_false.in"
+          }
+        ]
+      },
+      {
+        "id": "af_metrics_gateway_true",
+        "op": "emit",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [],
+        "provenance": {
+          "native": "af_metrics_encode"
+        },
+        "params": {
+          "output": "af_metrics_encode"
+        },
+        "bindings": [],
+        "inputs": [
+          {
+            "name": "in",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "af_metrics_gateway.true"
+          }
+        ],
+        "outputs": []
+      },
+      {
+        "id": "af_metrics_gateway_false",
+        "op": "drop",
+        "boundary": "synchronous",
+        "state": "none",
+        "loss": [
+          "policy"
+        ],
+        "provenance": {
+          "native": "af_metrics_gateway"
+        },
+        "params": {},
+        "bindings": [],
+        "inputs": [
+          {
+            "name": "in",
+            "accepts": {
+              "kinds": "all",
+              "timestamps": "mixed"
+            },
+            "from": "af_metrics_gateway.false"
+          }
+        ],
+        "outputs": []
+      }
+    ],
+    "edges": [
+      {
+        "from": "dsd_in.metrics",
+        "to": "dsd_enrich.in",
+        "port_type": {
+          "kinds": [
+            "counter",
+            "gauge",
+            "set",
+            "histogram",
+            "distribution"
+          ],
+          "timestamps": "mixed"
+        }
+      },
+      {
+        "from": "dsd_enrich.out",
+        "to": "dsd_prefix_filter.in",
+        "port_type": {
+          "kinds": [
+            "counter",
+            "gauge",
+            "set",
+            "histogram",
+            "distribution"
+          ],
+          "timestamps": "mixed"
+        }
+      },
+      {
+        "from": "dsd_prefix_filter.out",
+        "to": "dsd_prefix_filter_blocklist.in",
+        "port_type": {
+          "kinds": [
+            "counter",
+            "gauge",
+            "set",
+            "histogram",
+            "distribution"
+          ],
+          "timestamps": "mixed"
+        }
+      },
+      {
+        "from": "dsd_prefix_filter_blocklist.true",
+        "to": "dsd_prefix_filter_blocklist_true.in",
+        "port_type": {
+          "kinds": [
+            "counter",
+            "gauge",
+            "set",
+            "histogram",
+            "distribution"
+          ],
+          "timestamps": "mixed"
+        }
+      },
+      {
+        "from": "dsd_prefix_filter_blocklist.false",
+        "to": "dsd_no_agg_split.in",
+        "port_type": {
+          "kinds": [
+            "counter",
+            "gauge",
+            "set",
+            "histogram",
+            "distribution"
+          ],
+          "timestamps": "mixed"
+        }
+      },
+      {
+        "from": "dsd_no_agg_split.default",
+        "to": "dsd_tag_filterlist.in",
+        "port_type": {
+          "kinds": [
+            "counter",
+            "gauge",
+            "set",
+            "histogram",
+            "distribution"
+          ],
+          "timestamps": "untimestamped"
+        }
+      },
+      {
+        "from": "dsd_tag_filterlist.out",
+        "to": "dsd_agg.in",
+        "port_type": {
+          "kinds": [
+            "counter",
+            "gauge",
+            "set",
+            "histogram",
+            "distribution"
+          ],
+          "timestamps": "untimestamped"
+        }
+      },
+      {
+        "from": "dsd_agg.out",
+        "to": "dsd_post_agg_filter_in.0",
+        "port_type": {
+          "kinds": [
+            "rate",
+            "gauge",
+            "set",
+            "distribution"
+          ],
+          "timestamps": "timestamped"
+        }
+      },
+      {
+        "from": "dsd_no_agg_split.passthrough",
+        "to": "dsd_post_agg_filter_in.1",
+        "port_type": {
+          "kinds": [
+            "rate",
+            "gauge",
+            "set",
+            "histogram",
+            "distribution"
+          ],
+          "timestamps": "timestamped"
+        }
+      },
+      {
+        "from": "dsd_post_agg_filter_in.out",
+        "to": "dsd_post_agg_filter.in",
+        "port_type": {
+          "kinds": [
+            "rate",
+            "gauge",
+            "set",
+            "histogram",
+            "distribution"
+          ],
+          "timestamps": "timestamped"
+        }
+      },
+      {
+        "from": "dsd_post_agg_filter.true",
+        "to": "dsd_post_agg_filter_true.in",
+        "port_type": {
+          "kinds": [
+            "rate",
+            "gauge",
+            "set"
+          ],
+          "timestamps": "timestamped"
+        }
+      },
+      {
+        "from": "dsd_post_agg_filter.false",
+        "to": "dsd_post_agg_filter_fanout.in",
+        "port_type": {
+          "kinds": [
+            "rate",
+            "gauge",
+            "set",
+            "histogram",
+            "distribution"
+          ],
+          "timestamps": "timestamped"
+        }
+      },
+      {
+        "from": "dsd_post_agg_filter_fanout.0",
+        "to": "dsd_post_agg_filter_fanout_0.in",
+        "port_type": {
+          "kinds": [
+            "rate",
+            "gauge",
+            "set",
+            "histogram",
+            "distribution"
+          ],
+          "timestamps": "timestamped"
+        }
+      },
+      {
+        "from": "dsd_post_agg_filter_fanout.1",
+        "to": "metrics_enrich_in.0",
+        "port_type": {
+          "kinds": [
+            "rate",
+            "gauge",
+            "set",
+            "histogram",
+            "distribution"
+          ],
+          "timestamps": "timestamped"
+        }
+      },
+      {
+        "from": "otlp_in.metrics",
+        "to": "metrics_enrich_in.1",
+        "port_type": {
+          "kinds": [
+            "counter",
+            "rate",
+            "gauge",
+            "distribution"
+          ],
+          "timestamps": "mixed"
+        }
+      },
+      {
+        "from": "checks_ipc_in.metrics",
+        "to": "metrics_enrich_in.2",
+        "port_type": {
+          "kinds": [
+            "counter",
+            "rate",
+            "gauge",
+            "histogram"
+          ],
+          "timestamps": "mixed"
+        }
+      },
+      {
+        "from": "liveness_in.metrics",
+        "to": "metrics_enrich_in.3",
+        "port_type": {
+          "kinds": [
+            "gauge"
+          ],
+          "timestamps": "timestamped"
+        }
+      },
+      {
+        "from": "trace_sampler.metrics",
+        "to": "metrics_enrich_in.4",
+        "port_type": {
+          "kinds": [
+            "counter",
+            "gauge"
+          ],
+          "timestamps": "untimestamped"
+        }
+      },
+      {
+        "from": "metrics_enrich_in.out",
+        "to": "metrics_enrich.in",
+        "port_type": {
+          "kinds": "all",
+          "timestamps": "mixed"
+        }
+      },
+      {
+        "from": "metrics_enrich.out",
+        "to": "metrics_enrich_host_tags.in",
+        "port_type": {
+          "kinds": "all",
+          "timestamps": "mixed"
+        }
+      },
+      {
+        "from": "metrics_enrich_host_tags.out",
+        "to": "metrics_policy.in",
+        "port_type": {
+          "kinds": "all",
+          "timestamps": "mixed"
+        }
+      },
+      {
+        "from": "metrics_policy.0",
+        "to": "metrics_policy_0.in",
+        "port_type": {
+          "kinds": "all",
+          "timestamps": "mixed"
+        }
+      },
+      {
+        "from": "metrics_policy.1",
+        "to": "metrics_routing_filter_0.in",
+        "port_type": {
+          "kinds": "all",
+          "timestamps": "mixed"
+        }
+      },
+      {
+        "from": "metrics_routing_filter_0.true",
+        "to": "metrics_routing_filter_0_true.in",
+        "port_type": {
+          "kinds": "all",
+          "timestamps": "mixed"
+        }
+      },
+      {
+        "from": "metrics_routing_filter_0.false",
+        "to": "metrics_routing_filter_0_false.in",
+        "port_type": {
+          "kinds": "all",
+          "timestamps": "mixed"
+        }
+      },
+      {
+        "from": "metrics_policy.2",
+        "to": "metrics_routing_filter_1.in",
+        "port_type": {
+          "kinds": "all",
+          "timestamps": "mixed"
+        }
+      },
+      {
+        "from": "metrics_routing_filter_1.true",
+        "to": "metrics_routing_filter_1_true.in",
+        "port_type": {
+          "kinds": "all",
+          "timestamps": "mixed"
+        }
+      },
+      {
+        "from": "metrics_routing_filter_1.false",
+        "to": "metrics_routing_filter_1_false.in",
+        "port_type": {
+          "kinds": "all",
+          "timestamps": "mixed"
+        }
+      },
+      {
+        "from": "metrics_policy.3",
+        "to": "mrf_metrics_gateway.in",
+        "port_type": {
+          "kinds": "all",
+          "timestamps": "mixed"
+        }
+      },
+      {
+        "from": "mrf_metrics_gateway.true",
+        "to": "mrf_metrics_gateway_true.in",
+        "port_type": {
+          "kinds": "all",
+          "timestamps": "mixed"
+        }
+      },
+      {
+        "from": "mrf_metrics_gateway.false",
+        "to": "mrf_metrics_gateway_false.in",
+        "port_type": {
+          "kinds": "all",
+          "timestamps": "mixed"
+        }
+      },
+      {
+        "from": "metrics_policy.4",
+        "to": "af_metrics_gateway.in",
+        "port_type": {
+          "kinds": "all",
+          "timestamps": "mixed"
+        }
+      },
+      {
+        "from": "af_metrics_gateway.true",
+        "to": "af_metrics_gateway_true.in",
+        "port_type": {
+          "kinds": [
+            "counter",
+            "rate",
+            "gauge",
+            "set"
+          ],
+          "timestamps": "mixed"
+        }
+      },
+      {
+        "from": "af_metrics_gateway.false",
+        "to": "af_metrics_gateway_false.in",
+        "port_type": {
+          "kinds": "all",
+          "timestamps": "mixed"
+        }
+      }
+    ],
+    "outputs": [
+      {
+        "id": "dsd_client_telemetry",
+        "accepts": {
+          "kinds": "all",
+          "timestamps": "mixed"
+        },
+        "fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "recipients": [],
+        "delivery": "native",
+        "emitted_by": [
+          "dsd_post_agg_filter_fanout_0"
+        ]
+      },
+      {
+        "id": "dd_metrics_encode",
+        "accepts": {
+          "kinds": "all",
+          "timestamps": "mixed"
+        },
+        "fingerprint": "sha256:35b6c7483c20787a99a97a2a2bb2684fd1a0a8f0315e5bf73fad5b48b74595f7",
+        "recipients": [
+          "dd_out/additional_2/0",
+          "dd_out/primary/0"
+        ],
+        "delivery": "native",
+        "emitted_by": [
+          "metrics_policy_0"
+        ]
+      },
+      {
+        "id": "metrics_routing_encode_0",
+        "accepts": {
+          "kinds": "all",
+          "timestamps": "mixed"
+        },
+        "fingerprint": "sha256:872f5fcced0f5b63de64b05dd3ccd92f316105796588425c46540cf65a3ff5a9",
+        "recipients": [
+          "dd_out/additional_0/0"
+        ],
+        "delivery": "native",
+        "emitted_by": [
+          "metrics_routing_filter_0_true"
+        ]
+      },
+      {
+        "id": "metrics_routing_encode_1",
+        "accepts": {
+          "kinds": "all",
+          "timestamps": "mixed"
+        },
+        "fingerprint": "sha256:ccc6ed3c9012f1da6fe870fbf4a1c9e3357dfa31e85c0ba234a8d4ec7b740a99",
+        "recipients": [
+          "dd_out/additional_1/0",
+          "dd_out/additional_1/1"
+        ],
+        "delivery": "native",
+        "emitted_by": [
+          "metrics_routing_filter_1_true"
+        ]
+      },
+      {
+        "id": "mrf_metrics_encode",
+        "accepts": {
+          "kinds": "all",
+          "timestamps": "mixed"
+        },
+        "fingerprint": "sha256:0ff4cb7e0e1316c414965f9ca7858095cb8feff59bd696171455cbe959c77c08",
+        "recipients": [
+          "mrf_dd_out/primary/0"
+        ],
+        "delivery": "native",
+        "emitted_by": [
+          "mrf_metrics_gateway_true"
+        ]
+      },
+      {
+        "id": "af_metrics_encode",
+        "accepts": {
+          "kinds": [
+            "counter",
+            "rate",
+            "gauge",
+            "set"
+          ],
+          "timestamps": "mixed"
+        },
+        "fingerprint": "sha256:608361af9ff1be71390572e16f40425d91adeab874b3f89d17435918832514ff",
+        "recipients": [
+          "cluster_agent_out/primary/0"
+        ],
+        "delivery": "native",
+        "emitted_by": [
+          "af_metrics_gateway_true"
+        ]
+      },
+      {
+        "id": "resources_team_d",
+        "accepts": {
+          "kinds": "all",
+          "timestamps": "mixed"
+        },
+        "fingerprint": "sha256:361f843bc9a6b25663cc6da865dd3af0daf04bb8890e3717ae98d7d30bb1c838",
+        "recipients": [
+          "dd_out/declared/team_d/http://127.0.0.1:17105"
+        ],
+        "delivery": "native",
+        "emitted_by": []
+      }
+    ],
+    "scopes": [
+      {
+        "name": "dogstatsd_pre_aggregation",
+        "inputs": {
+          "metrics": "dsd_in.metrics"
+        },
+        "exits": {
+          "aggregated": "dsd_post_agg_filter_in.0",
+          "passthrough": "dsd_post_agg_filter_in.1"
+        }
+      },
+      {
+        "name": "post_enrich",
+        "inputs": {
+          "metrics": "metrics_enrich_host_tags.out"
+        }
+      }
+    ]
+  },
+  "resources": {
+    "outputs": [
+      {
+        "id": "dd_metrics_encode",
+        "host": "dd_out",
+        "selector": {
+          "role": "main"
+        },
+        "encoder": {
+          "flush_timeout": "2s",
+          "series": "v2"
+        },
+        "telemetry": "dd_metrics_encode",
+        "provenance": "native",
+        "change": "rebound"
+      },
+      {
+        "id": "metrics_routing_encode_0",
+        "host": "dd_out",
+        "selector": {
+          "group": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "encoder": {
+          "flush_timeout": "2s",
+          "series": "v2"
+        },
+        "telemetry": "metrics_routing_encode_0",
+        "provenance": "native",
+        "change": "reused"
+      },
+      {
+        "id": "metrics_routing_encode_1",
+        "host": "dd_out",
+        "selector": {
+          "group": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "encoder": {
+          "flush_timeout": "2s",
+          "series": "v2"
+        },
+        "telemetry": "metrics_routing_encode_1",
+        "provenance": "native",
+        "change": "reused"
+      },
+      {
+        "id": "mrf_metrics_encode",
+        "host": "mrf_dd_out",
+        "selector": {
+          "role": "multi_region_failover"
+        },
+        "encoder": {
+          "flush_timeout": "2s",
+          "series": "v2"
+        },
+        "telemetry": "mrf_metrics_encode",
+        "provenance": "native",
+        "change": "reused"
+      },
+      {
+        "id": "af_metrics_encode",
+        "host": "cluster_agent_out",
+        "selector": {
+          "role": "autoscaling_failover"
+        },
+        "encoder": {
+          "flush_timeout": "2s",
+          "series": "v2"
+        },
+        "telemetry": "af_metrics_encode",
+        "provenance": "native",
+        "change": "reused"
+      },
+      {
+        "id": "resources_team_d",
+        "host": "dd_out",
+        "selector": {
+          "declared": [
+            "dd_out/declared/team_d/http://127.0.0.1:17105"
+          ]
+        },
+        "encoder": {
+          "flush_timeout": "2s",
+          "series": "v2"
+        },
+        "telemetry": "resources_team_d",
+        "provenance": {
+          "declared": {
+            "revision": 2,
+            "hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          }
+        },
+        "change": "reused"
+      }
+    ],
+    "hosts": [
+      {
+        "host": "dd_out",
+        "settings": {
+          "endpoint_concurrency": 1,
+          "request_timeout": "30s"
+        },
+        "change": "reconfigured"
+      },
+      {
+        "host": "mrf_dd_out",
+        "settings": {
+          "endpoint_concurrency": 1,
+          "request_timeout": "20s"
+        },
+        "change": "reused"
+      },
+      {
+        "host": "cluster_agent_out",
+        "settings": {
+          "endpoint_concurrency": 1,
+          "request_timeout": "20s"
+        },
+        "change": "reused"
+      }
+    ],
+    "recipients": [
+      {
+        "id": "dd_out/primary/0",
+        "host": "dd_out",
+        "endpoint": "https://app.datadoghq.com",
+        "credential": "native:api_key",
+        "classes": "all",
+        "protocol": {
+          "kind": "datadog_intake",
+          "v3": {
+            "series": false,
+            "sketches": false
+          }
+        },
+        "delivery": "native",
+        "provenance": "native",
+        "outputs": [
+          "dd_metrics_encode"
+        ],
+        "change": "reused"
+      },
+      {
+        "id": "dd_out/additional_0/0",
+        "host": "dd_out",
+        "endpoint": "https://group0.example.com",
+        "credential": "native:additional/0123456789abcdef/0",
+        "classes": "all",
+        "protocol": {
+          "kind": "datadog_intake",
+          "v3": {
+            "series": false,
+            "sketches": false
+          }
+        },
+        "delivery": "native",
+        "provenance": "native",
+        "outputs": [
+          "metrics_routing_encode_0"
+        ],
+        "change": "reused"
+      },
+      {
+        "id": "dd_out/additional_1/0",
+        "host": "dd_out",
+        "endpoint": "https://group1.example.com",
+        "credential": "native:additional/fedcba9876543210/0",
+        "classes": "all",
+        "protocol": {
+          "kind": "datadog_intake",
+          "v3": {
+            "series": false,
+            "sketches": false
+          }
+        },
+        "delivery": "native",
+        "provenance": "native",
+        "outputs": [
+          "metrics_routing_encode_1"
+        ],
+        "change": "reused"
+      },
+      {
+        "id": "dd_out/additional_1/1",
+        "host": "dd_out",
+        "endpoint": "https://group1.example.com",
+        "credential": "native:additional/fedcba9876543210/1",
+        "classes": "all",
+        "protocol": {
+          "kind": "datadog_intake",
+          "v3": {
+            "series": false,
+            "sketches": false
+          }
+        },
+        "delivery": "native",
+        "provenance": "native",
+        "outputs": [
+          "metrics_routing_encode_1"
+        ],
+        "change": "reused"
+      },
+      {
+        "id": "mrf_dd_out/primary/0",
+        "host": "mrf_dd_out",
+        "endpoint": "https://app.datadoghq.eu",
+        "credential": "native:multi_region_failover.api_key",
+        "classes": "all",
+        "protocol": {
+          "kind": "datadog_intake",
+          "v3": {
+            "series": false,
+            "sketches": false
+          }
+        },
+        "delivery": "native",
+        "provenance": "native",
+        "outputs": [
+          "mrf_metrics_encode"
+        ],
+        "change": "reused"
+      },
+      {
+        "id": "cluster_agent_out/primary/0",
+        "host": "cluster_agent_out",
+        "endpoint": "https://datadog-cluster-agent.default.svc:5005",
+        "credential": "native:cluster_agent.auth_token",
+        "classes": "metrics_only",
+        "protocol": {
+          "kind": "cluster_agent"
+        },
+        "delivery": "native",
+        "provenance": "native",
+        "outputs": [
+          "af_metrics_encode"
+        ],
+        "change": "reused"
+      },
+      {
+        "id": "dd_out/declared/team_d/http://127.0.0.1:17105",
+        "host": "dd_out",
+        "endpoint": "http://127.0.0.1:17105",
+        "credential": "credentials/team_d",
+        "classes": "metrics_only",
+        "protocol": {
+          "kind": "datadog_intake",
+          "v3": {
+            "series": false,
+            "sketches": false
+          }
+        },
+        "delivery": {
+          "bounded": {
+            "queue_bytes": 4194304,
+            "spill": "never",
+            "on_retire": "attempt"
+          }
+        },
+        "provenance": {
+          "declared": {
+            "revision": 2,
+            "hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          }
+        },
+        "outputs": [
+          "resources_team_d"
+        ],
+        "change": "reused"
+      },
+      {
+        "id": "dd_out/additional_2/0",
+        "host": "dd_out",
+        "endpoint": "https://dual.example.com",
+        "credential": "native:additional/0000111122223333/0",
+        "classes": "all",
+        "protocol": {
+          "kind": "datadog_intake",
+          "v3": {
+            "series": false,
+            "sketches": false
+          }
+        },
+        "delivery": "native",
+        "provenance": "native",
+        "outputs": [
+          "dd_metrics_encode"
+        ],
+        "change": "new"
+      }
+    ],
+    "removed": {
+      "outputs": [
+        "resources_team_e"
+      ],
+      "recipients": [
+        "dd_out/declared/team_e/https://e.example.com"
+      ]
+    }
+  },
+  "bounds": [
+    {
+      "limit": "artifact_nodes",
+      "scope": "plan",
+      "value": 34,
+      "maximum": 256,
+      "enforced": false,
+      "within": true
+    },
+    {
+      "limit": "predicate_leaves",
+      "scope": "plan",
+      "value": 13,
+      "maximum": 1024,
+      "enforced": false,
+      "within": true
+    },
+    {
+      "limit": "tee_fan_out",
+      "scope": "plan",
+      "value": 5,
+      "maximum": 32,
+      "enforced": false,
+      "within": true
+    },
+    {
+      "limit": "work_per_input",
+      "scope": "plan",
+      "value": 179,
+      "maximum": 4096,
+      "enforced": false,
+      "within": true
+    }
+  ],
+  "findings": [],
+  "rewrites": [
+    {
+      "id": "R5b",
+      "outcome": "applied",
+      "nodes": [
+        "dsd_agg",
+        "dsd_post_agg_filter"
+      ],
+      "justification": "path: `dsd_agg` feeds the filter `dsd_post_agg_filter` through `dsd_post_agg_filter_in`, which neither copies nor changes what it reads; reads: the filter reads {name, kind}, all known when a record is built; kinds: `dsd_agg` judges the records it emits of {rate, gauge, set, distribution} with the filter's predicate, as the filter receives them, and skips those its `true` port would drop; the filter stays for every other record, and state is unchanged, so every output is the same on every trace",
+      "capacity_rule": false,
+      "telemetry": [
+        {
+          "node": "dsd_agg",
+          "change": "changed",
+          "detail": "it sends fewer records downstream: none that `dsd_post_agg_filter` drops, which count in `dsd_post_agg_filter`'s own series of its `true` port and its policy loss, as if it had received them"
+        },
+        {
+          "node": "dsd_post_agg_filter_in",
+          "change": "changed",
+          "detail": "`plan_node_events_total{component_id:dsd_post_agg_filter_in}` of its input counts fewer records: those `dsd_agg` suppresses"
+        },
+        {
+          "node": "dsd_post_agg_filter",
+          "change": "changed",
+          "detail": "`plan_node_events_total{component_id:dsd_post_agg_filter}` of its input counts fewer records: those `dsd_agg` suppresses"
+        }
+      ]
+    },
+    {
+      "id": "R3",
+      "outcome": "applied",
+      "nodes": [
+        "mrf_metrics_gateway"
+      ],
+      "justification": "The predicate is constant given the resolved values of `multi_region_failover.metric_mirroring.allowlist`, `multi_region_failover.enabled`, and `multi_region_failover.metric_mirroring.enabled`: it is true for every event, so the compiled decision sends every metric to the `true` port without evaluating it. The plan keeps the node, and its `false` port's exit stays, idle; a new value of a binding changes only the next generation's program.",
+      "capacity_rule": false,
+      "telemetry": []
+    },
+    {
+      "id": "R4",
+      "outcome": "applied",
+      "nodes": [
+        "metrics_policy",
+        "metrics_routing_filter_0",
+        "metrics_routing_filter_1",
+        "mrf_metrics_gateway",
+        "af_metrics_gateway"
+      ],
+      "justification": "The decision's predicates read only `name` and `kind`, which are context fields or the kind, and evaluating them is estimated to cost 61 ns per event, at least the 25 ns from which a lookup that hits saves several times what one that misses adds. Regions memoize the decision's exit set per context identity plus kind, in a direct-mapped memo of 4096 entries that belongs to one generation's program and evicts without allocating. Keying by the 64-bit context identity treats colliding contexts as one, as native aggregation does.",
+      "capacity_rule": false,
+      "telemetry": []
+    }
+  ],
+  "physical": {
+    "fixed": [
+      {
+        "node": "dsd_in",
+        "op": "source",
+        "boundary": "io_host",
+        "input": null,
+        "idle": false,
+        "admission_points": [
+          {
+            "id": 0,
+            "port": "metrics",
+            "mode": "admit",
+            "to": "dsd_pre_aggregation",
+            "feeds_state": true
+          }
+        ]
+      },
+      {
+        "node": "otlp_in",
+        "op": "source",
+        "boundary": "io_host",
+        "input": null,
+        "idle": false,
+        "admission_points": [
+          {
+            "id": 1,
+            "port": "metrics",
+            "mode": "admit",
+            "to": "metrics_enrich"
+          }
+        ]
+      },
+      {
+        "node": "checks_ipc_in",
+        "op": "source",
+        "boundary": "io_host",
+        "input": null,
+        "idle": false,
+        "admission_points": [
+          {
+            "id": 2,
+            "port": "metrics",
+            "mode": "admit",
+            "to": "metrics_enrich"
+          }
+        ]
+      },
+      {
+        "node": "liveness_in",
+        "op": "source",
+        "boundary": "io_host",
+        "input": null,
+        "idle": false,
+        "admission_points": [
+          {
+            "id": 3,
+            "port": "metrics",
+            "mode": "admit",
+            "to": "metrics_enrich"
+          }
+        ]
+      },
+      {
+        "node": "trace_sampler",
+        "op": "source",
+        "boundary": "io_host",
+        "input": null,
+        "idle": false,
+        "admission_points": [
+          {
+            "id": 4,
+            "port": "metrics",
+            "mode": "admit",
+            "to": "metrics_enrich"
+          }
+        ]
+      }
+    ],
+    "slots": [
+      {
+        "name": "dsd_pre_aggregation",
+        "cost": 65,
+        "nodes": [
+          "dsd_enrich"
+        ],
+        "entries": [
+          {
+            "key": "admission point 0",
+            "from": "dsd_in.metrics",
+            "input": "dsd_enrich.in"
+          }
+        ],
+        "exits": [
+          {
+            "index": 0,
+            "name": "dsd_prefix_filter_region",
+            "to": "dsd_prefix_filter_region",
+            "idle": false,
+            "progress_points": [
+              0
+            ]
+          },
+          {
+            "index": 1,
+            "name": "dsd_client_telemetry",
+            "to": "output dsd_client_telemetry",
+            "idle": true
+          },
+          {
+            "index": 2,
+            "name": "dd_metrics_encode",
+            "to": "encode host dd_metrics_encode of dd_out",
+            "idle": true
+          },
+          {
+            "index": 3,
+            "name": "mrf_metrics_encode",
+            "to": "encode host mrf_metrics_encode of mrf_dd_out",
+            "idle": true
+          },
+          {
+            "index": 4,
+            "name": "af_metrics_encode",
+            "to": "encode host af_metrics_encode of cluster_agent_out",
+            "idle": true
+          }
+        ]
+      },
+      {
+        "name": "dsd_prefix_filter_region",
+        "cost": 110,
+        "nodes": [
+          "dsd_prefix_filter",
+          "dsd_prefix_filter_blocklist",
+          "dsd_prefix_filter_blocklist_true"
+        ],
+        "entries": [
+          {
+            "key": "entry 0",
+            "from": "dsd_enrich.out",
+            "input": "dsd_prefix_filter.in"
+          }
+        ],
+        "exits": [
+          {
+            "index": 0,
+            "name": "dsd_no_agg_split_region",
+            "to": "dsd_no_agg_split_region",
+            "idle": false,
+            "progress_points": [
+              0
+            ]
+          },
+          {
+            "index": 1,
+            "name": "dsd_client_telemetry",
+            "to": "output dsd_client_telemetry",
+            "idle": true
+          },
+          {
+            "index": 2,
+            "name": "dd_metrics_encode",
+            "to": "encode host dd_metrics_encode of dd_out",
+            "idle": true
+          },
+          {
+            "index": 3,
+            "name": "mrf_metrics_encode",
+            "to": "encode host mrf_metrics_encode of mrf_dd_out",
+            "idle": true
+          },
+          {
+            "index": 4,
+            "name": "af_metrics_encode",
+            "to": "encode host af_metrics_encode of cluster_agent_out",
+            "idle": true
+          }
+        ]
+      },
+      {
+        "name": "dsd_no_agg_split_region",
+        "cost": 25,
+        "nodes": [
+          "dsd_no_agg_split",
+          "dsd_tag_filterlist"
+        ],
+        "entries": [
+          {
+            "key": "entry 0",
+            "from": "dsd_prefix_filter_blocklist.false",
+            "input": "dsd_no_agg_split.in"
+          }
+        ],
+        "exits": [
+          {
+            "index": 0,
+            "name": "dsd_agg",
+            "to": "dsd_agg",
+            "idle": false,
+            "progress_points": [
+              0
+            ]
+          },
+          {
+            "index": 1,
+            "name": "dsd_post_agg_filter_region",
+            "to": "dsd_post_agg_filter_region",
+            "idle": false
+          },
+          {
+            "index": 2,
+            "name": "dsd_client_telemetry",
+            "to": "output dsd_client_telemetry",
+            "idle": true
+          },
+          {
+            "index": 3,
+            "name": "dd_metrics_encode",
+            "to": "encode host dd_metrics_encode of dd_out",
+            "idle": true
+          },
+          {
+            "index": 4,
+            "name": "mrf_metrics_encode",
+            "to": "encode host mrf_metrics_encode of mrf_dd_out",
+            "idle": true
+          },
+          {
+            "index": 5,
+            "name": "af_metrics_encode",
+            "to": "encode host af_metrics_encode of cluster_agent_out",
+            "idle": true
+          }
+        ]
+      },
+      {
+        "name": "dsd_agg",
+        "cost": 0,
+        "nodes": [
+          "dsd_agg"
+        ],
+        "entries": [
+          {
+            "key": "entry 0",
+            "from": "dsd_tag_filterlist.out",
+            "input": "dsd_agg.in"
+          }
+        ],
+        "exits": [
+          {
+            "index": 0,
+            "name": "dsd_post_agg_filter_region",
+            "to": "dsd_post_agg_filter_region",
+            "idle": false
+          }
+        ],
+        "isolation": {
+          "output_point": 5,
+          "upstream": [
+            0
+          ]
+        }
+      },
+      {
+        "name": "dsd_post_agg_filter_region",
+        "cost": 36,
+        "nodes": [
+          "dsd_post_agg_filter_in",
+          "dsd_post_agg_filter",
+          "dsd_post_agg_filter_true",
+          "dsd_post_agg_filter_fanout",
+          "dsd_post_agg_filter_fanout_0"
+        ],
+        "entries": [
+          {
+            "key": "entry 0",
+            "from": "dsd_agg.out",
+            "input": "dsd_post_agg_filter_in.0"
+          },
+          {
+            "key": "entry 1",
+            "from": "dsd_no_agg_split.passthrough",
+            "input": "dsd_post_agg_filter_in.1"
+          }
+        ],
+        "exits": [
+          {
+            "index": 0,
+            "name": "dsd_client_telemetry",
+            "to": "output dsd_client_telemetry",
+            "idle": false
+          },
+          {
+            "index": 1,
+            "name": "metrics_enrich",
+            "to": "metrics_enrich",
+            "idle": false
+          },
+          {
+            "index": 2,
+            "name": "dd_metrics_encode",
+            "to": "encode host dd_metrics_encode of dd_out",
+            "idle": true
+          },
+          {
+            "index": 3,
+            "name": "mrf_metrics_encode",
+            "to": "encode host mrf_metrics_encode of mrf_dd_out",
+            "idle": true
+          },
+          {
+            "index": 4,
+            "name": "af_metrics_encode",
+            "to": "encode host af_metrics_encode of cluster_agent_out",
+            "idle": true
+          }
+        ]
+      },
+      {
+        "name": "metrics_enrich",
+        "cost": 105,
+        "nodes": [
+          "metrics_enrich_in",
+          "metrics_enrich",
+          "metrics_enrich_host_tags",
+          "metrics_policy",
+          "metrics_policy_0",
+          "metrics_routing_filter_0",
+          "metrics_routing_filter_0_true",
+          "metrics_routing_filter_0_false",
+          "metrics_routing_filter_1",
+          "metrics_routing_filter_1_true",
+          "metrics_routing_filter_1_false",
+          "mrf_metrics_gateway",
+          "mrf_metrics_gateway_true",
+          "mrf_metrics_gateway_false",
+          "af_metrics_gateway",
+          "af_metrics_gateway_true",
+          "af_metrics_gateway_false"
+        ],
+        "entries": [
+          {
+            "key": "admission point 1",
+            "from": "otlp_in.metrics",
+            "input": "metrics_enrich_in.1"
+          },
+          {
+            "key": "admission point 2",
+            "from": "checks_ipc_in.metrics",
+            "input": "metrics_enrich_in.2"
+          },
+          {
+            "key": "admission point 3",
+            "from": "liveness_in.metrics",
+            "input": "metrics_enrich_in.3"
+          },
+          {
+            "key": "admission point 4",
+            "from": "trace_sampler.metrics",
+            "input": "metrics_enrich_in.4"
+          },
+          {
+            "key": "entry 0",
+            "from": "dsd_post_agg_filter_fanout.1",
+            "input": "metrics_enrich_in.0"
+          }
+        ],
+        "exits": [
+          {
+            "index": 0,
+            "name": "dd_metrics_encode",
+            "to": "encode host dd_metrics_encode of dd_out",
+            "idle": false
+          },
+          {
+            "index": 1,
+            "name": "mrf_metrics_encode",
+            "to": "encode host mrf_metrics_encode of mrf_dd_out",
+            "idle": false
+          },
+          {
+            "index": 2,
+            "name": "af_metrics_encode",
+            "to": "encode host af_metrics_encode of cluster_agent_out",
+            "idle": false
+          }
+        ]
+      }
+    ],
+    "edges": [
+      {
+        "from": "dsd_in.metrics",
+        "to": "dsd_pre_aggregation",
+        "kind": "admission"
+      },
+      {
+        "from": "otlp_in.metrics",
+        "to": "metrics_enrich",
+        "kind": "admission"
+      },
+      {
+        "from": "checks_ipc_in.metrics",
+        "to": "metrics_enrich",
+        "kind": "admission"
+      },
+      {
+        "from": "liveness_in.metrics",
+        "to": "metrics_enrich",
+        "kind": "admission"
+      },
+      {
+        "from": "trace_sampler.metrics",
+        "to": "metrics_enrich",
+        "kind": "admission"
+      },
+      {
+        "from": "dsd_pre_aggregation.dsd_prefix_filter_region",
+        "to": "dsd_prefix_filter_region",
+        "kind": "exit"
+      },
+      {
+        "from": "dsd_pre_aggregation.dsd_client_telemetry",
+        "to": "output dsd_client_telemetry",
+        "kind": "exit"
+      },
+      {
+        "from": "dsd_pre_aggregation.dd_metrics_encode",
+        "to": "encode host dd_metrics_encode of dd_out",
+        "kind": "exit"
+      },
+      {
+        "from": "dsd_pre_aggregation.mrf_metrics_encode",
+        "to": "encode host mrf_metrics_encode of mrf_dd_out",
+        "kind": "exit"
+      },
+      {
+        "from": "dsd_pre_aggregation.af_metrics_encode",
+        "to": "encode host af_metrics_encode of cluster_agent_out",
+        "kind": "exit"
+      },
+      {
+        "from": "dsd_prefix_filter_region.dsd_no_agg_split_region",
+        "to": "dsd_no_agg_split_region",
+        "kind": "exit"
+      },
+      {
+        "from": "dsd_prefix_filter_region.dsd_client_telemetry",
+        "to": "output dsd_client_telemetry",
+        "kind": "exit"
+      },
+      {
+        "from": "dsd_prefix_filter_region.dd_metrics_encode",
+        "to": "encode host dd_metrics_encode of dd_out",
+        "kind": "exit"
+      },
+      {
+        "from": "dsd_prefix_filter_region.mrf_metrics_encode",
+        "to": "encode host mrf_metrics_encode of mrf_dd_out",
+        "kind": "exit"
+      },
+      {
+        "from": "dsd_prefix_filter_region.af_metrics_encode",
+        "to": "encode host af_metrics_encode of cluster_agent_out",
+        "kind": "exit"
+      },
+      {
+        "from": "dsd_no_agg_split_region.dsd_agg",
+        "to": "dsd_agg",
+        "kind": "exit"
+      },
+      {
+        "from": "dsd_no_agg_split_region.dsd_post_agg_filter_region",
+        "to": "dsd_post_agg_filter_region",
+        "kind": "exit"
+      },
+      {
+        "from": "dsd_no_agg_split_region.dsd_client_telemetry",
+        "to": "output dsd_client_telemetry",
+        "kind": "exit"
+      },
+      {
+        "from": "dsd_no_agg_split_region.dd_metrics_encode",
+        "to": "encode host dd_metrics_encode of dd_out",
+        "kind": "exit"
+      },
+      {
+        "from": "dsd_no_agg_split_region.mrf_metrics_encode",
+        "to": "encode host mrf_metrics_encode of mrf_dd_out",
+        "kind": "exit"
+      },
+      {
+        "from": "dsd_no_agg_split_region.af_metrics_encode",
+        "to": "encode host af_metrics_encode of cluster_agent_out",
+        "kind": "exit"
+      },
+      {
+        "from": "dsd_agg.dsd_post_agg_filter_region",
+        "to": "dsd_post_agg_filter_region",
+        "kind": "exit"
+      },
+      {
+        "from": "dsd_post_agg_filter_region.dsd_client_telemetry",
+        "to": "output dsd_client_telemetry",
+        "kind": "exit"
+      },
+      {
+        "from": "dsd_post_agg_filter_region.metrics_enrich",
+        "to": "metrics_enrich",
+        "kind": "exit"
+      },
+      {
+        "from": "dsd_post_agg_filter_region.dd_metrics_encode",
+        "to": "encode host dd_metrics_encode of dd_out",
+        "kind": "exit"
+      },
+      {
+        "from": "dsd_post_agg_filter_region.mrf_metrics_encode",
+        "to": "encode host mrf_metrics_encode of mrf_dd_out",
+        "kind": "exit"
+      },
+      {
+        "from": "dsd_post_agg_filter_region.af_metrics_encode",
+        "to": "encode host af_metrics_encode of cluster_agent_out",
+        "kind": "exit"
+      },
+      {
+        "from": "metrics_enrich.dd_metrics_encode",
+        "to": "encode host dd_metrics_encode of dd_out",
+        "kind": "exit"
+      },
+      {
+        "from": "metrics_enrich.mrf_metrics_encode",
+        "to": "encode host mrf_metrics_encode of mrf_dd_out",
+        "kind": "exit"
+      },
+      {
+        "from": "metrics_enrich.af_metrics_encode",
+        "to": "encode host af_metrics_encode of cluster_agent_out",
+        "kind": "exit"
+      }
+    ],
+    "fusion": [
+      {
+        "from": "dsd_in.metrics",
+        "to": "dsd_enrich.in",
+        "decision": "fence",
+        "reason": "`dsd_in` is an io_host, a fence that fusion never crosses"
+      },
+      {
+        "from": "dsd_enrich.out",
+        "to": "dsd_prefix_filter.in",
+        "decision": "pipelined",
+        "reason": "fusing would make one region cost more than 110 ns per event, the cost model's budget: slots `dsd_pre_aggregation` and `dsd_prefix_filter_region` pipeline"
+      },
+      {
+        "from": "dsd_prefix_filter.out",
+        "to": "dsd_prefix_filter_blocklist.in",
+        "decision": "fused",
+        "reason": "both nodes are synchronous and nothing separates them: slot `dsd_prefix_filter_region`"
+      },
+      {
+        "from": "dsd_prefix_filter_blocklist.true",
+        "to": "dsd_prefix_filter_blocklist_true.in",
+        "decision": "fused",
+        "reason": "both nodes are synchronous and nothing separates them: slot `dsd_prefix_filter_region`"
+      },
+      {
+        "from": "dsd_prefix_filter_blocklist.false",
+        "to": "dsd_no_agg_split.in",
+        "decision": "pipelined",
+        "reason": "fusing would make one region cost more than 110 ns per event, the cost model's budget: slots `dsd_prefix_filter_region` and `dsd_no_agg_split_region` pipeline"
+      },
+      {
+        "from": "dsd_no_agg_split.default",
+        "to": "dsd_tag_filterlist.in",
+        "decision": "fused",
+        "reason": "both nodes are synchronous and nothing separates them: slot `dsd_no_agg_split_region`"
+      },
+      {
+        "from": "dsd_tag_filterlist.out",
+        "to": "dsd_agg.in",
+        "decision": "isolation",
+        "reason": "the edge enters or leaves the isolation slot `dsd_agg`, which runs its state owner alone"
+      },
+      {
+        "from": "dsd_agg.out",
+        "to": "dsd_post_agg_filter_in.0",
+        "decision": "isolation",
+        "reason": "the edge enters or leaves the isolation slot `dsd_agg`, which runs its state owner alone"
+      },
+      {
+        "from": "dsd_no_agg_split.passthrough",
+        "to": "dsd_post_agg_filter_in.1",
+        "decision": "separated",
+        "reason": "fusing would form a cycle through `dsd_agg`: slots `dsd_no_agg_split_region` and `dsd_post_agg_filter_region` stay apart"
+      },
+      {
+        "from": "dsd_post_agg_filter_in.out",
+        "to": "dsd_post_agg_filter.in",
+        "decision": "fused",
+        "reason": "both nodes are synchronous and nothing separates them: slot `dsd_post_agg_filter_region`"
+      },
+      {
+        "from": "dsd_post_agg_filter.true",
+        "to": "dsd_post_agg_filter_true.in",
+        "decision": "fused",
+        "reason": "both nodes are synchronous and nothing separates them: slot `dsd_post_agg_filter_region`"
+      },
+      {
+        "from": "dsd_post_agg_filter.false",
+        "to": "dsd_post_agg_filter_fanout.in",
+        "decision": "fused",
+        "reason": "both nodes are synchronous and nothing separates them: slot `dsd_post_agg_filter_region`"
+      },
+      {
+        "from": "dsd_post_agg_filter_fanout.0",
+        "to": "dsd_post_agg_filter_fanout_0.in",
+        "decision": "fused",
+        "reason": "both nodes are synchronous and nothing separates them: slot `dsd_post_agg_filter_region`"
+      },
+      {
+        "from": "dsd_post_agg_filter_fanout.1",
+        "to": "metrics_enrich_in.0",
+        "decision": "pipelined",
+        "reason": "fusing would make one region cost more than 110 ns per event, the cost model's budget: slots `dsd_post_agg_filter_region` and `metrics_enrich` pipeline"
+      },
+      {
+        "from": "otlp_in.metrics",
+        "to": "metrics_enrich_in.1",
+        "decision": "fence",
+        "reason": "`otlp_in` is an io_host, a fence that fusion never crosses"
+      },
+      {
+        "from": "checks_ipc_in.metrics",
+        "to": "metrics_enrich_in.2",
+        "decision": "fence",
+        "reason": "`checks_ipc_in` is an io_host, a fence that fusion never crosses"
+      },
+      {
+        "from": "liveness_in.metrics",
+        "to": "metrics_enrich_in.3",
+        "decision": "fence",
+        "reason": "`liveness_in` is an io_host, a fence that fusion never crosses"
+      },
+      {
+        "from": "trace_sampler.metrics",
+        "to": "metrics_enrich_in.4",
+        "decision": "fence",
+        "reason": "`trace_sampler` is an io_host, a fence that fusion never crosses"
+      },
+      {
+        "from": "metrics_enrich_in.out",
+        "to": "metrics_enrich.in",
+        "decision": "fused",
+        "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+      },
+      {
+        "from": "metrics_enrich.out",
+        "to": "metrics_enrich_host_tags.in",
+        "decision": "fused",
+        "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+      },
+      {
+        "from": "metrics_enrich_host_tags.out",
+        "to": "metrics_policy.in",
+        "decision": "fused",
+        "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+      },
+      {
+        "from": "metrics_policy.0",
+        "to": "metrics_policy_0.in",
+        "decision": "fused",
+        "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+      },
+      {
+        "from": "metrics_policy.1",
+        "to": "metrics_routing_filter_0.in",
+        "decision": "fused",
+        "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+      },
+      {
+        "from": "metrics_routing_filter_0.true",
+        "to": "metrics_routing_filter_0_true.in",
+        "decision": "fused",
+        "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+      },
+      {
+        "from": "metrics_routing_filter_0.false",
+        "to": "metrics_routing_filter_0_false.in",
+        "decision": "fused",
+        "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+      },
+      {
+        "from": "metrics_policy.2",
+        "to": "metrics_routing_filter_1.in",
+        "decision": "fused",
+        "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+      },
+      {
+        "from": "metrics_routing_filter_1.true",
+        "to": "metrics_routing_filter_1_true.in",
+        "decision": "fused",
+        "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+      },
+      {
+        "from": "metrics_routing_filter_1.false",
+        "to": "metrics_routing_filter_1_false.in",
+        "decision": "fused",
+        "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+      },
+      {
+        "from": "metrics_policy.3",
+        "to": "mrf_metrics_gateway.in",
+        "decision": "fused",
+        "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+      },
+      {
+        "from": "mrf_metrics_gateway.true",
+        "to": "mrf_metrics_gateway_true.in",
+        "decision": "fused",
+        "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+      },
+      {
+        "from": "mrf_metrics_gateway.false",
+        "to": "mrf_metrics_gateway_false.in",
+        "decision": "fused",
+        "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+      },
+      {
+        "from": "metrics_policy.4",
+        "to": "af_metrics_gateway.in",
+        "decision": "fused",
+        "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+      },
+      {
+        "from": "af_metrics_gateway.true",
+        "to": "af_metrics_gateway_true.in",
+        "decision": "fused",
+        "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+      },
+      {
+        "from": "af_metrics_gateway.false",
+        "to": "af_metrics_gateway_false.in",
+        "decision": "fused",
+        "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+      }
+    ],
+    "segments": [
+      {
+        "admission_point": 0,
+        "from": "dsd_in.metrics",
+        "mode": "admit",
+        "nodes": [
+          "dsd_enrich",
+          "dsd_prefix_filter",
+          "dsd_prefix_filter_blocklist",
+          "dsd_prefix_filter_blocklist_true",
+          "dsd_no_agg_split",
+          "dsd_tag_filterlist",
+          "dsd_post_agg_filter_in",
+          "dsd_post_agg_filter",
+          "dsd_post_agg_filter_true",
+          "dsd_post_agg_filter_fanout",
+          "dsd_post_agg_filter_fanout_0",
+          "metrics_enrich_in",
+          "metrics_enrich",
+          "metrics_enrich_host_tags",
+          "metrics_policy",
+          "metrics_policy_0",
+          "metrics_routing_filter_0",
+          "metrics_routing_filter_0_true",
+          "metrics_routing_filter_0_false",
+          "metrics_routing_filter_1",
+          "metrics_routing_filter_1_true",
+          "metrics_routing_filter_1_false",
+          "mrf_metrics_gateway",
+          "mrf_metrics_gateway_true",
+          "mrf_metrics_gateway_false",
+          "af_metrics_gateway",
+          "af_metrics_gateway_true",
+          "af_metrics_gateway_false"
+        ],
+        "slots": [
+          "dsd_pre_aggregation",
+          "dsd_prefix_filter_region",
+          "dsd_no_agg_split_region",
+          "dsd_post_agg_filter_region",
+          "metrics_enrich"
+        ],
+        "ends": [
+          "dsd_agg",
+          "output af_metrics_encode",
+          "output dd_metrics_encode",
+          "output dsd_client_telemetry",
+          "output metrics_routing_encode_0",
+          "output metrics_routing_encode_1",
+          "output mrf_metrics_encode"
+        ]
+      },
+      {
+        "admission_point": 1,
+        "from": "otlp_in.metrics",
+        "mode": "admit",
+        "nodes": [
+          "metrics_enrich_in",
+          "metrics_enrich",
+          "metrics_enrich_host_tags",
+          "metrics_policy",
+          "metrics_policy_0",
+          "metrics_routing_filter_0",
+          "metrics_routing_filter_0_true",
+          "metrics_routing_filter_0_false",
+          "metrics_routing_filter_1",
+          "metrics_routing_filter_1_true",
+          "metrics_routing_filter_1_false",
+          "mrf_metrics_gateway",
+          "mrf_metrics_gateway_true",
+          "mrf_metrics_gateway_false",
+          "af_metrics_gateway",
+          "af_metrics_gateway_true",
+          "af_metrics_gateway_false"
+        ],
+        "slots": [
+          "metrics_enrich"
+        ],
+        "ends": [
+          "output af_metrics_encode",
+          "output dd_metrics_encode",
+          "output metrics_routing_encode_0",
+          "output metrics_routing_encode_1",
+          "output mrf_metrics_encode"
+        ]
+      },
+      {
+        "admission_point": 2,
+        "from": "checks_ipc_in.metrics",
+        "mode": "admit",
+        "nodes": [
+          "metrics_enrich_in",
+          "metrics_enrich",
+          "metrics_enrich_host_tags",
+          "metrics_policy",
+          "metrics_policy_0",
+          "metrics_routing_filter_0",
+          "metrics_routing_filter_0_true",
+          "metrics_routing_filter_0_false",
+          "metrics_routing_filter_1",
+          "metrics_routing_filter_1_true",
+          "metrics_routing_filter_1_false",
+          "mrf_metrics_gateway",
+          "mrf_metrics_gateway_true",
+          "mrf_metrics_gateway_false",
+          "af_metrics_gateway",
+          "af_metrics_gateway_true",
+          "af_metrics_gateway_false"
+        ],
+        "slots": [
+          "metrics_enrich"
+        ],
+        "ends": [
+          "output af_metrics_encode",
+          "output dd_metrics_encode",
+          "output metrics_routing_encode_0",
+          "output metrics_routing_encode_1",
+          "output mrf_metrics_encode"
+        ]
+      },
+      {
+        "admission_point": 3,
+        "from": "liveness_in.metrics",
+        "mode": "admit",
+        "nodes": [
+          "metrics_enrich_in",
+          "metrics_enrich",
+          "metrics_enrich_host_tags",
+          "metrics_policy",
+          "metrics_policy_0",
+          "metrics_routing_filter_0",
+          "metrics_routing_filter_0_true",
+          "metrics_routing_filter_0_false",
+          "metrics_routing_filter_1",
+          "metrics_routing_filter_1_true",
+          "metrics_routing_filter_1_false",
+          "mrf_metrics_gateway",
+          "mrf_metrics_gateway_true",
+          "mrf_metrics_gateway_false",
+          "af_metrics_gateway",
+          "af_metrics_gateway_true",
+          "af_metrics_gateway_false"
+        ],
+        "slots": [
+          "metrics_enrich"
+        ],
+        "ends": [
+          "output af_metrics_encode",
+          "output dd_metrics_encode",
+          "output metrics_routing_encode_0",
+          "output metrics_routing_encode_1",
+          "output mrf_metrics_encode"
+        ]
+      },
+      {
+        "admission_point": 4,
+        "from": "trace_sampler.metrics",
+        "mode": "admit",
+        "nodes": [
+          "metrics_enrich_in",
+          "metrics_enrich",
+          "metrics_enrich_host_tags",
+          "metrics_policy",
+          "metrics_policy_0",
+          "metrics_routing_filter_0",
+          "metrics_routing_filter_0_true",
+          "metrics_routing_filter_0_false",
+          "metrics_routing_filter_1",
+          "metrics_routing_filter_1_true",
+          "metrics_routing_filter_1_false",
+          "mrf_metrics_gateway",
+          "mrf_metrics_gateway_true",
+          "mrf_metrics_gateway_false",
+          "af_metrics_gateway",
+          "af_metrics_gateway_true",
+          "af_metrics_gateway_false"
+        ],
+        "slots": [
+          "metrics_enrich"
+        ],
+        "ends": [
+          "output af_metrics_encode",
+          "output dd_metrics_encode",
+          "output metrics_routing_encode_0",
+          "output metrics_routing_encode_1",
+          "output mrf_metrics_encode"
+        ]
+      },
+      {
+        "admission_point": 5,
+        "from": "dsd_agg.out",
+        "mode": "time-driven",
+        "nodes": [
+          "dsd_post_agg_filter_in",
+          "dsd_post_agg_filter",
+          "dsd_post_agg_filter_true",
+          "dsd_post_agg_filter_fanout",
+          "dsd_post_agg_filter_fanout_0",
+          "metrics_enrich_in",
+          "metrics_enrich",
+          "metrics_enrich_host_tags",
+          "metrics_policy",
+          "metrics_policy_0",
+          "metrics_routing_filter_0",
+          "metrics_routing_filter_0_true",
+          "metrics_routing_filter_0_false",
+          "metrics_routing_filter_1",
+          "metrics_routing_filter_1_true",
+          "metrics_routing_filter_1_false",
+          "mrf_metrics_gateway",
+          "mrf_metrics_gateway_true",
+          "mrf_metrics_gateway_false",
+          "af_metrics_gateway",
+          "af_metrics_gateway_true",
+          "af_metrics_gateway_false"
+        ],
+        "slots": [
+          "dsd_post_agg_filter_region",
+          "metrics_enrich"
+        ],
+        "ends": [
+          "output af_metrics_encode",
+          "output dd_metrics_encode",
+          "output dsd_client_telemetry",
+          "output metrics_routing_encode_0",
+          "output metrics_routing_encode_1",
+          "output mrf_metrics_encode"
+        ]
+      }
+    ],
+    "output_bindings": [
+      {
+        "output": "dsd_client_telemetry",
+        "recipients": [],
+        "delivery": "native",
+        "overflow": "wait",
+        "closure": "native",
+        "fed_by": [
+          "dsd_post_agg_filter_region.dsd_client_telemetry"
+        ],
+        "idle": [
+          "dsd_pre_aggregation.dsd_client_telemetry",
+          "dsd_prefix_filter_region.dsd_client_telemetry",
+          "dsd_no_agg_split_region.dsd_client_telemetry"
+        ]
+      },
+      {
+        "output": "dd_metrics_encode",
+        "encode_host": "encode host dd_metrics_encode of dd_out",
+        "recipients": [
+          "dd_out/additional_2/0",
+          "dd_out/primary/0"
+        ],
+        "delivery": "native",
+        "overflow": "wait",
+        "closure": "native",
+        "fed_by": [
+          "metrics_enrich.dd_metrics_encode"
+        ],
+        "idle": [
+          "dsd_pre_aggregation.dd_metrics_encode",
+          "dsd_prefix_filter_region.dd_metrics_encode",
+          "dsd_no_agg_split_region.dd_metrics_encode",
+          "dsd_post_agg_filter_region.dd_metrics_encode"
+        ]
+      },
+      {
+        "output": "metrics_routing_encode_0",
+        "encode_host": "encode host dd_metrics_encode of dd_out",
+        "recipients": [
+          "dd_out/additional_0/0"
+        ],
+        "delivery": "native",
+        "overflow": "wait",
+        "closure": "native",
+        "fed_by": [
+          "metrics_enrich.dd_metrics_encode"
+        ],
+        "idle": [
+          "dsd_pre_aggregation.dd_metrics_encode",
+          "dsd_prefix_filter_region.dd_metrics_encode",
+          "dsd_no_agg_split_region.dd_metrics_encode",
+          "dsd_post_agg_filter_region.dd_metrics_encode"
+        ]
+      },
+      {
+        "output": "metrics_routing_encode_1",
+        "encode_host": "encode host dd_metrics_encode of dd_out",
+        "recipients": [
+          "dd_out/additional_1/0",
+          "dd_out/additional_1/1"
+        ],
+        "delivery": "native",
+        "overflow": "wait",
+        "closure": "native",
+        "fed_by": [
+          "metrics_enrich.dd_metrics_encode"
+        ],
+        "idle": [
+          "dsd_pre_aggregation.dd_metrics_encode",
+          "dsd_prefix_filter_region.dd_metrics_encode",
+          "dsd_no_agg_split_region.dd_metrics_encode",
+          "dsd_post_agg_filter_region.dd_metrics_encode"
+        ]
+      },
+      {
+        "output": "mrf_metrics_encode",
+        "encode_host": "encode host mrf_metrics_encode of mrf_dd_out",
+        "recipients": [
+          "mrf_dd_out/primary/0"
+        ],
+        "delivery": "native",
+        "overflow": "wait",
+        "closure": "native",
+        "fed_by": [
+          "metrics_enrich.mrf_metrics_encode"
+        ],
+        "idle": [
+          "dsd_pre_aggregation.mrf_metrics_encode",
+          "dsd_prefix_filter_region.mrf_metrics_encode",
+          "dsd_no_agg_split_region.mrf_metrics_encode",
+          "dsd_post_agg_filter_region.mrf_metrics_encode"
+        ]
+      },
+      {
+        "output": "af_metrics_encode",
+        "encode_host": "encode host af_metrics_encode of cluster_agent_out",
+        "recipients": [
+          "cluster_agent_out/primary/0"
+        ],
+        "delivery": "native",
+        "overflow": "wait",
+        "closure": "native",
+        "fed_by": [
+          "metrics_enrich.af_metrics_encode"
+        ],
+        "idle": [
+          "dsd_pre_aggregation.af_metrics_encode",
+          "dsd_prefix_filter_region.af_metrics_encode",
+          "dsd_no_agg_split_region.af_metrics_encode",
+          "dsd_post_agg_filter_region.af_metrics_encode"
+        ]
+      },
+      {
+        "output": "resources_team_d",
+        "encode_host": "encode host dd_metrics_encode of dd_out",
+        "recipients": [
+          "dd_out/declared/team_d/http://127.0.0.1:17105"
+        ],
+        "delivery": "native",
+        "overflow": "wait",
+        "closure": "native",
+        "fed_by": [],
+        "idle": [
+          "dsd_pre_aggregation.dd_metrics_encode",
+          "dsd_prefix_filter_region.dd_metrics_encode",
+          "dsd_no_agg_split_region.dd_metrics_encode",
+          "dsd_post_agg_filter_region.dd_metrics_encode",
+          "metrics_enrich.dd_metrics_encode"
+        ]
+      },
+      {
+        "output": "resources_team_e",
+        "removed": true,
+        "recipients": [
+          "dd_out/declared/team_e/https://e.example.com"
+        ],
+        "delivery": "native",
+        "overflow": "wait",
+        "closure": "native",
+        "fed_by": [],
+        "idle": []
+      }
+    ]
+  }
+}

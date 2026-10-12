@@ -5,7 +5,8 @@ use saluki_core::execution::{BatchHeader, EntryId, ExitId};
 
 use super::{telemetry::Layout, RegionError};
 use crate::compile::{
-    DecisionExit, DecisionFunction, EntryKey, ExitSet, KernelIndex, RegionProgram, RegisterId, Route, Step,
+    DecisionExit, DecisionFunction, EntryKey, EntrySource, ExitSet, KernelIndex, LeaseTable, RegionProgram, RegisterId,
+    Route, Step,
 };
 
 /// Where one output of a step leads.
@@ -108,14 +109,20 @@ pub(super) struct ProgramCode {
 impl ProgramCode {
     /// Translates a program for a region with `exit_count` exits, which is an isolation slot's if `isolation`.
     ///
+    /// Each exit toward an encode host writes the lease of the output it delivers to from `leases`, the lease table of
+    /// the program's generation, so that the host knows which encoder stream a buffer belongs to. An exit toward a
+    /// fixed destination or a region writes no lease, and a program without exits toward an encode host needs no table.
+    ///
     /// # Errors
     ///
     /// Returns an error if the program refers to a kernel, decision, register, exit, or state parameters it does not
     /// have, if a decision is malformed, if a decision's targets do not match its exits, if a state owner's kernel runs
-    /// outside an isolation slot, as a stateless step, or without exactly one entry for its time-driven output, or if
-    /// an isolation slot's program has any step but state steps and exits: a program the region cannot run.
+    /// outside an isolation slot, as a stateless step, or without exactly one entry for its time-driven output, if an
+    /// isolation slot's program has any step but state steps and exits, or if an exit delivers to an encode host
+    /// without a lease table, or to an output the lease table has no lease for: a program the region cannot run, since
+    /// the host could only drop such buffers as addressed to no lease.
     pub fn translate(
-        program: &RegionProgram, layout: &Layout, exit_count: usize, isolation: bool,
+        program: &RegionProgram, layout: &Layout, exit_count: usize, isolation: bool, leases: Option<&LeaseTable>,
     ) -> Result<Self, RegionError> {
         let malformed = |entry: &EntryKey, message: String| RegionError::MalformedProgram {
             slot: program.slot(),
@@ -292,10 +299,36 @@ impl ProgramCode {
                                 ),
                             ));
                         }
+                        let entry = match (consumer, leases) {
+                            (EntrySource::None, _) => None,
+                            (EntrySource::Region(entry), _) => Some(*entry),
+                            (EntrySource::Lease(output), None) => {
+                                return Err(malformed(
+                                    key,
+                                    format!(
+                                        "a step delivers to the encode host of output `{}`, but the generation was \
+                                         prepared without a lease table",
+                                        output
+                                    ),
+                                ))
+                            }
+                            (EntrySource::Lease(output), Some(leases)) => {
+                                Some(leases.lease(output).ok_or_else(|| {
+                                    malformed(
+                                        key,
+                                        format!(
+                                            "a step delivers to output `{}`, but the generation's lease table has no \
+                                             lease for it",
+                                            output
+                                        ),
+                                    )
+                                })?)
+                            }
+                        };
                         Op::Exit {
                             register: register(*id)?,
                             exit: ExitId::new(exit.get() as u16),
-                            entry: *consumer,
+                            entry,
                         }
                     }
                     Step::Drop { register: id, node } => Op::Drop {

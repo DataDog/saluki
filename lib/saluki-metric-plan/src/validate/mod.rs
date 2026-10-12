@@ -15,6 +15,9 @@
 //!   input, or a port that can never carry anything, is a warning.
 //! - **References:** outputs, configuration bindings, and scope inputs must be declared by the catalog, and agree with
 //!   it.
+//! - **Resources:** the resources the plan declares, and its outputs' bindings to them, follow the capability-binding
+//!   rule: each on a delivery host the catalog declares, with parameters the host's schema accepts, and every
+//!   recipient of an output accepting what it produces, as the host decides.
 //! - **Duplicate contribution:** no structure may deliver one contribution twice to the same output, counting outputs
 //!   that share a recipient as one (see [the analysis](#duplicate-analysis)).
 //! - **Scopes:** every scope's inputs are declared by the catalog, and every scope is closed, so that an artifact
@@ -56,12 +59,13 @@ use crate::{
 mod bounds;
 pub(crate) use self::bounds::predicate_leaves;
 mod catalog;
-pub use self::catalog::{Catalog, CatalogBinding, CatalogOutput, Liveness, MemoryCatalog};
+pub use self::catalog::{Catalog, CatalogBinding, CatalogOutput, HostSchema, Liveness, MemoryCatalog};
 
 mod duplicates;
 pub(crate) mod graph;
 mod references;
 pub(crate) use self::references::binding_uses;
+mod resources;
 mod state;
 mod types;
 pub(crate) use self::types::describe as describe_port_type;
@@ -152,8 +156,19 @@ rules! {
     DeclaredOutput => "declared_output", Error;
     /// Every declared output is declared by the catalog, with the same binding.
     CatalogOutput => "catalog_output", Error;
-    /// Every declared output is emitted to.
+    /// Every declared output is emitted to, but an output a resources artifact declares, which only the artifacts that
+    /// route to it emit to.
     UnusedOutput => "unused_output", Warning;
+    /// Every host setting and recipient the plan's resources declare is declared once, on a delivery host the catalog
+    /// declares, with parameters its schema accepts; a recipient a resources artifact declares receives metrics only,
+    /// on a host that accepts it, with an operator-declared credential; and only such a recipient has a bounded
+    /// delivery policy.
+    ResourceDeclarations => "resource_declarations", Error;
+    /// Every output binding names a delivery host the catalog declares, with encoder parameters its schema accepts; has
+    /// the fingerprint its selector gives; and delivers to recipients the plan declares on that host, each accepting
+    /// what the output produces. An output a resources artifact declares delivers to declared recipients only, and is
+    /// the only kind with a declared selector.
+    OutputBinding => "output_binding", Error;
     /// Every configuration binding is declared by the catalog.
     KnownBinding => "known_binding", Error;
     /// Every configuration binding's type is admitted by the parameter it supplies.
@@ -438,6 +453,7 @@ impl<'a> Validator<'a> {
         let types = types::check(&graph, plan, &mut report);
         record_port_types(&graph, &types, &mut report);
         references::check(&graph, &types, plan, self.catalog, &mut report);
+        resources::check(plan, self.catalog, &mut report);
         duplicates::check(&graph, &types, plan, &mut report);
         state::check(&graph, Some(self.catalog), &mut report);
         bounds::check(&graph, plan, &mut report);
@@ -448,10 +464,10 @@ impl<'a> Validator<'a> {
 
 /// Validates a plan that rewrites derived from a valid plan, without a catalog.
 ///
-/// Rewrites never change a plan's outputs, the configuration bindings an operator's parameters use, or its scopes,
-/// which are what the catalog checks: so every check but those runs, as [`Validator::validate`] runs it, and the
-/// report carries the rewritten plan's port types and bounds. Rewrites do remove nodes, so the ports that scopes name
-/// are checked to still be there: scope inputs here, and exits by scope closure.
+/// Rewrites never change a plan's outputs, its resources, the configuration bindings an operator's parameters use, or
+/// its scopes, which are what the catalog checks: so every check but those runs, as [`Validator::validate`] runs it,
+/// and the report carries the rewritten plan's port types and bounds. Rewrites do remove nodes, so the ports that
+/// scopes name are checked to still be there: scope inputs here, and exits by scope closure.
 pub(crate) fn revalidate(registry: &OperatorRegistry, plan: &Plan) -> ValidationReport {
     let mut report = ValidationReport::default();
     let graph = graph::Graph::build(plan, registry, &mut report);

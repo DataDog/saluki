@@ -2,17 +2,27 @@
 //!
 //! - `GET /` (and `/app.js`, `/app.css`): the UI, embedded in the binary.
 //! - `GET /api/state`: everything the UI shows, polled about once per second.
-//! - `POST /api/compile` `{source}`: parses a program, composes it into ADP's default program, with the artifacts ADP
-//!   runs for the other scopes, and validates the composed plan as ADP will, against the export of the scope it
-//!   replaces; returns diagnostics, the artifact, its hash, its canonical source, and the plan diff against the active
-//!   plan.
+//! - `POST /api/compile` `{source, resources?}`: parses a program, composes it into ADP's default program, with the
+//!   artifacts ADP runs for the other scopes, and validates the composed plan as ADP will, against the export of the
+//!   scope it replaces; returns diagnostics, the artifact, its hash, its canonical source, and the plan diff against
+//!   the active plan. `resources`, the Resources tab's draft as text, gives the fingerprints of declared outputs the
+//!   export does not declare yet.
 //! - `POST /api/publish` `{artifact_hash}`: publishes the last compiled artifact as the next revision, if
 //!   `artifact_hash` is its hash. An approval is used once: publishing again needs another compile.
 //! - `POST /api/revoke` (optionally `{scope}`): empties the snapshot, so that ADP goes back to the default program, or
 //!   removes one scope's config, so that ADP runs the default program's region there.
+//! - `GET /api/resources/template`: the team D resources template, and the resources document the stub serves, if
+//!   any, as the Resources tab's editor shows documents.
+//! - `POST /api/resources/check` `{document}`: checks a resources draft (its hash, validation as ADP does it, and the
+//!   fingerprints of the outputs it declares), and keeps it for approval.
+//! - `POST /api/resources/publish` `{artifact_hash}`: publishes the last checked resources draft as the next resources
+//!   revision, if `artifact_hash` is its hash: an approval of its own, used once.
+//! - `POST /api/resources/revoke`: empties the resources snapshot, revoking everything it declared.
 //! - `GET /api/default-program[?scope=<scope>]`: the export bundle's artifact printed as source, with its legend, or
 //!   why there is none: of the policy scope, or of the scope named.
 //! - `POST /api/traffic` `{running?, rate?}`: starts, pauses, or changes the rate of the traffic generator.
+//! - `POST /api/intakes/{name}/pause` `{paused}`: pauses an intake, which then answers `503 Service Unavailable`, or
+//!   resumes it.
 //! - `GET /api/intakes/{name}/recent`: the most recent series and requests an intake received.
 //! - `GET /api/canary?from_s=<s>&to_s=<s>`: the canary conservation check over a range of seconds (Unix seconds,
 //!   within the last five minutes), such as the whole of a scripted run.
@@ -37,12 +47,14 @@ use crate::{
     adp_api::{routes, AdpApi, Surface},
     canary::{self, CanaryCheck, CanaryElsewhere},
     clock::unix_millis,
-    compile::{compile, default_program_source, CompileOutcome, CompiledArtifact},
+    compile::{compile_with_resources, default_program_source, CompileOutcome, CompiledArtifact},
     control::{ControlSurface, ControlView, EXPORT_NOT_EXPOSED_MESSAGE},
     export::Legend,
     intake::{IntakeRecorder, IntakeSummary},
     launcher::{Launch, LaunchView, Phase},
     preview::{other_scope_artifacts, ActivePlan, CompileContext},
+    recipients::RecipientsView,
+    resources::{self, document_text, team_d_template, DraftFingerprints, ResourcesCheck},
     settings::{DemoPorts, Recipient, RunSettings},
     stub::{
         protocol::{ApprovedAgainst, ChannelStatus, POLICY_SCOPE},
@@ -67,6 +79,14 @@ struct Compiled {
     active_plan_hash: Option<String>,
 }
 
+/// The last resources draft checked that can be published, which a resources publish approves by its hash.
+#[derive(Clone, Debug)]
+struct CheckedResources {
+    document: Value,
+    hash: PlanHash,
+    checked_ms: u64,
+}
+
 /// Everything the demo server's handlers share.
 #[derive(Clone)]
 pub struct App {
@@ -79,6 +99,7 @@ pub struct App {
     launch: Launch,
     api: AdpApi,
     compiled: Arc<Mutex<Option<Compiled>>>,
+    resources_checked: Arc<Mutex<Option<CheckedResources>>>,
 }
 
 /// The demo's components, as the server uses them.
@@ -121,6 +142,7 @@ impl App {
             launch: components.launch,
             api: components.api,
             compiled: Arc::new(Mutex::new(None)),
+            resources_checked: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -138,6 +160,19 @@ impl App {
         self.control
             .status()
             .and_then(|(_, status)| status.status.revision_high_water)
+    }
+
+    /// Returns the resources revision high-water mark the privileged status route reported, which publishing resources
+    /// counts.
+    fn reported_resources_high_water(&self) -> Option<u64> {
+        self.control
+            .status()
+            .and_then(|(_, status)| status.status.resources?.revision_high_water)
+    }
+
+    /// Returns the intake that stands in for team D's endpoint, which the resources template declares.
+    fn team_d(&self) -> Option<Recipient> {
+        self.recipients().into_iter().find(|recipient| recipient.declared)
     }
 
     fn recipients(&self) -> Vec<Recipient> {
@@ -192,8 +227,13 @@ pub fn router(app: App) -> Router {
         .route("/api/compile", post(compile_source))
         .route("/api/publish", post(publish))
         .route("/api/revoke", post(revoke))
+        .route("/api/resources/template", get(resources_template))
+        .route("/api/resources/check", post(check_resources))
+        .route("/api/resources/publish", post(publish_resources))
+        .route("/api/resources/revoke", post(revoke_resources))
         .route("/api/default-program", get(default_program))
         .route("/api/traffic", post(traffic))
+        .route("/api/intakes/{name}/pause", post(pause_intake))
         .route("/api/intakes/{name}/recent", get(intake_recent))
         .route("/api/canary", get(canary_range))
         .route("/api/adp/{route}", get(adp_route))
@@ -221,6 +261,8 @@ struct StateResponse {
     traffic: TrafficState,
     canary: CanaryCheck,
     compiled: Option<CompiledView>,
+    resources_checked: Option<CompiledView>,
+    recipients: RecipientsView,
 }
 
 #[derive(Serialize)]
@@ -240,6 +282,15 @@ async fn state(State(app): State<App>) -> Json<StateResponse> {
             artifact_hash: compiled.artifact.hash.to_string(),
             compiled_ms: compiled.compiled_ms,
         });
+    let resources_checked = app
+        .resources_checked
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .map(|checked| CompiledView {
+            artifact_hash: checked.hash.to_string(),
+            compiled_ms: checked.checked_ms,
+        });
     let adp = app.launch.view();
     let telemetry = app.telemetry.snapshot(now_ms);
     Json(StateResponse {
@@ -250,19 +301,29 @@ async fn state(State(app): State<App>) -> Json<StateResponse> {
         aggregate_window_secs: app.settings.aggregate_window_secs,
         control: app.control.view(),
         legend: app.control.export().map(|export| export.legend(&app.recipients())),
-        channel: app.channel.view(TIMELINE_LIMIT, app.reported_high_water()),
+        channel: app.channel.view(
+            TIMELINE_LIMIT,
+            app.reported_high_water(),
+            app.reported_resources_high_water(),
+        ),
         intakes: app.intakes.iter().map(|intake| intake.summary(now_ms)).collect(),
         traffic: app.traffic.state(),
         canary: app.canary_check(now_ms, &adp, &telemetry),
+        recipients: app.control.recipients(),
         adp,
         telemetry,
         compiled,
+        resources_checked,
     })
 }
 
 #[derive(Deserialize)]
 struct CompileRequest {
     source: String,
+
+    /// The Resources tab's draft, as text: the fingerprints of the outputs it declares stand in for those the export
+    /// does not declare yet.
+    resources: Option<String>,
 }
 
 async fn compile_source(State(app): State<App>, Json(request): Json<CompileRequest>) -> Json<CompileOutcome> {
@@ -305,7 +366,12 @@ async fn compile_source(State(app): State<App>, Json(request): Json<CompileReque
         }),
         revision: app.channel.next_revision(app.reported_high_water()),
     });
-    let (outcome, artifact) = compile(&request.source, context.as_ref());
+    let draft = request
+        .resources
+        .as_deref()
+        .map(DraftFingerprints::of_draft)
+        .unwrap_or_default();
+    let (outcome, artifact) = compile_with_resources(&request.source, context.as_ref(), &draft);
     *app.compiled.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = artifact.map(|artifact| Compiled {
         artifact,
         compiled_ms: unix_millis(),
@@ -422,6 +488,106 @@ async fn revoke(State(app): State<App>, body: Bytes) -> Response {
     }
 }
 
+async fn resources_template(State(app): State<App>) -> Json<Value> {
+    let template = app.team_d().map(|team_d| document_text(&team_d_template(&team_d)));
+    let served = app.channel.resources().map(|(config, document)| {
+        json!({
+            "revision": config.revision,
+            "artifact_hash": config.artifact_hash,
+            "document": document_text(&document),
+        })
+    });
+    Json(json!({ "template": template, "served": served }))
+}
+
+#[derive(Deserialize)]
+struct CheckResourcesRequest {
+    /// The draft, as text.
+    document: String,
+}
+
+async fn check_resources(State(app): State<App>, Json(request): Json<CheckResourcesRequest>) -> Json<ResourcesCheck> {
+    let (check, checked) = resources::check(&request.document);
+    // The last check is the one a publish approves; a draft that cannot be published replaces it with nothing.
+    *app.resources_checked
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = checked.map(|(document, hash)| CheckedResources {
+        document,
+        hash,
+        checked_ms: unix_millis(),
+    });
+    Json(check)
+}
+
+async fn publish_resources(State(app): State<App>, Json(request): Json<PublishRequest>) -> Response {
+    // Used up under the lock, as a policy approval is, so that it publishes one revision.
+    let taken = {
+        let mut slot = app
+            .resources_checked
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match slot.as_ref().map(|checked| checked.hash.to_string()) {
+            Some(hash) if hash == request.artifact_hash => slot.take(),
+            Some(hash) => {
+                return error_response(
+                    StatusCode::CONFLICT,
+                    format!(
+                        "The approved hash {} is not the hash of the last checked resources draft, {}. Check the \
+                         draft again and approve the new hash.",
+                        request.artifact_hash, hash
+                    ),
+                )
+            }
+            None => None,
+        }
+    };
+    let Some(checked) = taken else {
+        let message = match app.channel.resources() {
+            Some((served, _)) if served.artifact_hash == request.artifact_hash => format!(
+                "This approval was already used: the stub serves {} as resources revision {}. Check the draft again \
+                 to publish it as another revision.",
+                served.artifact_hash, served.revision
+            ),
+            _ => "There is no checked resources draft to publish. Check the draft, review its hash, and publish that \
+                  hash."
+                .to_string(),
+        };
+        return error_response(StatusCode::CONFLICT, message);
+    };
+    match app.channel.publish_resources(
+        checked.document.clone(),
+        app.reported_resources_high_water(),
+        unix_millis(),
+    ) {
+        Ok(config) => Json(json!({
+            "revision": config.revision,
+            "artifact_hash": config.artifact_hash,
+            "sha256": config.sha256,
+        }))
+        .into_response(),
+        Err(error) => {
+            // Nothing was published, so the approval still stands, unless another check replaced it meanwhile.
+            app.resources_checked
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get_or_insert(checked);
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, format!("{:#}", error))
+        }
+    }
+}
+
+async fn revoke_resources(State(app): State<App>) -> Response {
+    match app.channel.revoke_resources(unix_millis()) {
+        Ok(true) => Json(json!({ "revoked": true })).into_response(),
+        Ok(false) => Json(json!({
+            "revoked": false,
+            "message": "The resources snapshot is already empty: nothing to revoke.",
+        }))
+        .into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, format!("{:#}", error)),
+    }
+}
+
 /// Which scope of the default program to load: the policy scope unless named.
 #[derive(Deserialize)]
 struct DefaultProgramQuery {
@@ -457,6 +623,21 @@ async fn traffic(State(app): State<App>, Json(request): Json<TrafficRequest>) ->
         running: request.running,
         rate: request.rate,
     }))
+}
+
+#[derive(Deserialize)]
+struct PauseRequest {
+    paused: bool,
+}
+
+async fn pause_intake(State(app): State<App>, Path(name): Path<String>, Json(request): Json<PauseRequest>) -> Response {
+    match app.intakes.iter().find(|intake| intake.recipient().name == name) {
+        Some(intake) => {
+            intake.set_paused(request.paused);
+            Json(json!({ "name": name, "paused": request.paused })).into_response()
+        }
+        None => error_response(StatusCode::NOT_FOUND, format!("There is no intake named `{}`.", name)),
+    }
 }
 
 async fn intake_recent(State(app): State<App>, Path(name): Path<String>) -> Response {

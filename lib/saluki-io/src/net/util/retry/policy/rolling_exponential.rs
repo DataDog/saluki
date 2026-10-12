@@ -76,6 +76,21 @@ impl<C, L> RollingExponentialBackoffRetryPolicy<C, L> {
         self
     }
 
+    /// Changes the exponential backoff strategy of this policy while it is in use.
+    ///
+    /// The count of errors seen so far is kept, so the next retry backs off from where the policy was, by the new
+    /// strategy, rather than from the start.
+    pub fn set_backoff(&mut self, backoff: ExponentialBackoff) {
+        self.backoff = backoff;
+    }
+
+    /// Changes the recovery error decrease factor of this policy while it is in use, keeping its count of errors.
+    ///
+    /// See [`with_recovery_error_decrease_factor`][Self::with_recovery_error_decrease_factor].
+    pub fn set_recovery_error_decrease_factor(&mut self, factor: Option<u32>) {
+        self.recovery_error_decrease_factor = factor;
+    }
+
     /// Sets the retry lifecycle for this policy.
     ///
     /// `RetryLifecycle` allows defining custom hooks that are called at various points within the retry policy, such as
@@ -204,5 +219,30 @@ mod tests {
         // Without a recovery factor, a single success resets the count all the way to zero.
         assert!(!drive(&mut policy, Ok(())));
         assert_eq!(policy.error_count.load(Relaxed), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_policy_changed_in_use_keeps_backing_off_from_its_error_count() {
+        let mut policy = test_policy(None);
+        for _ in 0..3 {
+            assert!(drive(&mut policy, Err(())));
+        }
+
+        // The fourth error backs off by the new strategy, from the count the policy had: 2 ms doubled four times. A
+        // policy that started again would back off 4 ms.
+        policy.set_backoff(ExponentialBackoff::new(
+            Duration::from_millis(2),
+            Duration::from_secs(1),
+        ));
+        policy.set_recovery_error_decrease_factor(Some(1));
+        let backoff = Policy::<(), (), ()>::retry(&mut policy, &mut (), &mut Err(())).expect("an error is retried");
+        assert_eq!(
+            backoff.deadline() - tokio::time::Instant::now(),
+            Duration::from_millis(32)
+        );
+
+        // The new recovery factor applies too: a success takes one error off the count, rather than resetting it.
+        assert!(!drive(&mut policy, Ok(())));
+        assert_eq!(policy.error_count.load(Relaxed), 3);
     }
 }

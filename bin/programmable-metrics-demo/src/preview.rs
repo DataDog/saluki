@@ -264,6 +264,9 @@ pub fn compose_preview(
         // Approval binds to the active plan at compile time, as publishing records it.
         approved_against: context.active.map(|active| active.hash),
         active_plan_hash: context.active.map(|active| active.hash),
+        // The previewed artifact is new: an output it records that changed refuses it.
+        in_effect: false,
+        upgraded: Default::default(),
     };
     let scope = &received.artifact.scope;
     let others = context
@@ -271,10 +274,13 @@ pub fn compose_preview(
         .iter()
         .filter(|other| &other.artifact.artifact.scope != scope)
         .map(|other| {
+            // ADP runs the other scopes' artifacts: their emits to an output that changed are dropped, not refused.
             let approval = Approval {
                 revision: other.revision,
                 approved_against: None,
                 active_plan_hash: None,
+                in_effect: true,
+                upgraded: Default::default(),
             };
             (&other.artifact, approval)
         })
@@ -503,7 +509,9 @@ fn compose_error_span(error: &ComposeError, parsed: &Parsed, source: &str) -> Op
             .spans
             .param(node.as_str(), "output")
             .or_else(|| parsed.spans.node(node.as_str())),
-        ComposeError::RemovedOutput { output, .. } => emit_span(parsed, output),
+        ComposeError::PendingOutput { output } | ComposeError::ReboundOutput { output, .. } => {
+            emit_span(parsed, output)
+        }
         ComposeError::UnknownScope { scope } => find(source, scope.as_str()),
         ComposeError::DefaultProgram { .. } | ComposeError::Malformed { .. } => None,
     }

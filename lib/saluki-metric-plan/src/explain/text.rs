@@ -1,13 +1,13 @@
 //! The text rendering of explain documents.
 
-use std::fmt::Write as _;
+use std::{collections::BTreeMap, fmt::Write as _};
 
 use serde_json::Value;
 
-use super::{BoundEntry, BoundScopeEntry, Explain, PhysicalPlan, RewriteEntry};
+use super::{BoundEntry, BoundScopeEntry, Explain, PhysicalPlan, ResourcesEntry, RewriteEntry};
 use crate::{
     canonical::{to_canonical_string, PlanHash},
-    ir::Provenance,
+    ir::{ParamName, PayloadClasses, Provenance, ResourceProvenance, Selector},
     model::PortType,
     validate::describe_port_type,
 };
@@ -150,6 +150,10 @@ fn write_document(explain: &Explain, out: &mut String) -> std::fmt::Result {
         }
     }
 
+    if let Some(resources) = &explain.resources {
+        write_resources(resources, out)?;
+    }
+
     writeln!(out)?;
     writeln!(out, "bounds ({})", explain.bounds.len())?;
     for bound in &explain.bounds {
@@ -170,6 +174,111 @@ fn write_document(explain: &Explain, out: &mut String) -> std::fmt::Result {
     }
     if let Some(physical) = &explain.physical {
         write_physical(physical, out)?;
+    }
+    Ok(())
+}
+
+/// Says who declared a resource, and, once compared with the active plan, whether it is reused or new.
+fn resource_origin(provenance: &ResourceProvenance, change: &Option<String>) -> String {
+    let declared = match provenance {
+        ResourceProvenance::Native => "native".to_string(),
+        ResourceProvenance::Declared(revision) => {
+            format!("resources revision {} {}", revision.revision, revision.hash)
+        }
+    };
+    match change {
+        Some(change) => format!("{}, {}", change, declared),
+        None => declared,
+    }
+}
+
+/// Writes parameters on one line as a JSON object, or `none`.
+fn params_line(params: &BTreeMap<ParamName, Value>) -> String {
+    if params.is_empty() {
+        return "none".to_string();
+    }
+    let object = params
+        .iter()
+        .map(|(name, value)| (name.to_string(), value.clone()))
+        .collect::<serde_json::Map<_, _>>();
+    json(&Value::Object(object))
+}
+
+fn write_resources(resources: &ResourcesEntry, out: &mut String) -> std::fmt::Result {
+    writeln!(out)?;
+    writeln!(out, "resources")?;
+    writeln!(out, "  bound outputs ({})", resources.outputs.len())?;
+    for output in &resources.outputs {
+        writeln!(
+            out,
+            "    {} ({})",
+            output.id,
+            resource_origin(&output.provenance, &output.change)
+        )?;
+        writeln!(out, "      host {}", output.host)?;
+        let selector = match &output.selector {
+            Selector::Role(role) => format!("role {}", role),
+            Selector::Group(key) => format!("group {}", key),
+            Selector::Declared(recipients) => {
+                let recipients = recipients.iter().map(ToString::to_string).collect::<Vec<_>>();
+                format!("declared {}", list(&recipients))
+            }
+        };
+        writeln!(out, "      selector {}", selector)?;
+        writeln!(out, "      encoder {}", params_line(&output.encoder))?;
+        writeln!(out, "      telemetry {}", output.telemetry)?;
+    }
+    writeln!(out, "  hosts ({})", resources.hosts.len())?;
+    for host in &resources.hosts {
+        match &host.change {
+            Some(change) => writeln!(out, "    {} ({})", host.host, change)?,
+            None => writeln!(out, "    {}", host.host)?,
+        }
+        writeln!(out, "      settings {}", params_line(&host.settings))?;
+    }
+    writeln!(out, "  recipients ({})", resources.recipients.len())?;
+    for recipient in &resources.recipients {
+        writeln!(
+            out,
+            "    {} ({})",
+            recipient.id,
+            resource_origin(&recipient.provenance, &recipient.change)
+        )?;
+        writeln!(out, "      host {}, endpoint {}", recipient.host, recipient.endpoint)?;
+        let classes = match recipient.classes {
+            PayloadClasses::All => "all",
+            PayloadClasses::MetricsOnly => "metrics only",
+        };
+        writeln!(out, "      credential {}, classes {}", recipient.credential, classes)?;
+        writeln!(out, "      protocol {}", params_line(&recipient.protocol))?;
+        let delivery = serde_json::to_value(recipient.delivery).unwrap_or(Value::Null);
+        writeln!(
+            out,
+            "      delivery {}",
+            delivery.as_str().map_or_else(|| json(&delivery), str::to_string)
+        )?;
+        let outputs = recipient.outputs.iter().map(ToString::to_string).collect::<Vec<_>>();
+        writeln!(out, "      outputs {}", list(&outputs))?;
+    }
+    let removed = &resources.removed;
+    if !removed.is_empty() {
+        let names = |items: Vec<String>| list(&items);
+        writeln!(out, "  removed")?;
+        writeln!(
+            out,
+            "    outputs {}",
+            names(removed.outputs.iter().map(ToString::to_string).collect())
+        )?;
+        writeln!(
+            out,
+            "    hosts {}",
+            names(removed.hosts.iter().map(ToString::to_string).collect())
+        )?;
+        writeln!(
+            out,
+            "    recipients {}",
+            names(removed.recipients.iter().map(ToString::to_string).collect())
+        )?;
     }
     Ok(())
 }
@@ -301,7 +410,15 @@ fn write_physical(physical: &PhysicalPlan, out: &mut String) -> std::fmt::Result
     writeln!(out)?;
     writeln!(out, "output bindings ({})", physical.output_bindings.len())?;
     for binding in &physical.output_bindings {
-        writeln!(out, "  {}", binding.output)?;
+        match &binding.encode_host {
+            Some(host) => writeln!(out, "  {}: a lease in {}", binding.output, host)?,
+            None if binding.removed => writeln!(
+                out,
+                "  {}: removed, the plan no longer declares it; below as the boot plan declares it",
+                binding.output
+            )?,
+            None => writeln!(out, "  {}", binding.output)?,
+        }
         let recipients = binding.recipients.iter().map(ToString::to_string).collect::<Vec<_>>();
         writeln!(out, "    recipients {}", list(&recipients))?;
         let delivery = serde_json::to_value(binding.delivery).unwrap_or(Value::Null);

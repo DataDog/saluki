@@ -44,10 +44,11 @@ pub struct HostFacts {
 
     /// The Cluster Agent endpoint that autoscaling failover forwards to, resolved at boot.
     ///
-    /// This is the endpoint [`ClusterAgentConfiguration::endpoint_and_token`] resolves: `None` unless forwarding to the
-    /// Cluster Agent is enabled, an `https` endpoint resolves from `cluster_agent.url` or from the Kubernetes service
-    /// environment, and a token is configured. Service discovery reads the process environment, which is why the
-    /// endpoint is a host fact.
+    /// This is the endpoint [`ClusterAgentConfiguration::endpoint`] resolves: `None` unless an `https` endpoint
+    /// resolves from `cluster_agent.url` or from the Kubernetes service environment, whether or not forwarding to the
+    /// Cluster Agent is enabled and a token is configured, both of which can change later. Service discovery reads the
+    /// process environment, which is why the endpoint is a host fact, and why the Cluster Agent's delivery host exists
+    /// exactly when it resolves.
     pub cluster_agent_endpoint: Option<String>,
 }
 
@@ -86,9 +87,7 @@ impl HostFacts {
             hostname,
             standalone,
             host_tags,
-            cluster_agent_endpoint: cluster_agent_configuration(config)
-                .endpoint_and_token()
-                .map(|(endpoint, _)| endpoint),
+            cluster_agent_endpoint: cluster_agent_configuration(config).endpoint(),
         })
     }
 
@@ -167,18 +166,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_cluster_agent_endpoint_needs_forwarding_enabled_and_a_token() {
-        for yaml in [
-            "cluster_agent: {enabled: false, url: https://ca.example.com, auth_token: t}",
-            "cluster_agent: {enabled: true, url: https://ca.example.com}",
+    async fn the_cluster_agent_endpoint_resolves_whether_or_not_forwarding_is_enabled_with_a_token() {
+        for (yaml, expected) in [
+            (
+                "cluster_agent: {enabled: false, url: https://ca.example.com, auth_token: t}",
+                Some("https://ca.example.com"),
+            ),
+            (
+                "cluster_agent: {enabled: true, url: https://ca.example.com}",
+                Some("https://ca.example.com"),
+            ),
+            (
+                "cluster_agent: {url: ca.example.com:5005}",
+                Some("https://ca.example.com:5005"),
+            ),
             // An explicit URL that does not resolve to `https` yields no endpoint rather than service discovery.
-            "cluster_agent: {enabled: true, url: http://ca.example.com, auth_token: t}",
+            (
+                "cluster_agent: {enabled: true, url: http://ca.example.com, auth_token: t}",
+                None,
+            ),
         ] {
             let config = configuration(yaml).await;
             let facts = HostFacts::capture(UNIX_EPOCH, &config, &environment_provider(&config).await, None)
                 .await
                 .unwrap();
-            assert_eq!(facts.cluster_agent_endpoint, None, "{}", yaml);
+            assert_eq!(facts.cluster_agent_endpoint.as_deref(), expected, "{}", yaml);
         }
     }
 

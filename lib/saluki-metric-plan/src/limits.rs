@@ -50,6 +50,33 @@ pub mod values {
     /// The maximum number of generations alive at once.
     pub const OVERLAP_BUDGET: u64 = 4;
 
+    /// The maximum number of recipients one resources artifact declares.
+    ///
+    /// Decision log: new with live resources. A resources artifact adds at most this many recipient queues, each within
+    /// its host's native bounds and admitted against the memory limit.
+    pub const MAX_DECLARED_RECIPIENTS: u64 = 16;
+
+    /// The maximum number of outputs one resources artifact declares.
+    ///
+    /// Decision log: new with live resources. Each declared output runs as one lease, so this bounds the leases a
+    /// resources artifact adds, before overlap.
+    pub const MAX_DECLARED_OUTPUTS: u64 = 16;
+
+    /// The maximum serialized size of a resources artifact, in bytes.
+    pub const RESOURCES_ARTIFACT_SIZE: u64 = 64 * 1024;
+
+    /// The number of whole buffers queued for one builder shard of a lease in an encode host.
+    ///
+    /// Decision log: new with live resources. It is the native encoder's own events channel, so one output's lease
+    /// holds what the native encoder held.
+    pub const LEASE_QUEUE_BUFFERS: u64 = 8;
+
+    /// The maximum number of recipients of one delivery host that drain at once.
+    ///
+    /// Decision log: new with live resources. One more drain closes the oldest draining recipient early with its
+    /// closure, so a flapping configuration cannot grow drains without bound.
+    pub const MAX_DRAINING_RECIPIENTS: u64 = 16;
+
     /// The longest an idle admission point waits before sending a heartbeat.
     ///
     /// Decision log: lowered from 5 seconds to 1 second when aggregation became a kernel. Heartbeats bound how long an
@@ -326,6 +353,50 @@ pub const OVERLAP_BUDGET: LimitSpec = LimitSpec {
                   behavior, not only tuning.",
 };
 
+/// The maximum number of recipients one resources artifact declares.
+pub const MAX_DECLARED_RECIPIENTS: LimitSpec = LimitSpec {
+    name: "max_declared_recipients",
+    default: LimitValue::Count(values::MAX_DECLARED_RECIPIENTS),
+    source: LimitSource::Fixed,
+    description: "Maximum number of recipients a resources artifact declares. A resources artifact with more is \
+                  rejected.",
+};
+
+/// The maximum number of outputs one resources artifact declares.
+pub const MAX_DECLARED_OUTPUTS: LimitSpec = LimitSpec {
+    name: "max_declared_outputs",
+    default: LimitValue::Count(values::MAX_DECLARED_OUTPUTS),
+    source: LimitSource::Fixed,
+    description: "Maximum number of outputs a resources artifact declares. A resources artifact with more is \
+                  rejected.",
+};
+
+/// The maximum serialized size of a resources artifact.
+pub const RESOURCES_ARTIFACT_SIZE: LimitSpec = LimitSpec {
+    name: "resources_artifact_size",
+    default: LimitValue::Bytes(values::RESOURCES_ARTIFACT_SIZE),
+    source: LimitSource::Fixed,
+    description: "Maximum size of a resources artifact's JSON. Larger resources artifacts are rejected.",
+};
+
+/// The number of whole buffers queued for one builder shard of a lease.
+pub const LEASE_QUEUE_BUFFERS: LimitSpec = LimitSpec {
+    name: "lease_queue_buffers",
+    default: LimitValue::Count(values::LEASE_QUEUE_BUFFERS),
+    source: LimitSource::Fixed,
+    description: "Number of whole buffers queued for each builder of an output's encoder stream, beside the encode \
+                  host's shared input. When one stream's queue is full, every stream of the host waits.",
+};
+
+/// The maximum number of recipients of one delivery host that drain at once.
+pub const MAX_DRAINING_RECIPIENTS: LimitSpec = LimitSpec {
+    name: "max_draining_recipients",
+    default: LimitValue::Count(values::MAX_DRAINING_RECIPIENTS),
+    source: LimitSource::Fixed,
+    description: "Maximum number of retiring recipients of one delivery host that drain their queued work at once. \
+                  One more closes the oldest draining recipient early, with its closure behavior.",
+};
+
 /// The longest an idle admission point waits before sending a heartbeat.
 pub const HEARTBEAT_PERIOD: LimitSpec = LimitSpec {
     name: "heartbeat_period",
@@ -488,6 +559,11 @@ pub const LIMITS: &[LimitSpec] = &[
     PREPARE_TIMEOUT,
     DRAIN_DEADLINE,
     OVERLAP_BUDGET,
+    MAX_DECLARED_RECIPIENTS,
+    MAX_DECLARED_OUTPUTS,
+    RESOURCES_ARTIFACT_SIZE,
+    LEASE_QUEUE_BUFFERS,
+    MAX_DRAINING_RECIPIENTS,
     HEARTBEAT_PERIOD,
     CLOCK_RESET_THRESHOLD,
     PROGRESS_PERIOD,
@@ -562,6 +638,11 @@ mod tests {
         assert_eq!(duration(&PREPARE_TIMEOUT), Duration::from_secs(10));
         assert_eq!(duration(&DRAIN_DEADLINE), Duration::from_secs(30));
         assert_eq!(count(&OVERLAP_BUDGET), 4);
+        assert_eq!(count(&MAX_DECLARED_RECIPIENTS), 16);
+        assert_eq!(count(&MAX_DECLARED_OUTPUTS), 16);
+        assert_eq!(count(&RESOURCES_ARTIFACT_SIZE), 65_536);
+        assert_eq!(count(&LEASE_QUEUE_BUFFERS), 8);
+        assert_eq!(count(&MAX_DRAINING_RECIPIENTS), 16);
         assert_eq!(count(&BLOB_SIZE), 65_536);
         assert_eq!(count(&DECISION_MEMO_ENTRIES), 4096);
         assert_eq!(count(&WORK_PER_TURN), 8);

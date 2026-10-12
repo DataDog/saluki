@@ -21,10 +21,16 @@
 //!   The admission points upstream of it send heartbeats toward it, and only toward it, so that its watermark advances
 //!   while they are idle; the bridge of [`snapshot_bridge`](super::snapshot_bridge) answers aggregation's context
 //!   snapshot requests from it.
-//! - **Outputs** are the native encoders and forwarders, built exactly as natively, and the DogStatsD client telemetry
-//!   tap, `dsd_client_telemetry_out`, which the `metrics_enrich` slot feeds. No gateway component stands in front of an
-//!   encoder: the endpoint routing filters and the failover gateways are `split`s of the policy region, so a region
-//!   exit feeds each encoder directly.
+//! - **Hosts** are fixed at boot, one encode host and one delivery host per fixed delivery host of the process
+//!   ([`FixedHosts`](super::resources::FixedHosts)): `dd_metrics_encode` and `dd_out`, `mrf_metrics_encode` and
+//!   `mrf_dd_out`, and, when a Cluster Agent endpoint resolves at boot, `af_metrics_encode` and `cluster_agent_out`.
+//!   Every output bound to a delivery host runs as a lease in its encode host, and every recipient as an I/O loop in
+//!   the delivery host, which the installer prepares, publishes, drains, and retires while they run; the hosts start
+//!   with what the boot generation needs, so that `dd_out` routes every pipeline's payloads from the first one. A host
+//!   with nothing at boot is idle until the installer prepares something in it. The DogStatsD client telemetry tap,
+//!   `dsd_client_telemetry_out`, which the `metrics_enrich` slot feeds, is the one fixed destination. No gateway
+//!   component stands in front of an encode host: the endpoint routing filters and the failover gateways are `split`s
+//!   of the policy region, whose exits name the lease of each output they emit to in their batches' headers.
 //! - **Edges** are the frame's: one blueprint edge per physical edge, from an admission point or a slot's exit to a
 //!   fixed component, a slot, or an output's component. Exits the default program does not use are connected and stay
 //!   idle, so that later generations can use them.
@@ -43,29 +49,36 @@ use agent_data_plane_config::shared::SharedConfiguration;
 use agent_data_plane_config_system::ConfigurationSystem;
 use saluki_components::{
     destinations::DogStatsDClientTelemetryConfiguration,
+    encoders::encode_host::MetricsEncodeHostConfiguration,
+    forwarders::{
+        delivery::{BootPublication, DeliveryHostConfiguration},
+        ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration,
+    },
     transforms::{aggregate_context_snapshot_channel, AggregateContextSnapshotHandle},
 };
 use saluki_core::{
     execution::{AdmissionPointConfig, AdmissionPointId, Budget, RegionHostBuilder, WorkKind, MIN_HEARTBEAT_PERIOD},
     topology::{ComponentId, TopologyBlueprint},
 };
-use saluki_error::{generic_error, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_metric_plan::{
     compile::{FixedComponent, Frame, FrameSource, FrameTarget, RegionProgram, Slot, SlotKind},
-    ir::{NativeComponentId, NodeId, Plan, Provenance},
+    ir::{NativeComponentId, NodeId, Plan, Provenance, Resources},
     limits,
     operators::names,
     runtime::{build_kernels, MetricRegionDriver, PanicBudget, PrepareRegion, RegionBounds, RegionConfig},
 };
 
 use super::{
-    bindings::routing_groups,
-    installer::{BootTopology, ProgrammableMetrics},
+    installer::{BootTopology, HostWiring, ProgrammableMetrics},
     lowering::ids,
-    outputs::{NativeOutputs, OutputKind},
+    resources::{
+        specs::{host_settings, lease_spec, publication, recipient_settings},
+        FixedHost, NativeOutputs, OutputKind, CLUSTER_AGENT_OUT, DD_OUT, MRF_DD_OUT,
+    },
     snapshot_bridge::SnapshotBridgeState,
 };
-use crate::cli::run::{autoscaling_failover_branch, main_metrics_encoder, mrf_metrics_branch, routing_group_encoder};
+use crate::cli::run::{autoscaling_failover_wired, mrf_metrics_endpoint};
 
 /// Names the region host of a slot of the default program's frame, after the native components it replaces.
 ///
@@ -100,13 +113,17 @@ pub fn slot_name(nodes: &[NodeId]) -> Result<NativeComponentId, String> {
 
 /// Builds the plan-driven metrics path into a topology blueprint, from what [`ProgrammableMetrics::boot`] prepared.
 ///
-/// `run.rs` calls it in the order it builds the topology: [`add_outputs`][Self::add_outputs] before the pipelines that
-/// feed the metrics path, [`add_source`][Self::add_source] for each of their metrics outputs,
-/// [`add_dogstatsd`][Self::add_dogstatsd] with the DogStatsD pipeline, and [`finish`][Self::finish] last.
+/// `run.rs` calls it in the order it builds the topology: [`dd_forwarder`][Self::dd_forwarder] for `dd_out`, which
+/// every pipeline sends through, [`add_outputs`][Self::add_outputs] before the pipelines that feed the metrics path,
+/// [`add_source`][Self::add_source] for each of their metrics outputs, [`add_dogstatsd`][Self::add_dogstatsd] with the
+/// DogStatsD pipeline, and [`finish`][Self::finish] last.
 pub struct PlanTopology<'a> {
     boot: &'a mut BootTopology,
     sources: BTreeSet<String>,
     dogstatsd: bool,
+
+    /// The encode host of each delivery host configured so far, which [`add_outputs`][Self::add_outputs] adds.
+    encode_hosts: Vec<(FixedHost, MetricsEncodeHostConfiguration)>,
 }
 
 impl<'a> PlanTopology<'a> {
@@ -116,34 +133,95 @@ impl<'a> PlanTopology<'a> {
             boot: metrics.boot_topology(),
             sources: BTreeSet::new(),
             dogstatsd: false,
+            encode_hosts: Vec::new(),
         }
     }
 
-    /// Adds the outputs of the frame, with their encoders and forwarders, built as natively.
+    /// Returns the configuration of `dd_out`: the delivery host that every pipeline's payloads go through, which the
+    /// installer controls, and which routes from its first payload with what the boot generation needs.
     ///
-    /// The gateways in front of them are part of the default program, which the regions run.
+    /// Its encode host, `dd_metrics_encode`, is added with the other outputs.
     ///
     /// # Errors
     ///
-    /// Returns an error if a component cannot be configured, or if the frame and the native outputs disagree, which is
-    /// a lowering bug.
+    /// Returns an error if `dd_out` was configured already, or if what the boot generation needs in it cannot be read,
+    /// which is a lowering bug.
+    pub fn dd_forwarder(
+        &mut self, shared: &SharedConfiguration, config_system: &ConfigurationSystem,
+    ) -> Result<DatadogForwarderConfiguration, GenericError> {
+        let host = self.configure_host(DD_OUT)?;
+        let secrets = config_system.live(|config| &config.shared.secrets);
+        Ok(DatadogForwarderConfiguration::controlled(shared, secrets, host))
+    }
+
+    /// Adds the encode hosts of the frame, the failover delivery hosts, and the DogStatsD client telemetry
+    /// destination.
+    ///
+    /// The gateways in front of the encode hosts are part of the default program, which the regions run.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a component cannot be configured, if `dd_out` was not configured first, or if the frame and
+    /// the native outputs disagree, which is a lowering bug.
     pub fn add_outputs(
         &mut self, blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, shared: &SharedConfiguration,
     ) -> Result<(), GenericError> {
         let startup = config_system.config();
-        let routing = routing_groups(&startup)?;
-        // The failover branches as native wiring builds them, which warns when one is requested but cannot be wired.
-        // The Cluster Agent endpoint is a host fact, resolved once at boot.
-        let mut mrf = mrf_metrics_branch(config_system, shared, &startup.domains.multi_region_failover);
-        let cluster_agent = self
-            .boot
-            .facts
-            .cluster_agent_endpoint
-            .clone()
+        // Native wiring warns when a failover branch is requested but cannot be wired. Their delivery hosts are built
+        // whatever the branches resolve to: a branch that appears later is a recipient and a lease the installer
+        // prepares in them.
+        mrf_metrics_endpoint(&startup.domains.multi_region_failover);
+        let endpoint = self.boot.facts.cluster_agent_endpoint.clone();
+        let endpoint_at_startup = endpoint.is_some();
+        let cluster_agent = endpoint
+            .filter(|_| shared.cluster_agent.enabled)
             .zip(shared.cluster_agent.auth_token.clone());
-        let mut autoscaling = autoscaling_failover_branch(shared, cluster_agent)?;
+        autoscaling_failover_wired(shared, cluster_agent.as_ref(), endpoint_at_startup);
+
+        if !self.encode_hosts.iter().any(|(host, _)| host.delivery == DD_OUT) {
+            return Err(generic_error!(
+                "The metrics outputs are added before `dd_out` was configured; this is a bug."
+            ));
+        }
+        let failover = self
+            .boot
+            .hosts_at_boot
+            .iter()
+            .filter(|host| host.delivery != DD_OUT)
+            .collect::<Vec<_>>();
+        for host in failover {
+            let configured = self.configure_host(host.delivery)?;
+            match host.delivery {
+                MRF_DD_OUT => {
+                    let secrets = config_system.live(|config| &config.shared.secrets);
+                    blueprint.add_forwarder(
+                        host.delivery,
+                        DatadogForwarderConfiguration::controlled(shared, secrets, configured),
+                    )?;
+                }
+                CLUSTER_AGENT_OUT => {
+                    blueprint.add_forwarder(
+                        host.delivery,
+                        ClusterAgentForwarderConfiguration::controlled(shared, configured),
+                    )?;
+                }
+                other => {
+                    return Err(generic_error!(
+                        "The process has a delivery host `{}` the plan-driven path cannot build; this is a bug.",
+                        other
+                    ))
+                }
+            }
+        }
+        // Each encode host feeds its delivery host: `dd_out`, shared with the other pipelines, or its own.
+        for (host, encoder) in std::mem::take(&mut self.encode_hosts) {
+            blueprint
+                .add_encoder(host.encoder, encoder)?
+                .connect_components(host.encoder, host.delivery)?;
+        }
+
         let outputs = &self.boot.outputs;
-        for decl in self.boot.frame.outputs() {
+        for decl in self.boot.frame.outputs().iter().filter(|decl| decl.binding.is_none()) {
             let output = outputs.get(decl.id.as_str()).ok_or_else(|| {
                 generic_error!(
                     "The default program delivers to output `{}`, which is not a native metrics output; this is a \
@@ -151,58 +229,42 @@ impl<'a> PlanTopology<'a> {
                     decl.id
                 )
             })?;
-            let component = output.component.as_str();
-            let missing = |what: &str| {
-                generic_error!(
-                    "The default program delivers to output `{}`, but the native {} is not wired; this is a lowering \
-                     bug.",
-                    decl.id,
-                    what
-                )
-            };
             match &output.kind {
                 OutputKind::ClientTelemetry => {
-                    blueprint.add_destination(component, DogStatsDClientTelemetryConfiguration)?;
+                    blueprint.add_destination(output.component.as_str(), DogStatsDClientTelemetryConfiguration)?;
                 }
-                OutputKind::Main => {
-                    blueprint.add_encoder(component, main_metrics_encoder(shared, &routing))?;
-                }
-                OutputKind::RoutingGroup(group) => {
-                    let policy = routing
-                        .policy_groups()
-                        .get(group.index)
-                        .ok_or_else(|| missing("endpoint routing group"))?;
-                    blueprint.add_encoder(component, routing_group_encoder(shared, policy))?;
-                }
-                OutputKind::MultiRegionFailover => {
-                    let branch = mrf.take().ok_or_else(|| missing("Multi-Region Failover branch"))?;
-                    let forwarder = output.forwarder.ok_or_else(|| missing("forwarder"))?;
-                    blueprint
-                        .add_encoder(component, branch.encoder)?
-                        .add_forwarder(forwarder, branch.forwarder)?;
-                }
-                OutputKind::AutoscalingFailover => {
-                    let branch = autoscaling
-                        .take()
-                        .ok_or_else(|| missing("autoscaling failover branch"))?;
-                    let forwarder = output.forwarder.ok_or_else(|| missing("forwarder"))?;
-                    blueprint
-                        .add_encoder(component, branch.encoder)?
-                        .add_forwarder(forwarder, branch.forwarder)?;
+                _ => {
+                    return Err(generic_error!(
+                        "The default program delivers to output `{}` as a fixed destination, but it is an encoder \
+                         stream, which runs as a lease of an encode host; this is a lowering bug.",
+                        decl.id
+                    ))
                 }
             }
-            // Encoders feed their forwarder, as natively: `dd_out`, shared with the other pipelines, or their own.
-            if let Some(forwarder) = output.forwarder {
-                blueprint.connect_components(component, forwarder)?;
-            }
-        }
-        if mrf.is_some() || autoscaling.is_some() {
-            return Err(generic_error!(
-                "Native wiring builds a failover branch that the default program does not deliver to; this is a \
-                 lowering bug."
-            ));
         }
         Ok(())
+    }
+
+    /// Configures the delivery host `delivery` and its encode host from their wiring: each starts with what the boot
+    /// generation needs in it (the encode host its leases, the delivery host its recipients, native set, and settings,
+    /// as published at the boot revision), and exposes its factory and its status to the installer.
+    ///
+    /// Returns the delivery host's configuration; the encode host's waits for [`add_outputs`][Self::add_outputs].
+    fn configure_host(&mut self, delivery: &str) -> Result<DeliveryHostConfiguration, GenericError> {
+        let wiring = self.boot.hosts.take(delivery).ok_or_else(|| {
+            generic_error!(
+                "Delivery host `{}` was configured already, or the process has none; this is a bug.",
+                delivery
+            )
+        })?;
+        let (encoder, delivery) = configure_wired_host(wiring, &self.boot.plan.resources)?;
+        #[cfg(test)]
+        let (encoder, delivery) = match &self.boot.host_doubles {
+            Some(doubles) => doubles.apply(encoder, delivery),
+            None => (encoder, delivery),
+        };
+        self.encode_hosts.push(encoder);
+        Ok(delivery)
     }
 
     /// Registers a component output that carries metrics into the metrics path, which the frame must read.
@@ -246,11 +308,172 @@ impl<'a> PlanTopology<'a> {
             boot,
             sources,
             dogstatsd,
+            encode_hosts,
         } = self;
+        if let Some((host, _)) = encode_hosts.first() {
+            return Err(generic_error!(
+                "The encode host of `{}` was configured but never added; this is a bug.",
+                host.delivery
+            ));
+        }
         check_fixed_components(&boot.frame, &sources, dogstatsd)?;
         add_regions(blueprint, boot)?;
-        connect_frame(blueprint, boot)
+        connect_frame(blueprint, boot)?;
+        boot.hosts.close_unbuilt();
+        Ok(())
     }
+}
+
+/// What stands in for the edges of the encode and delivery hosts in tests: each encode host shows every buffer it
+/// routes to an observer, by output, and may wait for a gate before it reads its input; each delivery host's
+/// recipients send nothing, and count the events they would have sent, unless they send as in production. The hosts
+/// themselves, with their control, run as in production.
+#[cfg(test)]
+pub struct HostDoubles {
+    /// What sees every buffer an encode host routes to a lease.
+    pub observer: Arc<dyn saluki_components::encoders::encode_host::LeaseObserver>,
+
+    /// Whether the leases encode what the observer saw, or the encode hosts drop it.
+    pub encode: bool,
+
+    /// The events the delivery hosts' recipients took, in all, if they send nothing; recipients that send as in
+    /// production otherwise.
+    pub delivered: Option<Arc<std::sync::atomic::AtomicU64>>,
+
+    /// The gate each encode host waits on before it reads its input, by encode host component ID.
+    pub gates: BTreeMap<String, Arc<tokio::sync::Semaphore>>,
+}
+
+#[cfg(test)]
+impl HostDoubles {
+    /// Makes a host's encode host and delivery host run with these doubles.
+    fn apply(
+        &self, (host, encoder): (FixedHost, MetricsEncodeHostConfiguration), delivery: DeliveryHostConfiguration,
+    ) -> ((FixedHost, MetricsEncodeHostConfiguration), DeliveryHostConfiguration) {
+        let mut encoder = encoder.with_observer(Arc::clone(&self.observer), self.encode);
+        if let Some(gate) = self.gates.get(host.encoder) {
+            encoder = encoder.with_input_gate(Arc::clone(gate));
+        }
+        let delivery = match &self.delivered {
+            Some(delivered) => delivery.with_discarding_recipients(Arc::clone(delivered)),
+            None => delivery,
+        };
+        ((host, encoder), delivery)
+    }
+}
+
+/// Adds every fixed host of the boot topology to `blueprint`, each encode host feeding its delivery host, as the
+/// plan-driven path adds them, with the doubles of the boot topology: for tests that build the rest of the metrics path
+/// themselves.
+///
+/// # Errors
+///
+/// Returns an error if a host was configured already, or cannot be configured.
+#[cfg(test)]
+pub(super) fn add_hosts(
+    blueprint: &mut TopologyBlueprint, boot: &mut BootTopology, shared: &SharedConfiguration,
+    secrets: agent_data_plane_config::Live<agent_data_plane_config::shared::Secrets>,
+) -> Result<(), GenericError> {
+    super::test_support::init_test_tls();
+    for host in boot.hosts_at_boot.iter() {
+        let wiring = boot
+            .hosts
+            .take(host.delivery)
+            .ok_or_else(|| generic_error!("Delivery host `{}` was configured already.", host.delivery))?;
+        let configured = configure_wired_host(wiring, &boot.plan.resources)?;
+        let ((host, encoder), delivery) = match &boot.host_doubles {
+            Some(doubles) => doubles.apply(configured.0, configured.1),
+            None => configured,
+        };
+        match host.delivery {
+            CLUSTER_AGENT_OUT => {
+                blueprint.add_forwarder(
+                    host.delivery,
+                    ClusterAgentForwarderConfiguration::controlled(shared, delivery),
+                )?;
+            }
+            _ => {
+                blueprint.add_forwarder(
+                    host.delivery,
+                    DatadogForwarderConfiguration::controlled(shared, secrets.clone(), delivery),
+                )?;
+            }
+        }
+        blueprint
+            .add_encoder(host.encoder, encoder)?
+            .connect_components(host.encoder, host.delivery)?;
+    }
+    Ok(())
+}
+
+/// Configures a delivery host and its encode host from their wiring, each starting with what the boot generation
+/// needs in it, as `resources`, the boot plan's resources, declares it: the encode host the boot leases, and the
+/// delivery host the boot publication's recipients (with those the boot generation creates), native set, settings,
+/// and withdrawn set. The installer gets each host's factory, and the delivery host's status.
+///
+/// # Errors
+///
+/// Returns an error if a boot lease, recipient, or the host's settings cannot be read, which is a lowering bug.
+pub(super) fn configure_wired_host(
+    wiring: HostWiring, resources: &Resources,
+) -> Result<((FixedHost, MetricsEncodeHostConfiguration), DeliveryHostConfiguration), GenericError> {
+    let HostWiring {
+        host,
+        delivery,
+        encode,
+        events,
+        boot_prepare,
+        boot_publish,
+        boot_revision,
+        factories,
+        credentials,
+    } = wiring;
+    let mut encoder = MetricsEncodeHostConfiguration::new().with_control_mailbox(encode);
+    for lease in boot_prepare.iter().flat_map(|prepare| &prepare.leases) {
+        let spec = lease_spec(lease, resources).error_context(format!(
+            "The boot lease of output `{}` cannot be read.",
+            lease.output.id
+        ))?;
+        encoder = encoder.with_lease(spec);
+    }
+
+    let binding = resources.host(&host.id()).ok_or_else(|| {
+        generic_error!(
+            "The boot plan declares no settings for delivery host `{}`; this is a lowering bug.",
+            host.delivery
+        )
+    })?;
+    let settings = Arc::new(host_settings(binding)?);
+    let mut boot = match &boot_publish {
+        Some(publish) => {
+            // No resources artifact is delivered before boot, so every boot recipient is native and has no name.
+            let published = publication(boot_revision, publish, |_| None)?;
+            BootPublication {
+                revision: published.revision,
+                settings: published.settings,
+                recipients: published.recipients,
+                native_set: published.native_set,
+                withdrawn: published.withdrawn,
+            }
+        }
+        None => BootPublication::empty(settings),
+    };
+    // A recipient the boot generation creates that the boot publication does not set runs from the start too.
+    for create in boot_prepare.iter().flat_map(|prepare| &prepare.create) {
+        let created = recipient_settings(create, None)?;
+        if !boot.recipients.iter().any(|known| known.recipient == created.recipient) {
+            boot.recipients.push(created);
+        }
+    }
+
+    let delivery = DeliveryHostConfiguration::new(delivery, credentials, boot)
+        .with_events(events)
+        .with_drain_deadline(limits::values::DRAIN_DEADLINE);
+    // Each slot is set once per host, and this host is configured once.
+    let _ = factories.leases.set(encoder.lease_factory());
+    let _ = factories.recipients.set(delivery.factory());
+    let _ = factories.status.set(delivery.status());
+    Ok(((host, encoder), delivery))
 }
 
 /// Adds a region host per slot of the frame, each starting with the boot generation's program for its slot, and with
@@ -524,6 +747,7 @@ fn region_host(boot: &mut BootTopology, slot: &Slot) -> Result<RegionHostBuilder
     let generation = boot.generation.clone();
     let telemetry = boot.telemetry.clone();
     let failures = Arc::clone(&boot.failures);
+    let leases = Arc::clone(&boot.leases);
     // A state owner's region also reads the schedule, to tell which generation its flushes belong to, a wall clock, and
     // the budgets of state its lineages draw on.
     let state = slot.is_isolation().then(|| {
@@ -544,7 +768,8 @@ fn region_host(boot: &mut BootTopology, slot: &Slot) -> Result<RegionHostBuilder
             kernels,
             PanicBudget::DEFAULT_PROGRAM,
             &telemetry,
-        );
+        )
+        .with_leases(Arc::clone(&leases));
         let mut config = RegionConfig::for_slot(&slot, &telemetry).with_failure_reporter(Arc::clone(&failures));
         if let Some((schedule, wall_clock, budgets)) = &state {
             config = config
@@ -647,7 +872,7 @@ fn target_component(frame: &Frame, outputs: &NativeOutputs, target: &FrameTarget
             .slot(*slot)
             .map(|slot| slot.name.to_string())
             .ok_or_else(|| generic_error!("The frame has no slot {}; this is a bug.", slot)),
-        FrameTarget::Output(output) => outputs
+        FrameTarget::Destination(output) => outputs
             .get(output.as_str())
             .map(|output| output.component.clone())
             .ok_or_else(|| {
@@ -656,6 +881,12 @@ fn target_component(frame: &Frame, outputs: &NativeOutputs, target: &FrameTarget
                     output
                 )
             }),
+        // Stage 7 part P7.5 binds outputs to delivery hosts and builds their encode hosts; until then the frame has
+        // none, and every output is a fixed destination.
+        FrameTarget::EncodeHost(host) => frame
+            .encode_host(host)
+            .map(|host| host.encoder.to_string())
+            .ok_or_else(|| generic_error!("The frame has no encode host for `{}`; this is a bug.", host)),
     }
 }
 

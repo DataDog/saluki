@@ -1,0 +1,104 @@
+# One scaling run: ADP under N CPUs, lading sending DogStatsD over a Unix socket (datagram or stream) on a shared
+# volume, and lading HTTP blackholes as the intake, each pinned to CPU sets that do not overlap.
+#
+# `run-curves.sh` sets every variable below for each run; see README.md. The defaults describe a 4-CPU run of the
+# `defaults` profile over a Unix datagram socket.
+name: saluki-scaling
+
+services:
+  adp:
+    image: ${ADP_IMAGE:-saluki-images/agent-data-plane:testing-release}
+    command: ["--config", "/etc/agent-data-plane/adp.yaml", "run"]
+    cpus: ${ADP_CPUS:-4}
+    cpuset: "${ADP_CPUSET:-0-3}"
+    mem_limit: ${ADP_MEMORY:-4g}
+    # The profile's environment (V3 series for its endpoints), then the transport's (the socket ADP listens on).
+    env_file:
+      - ${ADP_PROFILE_ENV:-./adp/defaults.env}
+      - ${ADP_TRANSPORT_ENV:-./adp/unix_datagram.env}
+    environment:
+      DD_HOSTNAME: scaling
+      DD_API_KEY: foo00000001
+      DD_DD_URL: http://blackhole:9091
+      DD_IPC_CERT_FILE_PATH: /etc/agent-data-plane/cert.pem
+      DD_LOG_FORMAT_JSON: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "true"
+      DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+      DD_DOGSTATSD_PORT: "0"
+      # The native default reads the host's vCPUs, not the CPUs the container may use: set the decoders explicitly,
+      # `max(2, N - 2)` unless `SCALING_DECODERS` says otherwise.
+      DD_DOGSTATSD_WORKERS_COUNT: "${DECODERS:-2}"
+      DD_AGGREGATE_CONTEXT_LIMIT: "${CONTEXT_LIMIT:-3100}"
+      DD_METRICS_LEVEL: trace
+      SALUKI_WORKER_THREADS: "${WORKERS:-4}"
+      # Read by the plan image only (CPU-time sampling, stage 9); the legacy image ignores it.
+      SALUKI_CPU_TIME_SAMPLING: "${CPU_TIME_SAMPLING:-}"
+    volumes:
+      - dsd-socket:/var/run/dsd
+      - ${ADP_CONFIG:-./adp/defaults.yaml}:/etc/agent-data-plane/adp.yaml:ro
+      - ../smp/regression/adp/shared/cert.pem:/etc/agent-data-plane/cert.pem:ro
+    ports:
+      - "127.0.0.1:${ADP_TELEMETRY_PORT:-15100}:5100"
+    healthcheck:
+      # The generator connects once the socket exists.
+      test: ["CMD", "test", "-S", "/var/run/dsd/dsd.sock"]
+      interval: 1s
+      timeout: 1s
+      retries: 60
+    depends_on:
+      blackhole:
+        condition: service_started
+
+  lading:
+    image: ghcr.io/datadog/lading:${LADING_VERSION:-0.33.0}
+    command:
+      - --config-path
+      - /etc/lading/lading.yaml
+      - --no-target
+      - --warmup-duration-seconds
+      - "${LADING_WARMUP_SECONDS:-1}"
+      - --experiment-duration-seconds
+      - "${LADING_DURATION_SECONDS:-3600}"
+      - --prometheus-addr
+      - 0.0.0.0:9229
+    cpuset: "${LADING_CPUSET:-4-5}"
+    volumes:
+      - dsd-socket:/var/run/dsd
+      - ${LADING_CONFIG:-./lading/generator.yaml}:/etc/lading/lading.yaml:ro
+    ports:
+      - "127.0.0.1:${LADING_TELEMETRY_PORT:-19229}:9229"
+    depends_on:
+      adp:
+        condition: service_healthy
+
+  blackhole:
+    image: ghcr.io/datadog/lading:${LADING_VERSION:-0.33.0}
+    command:
+      - --config-path
+      - /etc/lading/lading.yaml
+      - --no-target
+      - --warmup-duration-seconds
+      - "1"
+      - --experiment-duration-seconds
+      - "${LADING_DURATION_SECONDS:-3600}"
+      - --prometheus-addr
+      - 0.0.0.0:9229
+    cpuset: "${BLACKHOLE_CPUSET:-6-7}"
+    volumes:
+      - ./lading/blackhole.yaml:/etc/lading/lading.yaml:ro
+    ports:
+      - "127.0.0.1:${BLACKHOLE_TELEMETRY_PORT:-19230}:9229"
+
+  # Optional: `docker compose --profile observe up` adds a Prometheus that scrapes all three every second, for
+  # watching a run live. `run-curves.sh` reads the endpoints directly and does not need it.
+  prometheus:
+    profiles: [observe]
+    image: prom/prometheus:v3.5.0
+    command: ["--config.file=/etc/prometheus/prometheus.yaml", "--storage.tsdb.retention.time=1d"]
+    volumes:
+      - ./prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-19090}:9090"
+
+volumes:
+  dsd-socket:

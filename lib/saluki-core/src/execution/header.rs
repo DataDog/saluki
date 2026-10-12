@@ -74,11 +74,18 @@ impl AdmissionPointId {
     }
 }
 
-/// The identifier of a logical entry into a region's program.
+/// The identifier of a logical entry into a consumer: one of a region's logical inputs, or one of the logical streams a
+/// component multiplexes.
 ///
-/// A region can receive batches for several logical inputs over one physical edge. When one region dispatches a batch
-/// to another, it sets the entry so that the consumer knows which of its logical inputs the batch belongs to under the
-/// batch's generation. Entry identifiers are only meaningful within one generation.
+/// A consumer can receive batches for several logical inputs over one physical edge. When a region dispatches a batch,
+/// it sets the entry so that the consumer knows which of its logical inputs the batch belongs to. What an entry means
+/// is the consumer's:
+///
+/// - Between regions, entry identifiers are only meaningful within the batch's generation: the consumer reads the
+///   entry under the program of the generation the header carries.
+/// - A component that multiplexes logical streams, such as several encoder streams sharing one component, may assign
+///   entries that keep their meaning across generations, as long as a stream keeps its entry for its whole life and an
+///   entry is never reused while a batch carrying it can still arrive.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct EntryId(u16);
 
@@ -123,7 +130,8 @@ pub struct BatchHeader {
     /// The generation that processes this batch, stamped at the admission point.
     pub generation: Option<GenerationRef>,
 
-    /// The consumer's logical entry, set by a region when it dispatches the batch to another region.
+    /// The consumer's logical entry, set by a region when it dispatches the batch to another region or to a component
+    /// that multiplexes logical streams.
     pub entry: Option<EntryId>,
 }
 

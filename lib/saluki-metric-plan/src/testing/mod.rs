@@ -33,7 +33,8 @@ use crate::{
 
 mod fixtures;
 pub use self::fixtures::{
-    default_program_catalog, default_program_slot_name, with_opaque_gateways, DEFAULT_PROGRAM_JSON,
+    default_program_catalog, default_program_hosts, default_program_resources_catalog, default_program_slot_name,
+    with_opaque_gateways, with_resources, DEFAULT_PROGRAM_JSON, DEFAULT_PROGRAM_RESOURCES_JSON,
     NO_AGGREGATION_PIPELINE_OFF_JSON,
 };
 

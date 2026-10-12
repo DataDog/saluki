@@ -101,6 +101,8 @@ async fn every_lowered_default_program_exports_and_composes_back_unchanged() {
             revision: 1,
             approved_against: None,
             active_plan_hash: None,
+            in_effect: false,
+            upgraded: Default::default(),
         };
         let composed = compose(plan, &received, &approval, &lowered.catalog, &registry)
             .unwrap_or_else(|e| panic!("{}: {}", name, e));

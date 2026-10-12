@@ -24,7 +24,7 @@ use crate::{
     config::remote_agent_client_configuration,
     programmable_metrics::{
         lowering::matrix::{matrix_entry, MATRIX},
-        outputs::NativeOutputs,
+        resources::NativeOutputs,
         test_support::{configuration_system, environment_provider, programmable_metrics, ConfigCell},
     },
 };
@@ -46,6 +46,13 @@ fn fused(id: &str) -> bool {
         .strip_prefix("metrics_routing_filter_")
         .is_some_and(|index| !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()));
     FUSED.contains(&id) || routing_filter || id == "mrf_metrics_gateway" || id == "af_metrics_gateway"
+}
+
+/// Returns `true` if the legacy component `id` is the encoder of an endpoint routing group, whose stream the
+/// plan-driven topology runs as a lease of `dd_metrics_encode`.
+fn routing_encoder(id: &str) -> bool {
+    id.strip_prefix("metrics_routing_encode_")
+        .is_some_and(|index| !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// The taps on the DogStatsD source's metrics, outside the plan.
@@ -139,7 +146,8 @@ fn frame_edges(frame: &Frame, outputs: &NativeOutputs) -> BTreeSet<(String, Stri
             let to = match &edge.to {
                 FrameTarget::Fixed(node) => fixed_component(frame, node),
                 FrameTarget::Slot(slot) => frame.slot(*slot).unwrap().name.to_string(),
-                FrameTarget::Output(output) => outputs.get(output.as_str()).unwrap().component.clone(),
+                FrameTarget::Destination(output) => outputs.get(output.as_str()).unwrap().component.clone(),
+                FrameTarget::EncodeHost(host) => frame.encode_host(host).unwrap().encoder.to_string(),
             };
             (from, to)
         })
@@ -164,31 +172,45 @@ async fn the_plan_driven_topology_is_the_legacy_one_with_regions_in_place_of_the
             .collect::<BTreeSet<_>>();
         assert!(regions.contains("metrics_enrich"), "{}: regions {:?}", name, regions);
 
-        // Components: the legacy ones without the fused transforms and gateways, and a region host per slot. Every
-        // component but the regions is the legacy one: same type, input, and outputs.
+        // Components: the legacy ones without the fused transforms, the gateways, and the routing groups' encoders,
+        // whose streams are leases of `dd_metrics_encode`; a region host per slot; and the encode host and delivery
+        // host of every fixed host, which run whether or not an output is bound to them (plan 4.15). Every component
+        // but the regions and the hosts the legacy topology does not build is the legacy one: same type, input, and
+        // outputs.
         let legacy_ids = legacy
             .components()
             .iter()
             .map(|component| component.id().to_string())
-            .filter(|id| !fused(id))
+            .filter(|id| !fused(id) && !routing_encoder(id))
             .collect::<BTreeSet<_>>();
+        let hosts = frame
+            .hosts()
+            .iter()
+            .flat_map(|host| [host.host.to_string(), host.encoder.to_string()])
+            .collect::<BTreeSet<_>>();
+        assert!(
+            hosts.contains("dd_out") && hosts.contains("mrf_dd_out"),
+            "{}: {:?}",
+            name,
+            hosts
+        );
         let plan_ids = plan
             .components()
             .iter()
             .map(|component| component.id().to_string())
             .collect::<BTreeSet<_>>();
-        assert_eq!(
-            plan_ids,
-            legacy_ids.union(&regions).cloned().collect::<BTreeSet<_>>(),
-            "{}: components",
-            name
-        );
+        let mut expected = legacy_ids.union(&regions).cloned().collect::<BTreeSet<_>>();
+        expected.extend(hosts.iter().cloned());
+        assert_eq!(plan_ids, expected, "{}: components", name);
         for component in plan.components() {
             let id = component.id().to_string();
             if regions.contains(&id) {
                 continue;
             }
-            let native = legacy.component(&id).unwrap();
+            let Some(native) = legacy.component(&id) else {
+                assert!(hosts.contains(&id), "{}: `{}`", name, id);
+                continue;
+            };
             assert_eq!(
                 component.component_type(),
                 native.component_type(),
@@ -224,15 +246,17 @@ async fn the_plan_driven_topology_is_the_legacy_one_with_regions_in_place_of_the
             assert_eq!(exits, expected, "{}: exits of `{}`", name, slot.name);
         }
 
-        // Edges: the legacy ones, without those leaving or entering a fused transform, a gateway, metrics enrichment,
-        // or aggregation, whose IDs regions keep, and those leaving an output the frame reads, but with the DogStatsD
-        // taps; and the frame's.
+        // Edges: the legacy ones, without those leaving or entering a fused transform, a gateway, a routing group's
+        // encoder, metrics enrichment, or aggregation, whose IDs regions keep, and those leaving an output the frame
+        // reads, but with the DogStatsD taps; the frame's; and each encode host's to its delivery host.
         let read = frame
             .admission_points()
             .iter()
             .map(|point| admission_output(frame, point.id))
             .collect::<BTreeSet<_>>();
-        let replaced = |component: &str| fused(component) || component == "metrics_enrich" || component == "dsd_agg";
+        let replaced = |component: &str| {
+            fused(component) || routing_encoder(component) || component == "metrics_enrich" || component == "dsd_agg"
+        };
         let mut expected = edges(legacy)
             .into_iter()
             .filter(|(from, to)| {
@@ -241,6 +265,12 @@ async fn the_plan_driven_topology_is_the_legacy_one_with_regions_in_place_of_the
             })
             .collect::<BTreeSet<_>>();
         expected.extend(frame_edges(frame, outputs));
+        expected.extend(
+            frame
+                .hosts()
+                .iter()
+                .map(|host| (host.encoder.to_string(), host.host.to_string())),
+        );
         assert_eq!(edges(plan), expected, "{}: edges", name);
 
         // Every output of a fixed component is an admission point: sources admit, hosts readmit, and only the point
@@ -275,8 +305,8 @@ async fn the_plan_driven_topology_is_the_legacy_one_with_regions_in_place_of_the
 #[tokio::test]
 async fn the_metrics_path_has_exactly_the_edges_of_its_frame() {
     // DogStatsD alone, with the no-aggregation pipeline: the pre-aggregation region, aggregation's isolation slot, and
-    // enrichment, with an idle exit to each output from the pre-aggregation region; the isolation slot has only its
-    // boot edge's exit.
+    // enrichment, with an idle exit to each output from the pre-aggregation region, and from both to the failover
+    // encode host, which runs idle; the isolation slot has only its boot edge's exit.
     let Topologies { legacy, plan, .. } = topologies("").await;
     let native = pairs(&[
         ("dsd_agg", "dsd_post_agg_filter"),
@@ -297,8 +327,11 @@ async fn the_metrics_path_has_exactly_the_edges_of_its_frame() {
         ("dsd_pre_aggregation.metrics_enrich", "metrics_enrich"),
         ("dsd_pre_aggregation.dsd_client_telemetry", "dsd_client_telemetry_out"),
         ("dsd_pre_aggregation.dd_metrics_encode", "dd_metrics_encode"),
+        ("dsd_pre_aggregation.mrf_metrics_encode", "mrf_metrics_encode"),
         ("metrics_enrich.dsd_client_telemetry", "dsd_client_telemetry_out"),
         ("metrics_enrich.dd_metrics_encode", "dd_metrics_encode"),
+        ("metrics_enrich.mrf_metrics_encode", "mrf_metrics_encode"),
+        ("mrf_metrics_encode", "mrf_dd_out"),
     ]);
     let legacy = edges(&legacy);
     assert!(native.is_subset(&legacy));
@@ -339,7 +372,8 @@ async fn the_metrics_path_has_exactly_the_edges_of_its_frame() {
     assert!(plan.component("mrf_metrics_gateway").is_none());
 
     // Every branch: five sources, two routing groups, and both failover gateways, which are `split`s of the policy
-    // region, so no component stands between a region and an encoder. Its mapper profile and namespace prefix make the
+    // region, so no component stands between a region and an encode host, and the routing groups' streams are leases
+    // of `dd_metrics_encode`, which every exit toward them leads to. Its mapper profile and namespace prefix make the
     // pre-aggregation chain costly enough that R1's cost model pipelines it over three regions (the mapper, the prefix
     // with the listener filterlist, and the timestamp split with the tag filterlist), and its host tags and five-way
     // fan-out keep enrichment from the post-aggregation filter. The fan-out and the four gateways are one decision,
@@ -347,11 +381,9 @@ async fn the_metrics_path_has_exactly_the_edges_of_its_frame() {
     // tags and the fan-out's copies) runs the whole policy region within the budget (110 ns, the prefix filter's), and
     // feeds every encoder directly.
     let Topologies { plan, .. } = topologies(matrix_entry("every branch")).await;
-    const OUTPUTS: [(&str, &str); 6] = [
+    const OUTPUTS: [(&str, &str); 4] = [
         ("dsd_client_telemetry", "dsd_client_telemetry_out"),
         ("dd_metrics_encode", "dd_metrics_encode"),
-        ("metrics_routing_encode_0", "metrics_routing_encode_0"),
-        ("metrics_routing_encode_1", "metrics_routing_encode_1"),
         ("mrf_metrics_encode", "mrf_metrics_encode"),
         ("af_metrics_encode", "af_metrics_encode"),
     ];
@@ -388,20 +420,12 @@ async fn the_metrics_path_has_exactly_the_edges_of_its_frame() {
                 ("dsd_client_telemetry", "dsd_client_telemetry_out"),
                 ("metrics_enrich", "metrics_enrich"),
             ],
-            &[
-                "dd_metrics_encode",
-                "metrics_routing_encode_0",
-                "metrics_routing_encode_1",
-                "mrf_metrics_encode",
-                "af_metrics_encode",
-            ],
+            &["dd_metrics_encode", "mrf_metrics_encode", "af_metrics_encode"],
         ),
         (
             "metrics_enrich",
             &[
                 ("dd_metrics_encode", "dd_metrics_encode"),
-                ("metrics_routing_encode_0", "metrics_routing_encode_0"),
-                ("metrics_routing_encode_1", "metrics_routing_encode_1"),
                 ("mrf_metrics_encode", "mrf_metrics_encode"),
                 ("af_metrics_encode", "af_metrics_encode"),
             ],
@@ -415,10 +439,8 @@ async fn the_metrics_path_has_exactly_the_edges_of_its_frame() {
         ("checks_ipc_in.metrics", "metrics_enrich"),
         ("liveness_in.metrics", "metrics_enrich"),
         ("trace_sampler.metrics", "metrics_enrich"),
-        // Encoders feed their forwarders, as natively.
+        // Encode hosts feed their delivery hosts, as the native encoders fed their forwarders.
         ("dd_metrics_encode", "dd_out"),
-        ("metrics_routing_encode_0", "dd_out"),
-        ("metrics_routing_encode_1", "dd_out"),
         ("mrf_metrics_encode", "mrf_dd_out"),
         ("af_metrics_encode", "cluster_agent_out"),
     ]);
@@ -437,8 +459,6 @@ async fn the_metrics_path_has_exactly_the_edges_of_its_frame() {
             || [
                 "dsd_client_telemetry_out",
                 "dd_metrics_encode",
-                "metrics_routing_encode_0",
-                "metrics_routing_encode_1",
                 "mrf_metrics_encode",
                 "af_metrics_encode",
             ]
@@ -449,10 +469,10 @@ async fn the_metrics_path_has_exactly_the_edges_of_its_frame() {
         .filter(|(from, to)| touching(from.split('.').next().unwrap()) || touching(to))
         .collect::<BTreeSet<_>>();
     assert_eq!(found, path);
-    assert!(plan
-        .components()
-        .iter()
-        .all(|component| !fused(&component.id().to_string())));
+    assert!(plan.components().iter().all(|component| {
+        let id = component.id().to_string();
+        !fused(&id) && !routing_encoder(&id)
+    }));
 }
 
 /// One configuration's regions, each with the most native transforms that one path through it runs through.
@@ -647,6 +667,154 @@ fn declared_by_path(bounds: &ComponentBounds, except: &[&str]) -> BTreeMap<Strin
     declared
 }
 
+/// Returns the bounds at `path` below `bounds`, if there are any.
+fn bounds_below<'a>(bounds: &'a ComponentBounds, path: &[&str]) -> Option<&'a ComponentBounds> {
+    path.iter().try_fold(bounds, |bounds, segment| {
+        bounds
+            .subcomponents()
+            .into_iter()
+            .find(|(name, _)| name.as_str() == *segment)
+            .map(|(_, bounds)| bounds)
+    })
+}
+
+/// Returns `declared` without the fixed hosts of `frame`, which
+/// [`assert_hosts_declare_what_native_encoders_and_forwarders_do`] compares on their own.
+fn without_hosts(mut declared: BTreeMap<String, Vec<String>>, frame: &Frame) -> BTreeMap<String, Vec<String>> {
+    let prefixes = frame
+        .hosts()
+        .iter()
+        .flat_map(|host| {
+            [
+                format!("root.topology.primary.encoders.{}.", host.encoder),
+                format!("root.topology.primary.forwarders.{}.", host.host),
+            ]
+        })
+        .collect::<Vec<_>>();
+    declared.retain(|path, _| !prefixes.iter().any(|prefix| path.starts_with(prefix)));
+    declared
+}
+
+/// Returns every term `bounds` declares at or below the component, as `min` or `firm` with the term, sorted, without
+/// the names of its parts and leaving out the size of each component's own struct: what each term counts.
+fn unnamed_terms(bounds: &ComponentBounds) -> Vec<String> {
+    fn strip(value: &mut serde_json::Value) {
+        if let Some(object) = value.as_object_mut() {
+            object.remove("name");
+            object.values_mut().for_each(strip);
+        } else if let Some(array) = value.as_array_mut() {
+            array.iter_mut().for_each(strip);
+        }
+    }
+    let mut terms = bounds
+        .to_exprs()
+        .into_iter()
+        .filter(|entry| entry["expr"]["name"] != "component struct")
+        .map(|mut entry| {
+            let kind = entry["name"].as_str().unwrap().rsplit('.').next().unwrap().to_string();
+            strip(&mut entry["expr"]);
+            format!("{} {}", kind, entry["expr"])
+        })
+        .collect::<Vec<_>>();
+    terms.sort();
+    terms
+}
+
+/// Returns the bytes of the minimum terms `bounds` declares at or below the component for a channel whose name has
+/// `channel` in it.
+fn channel_bytes(bounds: &ComponentBounds, channel: &str) -> u64 {
+    bounds
+        .to_exprs()
+        .iter()
+        .filter(|entry| entry["name"].as_str().unwrap().ends_with(".min"))
+        .filter_map(|entry| entry["expr"]["values"].as_array())
+        .filter(|values| values[0]["name"].as_str().is_some_and(|name| name.contains(channel)))
+        .map(|values| {
+            values
+                .iter()
+                .map(|value| value["value"].as_u64().unwrap())
+                .product::<u64>()
+        })
+        .sum()
+}
+
+/// Checks the bounds of the fixed hosts of `frame` against the native encoders and forwarders at their IDs.
+///
+/// Each encode host declares what the native encoders whose streams are its leases declared together (the one at its
+/// ID, and for `dd_metrics_encode` the routing groups' encoders), with three differences (plan 4.6): the names of their
+/// channels and buffers, which its leases' builders hold where each native request builder did; the size of its own
+/// struct; and one payloads channel, which every lease's builder sends on, where each native encoder had one. Each
+/// delivery host declares what the native forwarder does. A host the legacy topology does not build, which runs idle
+/// (plan 4.15), declares no lease.
+#[track_caller]
+fn assert_hosts_declare_what_native_encoders_and_forwarders_do(
+    plan: &ComponentBounds, legacy: &ComponentBounds, frame: &Frame, name: &str,
+) {
+    let firm = |bounds: &ComponentBounds| {
+        unnamed_terms(bounds)
+            .into_iter()
+            .filter(|term| term.starts_with("firm "))
+            .collect::<Vec<_>>()
+    };
+    for host in frame.hosts().iter() {
+        let encoder = host.encoder.to_string();
+        let delivery = host.host.to_string();
+        let encoder_path = ["topology", "primary", "encoders", encoder.as_str()];
+        let delivery_path = ["topology", "primary", "forwarders", delivery.as_str()];
+        let encode_host = bounds_at(plan, &encoder_path);
+        match bounds_below(legacy, &encoder_path) {
+            Some(native) => {
+                let mut natives = vec![native];
+                if encoder == "dd_metrics_encode" {
+                    for (id, routing) in bounds_at(legacy, &encoder_path[..3]).subcomponents() {
+                        if routing_encoder(id) {
+                            natives.push(routing);
+                        }
+                    }
+                }
+                let mut terms = natives.iter().flat_map(|native| firm(native)).collect::<Vec<_>>();
+                terms.sort();
+                assert_eq!(firm(encode_host), terms, "{}: `{}`", name, encoder);
+                assert_eq!(
+                    channel_bytes(encode_host, "events channel"),
+                    natives
+                        .iter()
+                        .map(|native| channel_bytes(native, "events channel"))
+                        .sum::<u64>(),
+                    "{}: `{}`",
+                    name,
+                    encoder
+                );
+                assert_eq!(
+                    channel_bytes(encode_host, "payloads channel"),
+                    channel_bytes(native, "payloads channel"),
+                    "{}: `{}`",
+                    name,
+                    encoder
+                );
+                assert_ne!(channel_bytes(native, "payloads channel"), 0, "{}: `{}`", name, encoder);
+            }
+            None => assert_eq!(
+                encode_host.subcomponents().into_iter().count(),
+                0,
+                "{}: idle `{}`",
+                name,
+                encoder
+            ),
+        }
+        let delivery_host = bounds_at(plan, &delivery_path);
+        if let Some(native) = bounds_below(legacy, &delivery_path) {
+            assert_eq!(
+                declared_by_path(delivery_host, &[]),
+                declared_by_path(native, &[]),
+                "{}: `{}`",
+                name,
+                delivery
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn region_bounds_are_their_kernels_native_bounds_and_their_buffers_and_the_rest_is_the_legacy_topologys() {
     let topologies = topologies("").await;
@@ -683,7 +851,13 @@ async fn region_bounds_are_their_kernels_native_bounds_and_their_buffers_and_the
     let regions: [Region; 2] = [
         (
             "dsd_pre_aggregation",
-            &["dsd_agg", "metrics_enrich", "dsd_client_telemetry", "dd_metrics_encode"],
+            &[
+                "dsd_agg",
+                "metrics_enrich",
+                "dsd_client_telemetry",
+                "dd_metrics_encode",
+                "mrf_metrics_encode",
+            ],
             4,
             (1, 2),
             0,
@@ -697,7 +871,7 @@ async fn region_bounds_are_their_kernels_native_bounds_and_their_buffers_and_the
         ),
         (
             "metrics_enrich",
-            &["dsd_client_telemetry", "dd_metrics_encode"],
+            &["dsd_client_telemetry", "dd_metrics_encode", "mrf_metrics_encode"],
             4,
             (2, 3),
             0,
@@ -812,9 +986,13 @@ async fn region_bounds_are_their_kernels_native_bounds_and_their_buffers_and_the
     // but its struct; the region declares its predicate, as above.
     assert!(declared_without_structs(at(&legacy, "dsd_post_agg_filter")).is_empty());
 
-    // Every other component declares what it does natively.
+    // Every other component declares what it does natively, the hosts as their native encoders and forwarders do.
     let replaced = [&FUSED[..], &["metrics_enrich", "dsd_pre_aggregation", "dsd_agg"]].concat();
-    assert_eq!(declared_by_path(&plan, &replaced), declared_by_path(&legacy, &replaced));
+    assert_eq!(
+        without_hosts(declared_by_path(&plan, &replaced), &topologies.frame),
+        without_hosts(declared_by_path(&legacy, &replaced), &topologies.frame)
+    );
+    assert_hosts_declare_what_native_encoders_and_forwarders_do(&plan, &legacy, &topologies.frame, "defaults");
 
     // The interconnects: one into each transform and destination, of the default capacity, 128 buffers, but for the
     // regions', and the in-flight buffers of every source and transform besides. The legacy topology has nine
@@ -1026,15 +1204,19 @@ async fn gateways_run_in_regions_and_declare_their_lists_as_the_legacy_gateways_
             );
         }
 
-        // Every other component declares what it does natively.
+        // Every other component declares what it does natively, the hosts as their native encoders and forwarders
+        // do; the routing groups' encoders are gone, their streams being leases of `dd_metrics_encode`.
         let mut replaced = [&FUSED[..], &["metrics_enrich"], regions].concat();
         replaced.extend(gateways.iter().map(String::as_str));
+        let mut native = without_hosts(declared_by_path(&legacy, &replaced), frame);
+        native.retain(|path, _| !path.starts_with("root.topology.primary.encoders.metrics_routing_encode_"));
         assert_eq!(
-            declared_by_path(&plan, &replaced),
-            declared_by_path(&legacy, &replaced),
+            without_hosts(declared_by_path(&plan, &replaced), frame),
+            native,
             "{}",
             name
         );
+        assert_hosts_declare_what_native_encoders_and_forwarders_do(&plan, &legacy, frame, name);
 
         // One interconnect, and one transform's in-flight buffers, per transform: the gateways' are gone. A region's
         // input holds what the transforms it replaces held on the way through it (see
@@ -1071,4 +1253,21 @@ async fn gateways_run_in_regions_and_declare_their_lists_as_the_legacy_gateways_
             name
         );
     }
+}
+
+#[test]
+fn the_hosts_limits_are_the_plans() {
+    // `saluki-components` cannot depend on the plan crate, so its hosts keep copies of the limits the installer
+    // plans with: a lease's shard channel, the drain deadline, and how many recipients drain at once.
+    use saluki_components::{encoders::encode_host, forwarders::delivery};
+
+    assert_eq!(
+        encode_host::LEASE_QUEUE_BUFFERS as u64,
+        limits::values::LEASE_QUEUE_BUFFERS
+    );
+    assert_eq!(delivery::DRAIN_DEADLINE, limits::values::DRAIN_DEADLINE);
+    assert_eq!(
+        delivery::MAX_DRAINING_RECIPIENTS as u64,
+        limits::values::MAX_DRAINING_RECIPIENTS
+    );
 }

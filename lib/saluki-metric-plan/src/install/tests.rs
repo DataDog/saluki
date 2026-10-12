@@ -12,7 +12,7 @@ use super::{diff::NodeChange, diff::OutputChange, *};
 use crate::{
     compile::{Frame, MissingCapability, SlotId},
     extension::TransitionClass,
-    ir::{NativeComponentId, NodeId, Plan},
+    ir::{HostId, NativeComponentId, NodeId, Plan, RecipientId},
     operators::OperatorRegistry,
     testing::{default_program_catalog, with_opaque_gateways, DEFAULT_PROGRAM_JSON},
     validate::Validator,
@@ -421,7 +421,7 @@ pub(super) fn describe(action: &Action) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
-        Action::Abort { generation, slots } => format!("abort {} in {} slots", generation, slots.len()),
+        Action::Abort { generation, slots, .. } => format!("abort {} in {} slots", generation, slots.len()),
         Action::Commit { generation } => format!("commit {}", generation.id()),
         Action::RetryAfter(delay) => format!("retry after {:?}", delay),
         Action::InstallDefaultProgram => "install the default program".to_string(),
@@ -441,6 +441,28 @@ pub(super) fn describe(action: &Action) -> String {
         Action::WatchCut { generation, at } => format!("watch the cut of {} at {}", generation, at),
         Action::CancelCut { generation, .. } => format!("cancel the cut of {}", generation),
         Action::FinalizeCut { generation } => format!("finalize the cut of {}", generation.id()),
+        Action::PrepareResources {
+            revision,
+            hosts,
+            timeout,
+            admitted: _,
+        } => format!(
+            "prepare resources revision {} in {} hosts within {:?}",
+            revision,
+            hosts.len(),
+            timeout
+        ),
+        Action::PublishResources { revision, hosts } => {
+            format!("publish resources revision {} in {} hosts", revision, hosts.len())
+        }
+        Action::AbortResources { revision, hosts } => {
+            format!("abort resources revision {} in {} hosts", revision, hosts.len())
+        }
+        Action::ReleaseLeases { host, leases } => format!("release {} leases of {}", leases.len(), host),
+        Action::ReleaseRecipients { host, recipients } => {
+            format!("release {} recipients of {}", recipients.len(), host)
+        }
+        Action::ReleaseCredits { credits } => format!("release {} credits", credits.len()),
     }
 }
 
@@ -480,6 +502,9 @@ fn the_boot_generation_is_active_at_once() {
         6,
         "three pre-aggregation regions, aggregation's isolation slot, and two after aggregation"
     );
+    // No host is controlled yet: the boot generation prepares and publishes nothing in one, at the first revision.
+    assert!(boot.hosts.is_empty() && boot.publish.is_empty());
+    assert_eq!(boot.revision, ResourcesRevision::default());
     let status = harness.core.status();
     assert_eq!(
         status.active.as_ref().map(|record| record.state),
@@ -661,6 +686,93 @@ fn a_failed_preparation_of_the_default_program_is_retried_with_backoff() {
     assert_eq!(described(&actions)[0], prepared(4, FILTERLIST_CHANGED));
 }
 
+/// Returns why generation `generation` ended, if it did.
+fn reason(harness: &Harness, generation: u64) -> Option<String> {
+    harness
+        .core
+        .status()
+        .generations
+        .into_iter()
+        .find(|record| record.id == GenerationId::new(generation))
+        .and_then(|record| record.reason)
+}
+
+#[test]
+fn host_and_budget_failures_name_their_resource_and_only_a_host_answers_with_reopens_that_exited() {
+    let host = HostId::new("dd_out").unwrap();
+    let recipient = RecipientRef {
+        slot: RecipientSlot::new(0),
+        id: RecipientId::new("dd_out/declared/team_d/https://team-d.example.com").unwrap(),
+        incarnation: 3,
+    };
+    let exited = || PrepareOutcome::ReopenExited {
+        recipients: vec![recipient.clone()],
+    };
+
+    // No host is sent a part of a preparation yet, so a host's acknowledgment, of any outcome but a failure, leaves the
+    // barrier waiting for the regions.
+    let mut harness = Harness::new(InstallerConfig::default());
+    harness.propose(filtered(&["a"]));
+    for outcome in [PrepareOutcome::Prepared, exited()] {
+        let actions = harness
+            .core
+            .prepare_acknowledged(GenerationId::new(2), PrepareSite::Host(host.clone()), outcome);
+        assert!(actions.is_empty(), "{:?}", described(&actions));
+    }
+    assert_eq!(
+        harness.core.status().preparing.map(|record| record.id),
+        Some(GenerationId::new(2))
+    );
+    let actions = harness.core.prepare_acknowledged(
+        GenerationId::new(2),
+        PrepareSite::Host(host.clone()),
+        Err("no client".to_string()),
+    );
+    assert_eq!(described(&actions)[0], "abort 2 in 6 slots");
+    assert_eq!(
+        reason(&harness, 2),
+        Some("host `dd_out` failed to prepare: no client".to_string())
+    );
+
+    // A budget refusal names the credit refused, in words.
+    let mut harness = Harness::new(InstallerConfig::default());
+    harness.propose(filtered(&["a"]));
+    harness.core.prepare_acknowledged(
+        GenerationId::new(2),
+        PrepareSite::Budget {
+            resource: CreditKey::Recipient(host.clone(), recipient.clone()),
+        },
+        Err("4 MiB more than the grant".to_string()),
+    );
+    assert_eq!(
+        reason(&harness, 2),
+        Some(
+            "the resource budget refused recipient `dd_out/declared/team_d/https://team-d.example.com` (slot 0, \
+             incarnation 3) of delivery host `dd_out`: 4 MiB more than the grant"
+                .to_string()
+        )
+    );
+
+    // Reopens that exited are a host's answer: from a region, the preparation fails.
+    let mut harness = Harness::new(InstallerConfig::default());
+    harness.propose(filtered(&["a"]));
+    let actions = harness
+        .core
+        .prepare_acknowledged(GenerationId::new(2), SlotId::new(5), exited());
+    assert_eq!(described(&actions)[0], "abort 2 in 6 slots");
+    assert!(reason(&harness, 2)
+        .unwrap()
+        .starts_with("region `metrics_enrich` failed to prepare: it answered as a delivery host does"));
+
+    // A resource transaction's acknowledgment takes the same outcomes; the core runs no transaction yet, so neither an
+    // acknowledgment nor a timeout leads anywhere.
+    assert!(harness
+        .core
+        .resources_prepared(ResourcesRevision::new(1), host, exited())
+        .is_empty());
+    assert!(harness.core.resources_timed_out(ResourcesRevision::new(1)).is_empty());
+}
+
 #[test]
 fn the_retry_delay_doubles_up_to_its_maximum() {
     let config = InstallerConfig::default();
@@ -747,7 +859,7 @@ fn invalid_and_unplaceable_candidates_are_rejected_and_the_active_generation_sta
     else {
         panic!("{:?}", described(&actions))
     };
-    assert_eq!(error.capabilities(), vec![MissingCapability::ResourceGenerations]);
+    assert_eq!(error.capabilities(), vec![MissingCapability::Restart]);
     assert_eq!(harness.core.status().live, vec![GenerationId::new(1)]);
 }
 

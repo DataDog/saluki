@@ -22,14 +22,14 @@ use tracing::debug;
 
 use crate::common::datadog::{
     config::ForwarderConfiguration,
+    delivery::{DeliveryHostConfiguration, DeliverySettings, HostKind, RecipientProtocol},
     endpoints::{MetricsRecipient, ResolvedEndpoint, SingleDestination},
     io::{EndpointRequestMapper, EndpointRequestMapperFactory, LiveForwarderConfiguration, TransactionForwarder},
+    middleware::CLUSTER_AGENT_SERIES_PATH,
     telemetry::ComponentTelemetry,
     transaction::{Metadata, Transaction, TransactionBody},
     DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT,
 };
-
-const CLUSTER_AGENT_SERIES_PATH: &str = "/series";
 
 static DD_API_KEY_HEADER: HeaderName = HeaderName::from_static("dd-api-key");
 
@@ -37,9 +37,22 @@ static DD_API_KEY_HEADER: HeaderName = HeaderName::from_static("dd-api-key");
 ///
 /// This forwarder sends encoded metric series payloads to the Cluster Agent `/series` endpoint using bearer-token
 /// authorization. It intentionally does not use Datadog intake endpoint configuration or `DD-Api-Key` auth.
+///
+/// A forwarder sends to the endpoint and token it is built with, natively, or, as a delivery host
+/// ([`controlled`][Self::controlled]), to the recipient a controller prepares while it runs, inserting the token from
+/// the recipient's credential at dispatch.
 pub struct ClusterAgentForwarderConfiguration {
     forwarder_config: ForwarderConfiguration,
-    auth_header_value: HeaderValue,
+    mode: Mode,
+}
+
+/// What a Cluster Agent forwarder sends to.
+enum Mode {
+    /// The endpoint it is built with, with the bearer token's header.
+    Static(HeaderValue),
+
+    /// The recipients a controller prepares while it runs.
+    Controlled(DeliveryHostConfiguration),
 }
 
 impl ClusterAgentForwarderConfiguration {
@@ -67,8 +80,27 @@ impl ClusterAgentForwarderConfiguration {
 
         Ok(Self {
             forwarder_config,
-            auth_header_value,
+            mode: Mode::Static(auth_header_value),
         })
+    }
+
+    /// Creates the configuration of a delivery host that sends to the Cluster Agent recipients a controller prepares
+    /// through `host`'s control mailbox while it runs, with each recipient's token inserted from its credential at
+    /// dispatch.
+    ///
+    /// `shared` supplies only what stays fixed while the process runs, the retry queue's storage path and the TLS key
+    /// log. A rejected token is never retried.
+    pub fn controlled(shared: &SharedConfiguration, host: DeliveryHostConfiguration) -> Self {
+        Self {
+            forwarder_config: ForwarderConfiguration::from_configuration(shared).with_allow_arbitrary_tags(false),
+            mode: Mode::Controlled(host),
+        }
+    }
+
+    /// Returns the settings a delivery host runs with when it follows this configuration: its client profile, and its
+    /// retry and concurrency settings.
+    pub fn delivery_settings(&self) -> DeliverySettings {
+        self.forwarder_config.delivery_settings()
     }
 
     /// Returns the endpoints this forwarder sends metrics payloads to: the Cluster Agent alone.
@@ -77,8 +109,13 @@ impl ClusterAgentForwarderConfiguration {
     ///
     /// Returns an error if the Cluster Agent endpoint cannot be resolved, which also fails building the forwarder.
     pub fn metrics_recipients(&self) -> Result<Vec<MetricsRecipient>, GenericError> {
-        // The Cluster Agent forwarder does not carry endpoint routing into its transactions.
-        self.forwarder_config.metrics_recipients(None)
+        // The Cluster Agent forwarder does not carry endpoint routing into its transactions, and its requests are the
+        // Cluster Agent's, whatever the forwarder configuration says of a Datadog intake.
+        let mut recipients = self.forwarder_config.metrics_recipients(None)?;
+        for recipient in &mut recipients {
+            recipient.protocol = RecipientProtocol::ClusterAgent;
+        }
+        Ok(recipients)
     }
 }
 
@@ -89,9 +126,19 @@ impl ForwarderBuilder for ClusterAgentForwarderConfiguration {
     }
 
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Forwarder + Send>, GenericError> {
+        let auth_header_value = match &self.mode {
+            Mode::Static(auth_header_value) => auth_header_value,
+            Mode::Controlled(host) => {
+                let kind = HostKind {
+                    endpoint_name: std::sync::Arc::new(get_cluster_agent_endpoint_name),
+                    secrets: None,
+                };
+                return host.build(&context, self.forwarder_config.clone(), kind);
+            }
+        };
         let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
-        let endpoint_request_mapper_factory = cluster_agent_request_mapper_factory(self.auth_header_value.clone());
+        let endpoint_request_mapper_factory = cluster_agent_request_mapper_factory(auth_header_value.clone());
         let forwarder = TransactionForwarder::from_config_with_endpoint_request_mapper(
             context.component_context().clone(),
             self.forwarder_config.clone(),
@@ -115,6 +162,13 @@ impl MemoryBounds for ClusterAgentForwarderConfiguration {
             .minimum()
             .with_single_value::<ClusterAgentForwarder>("component struct")
             .with_array::<Transaction<FrozenChunkedBytesBuffer>>("requests channel", 8);
+
+        // An idle host declares only its minimum: its controller admits its queue with its first recipient.
+        if let Mode::Controlled(host) = &self.mode {
+            if !host.has_boot_recipients() {
+                return;
+            }
+        }
 
         builder.firm().with_expr(UsageExpr::sum(
             "in-flight requests",
@@ -231,7 +285,7 @@ mod tests {
     use http::Method;
 
     use super::*;
-    use crate::common::datadog::{endpoints::EndpointRoute, test_util::shared_configuration};
+    use crate::common::datadog::{delivery::PayloadClasses, endpoints::EndpointRoute, test_util::shared_configuration};
 
     #[test]
     fn metrics_recipients_are_the_cluster_agent_alone() {
@@ -251,6 +305,8 @@ mod tests {
                 route: crate::common::datadog::endpoints::MetricsRecipientRoute::Primary,
                 configured_endpoint: "https://cluster-agent.example.com:5005".to_string(),
                 api_key_index: None,
+                classes: PayloadClasses::All,
+                protocol: RecipientProtocol::ClusterAgent,
             }]
         );
     }

@@ -6,6 +6,8 @@ use saluki_metrics::{static_metrics, Counter, Histogram};
 use tokio::sync::mpsc;
 
 use super::Dispatchable;
+#[cfg(feature = "measurement")]
+use crate::probes;
 use crate::{
     components::ComponentContext,
     execution::{AdmissionPoint, OwnerToken},
@@ -54,8 +56,35 @@ pub trait DispatchBuffer: Dispatchable + Default {
     fn try_push(&mut self, item: Self::Item) -> Option<Self::Item>;
 }
 
+/// The measurement probes of one output (see [`probes`][crate::probes]).
+#[cfg(feature = "measurement")]
+struct DispatchProbes {
+    lock_wait: Arc<probes::Histogram>,
+    lock_hold: Arc<probes::Histogram>,
+    send_wait: Arc<probes::Histogram>,
+    clone: Arc<probes::Histogram>,
+    items: Arc<probes::Histogram>,
+}
+
+#[cfg(feature = "measurement")]
+impl DispatchProbes {
+    fn new(context: &ComponentContext, output_name: &str) -> Self {
+        let subject = format!("{}.{}", context.component_id(), output_name);
+        let histogram = |probe: &str| probes::histogram(&format!("{}/{}", probe, subject));
+        Self {
+            lock_wait: histogram("admission_lock_wait"),
+            lock_hold: histogram("admission_lock_hold"),
+            send_wait: histogram("dispatch_send_wait"),
+            clone: histogram("dispatch_clone"),
+            items: histogram("dispatch_items"),
+        }
+    }
+}
+
 struct DispatchTarget<T> {
     metrics: DispatcherMetrics,
+    #[cfg(feature = "measurement")]
+    probes: DispatchProbes,
     senders: Vec<mpsc::Sender<T>>,
 
     // The component each sender feeds, where it is known, so that heartbeats can go to some of them only.
@@ -72,6 +101,8 @@ where
 {
     fn default_output(context: ComponentContext) -> Self {
         Self {
+            #[cfg(feature = "measurement")]
+            probes: DispatchProbes::new(&context, "_default"),
             metrics: DispatcherMetrics::default_output(context),
             senders: Vec::new(),
             sender_components: Vec::new(),
@@ -82,6 +113,8 @@ where
 
     fn named_output(context: ComponentContext, output_name: &str) -> Self {
         Self {
+            #[cfg(feature = "measurement")]
+            probes: DispatchProbes::new(&context, output_name),
             metrics: DispatcherMetrics::named_output(context, output_name),
             senders: Vec::new(),
             sender_components: Vec::new(),
@@ -101,7 +134,11 @@ where
         // share this dispatcher.
         let _admission = match &self.admission {
             Some(point) => {
+                #[cfg(feature = "measurement")]
+                let lock_wait = probes::Span::start(&self.probes.lock_wait);
                 let mut guard = point.lock().await;
+                #[cfg(feature = "measurement")]
+                drop(lock_wait);
                 if let Some(header) = item.header_mut() {
                     guard.stamp(header);
                 }
@@ -109,6 +146,12 @@ where
             }
             None => None,
         };
+        // Declared after the guard, so that it ends just before the guard is released.
+        #[cfg(feature = "measurement")]
+        let _lock_hold = self
+            .admission
+            .as_ref()
+            .map(|_| probes::Span::start(&self.probes.lock_hold));
 
         if self.senders.is_empty() {
             // Track discarded events when no senders are attached to this output
@@ -126,23 +169,36 @@ where
 
         let start = Instant::now();
         let item_count = item.item_count();
+        #[cfg(feature = "measurement")]
+        self.probes.items.record(item_count as u64);
 
         // Send the item to all senders except the last one by cloning the item.
         saluki_antithesis::always_gt!(self.senders.len(), 0, "dispatcher fanout has at least one sender");
         let cloned_sends = self.senders.len() - 1;
         for sender in &self.senders[0..cloned_sends] {
+            #[cfg(feature = "measurement")]
+            let clone = probes::Span::start(&self.probes.clone);
+            let cloned = item.clone();
+            #[cfg(feature = "measurement")]
+            drop(clone);
+            #[cfg(feature = "measurement")]
+            let _send_wait = probes::Span::start(&self.probes.send_wait);
             sender
-                .send(item.clone())
+                .send(cloned)
                 .await
                 .map_err(|_| generic_error!("Failed to send to output."))?;
         }
 
         // Send the item to the last sender without cloning.
         let last_sender = &self.senders[cloned_sends];
+        #[cfg(feature = "measurement")]
+        let send_wait = probes::Span::start(&self.probes.send_wait);
         last_sender
             .send(item)
             .await
             .map_err(|_| generic_error!("Failed to send to output."))?;
+        #[cfg(feature = "measurement")]
+        drop(send_wait);
 
         let elapsed = start.elapsed();
 
@@ -1173,6 +1229,56 @@ mod tests {
             "Cannot attach a sender to output '_default' after it became an admission point. Attach every sender \
              before setting the admission point."
         );
+    }
+
+    #[cfg(feature = "measurement")]
+    #[test]
+    fn probes_record_the_lock_the_fan_out_and_the_fill_of_an_admission_point_output() {
+        use crate::data_model::event::{
+            metric::{context::Context, Metric},
+            Event,
+        };
+
+        // The probes' state is process-wide: hold the lock outside the runtime, so that no guard is held across an
+        // await.
+        let _probes = probes::tests::PROBES_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        runtime.block_on(async {
+            let mut dispatcher =
+                Dispatcher::<EventsBuffer>::new(ComponentContext::test_source("dispatcher_probe_test"));
+            let (tx1, mut rx1) = mpsc::channel(2);
+            let (tx2, mut rx2) = mpsc::channel(2);
+            add_output_with_senders(&mut dispatcher, &OutputName::Default, [tx1, tx2]);
+            dispatcher
+                .set_admission_point(&OutputName::Default, admission_point(9))
+                .unwrap();
+            let probe = |name: &str| probes::snapshot()[&format!("{}/dispatcher_probe_test._default", name)].clone();
+
+            // Item counts are recorded whether or not timing is on; durations only while it is.
+            probes::set_timing(false);
+            let mut buffer = EventsBuffer::with_capacity(4);
+            let metric = Metric::counter(Context::from_static_name("probed"), 1.0);
+            assert!(buffer.try_push(Event::Metric(metric)).is_none());
+            dispatcher.dispatch(buffer.clone()).await.unwrap();
+            assert_eq!((probe("dispatch_items").count, probe("dispatch_items").sum), (1, 1));
+            assert_eq!(probe("admission_lock_wait").count, 0);
+
+            probes::set_timing(true);
+            dispatcher.dispatch(buffer).await.unwrap();
+            probes::set_timing(false);
+            assert_eq!(probe("dispatch_items").count, 2);
+            assert_eq!(probe("admission_lock_wait").count, 1);
+            assert_eq!(probe("admission_lock_hold").count, 1);
+            // One clone, for the first of two senders; one send wait for each sender.
+            assert_eq!(probe("dispatch_clone").count, 1);
+            assert_eq!(probe("dispatch_send_wait").count, 2);
+            for rx in [&mut rx1, &mut rx2] {
+                assert!(rx.try_recv().unwrap().header().is_stamped());
+                assert!(rx.try_recv().unwrap().header().is_stamped());
+            }
+        });
     }
 
     #[tokio::test]

@@ -21,8 +21,9 @@
 //! rule count, and a native filter counts the metrics it drops.
 
 use saluki_core::components::ComponentType;
+use saluki_error::{generic_error, GenericError};
 use saluki_metric_plan::{
-    ir::{Namespace, NodeId},
+    ir::{Namespace, NativeComponentId, NodeId, OutputId},
     operators::names,
 };
 
@@ -525,6 +526,29 @@ pub fn native_telemetry(node: &NodeId, operator: &str) -> Option<NativeTelemetry
             component_type: entry.component_type,
             profile: entry.profile,
         })
+    })
+}
+
+/// Returns the identity a lease's encoder telemetry reports under, with `component_type:encoder`: its output's
+/// identifier.
+///
+/// A native output's identifier is the component ID of the encoder that served it natively (`dd_metrics_encode`,
+/// `metrics_routing_encode_<i>`, `mrf_metrics_encode`, `af_metrics_encode`), so its encoder series continue across
+/// the move into an encode host and across rebinding, summed over a lease's builder shards. A declared output reports
+/// under `resources_<name>`. A routing group's series follow its position, not its key: after a group is removed, the
+/// next one continues under the removed one's identity.
+///
+/// # Errors
+///
+/// Returns an error if the identifier is not a component ID, which only a declared output named against the
+/// validation rules can be.
+pub fn lease_telemetry(output: &OutputId) -> Result<NativeComponentId, GenericError> {
+    NativeComponentId::new(output.as_str()).map_err(|error| {
+        generic_error!(
+            "Output `{}` cannot report encoder telemetry under its identifier: {}",
+            output,
+            error
+        )
     })
 }
 

@@ -1,0 +1,14 @@
+# The mapper configuration of a scaling run (`SCALING_PROFILE=mapper`): the mapper profile and the metric filterlist of
+# the in-process measurements (`measurement_tests.rs`, `CONFIG`), over the metric names `run-curves.sh` gives lading for
+# this profile (`raw.requests.route0` to `route15`, `raw.blocked`, and `app.queue0` to `app.queue31`): the mapper
+# rewrites a third of the names, and the filterlist drops one in 49. The in-process tag filterlist is left out, since
+# lading's tag keys are random.
+dogstatsd_mapper_profiles:
+  - name: requests
+    prefix: raw.
+    mappings:
+      - match: raw.requests.*
+        name: requests
+        tags:
+          route: $1
+metric_filterlist: [raw.blocked]

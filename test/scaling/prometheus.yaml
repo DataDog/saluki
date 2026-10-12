@@ -1,0 +1,18 @@
+# Scrapes a scaling run for watching it live (`docker compose --profile observe up`): ADP's internal telemetry on its
+# unprivileged API, and the generator's and the blackhole's lading telemetry. `run-curves.sh` reads the same endpoints
+# directly, at the start and the end of each measured window.
+global:
+  scrape_interval: 1s
+  scrape_timeout: 1s
+
+scrape_configs:
+  - job_name: adp
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["adp:5100"]
+  - job_name: lading-generator
+    static_configs:
+      - targets: ["lading:9229"]
+  - job_name: lading-blackhole
+    static_configs:
+      - targets: ["blackhole:9229"]

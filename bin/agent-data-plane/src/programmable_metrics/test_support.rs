@@ -168,10 +168,21 @@ pub(super) fn facts(config: &SalukiConfiguration) -> HostFacts {
         standalone: config.control.standalone_mode,
         host_tags: host_tags_enabled(config)
             .then(|| HOST_TAGS.iter().map(|tag| Tag::from(*tag)).collect::<SharedTagSet>()),
-        cluster_agent_endpoint: cluster_agent_configuration(config)
-            .endpoint_and_token()
-            .map(|(endpoint, _)| endpoint),
+        cluster_agent_endpoint: cluster_agent_configuration(config).endpoint(),
     }
+}
+
+/// Readies TLS for the clients the delivery hosts of a test topology build: the default cryptography provider, and a
+/// default root certificate store with no certificate, since a test's recipients never connect to a TLS endpoint.
+pub(super) fn init_test_tls() {
+    let _ = saluki_tls::initialize_default_crypto_provider();
+    let _ = saluki_tls::initialize_empty_root_certificates();
+}
+
+/// Returns the frame hosts of a process with every fixed host, the Cluster Agent's included, for tests that lay a
+/// lowered plan out themselves.
+pub(super) fn frame_hosts() -> saluki_metric_plan::compile::FrameHosts {
+    super::resources::FixedHosts::every().frame_hosts()
 }
 
 /// Returns the wall-clock time the process starts at in tests.

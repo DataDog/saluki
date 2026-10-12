@@ -67,6 +67,41 @@ pub struct MemoryBoundsConfiguration {
     pub memory_mode: MemoryMode,
 }
 
+/// What memory bounds verification checked at startup: the grant, the firm bound of the components verified against
+/// it, and the mode it was verified in.
+///
+/// A caller that adds memory after startup, such as resources created while the process runs, admits it against the
+/// same grant in the same mode.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VerifiedMemory {
+    /// The bytes the grant makes available: the memory limit less the slop factor's share.
+    pub grant_bytes: u64,
+
+    /// The firm bound of every component verified at startup, in bytes. It can exceed the grant in
+    /// [`MemoryMode::Permissive`].
+    pub firm_bytes: u64,
+
+    /// The mode the bounds were verified in: [`MemoryMode::Strict`] or [`MemoryMode::Permissive`].
+    pub mode: MemoryMode,
+}
+
+impl VerifiedMemory {
+    /// Returns the bytes of the grant the firm bound left free at startup: none if the bound exceeds the grant.
+    pub fn headroom_bytes(&self) -> u64 {
+        self.grant_bytes.saturating_sub(self.firm_bytes)
+    }
+}
+
+/// What initializing the memory bounds system set up.
+pub struct MemoryBounds {
+    /// The global memory limiter: a no-op unless a limit is verified and the limiter is enabled.
+    pub limiter: MemoryLimiter,
+
+    /// What verification checked, or `None` when it was skipped: in [`MemoryMode::Disabled`], or without a memory
+    /// limit.
+    pub verified: Option<VerifiedMemory>,
+}
+
 /// Initializes the memory bounds system and verifies any configured bounds based on the configured memory mode.
 ///
 /// When no memory limit is configured and `DOCKER_DD_AGENT` is set to a non-empty value, the limit is read from the
@@ -80,7 +115,7 @@ pub struct MemoryBoundsConfiguration {
 /// is returned.
 pub fn initialize_memory_bounds(
     configuration: MemoryBoundsConfiguration, component_registry: ComponentRegistryHandle,
-) -> Result<MemoryLimiter, GenericError> {
+) -> Result<MemoryBounds, GenericError> {
     let memory_limit = configuration.memory_limit.or_else(detect_cgroup_memory_limit);
 
     let configured_grant = memory_limit
@@ -88,19 +123,19 @@ pub fn initialize_memory_bounds(
         .transpose()
         .error_context("Given memory limit and/or slop factor invalid.")?;
 
-    let limiter_grant = match configuration.memory_mode {
+    let (limiter_grant, verified) = match configuration.memory_mode {
         MemoryMode::Disabled => {
             info!("Memory limiting disabled.");
-            None
+            (None, None)
         }
         mode @ (MemoryMode::Permissive | MemoryMode::Strict) => match configured_grant {
             Some(grant) => {
-                verify_bounds_for_mode(mode, grant, &component_registry)?;
-                Some(grant)
+                let verified = verify_bounds_for_mode(mode, grant, &component_registry)?;
+                (Some(grant), Some(verified))
             }
             None => {
                 info!("No memory limit set for the process. Skipping memory bounds verification.");
-                None
+                (None, None)
             }
         },
     };
@@ -111,12 +146,17 @@ pub fn initialize_memory_bounds(
         _ => MemoryLimiter::noop(),
     };
 
-    Ok(limiter)
+    Ok(MemoryBounds { limiter, verified })
 }
 
 fn verify_bounds_for_mode(
     mode: MemoryMode, initial_grant: MemoryGrant, component_registry: &ComponentRegistryHandle,
-) -> Result<(), GenericError> {
+) -> Result<VerifiedMemory, GenericError> {
+    let verified = |firm_bytes: usize| VerifiedMemory {
+        grant_bytes: initial_grant.effective_limit_bytes() as u64,
+        firm_bytes: firm_bytes as u64,
+        mode,
+    };
     match component_registry.verify_bounds(initial_grant) {
         Ok(verified_bounds) => {
             info!(
@@ -128,7 +168,7 @@ fn verify_bounds_for_mode(
 			);
 
             print_bounds(verified_bounds.bounds());
-            Ok(())
+            Ok(verified(verified_bounds.total_firm_limit_bytes()))
         }
         Err(e) => {
             let bounds = component_registry.as_bounds();
@@ -146,7 +186,7 @@ fn verify_bounds_for_mode(
                         "Configured memory limit ({}) may be insufficient for the current configuration. Memory limiting behavior will be best effort. Continuing.",
                         bytes_to_si_string(initial_grant.initial_limit_bytes()),
                     );
-                    Ok(())
+                    Ok(verified(bounds.total_firm_limit_bytes()))
                 }
                 MemoryMode::Disabled => unreachable!("verify_bounds_for_mode is never called with Disabled mode"),
             }
@@ -433,11 +473,31 @@ mod tests {
     fn disabled_memory_mode_skips_bounds_verification() {
         let registry = registry_with_firm_bound(64 * 1024 * 1024);
 
-        initialize_memory_bounds(
+        let bounds = initialize_memory_bounds(
             config_with_limit(ByteSize::b(1024), MemoryMode::Disabled),
             registry.root(),
         )
         .expect("disabled mode should not verify bounds");
+        assert_eq!(bounds.verified, None);
+    }
+
+    #[test]
+    fn verified_bounds_report_the_effective_grant_the_firm_bound_and_the_mode() {
+        let registry = registry_with_firm_bound(1024 * 1024);
+
+        // 4 MiB less the 25% slop factor leaves 3 MiB, of which the firm bound takes 1 MiB.
+        let bounds = initialize_memory_bounds(config_with_limit(ByteSize::mib(4), MemoryMode::Strict), registry.root())
+            .expect("bounds within the limit verify");
+        let verified = bounds.verified.expect("strict mode with a limit verifies");
+        assert_eq!(
+            verified,
+            VerifiedMemory {
+                grant_bytes: 3 * 1024 * 1024,
+                firm_bytes: 1024 * 1024,
+                mode: MemoryMode::Strict,
+            }
+        );
+        assert_eq!(verified.headroom_bytes(), 2 * 1024 * 1024);
     }
 
     #[test]
@@ -459,11 +519,16 @@ mod tests {
     fn permissive_memory_mode_tolerates_bounds_exceeding_the_limit() {
         let registry = registry_with_firm_bound(64 * 1024 * 1024);
 
-        initialize_memory_bounds(
+        let bounds = initialize_memory_bounds(
             config_with_limit(ByteSize::b(1024), MemoryMode::Permissive),
             registry.root(),
         )
         .expect("bounds larger than the limit should be non-fatal in permissive mode");
+        // What verification found is reported all the same: no headroom.
+        let verified = bounds.verified.expect("permissive mode with a limit verifies");
+        assert_eq!(verified.mode, MemoryMode::Permissive);
+        assert_eq!(verified.firm_bytes, 64 * 1024 * 1024);
+        assert_eq!(verified.headroom_bytes(), 0);
     }
 
     #[test]

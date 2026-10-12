@@ -1,10 +1,11 @@
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
-    sync::LazyLock,
+    sync::{Arc, LazyLock},
 };
 
 use agent_data_plane_config::shared::{self, V3SeriesMode};
+use arc_swap::ArcSwap;
 use http::uri::Authority;
 use regex::Regex;
 use saluki_error::{ErrorContext as _, GenericError};
@@ -15,6 +16,7 @@ use tracing::{debug, error};
 use url::Url;
 
 use super::api_key::ApiKeyCell;
+use super::delivery::{PayloadClasses, RecipientOrigin, RecipientProtocol, RecipientSpec};
 use super::protocol::{MetricsPayloadInfo, MetricsProtocolVersion, UseV3ApiSeriesConfig};
 
 static DD_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
@@ -226,6 +228,7 @@ pub(crate) fn resolve_additional_endpoints(
                 raw_additional_url: Some(raw_endpoint.to_string()),
                 logs_authority: logs_authority.clone(),
                 traces_authority: traces_authority.clone(),
+                protocol: None,
             });
         }
     }
@@ -341,6 +344,82 @@ pub struct ResolvedEndpoint {
     /// Pre-computed traces intake authority (for example, `trace.agent.datadoghq.com`).
     /// This is derived from the endpoint host when it contains `.agent.` marker.
     traces_authority: Option<Authority>,
+    /// The live protocol of a recipient a delivery host runs, which its request mapper reads at every dispatch.
+    /// `None` for an endpoint a static forwarder runs, whose protocol is fixed when it is built.
+    protocol: Option<ProtocolCell>,
+}
+
+/// How a delivery host's recipient forms its requests, as its request mapper reads it at every dispatch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum DispatchProtocol {
+    /// The Datadog intake.
+    DatadogIntake {
+        /// The authority logs payloads go to in place of the endpoint's own.
+        logs_authority: Option<Authority>,
+
+        /// The authority trace and APM statistics payloads go to in place of the endpoint's own.
+        traces_authority: Option<Authority>,
+
+        /// Whether every request carries `Allow-Arbitrary-Tag-Value: true`.
+        allow_arbitrary_tags: bool,
+    },
+
+    /// The Cluster Agent.
+    ClusterAgent,
+}
+
+impl DispatchProtocol {
+    /// Returns how requests are formed for `protocol`.
+    ///
+    /// An authority that does not parse is left out, so requests of that class go to the endpoint's own authority,
+    /// as natively when the endpoint's host names no intake authority.
+    pub(crate) fn new(protocol: &RecipientProtocol) -> Self {
+        let authority = |authority: &Option<MetaString>| {
+            authority
+                .as_deref()
+                .and_then(|authority| Authority::from_str(authority).ok())
+        };
+        match protocol {
+            RecipientProtocol::DatadogIntake {
+                authorities,
+                allow_arbitrary_tags,
+                ..
+            } => Self::DatadogIntake {
+                logs_authority: authority(&authorities.logs),
+                traces_authority: authority(&authorities.traces),
+                allow_arbitrary_tags: *allow_arbitrary_tags,
+            },
+            RecipientProtocol::ClusterAgent => Self::ClusterAgent,
+        }
+    }
+}
+
+/// The live protocol of one recipient a delivery host runs: the host stores each protocol a publication gives the
+/// recipient, and the recipient's request mapper reads it at every dispatch, so a change applies at the next request
+/// boundary.
+///
+/// Cloning shares the cell.
+#[derive(Clone, Debug)]
+pub(crate) struct ProtocolCell {
+    current: Arc<ArcSwap<DispatchProtocol>>,
+}
+
+impl ProtocolCell {
+    fn new(protocol: &RecipientProtocol) -> Self {
+        Self {
+            current: Arc::new(ArcSwap::from_pointee(DispatchProtocol::new(protocol))),
+        }
+    }
+
+    /// Returns the current protocol.
+    pub(crate) fn load(&self) -> Arc<DispatchProtocol> {
+        self.current.load_full()
+    }
+
+    /// Replaces the current protocol.
+    pub(crate) fn store(&self, protocol: &RecipientProtocol) {
+        self.current.store(Arc::new(DispatchProtocol::new(protocol)));
+    }
 }
 
 /// How a forwarder came to send to one of its metrics recipients.
@@ -372,8 +451,9 @@ impl MetricsRecipientRoute {
 ///
 /// A forwarder has one recipient for its primary endpoint (or its alternate metrics intake, which replaces the primary
 /// endpoint for metrics), and one for each distinct, non-empty, usable API key of each additional endpoint. Recipients
-/// are identified as configured: two additional endpoints whose URLs normalize to the same host are two recipients, and
-/// so is an additional endpoint that repeats the primary endpoint.
+/// are identified by what names their queue directories ([`queue_endpoint`][Self::queue_endpoint]): two additional
+/// endpoints whose URLs normalize to the same host are two recipients, and so is an additional endpoint that repeats
+/// the primary endpoint, while two spellings of the primary endpoint are one.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct MetricsRecipient {
     /// How the forwarder came to send to the endpoint.
@@ -385,6 +465,57 @@ pub struct MetricsRecipient {
     /// The position of the endpoint's API key in the configured key list of its additional endpoint, or `None` for a
     /// primary endpoint or alternate metrics intake, which have one key.
     pub api_key_index: Option<usize>,
+
+    /// Which payloads the endpoint receives besides metrics payloads that name it: every class for the primary and
+    /// additional endpoints, metrics only for the alternate metrics intake.
+    pub classes: PayloadClasses,
+
+    /// How the endpoint's requests are formed, and which metrics variants it takes in their V3 form.
+    pub protocol: RecipientProtocol,
+}
+
+impl MetricsRecipient {
+    /// Returns the endpoint the recipient's queue directory is named after, as an identity spells it
+    /// ([`queue_endpoint`]).
+    pub fn queue_endpoint(&self) -> String {
+        queue_endpoint(self.route, &self.configured_endpoint)
+    }
+}
+
+/// Returns the endpoint the queue directory of a recipient of `route` configured as `configured` is named after, as an
+/// identity spells it.
+///
+/// An additional endpoint's directory hashes its URL as configured, with its key's position, so it is spelled as
+/// configured. Any other recipient's hashes its URL as the forwarder resolves it, so it is spelled resolved: two
+/// spellings of one intake, such as with and without a trailing slash or a default port, or a site and the URL it
+/// implies, are one endpoint, and two configurations that give one endpoint share one directory. A resolved endpoint is
+/// written without its root path, and with the data plane's version label, which the forwarder puts in place of a
+/// Datadog intake's leading `app` label, written as that `app` label, so that it reads as configured and stays the same
+/// from one version to the next. An endpoint the forwarder cannot resolve is spelled as configured.
+pub fn queue_endpoint(route: MetricsRecipientRoute, configured: &str) -> String {
+    if route == MetricsRecipientRoute::Additional {
+        return configured.to_string();
+    }
+    let Ok(mut resolved) = parse_and_normalize_endpoint(configured) else {
+        return configured.to_string();
+    };
+    let prefix = format!("{}.", get_data_plane_version_prefix());
+    let configured_host = resolved
+        .host_str()
+        .and_then(|host| host.strip_prefix(&prefix))
+        .map(|rest| format!("app.{}", rest))
+        .filter(|host| DD_URL_REGEX.is_match(host));
+    if let Some(host) = configured_host {
+        // Only an `app` label the forwarder replaced is written back: a host that already reads `app` and matches is
+        // always replaced, so no two resolved endpoints are written alike.
+        let _ = resolved.set_host(Some(&host));
+    }
+    let mut spelled = resolved.to_string();
+    // An HTTP URL always has a path, so the root path written as nothing is never another endpoint's.
+    if resolved.path() == "/" && resolved.query().is_none() && resolved.fragment().is_none() {
+        spelled.pop();
+    }
+    spelled
 }
 
 /// Routing role for a resolved endpoint.
@@ -446,7 +577,31 @@ impl ResolvedEndpoint {
             raw_additional_url: None,
             logs_authority,
             traces_authority,
+            protocol: None,
         })
+    }
+
+    /// Creates the endpoint of a recipient a delivery host runs, presenting `api_key` until its credential changes.
+    ///
+    /// The endpoint is resolved as natively from the recipient's endpoint as configured (or, for a declared
+    /// recipient, in canonical form), and an additional endpoint keeps what names its queue directory, its raw URL and
+    /// key position, as a static forwarder's does.
+    /// Its request mapper reads the recipient's protocol from a live cell, which the host replaces when a publication
+    /// changes the protocol.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the endpoint URL is invalid or the API key cannot be used as an HTTP header value.
+    pub(crate) fn for_recipient(spec: &RecipientSpec, api_key: &str) -> Result<Self, EndpointError> {
+        let mut endpoint = Self::from_raw_endpoint(&spec.endpoint, api_key)?;
+        if let RecipientOrigin::Native(recipient) = &spec.origin {
+            if recipient.route == MetricsRecipientRoute::Additional {
+                endpoint.raw_additional_url = Some(recipient.configured_endpoint.clone());
+                endpoint.api_key_index = recipient.api_key_index;
+            }
+        }
+        endpoint.protocol = Some(ProtocolCell::new(&spec.protocol));
+        Ok(endpoint)
     }
 
     /// Returns the endpoint of the resolver.
@@ -494,6 +649,12 @@ impl ResolvedEndpoint {
         }
     }
 
+    /// Returns the live protocol of a recipient a delivery host runs, or `None` for an endpoint a static forwarder
+    /// runs.
+    pub(crate) fn protocol_cell(&self) -> Option<&ProtocolCell> {
+        self.protocol.as_ref()
+    }
+
     /// Returns the pre-computed logs intake authority, if available.
     ///
     /// This authority is derived from the endpoint host when it contains the `.agent.` marker,
@@ -535,7 +696,7 @@ fn parse_and_normalize_endpoint(raw_endpoint: &str) -> Result<Url, EndpointError
 ///
 /// This generates a prefix that's similar in format to the one generated by Datadog Agent for determining the endpoint
 /// to send metrics to.
-fn get_data_plane_version_prefix() -> String {
+pub(crate) fn get_data_plane_version_prefix() -> String {
     let app_details = saluki_metadata::get_app_details();
     let version = app_details.version();
     format!(

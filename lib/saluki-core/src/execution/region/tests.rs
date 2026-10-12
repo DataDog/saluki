@@ -39,6 +39,7 @@ use crate::{
     },
     data_model::event::{metric::Metric, Event, EventType},
     execution::{
+        control::{control_mailbox, ControlAck, ControlError, ControlMailbox, ControlSender},
         AdmissionPointId, AdmissionTime, BatchHeader, Budget, DrainPolicy, GenerationId, GenerationToken, Progress,
         WorkKind,
     },
@@ -1290,7 +1291,7 @@ async fn a_panic_that_fails_the_region_stops_it_with_the_drivers_error() {
     assert!(control.is_closed());
     assert!(matches!(
         acknowledged(control.send(Command::Note("late"))).await,
-        Err(ControlError::Stopped)
+        Err(ControlError::Stopped { .. })
     ));
 }
 
@@ -1371,7 +1372,7 @@ async fn panics_in_every_supervised_call_discard_its_output_and_the_region_recov
             PanicTrigger::ControlMessage => {
                 let ack = acknowledged(control.send(Command::Panic)).await;
                 assert!(
-                    matches!(&ack, Err(ControlError::Panicked { message }) if message == "boom in control"),
+                    matches!(&ack, Err(ControlError::Panicked { message, .. }) if message == "boom in control"),
                     "{:?}: unexpected acknowledgment {:?}",
                     case.site,
                     ack
@@ -1528,7 +1529,7 @@ async fn at_the_end_of_input_the_region_completes_yielded_work_finishes_and_stop
     );
     assert!(matches!(
         acknowledged(control.send(Command::Note("late"))).await,
-        Err(ControlError::Stopped)
+        Err(ControlError::Stopped { .. })
     ));
 }
 
@@ -1821,8 +1822,8 @@ async fn control_messages_are_acknowledged_with_their_outcome() {
 
     acknowledged(control.send(Command::Note("applied"))).await.unwrap();
     match acknowledged(control.send(Command::Reject)).await {
-        Err(ControlError::Rejected { failure }) => {
-            assert_eq!(failure.to_string(), "Generation 7 is not prepared.");
+        Err(ControlError::Rejected { error, .. }) => {
+            assert_eq!(error.to_string(), "Generation 7 is not prepared.");
         }
         other => panic!("expected a rejection, got {:?}", other),
     }
@@ -1838,11 +1839,11 @@ async fn control_messages_are_acknowledged_with_their_outcome() {
     let error = acknowledged(control.send(Command::Note("late")))
         .await
         .expect_err("a stopped region applies nothing");
-    assert!(matches!(error, ControlError::Stopped));
+    assert!(matches!(error, ControlError::Stopped { .. }));
     assert_eq!(
         error.to_string(),
-        "The region stopped before it handled the control message. The region is shutting down, or it failed; see \
-         its logs for the reason."
+        "The region stopped before it handled the control message. The region is shutting down, or it failed; see its \
+         logs for the reason."
     );
 }
 

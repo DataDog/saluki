@@ -427,7 +427,6 @@ default values.
 | `dogstatsd_metrics_stats_enable`             | Enable per-metric debug stats                |
 | `dogstatsd_workers_count`                    | Number of DSD processing workers             |
 | `env`                                        | Agent environment name                       |
-| `forwarder_apikey_validation_interval`       | API key check interval (minutes)             |
 | `forwarder_high_prio_buffer_size`            | High-priority request queue size             |
 | `forwarder_num_workers`                      | Concurrent forwarder workers                 |
 | `forwarder_stop_timeout`                     | Timeout (s) for forwarder graceful stop      |
@@ -524,20 +523,6 @@ every metric, event, log, trace, and service check it emits.
 ADP uses `env` for traces and APM stats only, and substitutes `none` when the setting is empty.
 It does not apply this setting directly to the DogStatsD metrics path.
 
-### `forwarder_apikey_validation_interval`
-
-ADP supports `forwarder_apikey_validation_interval` for Datadog intake forwarding. The value is in minutes,
-defaults to `60`, and falls back to that default for non-positive values.
-
-ADP validates configured API keys when the forwarder starts, periodically at the configured interval, and
-after API-key-related runtime config updates. Validation controls readiness only: confirmed invalid keys can
-make the forwarder not ready, but the forwarder keeps running and transient validation failures do not prove
-that keys are invalid.
-
-Support is partial because ADP only tracks `additional_endpoints` domains present at forwarder startup.
-Runtime updates can rotate keys for those domains, but brand-new domains are not added or validated until
-restart.
-
 ### `forwarder_high_prio_buffer_size`
 
 ADP implements `forwarder_high_prio_buffer_size` and matches the core agent's default of `100`. The
@@ -604,16 +589,16 @@ ADP supports multi-region failover for metrics. When `multi_region_failover.enab
 `multi_region_failover.failover_metrics` are both `true`, ADP forwards metrics to the
 primary Datadog endpoint and to a second MRF endpoint.
 
-To enable the MRF metrics branch at startup, configure `multi_region_failover.api_key`
-and one of `multi_region_failover.site` or `multi_region_failover.dd_url`. If the MRF
-endpoint configuration is incomplete, ADP skips the MRF branch and continues forwarding
-to the primary endpoint.
+To enable the MRF metrics branch, configure `multi_region_failover.api_key` and one of
+`multi_region_failover.site` or `multi_region_failover.dd_url`. If the MRF endpoint
+configuration is incomplete, ADP skips the MRF branch and continues forwarding to the
+primary endpoint.
 
 ADP does not fall back to the primary `api_key`, `site`, or `dd_url` for MRF traffic.
-`multi_region_failover.enabled` and endpoint selection are resolved at startup.
-`multi_region_failover.failover_metrics`, `multi_region_failover.metric_allowlist`, and
-`multi_region_failover.api_key` can refresh from live configuration after the MRF branch
-is enabled.
+Every MRF setting applies without a restart. Enabling or disabling failover, or changing its
+endpoint, installs a new generation of the metrics path, in which the MRF forwarder, idle
+while failover is disabled, gains or retires its endpoint; a key rotation applies at the next
+request.
 
 | Config Key                               | Behavior                                                                   | Default |
 | ---------------------------------------- | -------------------------------------------------------------------------- | ------- |
@@ -746,6 +731,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `experimental.metrics_endpoint_routing.metric_prefix_allowlist`    | Per-endpoint literal metric-prefix allow lists                              | {}             |
 | `experimental.programmable_metrics.artifact_channel.poll_interval` | Artifact channel stub poll interval                                         | 1 second       |
 | `experimental.programmable_metrics.artifact_channel.stub_url`      | Artifact channel stub URL (development only)                                |                |
+| `experimental.programmable_metrics.resources.credentials`          | Credentials resources artifacts may send with, by name                      | {}             |
 | `flush_timeout_secs`                                               | Encoder flush timeout (secs)                                                |                |
 | `memory_limit`                                                     | Process memory limit                                                        |                |
 | `memory_mode`                                                      | Memory bounds validation mode                                               | disabled       |
@@ -770,7 +756,7 @@ ADP can route a selected subset of metrics to the primary intake or to specific 
 
 Key `experimental.metrics_endpoint_routing.metric_allowlist` by the exact configured endpoint string. For the primary, use the effective endpoint configured through `dd_url` or derived from `site`. Configure additional destinations and their API keys through `additional_endpoints`, and use those exact map keys. The allowlist filters both series and sketches by metric name. A metric is forwarded if its name matches this exact list or the endpoint's `metric_prefix_allowlist`. If both lists are empty, no metrics are sent to that endpoint. Endpoints absent from both policy maps retain their ordinary behavior.
 
-ADP rejects a policy whose endpoint matches neither the primary endpoint nor a key in `additional_endpoints`, preventing a typo from silently sending an unfiltered stream. Endpoint policies are read when the topology is built, so changing the map requires an ADP restart. An absent or empty pair of policy maps leaves ordinary endpoint routing unchanged.
+ADP rejects a policy whose endpoint matches neither the primary endpoint nor a key in `additional_endpoints`, preventing a typo from silently sending an unfiltered stream. Endpoint policies apply without a restart: a change installs a new generation of the metrics path, in which policies can appear, disappear, and change, and a policy that names an unknown endpoint is reported and leaves the running generation in place. Routing outputs are numbered by position, so removing one renumbers the outputs after it, which a policy artifact emitting to one of them reports. An absent or empty pair of policy maps leaves ordinary endpoint routing unchanged.
 
 To filter the primary while leaving an additional endpoint on its ordinary full stream:
 
@@ -832,12 +818,12 @@ The example endpoint must also be configured as the primary or an additional end
 
 ### `experimental.programmable_metrics.artifact_channel.*`
 
-ADP can install policy artifacts that replace the policy region of its metrics path: endpoint routing, the failover branches, and the outputs. Artifacts reach ADP through an artifact channel. Only a local development stub of the channel exists, for development, tests, and demos.
+ADP can install policy artifacts that replace the policy region of its metrics path: endpoint routing, the failover branches, and the outputs, and resources artifacts that declare outputs and recipients apart from native configuration. Artifacts reach ADP through an artifact channel, with one product each, `policy` and `resources`. Only a local development stub of the channel exists, for development, tests, and demos.
 
 > [!WARNING]
 > Settings under `experimental` are unstable and may change, move, or be removed. Do not rely on backward compatibility. The stub has no authentication: do not use it in production.
 
-When `stub_url` is set, ADP polls `POST <stub_url>/v1/artifacts/poll` every `poll_interval` with the state of every artifact it has received, and installs the artifact the stub answers with. The URL must be an `http://` URL of a loopback address (`127.0.0.1`, `[::1]`, or `localhost`) without a query, and can have a path, which the poll path is appended to; ADP refuses to start with any other URL. `poll_interval` must be greater than zero. When `stub_url` is unset or empty, there is no channel, and ADP runs the metrics path its configuration describes. Both keys are read at startup; changing them requires a restart.
+When `stub_url` is set, ADP polls `POST <stub_url>/v1/artifacts/poll` every `poll_interval` with the state of every artifact it has received, and installs the artifacts the stub answers with. The URL must be an `http://` URL of a loopback address (`127.0.0.1`, `[::1]`, or `localhost`) without a query, and can have a path, which the poll path is appended to; ADP refuses to start with any other URL. `poll_interval` must be greater than zero. When `stub_url` is unset or empty, there is no channel, and ADP runs the metrics path its configuration describes. Both keys are read at startup; changing them requires a restart.
 
 ```yaml
 # Experimental keys may change, move, or be removed without backward compatibility.
@@ -849,6 +835,26 @@ experimental:
 ```
 
 The protocol is described in `docs/design/programmable-metrics-stub-protocol.md`.
+
+### `experimental.programmable_metrics.resources.credentials`
+
+A resources artifact, delivered through the `resources` product of the artifact channel, can declare recipients: endpoints that outputs it also declares deliver metrics to. A declared recipient sends with a credential `credentials/<name>`, which is the value of entry `<name>` of this map. The native API keys (`api_key`, the keys of `additional_endpoints`, and the failover keys) are never available to resources artifacts: only the credentials listed here are.
+
+> [!WARNING]
+> Settings under `experimental` are unstable and may change, move, or be removed. Do not rely on backward compatibility.
+
+An entry that is absent is not configured: a resources artifact that uses it waits, reported as `pending` with the credential's name, and installs once the entry is configured. Removing an entry withdraws the recipients that send with it. A value that still reads `ENC[...]` when ADP reads it, because no secret backend resolved it, counts as not configured. A present but blank value keeps the last usable key of the recipients already sending with it, as an API key rotation does.
+
+In `datadog.yaml` the key is a map; in the environment, `DD_EXPERIMENTAL_PROGRAMMABLE_METRICS_RESOURCES_CREDENTIALS` is a JSON object, such as `{"team_d": "<key>"}`. The environment form is read at startup only, so changing it requires a restart. In connected mode, a change in `datadog.yaml` applies without a restart only if the Core Agent streams the key to ADP.
+
+```yaml
+# Experimental keys may change, move, or be removed without backward compatibility.
+experimental:
+  programmable_metrics:
+    resources:
+      credentials:
+        team_d: <team-d-api-key>
+```
 
 ### `data_plane.apm.*`
 
@@ -1042,6 +1048,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `enable_payloads.sketches`                                                                 | Allow sending sketch payloads                      |
 | `expected_tags_duration`                                                                   | How long startup host tags are attached            |
 | `extra_tags`                                                                               | Additional EKS Fargate OTLP metric tags            |
+| `forwarder_apikey_validation_interval`                                                     | API key check interval (minutes)                   |
 | `forwarder_backoff_base`                                                                   | Retry backoff base (secs)                          |
 | `forwarder_backoff_factor`                                                                 | Retry backoff jitter factor                        |
 | `forwarder_backoff_max`                                                                    | Retry backoff ceiling (secs)                       |
@@ -1283,6 +1290,17 @@ The on-demand PID resolver is also Linux-only because it reads procfs and cgroup
 metadata can still populate `ContainerPid` aliases in the tag store on Unix platforms, which
 covers steady-state tagging when another source provides a PID, but macOS UDS origin detection
 cannot obtain that PID from the socket.
+
+### `forwarder_apikey_validation_interval`
+
+ADP supports `forwarder_apikey_validation_interval` for Datadog intake forwarding. The value is in minutes,
+defaults to `60`, and falls back to that default for non-positive values.
+
+ADP validates the API key of every Datadog intake endpoint it sends to when the endpoint starts sending,
+periodically at the configured interval, and after its key changes. An endpoint added to
+`additional_endpoints` while ADP runs is validated once it starts sending, and an endpoint removed is no
+longer validated. Validation controls readiness only: confirmed invalid keys can make the forwarder not
+ready, but the forwarder keeps running and transient validation failures do not prove that keys are invalid.
 
 ### `hostname`
 

@@ -37,8 +37,8 @@ use saluki_core::{
     data_model::event::{metric::Metric, Event},
     execution::{
         AdmissionClock, AdmissionMode, AdmissionPointId, AdmissionSchedule, AdmissionTime, BatchHeader, Budget,
-        CutBoundary, DrainPolicy, ExitSink, GenerationId, GenerationRef, GenerationToken, LossClass, PanicOutcome,
-        PanicSite, Progress, RegionDriver, RegionPanic, RegionTurn, ScheduleHandle, WallClock,
+        CutBoundary, DrainPolicy, EntryId, ExitSink, GenerationId, GenerationRef, GenerationToken, LossClass,
+        PanicOutcome, PanicSite, Progress, RegionDriver, RegionPanic, RegionTurn, ScheduleHandle, WallClock,
     },
     topology::EventsBuffer,
 };
@@ -49,7 +49,9 @@ use super::{
     RegionConfig, RegionControl, RegisterTelemetry, StateBudgets,
 };
 use crate::{
-    compile::{compile, CompiledPlan, Frame, FrameTarget, Placement, RegionProgram, Site, SlotId},
+    compile::{
+        compile, CompiledPlan, Frame, FrameHosts, FrameTarget, LeaseTable, Placement, RegionProgram, Site, SlotId,
+    },
     equivalence::{CapacityOutcome, OutputPoints},
     explain::loss_class_name,
     install::{kernel_reuse, StateBinding},
@@ -364,6 +366,41 @@ pub struct FrameHarness {
     resumes: usize,
     /// The buffers each slot received: those with events, and header-only ones.
     arrivals: BTreeMap<SlotId, (usize, usize)>,
+    /// The lease of every output a generation's plan declared.
+    leases: HarnessLeases,
+}
+
+/// The leases the harness gives outputs, standing in for the installer and the encode hosts: one per output, the first
+/// time a plan declares it, never reused.
+#[derive(Default)]
+struct HarnessLeases {
+    leases: BTreeMap<OutputId, EntryId>,
+    outputs: BTreeMap<EntryId, OutputId>,
+}
+
+impl HarnessLeases {
+    /// Returns the lease table of a generation whose plan is `plan`, giving each output it declares for the first time
+    /// a lease.
+    fn table(&mut self, plan: &Plan) -> Arc<LeaseTable> {
+        for output in &plan.outputs {
+            if !self.leases.contains_key(&output.id) {
+                let lease = EntryId::new(u16::try_from(self.leases.len()).expect("a test plan declares few outputs"));
+                self.leases.insert(output.id.clone(), lease);
+                self.outputs.insert(lease, output.id.clone());
+            }
+        }
+        Arc::new(
+            plan.outputs
+                .iter()
+                .map(|output| (output.id.clone(), self.leases[&output.id]))
+                .collect(),
+        )
+    }
+
+    /// Returns the output a lease belongs to.
+    fn output(&self, lease: EntryId) -> Option<&OutputId> {
+        self.outputs.get(&lease)
+    }
 }
 
 /// Names slots as the default program's host does, and every other slot `region_<first node>`.
@@ -405,8 +442,27 @@ impl FrameHarness {
         plan: &Plan, report: &ValidationReport, registry: OperatorRegistry, options: HarnessOptions,
         start: AdmissionTime,
     ) -> Self {
-        let frame = Frame::compute(plan, &registry, &namer).expect("the boot plan has a frame");
+        Self::with_hosts(plan, report, registry, options, start, &FrameHosts::new())
+    }
+
+    /// Computes the frame of a valid boot plan with the given delivery hosts, and creates a driver for each slot,
+    /// prepared for generation 1, compiled and run as `options` say, and started at the wall-clock time `start`.
+    ///
+    /// The harness stands in for the encode hosts: it gives every output a lease the first time a generation's plan
+    /// declares it, never reused, prepares each generation with the lease table of its plan, and delivers a batch that
+    /// reaches an encode host to the output its header's lease names.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the plan has no frame with these hosts or does not compile, or a region cannot be created: a test bug.
+    pub fn with_hosts(
+        plan: &Plan, report: &ValidationReport, registry: OperatorRegistry, options: HarnessOptions,
+        start: AdmissionTime, hosts: &FrameHosts,
+    ) -> Self {
+        let frame = Frame::compute_with_hosts(plan, &registry, &namer, hosts).expect("the boot plan has a frame");
         let compiled = compiled_with(plan, report, &registry, &frame, options);
+        let mut leases = HarnessLeases::default();
+        let boot_leases = leases.table(plan);
         let active: GenerationRef = Arc::new(GenerationToken::new(GenerationId::new(1)));
         let schedule = AdmissionSchedule::Steady(Arc::clone(&active)).into_handle();
         let telemetry = RecordingTelemetry::default();
@@ -438,7 +494,8 @@ impl FrameHarness {
                     kernels,
                     PanicBudget::DEFAULT_PROGRAM,
                     &telemetry,
-                );
+                )
+                .with_leases(Arc::clone(&boot_leases));
                 let config = RegionConfig::for_slot(slot, &telemetry)
                     .with_memo_entries(options.memo_entries)
                     .with_schedule(Arc::clone(&schedule))
@@ -521,6 +578,7 @@ impl FrameHarness {
             failures,
             resumes: 0,
             arrivals: BTreeMap::new(),
+            leases,
         }
     }
 
@@ -615,6 +673,7 @@ impl FrameHarness {
             .iter()
             .flatten()
             .any(|binding| !matches!(binding, StateBinding::Retain { .. }));
+        let leases = self.leases.table(plan);
         for (((driver, program), kernels), bindings) in self
             .drivers
             .iter_mut()
@@ -641,7 +700,8 @@ impl FrameHarness {
                 self.options.candidate_budget,
                 &self.telemetry,
             )
-            .with_state_bindings(bindings);
+            .with_state_bindings(bindings)
+            .with_leases(Arc::clone(&leases));
             let mut budget = self.options.turn_budget;
             let mut sink = ExitSink::new(0);
             driver
@@ -1032,12 +1092,13 @@ impl FrameHarness {
         let exits = self.frame.slot(slot).expect("the frame's slot").exits.clone();
         for (exit, buffer) in buffers {
             let target = exits[exit.get()].target.clone();
-            // Every buffer leaves stamped, with an entry exactly when it carries events to another slot.
+            // Every buffer leaves stamped, with an entry exactly when it carries events to another slot or to an encode
+            // host, where the entry is its output's lease.
             assert!(buffer.header().generation.is_some(), "exit buffers keep the generation");
             if !buffer.is_empty() {
                 assert_eq!(
                     buffer.header().entry.is_some(),
-                    matches!(target, FrameTarget::Slot(_)),
+                    matches!(target, FrameTarget::Slot(_) | FrameTarget::EncodeHost(_)),
                     "exit to {:?} has entry {:?}",
                     target,
                     buffer.header().entry
@@ -1052,9 +1113,25 @@ impl FrameHarness {
     }
 
     fn deliver(&mut self, target: Option<FrameTarget>, buffer: EventsBuffer, arrival: AdmissionTime) {
+        // An encode host delivers each buffer to the output its lease names, as the encode host's front task does.
+        let target = match target {
+            Some(FrameTarget::EncodeHost(host)) if !buffer.is_empty() => {
+                let lease = buffer
+                    .header()
+                    .entry
+                    .expect("a batch to an encode host names its lease");
+                let output = self.leases.output(lease).unwrap_or_else(|| {
+                    panic!("a batch to the encode host of {} names unknown lease {:?}", host, lease)
+                });
+                Some(FrameTarget::Destination(output.clone()))
+            }
+            // Header-only progress carries nothing to deliver.
+            Some(FrameTarget::EncodeHost(_)) => None,
+            target => target,
+        };
         match target {
-            None => {}
-            Some(FrameTarget::Output(output)) => {
+            None | Some(FrameTarget::EncodeHost(_)) => {}
+            Some(FrameTarget::Destination(output)) => {
                 let header = buffer.header().clone();
                 for event in buffer {
                     let metric = event.try_into_metric().expect("outputs receive metrics");

@@ -8,7 +8,10 @@ use serde_json::Value;
 
 use crate::{
     canonical::PlanHash,
-    ir::{BindingName, ExitName, InputName, OutputId, ParamType, RecipientId, ScopeName, ValueType},
+    ir::{
+        BindingName, ExitName, HostId, InputName, OutputDecl, OutputId, ParamSpec, ParamType, RecipientDecl,
+        RecipientId, ScopeName, ValueType,
+    },
     model::PortType,
     predicate::BindingResolver,
 };
@@ -20,12 +23,22 @@ pub struct CatalogOutput {
     /// The records the output accepts.
     pub accepts: PortType,
 
-    /// The digest of the output's resolved binding.
+    /// The output's fingerprint: what its declaration says it delivers to (for a bound output, version 2, see
+    /// [`resources::fingerprint`][crate::resources::fingerprint]).
     pub fingerprint: PlanHash,
 
     /// The output's physical recipients.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recipients: Vec<RecipientId>,
+
+    /// The output's fingerprint as version 1 computed it from the current configuration, for a native output that
+    /// existed before fingerprint version 2.
+    ///
+    /// An artifact whose base records this digest composes as it did before the upgrade, noted as needing a rebase, so
+    /// that a working policy does not stop applying when fingerprints change version. `None` for an output that never
+    /// had a version 1 fingerprint, such as a declared one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy_fingerprint: Option<PlanHash>,
 }
 
 /// Whether a configuration binding's value can change while the process runs.
@@ -56,6 +69,26 @@ pub struct CatalogBinding {
     /// program, can be previewed against them away from the host: the catalog is then a [`BindingResolver`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<Value>,
+}
+
+/// What a delivery host accepts as plan parameters: the schema of each of its typed [`Params`][crate::ir::Params]
+/// members.
+///
+/// The plan crate never reads what these parameters mean: the host provides their schema, generated from the same
+/// table its codec decodes them with, so that validation, `explain`, and decoding cannot disagree.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HostSchema {
+    /// The parameters of an output binding's encoder ([`OutputBinding::encoder`][crate::ir::OutputBinding::encoder]).
+    pub encoder: &'static [ParamSpec],
+
+    /// The host's shared settings ([`HostBinding::settings`][crate::ir::HostBinding::settings]).
+    pub settings: &'static [ParamSpec],
+
+    /// A recipient's protocol ([`RecipientDecl::protocol`][crate::ir::RecipientDecl::protocol]).
+    pub protocol: &'static [ParamSpec],
+
+    /// Whether the host accepts recipients that a resources artifact declares.
+    pub declared_recipients: bool,
 }
 
 /// What the host declares, which plans may refer to.
@@ -94,6 +127,36 @@ pub trait Catalog {
     fn state_budget(&self) -> Option<u64> {
         None
     }
+
+    /// Returns the schema of the given delivery host's parameters, if the host declares it.
+    ///
+    /// Output bindings, host settings, and recipients name a delivery host; validation checks that their parameters
+    /// match its schema. The default declares no host, as an exported catalog, which leaves host settings out, does.
+    fn host(&self, host: &HostId) -> Option<HostSchema> {
+        let _ = host;
+        None
+    }
+
+    /// Returns `true` if the catalog declares every delivery host the host has, so that a host it does not declare is
+    /// not one.
+    ///
+    /// Validation then rejects an output binding, host settings, or a recipient on a host the catalog does not
+    /// declare. A catalog that declares hosts only in part, such as an exported one, which leaves host settings out,
+    /// returns `false`, the default: validation then checks the parameters of the hosts it declares, and leaves the
+    /// others to the host, whose frame has no encode host for a host it does not have.
+    fn declares_hosts(&self) -> bool {
+        false
+    }
+
+    /// Returns why `recipient` cannot receive what `output`, bound to its delivery host, produces, or `None` if it can.
+    ///
+    /// The plan crate does not read what protocols mean: the host decides from the output's encoder parameters and the
+    /// recipient's protocol, as a recipient that takes only some protocol variants or record kinds does. The default
+    /// refuses nothing.
+    fn refuses(&self, output: &OutputDecl, recipient: &RecipientDecl) -> Option<String> {
+        let _ = (output, recipient);
+        None
+    }
 }
 
 impl BindingResolver for dyn Catalog + '_ {
@@ -115,12 +178,12 @@ impl BindingResolver for dyn Catalog + '_ {
 /// A catalog held in memory, which is also the catalog's document form.
 ///
 /// Serialized as an object with four members, each of which may be left out when empty: `outputs`, from output ID to
-/// the output's `accepts`, `fingerprint`, and `recipients`; `bindings`, from binding name to the binding's `type` (a
-/// [`ValueType`]), `liveness` (`live` or `startup`), and optional `value`; `scopes`, from scope name to the scope's
-/// `inputs` and `exits`, each a map from name to port type; and `state_budget`, the host's state budget. A scope
-/// without exits is written as the map of its inputs alone, as documents written before scopes had exits are, and
-/// either form is read. A host exports its catalog in this form, so that plans can be validated and previewed away from
-/// it.
+/// the output's `accepts`, `fingerprint`, `recipients`, and optional `legacy_fingerprint`; `bindings`, from binding
+/// name to the binding's `type` (a [`ValueType`]), `liveness` (`live` or `startup`), and optional `value`; `scopes`,
+/// from scope name to the scope's `inputs` and `exits`, each a map from name to port type; and `state_budget`, the
+/// host's state budget. A scope without exits is written as the map of its inputs alone, as documents written before
+/// scopes had exits are, and either form is read. A host exports its catalog in this form, so that plans can be
+/// validated and previewed away from it. It declares no delivery host: an export leaves host settings out.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MemoryCatalog {

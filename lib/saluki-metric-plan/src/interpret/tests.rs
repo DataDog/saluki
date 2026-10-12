@@ -65,6 +65,7 @@ fn test_catalog() -> MemoryCatalog {
                 accepts: PortType::ANY,
                 fingerprint: fingerprint(output),
                 recipients: vec![RecipientId::new(format!("out/{}", output)).unwrap()],
+                legacy_fingerprint: None,
             },
         );
     }
@@ -1098,13 +1099,13 @@ fn installations_that_need_later_stages_are_explicit_errors() {
         (
             "adding a host",
             Trace::new().install(plain.clone()).install(hosted.clone()),
-            "stage 7",
+            "stage 10",
             "adding the host component `h`",
         ),
         (
             "removing a host",
             Trace::new().install(hosted).install(plain.clone()),
-            "stage 7",
+            "stage 10",
             "removing the host component `h`",
         ),
         // A state owner that keeps its state in its own program, outside an isolation fence, has no lineage that an
@@ -1112,19 +1113,19 @@ fn installations_that_need_later_stages_are_explicit_errors() {
         (
             "adding a state owner outside an isolation fence",
             Trace::new().install(plain.clone()).install(held.clone()),
-            "stage 7",
+            "stage 10",
             "adding the state owner `k` outside an isolation fence",
         ),
         (
             "removing a state owner outside an isolation fence",
             Trace::new().install(held.clone()).install(plain),
-            "stage 7",
+            "stage 10",
             "removing the state owner `k` outside an isolation fence",
         ),
         (
             "changing a state owner's parameters outside an isolation fence",
             Trace::new().install(held).install(relabeled),
-            "stage 7",
+            "stage 10",
             "changing the state owner `k` outside an isolation fence while it keeps its state",
         ),
     ];
@@ -1266,7 +1267,7 @@ fn malformed_and_unsupported_trace_events_are_explicit_errors() {
         "{}",
         message
     );
-    assert!(message.contains("stage 7"), "{}", message);
+    assert!(message.contains("stage 10"), "{}", message);
 
     // A reset upstream of nothing that keeps state is a new epoch of the point's clock, and so is a `cancel` with no
     // cut in flight nothing to cancel.

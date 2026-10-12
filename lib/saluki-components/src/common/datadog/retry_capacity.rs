@@ -113,6 +113,18 @@ impl RetryQueueCapacityAggregator {
         self.recompute_domain_stats();
     }
 
+    /// Forgets an endpoint whose queue stopped, so the estimates no longer count it.
+    pub(super) fn remove_endpoint(&mut self, endpoint_id: &MetaString) {
+        if self.per_endpoint.remove(endpoint_id).is_some() {
+            self.recompute_domain_stats();
+        }
+    }
+
+    /// Returns whether any endpoint the estimates count sends to `domain`, whatever its current rate.
+    pub(super) fn covers_domain(&self, domain: &str) -> bool {
+        self.per_endpoint.values().any(|stats| &*stats.domain == domain)
+    }
+
     pub(super) fn total_bytes_per_sec(&self) -> f64 {
         self.per_endpoint.values().map(|stats| stats.bytes_per_sec).sum::<f64>()
     }

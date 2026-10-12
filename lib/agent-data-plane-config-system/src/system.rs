@@ -1315,6 +1315,59 @@ mod tests {
         assert_eq!(system.config().domains.dogstatsd.listeners.port, 8125);
     }
 
+    /// Whether a declared credential changes live depends on its source: the Agent stream is folded over a base fixed
+    /// at boot, which holds the environment and file forms. This pins what ADP does with each: a credential the stream
+    /// carries applies, entry by entry, and is removed when a snapshot no longer carries it; one only the base holds
+    /// never changes after boot. Whether the Core Agent streams this key, which its schema does not publish, is not
+    /// decided here.
+    #[tokio::test]
+    async fn resources_credentials_follow_the_agent_stream_over_the_boot_base() {
+        let credentials = |system: &ConfigurationSystem| {
+            system
+                .config()
+                .control
+                .programmable_metrics
+                .resources
+                .credentials
+                .clone()
+                .into_iter()
+                .collect::<Vec<_>>()
+        };
+        let pair = |name: &str, value: &str| (name.to_string(), value.to_string());
+        let (system, agent_tx) = connected_system(json!({ "experimental": { "programmable_metrics": {
+            "resources": { "credentials": { "boot": "key-boot" } }
+        } } }))
+        .await;
+        assert_eq!(credentials(&system), vec![pair("boot", "key-boot")]);
+        let mut view = system.live(|c| &c.control.programmable_metrics.resources.credentials);
+
+        // The stream's map replaces the base's as one value, as `additional_endpoints` does.
+        agent_tx
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "experimental.programmable_metrics.resources.credentials",
+                json!({ "team_d": "key-d" }),
+            )))
+            .await
+            .unwrap();
+        let updated = tokio::time::timeout(Duration::from_secs(2), view.changed())
+            .await
+            .expect("the view observes a streamed credential");
+        assert_eq!(updated.get("team_d").map(String::as_str), Some("key-d"));
+        assert_eq!(credentials(&system), vec![pair("team_d", "key-d")]);
+
+        // A snapshot without the key returns to the base, which boot fixed.
+        agent_tx.send(ConfigUpdate::snapshot([])).await.unwrap();
+        await_config(&system, "the base credentials to return", |c| {
+            c.control
+                .programmable_metrics
+                .resources
+                .credentials
+                .contains_key("boot")
+        })
+        .await;
+        assert_eq!(credentials(&system), vec![pair("boot", "key-boot")]);
+    }
+
     #[tokio::test]
     async fn a_live_view_wakes_when_only_provenance_changes() {
         let (system, agent_tx) = connected_system(json!({})).await;

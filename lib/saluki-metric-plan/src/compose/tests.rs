@@ -145,6 +145,8 @@ fn approval(revision: u64) -> Approval {
         revision,
         approved_against: None,
         active_plan_hash: None,
+        in_effect: false,
+        upgraded: Default::default(),
     }
 }
 
@@ -840,9 +842,16 @@ fn edits_that_cannot_be_composed_are_refused_with_the_reason() {
                 node(document, "metrics_policy_0")["params"]["output"] = json!("nowhere");
                 document["base"]["outputs"]["nowhere"] = json!(ZERO_HASH);
             },
-            ComposeError::RemovedOutput {
+            ComposeError::PendingOutput {
                 output: output("nowhere"),
-                declared: false,
+            },
+        ),
+        (
+            "an unrecorded output named as a resources artifact names its outputs",
+            |document| node(document, "metrics_policy_0")["params"]["output"] = json!("resources_team_d"),
+            ComposeError::UnrecordedOutput {
+                node: id("metrics_policy_0"),
+                output: output("resources_team_d"),
             },
         ),
         (
@@ -874,9 +883,9 @@ fn edits_that_cannot_be_composed_are_refused_with_the_reason() {
         (
             "a fingerprint mismatch",
             |document| document["base"]["outputs"]["dd_metrics_encode"] = json!(ZERO_HASH),
-            ComposeError::RemovedOutput {
+            ComposeError::ReboundOutput {
                 output: output("dd_metrics_encode"),
-                declared: true,
+                renumbered: None,
             },
         ),
         (
@@ -1163,6 +1172,8 @@ fn stale_reviews_are_flagged_when_approval_was_against_another_active_plan() {
             revision: 1,
             approved_against,
             active_plan_hash,
+            in_effect: false,
+            upgraded: Default::default(),
         };
         let composed = fixture.compose(fixture.artifact(), &approval).unwrap();
         assert_eq!(composed.stale_review, stale, "{:?}", approval);
@@ -1611,7 +1622,10 @@ fn explains(error: &ComposeError, artifact: &PolicyArtifact, fixture: &Fixture) 
         }
         ComposeError::UnrecordedOutput { node: id, output } => node(id)
             .filter(|node| node.op.as_str() == names::EMIT && emitted_output(&node.params).as_ref() == Some(output))
-            .filter(|_| !artifact.base.outputs.contains_key(output) && fixture.catalog.output(output).is_some())
+            .filter(|_| {
+                !artifact.base.outputs.contains_key(output)
+                    && (fixture.catalog.output(output).is_some() || output.is_declared())
+            })
             .map(|_| "an emit delivers to an output the base does not record"),
         ComposeError::UndeclaredOutput {
             node: id,
@@ -1630,20 +1644,36 @@ fn explains(error: &ComposeError, artifact: &PolicyArtifact, fixture: &Fixture) 
                 .filter(|_| {
                     !artifact.base.outputs.contains_key(output)
                         && fixture.catalog.output(output).is_none()
+                        && !output.is_declared()
                         && *declared == all_declared
                 })
                 .map(|_| "an emit delivers to an output the host does not declare")
         }
-        ComposeError::RemovedOutput { output, declared } => {
+        ComposeError::PendingOutput { output } => {
+            let recorded = artifact.base.outputs.get(output);
+            // No other output carries the recorded fingerprint, which would make it a renumbering.
+            let elsewhere = fixture
+                .plan
+                .outputs
+                .iter()
+                .any(|other| Some(&other.fingerprint) == recorded && other.id != *output);
+            (emits_to(output) && recorded.is_some() && fixture.catalog.output(output).is_none() && !elsewhere)
+                .then_some("an emit delivers to an output the base records and the host does not declare")
+        }
+        ComposeError::ReboundOutput { output, renumbered } => {
             let recorded = artifact.base.outputs.get(output);
             let current = fixture.catalog.output(output).map(|declared| declared.fingerprint);
-            let removed = match (recorded, current) {
-                (Some(_), None) => !declared,
-                (Some(recorded), Some(current)) => *declared && *recorded != current,
+            let carried = |id: &OutputId| fixture.catalog.output(id).map(|declared| declared.fingerprint);
+            let rebound = match (recorded, current) {
+                (Some(recorded), Some(current)) => *recorded != current,
+                (Some(_), None) => renumbered.is_some(),
                 (None, _) => false,
             };
-            (emits_to(output) && removed)
-                .then_some("an emit delivers to an output the host no longer declares as it was")
+            let renumbered_right = renumbered
+                .as_ref()
+                .is_none_or(|now| recorded.is_some() && carried(now).as_ref() == recorded);
+            (emits_to(output) && rebound && renumbered_right)
+                .then_some("an emit delivers to an output that now delivers elsewhere than the base records")
         }
         ComposeError::Malformed { .. } => {
             let ids = artifact.nodes.iter().map(|node| &node.id).collect::<BTreeSet<_>>();
@@ -2041,6 +2071,8 @@ fn artifacts_of_two_scopes_compose_each_against_the_default_program_with_their_o
         revision: 2,
         approved_against: Some(hash('9')),
         active_plan_hash: Some(hash('8')),
+        in_effect: false,
+        upgraded: Default::default(),
     };
     let composed = compose_all(
         &fixture.plan,

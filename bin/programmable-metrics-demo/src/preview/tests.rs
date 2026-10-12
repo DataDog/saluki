@@ -361,6 +361,8 @@ fn an_artifact_composes_with_the_artifacts_adp_runs_for_the_other_scopes() {
         revision: 5,
         approved_against: None,
         active_plan_hash: None,
+        in_effect: true,
+        upgraded: Default::default(),
     };
     let active = compose_all(&plan, &[(&other.artifact, &approval)], &export.catalog, &registry)
         .unwrap()

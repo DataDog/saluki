@@ -1,0 +1,99 @@
+upgrade:
+  - |
+    When a metrics pipeline is enabled, the Datadog forwarder (``dd_out``) and the metrics encoder in front of it
+    (``dd_metrics_encode``) are now hosts whose destinations change while Agent Data Plane runs, and so are the
+    Multi-Region Failover pair (``mrf_metrics_encode`` and ``mrf_dd_out``) and the Cluster Agent pair
+    (``af_metrics_encode`` and ``cluster_agent_out``). The endpoint routing groups' encoders
+    (``metrics_routing_encode_<n>``) no longer run as components: each routing group is an encoder stream inside
+    ``dd_metrics_encode``. Payloads, endpoints, API keys, and what each endpoint receives are unchanged for an
+    unchanged configuration.
+  - |
+    Changes to ``additional_endpoints`` (endpoints and API keys), ``experimental.metrics_endpoint_routing.*``,
+    ``multi_region_failover.*`` (including ``enabled`` and the endpoint), the primary endpoint (``dd_url`` and
+    ``site``), ``use_v3_api.series.*``, the series payload limits, ``forwarder_timeout``,
+    ``forwarder_max_concurrent_requests``, the retry and queue settings, the proxy settings, the proxy password
+    included, and the TLS and connection settings (``skip_ssl_validation``, ``min_tls_version``,
+    ``tls_handshake_timeout``, ``forwarder_http_protocol``, and ``forwarder_connection_reset_interval``) now apply
+    without a restart. Autoscaling failover, ``cluster_agent.enabled``, and ``cluster_agent.auth_token`` apply without a
+    restart when a Cluster Agent endpoint resolved at startup. A queue bound raised without a restart, such as with
+    ``forwarder_retry_queue_payloads_max_size``, is not checked against the memory limit until the next restart. Logs,
+    events, service checks, and traces follow a change of ``additional_endpoints`` too, from the moment Agent Data
+    Plane applies it. An endpoint added
+    receives every metric processed from then on; an endpoint removed stops receiving at that moment: payloads still
+    on their way to it are dropped and counted in ``plan_recipient_withdrawn_payloads_total``, and what it already
+    held is delivered for up to 30 seconds before it is persisted or dropped as at shutdown.
+  - |
+    These settings still need a restart: the encoder settings other encoders share (``serializer_compressor_kind``,
+    ``serializer_max_payload_size``, and ``serializer_max_uncompressed_payload_size``), ``flush_timeout_secs``,
+    ``forwarder_storage_path``, ``forwarder_stop_timeout``, ``run_path``, and the Cluster Agent endpoint
+    (``cluster_agent.url``, ``cluster_agent.kubernetes_service_name``, and the Kubernetes service environment
+    variables it reads), which is resolved once, at startup: without one, enabling autoscaling failover takes effect
+    only after a restart, as the startup warning says. ``forwarder_storage_max_size_in_bytes``
+    applies live only between nonzero values: turning disk persistence on or off needs a restart.
+  - |
+    The Multi-Region Failover forwarder pair now runs, idle, whenever a metrics pipeline is enabled, and the Cluster
+    Agent pair whenever a Cluster Agent endpoint resolves at startup, which is most node Agents in Kubernetes. Both
+    report health and component metrics while idle, and are ready. The Multi-Region Failover startup warning no longer
+    says that a restart is needed.
+  - |
+    The outputs of one encoder now share its input: a burst of metrics that reaches both the main output and an
+    endpoint routing group fills ``dd_metrics_encode``'s input of 128 batches with two copies of each batch, so it
+    reaches back to its source sooner than before, when each routing group had an encoder and an input of its own.
+  - |
+    Telemetry changes: the forwarders' ``io_loop`` task and their ``api_key_refresher_<endpoint>`` tasks are no longer
+    reported where a metrics pipeline runs; the metrics encoder's ``request_builder`` task is now
+    ``<encoder>.encoder.request_builder``; the component, health, and task series of ``metrics_routing_encode_<n>``
+    are gone, while its encoder series keep their ``component_id``. Those encoder series follow a routing group's
+    position: after a group is removed, ``metrics_routing_encode_0`` continues with the next group's data, and Agent
+    Data Plane logs the renumbering with both groups. ``dd_metrics_encode``'s input counts the metrics of every
+    output of ``dd_out``, and its ``component_events_sent_total`` the payloads of every output. The
+    ``component_events_sent_total`` and ``component_events_discarded_total`` that ``metrics_enrich``,
+    ``dsd_pre_aggregation``, and ``dsd_post_agg_filter_region`` report for ``output:metrics_routing_encode_<n>`` are
+    now counted under ``output:dd_metrics_encode``, and they report an ``output:mrf_metrics_encode`` while Multi-Region
+    Failover is off. The allocations of an encoder's streams are reported under the debug-level resource groups
+    ``<encoder>.leases.<output>`` and ``<encoder>.resources`` rather than the encoder's own.
+    ``component_data_points_sent_total`` for a domain restarts from 0 when the domain returns more than 3 seconds after
+    its last endpoint was removed.
+  - |
+    New metrics: ``plan_recipients``, ``plan_recipient_retirements_total`` (by ``outcome``: ``drained`` once a
+    removed endpoint's queue emptied by delivery, ``persisted`` when its close wrote its queue to disk, ``discarded``
+    when its close dropped work, ``deadline`` when its drain reached its deadline),
+    ``plan_recipient_withdrawn_payloads_total``, and ``plan_resource_conflicts`` by delivery host,
+    ``plan_live_leases`` by host, and ``plan_resource_budget_bytes``; and
+    ``component_events_dropped_total{drop_reason:payload_too_large}``, which counts the metrics a payload too large
+    to send drops, previously uncounted.
+  - |
+    Removing the first API key of an additional endpoint while Agent Data Plane runs moves the payloads queued for that
+    key's position to the next key, as a restart with the new configuration would, so data queued for one
+    organization can be delivered under another's key.
+  - |
+    When ``site`` and ``api_key`` change together while Agent Data Plane runs, the Agent sends them one at a time, and
+    requests sent in between pair the new endpoint with the old key, or the old endpoint with the new key. An intake
+    that rejects them drops those requests, as for any key rotation the intake does not know yet.
+features:
+  - |
+    A resources artifact, delivered by the experimental artifact channel stub as the ``resources`` product, can
+    declare up to 16 recipients (endpoints of ``dd_out`` that receive metrics only) and up to 16 outputs
+    (``resources_<name>``) delivering to them, which policy artifacts can route to. A recipient sends with a
+    credential the operator configures under the experimental
+    ``experimental.programmable_metrics.resources.credentials`` key, by name (``credentials/<name>``); until the
+    credential is configured, the artifact is reported pending. Each recipient may bound its in-memory retry queue
+    (within the native bound), never spill to disk, and say what becomes of its queued work when it is removed.
+    Declared recipients' API keys are never validated, and never affect readiness.
+  - |
+    A policy artifact that routes to an output the configuration or a resources artifact no longer declares keeps
+    running, reported degraded: its metrics for that output are dropped and counted, until the output is declared
+    again. A policy artifact whose output is not declared yet waits, reported pending, and installs once it is.
+    Artifacts written against the fingerprints of earlier versions are accepted while those fingerprints match.
+  - |
+    The privileged API serves the resources the metrics path delivers through, at
+    ``GET /programmable-metrics/resources``, and ``GET /programmable-metrics/status`` lists each recipient's
+    incarnations, with what a removed recipient's drain delivered, persisted, and dropped.
+fixes:
+  - |
+    Two API keys of one additional endpoint no longer overwrite each other's retry queue size in
+    ``network_http_retry_queue_size`` and its rate, and a failure to persist one queued payload at shutdown no longer
+    loses the rest of the queue uncounted: each payload that cannot be persisted is dropped and counted.
+  - |
+    API keys of endpoints added to ``additional_endpoints`` while Agent Data Plane runs are now validated, and those
+    of removed endpoints no longer are.

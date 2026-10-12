@@ -4,7 +4,7 @@
 //! components. It carries pipeline activation gates, topology-shaping decisions, listen addresses,
 //! logging (read before topology exists), bootstrap IPC parameters, and process-lifecycle knobs.
 
-use std::{num::NonZeroUsize, path::PathBuf, time::Duration};
+use std::{collections::BTreeMap, num::NonZeroUsize, path::PathBuf, time::Duration};
 
 use serde::Serialize;
 
@@ -13,7 +13,8 @@ use crate::{
     ConfigValue,
 };
 
-/// Topology gates and orchestration decisions. Most are static; `logging.level` is live.
+/// Topology gates and orchestration decisions. Most are static; `logging.level` and
+/// `programmable_metrics.resources.credentials` are live.
 ///
 /// The derived `Default` is all zeroes, empty, and `false`, and serves only as the starting point for translation. The
 /// effective default of each field is the one translation resolves, noted per field below.
@@ -115,18 +116,36 @@ pub struct ControlConfiguration {
     /// kills a process that exceeds its ceiling and refusing to start is the better failure.
     pub memory_mode: MemoryMode,
 
-    /// Programmable metric processing settings, read once at startup. (not in Datadog Agent config schema)
+    /// Programmable metric processing settings. (not in Datadog Agent config schema)
     pub programmable_metrics: ProgrammableMetrics,
 }
 
-/// Programmable metric processing settings (`experimental.programmable_metrics.*`), read once at startup. (not in
-/// Datadog Agent config schema)
+/// Programmable metric processing settings (`experimental.programmable_metrics.*`). (not in Datadog Agent config
+/// schema)
 ///
 /// These settings are experimental: they may change, move, or be removed without backward compatibility.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct ProgrammableMetrics {
-    /// How policy artifacts reach the process.
+    /// How policy and resources artifacts reach the process, read once at startup.
     pub artifact_channel: ArtifactChannel,
+
+    /// What resources artifacts may use.
+    pub resources: ProgrammableMetricsResources,
+}
+
+/// What resources artifacts, which declare destinations apart from native configuration, may use
+/// (`experimental.programmable_metrics.resources.*`). (not in Datadog Agent config schema)
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct ProgrammableMetricsResources {
+    /// The credentials resources artifacts may send with, by name: a declared recipient's credential
+    /// `credentials/<name>` is the value of entry `<name>`.
+    ///
+    /// Defaults to empty: no resources artifact can declare a recipient. The native API keys are never available to
+    /// resources artifacts; only the entries the operator lists here are. An entry whose value is absent, or still
+    /// reads `ENC[...]` because no secret backend resolved it, is not configured, and a resources artifact that uses
+    /// it waits until it is. A present but blank value keeps the last usable key of the recipients already sending with
+    /// it, as an API key rotation does.
+    pub credentials: BTreeMap<String, String>,
 }
 
 /// The artifact channel, which delivers approved policy artifacts for the metrics path

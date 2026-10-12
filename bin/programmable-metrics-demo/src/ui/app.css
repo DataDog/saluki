@@ -21,6 +21,7 @@
   --intake-team-b: #0c7c74;
   --intake-team-c: #7a3fb0;
   --intake-mrf: #b5541a;
+  --intake-team-d: #a3306e;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --radius: 8px;
@@ -50,6 +51,7 @@
     --intake-team-b: #4fd1c5;
     --intake-team-c: #c49bf2;
     --intake-mrf: #f29b5c;
+    --intake-team-d: #f08cc0;
   }
 }
 
@@ -196,6 +198,47 @@ button.quiet { background: transparent; }
 @media (max-width: 760px) {
   .grid-2 { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* Tabs: the policy editor and the resources editor share the pane. */
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); }
+.tab {
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 6px 6px 0 0;
+  background: transparent;
+  padding: 6px 16px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.tab.active { background: var(--panel); border-color: var(--border); color: var(--text); margin-bottom: -1px; }
+.tab-panel { display: flex; flex-direction: column; gap: 10px; flex-grow: 1; min-height: 0; }
+.pane > .tab-panel { flex-shrink: 1; }
+.tab-panel > :not(.editor) { flex-shrink: 0; }
+.tab-panel > .hint { margin: 0; }
+textarea.json-editor {
+  min-height: 300px;
+  resize: vertical;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  font: 12px/20px var(--mono);
+  white-space: pre;
+  overflow: auto;
+  tab-size: 2;
+  caret-color: var(--accent);
+}
+.declared-outputs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.declared-outputs li {
+  padding: 5px 8px;
+  border-radius: 5px;
+  background: var(--panel-2);
+  font-size: 13.5px;
+  overflow-wrap: anywhere;
+}
+.declared-outputs .what { color: var(--muted); }
 
 /* Editor */
 .editor {
@@ -391,9 +434,10 @@ textarea#source:focus-visible { outline: none; }
 .bindings table { margin-top: 8px; }
 .bindings td { font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; }
 .bindings td.live::after { content: " live"; color: var(--muted); font-family: var(--sans); font-size: 12.5px; }
+.bindings tr.drafted td { color: var(--warn); }
 
 /* Intakes */
-.intakes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.intakes { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
 @media (max-width: 760px) {
   .intakes { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -413,6 +457,7 @@ textarea#source:focus-visible { outline: none; }
 .intake[data-name="team-b"] { --tone: var(--intake-team-b); }
 .intake[data-name="team-c"] { --tone: var(--intake-team-c); }
 .intake[data-name="mrf"] { --tone: var(--intake-mrf); }
+.intake[data-name="team-d"] { --tone: var(--intake-team-d); }
 .intake-head { display: flex; flex-direction: column; gap: 2px; }
 .intake-name { font-weight: 700; font-size: 16px; color: var(--tone); }
 .intake-outputs { font-family: var(--mono); font-size: 12.5px; line-height: 1.3; color: var(--muted); }
@@ -427,6 +472,12 @@ textarea#source:focus-visible { outline: none; }
   overflow-wrap: anywhere;
 }
 .intake-meta { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+/* A declared endpoint's column says whether a resources artifact declares it, and whether its intake is paused. */
+.intake-state { font-size: 13px; font-weight: 650; color: var(--muted); }
+.intake-state:empty { display: none; }
+.intake-state.undeclared { color: var(--faint); font-style: italic; font-weight: 500; }
+.intake-state.paused { color: var(--warn); }
+.intake-pause { padding: 2px 8px; font-size: 12.5px; align-self: flex-start; }
 .families { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .family {
   padding: 3px 4px 2px;
@@ -513,6 +564,11 @@ td.detail.warn { color: var(--warn); }
 .pill.active { background: var(--ok-soft); color: var(--ok); }
 .pill.pending, .pill.prepared { background: var(--accent-soft); color: var(--accent); }
 .pill.rejected, .pill.failed, .pill.refused { background: var(--err-soft); color: var(--err); }
+.pill.draining, .pill.exiting, .pill.preparing { background: var(--warn-soft); color: var(--warn); }
+.recipients td.id { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhere; }
+.recipients td.drain { font-size: 13px; color: var(--muted); }
+.recipients td.drain.deadline { color: var(--warn); }
+.recipients tr.gone td { color: var(--faint); }
 .nodes svg { width: 110px; height: 18px; display: block; }
 .nodes td.id { font-family: var(--mono); font-size: 13.5px; overflow-wrap: anywhere; }
 .nodes.stale td { color: var(--faint); }

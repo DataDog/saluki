@@ -124,7 +124,7 @@ impl WorkerState {
     pub(super) fn add_worker(
         &mut self, worker_id: u64, child_spec: &SupervisedChild, config: &ChildConfig,
     ) -> Result<StartedChild, SupervisorError> {
-        let process = child_spec.create_process(&self.process);
+        let process = child_spec.create_process(&self.process, config.resource_group());
         let worker_name: Arc<str> = process.name().into();
 
         let started = StartedChild::new(&process, Arc::clone(&worker_name));

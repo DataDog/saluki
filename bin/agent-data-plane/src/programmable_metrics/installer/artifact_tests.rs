@@ -287,9 +287,8 @@ impl ArtifactPaths for ScriptedArtifacts {
 /// it in the status summary.
 /// The composition error the double stands in for: the configuration change removed an output the artifact emits to.
 fn removed_output() -> ComposeError {
-    ComposeError::RemovedOutput {
+    ComposeError::PendingOutput {
         output: OutputId::new("af_metrics_encode").unwrap(),
-        declared: false,
     }
 }
 
@@ -970,9 +969,12 @@ async fn a_configuration_change_the_artifact_in_effect_cannot_follow_is_reported
 
     // The core refused the artifact composed again, so the artifact keeps running, and the installer reports itself
     // degraded until a new artifact or configuration resolves it.
-    let reason = "artifact revision 1 cannot be composed with the changed default program, and stays as it was \
-                  composed before: The artifact emits to output `af_metrics_encode`, which the host no longer \
-                  declares. Rebase the artifact on the current export.";
+    let reason = format!(
+        "artifact revision 1 cannot be composed with the changed default program, and stays as it was composed \
+         before: {}",
+        removed_output()
+    );
+    let reason = reason.as_str();
     assert_eq!(degraded.last_error.as_deref(), Some(reason));
     assert_eq!(active(&degraded), Some(2));
     assert_eq!(active_revision(&degraded), Some(1));
@@ -1179,6 +1181,14 @@ async fn settle(installer: &mut Installer, actions: Vec<Action>) {
                             .prepare_acknowledged(prepare.generation.id(), slot.slot, Ok(())),
                     );
                 }
+                // The delivery hosts, whose recipients the generation requires, acknowledge their parts too.
+                for part in &prepare.hosts {
+                    queue.extend(installer.core.prepare_acknowledged(
+                        prepare.generation.id(),
+                        saluki_metric_plan::install::PrepareSite::Host(part.host.clone()),
+                        Ok(()),
+                    ));
+                }
             }
             action => {
                 installer.perform(action).await;
@@ -1270,7 +1280,13 @@ async fn a_default_program_that_does_not_validate_is_reported_degraded_whenever_
 async fn an_artifact_panic_budget_applies_only_in_the_regions_that_run_its_nodes() {
     let (default, _) = lowered("").await;
     let registry = OperatorRegistry::native();
-    let frame = Frame::compute(&default, &registry, &slot_name).expect("the default program lays out");
+    let frame = Frame::compute_with_hosts(
+        &default,
+        &registry,
+        &slot_name,
+        &crate::programmable_metrics::test_support::frame_hosts(),
+    )
+    .expect("the default program lays out");
     let budgets = |plan: &Plan, origin: Origin| {
         frame
             .slots()

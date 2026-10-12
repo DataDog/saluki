@@ -5,14 +5,18 @@
 //! process:
 //!
 //! 1. **Launcher**: creates a run directory, generates a self-signed IPC certificate, writes an ADP configuration
-//!    (standalone mode, UDP DogStatsD, a primary endpoint, two additional endpoints routed by metric prefix, and a
-//!    multi-region failover endpoint, all pointing at the demo), starts ADP, and waits for it to report ready.
-//! 2. **Recording intakes**: one loopback HTTP listener per endpoint, decoding and recording every metric payload.
+//!    (standalone mode, UDP DogStatsD, a primary endpoint, two additional endpoints routed by metric prefix, a
+//!    multi-region failover endpoint, all pointing at the demo, and the credential a resources artifact may use for
+//!    team D's endpoint, which the configuration does not name), starts ADP, and waits for it to report ready.
+//! 2. **Recording intakes**: one loopback HTTP listener per endpoint, team D's included, decoding and recording every
+//!    metric payload.
 //! 3. **Traffic generator**: DogStatsD over UDP at a steady rate, including a canary counter for conservation checks.
 //! 4. **Telemetry scraper**: reads ADP's `/metrics` every second and keeps rates of the series the UI shows.
-//! 5. **Artifact channel stub**: the server ADP polls for policy artifacts, with a durable store in the run directory.
+//! 5. **Artifact channel stub**: the server ADP polls for policy and resources artifacts, with a durable store in the
+//!    run directory.
 //! 6. **Control surface client**: ADP's privileged programmable-metrics routes, over mTLS with the IPC certificate.
-//! 7. **Compile and publish API** and the **UI**: an editor with diagnostics, and the telemetry viewer.
+//! 7. **Compile and publish API** and the **UI**: an editor with diagnostics, a resources editor, and the telemetry
+//!    viewer.
 //!
 //! Open the URL it prints. Press Ctrl-C to stop the demo and ADP, and Ctrl-C again to kill ADP at once instead of
 //! waiting for it to exit. `SIGTERM` and `SIGHUP` (closing the terminal) stop both too, at any point of the run. ADP
@@ -20,8 +24,8 @@
 //! keeps running, and the next run reports the ports it holds.
 //!
 //! `programmable-metrics-demo check --adp-bin <path>` (or `make demo-programmable-metrics-check`) runs the same
-//! components headless on other ports, drives the demo's scenarios S0 to S6 through the demo server's API, checks
-//! what each endpoint receives, and stops everything: see [`scenario`].
+//! components headless on other ports, drives the demo's scenarios S0 to S6 and S8 to S11 through the demo server's
+//! API, checks what each endpoint receives, and stops everything: see [`scenario`].
 //!
 //! The demo is a development tool: it listens on loopback only, writes everything to the run directory, and is not
 //! part of any release. ADP implements its side of the artifact channel and control surface from stage 5 of the
@@ -55,6 +59,8 @@ mod export;
 mod intake;
 mod launcher;
 mod preview;
+mod recipients;
+mod resources;
 mod scenario;
 mod settings;
 mod stub;
@@ -88,12 +94,12 @@ enum CliCommand {
     Check(CheckCommand),
 }
 
-/// Run the demo's scenarios S0 to S6 headless against ADP, and check what each endpoint receives.
+/// Run the demo's scenarios S0 to S6 and S8 to S11 headless against ADP, and check what each endpoint receives.
 ///
 /// Launches ADP and the demo on the default ports moved up by --port-offset, drives the scenarios through the demo
-/// server's API (compile, publish, revoke), checks every step's acknowledgment, the families each intake receives, and
-/// canary conservation across every install, then stops everything. Exits 1 if any check fails; the report, with
-/// timings, is written to check-report.json in the run directory.
+/// server's API (compile, publish, revoke, for policies and resources), checks every step's acknowledgment, the
+/// families each intake receives, and canary conservation across every install, then stops everything. Exits 1 if any
+/// check fails; the report, with timings, is written to check-report.json in the run directory.
 #[derive(FromArgs)]
 #[argh(subcommand, name = "check")]
 struct CheckCommand {
@@ -101,7 +107,8 @@ struct CheckCommand {
     #[argh(option)]
     adp_bin: PathBuf,
 
-    /// run directory (default: a new target/programmable-metrics-demo/check-(unix seconds))
+    /// run directory (default: a new target/programmable-metrics-demo/check-(unix seconds)); in a reused one, what its
+    /// artifact store serves is revoked before ADP starts
     #[argh(option)]
     run_dir: Option<PathBuf>,
 
@@ -155,6 +162,10 @@ struct RunCommand {
     /// port of the multi-region failover endpoint's intake (default 17104)
     #[argh(option, default = "DemoPorts::default().mrf")]
     mrf_port: u16,
+
+    /// port of team D's endpoint's intake, which only a resources artifact declares (default 17105)
+    #[argh(option, default = "DemoPorts::default().team_d")]
+    team_d_port: u16,
 
     /// port of ADP's unprivileged API (default 17110)
     #[argh(option, default = "DemoPorts::default().api")]
@@ -264,6 +275,7 @@ async fn run(command: RunCommand) -> Result<(), GenericError> {
             team_b: command.team_b_port,
             team_c: command.team_c_port,
             mrf: command.mrf_port,
+            team_d: command.team_d_port,
             api: command.api_port,
             secure_api: command.secure_api_port,
             dogstatsd: command.dogstatsd_port,
@@ -335,6 +347,16 @@ async fn check(command: CheckCommand) -> Result<(), GenericError> {
         traffic_paused: false,
     };
     let report_path = settings.run_dir.join("check-report.json");
+    // The scenarios start from the default program with nothing declared: whatever an earlier run in this run
+    // directory left served (a policy and resources a failed or interrupted run published, or S10's policy, which a
+    // passing run ends with) is revoked before ADP starts.
+    let store_dir = settings.store_dir();
+    if ArtifactStore::open(&store_dir)?.revoke_all(clock::unix_millis())? {
+        info!(
+            store = %store_dir.display(),
+            "Revoked what an earlier run left served in the run directory's artifact store."
+        );
+    }
     let Some(demo) = Demo::start(settings, &adp_bin, Some(&adp_bin), &mut signals).await? else {
         return Err(generic_error!("Interrupted while waiting for ADP to report ready."));
     };

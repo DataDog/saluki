@@ -352,6 +352,7 @@ impl Site {
             edges,
             outputs: plan.outputs.clone(),
             scopes: plan.scopes.clone(),
+            resources: plan.resources.clone(),
         };
         Some(Rewritten {
             plan: rewritten,

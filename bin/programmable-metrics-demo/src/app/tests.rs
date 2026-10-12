@@ -137,7 +137,7 @@ async fn publishing_approves_exactly_the_last_compiled_hash() {
         .as_str()
         .unwrap()
         .contains("is not the hash of the last compiled artifact"));
-    assert!(app.channel.view(10, None).current.is_none());
+    assert!(app.channel.view(10, None, None).current.is_none());
 
     // Compiling a source that does not parse withdraws the approval target.
     let (_, failed) = call(app, "POST", "/api/compile", Some(json!({"source": "policy {"}))).await;
@@ -158,7 +158,7 @@ async fn publishing_approves_exactly_the_last_compiled_hash() {
     assert_eq!(status, StatusCode::CONFLICT);
     assert!(body["error"].as_str().unwrap().contains("already used"), "{}", body);
     assert!(body["error"].as_str().unwrap().contains("revision 7"), "{}", body);
-    assert_eq!(app.channel.view(10, None).revision_counter, 7);
+    assert_eq!(app.channel.view(10, None, None).revision_counter, 7);
 
     // ADP's next poll receives an envelope approved against the plan that was active when the artifact was compiled.
     let response: PollResponse = {
@@ -176,12 +176,12 @@ async fn publishing_approves_exactly_the_last_compiled_hash() {
     let (status, body) = call(app, "POST", "/api/revoke", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["revoked"], true);
-    assert!(app.channel.view(10, None).current.is_none());
+    assert!(app.channel.view(10, None, None).current.is_none());
     // Revoking an empty snapshot changes nothing.
     let (status, body) = call(app, "POST", "/api/revoke", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["revoked"], false);
-    assert_eq!(app.channel.view(10, None).history.len(), 2);
+    assert_eq!(app.channel.view(10, None, None).history.len(), 2);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -205,7 +205,7 @@ async fn concurrent_approvals_of_one_compile_publish_it_once() {
         .filter(|(status, _)| *status == StatusCode::CONFLICT)
         .count();
     assert_eq!((published, refused), (1, 3), "{:?}", statuses);
-    assert_eq!(app.channel.view(10, None).revision_counter, 1);
+    assert_eq!(app.channel.view(10, None, None).revision_counter, 1);
 }
 
 #[tokio::test]
@@ -350,9 +350,16 @@ async fn the_state_says_plainly_when_adp_lacks_the_control_surface() {
         .iter()
         .map(|intake| intake["name"].as_str().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(names, ["primary", "team-b", "team-c", "mrf"]);
+    assert_eq!(names, ["primary", "team-b", "team-c", "mrf", "team-d"]);
     assert_eq!(intakes[1]["expected_api_key"], "demo-team-b");
+    // Team D's endpoint is declared by a resources artifact only, with the credential the launcher declares.
+    assert_eq!(
+        (&intakes[4]["declared"], &intakes[4]["expected_api_key"]),
+        (&json!(true), &json!("demo-team-d-key"))
+    );
     assert_eq!(state["channel"]["next_revision"], 1);
+    assert_eq!(state["channel"]["resources"]["next_revision"], 1);
+    assert_eq!(state["recipients"]["reported"], false);
     assert_eq!(state["telemetry"]["state"], "waiting");
     assert_eq!(state["traffic"]["running"], false);
     assert_eq!(state["compiled"], Value::Null);
@@ -409,4 +416,115 @@ async fn the_ui_traffic_and_intake_routes_answer() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     let (status, _) = call(app, "GET", "/api/adp/secrets", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Pausing an intake shows in the state, and resuming it too.
+    let (status, body) = call(app, "POST", "/api/intakes/team-d/pause", Some(json!({"paused": true}))).await;
+    assert_eq!((status, &body["paused"]), (StatusCode::OK, &json!(true)));
+    let (_, state) = call(app, "GET", "/api/state", None).await;
+    assert_eq!(state["intakes"][4]["paused"], true);
+    call(app, "POST", "/api/intakes/team-d/pause", Some(json!({"paused": false}))).await;
+    let (_, state) = call(app, "GET", "/api/state", None).await;
+    assert_eq!(state["intakes"][4]["paused"], false);
+    let (status, _) = call(app, "POST", "/api/intakes/nowhere/pause", Some(json!({"paused": true}))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn publishing_resources_approves_exactly_the_last_checked_draft_once_and_counts_their_own_revisions() {
+    let harness = harness().await;
+    let app = &harness.app;
+    let (status, template) = call(app, "GET", "/api/resources/template", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(template["served"], Value::Null);
+    let draft = template["template"].as_str().unwrap().to_string();
+    let document = serde_json::from_str::<Value>(&draft).unwrap();
+    // The template declares the team D intake of this run, with the credential the launcher declares.
+    assert_eq!(document["recipients"][0]["endpoint"], "http://127.0.0.1:17105");
+    assert_eq!(document["recipients"][0]["credential"], "credentials/team_d");
+
+    let (status, body) = call(
+        app,
+        "POST",
+        "/api/resources/publish",
+        Some(json!({"artifact_hash": "sha256:00"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(body["error"].as_str().unwrap().contains("no checked resources draft"));
+
+    let (_, refused) = call(app, "POST", "/api/resources/check", Some(json!({"document": "{"}))).await;
+    assert_eq!(refused["ok"], false);
+    let (status, checked) = call(app, "POST", "/api/resources/check", Some(json!({"document": draft}))).await;
+    assert_eq!((status, &checked["ok"]), (StatusCode::OK, &json!(true)));
+    let hash = checked["artifact_hash"].as_str().unwrap().to_string();
+    assert_eq!(hash, PlanHash::of_value(&document).unwrap().to_string());
+    let (_, state) = call(app, "GET", "/api/state", None).await;
+    assert_eq!(state["resources_checked"]["artifact_hash"], hash.as_str());
+
+    let wrong = format!("sha256:{}", "cd".repeat(32));
+    let (status, body) = call(
+        app,
+        "POST",
+        "/api/resources/publish",
+        Some(json!({"artifact_hash": wrong})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("not the hash of the last checked"));
+
+    // ADP's policy mark is 6 and its resources mark is 2: the resources revision follows the resources mark.
+    let request = PollRequest {
+        protocol_version: Some(1),
+        status: Some(ChannelStatus {
+            revision_high_water: Some(6),
+            resources: Some(crate::stub::protocol::ResourcesStatus {
+                revision_high_water: Some(2),
+                active_artifact: None,
+            }),
+            ..ChannelStatus::default()
+        }),
+        ..PollRequest::default()
+    };
+    app.channel.poll(request, Vec::new(), unix_millis()).unwrap();
+    let (status, body) = call(
+        app,
+        "POST",
+        "/api/resources/publish",
+        Some(json!({"artifact_hash": hash})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", body);
+    assert_eq!((&body["revision"], &body["artifact_hash"]), (&json!(3), &json!(hash)));
+    let (status, body) = call(
+        app,
+        "POST",
+        "/api/resources/publish",
+        Some(json!({"artifact_hash": hash})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(body["error"].as_str().unwrap().contains("already used"), "{}", body);
+
+    // What the stub serves now, and the next revisions of each product.
+    let (_, template) = call(app, "GET", "/api/resources/template", None).await;
+    assert_eq!(template["served"]["revision"], 3);
+    assert_eq!(
+        serde_json::from_str::<Value>(template["served"]["document"].as_str().unwrap()).unwrap(),
+        document
+    );
+    let (_, state) = call(app, "GET", "/api/state", None).await;
+    assert_eq!(state["channel"]["resources"]["current"]["revision"], 3);
+    assert_eq!(state["channel"]["resources"]["next_revision"], 4);
+    assert_eq!(state["channel"]["next_revision"], 7);
+    assert_eq!(state["resources_checked"], Value::Null);
+
+    let (status, body) = call(app, "POST", "/api/resources/revoke", None).await;
+    assert_eq!((status, &body["revoked"]), (StatusCode::OK, &json!(true)));
+    let (_, body) = call(app, "POST", "/api/resources/revoke", None).await;
+    assert_eq!(body["revoked"], false);
+    let (_, state) = call(app, "GET", "/api/state", None).await;
+    assert_eq!(state["channel"]["resources"]["current"], Value::Null);
 }

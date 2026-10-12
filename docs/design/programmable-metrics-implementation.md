@@ -1,9 +1,11 @@
 # Programmable metric processing: implementation design
 
 **Status:** working design for implementing [the specification](programmable-metrics.md), stages 1 through 6, plus a
-local demo. The specification stays authoritative for semantics. This document fixes code layout, interfaces, and the
-decisions the specification leaves open. Where the code contradicts the specification, [proposed spec
-amendments](#proposed-spec-amendments) records what we do and why. Revision 2 incorporates a five-lens design review.
+local demo; stage 7, designed in [the stages 7 and 9 plan](programmable-metrics-stages-7-and-9.md), is summarized as
+built in [its own section](#stage-7-resource-generations-as-built). The specification stays authoritative for semantics.
+This document fixes code layout, interfaces, and the decisions the specification leaves open. Where the code contradicts
+the specification, [proposed spec amendments](#proposed-spec-amendments) records what we do and why. Revision 2
+incorporates a five-lens design review.
 
 ## Contents
 
@@ -17,8 +19,9 @@ amendments](#proposed-spec-amendments) records what we do and why. Revision 2 in
 8. [Demo](#demo)
 9. [Stage plan](#stage-plan)
 10. [Stage 6: stateful kernels](#stage-6-stateful-kernels)
-11. [Proposed spec amendments](#proposed-spec-amendments)
-12. [Risks](#risks)
+11. [Stage 7: resource generations, as built](#stage-7-resource-generations-as-built)
+12. [Proposed spec amendments](#proposed-spec-amendments)
+13. [Risks](#risks)
 
 ## Scope
 
@@ -26,9 +29,10 @@ In scope: stages 1–6 and a demo built on stage 5. The demo boots ADP on the pr
 program, then edits that program live through a demo server that stubs the artifact channel and shows the effect in a
 telemetry viewer.
 
-Out of scope: stage 7 resource generations (new outputs, recipients, encoder settings as plan parameters), stage 8
-Remote Config, stage 9 partitioning, stage 10 extensions. The extension-point **types** for those stages exist from
-stage 1, and only native defaults are accepted.
+Out of scope here: stage 7 resource generations (new outputs, recipients, encoder settings as plan parameters), which
+[the stages 7 and 9 plan](programmable-metrics-stages-7-and-9.md) designs and [a section
+below](#stage-7-resource-generations-as-built) summarizes as built, stage 8 Remote Config, stage 9 partitioning, stage
+10 extensions. The extension-point **types** for those stages exist from stage 1, and only native defaults are accepted.
 
 Easily changed layers get first-pass implementations behind narrow interfaces: the surface syntax
 (`parse(&str) -> Result<Parsed, Diagnostics>`, `print(&PolicyArtifact, &PrintOptions) -> String`) and the demo UI (an
@@ -3829,6 +3833,74 @@ tests, benches, and measurements):
 
 Not measured: the shadow comparison against a native core under load, histogram-heavy contexts, and a million
 contexts (see Risks).
+
+## Stage 7: resource generations, as built
+
+[The stages 7 and 9 plan](programmable-metrics-stages-7-and-9.md) is the design: sections 3 and 4 the model, 4.17 the
+worked traces, 6.11 the tests, and 8.2's "Stage 7 as built" what the parts and the integration step changed, with the
+amendments it implies (129 to 138 of its section 10, after its own 88 to 107). This section is the map of what exists.
+
+### The model in one paragraph
+
+The frame is fixed at boot, with one **encode host** and one **delivery host** per fixed delivery host of the process
+(`dd_metrics_encode` and `dd_out`; `mrf_metrics_encode` and `mrf_dd_out`; `af_metrics_encode` and
+`cluster_agent_out` when a Cluster Agent endpoint resolves at boot). Every fused slot that has an output downstream has
+an exit to every encode host. An **output** bound to a host runs as a **lease** of its encode host (an encoder stream
+keyed by the output and a digest of its binding, recipients' protocols included); a buffer names its lease in
+`header.entry`. A **recipient** is an I/O loop of its delivery host, addressed by slot, with an identity and an
+incarnation. The installer core's `ResourceTable` allocates leases, slots, and incarnations, prepares them before the
+generations that use them, publishes each host's native set, settings, and withdrawn set through **resource
+transactions**, and releases what no generation uses in two phases: leases drain first (their last payloads pass the
+delivery host's input barrier), then recipients drain for at most 30 seconds. Native configuration and a **resources
+artifact** (the stub channel's second product) both declare resources; only lowering does, so composition never adds
+one.
+
+### Where it lives
+
+| Concern | Code |
+|---|---|
+| Encode host: front task, lease table, shards, drain markers, lease factory, bounds | `lib/saluki-components/src/encoders/datadog/metrics/host.rs` (`MetricsEncodeHost`, `MetricsEncodeHostConfiguration`, `LEASE_QUEUE_BUFFERS`, `lease_bound_bytes`) |
+| Delivery host: routing loop, recipient table, input barrier, withdrawal, tombstones, reopen, client switch, credential followers, validation, status, events | `lib/saluki-components/src/common/datadog/delivery/` (`host.rs`, `router.rs`, `credentials.rs`, `client.rs`, `spec.rs`) |
+| Recipient loops: closer, drain, live settings, queue opening, drain reports | `lib/saluki-components/src/common/datadog/io.rs` (`RecipientLoop`, `RecipientPieces`, `RecipientCloser`, `RecipientSettingsSender`) |
+| A client every loop shares and the host switches; queue limits set in place; a flush that goes on past failures | `lib/saluki-io/src/net/client/http/client.rs` (`HttpClient::switchable`); `lib/saluki-io/src/net/util/retry/queue/` |
+| Frame hosts, exits to encode hosts, lease entries in programs | `lib/saluki-metric-plan/src/compile/frame.rs` (`FrameHosts`, `Frame::compute_with_hosts`); `runtime/code.rs` |
+| Resource declarations, fingerprints version 2, declared identities, the resources artifact | `lib/saluki-metric-plan/src/ir/resources.rs`; `lib/saluki-metric-plan/src/resources/mod.rs` (`validate`, `fingerprint`, `declared_recipient_id`) |
+| Composition: pending, degraded, rebound, version 1 bases | `lib/saluki-metric-plan/src/compose/` (`Approval::{in_effect, upgraded}`, `ScopeComposition::{outcome, notes}`) |
+| The resource table, transactions, credits, the resources product, retries | `lib/saluki-metric-plan/src/install/resources.rs`; `install/core/{resources.rs, declared.rs, retry.rs}` |
+| ADP: fixed hosts, native resources, the codec of plan parameters, credentials, specs | `bin/agent-data-plane/src/programmable_metrics/{resources.rs, resources/params.rs, resources/specs.rs, credentials.rs}` |
+| ADP: the hosts' wiring, the budget, the resources product, status | `bin/agent-data-plane/src/programmable_metrics/installer/{hosts.rs, budget.rs, product.rs, status.rs}`, `topology.rs` |
+| ADP: live credentials from configuration | `lib/agent-data-plane-config/src/live.rs` (`Live::map`) |
+| Verified memory for the budget | `lib/saluki-app/src/accounting.rs` (`MemoryBounds`) |
+
+### Tests that cross parts
+
+`bin/agent-data-plane/src/programmable_metrics/delivery_tests.rs` runs the plan-driven topology with real encode and
+delivery hosts sending to recording intakes (`test_intake.rs`, which decode with `stele`): the per-recipient
+differential against the legacy topology (additional endpoints with two keys, routing groups with a shared group and an
+endpoint with empty lists, Multi-Region Failover); live changes in connected mode with exact counts per recipient (an
+endpoint added and removed, metrics, events, logs, and traces; failover and a routing group enabled; a V3 flip; payload
+limits, timeout, concurrency, and a proxy, including one no client can be built with); faults (an endpoint removed while
+its intake is down, a recipient whose intake stays down reaching its deadline and persisting, shutdown during a drain,
+an endpoint that cannot be prepared, with events, logs, and traces; a primary endpoint respelled live); and reclamation
+(50 cycles in the suite, 1,000 in an ignored test, each cycle an additional endpoint and a declared recipient and
+output on a domain of their own, with the budget counted and the process's metric handles counted). The telemetry
+parity test with real delivery is in `telemetry/tests.rs`; the structural tests in `topology/tests.rs` compare host
+bounds with the native encoders' and forwarders'.
+
+### Native behavior preserved and changed
+
+Preserved for an unchanged configuration, and pinned: payload bodies and metadata (the encode host's differential
+against `DatadogMetrics`), what every endpoint receives (the per-recipient differential), and the forwarder telemetry
+and its remapped output, but the series 4.15 lists (the telemetry parity test). The parity test's recorder never
+evicts a series, so it could not see that, until the stage 7 review, every request through a host's switchable client
+took a fresh copy of it, whose per-endpoint handles the process's registry evicted 3 seconds later
+(`network_http_requests_*`, and the `transactions.*` and `forwarder_transactions_*` series remapped from them, never
+accumulated); a clone of the switchable client now keeps its copy until the switch changes, which
+`a_switchable_clients_clone_keeps_its_endpoint_telemetry_from_request_to_request_until_it_is_switched` pins. Static
+mode is the native forwarder itself. Changed, and release-noted: live endpoint changes and what a removed endpoint
+loses, idle failover hosts, a burst's slack where outputs share an encode host, the task and series changes of 4.15, and
+two static-mode fixes (two keys of one URL no longer overwrite each other's queue gauges; a failed flush no longer loses
+the rest uncounted).
 
 ## Proposed spec amendments
 

@@ -720,6 +720,19 @@ pub fn load_platform_root_certificates() -> Result<(), GenericError> {
     Ok(())
 }
 
+/// Initializes the default root certificate store with no certificate, unless it is initialized already, and returns
+/// whether it did, for tests (`test-util`).
+///
+/// A client built from the default store then builds without loading the platform's certificates, which can take
+/// seconds under load, and trusts no server certificate: for tests whose clients never make a verified TLS connection.
+#[cfg(any(test, feature = "test-util"))]
+pub fn initialize_empty_root_certificates() -> bool {
+    let Ok(_guard) = DEFAULT_ROOT_CERT_STORE_MUTEX.lock() else {
+        return false;
+    };
+    DEFAULT_ROOT_CERT_STORE.set(Arc::new(RootCertStore::empty())).is_ok()
+}
+
 /// Builds a `RootCertStore` from the platform's native certificate store.
 ///
 /// Behaves identically to [`load_platform_root_certificates`] with respect to which certificates are loaded, but

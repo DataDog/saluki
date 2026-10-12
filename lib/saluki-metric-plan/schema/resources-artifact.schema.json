@@ -1,0 +1,255 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ResourcesArtifact",
+  "description": "A resources artifact: the recipients and outputs declared apart from native configuration.\n\nSerialized as an object with the members `resources_version` ([`RESOURCES_VERSION`]), `recipients`, and `outputs`; unknown members are rejected.",
+  "type": "object",
+  "required": [
+    "resources_version"
+  ],
+  "properties": {
+    "outputs": {
+      "description": "The outputs declared.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/DeclaredOutput"
+      }
+    },
+    "recipients": {
+      "description": "The recipients declared.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/DeclaredRecipient"
+      }
+    },
+    "resources_version": {
+      "description": "The document's format version, [`RESOURCES_VERSION`].",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "BoundedDelivery": {
+      "description": "A recipient's delivery within bounds tighter than its host's native ones.\n\nA dual-ship destination added for an experiment should not take the primary's memory, should not fill the disk, and may not deserve the whole drain deadline of retries when it is removed: these knobs cover that.",
+      "type": "object",
+      "properties": {
+        "on_retire": {
+          "description": "What the recipient does with its queued work when it retires.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/Closure"
+            }
+          ]
+        },
+        "queue_bytes": {
+          "description": "The bound of the recipient's in-memory retry queue, in bytes, at most the native configured bound; `None` keeps the native bound.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "spill": {
+          "description": "Whether the recipient's queue spills to disk.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/Spill"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Closure": {
+      "description": "What an output or recipient does with queued work when it closes, at process shutdown or when it retires.\n\nSerialized as its name, such as `\"attempt\"`.",
+      "oneOf": [
+        {
+          "description": "Native shutdown: in-flight requests finish within the shutdown timeout, and queued work is persisted where configured, and otherwise dropped. A retiring generation's batches finish in the shared encoder streams, which do not close, so a live update loses nothing beyond what a native shutdown would.",
+          "type": "string",
+          "enum": [
+            "native"
+          ]
+        },
+        {
+          "description": "Queued work is attempted until the drain deadline, then closed as at native shutdown.",
+          "type": "string",
+          "enum": [
+            "attempt"
+          ]
+        },
+        {
+          "description": "Queued work is persisted where disk storage is configured, without further attempts, and otherwise dropped.",
+          "type": "string",
+          "enum": [
+            "persist"
+          ]
+        },
+        {
+          "description": "Queued work is dropped and counted.",
+          "type": "string",
+          "enum": [
+            "discard"
+          ]
+        }
+      ]
+    },
+    "CredentialRef": {
+      "description": "A credential reference.",
+      "type": "string",
+      "maxLength": 512,
+      "minLength": 1,
+      "pattern": "^[!-~]{1,512}$"
+    },
+    "DeclaredAccepts": {
+      "description": "The records a declared output accepts.",
+      "oneOf": [
+        {
+          "description": "Every metric, of every kind and timestamp form.",
+          "type": "string",
+          "enum": [
+            "any"
+          ]
+        }
+      ]
+    },
+    "DeclaredOutput": {
+      "description": "One output a resources artifact declares: an encoder stream delivering to declared recipients.",
+      "type": "object",
+      "required": [
+        "name",
+        "recipients"
+      ],
+      "properties": {
+        "accepts": {
+          "description": "The records the output accepts.",
+          "default": "any",
+          "allOf": [
+            {
+              "$ref": "#/definitions/DeclaredAccepts"
+            }
+          ]
+        },
+        "label": {
+          "description": "The output's display label, for tools that list outputs.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "The output's name, an identifier of at most 53 bytes: the output's ID is `resources_<name>`.",
+          "type": "string"
+        },
+        "recipients": {
+          "description": "The names of the declared recipients the output delivers to, all on one host.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "DeclaredProtocol": {
+      "description": "The protocol variants a declared recipient accepts, beside the defaults every recipient accepts.",
+      "type": "object",
+      "properties": {
+        "v3_series": {
+          "description": "Whether the recipient takes series in the V3 protocol, and so no V2 series.",
+          "default": false,
+          "type": "boolean"
+        },
+        "v3_sketches": {
+          "description": "Whether the recipient takes sketches in the V3 protocol, and so no V2 sketches.",
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "DeclaredRecipient": {
+      "description": "One recipient a resources artifact declares: an endpoint of a delivery host, with its credential.",
+      "type": "object",
+      "required": [
+        "credential",
+        "endpoint",
+        "host",
+        "name"
+      ],
+      "properties": {
+        "credential": {
+          "description": "The credential the recipient sends with: a `credentials/<name>` reference to an entry the operator declared.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/CredentialRef"
+            }
+          ]
+        },
+        "delivery": {
+          "description": "The recipient's delivery policy within its host's native bounds.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BoundedDelivery"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "endpoint": {
+          "description": "The endpoint, an `http` or `https` URL; in canonical form once the artifact is [validated](validate).",
+          "type": "string"
+        },
+        "host": {
+          "description": "The delivery host the recipient belongs to.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/HostId"
+            }
+          ]
+        },
+        "name": {
+          "description": "The recipient's name within the artifact, an identifier, which declared outputs refer to it by.",
+          "type": "string"
+        },
+        "protocol": {
+          "description": "The protocol variants the recipient accepts.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/DeclaredProtocol"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "HostId": {
+      "description": "A delivery host ID.",
+      "type": "string",
+      "maxLength": 63,
+      "minLength": 1,
+      "pattern": "^[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}$"
+    },
+    "Spill": {
+      "description": "Whether a recipient's queue spills to disk.",
+      "oneOf": [
+        {
+          "description": "As configured for the host: to disk where disk storage is configured.",
+          "type": "string",
+          "enum": [
+            "native"
+          ]
+        },
+        {
+          "description": "Never: queued work beyond the in-memory bound is dropped and counted.",
+          "type": "string",
+          "enum": [
+            "never"
+          ]
+        }
+      ]
+    }
+  }
+}

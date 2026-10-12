@@ -1,6 +1,7 @@
 //! The scripted check of the demo (`programmable-metrics-demo check`, `make demo-programmable-metrics-check`): the
-//! scenarios S0 to S6 of the implementation design's Demo section, driven through the demo server's API against the
-//! ADP the demo launched, with what each endpoint receives checked after every step.
+//! scenarios S0 to S6 of the implementation design's Demo section, and S8 to S11 of stage 7's (resources declared
+//! live), driven through the demo server's API against the ADP the demo launched, with what each endpoint receives
+//! checked after every step.
 //!
 //! Every scenario edits the default program as ADP exports it (see [`edits`]), compiles it (`POST /api/compile`, which
 //! composes it into ADP's default program, validates it, and diffs it against the active plan), publishes it (`POST
@@ -21,6 +22,23 @@
 //!   endpoints unchanged.
 //! - **S6**: revoking (an empty snapshot) brings the default program back: the active plan is the boot plan again, and
 //!   the endpoints receive what they did in S0.
+//!
+//! Team D's endpoint is in no configuration file; the steps after S6 declare it with a resources artifact (the team D
+//! template, [`team_d_template`]) and route to it with a policy that adds a `tee` branch, `split(tag("team") ==
+//! "platform") { true -> emit resources_team_d; false -> drop }`:
+//!
+//! - **S8**: publishing the resources makes ADP declare `resources_team_d` (its export lists it), and then publishing
+//!   the routing policy sends the platform family to team D, with the primary, team B, and team C endpoints unchanged.
+//! - **S9**: revoking the resources keeps the policy `active`, degraded: its acknowledgment gives the reason, that its
+//!   emits to the output are dropped; its emit to team D is dropped and counted as policy loss of that node, the
+//!   primary endpoint is unchanged, and team D's recipient drains and retires. Publishing the resources again restores
+//!   the emit, without a new policy revision, and nothing names the output any more.
+//! - **S10**: with both revoked, publishing the routing policy first (its fingerprint of `resources_team_d` taken from
+//!   the resources draft) leaves it `pending`, waiting for the output, while the default program keeps running; then
+//!   publishing the resources installs the policy by itself.
+//! - **S11**: with team D's intake paused (it answers `503`), revoking the resources makes team D's recipient drain
+//!   until its deadline and drop what it still holds: its drain report says so, and its dropped count is what the
+//!   forwarder's telemetry (`component_items_dropped_total` of `dd_out`) counted meanwhile.
 //!
 //! Each step after S0 also checks that the active plan hash ADP reports is the hash of the plan the editor composed, so
 //! the editor's preview is what ADP installs. Throughout, every sample of the demo's state checks the canary
@@ -50,10 +68,16 @@ use self::{
     client::DemoClient,
     edits::{Outputs, MIRRORED_METRIC, UNDECLARED_OUTPUT},
 };
-use crate::{clock::unix_millis, settings::RunSettings};
+use crate::{
+    clock::unix_millis,
+    resources::{document_text, team_d_template},
+    settings::RunSettings,
+    stub::protocol::POLICY_PRODUCT,
+};
 
 pub mod client;
 mod edits;
+mod resources;
 
 /// How often the runner samples the demo's state while it waits.
 const POLL: Duration = Duration::from_millis(250);
@@ -88,19 +112,21 @@ const FAMILIES: [&str; 6] = [
 const CHECKOUT: [&str; 2] = ["demo.checkout.latency", "demo.checkout.requests"];
 
 /// The intakes, as the demo names them.
-const INTAKES: [&str; 4] = ["primary", "team-b", "team-c", "mrf"];
+const INTAKES: [&str; 5] = ["primary", "team-b", "team-c", "mrf", "team-d"];
 
 /// The metric families each intake receives, by intake name.
 type Routing = BTreeMap<String, BTreeSet<String>>;
 
 /// Returns the routing of the default program: everything to the primary endpoint, the checkout families to team B,
-/// the catalog family to team C, nothing to the failover endpoint.
+/// the catalog family to team C, nothing to the failover endpoint, and nothing to team D, which only a resources
+/// artifact declares.
 fn default_routing() -> Routing {
     routing(&[
         ("primary", &FAMILIES),
         ("team-b", &CHECKOUT),
         ("team-c", &["demo.catalog.views"]),
         ("mrf", &[]),
+        ("team-d", &[]),
     ])
 }
 
@@ -198,6 +224,17 @@ pub struct StepReport {
 
     /// The generation active after the step.
     pub generation: Option<u64>,
+}
+
+impl StepReport {
+    /// Returns the report of a step that has not run yet.
+    fn new(id: &'static str, title: &'static str) -> Self {
+        Self {
+            id,
+            title,
+            ..Self::default()
+        }
+    }
 }
 
 /// One control surface route the run read through the demo, and what it checked.
@@ -328,6 +365,18 @@ impl Report {
 /// the report says why.
 pub async fn run(settings: &RunSettings) -> Report {
     let started = Instant::now();
+    let Some(team_d) = settings
+        .ports
+        .recipients()
+        .into_iter()
+        .find(|recipient| recipient.declared)
+    else {
+        return Report {
+            error: Some("The demo has no intake for a declared recipient (team D).".to_string()),
+            ..Report::default()
+        };
+    };
+    let template = document_text(&team_d_template(&team_d));
     let mut runner = match DemoClient::new(settings.ports.ui) {
         Ok(client) => Runner {
             client,
@@ -338,6 +387,8 @@ pub async fn run(settings: &RunSettings) -> Report {
             first_range: None,
             last_change_s: 0,
             alerted: BTreeSet::new(),
+            resources_draft: None,
+            template,
         },
         Err(error) => {
             return Report {
@@ -359,6 +410,8 @@ struct Status {
     generation: Option<u64>,
     plan_hash: Option<String>,
     artifact_revision: Option<u64>,
+    /// The revision of the resources artifact the active generation was lowered with.
+    resources_revision: Option<u64>,
     default_program_hash: Option<String>,
     document: Value,
 }
@@ -369,18 +422,47 @@ impl Status {
             generation: document["active_generation"].as_u64(),
             plan_hash: document["active_plan_hash"].as_str().map(ToString::to_string),
             artifact_revision: document["active_artifact"]["revision"].as_u64(),
+            resources_revision: document["resources"]["active_artifact"]["revision"].as_u64(),
             default_program_hash: document["default_program_hash"].as_str().map(ToString::to_string),
             document,
         }
     }
 
-    /// Returns ADP's acknowledgment of `revision`, if it reports one.
-    fn acknowledgment(&self, revision: u64) -> Option<&Value> {
+    /// Returns ADP's acknowledgment of `revision` of `product`, if it reports one. A config state that names no
+    /// product is the policy product's, as the first version of the protocol wrote it.
+    fn acknowledgment(&self, product: &str, revision: u64) -> Option<&Value> {
         self.document["config_states"]
             .as_array()?
             .iter()
-            .find(|state| state["revision"].as_u64() == Some(revision))
+            .find(|state| state["revision"].as_u64() == Some(revision) && product_of(state) == product)
     }
+
+    /// Returns ADP's degraded reason, if it reports one.
+    fn degraded(&self) -> Option<&str> {
+        self.document["degraded"].as_str()
+    }
+}
+
+/// Returns `true` if an acknowledgment is final for the step that waits for it: `active`, `rejected`, or `failed`.
+fn settled(acknowledgment: &Value) -> bool {
+    matches!(acknowledgment["state"].as_str(), Some("active" | "rejected" | "failed"))
+}
+
+/// Returns `true` if an acknowledgment is `pending` with an error that names `output`: an artifact that waits for the
+/// output, rather than one being installed, which is `pending` too.
+fn waiting_for(acknowledgment: &Value, output: &str) -> bool {
+    acknowledgment["state"] == "pending"
+        && acknowledgment["error"]
+            .as_str()
+            .is_some_and(|error| error.contains(output))
+}
+
+/// Returns the product of a config state: the one it names, or the policy product when it names none.
+fn product_of(state: &Value) -> &str {
+    state["product"]
+        .as_str()
+        .filter(|product| !product.is_empty())
+        .unwrap_or(POLICY_PRODUCT)
 }
 
 /// What a scenario expects of a compile.
@@ -393,6 +475,10 @@ enum Compiled {
 
     /// An artifact, with findings or without: what refuses it is ADP's placement, which the editor does not run.
     Unplaced,
+
+    /// An artifact that emits to a declared output ADP does not declare yet: its fingerprint came from the resources
+    /// draft, and composition says the output is missing.
+    Pending { output: &'static str },
 }
 
 /// The fragment of ADP's refusal of an aggregation in the policy scope: placement refuses it with the capability it
@@ -406,6 +492,9 @@ enum Installed {
 
     /// Reject it with an error that has one of these fragments, and keep the active generation running.
     Rejected { fragments: &'static [&'static str] },
+
+    /// Hold it `pending`, with an error that names the output it waits for, and keep the active generation running.
+    Pending { output: &'static str },
 }
 
 struct Runner {
@@ -417,6 +506,10 @@ struct Runner {
     last_change_s: u64,
     /// The intake problems already reported, so that each is reported once.
     alerted: BTreeSet<String>,
+    /// The Resources tab's draft, sent with every compile once the resources steps start, as the UI sends it.
+    resources_draft: Option<String>,
+    /// The team D resources template, as the Resources tab starts from it.
+    template: String,
 }
 
 impl Runner {
@@ -562,6 +655,7 @@ impl Runner {
         self.expect_routing("S5", &mirrored, Instant::now()).await?;
 
         self.revoke(&boot).await?;
+        self.resources_steps(&source, &outputs, &boot).await?;
         self.whole_run_canary().await
     }
 
@@ -586,7 +680,10 @@ impl Runner {
         let compile_started = Instant::now();
         let (status, outcome) = self
             .client
-            .post_json("/api/compile", &json!({ "source": source }))
+            .post_json(
+                "/api/compile",
+                &json!({ "source": source, "resources": self.resources_draft }),
+            )
             .await?;
         step.compile_ms = Some(compile_started.elapsed().as_millis() as u64);
         if !status.is_success() || outcome["ok"] != true {
@@ -631,6 +728,31 @@ impl Runner {
             }
             // The editor validates without placing the plan: what it finds does not decide the step.
             Compiled::Unplaced => {}
+            Compiled::Pending { output } => {
+                let from_draft = outcome["draft_fingerprints"]
+                    .as_array()
+                    .is_some_and(|outputs| outputs.iter().any(|from_draft| from_draft == output));
+                if !from_draft {
+                    return Err(generic_error!(
+                        "The editor did not take the fingerprint of `{}` from the resources draft: {} ({})",
+                        output,
+                        outcome["draft_fingerprints"],
+                        outcome["draft_note"]
+                    ));
+                }
+                let flagged = diagnostics.iter().any(|diagnostic| {
+                    diagnostic["message"]
+                        .as_str()
+                        .is_some_and(|message| message.contains(output))
+                });
+                if !flagged {
+                    return Err(generic_error!(
+                        "The editor did not say that ADP does not declare `{}` yet: {}",
+                        output,
+                        messages()
+                    ));
+                }
+            }
             Compiled::Flagged { fragment } => {
                 let flagged = diagnostics.iter().any(|diagnostic| {
                     diagnostic["severity"] == "error"
@@ -664,7 +786,15 @@ impl Runner {
         self.last_change_s = unix_millis() / 1000;
         step.revision = Some(revision);
 
-        let (acknowledgment, after) = self.wait_ack(revision, published).await?;
+        let waits_for = match &installed {
+            Installed::Pending { output } => Some(*output),
+            Installed::Active { .. } | Installed::Rejected { .. } => None,
+        };
+        let expected = |acknowledgment: &Value| match waits_for {
+            Some(output) => waiting_for(acknowledgment, output),
+            None => settled(acknowledgment),
+        };
+        let (acknowledgment, after) = self.wait_ack(POLICY_PRODUCT, revision, published, expected).await?;
         step.ack_ms = Some(published.elapsed().as_millis() as u64);
         let state = acknowledgment["state"].as_str().unwrap_or_default().to_string();
         let error = acknowledgment["error"].as_str().unwrap_or_default().to_string();
@@ -752,6 +882,24 @@ impl Runner {
                 }
                 step.outcome = format!(
                     "rejected, generation {} kept: {}",
+                    after.generation.unwrap_or_default(),
+                    shorten(&error, 100)
+                );
+            }
+            Installed::Pending { .. } => {
+                if (after.generation, after.artifact_revision) != (before.generation, before.artifact_revision) {
+                    return Err(generic_error!(
+                        "While revision {} waits, ADP runs generation {:?} (artifact {:?}), not generation {:?} \
+                         (artifact {:?}) as before.",
+                        revision,
+                        after.generation,
+                        after.artifact_revision,
+                        before.generation,
+                        before.artifact_revision
+                    ));
+                }
+                step.outcome = format!(
+                    "pending, generation {} kept: {}",
                     after.generation.unwrap_or_default(),
                     shorten(&error, 100)
                 );
@@ -933,20 +1081,23 @@ impl Runner {
         Ok(Status::read(self.client.get_json("/api/adp/status").await?))
     }
 
-    /// Waits for ADP to acknowledge `revision` (`active`, `rejected`, or `failed`) on the privileged status route and
-    /// in its polls of the stub, and returns the acknowledgment with ADP's status.
-    async fn wait_ack(&mut self, revision: u64, since: Instant) -> Result<(Value, Status), GenericError> {
+    /// Waits for ADP to acknowledge `revision` of `product` as `expected` says (see [`settled`] and [`waiting_for`])
+    /// on the privileged status route and in its polls of the stub, and returns the acknowledgment with ADP's status.
+    async fn wait_ack(
+        &mut self, product: &str, revision: u64, since: Instant, expected: impl Fn(&Value) -> bool,
+    ) -> Result<(Value, Status), GenericError> {
         let deadline = since + ACK_TIMEOUT;
         let (acknowledgment, status) = loop {
             let status = self.status().await?;
-            if let Some(acknowledgment) = status.acknowledgment(revision) {
-                if matches!(acknowledgment["state"].as_str(), Some("active" | "rejected" | "failed")) {
+            if let Some(acknowledgment) = status.acknowledgment(product, revision) {
+                if expected(acknowledgment) {
                     break (acknowledgment.clone(), status);
                 }
             }
             if Instant::now() >= deadline {
                 return Err(generic_error!(
-                    "ADP did not acknowledge revision {} within {} s; its status: {}",
+                    "ADP did not acknowledge {} revision {} as expected within {} s; its status: {}",
+                    product,
                     revision,
                     ACK_TIMEOUT.as_secs(),
                     status.document
@@ -954,7 +1105,7 @@ impl Runner {
             }
             tokio::time::sleep(POLL).await;
         };
-        let expected = acknowledgment["state"].clone();
+        let acknowledged = acknowledgment["state"].clone();
         self.wait_for(
             "ADP's polls of the stub to report the acknowledgment",
             ACK_TIMEOUT,
@@ -964,9 +1115,9 @@ impl Runner {
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .find(|state| state["revision"].as_u64() == Some(revision));
+                    .find(|state| state["revision"].as_u64() == Some(revision) && product_of(state) == product);
                 match polled {
-                    Some(polled) if polled["state"] == expected => Ok(()),
+                    Some(polled) if polled["state"] == acknowledged => Ok(()),
                     other => Err(format!("the last poll reports {:?}", other)),
                 }
             },

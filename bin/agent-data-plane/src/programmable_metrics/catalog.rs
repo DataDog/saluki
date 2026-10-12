@@ -2,15 +2,19 @@
 
 use std::collections::BTreeMap;
 
+use saluki_components::forwarders::delivery::RecipientProtocol;
 use saluki_metric_plan::{
-    ir::{BindingName, ExitName, InputName, OutputId, ScopeName, ValueType},
-    model::PortType,
-    validate::{Catalog, CatalogBinding, CatalogOutput, MemoryCatalog},
+    ir::{BindingName, ExitName, HostId, InputName, OutputDecl, OutputId, RecipientDecl, ScopeName, ValueType},
+    model::{Kind, PortType},
+    validate::{Catalog, CatalogBinding, CatalogOutput, HostSchema, Liveness, MemoryCatalog},
 };
 
 use super::{
     bindings::{Snapshots, BINDINGS},
-    outputs::NativeOutputs,
+    resources::{
+        params::{decode_encoder, decode_protocol, host_schema},
+        FixedHosts, NativeOutputs,
+    },
 };
 use crate::config::DataPlaneConfiguration;
 
@@ -34,16 +38,19 @@ pub const EXIT_AGGREGATED: &str = "aggregated";
 /// passes by aggregation.
 pub const EXIT_PASSTHROUGH: &str = "passthrough";
 
-/// ADP's catalog: the native outputs, every configuration binding of the registry with its current value, the
-/// `dogstatsd_pre_aggregation` and `post_enrich` scopes, and the budget of state every state owner shares.
+/// ADP's catalog: the outputs, native and declared, every configuration binding of the registry with its current value,
+/// the `dogstatsd_pre_aggregation` and `post_enrich` scopes, the budget of state every state owner shares, and the
+/// delivery hosts with the schemas of their parameters.
 ///
 /// Bindings are resolved when the catalog is built, `Startup` bindings from the startup configuration and `Live` ones
 /// from the current configuration, so the catalog carries the same values lowering writes into plans. A binding the
-/// configuration has no valid value for is declared without one. Keyed bindings are declared for every key the startup
-/// configuration has.
+/// configuration has no valid value for is declared without one. Keyed bindings are declared for every key the
+/// configuration they resolve from has.
 ///
 /// It also declares the exits of the `dogstatsd_pre_aggregation` scope that lowering wrote, every one carrying any
 /// port type (informational: a composed plan is validated whole), and the budget of state every state owner draws on.
+/// It declares a host only if the process has it: `cluster_agent_out` only when a Cluster Agent endpoint resolved at
+/// boot.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AdpCatalog {
     outputs: BTreeMap<OutputId, CatalogOutput>,
@@ -51,11 +58,12 @@ pub struct AdpCatalog {
     scope_input: PortType,
     state_budget: Option<u64>,
     pre_aggregation_exits: Vec<ExitName>,
+    hosts: FixedHosts,
 }
 
 impl AdpCatalog {
-    /// Builds the catalog of the given native outputs and configuration snapshots.
-    pub fn new(outputs: &NativeOutputs, snapshots: Snapshots<'_>) -> Self {
+    /// Builds the catalog of the given outputs, configuration snapshots, and delivery hosts.
+    pub fn new(outputs: &NativeOutputs, snapshots: Snapshots<'_>, hosts: FixedHosts) -> Self {
         let outputs = outputs
             .iter()
             .map(|output| {
@@ -65,6 +73,7 @@ impl AdpCatalog {
                         accepts: output.decl.accepts,
                         fingerprint: output.decl.fingerprint,
                         recipients: output.decl.recipients.clone(),
+                        legacy_fingerprint: output.legacy_fingerprint,
                     },
                 )
             })
@@ -72,9 +81,10 @@ impl AdpCatalog {
 
         let mut bindings = BTreeMap::new();
         for spec in BINDINGS {
-            let keys = match spec.key {
-                None => vec![String::new()],
-                Some(key) => key.keys(snapshots.startup),
+            let keys = match (spec.key, spec.liveness) {
+                (None, _) => vec![String::new()],
+                (Some(key), Liveness::Live) => key.keys(snapshots.current),
+                (Some(key), Liveness::Startup) => key.keys(snapshots.startup),
             };
             for key in keys {
                 let name = BindingName::new(spec.instance_name(&key)).expect("registry binding names are valid");
@@ -102,6 +112,7 @@ impl AdpCatalog {
             scope_input: PortType::ANY,
             state_budget,
             pre_aggregation_exits: Vec::new(),
+            hosts,
         }
     }
 
@@ -172,5 +183,78 @@ impl Catalog for AdpCatalog {
 
     fn state_budget(&self) -> Option<u64> {
         self.state_budget
+    }
+
+    fn host(&self, host: &HostId) -> Option<HostSchema> {
+        self.hosts.get(host.as_str()).map(|host| host_schema(&host))
+    }
+
+    fn declares_hosts(&self) -> bool {
+        true
+    }
+
+    fn refuses(&self, output: &OutputDecl, recipient: &RecipientDecl) -> Option<String> {
+        // Parameters that do not decode are the schema rule's to report.
+        let binding = output.binding.as_ref()?;
+        let variants = decode_encoder(&binding.encoder).ok()?.variants;
+        let protocol = decode_protocol(&recipient.protocol).ok()?;
+        refusal(output.accepts, variants, &protocol)
+    }
+}
+
+/// Returns why a recipient of `protocol` cannot receive what an output accepting `accepts`, encoded in `variants`,
+/// produces, or `None` if it can: every payload names the recipients of its own protocol variant, so a recipient must
+/// take one variant the output encodes for each kind of record the output carries.
+fn refusal(
+    accepts: PortType, variants: saluki_components::forwarders::delivery::ProtocolVariants,
+    protocol: &RecipientProtocol,
+) -> Option<String> {
+    let series_kinds = [Kind::Counter, Kind::Rate, Kind::Gauge, Kind::Set, Kind::Histogram];
+    let carries_series = series_kinds.into_iter().any(|kind| accepts.kinds.contains(kind));
+    let carries_sketches = accepts.kinds.contains(Kind::Distribution);
+    match protocol {
+        // The Cluster Agent takes V2 series of scalar kinds only: a payload of another variant names no Cluster Agent
+        // recipient, so what matters is what the output carries, and that it encodes V2 series for it.
+        RecipientProtocol::ClusterAgent => {
+            let unscalar = [Kind::Histogram, Kind::Distribution]
+                .into_iter()
+                .any(|kind| accepts.kinds.contains(kind));
+            if unscalar {
+                Some(
+                    "the Cluster Agent takes only series of scalar kinds (counters, rates, gauges, and sets), and the \
+                     output carries histograms or distributions"
+                        .to_string(),
+                )
+            } else if carries_series && !variants.v2_series {
+                Some("the Cluster Agent takes only V2 series, which the output does not encode".to_string())
+            } else {
+                None
+            }
+        }
+        RecipientProtocol::DatadogIntake { v3, .. } => {
+            let series = if v3.series {
+                variants.v3_series
+            } else {
+                variants.v2_series
+            };
+            let sketches = if v3.sketches {
+                variants.v3_sketches
+            } else {
+                variants.v2_sketches
+            };
+            if carries_series && !series {
+                Some(format!(
+                    "it takes series only in their {} form, which the output does not encode",
+                    if v3.series { "V3" } else { "V1 or V2" }
+                ))
+            } else if carries_sketches && !sketches {
+                Some(format!(
+                    "it takes sketches only in their {} form, which the output does not encode",
+                    if v3.sketches { "V3" } else { "V2" }
+                ))
+            } else {
+                None
+            }
+        }
     }
 }

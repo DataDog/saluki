@@ -192,6 +192,7 @@ fn catalog() -> MemoryCatalog {
             accepts: PortType::ANY,
             fingerprint: PlanHash::of_bytes(b"out"),
             recipients: vec![RecipientId::new("out/out").unwrap()],
+            legacy_fingerprint: None,
         },
     )
 }
@@ -427,7 +428,7 @@ fn a_candidate_places_each_state_owner_in_the_isolation_slot_its_input_reaches_o
         .iter()
         .find(|problem| problem.node.as_ref() == Some(&id("again")))
         .unwrap_or_else(|| panic!("no problem names the second state owner: {}", error));
-    assert_eq!(problem.capability, Some(MissingCapability::ResourceGenerations));
+    assert_eq!(problem.capability, Some(MissingCapability::Restart));
     assert!(problem.message.contains("isolation slot"), "{}", problem.message);
 }
 
@@ -517,7 +518,7 @@ fn a_state_owner_fed_straight_by_an_admission_point_runs_in_the_isolation_slot_t
             vec![Step::Exit {
                 register: RegisterId::new(0),
                 exit: to_agg,
-                entry: Some(EntryId::new(0)),
+                entry: EntrySource::Region(EntryId::new(0)),
             }]
         )]
     );
@@ -556,7 +557,7 @@ fn a_state_owner_fed_straight_by_an_admission_point_runs_in_the_isolation_slot_t
         .iter()
         .find(|problem| problem.node.as_ref() == Some(&id("dsd_agg")))
         .unwrap_or_else(|| panic!("no problem names the state owner: {}", error));
-    assert_eq!(problem.capability, Some(MissingCapability::ResourceGenerations));
+    assert_eq!(problem.capability, Some(MissingCapability::Restart));
     assert!(
         problem.message.contains("no such isolation slot for `pick_region`")
             && problem.message.contains("adding an isolation slot"),
@@ -612,7 +613,7 @@ fn a_state_owners_kernel_is_keyed_by_its_lineage_and_its_per_call_parameters_by_
                 vec![Step::Exit {
                     register: RegisterId::new(0),
                     exit: to_post,
-                    entry: Some(EntryId::new(0)),
+                    entry: EntrySource::Region(EntryId::new(0)),
                 }]
             ),
         ]

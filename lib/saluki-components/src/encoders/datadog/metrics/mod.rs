@@ -1,4 +1,4 @@
-use std::{collections::HashMap, collections::VecDeque, ops::Range, sync::Arc, time::Duration};
+use std::{collections::HashMap, collections::VecDeque, future::Future, ops::Range, sync::Arc, time::Duration};
 
 use agent_data_plane_config::shared::{SharedConfiguration, V3SeriesMode};
 use async_trait::async_trait;
@@ -26,7 +26,7 @@ use saluki_core::{
 };
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::compression::{CompressionScheme, Compressor};
-use saluki_metrics::MetricsBuilder;
+use saluki_metrics::{Counter, MetricsBuilder};
 use tokio::{io::AsyncWriteExt as _, select, sync::mpsc, time::sleep};
 use tracing::{debug, error, warn};
 use url::Url;
@@ -39,6 +39,7 @@ use crate::{
     common::datadog::{
         clamp_payload_limits,
         config::OpwMetricsConfiguration,
+        delivery::{EncoderSettings, ProtocolVariants, SeriesVariant},
         endpoints::{
             resolve_additional_endpoints, series_v3_config_can_enable_v3, EndpointV3Settings, ResolvedEndpoint,
             V3EndpointConfig,
@@ -55,6 +56,8 @@ use crate::{
 
 mod endpoint;
 use self::endpoint::{EndpointConfiguration, MetricsEndpoint};
+
+pub(crate) mod host;
 
 mod v1;
 mod v2;
@@ -291,13 +294,56 @@ impl DatadogMetricsConfiguration {
         self
     }
 
-    fn v3_payload_limits(&self) -> V3PayloadLimits {
-        V3PayloadLimits::new(
-            self.max_series_payload_size,
-            self.max_series_uncompressed_payload_size,
-            self.max_metrics_per_payload,
-            self.max_series_points_per_payload,
+    /// Returns the settings of the encoder stream this configuration builds, as a lease of an encode host runs them.
+    ///
+    /// The protocol variants are those this encoder produces for the endpoints it resolves: series in their V2 (or V1)
+    /// form when an endpoint takes them, series in their V3 form when one takes those, sketches in their V2 form
+    /// always, and sketches in their V3 form when an endpoint is configured for them, with V3 turned off when the
+    /// compressor cannot produce it. A lease with these settings builds the payloads this encoder builds. Additional
+    /// tags are not part of them: an encode host applies its own to every lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the primary endpoint, the alternate metrics intake, or an additional endpoint cannot be
+    /// parsed or resolved.
+    pub fn encoder_settings(&self) -> Result<EncoderSettings, GenericError> {
+        let metrics_v3_disabled_by_compressor = CompressionSchemes::new(
+            &self.compressor_kind,
+            self.zstd_compressor_level,
+            self.v3_api.compression_level,
         )
+        .v3_disabled();
+        let v3_series = self.requires_v3_series(metrics_v3_disabled_by_compressor)?;
+        let v2_series = self.requires_v2_series(metrics_v3_disabled_by_compressor)?;
+
+        Ok(EncoderSettings {
+            variants: ProtocolVariants {
+                v2_series,
+                v2_sketches: true,
+                v3_series: metrics_encoder_mode_for_config(v3_series, metrics_v3_disabled_by_compressor).needs_v3(),
+                v3_sketches: metrics_encoder_mode_for_config(
+                    self.v3_api.use_v3_sketches(),
+                    metrics_v3_disabled_by_compressor,
+                )
+                .needs_v3(),
+            },
+            series: if self.use_v2_series_api {
+                SeriesVariant::V2
+            } else {
+                SeriesVariant::V1
+            },
+            compressor_kind: self.compressor_kind.as_str().into(),
+            zstd_compressor_level: self.zstd_compressor_level,
+            v3_compression_level: self.v3_api.compression_level,
+            max_metrics_per_payload: self.max_metrics_per_payload,
+            max_payload_size: self.max_payload_size,
+            max_uncompressed_payload_size: self.max_uncompressed_payload_size,
+            max_series_payload_size: self.max_series_payload_size,
+            max_series_uncompressed_payload_size: self.max_series_uncompressed_payload_size,
+            max_series_points_per_payload: self.max_series_points_per_payload,
+            flush_timeout: self.flush_timeout,
+            log_payloads: self.log_payloads,
+        })
     }
 
     fn endpoint_v3_settings(
@@ -390,102 +436,183 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
 
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
-        let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
-        let v3_serializer_telemetry = V3SerializerTelemetry::from_builder(&metrics_builder);
+        let settings = self.encoder_settings()?;
+        let builders = StreamBuilders::build(&settings, self.additional_tags.clone(), &metrics_builder)?;
 
-        let v2_compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
-        let v3_compression_scheme = if self.v3_api.compression_level > 0 {
-            CompressionScheme::new(&self.compressor_kind, self.v3_api.compression_level)
+        Ok(Box::new(DatadogMetrics {
+            builders,
+            endpoint_routing: self.endpoint_routing.clone(),
+        }))
+    }
+}
+
+/// The compression schemes of a metrics encoder stream: one for V1 and V2 payloads, and one for V3 payloads.
+#[derive(Clone, Copy, Debug)]
+struct CompressionSchemes {
+    v2: CompressionScheme,
+    v3: CompressionScheme,
+}
+
+impl CompressionSchemes {
+    /// Returns the schemes of a compressor kind and level, with the level of V3 payloads, where zero uses `level`.
+    fn new(kind: &str, level: i32, v3_level: i32) -> Self {
+        let v2 = CompressionScheme::new(kind, level);
+        let v3 = if v3_level > 0 {
+            CompressionScheme::new(kind, v3_level)
         } else {
-            v2_compression_scheme
+            v2
         };
-        let series_endpoint_uri = METRICS_SERIES_V3_PATH.to_string();
-        let payload_limits = self.v3_payload_limits();
+        Self { v2, v3 }
+    }
+
+    /// Returns `true` if V3 payloads cannot be produced with these schemes: the V3 protocol does not support zlib.
+    fn v3_disabled(&self) -> bool {
+        matches!(self.v3, CompressionScheme::Zlib(_))
+    }
+}
+
+/// Returns the payload limits of V3 payloads.
+fn v3_payload_limits(settings: &EncoderSettings) -> V3PayloadLimits {
+    V3PayloadLimits::new(
+        settings.max_series_payload_size,
+        settings.max_series_uncompressed_payload_size,
+        settings.max_metrics_per_payload,
+        settings.max_series_points_per_payload,
+    )
+}
+
+/// The request builders and settings of one metrics encoder stream: what one request builder task runs with.
+struct StreamBuilders {
+    v2_series_builder: Option<RequestBuilder<v2::MetricsEndpointEncoder>>,
+    v2_sketch_builder: Option<RequestBuilder<v2::MetricsEndpointEncoder>>,
+    series_mode: MetricsEncoderMode,
+    sketches_mode: MetricsEncoderMode,
+    v3_runtime_config: V3RuntimeConfig,
+    telemetry: ComponentTelemetry,
+    flush_timeout: Duration,
+    log_payloads: bool,
+
+    /// Counts the metrics dropped with a V1 or V2 payload that is too large even on its own, which the native encoder
+    /// does not count.
+    oversized_drops: Option<Counter>,
+}
+
+impl StreamBuilders {
+    /// Builds the request builders of one stream with the given settings, reporting its telemetry through
+    /// `metrics_builder`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the settings ask for V3 payloads that their compressor or series protocol cannot produce,
+    /// or if a payload limit is too small to hold the framing of a payload.
+    fn build(
+        settings: &EncoderSettings, additional_tags: Option<SharedTagSet>, metrics_builder: &MetricsBuilder,
+    ) -> Result<Self, GenericError> {
+        let telemetry = ComponentTelemetry::from_builder(metrics_builder);
+        let v3_serializer_telemetry = V3SerializerTelemetry::from_builder(metrics_builder);
+        let variants = settings.variants;
+
+        let schemes = CompressionSchemes::new(
+            &settings.compressor_kind,
+            settings.zstd_compressor_level,
+            settings.v3_compression_level,
+        );
+        if schemes.v3_disabled() && (variants.v3_series || variants.v3_sketches) {
+            return Err(generic_error!(
+                "V3 metrics payloads cannot be compressed with zlib. Set `serializer_compressor_kind` to `zstd`, or \
+                 send V2 payloads to every endpoint."
+            ));
+        }
+        if settings.series == SeriesVariant::V1 && variants.v3_series {
+            return Err(generic_error!(
+                "V3 series payloads need the V2 series API. Set `use_v2_api.series` to `true`, or send V2 series to \
+                 every endpoint."
+            ));
+        }
 
         let v2_endpoint_config = EndpointConfiguration::new(
-            v2_compression_scheme,
-            self.max_metrics_per_payload,
-            self.max_series_points_per_payload,
-            self.additional_tags.clone(),
+            schemes.v2,
+            settings.max_metrics_per_payload,
+            settings.max_series_points_per_payload,
+            additional_tags.clone(),
         );
         let endpoint_config = EndpointConfiguration::new(
-            v3_compression_scheme,
-            self.max_metrics_per_payload,
+            schemes.v3,
+            settings.max_metrics_per_payload,
             // Actually enforced by V3PayloadLimits, required for the
             // constructor shared between V1/V2/V3.
             usize::MAX,
-            self.additional_tags.clone(),
+            additional_tags,
         );
 
-        // Derive the encoding mode for each metric type from the configuration.
-        let metrics_v3_disabled_by_compressor = matches!(v3_compression_scheme, CompressionScheme::Zlib(_));
-        let use_v3_series = self.requires_v3_series(metrics_v3_disabled_by_compressor)?;
-        let series_mode = metrics_encoder_mode_for_config(use_v3_series, metrics_v3_disabled_by_compressor);
-        let sketches_mode =
-            metrics_encoder_mode_for_config(self.v3_api.use_v3_sketches(), metrics_v3_disabled_by_compressor);
-        let series_endpoint = if self.use_v2_series_api {
-            MetricsEndpoint::SeriesV2
-        } else {
-            MetricsEndpoint::SeriesV1
+        let series_mode = MetricsEncoderMode::from_config(variants.v3_series);
+        let sketches_mode = MetricsEncoderMode::from_config(variants.v3_sketches);
+        let series_endpoint = match settings.series {
+            SeriesVariant::V2 => MetricsEndpoint::SeriesV2,
+            SeriesVariant::V1 => MetricsEndpoint::SeriesV1,
         };
         let v3_runtime_config = V3RuntimeConfig {
             endpoint_config,
-            payload_limits,
-            series_endpoint_uri,
+            payload_limits: v3_payload_limits(settings),
+            series_endpoint_uri: METRICS_SERIES_V3_PATH.to_string(),
             serializer_telemetry: v3_serializer_telemetry,
         };
         let generic_payload_limits = clamp_payload_limits(
-            self.max_uncompressed_payload_size,
-            self.max_payload_size,
+            settings.max_uncompressed_payload_size,
+            settings.max_payload_size,
             DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT,
             DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT,
         );
         let (series_uncompressed_limit, series_compressed_limit) = if series_endpoint == MetricsEndpoint::SeriesV2 {
             clamp_payload_limits(
-                self.max_series_uncompressed_payload_size,
-                self.max_series_payload_size,
+                settings.max_series_uncompressed_payload_size,
+                settings.max_series_payload_size,
                 v2::SERIES_V2_UNCOMPRESSED_SIZE_LIMIT,
                 v2::SERIES_V2_COMPRESSED_SIZE_LIMIT,
             )
         } else {
             generic_payload_limits
         };
-        let v2_series_builder = if self.requires_v2_series(metrics_v3_disabled_by_compressor)? {
+        let v2_series_builder = if variants.v2_series {
             let mut builder = v2::create_v2_request_builder(series_endpoint, &v2_endpoint_config)
-                .await
                 .error_context("Failed to create V2 series request builder.")?;
             builder.with_len_limits(series_uncompressed_limit, series_compressed_limit)?;
             Some(builder)
-        } else {
+        } else if variants.v3_series {
             debug!("All metrics series endpoints use authoritative V3; disabling V2 series encoding.");
+            None
+        } else {
+            debug!("No recipient of this stream accepts series; series metrics are dropped and counted.");
             None
         };
 
-        let (sketches_uncompressed_limit, sketches_compressed_limit) = generic_payload_limits;
-        let mut v2_sketch_builder = v2::create_v2_request_builder(MetricsEndpoint::Sketches, &v2_endpoint_config)
-            .await
-            .error_context("Failed to create V2 sketches request builder.")?;
-        v2_sketch_builder.with_len_limits(sketches_uncompressed_limit, sketches_compressed_limit)?;
-        let v2_sketch_builder = Some(v2_sketch_builder);
+        let v2_sketch_builder = if variants.v2_sketches {
+            let (sketches_uncompressed_limit, sketches_compressed_limit) = generic_payload_limits;
+            let mut builder = v2::create_v2_request_builder(MetricsEndpoint::Sketches, &v2_endpoint_config)
+                .error_context("Failed to create V2 sketches request builder.")?;
+            builder.with_len_limits(sketches_uncompressed_limit, sketches_compressed_limit)?;
+            Some(builder)
+        } else if variants.v3_sketches {
+            debug!("All metrics sketch endpoints use authoritative V3; disabling V2 sketch encoding.");
+            None
+        } else {
+            debug!("No recipient of this stream accepts sketches; sketch metrics are dropped and counted.");
+            None
+        };
 
-        let flush_timeout = if self.flush_timeout.is_zero() {
+        let flush_timeout = if settings.flush_timeout.is_zero() {
             // We always give ourselves a minimum flush timeout of 10ms to allow for some very minimal amount of
             // batching, while still practically flushing things almost immediately.
             Duration::from_millis(10)
         } else {
-            self.flush_timeout
+            settings.flush_timeout
         };
 
         if series_mode.needs_v3() || sketches_mode.needs_v3() {
-            debug!(
-                ?series_mode,
-                ?sketches_mode,
-                v3_sketches_endpoints = ?self.v3_api.sketches.endpoints,
-                "V3 encoding support is enabled."
-            );
+            debug!(?series_mode, ?sketches_mode, "V3 encoding support is enabled.");
         }
 
-        Ok(Box::new(DatadogMetrics {
+        Ok(Self {
             v2_series_builder,
             v2_sketch_builder,
             series_mode,
@@ -493,9 +620,9 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
             v3_runtime_config,
             telemetry,
             flush_timeout,
-            log_payloads: self.log_payloads,
-            endpoint_routing: self.endpoint_routing.clone(),
-        }))
+            log_payloads: settings.log_payloads,
+            oversized_drops: None,
+        })
     }
 }
 
@@ -524,14 +651,7 @@ impl MemoryBounds for DatadogMetricsConfiguration {
 }
 
 pub struct DatadogMetrics {
-    v2_series_builder: Option<RequestBuilder<v2::MetricsEndpointEncoder>>,
-    v2_sketch_builder: Option<RequestBuilder<v2::MetricsEndpointEncoder>>,
-    series_mode: MetricsEncoderMode,
-    sketches_mode: MetricsEncoderMode,
-    v3_runtime_config: V3RuntimeConfig,
-    telemetry: ComponentTelemetry,
-    flush_timeout: Duration,
-    log_payloads: bool,
+    builders: StreamBuilders,
     endpoint_routing: Option<Arc<MetricsEndpointRouting>>,
 }
 
@@ -546,14 +666,7 @@ struct V3RuntimeConfig {
 impl Encoder for DatadogMetrics {
     async fn run(mut self: Box<Self>, mut context: EncoderContext) -> Result<(), GenericError> {
         let Self {
-            v2_series_builder,
-            v2_sketch_builder,
-            series_mode,
-            sketches_mode,
-            v3_runtime_config,
-            telemetry,
-            flush_timeout,
-            log_payloads,
+            builders,
             endpoint_routing,
         } = *self;
 
@@ -566,18 +679,7 @@ impl Encoder for DatadogMetrics {
         //
         // The request builder task ignores the shutdown signal on purpose: it drains its incoming event buffer channel
         // until the channel closes, which is what guarantees every buffered metric is encoded and dispatched.
-        let request_builder_fut = run_request_builder(
-            v2_series_builder,
-            v2_sketch_builder,
-            series_mode,
-            sketches_mode,
-            v3_runtime_config,
-            telemetry,
-            events_rx,
-            payloads_tx,
-            flush_timeout,
-            log_payloads,
-        );
+        let request_builder_fut = run_request_builder(builders, events_rx, payloads_tx, OnInputClose::FlushAtTimeout);
         runtime::worker("request_builder", request_builder_fut)
             .on_runtime(context.topology_context().global_thread_pool().clone())
             .spawn();
@@ -682,14 +784,68 @@ fn log_metric_payload(metric: &Metric) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn run_request_builder(
-    mut v2_series_builder: Option<RequestBuilder<v2::MetricsEndpointEncoder>>,
-    mut v2_sketch_builder: Option<RequestBuilder<v2::MetricsEndpointEncoder>>, series_mode: MetricsEncoderMode,
-    sketches_mode: MetricsEncoderMode, v3_runtime_config: V3RuntimeConfig, telemetry: ComponentTelemetry,
-    mut events_rx: mpsc::Receiver<EventsBuffer>, mut payloads_tx: mpsc::Sender<PayloadsBuffer>,
-    flush_timeout: Duration, log_payloads: bool,
+/// The protocol variant of the payloads a request builder flushes, and whether their metadata names it.
+///
+/// A stream that produces V3 payloads of a metric type tags every payload of that type with its variant
+/// ([`MetricsPayloadInfo`]), so that each endpoint takes the variant it accepts; a stream that produces only V1 or V2
+/// payloads does not. The variant is known either way: an encode host's lease picks a payload's recipients by it.
+#[derive(Clone, Copy, Debug)]
+struct PayloadVariant {
+    info: MetricsPayloadInfo,
+    tagged: bool,
+}
+
+impl PayloadVariant {
+    const fn new(info: MetricsPayloadInfo, tagged: bool) -> Self {
+        Self { info, tagged }
+    }
+}
+
+/// Where a request builder task sends the payloads it builds.
+trait PayloadSink: Send {
+    /// Sends one payload, whose protocol variant is `variant`.
+    fn send_payload(
+        &mut self, metadata: PayloadMetadata, request: Request<FrozenChunkedBytesBuffer>, variant: MetricsPayloadInfo,
+    ) -> impl Future<Output = Result<(), GenericError>> + Send;
+}
+
+/// A native encoder's request builder sends its payloads to the encoder's own task.
+impl PayloadSink for mpsc::Sender<PayloadsBuffer> {
+    async fn send_payload(
+        &mut self, metadata: PayloadMetadata, request: Request<FrozenChunkedBytesBuffer>, _variant: MetricsPayloadInfo,
+    ) -> Result<(), GenericError> {
+        self.send(Payload::Http(HttpPayload::new(metadata, request)))
+            .await
+            .error_context("Failed to send payload.")
+    }
+}
+
+/// What a request builder task does with its open payloads when its input closes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OnInputClose {
+    /// Flushes them when the flush timeout expires, as more input would have found them.
+    FlushAtTimeout,
+
+    /// Flushes them at once.
+    FlushNow,
+}
+
+async fn run_request_builder<S: PayloadSink>(
+    builders: StreamBuilders, mut events_rx: mpsc::Receiver<EventsBuffer>, mut payloads_tx: S, on_close: OnInputClose,
 ) -> Result<(), GenericError> {
+    let StreamBuilders {
+        mut v2_series_builder,
+        mut v2_sketch_builder,
+        series_mode,
+        sketches_mode,
+        v3_runtime_config,
+        telemetry,
+        flush_timeout,
+        log_payloads,
+        oversized_drops,
+    } = builders;
+    let oversized_drops = oversized_drops.as_ref();
+    let mut input_open = true;
     let mut pending_flush = false;
     let pending_flush_timeout = sleep(flush_timeout);
     tokio::pin!(pending_flush_timeout);
@@ -713,7 +869,16 @@ async fn run_request_builder(
 
     loop {
         select! {
-            Some(event_buffer) = events_rx.recv() => {
+            maybe_event_buffer = events_rx.recv(), if input_open => {
+                let Some(event_buffer) = maybe_event_buffer else {
+                    input_open = false;
+                    if on_close == OnInputClose::FlushNow {
+                        // Flush the open payloads now, rather than when the flush timeout would have expired.
+                        pending_flush_timeout.as_mut().reset(tokio::time::Instant::now());
+                    }
+                    continue;
+                };
+
                 for event in event_buffer {
                     let metric = match event.try_into_metric() {
                         Some(metric) => metric,
@@ -748,6 +913,19 @@ async fn run_request_builder(
                             &mut v3_sketch_points,
                         ),
                     };
+
+                    // A stream whose recipients accept no protocol variant of the metric's kind builds no payload for
+                    // it. The native encoder always has one, but a lease's variants are those of its recipients.
+                    if maybe_v2_builder.is_none() && maybe_v3_metrics.is_none() {
+                        debug!(
+                            metric = %metric.context().name(),
+                            ?endpoint,
+                            "Dropping metric that no protocol variant of this stream encodes."
+                        );
+                        telemetry.events_dropped_encoder().increment(1);
+                        continue;
+                    }
+
                     let metric_point_count = metric.values().len();
                     let should_buffer_v3 = endpoint_mode.needs_v3();
 
@@ -766,14 +944,24 @@ async fn run_request_builder(
                     //
                     // If the metric could not be encoded, remove its buffered V3 copy when this endpoint also requires
                     // a V2 encoding.
-                    let v2_payload_info = match endpoint {
+                    let v2_payload_variant = match endpoint {
                         MetricsEndpoint::SeriesV1 | MetricsEndpoint::SeriesV2 => {
-                            tag_series.then(MetricsPayloadInfo::v2_series)
+                            PayloadVariant::new(MetricsPayloadInfo::v2_series(), tag_series)
                         }
-                        MetricsEndpoint::Sketches => tag_sketches.then(MetricsPayloadInfo::v2_sketches),
+                        MetricsEndpoint::Sketches => {
+                            PayloadVariant::new(MetricsPayloadInfo::v2_sketches(), tag_sketches)
+                        }
                     };
                     let _v2_flushed = if let Some(builder) = maybe_v2_builder {
-                        let result = encode_v2_metrics(builder, metric, &telemetry, &mut payloads_tx, v2_payload_info).await?;
+                        let result = encode_v2_metrics(
+                            builder,
+                            metric,
+                            &telemetry,
+                            oversized_drops,
+                            &mut payloads_tx,
+                            v2_payload_variant,
+                        )
+                        .await?;
                         if should_buffer_v3
                             && !result.encoded()
                             && !matches!(endpoint_mode, MetricsEncoderMode::V3Enabled)
@@ -788,11 +976,13 @@ async fn run_request_builder(
                         false
                     };
 
-                    let v3_payload_info = match endpoint {
+                    let v3_payload_variant = match endpoint {
                         MetricsEndpoint::SeriesV1 | MetricsEndpoint::SeriesV2 => {
-                            tag_series.then(MetricsPayloadInfo::v3_series)
+                            PayloadVariant::new(MetricsPayloadInfo::v3_series(), tag_series)
                         }
-                        MetricsEndpoint::Sketches => tag_sketches.then(MetricsPayloadInfo::v3_sketches),
+                        MetricsEndpoint::Sketches => {
+                            PayloadVariant::new(MetricsPayloadInfo::v3_sketches(), tag_sketches)
+                        }
                     };
                     let mut split_metric = None;
                     let _v3_flushed = if let Some(v3_metrics) = maybe_v3_metrics {
@@ -827,7 +1017,7 @@ async fn run_request_builder(
                                 &mut v3_series_ratio,
                                 &mut v3_sketch_ratio,
                                 &mut payloads_tx,
-                                v3_payload_info,
+                                v3_payload_variant,
                             )
                             .await?;
                             *v3_points = 0;
@@ -864,16 +1054,18 @@ async fn run_request_builder(
                 pending_flush = false;
 
                 // Flush any pending series metrics.
-                let v2_series_payload_info = tag_series.then(MetricsPayloadInfo::v2_series);
+                let v2_series_payload_variant = PayloadVariant::new(MetricsPayloadInfo::v2_series(), tag_series);
                 let mut v2_series_flush_succeeded = true;
                 if let Some(builder) = &mut v2_series_builder {
-                    if let Err(e) = flush_v2_metrics(builder, &mut payloads_tx, v2_series_payload_info).await {
+                    if let Err(e) =
+                        flush_v2_metrics(builder, oversized_drops, &mut payloads_tx, v2_series_payload_variant).await
+                    {
                         error!(error = %e, "Failed to flush V2 series metrics: {}", e);
                         v2_series_flush_succeeded = false;
                     }
                 }
 
-                let v3_series_payload_info = tag_series.then(MetricsPayloadInfo::v3_series);
+                let v3_series_payload_variant = PayloadVariant::new(MetricsPayloadInfo::v3_series(), tag_series);
                 if let Some(metrics) = &mut v3_series_metrics {
                     if v2_series_flush_succeeded || matches!(series_mode, MetricsEncoderMode::V3Enabled) {
                         if let Err(e) = encode_and_flush_v3_series_metrics(
@@ -881,7 +1073,7 @@ async fn run_request_builder(
                             metrics,
                             &mut v3_series_ratio,
                             &mut payloads_tx,
-                            v3_series_payload_info,
+                            v3_series_payload_variant,
                         )
                         .await
                         {
@@ -896,16 +1088,18 @@ async fn run_request_builder(
                 }
 
                 // Flush any pending sketch metrics.
-                let v2_sketches_payload_info = tag_sketches.then(MetricsPayloadInfo::v2_sketches);
+                let v2_sketches_payload_variant = PayloadVariant::new(MetricsPayloadInfo::v2_sketches(), tag_sketches);
                 let mut v2_sketches_flush_succeeded = true;
                 if let Some(builder) = &mut v2_sketch_builder {
-                    if let Err(e) = flush_v2_metrics(builder, &mut payloads_tx, v2_sketches_payload_info).await {
+                    if let Err(e) =
+                        flush_v2_metrics(builder, oversized_drops, &mut payloads_tx, v2_sketches_payload_variant).await
+                    {
                         error!(error = %e, "Failed to flush V2 sketch metrics: {}", e);
                         v2_sketches_flush_succeeded = false;
                     }
                 }
 
-                let v3_sketches_payload_info = tag_sketches.then(MetricsPayloadInfo::v3_sketches);
+                let v3_sketches_payload_variant = PayloadVariant::new(MetricsPayloadInfo::v3_sketches(), tag_sketches);
                 if let Some(metrics) = &mut v3_sketch_metrics {
                     if v2_sketches_flush_succeeded || matches!(sketches_mode, MetricsEncoderMode::V3Enabled) {
                         if let Err(e) = encode_and_flush_v3_sketch_metrics(
@@ -913,7 +1107,7 @@ async fn run_request_builder(
                             metrics,
                             &mut v3_sketch_ratio,
                             &mut payloads_tx,
-                            v3_sketches_payload_info,
+                            v3_sketches_payload_variant,
                         )
                         .await
                         {
@@ -957,9 +1151,9 @@ impl EncodeResult {
     }
 }
 
-async fn encode_v2_metrics(
+async fn encode_v2_metrics<S: PayloadSink>(
     request_builder: &mut RequestBuilder<v2::MetricsEndpointEncoder>, metric: Metric, telemetry: &ComponentTelemetry,
-    payloads_tx: &mut mpsc::Sender<Payload>, payload_info: Option<MetricsPayloadInfo>,
+    oversized_drops: Option<&Counter>, payloads_tx: &mut S, variant: PayloadVariant,
 ) -> Result<EncodeResult, GenericError> {
     // Encode the metric. If we get it back, that means the current request is full, and we need to
     // flush it before we can try to encode the metric again... so we'll hold on to it in that case
@@ -979,7 +1173,7 @@ async fn encode_v2_metrics(
         }
     };
 
-    flush_v2_metrics(request_builder, payloads_tx, payload_info).await?;
+    flush_v2_metrics(request_builder, oversized_drops, payloads_tx, variant).await?;
 
     // Now try to encode the metric again. If it fails again, we'll just log it because it shouldn't
     // be possible to fail at this point, otherwise we would have already caught that the first
@@ -997,9 +1191,9 @@ async fn encode_v2_metrics(
     }
 }
 
-async fn flush_v2_metrics(
-    request_builder: &mut RequestBuilder<MetricsEndpointEncoder>, payloads_tx: &mut mpsc::Sender<Payload>,
-    payload_info: Option<MetricsPayloadInfo>,
+async fn flush_v2_metrics<S: PayloadSink>(
+    request_builder: &mut RequestBuilder<MetricsEndpointEncoder>, oversized_drops: Option<&Counter>,
+    payloads_tx: &mut S, variant: PayloadVariant,
 ) -> Result<usize, GenericError> {
     let mut requests_flushed = 0;
 
@@ -1009,10 +1203,16 @@ async fn flush_v2_metrics(
             Ok((events, data_points, request)) => {
                 requests_flushed += 1;
 
-                flush_payload(request, events, data_points, payloads_tx, payload_info).await?;
+                flush_payload(request, events, data_points, payloads_tx, variant).await?;
             }
 
-            // TODO: Increment a counter here that metrics were dropped due to a flush failure.
+            // A payload too large even on its own is dropped with its metrics. An encode host's lease counts them; the
+            // native encoder does not.
+            Err(RequestBuilderError::PayloadTooLarge { inputs_dropped, .. }) => {
+                if let Some(oversized_drops) = oversized_drops {
+                    oversized_drops.increment(inputs_dropped as u64);
+                }
+            }
             Err(e) => {
                 if !e.is_recoverable() {
                     return Err(GenericError::from(e).context("Failed to flush request."));
@@ -1034,24 +1234,24 @@ struct V3FlushContext<'a> {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn encode_and_flush_v3_metrics(
+async fn encode_and_flush_v3_metrics<S: PayloadSink>(
     endpoint: MetricsEndpoint, context: V3FlushContext<'_>, metrics: &mut Vec<Metric>,
-    series_ratio: &mut V3CompressionRatio, sketches_ratio: &mut V3CompressionRatio,
-    payloads_tx: &mut mpsc::Sender<Payload>, payload_info: Option<MetricsPayloadInfo>,
+    series_ratio: &mut V3CompressionRatio, sketches_ratio: &mut V3CompressionRatio, payloads_tx: &mut S,
+    variant: PayloadVariant,
 ) -> Result<(), GenericError> {
     match endpoint {
         MetricsEndpoint::SeriesV1 | MetricsEndpoint::SeriesV2 => {
-            encode_and_flush_v3_series_metrics(context, metrics, series_ratio, payloads_tx, payload_info).await
+            encode_and_flush_v3_series_metrics(context, metrics, series_ratio, payloads_tx, variant).await
         }
         MetricsEndpoint::Sketches => {
-            encode_and_flush_v3_sketch_metrics(context, metrics, sketches_ratio, payloads_tx, payload_info).await
+            encode_and_flush_v3_sketch_metrics(context, metrics, sketches_ratio, payloads_tx, variant).await
         }
     }
 }
 
-async fn encode_and_flush_v3_series_metrics(
-    context: V3FlushContext<'_>, metrics: &mut Vec<Metric>, ratio: &mut V3CompressionRatio,
-    payloads_tx: &mut mpsc::Sender<Payload>, payload_info: Option<MetricsPayloadInfo>,
+async fn encode_and_flush_v3_series_metrics<S: PayloadSink>(
+    context: V3FlushContext<'_>, metrics: &mut Vec<Metric>, ratio: &mut V3CompressionRatio, payloads_tx: &mut S,
+    variant: PayloadVariant,
 ) -> Result<(), GenericError> {
     if metrics.is_empty() {
         return Ok(());
@@ -1065,14 +1265,14 @@ async fn encode_and_flush_v3_series_metrics(
         "series",
         ratio,
         payloads_tx,
-        payload_info,
+        variant,
     )
     .await
 }
 
-async fn encode_and_flush_v3_sketch_metrics(
-    context: V3FlushContext<'_>, metrics: &mut Vec<Metric>, ratio: &mut V3CompressionRatio,
-    payloads_tx: &mut mpsc::Sender<Payload>, payload_info: Option<MetricsPayloadInfo>,
+async fn encode_and_flush_v3_sketch_metrics<S: PayloadSink>(
+    context: V3FlushContext<'_>, metrics: &mut Vec<Metric>, ratio: &mut V3CompressionRatio, payloads_tx: &mut S,
+    variant: PayloadVariant,
 ) -> Result<(), GenericError> {
     if metrics.is_empty() {
         return Ok(());
@@ -1086,7 +1286,7 @@ async fn encode_and_flush_v3_sketch_metrics(
         "sketches",
         ratio,
         payloads_tx,
-        payload_info,
+        variant,
     )
     .await
 }
@@ -1382,9 +1582,9 @@ async fn split_and_encode_oversized_v3_range(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn encode_and_flush_v3_payload_requests(
+async fn encode_and_flush_v3_payload_requests<S: PayloadSink>(
     endpoint_uri: &str, metrics: &[Metric], context: V3FlushContext<'_>, payload_kind: &'static str,
-    ratio: &mut V3CompressionRatio, payloads_tx: &mut mpsc::Sender<Payload>, payload_info: Option<MetricsPayloadInfo>,
+    ratio: &mut V3CompressionRatio, payloads_tx: &mut S, variant: PayloadVariant,
 ) -> Result<(), GenericError> {
     let target_uncompressed_len = ratio.uncompressed_target(context.payload_limits);
     let mut idx = 0;
@@ -1432,7 +1632,7 @@ async fn encode_and_flush_v3_payload_requests(
                 payload_request.event_count,
                 payload_request.data_point_count,
                 payloads_tx,
-                payload_info,
+                variant,
             )
             .await?;
             debug!(
@@ -1496,23 +1696,16 @@ async fn compressed_v3_len(bytes: &[u8], compression_scheme: CompressionScheme) 
     Ok(compressor.into_inner().freeze().len())
 }
 
-async fn flush_payload(
-    request: Request<FrozenChunkedBytesBuffer>, event_count: usize, data_point_count: usize,
-    payloads_tx: &mut mpsc::Sender<Payload>, payload_info: Option<MetricsPayloadInfo>,
+async fn flush_payload<S: PayloadSink>(
+    request: Request<FrozenChunkedBytesBuffer>, event_count: usize, data_point_count: usize, payloads_tx: &mut S,
+    variant: PayloadVariant,
 ) -> Result<(), GenericError> {
     let mut payload_meta = PayloadMetadata::from_event_and_data_point_count(event_count, data_point_count);
-    if let Some(info) = payload_info {
-        payload_meta = payload_meta.with(info);
+    if variant.tagged {
+        payload_meta = payload_meta.with(variant.info);
     }
-    let http_payload = HttpPayload::new(payload_meta, request);
-    let payload = Payload::Http(http_payload);
 
-    payloads_tx
-        .send(payload)
-        .await
-        .error_context("Failed to send payload.")?;
-
-    Ok(())
+    payloads_tx.send_payload(payload_meta, request, variant.info).await
 }
 
 // Encodes a batch of metrics to V3 columnar format.
@@ -2447,7 +2640,7 @@ mod tests {
             "series",
             &mut ratio,
             &mut payloads_tx,
-            None,
+            PayloadVariant::new(MetricsPayloadInfo::v3_series(), false),
         )
         .await
         .expect("payload requests should encode and flush");
@@ -2979,22 +3172,27 @@ mod tests {
             let (events_tx, events_rx) = tokio::sync::mpsc::channel(1);
             let (payloads_tx, payloads_rx) = tokio::sync::mpsc::channel(8);
 
-            let handle = tokio::spawn(run_request_builder(
-                None,
-                None,
-                self.series_mode,
-                self.sketches_mode,
-                V3RuntimeConfig {
+            let builders = StreamBuilders {
+                v2_series_builder: None,
+                v2_sketch_builder: None,
+                series_mode: self.series_mode,
+                sketches_mode: self.sketches_mode,
+                v3_runtime_config: V3RuntimeConfig {
                     endpoint_config: v3_endpoint_config,
                     payload_limits: self.payload_limits,
                     series_endpoint_uri: METRICS_SERIES_V3_PATH.to_string(),
                     serializer_telemetry,
                 },
                 telemetry,
+                flush_timeout: self.flush_timeout,
+                log_payloads: false,
+                oversized_drops: None,
+            };
+            let handle = tokio::spawn(run_request_builder(
+                builders,
                 events_rx,
                 payloads_tx,
-                self.flush_timeout,
-                false,
+                OnInputClose::FlushAtTimeout,
             ));
 
             RequestBuilderHarness {
@@ -3156,7 +3354,6 @@ mod tests {
     async fn v2_series_builder_enforces_max_series_points_per_payload() {
         let v2_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, 10_000, None);
         let mut builder = v2::create_v2_request_builder(MetricsEndpoint::SeriesV2, &v2_endpoint_config)
-            .await
             .expect("V2 request builder should be created");
         builder
             .with_len_limits(usize::MAX, usize::MAX)
@@ -3203,7 +3400,7 @@ mod tests {
 
 #[cfg(test)]
 mod payload_limits {
-    use super::{v2, DatadogMetricsConfiguration};
+    use super::{v2, v3_payload_limits, DatadogMetricsConfiguration};
     use crate::common::datadog::{clamp_payload_limits, test_util::shared_configuration};
 
     #[test]
@@ -3223,7 +3420,8 @@ mod payload_limits {
         assert_eq!(1234, config.max_series_payload_size);
         assert_eq!(5678, config.max_series_uncompressed_payload_size);
         assert_eq!(500, config.max_series_points_per_payload);
-        assert_eq!(500, config.v3_payload_limits().max_points_per_payload);
+        let settings = config.encoder_settings().expect("endpoints should resolve");
+        assert_eq!(500, v3_payload_limits(&settings).max_points_per_payload);
         assert_eq!(42, config.max_metrics_per_payload);
     }
 

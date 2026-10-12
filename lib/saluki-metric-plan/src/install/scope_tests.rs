@@ -102,6 +102,7 @@ impl Composer for TwoScopes {
                 stale_review: approval
                     .approved_against
                     .is_some_and(|approved| Some(approved) != approval.active_plan_hash),
+                ..ScopeComposition::default()
             };
             scopes.insert(artifact.artifact.scope.clone(), composition);
         }

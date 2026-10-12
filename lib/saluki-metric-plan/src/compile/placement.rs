@@ -4,10 +4,11 @@
 //! physical structure the candidate needs:
 //!
 //! - A **fence** (source or opaque host) runs in the fixed component of the same node, configured as at boot. A host
-//!   component keeps the configuration it was built with, so adding or reconfiguring one needs a later stage. A fixed
+//!   component keeps the configuration it was built with, so adding or reconfiguring one needs a restart. A fixed
 //!   component the candidate leaves out is accepted only if it would then be idle: if a slot's exit is all that feeds
 //!   it and none of its outputs feeds a slot. A source is never left out: its host keeps producing.
-//! - An `emit` or `drop` fed straight by a fence must match the frame's direct edge: the same output, or no edge.
+//! - An `emit` or `drop` fed straight by a fence must match the frame's direct edge: the same fixed destination, or no
+//!   edge. A host never feeds an encode host directly, since only a region writes the lease it reads.
 //! - Every other node is synchronous and runs in a slot. A node the boot plan has runs in its boot slot, where its
 //!   inputs can reach that slot: R1's cost model may have put it in a later slot of a pipeline than its inputs. Any
 //!   other node's slot follows from its inputs: the slot an admission point's edge leads to, or the slot of the node
@@ -17,14 +18,20 @@
 //!   with its own width in the one isolation slot. A state owner fed straight by an admission point whose edge leads to
 //!   a fused slot runs in the isolation slot that slot has an exit to: the fused slot passes the point's batches
 //!   through, unchanged. A node fed by a state owner runs in a fused slot that the state owner's isolation slot has an
-//!   exit to. A state owner outside the boot plan's isolation slots needs resource generations.
+//!   exit to. A state owner outside the boot plan's isolation slots needs a frame change.
 //! - Every edge between slots, from a slot to a fixed component, and from a slot to an output must use one of the
-//!   slot's exits, and every edge leaving a fixed component must use its physical edge.
-//! - Every declared output must be an output of the frame, bound as at boot.
+//!   slot's exits, and every edge leaving a fixed component must use its physical edge. An edge to an `emit` leads to
+//!   the encode host of the output's delivery host when the output is bound, and to its fixed destination otherwise.
+//! - Every bound output places by its delivery host, whose encode host the frame must have: the output itself, and
+//!   its binding, can be new, since it runs as a lease of the encode host. An output without a binding must be a fixed
+//!   destination of the frame, declared as at boot.
 //!
 //! What the candidate does not use stays idle: an exit that no edge uses carries nothing. A candidate that needs
-//! structure the frame lacks is rejected, with one [problem][PlacementProblem] per node or edge, each naming the
-//! capability it needs and the stage that provides it. Nothing is approximated.
+//! structure the frame lacks is rejected, with one [problem][PlacementProblem] per node or edge, each naming what it
+//! needs. Nothing is approximated. Structure that native configuration asks for needs a restart, since the frame is
+//! built from native configuration at boot ([`MissingCapability::Restart`]); structure only an artifact asks for, at a
+//! node the artifact wrote, is not in the frame built from the default program, and a restart does not add it
+//! ([`MissingCapability::FrameChanges`], stage 10).
 //!
 //! # Entries
 //!
@@ -48,32 +55,37 @@ use super::{
     resolve, Role,
 };
 use crate::{
-    ir::{NodeId, OutputId, Plan, PortRef},
+    ir::{NodeId, OutputId, Plan, PortRef, Provenance},
     operators::{OperatorRegistry, StateContract},
     validate::{graph::emit_output, ValidationReport},
 };
 
-/// A capability a candidate needs that this stage does not have.
+/// A capability a candidate needs that the running host does not have.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum MissingCapability {
     /// State owners that run in regions, and changes to state owners (stage 6).
     State,
 
-    /// Resource generations, which add or change outputs, recipients, host components, and physical edges without a
-    /// restart (stage 7).
-    ResourceGenerations,
+    /// A restart: the physical structure native configuration describes is built at boot, so structure that the
+    /// current configuration needs and the frame lacks, such as a new host component or physical edge, is built by
+    /// restarting with that configuration.
+    Restart,
+
+    /// Physical structure that only an artifact asks for, such as a new exit from a region to an isolation slot: the
+    /// frame is built from the default program, so a restart does not add it (stage 10).
+    FrameChanges,
 
     /// Operators that read host signals (stage 10).
     Signals,
 }
 
 impl MissingCapability {
-    /// Returns the stage that provides the capability.
-    pub const fn stage(self) -> u8 {
+    /// Returns the stage that provides the capability, or `None` for a restart, which every stage provides.
+    pub const fn stage(self) -> Option<u8> {
         match self {
-            Self::State => 6,
-            Self::ResourceGenerations => 7,
-            Self::Signals => 10,
+            Self::State => Some(6),
+            Self::Restart => None,
+            Self::FrameChanges | Self::Signals => Some(10),
         }
     }
 
@@ -81,7 +93,8 @@ impl MissingCapability {
     pub const fn name(self) -> &'static str {
         match self {
             Self::State => "state transitions",
-            Self::ResourceGenerations => "resource generations",
+            Self::Restart => "a restart",
+            Self::FrameChanges => "frame changes",
             Self::Signals => "signals",
         }
     }
@@ -89,7 +102,47 @@ impl MissingCapability {
 
 impl fmt::Display for MissingCapability {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "stage {} {}", self.stage(), self.name())
+        match self.stage() {
+            Some(stage) => write!(f, "stage {} {}", stage, self.name()),
+            None => f.write_str(self.name()),
+        }
+    }
+}
+
+/// Who asks for structure the frame lacks, which decides what a candidate needs to get it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AskedBy {
+    /// Native configuration: the default program, or the parts of a composed plan it gives. A restart with the
+    /// current configuration builds the frame from it.
+    Native,
+
+    /// An artifact: a restart builds the frame from the default program, which does not have it.
+    Artifact,
+}
+
+impl AskedBy {
+    /// Returns the capability that provides what was asked for.
+    const fn capability(self) -> MissingCapability {
+        match self {
+            Self::Native => MissingCapability::Restart,
+            Self::Artifact => MissingCapability::FrameChanges,
+        }
+    }
+
+    /// Says that `what` is missing from the frame, and what provides it.
+    fn needs(self, what: &str) -> String {
+        match self {
+            Self::Native => format!(
+                "{} needs a restart, since the physical structure is built from native configuration at boot",
+                what
+            ),
+            Self::Artifact => format!(
+                "{} requires {}: the physical structure is built from the default program at boot, so a restart \
+                 does not add it",
+                what,
+                MissingCapability::FrameChanges
+            ),
+        }
     }
 }
 
@@ -165,9 +218,7 @@ impl fmt::Display for PlacementError {
                 problems.join("; ")
             ),
             Self::Unplaceable { problems } => {
-                f.write_str(
-                    "The candidate plan cannot run in the physical structure built at boot, and needs a restart: ",
-                )?;
+                f.write_str("The candidate plan cannot run in the physical structure built at boot: ")?;
                 let problems = problems.iter().map(ToString::to_string).collect::<Vec<_>>();
                 write!(f, "{}.", problems.join("; "))
             }
@@ -309,36 +360,59 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
     let graph = resolve(plan, registry).map_err(|problems| PlacementError::Invalid { problems })?;
     let roles = super::roles(&graph);
     let mut problems = Vec::new();
-    let needs = |capability: MissingCapability, what: &str| {
-        format!(
-            "{} requires {}, which change physical structure without a restart",
-            what, capability
-        )
+    // Structure at a node an artifact wrote is the artifact's to ask for; anything else follows native configuration.
+    // Outputs, host components, and the nodes the default program keeps are native: an artifact cannot declare them.
+    let asked_by = |node: usize| match graph.nodes[node].node.provenance {
+        Some(Provenance::Artifact(_)) => AskedBy::Artifact,
+        _ => AskedBy::Native,
+    };
+    let problem = |node: Option<&NodeId>, asked: AskedBy, message: String| {
+        PlacementProblem::new(node, Some(asked.capability()), message)
     };
 
-    // Outputs: the frame's encoders, bound as at boot.
+    // Outputs: a bound output places by its delivery host, whose encode host the frame must have, and runs as a lease
+    // there; an output without a binding is a fixed destination, declared as at boot.
+    let native = AskedBy::Native;
     for output in &plan.outputs {
-        match frame.output(&output.id) {
-            None => problems.push(PlacementProblem::new(
+        match (&output.binding, frame.output(&output.id)) {
+            (Some(binding), _) => {
+                if frame.encode_host(&binding.host).is_none() {
+                    problems.push(problem(
+                        None,
+                        native,
+                        format!(
+                            "output `{}` delivers through delivery host `{}`, which the topology built at boot has \
+                             no encode host for: {}",
+                            output.id,
+                            binding.host,
+                            native.needs("adding a delivery host")
+                        ),
+                    ));
+                }
+            }
+            (None, Some(boot)) if boot.binding.is_none() => {
+                if boot != output {
+                    problems.push(problem(
+                        None,
+                        native,
+                        format!(
+                            "output `{}` is a fixed destination declared differently than at boot (its accepted \
+                             type, fingerprint, recipients, or delivery policy changed): {}",
+                            output.id,
+                            native.needs("changing a fixed destination")
+                        ),
+                    ));
+                }
+            }
+            (None, _) => problems.push(problem(
                 None,
-                Some(MissingCapability::ResourceGenerations),
+                native,
                 format!(
-                    "output `{}` is not an output of the topology built at boot: {}",
+                    "output `{}` has no binding, and is not a fixed destination of the topology built at boot: {}",
                     output.id,
-                    needs(MissingCapability::ResourceGenerations, "adding an output")
+                    native.needs("adding a fixed destination")
                 ),
             )),
-            Some(boot) if boot != output => problems.push(PlacementProblem::new(
-                None,
-                Some(MissingCapability::ResourceGenerations),
-                format!(
-                    "output `{}` is bound differently than at boot (its accepted type, fingerprint, recipients, or \
-                     delivery policy changed): {}",
-                    output.id,
-                    needs(MissingCapability::ResourceGenerations, "changing an output's binding")
-                ),
-            )),
-            Some(_) => {}
         }
     }
 
@@ -351,28 +425,28 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
         match role {
             Role::Fixed => {
                 present.insert(id.clone());
+                // Only native configuration places host components, so the structure they need is native.
                 match frame.fixed_component(id) {
-                    None => problems.push(PlacementProblem::new(
+                    None => problems.push(problem(
                         Some(id),
-                        Some(MissingCapability::ResourceGenerations),
+                        native,
                         format!(
                             "the topology built at boot has no host component for this `{}` node: {}",
                             op.name(),
-                            needs(MissingCapability::ResourceGenerations, "adding a host component")
+                            native.needs("adding a host component")
                         ),
                     )),
                     Some(fixed) if fixed.operator != written.op || fixed.params != written.params => {
-                        // A host component keeps the configuration it was built with: reconfiguring it needs resource
-                        // generations. (Aggregation runs as a kernel in its isolation slot, so its changes are state
-                        // transitions the installer classifies, not host reconfigurations.)
-                        problems.push(PlacementProblem::new(
+                        // A host component keeps the configuration it was built with. (Aggregation runs as a kernel in
+                        // its isolation slot, so its changes are state transitions the installer classifies, not host
+                        // reconfigurations.)
+                        problems.push(problem(
                             Some(id),
-                            Some(MissingCapability::ResourceGenerations),
+                            native,
                             format!(
                                 "its operator or parameters differ from the boot plan's: {}",
-                                needs(
-                                    MissingCapability::ResourceGenerations,
-                                    "reconfiguring a host component, which keeps the configuration it was built with,",
+                                native.needs(
+                                    "reconfiguring a host component, which keeps the configuration it was built with,"
                                 )
                             ),
                         ));
@@ -433,13 +507,24 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
             } else {
                 "its host component keeps receiving records straight from another host"
             };
-            problems.push(PlacementProblem::new(
+            // A composed candidate leaves a host component out because an artifact replaced the scope holding it; a
+            // default program, because native configuration no longer has it.
+            let asked = if plan
+                .provenance
+                .as_ref()
+                .is_some_and(|provenance| !provenance.artifacts.is_empty())
+            {
+                AskedBy::Artifact
+            } else {
+                AskedBy::Native
+            };
+            problems.push(problem(
                 Some(&fixed.node),
-                Some(MissingCapability::ResourceGenerations),
+                asked,
                 format!(
                     "the candidate leaves out this host-owned node, but {}: {}",
                     why,
-                    needs(MissingCapability::ResourceGenerations, "removing a host component")
+                    asked.needs("removing a host component")
                 ),
             ));
         } else {
@@ -499,15 +584,15 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
                         let leads = route
                             .as_ref()
                             .map_or_else(|| "nothing".to_string(), |target| frame.describe_target(target));
-                        problems.push(PlacementProblem::new(
+                        problems.push(problem(
                             Some(id),
-                            Some(MissingCapability::ResourceGenerations),
+                            asked_by(node),
                             format!(
                                 "it is fed by `{}`, which the topology built at boot connects straight to {}, with \
                                  no region to run this node in: {}",
                                 port_ref(from, from_port, false),
                                 leads,
-                                needs(MissingCapability::ResourceGenerations, "adding a region after a host")
+                                asked_by(node).needs("adding a region after a host")
                             ),
                         ));
                         unplaced[node] = true;
@@ -533,13 +618,13 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
                 .iter()
                 .map(|(slot, from)| format!("`{}` (to {})", from, region(*slot)))
                 .collect::<Vec<_>>();
-            problems.push(PlacementProblem::new(
+            problems.push(problem(
                 Some(id),
-                Some(MissingCapability::ResourceGenerations),
+                asked_by(node),
                 format!(
                     "it joins {}, which the topology built at boot connects to different regions: {}",
                     joined.join(" and "),
-                    needs(MissingCapability::ResourceGenerations, "a new physical edge")
+                    asked_by(node).needs("a new physical edge")
                 ),
             ));
             unplaced[node] = true;
@@ -632,14 +717,14 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
                 } else {
                     "adding an isolation slot"
                 };
-                problems.push(PlacementProblem::new(
+                problems.push(problem(
                     Some(id),
-                    Some(MissingCapability::ResourceGenerations),
+                    asked_by(node),
                     format!(
                         "it is a state owner, which runs only in an isolation slot that the region its input comes \
                          from has an exit to, and the topology built at boot has no such isolation slot for {}: {}",
                         regions.join(", "),
-                        needs(MissingCapability::ResourceGenerations, what)
+                        asked_by(node).needs(what)
                     ),
                 ));
                 unplaced[node] = true;
@@ -653,16 +738,13 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
                     .into_iter()
                     .map(region)
                     .collect::<Vec<_>>();
-                problems.push(PlacementProblem::new(
+                problems.push(problem(
                     Some(id),
-                    Some(MissingCapability::ResourceGenerations),
+                    asked_by(node),
                     format!(
                         "it joins records from the regions {}, and no one of them receives from all the others: {}",
                         regions.join(", "),
-                        needs(
-                            MissingCapability::ResourceGenerations,
-                            "connecting regions in a new way"
-                        )
+                        asked_by(node).needs("connecting regions in a new way")
                     ),
                 ));
                 unplaced[node] = true;
@@ -679,6 +761,12 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
             continue;
         };
         let describe_edge = || format!("the edge from `{}` to `{}`", edge.from, edge.to);
+        // An edge is an artifact's to ask for when it leaves or enters a node the artifact wrote.
+        let asked = if asked_by(from) == AskedBy::Artifact || asked_by(to) == AskedBy::Artifact {
+            AskedBy::Artifact
+        } else {
+            AskedBy::Native
+        };
         match (roles[from], roles[to]) {
             (Role::Fixed, target_role) => {
                 let Some(point) = route_of(from, from_port) else {
@@ -701,7 +789,7 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
                     Role::Terminal => graph
                         .op(to)
                         .and_then(emit_output)
-                        .map(|output| FrameTarget::Output(output.clone())),
+                        .map(|output| FrameTarget::of_emit(plan, output)),
                 };
                 if point.route != expected {
                     let built = point
@@ -711,16 +799,22 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
                     let wanted = expected
                         .as_ref()
                         .map_or_else(|| "nothing".to_string(), |target| frame.describe_target(target));
-                    problems.push(PlacementProblem::new(
+                    // Only a region writes the lease an encode host reads, so a host cannot feed one directly.
+                    let what = if matches!(expected, Some(FrameTarget::EncodeHost(_))) {
+                        "a region between the host and the encode host, which reads the lease only a region writes,"
+                    } else {
+                        "a new physical edge"
+                    };
+                    problems.push(problem(
                         Some(graph.id(to)),
-                        Some(MissingCapability::ResourceGenerations),
+                        asked,
                         format!(
                             "{} needs `{}` connected to {}, but the topology built at boot connects it to {}: {}",
                             describe_edge(),
                             edge.from,
                             wanted,
                             built,
-                            needs(MissingCapability::ResourceGenerations, "a new physical edge")
+                            asked.needs(what)
                         ),
                     ));
                 }
@@ -731,7 +825,7 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
                     Role::Fixed => FrameTarget::Fixed(graph.id(to).clone()),
                     Role::Synchronous | Role::Isolated => match slot_of[to] {
                         Some(other) if other == slot => match graph.op(to).and_then(emit_output) {
-                            Some(output) => FrameTarget::Output(output.clone()),
+                            Some(output) => FrameTarget::of_emit(plan, output),
                             None => continue,
                         },
                         Some(other) => FrameTarget::Slot(other),
@@ -741,15 +835,23 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
                 };
                 let has_exit = frame.slot(slot).is_some_and(|slot| slot.exit_to(&target).is_some());
                 if !has_exit {
-                    let what = match &target {
-                        FrameTarget::Output(output) if frame.output(output).is_none() => {
-                            needs(MissingCapability::ResourceGenerations, "adding an output")
+                    // A declared output whose encode host or fixed destination the frame lacks is reported with the
+                    // outputs, once.
+                    let reported = match &target {
+                        FrameTarget::Destination(output) => {
+                            plan.output(output).is_some()
+                                && frame.output(output).is_none_or(|boot| boot.binding.is_some())
                         }
-                        _ => needs(MissingCapability::ResourceGenerations, "a new exit from a region"),
+                        FrameTarget::EncodeHost(host) => frame.encode_host(host).is_none(),
+                        FrameTarget::Fixed(_) | FrameTarget::Slot(_) => false,
                     };
-                    problems.push(PlacementProblem::new(
+                    if reported {
+                        continue;
+                    }
+                    let what = asked.needs("a new exit from a region");
+                    problems.push(problem(
                         Some(graph.id(to)),
-                        Some(MissingCapability::ResourceGenerations),
+                        asked,
                         format!(
                             "{} needs region `{}` to send records to {}, which it has no exit to: {}",
                             describe_edge(),
@@ -842,7 +944,7 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
                     _ => graph
                         .op(to)
                         .and_then(emit_output)
-                        .map(|output: &OutputId| FrameTarget::Output(output.clone())),
+                        .map(|output: &OutputId| FrameTarget::of_emit(plan, output)),
                 };
                 let Some(exit_target) = exit_target else { continue };
                 let exit = frame_slot.exit_to(&exit_target).expect("checked above").index;

@@ -92,7 +92,7 @@ impl IncrementalEncoderBuilder for DatadogEventsConfiguration {
 
         // Create our request builder.
         let mut request_builder =
-            RequestBuilder::new(EventsEndpointEncoder::new(), compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
+            RequestBuilder::new(EventsEndpointEncoder::new(), compression_scheme, RB_BUFFER_CHUNK_SIZE)?;
         let (uncompressed_limit, compressed_limit) = clamp_payload_limits(
             self.max_uncompressed_payload_size,
             self.max_payload_size,

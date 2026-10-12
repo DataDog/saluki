@@ -10,6 +10,11 @@
 //! refused: an unsupported content encoding (`415`), a body over [`MAX_BODY_SIZE`] once decompressed (`413`), and a
 //! body that cannot be decompressed or decoded (`400`). Decoding runs on a blocking thread, so a decoder that panics on
 //! a malformed payload is a refused request rather than a dropped connection.
+//!
+//! An intake can be paused ([`IntakeRecorder::set_paused`]): it then answers every request with `503 Service
+//! Unavailable` without reading it, as an intake that is down for a while does, and counts those answers apart from
+//! refusals. ADP's forwarder retries such requests, so a recipient that retires while its intake is paused drains until
+//! its deadline.
 
 use axum::{
     body::Body,
@@ -182,6 +187,21 @@ async fn handle(State(recorder): State<IntakeRecorder>, request: Request, max_bo
     let (parts, body) = request.into_parts();
     let api_key = api_key(&parts.headers, &parts.uri);
     let path = parts.uri.path().to_string();
+
+    if recorder.is_paused() {
+        // The body is read and discarded, so that the connection stays usable and the sender reads the answer rather
+        // than a reset.
+        let _ = Limited::new(body, max_body_size).collect().await;
+        recorder.record_unavailable(RequestRecord {
+            received_ms,
+            path,
+            api_key,
+            status: StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+            series: 0,
+            error: None,
+        });
+        return StatusCode::SERVICE_UNAVAILABLE;
+    }
 
     let outcome = match read_body(&parts.headers, body, max_body_size).await {
         Err(refusal) => Err(refusal),

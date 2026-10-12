@@ -31,14 +31,13 @@ pub(super) use constants::{SERIES_V2_COMPRESSED_SIZE_LIMIT, SERIES_V2_UNCOMPRESS
 /// # Errors
 ///
 /// If the request builder cannot be created, an error is returned.
-pub async fn create_v2_request_builder(
+pub fn create_v2_request_builder(
     endpoint: MetricsEndpoint, endpoint_config: &EndpointConfiguration,
 ) -> Result<RequestBuilder<MetricsEndpointEncoder>, GenericError> {
     let encoder =
         MetricsEndpointEncoder::from_endpoint(endpoint).with_additional_tags(endpoint_config.additional_tags().clone());
 
-    let mut request_builder =
-        RequestBuilder::new(encoder, endpoint_config.compression_scheme(), RB_BUFFER_CHUNK_SIZE).await?;
+    let mut request_builder = RequestBuilder::new(encoder, endpoint_config.compression_scheme(), RB_BUFFER_CHUNK_SIZE)?;
     request_builder.with_max_inputs_per_payload(endpoint_config.max_metrics_per_payload());
     if matches!(endpoint, MetricsEndpoint::SeriesV1 | MetricsEndpoint::SeriesV2) {
         request_builder.with_max_data_points_per_payload(endpoint_config.max_series_points_per_payload());

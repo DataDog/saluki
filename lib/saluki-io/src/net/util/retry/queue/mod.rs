@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, fmt};
 
 use saluki_error::{generic_error, GenericError};
 use serde::{de::DeserializeOwned, Serialize};
@@ -46,8 +46,9 @@ impl Retryable for String {
 /// Result of a push operation.
 ///
 /// As pushing items to `RetryQueue` may result in dropping older items to make room for new ones, this struct tracks
-/// the total number of items dropped, and the number of events represented by those items.
-#[derive(Default)]
+/// the total number of items dropped, and the number of events represented by those items, as well as the number of
+/// items moved from memory to disk.
+#[derive(Debug, Default)]
 #[must_use = "`PushResult` carries information about potentially dropped items/events and should not be ignored"]
 pub struct PushResult {
     /// Total number of items dropped.
@@ -58,6 +59,9 @@ pub struct PushResult {
 
     /// Total number of metric data points represented by the dropped items.
     pub data_points_dropped: u64,
+
+    /// Total number of in-memory items written to disk.
+    pub items_persisted: u64,
 }
 
 impl PushResult {
@@ -71,6 +75,7 @@ impl PushResult {
         self.items_dropped += other.items_dropped;
         self.events_dropped += other.events_dropped;
         self.data_points_dropped += other.data_points_dropped;
+        self.items_persisted += other.items_persisted;
     }
 
     /// Tracks a single dropped item.
@@ -134,6 +139,11 @@ where
     ///
     /// Files are stored in a subdirectory, with the same name as the given queue name, within `args.root_path`.
     ///
+    /// Opening the subdirectory is not read-only, though it reads no file: it creates the subdirectory if it is
+    /// missing, lists the retry files in it as entries by their names and sizes, and removes the files whose names are
+    /// older than the age limit. Files beyond the size limit stay until an entry is next persisted, which removes the
+    /// oldest until the new one fits. Two queues must therefore never be opened on one subdirectory at once.
+    ///
     /// # Errors
     ///
     /// If there is an error initializing the disk persistence layer, an error is returned.
@@ -155,6 +165,59 @@ where
         }
         self.persisted_pending = Some(persisted_pending);
         Ok(self)
+    }
+
+    /// Changes the in-memory bound while the queue is in use.
+    ///
+    /// A smaller bound evicts in-memory entries, oldest first, until the rest fit, as an overflowing push does: to disk
+    /// when disk persistence is enabled, and otherwise dropped, each counted in the returned `PushResult`. A larger
+    /// bound admits more from the next push. Either way, a push of an entry larger than the bound is refused.
+    pub async fn set_max_size_bytes(&mut self, max_in_memory_bytes: u64) -> PushResult {
+        self.max_in_memory_bytes = max_in_memory_bytes;
+        let excess_bytes = self.total_in_memory_bytes.saturating_sub(max_in_memory_bytes);
+        self.evict_oldest(excess_bytes).await
+    }
+
+    /// Changes the ratio of in-memory queue bytes moved to disk when the queue overflows, while the queue is in use.
+    ///
+    /// See [`with_flush_to_disk_mem_ratio`][Self::with_flush_to_disk_mem_ratio].
+    pub fn set_flush_to_disk_mem_ratio(&mut self, flush_to_disk_mem_ratio: f64) {
+        self.flush_to_disk_mem_ratio = flush_to_disk_mem_ratio;
+    }
+
+    /// Changes the disk limits of a queue with disk persistence while it is in use.
+    ///
+    /// A smaller limit removes persisted entries, oldest first, until the rest fit, each counted in the returned
+    /// `PushResult`; a larger one admits more from the next push. Disk persistence itself cannot be turned on or off
+    /// this way, since opening a directory is a step of its own: the queue must be created again.
+    ///
+    /// # Errors
+    ///
+    /// If the queue has no disk persistence, or `max_on_disk_bytes` is zero, an error is returned and nothing changes.
+    /// If the disk's usage cannot be read, or an entry cannot be removed, an error is returned, and the new limits
+    /// apply from the next push.
+    pub async fn set_disk_limits(
+        &mut self, max_on_disk_bytes: u64, storage_max_disk_ratio: f64,
+    ) -> Result<PushResult, GenericError> {
+        if max_on_disk_bytes == 0 {
+            return Err(generic_error!(
+                "A disk limit of zero turns disk persistence off, which needs the retry queue to be created again."
+            ));
+        }
+        let Some(persisted_pending) = self.persisted_pending.as_mut() else {
+            return Err(generic_error!(
+                "The retry queue has no disk persistence to limit. Turning it on needs the queue to be created again."
+            ));
+        };
+
+        persisted_pending
+            .set_limits(max_on_disk_bytes, storage_max_disk_ratio)
+            .await
+    }
+
+    /// Returns `true` if the queue persists entries to disk.
+    pub const fn has_disk_persistence(&self) -> bool {
+        self.persisted_pending.is_some()
     }
 
     /// Returns `true` if the queue is empty.
@@ -217,8 +280,6 @@ where
     ///
     /// If the entry is too large to fit into the queue, an error is returned.
     pub async fn push(&mut self, entry: T) -> Result<PushResult, GenericError> {
-        let mut push_result = PushResult::default();
-
         // Make sure the entry, by itself, isn't too big to ever fit into the queue.
         let current_entry_size = entry.size_bytes();
         if current_entry_size > self.max_in_memory_bytes {
@@ -244,6 +305,32 @@ where
         } else {
             required_bytes
         };
+        let push_result = self.evict_oldest(bytes_to_remove).await;
+
+        self.pending.push_back(entry);
+        self.total_in_memory_bytes += current_entry_size;
+
+        // The eviction above guarantees we stay within the in-memory byte cap. Assert the invariant; numeric form hands
+        // the search the headroom to the cap as a gradient.
+        saluki_antithesis::always_le!(
+            self.total_in_memory_bytes,
+            self.max_in_memory_bytes,
+            "retry queue in-memory bytes within cap",
+            { "bytes": self.total_in_memory_bytes, "cap": self.max_in_memory_bytes }
+        );
+
+        debug!(entry.len = current_entry_size, "Enqueued in-memory entry.");
+
+        Ok(push_result)
+    }
+
+    /// Evicts in-memory entries, oldest first, until at least `bytes_to_remove` bytes are evicted or none is left.
+    ///
+    /// With disk persistence, evicted entries are moved to disk; an entry that cannot be persisted is dropped. Without
+    /// it, they are dropped. The returned `PushResult` counts both.
+    async fn evict_oldest(&mut self, bytes_to_remove: u64) -> PushResult {
+        let mut push_result = PushResult::default();
+        let using_disk = self.persisted_pending.is_some();
         let mut bytes_removed = 0;
 
         while !self.pending.is_empty() && bytes_removed < bytes_to_remove {
@@ -259,6 +346,7 @@ where
                 match persisted_pending.push(oldest_entry).await {
                     Ok(persist_result) => {
                         push_result.merge(persist_result);
+                        push_result.items_persisted += 1;
                         debug!(entry.len = oldest_entry_size, "Moved in-memory entry to disk.");
                     }
                     Err(e) => {
@@ -292,21 +380,7 @@ where
             bytes_removed += oldest_entry_size;
         }
 
-        self.pending.push_back(entry);
-        self.total_in_memory_bytes += current_entry_size;
-
-        // The eviction loop above guarantees we stay within the in-memory byte cap. Assert the invariant; numeric form
-        // hands the search the headroom to the cap as a gradient.
-        saluki_antithesis::always_le!(
-            self.total_in_memory_bytes,
-            self.max_in_memory_bytes,
-            "retry queue in-memory bytes within cap",
-            { "bytes": self.total_in_memory_bytes, "cap": self.max_in_memory_bytes }
-        );
-
-        debug!(entry.len = current_entry_size, "Enqueued in-memory entry.");
-
-        Ok(push_result)
+        push_result
     }
 
     /// Consumes an entry.
@@ -344,20 +418,40 @@ where
     /// the normal limiting behavior in terms of maximum on-disk size. When disk persistence isn't enabled, all
     /// in-memory entries will be dropped.
     ///
+    /// An entry that cannot be persisted is dropped, and the flush goes on with the next one, so that one entry the
+    /// disk refuses does not lose those after it. Every entry is counted in the returned `PushResult`, as persisted or
+    /// as dropped.
+    ///
     /// # Errors
     ///
-    /// If an error occurs while persisting an entry to disk, an error is returned.
-    pub async fn flush(mut self) -> Result<PushResult, GenericError> {
+    /// If an entry cannot be persisted, the first such error is returned, with what the flush did.
+    pub async fn flush(mut self) -> Result<PushResult, FlushError> {
         let mut push_result = PushResult::default();
+        let mut first_error = None;
 
         while let Some(entry) = self.pending.pop_front() {
             let entry_size = entry.size_bytes();
 
             if let Some(persisted_pending) = &mut self.persisted_pending {
-                let persist_result = persisted_pending.push(entry).await?;
-                push_result.merge(persist_result);
+                let mut unpersisted = PushResult::default();
+                unpersisted.track_dropped_item(&entry);
+                match persisted_pending.push(entry).await {
+                    Ok(persist_result) => {
+                        push_result.merge(persist_result);
+                        push_result.items_persisted += 1;
 
-                debug!(entry.len = entry_size, "Flushed in-memory entry to disk.");
+                        debug!(entry.len = entry_size, "Flushed in-memory entry to disk.");
+                    }
+                    Err(e) => {
+                        warn!(
+                            error = %e,
+                            entry.len = entry_size,
+                            "Failed to persist in-memory entry to disk during flush; dropping entry."
+                        );
+                        push_result.merge(unpersisted);
+                        first_error.get_or_insert(e);
+                    }
+                }
             } else {
                 debug!(entry.len = entry_size, "Dropped in-memory entry during flush.");
 
@@ -365,7 +459,55 @@ where
             }
         }
 
-        Ok(push_result)
+        match first_error {
+            None => Ok(push_result),
+            Some(error) => Err(FlushError {
+                error,
+                result: push_result,
+            }),
+        }
+    }
+}
+
+/// The error of a flush that could not keep every entry: the first error, with what the flush did.
+///
+/// The flush went on past each entry it could not keep, dropping it, so `result` counts every entry, as persisted or
+/// as dropped.
+#[derive(Debug)]
+pub struct FlushError {
+    /// The first error the flush met.
+    pub error: GenericError,
+
+    /// What the flush did: the entries it persisted, and those it dropped, the ones it could not keep included.
+    pub result: PushResult,
+}
+
+impl fmt::Display for FlushError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.error)
+    }
+}
+
+impl std::error::Error for FlushError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.error.source()
+    }
+}
+
+impl<T> RetryQueue<T>
+where
+    T: EventContainer,
+{
+    /// Drops every in-memory entry without persisting it, counting each in the returned `PushResult`.
+    ///
+    /// Entries already persisted stay on disk, where the next queue opened on the same directory finds them.
+    pub fn discard(self) -> PushResult {
+        let mut push_result = PushResult::default();
+        for entry in &self.pending {
+            push_result.track_dropped_item(entry);
+        }
+
+        push_result
     }
 }
 
@@ -565,6 +707,7 @@ mod tests {
         let flush_result = retry_queue.flush().await.expect("should not fail to flush");
         assert_eq!(2, flush_result.items_dropped);
         assert_eq!(2, flush_result.events_dropped);
+        assert_eq!(0, flush_result.items_persisted);
     }
 
     #[tokio::test]
@@ -604,6 +747,44 @@ mod tests {
         assert_eq!(0, flush_result.events_dropped);
 
         // We should now have two files on disk after flushing.
+        assert_eq!(2, flush_result.items_persisted);
+        assert_eq!(2, file_count_recursive(&root_path));
+    }
+
+    #[tokio::test]
+    async fn a_flush_persists_the_entries_after_one_it_cannot_persist_and_counts_that_one_as_dropped() {
+        let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
+        let root_path = temp_dir.path().to_path_buf();
+        let mut retry_queue = RetryQueue::<FakeData>::new("test".to_string(), u64::MAX)
+            .with_disk_persistence(PersistedQueueArgs {
+                root_path: root_path.clone(),
+                max_on_disk_bytes: 1024,
+                storage_max_disk_ratio: 1.0,
+                disk_usage_retriever: Arc::new(DiskUsageRetrieverImpl::new(root_path.clone())),
+                max_age_days: 10,
+            })
+            .await
+            .expect("should not fail to create retry queue with disk persistence");
+
+        // The middle entry serializes to more than the disk limit, so it alone cannot be persisted.
+        let too_large = FakeData {
+            name: "x".repeat(2048),
+            value: 0,
+        };
+        for entry in [FakeData::random(), too_large, FakeData::random()] {
+            let push_result = retry_queue.push(entry).await.expect("the in-memory queue has room");
+            assert!(!push_result.had_drops());
+        }
+
+        let FlushError { error, result } = retry_queue
+            .flush()
+            .await
+            .expect_err("the flush reports the entry it could not persist");
+        assert!(error.to_string().contains("Entry is too large to persist"), "{error}");
+        assert_eq!(
+            (result.items_persisted, result.items_dropped, result.events_dropped),
+            (2, 1, 1)
+        );
         assert_eq!(2, file_count_recursive(&root_path));
     }
 
@@ -749,5 +930,296 @@ mod tests {
             .expect("should not fail to pop data")
             .expect("should not be empty");
         assert_eq!(data1, actual);
+    }
+
+    /// Opens a retry queue named `test` under `root_path`, as a forwarder's endpoint loop does.
+    async fn open_disk_queue(
+        root_path: &Path, max_in_memory_bytes: u64, max_on_disk_bytes: u64,
+    ) -> RetryQueue<FakeData> {
+        RetryQueue::<FakeData>::new("test".to_string(), max_in_memory_bytes)
+            .with_disk_persistence(PersistedQueueArgs {
+                root_path: root_path.to_path_buf(),
+                max_on_disk_bytes,
+                storage_max_disk_ratio: 1.0,
+                disk_usage_retriever: Arc::new(DiskUsageRetrieverImpl::new(root_path.to_path_buf())),
+                max_age_days: 10,
+            })
+            .await
+            .expect("should not fail to create retry queue with disk persistence")
+    }
+
+    /// Writes a retry file holding `contents` into `dir`, named as one persisted at `written`, as an earlier run would.
+    fn write_retry_file(
+        dir: &Path, written: chrono::DateTime<chrono::Utc>, nonce: u32, contents: &[u8],
+    ) -> std::path::PathBuf {
+        let path = dir.join(format!("retry-{}-{nonce}.json", written.format("%Y%m%d%H%M%S%f")));
+        std::fs::write(&path, contents).expect("should not fail to write a retry file");
+        path
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn opening_a_persisted_queue_creates_its_directory_for_its_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
+        let _retry_queue = open_disk_queue(temp_dir.path(), 1024, 1024).await;
+
+        let metadata = std::fs::metadata(temp_dir.path().join("test")).expect("opening creates the queue's directory");
+        assert!(metadata.is_dir());
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn opening_a_persisted_queue_removes_outdated_files_and_lists_the_rest_without_reading_or_trimming_them() {
+        // Pins what opening a queue on disk does today (plan 4.7 and 4.9, and its risk 12): it removes the retry files
+        // whose names are older than the age limit, and lists the rest as entries by name and size alone. It reads no
+        // file, so a file it cannot read does not fail it, and it does not trim the directory to its size limit: the
+        // next persisted entry does that.
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
+        let queue_dir = temp_dir.path().join("test");
+        std::fs::create_dir(&queue_dir).expect("should not fail to create the queue's directory");
+        let now = chrono::Utc::now();
+        let serialized = |data: &FakeData| serde_json::to_vec(data).expect("should not fail to serialize");
+        let outdated = write_retry_file(
+            &queue_dir,
+            now - chrono::Duration::days(11),
+            100_000_000,
+            &serialized(&FakeData::random()),
+        );
+        let unreadable = write_retry_file(&queue_dir, now - chrono::Duration::days(1), 100_000_001, b"never read");
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000))
+            .expect("should not fail to make the file unreadable");
+        let newest_data = FakeData::random();
+        let newest = write_retry_file(&queue_dir, now, 100_000_002, &serialized(&newest_data));
+        let unrelated = queue_dir.join("notes.txt");
+        std::fs::write(&unrelated, b"not a retry file").expect("should not fail to write a file");
+
+        // The size limit is smaller than either remaining file.
+        let mut retry_queue = open_disk_queue(temp_dir.path(), 1024, 8).await;
+
+        assert!(!outdated.exists(), "the outdated file is removed by its name");
+        assert!(unreadable.exists() && newest.exists() && unrelated.exists());
+        assert_eq!(
+            2,
+            retry_queue.len(),
+            "both remaining retry files are entries, beyond the size limit"
+        );
+
+        // Popping is what reads a file: the unreadable one is dropped and counted, and the next one is returned.
+        let actual = retry_queue
+            .pop()
+            .await
+            .expect("should not fail to pop data")
+            .expect("should not be empty");
+        assert_eq!(newest_data, actual);
+        assert_eq!(1, retry_queue.take_persisted_entries_dropped());
+    }
+
+    #[tokio::test]
+    async fn a_smaller_in_memory_bound_drops_the_oldest_entries_without_disk_persistence() {
+        let entries = [FakeData::random(), FakeData::random(), FakeData::random()];
+        let mut retry_queue = RetryQueue::<FakeData>::new("test".to_string(), 3 * 36);
+        for entry in &entries {
+            let push_result = retry_queue
+                .push(entry.clone())
+                .await
+                .expect("should not fail to push data");
+            assert!(!push_result.had_drops());
+        }
+
+        let push_result = retry_queue.set_max_size_bytes(40).await;
+        assert_eq!(
+            (2, 2, 0),
+            (
+                push_result.items_dropped,
+                push_result.events_dropped,
+                push_result.items_persisted
+            )
+        );
+        assert_eq!(1, retry_queue.len());
+        assert_eq!(4, retry_queue.available_in_memory_capacity_bytes());
+
+        // The bound holds for later pushes, and a larger one admits more again.
+        let push_result = retry_queue
+            .push(FakeData::random())
+            .await
+            .expect("should not fail to push data");
+        assert_eq!(1, push_result.items_dropped);
+        let push_result = retry_queue.set_max_size_bytes(2 * 36).await;
+        assert!(!push_result.had_drops());
+        let push_result = retry_queue
+            .push(FakeData::random())
+            .await
+            .expect("should not fail to push data");
+        assert!(!push_result.had_drops());
+        assert_eq!(2, retry_queue.len());
+    }
+
+    #[tokio::test]
+    async fn a_smaller_in_memory_bound_moves_the_oldest_entries_to_disk_with_disk_persistence() {
+        let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
+        let entries = [FakeData::random(), FakeData::random(), FakeData::random()];
+        let mut retry_queue = open_disk_queue(temp_dir.path(), 3 * 36, 1024).await;
+        for entry in &entries {
+            let push_result = retry_queue
+                .push(entry.clone())
+                .await
+                .expect("should not fail to push data");
+            assert!(!push_result.had_drops());
+        }
+
+        let push_result = retry_queue.set_max_size_bytes(40).await;
+        assert_eq!((0, 2), (push_result.items_dropped, push_result.items_persisted));
+        assert_eq!(2, file_count_recursive(temp_dir.path()));
+
+        // The newest entry stays in memory and is read first; the persisted ones follow, oldest first.
+        let mut popped = Vec::new();
+        while let Some(entry) = retry_queue.pop().await.expect("should not fail to pop data") {
+            popped.push(entry);
+        }
+        assert_eq!(vec![entries[2].clone(), entries[0].clone(), entries[1].clone()], popped);
+    }
+
+    #[tokio::test]
+    async fn a_smaller_disk_limit_removes_the_oldest_persisted_entries() {
+        let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
+        // One entry fits in memory, so each push moves the one before it to disk.
+        let mut retry_queue = open_disk_queue(temp_dir.path(), 36, 1024).await;
+        let entries = [FakeData::random(), FakeData::random(), FakeData::random()];
+        for entry in &entries {
+            let push_result = retry_queue
+                .push(entry.clone())
+                .await
+                .expect("should not fail to push data");
+            assert!(!push_result.had_drops());
+        }
+        assert_eq!(2, file_count_recursive(temp_dir.path()));
+
+        // A serialized entry is at most 30 bytes, so 40 bytes holds one of the two.
+        let push_result = retry_queue
+            .set_disk_limits(40, 1.0)
+            .await
+            .expect("should not fail to change the disk limits");
+        assert_eq!((1, 1), (push_result.items_dropped, push_result.events_dropped));
+        assert_eq!(1, file_count_recursive(temp_dir.path()));
+
+        let mut popped = Vec::new();
+        while let Some(entry) = retry_queue.pop().await.expect("should not fail to pop data") {
+            popped.push(entry);
+        }
+        assert_eq!(vec![entries[2].clone(), entries[1].clone()], popped);
+    }
+
+    #[tokio::test]
+    async fn disk_persistence_cannot_be_turned_on_or_off_while_a_queue_is_in_use() {
+        let mut in_memory = RetryQueue::<FakeData>::new("test".to_string(), 1024);
+        assert!(!in_memory.has_disk_persistence());
+        assert!(in_memory.set_disk_limits(1024, 1.0).await.is_err());
+        assert!(!in_memory.has_disk_persistence());
+
+        let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
+        let mut on_disk = open_disk_queue(temp_dir.path(), 36, 1024).await;
+        assert!(on_disk.set_disk_limits(0, 1.0).await.is_err());
+        // The refused change left the limit in place: two entries still fit on disk.
+        for _ in 0..3 {
+            let push_result = on_disk
+                .push(FakeData::random())
+                .await
+                .expect("should not fail to push data");
+            assert!(!push_result.had_drops());
+        }
+        assert_eq!(2, file_count_recursive(temp_dir.path()));
+    }
+
+    /// One operation on a retry queue, for the model-based property test.
+    #[derive(Clone, Debug)]
+    enum Operation {
+        /// Pushes an entry of at least this many bytes.
+        Push(usize),
+
+        /// Pops the next entry.
+        Pop,
+
+        /// Changes the in-memory bound.
+        SetMaxSizeBytes(u64),
+    }
+
+    fn operation() -> impl proptest::strategy::Strategy<Value = Operation> {
+        use proptest::prelude::*;
+
+        prop_oneof![
+            4 => (2usize..48).prop_map(Operation::Push),
+            2 => Just(Operation::Pop),
+            1 => (0u64..160).prop_map(Operation::SetMaxSizeBytes),
+        ]
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn property_test_an_in_memory_retry_queue_keeps_its_newest_entries_within_a_bound_changed_live(
+            initial_max in 0u64..160,
+            operations in proptest::collection::vec(operation(), 1..64),
+        ) {
+            use proptest::prelude::*;
+
+            // The model is the queue's rule stated plainly: entries leave oldest first, and the queue holds at most
+            // its current bound, dropping the oldest entries to stay within it.
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("should not fail to build a runtime");
+            runtime.block_on(async {
+                let mut retry_queue = RetryQueue::<String>::new("test".to_string(), initial_max);
+                let mut model = VecDeque::<String>::new();
+                let mut model_max = initial_max;
+                let model_bytes = |model: &VecDeque<String>| model.iter().map(|entry| entry.len() as u64).sum::<u64>();
+
+                for (id, operation) in operations.into_iter().enumerate() {
+                    match operation {
+                        Operation::Push(size) => {
+                            let entry = format!("{id:0>size$}");
+                            let result = retry_queue.push(entry.clone()).await;
+                            if entry.len() as u64 > model_max {
+                                prop_assert!(result.is_err());
+                                continue;
+                            }
+                            let mut dropped = 0;
+                            while model_bytes(&model) + entry.len() as u64 > model_max {
+                                model.pop_front();
+                                dropped += 1;
+                            }
+                            model.push_back(entry);
+                            let push_result = result.expect("an entry within the bound is accepted");
+                            prop_assert_eq!(dropped, push_result.items_dropped);
+                            prop_assert_eq!(dropped, push_result.events_dropped);
+                        }
+                        Operation::Pop => {
+                            let popped = retry_queue.pop().await.expect("an in-memory queue pops without errors");
+                            prop_assert_eq!(model.pop_front(), popped);
+                        }
+                        Operation::SetMaxSizeBytes(max) => {
+                            model_max = max;
+                            let mut dropped = 0;
+                            while model_bytes(&model) > model_max {
+                                model.pop_front();
+                                dropped += 1;
+                            }
+                            let push_result = retry_queue.set_max_size_bytes(max).await;
+                            prop_assert_eq!(dropped, push_result.items_dropped);
+                            prop_assert_eq!(0, push_result.items_persisted);
+                        }
+                    }
+
+                    prop_assert!(model_bytes(&model) <= model_max);
+                    prop_assert_eq!(model.len(), retry_queue.len());
+                    prop_assert_eq!(model_max - model_bytes(&model), retry_queue.available_in_memory_capacity_bytes());
+                }
+
+                Ok(())
+            })?;
+        }
     }
 }

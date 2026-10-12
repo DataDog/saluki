@@ -15,6 +15,8 @@
 //!   snapshots ([`InstallerCore::on_snapshot`]), and it keeps each config's acknowledgment.
 //! - [`correspondence`]: which plan node each artifact node became when it was composed, and the plan diff in the
 //!   artifact's terms.
+//! - [`resources`]: the leases and recipients that the fixed encode and delivery hosts run for live generations, and
+//!   the resource transactions that publish what outlives generations.
 //!
 //! A change whose state owners keep their state (`retain`), or that keeps no state, commits at the next batch boundary
 //! of each segment, with the schedule `Steady`. A **cut installation**, in which a state owner changes its time
@@ -25,7 +27,7 @@ mod core;
 pub use self::core::{
     Action, AfterCancel, ArmCut, Boot, Candidate, CandidateId, CutDeferReason, CutInFlight, CutPhase, CutProgress,
     CutStatus, GenerationRecord, InstallerConfig, InstallerCore, InstallerStatus, Origin, Outcome, PendingReason,
-    Prepare, Rejection, Report, SlotPrepare, StateBinding,
+    Prepare, PrepareOutcome, PrepareSite, Rejection, Report, SlotPrepare, StateBinding,
 };
 
 pub mod correspondence;
@@ -37,11 +39,24 @@ pub use self::diff::{diff, kernel_reuse, state_bindings, CutPlan, PlanDiff, Stat
 pub mod lifecycle;
 pub use self::lifecycle::{GenerationState, InvalidTransition, LifecycleEvent};
 
+pub mod resources;
+pub use self::resources::{
+    Creator, CreditKey, HostPrepare, HostPublish, LeaseKey, LeasePrepare, LeaseRef, LeaseState, NoResourceBounds,
+    RecipientPrepare, RecipientRef, RecipientSlot, RecipientState, RecipientStatus, ResourceBounds, ResourcePlan,
+    ResourceTable, ResourceTransaction, ResourcesEvent, ResourcesRevision, RetirementReport,
+};
+
+#[cfg(any(test, feature = "test-util"))]
+pub mod testing;
+
 #[cfg(test)]
 mod artifact_tests;
 
 #[cfg(test)]
 mod cut_tests;
+
+#[cfg(test)]
+mod resource_tests;
 
 #[cfg(test)]
 mod scope_tests;

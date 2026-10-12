@@ -142,7 +142,8 @@ impl ExportBundle {
     }
 
     /// Returns what the editor shows next to a program: each output with its label, recipients, and the intake it
-    /// most likely reaches, and each configuration binding with its current value.
+    /// most likely reaches, the outputs resources artifacts declare beside the native ones, and each configuration
+    /// binding with its current value.
     pub fn legend(&self, intakes: &[Recipient]) -> Legend {
         let outputs = self
             .output_ids
@@ -156,6 +157,8 @@ impl ExportBundle {
                 Some(LegendOutput {
                     id: id.clone(),
                     label,
+                    declared: output_id.is_declared(),
+                    fingerprint: declared.fingerprint.to_string(),
                     recipients,
                     intake,
                 })
@@ -195,6 +198,12 @@ pub struct LegendOutput {
 
     /// The output's display label, if the export gives one.
     pub label: Option<String>,
+
+    /// Whether a resources artifact declares the output (`resources_<name>`), rather than ADP's configuration.
+    pub declared: bool,
+
+    /// The output's fingerprint, which an artifact that emits to it records in its base.
+    pub fingerprint: String,
 
     /// The output's physical recipients.
     pub recipients: Vec<String>,
@@ -404,6 +413,38 @@ pub(crate) mod tests {
         assert_eq!(
             super::intake_of(Some("Somewhere"), &["x/y".to_string()], &intakes),
             None
+        );
+    }
+
+    #[test]
+    fn the_legend_lists_declared_outputs_beside_native_ones_with_the_intake_they_reach() {
+        let mut bundle = serde_json::from_str::<Value>(DEMO_EXPORT).unwrap();
+        bundle["catalog"]["outputs"]["resources_team_d"] = serde_json::json!({
+            "accepts": {"kinds": "all", "timestamps": "mixed"},
+            "fingerprint": "sha256:361f843bc9a6b25663cc6da865dd3af0daf04bb8890e3717ae98d7d30bb1c838",
+            "recipients": ["dd_out/declared/team_d/http://127.0.0.1:17105"]
+        });
+        bundle["labels"]["resources_team_d"] = "Team D".into();
+        let export = ExportBundle::from_value(bundle).unwrap();
+        let legend = export.legend(&crate::settings::DemoPorts::default().recipients());
+        let outputs = legend
+            .outputs
+            .iter()
+            .map(|output| (output.id.as_str(), output.declared, output.intake))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            outputs,
+            [
+                ("dd_metrics_encode", false, Some("primary")),
+                ("metrics_routing_encode_0", false, Some("team-b")),
+                ("metrics_routing_encode_1", false, Some("team-c")),
+                ("mrf_metrics_encode", false, Some("mrf")),
+                ("resources_team_d", true, Some("team-d")),
+            ]
+        );
+        assert_eq!(
+            legend.outputs[4].fingerprint,
+            "sha256:361f843bc9a6b25663cc6da865dd3af0daf04bb8890e3717ae98d7d30bb1c838"
         );
     }
 

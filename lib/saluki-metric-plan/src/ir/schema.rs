@@ -17,6 +17,17 @@ pub fn policy_artifact_schema() -> RootSchema {
         .into_root_schema_for::<PolicyArtifact>()
 }
 
+/// Returns the JSON Schema of a [`ResourcesArtifact`][crate::resources::ResourcesArtifact], the document of the
+/// `resources` product.
+///
+/// The schema checks the document's shape; [`resources::validate`][crate::resources::validate] checks the rest, such
+/// as endpoints, credential namespaces, limits, and the hosts the catalog declares.
+pub fn resources_artifact_schema() -> RootSchema {
+    SchemaSettings::draft07()
+        .into_generator()
+        .into_root_schema_for::<crate::resources::ResourcesArtifact>()
+}
+
 /// Returns the JSON Schema of a [`Predicate`].
 ///
 /// Predicates appear in plans as operator parameters, which the plan schema leaves open, because each operator's
@@ -42,6 +53,7 @@ mod tests {
             ("plan.schema.json", plan_schema()),
             ("policy-artifact.schema.json", policy_artifact_schema()),
             ("predicate.schema.json", predicate_schema()),
+            ("resources-artifact.schema.json", resources_artifact_schema()),
         ];
 
         for (file, schema) in schemas {

@@ -8,10 +8,11 @@ use snafu::{ResultExt as _, Snafu};
 use super::{
     document::parse_document,
     id::{
-        ArtifactNodeId, ArtifactPortRef, ExitName, InputName, NativeComponentId, NodeId, OperatorName, OutputId,
-        PortRef, RecipientId, ScopeName,
+        ArtifactNodeId, ArtifactPortRef, ExitName, HostId, InputName, NativeComponentId, NodeId, OperatorName,
+        OutputId, PortRef, RecipientId, ScopeName,
     },
     params::Params,
+    resources::{OutputBinding, Resources},
     version::{migrate, BlobTable, EdgeFromExit, Invalid, IrError, Parse, ResolvedInArtifact, Unhashable},
 };
 use crate::{
@@ -61,6 +62,13 @@ pub struct Plan {
     /// The replaceable regions of the plan, by name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub scopes: Scopes,
+
+    /// The resources the plan's outputs deliver through: each delivery host's settings, and every recipient.
+    ///
+    /// Resources are plan parameters, so a change of any of them is a new plan, with a new hash. Only the host's own
+    /// lowering declares them: an artifact cannot.
+    #[serde(default, skip_serializing_if = "Resources::is_empty")]
+    pub resources: Resources,
 }
 
 impl Plan {
@@ -113,6 +121,40 @@ impl Plan {
     /// Returns the output with the given identifier, if there is one.
     pub fn output(&self, id: &OutputId) -> Option<&OutputDecl> {
         self.outputs.iter().find(|output| &output.id == id)
+    }
+
+    /// Returns the digest of the binding of the output `output`, or `None` if the plan does not declare it: what keys
+    /// the output's encoder stream (a lease), so that two plans with one digest for an output share its stream.
+    ///
+    /// The digest covers the output's declaration without its binding's provenance, and the delivery host and protocol
+    /// of each recipient the output names, as the plan's [resources](Plan::resources) declare them:
+    ///
+    /// - provenance says who declared the output, not how it is encoded or where it delivers, so a resources revision
+    ///   whose content is unchanged rebinds nothing;
+    /// - a recipient's protocol decides which of the binding's protocol variants the stream resolves the recipient for,
+    ///   so a recipient whose protocol changes rebinds every output naming it, even when the output's declaration is
+    ///   unchanged;
+    /// - a recipient's other settings, such as its delivery policy, change how it sends, never which payloads reach it,
+    ///   so they rebind nothing.
+    ///
+    /// The digest is that of the canonical form; a binding without one (an encoder parameter holding an integer beyond
+    /// ±(2^53 - 1)) is digested in its serialized form instead, which is deterministic too.
+    pub fn binding_digest(&self, output: &OutputId) -> Option<PlanHash> {
+        let identity = self.output(output)?.binding_identity(&self.resources);
+        let digest = PlanHash::of_serializable(&identity)
+            .unwrap_or_else(|_| PlanHash::of_bytes(serde_json::to_string(&identity).unwrap_or_default().as_bytes()));
+        Some(digest)
+    }
+
+    /// Returns `true` if both this plan and `other` declare the output `output` and bind it alike, so that they share
+    /// its encoder stream: what [`binding_digest`](Self::binding_digest) covers is equal in both.
+    pub fn binds_alike(&self, other: &Plan, output: &OutputId) -> bool {
+        match (self.output(output), other.output(output)) {
+            (Some(this), Some(that)) => {
+                this.binding_identity(&self.resources) == that.binding_identity(&other.resources)
+            }
+            _ => false,
+        }
     }
 }
 
@@ -209,21 +251,65 @@ pub struct OutputDecl {
     /// The type of the records the output accepts.
     pub accepts: PortType,
 
-    /// A digest of the output's resolved binding: its encoder, recipient set, and forwarder.
+    /// A digest of what the output's declaration says it delivers to.
     ///
     /// An artifact records the fingerprint of every output it was written against, so that it is never silently
-    /// applied to an output whose binding has changed.
+    /// applied to an output that now delivers elsewhere. A bound output's fingerprint is version 2
+    /// ([`resources::fingerprint`][crate::resources::fingerprint]): its delivery host, what it accepts, and its
+    /// [selector](super::Selector), so that recipients added or removed under a role change nothing.
     pub fingerprint: PlanHash,
 
-    /// The physical recipients the output delivers to. Outputs that share a recipient feed the same delivery queue.
+    /// The physical recipients the output delivers to, sorted and without repeats. Outputs that share a recipient
+    /// feed the same delivery queue.
     ///
-    /// An output without recipients, such as an internal tap, delivers to no endpoint.
+    /// An output without recipients, such as an internal tap, delivers to no endpoint. A bound output's recipients are
+    /// those the plan's [resources](Plan::resources) declare on its delivery host.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recipients: Vec<RecipientId>,
 
     /// What the output does when it cannot keep up or when it closes. Defaults to the native policy.
     #[serde(default, skip_serializing_if = "DeliveryPolicy::is_native")]
     pub delivery: DeliveryPolicy,
+
+    /// The output's resolved binding to a delivery host, or `None` for a fixed destination, such as an internal tap,
+    /// which runs in a component of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding: Option<OutputBinding>,
+}
+
+impl OutputDecl {
+    /// Returns what decides whether two plans bind the output alike ([`Plan::binding_digest`]), with `resources` the
+    /// resources of the plan that declares the output.
+    fn binding_identity<'a>(&self, resources: &'a Resources) -> BindingIdentity<'a> {
+        let mut declaration = self.clone();
+        if let Some(binding) = &mut declaration.binding {
+            binding.provenance = super::ResourceProvenance::Native;
+        }
+        let recipients = self
+            .recipients
+            .iter()
+            .map(|id| {
+                resources
+                    .recipient(id)
+                    .map(|recipient| (&recipient.host, &recipient.protocol))
+            })
+            .collect();
+        BindingIdentity {
+            declaration,
+            recipients,
+        }
+    }
+}
+
+/// What decides whether two plans bind an output alike ([`Plan::binding_digest`]).
+#[derive(PartialEq, Serialize)]
+struct BindingIdentity<'a> {
+    /// The output's declaration, without its binding's provenance.
+    declaration: OutputDecl,
+
+    /// The delivery host and protocol of each recipient the output names, in the output's order, or `None` for one the
+    /// plan does not declare.
+    recipients: Vec<Option<(&'a HostId, &'a Params)>>,
 }
 
 /// The replaceable regions of a plan, by name.

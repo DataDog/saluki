@@ -90,7 +90,7 @@ pub struct OriginEnrichmentConfiguration {
     pub origin_detection_client: bool,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "measurement"))]
 impl OriginEnrichmentConfiguration {
     /// Creates a fixture configuration with origin detection disabled, for tests that exercise enrichment behavior
     /// rather than configuration.

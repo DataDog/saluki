@@ -310,6 +310,18 @@ pub struct Experimental {
 pub struct ProgrammableMetrics {
     /// The artifact channel (`experimental.programmable_metrics.artifact_channel.*`).
     pub artifact_channel: ArtifactChannel,
+    /// What resources artifacts may use (`experimental.programmable_metrics.resources.*`).
+    pub resources: ProgrammableMetricsResources,
+}
+
+/// What programmable metrics resources artifacts may use (`experimental.programmable_metrics.resources.*`).
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct ProgrammableMetricsResources {
+    /// The credentials resources artifacts may send with, by name
+    /// (`experimental.programmable_metrics.resources.credentials`): a map from credential name to its value, whose
+    /// environment form is a JSON object. Defaults to absent, which is no credential.
+    pub credentials: Option<HashMap<String, String>>,
 }
 
 /// The programmable metrics artifact channel (`experimental.programmable_metrics.artifact_channel.*`).
@@ -736,6 +748,12 @@ impl SalukiOnly {
         destination.poll_interval = channel
             .poll_interval
             .map_or(DEFAULT_ARTIFACT_CHANNEL_POLL_INTERVAL, |v| v.as_duration());
+        if let Some(credentials) = &self.experimental.programmable_metrics.resources.credentials {
+            config.control.programmable_metrics.resources.credentials = credentials
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect();
+        }
 
         // shared
         config.shared.metrics_level = self
@@ -1235,6 +1253,42 @@ mod tests {
             assert!(
                 serde_json::from_value::<SalukiOnly>(unreadable).is_err(),
                 "{poll_interval}"
+            );
+        }
+    }
+
+    #[test]
+    fn resources_credentials_default_to_none_and_seed_every_entry_by_name() {
+        let saluki_only: SalukiOnly = serde_json::from_value(json!({})).expect("the source deserializes");
+        let mut config = SalukiConfiguration::default();
+        saluki_only.seed(&mut config);
+        assert!(config.control.programmable_metrics.resources.credentials.is_empty());
+
+        // Values are kept as configured: a blank value is configured (a rotation to it keeps the last usable key),
+        // and an unresolved secret handle is the reader's to tell apart.
+        let saluki_only: SalukiOnly = serde_json::from_value(json!({ "experimental": { "programmable_metrics": {
+            "resources": { "credentials": { "team_d": "key-d", "blank": "", "secret": "ENC[team_e]" } }
+        } } }))
+        .expect("the credentials deserialize");
+        let mut config = SalukiConfiguration::default();
+        saluki_only.seed(&mut config);
+        let credentials = &config.control.programmable_metrics.resources.credentials;
+        assert_eq!(
+            credentials
+                .iter()
+                .map(|(name, value)| (name.as_str(), value.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("blank", ""), ("secret", "ENC[team_e]"), ("team_d", "key-d")]
+        );
+
+        // A value that is not a map of strings fails the load.
+        for credentials in [json!(["team_d"]), json!({ "team_d": 7 })] {
+            let unreadable = json!({ "experimental": { "programmable_metrics": { "resources": {
+                "credentials": credentials
+            } } } });
+            assert!(
+                serde_json::from_value::<SalukiOnly>(unreadable).is_err(),
+                "{credentials}"
             );
         }
     }

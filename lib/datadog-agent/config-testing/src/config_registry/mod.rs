@@ -66,6 +66,8 @@ pub enum ValueType {
     StringList,
     /// A map from strings to lists of strings.
     StringMapList,
+    /// A map from strings to strings (a YAML mapping, or a JSON object in an environment variable).
+    StringMap,
     /// A duration, expressed as a Go duration string (for example, `10s`) or integer nanoseconds.
     Duration,
 }

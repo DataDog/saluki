@@ -82,11 +82,30 @@
 //! ([`InstallerCore::apply_states`]), with the base program hash of the default program's export and whether ADP is
 //! degraded.
 //!
+//! # Resources
+//!
+//! The outputs, recipients, and host settings the default program delivers through follow the current configuration
+//! and the accepted resources artifact (see [`resources`](super::resources)), and run in the fixed encode and delivery
+//! hosts (see the `hosts` module). The worker performs the core's resource actions in those hosts: each generation's
+//! and each resource transaction's part for a host, publications, aborts, and the two-phase release of leases, then
+//! recipients, whose exits the hosts report on event channels the installer keeps outside the worker.
+//!
+//! A snapshot of the `resources` product is read here, not in the core: its shape, transport hash, envelope, artifact
+//! hash, and document (the `product` module). Before every lowering, the worker tells the core which declared
+//! credentials the documents it holds ([`InstallerCore::held_resources`]) reference that are not configured
+//! ([`InstallerCore::credentials_changed`]), and lowers with the resources artifact the core accepted
+//! ([`InstallerCore::accepted_resources`]), whose revision and hash the resources it declares record
+//! ([`InstallerCore::accepted_revision`]).
+//!
+//! Everything a preparation adds after boot is admitted against the memory limit's headroom: the worker acquires each
+//! credit the core lists before it sends anything, and releases it when the core says its creation ended (the `budget`
+//! module).
+//!
 //! # Telemetry and status
 //!
 //! The worker publishes `plan_active_generation`, `plan_active_revision`, `plan_live_generations`, and
 //! `plan_installs_total{outcome}`, and the native metrics that telemetry profiles say the installer records from
-//! bindings (see [`InstallerTelemetry`](super::telemetry::InstallerTelemetry)). It keeps a [`PlanStatus`] current in an
+//! bindings (see [`InstallerTelemetry`]). It keeps a [`PlanStatus`] current in an
 //! [`ArcSwap`], with everything the [control surface](super::api) serves: the acknowledgments and status summary, the
 //! export of every scope of the default program, and the active plan with its explain document.
 
@@ -104,7 +123,9 @@ use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use datadog_agent_commons::ipc::config::RemoteAgentClientConfiguration;
 use futures::{future::BoxFuture, stream::FuturesUnordered, StreamExt as _};
+use saluki_app::accounting::VerifiedMemory;
 use saluki_common::sync::shutdown::ShutdownHandle;
+use saluki_components::forwarders::delivery::{DeliveryEvent, DeliveryHostStatus};
 #[cfg(test)]
 use saluki_core::execution::ManualWallClock;
 use saluki_core::{
@@ -120,18 +141,23 @@ use saluki_core::{
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_metric_plan::{
     canonical::PlanHash,
-    channel::{artifact_channel, ApplyStates, ArtifactSnapshot, InstallerEnd, TransportEnd},
-    compile::{compile, compile_unvalidated, place_unvalidated, Frame, RegionProgram, SlotId},
+    channel::{artifact_channel, ApplyStates, ArtifactProduct, ArtifactSnapshot, InstallerEnd, TransportEnd},
+    compile::{compile, compile_unvalidated, place_unvalidated, Frame, LeaseTable, RegionProgram, SlotId},
     compose::{compose_all, Approval, ComposeError, Composed, Composer},
     explain::Explain,
     export::{base, export, ExportBundle},
     install::{
-        Action, ArmCut, Candidate, CandidateId, CutDeferReason, CutPhase, GenerationState, InstallerConfig,
-        InstallerCore, InstallerStatus, Origin, Outcome, PendingReason, Prepare, Report, SlotPrepare,
+        Action, ArmCut, Candidate, CandidateId, CreditKey, CutDeferReason, CutPhase, GenerationState, InstallerConfig,
+        InstallerCore, InstallerStatus, LeaseRef, Origin, Outcome, PendingReason, Prepare, PrepareOutcome, PrepareSite,
+        RecipientRef, Report, ResourcesEvent, ResourcesRevision, RetirementReport, SlotPrepare,
     },
-    ir::{NodeId, OutputId, Plan, Provenance, ReceivedArtifact, ScopeName},
+    ir::{
+        ArtifactRevision, CredentialRef, HostId, NodeId, OutputId, Plan, Provenance, ReceivedArtifact,
+        ResourceProvenance, ScopeName,
+    },
     limits,
     operators::OperatorRegistry,
+    resources::ResourcesArtifact,
     runtime::{
         build_kernels, GenerationFailureReporter, PanicBudget, PrepareRegion, RegionControl, RegionError, StateBudgets,
     },
@@ -144,12 +170,20 @@ use tokio::{
 };
 use tracing::{debug, error, info, warn};
 
-use self::cut::{ArmOutcome, CancelOutcome, Polled};
+pub use self::hosts::HostWiring;
+use self::{
+    budget::{AdpResourceBounds, ResourceBudget},
+    cut::{ArmOutcome, CancelOutcome, Polled},
+    hosts::{next_host_event, wire_hosts, BootHosts, HostLink},
+    product::HeldResources,
+    status::{RecipientEntry, ResourcesView, RetiredRecipients},
+};
 use super::{
     catalog::AdpCatalog,
+    credentials::{missing_credentials, AdpCredentialSource},
     host_facts::HostFacts,
     lowering::Lowering,
-    outputs::{NativeOutputs, OutputKind},
+    resources::{Declared, FixedHosts, NativeOutputs, NativeResources, OutputKind},
     snapshot_bridge::{SnapshotBridge, SnapshotBridgeState},
     telemetry::{CutOutcome, InstallOutcome, InstallerTelemetry, RegionTelemetry},
     topology::{aggregation_slot, slot_name},
@@ -179,11 +213,21 @@ pub struct BootTopology {
     /// The boot generation's program of every slot, in slot order.
     pub programs: Vec<Arc<RegionProgram>>,
 
+    /// The boot generation's lease table: the lease of every output, which each region's exits to outputs write into
+    /// the header of every buffer they send.
+    pub leases: Arc<LeaseTable>,
+
     /// The admission schedule, `Steady(G0)` at boot, which every admission point reads.
     pub schedule: ScheduleHandle,
 
     /// The receiving side of every region's control mailbox, in slot order, taken when the region host is created.
     pub mailboxes: Vec<Option<ControlMailbox<RegionControl>>>,
+
+    /// The wiring of every fixed delivery host and its encode host, taken by whatever builds each host.
+    pub hosts: BootHosts,
+
+    /// The fixed delivery hosts of the process, each with its encode host.
+    pub hosts_at_boot: FixedHosts,
 
     /// What regions publish to, the identities their kernels report as, and where their kernels are accounted.
     pub telemetry: RegionTelemetry,
@@ -211,6 +255,10 @@ pub struct BootTopology {
     /// that clock aggregation.
     #[cfg(test)]
     pub state_admission_clock: Option<ManualWallClock>,
+
+    /// What stands in for the edges of the encode and delivery hosts, for tests.
+    #[cfg(test)]
+    pub host_doubles: Option<super::topology::HostDoubles>,
 }
 
 /// The programmable metrics path of one process: what the metrics path of the topology is built from, and the
@@ -276,13 +324,14 @@ impl ProgrammableMetrics {
             );
         }
 
-        let frame = Frame::compute(&lowered.plan, &registry, &slot_name).map_err(|error| {
-            generic_error!(
+        let frame = Frame::compute_with_hosts(&lowered.plan, &registry, &slot_name, &lowering.hosts().frame_hosts())
+            .map_err(|error| {
+                generic_error!(
                 "The metrics path cannot be laid out from the default program lowered from the configuration: {} If \
                  a node's parameter is out of range, change the configuration setting it is bound to.",
                 error
             )
-        })?;
+            })?;
         let frame = Arc::new(frame);
         let plan = Arc::new(lowered.plan);
 
@@ -299,10 +348,11 @@ impl ProgrammableMetrics {
             report,
             origin: Origin::DefaultProgram { config_change: 0 },
         };
-        let (core, boot) = InstallerCore::new(
+        let (core, boot) = InstallerCore::with_resource_bounds(
             Arc::clone(&frame),
             registry,
             InstallerConfig::default(),
+            Arc::new(AdpResourceBounds),
             notifier,
             boot_candidate,
         )
@@ -350,13 +400,17 @@ impl ProgrammableMetrics {
             let _ = failures_tx.send((generation, reason.to_string()));
         });
         let mut telemetry = InstallerTelemetry::new(topology_root);
+        telemetry.register_hosts(lowering.hosts().iter().map(|host| host.delivery));
         telemetry.set_binding_gauges(&plan);
         telemetry.register_change_counters(&plan);
         telemetry.rewrites(core.active_rewrites());
 
-        let labels = output_labels(lowering.outputs());
+        let labels = output_labels(&lowered.resources.outputs);
         let default_program = DefaultProgramView::of(&plan, lowered.catalog, &labels);
         let outputs = lowering.outputs().clone();
+        let credentials = Arc::new(AdpCredentialSource::new(config.clone()));
+        let hosts_at_boot = *lowering.hosts();
+        let (hosts, boot_hosts) = wire_hosts(&hosts_at_boot, &boot, credentials);
         let admission = AdmissionRegistry::new();
         let cut_points = CutPoints::of(&frame);
         let mut installer = Installer {
@@ -392,6 +446,15 @@ impl ProgrammableMetrics {
             channel: None,
             artifact_paths: Box::new(CoreArtifactPaths),
             active_plan: None,
+            hosts,
+            resource_paths: Box::new(CoreResourcePaths),
+            resources_deadline: None,
+            budget: ResourceBudget::uncounted(),
+            boot_credits: boot.admitted.clone(),
+            validate_resources: saluki_metric_plan::resources::validate,
+            lowered_resources: lowered.resources,
+            missing_credentials: BTreeSet::new(),
+            retired_recipients: RetiredRecipients::default(),
         };
         let status = Arc::new(ArcSwap::from_pointee(installer.current_status()));
 
@@ -404,8 +467,11 @@ impl ProgrammableMetrics {
                 facts,
                 generation: boot.generation,
                 programs: boot.programs,
+                leases: boot.leases,
                 schedule,
                 mailboxes,
+                hosts: boot_hosts,
+                hosts_at_boot,
                 telemetry: region_telemetry,
                 failures,
                 admission,
@@ -414,6 +480,8 @@ impl ProgrammableMetrics {
                 snapshots: None,
                 #[cfg(test)]
                 state_admission_clock: None,
+                #[cfg(test)]
+                host_doubles: None,
             },
             installer,
             status,
@@ -434,17 +502,34 @@ impl ProgrammableMetrics {
         self.installer.channel = Some(ChannelEnd {
             end,
             open: true,
-            handled: None,
+            handled: Default::default(),
         });
         // The transport sends what the installer reports from its first poll on, before the worker runs.
         self.installer.publish(&self.status);
         transport
     }
 
+    /// Admits everything a preparation adds after boot against what memory bounds verification left of the grant,
+    /// `verified`, in its mode, or counts nothing when verification was skipped.
+    ///
+    /// Call it once the bounds of the topology are verified, before the installer runs. Until then, nothing is counted.
+    pub fn admit_against(&mut self, verified: Option<VerifiedMemory>) {
+        let budget = ResourceBudget::new(verified, &self.installer.boot_credits);
+        let usage = budget.usage();
+        self.installer.telemetry.resource_budget(usage.granted, usage.used);
+        self.installer.budget = budget;
+    }
+
     /// Replaces the core's artifact paths with a test double.
     #[cfg(test)]
     pub(super) fn with_artifact_paths(&mut self, paths: Box<dyn ArtifactPaths>) {
         self.installer.artifact_paths = paths;
+    }
+
+    /// Replaces the core's resource paths with a test double.
+    #[cfg(test)]
+    pub(super) fn with_resource_paths(&mut self, paths: Box<dyn ResourcePaths>) {
+        self.installer.resource_paths = paths;
     }
 
     /// Returns the installer's status, kept current as it changes, for the control surface.
@@ -506,6 +591,14 @@ pub struct PlanStatus {
 
     /// The active generation's plan and explain document.
     pub active: Option<Arc<ActivePlan>>,
+
+    /// What the default program delivers through: the resources product's state, the outputs, the recipients, and
+    /// the resource budget.
+    pub resources: ResourcesView,
+
+    /// The recipient incarnations of the delivery hosts, which the status route lists: those retired lately, with
+    /// what their drains did.
+    pub recipients: Vec<RecipientEntry>,
 }
 
 /// The plan of the active generation, as the control surface serves it.
@@ -634,11 +727,17 @@ impl Supervisable for InstallerWorker {
             installer.resume_cut();
             // A topology builds its region hosts long before it runs them: it waits for its environment to be ready
             // first, which can take a while. A preparation sent before a region reads its mailbox would only time
-            // out, so the installer starts once every region runs, and installs the configuration current then.
+            // out, so the installer starts once every region, encode host, and delivery host runs, and installs the
+            // configuration current then.
+            let hosts = installer
+                .hosts
+                .iter()
+                .map(|(host, link)| (host.clone(), link.senders()))
+                .collect();
             select! {
                 biased;
                 _ = &mut shutdown => return Ok(()),
-                () = wait_for_regions(installer.regions.clone()) => {}
+                () = wait_for_components(installer.regions.clone(), hosts) => {}
             }
             loop {
                 installer.perform_actions().await;
@@ -703,6 +802,131 @@ impl ArtifactPaths for CoreArtifactPaths {
     }
 }
 
+/// The core's resource paths, which the worker hands what the hosts acknowledge and report, and the budget's
+/// refusals.
+///
+/// The worker calls the core's own ([`CoreResourcePaths`]); tests substitute doubles, to observe what the worker hands
+/// the core.
+pub(super) trait ResourcePaths: Send {
+    /// Hands the core a host's acknowledgment of its part of a generation's preparation.
+    fn host_prepared(
+        &mut self, core: &mut InstallerCore, generation: GenerationId, host: HostId, outcome: PrepareOutcome,
+    ) -> Vec<Action>;
+
+    /// Hands the core the budget's refusal of a credit a generation's preparation adds.
+    fn budget_refused(&mut self, core: &mut InstallerCore, generation: GenerationId, credit: CreditKey) -> Vec<Action>;
+
+    /// Hands the core a host's acknowledgment of its part of a resource transaction.
+    fn resources_prepared(
+        &mut self, core: &mut InstallerCore, revision: ResourcesRevision, host: HostId, outcome: PrepareOutcome,
+    ) -> Vec<Action>;
+
+    /// Tells the core a resource transaction's hosts did not all acknowledge in time.
+    fn resources_timed_out(&mut self, core: &mut InstallerCore, revision: ResourcesRevision) -> Vec<Action>;
+
+    /// Tells the core an encode host released a lease: its last payload is in the delivery host's input.
+    fn lease_released(&mut self, core: &mut InstallerCore, host: HostId, lease: LeaseRef) -> Vec<Action>;
+
+    /// Hands the core a recipient's retirement, returning the core's actions and, if the retirement ended an
+    /// incarnation the core was releasing, who declared that incarnation.
+    ///
+    /// A host also reports an exit for each recipient an abort drops, which the core no longer holds: such an exit ends
+    /// nothing, so it is no retirement.
+    fn recipient_retired(
+        &mut self, core: &mut InstallerCore, recipient: RecipientRef, report: RetirementReport,
+    ) -> (Vec<Action>, Option<ResourceProvenance>);
+
+    /// Hands the core a recipient's failure.
+    fn recipient_failed(&mut self, core: &mut InstallerCore, recipient: RecipientRef, reason: &str) -> Vec<Action>;
+
+    /// Hands the core what a snapshot of the resources product says.
+    fn on_resources(&mut self, core: &mut InstallerCore, event: ResourcesEvent) -> Vec<Action>;
+
+    /// Tells the core which declared credentials are not configured.
+    fn credentials_changed(&mut self, core: &mut InstallerCore, missing: BTreeSet<CredentialRef>) -> Vec<Action>;
+
+    /// Returns the resources artifacts the core holds, with the one lowering takes.
+    fn held_resources(&self, core: &InstallerCore) -> HeldResources;
+}
+
+/// The core's own resource paths.
+struct CoreResourcePaths;
+
+impl ResourcePaths for CoreResourcePaths {
+    fn host_prepared(
+        &mut self, core: &mut InstallerCore, generation: GenerationId, host: HostId, outcome: PrepareOutcome,
+    ) -> Vec<Action> {
+        core.prepare_acknowledged(generation, PrepareSite::Host(host), outcome)
+    }
+
+    fn budget_refused(&mut self, core: &mut InstallerCore, generation: GenerationId, credit: CreditKey) -> Vec<Action> {
+        let reason = format!("the memory limit's headroom has no room for {}", credit);
+        core.prepare_acknowledged(
+            generation,
+            PrepareSite::Budget { resource: credit },
+            PrepareOutcome::Failed(reason),
+        )
+    }
+
+    fn resources_prepared(
+        &mut self, core: &mut InstallerCore, revision: ResourcesRevision, host: HostId, outcome: PrepareOutcome,
+    ) -> Vec<Action> {
+        core.resources_prepared(revision, host, outcome)
+    }
+
+    fn resources_timed_out(&mut self, core: &mut InstallerCore, revision: ResourcesRevision) -> Vec<Action> {
+        core.resources_timed_out(revision)
+    }
+
+    fn lease_released(&mut self, core: &mut InstallerCore, host: HostId, lease: LeaseRef) -> Vec<Action> {
+        core.lease_released(host, lease)
+    }
+
+    fn recipient_retired(
+        &mut self, core: &mut InstallerCore, recipient: RecipientRef, report: RetirementReport,
+    ) -> (Vec<Action>, Option<ResourceProvenance>) {
+        // The core holds an incarnation it releases from its release until its exit, which removes it from the
+        // resource table; an exit of one it does not hold (an abort's drop), or of one it keeps (a live or failed
+        // incarnation, which it counts failed), leaves the table as it was. So the exit ended a release exactly when
+        // the table held the incarnation before and does not after: a check of the state alone would miss a released
+        // incarnation a reopen is preparing.
+        let held = |core: &InstallerCore| {
+            core.resource_table()
+                .recipients()
+                .into_iter()
+                .find(|held| held.recipient == recipient)
+                .map(|held| held.provenance)
+        };
+        let before = held(core);
+        let actions = core.recipient_retired(recipient.clone(), report);
+        let ended = before.filter(|_| held(core).is_none());
+        (actions, ended)
+    }
+
+    fn recipient_failed(&mut self, core: &mut InstallerCore, recipient: RecipientRef, reason: &str) -> Vec<Action> {
+        core.recipient_failed(recipient, reason)
+    }
+
+    fn on_resources(&mut self, core: &mut InstallerCore, event: ResourcesEvent) -> Vec<Action> {
+        core.on_resources(event)
+    }
+
+    fn credentials_changed(&mut self, core: &mut InstallerCore, missing: BTreeSet<CredentialRef>) -> Vec<Action> {
+        core.credentials_changed(missing)
+    }
+
+    fn held_resources(&self, core: &InstallerCore) -> HeldResources {
+        HeldResources {
+            held: core
+                .held_resources()
+                .into_iter()
+                .map(|(document, revision)| (document.clone(), revision))
+                .collect(),
+            accepted: core.accepted_resources().cloned().zip(core.accepted_revision()),
+        }
+    }
+}
+
 /// Composes artifacts into the default program ADP last lowered, with the catalog it was lowered with.
 struct DefaultProgramComposer<'a> {
     plan: &'a Plan,
@@ -721,8 +945,9 @@ struct ChannelEnd {
     end: InstallerEnd,
     /// Whether the transport still publishes: once it is gone, the last snapshot stays in effect.
     open: bool,
-    /// The last snapshot the core finished handling, which a restarted worker does not hand it again.
-    handled: Option<Arc<ArtifactSnapshot>>,
+    /// The last snapshot of each product the core finished handling, in product order, which a restarted worker does
+    /// not hand it again.
+    handled: [Option<Arc<ArtifactSnapshot>>; ArtifactProduct::ALL.len()],
 }
 
 impl ChannelEnd {
@@ -733,8 +958,10 @@ impl ChannelEnd {
     /// rolled back, its revision is at the high-water mark, so handling it again would reject it as stale, replacing
     /// its `failed` acknowledgment.
     fn restart(&mut self) {
-        if self.end.feed.latest() != self.handled {
-            self.end.feed.mark_unseen();
+        for product in ArtifactProduct::ALL {
+            if self.end.feed.latest(product) != self.handled[product.index()] {
+                self.end.feed.mark_unseen(product);
+            }
         }
     }
 }
@@ -789,7 +1016,8 @@ impl DefaultProgramView {
 
 /// Returns the display label of every output, by output ID, as exports carry them.
 ///
-/// A label says what its output is, never where it delivers: the catalog's recipients identify that.
+/// A label says what its output is, never where it delivers: the catalog's recipients identify that. A declared output
+/// is labeled as its resources artifact labels it, or by its name.
 fn output_labels(outputs: &NativeOutputs) -> BTreeMap<OutputId, String> {
     outputs
         .iter()
@@ -800,17 +1028,47 @@ fn output_labels(outputs: &NativeOutputs) -> BTreeMap<OutputId, String> {
                 OutputKind::RoutingGroup(group) => format!("Endpoint routing group {}", group.index),
                 OutputKind::MultiRegionFailover => "Multi-region failover".to_string(),
                 OutputKind::AutoscalingFailover => "Autoscaling failover".to_string(),
+                OutputKind::Declared { name, label } => {
+                    label.clone().unwrap_or_else(|| format!("Declared output {}", name))
+                }
             };
             (output.decl.id.clone(), label)
         })
         .collect()
 }
 
-/// One region's acknowledgment of a preparation.
-struct Acknowledgment {
-    generation: GenerationId,
-    slot: SlotId,
-    outcome: Result<(), String>,
+/// An acknowledgment the worker awaits.
+enum Acknowledged {
+    /// A region acknowledged its part of a generation's preparation.
+    Region {
+        generation: GenerationId,
+        slot: SlotId,
+        outcome: Result<(), String>,
+    },
+
+    /// A host acknowledged its part of a generation's preparation.
+    Host {
+        generation: GenerationId,
+        host: HostId,
+        outcome: PrepareOutcome,
+    },
+
+    /// A host acknowledged its part of a resource transaction.
+    Resources {
+        revision: ResourcesRevision,
+        host: HostId,
+        outcome: PrepareOutcome,
+    },
+
+    /// An encode host acknowledged a lease's drain: every payload of the lease is in its delivery host's input.
+    LeaseReleased { host: HostId, lease: LeaseRef },
+
+    /// A host acknowledged a message whose outcome the core does not take: a publication, a release, or an abort.
+    Sent {
+        host: HostId,
+        what: &'static str,
+        outcome: Result<(), String>,
+    },
 }
 
 /// Something the installer reacts to.
@@ -821,11 +1079,17 @@ enum Event {
     /// A region failed a generation, for the reason given.
     Failed(GenerationId, String),
 
-    /// A region acknowledged a preparation.
-    Acknowledged(Acknowledgment),
+    /// A region or a host acknowledged a message.
+    Acknowledged(Acknowledged),
 
     /// A preparation's timeout passed.
     TimedOut(GenerationId),
+
+    /// A resource transaction's timeout passed.
+    ResourcesTimedOut(ResourcesRevision),
+
+    /// A delivery host reported an event.
+    Host(HostId, DeliveryEvent),
 
     /// The delay before trying a failed preparation again passed.
     Retry,
@@ -946,7 +1210,7 @@ struct Installer {
     /// The core's actions not performed yet.
     actions: VecDeque<Action>,
     /// The acknowledgments still awaited.
-    acks: FuturesUnordered<BoxFuture<'static, Acknowledgment>>,
+    acks: FuturesUnordered<BoxFuture<'static, Acknowledged>>,
     prepare_deadline: Option<(GenerationId, Instant)>,
     retry_at: Option<Instant>,
     draining: BTreeMap<GenerationId, Draining>,
@@ -956,10 +1220,32 @@ struct Installer {
     artifact_paths: Box<dyn ArtifactPaths>,
     /// The active generation's plan and explain document, once published.
     active_plan: Option<Arc<ActivePlan>>,
+    /// The links to every fixed delivery host and its encode host, with their event channels.
+    hosts: BTreeMap<HostId, HostLink>,
+    /// The core's resource paths, or a test double.
+    resource_paths: Box<dyn ResourcePaths>,
+    /// The resource transaction whose hosts have not all acknowledged, and when it times out.
+    resources_deadline: Option<(ResourcesRevision, Instant)>,
+    /// The resource budget and the ledger of the credits held.
+    budget: ResourceBudget,
+
+    /// The boot generation's own resource credits, which the budget holds from the start, once memory bounds are
+    /// verified ([`ProgrammableMetrics::admit_against`]).
+    boot_credits: Vec<(CreditKey, u64)>,
+    /// Validates the documents of the resources product, or a test double.
+    validate_resources: product::Validate,
+    /// The outputs, recipients, and host settings of the last lowering.
+    lowered_resources: NativeResources,
+    /// The declared credentials the resources artifacts the core holds reference that the configuration does not
+    /// configure, as the core was last told.
+    missing_credentials: BTreeSet<CredentialRef>,
+    /// The latest recipient incarnations the delivery hosts reported retired, with what their drains did.
+    retired_recipients: RetiredRecipients,
 }
 
-/// Waits until every region host runs and reads its mailbox, or will never run.
-async fn wait_for_regions(regions: Vec<ControlSender<RegionControl>>) {
+/// Waits until every region host and every built encode and delivery host runs and reads its mailbox, or will never
+/// run.
+async fn wait_for_components(regions: Vec<ControlSender<RegionControl>>, hosts: Vec<HostSenders>) {
     for (slot, region) in regions.iter().enumerate() {
         if !region.running().await {
             debug!(
@@ -968,13 +1254,32 @@ async fn wait_for_regions(regions: Vec<ControlSender<RegionControl>>) {
             );
         }
     }
+    for (host, (delivery, encode)) in hosts {
+        if !delivery.running().await || !encode.running().await {
+            debug!(
+                %host,
+                "A delivery host or its encode host of the metrics plan does not run; messages sent to it fail as \
+                 stopped."
+            );
+        }
+    }
 }
+
+/// The senders of a delivery host's mailbox and of its encode host's, by host.
+type HostSenders = (
+    HostId,
+    (
+        ControlSender<saluki_components::forwarders::delivery::DeliveryControl<hosts::Body>>,
+        ControlSender<saluki_components::encoders::encode_host::EncodeControl>,
+    ),
+);
 
 /// Waits for the next snapshot the artifact channel delivers, or never, without a channel or once its transport is
 /// gone. Returns `None` when the transport goes.
 async fn next_snapshot(channel: Option<&mut ChannelEnd>) -> Option<Arc<ArtifactSnapshot>> {
     match channel {
-        Some(channel) if channel.open => channel.end.feed.changed().await,
+        // A snapshot names its product.
+        Some(channel) if channel.open => channel.end.feed.changed().await.map(|(_, snapshot)| snapshot),
         _ => std::future::pending().await,
     }
 }
@@ -996,12 +1301,15 @@ impl Installer {
             .cut
             .as_ref()
             .map(|cut| (cut.generation, cut.next_poll, cut.affected.clone()));
+        let resources_deadline = self.resources_deadline;
         select! {
             biased;
             Some(generation) = self.retired.recv() => Event::Retired(generation),
             Some((generation, reason)) = self.failures.recv() => Event::Failed(generation, reason),
             Some(ack) = self.acks.next(), if !self.acks.is_empty() => Event::Acknowledged(ack),
+            (host, event) = next_host_event(&mut self.hosts) => Event::Host(host, event),
             generation = at(prepare_deadline) => Event::TimedOut(generation),
+            revision = at(resources_deadline) => Event::ResourcesTimedOut(revision),
             () = at(retry_at.map(|at| ((), at))) => Event::Retry,
             generation = at(drain_deadline) => Event::DrainDeadline(generation),
             (generation, polled) = poll_cut(&self.admission, &self.cut_points.every, poll) => {
@@ -1028,11 +1336,16 @@ impl Installer {
                 self.core.retired(generation)
             }
             Event::Failed(generation, reason) => self.core.generation_failed(generation, &reason),
-            Event::Acknowledged(ack) => self.core.prepare_acknowledged(ack.generation, ack.slot, ack.outcome),
+            Event::Acknowledged(ack) => self.acknowledged(ack),
             Event::TimedOut(generation) => {
                 self.prepare_deadline = None;
                 self.core.prepare_timed_out(generation)
             }
+            Event::ResourcesTimedOut(revision) => {
+                self.resources_deadline = None;
+                self.resource_paths.resources_timed_out(&mut self.core, revision)
+            }
+            Event::Host(host, event) => self.host_event(host, event),
             Event::Retry => {
                 self.retry_at = None;
                 self.core.retry()
@@ -1056,16 +1369,22 @@ impl Installer {
                     configs = snapshot.configs.len(),
                     "The artifact channel delivered a snapshot."
                 );
-                let composer = DefaultProgramComposer {
-                    plan: &self.last_lowered,
-                    catalog: &self.default_program.catalog,
-                    registry: &self.registry,
+                let actions = match snapshot.product {
+                    ArtifactProduct::Policy => {
+                        let composer = DefaultProgramComposer {
+                            plan: &self.last_lowered,
+                            catalog: &self.default_program.catalog,
+                            registry: &self.registry,
+                        };
+                        self.artifact_paths.on_snapshot(&mut self.core, &snapshot, &composer)
+                    }
+                    ArtifactProduct::Resources => self.on_resources_snapshot(&snapshot),
                 };
-                let actions = self.artifact_paths.on_snapshot(&mut self.core, &snapshot, &composer);
                 // The actions are queued in the installer's state, so a restarted worker performs them: the snapshot
                 // is handled.
                 if let Some(channel) = &mut self.channel {
-                    channel.handled = Some(snapshot);
+                    let product = snapshot.product.index();
+                    channel.handled[product] = Some(snapshot);
                 }
                 actions
             }
@@ -1084,12 +1403,135 @@ impl Installer {
         self.actions.extend(actions);
     }
 
+    /// Hands an acknowledgment to the core, or logs one the core does not take.
+    fn acknowledged(&mut self, ack: Acknowledged) -> Vec<Action> {
+        match ack {
+            Acknowledged::Region {
+                generation,
+                slot,
+                outcome,
+            } => self.core.prepare_acknowledged(generation, slot, outcome),
+            Acknowledged::Host {
+                generation,
+                host,
+                outcome,
+            } => self
+                .resource_paths
+                .host_prepared(&mut self.core, generation, host, outcome),
+            Acknowledged::Resources {
+                revision,
+                host,
+                outcome,
+            } => self
+                .resource_paths
+                .resources_prepared(&mut self.core, revision, host, outcome),
+            Acknowledged::LeaseReleased { host, lease } => {
+                self.resource_paths.lease_released(&mut self.core, host, lease)
+            }
+            Acknowledged::Sent { host, what, outcome } => {
+                if let Err(error) = outcome {
+                    warn!(%host, error = %error, "A delivery host did not apply a {}.", what);
+                }
+                Vec::new()
+            }
+        }
+    }
+
+    /// Reads a snapshot of the resources product and hands what it says to the core, returning the core's actions.
+    ///
+    /// The core is first told which declared credentials are not configured among those of the documents it holds and
+    /// of those the snapshot delivers, so that it holds a delivered document whose credential is missing pending from
+    /// its delivery; once it took the snapshot, which may let it drop a document, it is told again.
+    fn on_resources_snapshot(&mut self, snapshot: &ArtifactSnapshot) -> Vec<Action> {
+        let events = product::read_snapshot(snapshot, &self.default_program.catalog, self.validate_resources);
+        let mut delivered = Vec::new();
+        for event in &events {
+            match event {
+                ResourcesEvent::Refused { config, reason, .. } => {
+                    warn!(config = %config, reason = %reason, "A resources config was refused.");
+                }
+                ResourcesEvent::Delivered {
+                    config,
+                    revision,
+                    document: Err(reason),
+                    ..
+                } => {
+                    warn!(
+                        config = %config,
+                        revision,
+                        reason = %reason,
+                        "A resources artifact is not valid, and is rejected."
+                    );
+                }
+                ResourcesEvent::Delivered {
+                    document: Ok(document), ..
+                } => delivered.push(document.clone()),
+                ResourcesEvent::Revoked => {}
+            }
+        }
+        let current = SalukiConfiguration::clone(&self.config);
+        let mut actions = self.tell_missing_credentials(&current, &delivered);
+        for event in events {
+            actions.extend(self.resource_paths.on_resources(&mut self.core, event));
+        }
+        actions.extend(self.tell_missing_credentials(&current, &[]));
+        actions
+    }
+
+    /// Tells the core which declared credentials `current` does not configure, among those of the resources artifacts
+    /// it holds and of `delivered`, if that changed since it was last told, returning the core's actions.
+    ///
+    /// The core takes a revision it holds as usable while none of its credentials is among them, so every document it
+    /// holds counts: the revision in use while a newer one is pending, as well as the newer one.
+    fn tell_missing_credentials(
+        &mut self, current: &SalukiConfiguration, delivered: &[ResourcesArtifact],
+    ) -> Vec<Action> {
+        let held = self.resource_paths.held_resources(&self.core);
+        let documents = held.held.iter().map(|(document, _)| document).chain(delivered);
+        let missing = missing_credentials(documents, current);
+        if missing == self.missing_credentials {
+            return Vec::new();
+        }
+        if !missing.is_empty() {
+            let names = missing.iter().map(ToString::to_string).collect::<Vec<_>>();
+            info!(
+                credentials = %names.join(", "),
+                "A resources artifact uses credentials that are not configured under \
+                 `experimental.programmable_metrics.resources.credentials`: it waits until they are."
+            );
+        }
+        self.missing_credentials = missing.clone();
+        self.resource_paths.credentials_changed(&mut self.core, missing)
+    }
+
+    /// Returns the resources the core accepted, as lowering takes them, with the revision and hash they were delivered
+    /// with.
+    fn accepted_resources(&self) -> Option<(ResourcesArtifact, ArtifactRevision)> {
+        self.resource_paths.held_resources(&self.core).accepted
+    }
+
     /// Lowers the configuration into the default program and proposes it, returning the core's actions.
     ///
-    /// While an artifact is in effect, the core composes it again against the new default program, and proposes that
-    /// instead.
+    /// The core is told which declared credentials are missing first, and the program is lowered with the resources
+    /// artifact it then accepts. While an artifact is in effect, the core composes it again against the new default
+    /// program, and proposes that instead.
     fn propose_default_program(&mut self, current: &SalukiConfiguration) -> Vec<Action> {
-        let lowered = match self.lowering.lower(current) {
+        let mut actions = self.tell_missing_credentials(current, &[]);
+        actions.extend(self.propose_lowered(current));
+        actions
+    }
+
+    /// Lowers the configuration, with the accepted resources artifact, into the default program and proposes it,
+    /// returning the core's actions.
+    ///
+    /// The native recipients of the last lowering stay while their endpoints and key positions stay configured,
+    /// whatever their keys now hold: a key is a credential its recipient follows, never a reason to add or remove one.
+    fn propose_lowered(&mut self, current: &SalukiConfiguration) -> Vec<Action> {
+        let accepted = self.accepted_resources();
+        let declared = accepted
+            .as_ref()
+            .map(|(artifact, provenance)| Declared { artifact, provenance });
+        let lowered = match self.lowering.lower_after(current, declared, &self.lowered_resources) {
             Ok(lowered) => lowered,
             Err(error) => {
                 let error = format!("{:#}", error);
@@ -1110,10 +1552,27 @@ impl Installer {
         let report = Validator::new(&self.registry, &lowered.catalog).validate(&lowered.plan);
         let degraded = errors(&report);
         let plan = Arc::new(lowered.plan);
-        if *plan != *self.last_lowered || lowered.catalog != self.default_program.catalog {
+        // Outputs follow the configuration and the resources artifact, and their labels with them.
+        let labels = output_labels(&lowered.resources.outputs);
+        if *plan != *self.last_lowered || lowered.catalog != self.default_program.catalog || labels != self.labels {
+            self.labels = labels;
             self.default_program = DefaultProgramView::of(&plan, lowered.catalog, &self.labels);
         }
         self.last_lowered = Arc::clone(&plan);
+        for (output, was, is) in lowered
+            .resources
+            .outputs
+            .renumbered_routing_groups(&self.lowered_resources.outputs)
+        {
+            info!(
+                output,
+                was,
+                is,
+                "An endpoint routing group was renumbered: its output now carries another group's metrics, and its \
+                 encoder telemetry continues under the same component ID with that group's data."
+            );
+        }
+        self.lowered_resources = lowered.resources;
         let candidate = Candidate {
             plan: Arc::clone(&plan),
             report,
@@ -1148,7 +1607,11 @@ impl Installer {
     async fn perform(&mut self, action: Action) {
         match action {
             Action::Prepare(prepare) => self.prepare(prepare),
-            Action::Abort { generation, slots } => {
+            Action::Abort {
+                generation,
+                slots,
+                hosts,
+            } => {
                 if self
                     .prepare_deadline
                     .is_some_and(|(preparing, _)| preparing == generation)
@@ -1161,6 +1624,7 @@ impl Installer {
                         drop(region.send(RegionControl::Abort { generation }));
                     }
                 }
+                self.abort_hosts(generation, hosts);
             }
             Action::Commit { generation } => {
                 let id = generation.id();
@@ -1182,6 +1646,21 @@ impl Installer {
             Action::WatchCut { generation, at } => self.watch_cut(generation, at),
             Action::CancelCut { generation, old } => self.cancel_cut(generation, old).await,
             Action::FinalizeCut { generation } => self.finalize_cut(generation),
+            Action::PrepareResources {
+                revision,
+                hosts,
+                timeout,
+                admitted,
+            } => self.prepare_resources(revision, hosts, timeout, &admitted),
+            Action::PublishResources { revision, hosts } => self.publish_resources(revision, hosts),
+            Action::ReleaseLeases { host, leases } => self.release_leases(host, leases),
+            Action::ReleaseRecipients { host, recipients } => self.release_recipients(host, recipients),
+            Action::AbortResources { revision, hosts } => self.abort_resources(revision, hosts),
+            Action::ReleaseCredits { credits } => {
+                self.budget.release(&credits);
+                let usage = self.budget.usage();
+                self.telemetry.resource_budget(usage.granted, usage.used);
+            }
         }
     }
 
@@ -1445,10 +1924,21 @@ impl Installer {
         let Prepare {
             generation,
             slots,
+            hosts,
+            admitted,
             timeout,
         } = prepare;
         let id = generation.id();
         self.prepare_deadline = Some((id, Instant::now() + timeout));
+        // The credits the preparation adds, as the core lists them, are acquired before anything is sent: a refusal
+        // fails the preparation at the budget, and no region or host is sent its part.
+        if let Err(refused) = self.budget.acquire(&admitted) {
+            let actions = self.resource_paths.budget_refused(&mut self.core, id, refused);
+            self.actions.extend(actions);
+            return;
+        }
+        let usage = self.budget.usage();
+        self.telemetry.resource_budget(usage.granted, usage.used);
         let (budgets, artifact_nodes) = self.preparing_budgets(id);
 
         for slot in slots {
@@ -1467,7 +1957,7 @@ impl Installer {
                 Ok(message) => {
                     let ack = region.send(RegionControl::Prepare(Box::new(message)));
                     self.acks.push(Box::pin(async move {
-                        Acknowledgment {
+                        Acknowledged::Region {
                             generation: id,
                             slot: slot_id,
                             outcome: ack.await.map_err(|error| error.to_string()),
@@ -1482,6 +1972,7 @@ impl Installer {
                 }
             }
         }
+        self.prepare_hosts(id, hosts);
     }
 
     /// Returns what the region of `slot` prepares for `generation`: the slot's program, the kernels it lacks, built
@@ -1505,6 +1996,7 @@ impl Installer {
             reuse: _,
             build,
             state,
+            leases,
         } = slot;
         // Kernels are built off the data path, each in its own resource group under its region's.
         let kernels = build_kernels(&program, &build, |node| {
@@ -1514,7 +2006,8 @@ impl Installer {
         Ok(
             PrepareRegion::new(generation.clone(), program, kernels, budget, &self.region_telemetry)
                 .with_artifact_nodes(artifact_nodes.iter().cloned())
-                .with_state_bindings(state),
+                .with_state_bindings(state)
+                .with_leases(leases),
         )
     }
 
@@ -1568,6 +2061,25 @@ impl Installer {
                     attempt,
                     "The metrics plan could not be prepared, and is tried again after a delay."
                 );
+                // A configuration change whose preparation keeps failing, such as on a recipient its host cannot
+                // prepare, is not in effect: the status says why until it is.
+                if matches!(origin, Origin::DefaultProgram { .. }) || self.last_config_candidate == Some(candidate) {
+                    let reason = self
+                        .core
+                        .status()
+                        .generations
+                        .into_iter()
+                        .filter(|record| record.candidate == candidate && record.state == GenerationState::Rejected)
+                        .max_by_key(|record| record.id)
+                        .and_then(|record| record.reason);
+                    if let Some(reason) = reason {
+                        self.last_error_is_policy = matches!(origin, Origin::Artifact { .. });
+                        self.last_error = Some(format!(
+                            "its preparation failed, and is tried again (attempt {}): {}",
+                            attempt, reason
+                        ));
+                    }
+                }
             }
             Outcome::Pending(reason) => {
                 debug!(candidate = candidate.get(), %origin, ?reason, "The metrics plan waits to be prepared.");
@@ -1683,6 +2195,14 @@ impl Installer {
         let artifact = current.apply_states.status.active_artifact.as_ref();
         self.telemetry
             .active_revision(artifact.map(|artifact| artifact.revision));
+        for host in &current.resources.hosts {
+            let live = host
+                .leases
+                .iter()
+                .filter(|lease| lease.state == status::LeaseViewState::Live)
+                .count();
+            self.telemetry.live_leases(&host.host, live);
+        }
         if let Some(channel) = &self.channel {
             channel.end.reporter.report(current.apply_states.clone());
         }
@@ -1718,9 +2238,27 @@ impl Installer {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
-        let apply_states =
-            self.artifact_paths
-                .apply_states(&self.core, &self.default_program.bases, self.degraded_reason());
+        let host_status = self
+            .hosts
+            .iter()
+            .filter_map(|(host, link)| Some((host.to_string(), link.status()?)))
+            .collect::<BTreeMap<_, _>>();
+        let apply_states = self.artifact_paths.apply_states(
+            &self.core,
+            &self.default_program.bases,
+            self.degraded_reason(&host_status),
+        );
+        let resources = status::resources_view(status::Parts {
+            hosts: self.lowering.hosts(),
+            table: self.core.resource_table(),
+            host_status: &host_status,
+            lowered: &self.lowered_resources,
+            labels: &self.labels,
+            config_states: &apply_states.config_states,
+            installed_revision: self.accepted_resources().map(|(_, provenance)| provenance.revision),
+            missing_credentials: self.missing_credentials.iter().map(ToString::to_string).collect(),
+            budget: self.budget.usage(),
+        });
         PlanStatus {
             active: self.active_plan(installer.active.as_ref().map(|active| active.id)),
             installer,
@@ -1731,28 +2269,40 @@ impl Installer {
             apply_states,
             exports: self.default_program.exports.clone(),
             default_program: Arc::clone(&self.last_lowered),
+            resources,
+            recipients: status::recipient_entries(self.core.resource_table(), &host_status, &self.retired_recipients),
         }
     }
 
     /// Returns why the installer is degraded, in a few words, for the status summary: the active default program does
-    /// not validate, or the last configuration change was not installed.
+    /// not validate, or the last configuration change was not installed; and each delivery host that could not build
+    /// the client its settings ask for, which sends through the one it had (plan 4.16), from what `hosts` report.
     ///
     /// A change the artifact in effect could not be composed again for is left out: the core adds that reason to the
-    /// summary itself.
-    fn degraded_reason(&self) -> Option<String> {
+    /// summary itself, as it does the recipients a resource transaction could not prepare.
+    fn degraded_reason(&self, hosts: &BTreeMap<String, DeliveryHostStatus>) -> Option<String> {
+        let mut reasons = Vec::new();
         if let Some(first) = self.active_degraded.first() {
-            return Some(match self.active_degraded.len() - 1 {
+            reasons.push(match self.active_degraded.len() - 1 {
                 0 => format!("the active default program does not validate: {}", first),
                 more => format!(
                     "the active default program does not validate: {} (and {} more)",
                     first, more
                 ),
             });
+        } else if let Some(error) = self.last_error.as_ref().filter(|_| !self.last_error_is_policy) {
+            reasons.push(format!("the last configuration change was not installed: {}", error));
         }
-        self.last_error
-            .as_ref()
-            .filter(|_| !self.last_error_is_policy)
-            .map(|error| format!("the last configuration change was not installed: {}", error))
+        for (host, status) in hosts {
+            if let Some(failure) = &status.client_failure {
+                reasons.push(format!(
+                    "delivery host `{}` could not build the HTTP client its settings ask for, and sends through the \
+                     one it had: {}",
+                    host, failure
+                ));
+            }
+        }
+        (!reasons.is_empty()).then(|| reasons.join("; "))
     }
 
     /// Returns the plan and explain document of the active generation, `active`, describing it once per generation.
@@ -1885,7 +2435,11 @@ fn errors(report: &ValidationReport) -> Vec<String> {
     report.errors().map(ToString::to_string).collect()
 }
 
+mod budget;
 mod cut;
+pub mod hosts;
+mod product;
+pub mod status;
 
 #[cfg(test)]
 mod artifact_tests;
@@ -1897,5 +2451,7 @@ mod fault_tests;
 mod lifecycle_tests;
 #[cfg(test)]
 mod live_tests;
+#[cfg(test)]
+mod resource_tests;
 #[cfg(test)]
 mod tests;

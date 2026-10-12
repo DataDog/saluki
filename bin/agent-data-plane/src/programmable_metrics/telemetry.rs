@@ -69,6 +69,14 @@ pub const PLAN_CUTS_TOTAL: &str = "plan_cuts_total";
 /// `plan_cuts_total` counts it as such.
 pub const PLAN_CUT_CANCELLATIONS_REFUSED_TOTAL: &str = "plan_cut_cancellations_refused_total";
 
+/// The name of the gauge of the resource budget, tagged `state`: `granted`, the bytes the memory limit's headroom
+/// grants resources created after boot, and `used`, the bytes their credits hold.
+pub const PLAN_RESOURCE_BUDGET_BYTES: &str = "plan_resource_budget_bytes";
+
+/// The name of the gauge of the leases each encode host runs that generations use, tagged `host` with its delivery
+/// host: draining leases are not counted.
+pub const PLAN_LIVE_LEASES: &str = "plan_live_leases";
+
 /// How a cut installation ended, as `plan_cuts_total` counts it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CutOutcome {
@@ -292,6 +300,9 @@ pub struct InstallerTelemetry {
     rewrites: Vec<(RewriteId, Gauge)>,
     native_gauges: BTreeMap<NativeKey, Gauge>,
     native_counters: BTreeMap<NativeKey, Counter>,
+    budget_granted: Gauge,
+    budget_used: Gauge,
+    live_leases: BTreeMap<String, Gauge>,
 }
 
 impl InstallerTelemetry {
@@ -329,7 +340,34 @@ impl InstallerTelemetry {
             topology,
             native_gauges: BTreeMap::new(),
             native_counters: BTreeMap::new(),
+            budget_granted: builder.register_gauge_with_tags(PLAN_RESOURCE_BUDGET_BYTES, [("state", "granted")]),
+            budget_used: builder.register_gauge_with_tags(PLAN_RESOURCE_BUDGET_BYTES, [("state", "used")]),
+            live_leases: BTreeMap::new(),
         }
+    }
+
+    /// Registers the gauge of live leases of each delivery host's encode host, for the hosts of the process.
+    pub fn register_hosts<'a>(&mut self, hosts: impl IntoIterator<Item = &'a str>) {
+        let builder = MetricsBuilder::default();
+        for host in hosts {
+            self.live_leases.insert(
+                host.to_string(),
+                builder.register_gauge_with_tags(PLAN_LIVE_LEASES, [("host", host.to_string())]),
+            );
+        }
+    }
+
+    /// Sets the gauge of the live leases of the encode host of `host`: the leases generations use.
+    pub fn live_leases(&self, host: &str, leases: usize) {
+        if let Some(gauge) = self.live_leases.get(host) {
+            gauge.set(leases as f64);
+        }
+    }
+
+    /// Sets the resource budget's gauges: its capacity (zero when nothing is counted) and the bytes its credits hold.
+    pub fn resource_budget(&self, granted: Option<u64>, used: u64) {
+        self.budget_granted.set(granted.unwrap_or_default() as f64);
+        self.budget_used.set(used as f64);
     }
 
     /// Counts a candidate's outcome.

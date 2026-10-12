@@ -46,6 +46,14 @@ impl ClusterAgentConfiguration {
         self.endpoint_and_token_with_env(|key| std::env::var(key).ok())
     }
 
+    /// Returns the Cluster Agent HTTPS endpoint that `url`, or else the Kubernetes service environment, resolves to,
+    /// whether or not forwarding is turned on and a token is set.
+    ///
+    /// Returns `None` when no `https` endpoint resolves from either.
+    pub fn endpoint(&self) -> Option<String> {
+        self.resolve_endpoint(|key| std::env::var(key).ok())
+    }
+
     fn endpoint_and_token_with_env<F>(&self, env_lookup: F) -> Option<(String, String)>
     where
         F: Fn(&str) -> Option<String>,
@@ -139,6 +147,25 @@ mod tests {
         };
 
         assert_eq!(config.endpoint_and_token_with_env(env_lookup(&[])), None);
+    }
+
+    #[test]
+    fn the_endpoint_resolves_whether_or_not_forwarding_is_enabled_with_a_token() {
+        let config = ClusterAgentConfiguration {
+            enabled: false,
+            url: Some("cluster-agent.example.com:5005".to_string()),
+            auth_token: None,
+            kubernetes_service_name: String::new(),
+        };
+        assert_eq!(
+            config.endpoint(),
+            Some("https://cluster-agent.example.com:5005".to_string())
+        );
+        let http = ClusterAgentConfiguration {
+            url: Some("http://cluster-agent.example.com".to_string()),
+            ..config
+        };
+        assert_eq!(http.endpoint(), None);
     }
 
     #[test]

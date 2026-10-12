@@ -303,6 +303,15 @@ impl ChildSpecification<WorkerSpec> {
         self
     }
 
+    /// Accounts this worker's process in the resource group `name` instead of its parent's.
+    ///
+    /// See [`ChildBuilder::with_resource_group`][crate::runtime::ChildBuilder::with_resource_group].
+    #[must_use]
+    pub(crate) fn with_resource_group(mut self, name: String) -> Self {
+        self.spec_inner.options.resource_group = Some(name);
+        self
+    }
+
     /// Sets how the termination of this worker affects the [`Scope`][super::Scope] that owns it.
     ///
     /// Only a scope uses this option. A supervisor uses significance instead. See [`Edge`].
@@ -509,10 +518,13 @@ impl SupervisedChild {
     /// as a process name. Rather than refuse to start the child -- which for a dynamically spawned child would mean
     /// silently losing work that the caller was told had been accepted -- the child runs under
     /// [`UNNAMED_CHILD`] instead, and the substitution is logged.
-    pub(super) fn create_process(&self, parent_process: &Process) -> Process {
+    ///
+    /// A worker is accounted in `resource_group` when one is given, and in its parent's resource group otherwise. A
+    /// supervisor always has a resource group of its own, named after it.
+    pub(super) fn create_process(&self, parent_process: &Process, resource_group: Option<&str>) -> Process {
         let name = self.name();
         let process = match self {
-            Self::Worker(_) => Process::worker(name, parent_process),
+            Self::Worker(_) => Process::worker(name, parent_process, resource_group),
             Self::Supervisor(_) => Process::supervisor(name, Some(parent_process)),
         };
 
@@ -525,7 +537,7 @@ impl SupervisedChild {
             );
 
             match self {
-                Self::Worker(_) => Process::worker(UNNAMED_CHILD, parent_process),
+                Self::Worker(_) => Process::worker(UNNAMED_CHILD, parent_process, resource_group),
                 Self::Supervisor(_) => Process::supervisor(UNNAMED_CHILD, Some(parent_process)),
             }
             .expect("placeholder child name is always a valid process name")
@@ -632,6 +644,9 @@ pub(super) struct ChildOptions {
 
     /// A pre-created scope for the child to adopt as its own.
     adopt: Option<Adoption>,
+
+    /// The resource group the child's process is accounted in, if not its parent's.
+    resource_group: Option<String>,
 }
 
 impl ChildOptions {
@@ -645,6 +660,7 @@ impl ChildOptions {
             edge: self.edge,
             forwards_failures: self.forwards_failures,
             adopt: self.adopt,
+            resource_group: self.resource_group,
         }
     }
 }
@@ -659,6 +675,7 @@ impl ChildOptions {
 /// - how the shutdown strategy of the child is decided
 /// - how the termination of the child affects a scope that owns it
 /// - the scope that the child adopts, if there is one
+/// - the resource group the child is accounted in, if it is not its parent's
 #[derive(Clone, Debug)]
 pub(super) struct ChildConfig {
     restart: RestartType,
@@ -668,6 +685,7 @@ pub(super) struct ChildConfig {
     edge: Edge,
     forwards_failures: bool,
     adopt: Option<Adoption>,
+    resource_group: Option<String>,
 }
 
 impl ChildConfig {
@@ -704,6 +722,11 @@ impl ChildConfig {
     /// Returns how the child's shutdown strategy should be determined.
     pub(super) fn shutdown(&self) -> ChildShutdown {
         self.shutdown
+    }
+
+    /// Returns the resource group the child is accounted in, if it is not its parent's.
+    pub(super) fn resource_group(&self) -> Option<&str> {
+        self.resource_group.as_deref()
     }
 }
 
@@ -1536,6 +1559,7 @@ mod tests {
     };
 
     use async_trait::async_trait;
+    use saluki_common::resource_tracking::ResourceGroupRegistry;
     use saluki_common::sync::shutdown::ShutdownCoordinator;
     use saluki_metrics::test::TestRecorder;
     use tokio::{
@@ -4306,6 +4330,53 @@ mod tests {
         let worker = &nested.children[0];
         assert!(worker.resources.is_none(), "a worker owns no resource group");
         assert_eq!(worker.resource_group.as_deref(), nested.process_name.as_deref());
+
+        tx.send(()).unwrap();
+        let _ = join_supervisor(handle).await;
+    }
+
+    #[tokio::test]
+    async fn a_worker_given_a_resource_group_is_accounted_there_instead_of_in_its_supervisors() {
+        let mut sup = Supervisor::new("parent-sup").unwrap();
+        sup.add_worker(MockWorker::long_running("inherits"));
+        sup.add_worker(
+            runtime::supervisable(MockWorker::long_running("own-group"))
+                .with_resource_group("parent_sup.leases.dd_metrics_encode")
+                .build(),
+        );
+
+        let tree = sup.tree_handle();
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+        wait_until("both workers are running", || {
+            tree.snapshot()
+                .root
+                .children
+                .iter()
+                .filter(|child| child.state == NodeState::Running)
+                .count()
+                == 2
+        })
+        .await;
+
+        let snapshot = tree.snapshot();
+        let inherits = find_node(&snapshot.root.children, "inherits");
+        assert_eq!(inherits.resource_group, snapshot.root.process_name);
+        let own = find_node(&snapshot.root.children, "own-group");
+        assert_eq!(
+            own.resource_group.as_deref(),
+            Some("parent_sup.leases.dd_metrics_encode")
+        );
+        assert!(
+            own.resources.is_none(),
+            "a worker reports no figures, even in a group of its own"
+        );
+
+        // The group exists in the registry under the name given, so its usage is reported like any other group's.
+        let mut registered = false;
+        ResourceGroupRegistry::global().visit_resource_groups(|name, _| {
+            registered |= name == "parent_sup.leases.dd_metrics_encode";
+        });
+        assert!(registered);
 
         tx.send(()).unwrap();
         let _ = join_supervisor(handle).await;

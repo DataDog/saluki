@@ -1,0 +1,89 @@
+# The DogStatsD load of a scaling run, from the SMP case `dsd_uds_500mb_3k_contexts_throughput`: lading's DogStatsD
+# payloads over the Unix datagram socket ADP listens on, on the volume the two containers share.
+#
+# `run-curves.sh` renders a copy of this file per run (`render_lading_config`), with the rate, the contexts, and the
+# number of generator entries it is asked for: each entry is a task of its own, so several entries load ADP from
+# several sockets. This file is the reference shape, with two entries and the rate of a saturated run.
+generator:
+  - unix_datagram:
+      seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103,
+        107, 109, 113, 127, 131]
+      path: /var/run/dsd/dsd.sock
+      block_cache_method: Fixed
+      variant:
+        dogstatsd:
+          contexts:
+            inclusive:
+              min: 3000
+              max: 3001
+          name_length:
+            inclusive:
+              min: 1
+              max: 200
+          tag_length:
+            inclusive:
+              min: 3
+              max: 150
+          tags_per_msg:
+            inclusive:
+              min: 2
+              max: 50
+          multivalue_count:
+            inclusive:
+              min: 2
+              max: 32
+          multivalue_pack_probability: 0.08
+          kind_weights:
+            metric: 100
+            event: 0
+            service_check: 0
+          metric_weights:
+            count: 208
+            gauge: 66
+            timer: 0
+            distribution: 72
+            set: 9
+            histogram: 1
+      maximum_prebuild_cache_size_bytes: 500 Mb
+      bytes_per_second: 1 GiB
+  - unix_datagram:
+      seed: [3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107,
+        109, 113, 127, 131, 137]
+      path: /var/run/dsd/dsd.sock
+      block_cache_method: Fixed
+      variant:
+        dogstatsd:
+          contexts:
+            inclusive:
+              min: 3000
+              max: 3001
+          name_length:
+            inclusive:
+              min: 1
+              max: 200
+          tag_length:
+            inclusive:
+              min: 3
+              max: 150
+          tags_per_msg:
+            inclusive:
+              min: 2
+              max: 50
+          multivalue_count:
+            inclusive:
+              min: 2
+              max: 32
+          multivalue_pack_probability: 0.08
+          kind_weights:
+            metric: 100
+            event: 0
+            service_check: 0
+          metric_weights:
+            count: 208
+            gauge: 66
+            timer: 0
+            distribution: 72
+            set: 9
+            histogram: 1
+      maximum_prebuild_cache_size_bytes: 500 Mb
+      bytes_per_second: 1 GiB

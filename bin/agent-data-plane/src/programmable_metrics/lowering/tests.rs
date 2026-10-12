@@ -164,11 +164,95 @@ async fn every_branch_lowers_to_the_designed_default_program() {
     ];
     let mut plan = lowered.plan.clone();
     assert_eq!(plan.outputs.len(), documents.len());
-    for (output, (id, document)) in plan.outputs.iter_mut().zip(documents) {
+    // Those are the version 1 fingerprints, which each native output keeps. Version 2 covers each output's host, the
+    // records it accepts, and its selector: these are the SHA-256 digests, computed with `shasum -a 256`, of
+    // `{"accepts":<port type>,"host":<host>,"selector":<selector>,"v":2}` written out by hand, a routing group's
+    // selector being the digest of its endpoints' list, `["https://c.example.com"]` for group 0 and
+    // `["https://b.example.com"]` for group 1.
+    let version_2 = [
+        ("dsd_client_telemetry", None, None),
+        (
+            "dd_metrics_encode",
+            Some(("dd_out", "{\"role\":\"main\"}")),
+            Some("sha256:35b6c7483c20787a99a97a2a2bb2684fd1a0a8f0315e5bf73fad5b48b74595f7"),
+        ),
+        (
+            "metrics_routing_encode_0",
+            Some((
+                "dd_out",
+                "{\"group\":\"sha256:fbf8ee3836041667cb9294b1d226175bd8fbf49a589514f41fabf40c501c8dc4\"}",
+            )),
+            Some("sha256:914e2f654ed5262a00deb572e4d6a3c55dd839aba517ec611e36da9a7bf8040e"),
+        ),
+        (
+            "metrics_routing_encode_1",
+            Some((
+                "dd_out",
+                "{\"group\":\"sha256:3b8a3a482e967bb066247cb6430361f515ec75eba2358c9784162d522269176f\"}",
+            )),
+            Some("sha256:028290e3cf2fd20a20ec863a26125dbf65a9c24946ff3b3a079a0b9eae182e2a"),
+        ),
+        (
+            "mrf_metrics_encode",
+            Some(("mrf_dd_out", "{\"role\":\"multi_region_failover\"}")),
+            Some("sha256:0ff4cb7e0e1316c414965f9ca7858095cb8feff59bd696171455cbe959c77c08"),
+        ),
+        (
+            "af_metrics_encode",
+            Some(("cluster_agent_out", "{\"role\":\"autoscaling_failover\"}")),
+            Some("sha256:608361af9ff1be71390572e16f40425d91adeab874b3f89d17435918832514ff"),
+        ),
+    ];
+    for ((output, (id, document)), (_, bound, fingerprint)) in plan.outputs.iter_mut().zip(documents).zip(version_2) {
         assert_eq!(output.id.as_str(), id);
-        assert_eq!(output.fingerprint, PlanHash::of_value(&document).unwrap(), "{}", id);
+        let native = lowered.resources.outputs.get(id).unwrap();
+        assert_eq!(
+            native.legacy_fingerprint,
+            Some(PlanHash::of_value(&document).unwrap()),
+            "{}",
+            id
+        );
+        match (output.binding.take(), bound, fingerprint) {
+            (Some(binding), Some((host, selector)), Some(fingerprint)) => {
+                assert_eq!(binding.host.as_str(), host, "{}", id);
+                assert_eq!(serde_json::to_string(&binding.selector).unwrap(), selector, "{}", id);
+                assert_eq!(binding.telemetry.as_str(), id);
+                assert_eq!(output.fingerprint.to_string(), fingerprint, "{}", id);
+            }
+            // A fixed destination keeps its fingerprint.
+            (None, None, None) => {
+                assert_eq!(output.fingerprint, PlanHash::of_value(&document).unwrap(), "{}", id);
+            }
+            (binding, ..) => panic!("output `{}` has binding {:?}", id, binding),
+        }
         output.fingerprint = format!("sha256:{}", "0".repeat(64)).parse().unwrap();
     }
+    // The resources the program delivers through: every recipient of every host, and each host's settings.
+    let recipients = plan
+        .resources
+        .recipients
+        .iter()
+        .map(|recipient| recipient.id.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        recipients,
+        [
+            "cluster_agent_out/primary/0/https://cluster-agent.example.com:5005",
+            "dd_out/additional/0/https://b.example.com",
+            "dd_out/additional/0/https://c.example.com",
+            "dd_out/additional/1/https://b.example.com",
+            "dd_out/primary/0/https://primary.example.com",
+            "mrf_dd_out/primary/0/https://mrf.example.com",
+        ]
+    );
+    let hosts = plan
+        .resources
+        .hosts
+        .iter()
+        .map(|host| host.host.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(hosts, ["cluster_agent_out", "dd_out", "mrf_dd_out"]);
+    plan.resources = Default::default();
 
     let expected = Plan::from_json(include_str!("fixtures/every-branch.json")).unwrap();
     let ids = |plan: &Plan| plan.nodes.iter().map(|node| node.id.to_string()).collect::<Vec<_>>();
@@ -229,10 +313,11 @@ async fn no_configuration_of_the_matrix_gives_r3_or_r7_anything_to_rewrite() {
         let lowered = lowered(yaml).await;
         let report = validate(&lowered.plan, &lowered.catalog);
         assert!(report.is_valid(), "{}:\n{}", name, report);
-        let frame = Frame::compute(
+        let frame = Frame::compute_with_hosts(
             &lowered.plan,
             &registry,
             &crate::programmable_metrics::topology::slot_name,
+            &crate::programmable_metrics::test_support::frame_hosts(),
         )
         .unwrap_or_else(|error| panic!("{}: {}", name, error));
         let compiled =
@@ -514,11 +599,13 @@ async fn startup_inputs_do_not_change_a_re_lowered_plan() {
         "dogstatsd_expiry_seconds: 0",
         "histogram_aggregates: [min]",
         "histogram_percentiles: ['0.5']",
-        "experimental: {metrics_endpoint_routing: {metric_prefix_allowlist: {https://c.example.com: [other.]}}}",
-        "multi_region_failover: {enabled: false}",
-        "autoscaling: {failover: {metrics: [other.metric]}}",
         "expected_tags_duration: 1h",
         "data_plane: {checks: {enabled: false}}",
+        // The encoder settings every encoder reads, and turning disk persistence on, apply only at restart.
+        "serializer_compressor_kind: zlib",
+        "serializer_max_payload_size: 1000",
+        "flush_timeout_secs: 7",
+        "forwarder_storage_max_size_in_bytes: 1048576",
     ] {
         let current = layered_configuration(&[EVERY_BRANCH, change]).await;
         assert_ne!(current, startup, "{} changes the configuration", change);
@@ -547,14 +634,62 @@ async fn startup_inputs_do_not_change_a_re_lowered_plan() {
 }
 
 #[tokio::test]
+async fn the_output_branches_follow_the_current_configuration() {
+    let startup = configuration(EVERY_BRANCH).await;
+    let before = lower_with(&startup, &startup);
+    let outputs = |lowered: &Lowered| {
+        lowered
+            .plan
+            .outputs
+            .iter()
+            .map(|output| output.id.to_string())
+            .collect::<Vec<_>>()
+    };
+    // A routing group's lists, the failover branch, and the autoscaling failover metrics are live: each change is a new
+    // plan, and a removed branch takes its output and gateway with it.
+    for (change, expected) in [
+        (
+            "experimental: {metrics_endpoint_routing: {metric_prefix_allowlist: {https://c.example.com: [other.]}}}",
+            outputs(&before),
+        ),
+        (
+            "multi_region_failover: {enabled: false}",
+            vec![
+                "dsd_client_telemetry".to_string(),
+                "dd_metrics_encode".to_string(),
+                "metrics_routing_encode_0".to_string(),
+                "metrics_routing_encode_1".to_string(),
+                "af_metrics_encode".to_string(),
+            ],
+        ),
+        ("autoscaling: {failover: {metrics: [other.metric]}}", outputs(&before)),
+    ] {
+        let current = layered_configuration(&[EVERY_BRANCH, change]).await;
+        let after = lower_with(&startup, &current);
+        assert_ne!(after.plan, before.plan, "{}", change);
+        assert_eq!(outputs(&after), expected, "{}", change);
+    }
+    let current = layered_configuration(&[EVERY_BRANCH, "multi_region_failover: {enabled: false}"]).await;
+    let after = lower_with(&startup, &current);
+    assert!(!after
+        .plan
+        .nodes
+        .iter()
+        .any(|node| node.id.to_string().starts_with("mrf_metrics_gateway")));
+}
+
+#[tokio::test]
 async fn live_bindings_are_only_on_components_that_read_live_views_natively() {
     // The components the legacy metrics path gives live views of the metrics path's configuration, other than the
-    // forwarders.
+    // forwarders, and the gateways of the output branches, which follow the current configuration.
     let live_components = [
         "dsd_prefix_filter",
         "dsd_post_agg_filter",
         "dsd_tag_filterlist",
         "mrf_metrics_gateway",
+        "metrics_routing_filter_0",
+        "metrics_routing_filter_1",
+        "af_metrics_gateway",
     ];
     for (name, yaml) in MATRIX {
         let lowered = lowered(yaml).await;

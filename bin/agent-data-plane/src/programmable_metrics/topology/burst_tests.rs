@@ -7,7 +7,8 @@
 //! aggregation sends a large flush, it reads nothing, and what reaches it backs up to the source. The plan-driven
 //! topology runs several of those transforms in one region, whose input takes what theirs held together (see
 //! `region_input_capacity`), so both topologies take exactly as many batches before backpressure reaches the source,
-//! and deliver every one of them once the stalled component reads.
+//! and deliver every one of them once the stalled component reads; but the outputs of one encode host share its input
+//! (plan 4.6), so a burst that reaches several of them backs up sooner.
 //!
 //! The clock is paused, so a test can wait for a topology to settle: a sleep ends only once every task waits.
 
@@ -58,6 +59,18 @@ struct Burst {
 
     /// How many batches the stretch holds before the feed's component waits, from the native components on it.
     held: usize,
+
+    /// How many of the stalled encode host's outputs each batch reaches on the plan-driven path, where they share the
+    /// host's input of [`STALLED`] buffers (plan 4.6): 1 but for a routing group, whose stream is a lease of
+    /// `dd_metrics_encode` beside the main output's, where natively each had an encoder and an input of its own.
+    shared: usize,
+}
+
+impl Burst {
+    /// Returns how many batches the stretch of the plan-driven topology holds before the feed's component waits.
+    fn plan_held(&self) -> usize {
+        self.held - STALLED + STALLED / self.shared
+    }
 }
 
 /// The bursts: before aggregation, through one region and through a pipeline of three; after aggregation, through
@@ -74,6 +87,7 @@ fn bursts() -> [Burst; 5] {
             stalled: DSD_AGG,
             output: "dd_metrics_encode",
             held: 4 * TRANSFORM + STALLED,
+            shared: 1,
         },
         // The same transforms, which three regions run.
         Burst {
@@ -85,6 +99,7 @@ fn bursts() -> [Burst; 5] {
             stalled: DSD_AGG,
             output: "dd_metrics_encode",
             held: 4 * TRANSFORM + STALLED,
+            shared: 1,
         },
         // The post-aggregation filter and enrichment, then the encoder's input.
         Burst {
@@ -96,8 +111,11 @@ fn bursts() -> [Burst; 5] {
             stalled: "dd_metrics_encode",
             output: "dd_metrics_encode",
             held: 2 * TRANSFORM + STALLED,
+            shared: 1,
         },
-        // The post-aggregation filter, enrichment, and the routing filter, then the encoder's input.
+        // The post-aggregation filter, enrichment, and the routing filter, then the encoder's input. On the plan-driven
+        // path, the routing group's lease and the main output's share `dd_metrics_encode`'s input, which each batch
+        // reaches twice, and the gate of the routing group's output is that encode host's.
         Burst {
             name: "a flush to a routing group",
             config: matrix_entry("one routing group"),
@@ -107,6 +125,7 @@ fn bursts() -> [Burst; 5] {
             stalled: "metrics_routing_encode_0",
             output: "metrics_routing_encode_0",
             held: 3 * TRANSFORM + STALLED,
+            shared: 2,
         },
         // The post-aggregation filter, enrichment, and the failover gateway, then the encoder's input.
         Burst {
@@ -118,6 +137,7 @@ fn bursts() -> [Burst; 5] {
             stalled: "mrf_metrics_encode",
             output: "mrf_metrics_encode",
             held: 3 * TRANSFORM + STALLED,
+            shared: 1,
         },
     ]
 }
@@ -164,7 +184,7 @@ async fn the_plan_driven_topology_takes_as_many_batches_as_the_legacy_one_before
         let (plan, plan_deliveries) = run(&burst, MetricsPath::Plan).await;
         assert_eq!(
             (legacy, plan),
-            (burst.held, burst.held),
+            (burst.held, burst.plan_held()),
             "{}: batches taken (legacy, plan-driven)",
             burst.name
         );

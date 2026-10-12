@@ -218,11 +218,8 @@ impl Metadata {
 /// actually be rehydrated from a single string input (such as `FrozenChunkedBytesBuffer`) and we maintain optimal
 /// memory usage, and performance, regardless of which body type was used to construct `Transaction<B>`.
 #[derive(Clone, Deserialize, Serialize)]
-#[serde(bound = "")]
-pub struct Transaction<B>
-where
-    B: Buf + Clone,
-{
+#[serde(bound(serialize = "B: Buf + Clone", deserialize = ""))]
+pub struct Transaction<B> {
     metadata: Metadata,
 
     #[serde(with = "http_serde_ext::request")]
@@ -286,7 +283,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
+    use std::{collections::VecDeque, sync::Arc};
 
     use bytes::{Buf as _, Bytes};
     use http::Request;
@@ -322,6 +319,30 @@ mod tests {
         let req_body_raw = deserialized.request.body().clone();
         let req_body = VecDeque::from(req_body_raw.chunk().to_vec());
         assert_eq!(req_body, body);
+    }
+
+    #[test]
+    fn a_serialized_transaction_keeps_its_request_headers_and_leaves_out_where_it_was_routed() {
+        // Pins the persisted format (plan F20 and A18): a retry persists with the headers it was sent with, API key
+        // included, while its routing, which belongs to the recipient whose queue holds it, is left out.
+        let mut metadata = Metadata::from_event_and_data_point_count(1, 1);
+        metadata.metrics_endpoint_routing = Some(Arc::new(MetricsEndpointRouting::Only(
+            ["https://intake.example.com".to_string()].into(),
+        )));
+        let request = Request::builder()
+            .uri("http://example.com/api/v2/series")
+            .header("dd-api-key", "key-at-rest")
+            .body(VecDeque::from(b"payload".to_vec()))
+            .unwrap();
+
+        let serialized = serde_json::to_string(&Transaction::from_original(metadata, request)).unwrap();
+        assert!(serialized.contains("dd-api-key"), "{serialized}");
+        assert!(serialized.contains("key-at-rest"), "{serialized}");
+        assert!(!serialized.contains("intake.example.com"), "{serialized}");
+
+        let deserialized: Transaction<VecDeque<u8>> = serde_json::from_str(&serialized).unwrap();
+        assert!(deserialized.metadata.metrics_endpoint_routing.is_none());
+        assert_eq!(deserialized.request.headers()["dd-api-key"], "key-at-rest");
     }
 
     #[test]

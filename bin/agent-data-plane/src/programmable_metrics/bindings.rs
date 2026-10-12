@@ -10,11 +10,13 @@
 //!   `dogstatsd.post_aggregate_filter.values`.
 //! - **Keyed bindings** have one instance per key, such as the lists of each endpoint routing group, keyed by the
 //!   group's fingerprint.
-//! - **Liveness follows native behavior.** `Live` bindings are exactly the inputs a native component reads through a
-//!   live view (`dogstatsd.metric_filter.*`, `dogstatsd.tag_filterlist`, and
-//!   `multi_region_failover.metric_mirroring.*`), and a derived binding is live when one of its inputs is. Every other
-//!   binding is `Startup`: it resolves from the configuration the process started with, so a change to it takes effect
-//!   only at restart, as natively.
+//! - **Liveness follows native behavior, and the structure that follows live configuration.** `Live` bindings are the
+//!   inputs a native component reads through a live view (`dogstatsd.metric_filter.*`, `dogstatsd.tag_filterlist`,
+//!   and `multi_region_failover.metric_mirroring.*`), and the inputs of the output branches, which follow the current
+//!   configuration since outputs became live (`metrics_endpoint_routing.group.*`, `multi_region_failover.enabled`,
+//!   and `autoscaling_failover.metrics`); a derived binding is live when one of its inputs is. Every other binding is
+//!   `Startup`: it resolves from the configuration the process started with, so a change to it takes effect only at
+//!   restart, as natively.
 //! - **Credentials are never bindable.** No binding reads an API key, a token, or a secret.
 //!
 //! Each binding's value is written as the parameter that names it reads it: configuration values are converted into
@@ -36,7 +38,7 @@ use saluki_metric_plan::{
 };
 use serde_json::{json, Value};
 
-use super::outputs::routing_group_key;
+use super::resources::routing_group_key;
 use crate::{
     cli::run::dogstatsd_mapper_configuration,
     components::tag_filterlist::{tag_filter_rules, tag_value_rules},
@@ -79,9 +81,10 @@ pub enum Resolve {
     /// the startup snapshot (the second).
     Derived(fn(&SalukiConfiguration, &SalukiConfiguration) -> Option<Value>),
 
-    /// The value of the instance with the given key is read from the startup snapshot.
+    /// The value of the instance with the given key is read from one configuration snapshot, as for
+    /// [`Value`][Self::Value].
     ///
-    /// Returns `None` if the startup configuration has no instance with that key.
+    /// Returns `None` if the configuration has no instance with that key.
     Keyed(fn(&SalukiConfiguration, &str) -> Option<Value>),
 }
 
@@ -106,7 +109,8 @@ impl BindingKey {
         }
     }
 
-    /// Returns the keys the given startup configuration has instances for, in order.
+    /// Returns the keys the given configuration has instances for, in order: the current configuration's, for a live
+    /// keyed binding.
     ///
     /// Returns no keys if the configuration's endpoint routing policies are invalid, which fails lowering anyway.
     pub fn keys(self, startup: &SalukiConfiguration) -> Vec<String> {
@@ -180,7 +184,7 @@ impl BindingSpec {
         let value = match self.resolve {
             Resolve::Value(read) => read(live)?,
             Resolve::Derived(derive) => derive(live, snapshots.startup)?,
-            Resolve::Keyed(read) => read(snapshots.startup, key)?,
+            Resolve::Keyed(read) => read(live, key)?,
         };
         Some(match ParamValue::decode(&self.ty, &value, self.name) {
             Ok(decoded) => decoded.encode(),
@@ -380,30 +384,31 @@ pub static BINDINGS: &[BindingSpec] = &[
             ))
         }),
     },
-    // Endpoint routing groups: the canonical lists of each group, as the group's filter matches them.
+    // Endpoint routing groups: the canonical lists of each group, as the group's filter matches them. Live, as the
+    // groups are.
     BindingSpec {
         name: "metrics_endpoint_routing.group.{key}.names",
         key: Some(BindingKey::RoutingGroup),
         ty: STRINGS,
-        liveness: Liveness::Startup,
+        liveness: Liveness::Live,
         resolve: Resolve::Keyed(|config, key| routing_group(config, key).map(|group| json!(group.metric_allowlist))),
     },
     BindingSpec {
         name: "metrics_endpoint_routing.group.{key}.prefixes",
         key: Some(BindingKey::RoutingGroup),
         ty: STRINGS,
-        liveness: Liveness::Startup,
+        liveness: Liveness::Live,
         resolve: Resolve::Keyed(|config, key| {
             routing_group(config, key).map(|group| json!(group.metric_prefix_allowlist))
         }),
     },
-    // Multi-region failover: whether it is enabled is read at startup, as the branch exists only if it is; metric
+    // Multi-region failover: whether it is enabled is live, as the branch, which exists only while it is; metric
     // mirroring is live, as natively.
     BindingSpec {
         name: "multi_region_failover.enabled",
         key: None,
         ty: ParamType::Bool,
-        liveness: Liveness::Startup,
+        liveness: Liveness::Live,
         resolve: Resolve::Value(|config| Some(json!(config.domains.multi_region_failover.enabled))),
     },
     BindingSpec {
@@ -420,12 +425,12 @@ pub static BINDINGS: &[BindingSpec] = &[
         liveness: Liveness::Live,
         resolve: Resolve::Value(|config| Some(json!(config.domains.multi_region_failover.metric_mirroring.allowlist))),
     },
-    // Autoscaling failover.
+    // Autoscaling failover: live, as the branch, which exists only while its list is not empty.
     BindingSpec {
         name: "autoscaling_failover.metrics",
         key: None,
         ty: STRINGS,
-        liveness: Liveness::Startup,
+        liveness: Liveness::Live,
         resolve: Resolve::Value(|config| Some(json!(config.shared.autoscaling_failover.metrics))),
     },
 ];

@@ -134,8 +134,17 @@ pub struct IntakeSummary {
     /// The API key ADP is configured to send to this endpoint.
     pub expected_api_key: &'static str,
 
+    /// Whether a resources artifact declares the endpoint, rather than ADP's configuration file.
+    pub declared: bool,
+
+    /// Whether the intake is paused: it answers every request with `503 Service Unavailable`.
+    pub paused: bool,
+
     /// Every request received.
     pub requests_total: u64,
+
+    /// Requests answered with `503 Service Unavailable` while the intake was paused, which are not refusals.
+    pub unavailable: u64,
 
     /// Requests the intake refused: an unsupported encoding, a body too large, or a body that could not be
     /// decompressed or decoded.
@@ -365,7 +374,9 @@ struct IntakeState {
     families: BTreeMap<String, FamilyState>,
     api_keys: BTreeMap<String, u64>,
     other_api_key_requests: u64,
+    paused: bool,
     requests_total: u64,
+    unavailable: u64,
     refused: u64,
     last_refusal: Option<RequestRecord>,
     last_request_ms: Option<u64>,
@@ -423,6 +434,29 @@ impl IntakeRecorder {
     /// Returns the recipient this intake stands in for.
     pub fn recipient(&self) -> &Recipient {
         &self.recipient
+    }
+
+    /// Pauses the intake, so that it answers every request with `503 Service Unavailable`, or resumes it.
+    pub fn set_paused(&self, paused: bool) {
+        self.lock().paused = paused;
+    }
+
+    /// Returns `true` if the intake is paused.
+    pub fn is_paused(&self) -> bool {
+        self.lock().paused
+    }
+
+    /// Records a request a paused intake answered with `503 Service Unavailable` without reading it.
+    pub fn record_unavailable(&self, request: RequestRecord) {
+        let mut state = self.lock();
+        state.requests_total += 1;
+        state.unavailable += 1;
+        state.last_request_ms = Some(state.last_request_ms.unwrap_or(0).max(request.received_ms));
+        state.count_api_key(request.api_key.as_deref());
+        if state.requests.len() == REQUEST_CAPACITY {
+            state.requests.pop_front();
+        }
+        state.requests.push_back(request);
     }
 
     /// Records one request, and the metrics decoded from it.
@@ -485,7 +519,10 @@ impl IntakeRecorder {
             label: self.recipient.label,
             port: self.recipient.port,
             expected_api_key: self.recipient.api_key,
+            declared: self.recipient.declared,
+            paused: state.paused,
             requests_total: state.requests_total,
+            unavailable: state.unavailable,
             refused: state.refused,
             last_refusal: state.last_refusal.clone(),
             last_request_ms: state.last_request_ms,

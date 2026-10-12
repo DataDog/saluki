@@ -12,7 +12,8 @@ pub use self::policy::{NoopRetryPolicy, RollingExponentialBackoffRetryPolicy};
 
 mod queue;
 pub use self::queue::{
-    DiskUsageRetriever, DiskUsageRetrieverImpl, EventContainer, PersistedQueueArgs, PushResult, RetryQueue, Retryable,
+    DiskUsageRetriever, DiskUsageRetrieverImpl, EventContainer, FlushError, PersistedQueueArgs, PushResult, RetryQueue,
+    Retryable,
 };
 
 /// A batteries-included retry policy suitable for HTTP-based clients.

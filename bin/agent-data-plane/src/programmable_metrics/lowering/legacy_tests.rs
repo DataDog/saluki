@@ -62,7 +62,7 @@ use crate::{
     cli::run::create_legacy_topology,
     config::remote_agent_client_configuration,
     programmable_metrics::{
-        outputs::{NativeOutputs, OutputKind},
+        resources::{NativeOutputs, OutputKind},
         test_support::{configuration, configuration_system, environment_provider, facts},
     },
 };

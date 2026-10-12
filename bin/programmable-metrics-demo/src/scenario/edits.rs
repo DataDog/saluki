@@ -13,6 +13,12 @@ pub const MIRRORED_METRIC: &str = "demo.checkout.requests";
 /// The output the undeclared-output guardrail emits to, which ADP does not declare.
 pub const UNDECLARED_OUTPUT: &str = "metrics_routing_encode_99";
 
+/// The node the team D routing scenarios add, which emits the platform family to team D's declared output.
+pub const TEAM_D_ROUTE: &str = "team_d_route";
+
+/// The family the team D routing scenarios route to team D.
+pub const TEAM_D_FAMILY: &str = "demo.platform.queue_depth";
+
 /// The outputs of the default program that feed each intake, from the export's legend.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Outputs {
@@ -148,6 +154,27 @@ pub fn undeclared_output(source: &str, outputs: &Outputs) -> Result<String, Gene
     )
 }
 
+/// S8 and S10: a branch of the policy `tee` that routes the metrics tagged `team:platform` to team D's declared output
+/// as well, `split(tag("team") == "platform") { true -> emit <output>; false -> drop }`, next to the branch that emits
+/// to the primary output, which keeps receiving everything.
+pub fn route_to_team_d(source: &str, outputs: &Outputs, team_d_output: &str) -> Result<String, GenericError> {
+    let branch = format!("\n    -> emit {}\n", outputs.primary);
+    let with_branch = replace_once(
+        source,
+        &branch,
+        &format!("{}    -> {}\n", branch, TEAM_D_ROUTE),
+        &format!("`tee` branch that emits to `{}`", outputs.primary),
+    )?;
+    // The node goes after the scope input's edge, before the `tee` that refers to it.
+    let target = input_target(&with_branch)?.to_string();
+    let edge = format!("\n  input.metrics -> {}\n", target);
+    let node = format!(
+        "\n  node {} = split(tag(\"team\") == \"platform\") {{\n    true  -> emit {}\n    false -> drop\n  }}\n",
+        TEAM_D_ROUTE, team_d_output
+    );
+    Ok(with_branch.replacen(&edge, &format!("{}{}", edge, node), 1))
+}
+
 /// S5, aggregation without parameters: an aggregation in front of the policy that names only its window, while
 /// validation requires every parameter of an aggregation.
 pub fn aggregation_without_parameters(source: &str) -> Result<String, GenericError> {
@@ -229,7 +256,7 @@ mod tests {
     fn each_edit_changes_the_lines_its_scenario_describes() {
         let outputs = outputs();
         type Edit = fn(&str, &Outputs) -> Result<String, GenericError>;
-        let cases: [(&str, Edit, &[&str], &[&str]); 8] = [
+        let cases: [(&str, Edit, &[&str], &[&str]); 9] = [
             (
                 "S1",
                 |source, _| drop_debug(source),
@@ -299,6 +326,17 @@ mod tests {
                     "    -> metrics_policy",
                 ],
                 &["  input.metrics -> metrics_policy"],
+            ),
+            (
+                "S8 route to team D",
+                |source, outputs| route_to_team_d(source, outputs, "resources_team_d"),
+                // Its `false` branch drops, a line the source already has.
+                &[
+                    "  node team_d_route = split(tag(\"team\") == \"platform\") {",
+                    "    true  -> emit resources_team_d",
+                    "    -> team_d_route",
+                ],
+                &[],
             ),
         ];
         for (case, edit, added, removed) in cases {

@@ -45,9 +45,16 @@ fn answer(configs: Vec<Value>) -> Value {
 }
 
 fn snapshot(answer: Value) -> ArtifactSnapshot {
+    snapshot_of(answer, ArtifactProduct::Policy).expect("the answer holds policy")
+}
+
+/// Returns the snapshot of `product` an answer holds, or `None` if its member cannot be read.
+fn snapshot_of(answer: Value, product: ArtifactProduct) -> Option<ArtifactSnapshot> {
     serde_json::from_value::<PollResponse>(answer)
         .expect("the answer is readable")
-        .into_policy_snapshot()
+        .into_snapshots()
+        .into_iter()
+        .find(|snapshot| snapshot.product == product)
 }
 
 /// How the fake stub answers a poll.
@@ -191,6 +198,8 @@ struct RunningWorker {
     installer: InstallerEnd,
     coordinator: Option<saluki_common::sync::shutdown::ShutdownCoordinator>,
     task: JoinHandle<()>,
+    /// The snapshots the feed delivered that a wait for another product's passed over, in order.
+    passed: std::collections::VecDeque<(ArtifactProduct, Arc<ArtifactSnapshot>)>,
 }
 
 impl RunningWorker {
@@ -224,6 +233,7 @@ impl RunningWorker {
             installer,
             coordinator: Some(coordinator),
             task,
+            passed: Default::default(),
         }
     }
 
@@ -231,12 +241,38 @@ impl RunningWorker {
         &mut self.installer.feed
     }
 
-    /// Waits for the next snapshot the worker publishes.
+    /// Waits for the next policy snapshot the worker publishes, skipping resources snapshots.
     async fn next_snapshot(&mut self) -> Arc<ArtifactSnapshot> {
-        tokio::time::timeout(PATIENCE, self.feed().changed())
+        self.next_snapshot_of(ArtifactProduct::Policy).await
+    }
+
+    /// Waits for the next snapshot of `product` the worker publishes.
+    ///
+    /// The snapshots of the other product it passes over, and those the feed holds ready once it returns, are kept for
+    /// later waits, so that the feed holds nothing a test that expects no delivery would see.
+    async fn next_snapshot_of(&mut self, product: ArtifactProduct) -> Arc<ArtifactSnapshot> {
+        let snapshot = match self.passed.iter().position(|(passed, _)| *passed == product) {
+            Some(index) => self.passed.remove(index).map(|(_, snapshot)| snapshot),
+            None => None,
+        };
+        let snapshot = match snapshot {
+            Some(snapshot) => snapshot,
+            None => tokio::time::timeout(PATIENCE, async {
+                loop {
+                    let (published, snapshot) = self.feed().changed().await.expect("the worker runs");
+                    if published == product {
+                        return snapshot;
+                    }
+                    self.passed.push_back((published, snapshot));
+                }
+            })
             .await
-            .expect("the worker publishes a snapshot")
-            .expect("the worker runs")
+            .expect("the worker publishes a snapshot"),
+        };
+        while let Some(Some(ready)) = futures::FutureExt::now_or_never(self.feed().changed()) {
+            self.passed.push_back(ready);
+        }
+        snapshot
     }
 
     /// Stops the worker, and waits until it has stopped.
@@ -345,7 +381,7 @@ fn polls_are_written_as_the_stub_protocol_says() {
         json!({
             "protocol_version": 1,
             "client": {"id": "a1", "version": "1.8.0"},
-            "products": ["policy"],
+            "products": ["policy", "resources"],
             "config_states": [],
             "status": {
                 "default_program_hash": null, "revision_high_water": null, "active_generation": null,
@@ -365,26 +401,45 @@ fn a_process_identity_is_random_and_names_the_version() {
 
 #[test]
 fn answers_are_read_as_complete_policy_snapshots() {
-    let read = snapshot(json!({
+    let answered = json!({
         "protocol_version": 1,
         "products": {
             "policy": [{"id": "demo", "version": 7, "sha256": "00", "payload": "{}", "future": true}],
-            // Another product's entries can have any shape: they are not read.
+            // A resources member that is not a list of configs makes only that product unreadable.
             "resources": [{"name": "endpoint", "spec": {"url": "http://example.com"}}],
+            // Another product's entries can have any shape: they are not read.
             "other": "not a list"
         },
         "future_member": 1
-    }));
+    });
+    let read = snapshot(answered.clone());
     assert_eq!(read.product, ArtifactProduct::Policy);
     assert_eq!(read.configs.len(), 1);
     assert_eq!(read.configs[0].id, ArtifactConfigId::new("demo"));
     assert_eq!(read.configs[0].version, 7);
     assert_eq!(read.configs[0].payload, "{}");
+    assert_eq!(snapshot_of(answered.clone(), ArtifactProduct::Resources), None);
+    let response = serde_json::from_value::<PollResponse>(answered).unwrap();
+    let error = &response.products.unreadable[&ArtifactProduct::Resources];
+    assert!(error.starts_with("product `resources`:"), "{}", error);
 
     // An empty list, or a missing product, revokes.
     assert!(snapshot(answer(Vec::new())).revokes());
     assert!(snapshot(json!({"protocol_version": 1, "products": {}})).revokes());
     assert!(snapshot(json!({"protocol_version": 1, "products": {"resources": []}})).revokes());
+    for product in [ArtifactProduct::Policy, ArtifactProduct::Resources] {
+        let revoked = snapshot_of(json!({"protocol_version": 1, "products": {}}), product).unwrap();
+        assert!(revoked.revokes(), "{}", product);
+    }
+    let resources = snapshot_of(
+        json!({"protocol_version": 1, "products": {"resources": [
+            {"id": "resources", "version": 2, "sha256": "00", "payload": "{}"}
+        ]}}),
+        ArtifactProduct::Resources,
+    )
+    .unwrap();
+    assert_eq!(resources.product, ArtifactProduct::Resources);
+    assert_eq!(resources.configs[0].id, ArtifactConfigId::new("resources"));
 
     // An answer without products, such as an error object, is unreadable, which is a transport failure: it never
     // revokes.
@@ -499,6 +554,58 @@ async fn an_empty_or_missing_policy_product_revokes() {
 }
 
 #[tokio::test]
+async fn each_product_reaches_its_own_slot_and_an_unreadable_resources_member_keeps_the_last_resources_snapshot() {
+    let resources = |version: u64| {
+        json!({
+            "id": "resources",
+            "version": version,
+            "sha256": ArtifactConfig::transport_hash("{}"),
+            "payload": "{}",
+        })
+    };
+    let both = |policy: Vec<Value>, resources: Value| {
+        json!({
+            "protocol_version": 1,
+            "products": {"policy": policy, "resources": resources},
+        })
+    };
+    let mut stub = FakeStub::start(Answer::Json(both(
+        vec![config(r#"{"revision": 1}"#)],
+        json!([resources(1)]),
+    )))
+    .await;
+    let mut worker = RunningWorker::start(&stub.url()).await;
+    // One poll publishes both products, back to back: neither overwrites the other.
+    let policy = worker.next_snapshot_of(ArtifactProduct::Policy).await;
+    let first = worker.next_snapshot_of(ArtifactProduct::Resources).await;
+    assert_eq!(policy.configs.len(), 1);
+    assert_eq!(first.configs[0].version, 1);
+    assert_eq!(worker.feed().latest(ArtifactProduct::Policy), Some(Arc::clone(&policy)));
+
+    // A resources member that cannot be read keeps the resources snapshot in effect; policy is still read.
+    stub.answer(Answer::Json(both(
+        vec![config(r#"{"revision": 2}"#)],
+        json!({"id": "x"}),
+    )));
+    let changed = worker.next_snapshot_of(ArtifactProduct::Policy).await;
+    assert_ne!(changed, policy);
+    stub.polls(2).await;
+    assert_eq!(
+        worker.feed().latest(ArtifactProduct::Resources),
+        Some(Arc::clone(&first))
+    );
+
+    // Readable again, the newer resources snapshot is delivered.
+    stub.answer(Answer::Json(both(
+        vec![config(r#"{"revision": 2}"#)],
+        json!([resources(2)]),
+    )));
+    let second = worker.next_snapshot_of(ArtifactProduct::Resources).await;
+    assert_eq!(second.configs[0].version, 2);
+    worker.stop().await;
+}
+
+#[tokio::test]
 async fn transport_failures_keep_the_current_snapshot_and_the_next_poll_retries() {
     let installed = answer(vec![config(r#"{"revision": 1}"#)]);
     let mut stub = FakeStub::start(Answer::Json(installed.clone())).await;
@@ -538,7 +645,12 @@ async fn transport_failures_keep_the_current_snapshot_and_the_next_poll_retries(
         stub.answer(failure);
         // Polls continue, and none of them changes the snapshot: in particular, none revokes it.
         stub.polls(3).await;
-        assert_eq!(worker.feed().latest(), Some(Arc::clone(&current)), "after {}", what);
+        assert_eq!(
+            worker.feed().latest(ArtifactProduct::Policy),
+            Some(Arc::clone(&current)),
+            "after {}",
+            what
+        );
         assert!(
             tokio::time::timeout(INTERVAL, worker.feed().changed()).await.is_err(),
             "{} delivered a snapshot",
@@ -560,7 +672,7 @@ async fn an_unreachable_stub_is_retried_until_it_answers() {
     drop(listener);
     let mut worker = RunningWorker::start(&format!("http://{}", address)).await;
     tokio::time::sleep(INTERVAL * 5).await;
-    assert_eq!(worker.feed().latest(), None);
+    assert_eq!(worker.feed().latest(ArtifactProduct::Policy), None);
 
     // The stub starts on that port: the next poll reaches it.
     let installed = answer(vec![config(r#"{"revision": 1}"#)]);
@@ -631,7 +743,12 @@ async fn a_poll_that_gets_no_complete_answer_within_the_poll_timeout_is_abandone
             next.at.duration_since(stuck_at)
         );
         // A stuck poll is a transport failure: the current snapshot stays.
-        assert_eq!(worker.feed().latest(), Some(Arc::clone(&current)), "{}", what);
+        assert_eq!(
+            worker.feed().latest(ArtifactProduct::Policy),
+            Some(Arc::clone(&current)),
+            "{}",
+            what
+        );
     }
 
     // Once the stub answers again, its snapshot is delivered.
@@ -658,7 +775,10 @@ async fn an_answer_larger_than_the_answer_limit_is_a_transport_failure() {
     stub.answer(Answer::Raw(padded(MAX_ANSWER_SIZE + 1)));
     stub.drain();
     stub.polls(3).await;
-    assert_eq!(worker.feed().latest(), Some(Arc::clone(&current)));
+    assert_eq!(
+        worker.feed().latest(ArtifactProduct::Policy),
+        Some(Arc::clone(&current))
+    );
     assert!(
         tokio::time::timeout(INTERVAL, worker.feed().changed()).await.is_err(),
         "an oversized answer delivered a snapshot"

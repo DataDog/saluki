@@ -5,7 +5,8 @@
 //! scrape-to-scrape rate alternates between zero and twice the average. The series kept are the plan-level series
 //! (`adp__plan_*`, such as `plan_node_events_total{component_id, port}`, the per-node counts the plan-driven topology
 //! derives), and the per-component event counters of the native telemetry (`adp__component_events_*`,
-//! `adp__component_errors_total`), which also cover the encoders and forwarders.
+//! `adp__component_errors_total`, and `adp__component_items_dropped_total`, the transactions a forwarder dropped, which
+//! a retired recipient's drain report counts too), which also cover the encoders and forwarders.
 //!
 //! A series that stops appearing, including every series while ADP does not answer, is dropped
 //! [`SERIES_RETENTION_MS`] after it was last seen, so that rates never outlive ADP.
@@ -24,7 +25,12 @@ pub mod prometheus;
 use self::prometheus::Exposition;
 
 /// The name prefixes of the series the scraper keeps.
-pub const TRACKED_PREFIXES: &[&str] = &["adp__plan_", "adp__component_events_", "adp__component_errors_total"];
+pub const TRACKED_PREFIXES: &[&str] = &[
+    "adp__plan_",
+    "adp__component_events_",
+    "adp__component_errors_total",
+    "adp__component_items_dropped_total",
+];
 
 /// The prefix ADP's internal metric names carry in the exposition.
 const ADP_PREFIX: &str = "adp__";

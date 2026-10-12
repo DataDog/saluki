@@ -19,6 +19,8 @@ pub mod execution;
 pub mod health;
 pub mod observability;
 pub mod pooling;
+#[cfg(feature = "measurement")]
+pub mod probes;
 pub mod runtime;
 pub mod support;
 pub mod topology;

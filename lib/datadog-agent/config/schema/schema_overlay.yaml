@@ -1654,21 +1654,18 @@ inventory:
         config_registry_filename: otlp.rs
 
   forwarder_apikey_validation_interval:
-    support: partial
+    support: full
     pipelines: [cross_cutting]
     description: "API key check interval (minutes)"
     documentation: |
       ADP supports `forwarder_apikey_validation_interval` for Datadog intake forwarding. The value is in minutes,
       defaults to `60`, and falls back to that default for non-positive values.
 
-      ADP validates configured API keys when the forwarder starts, periodically at the configured interval, and
-      after API-key-related runtime config updates. Validation controls readiness only: confirmed invalid keys can
-      make the forwarder not ready, but the forwarder keeps running and transient validation failures do not prove
-      that keys are invalid.
-
-      Support is partial because ADP only tracks `additional_endpoints` domains present at forwarder startup.
-      Runtime updates can rotate keys for those domains, but brand-new domains are not added or validated until
-      restart.
+      ADP validates the API key of every Datadog intake endpoint it sends to when the endpoint starts sending,
+      periodically at the configured interval, and after its key changes. An endpoint added to
+      `additional_endpoints` while ADP runs is validated once it starts sending, and an endpoint removed is no
+      longer validated. Validation controls readiness only: confirmed invalid keys can make the forwarder not
+      ready, but the forwarder keeps running and transient validation failures do not prove that keys are invalid.
     issue: "#1357"
     test_support:
       used_by: [TypedConfigSystem]
@@ -2333,16 +2330,16 @@ inventory:
       `multi_region_failover.failover_metrics` are both `true`, ADP forwards metrics to the
       primary Datadog endpoint and to a second MRF endpoint.
 
-      To enable the MRF metrics branch at startup, configure `multi_region_failover.api_key`
-      and one of `multi_region_failover.site` or `multi_region_failover.dd_url`. If the MRF
-      endpoint configuration is incomplete, ADP skips the MRF branch and continues forwarding
-      to the primary endpoint.
+      To enable the MRF metrics branch, configure `multi_region_failover.api_key` and one of
+      `multi_region_failover.site` or `multi_region_failover.dd_url`. If the MRF endpoint
+      configuration is incomplete, ADP skips the MRF branch and continues forwarding to the
+      primary endpoint.
 
       ADP does not fall back to the primary `api_key`, `site`, or `dd_url` for MRF traffic.
-      `multi_region_failover.enabled` and endpoint selection are resolved at startup.
-      `multi_region_failover.failover_metrics`, `multi_region_failover.metric_allowlist`, and
-      `multi_region_failover.api_key` can refresh from live configuration after the MRF branch
-      is enabled.
+      Every MRF setting applies without a restart. Enabling or disabling failover, or changing its
+      endpoint, installs a new generation of the metrics path, in which the MRF forwarder, idle
+      while failover is disabled, gains or retires its endpoint; a key rotation applies at the next
+      request.
 
       | Config Key                               | Behavior                                                                   | Default |
       | ---------------------------------------- | -------------------------------------------------------------------------- | ------- |

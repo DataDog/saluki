@@ -165,6 +165,8 @@ mod tests {
             revision: 1,
             approved_against: None,
             active_plan_hash: None,
+            in_effect: false,
+            upgraded: Default::default(),
         };
         let composed = compose(
             plan,

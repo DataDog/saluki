@@ -10,8 +10,9 @@
 //!
 //! The editor shows programs printed with [`DISPLAY`]: narrow enough for the editor at 1280 pixels, and without the
 //! output fingerprints, which are long digests a reader does not edit. A source that lists no fingerprints gets them
-//! back from the export when it is compiled (see [`compile`]), as the syntax crate's documentation asks of tools that
-//! elide them.
+//! back from the export when it is compiled, as the syntax crate's documentation asks of tools that elide them; an
+//! output a resources artifact declares that the export does not list yet gets its fingerprint from the Resources tab's
+//! draft instead, so that a policy can wait for it (see [`compile_with_resources`]).
 
 use saluki_metric_plan::{
     canonical::PlanHash,
@@ -28,6 +29,7 @@ use crate::{
     checks::{check_against_export, Severity},
     export::ExportBundle,
     preview::{compose_preview, CompileContext, Preview},
+    resources::DraftFingerprints,
 };
 
 /// How the editor prints programs: lines of up to about 64 characters where the syntax can break them, which the
@@ -148,6 +150,14 @@ pub struct CompileOutcome {
     /// The outputs whose fingerprints the source did not list and the export supplied.
     pub restored_fingerprints: Vec<String>,
 
+    /// The outputs whose fingerprints the source did not list, the export does not declare, and the resources draft
+    /// supplied: ADP holds the artifact `pending` until a resources artifact declares them.
+    pub draft_fingerprints: Vec<String>,
+
+    /// Why the resources draft supplied no fingerprints, when the source emits to an output only it could declare and
+    /// the draft cannot be read or does not validate.
+    pub draft_note: Option<String>,
+
     /// What the source was checked against.
     pub checked_against: CheckContext,
 
@@ -205,14 +215,29 @@ impl<'a> LineIndex<'a> {
     }
 }
 
-/// Gives an artifact that lists no output fingerprints the export's fingerprint of every output it emits to, and
-/// returns those outputs, each once, in the order the artifact first emits to them.
+/// The outputs whose fingerprints [`restore_fingerprints`] gave an artifact, by where each came from.
+#[derive(Debug, Default)]
+struct Restored {
+    /// From the export: its base, or its catalog.
+    export: Vec<String>,
+
+    /// From the resources draft, for outputs the export does not declare.
+    draft: Vec<String>,
+
+    /// Declared outputs (`resources_<name>`) the artifact emits to that neither gave.
+    missing_declared: Vec<String>,
+}
+
+/// Gives an artifact that lists no output fingerprints the fingerprint of every output it emits to, and returns those
+/// outputs, each once, in the order the artifact first emits to them.
 ///
 /// The base of the export lists each output's fingerprint as of the default program; an output it does not list takes
-/// the catalog's. An output neither knows stays out, and the checks report the emit.
-fn restore_fingerprints(artifact: &mut PolicyArtifact, export: &ExportBundle) -> Vec<String> {
+/// the catalog's; a declared output (`resources_<name>`) the catalog does not declare yet takes the resources draft's.
+/// An output none knows stays out, and the checks report the emit.
+fn restore_fingerprints(artifact: &mut PolicyArtifact, export: &ExportBundle, draft: &DraftFingerprints) -> Restored {
+    let mut restored = Restored::default();
     if !artifact.base.outputs.is_empty() {
-        return Vec::new();
+        return restored;
     }
     let mut emitted = Vec::new();
     for output in artifact
@@ -225,34 +250,50 @@ fn restore_fingerprints(artifact: &mut PolicyArtifact, export: &ExportBundle) ->
             emitted.push(output);
         }
     }
-    let mut restored = Vec::new();
     for output in emitted {
-        let fingerprint = export
+        let exported = export
             .artifact
             .artifact
             .base
             .outputs
             .get(&output)
             .or_else(|| export.catalog.output(&output).map(|declared| &declared.fingerprint));
-        if let Some(fingerprint) = fingerprint {
-            restored.push(output.to_string());
+        if let Some(fingerprint) = exported {
+            restored.export.push(output.to_string());
             artifact.base.outputs.insert(output, *fingerprint);
+        } else if let Some(fingerprint) = draft.fingerprints.get(&output) {
+            restored.draft.push(output.to_string());
+            artifact.base.outputs.insert(output, *fingerprint);
+        } else if output.is_declared() {
+            restored.missing_declared.push(output.to_string());
         }
     }
     restored
 }
 
+/// Compiles a source without a resources draft, as [`compile_with_resources`] does with an empty one: the demo server
+/// always sends the Resources tab's draft, so only tests compile without one.
+#[cfg(test)]
+pub fn compile(source: &str, context: Option<&CompileContext<'_>>) -> (CompileOutcome, Option<CompiledArtifact>) {
+    compile_with_resources(source, context, &DraftFingerprints::default())
+}
+
 /// Compiles a source, checking it against what ADP serves when `context` gives it.
 ///
 /// A source that lists no output fingerprints, as the editor prints programs, gets the export's fingerprint of each
-/// output it emits to (see [`CompileOutcome::restored_fingerprints`]); without an export, it keeps none. With the
-/// default program too, the artifact is composed into it, the composed plan validated, and the plan diff computed, as
-/// ADP will (see [`compose_preview`]); with the export alone, the structural checks run.
+/// output it emits to (see [`CompileOutcome::restored_fingerprints`]); without an export, it keeps none. A declared
+/// output the export does not declare takes its fingerprint from the resources draft's fingerprints (`draft`), so that
+/// an artifact can be published before the resources it emits to: ADP holds it `pending` until a resources artifact
+/// declares them (see [`CompileOutcome::draft_fingerprints`]). With the default program too, the artifact is composed
+/// into it, the composed plan validated, and the plan diff computed, as ADP will (see [`compose_preview`]); with the
+/// export alone, the structural checks run.
 ///
 /// Returns the outcome for the editor and, if the source produced an artifact, the artifact for publishing. Findings
 /// do not prevent publishing, not even those ADP is certain to reject: ADP is the authority, and publishing an artifact
 /// the editor flags is how the demo shows ADP's own rejection.
-pub fn compile(source: &str, context: Option<&CompileContext<'_>>) -> (CompileOutcome, Option<CompiledArtifact>) {
+pub fn compile_with_resources(
+    source: &str, context: Option<&CompileContext<'_>>, draft: &DraftFingerprints,
+) -> (CompileOutcome, Option<CompiledArtifact>) {
     let index = LineIndex::new(source);
     let export = context.map(|context| context.export);
     let default_program = context.and_then(|context| context.default_program);
@@ -297,6 +338,8 @@ pub fn compile(source: &str, context: Option<&CompileContext<'_>>) -> (CompileOu
         artifact_hash: None,
         canonical_source: None,
         restored_fingerprints: Vec::new(),
+        draft_fingerprints: Vec::new(),
+        draft_note: None,
         checked_against,
         preview,
     };
@@ -320,7 +363,27 @@ pub fn compile(source: &str, context: Option<&CompileContext<'_>>) -> (CompileOu
         }
     };
     if let Some(export) = export {
-        outcome.restored_fingerprints = restore_fingerprints(&mut parsed.artifact, export);
+        let restored = restore_fingerprints(&mut parsed.artifact, export, draft);
+        if !restored.missing_declared.is_empty() {
+            let outputs = restored
+                .missing_declared
+                .iter()
+                .map(|output| format!("`{}`", output))
+                .collect::<Vec<_>>()
+                .join(", ");
+            outcome.draft_note = Some(match &draft.error {
+                Some(error) => format!(
+                    "ADP does not declare {} yet, and the resources draft gives no fingerprint for it: {}",
+                    outputs, error
+                ),
+                None => format!(
+                    "ADP does not declare {} yet, and the resources draft does not declare it either.",
+                    outputs
+                ),
+            });
+        }
+        outcome.restored_fingerprints = restored.export;
+        outcome.draft_fingerprints = restored.draft;
     }
 
     let document = match serde_json::to_value(&parsed.artifact) {
@@ -408,9 +471,10 @@ pub fn compile(source: &str, context: Option<&CompileContext<'_>>) -> (CompileOu
     outcome.warnings = outcome.diagnostics.len() - outcome.errors;
     outcome.ok = true;
     outcome.artifact_hash = Some(hash.to_string());
-    // Printed as it was written: without fingerprints if the export supplied them (they come back on compiling), with
-    // them if the source listed them.
-    let options = if outcome.restored_fingerprints.is_empty() && !parsed.artifact.base.outputs.is_empty() {
+    // Printed as it was written: without fingerprints if the export or the draft supplied them (they come back on
+    // compiling), with them if the source listed them.
+    let supplied = !outcome.restored_fingerprints.is_empty() || !outcome.draft_fingerprints.is_empty();
+    let options = if !supplied && !parsed.artifact.base.outputs.is_empty() {
         DISPLAY_WITH_FINGERPRINTS
     } else {
         DISPLAY

@@ -616,7 +616,8 @@ region exits (any number of producers; stage 9: M lanes)
   no per-event work. While it waits for room in a shard, it keeps draining the shared payload channel, as the native
   task does to avoid the two-channel deadlock (`metrics/mod.rs:596-631`), and serves its control mailbox and health:
   the wait is one `select!` over the shard's reservation, the payload channel, the mailbox, and liveness, so a prepare
-  or a drain never waits behind data.
+  or a drain never waits behind data. As built, it also answers its mailbox and liveness while it waits for the
+  delivery host to take a payload, since a slow recipient fills the delivery host's input (P7.2).
 - **Shards.** `EncodeLeaseSpec::builders: NonZeroU8` is 1 in stage 7 (native payloads, byte for byte). With S > 1 (stage
   9, only on measurement), a buffer goes to the shard with the most free capacity (`Sender::capacity`), ties by
   rotation; payloads are independent requests, and payload boundaries are not observable (specification, Equivalence).
@@ -633,11 +634,17 @@ region exits (any number of producers; stage 9: M lanes)
   held; with several, the host holds one 128-buffer input where natively each encoder had its own, so a slow output has
   8 buffers of its own plus the shared 128 before the regions block. When one lease is full, the front task waits and
   every output of the host waits with it. Natively the region's fan-out awaits each exit in turn, so one full encoder
-  already stalls every output; overflow stays `wait`. An encode host that has no lease at boot (an idle failover host)
-  gets an input of 8 buffers, so it adds about 2.7 MiB rather than 44 MiB to the boot bound; enabled live, it has that
-  smaller burst slack until a restart (release-noted).
-- **Unknown lease.** A batch whose entry names no live lease is counted as loss (`plan_loss_total{class=invalid}`) and
-  logged as a wiring fault. Installer order (4.10) makes it unreachable.
+  already stalls every output; overflow stays `wait`. **As built**, an encode host that has no lease at boot (an idle
+  failover host) keeps the 128-buffer input of the topology: encoder inputs are not part of the bounds of the topology
+  (`TopologyBlueprint::with_component_input_capacity` sizes only transforms' and destinations', which are), so the
+  8-buffer input this paragraph proposed would save nothing in the boot bound and would only shrink burst slack. A burst
+  that reaches several outputs of one host fills the shared input sooner than natively, where each output had an encoder
+  and an input of its own: a flush to one routing group holds 64 batches in `dd_metrics_encode`'s input where the native
+  routing encoder held 128 (`burst_tests`; release-noted).
+- **Unknown lease.** A batch whose entry names no live lease, or a draining one, is counted as loss
+  (`plan_loss_total{class=invalid}`) and logged as a wiring fault, once per entry value. Installer order (4.10) makes
+  it unreachable. The lease table is a hash map by lease ID, not a vector: identifiers are allocated in rotation and
+  reach every value over a process's life (P7.2).
 - **Protocol variants follow the recipient set.** Lowering computes each binding's variants (V1 or V2 series, V2
   sketches, V3 series, V3 sketches) from its resolved recipients with the encoder's own functions (`requires_v3_series`,
   `requires_v2_series`, `metrics/mod.rs:354-378`), so a V3 recipient joining a V2-only output changes the binding and
@@ -645,15 +652,17 @@ region exits (any number of producers; stage 9: M lanes)
   loop applies the `MetricsPayloadInfo` filter (`io.rs:802-808`) only to payloads without a resolved set (the native
   set's and legacy payloads). A live change of a recipient's V3 acceptance then loses nothing: the old lease's V2
   payloads name the slots that accepted V2 when it was resolved, and the new lease's V3 payloads the slots that accept
-  V3 now, whatever the loop's settings say at that moment.
+  V3 now, whatever the loop's settings say at that moment. A metric of a kind for which the lease has no variant (a
+  Cluster Agent output's sketches) is dropped and counted as `encoder_failure` under the lease's `component_id`;
+  validation's capability rule keeps that unreachable (P7.2).
 
 | Phase | Encode host does |
 |---|---|
-| Prepare | receives `LeasePrepare { lease, key, spec, built }`, whose builders the installer built off the data path through the host's `EncodeLeaseFactory`; registers the lease's telemetry; spawns its S builder tasks; acknowledges. Nothing addresses the lease before the commit. |
+| Prepare | receives `LeasePrepare { lease, key, spec, built }`, whose builders and telemetry handles the installer built off the data path through the host's `EncodeLeaseFactory`; spawns its S builder tasks; acknowledges. A prepare into an entry another lease holds, or a draining one holds, is rejected. Nothing addresses the lease before the commit. |
 | Commit | nothing: batches of a generation whose lease table names the lease start arriving |
-| Drain | on `LeaseDrain { lease, key }`, sent only after every user retired: sends `Close` on each shard channel, after the lease's last batch on that channel; each builder flushes every open payload (as its timer would), sends it, then sends its `LeaseClosed` marker, and exits. Each builder's sends are FIFO on the shared channel, and the front task awaits each dispatch, so once it has dispatched past every shard's marker every payload of the lease is in the delivery host's input; it acknowledges then. |
+| Drain | on `LeaseDrain { lease, key }`, sent only after every user retired: closes each shard channel by dropping its senders (FIFO with the buffers before it, and needing no room in a full shard), after the lease's last batch on that channel; each builder flushes every open payload (as its timer would), sends it, then sends its `LeaseClosed` marker, and exits. Each builder's sends are FIFO on the shared channel, and the front task awaits each dispatch, so once it has dispatched past every shard's marker every payload of the lease is in the delivery host's input; it acknowledges then. |
 | Retire | drops the handles and frees the lease ID; the lease's series are evicted 3 s later unless a successor registers the same keys |
-| Shutdown | on input end: closes every shard of every live and draining lease, keeps dispatching until the payload channel closes (the front task drops its own sender, kept for spawning, and every builder exits), drops leases still preparing, and answers pending drains with `Stopped` |
+| Shutdown | on input end: closes every shard of every live and draining lease, keeps dispatching until the payload channel closes (the front task drops its own sender, kept for spawning, and every builder exits), and answers pending drains, and any message still in the mailbox, with `Stopped`; no lease is ever half prepared, since a prepare carries its built lease |
 
 A binding change therefore costs one early flush of the old builder per affected output: smaller payloads once, nothing
 lost. A metrics-only encoder-setting change such as `use_v2_api.series` replaces every lease of the host that way.
@@ -673,10 +682,10 @@ interprets:
 | `Vec<RoutableEndpoint>` from `build_routable_endpoints` (`config.rs:426-467`) | `RecipientTable`: slot to `RecipientEntry { id, spec, sender, state, credential cell, settings watch }` |
 | `should_route_to_endpoint` and `matches_metrics_endpoint_routing` over raw strings (`io.rs:572-597`, `:621-655`) | per payload, its variant's `ResolvedRecipients` slots; without one, the published **native set** filtered by payload class with the native rule |
 | request mapper factory (`middleware.rs:17-58`); Cluster Agent mapper (`forwarders/cluster_agent/mod.rs:196-223`) | `RecipientProtocol::{DatadogIntake { authorities, allow_arbitrary_tags, v3 }, ClusterAgent}`; the credential (API key or bearer token) is inserted from the recipient's cell at dispatch, for both kinds |
-| retry policy, concurrency, timeouts, queue sizes from `ForwarderConfiguration` | `DeliverySettings` (the host binding) and a declared recipient's `DeliveryPolicy`, swapped at a request boundary |
+| retry policy, concurrency, timeouts, queue sizes from `ForwarderConfiguration` | `DeliverySettings` (the host binding) and a declared recipient's `DeliveryPolicy`, published to each loop through its `RecipientSettingsSender` and applied in place between requests: the loop's service and circuit breaker are built once, so a publication keeps an open backoff and the retry policy's error count; turning persistence on or off is not applied live (P7.1a) |
 | `ApiKeyRefresher` bound to configured `(url, index)` positions (`api_key.rs:222-280`) | one credential cell per recipient, fed by the view its `CredentialRef` resolves to (4.8) |
-| `ApiKeyValidator` over the startup set (`validation.rs:24-70`) | validation targets: the native `DatadogIntake` recipients of the table, following it |
-| one `HttpClient` (`io.rs:386-410`) | one client per host binding, built at a resource transaction's prepare when the client profile changes and swapped at its publish; rebuilt by the host itself when a proxy credential it follows changes (4.4) |
+| `ApiKeyValidator` over the startup set (`validation.rs:24-70`) | validation targets: the native `DatadogIntake` recipients of the table, following it (`RecipientValidationTargets`), asked about in a native forwarder's order (the primary endpoint, the alternate metrics intake, the additional endpoints) and stopping at the first key the intake accepts |
+| one `HttpClient` (`io.rs:386-410`) | one client per host binding, built when a publication changes the client profile or a proxy credential it follows changes, off the routing loop, and switched for every loop and the validator through `HttpClient::switchable`; a failed build keeps the current client, is reported in status (`client_failure`, which ADP shows in `status.degraded` naming the host), and is built again at the next publication (P7.1b D2, R6) |
 
 `DatadogForwarderConfiguration` and `ClusterAgentForwarderConfiguration` become configurations of the one `DeliveryHost`
 (protocol defaults, telemetry names, which validation runs). `build_routable_endpoints` must allow an empty table (it
@@ -705,7 +714,13 @@ select! {
   stamped it, and counts it in `plan_recipient_withdrawn_payloads_total{host}`; a later publish that no longer lists the
   recipient restores it. Removal is therefore enforced where delivery happens: a generation that never commits (an
   addition that keeps failing to prepare, a re-composition that fails, a cut in flight, a candidate queued behind
-  another) cannot keep a removed destination receiving, and neither can a rollback.
+  another) cannot keep a removed destination receiving, and neither can a rollback. **As built** (stage 7 review), a
+  resource transaction follows whenever the published withdrawn set differs from the table's, so a retired recipient's
+  identity leaves it after the exit and never withdraws a later incarnation; and a generation that uses a recipient its
+  host withdraws while the latest lowering declares it again (an endpoint added back before the transaction restoring
+  it published, as when a newer change supersedes that transaction) passes its barrier only once the transaction in
+  flight published, so its leases never send to a recipient their host drops everything for
+  (`InstallerCore::pass_barrier`).
 - Payloads without a resolved set (logs, events, service checks, traces, APM stats, any legacy encoder's) route over the
   published native set with `should_route_to_endpoint`, unchanged; a legacy `MetricsEndpointRouting` is still honored.
 - **Payload classes.** Native recipients keep native classes (an additional endpoint receives every class, the metrics
@@ -721,19 +736,20 @@ stands: declared recipients are never validated (their endpoint would otherwise 
 <endpoint>/api/v1/validate?api_key=<credential>`, `validation.rs:325-340`) and never affect readiness; an invalid
 declared credential is reported in status and `plan_recipients{state}`. A host whose table holds no native recipient
 (an idle failover host) is ready and logs nothing; static mode keeps the native warning
-(`validation.rs:207-211`). Enabling Multi-Region Failover live with a bad key makes the process not ready, as a restart
-with that configuration would.
+(`validation.rs:207-211`). **As built**, a host whose native intake recipients have no usable key (a blank primary key,
+or one not streamed yet in connected mode) is ready with the native warning too. Enabling Multi-Region Failover live
+with a bad key makes the process not ready, as a restart with that configuration would.
 
 **Per-recipient lifecycle:**
 
 | Phase | Delivery host does |
 |---|---|
-| Prepare | receives `RecipientPrepare { recipient: RecipientRef, decl, built }` whose pieces the installer built through the host's `RecipientFactory` (credential cell bound to its view, retry queue opened on its persisted directory, request mapper, telemetry handles); spawns the I/O loop as a dynamic child in its own `scope::nested` scope; inserts it, addressable only by slot; acknowledges. Opening a queue on disk is not read-only: it creates the directory, lists it, deletes the oldest files beyond the maximum size, and removes outdated ones (`queue/persisted.rs:121-166`, `queue/mod.rs:140-160`), reading no file contents. So a queue is opened on a directory only while no loop owns it: the core prepares an identity's next incarnation only after the previous one's exit was reported, and the host serializes prepares per directory and fails one whose directory a live loop still owns. A failure (client, directory, bounds, duplicate key) is the slot's failed acknowledgment, naming the recipient; a prepare of the reference the host already holds is acknowledged as done. |
+| Prepare | receives `RecipientPrepare { recipient: RecipientRef, decl, built }` whose pieces the installer built through the host's `RecipientFactory` (credential cell bound to its view, request mapper, telemetry handles); checks that no live loop owns the recipient's directory (`RecipientPieces::queue_directory`), then opens its retry queue (`open_queue`), so a directory that cannot be used fails the prepare; spawns the I/O loop through `RecipientLoop::spawn` on the component's supervisor (not a scope of its own: P7.1b D15); inserts it, addressable only by slot; acknowledges. Opening a queue on disk is not read-only: it creates the directory (mode 0700), lists it by name and size, and removes files whose names are older than the age limit, reading no file contents; files beyond the size limit go when the next entry is persisted (P7.1a). So a queue is opened on a directory only while no loop owns it: the core prepares an identity's next incarnation only after the previous one's exit was reported, and the host fails a prepare whose directory a live loop still owns. **As built** (stage 7 review), a prepare whose directory a loop an abort dropped still owns waits, unanswered, until that loop exits, and proceeds then; an abort of its preparation rejects it. The core cannot tell when a dropped loop exits, and prepares the next incarnation right after an abort (a newer candidate cancelling the generation that created a recipient first, a restart for exits, a retry after a timeout): failing would reject a declared recipient's resources revision. An incarnation is created at most once: a create of an incarnation the host dropped, at or below the newest it created of that identity, fails the part (P7.4 R4); **as built**, the host remembers the newest incarnation of each identity it runs or holds, and of the last 128 identities it no longer does, so what it keeps stays bounded. A failure (client, directory, bounds, duplicate key) is the slot's failed acknowledgment, naming the recipient; a prepare of the reference the host already holds is acknowledged as done. |
 | Publish | on `Publish { revision, native_set, settings, withdrawn }` from a resource transaction: swaps the native set, stores each recipient's settings version into its watch (the only path that changes a live recipient's settings, 4.10), replaces the withdrawn set, updates the validation targets |
-| Drain | on `Release { recipients: [RecipientRef] }`, acknowledged once accepted: waits for the **input barrier**, removes the slots from routing, and sets each loop's close request to `CloseRequest::Retire { deadline: DRAIN_DEADLINE }`. The loop keeps dispatching queued work (dispatch enabled while `!done || draining`, ported from the spike's `drain_on_close`; a readiness error during a drain is returned rather than ending the loop). It exits when its queue and in-flight set are empty, or, at the deadline, closes as at shutdown: in-flight requests finish, queued work persists where disk is configured, otherwise it is dropped and counted (`io.rs:881-899`). At most `MAX_DRAINING_RECIPIENTS` (16) drain per host; one more closes the oldest early with its closure. |
+| Drain | on `Release { recipients: [RecipientRef] }`, acknowledged once accepted: waits for the **input barrier**, removes the slots from routing, and retires each loop through its closer (`RecipientCloser::retire(deadline)`, `DRAIN_DEADLINE`). The loop keeps dispatching queued work, persisted entries included. A readiness error during a drain ends it as the deadline would, and the exit is `Retired` with what the close persisted and dropped (P7.1a). It exits when its queue and in-flight set are empty, or, at the deadline, closes as at shutdown: in-flight requests finish, queued work persists where disk is configured, otherwise it is dropped and counted; a transaction that cannot be persisted is dropped and counted, and the close goes on past it. A `Discard` closure drops what is queued in memory and keeps entries already on disk. The host keeps a draining recipient's sender, so that it can be reopened; dropping the closer closes the loop as at shutdown. At most `MAX_DRAINING_RECIPIENTS` (16) drain per host; one more closes the oldest early with its closure. |
 | Retire | when the loop exits: drops the scope, the credential cell, the telemetry handles, and the per-domain cache entries it held (4.11); frees the slot; reports `RecipientExited { recipient, outcome: Retired(DrainReport { delivered, persisted, dropped, deadline_reached }) }` on the host's event channel |
-| Reopen | `Reopen { recipients: [RecipientRef], decls }` (a declaration only, no built pieces) for a recipient declared again while its release waits at the barrier or its loop drains: cancels the removal or clears the close request, applies the new declaration's settings, and the loop continues with the same queue and directory; replies `ReopenReply::Reopened`, and the cancelled release reports no exit. An abort that returns it to draining keeps the original deadline. If the loop already exited, the host replies `ReopenReply::Exited`: the core waits for that incarnation's exit event and then prepares the next incarnation, whose queue adopts the directory (same identity, same directory, 4.9). |
-| Fail | a loop that ends on an error outside a drain (`io.rs:853-858`) finishes its native closure (`io.rs:881-899`) and then reports `RecipientExited { recipient, outcome: Failed(reason) }`. Its slot stays allocated, and payloads naming it are dropped and counted, until the core's next incarnation for it, prepared into the same slot, is live (4.10) |
+| Reopen | `Reopen { creator, recipients: [RecipientSettings], reply }` (a declaration only, no built pieces) for a recipient declared again while its release waits at the barrier, its loop drains, or the close a retirement reaches (its deadline, a closure, an error while draining) has not become final: cancels the removal or the close, applies the new declaration, and the loop continues with the same queue and directory; replies `ReopenReply::Reopened`, and the cancelled release reports no exit. The host asks the loop's closer (`RecipientCloser::reopen`), which answers atomically with the loop's decision to close for good, and a reopen with no input left is refused. An abort that returns it to draining keeps the original deadline. If the loop's close is final, the host replies `ReopenReply::Exited`: the core waits for that incarnation's exit event and then prepares the next incarnation, whose queue adopts the directory (same identity, same directory, 4.9). |
+| Fail | a loop that ends on an error outside a drain (`io.rs:853-858`) finishes its native closure (`io.rs:881-899`) and then reports `RecipientExited { recipient, outcome: Failed(reason) }`. Its slot stays allocated, and payloads naming it are dropped and counted, until the core's next incarnation for it, prepared into the same slot, is live (4.10), or until the core releases it: a released failed recipient frees its slot at once, and the payloads received before the release that name the slot are dropped and counted (a tombstone), so a recipient prepared into the slot meanwhile receives only payloads sent after the release; a loop that ends while its release waits at the barrier, and a recipient an abort drops, free their slots the same way. An abort that drops a failed recipient's next incarnation puts the failed marker back in the slot (P7.1b R1, P7.4 R4). **As built** (stage 7 review), a failed native recipient stays in the published native set while it waits for its backoff, so payloads routed over the native set are counted at its slot as natively, and a committed successor lets go of the failed incarnation it replaced; a payload that no recipient of the native set takes (no primary endpoint, for logs, events, service checks, and traces) is dropped and counted in `component_errors_total{error_type:http_send}`, and logged once per publication |
 
 The drain-on-close mechanism exists only on the local branch `experiment/programmable-metrics-spike` (head
 `e61e9b2ad6`, `lib/saluki-components/src/common/datadog/config.rs:279-372`, with the test
@@ -746,7 +762,8 @@ On `Release`, the routing loop records `target = received + input.queued()` and 
 until it has received `target` payloads and no send is pending: by FIFO on its single input, every payload enqueued
 before the release has then been routed to every slot it names, one send at a time. This needs one accessor,
 `Consumer::queued()` over `mpsc::Receiver::len` (tokio 1.53, `topology/interconnect/consumer.rs:24-44`), and no extra
-message. A `debug_assert!` checks that no payload names a retired slot.
+message. A `debug_assert!` checks that no payload names a slot that holds neither a recipient nor the tombstone of one
+that left after the payload was received.
 
 **Process shutdown** keeps native closure: the input closes, every loop's close request becomes `Shutdown`, and loops
 stop popping, finish in-flight work, and persist or drop, within the shutdown budget (`built.rs:641-663`). A loop
@@ -774,7 +791,11 @@ recipient's credential cell inserted at dispatch (today the mapper fixes it when
 
 **Static mode.** Without a metrics pipeline no installer exists: `dd_out` runs a table built from the startup
 configuration, with no control mailbox and native routing, which is exactly today's behavior for logs-only and
-traces-only deployments. Every existing forwarder test runs against this mode.
+traces-only deployments. Every existing forwarder test runs against this mode. **As built**, static mode is the native
+`TransactionForwarder` itself (its component loop, `io_loop` task, and endpoint loops), and only `::controlled(..)`
+builds a delivery host; the host is pinned against it by
+`a_host_booted_from_a_configuration_delivers_what_the_static_forwarder_delivers_for_it`. Folding static mode into the
+host, and deleting `TransactionForwarder::spawn`, `run_io_loop`, and `EndpointSender`, is deferred (P7.1b D1).
 
 ### 4.8 Credentials
 
@@ -838,7 +859,7 @@ traces-only deployments. Every existing forwarder test runs against this mode.
 | Queued work of a retiring recipient | attempted until `DRAIN_DEADLINE` (30 s), then native shutdown closure; counted with the existing drop telemetry; summarized in the `DrainReport` |
 | The encoder's final flush at retirement | the lease drains first and its payloads pass the input barrier before the recipient is released, so they are attempted like any queued work |
 | Credentials at rest | native: a persisted retry holds the headers it was sent with, and the request mapper overwrites the credential at dispatch, so a rotated key is used after a restart too. Stripping credentials before persisting is a follow-up ([A18](#91-stage-7-assumptions)): the owner's direction does not ask for hardening yet, and it would change the persisted format of every payload `dd_out` carries. |
-| Directory identity | native: `generate_retry_queue_id` (`io.rs:901-920`), `{component}/{host}/{hash}` over (component, raw URL, key index) for additional endpoints and (component, resolved endpoint) otherwise; a declared recipient hashes (`dd_out`, canonical endpoint, credential name). A recipient added live gets the directory a restart with that configuration would give it. |
+| Directory identity | native: `generate_retry_queue_id` (`io.rs:901-920`), `{component}/{resolved host}/{hash}` with the hash over (component, raw URL, key index) for additional endpoints and (component, resolved endpoint) otherwise; a declared recipient hashes (`dd_out`, canonical endpoint, credential name). The resolved host carries the data plane's version for a Datadog site (`<major>-<minor>-<patch>-<id>.agent.datadoghq.eu`), so an upgrade moves every Datadog endpoint's directory, as today (A19's follow-up). A recipient added live gets the directory a restart with that configuration would give it. A declared recipient renamed with the same endpoint and credential keeps the directory, which its predecessor may still own: that revision is rejected (P7.4 R3). **As built** (stage 7 review), a native recipient's identity names its endpoint as its directory does (`queue_endpoint`): an additional endpoint's as configured, any other's as resolved, without its root path and with the version label written as the `app` label it replaced, so no two identities share a directory, and a primary endpoint respelled live (a trailing slash, a default port, a site and the URL it implies) stays one recipient whose settings a publication changes. Version 1 fingerprints keep naming recipients as configured. |
 | Orphaned directories | as natively: a removed recipient's directory stays, and is adopted, with its backlog, when a recipient of the same identity returns (a configuration flap, a resources redelivery after a restart); its files age out (`forwarder_outdated_file_in_days`) only while a loop runs on it. Removing an endpoint and restarting orphans it the same way today. A janitor for orphans is part of the follow-up ([A19](#91-stage-7-assumptions)). |
 | A replaced endpoint | the old recipient (another ID, another directory) drains for at most 30 s beside its successor; each holds only its own bound |
 
@@ -991,14 +1012,14 @@ stub poll.
 | Registry | Choice | Release |
 |---|---|---|
 | Health | per host only, fixed at boot (F2: nothing unregisters a component, and nothing needs to) | none needed |
-| Resource groups | per host (the component group, as natively); per native output name for its lease (bounded by the native output set), through `runtime::worker(..).with_resource_group(name)`, which I7 adds to `saluki-core` (additive, no behavior change); one group per host shared by every declared output (`<host>.resources`) | none: bounded names (F2) |
+| Resource groups | per host (the component group, as natively); per native output name for its lease (bounded by the native output set), below the encode host's identity (`<host identity>.leases.<output>`), through `runtime::worker(..).with_resource_group(name)`, which I7 adds to `saluki-core` (additive, no behavior change); one group per encode host shared by every declared output (`<host identity>.resources`). Groups are flat statistics: a host's bytes are its group's and those below it | none: bounded names (F2) |
 | Internal metrics | per lease (encoder telemetry under the output's native `component_id`) and per recipient (queue, retry, transaction series) | handles dropped at retire, evicted 3 s later; a successor that registers the same keys continues the series |
 | Forwarder caches | the per-domain caches (`data_points_sent_by_domain`, `data_points_dropped_by_domain`, the retry-queue gauges by domain) and `SharedTransactionQueueTelemetryInner::per_endpoint` become reference-counted by domain; `per_endpoint` is keyed by recipient ID, which fixes two keys on one URL overwriting each other, and the per-domain gauge sums the recipients on the domain. `http_errors_by_code` is keyed by status code (`telemetry.rs:104`), bounded, and stays. | a per-domain entry goes with its last recipient, so a retired recipient's last queue size stops counting in totals; a domain that returns more than 3 s later restarts its running-total gauges (`component_data_points_sent_total`, remapped as `points.sent`) from 0, as after a restart |
 | Validation targets | native `DatadogIntake` recipients, following the table | at retire |
 | Credentials | a cell per recipient, a refresher per reference | at retire, and with the reference's last user |
 | Diagnostics | the HTTP inspection layer per recipient | at retire |
 | Memory bounds | 4.12 | credits returned once per resource, when it ends, however it ends |
-| Tasks | native names for native recipients (`endpoint_io_loop_<host>`); `recipient_io_loop_<declared name>` for declared ones (at most 16, names sanitized); `request_builder` per shard. The component's `io_loop` task disappears: its loop is the routing loop | end with the task |
+| Tasks | native names for native recipients (`endpoint_io_loop_<host>`); `recipient_io_loop_<declared name>` for declared ones (at most 16, names sanitized); a lease's builder per shard, below the encoder's task (`<host>.encoder.request_builder`, where the native one was `<host>.request_builder`). The component's `io_loop` task and the per-endpoint `api_key_refresher_*` tasks disappear: the routing loop does their work, its credential followers being futures inside it | end with the task |
 
 **The specification's exit gate, "resources reclaimed after repeated installs":** after N add-and-remove cycles of a
 recipient and an output, the task count, live metric handles, forwarder cache entries, credential refreshers, scopes,
@@ -1082,15 +1103,16 @@ prepare (4.12; [amendment 102](#10-proposed-spec-amendments)).
 | Interconnect, health, and task series of `dd_metrics_encode`, `mrf_metrics_encode`, `af_metrics_encode` | per encoder | per encode host: `dd_metrics_encode`'s now counts every output of `dd_out` | yes |
 | Interconnect, health, and task series of `metrics_routing_encode_<i>` | per encoder | gone, as fused transforms' and gateways' went in stages 3 and 4 | yes |
 | `metrics_enrich` sent per exit (`output:metrics_routing_encode_<i>`) | per output | per encode host (`output:dd_metrics_encode`) | yes |
-| Forwarder series keyed by `domain` and `endpoint` | per forwarder | unchanged for native recipients; per-domain caches now release (4.11) | the fix |
+| Forwarder series keyed by `domain` and `endpoint` | per forwarder | unchanged for native recipients; per-domain caches now release (4.11). **As built** (stage 7 review), each clone of a host's switchable client keeps one copy of the client it switched to, with its per-endpoint handles, from request to request: before, every request took a fresh copy, so `network_http_requests_*` and their remapped `transactions.*` series reset within 3 s of each request | the fix |
 | `mrf_dd_out`, `mrf_metrics_encode` for operators without failover | absent | health series present and ready; interconnect series registered when the topology is built; queue and lease series with the first recipient or lease | yes |
 | `cluster_agent_out`, `af_metrics_encode` | present only when autoscaling failover was requested at boot | present, idle, whenever an `https` Cluster Agent endpoint resolves at boot, which is most node Agents in Kubernetes | yes |
-| The forwarders' `io_loop` task | one per forwarder | gone: the component loop is the routing loop | yes |
+| The forwarders' `io_loop` task, and their `api_key_refresher_<endpoint>` tasks | one per forwarder, and one per endpoint key | gone where a delivery host runs (with a metrics pipeline): the component loop is the routing loop, and the credential followers are futures inside it; unchanged in static mode | yes |
+| The metrics encoder's `request_builder` task | `<encoder>.request_builder` | `<encode host>.encoder.request_builder`, one per lease shard | yes |
 | `metrics_routing_encode_<i>` encoder series | per routing group | per position: after a group is removed, `metrics_routing_encode_0` continues with the former group 1's data; the installer logs the renumbering with both group keys | yes |
-| `component_events_dropped_total{drop_reason:payload_too_large}` of an encode host's leases | uncounted (a TODO) | counted per lease | new |
+| `component_events_dropped_total{drop_reason:payload_too_large, intentional:false}` of an encode host's leases | uncounted (a TODO) | counted per lease | new |
 | `component_data_points_sent_total{domain}` (`points.sent`) | a running total for the process | restarts from 0 when a domain returns more than 3 s after its last recipient retired | yes |
 | Declared outputs | none | encoder telemetry under `component_id:resources_<name>` | new |
-| Plan-level | | `plan_live_leases{host}`, `plan_recipients{host, state}` (`active`, `draining`, `failed`), `plan_recipient_retirements_total{host, outcome}` (`drained`, `deadline`, `discarded`), `plan_recipient_withdrawn_payloads_total{host}`, `plan_resource_conflicts`, `plan_resource_budget_bytes{state}` (`granted`, `used`) | new |
+| Plan-level | | by each delivery host, under its `component_id`: `plan_recipients{host, state}` (`active`, `draining`, `failed`), `plan_recipient_retirements_total{host, outcome}` (`drained`, `persisted`, `deadline`, `discarded`; as built, `persisted` counts a close that wrote work to disk, such as a `persist` closure, which `drained` counted before), `plan_recipient_withdrawn_payloads_total{host}`, `plan_resource_conflicts{host}`; by each encode host: `plan_loss_total{class:invalid}`; by the installer: `plan_live_leases{host}`, `plan_resource_budget_bytes{state}` (`granted`, `used`) | new |
 
 The Agent remaps key on names and on `domain` and `endpoint`, never on encoder component IDs
 (`bin/agent-data-plane/src/state/metrics/rules/serializer.rs`, `transaction.rs:10-50`), so remapped output is unchanged.
@@ -2557,6 +2579,79 @@ Sections 4.2, 4.3, 4.7, 4.10, 4.12, and 7 give the full text.
 | C7 | `InstallerCore::on_resources(ResourcesEvent)` with `ResourcesEvent::{Revoked, Refused { config, version, reason }, Delivered { config, version, revision, artifact_hash, document: Result<ResourcesArtifact, Reason> }}` (was `on_resources(revision, Result, missing_credentials)`), and `InstallerCore::credentials_changed(missing)`; `accepted_resources()` keeps the installed revision while a newer one is refused, rejected, or pending | `on_resources`, `accepted_resources` | I7's fix step; P7.4 (revision rules per `ArtifactConfigId`, revision retention); P7.5 (builds the event from the snapshot; calls `credentials_changed` before lowering) |
 | C8 | `PrepareSite::Budget { resource: CreditKey }` (was a unit variant); `CreditKey`; `ResourcePlan::admitted` and `ResourceTransaction::admitted` as `Vec<(CreditKey, u64)>`; `Action::ReleaseCredits { credits }` | `PrepareSite`; the core's actions | I7's fix step; P7.4 (the ledger's entries and releases); P7.5 (acquisition idempotent per key, held across worker restarts) |
 | C9 | `DeliverySettings` carries each proxy as a URL without user information plus a credential reference, which the delivery host follows through `CredentialSource`, rebuilding and swapping its client on a change | the shared typed specs | I7's fix step (the field, and its row in the `Params` name table); P7.1b (the rebuild); P7.5 (the codec) |
+| C10 | The privileged status route lists recipient incarnations as a top-level `recipients` member: the installer's live entries (`ResourceTable::recipients()`, joined with each host's `DeliveryHostStatus`) first, then the last 16 retired after a release, with `last_drain`; `GET /programmable-metrics/resources` serves the resources view | the status route | P7.5 (retired entries, the resources route); I7-Z (live entries, and retirements only of incarnations the core released); P7.6 reads it |
+| C11 | `RecipientHandle { sender, close: RecipientCloser, settings: RecipientSettingsSender, exited }`; `RecipientCloser::{retire, shutdown, reopen, current}`; `RecipientLoop::{prepare, spawn, name, into_task}`; `RecipientPieces::{queue_directory, open_queue}`; `RecipientHandle::detached` for doubles; `RecipientValidationTargets` | the recipient loop interface between P7.1a and P7.1b | P7.1a; I7-Z (the router's settings publication, closer, queue opening, and validation targets) |
+| C12 | `HttpClient::switchable` and `HttpClientSwitch` (`saluki-io`); `DeliveryHostConfiguration::{new, with_events, with_drain_deadline, factory, status}`, `BootPublication`, `DeliveryHostStatus` with `client_failure`; `Datadog`/`ClusterAgentForwarderConfiguration::controlled` | the delivery host's construction | P7.1b; P7.5 (wiring); I7-Z (`client_failure` in `status.degraded`) |
+| C13 | `Frame::compute_with_hosts` and `FrameHosts`; `Approval::{in_effect, upgraded}`; `ScopeComposition::{outcome, legacy_outputs, notes}`; `ComposeError::{PendingOutput, ReboundOutput}`; `Plan::{binding_digest, binds_alike}`; `Catalog::{declares_hosts, refuses}`; `CatalogOutput::legacy_fingerprint` | the frame, composition, and catalog interfaces | P7.3; P7.4 (in effect, upgrades, pending); P7.5 (the catalog); I7-Z (the core's wiring) |
+| C14 | `InstallerCore::{held_resources, accepted_revision}`; `ResourceTable::{recipients, lease_states, created_first}`; `ResourceBounds::recipient(decl, settings)` (the host's settings give an undeclared bound); `Live::map` (`agent-data-plane-config`) | the core's resource accessors and bounds | P7.4; P7.5; I7-Z |
+
+#### Stage 7 as built
+
+What the parts and the integration step changed from sections 4 and 7, beyond the corrections folded into those
+sections (marked "as built" there). Each item names the test that pins it and the design note it comes from (P7.2 note
+6, P7.1b R3, and so on: the notes each part kept with its work, outside this repository, whose substance this table
+carries); the amendments it implies are 129 to 138 of [section 10](#10-proposed-spec-amendments).
+
+| Area | As built | Why, and the test |
+|---|---|---|
+| Encode host (4.6) | A builder's failure (error, panic, cancellation) fails the host explicitly, through a guard per shard | with one shared payload channel the native signal (its channel closing) does not exist; stricter than native, as 4.16 intends (P7.2 note 6) |
+| Encode host (4.6) | One construction path: `DatadogMetricsConfiguration::encoder_settings()` and `StreamBuilders::build` build the native encoder's builders and every lease's; `RequestBuilder::new` became synchronous; additional tags are a host-level input | parity of settings by construction; the differential checks what differs (P7.2 notes 9, 11, 14) |
+| Encode host (4.6) | `LEASE_QUEUE_BUFFERS`, `DRAIN_DEADLINE`, and `MAX_DRAINING_RECIPIENTS` exist in `saluki-components` and the plan crate | `saluki-components` cannot depend on the plan crate; `the_hosts_limits_are_the_plans` pins them equal |
+| Recipient loops (4.7) | Close requests through `RecipientCloser`: a reopen cancels a retirement's close until the final flush begins, answered atomically; reopens are counted, so a reopen followed by a release is never lost; a reopen with no input is refused; a dropped closer is a shutdown | the review's races (P7.1a notes 17 to 19; a 500-race stress test) |
+| Recipient loops (4.7) | One concurrency semaphore per loop that every publication resizes, and no polling of the service while it owes permits | a rebuilt limit overshot by every request in flight, and a lowered one did not hold under a backlog (P7.1a notes 9, 20; `a_lowered_concurrency_limit_holds_while_work_is_queued`) |
+| Recipient loops (4.9, 4.11) | Per-domain telemetry released with the domain's last registration; the shared retry-queue series keyed by recipient; a transaction a queue refuses or cannot persist dropped and counted, and the flush goes on past it | static-mode fixes too: two keys on one URL no longer overwrite each other's queue size, and a failed flush no longer loses the rest uncounted (P7.1a notes 15, 22) |
+| Delivery host (4.7) | Exits of recipients an abort drops are reported; a publication refuses a native set naming a recipient not held live or failed; only a newer incarnation of the same identity takes a failed slot; a publication commits exactly its own revision's creations and reopens, and what its native set names | P7.1b D4 to D6, R2 |
+| Delivery host (4.7, 4.8) | A withdrawn recipient is neither a duplicate nor a conflict | renaming a credential would otherwise always fail, since the old recipient is still live, withdrawn, when the new one prepares (P7.1b R3) |
+| Delivery host (4.6, 4.7) | A hosted recipient loop never filters by protocol; the host decides which recipients take each payload; `Metadata::recipients` is gone | a live V3 flip made the loop's stale filter drop native-set metrics (P7.1b R4; `a_recipient_takes_every_payload_its_host_routes_to_it_whatever_variants_it_accepts`, and the ADP V3 flip test) |
+| Delivery host (4.7) | A native-set member resolves to the incarnation its slot holds under the same identity; validation follows the table through `RecipientValidationTargets`, in a native forwarder's order, once per change | P7.1b R5; the order and the single pass were found at I7-Z by the telemetry parity test (`native_intake_recipients_are_validated_once_in_the_order_a_forwarder_validates_its_endpoints`) |
+| Delivery host (4.8) | Credential followers are futures in the routing loop, one per reference; `CredentialSource` views come from `Live::map` | P7.1b D13, D14; P7.5 note 7 |
+| Plan crate (4.4, 4.5) | `Frame::compute_with_hosts`; exits to every encode host after the boot edges' targets, in `FrameHosts` order; a fixed destination writes no lease; an exit toward an encode host needs a lease table | P7.3 notes 1 to 4, R6 |
+| Plan crate (4.5, 4.14) | `ComposeError::{PendingOutput, ReboundOutput}`; `ScopeComposition::{outcome, notes}` carry the degraded reasons and the rebase note, which the core shows as the `active` acknowledgment's `error` | P7.3 note 8; the core's wiring at I7-Z (`in_effect`, `upgraded`, notes) |
+| Plan crate (4.4) | `Catalog::declares_hosts` and `Catalog::refuses` | the plan crate reads no protocols, and an exported catalog carries no host schemas (P7.3 note 11) |
+| Plan crate (4.3) | Endpoint canonicalization (WHATWG URLs; user information, query, and fragment refused, never echoed) | P7.3 note 12, R4 |
+| Installer core (4.10) | `ResourceTable::plan` is pure; leases per host keyed by `LeaseKey { output, binding }` with `Plan::binding_digest` (recipients' hosts and protocols included); identifiers and slots allocated in rotation | P7.4 notes 1, 2; P7.3 R1 |
+| Installer core (4.10) | One rule for every preparation: create, co-create, require, reopen, name a failed slot, or wait; generations create native recipients a transaction left out; one transaction in flight for all hosts | replaces "a generation `requires` every recipient the transaction adds, and fails if the transaction failed" (P7.4 notes 6, 9) |
+| Installer core (4.10, 4.16) | A host's failed part holds nothing at once; attribution of a host failure to a resources revision by text, only to what the part creates first; the last 64 parts that hold nothing are remembered for late acknowledgments | P7.4 notes 10, 16, 17, R3; structured failures deferred (below) |
+| Installer core (4.10) | Each wait keeps its own delay on the caller's one timer (`core/retry.rs`) | a failed recipient's 1 s retry rode on a candidate's 30 s (P7.4 R7) |
+| Installer core (4.12) | `ResourceBounds { lease, recipient(decl, settings), host_queue }`; `Permissive` warns and holds a credit at zero bytes; a failed permissive verification yields zero headroom | P7.4 note 18; P7.5 note 12 |
+| ADP (4.3, 4.8) | Native recipients by configured position: a key position stays a recipient while its URL lists it, whatever its key holds; a new position joins as native construction decides at startup | key rotation must not change the plan (P7.5 R2) |
+| ADP (4.4) | The Cluster Agent host exists when its endpoint resolves at boot, whether forwarding is enabled or not; every host gets `dd_out`'s delivery settings | P7.5 notes 5, 6 |
+| ADP (4.10) | A retirement is listed (and its provenance kept) only when the exit ended an incarnation the core was releasing: held before the exit and not after | a drop by an abort, or a loop that ended on its own, is no retirement (P7.5 R4; `an_endpoint_added_and_removed_live_receives_the_metrics_events_logs_and_traces_routed_to_it_once_each`) |
+| ADP (4.14, 4.16) | `status.degraded` names each delivery host whose client could not be built | P7.5 R6; `delivery_settings_and_a_proxy_changed_live_reach_the_running_recipients_without_loss_or_duplication` |
+| ADP (4.15) | A routing group's renumbering is logged with both group keys | `a_removed_routing_group_renumbers_the_outputs_after_it_each_named_with_both_groups` |
+| Delivery host (4.7), review | A prepare whose directory a loop an abort dropped still owns waits for that loop's exit; an abort of its preparation rejects it | the next preparation after an abort was refused 20 times in 20 with real loops, and a declared recipient's refusal rejected its resources revision for good (`a_preparation_on_a_directory_a_dropped_loop_owns_waits_for_its_exit_and_an_abort_ends_the_wait`, `with_real_loops_an_identitys_next_incarnation_prepared_right_after_an_abort_waits_for_the_dropped_loop`; the core with fakes that model it, `a_declared_recipients_next_incarnation_waits_for_the_loop_a_cancelled_preparation_dropped_and_rejects_nothing`, and the property test) |
+| Delivery host (4.7), review | The created-once memory covers the identities the host runs or holds and the last 128 others; a committed incarnation drops the failed one it replaced; a payload no native-set recipient takes is counted; a `persist` closure counts as `outcome:persisted` | the per-identity map grew without bound, the replaced chain nested at every failure, payloads vanished uncounted without a primary, and a persisted queue counted as drained (`a_host_remembers_what_it_created_only_of_the_identities_it_runs_and_the_latest_it_ran`, `a_failed_incarnation_its_committed_successor_replaced_is_let_go`, `a_payload_no_recipient_of_the_native_set_takes_is_counted_as_dropped`, `a_retirement_is_counted_by_what_became_of_the_work_the_recipient_held`) |
+| Validation (4.7), review | A host with native intake recipients but no usable key is ready with the native warning | a blank primary key made `dd_out` ready silently (`a_host_warns_that_no_key_is_usable_only_once_it_holds_a_native_intake_recipient`) |
+| `saluki-io` (4.7, 4.15), review | A clone of a switchable client keeps one copy of the switched client, taken again only once the switch changes | every request took a fresh copy, whose per-endpoint telemetry the registry evicted 3 s later, so `network_http_requests_*`, `transactions.*`, and `forwarder_transactions_*` never accumulated; the parity test missed it because its recorder never evicts (`a_switchable_clients_clone_keeps_its_endpoint_telemetry_from_request_to_request_until_it_is_switched`) |
+| Installer core (4.7, 4.10), review | At the end of every event, a transaction follows a host's published withdrawn set that differs from what the table and the latest lowering withdraw (`withdrawal_differs`); a generation using a recipient its host withdraws while the latest lowering declares it waits for the transaction in flight to publish; a failed native recipient stays in the native set during its backoff | a retired identity stayed withdrawn and covered its next incarnation, and a generation could commit over a recipient its host still withdrew (`a_retired_endpoints_withdrawal_is_dropped_by_a_publication`, `a_generation_using_an_endpoint_added_back_while_it_drains_commits_once_the_transaction_restoring_it_published`, `a_recipient_a_generation_of_an_older_lowering_creates_after_a_newer_publication_is_withdrawn_at_once`, and the property test's world checks: a committing or arming generation uses no recipient its host withdraws while the latest lowering declares it; no stale withdrawal once no transaction is in flight; no resources revision rejected for a directory race) |
+| Installer core, delivery host (4.7), review | A failed incarnation's next one that fails before it is committed keeps the one it replaced, which takes the slot back when nothing holds either (`Replaced` is a chain in the core; the router walks `Entry::replaced`) | found by the property test: an abort of both successors left the slot empty under the leases naming it (`a_failed_recipient_keeps_its_slot_when_its_next_incarnation_fails_too_and_every_later_preparation_aborts`, `a_failed_recipient_takes_its_slot_back_after_its_next_incarnation_failed_too_and_both_successors_are_aborted`) |
+| ADP (4.3, 4.9), review | Native recipient identities by `queue_endpoint`; version 1 fingerprints by the configured endpoint | respelling `dd_url` live made a second primary that waited forever for the first one's directory while the first was withdrawn, cutting the primary off from all data (`the_primary_endpoint_respelled_live_keeps_receiving_every_batch_event_log_and_trace_once`, `a_native_recipients_queue_endpoint_tells_two_endpoints_apart_exactly_when_their_queue_directories_differ`) |
+| ADP (4.14), review | A configuration change whose preparation keeps failing sets `last_error`, and so the status summary's degraded reason, until it is in effect | the failures showed only in the logs (`an_endpoint_that_cannot_be_prepared_is_retried_while_the_endpoint_its_edit_removes_stops_at_the_transaction`) |
+| ADP (6.11), review | The reclamation test counts the budget against a memory limit, cycles a declared recipient and output beside the native endpoint, gives each cycle a domain of its own, and counts the metric handles the process holds | the budget was uncounted, so its check could not fail, and identity-keyed leaks never grew; a queue registration, a domain registration, a credential follower, or a budget credit left behind now fails it (mutation-checked) |
+
+**Deferred from stage 7**, each with its reason (the status document's deferred work lists them too):
+
+- Folding static mode into the delivery host (P7.1b D1): static mode is the native forwarder, which keeps every
+  forwarder test meaningful; the host is pinned against it.
+- Loading platform roots once per process across client rebuilds (P7.1b D17, 6.11's last sentence): builds run off
+  the routing loop, so a slow load delays only the switch; a shared root store belongs in `saluki-io`'s builder.
+- A structured prepare failure naming the recipient (P7.4 R3(b)), and a declared recipient's directory including its
+  name (R3(a)): both change other parts' interfaces; until then a rename that keeps endpoint and credential is
+  rejected while its predecessor owns the directory. Since the review, a directory a dropped loop owns makes a prepare
+  wait rather than fail, so text attribution meets only failures a declaration causes.
+- Tests 6.11 lists that the review did not add: a routing-group add and remove cycle in the reclamation test, and the
+  non-metrics delivery of a live `additional_endpoints` change while a cut is in flight (the failed-prepare case now
+  checks events, logs, and traces); per-cache counts beyond what the metric handles and the hosts' live bytes show
+  (the router's tombstones, which its unit tests cover).
+- A delivery host's validator keeps the per-endpoint telemetry of every domain it validated for the host's life, as a
+  native forwarder's does for its fixed set: bounded by the domains a process ever validates, which stop at the first
+  accepted key.
+- Growth in place (4.12): a recipient's credit keeps its creation's bytes; the design (`CreditKey::Resized`,
+  `PublishResources::admitted`) is P7.4 R6's. Queue bounds are capped at the host's in any case.
+- 4.13's validation errors for a declared `queue_bytes` above the native bound and for spilling without storage: the
+  plan crate cannot read host settings and ADP's resources validator does not see them; at run time the recipient's
+  bound is capped at the host's (`ForwarderConfiguration::for_recipient`), so the declaration cannot exceed it.
+- The idle encode host's 8-buffer input (4.6): rejected, see 4.6 as built.
 
 ### 8.3 Stage 7 gate
 
@@ -2574,7 +2669,10 @@ Sections 4.2, 4.3, 4.7, 4.10, 4.12, and 7 give the full text.
   buffer recorded.
 - Non-metrics delivery: the Panoramic correctness suites of 6.11 against the `main` image, and the ADP test in which
   logs, events, and traces follow live endpoint changes.
-- The stage gate commands, Vale on the changed documents and crates, and the demo check S0 to S11.
+- The stage gate commands, Vale on the changed documents and crates, and the demo check S0 to S11. **As built**, the
+  gate runs Vale on every file the stage changes or adds, `make test-measurement`, and `make
+  test-integration-targets` (every crate's `tests/` targets, which `make test` skips); CI runs the last two as jobs of
+  their own.
 
 ### 8.4 Stage 9: foundations, interfaces step, and parts
 
@@ -2788,8 +2886,9 @@ for 10 s to 30 s).
   of 4.15 (the forwarders' `io_loop` task, routing-encoder series by position, the new `payload_too_large` drops,
   per-domain running totals restarting when a domain returns); the idle failover hosts, including the Cluster Agent pair
   for every node whose Cluster Agent endpoint resolves, and the MRF warning that no longer asks for a restart (`run.rs`
-  says "Restart ADP after configuring the static MRF endpoint settings"); an idle encode host's smaller burst slack
-  until a restart; version 1 fingerprints accepted while they match; removal of a used output failing closed
+  says "Restart ADP after configuring the static MRF endpoint settings"); the smaller burst slack of outputs that share
+  an encode host (routing groups beside the main output; an idle host keeps its full input, 4.6 as built); version 1
+  fingerprints accepted while they match; removal of a used output failing closed
   (degraded), and a removed endpoint receiving nothing after the resource transaction that withdraws it, its last
   metrics payloads dropped and counted; proxy password rotation applied live; `forwarder_storage_max_size_in_bytes`
   live only between nonzero values; declared recipients never validated; the native key-reordering quirk now reachable
@@ -2979,6 +3078,42 @@ index](programmable-metrics-status.md#spec-amendments-index): themes EXE, FRM, N
      to stage 10 ("removing the aggregator isolation fence"). The pins in `compile/tests.rs`, `interpret/tests.rs`, and
      `installer/lifecycle_tests.rs` change with them. Settles the status document's open item on capability stage
      numbers.
+
+**Stage 7, from the parts and the integration step:**
+
+129. **Renumbered outputs reject new artifacts** (ART, C; refines 91 and 92). A new artifact whose recorded output is
+     not declared, but whose recorded fingerprint another routing group's output now carries, is rejected naming that
+     output (rebase), not held pending; the artifact in effect drops its emits with that reason.
+130. **Who asks for missing structure** (FRM, C; refines 107). A missing structure is the artifact's when the node it
+     is found at, or an end of the edge, has artifact provenance, or when a composed candidate leaves a host component
+     out ("requires stage 10 frame changes"); otherwise native configuration's ("needs a restart").
+131. **Bound outputs carry their own fingerprint rule** (IR, C; refines 90). Validation rejects a bound output whose
+     fingerprint is not the version 2 digest of its binding, so a lowering bug cannot hand artifacts a fingerprint that
+     does not cover the selector.
+132. **Version 1 bases upgrade when they compose** (ART, C; refines 61 and 4.5's version 1 rule). From a version 1
+     base's first composition on, each output it records with a version 1 fingerprint is compared by the version 2
+     fingerprint the output had then, so a dual-ship endpoint added under a role leaves it composing. The upgrade lives
+     in the installer and is lost at a restart, when the version 1 rule applies again.
+133. **A waiting artifact is the newest of its scope** (ART, C; refines 92). Any newer authentic revision for its scope
+     supersedes it, whatever becomes of that revision, and so does a snapshot that names its scope in several configs;
+     a stale or unreadable delivery does not.
+134. **Native recipients by configured position** (NAT, C; refines 95). Membership never depends on a key's value: a
+     configured key position stays a recipient while its endpoint lists it, whatever the key holds; a new position joins
+     as native construction decides at startup (a blank or duplicate key, or one that cannot be sent, is no recipient).
+135. **Burst slack per encode host** (EXE, D; amends stage 3's burst-slack promise where outputs share a host). The
+     outputs of one encode host share its 128-buffer input, so a burst that reaches several of them (the main output
+     and a routing group) backs up to its source sooner than when each had an encoder of its own.
+136. **Plan-level telemetry has owners** (TEL, C). Delivery hosts report `plan_recipients`,
+     `plan_recipient_retirements_total`, `plan_recipient_withdrawn_payloads_total`, and `plan_resource_conflicts`
+     under their `component_id`; encode hosts their invalid loss; the installer `plan_live_leases` and
+     `plan_resource_budget_bytes`. One series has one writer.
+137. **Withdrawal precedes the generation that drops a recipient** (INS, C; refines 91). Payloads routed to a removed
+     recipient after the transaction that withdraws it are dropped and counted, including those the old generation's
+     leases build before the generation without it commits; exactness for a removed recipient holds up to that
+     transaction. An added recipient receives from the first batch of the generation that binds it.
+138. **Retirements are releases** (INS, C; refines 96). A retired acknowledgment, and a listed retirement with its drain
+     report, belong to an incarnation the installer released; an incarnation an abort dropped, or a loop that ended on
+     its own (a failure), is not a retirement.
 
 **Stage 9:**
 

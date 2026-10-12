@@ -52,7 +52,7 @@ fn bindings_read_from_configuration_are_named_by_their_typed_model_path() {
 }
 
 #[test]
-fn live_bindings_are_exactly_the_natively_live_inputs() {
+fn live_bindings_are_exactly_the_natively_live_inputs_and_those_of_the_output_branches() {
     let live = BINDINGS
         .iter()
         .filter(|spec| spec.liveness == Liveness::Live)
@@ -61,11 +61,16 @@ fn live_bindings_are_exactly_the_natively_live_inputs() {
     assert_eq!(
         live,
         [
+            // The output branches follow the current configuration, and their gateways' inputs with them.
+            "autoscaling_failover.metrics",
             "dogstatsd.metric_filter.match_prefix",
             "dogstatsd.metric_filter.values",
             // Derived from the live filterlist.
             "dogstatsd.post_aggregate_filter.values",
             "dogstatsd.tag_filterlist",
+            "metrics_endpoint_routing.group.{key}.names",
+            "metrics_endpoint_routing.group.{key}.prefixes",
+            "multi_region_failover.enabled",
             "multi_region_failover.metric_mirroring.allowlist",
             "multi_region_failover.metric_mirroring.enabled",
         ]
@@ -141,8 +146,8 @@ autoscaling: {failover: {metrics: [cpu]}}
         startup: &config,
         current: &config,
     };
-    let b_key = super::super::outputs::routing_group_key(&["https://b.example.com".to_string()]);
-    let c_key = super::super::outputs::routing_group_key(&["https://c.example.com".to_string()]);
+    let b_key = super::super::resources::routing_group_key(&["https://b.example.com".to_string()]);
+    let c_key = super::super::resources::routing_group_key(&["https://c.example.com".to_string()]);
     let cases = [
         (
             "dogstatsd.mapper.profiles".to_string(),

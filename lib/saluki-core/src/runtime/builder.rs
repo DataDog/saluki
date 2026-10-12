@@ -353,6 +353,23 @@ impl<'a, S: BuilderState> ChildBuilder<'a, S> {
         self.map_spec(|spec| spec.with_runtime(handle))
     }
 
+    /// Accounts this child task's memory and CPU time in the resource group `name`, rather than in its parent's.
+    ///
+    /// By default, a child task is accounted in the resource group of the process that spawns it. Use this for a task
+    /// whose resource usage should be reported apart from its parent's, such as one task per logical stream that a
+    /// component multiplexes.
+    ///
+    /// Resource groups are never released, so `name` must come from a bounded set: a group with this name is created
+    /// the first time it is used, and every later child given the same name shares it. The child's tasks, including
+    /// those it spawns into its own scope, inherit the group.
+    pub fn with_resource_group<N>(self, name: N) -> Self
+    where
+        N: Into<String>,
+    {
+        let name = name.into();
+        self.map_spec(|spec| spec.with_resource_group(name))
+    }
+
     /// Sets an explicit shutdown timeout for this child task.
     ///
     /// By default a closure-based child has no deadline of its own and is bounded only by the supervisor's shutdown

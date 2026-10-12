@@ -18,12 +18,18 @@ impl ConsumerMetrics {
     }
 }
 
+/// Sees each item a consumer yields (see [`Consumer::observe`]).
+#[cfg(any(test, feature = "test-util"))]
+type Observer<T> = Box<dyn Fn(&T) + Send + Sync>;
+
 /// A stream of items sent to a component.
 ///
 /// This represents the receiving end of a component interconnect, where the sending end is [`Dispatcher<T>`][super::Dispatcher].
 pub struct Consumer<T> {
     inner: mpsc::Receiver<T>,
     metrics: ConsumerMetrics,
+    #[cfg(any(test, feature = "test-util"))]
+    observer: Option<Observer<T>>,
 }
 
 impl<T> Consumer<T>
@@ -35,7 +41,23 @@ where
         Self {
             inner,
             metrics: ConsumerMetrics::from_component_context(context),
+            #[cfg(any(test, feature = "test-util"))]
+            observer: None,
         }
+    }
+
+    /// Calls `observer` with every item this consumer yields from now on, before the component receives it, in place
+    /// of any observer set earlier.
+    ///
+    /// This is a test helper, with the `test-util` feature: it lets a test or a measurement see what a component
+    /// receives, such as when a marker reaches an encoder, without a hop in front of the component. The observer runs
+    /// on the component's task, so it must be cheap.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn observe<F>(&mut self, observer: F)
+    where
+        F: Fn(&T) + Send + Sync + 'static,
+    {
+        self.observer = Some(Box::new(observer));
     }
 
     /// Gets the next item in the stream.
@@ -46,10 +68,23 @@ where
             Some(item) => {
                 self.metrics.events_received_total().increment(item.item_count() as u64);
                 self.metrics.events_received_size().record(item.item_count() as f64);
+                #[cfg(any(test, feature = "test-util"))]
+                if let Some(observer) = &self.observer {
+                    observer(&item);
+                }
                 Some(item)
             }
             None => None,
         }
+    }
+
+    /// Returns the number of items sent to this consumer and not received yet.
+    ///
+    /// Items are received in the order they were sent, so once this consumer has received as many more items as this
+    /// returns, it has received every item that was sent before the call. A component uses that to order a request it
+    /// receives on another channel after everything already sent to it.
+    pub fn queued(&self) -> usize {
+        self.inner.len()
     }
 }
 
@@ -125,6 +160,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn queued_counts_what_was_sent_and_not_received_yet() {
+        let (mut consumer, tx) = create_consumer(4);
+        assert_eq!(consumer.queued(), 0);
+
+        for data in ["a", "b", "c"] {
+            tx.send(DispatchableEvent::new(data))
+                .await
+                .expect("should not fail to send item");
+        }
+        assert_eq!(consumer.queued(), 3);
+
+        // Items are received in order: once as many more as were queued have been received, every one sent before is.
+        consumer.next().await.expect("should receive item");
+        assert_eq!(consumer.queued(), 2);
+
+        // Items still queued when every sender is gone are still received and counted.
+        drop(tx);
+        assert_eq!(consumer.queued(), 2);
+        consumer.next().await.expect("should receive item");
+        consumer.next().await.expect("should receive item");
+        assert_eq!(consumer.queued(), 0);
+        assert!(consumer.next().await.is_none());
+    }
+
+    #[tokio::test]
     async fn metrics() {
         let events_received_key =
             get_consumer_metric_composite_key(MetricKind::Counter, ConsumerMetrics::events_received_total_name());
@@ -177,5 +237,22 @@ mod tests {
 
         let expected_sizes = vec![OrderedFloat(42.0)];
         assert_eq!(events_received_size, &DebugValue::Histogram(expected_sizes));
+    }
+
+    #[tokio::test]
+    async fn an_observer_sees_every_item_before_the_component_does() {
+        use std::sync::{Arc, Mutex};
+
+        let (mut consumer, tx) = create_consumer(2);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&seen);
+        consumer.observe(move |item: &DispatchableEvent<&'static str>| observed.lock().unwrap().push(item.data));
+
+        tx.send(DispatchableEvent::new("first")).await.unwrap();
+        tx.send(DispatchableEvent::new("second")).await.unwrap();
+        assert_eq!(consumer.next().await.unwrap().data, "first");
+        assert_eq!(*seen.lock().unwrap(), ["first"]);
+        assert_eq!(consumer.next().await.unwrap().data, "second");
+        assert_eq!(*seen.lock().unwrap(), ["first", "second"]);
     }
 }

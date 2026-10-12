@@ -139,6 +139,7 @@ fn policy_plan(policies: usize) -> (Plan, MemoryCatalog) {
                 accepts: PortType::ANY,
                 fingerprint: fingerprint(output).parse().unwrap(),
                 recipients: Vec::new(),
+                legacy_fingerprint: None,
             },
         )
     });
@@ -450,7 +451,7 @@ fn bench_region(c: &mut Criterion) {
                 let mut delivered = sink
                     .drain()
                     .map(|(exit, buffer)| match &slot.exits[exit.get()].target {
-                        FrameTarget::Output(output) => (output.to_string(), names(&buffer)),
+                        FrameTarget::Destination(output) => (output.to_string(), names(&buffer)),
                         target => panic!("an exit to {:?}", target),
                     })
                     .collect::<Vec<_>>();
@@ -556,6 +557,7 @@ fn default_program_with(policies: usize) -> (Plan, MemoryCatalog) {
                 accepts: PortType::ANY,
                 fingerprint: fingerprint(&output).parse().unwrap(),
                 recipients: vec![RecipientId::new(recipient).unwrap()],
+                legacy_fingerprint: None,
             },
         );
         for list in ["names", "prefixes"] {
@@ -934,7 +936,7 @@ fn bench_default_program(c: &mut Criterion) {
                         .run(batch.clone(), now, &mut Budget::unlimited())
                         .into_iter()
                         .map(|(target, buffer)| match target {
-                            FrameTarget::Output(output) => (output.to_string(), buffer),
+                            FrameTarget::Destination(output) => (output.to_string(), buffer),
                             target => panic!("a delivery to {:?}", target),
                         });
                     assert_eq!(by_output(delivered), expected);

@@ -17,6 +17,8 @@ use saluki_io::net::util::retry::{
 };
 use tracing::debug;
 
+use super::delivery::RetrySettings;
+
 const RETRY_TXN_DIR: &str = "transactions_to_retry";
 const RETRY_QUEUE_CAPACITY_MIN_HISTORY_DURATION_SECS: u64 = 10;
 
@@ -123,8 +125,7 @@ impl<B, Error> RetryClassifier<Response<B>, Error> for SecretsHttpClassifier<B> 
 }
 
 /// Datadog Agent-specific forwarder retry configuration.
-#[derive(Clone)]
-#[cfg_attr(test, derive(Debug, PartialEq))]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RetryConfiguration {
     /// The minimum backoff factor to use when retrying requests.
     ///
@@ -218,6 +219,26 @@ impl RetryConfiguration {
         }
     }
 
+    /// Returns this configuration with the retry settings a delivery host publishes in place of its own.
+    ///
+    /// The storage path and the capacity estimate's window are fixed when the host is built, so they are kept.
+    pub(crate) fn with_settings(&self, settings: &RetrySettings) -> Self {
+        Self {
+            backoff_factor: settings.backoff_factor,
+            backoff_base: settings.backoff_base,
+            backoff_max: settings.backoff_max,
+            recovery_error_decrease_factor: settings.recovery_error_decrease_factor,
+            recovery_reset: settings.recovery_reset,
+            queue_max_size_bytes: settings.queue_max_size_bytes,
+            storage_max_size_bytes: settings.storage_max_size_bytes,
+            flush_to_disk_mem_ratio: settings.flush_to_disk_mem_ratio,
+            storage_path: self.storage_path.clone(),
+            storage_max_disk_ratio: settings.storage_max_disk_ratio,
+            outdated_file_in_days: settings.outdated_file_in_days,
+            capacity_time_interval_secs: self.capacity_time_interval_secs,
+        }
+    }
+
     /// Returns the maximum size of the retry queue in bytes.
     pub const fn queue_max_size_bytes(&self) -> u64 {
         self.queue_max_size_bytes
@@ -264,20 +285,36 @@ impl RetryConfiguration {
     pub(crate) fn to_default_http_retry_policy<B: 'static>(
         &self, secrets: SecretsGate, retry_causes: RetryCauseTelemetry,
     ) -> SecretsHttpRetryPolicy<B> {
-        let retry_backoff = ExponentialBackoff::with_jitter(
-            Duration::from_secs_f64(self.backoff_base),
-            Duration::from_secs_f64(self.backoff_max),
-            self.backoff_factor,
-        );
         let classifier = SecretsHttpClassifier {
             standard: StandardHttpClassifier::new(),
             secrets,
         };
 
-        let recovery_error_decrease_factor = (!self.recovery_reset).then_some(self.recovery_error_decrease_factor);
-        RollingExponentialBackoffRetryPolicy::new(classifier, retry_backoff)
+        RollingExponentialBackoffRetryPolicy::new(classifier, self.retry_backoff())
             .with_retry_lifecycle(StandardHttpRetryLifecycle::new().with_telemetry(retry_causes))
-            .with_recovery_error_decrease_factor(recovery_error_decrease_factor)
+            .with_recovery_error_decrease_factor(self.recovery_error_decrease_factor())
+    }
+
+    /// Changes `policy`, built by [`to_default_http_retry_policy`][Self::to_default_http_retry_policy], to back off and
+    /// recover as this configuration says.
+    ///
+    /// The policy keeps its count of errors, its classifier, and its telemetry, so a policy whose settings a
+    /// publication changes keeps backing off from where it was.
+    pub(crate) fn update_http_retry_policy<B>(&self, policy: &mut SecretsHttpRetryPolicy<B>) {
+        policy.set_backoff(self.retry_backoff());
+        policy.set_recovery_error_decrease_factor(self.recovery_error_decrease_factor());
+    }
+
+    fn retry_backoff(&self) -> ExponentialBackoff {
+        ExponentialBackoff::with_jitter(
+            Duration::from_secs_f64(self.backoff_base),
+            Duration::from_secs_f64(self.backoff_max),
+            self.backoff_factor,
+        )
+    }
+
+    fn recovery_error_decrease_factor(&self) -> Option<u32> {
+        (!self.recovery_reset).then_some(self.recovery_error_decrease_factor)
     }
 }
 
@@ -391,6 +428,47 @@ mod tests {
         let retry_config = RetryConfiguration::from_configuration(&forwarder, None);
 
         assert_eq!(1024 * 2 * 1024 * 1024, retry_config.queue_max_size_bytes());
+    }
+
+    #[test]
+    fn published_retry_settings_replace_the_configured_ones_except_what_the_host_fixes_when_built() {
+        let forwarder = shared::Forwarder {
+            storage_path: PathBuf::from("/var/run/retries"),
+            retry_queue_capacity_time_interval_sec: 60,
+            ..Default::default()
+        };
+        let configured = RetryConfiguration::from_configuration(&forwarder, None);
+        let settings = RetrySettings {
+            backoff_factor: 3.0,
+            backoff_base: 4.0,
+            backoff_max: 5.0,
+            recovery_error_decrease_factor: 6,
+            recovery_reset: true,
+            queue_max_size_bytes: 7,
+            storage_max_size_bytes: 8,
+            flush_to_disk_mem_ratio: 0.9,
+            storage_max_disk_ratio: 0.25,
+            outdated_file_in_days: 11,
+        };
+
+        let published = configured.with_settings(&settings);
+        assert_eq!(
+            published,
+            RetryConfiguration {
+                backoff_factor: 3.0,
+                backoff_base: 4.0,
+                backoff_max: 5.0,
+                recovery_error_decrease_factor: 6,
+                recovery_reset: true,
+                queue_max_size_bytes: 7,
+                storage_max_size_bytes: 8,
+                flush_to_disk_mem_ratio: 0.9,
+                storage_path: PathBuf::from("/var/run/retries"),
+                storage_max_disk_ratio: 0.25,
+                outdated_file_in_days: 11,
+                capacity_time_interval_secs: 60,
+            }
+        );
     }
 
     #[test]

@@ -393,10 +393,10 @@ demo-programmable-metrics: ## Runs the programmable metrics demo: ADP on the def
 
 .PHONY: demo-programmable-metrics-check
 demo-programmable-metrics-check: build-adp
-demo-programmable-metrics-check: ## Runs the programmable metrics demo scenarios S0-S6 headless against ADP and checks what each endpoint receives (extra flags: DEMO_CHECK_ARGS)
+demo-programmable-metrics-check: ## Runs the programmable metrics demo scenarios S0-S6 and S8-S11 headless against ADP and checks what each endpoint receives (extra flags: DEMO_CHECK_ARGS)
 	@echo "[*] Building the programmable metrics demo..."
 	@cargo build --profile devel --package programmable-metrics-demo
-	@echo "[*] Running the programmable metrics demo check (scenarios S0-S6, headless, UI port 27080 unless --port-offset is in DEMO_CHECK_ARGS)..."
+	@echo "[*] Running the programmable metrics demo check (scenarios S0-S6 and S8-S11, headless, UI port 27080 unless --port-offset is in DEMO_CHECK_ARGS)..."
 	@target/devel/programmable-metrics-demo check --adp-bin target/devel/agent-data-plane $(DEMO_CHECK_ARGS)
 
 ##@ Kubernetes
@@ -622,9 +622,25 @@ test-loom: ## Runs all Loom-specific unit tests
 	@echo "[*] Running Loom-specific unit tests..."
 	cargo nextest run --release --features loom -p stringtheory -p saluki-core loom_tests
 
+.PHONY: test-measurement
+test-measurement: check-rust-build-tools cargo-install-cargo-nextest
+test-measurement: ## Lints and runs the tests of the measurement probes and harness (the `measurement` features)
+	@echo "[*] Checking and running the measurement probes' and harness's tests..."
+	cargo clippy --all-targets -p saluki-core -p saluki-components -p agent-data-plane \
+		--features saluki-core/measurement,saluki-components/measurement,agent-data-plane/measurement -- -D warnings
+	cargo nextest run --lib --bins --no-fail-fast -p saluki-core -p saluki-components -p agent-data-plane \
+		--features saluki-core/measurement,saluki-components/measurement,agent-data-plane/measurement \
+		-E 'test(/probes|measurement/)'
+
+.PHONY: test-integration-targets
+test-integration-targets: check-rust-build-tools cargo-install-cargo-nextest
+test-integration-targets: ## Runs every crate's integration test targets (`tests/`), which `make test` skips
+	@echo "[*] Running the integration test targets of every crate..."
+	cargo nextest run --workspace --test '*' --no-fail-fast
+
 .PHONY: test-all
 test-all: ## Test everything
-test-all: test test-property test-docs test-miri test-loom
+test-all: test test-property test-docs test-miri test-loom test-measurement test-integration-targets
 
 .PHONY: test-correctness
 test-correctness: build-panoramic build-correctness-tools-image build-datadog-agent-image-release
@@ -908,6 +924,28 @@ ifeq ($(shell test -f test/ddprof/bin/ddprof || echo not-found), not-found)
 	@tar -C test -xf /tmp/ddprof.tar.xz
 	@rm -f /tmp/ddprof.tar.xz
 endif
+
+SCALING_LEGACY_BASE ?= b940bf1f8b
+export SCALING_LEGACY_IMAGE ?= saluki-images/agent-data-plane:legacy-$(SCALING_LEGACY_BASE)
+export SCALING_PLAN_IMAGE ?= saluki-images/agent-data-plane:plan
+
+.PHONY: scaling-images
+scaling-images: ## Builds the images the scaling curves compare: legacy (SCALING_LEGACY_BASE) and plan (this tree)
+	@echo "[*] Building the legacy image from $(SCALING_LEGACY_BASE) in a temporary work tree..."
+	@rm -rf target/scaling-legacy-tree
+	@git worktree prune
+	@git worktree add --detach target/scaling-legacy-tree $(SCALING_LEGACY_BASE)
+	@$(MAKE) -C target/scaling-legacy-tree build-adp-image-release
+	@docker tag saluki-images/agent-data-plane:testing-release $(SCALING_LEGACY_IMAGE)
+	@git worktree remove --force target/scaling-legacy-tree
+	@echo "[*] Building the plan image from this tree..."
+	@$(MAKE) build-adp-image-release
+	@docker tag saluki-images/agent-data-plane:testing-release $(SCALING_PLAN_IMAGE)
+
+.PHONY: scaling-curves
+scaling-curves: ## Runs the containerized scaling curves, legacy against plan (Linux; see test/scaling/README.md)
+	@echo "[*] Running the scaling curves (images $(SCALING_LEGACY_IMAGE) and $(SCALING_PLAN_IMAGE))..."
+	@./test/scaling/run-curves.sh
 
 ##@ Development
 
