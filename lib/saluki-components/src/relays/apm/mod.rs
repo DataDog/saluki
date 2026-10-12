@@ -76,7 +76,12 @@ impl ApmRelayConfiguration {
         let receiver_endpoint = if config.receiver_port == 0 {
             String::new()
         } else {
-            format!("127.0.0.1:{}", config.receiver_port)
+            let listen_address = if config.non_local_traffic {
+                "0.0.0.0"
+            } else {
+                "127.0.0.1"
+            };
+            format!("{}:{}", listen_address, config.receiver_port)
         };
         Self {
             receiver_endpoint,
