@@ -307,6 +307,8 @@ fn normalize_prefix_rules(rules: &[MetricPrefixRule]) -> (Vec<PrefixRule>, Vec<S
     (normalized, dropped_rules, dropped_exceptions)
 }
 
+/// Compact a list of prefixes by removing any prefixes that already have a shorter prefix
+/// defined for it.
 fn compact_prefixes(mut prefixes: Vec<String>) -> Vec<String> {
     if prefixes.is_empty() {
         return Vec::new();
@@ -325,6 +327,8 @@ fn compact_prefixes(mut prefixes: Vec<String>) -> Vec<String> {
     compacted
 }
 
+/// Remove any exact matches that are duplicates or are already defined by a given
+/// prefix rule.
 fn compact_exact(mut exact: Vec<String>, prefixes: &[String]) -> Vec<String> {
     if exact.is_empty() {
         return Vec::new();

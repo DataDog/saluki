@@ -274,17 +274,17 @@ fn parse_metric_prefix_rule(key: &str, raw: serde_json::Map<String, serde_json::
     struct RawEntry {
         prefix: String,
         #[serde(default)]
-        except_prefix: Vec<String>,
+        except_prefix: Option<Vec<String>>,
         #[serde(default)]
-        except_exact: Vec<String>,
+        except_exact: Option<Vec<String>>,
     }
 
     let parsed: RawEntry =
         serde_json::from_value(serde_json::Value::Object(raw)).map_err(|error| TranslateError::new(key, error))?;
     Ok(MetricPrefixRule {
         prefix: parsed.prefix,
-        except_prefix: parsed.except_prefix,
-        except_exact: parsed.except_exact,
+        except_prefix: parsed.except_prefix.unwrap_or_default(),
+        except_exact: parsed.except_exact.unwrap_or_default(),
     })
 }
 
@@ -2800,6 +2800,29 @@ mod tests {
         let (config, errors) = translate_explicit(json!({
             "metric_filterlist_prefix": [
                 { "prefix": "requests." }
+            ],
+        }));
+
+        assert!(errors.is_none());
+        assert_eq!(
+            config.domains.dogstatsd.metric_filter.prefix_rules,
+            vec![MetricPrefixRule {
+                prefix: "requests.".to_string(),
+                except_prefix: Vec::new(),
+                except_exact: Vec::new(),
+            }]
+        );
+    }
+
+    #[test]
+    fn metric_filter_prefix_rules_with_null_optional_fields_keep_empty_exceptions() {
+        let (config, errors) = translate_explicit(json!({
+            "metric_filterlist_prefix": [
+                {
+                    "prefix": "requests.",
+                    "except_prefix": null,
+                    "except_exact": null,
+                }
             ],
         }));
 
