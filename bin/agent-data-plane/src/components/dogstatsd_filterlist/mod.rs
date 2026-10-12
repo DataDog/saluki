@@ -188,7 +188,7 @@ impl Blocklist {
         self.exact.len() + self.prefixes.len() + self.rule_prefixes.len()
     }
 
-    /// Returns whether the matcher blocks every storable metric name.
+    /// Returns whether the matcher blocks every stored metric name.
     pub(super) fn matches_all(&self) -> bool {
         if self.prefixes.len() == 1 && self.prefixes[0].is_empty() {
             return true;
