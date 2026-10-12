@@ -25,7 +25,7 @@ use saluki_components::{
         AutoscalingFailoverConfiguration, ClusterAgentConfiguration, MetricsEndpointRoutingConfiguration,
         MrfConfiguration,
     },
-    decoders::otlp::OtlpDecoderConfiguration,
+    decoders::{datadog::ApmTraceV1DecoderConfiguration, otlp::OtlpDecoderConfiguration},
     destinations::{
         DogStatsDClientTelemetryConfiguration, DogStatsDDebugLogConfiguration, DogStatsDStatisticsConfiguration,
     },
@@ -1078,13 +1078,12 @@ async fn add_apm_pipeline_to_blueprint(
 ) -> Result<(), GenericError> {
     let config = config_system.config();
     let dd_traces_relay = ApmRelayConfiguration::from_configuration(&config.domains.apm);
+    let dd_traces_v1_decoder = ApmTraceV1DecoderConfiguration::new();
     blueprint
         .add_relay("dd_traces_relay", dd_traces_relay)?
-    // FIXME: for now, encoded traces are outputed from dd_traces_relay but they are not processed
-        // .add_decoder("dd_traces_decode", todo!())?
-        // .connect_components_in_order(["dd_traces_relay.traces", "dd_traces_decode", "dd_traces_enrich"])?;
-        .connect_components("dd_traces_relay", "dd_out")? // FIXME: these are not really connected, this is a workaround to bypass the disconnected components check
-    ;
+        .add_decoder("dd_traces_v1_decoder", dd_traces_v1_decoder)?
+        .connect_components("dd_traces_relay.traces", "dd_traces_v1_decoder")?
+        .connect_components("dd_traces_v1_decoder", "traces_enrich")?;
     Ok(())
 }
 

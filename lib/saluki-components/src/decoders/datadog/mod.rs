@@ -13,7 +13,7 @@
 //! `Trace` model, producing one `Trace` per trace chunk. String references are resolved to owned
 //! strings during decode.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use saluki_common::collections::FastHashMap;
 use saluki_core::{
@@ -25,14 +25,18 @@ use saluki_core::{
     data_model::{
         event::{
             trace::{AttributeValue, PayloadFields, Span, SpanEvent, SpanLink, Trace},
-            EventType,
+            Event, EventType,
         },
         payload::PayloadType,
     },
+    topology::interconnect::EventBufferManager,
 };
 use saluki_error::GenericError;
 use stringtheory::MetaString;
-use tokio::select;
+use tokio::{
+    select,
+    time::{interval, MissedTickBehavior},
+};
 use tonic::async_trait;
 use tracing::{debug, error, warn};
 
@@ -55,6 +59,13 @@ const MIN_BYTES_PER_SPAN: u32 = 21;
 
 /// TODO: doc
 pub struct ApmTraceV1DecoderConfiguration {}
+
+impl ApmTraceV1DecoderConfiguration {
+    /// TODO: doc
+    pub fn new() -> Self {
+        Self {}
+    }
+}
 
 #[async_trait]
 impl DecoderBuilder for ApmTraceV1DecoderConfiguration {
@@ -88,6 +99,12 @@ impl ApmTraceV1Decoder {
 #[async_trait]
 impl Decoder for ApmTraceV1Decoder {
     async fn run(self: Box<Self>, mut context: DecoderContext) -> Result<(), GenericError> {
+        // Set a buffer flush interval of 100ms to ensure we flush buffered events periodically.
+        let mut buffer_flush = interval(Duration::from_millis(100));
+        buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+        let mut event_buffer_manager = EventBufferManager::default();
+
         let mut health = context.take_health_handle();
         health.mark_ready();
 
@@ -116,14 +133,18 @@ impl Decoder for ApmTraceV1Decoder {
                     let traces = match decode_v1_payload(&payload_bytes) {
                         Ok(traces) => traces,
                         Err(e) => {
+                            // TODO: metrics ?
                             error!(error = %e, "Failed to decode V1 trace request.");
                             continue;
                         }
                     };
 
-                    // TODO: event buffer
-                if let Err(e) = context.dispatcher().dispatch(traces).await {
-                    error!(error = %e, "Failed to dispatch trace events.");
+                for trace in traces {
+                    if let Some(event_buffer) = event_buffer_manager.try_push(Event::Trace(trace)) {
+                        if let Err(e) = context.dispatcher().dispatch(event_buffer).await {
+                            error!(error = %e, "Failed to dispatch trace events.");
+                        }
+                    }
                 }
                 },
                 _ = health.live() => continue,
