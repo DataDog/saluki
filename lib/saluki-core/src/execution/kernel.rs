@@ -171,6 +171,17 @@ pub trait Kernel: Send {
     fn held(&self) -> LossCount {
         LossCount::default()
     }
+
+    /// Publishes the telemetry the kernel counted since it last published.
+    ///
+    /// A kernel whose telemetry would otherwise write shared handles for every event it processes can count in plain
+    /// integers of its own instead, and write what it counted to the same handles here, as one change of each. Several
+    /// instances of one kernel that run in parallel then never contend on a handle on their data path, and each series
+    /// still sums what they all counted. Its host calls this about once a second, and once more when it stops; a
+    /// kernel that accumulates publishes what is left when it is dropped, too, so that nothing it counted is lost.
+    ///
+    /// The default does nothing, which is correct for kernels that write their telemetry as they go, or have none.
+    fn publish_telemetry(&mut self) {}
 }
 
 /// A control message that tells a [`Kernel`] that the clock upstream of it restarted.

@@ -55,8 +55,10 @@ fn a_tracker_follows_each_point_and_reports_resets_and_faults() {
         watermark,
         max_latest,
     };
-    let reset = |point, pre: Option<u64>| Observation::Reset {
+    let reset = |point, previous, final_latest, pre: Option<u64>| Observation::EpochSwitched {
         point,
+        previous,
+        final_latest: secs(final_latest),
         pre: pre.map(secs),
     };
     let cases: Vec<(&str, &[AdmissionPointId], Vec<Step>)> = vec![
@@ -84,10 +86,21 @@ fn a_tracker_follows_each_point_and_reports_resets_and_faults() {
             &[A],
             vec![
                 step(stamped(A, 100, 0, 1), Observation::Ok, Some(100), Some(100)),
-                step(stamped(A, 40, 1, 1), reset(A, Some(100)), Some(40), Some(40)),
+                step(stamped(A, 40, 1, 1), reset(A, 0, 100, Some(100)), Some(40), Some(40)),
                 step(stamped(A, 41, 1, 1), Observation::Ok, Some(41), Some(41)),
-                // Epochs wrap: any change is a reset, even to a smaller epoch.
-                step(stamped(A, 30, 0, 1), reset(A, Some(41)), Some(30), Some(30)),
+            ],
+        ),
+        (
+            "epochs wrap: the epoch after the largest is the smallest, and newer",
+            &[A],
+            vec![
+                step(stamped(A, 100, u32::MAX, 1), Observation::Ok, Some(100), Some(100)),
+                step(
+                    stamped(A, 30, 0, 1),
+                    reset(A, u32::MAX, 100, Some(100)),
+                    Some(30),
+                    Some(30),
+                ),
             ],
         ),
         (
@@ -95,7 +108,7 @@ fn a_tracker_follows_each_point_and_reports_resets_and_faults() {
             &[A, B],
             vec![
                 step(stamped(A, 100, 0, 1), Observation::Ok, None, Some(100)),
-                step(stamped(A, 40, 3, 1), reset(A, None), None, Some(40)),
+                step(stamped(A, 40, 3, 1), reset(A, 0, 100, None), None, Some(40)),
                 step(stamped(B, 50, 0, 1), Observation::Ok, Some(40), Some(50)),
             ],
         ),
@@ -237,6 +250,51 @@ fn a_tracker_has_switched_once_every_point_sent_the_generation_or_a_later_one() 
 }
 
 #[test]
+fn an_epoch_is_newer_than_another_when_it_is_less_than_half_the_range_ahead() {
+    assert!(epoch_newer(1, 0));
+    assert!(epoch_newer(7, 3));
+    assert!(epoch_newer(0, u32::MAX), "epochs wrap");
+    assert!(epoch_newer(2, u32::MAX - 1));
+    assert!(!epoch_newer(0, 1));
+    assert!(!epoch_newer(u32::MAX, 0));
+    assert!(!epoch_newer(5, 5), "an epoch is not newer than itself");
+    assert!(epoch_newer(i32::MAX as u32, 0));
+    assert!(!epoch_newer(1 << 31, 0), "half the range ahead is not newer");
+}
+
+/// Observes a header of `point` in epoch 0 after one in epoch 1, which one path in stamping order never delivers.
+fn observe_an_older_epoch() -> (Observation, WatermarkTracker) {
+    let mut tracker = WatermarkTracker::new([A]);
+    assert_eq!(tracker.observe(&stamped(A, 100, 0, 1)), Observation::Ok);
+    assert!(matches!(
+        tracker.observe(&stamped(A, 40, 1, 2)),
+        Observation::EpochSwitched { previous: 0, .. }
+    ));
+    let observation = tracker.observe(&stamped(A, 120, 0, 3));
+    (observation, tracker)
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "admission point 0 stamped epoch 0 after epoch 1")]
+fn a_header_of_an_older_epoch_after_a_newer_one_fails_a_debug_assertion() {
+    observe_an_older_epoch();
+}
+
+#[test]
+#[cfg(not(debug_assertions))]
+fn a_header_of_an_older_epoch_after_a_newer_one_is_a_fault_the_tracker_ignores() {
+    let (observation, tracker) = observe_an_older_epoch();
+    assert_eq!(observation, Observation::Fault);
+    // The point stays in its newer epoch, at its time and generation there.
+    let progress = tracker.progress(A).unwrap();
+    assert_eq!(
+        (progress.epoch, progress.latest, progress.max_generation),
+        (1, secs(40), Some(GenerationId::new(2)))
+    );
+}
+
+#[test]
 fn a_tracker_is_in_the_publication_epoch_when_every_recorded_point_is() {
     // (case, headers, the cut's recorded epochs, in the publication epoch)
     type Case = (&'static str, Vec<BatchHeader>, Vec<(AdmissionPointId, u32)>, bool);
@@ -279,6 +337,56 @@ fn a_tracker_is_in_the_publication_epoch_when_every_recorded_point_is() {
             tracker.observe(header);
         }
         assert_eq!(tracker.in_publication_epoch(&cut(100, &epochs)), expected, "{}", name);
+    }
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(1024))]
+
+    #[test]
+    fn property_test_an_epoch_switch_reports_what_the_tracker_knew_before_it(
+        base in proptest::prelude::any::<u32>(),
+        headers in proptest::collection::vec((0u32..2, 0u64..50, proptest::prelude::any::<bool>()), 1..24),
+        recorded in proptest::collection::vec((0u32..2, 0u32..3), 0..3),
+    ) {
+        // A host decides whether a reset's watermark is in a cut's publication epoch from the observation alone, with
+        // no copy of the tracker: the rule evaluated after the switch with the point's previous epoch is the rule as it
+        // stood before the header, and the switch reports the point's last time in its previous epoch. Each point's
+        // epochs start at `base`, which can be near the end of the range, and a header may move its point to the next
+        // one, as a clock reset does; the cut records epochs from `base` on.
+        let epochs = recorded
+            .iter()
+            .map(|(point, offset)| (AdmissionPointId::new(*point), base.wrapping_add(*offset)))
+            .collect::<Vec<_>>();
+        let cut = cut(100, &epochs);
+        let mut tracker = WatermarkTracker::new([A, B]);
+        let mut current = std::collections::BTreeMap::new();
+        for (point, t_a, switch) in headers {
+            let point = AdmissionPointId::new(point);
+            let (epoch, latest) = current.entry(point).or_insert((base, 0));
+            if switch {
+                *epoch = epoch.wrapping_add(1);
+                *latest = 0;
+            }
+            // Times only grow within one epoch of a point, as one path in stamping order delivers them.
+            *latest = (*latest).max(t_a);
+            let (epoch, t_a) = (*epoch, *latest);
+            let before = tracker.clone();
+            match tracker.observe(&stamped(point, t_a, epoch, 1)) {
+                Observation::EpochSwitched { point: switched, previous, final_latest, pre } => {
+                    let known = before.progress(switched).expect("a point switches only after it sent something");
+                    proptest::prop_assert_eq!(switched, point);
+                    proptest::prop_assert_eq!((previous, final_latest), (known.epoch, known.latest));
+                    proptest::prop_assert_eq!(pre, before.watermark());
+                    proptest::prop_assert_eq!(
+                        tracker.in_publication_epoch_with(&cut, switched, previous),
+                        before.in_publication_epoch(&cut)
+                    );
+                }
+                Observation::Ok => {}
+                Observation::Fault => proptest::prop_assert!(false, "every header is stamped by an upstream point"),
+            }
+        }
     }
 }
 

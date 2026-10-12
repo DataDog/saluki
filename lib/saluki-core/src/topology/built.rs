@@ -51,7 +51,7 @@ use crate::runtime::state::DataspaceRegistry;
 use crate::runtime::{self, AutoShutdown, RestartMode, RestartStrategy, Supervisor};
 use crate::support::SubsystemIdentifier;
 use crate::topology::ids::get_component_relative_identifier;
-use crate::topology::interconnect::{Consumer, Dispatchable};
+use crate::topology::interconnect::{Consumer, Dispatchable, InputGate, ReceivedMetrics};
 use crate::{
     components::{
         decoders::{Decoder, DecoderContext},
@@ -101,6 +101,7 @@ pub(crate) struct BuiltTopology {
     component_token: ResourceGroupToken,
     interconnect_capacity: NonZeroUsize,
     input_capacities: HashMap<ComponentId, NonZeroUsize>,
+    input_gates: HashMap<ComponentId, InputGate>,
     worker_pool_config: WorkerPoolConfiguration,
 }
 
@@ -117,7 +118,7 @@ impl BuiltTopology {
         forwarders: HashMap<ComponentContext, (Box<dyn Forwarder + Send>, ComponentRegistry)>,
         admission_points: Vec<AdmissionPointBinding>, component_token: ResourceGroupToken,
         interconnect_capacity: NonZeroUsize, input_capacities: HashMap<ComponentId, NonZeroUsize>,
-        worker_pool_config: WorkerPoolConfiguration,
+        input_gates: HashMap<ComponentId, InputGate>, worker_pool_config: WorkerPoolConfiguration,
     ) -> Self {
         Self {
             name,
@@ -134,6 +135,7 @@ impl BuiltTopology {
             component_token,
             interconnect_capacity,
             input_capacities,
+            input_gates,
             worker_pool_config,
         }
     }
@@ -193,6 +195,7 @@ impl BuiltTopology {
         let mut interconnects = ComponentInterconnects::from_graph(
             self.interconnect_capacity,
             self.input_capacities,
+            self.input_gates,
             &self.topology_id,
             &self.graph,
             &self.admission_points,
@@ -364,6 +367,7 @@ impl BuiltTopology {
 struct ComponentInterconnects {
     interconnect_capacity: NonZeroUsize,
     input_capacities: HashMap<ComponentId, NonZeroUsize>,
+    input_gates: HashMap<ComponentId, InputGate>,
     topology_id: SubsystemIdentifier,
     events_dispatchers: HashMap<ComponentContext, EventsDispatcher>,
     payloads_dispatchers: HashMap<ComponentContext, PayloadsDispatcher>,
@@ -374,14 +378,17 @@ struct ComponentInterconnects {
 
 impl ComponentInterconnects {
     /// Creates the interconnects of `graph`: each component's input holds `interconnect_capacity` items, or the
-    /// component's own capacity in `input_capacities`.
+    /// component's own capacity in `input_capacities`, and the senders to a component with a gate in `input_gates`
+    /// skip it while the gate is closed.
     fn from_graph(
         interconnect_capacity: NonZeroUsize, input_capacities: HashMap<ComponentId, NonZeroUsize>,
-        topology_id: &SubsystemIdentifier, graph: &Graph, admission_points: &[AdmissionPointBinding],
+        input_gates: HashMap<ComponentId, InputGate>, topology_id: &SubsystemIdentifier, graph: &Graph,
+        admission_points: &[AdmissionPointBinding],
     ) -> Result<Self, GenericError> {
         let mut interconnects = Self {
             interconnect_capacity,
             input_capacities,
+            input_gates,
             topology_id: topology_id.clone(),
             events_dispatchers: HashMap::new(),
             payloads_dispatchers: HashMap::new(),
@@ -515,17 +522,28 @@ impl ComponentInterconnects {
             for downstream_id in downstream_ids {
                 debug!(upstream_id = %upstream_id.component_id(), %upstream_output_id, downstream_id = %downstream_id.component_id(), "Adding dispatcher output.");
                 let component_id = downstream_id.component_id().clone();
-                let sender = self.get_or_create_events_sender(downstream_id);
-                senders.push((component_id, sender));
+                let gate = self.input_gates.get(&component_id).cloned();
+                let (sender, received) = self.get_or_create_events_sender(downstream_id);
+                senders.push((component_id, sender, gate.map(|gate| (gate, received))));
             }
 
             let dispatcher = self.get_or_create_events_dispatcher(upstream_id.clone());
             dispatcher.add_output(upstream_output_id.clone())?;
 
             // Each sender records the component it feeds, so that an admission point on the output can send its
-            // heartbeats to some of them only.
-            for (component_id, sender) in senders {
-                dispatcher.attach_component_sender_to_output(&upstream_output_id, component_id, sender)?;
+            // heartbeats to some of them only. A sender to a component with an input gate skips it while the gate is
+            // closed, and counts what it skipped in the counters of that component's consumer.
+            for (component_id, sender, gate) in senders {
+                match gate {
+                    Some((gate, received)) => dispatcher.attach_gated_sender_to_output(
+                        &upstream_output_id,
+                        component_id,
+                        sender,
+                        gate,
+                        received,
+                    )?,
+                    None => dispatcher.attach_component_sender_to_output(&upstream_output_id, component_id, sender)?,
+                }
             }
         }
 
@@ -577,12 +595,16 @@ impl ComponentInterconnects {
             .unwrap_or(self.interconnect_capacity)
     }
 
-    fn get_or_create_events_sender(&mut self, component_id: TypedComponentId) -> mpsc::Sender<EventsBuffer> {
+    /// Returns a sender to the input of a component that consumes events, and the counters its consumer records what it
+    /// receives in.
+    fn get_or_create_events_sender(
+        &mut self, component_id: TypedComponentId,
+    ) -> (mpsc::Sender<EventsBuffer>, ReceivedMetrics) {
         let (component_id, component_type) = component_id.into_parts();
         let interconnect_capacity = self.input_capacity(&component_id);
         let component_context = ComponentContext::new(&self.topology_id, component_id, component_type);
 
-        let (sender, _) = match component_type {
+        let (sender, consumer) = match component_type {
             ComponentType::Transform | ComponentType::Destination | ComponentType::Encoder => self
                 .events_consumers
                 .entry(component_context.clone())
@@ -590,7 +612,7 @@ impl ComponentInterconnects {
             _ => panic!("Only transforms, destinations, and encoders can consume events."),
         };
 
-        sender.clone()
+        (sender.clone(), consumer.received_metrics())
     }
 
     fn get_or_create_payloads_dispatcher(&mut self, component_id: TypedComponentId) -> &mut PayloadsDispatcher {
@@ -735,8 +757,15 @@ mod tests {
         // Ensure we can properly build the interconnects for them, which requires adding the outputs
         // before attaching senders to them:
         let interconnect_capacity = NonZeroUsize::new(10).unwrap();
-        let _ = ComponentInterconnects::from_graph(interconnect_capacity, HashMap::new(), &topology_id, &graph, &[])
-            .expect("should build interconnects successfully");
+        let _ = ComponentInterconnects::from_graph(
+            interconnect_capacity,
+            HashMap::new(),
+            HashMap::new(),
+            &topology_id,
+            &graph,
+            &[],
+        )
+        .expect("should build interconnects successfully");
     }
 
     /// Builds the interconnects of `source -> {owner, tap}`, with an admission point on the source's output that
@@ -766,6 +795,7 @@ mod tests {
         ComponentInterconnects::from_graph(
             NonZeroUsize::new(4).unwrap(),
             HashMap::new(),
+            HashMap::new(),
             &SubsystemIdentifier::from_segments(["test"]),
             &graph,
             &[binding],
@@ -778,6 +808,47 @@ mod tests {
             ComponentId::try_from(id).unwrap(),
             ComponentType::Destination,
         )
+    }
+
+    #[tokio::test]
+    async fn a_destination_with_an_input_gate_receives_only_while_it_is_open() {
+        // `source -> {owner, tap}`, with a gate on the tap's input.
+        let mut graph = Graph::default();
+        graph
+            .with_source("source", EventType::Metric)
+            .with_destination("owner", EventType::Metric)
+            .with_destination("tap", EventType::Metric)
+            .with_edge("source", "owner")
+            .with_edge("source", "tap");
+        let gate = InputGate::closed();
+        let mut interconnects = ComponentInterconnects::from_graph(
+            NonZeroUsize::new(4).unwrap(),
+            HashMap::new(),
+            HashMap::from([(ComponentId::try_from("tap").unwrap(), gate.clone())]),
+            &SubsystemIdentifier::from_segments(["test"]),
+            &graph,
+            &[],
+        )
+        .expect("should build interconnects");
+        let mut owner = interconnects
+            .take_events_consumer(&destination_context("owner"))
+            .unwrap();
+        let mut tap = interconnects.take_events_consumer(&destination_context("tap")).unwrap();
+        let dispatcher = interconnects
+            .take_events_dispatcher(&ComponentContext::source(
+                &SubsystemIdentifier::from_segments(["test"]),
+                ComponentId::try_from("source").unwrap(),
+            ))
+            .unwrap();
+
+        dispatcher.dispatch(EventsBuffer::default()).await.unwrap();
+        assert!(owner.next().now_or_never().flatten().is_some());
+        assert!(tap.next().now_or_never().is_none(), "the closed tap is skipped");
+
+        gate.open();
+        dispatcher.dispatch(EventsBuffer::default()).await.unwrap();
+        assert!(owner.next().now_or_never().flatten().is_some());
+        assert!(tap.next().now_or_never().flatten().is_some(), "the open tap receives");
     }
 
     #[tokio::test]
@@ -846,6 +917,7 @@ mod tests {
             Vec::new(),
             ResourceGroupToken::root(),
             NonZeroUsize::new(128).unwrap(),
+            HashMap::new(),
             HashMap::new(),
             worker_pool_config,
         )

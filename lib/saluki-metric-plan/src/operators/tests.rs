@@ -1244,6 +1244,193 @@ fn kernel_specs_build_kernels() {
     assert_eq!(format!("{:?}", spec), "KernelSpec { .. }");
 }
 
+#[test]
+fn a_spec_with_a_shared_part_computes_it_once_and_builds_every_instance_around_it() {
+    struct Holding;
+
+    impl Kernel for Holding {
+        fn consume(&mut self, _turn: &mut Turn<'_>, _input: &mut EventsBuffer) -> Progress {
+            Progress::Done
+        }
+    }
+
+    let prepared = Arc::new(Mutex::new(0usize));
+    let parts = Arc::new(Mutex::new(Vec::<Arc<String>>::new()));
+    let (counted, recorded) = (Arc::clone(&prepared), Arc::clone(&parts));
+    let spec = KernelSpec::with_shared(
+        move || {
+            *counted.lock().unwrap() += 1;
+            Ok("compiled".to_string())
+        },
+        move |part, _context| {
+            recorded.lock().unwrap().push(Arc::clone(part));
+            Ok(Box::new(Holding) as Box<dyn Kernel>)
+        },
+    );
+    let context = KernelBuildContext::detached(&"dsd_node".parse().unwrap());
+    let threads = std::thread::scope(|scope| {
+        let builds = (0..4)
+            .map(|_| {
+                let spec = spec.clone();
+                let context = &context;
+                scope.spawn(move || spec.build(context).is_ok())
+            })
+            .collect::<Vec<_>>();
+        builds
+            .into_iter()
+            .map(|build| build.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(threads, [true; 4]);
+    assert!(spec.build(&context).is_ok());
+
+    // One computation for five instances, built on several threads at once and from clones of the spec, which all
+    // hold the same part.
+    assert_eq!(*prepared.lock().unwrap(), 1);
+    let parts = parts.lock().unwrap();
+    assert_eq!(parts.len(), 5);
+    assert!(parts.iter().all(|part| Arc::ptr_eq(part, &parts[0])));
+
+    // A failed computation is not remembered: the next build computes the part again.
+    let attempts = Arc::new(Mutex::new(0usize));
+    let counted = Arc::clone(&attempts);
+    let flaky = KernelSpec::with_shared(
+        move || {
+            let mut attempts = counted.lock().unwrap();
+            *attempts += 1;
+            if *attempts == 1 {
+                Err(KernelBuildError {
+                    message: "not yet".to_string(),
+                })
+            } else {
+                Ok("compiled".to_string())
+            }
+        },
+        |_part, _context| Ok(Box::new(Holding) as Box<dyn Kernel>),
+    );
+    assert_eq!(
+        flaky.build(&context).err().unwrap().to_string(),
+        "Failed to build the kernel: not yet"
+    );
+    assert!(flaky.build(&context).is_ok());
+    assert!(flaky.build(&context).is_ok());
+    assert_eq!(*attempts.lock().unwrap(), 2);
+}
+
+/// Consumes one batch of `metrics` with `kernel`, which has `ports` output ports, and returns the metrics on each.
+fn consume_with(kernel: &mut Box<dyn Kernel>, ports: usize, metrics: Vec<Metric>) -> Vec<Vec<Metric>> {
+    let header = saluki_core::execution::BatchHeader::default();
+    let mut input = EventsBuffer::default();
+    for metric in metrics {
+        assert!(input.try_push(Event::Metric(metric)).is_none());
+    }
+    let mut budget = Budget::unlimited();
+    let mut outputs = PortOutputs::new(ports);
+    let mut counters = TurnCounters::default();
+    {
+        let mut turn = Turn::new(
+            &header,
+            std::time::Instant::now(),
+            &mut budget,
+            &mut outputs,
+            &mut counters,
+        );
+        assert!(matches!(kernel.consume(&mut turn, &mut input), Progress::Done));
+    }
+    outputs.complete(input);
+    (0..ports)
+        .map(|port| {
+            outputs
+                .drain(PortIndex::new(port as u16))
+                .flat_map(|buffer| buffer.into_iter().filter_map(Event::try_into_metric))
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn instances_of_one_mapper_or_tag_projection_spec_behave_as_instances_of_separate_specs() {
+    // Instances built from one spec share its compiled profiles or rules, and keep their caches and memos to
+    // themselves: each maps and projects as an instance built from a spec of its own, a second batch, served from
+    // its cache or memo, included.
+    let runtime = runtime();
+    let _context = runtime.enter();
+    let projected = || Context::from_static_parts("checkout.latency", &["user_id:1", "env:dev"]);
+    let cases = [
+        (
+            "dogstatsd_mapper",
+            mapper_params(),
+            vec![
+                Metric::counter("raw.requests.checkout", 1.0),
+                Metric::counter("raw.other", 1.0),
+                Metric::counter("raw.cart.latency", 1.0),
+            ],
+        ),
+        (
+            "tag_projection",
+            tag_projection_params(),
+            vec![Metric::counter(projected(), 1.0), Metric::gauge(projected(), 1.0)],
+        ),
+    ];
+    for (op, params, batch) in cases {
+        let configured = configure(op, params);
+        let ports = configured.ports().outputs.len();
+        let context = KernelBuildContext::detached(&"dsd_node".parse().unwrap());
+        let spec = configured.kernel().expect("the operator has a kernel");
+        let mut shared = [spec.build(&context).unwrap(), spec.clone().build(&context).unwrap()];
+        let mut separate = configured.kernel().unwrap().build(&context).unwrap();
+        for round in 0..2 {
+            let expected = consume_with(&mut separate, ports, batch.clone());
+            for kernel in &mut shared {
+                assert_eq!(
+                    consume_with(kernel, ports, batch.clone()),
+                    expected,
+                    "{} round {}",
+                    op,
+                    round
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn instances_of_one_mapper_or_tag_projection_spec_share_the_profiles_or_rules_it_compiled_once() {
+    // Instances of one spec, built from it or from its clones, are built around the profiles or rules the spec
+    // compiled for the first of them: building more compiles nothing more, while a spec of its own compiles its own.
+    let runtime = runtime();
+    let _context = runtime.enter();
+    let context = KernelBuildContext::detached(&"dsd_node".parse().unwrap());
+    let cases = [
+        (
+            "dogstatsd_mapper",
+            mapper_params(),
+            saluki_metric_kernels::mapper::CompiledProfiles::compilations_on_this_thread as fn() -> u64,
+        ),
+        (
+            "tag_projection",
+            tag_projection_params(),
+            saluki_metric_kernels::tag_projection::TagProjectionRules::compilations_on_this_thread,
+        ),
+    ];
+    for (op, params, compilations) in cases {
+        let spec = configure(op, params.clone())
+            .kernel()
+            .expect("the operator has a kernel");
+        let separate = configure(op, params).kernel().unwrap();
+        let before = compilations();
+        let instances = [
+            spec.build(&context).unwrap(),
+            spec.clone().build(&context).unwrap(),
+            spec.build(&context).unwrap(),
+        ];
+        assert_eq!(compilations() - before, 1, "{}: three instances, one compilation", op);
+        let other = separate.build(&context).unwrap();
+        assert_eq!(compilations() - before, 2, "{}: a spec of its own compiles its own", op);
+        drop((instances, other));
+    }
+}
+
 /// Returns a current-thread Tokio runtime with timers, as hosts build kernels in.
 fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()

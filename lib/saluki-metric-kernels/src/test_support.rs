@@ -1,13 +1,21 @@
-//! Helpers shared by this crate's kernel tests: describing metrics completely, comparing outputs as multisets, and
-//! driving a kernel through one turn.
+//! Helpers shared by this crate's kernel tests: describing metrics completely, comparing outputs as multisets, driving
+//! a kernel through one turn, and counting telemetry writes.
 
-use std::time::Instant;
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
+use metrics::{
+    Counter, CounterFn, Gauge, GaugeFn, Histogram, HistogramFn, Key, KeyName, Metadata, Recorder, SharedString, Unit,
+};
 use saluki_core::{
     data_model::event::{metric::Metric, Event},
     execution::{BatchHeader, Budget, Kernel, PortIndex, PortOutputs, Progress, Turn, TurnCounters},
     topology::EventsBuffer,
 };
+use saluki_metrics::test::TestRecorder;
 
 /// Describes everything about a metric that a delivery carries: its name, host, tags and origin tags in their order,
 /// values, and metadata.
@@ -106,5 +114,123 @@ where
         ports,
         buffers,
         counters,
+    }
+}
+
+/// A recorder that counts the writes made to each handle, whatever they write, and passes every write on to a
+/// [`TestRecorder`], which keeps the values.
+#[derive(Default)]
+pub(crate) struct CountingRecorder {
+    values: TestRecorder,
+    writes: Arc<Mutex<BTreeMap<String, u64>>>,
+}
+
+impl CountingRecorder {
+    /// Returns the recorder that keeps the values written.
+    pub(crate) fn values(&self) -> &TestRecorder {
+        &self.values
+    }
+
+    /// Returns the number of writes made to each handle since the last call, by [key name][key_name], leaving out
+    /// handles not written.
+    pub(crate) fn take_writes(&self) -> BTreeMap<String, u64> {
+        std::mem::take(&mut *self.writes.lock().unwrap())
+    }
+
+    fn counting<H>(&self, key: &Key, inner: H) -> Arc<CountingHandle<H>> {
+        Arc::new(CountingHandle {
+            key: key_name(key),
+            writes: Arc::clone(&self.writes),
+            inner,
+        })
+    }
+}
+
+/// Names a key as `name{label=value,...}`, its labels sorted, or as its name alone without labels.
+pub(crate) fn key_name(key: &Key) -> String {
+    let mut labels = key
+        .labels()
+        .map(|label| format!("{}={}", label.key(), label.value()))
+        .collect::<Vec<_>>();
+    labels.sort();
+    if labels.is_empty() {
+        key.name().to_string()
+    } else {
+        format!("{}{{{}}}", key.name(), labels.join(","))
+    }
+}
+
+/// A handle that counts its writes, and passes them on to the handle it wraps.
+struct CountingHandle<H> {
+    key: String,
+    writes: Arc<Mutex<BTreeMap<String, u64>>>,
+    inner: H,
+}
+
+impl<H> CountingHandle<H> {
+    fn count(&self) {
+        *self.writes.lock().unwrap().entry(self.key.clone()).or_default() += 1;
+    }
+}
+
+impl CounterFn for CountingHandle<Counter> {
+    fn increment(&self, value: u64) {
+        self.count();
+        self.inner.increment(value);
+    }
+
+    fn absolute(&self, value: u64) {
+        self.count();
+        self.inner.absolute(value);
+    }
+}
+
+impl GaugeFn for CountingHandle<Gauge> {
+    fn increment(&self, value: f64) {
+        self.count();
+        self.inner.increment(value);
+    }
+
+    fn decrement(&self, value: f64) {
+        self.count();
+        self.inner.decrement(value);
+    }
+
+    fn set(&self, value: f64) {
+        self.count();
+        self.inner.set(value);
+    }
+}
+
+impl HistogramFn for CountingHandle<Histogram> {
+    fn record(&self, value: f64) {
+        self.count();
+        self.inner.record(value);
+    }
+}
+
+impl Recorder for CountingRecorder {
+    fn describe_counter(&self, key: KeyName, unit: Option<Unit>, description: SharedString) {
+        self.values.describe_counter(key, unit, description);
+    }
+
+    fn describe_gauge(&self, key: KeyName, unit: Option<Unit>, description: SharedString) {
+        self.values.describe_gauge(key, unit, description);
+    }
+
+    fn describe_histogram(&self, key: KeyName, unit: Option<Unit>, description: SharedString) {
+        self.values.describe_histogram(key, unit, description);
+    }
+
+    fn register_counter(&self, key: &Key, metadata: &Metadata<'_>) -> Counter {
+        Counter::from_arc(self.counting(key, self.values.register_counter(key, metadata)))
+    }
+
+    fn register_gauge(&self, key: &Key, metadata: &Metadata<'_>) -> Gauge {
+        Gauge::from_arc(self.counting(key, self.values.register_gauge(key, metadata)))
+    }
+
+    fn register_histogram(&self, key: &Key, metadata: &Metadata<'_>) -> Histogram {
+        Histogram::from_arc(self.counting(key, self.values.register_histogram(key, metadata)))
     }
 }

@@ -10,8 +10,9 @@ workspace = true
 
 [features]
 # Exposes constructors that only tests need, such as histogram statistics with arbitrary suffixes and context snapshot
-# entries, and the property-testing strategies for metrics, as plain `pub` items so that other crates can use them in
-# their own tests. Not enabled in normal builds.
+# entries, counts of the mapper profiles and tag projection rules compiled on a thread, and the property-testing
+# strategies for metrics, as plain `pub` items so that other crates can use them in their own tests. Not enabled in
+# normal builds.
 test-util = ["dep:proptest"]
 
 [dependencies]

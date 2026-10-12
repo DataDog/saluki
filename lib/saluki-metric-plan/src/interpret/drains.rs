@@ -35,16 +35,21 @@ impl Run<'_, '_> {
             if !instance.observes(point) {
                 continue;
             }
-            // Whether the instance's timeline before this stamp is the cut's, before the stamp moves it.
-            let in_publication_epoch = instance
-                .retiring
-                .as_ref()
-                .and_then(|retiring| retiring.by.cut())
-                .is_some_and(|cut| instance.tracker.in_publication_epoch(cut));
             let latest = instance.tracker.max_latest();
             match instance.tracker.observe(header) {
                 Observation::Ok => {}
-                Observation::Reset { pre, .. } => resets.push((index, pre, latest, in_publication_epoch)),
+                Observation::EpochSwitched {
+                    point, previous, pre, ..
+                } => {
+                    // Whether the instance's timeline before this stamp is the cut's, as it stood before the stamp
+                    // moved it.
+                    let in_publication_epoch = instance
+                        .retiring
+                        .as_ref()
+                        .and_then(|retiring| retiring.by.cut())
+                        .is_some_and(|cut| instance.tracker.in_publication_epoch_with(cut, point, previous));
+                    resets.push((index, pre, latest, in_publication_epoch));
+                }
                 Observation::Fault => {
                     return Err(InterpretErrorKind::Internal {
                         message: format!("a state owner rejected the stamp of its upstream point {}", point.get()),

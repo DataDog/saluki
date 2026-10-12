@@ -27,7 +27,12 @@
 //! Parameters whose values come from configuration are bindable: lowering writes them as configuration bindings with
 //! their resolved values. Parameters that structure the plan, such as port counts, are never bindable.
 
-use std::{any::Any, fmt, sync::Arc, time::Duration};
+use std::{
+    any::Any,
+    fmt,
+    sync::{Arc, Mutex, PoisonError},
+    time::Duration,
+};
 
 use saluki_common::resource_tracking::ResourceGroupToken;
 use saluki_core::{
@@ -370,6 +375,34 @@ impl KernelSpec {
         Self {
             factory: Arc::new(factory),
         }
+    }
+
+    /// Creates a spec whose kernels share an immutable part: `prepare` computes it once for the spec, the first time a
+    /// kernel is built, and `build` builds each instance around it.
+    ///
+    /// Hosts build one instance of a node's kernel per task that runs it, and again after a panic, so whatever is
+    /// costly to compute and never changes, such as compiled patterns or rules, is computed once and shared, while each
+    /// instance keeps its mutable state, such as caches and memos, to itself. Clones of the spec share the part too. A
+    /// `prepare` that fails is not remembered: the build fails, and the next build tries again.
+    pub fn with_shared<S, P, B>(prepare: P, build: B) -> Self
+    where
+        S: Send + Sync + 'static,
+        P: Fn() -> Result<S, KernelBuildError> + Send + Sync + 'static,
+        B: Fn(&Arc<S>, &KernelBuildContext) -> Result<Box<dyn Kernel>, KernelBuildError> + Send + Sync + 'static,
+    {
+        // A lock rather than a once-cell, so that the part is computed exactly once even when instances are built on
+        // several threads at once, and a failure leaves it to compute again.
+        let shared = Mutex::new(None::<Arc<S>>);
+        Self::new(move |context| {
+            let part = {
+                let mut shared = shared.lock().unwrap_or_else(PoisonError::into_inner);
+                match &*shared {
+                    Some(part) => Arc::clone(part),
+                    None => Arc::clone(shared.insert(Arc::new(prepare()?))),
+                }
+            };
+            build(&part, context)
+        })
     }
 
     /// Builds a new instance of the kernel, in the context the host supplies.

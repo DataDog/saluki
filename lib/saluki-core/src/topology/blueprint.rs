@@ -1225,6 +1225,12 @@ impl TopologyBuildState {
             transforms.insert(component_context, (transform, self.component_registry.clone()));
         }
 
+        // A destination with an input gate is skipped by its senders while the gate is closed.
+        let input_gates = self
+            .destinations
+            .iter()
+            .filter_map(|(id, builder)| builder.input_gate().map(|gate| (id.clone(), gate)))
+            .collect::<HashMap<_, _>>();
         let mut destinations = HashMap::new();
         for (id, builder) in self.destinations {
             let component_context = ComponentContext::destination(&self.topology_id, id.clone());
@@ -1287,6 +1293,7 @@ impl TopologyBuildState {
             topology_token,
             self.interconnect_capacity,
             self.input_capacities,
+            input_gates,
             self.worker_pool_config,
         ))
     }
@@ -2401,12 +2408,17 @@ mod tests {
 
     struct CollectingDestinationBuilder {
         received: Arc<StdMutex<Vec<EventsBuffer>>>,
+        gate: Option<crate::topology::interconnect::InputGate>,
     }
 
     #[async_trait]
     impl DestinationBuilder for CollectingDestinationBuilder {
         fn input_event_type(&self) -> EventType {
             EventType::Metric
+        }
+
+        fn input_gate(&self) -> Option<crate::topology::interconnect::InputGate> {
+            self.gate.clone()
         }
 
         async fn build(&self, _: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
@@ -2422,12 +2434,21 @@ mod tests {
 
     /// Adds a collecting destination to `blueprint` and returns what it will record.
     fn add_collector(blueprint: &mut TopologyBlueprint, id: &str) -> Arc<StdMutex<Vec<EventsBuffer>>> {
+        add_gated_collector(blueprint, id, None)
+    }
+
+    /// Adds a collecting destination with the input gate `gate`, if any, to `blueprint` and returns what it will
+    /// record.
+    fn add_gated_collector(
+        blueprint: &mut TopologyBlueprint, id: &str, gate: Option<crate::topology::interconnect::InputGate>,
+    ) -> Arc<StdMutex<Vec<EventsBuffer>>> {
         let received = Arc::new(StdMutex::new(Vec::new()));
         blueprint
             .add_destination(
                 id,
                 CollectingDestinationBuilder {
                     received: Arc::clone(&received),
+                    gate,
                 },
             )
             .expect("should not fail to add destination");
@@ -2883,6 +2904,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_tap_with_a_closed_input_gate_is_skipped_and_still_counts_what_it_was_offered() {
+        // src -> {owner, tap}, where the tap's builder gives its input a gate, closed in one run and open in the
+        // other. The tap receives buffers only while the gate is open, and its received-events series, like the
+        // source's sent-events series, are the same in both runs.
+        let received_total = |recorder: &saluki_metrics::test::TestRecorder, id: &'static str| {
+            recorder.counter((
+                "component_events_received_total",
+                &[("component_id", id), ("component_type", "destination")][..],
+            ))
+        };
+        let mut series = Vec::new();
+        for open in [false, true] {
+            let recorder = saluki_metrics::test::TestRecorder::default();
+            let _local = metrics::set_default_local_recorder(&recorder);
+            let gate = crate::topology::interconnect::InputGate::closed();
+            if open {
+                gate.open();
+            }
+            let script = (0..3)
+                .map(|step| ScriptStep {
+                    output: None,
+                    events: step + 1,
+                    at: AdmissionTime::from_unix_secs(100),
+                })
+                .collect();
+            let component_registry = ComponentRegistry::default();
+            let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+            blueprint
+                .add_source("src", ScriptedSourceBuilder::new(script, ManualWallClock::default()))
+                .unwrap();
+            let owner = add_collector(&mut blueprint, "owner");
+            let tap = add_gated_collector(&mut blueprint, "tap", Some(gate));
+            blueprint
+                .connect_components("src", ["owner", "tap"])
+                .unwrap()
+                .with_ambient_worker_pool()
+                .with_health_registry(HealthRegistry::new())
+                .with_memory_limiter(MemoryLimiter::noop())
+                .with_resource_registry(ResourceRegistry::new());
+
+            let (tx, handle) = spawn_supervised_blueprint(blueprint);
+            wait_until("the owner received every batch", || owner.lock().unwrap().len() == 3).await;
+            if open {
+                wait_until("the open tap received every batch", || tap.lock().unwrap().len() == 3).await;
+            }
+            tx.send(()).expect("should send shutdown signal");
+            assert!(join_topology(handle).await.is_ok());
+
+            let tapped = tap.lock().unwrap().iter().map(EventsBuffer::len).collect::<Vec<_>>();
+            assert_eq!(tapped, if open { vec![1, 2, 3] } else { vec![] }, "open: {}", open);
+            series.push((received_total(&recorder, "owner"), received_total(&recorder, "tap")));
+        }
+        assert_eq!(series, [(Some(6), Some(6)), (Some(6), Some(6))]);
+    }
+
+    #[tokio::test]
     async fn a_running_topology_sends_heartbeats_from_idle_admission_points() {
         let schedule = steady_schedule(1);
         let component_registry = ComponentRegistry::default();
@@ -3112,6 +3189,7 @@ mod tests {
                 "out",
                 CollectingDestinationBuilder {
                     received: Arc::clone(&received),
+                    gate: None,
                 },
             )
             .unwrap();

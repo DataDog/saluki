@@ -5,11 +5,14 @@
 //! `encode_*` functions turn those types into parameter values, as lowering writes them, and the `decode_*` functions
 //! turn decoded parameter values back into them.
 
-use std::num::{NonZeroU64, NonZeroUsize};
+use std::{
+    num::{NonZeroU64, NonZeroUsize},
+    sync::Arc,
+};
 
 use saluki_core::accounting::MemoryBoundsBuilder;
 use saluki_metric_kernels::{
-    mapper::{result_cache_usage, validate_profiles, MetricMapper},
+    mapper::{result_cache_usage, validate_profiles, CompiledProfiles, MetricMapper},
     params::{
         validate_tag_value_rules, MapperProfile, MatchType, MetricMapping, NamespacePrefixParams, TagFilterAction,
         TagFilterRule, TagValueMismatch, TagValueRule,
@@ -245,16 +248,25 @@ impl OperatorDef for DogstatsdMapper {
             .integer("string_interner_bytes")
             .and_then(|bytes| usize::try_from(bytes).ok())
             .and_then(NonZeroUsize::new);
-        Some(KernelSpec::new(move |context| {
-            let profiles = profiles.as_deref().ok_or_else(|| unresolved("profiles"))?;
-            let cache_size = cache_size.ok_or_else(|| unresolved("cache_size"))?;
-            let interner_bytes = interner_bytes.ok_or_else(|| unresolved("string_interner_bytes"))?;
-            let mapper = MetricMapper::new(context.component().component_id(), profiles, cache_size, interner_bytes)
-                .map_err(|problem| KernelBuildError {
+        // Every instance shares the compiled profiles, and takes a result cache and an interner of its own.
+        Some(KernelSpec::with_shared(
+            move || {
+                let profiles = profiles.as_deref().ok_or_else(|| unresolved("profiles"))?;
+                CompiledProfiles::compile(profiles).map_err(|problem| KernelBuildError {
                     message: error_chain(&problem),
-                })?;
-            Ok(Box::new(mapper))
-        }))
+                })
+            },
+            move |profiles, context| {
+                let cache_size = cache_size.ok_or_else(|| unresolved("cache_size"))?;
+                let interner_bytes = interner_bytes.ok_or_else(|| unresolved("string_interner_bytes"))?;
+                Ok(Box::new(MetricMapper::for_kernel(
+                    context.component().component_id(),
+                    profiles,
+                    cache_size,
+                    interner_bytes,
+                )))
+            },
+        ))
     }
 }
 
@@ -639,19 +651,25 @@ impl OperatorDef for TagProjection {
         let capacity = params
             .integer("cache_capacity")
             .and_then(|capacity| usize::try_from(capacity).ok());
-        Some(KernelSpec::new(move |context| {
-            let rules = rules.as_deref().ok_or_else(|| unresolved("rules"))?;
-            let value_rules = value_rules.as_deref().ok_or_else(|| unresolved("value_rules"))?;
-            let capacity = capacity.ok_or_else(|| unresolved("cache_capacity"))?;
-            let value_rules = ValueRules::new(value_rules).map_err(|problem| KernelBuildError {
-                message: problem.to_string(),
-            })?;
-            Ok(Box::new(TagProjectionKernel::new(
-                TagProjectionRules::new(rules, value_rules),
-                Some(ContextMemo::new(&tag_projection_memo_id(context), capacity)),
-                TagProjectionTelemetry::for_kernel(context.component()),
-            )))
-        }))
+        // Every instance shares the compiled rules, and takes a context memo of its own.
+        Some(KernelSpec::with_shared(
+            move || {
+                let rules = rules.as_deref().ok_or_else(|| unresolved("rules"))?;
+                let value_rules = value_rules.as_deref().ok_or_else(|| unresolved("value_rules"))?;
+                let value_rules = ValueRules::new(value_rules).map_err(|problem| KernelBuildError {
+                    message: problem.to_string(),
+                })?;
+                Ok(TagProjectionRules::new(rules, value_rules))
+            },
+            move |rules, context| {
+                let capacity = capacity.ok_or_else(|| unresolved("cache_capacity"))?;
+                Ok(Box::new(TagProjectionKernel::with_shared_rules(
+                    Arc::clone(rules),
+                    Some(ContextMemo::for_kernel(&tag_projection_memo_id(context), capacity)),
+                    TagProjectionTelemetry::for_kernel(context.component()),
+                )))
+            },
+        ))
     }
 }
 

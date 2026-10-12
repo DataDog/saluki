@@ -11,7 +11,7 @@ use tracing::{debug, info, warn};
 
 use super::{
     count_suppressed, AggregateCore, AggregateParams, AggregateStepParams, AggregateTelemetry, ContextBudget,
-    ContextSnapshot, FlushParams, FlushState, SuppressedBySite,
+    ContextSnapshot, FlushParams, FlushState, LastSeen, SuppressedBySite,
 };
 
 /// Native aggregation as a [`Kernel`], driven by admission time and watermarks instead of a clock.
@@ -24,11 +24,15 @@ use super::{
 /// # Calls
 ///
 /// - [`consume`][Kernel::consume] admits the batch at `floor(t_a)`, with the context limit of the turn's parameters.
-///   It writes nothing, and never yields. A batch without an admission time cannot be bucketed, and is recorded as
-///   [`LossClass::Invalid`], as is any event that is not a metric. Metrics dropped at the context limit are recorded as
-///   [`LossClass::Capacity`], and the first drop since the limit was last clear logs a warning, as native aggregation
-///   does. A metric whose kind, or rate interval, differs from the points its context holds replaces them; the
-///   replaced points are recorded as [`LossClass::Policy`], one event per metric that replaced any.
+///   It writes nothing, and never yields. A held context's last update, which counter expiry is measured from, is the
+///   latest admission time it was admitted at ([`LastSeen::Latest`]): the batches of one admission point arrive in
+///   stamp order, so with one upstream point this is the time of its last batch, as natively, and with several, a
+///   batch stamped earlier that arrives late never moves a counter's expiry earlier. A batch without an admission
+///   time cannot be bucketed, and is recorded as [`LossClass::Invalid`], as is any event that is not a metric.
+///   Metrics dropped at the context limit are recorded as [`LossClass::Capacity`], and the first drop since the limit
+///   was last clear logs a warning, as native aggregation does. A metric whose kind, or rate interval, differs from
+///   the points its context holds replaces them; the replaced points are recorded as [`LossClass::Policy`], one event
+///   per metric that replaced any.
 /// - [`advance_time`][Kernel::advance_time] flushes at `floor(watermark)`: it emits every bucket that ended by then,
 ///   with idle-counter zeros. Without a watermark, or while the core holds nothing, nothing happens. A flush that
 ///   brings the contexts below the limit logs that metrics are accepted again, as native aggregation does.
@@ -45,6 +49,8 @@ use super::{
 ///   [`LossClass::Shutdown`]: one event per context that held points, with its points. Each call records what it
 ///   discarded, so what the kernel [holds][Kernel::held] and what it recorded as lost always add up between calls.
 /// - [`held`][Kernel::held] counts the contexts that hold points, and their points.
+/// - [`publish_telemetry`][Kernel::publish_telemetry] writes what the core's telemetry counted since it last
+///   published, when it was built [accumulating][AggregateTelemetry::accumulating], as a kernel in a region is.
 ///
 /// # Budget
 ///
@@ -105,7 +111,7 @@ impl AggregateKernel {
     ) -> Self {
         let (_, admit, flush) = params.clone().split();
         Self {
-            core: AggregateCore::with_budget(params, budget, telemetry),
+            core: AggregateCore::with_budget(params, budget, telemetry).with_last_seen(LastSeen::Latest),
             defaults: AggregateStepParams {
                 admit,
                 flush,
@@ -385,6 +391,10 @@ impl Kernel for AggregateKernel {
             events: contexts as u64,
             points: points as u64,
         }
+    }
+
+    fn publish_telemetry(&mut self) {
+        self.core.publish_telemetry();
     }
 }
 

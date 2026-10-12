@@ -15,7 +15,7 @@ use super::{
     Context, ContextInner,
 };
 use crate::{
-    cache::{weight::ItemCountWeighter, Cache, CacheBuilder},
+    cache::{weight::ItemCountWeighter, AccumulatedCounters, Cache, CacheBuilder},
     data_model::{
         origin::{OriginTagsResolver, RawOrigin},
         tags::{SharedTagSet, TagSet},
@@ -68,6 +68,7 @@ pub struct ContextResolverBuilder {
     interner: Option<GenericMapInterner>,
     origin_tags_resolver: Option<Arc<dyn OriginTagsResolver>>,
     telemetry_enabled: bool,
+    accumulated_telemetry: bool,
 }
 
 impl ContextResolverBuilder {
@@ -97,6 +98,7 @@ impl ContextResolverBuilder {
             interner: None,
             origin_tags_resolver: None,
             telemetry_enabled: true,
+            accumulated_telemetry: false,
         })
     }
 
@@ -211,6 +213,22 @@ impl ContextResolverBuilder {
         self
     }
 
+    /// Makes the resolver count what it resolves, and its caches what they look up, in counters of their own, which
+    /// [`ContextResolver::publish_telemetry`] adds to their telemetry, instead of writing the telemetry on every
+    /// resolution.
+    ///
+    /// Resolvers with one name share their telemetry, so resolvers used in parallel, such as one per task of a
+    /// component, would contend on it on every resolution. Whatever owns the resolver publishes it periodically, about
+    /// once a second; see [`CacheBuilder::with_accumulated_telemetry`]. The tags resolver the resolver creates
+    /// accumulates too; one set with [`with_tags_resolver`][Self::with_tags_resolver] keeps its own setting. The gauge
+    /// of active contexts, which every context updates when it is dropped, is written as before.
+    ///
+    /// Defaults to writing the telemetry on every resolution.
+    pub fn with_accumulated_telemetry(mut self) -> Self {
+        self.accumulated_telemetry = true;
+        self
+    }
+
     /// Sets the interner to use for this resolver.
     ///
     /// If an interner isn't provided, an interner will be created in [`ContextResolverBuilder::build`]
@@ -269,27 +287,40 @@ impl ContextResolverBuilder {
             .with_capacity(cached_context_limit)
             .with_time_to_idle(self.idle_context_expiration)
             .with_hasher::<NoopU64BuildHasher>()
-            .with_telemetry(self.telemetry_enabled)
-            .build();
+            .with_telemetry(self.telemetry_enabled);
+        let context_cache = if self.accumulated_telemetry {
+            context_cache.with_accumulated_telemetry().build()
+        } else {
+            context_cache.build()
+        };
 
         // If no tags resolver is provided, we need to create one using the same interner used for the context resolver.
         let tags_resolver = match self.tags_resolver {
             Some(tags_resolver) => tags_resolver,
-            None => TagsResolverBuilder::new(format!("{}/tags", self.name), interner.clone())
-                .expect("tags resolver name not empty")
-                .with_cached_tagsets_limit(cached_context_limit.get())
-                .with_idle_tagsets_expiration(self.idle_context_expiration.unwrap_or_default())
-                .with_heap_allocations(allow_heap_allocations)
-                .with_origin_tags_resolver(self.origin_tags_resolver.clone())
-                .build(),
+            None => {
+                let builder = TagsResolverBuilder::new(format!("{}/tags", self.name), interner.clone())
+                    .expect("tags resolver name not empty")
+                    .with_cached_tagsets_limit(cached_context_limit.get())
+                    .with_idle_tagsets_expiration(self.idle_context_expiration.unwrap_or_default())
+                    .with_heap_allocations(allow_heap_allocations)
+                    .with_origin_tags_resolver(self.origin_tags_resolver.clone());
+                if self.accumulated_telemetry {
+                    builder.with_accumulated_telemetry().build()
+                } else {
+                    builder.build()
+                }
+            }
         };
 
         if self.telemetry_enabled {
             tokio::spawn(drive_telemetry(interner.clone(), telemetry.clone()));
         }
 
+        let (counters, accumulated) = ResolverCounters::new(&telemetry, self.accumulated_telemetry);
         ContextResolver {
             telemetry,
+            counters,
+            accumulated,
             interner,
             caching_enabled: self.caching_enabled,
             context_cache,
@@ -300,6 +331,44 @@ impl ContextResolverBuilder {
             allow_heap_allocations,
             tags_resolver,
         }
+    }
+}
+
+/// The counters a resolver writes as it resolves: its telemetry's handles, or the counts of its own that an
+/// accumulating resolver keeps.
+#[derive(Clone)]
+struct ResolverCounters {
+    intern_fallback: Counter,
+    resolved_existing_context: Counter,
+    resolved_new_context: Counter,
+    resolved_existing_tagset: Counter,
+    resolved_new_tagset: Counter,
+}
+
+impl ResolverCounters {
+    /// Returns the counters of a resolver whose telemetry is `telemetry`, and the counts they accumulate in, if
+    /// `accumulated`.
+    fn new(telemetry: &Telemetry, accumulated: bool) -> (Self, Option<Arc<AccumulatedCounters>>) {
+        let handles = vec![
+            telemetry.intern_fallback_total().clone(),
+            telemetry.resolved_existing_context_total().clone(),
+            telemetry.resolved_new_context_total().clone(),
+            telemetry.resolved_existing_tagset_total().clone(),
+            telemetry.resolved_new_tagset_total().clone(),
+        ];
+        let accumulated = accumulated.then(|| Arc::new(AccumulatedCounters::new(handles.clone())));
+        let counter = |index: usize| match &accumulated {
+            Some(accumulated) => accumulated.local(index),
+            None => handles[index].clone(),
+        };
+        let counters = Self {
+            intern_fallback: counter(0),
+            resolved_existing_context: counter(1),
+            resolved_new_context: counter(2),
+            resolved_existing_tagset: counter(3),
+            resolved_new_tagset: counter(4),
+        };
+        (counters, accumulated)
     }
 }
 
@@ -328,6 +397,9 @@ impl ContextResolverBuilder {
 /// components.
 pub struct ContextResolver {
     telemetry: Telemetry,
+    counters: ResolverCounters,
+    /// What an accumulating resolver counted and has not published, shared by its clones.
+    accumulated: Option<Arc<AccumulatedCounters>>,
     interner: GenericMapInterner,
     caching_enabled: bool,
     context_cache: ContextCache,
@@ -354,7 +426,7 @@ impl ContextResolver {
                         true,
                         "context string interner spilled to the heap (unbounded under default config)"
                     );
-                    self.telemetry.intern_fallback_total().increment(1);
+                    self.counters.intern_fallback.increment(1);
                     MetaString::from(s.as_ref())
                 })
             })
@@ -394,7 +466,7 @@ impl ContextResolver {
             None => None,
         };
 
-        self.telemetry.resolved_new_context_total().increment(1);
+        self.counters.resolved_new_context.increment(1);
         self.telemetry.active_contexts().increment(1);
 
         Some(Context::from_inner(ContextInner::from_parts(
@@ -545,14 +617,14 @@ impl ContextResolver {
 
         match self.context_cache.get(&context_key) {
             Some(context) => {
-                self.telemetry.resolved_existing_context_total().increment(1);
+                self.counters.resolved_existing_context.increment(1);
                 Some(context)
             }
             None => {
                 // Try seeing if we have the tagset cached already, and create it if not.
                 let tag_set = match self.tags_resolver.get_tag_set(tagset_key) {
                     Some(tag_set) => {
-                        self.telemetry.resolved_existing_tagset_total().increment(1);
+                        self.counters.resolved_existing_tagset.increment(1);
                         tag_set
                     }
                     None => {
@@ -573,12 +645,27 @@ impl ContextResolver {
             }
         }
     }
+
+    /// Adds what the resolver, its context cache, and its tags resolver counted since they last published to their
+    /// telemetry, if they were built with
+    /// [accumulated telemetry][ContextResolverBuilder::with_accumulated_telemetry]; otherwise, does nothing.
+    ///
+    /// Clones of a resolver share its counts, so publishing from any of them publishes everything counted once.
+    pub fn publish_telemetry(&self) {
+        if let Some(accumulated) = &self.accumulated {
+            accumulated.publish();
+        }
+        self.context_cache.publish_telemetry();
+        self.tags_resolver.publish_telemetry();
+    }
 }
 
 impl Clone for ContextResolver {
     fn clone(&self) -> Self {
         Self {
             telemetry: self.telemetry.clone(),
+            counters: self.counters.clone(),
+            accumulated: self.accumulated.clone(),
             interner: self.interner.clone(),
             caching_enabled: self.caching_enabled,
             context_cache: self.context_cache.clone(),
@@ -614,6 +701,7 @@ pub struct TagsResolverBuilder {
     origin_tags_resolver: Option<Arc<dyn OriginTagsResolver>>,
     telemetry_enabled: bool,
     interner: GenericMapInterner,
+    accumulated_telemetry: bool,
 }
 
 impl TagsResolverBuilder {
@@ -633,6 +721,7 @@ impl TagsResolverBuilder {
             origin_tags_resolver: None,
             telemetry_enabled: true,
             interner,
+            accumulated_telemetry: false,
         })
     }
 
@@ -746,6 +835,16 @@ impl TagsResolverBuilder {
         self
     }
 
+    /// Makes the resolver, and its cache, count what they resolve and look up in counters of their own, which
+    /// [`TagsResolver::publish_telemetry`] adds to their telemetry; see
+    /// [`ContextResolverBuilder::with_accumulated_telemetry`].
+    ///
+    /// Defaults to writing the telemetry on every resolution.
+    pub fn with_accumulated_telemetry(mut self) -> Self {
+        self.accumulated_telemetry = true;
+        self
+    }
+
     /// Builds a [`TagsResolver`] from the current configuration.
     pub fn build(self) -> TagsResolver {
         let cached_tagsets_limit = self
@@ -764,11 +863,18 @@ impl TagsResolverBuilder {
             .with_capacity(cached_tagsets_limit)
             .with_time_to_idle(self.idle_tagset_expiration)
             .with_hasher::<NoopU64BuildHasher>()
-            .with_telemetry(self.telemetry_enabled)
-            .build();
+            .with_telemetry(self.telemetry_enabled);
+        let tagset_cache = if self.accumulated_telemetry {
+            tagset_cache.with_accumulated_telemetry().build()
+        } else {
+            tagset_cache.build()
+        };
 
+        let (counters, accumulated) = ResolverCounters::new(&telemetry, self.accumulated_telemetry);
         TagsResolver {
             telemetry,
+            counters,
+            accumulated,
             interner: self.interner,
             caching_enabled: self.caching_enabled,
             tagset_cache,
@@ -801,6 +907,9 @@ impl TagsResolverBuilder {
 /// A resolver for tags.
 pub struct TagsResolver {
     telemetry: Telemetry,
+    counters: ResolverCounters,
+    /// What an accumulating resolver counted and has not published, shared by its clones.
+    accumulated: Option<Arc<AccumulatedCounters>>,
     interner: GenericMapInterner,
     caching_enabled: bool,
     tagset_cache: TagSetCache,
@@ -826,7 +935,7 @@ impl TagsResolver {
                         true,
                         "tag string interner spilled to the heap (unbounded under default config)"
                     );
-                    self.telemetry.intern_fallback_total().increment(1);
+                    self.counters.intern_fallback.increment(1);
                     MetaString::from(s.as_ref())
                 })
             })
@@ -849,7 +958,7 @@ impl TagsResolver {
             tag_set.insert_tag(tag);
         }
 
-        self.telemetry.resolved_new_tagset_total().increment(1);
+        self.counters.resolved_new_tagset.increment(1);
 
         Some(tag_set.into_shared())
     }
@@ -871,12 +980,23 @@ impl TagsResolver {
     fn insert_tag_set(&self, key: TagSetKey, tag_set: SharedTagSet) {
         self.tagset_cache.insert(key, tag_set);
     }
+
+    /// Adds what the resolver and its cache counted since they last published to their telemetry, if they were built
+    /// with [accumulated telemetry][TagsResolverBuilder::with_accumulated_telemetry]; otherwise, does nothing.
+    pub fn publish_telemetry(&self) {
+        if let Some(accumulated) = &self.accumulated {
+            accumulated.publish();
+        }
+        self.tagset_cache.publish_telemetry();
+    }
 }
 
 impl Clone for TagsResolver {
     fn clone(&self) -> Self {
         Self {
             telemetry: self.telemetry.clone(),
+            counters: self.counters.clone(),
+            accumulated: self.accumulated.clone(),
             interner: self.interner.clone(),
             caching_enabled: self.caching_enabled,
             tagset_cache: self.tagset_cache.clone(),

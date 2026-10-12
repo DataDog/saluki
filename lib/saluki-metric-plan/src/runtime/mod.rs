@@ -222,6 +222,8 @@ mod r5b_tests;
 #[cfg(test)]
 mod state_tests;
 #[cfg(test)]
+mod telemetry_audit_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod transition_tests;

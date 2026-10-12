@@ -308,7 +308,6 @@ impl MetricRegionDriver {
         let state = state
             .as_deref_mut()
             .expect("only an isolation slot's region runs its state");
-        let before = state.tracker.clone();
         let observation = state.tracker.observe(&header);
         let mut queue = VecDeque::new();
         let mut resets = 0;
@@ -317,7 +316,9 @@ impl MetricRegionDriver {
                 self.reject(Fault::NotUpstream, &header, &batch);
                 return Progress::Done;
             }
-            Observation::Reset { pre, .. } => {
+            Observation::EpochSwitched {
+                point, previous, pre, ..
+            } => {
                 state.clock_resets += 1;
                 let stamp_at = pre
                     .or(state.output.latest())
@@ -328,11 +329,12 @@ impl MetricRegionDriver {
                     if instance.retired || instance.removed {
                         continue;
                     }
+                    // Whether `pre` is in the cut's publication epoch, as the tracker stood before the header.
                     let in_publication_epoch = instance
                         .retiring
                         .as_ref()
                         .and_then(|retiring| retiring.by.cut())
-                        .is_some_and(|cut| before.in_publication_epoch(cut));
+                        .is_some_and(|cut| state.tracker.in_publication_epoch_with(cut, point, previous));
                     drains.push((
                         handle,
                         DrainKind::Reset {
@@ -1239,9 +1241,13 @@ impl MetricRegionDriver {
             .collect()
     }
 
-    /// Publishes the isolation slot's own telemetry.
+    /// Publishes the isolation slot's own telemetry, and what its state owners' kernels accumulated.
     pub(super) fn publish_state(&mut self) {
         let Some(state) = self.state.as_deref_mut() else { return };
+        for (_, instance) in state.instances.iter_mut() {
+            let slot = &mut instance.kernel;
+            slot.context.accounted(|| slot.kernel.publish_telemetry());
+        }
         let telemetry = &state.telemetry;
         if state.clock_resets > 0 {
             telemetry

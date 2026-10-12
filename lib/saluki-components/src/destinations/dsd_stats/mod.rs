@@ -18,6 +18,7 @@ use saluki_core::{
         event::{Event, EventType},
         tags::TagSet,
     },
+    topology::interconnect::InputGate,
 };
 use saluki_error::GenericError;
 use serde::{Deserialize, Serialize, Serializer};
@@ -85,10 +86,15 @@ impl Serialize for FlattenedStats {
 }
 
 /// Configuration for DogStatsD statistics destination and API handler.
+///
+/// The destination is a tap: it looks at what it receives only while a statistics collection runs. Its input is
+/// gated, open only during a collection, so that the components feeding it neither clone nor send it anything
+/// otherwise, while its received-events series keep counting everything offered to it; see [`InputGate`].
 #[derive(Clone)]
 pub struct DogStatsDStatisticsConfiguration {
     api_handler: DogStatsDStatsAPIHandler,
     rx: Arc<Mutex<StatsRequestReceiver>>,
+    gate: InputGate,
 }
 /// State for the DogStatsD API handler.
 #[derive(Clone)]
@@ -105,6 +111,8 @@ pub struct DogStatsDStatsAPIHandler {
 /// DogStatsD destination that collects metrics and processes statistics.
 pub struct DogStatsDStats {
     rx: OwnedMutexGuard<StatsRequestReceiver>,
+    /// The gate on the destination's input, open while a collection runs.
+    gate: InputGate,
 }
 
 #[async_trait::async_trait]
@@ -141,8 +149,9 @@ impl Destination for DogStatsDStats {
                         // We don't care if we can successfully send back a response or not.
                         let _ = response_tx.send(StatsResponse::AlreadyRunning { try_after });
                     } else {
-                        // Start collection.
+                        // Start collection: from now on, the components upstream send everything here.
                         collection_active = true;
+                        self.gate.open();
                         stats_collection_start_time = get_coarse_unix_timestamp();
                         stats_collection_end_time = stats_collection_start_time + collection_period_secs;
                         stats_response_tx = Some(response_tx);
@@ -174,7 +183,10 @@ impl Destination for DogStatsDStats {
                      None => break,
                 },
                 _ = &mut collection_done, if collection_active => {
+                    // Until the next collection, the components upstream skip sending here; what they sent before is
+                    // discarded as it arrives.
                     collection_active = false;
+                    self.gate.close();
 
                     // Build the response.
                     let stats = match current_stats.take() {
@@ -199,6 +211,7 @@ impl Destination for DogStatsDStats {
 
             }
         }
+        self.gate.close();
         Ok(())
     }
 }
@@ -283,6 +296,7 @@ impl DogStatsDStatisticsConfiguration {
         Self {
             api_handler: handler,
             rx: Arc::new(Mutex::new(rx)),
+            gate: InputGate::closed(),
         }
     }
 
@@ -298,9 +312,16 @@ impl DestinationBuilder for DogStatsDStatisticsConfiguration {
         EventType::Metric
     }
 
+    fn input_gate(&self) -> Option<InputGate> {
+        Some(self.gate.clone())
+    }
+
     async fn build(&self, _context: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
         let rx = self.rx.clone().try_lock_owned()?;
-        Ok(Box::new(DogStatsDStats { rx }))
+        Ok(Box::new(DogStatsDStats {
+            rx,
+            gate: self.gate.clone(),
+        }))
     }
 }
 
@@ -397,9 +418,12 @@ mod tests {
         use tokio::runtime::Handle;
         use tokio::time::timeout;
 
-        // Build the destination and grab the request sender the API handler would normally use.
+        // Build the destination and grab the request sender the API handler would normally use. Its input gate is
+        // closed until a collection starts.
         let config = DogStatsDStatisticsConfiguration::new();
         let request_tx = config.api_handler.state.tx.clone();
+        let gate = config.input_gate().expect("the statistics tap has an input gate");
+        assert!(!gate.is_open(), "nothing is sent to the tap while no collection runs");
 
         let component_context = ComponentContext::test_destination("test");
         let destination = config
@@ -439,6 +463,10 @@ mod tests {
             .await
             .expect("collection request should be accepted");
         tokio::task::yield_now().await;
+        assert!(
+            gate.is_open(),
+            "the components upstream send everything while a collection runs"
+        );
 
         // The same context seen twice accumulates a single entry with count 2; a distinct context yields count 1.
         let mut events = EventsBuffer::default();
@@ -465,6 +493,7 @@ mod tests {
             StatsResponse::Statistics(collected) => collected,
             StatsResponse::AlreadyRunning { .. } => panic!("first request should not report an active collection"),
         };
+        assert!(!gate.is_open(), "the gate closes with the collection");
         let samples = collected.stats.0;
         assert_eq!(2, samples.len(), "each distinct context should have its own sample");
 

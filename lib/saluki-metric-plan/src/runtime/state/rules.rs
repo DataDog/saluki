@@ -51,18 +51,28 @@ pub enum Observation {
     /// The header advanced, or kept, its point's progress.
     Ok,
 
-    /// The header's point reset its clock: its epoch changed. Before handling the header's batch, the state owner
-    /// closes everything it holds at `pre`, in the old timeline.
-    Reset {
+    /// The header's point reset its clock: its header is in a newer epoch than its previous one. Before handling the
+    /// header's batch, the state owner closes everything it holds at `pre`, in the old timeline.
+    ///
+    /// The observation carries what the tracker knew of the point before it switched, so that a host can evaluate a
+    /// rule as it stood before the header without keeping a copy of the tracker, such as
+    /// [`in_publication_epoch_with`][WatermarkTracker::in_publication_epoch_with].
+    EpochSwitched {
         /// The point that reset.
         point: AdmissionPointId,
+
+        /// The epoch the point was in before this header.
+        previous: u32,
+
+        /// The latest admission time the point stamped in its previous epoch, at which that epoch closed.
+        final_latest: AdmissionTime,
 
         /// The watermark before the reset, or `None` if another upstream point had sent nothing yet.
         pre: Option<AdmissionTime>,
     },
 
-    /// The header is unstamped, or stamped by a point that is not upstream of the state owner: a wiring fault. The
-    /// tracker ignored it; its batch is invalid.
+    /// The header is unstamped, stamped by a point that is not upstream of the state owner, or stamped in an epoch
+    /// older than one its point already sent: a wiring fault. The tracker ignored it; its batch is invalid.
     Fault,
 }
 
@@ -74,10 +84,12 @@ pub enum Observation {
 ///
 /// 1. an unstamped header, or one stamped by a point outside the upstream set, is a [fault][Observation::Fault];
 /// 2. the first header of a point records its progress;
-/// 3. a header of another epoch than the point's last is a [reset][Observation::Reset] of the point, whose progress
-///    then restarts from the header;
-/// 4. otherwise the point's latest admission time grows to the header's;
-/// 5. in every case but a fault, the point's newest generation grows to the header's.
+/// 3. a header of a [newer][epoch_newer] epoch than the point's last [switches its epoch][Observation::EpochSwitched]:
+///    a reset of the point, whose progress then restarts from the header;
+/// 4. a header of an older epoch than the point's last is a fault too, which one path in stamping order never
+///    delivers: debug builds assert it, and the tracker ignores it;
+/// 5. otherwise the point's latest admission time grows to the header's;
+/// 6. in every case but a fault, the point's newest generation grows to the header's.
 ///
 /// The **watermark** is the earliest latest admission time over the upstream points, and unknown while any of them has
 /// sent nothing: everything stamped before it has arrived, so a bucket ending by it can close.
@@ -132,11 +144,28 @@ impl WatermarkTracker {
                 });
                 return Observation::Ok;
             }
+            Some(known) if !epoch_newer(header.epoch, known.epoch) && known.epoch != header.epoch => {
+                debug_assert!(
+                    false,
+                    "admission point {} stamped epoch {} after epoch {}, which one path in stamping order rules out",
+                    point.get(),
+                    header.epoch,
+                    known.epoch
+                );
+                // Release builds drop the batch: its timeline is one this point already closed.
+                return Observation::Fault;
+            }
             Some(known) if known.epoch != header.epoch => {
-                // Epochs wrap, so any difference is a reset; the point's timeline restarts from this header.
+                // A newer epoch is a reset; the point's timeline restarts from this header.
+                let (previous, final_latest) = (known.epoch, known.latest);
                 known.epoch = header.epoch;
                 known.latest = admitted_at;
-                Observation::Reset { point, pre }
+                Observation::EpochSwitched {
+                    point,
+                    previous,
+                    final_latest,
+                    pre,
+                }
             }
             Some(known) => {
                 debug_assert!(
@@ -207,6 +236,29 @@ impl WatermarkTracker {
             Some(epoch) => progress.is_some_and(|progress| progress.epoch == epoch),
         })
     }
+
+    /// Returns what [`in_publication_epoch`][Self::in_publication_epoch] returned before the tracker observed a header
+    /// of `point` that switched it from the epoch `previous`, as an [`Observation::EpochSwitched`] reports.
+    ///
+    /// Only the observed point's epoch changed, so the rule is evaluated with that point in `previous`, and every other
+    /// point as it is.
+    pub fn in_publication_epoch_with(&self, cut: &CutBoundary, point: AdmissionPointId, previous: u32) -> bool {
+        self.points
+            .iter()
+            .all(|(upstream, progress)| match cut.epoch_of(*upstream) {
+                None => true,
+                Some(epoch) if *upstream == point => previous == epoch,
+                Some(epoch) => progress.is_some_and(|progress| progress.epoch == epoch),
+            })
+    }
+}
+
+/// Returns `true` if the clock epoch `a` is newer than `b`.
+///
+/// An admission clock moves to the next epoch at each reset, and epochs wrap around, so `a` is newer than `b` when it
+/// is less than half the epoch range ahead of it: `(a - b) mod 2^32` read as a signed number is positive.
+pub fn epoch_newer(a: u32, b: u32) -> bool {
+    (a.wrapping_sub(b) as i32) > 0
 }
 
 /// What the [tick gate][TickGate] decides at a flush tick's deadline.

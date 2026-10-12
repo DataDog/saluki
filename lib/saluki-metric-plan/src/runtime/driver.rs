@@ -1099,9 +1099,10 @@ impl MetricRegionDriver {
             Fault::NotUpstream => warn!(
                 region = %self.name,
                 admission_point = ?header.admission_point,
-                "Isolation slot received a batch that no admission point upstream of it stamped, which only a wiring \
-                 fault produces: its state owner's watermark cannot account for it. Dropping it as invalid loss; \
-                 later such batches are dropped without a warning."
+                "Isolation slot received a batch that no admission point upstream of it stamped, or that its point \
+                 stamped in an epoch older than one it already sent, which only a wiring fault produces: its state \
+                 owner's watermark cannot account for it. Dropping it as invalid loss; later such batches are \
+                 dropped without a warning."
             ),
         }
     }
@@ -1547,6 +1548,11 @@ impl RegionDriver for MetricRegionDriver {
         self.prune();
         for generation in &mut self.generations {
             generation.publish();
+        }
+        // Kernels that accumulate their telemetry, rather than writing shared handles per event, publish it now, each
+        // in its own resource group; a state owner's instances publish with the slot's state, below.
+        for slot in self.kernels.iter_mut() {
+            slot.context.accounted(|| slot.kernel.publish_telemetry());
         }
         let invalid = std::mem::take(&mut self.invalid.pending);
         if invalid.points > 0 {

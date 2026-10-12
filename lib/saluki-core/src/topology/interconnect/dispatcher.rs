@@ -1,11 +1,18 @@
-use std::{borrow::Cow, sync::Arc, time::Instant};
+use std::{
+    borrow::Cow,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Instant,
+};
 
 use saluki_common::collections::FastHashMap;
 use saluki_error::{generic_error, GenericError};
 use saluki_metrics::{static_metrics, Counter, Histogram};
 use tokio::sync::mpsc;
 
-use super::Dispatchable;
+use super::{consumer::ReceivedMetrics, Dispatchable};
 #[cfg(feature = "measurement")]
 use crate::probes;
 use crate::{
@@ -81,6 +88,51 @@ impl DispatchProbes {
     }
 }
 
+/// A gate on the input of a component that only observes what it receives, such as a tap that collects statistics on
+/// demand.
+///
+/// While the gate is closed, a dispatcher sending to the component skips it: it neither clones what it sends nor sends
+/// it there, and counts what it skipped as received by the component instead, in the component's own
+/// `component_events_received_total` and `component_events_received_size` series, which therefore keep the values
+/// they would have had. The dispatcher's own series count the component as sent to, as before. While the gate is open,
+/// the component receives everything, as any component does. A component opens its gate when it starts observing, and
+/// closes it when it stops: what was sent while it was closed never reaches it, and what was sent before it closed may
+/// still arrive, for the component to discard.
+///
+/// Clones share one gate. A gate starts closed.
+#[derive(Clone, Debug, Default)]
+pub struct InputGate {
+    open: Arc<AtomicBool>,
+}
+
+impl InputGate {
+    /// Creates a closed gate.
+    pub fn closed() -> Self {
+        Self::default()
+    }
+
+    /// Opens the gate: senders deliver to the component from their next send.
+    pub fn open(&self) {
+        self.open.store(true, Ordering::Release);
+    }
+
+    /// Closes the gate: senders skip the component from their next send.
+    pub fn close(&self) {
+        self.open.store(false, Ordering::Release);
+    }
+
+    /// Returns `true` if the gate is open.
+    pub fn is_open(&self) -> bool {
+        self.open.load(Ordering::Acquire)
+    }
+}
+
+/// The gate of a sender's component, and the counters of what the component received, which a skipped send adds to.
+struct GatedSender {
+    gate: InputGate,
+    received: ReceivedMetrics,
+}
+
 struct DispatchTarget<T> {
     metrics: DispatcherMetrics,
     #[cfg(feature = "measurement")]
@@ -89,6 +141,9 @@ struct DispatchTarget<T> {
 
     // The component each sender feeds, where it is known, so that heartbeats can go to some of them only.
     sender_components: Vec<Option<ComponentId>>,
+
+    // The gate of each sender's component, for the components that have one.
+    sender_gates: Vec<Option<GatedSender>>,
     admission: Option<Arc<AdmissionPoint>>,
 
     // Held while the dispatcher lives, so that the admission point sends no heartbeat once the component stops.
@@ -106,6 +161,7 @@ where
             metrics: DispatcherMetrics::default_output(context),
             senders: Vec::new(),
             sender_components: Vec::new(),
+            sender_gates: Vec::new(),
             admission: None,
             _admission_owner: None,
         }
@@ -118,14 +174,30 @@ where
             metrics: DispatcherMetrics::named_output(context, output_name),
             senders: Vec::new(),
             sender_components: Vec::new(),
+            sender_gates: Vec::new(),
             admission: None,
             _admission_owner: None,
         }
     }
 
-    fn add_sender(&mut self, sender: mpsc::Sender<T>, component: Option<ComponentId>) {
+    fn add_sender(&mut self, sender: mpsc::Sender<T>, component: Option<ComponentId>, gate: Option<GatedSender>) {
         self.senders.push(sender);
         self.sender_components.push(component);
+        self.sender_gates.push(gate);
+    }
+
+    /// Returns `true` if the sender at `index` delivers: it has no gate, or its gate is open.
+    fn delivers(&self, index: usize) -> bool {
+        self.sender_gates[index]
+            .as_ref()
+            .is_none_or(|gated| gated.gate.is_open())
+    }
+
+    /// Counts an item the sender at `index` skipped as received by its component, which must have a gate.
+    fn count_skipped(&self, index: usize, item_count: usize) {
+        if let Some(gated) = &self.sender_gates[index] {
+            gated.received.record(item_count);
+        }
     }
 
     async fn send(&self, mut item: T) -> Result<(), GenericError> {
@@ -172,33 +244,35 @@ where
         #[cfg(feature = "measurement")]
         self.probes.items.record(item_count as u64);
 
-        // Send the item to all senders except the last one by cloning the item.
+        // The last sender that delivers takes the item itself, and every other one that delivers a clone. A sender
+        // whose component's gate is closed is skipped, and what it would have sent counted as received there. Each
+        // gate is decided once: a sender after the last one found delivering is skipped even if its gate opens in the
+        // meantime, and the last one takes the item even if its gate closes.
         saluki_antithesis::always_gt!(self.senders.len(), 0, "dispatcher fanout has at least one sender");
-        let cloned_sends = self.senders.len() - 1;
-        for sender in &self.senders[0..cloned_sends] {
-            #[cfg(feature = "measurement")]
-            let clone = probes::Span::start(&self.probes.clone);
-            let cloned = item.clone();
-            #[cfg(feature = "measurement")]
-            drop(clone);
-            #[cfg(feature = "measurement")]
-            let _send_wait = probes::Span::start(&self.probes.send_wait);
-            sender
-                .send(cloned)
-                .await
-                .map_err(|_| generic_error!("Failed to send to output."))?;
+        let last_delivering = (0..self.senders.len()).rev().find(|&index| self.delivers(index));
+        let mut item = Some(item);
+        for (index, sender) in self.senders.iter().enumerate() {
+            let to_send = match last_delivering {
+                Some(last) if index == last => item.take(),
+                Some(last) if index < last && self.delivers(index) => {
+                    #[cfg(feature = "measurement")]
+                    let _clone = probes::Span::start(&self.probes.clone);
+                    item.clone()
+                }
+                _ => None,
+            };
+            match to_send {
+                Some(to_send) => {
+                    #[cfg(feature = "measurement")]
+                    let _send_wait = probes::Span::start(&self.probes.send_wait);
+                    sender
+                        .send(to_send)
+                        .await
+                        .map_err(|_| generic_error!("Failed to send to output."))?
+                }
+                None => self.count_skipped(index, item_count),
+            }
         }
-
-        // Send the item to the last sender without cloning.
-        let last_sender = &self.senders[cloned_sends];
-        #[cfg(feature = "measurement")]
-        let send_wait = probes::Span::start(&self.probes.send_wait);
-        last_sender
-            .send(item)
-            .await
-            .map_err(|_| generic_error!("Failed to send to output."))?;
-        #[cfg(feature = "measurement")]
-        drop(send_wait);
 
         let elapsed = start.elapsed();
 
@@ -377,7 +451,7 @@ where
     pub fn attach_sender_to_output(
         &mut self, output_name: &OutputName, sender: mpsc::Sender<T>,
     ) -> Result<(), GenericError> {
-        self.attach_sender(output_name, sender, None)
+        self.attach_sender(output_name, sender, None, None)
     }
 
     /// Attaches a sender that feeds the component `component_id` to the given output.
@@ -392,11 +466,27 @@ where
     pub fn attach_component_sender_to_output(
         &mut self, output_name: &OutputName, component_id: ComponentId, sender: mpsc::Sender<T>,
     ) -> Result<(), GenericError> {
-        self.attach_sender(output_name, sender, Some(component_id))
+        self.attach_sender(output_name, sender, Some(component_id), None)
+    }
+
+    /// Attaches a sender that feeds the component `component_id`, whose input has the gate `gate`, to the given
+    /// output: while the gate is closed, the output skips the sender, and records what it skipped in `received`, the
+    /// counters of what the component received. See [`InputGate`].
+    ///
+    /// # Errors
+    ///
+    /// If the output doesn't exist, or already has an admission point, an error is returned.
+    pub(crate) fn attach_gated_sender_to_output(
+        &mut self, output_name: &OutputName, component_id: ComponentId, sender: mpsc::Sender<T>, gate: InputGate,
+        received: ReceivedMetrics,
+    ) -> Result<(), GenericError> {
+        let gated = GatedSender { gate, received };
+        self.attach_sender(output_name, sender, Some(component_id), Some(gated))
     }
 
     fn attach_sender(
         &mut self, output_name: &OutputName, sender: mpsc::Sender<T>, component_id: Option<ComponentId>,
+        gate: Option<GatedSender>,
     ) -> Result<(), GenericError> {
         let target = self.get_output_mut(output_name)?;
         if target.admission.is_some() {
@@ -407,7 +497,7 @@ where
                 output_name
             ));
         }
-        target.add_sender(sender, component_id);
+        target.add_sender(sender, component_id, gate);
 
         Ok(())
     }
@@ -617,6 +707,7 @@ mod tests {
 
     use std::{ops::Deref, time::Duration};
 
+    use futures::FutureExt as _;
     use metrics::{Key, Label};
     use metrics_util::{
         debugging::{DebugValue, DebuggingRecorder, Snapshotter},
@@ -629,6 +720,7 @@ mod tests {
         AdmissionMode, AdmissionPointConfig, AdmissionPointId, AdmissionSchedule, AdmissionTime, BatchHeader, EntryId,
         GenerationId, GenerationToken,
     };
+    use crate::topology::interconnect::Consumer;
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     struct SingleEvent<T>(T);
@@ -1281,6 +1373,62 @@ mod tests {
         });
     }
 
+    #[cfg(feature = "measurement")]
+    #[test]
+    fn probes_record_no_clone_and_no_send_for_a_sender_whose_gate_is_closed() {
+        use crate::data_model::event::{
+            metric::{context::Context, Metric},
+            Event,
+        };
+
+        let _probes = probes::tests::PROBES_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        runtime.block_on(async {
+            let mut dispatcher =
+                Dispatcher::<EventsBuffer>::new(ComponentContext::test_source("dispatcher_gate_probe_test"));
+            dispatcher.add_output(OutputName::Default).unwrap();
+            let (tap_tx, tap_rx) = mpsc::channel(2);
+            let (owner_tx, mut owner_rx) = mpsc::channel(2);
+            let mut tap = Consumer::new(ComponentContext::test_destination("tap"), tap_rx);
+            let gate = InputGate::closed();
+            // The tap first: open, it takes a clone and the owner the buffer itself.
+            dispatcher
+                .attach_gated_sender_to_output(
+                    &OutputName::Default,
+                    ComponentId::try_from("tap").unwrap(),
+                    tap_tx,
+                    gate.clone(),
+                    tap.received_metrics(),
+                )
+                .unwrap();
+            dispatcher
+                .attach_sender_to_output(&OutputName::Default, owner_tx)
+                .unwrap();
+            let probe =
+                |name: &str| probes::snapshot()[&format!("{}/dispatcher_gate_probe_test._default", name)].clone();
+
+            let mut buffer = EventsBuffer::with_capacity(4);
+            let metric = Metric::counter(Context::from_static_name("probed"), 1.0);
+            assert!(buffer.try_push(Event::Metric(metric)).is_none());
+            probes::set_timing(true);
+            dispatcher.dispatch(buffer.clone()).await.unwrap();
+            let closed = (probe("dispatch_clone").count, probe("dispatch_send_wait").count);
+            gate.open();
+            dispatcher.dispatch(buffer).await.unwrap();
+            probes::set_timing(false);
+
+            // Closed: the owner's send only. Open: the tap's clone, and both sends.
+            assert_eq!(closed, (0, 1));
+            assert_eq!(probe("dispatch_clone").count, 1);
+            assert_eq!(probe("dispatch_send_wait").count, 3);
+            assert_eq!(probe("dispatch_items").count, 2);
+            assert!(owner_rx.try_recv().is_ok() && owner_rx.try_recv().is_ok());
+            assert_eq!(tap.next().await.map(|buffer| buffer.len()), Some(1));
+        });
+    }
+
     #[tokio::test]
     async fn dispatch_one_errors_when_buffer_cannot_hold_a_single_item() {
         // Defensive guard in `dispatch_one_inner`: if the default-constructed buffer can't accept even one item, it
@@ -1295,5 +1443,140 @@ mod tests {
             .await
             .expect_err("a zero-capacity buffer must be rejected, not silently drop the item");
         assert!(err.to_string().contains("rejected a single item"), "got: {err}");
+    }
+
+    /// A buffer of `len` items, and an observer of how many times buffers were cloned.
+    #[derive(Debug)]
+    struct CountedClones {
+        len: usize,
+        clones: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Clone for CountedClones {
+        fn clone(&self) -> Self {
+            self.clones.fetch_add(1, Ordering::Relaxed);
+            Self {
+                len: self.len,
+                clones: Arc::clone(&self.clones),
+            }
+        }
+    }
+
+    impl Dispatchable for CountedClones {
+        fn item_count(&self) -> usize {
+            self.len
+        }
+    }
+
+    /// Returns the value of the counter `name` of the destination `id` in `recorder`.
+    fn received_by(recorder: &saluki_metrics::test::TestRecorder, id: &'static str) -> Option<u64> {
+        recorder.counter((
+            "component_events_received_total",
+            &[("component_id", id), ("component_type", "destination")][..],
+        ))
+    }
+
+    #[tokio::test]
+    async fn a_closed_gate_skips_its_component_without_cloning_and_counts_it_as_received() {
+        let recorder = saluki_metrics::test::TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+        let clones = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let buffer = |len| CountedClones {
+            len,
+            clones: Arc::clone(&clones),
+        };
+
+        // Each case puts the gated tap in another position of the fan-out: the last delivering sender takes the item
+        // itself, so a closed tap in last place must not take it from the others.
+        for tap_first in [true, false] {
+            let mut dispatcher = unbuffered_dispatcher::<CountedClones>();
+            dispatcher.add_output(OutputName::Default).unwrap();
+            let (owner_tx, mut owner_rx) = mpsc::channel(4);
+            let (tap_tx, tap_rx) = mpsc::channel(4);
+            let tap = Consumer::new(ComponentContext::test_destination("tap"), tap_rx);
+            let gate = InputGate::closed();
+            let attach_tap = |dispatcher: &mut Dispatcher<CountedClones>, tap_tx| {
+                dispatcher
+                    .attach_gated_sender_to_output(
+                        &OutputName::Default,
+                        ComponentId::try_from("tap").unwrap(),
+                        tap_tx,
+                        gate.clone(),
+                        tap.received_metrics(),
+                    )
+                    .unwrap();
+            };
+            if tap_first {
+                attach_tap(&mut dispatcher, tap_tx);
+                dispatcher
+                    .attach_sender_to_output(&OutputName::Default, owner_tx)
+                    .unwrap();
+            } else {
+                dispatcher
+                    .attach_sender_to_output(&OutputName::Default, owner_tx)
+                    .unwrap();
+                attach_tap(&mut dispatcher, tap_tx);
+            }
+            let mut tap = tap;
+            let received_before = received_by(&recorder, "tap").unwrap_or(0);
+            clones.store(0, Ordering::Relaxed);
+
+            // Closed: the owner gets the buffer itself, the tap nothing, and no buffer is cloned; the tap's received
+            // count still grows by the buffer's items.
+            dispatcher.dispatch(buffer(3)).await.unwrap();
+            assert_eq!(owner_rx.recv().await.unwrap().len, 3);
+            assert!(tap.next().now_or_never().is_none(), "the closed tap receives nothing");
+            assert_eq!(clones.load(Ordering::Relaxed), 0, "nothing is cloned for a closed tap");
+            assert_eq!(received_by(&recorder, "tap"), Some(received_before + 3));
+
+            // Open: both receive, one of them a clone, and the tap's consumer counts what it receives, as for any
+            // component.
+            gate.open();
+            dispatcher.dispatch(buffer(5)).await.unwrap();
+            assert_eq!(owner_rx.recv().await.unwrap().len, 5);
+            assert_eq!(tap.next().await.unwrap().len, 5);
+            assert_eq!(clones.load(Ordering::Relaxed), 1);
+            assert_eq!(received_by(&recorder, "tap"), Some(received_before + 8));
+
+            // Closed again: skipped again.
+            gate.close();
+            dispatcher.dispatch(buffer(2)).await.unwrap();
+            assert_eq!(owner_rx.recv().await.unwrap().len, 2);
+            assert!(tap.next().now_or_never().is_none());
+            assert_eq!(received_by(&recorder, "tap"), Some(received_before + 10));
+        }
+    }
+
+    #[tokio::test]
+    async fn the_dispatcher_counts_a_closed_tap_as_sent_to() {
+        // The source's own series do not change with the gate: the tap counts as sent to, open or closed.
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let (dispatcher, gate, mut owner_rx) = metrics::with_local_recorder(&recorder, || {
+            let mut dispatcher = unbuffered_dispatcher::<SingleEvent<u32>>();
+            dispatcher.add_output(OutputName::Default).unwrap();
+            let (owner_tx, owner_rx) = mpsc::channel(4);
+            let (tap_tx, tap_rx) = mpsc::channel(4);
+            let tap = Consumer::new(ComponentContext::test_destination("tap"), tap_rx);
+            let gate = InputGate::closed();
+            dispatcher
+                .attach_sender_to_output(&OutputName::Default, owner_tx)
+                .unwrap();
+            dispatcher
+                .attach_gated_sender_to_output(
+                    &OutputName::Default,
+                    ComponentId::try_from("tap").unwrap(),
+                    tap_tx,
+                    gate.clone(),
+                    tap.received_metrics(),
+                )
+                .unwrap();
+            (dispatcher, gate, owner_rx)
+        });
+        dispatcher.dispatch(SingleEvent(1)).await.unwrap();
+        assert_eq!(owner_rx.recv().await, Some(SingleEvent(1)));
+        let (sent, _, _) = get_output_metrics(&snapshotter, "_default");
+        assert_eq!(sent, 2, "one event to each of the two senders");
+        drop((dispatcher, gate));
     }
 }

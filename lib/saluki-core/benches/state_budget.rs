@@ -1,7 +1,7 @@
 //! The cost of a shared `StateBudget` under churn: P threads re-admit one million contexts after a flush expired
 //! them, each new context taking one unit of the global budget and one of its node's, as aggregation admits a new
-//! context when it shares budgets (`saluki-metric-kernels`, `aggregate/state.rs`): read the node's count against its
-//! limit, acquire one global unit, then one node unit.
+//! context when it shares budgets (`saluki-metric-kernels`, `aggregate/state.rs`): acquire one node unit below the
+//! node's limit, then one global unit, giving the node's unit back if the global budget is full.
 //!
 //! Three shapes, for P in 1, 2, 4, 8, and 16 threads, each re-admitting `1M / P` contexts at once:
 //!
@@ -38,11 +38,11 @@ const NODE_LIMIT: u64 = 2 * CONTEXTS;
 /// Admits one new context as aggregation does when it shares budgets: `true` if it holds a unit of each budget.
 #[inline]
 fn admit(global: &StateBudget, node: &StateBudget) -> bool {
-    if node.used() >= NODE_LIMIT || !global.try_acquire(1) {
+    if !node.try_acquire_below(1, NODE_LIMIT) {
         return false;
     }
-    if !node.try_acquire(1) {
-        global.release(1);
+    if !global.try_acquire(1) {
+        node.release(1);
         return false;
     }
     true

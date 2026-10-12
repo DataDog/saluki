@@ -568,7 +568,7 @@ fn telemetry_records_hits_misses_filtered_tags_size_and_updates() {
     let recorder = TestRecorder::default();
     let _local = set_default_local_recorder(&recorder);
 
-    let telemetry = TagProjectionTelemetry::new(&MetricsBuilder::default());
+    let mut telemetry = TagProjectionTelemetry::new(&MetricsBuilder::default());
 
     for name in [
         "tag_filterlist_rule_hits_total",

@@ -16,6 +16,25 @@ impl ConsumerMetrics {
     fn from_component_context(context: ComponentContext) -> Self {
         Self::new(context.component_id(), context.component_type().as_str())
     }
+
+    fn record(&self, item_count: usize) {
+        self.events_received_total().increment(item_count as u64);
+        self.events_received_size().record(item_count as f64);
+    }
+}
+
+/// The counters of what a component received, which a dispatcher writes for what it skips sending to a component
+/// whose [input gate][super::InputGate] is closed, as the component's consumer would have on receiving it.
+#[derive(Clone)]
+pub(crate) struct ReceivedMetrics {
+    metrics: ConsumerMetrics,
+}
+
+impl ReceivedMetrics {
+    /// Records one item of `item_count` items as received.
+    pub(crate) fn record(&self, item_count: usize) {
+        self.metrics.record(item_count);
+    }
 }
 
 /// Sees each item a consumer yields (see [`Consumer::observe`]).
@@ -66,8 +85,7 @@ where
     pub async fn next(&mut self) -> Option<T> {
         match self.inner.recv().await {
             Some(item) => {
-                self.metrics.events_received_total().increment(item.item_count() as u64);
-                self.metrics.events_received_size().record(item.item_count() as f64);
+                self.metrics.record(item.item_count());
                 #[cfg(any(test, feature = "test-util"))]
                 if let Some(observer) = &self.observer {
                     observer(&item);
@@ -85,6 +103,13 @@ where
     /// receives on another channel after everything already sent to it.
     pub fn queued(&self) -> usize {
         self.inner.len()
+    }
+
+    /// Returns the counters this consumer records what its component receives in.
+    pub(crate) fn received_metrics(&self) -> ReceivedMetrics {
+        ReceivedMetrics {
+            metrics: self.metrics.clone(),
+        }
     }
 }
 

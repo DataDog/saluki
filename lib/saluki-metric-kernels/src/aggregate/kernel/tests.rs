@@ -185,6 +185,21 @@ impl Host {
 }
 
 #[test]
+fn a_batch_stamped_earlier_that_arrives_late_never_moves_a_counters_expiry_earlier() {
+    // Counter `c` from one admission point at 100, then a delayed batch another point stamped at 99: its last update
+    // stays 100, so with an expiry of 300 it is kept through the flush at 400 and removed by the next.
+    let mut host = Host::new(params(10, Some(300)));
+    host.admit(at(100, 0), vec![Metric::counter("c", 1.0)]);
+    host.admit(at(99, 0), vec![Metric::counter("c", 1.0)]);
+    for secs in (110..=400).step_by(10) {
+        host.tick(Some(at(secs, 0)));
+    }
+    assert_eq!(host.kernel.core().len(), 1, "expiry counts from 100, not 99");
+    host.tick(Some(at(410, 0)));
+    assert!(host.kernel.core().is_empty());
+}
+
+#[test]
 fn batches_are_bucketed_by_admission_time_and_flushed_at_the_watermark() {
     let mut host = Host::new(params(10, None));
     host.admit(at(3, 900), vec![Metric::counter("c", 1.0)]);
@@ -910,16 +925,23 @@ proptest! {
         // Admission times carry a fraction of a second, which bucketing floors.
         let time = |secs: u64, millis: u64| AdmissionTime::from_unix_nanos(secs * 1_000_000_000 + millis * 1_000_000);
         let mut now = 1_700_000_000 + start;
+        // An admission point's clock never moves back within an epoch: it latches its latest time, and only a reset
+        // starts a timeline that may be earlier. So batches are admitted at the latest time of their timeline so far,
+        // where a context's last update is the latest admission time it was admitted at, as the kernel keeps it, and
+        // the time of its last batch, as the frozen state machine keeps it.
+        let mut latest_admitted: Option<u64> = None;
         for step in &steps {
             match step {
                 KernelStep::Core(Step::Admit { after, metrics }) => {
                     now = now.saturating_add_signed(*after);
-                    let metrics = metrics.iter().map(|metric| metric.build(now)).collect::<Vec<_>>();
+                    let admitted = latest_admitted.map_or(now, |latest| latest.max(now));
+                    latest_admitted = Some(admitted);
+                    let metrics = metrics.iter().map(|metric| metric.build(admitted)).collect::<Vec<_>>();
                     for host in [&mut whole, &mut yielding] {
-                        host.admit(time(now, 750), metrics.clone());
+                        host.admit(time(admitted, 750), metrics.clone());
                     }
                     if let Some(oracle) = &mut oracle {
-                        oracle.reference.events(now, metrics.into_iter().map(Event::Metric));
+                        oracle.reference.events(admitted, metrics.into_iter().map(Event::Metric));
                     }
                 }
                 KernelStep::Core(Step::Tick { after }) => {
@@ -955,6 +977,7 @@ proptest! {
                         oracle = Some(Oracle::new(&effective, Some(base), breached));
                     }
                     now = now.saturating_add_signed(*after);
+                    latest_admitted = None;
                 }
             }
             prop_assert_eq!(whole.counters, yielding.counters);

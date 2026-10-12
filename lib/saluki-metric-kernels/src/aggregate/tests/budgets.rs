@@ -1,6 +1,6 @@
 //! Tests of budgets of contexts shared between cores, of kind conflicts, and of dropping a core.
 
-use saluki_core::execution::StateBudget;
+use saluki_core::execution::{BudgetOperation, StateBudget};
 
 use super::*;
 
@@ -463,5 +463,109 @@ proptest! {
         drop(cores);
         prop_assert_eq!(global.used(), 0);
         prop_assert_eq!((nodes[0].used(), nodes[1].used()), (0, 0));
+    }
+}
+
+#[test]
+fn a_new_context_takes_its_nodes_unit_first_and_gives_it_back_when_the_global_budget_is_full() {
+    // A global budget of one context, and a node under a limit of five: the second new context takes a node unit,
+    // finds the global budget full, and gives the node unit back. The node's unit is bounded by the limit in the same
+    // compare-and-swap that takes it.
+    let (global, global_ops) = StateBudget::recorded(1);
+    let (node, node_ops) = StateBudget::recorded(u64::MAX);
+    let mut core = shared_core(5, &global, &node);
+    let outcome = core.admit(B + 1, gauges(&["a", "b"]));
+    assert_eq!((outcome.accepted, outcome.dropped), (1, 1));
+    assert_eq!((global.used(), node.used()), (1, 1));
+
+    let acquire = |bound, observed, granted| BudgetOperation::Acquire {
+        units: 1,
+        bound,
+        observed,
+        granted,
+    };
+    assert_eq!(
+        node_ops.operations(),
+        vec![
+            acquire(5, 0, true),
+            acquire(5, 1, true),
+            BudgetOperation::Release { units: 1, observed: 2 },
+        ]
+    );
+    assert_eq!(global_ops.operations(), vec![acquire(1, 0, true), acquire(1, 1, false)]);
+}
+
+/// Runs one lane of a node: a core sharing the node's count and the global budget, which admits `per_round` new gauges
+/// each round under the context limit `limit` and then flushes them away, checking after every admission that the
+/// node holds at most `limit` contexts and the global budget at most its capacity. Returns the first violation seen.
+fn run_lane(
+    lane: usize, global: &StateBudget, node: &StateBudget, limit: usize, rounds: usize, per_round: usize,
+) -> Result<(), String> {
+    let mut core = shared_core(limit, global, node);
+    let params = AdmitParams { context_limit: limit };
+    for round in 0..rounds {
+        let at = B + 100 * round as u64;
+        let metrics = (0..per_round)
+            .map(|index| {
+                let name = format!("lane{}.round{}.{}", lane, round, index);
+                Metric::gauge(Context::from_parts(name, TagSet::default()), 1.0)
+            })
+            .collect::<Vec<_>>();
+        for metric in metrics {
+            core.admit_with(at, [metric], &params);
+            let (held, used) = (node.used(), global.used());
+            if held > limit as u64 {
+                return Err(format!("the node holds {} contexts, over its limit of {}", held, limit));
+            }
+            if used > global.capacity() {
+                return Err(format!("the global budget counts {}, over its capacity", used));
+            }
+        }
+        // Flushing at the next bucket emits the gauges and removes them, releasing their units.
+        core.flush_into(at + 50, false, |_| {});
+    }
+    Ok(())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(48))]
+
+    #[test]
+    fn property_test_bounded_node_acquire_never_exceeds_the_limit(
+        lanes in 2usize..5,
+        limit in 1usize..6,
+        spare in 0u64..6,
+        per_round in 1usize..4,
+    ) {
+        // Lanes on threads of their own admit new contexts of one node at once, under one context limit, while a lane
+        // of another node shares the global budget, which leaves `spare` units beyond the limit. However the lanes'
+        // admissions interleave, the node never holds more than its limit, nor the global budget more than its
+        // capacity, and once every lane drops its core, nothing is held.
+        const ROUNDS: usize = 300;
+        let global = StateBudget::new(limit as u64 + spare);
+        let node = StateBudget::unlimited();
+        let other = StateBudget::unlimited();
+        let start = std::sync::Barrier::new(lanes + 1);
+        let outcomes = std::thread::scope(|scope| {
+            let mut workers = (0..lanes)
+                .map(|lane| {
+                    let (global, node, start) = (&global, &node, &start);
+                    scope.spawn(move || {
+                        start.wait();
+                        run_lane(lane, global, node, limit, ROUNDS, per_round)
+                    })
+                })
+                .collect::<Vec<_>>();
+            let (global, other, start) = (&global, &other, &start);
+            workers.push(scope.spawn(move || {
+                start.wait();
+                run_lane(lanes, global, other, usize::MAX, ROUNDS, per_round)
+            }));
+            workers.into_iter().map(|worker| worker.join().expect("a lane panicked")).collect::<Vec<_>>()
+        });
+        for outcome in outcomes {
+            prop_assert!(outcome.is_ok(), "{}", outcome.unwrap_err());
+        }
+        prop_assert_eq!((global.used(), node.used(), other.used()), (0, 0, 0));
     }
 }

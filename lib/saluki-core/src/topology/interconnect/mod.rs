@@ -7,9 +7,10 @@ pub use self::event_buffer::{EventBufferManager, FixedSizeEventBuffer};
 
 mod consumer;
 pub use self::consumer::Consumer;
+pub(crate) use self::consumer::ReceivedMetrics;
 
 mod dispatcher;
-pub use self::dispatcher::{BufferedDispatcher, Dispatcher};
+pub use self::dispatcher::{BufferedDispatcher, Dispatcher, InputGate};
 
 /// A value that can be dispatched.
 pub trait Dispatchable: Clone {

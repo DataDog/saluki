@@ -33,6 +33,8 @@ pub use self::admission::{
 
 mod budget;
 pub use self::budget::StateBudget;
+#[cfg(any(test, feature = "test-util"))]
+pub use self::budget::{BudgetOperation, BudgetRecording};
 
 mod clock;
 #[cfg(any(test, feature = "test-util"))]

@@ -11,7 +11,7 @@ use std::{
 
 use pin_project::pin_project;
 
-use super::stats::{thread_cpu_time_nanos, ResourceStats};
+use super::stats::{measured_cpu_time_start, sampled_cpu_time_start, CpuTimeStart, ResourceStats};
 
 static REGISTRY: OnceLock<ResourceGroupRegistry> = OnceLock::new();
 static ROOT_GROUP: ResourceStats = ResourceStats::new();
@@ -53,10 +53,25 @@ impl ResourceGroupToken {
     }
 
     /// Enters this resource group, returning a guard that will exit the resource group when dropped.
+    ///
+    /// Allocations are attributed to the group while it is entered. The CPU time the thread uses until the guard is
+    /// dropped is attributed to it only if the entry is sampled: with the default sampling rate of `1`, every entry
+    /// is; see [`set_cpu_time_sampling`][super::set_cpu_time_sampling].
     pub fn enter(&self) -> ResourceTrackingGuard<'_> {
-        // Track our starting point for this thread's CPU usage.
-        let thread_cpu_usage_start = thread_cpu_time_nanos().unwrap_or(0);
+        self.enter_with(sampled_cpu_time_start())
+    }
 
+    /// Enters this resource group, as [`enter`][Self::enter] does, and always measures the CPU time the thread uses
+    /// until the guard is dropped, whatever the sampling rate.
+    ///
+    /// Use this for entries known to be long and rare, such as building a component or draining accumulated state,
+    /// whose cost sampling would report as nothing, or as many times what they cost, in any interval short enough to
+    /// see few of them.
+    pub fn enter_measured(&self) -> ResourceTrackingGuard<'_> {
+        self.enter_with(measured_cpu_time_start(1))
+    }
+
+    fn enter_with(&self, cpu_time_start: Option<CpuTimeStart>) -> ResourceTrackingGuard<'_> {
         // Swap the current group to the one we're tracking.
         CURRENT_GROUP.with(|current_group| {
             let mut group_ptr = current_group.borrow_mut();
@@ -65,7 +80,7 @@ impl ResourceGroupToken {
 
             ResourceTrackingGuard {
                 previous_group_ptr,
-                thread_cpu_usage_start,
+                cpu_time_start,
                 _token: PhantomData,
             }
         })
@@ -84,18 +99,19 @@ unsafe impl Sync for ResourceGroupToken {}
 /// When the guard is dropped, the resource group will be exited and the previously entered resource group will be
 /// restored.
 ///
-/// This is returned by the [`ResourceGroupToken::enter`] method.
+/// This is returned by the [`ResourceGroupToken::enter`] and [`ResourceGroupToken::enter_measured`] methods.
 pub struct ResourceTrackingGuard<'a> {
     previous_group_ptr: NonNull<ResourceStats>,
-    thread_cpu_usage_start: u64,
+    /// The thread's CPU time when the group was entered, if this entry measures it.
+    cpu_time_start: Option<CpuTimeStart>,
     _token: PhantomData<&'a ResourceGroupToken>,
 }
 
 impl Drop for ResourceTrackingGuard<'_> {
     fn drop(&mut self) {
-        // Grab our current total CPU usage for the thread, and calculate the delta.
-        let thread_cpu_usage_end = thread_cpu_time_nanos().unwrap_or(0);
-        let cpu_usage_delta = thread_cpu_usage_end.saturating_sub(self.thread_cpu_usage_start);
+        // Grab our current total CPU usage for the thread, and calculate the delta, scaled by the sampling rate the
+        // entry was drawn at.
+        let cpu_usage_delta = self.cpu_time_start.map_or(0, CpuTimeStart::attributable_since);
 
         // Reset the current group to the one that existed before we entered.
         CURRENT_GROUP.with(|current_group| {
@@ -333,12 +349,14 @@ mod tests {
     use std::{
         cell::Cell,
         future::Future,
+        num::NonZeroU32,
         pin::Pin,
         rc::Rc,
         task::{Context, Poll, Waker},
     };
 
     use super::{ResourceGroupRegistry, ResourceGroupToken, Track};
+    use crate::resource_tracking::{cpu_time_sampling, set_cpu_time_sampling, testing::FakeCpuClock};
 
     /// Polls a future to completion on the current thread using a no-op `waker`.
     fn poll_to_completion<F: Future>(future: F) -> F::Output {
@@ -367,10 +385,19 @@ mod tests {
         }
     }
 
-    // CPU attribution only happens on platforms where per-thread CPU time is available (Linux), so the helpers that
-    // read it back and burn CPU are gated to avoid dead-code warnings elsewhere.
+    // Real CPU time is only read on platforms where per-thread CPU time is available (Linux), so the helper that burns
+    // CPU is gated to avoid dead-code warnings elsewhere.
     #[cfg(target_os = "linux")]
-    fn cpu_time_nanos_for(registry: &ResourceGroupRegistry, target: &str) -> u64 {
+    fn burn_cpu() {
+        let mut sum = 0u64;
+        for i in 0..20_000_000u64 {
+            sum = sum.wrapping_add(i);
+        }
+        std::hint::black_box(sum);
+    }
+
+    /// Returns the CPU time attributed to the group named `target` so far.
+    fn cpu_time_of(registry: &ResourceGroupRegistry, target: &str) -> u64 {
         use crate::resource_tracking::ResourceStatsSnapshot;
 
         let mut cpu_time_nanos = 0;
@@ -382,13 +409,129 @@ mod tests {
         cpu_time_nanos
     }
 
-    #[cfg(target_os = "linux")]
-    fn burn_cpu() {
-        let mut sum = 0u64;
-        for i in 0..20_000_000u64 {
-            sum = sum.wrapping_add(i);
+    /// Enters `group` `entries` times, with the fake clock advancing `cost` nanoseconds inside each entry.
+    fn enter_repeatedly(clock: &FakeCpuClock, group: &ResourceGroupToken, entries: u64, cost: u64) {
+        for _ in 0..entries {
+            let _guard = group.enter();
+            clock.advance(cost);
         }
-        std::hint::black_box(sum);
+    }
+
+    #[test]
+    fn every_entry_measures_its_cpu_time_at_the_default_sampling_rate() {
+        let registry = ResourceGroupRegistry::new();
+        let group = registry.register_resource_group("every-entry");
+        let clock = FakeCpuClock::install(NonZeroU32::MIN, 1);
+
+        enter_repeatedly(&clock, &group, 100, 30);
+
+        // Two reads per entry, and exactly the CPU time used inside them, as without sampling.
+        assert_eq!(clock.reads(), 200);
+        assert_eq!(cpu_time_of(&registry, "every-entry"), 3_000);
+        // Time used outside every entry is attributed to no group.
+        clock.advance(1_000);
+        assert_eq!(cpu_time_of(&registry, "every-entry"), 3_000);
+    }
+
+    #[test]
+    fn sampled_entries_estimate_the_cpu_time_without_bias() {
+        const ENTRIES: u64 = 64_000;
+        const COST: u64 = 1_000;
+        let registry = ResourceGroupRegistry::new();
+        let group = registry.register_resource_group("sampled");
+        let clock = FakeCpuClock::install(NonZeroU32::new(16).unwrap(), 42);
+
+        enter_repeatedly(&clock, &group, ENTRIES, COST);
+
+        // One entry in 16 reads the clock, twice, and counts what it measured 16 times.
+        let sampled = clock.reads() / 2;
+        assert_eq!(cpu_time_of(&registry, "sampled"), sampled * COST * 16);
+        // The number of sampled entries is binomial, with a mean of 4,000 and a standard deviation of about 61, so the
+        // estimate is within 10% of the CPU time used, by more than six deviations.
+        let used = (ENTRIES * COST) as f64;
+        let estimate = cpu_time_of(&registry, "sampled") as f64;
+        assert!(
+            (estimate - used).abs() < used * 0.1,
+            "estimated {} for {} used",
+            estimate,
+            used
+        );
+    }
+
+    #[test]
+    fn sampling_is_not_aliased_by_a_regular_pattern_of_entries() {
+        // Two groups entered in turn, at very different costs: a sampler that took every 16th entry would only ever
+        // see one of them. A random one estimates both.
+        const ROUNDS: u64 = 64_000;
+        let registry = ResourceGroupRegistry::new();
+        let long = registry.register_resource_group("long");
+        let short = registry.register_resource_group("short");
+        let clock = FakeCpuClock::install(NonZeroU32::new(16).unwrap(), 3);
+
+        for _ in 0..ROUNDS {
+            enter_repeatedly(&clock, &long, 1, 1_000);
+            enter_repeatedly(&clock, &short, 1, 10);
+        }
+
+        for (name, cost) in [("long", 1_000), ("short", 10)] {
+            let used = (ROUNDS * cost) as f64;
+            let estimate = cpu_time_of(&registry, name) as f64;
+            assert!(
+                (estimate - used).abs() < used * 0.1,
+                "estimated {} for {} used in {}",
+                estimate,
+                used,
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn a_measured_entry_always_measures_its_cpu_time() {
+        let registry = ResourceGroupRegistry::new();
+        let group = registry.register_resource_group("measured");
+        let clock = FakeCpuClock::install(NonZeroU32::new(1_000_000).unwrap(), 5);
+
+        for _ in 0..10 {
+            let _guard = group.enter_measured();
+            clock.advance(70);
+        }
+
+        // Every entry read the clock, and counted exactly what it measured, never scaled.
+        assert_eq!(clock.reads(), 20);
+        assert_eq!(cpu_time_of(&registry, "measured"), 700);
+    }
+
+    #[test]
+    fn nested_entries_count_their_cpu_time_in_both_groups() {
+        let registry = ResourceGroupRegistry::new();
+        let outer = registry.register_resource_group("nesting-outer");
+        let inner = registry.register_resource_group("nesting-inner");
+        let clock = FakeCpuClock::install(NonZeroU32::MIN, 1);
+
+        {
+            let _outer = outer.enter();
+            clock.advance(5);
+            {
+                let _inner = inner.enter();
+                clock.advance(20);
+            }
+            clock.advance(5);
+        }
+
+        assert_eq!(cpu_time_of(&registry, "nesting-inner"), 20);
+        assert_eq!(cpu_time_of(&registry, "nesting-outer"), 30);
+    }
+
+    #[test]
+    fn the_sampling_rate_is_set_process_wide() {
+        // Under the fake clock, this thread's entries use the clock's rate, so the process-wide one only reads back.
+        assert_eq!(cpu_time_sampling(), NonZeroU32::MIN);
+        let sixteen = NonZeroU32::new(16).unwrap();
+        set_cpu_time_sampling(sixteen);
+        assert_eq!(cpu_time_sampling(), sixteen);
+        set_cpu_time_sampling(NonZeroU32::MIN);
+        assert_eq!(cpu_time_sampling(), NonZeroU32::MIN);
     }
 
     #[test]
@@ -522,11 +665,11 @@ mod tests {
 
         // CPU time consumed while `busy` was entered is attributed to it; `idle` was never entered.
         assert!(
-            cpu_time_nanos_for(&registry, "busy") > 0,
+            cpu_time_of(&registry, "busy") > 0,
             "the entered group should accrue the CPU time spent inside the guard"
         );
         assert_eq!(
-            cpu_time_nanos_for(&registry, "idle"),
+            cpu_time_of(&registry, "idle"),
             0,
             "a group that was never entered should accrue no CPU time"
         );
@@ -552,7 +695,7 @@ mod tests {
         poll_to_completion(BurnCpu.track_resources(group));
 
         assert!(
-            cpu_time_nanos_for(&registry, "worker") > 0,
+            cpu_time_of(&registry, "worker") > 0,
             "CPU time spent polling a tracked future should be attributed to its group"
         );
     }

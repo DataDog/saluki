@@ -2,7 +2,11 @@
 //! of the decisions the core took over from the native run loop, and differential tests against the frozen
 //! pre-extraction state machine.
 
-use std::{collections::BTreeSet, num::NonZeroU64, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    num::NonZeroU64,
+    time::Duration,
+};
 
 use float_cmp::ApproxEqRatio as _;
 use proptest::{collection::vec, prelude::*};
@@ -26,6 +30,7 @@ use super::{
     state::{align_to_bucket_start, is_bucket_closed, AggregationState, ContextLimit, FlushCursor, Insertion},
     *,
 };
+use crate::test_support::CountingRecorder;
 
 /// The state machine together with the parameters the native state machine was created with, which the native tests
 /// below were written against: it passes them to every call that takes them.
@@ -1580,6 +1585,312 @@ fn an_abandoned_flush_leaves_the_state_the_failed_native_flush_left() {
     assert_eq!(
         kernel_recorder.gauge("aggregate_active_contexts"),
         Some(CONTEXTS as f64 - 1024.0 - CONTEXTS as f64)
+    );
+}
+
+#[test]
+fn the_latest_update_decides_a_counters_expiry_when_a_delayed_batch_arrives_late() {
+    // A counter updated at 100 by one admission point, then by a batch another point stamped at 99 that arrives
+    // later: its last update is 100, so with an expiry of 300 it expires after 400, not after 399. By the time of
+    // its last batch, as native aggregation keeps it, the delayed batch would move it back to 399.
+    let params = AggregateParams {
+        window: NonZeroU64::new(10).unwrap(),
+        context_limit: 10,
+        counter_expiry: NonZeroU64::new(300),
+        flush_open_windows: false,
+        histograms: HistogramConfiguration::default(),
+    };
+    const B: u64 = 1_700_000_000;
+    let expires_at = |rule: LastSeen| {
+        let mut core = AggregateCore::new(params.clone(), AggregateTelemetry::noop()).with_last_seen(rule);
+        core.admit(B + 100, [Metric::counter("c", 1.0)]);
+        core.admit(B + 99, [Metric::counter("c", 1.0)]);
+        // Flushes every 10 seconds, until the idle counter is removed: the first flush that removes it is the first
+        // after its expiry.
+        (1..=50)
+            .map(|step| B + 100 + step * 10)
+            .find(|&at| {
+                core.flush_into(at, false, |_| {});
+                core.is_empty()
+            })
+            .map(|at| at - B)
+    };
+    assert_eq!(
+        expires_at(LastSeen::Latest),
+        Some(410),
+        "removed by the first flush after 400"
+    );
+    assert_eq!(
+        expires_at(LastSeen::LastArrival),
+        Some(400),
+        "removed by the first flush after 399"
+    );
+}
+
+/// One batch of counters from one admission point, in a generated segment of a run: the point, the offset into the
+/// segment of one of that point's batch times, and the counters, by context index and value.
+#[derive(Clone, Debug)]
+struct PointBatch {
+    point: usize,
+    offset: u64,
+    counters: Vec<(usize, i8)>,
+}
+
+fn arb_point_batches() -> impl Strategy<Value = Vec<PointBatch>> {
+    let batch =
+        (0usize..3, 0u64..20, vec((0usize..3, 1i8..5), 1..4)).prop_map(|(point, offset, counters)| PointBatch {
+            point,
+            offset,
+            counters,
+        });
+    vec(batch, 0..8)
+}
+
+/// Returns a segment's batches in arrival order, each with its admission time: the batches of each point arrive in
+/// generated order, stamped with that point's offsets in increasing order, so that every point's times only grow, as
+/// one admission point stamps them, while the points' batches interleave.
+fn arrival_order(segment: &[PointBatch], start: u64) -> Vec<(u64, &PointBatch)> {
+    let mut offsets = [Vec::new(), Vec::new(), Vec::new()];
+    for batch in segment {
+        offsets[batch.point].push(batch.offset);
+    }
+    for point in &mut offsets {
+        point.sort_unstable();
+        point.reverse();
+    }
+    segment
+        .iter()
+        .map(|batch| {
+            let offset = offsets[batch.point].pop().expect("one offset per batch of the point");
+            (start + offset, batch)
+        })
+        .collect()
+}
+
+fn counters(batch: &PointBatch) -> Vec<Metric> {
+    const NAMES: [&str; 3] = ["a", "b", "c"];
+    batch
+        .counters
+        .iter()
+        .map(|(context, value)| Metric::counter(NAMES[*context], f64::from(*value)))
+        .collect()
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(1024))]
+
+    #[test]
+    fn property_test_last_seen_is_max_under_reordering(
+        counter_expiry in prop_oneof![Just(None), (1u64..40).prop_map(Some)],
+        segments in vec(arb_point_batches(), 1..6),
+        trailing_ticks in 1u64..8,
+    ) {
+        // The batches of three admission points interleave at a core that keeps each context's latest update, as a
+        // state lane fed by several producer lanes does; the frozen state machine receives the same batches in time
+        // order, as from one point. Counters merge by addition, so the order of arrival changes nothing but which
+        // batch arrives last: both must flush the same records at every tick, idle-counter zeros and expiry included.
+        const SEGMENT: u64 = 20;
+        let start_time = 1_700_000_000u64;
+        let generated = GeneratedParams {
+            window: 10,
+            context_limit: 1000,
+            counter_expiry,
+            flush_open_windows: false,
+            aggregates: Vec::new(),
+            percentiles: Vec::new(),
+            copy_to_distribution: false,
+            copy_to_distribution_prefix: String::new(),
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("the test runtime builds");
+        let recorder = TestRecorder::default();
+        let mut expected = reference_run_loop(&generated, &recorder);
+        let mut actual = AggregateCore::new(aggregate_params(&generated), AggregateTelemetry::noop())
+            .with_last_seen(LastSeen::Latest);
+
+        let flush = |expected: &mut reference::RunLoop, actual: &mut AggregateCore, at: u64| {
+            let reference = runtime.block_on(reference_tick(expected, at, false));
+            let mut emitted = Vec::new();
+            let outcome = actual.flush_into(at, false, |metric| emitted.push(metric));
+            prop_assert_eq!(reference.is_some(), outcome.is_some(), "flush at {}", at);
+            let reference = reference.map_or_else(Vec::new, |(_, emitted)| emitted);
+            prop_assert_eq!(multiset(&reference), multiset(&emitted), "flush at {}", at);
+            Ok(())
+        };
+
+        for (index, segment) in segments.iter().enumerate() {
+            let start = start_time + index as u64 * SEGMENT;
+            let arrivals = arrival_order(segment, start);
+            for (at, batch) in &arrivals {
+                actual.admit(*at, counters(batch));
+            }
+            let mut in_time_order = arrivals.clone();
+            in_time_order.sort_by_key(|(at, _)| *at);
+            for (at, batch) in in_time_order {
+                expected.events(at, counters(batch).into_iter().map(Event::Metric));
+            }
+            flush(&mut expected, &mut actual, start + SEGMENT)?;
+        }
+        // Idle counters gain zeros, and expire, over the ticks after the last batch.
+        let end = start_time + segments.len() as u64 * SEGMENT;
+        for tick in 1..=trailing_ticks {
+            flush(&mut expected, &mut actual, end + tick * 10)?;
+        }
+        prop_assert_eq!(
+            snapshot_set(expected.state.snapshot_contexts()),
+            snapshot_set(actual.snapshot_contexts())
+        );
+    }
+}
+
+/// Runs `steps` on a core as [`run_against_reference`] times them, calling `after_step` after each step.
+fn run_core(core: &mut AggregateCore, steps: &[Step], mut after_step: impl FnMut(&mut AggregateCore)) {
+    let mut now = 1_700_000_000u64;
+    let last_step = steps.len();
+    for (position, step) in steps.iter().chain([Step::Tick { after: 1 }].iter()).enumerate() {
+        match step {
+            Step::Admit { after, metrics } => {
+                now = now.saturating_add_signed(*after);
+                core.admit(now, metrics.iter().map(|metric| metric.build(now)).collect::<Vec<_>>());
+            }
+            Step::Tick { after } => {
+                now = now.saturating_add_signed(*after);
+                core.flush_into(now, position == last_step, |_| {});
+            }
+        }
+        after_step(core);
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    #[test]
+    fn property_test_accumulated_telemetry_publishes_what_direct_telemetry_writes(
+        params in arb_params(),
+        steps in arb_steps(),
+        publish_every in 1usize..4,
+        shared in any::<bool>(),
+    ) {
+        // Two cores run the same steps, one writing its telemetry as it counts, one accumulating it and publishing
+        // every few steps. After each publication, every series is the same; between them, the accumulating core's
+        // series still show the last publication; and dropping the core publishes what it counted since, including
+        // the contexts a core that shares budgets removes from its gauges when it is dropped.
+        let (direct_recorder, accumulating_recorder) = (TestRecorder::default(), TestRecorder::default());
+        let build = |recorder: &TestRecorder, accumulating: bool| {
+            let _local = metrics::set_default_local_recorder(recorder);
+            let builder = MetricsBuilder::default();
+            let telemetry = if accumulating {
+                AggregateTelemetry::accumulating(&builder)
+            } else {
+                AggregateTelemetry::new(&builder)
+            };
+            if shared {
+                AggregateCore::with_budget(aggregate_params(&params), ContextBudget::exclusive(), telemetry)
+            } else {
+                AggregateCore::new(aggregate_params(&params), telemetry)
+            }
+        };
+        let mut direct = build(&direct_recorder, false);
+        let mut accumulating = build(&accumulating_recorder, true);
+
+        let mut direct_values = Vec::new();
+        run_core(&mut direct, &steps, |_| direct_values.push(telemetry_values(&direct_recorder)));
+        let mut position = 0;
+        let mut published = telemetry_values(&accumulating_recorder);
+        let mut checks = Vec::new();
+        run_core(&mut accumulating, &steps, |core| {
+            position += 1;
+            checks.push((telemetry_values(&accumulating_recorder), published.clone()));
+            if position % publish_every == 0 {
+                core.publish_telemetry();
+                published = telemetry_values(&accumulating_recorder);
+                checks.push((published.clone(), direct_values[position - 1].clone()));
+            }
+        });
+        for (actual, expected) in checks {
+            prop_assert_eq!(actual, expected);
+        }
+
+        drop(direct);
+        drop(accumulating);
+        prop_assert_eq!(telemetry_values(&accumulating_recorder), telemetry_values(&direct_recorder));
+    }
+}
+
+#[test]
+fn accumulated_telemetry_writes_each_series_once_per_publication() {
+    // A hundred new contexts and a flush that removes them: accumulating telemetry writes nothing as it counts, and
+    // each series that changed once when published, however many changes it counted.
+    let recorder = CountingRecorder::default();
+    let mut core = {
+        let _local = metrics::set_default_local_recorder(&recorder);
+        AggregateCore::new(
+            AggregateParams {
+                window: NonZeroU64::new(10).unwrap(),
+                context_limit: 1_000,
+                counter_expiry: None,
+                flush_open_windows: false,
+                histograms: HistogramConfiguration::default(),
+            },
+            AggregateTelemetry::accumulating(&MetricsBuilder::default()),
+        )
+    };
+    let once_each = |keys: &[&str]| keys.iter().map(|key| (key.to_string(), 1)).collect::<BTreeMap<_, _>>();
+    let gauges = (0..100).map(|i| Metric::gauge(Context::from_parts(format!("g{}", i), TagSet::default()), 1.0));
+    core.admit(1_700_000_001, gauges.collect::<Vec<_>>());
+    assert_eq!(
+        recorder.take_writes(),
+        BTreeMap::new(),
+        "nothing is written before publication"
+    );
+
+    core.publish_telemetry();
+    assert_eq!(
+        recorder.take_writes(),
+        once_each(&[
+            "aggregate_active_contexts",
+            "aggregate_active_contexts_by_type{metric_type=gauge}",
+            "aggregate_active_contexts_bytes_by_type{metric_type=gauge}",
+        ])
+    );
+    let values = recorder.values();
+    assert_eq!(values.gauge("aggregate_active_contexts"), Some(100.0));
+    assert_eq!(
+        values.gauge(("aggregate_active_contexts_by_type", &[("metric_type", "gauge")])),
+        Some(100.0)
+    );
+    core.publish_telemetry();
+    assert_eq!(
+        recorder.take_writes(),
+        BTreeMap::new(),
+        "a publication with nothing counted writes nothing"
+    );
+
+    core.flush_into(1_700_000_020, false, |_| {});
+    assert_eq!(
+        recorder.take_writes(),
+        BTreeMap::new(),
+        "nothing is written before publication"
+    );
+    core.publish_telemetry();
+    assert_eq!(
+        recorder.take_writes(),
+        once_each(&[
+            "aggregate_active_contexts",
+            "aggregate_active_contexts_by_type{metric_type=gauge}",
+            "aggregate_active_contexts_bytes_by_type{metric_type=gauge}",
+            "aggregate_flushed_total{data_type=series}",
+            "aggregate_flushes_total",
+        ])
+    );
+    assert_eq!(values.gauge("aggregate_active_contexts"), Some(0.0));
+    assert_eq!(values.counter("aggregate_flushes_total"), Some(1));
+    assert_eq!(
+        values.counter(("aggregate_flushed_total", &[("data_type", "series")])),
+        Some(100)
     );
 }
 

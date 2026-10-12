@@ -306,7 +306,9 @@ impl OperatorDef for Aggregate {
             // A host that runs state owners gives each one its budgets; a kernel built outside any host, such as the
             // interpreter's, owns its contexts alone, as native aggregation does.
             let budget = context.state_budget().cloned().unwrap_or_else(ContextBudget::exclusive);
-            let telemetry = AggregateTelemetry::new(&MetricsBuilder::from_component_context(context.component()));
+            // A region publishes its kernels' telemetry once a second: the kernel writes no shared handle per metric.
+            let telemetry =
+                AggregateTelemetry::accumulating(&MetricsBuilder::from_component_context(context.component()));
             Ok(Box::new(AggregateKernel::new(
                 params,
                 flush_interval,

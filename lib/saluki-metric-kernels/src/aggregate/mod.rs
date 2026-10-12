@@ -31,7 +31,8 @@
 //!   The rule does not ask whether the counter existed in those buckets, so a counter first seen after an idle period
 //!   gains zeros back to the previous flush. A counter is removed at the first flush after `last seen + expiry` that
 //!   leaves it without points; with no expiry, counters are never removed. Every other context is removed by the flush
-//!   that empties it.
+//!   that empties it. A context's last seen time is the time of the batch that last updated it, as natively, or the
+//!   latest time of any batch that did; see [`LastSeen`].
 //! - **Emission.** Counters leave as rates over the window, zeros included. Histograms expand: first into a
 //!   distribution under an optionally prefixed name, when they are copied to distributions, with sample weights
 //!   truncated to integers, then into `<name>.<suffix>` per statistic, in order, where the count is a rate with its
@@ -276,6 +277,22 @@ pub struct AggregateStepParams {
     pub flush_interval: Duration,
 }
 
+/// Which time counts as a held context's last update, which counter expiry is measured from.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum LastSeen {
+    /// The time of the batch that last updated the context, as native aggregation, which reads its clock as each batch
+    /// arrives: a clock that moves backward moves the context's last update backward too.
+    #[default]
+    LastArrival,
+
+    /// The latest time of any batch that updated the context.
+    ///
+    /// For batches whose times never decrease, as those stamped at one admission point within one epoch, this is
+    /// [`LastArrival`][Self::LastArrival]. When the batches of several admission points interleave, a batch stamped
+    /// earlier that arrives after a later one never moves a counter's expiry earlier.
+    Latest,
+}
+
 /// The budgets of contexts a core draws on: one shared by every core of a host, and one shared by every core of the
 /// same node.
 ///
@@ -443,6 +460,12 @@ impl AggregateCore {
     /// The core's bucket width is `params.window`; the rest of `params` is what [`admit`][Self::admit] and
     /// [`flush`][Self::flush] apply. Dropping the core releases the units it holds and removes its contexts from its
     /// context gauges. The core reports its telemetry through `telemetry`; see [`AggregateTelemetry`].
+    ///
+    /// The core keeps native aggregation's last seen rule, [`LastSeen::LastArrival`]. A core whose batches can arrive
+    /// out of time order, such as one fed by several admission points, or one of several cores that share a node's
+    /// budget across tasks, sets [`LastSeen::Latest`] with [`with_last_seen`][Self::with_last_seen], as
+    /// [`AggregateKernel::new`] does: otherwise a batch stamped earlier that arrives late moves a counter's expiry
+    /// earlier.
     pub fn with_budget(params: AggregateParams, budget: ContextBudget, telemetry: AggregateTelemetry) -> Self {
         Self::create(params, budget, true, telemetry)
     }
@@ -456,6 +479,17 @@ impl AggregateCore {
             admit,
             flush,
         }
+    }
+
+    /// Sets which time counts as a held context's last update, for an empty core: the time of the batch that last
+    /// updated it, as natively, by default; see [`LastSeen`].
+    pub fn with_last_seen(mut self, rule: LastSeen) -> Self {
+        debug_assert!(
+            self.is_empty(),
+            "the last seen rule is set before the core holds anything"
+        );
+        self.state.set_last_seen(rule);
+        self
     }
 
     /// Returns the parameters that define the core's state.
@@ -513,6 +547,12 @@ impl AggregateCore {
         self.state.snapshot_contexts()
     }
 
+    /// Publishes what the core's telemetry counted since it last published, if it
+    /// [accumulates][AggregateTelemetry::accumulating]; otherwise, does nothing.
+    pub fn publish_telemetry(&mut self) {
+        self.state.telemetry_mut().publish();
+    }
+
     /// Admits a batch of metrics that arrived at `now`, in whole Unix seconds, with the context limit the core was
     /// created with.
     ///
@@ -553,7 +593,7 @@ impl AggregateCore {
                         // First drop since the last recovery.
                         outcome.limit_reached = true;
                     }
-                    self.state.telemetry().increment_events_dropped();
+                    self.state.telemetry_mut().increment_events_dropped();
                     outcome.dropped += 1;
                     outcome.dropped_points += points;
                 }
@@ -681,7 +721,7 @@ impl AggregateCore {
         let limit = context_limit(&self.budget, self.shared, params.context_limit);
         self.state.finish_flush(cursor, limit);
         if mode == FlushMode::Closed {
-            self.state.telemetry().increment_flushes();
+            self.state.telemetry_mut().increment_flushes();
         }
         FlushOutcome {
             recovered: was_breached && !self.state.context_limit_breached(),
@@ -697,7 +737,7 @@ impl AggregateCore {
     /// failed delivery did.
     pub fn abandon_flush(&mut self, state: FlushState) {
         if state.cursor.mode() == FlushMode::Closed {
-            self.state.telemetry().increment_flushes();
+            self.state.telemetry_mut().increment_flushes();
         }
     }
 }

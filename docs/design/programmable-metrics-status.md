@@ -48,8 +48,12 @@ artifact channel and given its headless check in stage 5, and extended in stages
   [the stages 7 and 9 plan](programmable-metrics-stages-7-and-9.md), its "Stage 7 as built," and the
   [implementation design's summary](programmable-metrics-implementation.md#stage-7-resource-generations-as-built).
 - Stage 9 is designed; its measurement harness (P9.0: probes behind ADP's `measurement` feature, the source-fed
-  measurements, the `dogstatsd_codec` bench, the container scaling curves in `test/scaling/`) is in place, and the rest
-  is not built (its foundations, P9.F, were built apart and are not in this tree). Stages 8 and 10 are not built. Their
+  measurements, the `dogstatsd_codec` bench, the container scaling curves in `test/scaling/`) and its foundations
+  (P9.F, each neutral at one lane: the bounded node acquire, `last_seen` as a maximum in the aggregation kernel,
+  accumulated kernel and cache telemetry, sampled CPU time (every entry measured by default), the tap gate, the
+  epoch-switch observation, shared kernel parts; see the plan's [P9.F as
+  built](programmable-metrics-stages-7-and-9.md#84-stage-9-foundations-interfaces-step-and-parts)) are in place, and
+  the rest is not built. Stages 8 and 10 are not built. Their
   extension-point types exist, only native defaults are accepted, and each unsupported case is a capability error that
   names a stage (see [Deferred work by stage](#deferred-work-by-stage)).
 
@@ -71,6 +75,7 @@ run on the branch.
 | `b01049372e` | 6 | Aggregation as a kernel in `dsd_agg`: admission-time bucketing, watermarks, heartbeats, progress, the tick gate, clock resets, lineages and transitions, the cut protocol, shared budgets, resumable drains, R5b as emission suppression, the `dogstatsd_pre_aggregation` scope, and allowed bucket widths. |
 | `2729a33271`, `d7316c474f` | docs | This document's status after stage 6, and the stages 7 and 9 design with its second review. |
 | (the stage 7 commit) | 7 | Resource generations: the encode host and the delivery host, recipient loops with drains, reopens, and live settings, the resource table and resource transactions, credentials, the resource budget, fingerprints version 2, pending and degraded artifacts, the `resources` product, the status and resources routes; stage 9's measurement harness (P9.0); the demo's scenarios S8 to S11. |
+| (the P9.F commit) | 9 | Stage 9's foundations, neutral at one lane: the bounded node acquire and the budget recording, `last_seen` as a maximum in the aggregation kernel, accumulated aggregation, cache, resolver, mapper, and tag projection telemetry with the telemetry audit, sampled CPU-time accounting, the tap gate, `Observation::EpochSwitched` without the tracker clone, and `KernelSpec::with_shared`. |
 
 **Next.** Stage 9's parts, designed in
 [programmable-metrics-stages-7-and-9.md](programmable-metrics-stages-7-and-9.md) (section 8.4); stage 7's deferred
@@ -676,9 +681,11 @@ the shutdown row, the expiry row, and the timestamped row.
 
 Totals: kinds C 49, D 26, N 9, L 3; themes STA 20, ART 16, NAT 12, INS 9, IR 8, VER 8, FRM 7, TEL 4, EXE 3.
 
-Amendments 88 to 138 are in [the stages 7 and 9 plan's section
+Amendments 88 to 140 are in [the stages 7 and 9 plan's section
 10](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments): 88 to 107 from its stage 7 design, 108 to 128
-from its stage 9 design, and 129 to 138 from stage 7's parts and integration; the next is 139. Stage 7's:
+from its stage 9 design, 129 to 138 from stage 7's parts and integration, and 139 and 140 from stage 9's foundations
+(P9.F: `last_seen` in the aggregation kernel, refining 117; the statistics tap observes what is dispatched, refining
+126); the next is 141. Stage 7's:
 
 | # | Short title | Theme | Kind | Owner |
 |---|---|---|---|---|
@@ -828,10 +835,28 @@ its reason in the plan's [Stage 7 as built](programmable-metrics-stages-7-and-9.
 
 ### Stage 9: partitioned execution
 
+- **Foundations in place (P9.F)**, each neutral at one lane, and what they leave to later parts (the plan's [P9.F as
+  built](programmable-metrics-stages-7-and-9.md#84-stage-9-foundations-interfaces-step-and-parts) gives the reasons):
+  - P9.3b: move the budget's `loom` models from `saluki-core` (`execution::budget::loom_tests`, which transcribe
+    `try_admit`) into the kernels crate once it has a `loom` feature, running `try_admit` itself; call
+    `enter_measured` at drain steps and `finish`; build every lane-side core with `.with_last_seen(LastSeen::Latest)`
+    unless `AggregateKernel::new` builds it, or a delayed earlier batch moves a counter's expiry back.
+  - P9.4: read `StateBudget::recorded`'s operations in `check_capacity` (each carries the `used` value it observed;
+    their order may differ from the compare-and-swaps'); oracle cores and the arrival replay set `LastSeen::Latest`.
+  - P9.5: set `set_cpu_time_sampling` at startup (16 on Linux, or `SALUKI_CPU_TIME_SAMPLING`); call `enter_measured`
+    at installer builds; decide how the gauges a background task sets (`cache_current_items`, `cache_current_weight`,
+    `cache_weight_limit`, `context_resolver_interner_*`) sum across lanes, since today the last lane's value wins.
+  - P9.1a: carry the tap gate's wiring (`blueprint.rs` collects gates at build, `built.rs` attaches gated senders,
+    `DispatchTarget::sender_gates`, `Consumer::received_metrics`) over to lane edges.
+  - M7, the tap gate's saving, is not measured yet.
+  - `StateBudget`'s atomics are `loom`'s under `cfg(all(test, feature = "loom"))`, so `saluki-core`'s `loom` build
+    runs only with the `loom_tests` filter, as `make test-loom` does.
 - **Frame restrictions.** `FrameError::StateOwnerPoints` (a state owner is fed by one admission point until stage 9
   adds repartition edges) and `StateOwnerPaths` (one physical path per point); amendment 84. The interpreter drains
   everything on a reset at any of several points; the multi-point reset rule arrives with repartition edges. The
-  watermark tracker already keeps the min-over-points rule, so only the reset rule changes.
+  watermark tracker already keeps the min-over-points rule, so only the reset rule changes; since P9.F, it reports an
+  epoch change as `Observation::EpochSwitched` with what it knew before the header (`in_publication_epoch_with`), and an
+  older-epoch header after a newer one from the same point as a fault.
 - **The oracle is partly built.** `compare_reordered` decides counters and rates (pairwise within 1e-9 relative), sets
   (by union), and count mismatches; gauges, histograms, and distributions are `Undecided`, since the gauge check needs
   the admitted inputs (amendment 31).
@@ -862,7 +887,9 @@ its reason in the plan's [Stage 7 as built](programmable-metrics-stages-7-and-9.
   registrations.
 - **State.** One global `StateBudget` is shared by lineages: an `Arc` of an atomic counter that every new context
   acquires from with a compare-and-swap (`execution/budget.rs`), so partitions of one owner would contend on it unless
-  credits are split (the specification's stage 9 lists credit splitting). `CutBoundary::epochs` is per point. The
+  credits are split (the specification's stage 9 lists credit splitting); since P9.F a new context takes its node's
+  unit first, in one bounded acquisition (`try_acquire_below`), so the node limit holds at any lane count, and M4
+  decides whether contention needs O1. `CutBoundary::epochs` is per point. The
   interpreter shares one output latch per set of upstream points where the frame gives each isolated owner of a boot
   plan its own slot, so comparisons must avoid two isolated owners over one point.
 - **Placement gaps.** A state owner fed straight by a point whose route reaches the isolation slot only through

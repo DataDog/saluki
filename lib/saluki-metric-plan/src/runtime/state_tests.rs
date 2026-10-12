@@ -228,6 +228,28 @@ fn every_tick_flushes_at_its_wall_clock_second_what_was_admitted_before_it() {
 }
 
 #[test]
+fn a_state_owner_publishes_the_telemetry_it_accumulated_when_its_region_publishes() {
+    // The aggregation kernel counts its contexts in integers of its own, and writes them to its native series when
+    // the region publishes, as a region does once a second: never per metric.
+    let recorder = saluki_metrics::test::TestRecorder::default();
+    let active = |recorder: &saluki_metrics::test::TestRecorder| {
+        recorder
+            .gauges()
+            .into_iter()
+            .find(|(key, _)| key.name() == "aggregate_active_contexts")
+            .map(|(_, value)| value)
+    };
+    let mut harness = {
+        let _local = metrics::set_default_local_recorder(&recorder);
+        harness(&plan(), HarnessOptions::default())
+    };
+    harness.admit("src", t(3_000), vec![gauge("g", 1.0), gauge("h", 2.0)]);
+    assert_eq!(active(&recorder), Some(0.0), "nothing is written per metric");
+    harness.publish();
+    assert_eq!(active(&recorder), Some(2.0));
+}
+
+#[test]
 fn a_tick_whose_watermark_lags_waits_at_the_gate_for_a_later_stamp_or_the_end_of_its_grace() {
     // Without heartbeats the watermark is the latest admission time. The tick due at 15, run at 15.2, finds it at 3,
     // so it waits; the batch at 16 raises it past 15, which fires the tick at 15 before the batch is admitted, so the
@@ -568,6 +590,10 @@ impl Kernel for PanickingKernel {
 
     fn held(&self) -> LossCount {
         self.inner.held()
+    }
+
+    fn publish_telemetry(&mut self) {
+        self.inner.publish_telemetry();
     }
 }
 

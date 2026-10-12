@@ -14,7 +14,7 @@ use super::{
     histogram::{HistogramConfiguration, HistogramStatistic},
     snapshot::{AggregateContextSnapshotEntry, AggregateMetricType},
     telemetry::AggregateTelemetry,
-    ContextBudget,
+    ContextBudget, LastSeen,
 };
 
 /// One context's aggregated values, the metadata of its first insertion, and when it was last updated.
@@ -51,6 +51,8 @@ pub(super) struct AggregationState {
     contexts_remove_buf: Vec<Context>,
     bucket_width_secs: NonZeroU64,
     last_flush: u64,
+    /// How a held context's last update follows the times it is updated at.
+    last_seen: LastSeen,
     telemetry: AggregateTelemetry,
     /// Tracks whether the context limit has been breached. Starts out as `false`. Set to `true` on the first dropped
     /// metric. Reset to `false` when the context count drops below the limit during flush.
@@ -86,16 +88,22 @@ impl<'a> ContextLimit<'a> {
     /// A state that admits by its own count has room below the limit. A state that shares budgets has room while its
     /// node's budget counts fewer contexts than the limit and the global budget has a unit left; the new context then
     /// holds one unit of each.
+    ///
+    /// The node's unit is taken first, in one bounded acquisition, as native aggregation checks its own count first:
+    /// states of one node that admit at once, from several tasks, then never hold more than the limit together, and a
+    /// node at its limit never holds a global unit, even for a moment, that another node's context could be refused
+    /// for. A global refusal gives the node's unit back.
     fn try_admit(&self, len: usize) -> bool {
         let Some(budget) = self.shared else {
             return len < self.limit;
         };
-        if budget.node.used() >= limit_units(self.limit) || !budget.global.try_acquire(1) {
+        // This protocol is transcribed in `saluki-core`'s `loom` model of budgets (`execution::budget::loom_tests`),
+        // which must change with it.
+        if !budget.node.try_acquire_below(1, limit_units(self.limit)) {
             return false;
         }
-        if !budget.node.try_acquire(1) {
-            // A node budget with a capacity of its own refused: give the global unit back.
-            budget.global.release(1);
+        if !budget.global.try_acquire(1) {
+            budget.node.release(1);
             return false;
         }
         true
@@ -207,9 +215,15 @@ impl AggregationState {
             contexts_remove_buf: Vec::new(),
             bucket_width_secs,
             last_flush: 0,
+            last_seen: LastSeen::default(),
             telemetry,
             context_limit_breached: false,
         }
+    }
+
+    /// Sets how a held context's last update follows the times it is updated at.
+    pub(super) fn set_last_seen(&mut self, rule: LastSeen) {
+        self.last_seen = rule;
     }
 
     pub(super) fn is_empty(&self) -> bool {
@@ -228,8 +242,8 @@ impl AggregationState {
         self.context_limit_breached
     }
 
-    pub(super) fn telemetry(&self) -> &AggregateTelemetry {
-        &self.telemetry
+    pub(super) fn telemetry_mut(&mut self) -> &mut AggregateTelemetry {
+        &mut self.telemetry
     }
 
     /// Forgets every flush, as a drain or a discard does when it ends: the next flush is as the first one.
@@ -295,7 +309,10 @@ impl AggregationState {
         match self.contexts.find_mut(hash, |(existing, _)| *existing == context) {
             Some((_, aggregated)) => {
                 // We ignore metadata changes within a flush interval to keep things simple.
-                aggregated.last_seen = timestamp;
+                aggregated.last_seen = match self.last_seen {
+                    LastSeen::LastArrival => timestamp,
+                    LastSeen::Latest => aggregated.last_seen.max(timestamp),
+                };
 
                 // Values of another kind, or a rate over another interval, replace every point held, closed buckets
                 // included: those points are lost.

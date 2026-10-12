@@ -140,7 +140,15 @@ pub fn result_cache_usage(cache_size: usize) -> UsageExpr {
     )
 }
 
+#[cfg(any(test, feature = "test-util"))]
+thread_local! {
+    /// The number of times mapper profiles were compiled on this thread.
+    static COMPILATIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 fn compile_profiles(profiles: &[MapperProfile]) -> Result<Vec<MappingProfile>, MapperError> {
+    #[cfg(any(test, feature = "test-util"))]
+    COMPILATIONS.with(|count| count.set(count.get() + 1));
     let mut compiled = Vec::with_capacity(profiles.len());
     for config_profile in profiles {
         if config_profile.name.is_empty() {
@@ -205,15 +213,48 @@ fn build_regex(match_re: &str, match_type: MatchType) -> Result<Regex, MapperErr
     })
 }
 
+#[derive(Clone)]
 struct MappingProfile {
     prefix: String,
     mappings: Vec<MetricMapping>,
 }
 
+#[derive(Clone)]
 struct MetricMapping {
     name: String,
     tags: Vec<(String, String)>,
     regex: Regex,
+}
+
+/// Mapper profiles, compiled: the immutable part of a mapper, which mappers built from the same profiles share.
+///
+/// Compiling the profiles' patterns is the costly part of building a mapper. A mapper built from compiled profiles
+/// clones their patterns, which shares each compiled pattern and gives the mapper its own match caches, so that
+/// mappers built from one set of compiled profiles match in parallel without contending.
+pub struct CompiledProfiles {
+    profiles: Vec<MappingProfile>,
+}
+
+impl CompiledProfiles {
+    /// Compiles mapper profiles.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a profile has an empty name or prefix, a mapping has an empty name or match pattern, or a
+    /// pattern does not compile; see [`validate_profiles`].
+    pub fn compile(profiles: &[MapperProfile]) -> Result<Self, MapperError> {
+        compile_profiles(profiles).map(|profiles| Self { profiles })
+    }
+
+    /// Returns the number of times mapper profiles were compiled on the calling thread so far: by
+    /// [`compile`][Self::compile], by [`MetricMapper::new`], and by [`validate_profiles`].
+    ///
+    /// A test that builds mappers on one thread compares the counts before and after to check how often their profiles
+    /// were compiled.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn compilations_on_this_thread() -> u64 {
+        COMPILATIONS.with(std::cell::Cell::get)
+    }
 }
 
 /// One cached mapping result: the mapped name and the tags the mapping added.
@@ -251,26 +292,54 @@ impl MetricMapper {
     pub fn new(
         identity: &str, profiles: &[MapperProfile], cache_size: usize, interner_bytes: NonZeroUsize,
     ) -> Result<Self, MapperError> {
-        let profiles = compile_profiles(profiles)?;
+        let profiles = CompiledProfiles::compile(profiles)?;
+        Ok(Self::build(identity, &profiles, cache_size, interner_bytes, false))
+    }
 
-        let context_resolver = ContextResolverBuilder::from_name(format!("{}/dsd_mapper/primary", identity))
+    /// Builds a mapper from compiled profiles, which it shares with every mapper built from them, for a kernel whose
+    /// host publishes its telemetry.
+    ///
+    /// The mapper is the one [`new`][Self::new] builds from the same profiles, with a context resolver and a result
+    /// cache of its own, except that both count what they look up and resolve in counters of their own, which the
+    /// kernel publishes; see [`CacheBuilder::with_accumulated_telemetry`] and
+    /// [`ContextResolverBuilder::with_accumulated_telemetry`]. It must be built inside a Tokio runtime.
+    pub fn for_kernel(
+        identity: &str, profiles: &CompiledProfiles, cache_size: usize, interner_bytes: NonZeroUsize,
+    ) -> Self {
+        Self::build(identity, profiles, cache_size, interner_bytes, true)
+    }
+
+    fn build(
+        identity: &str, profiles: &CompiledProfiles, cache_size: usize, interner_bytes: NonZeroUsize,
+        accumulated_telemetry: bool,
+    ) -> Self {
+        let resolver = ContextResolverBuilder::from_name(format!("{}/dsd_mapper/primary", identity))
             .expect("resolver name is not empty")
             .with_interner_capacity_bytes(interner_bytes)
-            .with_idle_context_expiration(RESOLVER_IDLE_CONTEXT_EXPIRATION)
-            .build();
+            .with_idle_context_expiration(RESOLVER_IDLE_CONTEXT_EXPIRATION);
+        let context_resolver = if accumulated_telemetry {
+            resolver.with_accumulated_telemetry().build()
+        } else {
+            resolver.build()
+        };
 
         let cache = NonZeroUsize::new(cache_size).map(|capacity| {
-            CacheBuilder::from_identifier(format!("{}/dsd_mapper/result_cache", identity))
+            let builder = CacheBuilder::from_identifier(format!("{}/dsd_mapper/result_cache", identity))
                 .expect("cache identifier is not empty")
-                .with_capacity(capacity)
-                .build()
+                .with_capacity(capacity);
+            if accumulated_telemetry {
+                builder.with_accumulated_telemetry().build()
+            } else {
+                builder.build()
+            }
         });
 
-        Ok(Self {
-            profiles,
+        Self {
+            // Cloning shares each compiled pattern, and gives this mapper match caches of its own.
+            profiles: profiles.profiles.clone(),
             context_resolver,
             cache,
-        })
+        }
     }
 
     /// Maps one metric context.
@@ -396,6 +465,13 @@ impl Kernel for MetricMapper {
     fn consume(&mut self, _turn: &mut Turn<'_>, input: &mut EventsBuffer) -> Progress {
         self.map_buffer(input);
         Progress::Done
+    }
+
+    fn publish_telemetry(&mut self) {
+        self.context_resolver.publish_telemetry();
+        if let Some(cache) = &self.cache {
+            cache.publish_telemetry();
+        }
     }
 }
 

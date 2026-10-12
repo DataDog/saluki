@@ -16,7 +16,7 @@
 //! [`TagProjection`] is the kernel. It keeps the native memo of results per context, which is unobservable: a result
 //! served from it equals the result computed again.
 
-use std::{collections::hash_map::Entry, num::NonZeroUsize, time::Duration};
+use std::{collections::hash_map::Entry, num::NonZeroUsize, sync::Arc, time::Duration};
 
 use saluki_common::collections::{FastHashMap, FastHashSet};
 use saluki_core::{
@@ -159,6 +159,12 @@ pub struct TagProjectionRules {
     value_prefix_filters: CompiledValuePrefixFilters,
 }
 
+#[cfg(any(test, feature = "test-util"))]
+thread_local! {
+    /// The number of times tag projection rules were compiled on this thread.
+    static COMPILATIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 impl TagProjectionRules {
     /// Compiles tag rules and combines them with compiled value rules.
     ///
@@ -166,6 +172,8 @@ impl TagProjectionRules {
     /// of their tags; when rules for the same name have different actions, `exclude` wins, with the tags of the
     /// `exclude` rules only.
     pub fn new(rules: &[TagFilterRule], value_rules: ValueRules) -> Self {
+        #[cfg(any(test, feature = "test-util"))]
+        COMPILATIONS.with(|count| count.set(count.get() + 1));
         let mut key_filters = FastHashMap::<String, CompiledKeyFilter>::default();
 
         for rule in rules {
@@ -207,6 +215,15 @@ impl TagProjectionRules {
     /// with a value rule.
     pub fn rule_count(&self) -> usize {
         self.key_filters.len() + self.value_prefix_filters.rule_count()
+    }
+
+    /// Returns the number of times rules were compiled with [`new`][Self::new] on the calling thread so far.
+    ///
+    /// A test that builds kernels on one thread compares the counts before and after to check how often their rules
+    /// were compiled.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn compilations_on_this_thread() -> u64 {
+        COMPILATIONS.with(std::cell::Cell::get)
     }
 }
 
@@ -337,14 +354,31 @@ impl ContextMemo {
     ///
     /// Panics if `identifier` is empty.
     pub fn new(identifier: &str, capacity: usize) -> Self {
+        Self {
+            cache: Self::builder(identifier, capacity).build(),
+        }
+    }
+
+    /// Creates a memo as [`new`][Self::new] does, for a [`TagProjection`] kernel whose host publishes its telemetry:
+    /// the memo counts its hits, misses, and evictions in counters of its own, which the kernel publishes; see
+    /// [`CacheBuilder::with_accumulated_telemetry`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `identifier` is empty.
+    pub fn for_kernel(identifier: &str, capacity: usize) -> Self {
+        Self {
+            cache: Self::builder(identifier, capacity).with_accumulated_telemetry().build(),
+        }
+    }
+
+    fn builder(identifier: &str, capacity: usize) -> CacheBuilder<Context, Option<(Context, usize)>> {
         let capacity = NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::MIN);
-        let cache = CacheBuilder::from_identifier(identifier)
+        CacheBuilder::from_identifier(identifier)
             .expect("identifier cannot be empty")
             .with_capacity(capacity)
             .with_time_to_idle(Some(CONTEXT_CACHE_TTI))
             .with_expiration_interval(CONTEXT_CACHE_EXPIRATION_INTERVAL)
-            .build();
-        Self { cache }
     }
 }
 
@@ -355,7 +389,7 @@ impl ContextMemo {
 /// served from the [memo][ContextMemo]. Metrics of other kinds, and events that are not metrics, pass untouched and
 /// record nothing.
 pub struct TagProjection {
-    rules: TagProjectionRules,
+    rules: Arc<TagProjectionRules>,
     memo: Option<ContextMemo>,
     view_state: TagSetMutViewState,
     telemetry: TagProjectionTelemetry,
@@ -364,6 +398,14 @@ pub struct TagProjection {
 impl TagProjection {
     /// Creates the kernel from its rules, an optional memo, and its telemetry, which records the number of rules.
     pub fn new(rules: TagProjectionRules, memo: Option<ContextMemo>, telemetry: TagProjectionTelemetry) -> Self {
+        Self::with_shared_rules(Arc::new(rules), memo, telemetry)
+    }
+
+    /// Creates the kernel as [`new`][Self::new] does, from rules it shares with other kernels, such as instances of one
+    /// node in several tasks: the rules are immutable and read concurrently, while each kernel has its own memo.
+    pub fn with_shared_rules(
+        rules: Arc<TagProjectionRules>, memo: Option<ContextMemo>, telemetry: TagProjectionTelemetry,
+    ) -> Self {
         telemetry.set_size(rules.rule_count());
         Self {
             rules,
@@ -376,7 +418,7 @@ impl TagProjection {
     /// Replaces the rules in effect, and the memo, which must not hold results of the old rules, and records the
     /// update in telemetry.
     pub fn replace_rules(&mut self, rules: TagProjectionRules, memo: Option<ContextMemo>) {
-        self.rules = rules;
+        self.rules = Arc::new(rules);
         self.memo = memo;
         self.telemetry.set_size(self.rules.rule_count());
         self.telemetry.increment_updates();
@@ -439,6 +481,13 @@ impl Kernel for TagProjection {
     fn consume(&mut self, _turn: &mut Turn<'_>, input: &mut EventsBuffer) -> Progress {
         self.apply_buffer(input);
         Progress::Done
+    }
+
+    fn publish_telemetry(&mut self) {
+        self.telemetry.publish();
+        if let Some(memo) = &self.memo {
+            memo.cache.publish_telemetry();
+        }
     }
 }
 

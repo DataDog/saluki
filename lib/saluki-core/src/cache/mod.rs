@@ -9,6 +9,9 @@ use tokio::time::sleep;
 use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::debug;
 
+mod accumulated;
+pub(crate) use self::accumulated::AccumulatedCounters;
+
 mod expiry;
 use self::expiry::{Expiration, ExpirationBuilder, ExpiryCapableLifecycle};
 
@@ -36,8 +39,51 @@ struct Telemetry {
     items_expired_batch_size: Histogram,
 }
 
+/// The counters a cache writes on every lookup, insertion, and removal: its telemetry's handles, or the counts of its
+/// own that an accumulating cache keeps.
+#[derive(Clone)]
+struct OperationCounters {
+    hits: Counter,
+    misses: Counter,
+    inserted: Counter,
+    removed: Counter,
+}
+
+impl OperationCounters {
+    fn of(telemetry: &Telemetry) -> Self {
+        Self {
+            hits: telemetry.hits_total().clone(),
+            misses: telemetry.misses_total().clone(),
+            inserted: telemetry.items_inserted_total().clone(),
+            removed: telemetry.items_removed_total().clone(),
+        }
+    }
+}
+
+/// Returns the counts of an accumulating cache whose telemetry is `telemetry`, with the counters its operations
+/// write and the counter its evictions write.
+fn accumulated(telemetry: &Telemetry) -> (AccumulatedCounters, OperationCounters, Counter) {
+    let accumulated = AccumulatedCounters::new(vec![
+        telemetry.hits_total().clone(),
+        telemetry.misses_total().clone(),
+        telemetry.items_inserted_total().clone(),
+        telemetry.items_removed_total().clone(),
+        telemetry.items_evicted_total().clone(),
+    ]);
+    let counters = OperationCounters {
+        hits: accumulated.local(0),
+        misses: accumulated.local(1),
+        inserted: accumulated.local(2),
+        removed: accumulated.local(3),
+    };
+    let evicted = accumulated.local(4);
+    (accumulated, counters, evicted)
+}
+
 struct InnerCache<K, V, W, H> {
     cache: Arc<RawCache<K, V, W, H>>,
+    /// What an accumulating cache counted and has not published; published when the last clone is dropped, too.
+    accumulated: Option<AccumulatedCounters>,
     _task_shutdown_guard: DropGuard,
 }
 
@@ -49,6 +95,7 @@ pub struct CacheBuilder<K, V, W = ItemCountWeighter, H = FastBuildHasher> {
     idle_period: Option<Duration>,
     expiration_interval: Option<Duration>,
     telemetry_enabled: bool,
+    accumulated_telemetry: bool,
     _key: PhantomData<K>,
     _value: PhantomData<V>,
     _hasher: PhantomData<H>,
@@ -77,6 +124,7 @@ impl<K, V> CacheBuilder<K, V> {
             idle_period: None,
             expiration_interval: None,
             telemetry_enabled: true,
+            accumulated_telemetry: false,
             _key: PhantomData,
             _value: PhantomData,
             _hasher: PhantomData,
@@ -171,6 +219,7 @@ impl<K, V, W, H> CacheBuilder<K, V, W, H> {
             idle_period: self.idle_period,
             expiration_interval: self.expiration_interval,
             telemetry_enabled: self.telemetry_enabled,
+            accumulated_telemetry: self.accumulated_telemetry,
             _key: PhantomData,
             _value: PhantomData,
             _hasher: PhantomData,
@@ -192,6 +241,7 @@ impl<K, V, W, H> CacheBuilder<K, V, W, H> {
             idle_period: self.idle_period,
             expiration_interval: self.expiration_interval,
             telemetry_enabled: self.telemetry_enabled,
+            accumulated_telemetry: self.accumulated_telemetry,
             _key: PhantomData,
             _value: PhantomData,
             _hasher: PhantomData,
@@ -210,6 +260,22 @@ impl<K, V, W, H> CacheBuilder<K, V, W, H> {
         self.telemetry_enabled = enabled;
         self
     }
+
+    /// Makes the cache count its hits, misses, insertions, removals, and evictions in counters of its own, which
+    /// [`Cache::publish_telemetry`] adds to its telemetry, instead of writing its telemetry on every operation.
+    ///
+    /// Caches with one identifier share their telemetry, so caches used in parallel, such as one per task of a
+    /// component, contend on it on every lookup. Accumulating keeps each cache's operations on its own counters, and
+    /// its series still sum what every cache counted, once each publishes. Whatever owns the cache publishes it
+    /// periodically, about once a second; what is left is published when the last clone of the cache is dropped.
+    /// Between publications, the cache's counters lag its operations. Gauges, which a background task sets, and the
+    /// expiration task's counts are unaffected.
+    ///
+    /// Defaults to writing the telemetry on every operation.
+    pub fn with_accumulated_telemetry(mut self) -> Self {
+        self.accumulated_telemetry = true;
+        self
+    }
 }
 
 impl<K, V, W, H> CacheBuilder<K, V, W, H>
@@ -226,11 +292,19 @@ where
         let telemetry = Telemetry::new(self.identifier);
         telemetry.weight_limit().set(capacity as f64);
 
-        // Configure expiration if enabled.
-        let eviction_counter = if self.telemetry_enabled {
-            telemetry.items_evicted_total().clone()
+        // An accumulating cache writes its operations to counters of its own, which it publishes to its telemetry.
+        let (accumulated, counters, accumulated_evictions) = if self.accumulated_telemetry {
+            let (accumulated, counters, evictions) = accumulated(&telemetry);
+            (Some(accumulated), counters, Some(evictions))
         } else {
-            Counter::noop()
+            (None, OperationCounters::of(&telemetry), None)
+        };
+
+        // Configure expiration if enabled.
+        let eviction_counter = match accumulated_evictions {
+            _ if !self.telemetry_enabled => Counter::noop(),
+            Some(evictions) => evictions,
+            None => telemetry.items_evicted_total().clone(),
         };
         let mut expiration_builder = ExpirationBuilder::new(eviction_counter);
         if let Some(time_to_idle) = self.idle_period {
@@ -251,10 +325,11 @@ where
         let cache = Cache {
             inner: Arc::new(InnerCache {
                 cache: Arc::clone(&raw_cache),
+                accumulated,
                 _task_shutdown_guard: shutdown_token.clone().drop_guard(),
             }),
             expiration: expiration.clone(),
-            telemetry: telemetry.clone(),
+            counters,
         };
 
         // If expiration is enabled, spawn a background task to actually drive expiration.
@@ -284,7 +359,7 @@ where
 pub struct Cache<K, V, W = ItemCountWeighter, H = FastBuildHasher> {
     inner: Arc<InnerCache<K, V, W, H>>,
     expiration: Expiration<K>,
-    telemetry: Telemetry,
+    counters: OperationCounters,
 }
 
 impl<K, V, W, H> Cache<K, V, W, H>
@@ -317,7 +392,7 @@ where
     pub fn insert(&self, key: K, value: V) {
         self.inner.cache.insert(key.clone(), value);
         self.expiration.mark_entry_accessed(key);
-        self.telemetry.items_inserted_total().increment(1);
+        self.counters.inserted.increment(1);
     }
 
     /// Gets an item from the cache by its key.
@@ -327,18 +402,28 @@ where
         let value = self.inner.cache.get(key);
         if value.is_some() {
             self.expiration.mark_entry_accessed(key.clone());
-            self.telemetry.hits_total().increment(1);
+            self.counters.hits.increment(1);
         } else {
-            self.telemetry.misses_total().increment(1);
+            self.counters.misses.increment(1);
         }
         value
+    }
+
+    /// Adds what the cache counted since it last published to its telemetry, if it was built with
+    /// [accumulated telemetry][CacheBuilder::with_accumulated_telemetry]; otherwise, does nothing.
+    ///
+    /// Clones of a cache share its counts, so publishing from any of them publishes everything counted once.
+    pub fn publish_telemetry(&self) {
+        if let Some(accumulated) = &self.inner.accumulated {
+            accumulated.publish();
+        }
     }
 
     /// Removes an item from the cache by its key.
     pub fn remove(&self, key: &K) {
         self.inner.cache.remove(key);
         self.expiration.mark_entry_removed(key.clone());
-        self.telemetry.items_removed_total().increment(1);
+        self.counters.removed.increment(1);
     }
 }
 
@@ -521,6 +606,80 @@ mod tests {
         assert_eq!(cache.get(&2), None);
         assert_eq!(cache.get(&3), None);
         assert_eq!(cache.get(&4), Some(CAPACITY - 1));
+    }
+
+    /// Returns the counters of the cache `identifier` in `recorder`: hits, misses, insertions, removals, evictions.
+    fn operation_counts(recorder: &saluki_metrics::test::TestRecorder, identifier: &'static str) -> [Option<u64>; 5] {
+        [
+            "hits_total",
+            "misses_total",
+            "items_inserted_total",
+            "items_removed_total",
+            "items_evicted_total",
+        ]
+        .map(|name| {
+            let name = format!("cache_{}", name);
+            recorder.counter(metrics::Key::from_parts(
+                name,
+                vec![metrics::Label::new("cache_id", identifier)],
+            ))
+        })
+    }
+
+    /// Runs the same operations on a cache: three insertions into a cache of two, which evicts one, two hits, a miss,
+    /// and a removal.
+    fn exercise(cache: &Cache<u64, u64>) {
+        cache.insert(1, 10);
+        cache.insert(2, 20);
+        assert_eq!(cache.get(&1), Some(10));
+        cache.insert(3, 30);
+        let found = (1..=3).filter(|key| cache.get(key).is_some()).count();
+        assert_eq!(found, 2, "one of three items was evicted from a cache of two");
+        cache.remove(&3);
+    }
+
+    #[tokio::test]
+    async fn an_accumulating_cache_publishes_what_a_direct_cache_writes_as_it_goes() {
+        let recorder = saluki_metrics::test::TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+        let build = |identifier: &'static str| {
+            CacheBuilder::from_identifier(identifier)
+                .unwrap()
+                .with_capacity(NonZeroUsize::new(2).unwrap())
+        };
+
+        let direct = build("direct").build();
+        exercise(&direct);
+        let written = operation_counts(&recorder, "direct");
+        assert_eq!(written, [Some(3), Some(1), Some(3), Some(1), Some(1)]);
+
+        let accumulating = build("accumulating").with_accumulated_telemetry().build();
+        exercise(&accumulating);
+        assert_eq!(
+            operation_counts(&recorder, "accumulating"),
+            [Some(0); 5],
+            "nothing is written before the cache publishes"
+        );
+        accumulating.publish_telemetry();
+        assert_eq!(operation_counts(&recorder, "accumulating"), written);
+
+        // Counts left unpublished reach the telemetry when the last clone of the cache is dropped, and never twice.
+        let clone = accumulating.clone();
+        clone.insert(4, 40);
+        assert_eq!(accumulating.get(&4), Some(40));
+        accumulating.publish_telemetry();
+        clone.remove(&4);
+        drop(accumulating);
+        assert_eq!(
+            operation_counts(&recorder, "accumulating")[3],
+            Some(1),
+            "the clone keeps the counts"
+        );
+        drop(clone);
+        assert_eq!(
+            operation_counts(&recorder, "accumulating"),
+            [Some(4), Some(1), Some(4), Some(2), Some(1)]
+        );
     }
 
     #[tokio::test]
