@@ -109,7 +109,7 @@ impl Assertion for HttpCheckAssertion {
             }
         };
         let description = match &self.body {
-            Some(HttpBodyMatcher::Equal(body)) => format!("{description} with body equal to \"{body}\""),
+            Some(HttpBodyMatcher::Equal(body)) => format!("{description} with body equal to {body:?}"),
             None => description,
         };
         description
@@ -255,7 +255,12 @@ async fn get_response_in_container(
     if insecure_skip_verify {
         cmd.push("-k".to_string());
     }
-    cmd.extend(["-s".to_string(), "-w".to_string(), "%{http_code}".to_string(), endpoint]);
+    cmd.extend([
+        "-s".to_string(),
+        "-w".to_string(),
+        "\r\n%{http_code}".to_string(),
+        endpoint,
+    ]);
     let exec = docker
         .create_exec(
             container_name,
