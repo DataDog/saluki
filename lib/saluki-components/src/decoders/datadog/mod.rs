@@ -16,8 +16,25 @@
 use std::sync::Arc;
 
 use saluki_common::collections::FastHashMap;
-use saluki_core::data_model::event::trace::{AttributeValue, PayloadFields, Span, SpanEvent, SpanLink, Trace};
+use saluki_core::{
+    accounting::MemoryBounds,
+    components::{
+        decoders::{Decoder, DecoderBuilder, DecoderContext},
+        BuildContext,
+    },
+    data_model::{
+        event::{
+            trace::{AttributeValue, PayloadFields, Span, SpanEvent, SpanLink, Trace},
+            EventType,
+        },
+        payload::PayloadType,
+    },
+};
+use saluki_error::GenericError;
 use stringtheory::MetaString;
+use tokio::select;
+use tonic::async_trait;
+use tracing::{debug, error, warn};
 
 mod error;
 mod read;
@@ -35,6 +52,89 @@ const MIN_BYTES_PER_TRACE_CHUNK: u32 = 22;
 
 /// Plausible minimum average wire size of a span containing a random span ID and epoch-nanosecond start time.
 const MIN_BYTES_PER_SPAN: u32 = 21;
+
+/// TODO: doc
+pub struct ApmTraceV1DecoderConfiguration {}
+
+#[async_trait]
+impl DecoderBuilder for ApmTraceV1DecoderConfiguration {
+    fn input_payload_type(&self) -> PayloadType {
+        PayloadType::Http
+    }
+
+    fn output_event_type(&self) -> EventType {
+        EventType::Trace
+    }
+
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn Decoder + Send>, GenericError> {
+        Ok(Box::new(ApmTraceV1Decoder::new()))
+    }
+}
+
+impl MemoryBounds for ApmTraceV1DecoderConfiguration {
+    fn specify_bounds(&self, _builder: &mut saluki_core::accounting::MemoryBoundsBuilder) {
+        // TODO: this uses no memory right ?
+    }
+}
+
+struct ApmTraceV1Decoder {}
+
+impl ApmTraceV1Decoder {
+    fn new() -> Self {
+        Self {}
+    }
+}
+
+#[async_trait]
+impl Decoder for ApmTraceV1Decoder {
+    async fn run(self: Box<Self>, mut context: DecoderContext) -> Result<(), GenericError> {
+        let mut health = context.take_health_handle();
+        health.mark_ready();
+
+        debug!("V1 decoder started.");
+
+        loop {
+            select! {
+                maybe_payload = context.payloads().next() => {
+                    let payload = match maybe_payload {
+                        Some(payload) => payload,
+                        None => {
+                            debug!("Payloads stream closed, shutting down decoder.");
+                            break;
+                        }
+                    };
+                    let http_payload = match payload.try_into_http_payload() {
+                        Some(http) => http,
+                        None => {
+                            warn!("Received non-HTTP payload in V1 decoder. Dropping payload.");
+                            continue;
+                        }
+                    };
+                    let (_meta, request) = http_payload.into_parts();
+                    let payload_body = request.into_body();
+                    let payload_bytes = payload_body.into_bytes();
+                    let traces = match decode_v1_payload(&payload_bytes) {
+                        Ok(traces) => traces,
+                        Err(e) => {
+                            error!(error = %e, "Failed to decode V1 trace request.");
+                            continue;
+                        }
+                    };
+
+                    // TODO: event buffer
+                if let Err(e) = context.dispatcher().dispatch(traces).await {
+                    error!(error = %e, "Failed to dispatch trace events.");
+                }
+                },
+                _ = health.live() => continue,
+            }
+        }
+
+        debug!("V1 decoder stopped.");
+
+        Ok(())
+    }
+}
 
 /// Decodes a single v1.0 tracer payload into unified trace events.
 ///
