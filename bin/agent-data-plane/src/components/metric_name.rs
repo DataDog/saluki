@@ -215,7 +215,7 @@ pub(super) fn normalize_into<'buf>(buf: &'buf mut NameBuf, name: &str) -> Option
 /// widening to `service...`.
 ///
 /// Returns `None` when no stored metric name can start with `prefix`, except that the empty prefix
-/// is valid and matches every storable metric name.
+/// is valid and matches every stored metric name.
 pub(super) fn normalize_prefix_into<'buf>(buf: &'buf mut NameBuf, prefix: &str) -> Option<&'buf [u8]> {
     if prefix.is_empty() {
         buf.clear();
@@ -393,8 +393,8 @@ mod tests {
 
     #[test]
     fn is_normalized_agrees_with_normalize() {
-        // These cover the boundary cases the fast path in `Blocklist::contains` relies on: is_normalized(s) is true
-        // exactly when normalizing `s` returns `s` unchanged.
+        // These cover the boundary cases the fast path in `Blocklist::contains` relies on: for a name
+        // `s`, `is_normalized(s)` is true exactly when normalizing `s` returns `s` unchanged.
         let inputs = [
             "",
             "_",

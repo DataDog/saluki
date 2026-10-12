@@ -1311,8 +1311,8 @@ Exceptions apply across this whole key: a metric excepted by one rule is kept ev
 matches another prefix rule. Exact or prefix matches from `metric_filterlist` still drop the
 metric.
 
-The empty `prefix` matches every storable metric name. The empty `except_prefix` keeps every
-storable metric name, making the rule a no-op.
+The empty `prefix` matches every stored metric name. The empty `except_prefix` keeps every
+stored metric name, making the rule a no-op.
 
 ### `otlp_config.metrics.delta_ttl`
 

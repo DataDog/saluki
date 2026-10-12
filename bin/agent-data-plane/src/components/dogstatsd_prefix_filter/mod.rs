@@ -363,7 +363,7 @@ mod tests {
             .matcher(Blocklist::new(["foo.bar", "test"], false))
             .build();
 
-        // "bar" is prefixed to "foo.bar", which the blocklist matches.
+        // `bar` is prefixed to `foo.bar`, which the blocklist matches.
         let mut metric = Metric::gauge("bar", 1.0);
         assert!(!filter.process_metric(&mut metric));
 
@@ -381,11 +381,11 @@ mod tests {
             .matcher(Blocklist::new(["b", "test"], true))
             .build();
 
-        // match prefix is true, "bar" has prefix "b"
+        // Match-prefix mode is enabled, so `bar` matches prefix `b`.
         let mut metric = Metric::gauge("bar", 1.0);
         assert!(!filter.process_metric(&mut metric));
 
-        // match prefix is true, "test" has prefix "test"
+        // Match-prefix mode is enabled, so `test` matches prefix `test`.
         let mut metric = Metric::gauge("test", 1.0);
         assert!(!filter.process_metric(&mut metric));
     }
@@ -397,7 +397,7 @@ mod tests {
             .matcher(Blocklist::new(["fo", "test"], true))
             .build();
 
-        // new_metric is "foo.bar", match prefix is true, "foo.bar" has prefix "fo"
+        // The computed name is `foo.bar`; with match-prefix mode enabled, it matches prefix `fo`.
         let mut metric = Metric::gauge("bar", 1.0);
         assert!(!filter.process_metric(&mut metric));
     }

@@ -244,7 +244,7 @@ fn normalize_entries(entries: &[String], match_prefix: bool) -> (Vec<String>, Ve
 
         match key {
             Some(key) => normalized.push(
-                std::str::from_utf8(key)
+                simdutf8::basic::from_utf8(key)
                     .expect("normalized metric names are ASCII")
                     .to_owned(),
             ),
@@ -272,7 +272,7 @@ fn normalize_prefix_rules(rules: &[MetricPrefixRule]) -> (Vec<PrefixRule>, Vec<S
         };
 
         let mut normalized_rule = PrefixRule {
-            prefix: std::str::from_utf8(prefix)
+            prefix: simdutf8::basic::from_utf8(prefix)
                 .expect("normalized metric names are ASCII")
                 .to_owned(),
             except_exact: Vec::new(),
@@ -282,7 +282,7 @@ fn normalize_prefix_rules(rules: &[MetricPrefixRule]) -> (Vec<PrefixRule>, Vec<S
         for exact in &rule.except_exact {
             match normalize_into(&mut buf, exact) {
                 Some(key) => normalized_rule.except_exact.push(
-                    std::str::from_utf8(key)
+                    simdutf8::basic::from_utf8(key)
                         .expect("normalized metric names are ASCII")
                         .to_owned(),
                 ),
@@ -293,7 +293,7 @@ fn normalize_prefix_rules(rules: &[MetricPrefixRule]) -> (Vec<PrefixRule>, Vec<S
         for prefix in &rule.except_prefix {
             match normalize_prefix_into(&mut buf, prefix) {
                 Some(key) => normalized_rule.except_prefix.push(
-                    std::str::from_utf8(key)
+                    simdutf8::basic::from_utf8(key)
                         .expect("normalized metric names are ASCII")
                         .to_owned(),
                 ),
