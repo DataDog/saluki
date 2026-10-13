@@ -1796,8 +1796,8 @@ fn core_config_uses_default_dictionary_caps() {
     assert_eq!(
         config.metrics_dictionary_eviction,
         Some(MetricDictionaryEvictionConfig {
-            max_item_count: 150_000,
-            max_memory_bytes: 640 * 1024 * 1024,
+            max_item_count: 60_000,
+            max_memory_bytes: 256 * 1024 * 1024,
             stale_after: Duration::from_secs(30 * 60),
             ..MetricDictionaryEvictionConfig::default()
         })
