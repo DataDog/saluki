@@ -707,8 +707,8 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `data_plane.otlp.receiver_grpc_endpoint_temporary`              | ADP OTLP gRPC listen endpoint                           | localhost:6317   |
 | `data_plane.otlp.receiver_http_endpoint_temporary`              | ADP OTLP HTTP listen endpoint                           | localhost:6318   |
 | `data_plane.stateful_metrics_additional_endpoints`              | Further stateful series gRPC intake endpoints           | []               |
-| `data_plane.stateful_metrics_dictionary_max_bytes`              | Stateful metrics dictionary byte cap per sender worker  | 16MiB            |
-| `data_plane.stateful_metrics_dictionary_max_entries`            | Stateful metrics dictionary entry cap per sender worker | 20000            |
+| `data_plane.stateful_metrics_dictionary_max_bytes`              | Stateful metrics dictionary byte cap per sender worker  | 640MiB           |
+| `data_plane.stateful_metrics_dictionary_max_entries`            | Stateful metrics dictionary entry cap per sender worker | 150000           |
 | `data_plane.stateful_metrics_endpoint`                          | Experimental stateful series gRPC intake endpoint       | unset (disabled) |
 | `data_plane.stateful_metrics_workers`                           | Number of independent stateful metrics sender workers   | 3                |
 | `dogstatsd_allow_context_heap_allocs`                           | Allow heap allocations for contexts                     | true             |
@@ -744,11 +744,11 @@ Positive worker count, default 3. Requires a restart. Each worker owns its queue
 
 ### `data_plane.stateful_metrics_dictionary_max_entries`
 
-Positive entry cap for each stateful metrics sender worker's dictionary, default 20000; the process total is this value times data_plane.stateful_metrics_workers. Eviction starts near the cap, but entries younger than the 30-second grace period are protected. A cap below the live series working set re-sends many definitions on every flush. Requires a restart.
+Positive entry cap for each stateful metrics sender worker's dictionary, default 150000; the process total is this value times data_plane.stateful_metrics_workers. Eviction starts near the cap, but entries younger than the 30-second grace period are protected. A cap below the live series working set re-sends many definitions on every flush. Dictionary memory grows with the series each worker sees, not with the cap. Requires a restart.
 
 ### `data_plane.stateful_metrics_dictionary_max_bytes`
 
-Positive estimated-byte cap for each stateful metrics sender worker's dictionary, default 16MiB (16777216); the process total is this value times data_plane.stateful_metrics_workers. Accepts a bare byte count or a byte-size string such as 128MiB. The estimate excludes allocator slack and buffered or inflight metrics, so actual memory use is higher. Requires a restart.
+Positive estimated-byte cap for each stateful metrics sender worker's dictionary, default 640MiB (671088640); the process total is this value times data_plane.stateful_metrics_workers. Accepts a bare byte count or a byte-size string such as 128MiB. The estimate excludes allocator slack and buffered or inflight metrics, so actual memory use is higher. Requires a restart.
 
 ### `data_plane.stateful_metrics_endpoint`
 

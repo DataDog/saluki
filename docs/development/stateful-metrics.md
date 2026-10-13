@@ -262,29 +262,35 @@ apply **per worker**, so the process-wide totals are each value times
 
 | Setting | Environment variable | Default |
 | --- | --- | --- |
-| `data_plane.stateful_metrics_dictionary_max_entries` | `DD_DATA_PLANE_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES` | `20000` |
-| `data_plane.stateful_metrics_dictionary_max_bytes` | `DD_DATA_PLANE_STATEFUL_METRICS_DICTIONARY_MAX_BYTES` | `16MiB` (16777216) |
+| `data_plane.stateful_metrics_dictionary_max_entries` | `DD_DATA_PLANE_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES` | `150000` |
+| `data_plane.stateful_metrics_dictionary_max_bytes` | `DD_DATA_PLANE_STATEFUL_METRICS_DICTIONARY_MAX_BYTES` | `640MiB` (671088640) |
 
 Both must be positive; zero, negative, and non-numeric values fail startup. The byte cap accepts a
 bare byte count or a byte-size string such as `128MiB`, up to `i64::MAX`. Entries no payload has
 referenced for 30 minutes are removed regardless of the caps; that interval is not configurable.
 
-The default caps sit well above a typical live working set (about 7,000 entries per worker for a
-110-pod node), so in normal operation eviction only removes definitions for series that stopped
-reporting, such as departed pods. High-cardinality workloads can exceed them: a cap below the live
-working set evicts definitions that are still in use and re-sends them on later flushes, which
-slows draining under load. To raise the caps for a load test, set for example:
+The caps are a ceiling, not a reservation: a worker's dictionary grows only with the series routed
+to it. The defaults sit above the live working set of most nodes, so in normal operation eviction
+only removes definitions for series that stopped reporting, such as departed pods, and raising the
+caps costs memory only on nodes that actually have that many contexts.
+
+A cap below the live working set evicts definitions that are still in use and re-sends them on later
+flushes, which slows draining under load. In local load tests on traffic shaped like real tags, the
+earlier 16 MiB byte cap was reached at about 5,000 entries per worker, with heavy definition churn.
+Caps below the live working set churned nearly as much as that default did, while a cap about 10%
+above it behaved like no cap at all. Lower the caps only on memory-constrained hosts, for example:
 
 ```yaml
 data_plane:
-  stateful_metrics_dictionary_max_entries: 100000
+  stateful_metrics_dictionary_max_entries: 50000
   stateful_metrics_dictionary_max_bytes: 128MiB
 ```
 
-Real heap is about 1.5 times the estimate, because the estimate excludes the rule store's copy of
-each definition and per-endpoint sent sets. The caps cannot shrink the dictionary below the live
-working set: recently created definitions are protected by Foldspace's 30-second grace period. The
-aggregator's context limit bounds the live set instead.
+Actual heap use is higher than the estimate, which excludes the rule store's copy of each definition,
+allocator slack, per-endpoint sent sets, and eviction bookkeeping such as incoming counts and the
+frontier and grace indexes. The caps cannot shrink the dictionary below the live working set:
+recently created definitions are protected by Foldspace's 30-second grace period. The aggregator's
+context limit bounds the live set instead.
 
 Closing destination input closes all worker input queues before waiting for completion. Workers drain
 accepted input, run their delivery budgets concurrently, recover remaining logical data, and flush
