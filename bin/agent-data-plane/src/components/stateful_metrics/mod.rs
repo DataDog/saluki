@@ -413,6 +413,11 @@ impl StatefulMetricsWorker {
         });
         profile.dictionary_entries.set(stats.entries as f64);
         profile.dictionary_estimated_bytes.set(stats.estimated_bytes as f64);
+        profile.dictionary_transient_entries.set(stats.transient_entries as f64);
+        profile.dictionary_transient_bytes.set(stats.transient_bytes as f64);
+        profile
+            .dictionary_frequency_sketch_bytes
+            .set(stats.frequency_sketch_bytes as f64);
         profile.inflight_payloads.set(self.core.inflight_len() as f64);
         profile.buffered_series.set(self.core.buffered_series_len() as f64);
         if let Some(started) = drained_burst {

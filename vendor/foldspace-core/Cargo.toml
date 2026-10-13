@@ -14,6 +14,7 @@ zstd = ["dep:zstd"]
 prost = { version = "0.14" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", default-features = false, features = ["std"] }
+siphasher = "1"
 tonic = { version = "0.14" }
 tonic-prost = { version = "0.14" }
 zstd = { version = "0.13", default-features = false, optional = true }

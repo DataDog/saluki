@@ -340,10 +340,14 @@ impl StatefulMetricsCore {
         let endpoints = (0..config.metrics_endpoints.max(1))
             .map(|_| Endpoint::new(config.sender.first_payload_batch_id))
             .collect();
+        let encoder = config.metrics_dictionary_eviction.as_ref().map_or_else(
+            MetricSeriesEncoder::default,
+            MetricSeriesEncoder::with_eviction,
+        );
         Self {
             config,
             next_stream_id: 1,
-            encoder: MetricSeriesEncoder::default(),
+            encoder,
             next_payload_id: 0,
             retained: BTreeMap::new(),
             endpoints,
@@ -2028,6 +2032,154 @@ mod tests {
         assert!(redefined.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(redefined.iter().any(|key| !original.contains(key)));
         assert_sent_is_retained(&core);
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Retaining {
+        // Grace periods but no frequency sketch.
+        Unsketched,
+        // Returning values seeded from the sketch, but every value retained.
+        AdmitAll,
+        Admission,
+    }
+
+    struct Cycle {
+        definitions: usize,
+        entries: usize,
+        transient: usize,
+        residents: BTreeSet<DefinitionKey>,
+    }
+
+    /// Sends a hot set of `hot` single-definition series every `period`, in ten payloads,
+    /// and reports the definitions sent and the dictionary after each cycle.
+    fn cycle_hot_set(retaining: Retaining, hot: u64, period: Duration, cycles: u32) -> Vec<Cycle> {
+        let mut core = StatefulMetricsCore::new(CoreConfig {
+            batch_capacity: (hot / 10) as usize,
+            metrics_dictionary_eviction: Some(MetricDictionaryEvictionConfig {
+                max_item_count: 160,
+                stale_after: Duration::ZERO,
+                ..MetricDictionaryEvictionConfig::default()
+            }),
+            ..CoreConfig::default()
+        });
+        match retaining {
+            Retaining::Unsketched => core.encoder = MetricSeriesEncoder::default(),
+            Retaining::AdmitAll => core.encoder.admit_all(),
+            Retaining::Admission => {}
+        }
+        let stream_id = open(&mut core);
+        let start = Instant::now();
+        (0..cycles)
+            .map(|cycle| {
+                let mut definitions = 0;
+                for payload in 0..10 {
+                    let now = start + period * cycle + Duration::from_millis(payload);
+                    let series = (payload * hot / 10..(payload + 1) * hot / 10)
+                        .map(|index| batch(&format!("m{index}"), 1.0).series()[0].clone())
+                        .collect();
+                    let effects = core
+                        .push_batch(LogicalMetricBatch::new(series), now)
+                        .unwrap();
+                    for batch in sends(&effects) {
+                        definitions += definition_keys(batch).len();
+                        core.handle_ack(stream_id, batch.batch_id);
+                    }
+                    assert_sent_is_retained(&core);
+                }
+                let stats = core.dictionary_stats();
+                Cycle {
+                    definitions,
+                    entries: stats.entries,
+                    transient: stats.transient_entries,
+                    residents: core.encoder.resident_keys().into_iter().collect(),
+                }
+            })
+            .collect()
+    }
+
+    /// Mean definitions per cycle and peak entries after a warm-up.
+    fn steady(cycles: &[Cycle]) -> (usize, usize) {
+        let cycles = &cycles[10..];
+        (
+            cycles.iter().map(|cycle| cycle.definitions).sum::<usize>() / cycles.len(),
+            cycles.iter().map(|cycle| cycle.entries).max().unwrap(),
+        )
+    }
+
+    /// Values evicted from a hot set larger than the cap come back with no grace period, so
+    /// the cap holds instead of returning values floating the dictionary above it.
+    #[test]
+    fn returning_values_hold_the_cap_under_a_hot_set_above_it() {
+        let run = |retaining, seconds| {
+            steady(&cycle_hot_set(
+                retaining,
+                200,
+                Duration::from_secs(seconds),
+                40,
+            ))
+        };
+        let (base_definitions, base_entries) = run(Retaining::Unsketched, 10);
+        let (definitions, entries) = run(Retaining::Admission, 10);
+        assert_eq!(
+            base_entries, 200,
+            "grace periods float the dictionary above the cap"
+        );
+        assert!(entries <= 160, "{entries} entries");
+        assert!(
+            definitions < 100,
+            "a stable resident set: {definitions} of 200 values redefined per cycle"
+        );
+        assert!(
+            definitions > base_definitions,
+            "holding the cap costs redefinitions"
+        );
+
+        // Once values recur less often than the grace period, it no longer defers their
+        // redefinition, and remembering their frequency redefines fewer of them.
+        let (base_definitions, base_entries) = run(Retaining::Unsketched, 40);
+        let (definitions, entries) = run(Retaining::Admission, 40);
+        assert!(base_entries > 160);
+        assert!(entries <= 160, "{entries} entries");
+        assert!(
+            definitions < base_definitions,
+            "{definitions} vs {base_definitions} redefinitions per cycle"
+        );
+    }
+
+    /// With a hot set slightly above the cap, retaining every returning value makes each
+    /// displace a resident that returns in turn. Admitting only values more frequent than
+    /// the next victim keeps a stable resident set at the high watermark, and the rest of the
+    /// hot set is defined transiently each cycle.
+    #[test]
+    fn admission_keeps_residents_stable_under_a_hot_set_above_the_cap() {
+        let kept = |cycles: &[Cycle]| {
+            cycles[10..]
+                .windows(2)
+                .map(|pair| pair[0].residents.intersection(&pair[1].residents).count())
+                .min()
+                .unwrap()
+        };
+        for seconds in [10, 40] {
+            let period = Duration::from_secs(seconds);
+            let all = cycle_hot_set(Retaining::AdmitAll, 200, period, 40);
+            let admitted = cycle_hot_set(Retaining::Admission, 200, period, 40);
+            let (all_definitions, all_entries) = steady(&all);
+            let (definitions, entries) = steady(&admitted);
+            assert!(entries <= 160 && all_entries <= 160);
+            assert_eq!(definitions, 200 - 152, "every {seconds}s");
+            assert!(
+                definitions < all_definitions,
+                "{definitions} vs {all_definitions} definitions per cycle"
+            );
+            assert!(admitted[10..]
+                .iter()
+                .all(|cycle| cycle.entries == 152 && cycle.transient > 0));
+            assert_eq!(kept(&admitted), 152, "every {seconds}s");
+            assert!(kept(&all) < 136, "every {seconds}s");
+            if seconds == 40 {
+                assert!(definitions * 2 < all_definitions);
+            }
+        }
     }
 
     /// Payload IDs are global: they keep increasing across streams while batch IDs restart.

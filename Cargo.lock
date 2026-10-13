@@ -1794,6 +1794,7 @@ dependencies = [
  "prost",
  "serde",
  "serde_json",
+ "siphasher",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",

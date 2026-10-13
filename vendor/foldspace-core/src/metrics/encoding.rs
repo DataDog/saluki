@@ -75,6 +75,13 @@ pub struct MetricSeriesEncoder {
 }
 
 impl MetricSeriesEncoder {
+    /// An encoder whose dictionary `config` will evict.
+    pub(super) fn with_eviction(config: &MetricDictionaryEvictionConfig) -> Self {
+        Self {
+            dictionary: MetricDictionary::with_eviction(config),
+        }
+    }
+
     /// Evicts by the policy and returns the removed keys.
     pub(super) fn evict(&mut self, config: &MetricDictionaryEvictionConfig) -> Vec<DefinitionKey> {
         self.dictionary.evict(config)
@@ -103,6 +110,16 @@ impl MetricSeriesEncoder {
     #[cfg(test)]
     pub(super) fn retained_keys(&self) -> Vec<DefinitionKey> {
         self.dictionary.retained_keys()
+    }
+
+    #[cfg(test)]
+    pub(super) fn resident_keys(&self) -> Vec<DefinitionKey> {
+        self.dictionary.resident_keys()
+    }
+
+    #[cfg(test)]
+    pub(super) fn admit_all(&mut self) {
+        self.dictionary.admit_all();
     }
 
     /// Returns current dictionary usage.
@@ -467,6 +484,80 @@ mod tests {
             second.datums()[0].data,
             Some(datum::Data::MetricSeriesBatch(_))
         ));
+    }
+
+    /// Tagset lookup keys are private to a dictionary: they change neither IDs nor wire
+    /// bytes, a clone keeps them, and debug output does not reveal them.
+    #[test]
+    fn tagset_keys_change_neither_ids_nor_bytes() {
+        let keys = [
+            [0x0123_4567_89ab_cdef, 0xfedc_ba98_7654_3210],
+            [0x1357_9bdf_2468_ace0, 0x0f1e_2d3c_4b5a_6978],
+        ];
+        let config = MetricDictionaryEvictionConfig {
+            max_item_count: 40,
+            grace_period: std::time::Duration::ZERO,
+            ..MetricDictionaryEvictionConfig::default()
+        };
+        let mut encoders = keys.map(|[k0, k1]| MetricSeriesEncoder {
+            dictionary: MetricDictionary::with_eviction(&config).with_tagset_keys(k0, k1),
+        });
+        let start = Instant::now();
+        let batch = |round: u64| {
+            LogicalMetricBatch::new(
+                (0..6)
+                    .map(|i| {
+                        complete_series().with_tags(MetricTagSet {
+                            prefix: vec![format!("env:{}", (round + i) % 3)],
+                            values: (0..(round + i) % 4)
+                                .map(|tag| format!("pod:{}", (round * 7 + i + tag) % 11))
+                                .collect(),
+                        })
+                    })
+                    .collect(),
+            )
+        };
+        let mut evicted = 0;
+        for round in 0..40 {
+            let now = start + std::time::Duration::from_secs(round);
+            let encoded = encoders.each_mut().map(|encoder| {
+                let encoded = encoder.encode(&batch(round), now);
+                (encoded, encoder.evict(&config))
+            });
+            assert_eq!(encoded[0], encoded[1]);
+            let bytes = encoded.each_ref().map(|(encoded, _)| {
+                encoded
+                    .datums()
+                    .iter()
+                    .map(prost::Message::encode_to_vec)
+                    .collect::<Vec<_>>()
+            });
+            assert_eq!(bytes[0], bytes[1]);
+            evicted += encoded[0].1.len();
+        }
+        assert!(evicted > 100, "{evicted} evicted");
+
+        let now = start + std::time::Duration::from_secs(39);
+        let mut clone = encoders[0].clone();
+        let again = clone.encode(&batch(39), now);
+        assert!(
+            again.definitions().is_empty(),
+            "the clone finds every tagset"
+        );
+        assert_eq!(again.datums(), encoders[0].encode(&batch(39), now).datums());
+
+        let debug = format!("{encoders:?} {encoders:#?} {clone:?}");
+        assert!(debug.contains("TagsetKeys"));
+        for key in keys.as_flattened() {
+            for form in [
+                key.to_string(),
+                format!("{key:x}"),
+                format!("{key:X}"),
+                format!("{key:#x}"),
+            ] {
+                assert!(!debug.contains(&form), "debug output shows {form}");
+            }
+        }
     }
 
     #[test]

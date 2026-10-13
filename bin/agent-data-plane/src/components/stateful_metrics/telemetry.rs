@@ -84,8 +84,15 @@ pub(super) struct WorkerProfile {
     reported: CoreTotals,
     /// From the first batch received while idle until everything is acknowledged again.
     pub burst_drain_seconds: Histogram,
+    /// Retained definitions, which the entry cap governs; transient definitions are reported apart.
     pub dictionary_entries: Gauge,
+    /// Estimated bytes of retained definitions, which the byte cap governs.
     pub dictionary_estimated_bytes: Gauge,
+    /// Definitions sent only for the payloads that reference them, outside the caps.
+    pub dictionary_transient_entries: Gauge,
+    pub dictionary_transient_bytes: Gauge,
+    /// Fixed size of the admission frequency sketch, sized from the caps; outside the byte cap.
+    pub dictionary_frequency_sketch_bytes: Gauge,
     pub inflight_payloads: Gauge,
     pub buffered_series: Gauge,
     /// Indexed by endpoint.
@@ -125,6 +132,10 @@ impl WorkerProfile {
             burst_drain_seconds: builder.register_debug_histogram("stateful_metrics_burst_drain_seconds"),
             dictionary_entries: builder.register_debug_gauge("stateful_metrics_dictionary_entries"),
             dictionary_estimated_bytes: builder.register_debug_gauge("stateful_metrics_dictionary_estimated_bytes"),
+            dictionary_transient_entries: builder.register_debug_gauge("stateful_metrics_dictionary_transient_entries"),
+            dictionary_transient_bytes: builder.register_debug_gauge("stateful_metrics_dictionary_transient_bytes"),
+            dictionary_frequency_sketch_bytes: builder
+                .register_debug_gauge("stateful_metrics_dictionary_frequency_sketch_bytes"),
             inflight_payloads: builder.register_debug_gauge("stateful_metrics_inflight_payloads"),
             buffered_series: builder.register_debug_gauge("stateful_metrics_buffered_series"),
             endpoints: (0..endpoints)

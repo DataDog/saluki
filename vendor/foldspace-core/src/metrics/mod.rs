@@ -11,6 +11,7 @@ mod client;
 mod dictionary;
 mod encoding;
 mod eviction_policy;
+mod frequency;
 mod machine;
 mod model;
 mod retention;
