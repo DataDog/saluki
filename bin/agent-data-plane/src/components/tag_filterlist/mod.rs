@@ -504,11 +504,7 @@ mod tests {
     use std::sync::Arc;
 
     use saluki_core::{
-        accounting::{ComponentRegistry, MemoryLimiter},
-        components::{
-            transforms::{TransformBuilder, TransformContext},
-            BuildContext, ComponentContext,
-        },
+        components::test_util::TestComponentDriver,
         data_model::{
             event::{
                 metric::{
@@ -519,16 +515,8 @@ mod tests {
             },
             tags::{Tag, TagSet},
         },
-        health::HealthRegistry,
-        runtime::state::{DataspaceRegistry, ResourceRegistry},
-        topology::{
-            interconnect::{Consumer, Dispatcher},
-            EventsBuffer, OutputName, TopologyContext,
-        },
     };
     use saluki_metrics::{test::TestRecorder, MetricsBuilder};
-    use tokio::runtime::Handle;
-    use tokio::sync::mpsc;
 
     use super::*;
 
@@ -1405,76 +1393,39 @@ mod tests {
         )];
         let builder = TagFilterlistConfiguration::new(Live::new_fixed(entries), &value_allowlists, 100_000)
             .expect("typed configuration should be valid");
-
-        let component_context = ComponentContext::test_transform("tag_filterlist");
-        let transform = builder
-            .build(BuildContext::new(component_context.clone(), ResourceRegistry::new()))
+        let (control, mut outputs) = TestComponentDriver::transform(builder)
             .await
             .expect("tag filterlist should build");
-
-        // Wire a dispatcher whose default output we can drain after the run loop completes.
-        let mut dispatcher = Dispatcher::new(component_context.clone());
-        dispatcher.add_output(OutputName::Default).expect("add default output");
-        let (out_tx, mut out_rx) = mpsc::channel(4);
-        dispatcher
-            .attach_sender_to_output(&OutputName::Default, out_tx)
-            .expect("attach default sender");
 
         // A distribution, a counter, and a gauge that all share the same (name, tags) context, followed by a repeat
         // of the distribution. The counter and the repeated distribution hit the cache entry created by the first
         // distribution.
         let tags = &["host:h1", "env:prod", "customer_id:long-tail"];
-        let mut input = EventsBuffer::default();
-        for event in [
-            Event::Metric(Metric::distribution(
-                Context::from_static_parts("svc.latency", tags),
-                1.0,
-            )),
-            Event::Metric(Metric::counter(Context::from_static_parts("svc.latency", tags), 1.0)),
-            Event::Metric(Metric::gauge(Context::from_static_parts("svc.latency", tags), 1.0)),
-            Event::Metric(Metric::distribution(
-                Context::from_static_parts("svc.latency", tags),
-                1.0,
-            )),
-        ] {
-            assert!(input.try_push(event).is_none(), "input buffer should have capacity");
-        }
+        control
+            .send_events([
+                Event::Metric(Metric::distribution(
+                    Context::from_static_parts("svc.latency", tags),
+                    1.0,
+                )),
+                Event::Metric(Metric::counter(Context::from_static_parts("svc.latency", tags), 1.0)),
+                Event::Metric(Metric::gauge(Context::from_static_parts("svc.latency", tags), 1.0)),
+                Event::Metric(Metric::distribution(
+                    Context::from_static_parts("svc.latency", tags),
+                    1.0,
+                )),
+            ])
+            .await;
 
-        let (in_tx, in_rx) = mpsc::channel(4);
-        let consumer = Consumer::new(component_context.clone(), in_rx);
-        in_tx.send(input).await.expect("send input buffer");
-        drop(in_tx); // Closing the input makes the run loop terminate deterministically.
+        // Shutting down closes the input, which is what ends the run loop.
+        control.shutdown().await.expect("tag filterlist run should succeed");
 
-        let topology_context = TopologyContext::new(
-            Arc::from("test"),
-            MemoryLimiter::noop(),
-            HealthRegistry::new(),
-            Handle::current(),
-            DataspaceRegistry::new(),
-        );
-        let health = HealthRegistry::new()
-            .register_component(&saluki_core::support::SubsystemIdentifier::from_dotted("test"))
-            .expect("component was not previously registered");
-
-        let context = TransformContext::new(
-            &topology_context,
-            &component_context,
-            ComponentRegistry::default(),
-            health,
-            dispatcher,
-            consumer,
-        );
-
-        transform.run(context).await.expect("tag filterlist run should succeed");
-
-        let mut dispatched: Vec<Metric> = Vec::new();
-        while let Ok(buffer) = out_rx.try_recv() {
-            for event in buffer {
-                if let Event::Metric(metric) = event {
-                    dispatched.push(metric);
-                }
-            }
-        }
+        let dispatched: Vec<Metric> = outputs
+            .default_output()
+            .collect_events()
+            .await
+            .into_iter()
+            .map(|event| event.try_into_metric().expect("only metrics should be dispatched"))
+            .collect();
 
         // Nothing is dropped by the transform; order is preserved.
         assert_eq!(dispatched.len(), 4, "all four metrics should be dispatched");

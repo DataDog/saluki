@@ -58,10 +58,11 @@ pub trait Supervisable: Send + Sync {
 
     /// Returns whether this process observes the shutdown signal it is given.
     ///
-    /// Shutting a subtree down is a _trigger_, not an enforcement: many workers ignore the signal entirely and stop
-    /// only when they reach their own terminal condition, such as an input channel closing. Reporting `false` lets the
-    /// supervisor skip creating a shutdown coordinator it would never usefully fire, and hand the process a
-    /// [`ShutdownHandle::noop`] instead.
+    /// The shutdown of a subtree is a _trigger_, not an enforcement. Many workers ignore the signal completely, and
+    /// stop only when they reach their own terminal condition, such as when an input channel closes. If this function
+    /// returns `false`, the supervisor gives the process a [`ShutdownHandle::noop`] instead. But the
+    /// [scope][crate::runtime::scope] of the process still observes the signal for the process, so that it can tell
+    /// whether an exit of one of its children was requested.
     ///
     /// This says nothing about _whether_ the supervisor waits for the process -- that's
     /// [`shutdown_strategy`][Self::shutdown_strategy]. A process that ignores the signal is still waited for, up to

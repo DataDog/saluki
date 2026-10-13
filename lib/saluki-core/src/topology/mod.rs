@@ -11,7 +11,7 @@ pub use self::blueprint::{BlueprintError, TopologyBlueprint, TopologyReady};
 
 mod built;
 
-mod component_worker;
+pub(crate) mod component_worker;
 
 mod context;
 pub use self::context::TopologyContext;
@@ -31,7 +31,7 @@ pub(super) mod test_util;
 
 // SAFETY: These are obviously non-zero.
 const DEFAULT_EVENTS_BUFFER_CAPACITY: usize = 1024;
-const DEFAULT_INTERCONNECT_CAPACITY: NonZeroUsize = NonZeroUsize::new(128).unwrap();
+pub(crate) const DEFAULT_INTERCONNECT_CAPACITY: NonZeroUsize = NonZeroUsize::new(128).unwrap();
 
 // Topology-wide defaults.
 
