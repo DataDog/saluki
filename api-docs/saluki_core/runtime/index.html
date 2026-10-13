@@ -34,7 +34,7 @@ children while it runs. There are exactly two ways to do that, and they differ o
 identified:</p>
 <ul>
 <li><a href="fn.spawn.html" title="fn saluki_core::runtime::spawn"><code>spawn</code></a>, which targets the <em>ambient</em> supervisor: the one supervising the currently running process. This is the
-<a href="https://docs.rs/tokio/1.53.1/tokio/task/spawn/fn.spawn.html" title="fn tokio::task::spawn::spawn"><code>tokio::spawn</code></a> of supervision, and is what code running under supervision should reach for.</li>
+<a href="https://docs.rs/tokio/1.53.2/tokio/task/spawn/fn.spawn.html" title="fn tokio::task::spawn::spawn"><code>tokio::spawn</code></a> of supervision, and is what code running under supervision should reach for.</li>
 <li><a href="struct.SupervisorHandle.html" title="struct saluki_core::runtime::SupervisorHandle"><code>SupervisorHandle</code></a>, which names a supervisor explicitly.</li>
 </ul>
 <p>Either way, a child is described with <a href="struct.ChildBuilder.html" title="struct saluki_core::runtime::ChildBuilder"><code>ChildBuilder</code></a> – reached through <a href="fn.worker.html" title="fn saluki_core::runtime::worker"><code>worker</code></a> and <a href="fn.supervisable.html" title="fn saluki_core::runtime::supervisable"><code>supervisable</code></a> for the
@@ -45,7 +45,7 @@ own, so a combination the builder declines to offer can’t be assembled around 
 <a href="fn.nested_supervisor.html" title="fn saluki_core::runtime::nested_supervisor"><code>nested_supervisor</code></a> (and <a href="struct.SupervisorHandle.html#method.nested_supervisor" title="method saluki_core::runtime::SupervisorHandle::nested_supervisor"><code>SupervisorHandle::nested_supervisor</code></a>) exists for the two settings that aren’t
 reachable that way – the restart policy and significance. It matters most for a dynamically spawned subtree, which
 would otherwise be <a href="enum.RestartType.html#variant.Temporary" title="variant saluki_core::runtime::RestartType::Temporary"><code>temporary</code></a> and so quietly stay dead once it terminated.</p>
-<p>Both are synchronous and infallible. As with <a href="https://docs.rs/tokio/1.53.1/tokio/task/spawn/fn.spawn.html" title="fn tokio::task::spawn::spawn"><code>tokio::spawn</code></a>, a child being accepted doesn’t mean it will run: a
+<p>Both are synchronous and infallible. As with <a href="https://docs.rs/tokio/1.53.2/tokio/task/spawn/fn.spawn.html" title="fn tokio::task::spawn::spawn"><code>tokio::spawn</code></a>, a child being accepted doesn’t mean it will run: a
 supervisor that shuts down before it reaches the child never starts it at all.</p>
 <h2 id="scopes"><a class="doc-anchor" href="#scopes">§</a>Scopes</h2>
 <p>A supervisor owns its children. If a worker spawns a child through <a href="fn.spawn.html" title="fn saluki_core::runtime::spawn"><code>spawn</code></a>, the child is only a sibling of the

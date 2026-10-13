@@ -8,7 +8,7 @@ the caller rather than its descendant.</p>
 supervision subtree, or a <a href="struct.ChildSpecification.html" title="struct saluki_core::runtime::ChildSpecification"><code>ChildSpecification</code></a> configured in detail. Unless the specification says otherwise, the
 child is <a href="enum.RestartType.html#variant.Temporary" title="variant saluki_core::runtime::RestartType::Temporary"><code>temporary</code></a>; see <a href="struct.SupervisorHandle.html#method.spawn" title="method saluki_core::runtime::SupervisorHandle::spawn"><code>SupervisorHandle::spawn</code></a> for what that
 implies.</p>
-<p>This mirrors <a href="https://docs.rs/tokio/1.53.1/tokio/task/spawn/fn.spawn.html" title="fn tokio::task::spawn::spawn"><code>tokio::spawn</code></a> in both shape and guarantees: it always succeeds, and success means the child was
+<p>This mirrors <a href="https://docs.rs/tokio/1.53.2/tokio/task/spawn/fn.spawn.html" title="fn tokio::task::spawn::spawn"><code>tokio::spawn</code></a> in both shape and guarantees: it always succeeds, and success means the child was
 accepted, not that it will run. A supervisor that shuts down before it reaches the queued child never starts it.</p>
 <h2 id="panics"><a class="doc-anchor" href="#panics">§</a>Panics</h2>
 <p>Panics if there is no ambient supervisor, which means the caller isn’t running as (or within) a supervised process.
