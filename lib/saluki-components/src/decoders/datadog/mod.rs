@@ -141,15 +141,28 @@ impl Decoder for ApmTraceV1Decoder {
                         }
                     };
 
-                for trace in traces {
-                    if let Some(event_buffer) = event_buffer_manager.try_push(Event::Trace(trace)) {
-                        if let Err(e) = context.dispatcher().dispatch(event_buffer).await {
-                            error!(error = %e, "Failed to dispatch trace events.");
+                    for trace in traces {
+                        if let Some(event_buffer) = event_buffer_manager.try_push(Event::Trace(trace)) {
+                            if let Err(e) = context.dispatcher().dispatch(event_buffer).await {
+                                error!(error = %e, "Failed to dispatch trace events.");
+                            }
                         }
                     }
-                }
+                },
+                _ = buffer_flush.tick() => {
+                    if let Some(event_buffer) = event_buffer_manager.consume() {
+                        if let Err(e) = context.dispatcher().dispatch(event_buffer).await {
+                            error!(error = %e, "Failed to dispatch buffered trace events.");
+                        }
+                    }
                 },
                 _ = health.live() => continue,
+            }
+        }
+
+        if let Some(event_buffer) = event_buffer_manager.consume() {
+            if let Err(e) = context.dispatcher().dispatch(event_buffer).await {
+                error!(error = %e, "Failed to dispatch final trace events.");
             }
         }
 
