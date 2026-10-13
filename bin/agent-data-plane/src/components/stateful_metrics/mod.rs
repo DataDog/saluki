@@ -101,9 +101,9 @@ pub struct StatefulMetricsConfiguration {
     pub batch_capacity: usize,
     /// Dictionary entry cap for each worker; the process total is this times `workers`.
     ///
-    /// Keep it and `dictionary_max_bytes` well above each worker's live working set: a cap near it
-    /// re-sends a large share of definitions every flush, and the eviction grace period stops a cap
-    /// below it from bounding memory.
+    /// Keep it and `dictionary_max_bytes` above each worker's live working set: a cap below it re-sends
+    /// a large share of definitions every flush, and the eviction grace period stops it from bounding
+    /// memory.
     pub dictionary_max_entries: NonZeroUsize,
     /// Estimated dictionary byte cap for each worker, at most `i64::MAX`; the process total is this times `workers`.
     pub dictionary_max_bytes: NonZeroU64,

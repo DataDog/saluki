@@ -247,10 +247,10 @@ pub struct DataPlane {
     pub stateful_metrics_additional_endpoints: Vec<String>,
     /// Independent stateful sender tasks; defaults to three and rejects zero.
     pub stateful_metrics_workers: NonZeroUsize,
-    /// Per-worker stateful metrics dictionary entry cap; defaults to 20000 and rejects zero.
+    /// Per-worker stateful metrics dictionary entry cap; defaults to 150000 and rejects zero.
     pub stateful_metrics_dictionary_max_entries: NonZeroUsize,
     /// Per-worker estimated stateful metrics dictionary byte cap, as a bare byte count or a byte-size string such
-    /// as `16MiB`; defaults to 16 MiB and rejects zero.
+    /// as `640MiB`; defaults to 640 MiB and rejects zero.
     #[serde(deserialize_with = "deserialize_stateful_metrics_dictionary_max_bytes")]
     pub stateful_metrics_dictionary_max_bytes: NonZeroU64,
     /// Whether ADP runs in standalone mode (`data_plane.standalone_mode`).
