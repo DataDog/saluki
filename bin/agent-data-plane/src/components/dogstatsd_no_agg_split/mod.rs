@@ -295,8 +295,9 @@ impl Transform for DogStatsDNoAggSplit {
             }
         }
 
-        // Do a final flush of any timestamped metrics that we've buffered up.
-        self.passthrough_batcher.try_flush(context.dispatcher()).await;
+        // Forward any timestamped metrics we've buffered up. Unlike the periodic check, this doesn't wait for the idle
+        // flush timeout: nothing else will flush them once we stop.
+        self.passthrough_batcher.dispatch_events(context.dispatcher()).await;
 
         debug!("DogStatsD no-aggregation-pipeline split transform stopped.");
 
@@ -406,9 +407,6 @@ mod tests {
         split
             .send_event(Event::Metric(Metric::counter("app.requests", (1_700_000_000, 60.0))))
             .await;
-        split.wait_until_input_drained().await;
-        // The final flush at shutdown only dispatches once the idle flush timeout has elapsed, so let it elapse.
-        tokio::time::sleep(Duration::from_millis(20)).await;
         split.shutdown().await.expect("split transform should stop cleanly");
         let passthrough = split_outputs.named_output(PASSTHROUGH_OUTPUT).collect_events().await;
         assert!(split_outputs.default_output().collect_events().await.is_empty());
@@ -441,6 +439,33 @@ mod tests {
         assert_eq!(series[0]["type"], "rate");
         assert_eq!(series[0]["interval"], 10);
         assert_eq!(series[0]["points"], serde_json::json!([[1_700_000_000, 6.0]]));
+    }
+
+    /// Regression test: the final flush at shutdown used to dispatch only once the idle flush timeout had elapsed since
+    /// the last batch, so timestamped metrics received within that timeout before stopping (one second by default)
+    /// were dropped. The Core Agent's no-aggregation worker sends its pending batch unconditionally when stopped:
+    /// https://github.com/DataDog/datadog-agent/blob/78c2c984e848055b4aa63c5f6a9e94a534a07a44/pkg/aggregator/no_aggregation_stream_worker.go#L178-L182
+    #[tokio::test]
+    async fn shutdown_forwards_buffered_metrics_before_the_idle_timeout() {
+        // Far longer than the test, so only the shutdown flush can forward the metric.
+        let config = DogStatsDNoAggSplitConfiguration::new(Duration::from_secs(60));
+        let (split, mut outputs) = TestComponentDriver::transform(config)
+            .await
+            .expect("split transform should build");
+        let metric = Metric::counter("app.requests", (1_700_000_000, 1.0));
+        split.send_event(Event::Metric(metric.clone())).await;
+        split.shutdown().await.expect("split transform should stop cleanly");
+
+        let passthrough = outputs.named_output(PASSTHROUGH_OUTPUT).collect_events().await;
+        assert_eq!(passthrough.len(), 1, "buffered metrics must be forwarded at shutdown");
+        assert_eq!(
+            passthrough[0].clone().try_into_metric(),
+            Some(Metric::rate(
+                "app.requests",
+                (1_700_000_000, 1.0),
+                Duration::from_secs(10)
+            ))
+        );
     }
 
     #[test]
