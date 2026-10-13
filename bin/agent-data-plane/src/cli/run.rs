@@ -966,10 +966,7 @@ async fn add_dsd_pipeline_to_blueprint(
         hist_config: dsd_hist_config,
         context_snapshot_receiver: dsd_context_snapshot_receiver,
     };
-    let dsd_no_agg_split_config = DogStatsDNoAggSplitConfiguration::new(
-        aggregation.passthrough_idle_flush_timeout,
-        aggregation.window_duration_seconds,
-    );
+    let dsd_no_agg_split_config = DogStatsDNoAggSplitConfiguration::new(aggregation.passthrough_idle_flush_timeout);
     let dsd_post_agg_filter_config = DogStatsDPostAggregateFilterConfiguration::new(
         config_system.live(|config| &config.domains.dogstatsd.metric_filter),
         &histogram.aggregates,
@@ -1455,10 +1452,7 @@ mod tests {
     #[tokio::test]
     async fn no_agg_split_excludes_timestamped_metrics_from_tag_filterlist() {
         tokio::time::timeout(Duration::from_secs(5), async {
-            let no_agg_split = DogStatsDNoAggSplitConfiguration::new(
-                Duration::from_millis(50),
-                NonZeroU64::new(10).expect("not zero"),
-            );
+            let no_agg_split = DogStatsDNoAggSplitConfiguration::new(Duration::from_millis(50));
             let tag_filter = TagFilterlistConfiguration::new(
                 Live::new_fixed(vec![MetricTagFilterEntry {
                     metric_name: "app.requests".to_string(),
