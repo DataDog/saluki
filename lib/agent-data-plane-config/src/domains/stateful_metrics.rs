@@ -29,16 +29,16 @@ pub struct Domain {
     /// and inflight memory. Requires a restart. Drain persisted retries with the previous count
     /// before changing it; startup rejects a count change while retry files remain.
     pub workers: NonZeroUsize,
-    /// Dictionary entry cap for each sender worker. Defaults to `150000`; zero is invalid.
+    /// Dictionary entry cap for each sender worker. Defaults to `60000`; zero is invalid.
     ///
     /// The total across the process is this value times `workers`. Eviction starts near the cap and
     /// removes the lowest-scoring entries; entries younger than the eviction grace period are
     /// protected, so the dictionary can exceed the cap briefly. A cap below the live series working
-    /// set re-sends many definitions on every flush. The default sits above the working set of most
-    /// nodes, and dictionary memory grows only with the series a worker actually sees, so lowering
-    /// it mainly suits memory-constrained hosts. Requires a restart.
+    /// set re-sends many definitions on every flush. The default covers the working set of most nodes,
+    /// and dictionary memory grows only with the series a worker actually sees, so lowering it mainly
+    /// suits memory-constrained hosts. Requires a restart.
     pub dictionary_max_entries: NonZeroUsize,
-    /// Estimated dictionary byte cap for each sender worker. Defaults to 640 MiB; zero is invalid.
+    /// Estimated dictionary byte cap for each sender worker. Defaults to 256 MiB; zero is invalid.
     ///
     /// The total across the process is this value times `workers`. The estimate covers retained
     /// definitions and lookup keys, not allocator slack or buffered and inflight metrics, so actual
