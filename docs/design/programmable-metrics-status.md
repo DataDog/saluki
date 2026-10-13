@@ -118,6 +118,9 @@ real artifact channel, and stage 10 are not started. The owner's direction for s
 
 | Document | What it holds |
 |---|---|
+| [programmable-metrics-index.md](programmable-metrics-index.md) | **Start here**: a one-page map of the work, its state, key results, open questions, and which document holds what. |
+| [programmable-metrics-log.md](programmable-metrics-log.md) | The implementation log: what was tried, what failed, what reviews found, results, and decisions, stage by stage. |
+| [programmable-metrics-measurement.md](programmable-metrics-measurement.md) | The measurement runbook: M1 to M11, the scaling curves, the container harness, and what the gate host needs. |
 | [programmable-metrics.md](programmable-metrics.md) | The specification, authoritative for semantics. It is never edited without its author; refinements go to the proposed amendments. |
 | [programmable-metrics-implementation.md](programmable-metrics-implementation.md) | The implementation design, stages 1 to 6 as built: [code layout](programmable-metrics-implementation.md#code-layout), [execution contracts](programmable-metrics-implementation.md#execution-contracts-in-saluki-core), [frame and region programs](programmable-metrics-implementation.md#physical-frame-and-region-programs) (R1 to R7), [the plan crate](programmable-metrics-implementation.md#the-plan-crate), [installation](programmable-metrics-implementation.md#installation), [ADP integration](programmable-metrics-implementation.md#adp-integration), [demo](programmable-metrics-implementation.md#demo), [stage plan](programmable-metrics-implementation.md#stage-plan) with stage 3 to 5 exit evidence, [stage 6](programmable-metrics-implementation.md#stage-6-stateful-kernels) with its [exit evidence](programmable-metrics-implementation.md#exit-evidence), [87 proposed spec amendments](programmable-metrics-implementation.md#proposed-spec-amendments), and [risks](programmable-metrics-implementation.md#risks). |
 | [programmable-metrics-stub-protocol.md](programmable-metrics-stub-protocol.md) | The contract between ADP and the demo server: the poll, the envelope, the control surface routes (with stage 7's resources and stage 9's lanes, which the explain document and the `plan_lane_*` series carry), and the demo server's side. |
@@ -429,7 +432,7 @@ Stage 9's measurements are ignored tests of the same file and its `measurement_t
 post_aggregation.rs}`, which run the real DogStatsD source (`source_feed::scaling_curves_through_the_dogstatsd_source`,
 `one_saturated_stream_connection`, `decoder_pool_waits`, `flush_storm`, `source_buffer_fill`,
 `memo_hits_on_producer_lanes`), `per_buffer_fixed_cost`, and `key_skew`, set by environment variables:
-`SALUKI_MEASURE_WORKERS` (`1,2,4,8`), `SALUKI_MEASURE_ROUNDS`, `SALUKI_MEASURE_TRANSPORT` (`udp`; Unix datagrams on
+`SALUKI_MEASURE_WORKERS` (`1,2,4,8,16`), `SALUKI_MEASURE_ROUNDS`, `SALUKI_MEASURE_TRANSPORT` (`udp`; Unix datagrams on
 Linux), `SALUKI_MEASURE_CONFIG` (`defaults`, `gateways`; the mapper profile otherwise), `SALUKI_MEASURE_WORKLOAD`
 (`distinct`, `passthrough`), `SALUKI_MEASURE_CONTEXTS`, and `SALUKI_MEASURE_LANES` (`off`, `auto`, or
 `<producer>,<state>,<post>`, each a count or `auto`; producer lanes apart from the decoders, which no configuration key

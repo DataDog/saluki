@@ -98,7 +98,7 @@ ratio at most 1.07) are decided here, for each configuration of the gate and eac
 | 100,000 and 1M contexts | `SCALING_CONTEXTS=100000`, `SCALING_CONTEXTS=1000000` |
 | histogram-heavy | `SCALING_METRIC_WEIGHTS=20:10:10:0:200` |
 | passthrough-heavy | `SCALING_METRIC_WEIGHTS=200:100:0:0:0 SCALING_TIMESTAMP_PROBABILITY=0.9` |
-| one decoder with `lanes.mode: auto` | `SCALING_DECODERS=1 SCALING_ADP_CONFIG=<a file with the lanes keys>` (after P9.5) |
+| one decoder with `lanes.mode: auto` | `SCALING_DECODERS=1` (`auto` is the image's default) |
 | 70% of saturation | `SCALING_RATE=<0.7 x saturated decoded rate x lading bytes per metric>` |
 | about 500 UDS stream connections | `SCALING_TRANSPORT=unix_stream SCALING_GENERATORS=1 SCALING_CONNECTIONS=500` |
 

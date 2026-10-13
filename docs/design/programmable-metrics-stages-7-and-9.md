@@ -3212,9 +3212,10 @@ in-process harness through the real DogStatsD source over UDP (`SALUKI_MEASURE_T
 `d` on producer lane `d mod D`), the mapper profile and the mixed workload unless a row says otherwise, W in {1, 2, 4,
 8} with `max(2, W - 2)` decoders, three alternating rounds of legacy and plan per W (five for M1), medians, 5 s windows;
 each run waited for the one-minute load to fall below 4 (at most two to five minutes) and started at 3.8 to 4.0; the
-load at each start and end is in `scratchpad/pm/z2/mac/loads.txt` (ends read 5 to 11: the run itself). Nothing else of
-the work ran, and no UDP benchmark ran beside a demo check. **Linux**: the dory VM as before (6 vCPUs over the same
-cores), the Mac otherwise idle. Ratios are plan over legacy within one run (legacy's own throughput at W = 8 moved from
+load at each start and end is in the raw notes archive's `z2/mac/loads.txt` (ends read 5 to 11: the run itself).
+Nothing else of the work ran, and no UDP benchmark ran beside a demo check. **Linux**: the dory VM as before (6 vCPUs
+over the same cores), the Mac otherwise idle. Ratios are plan over legacy within one run (legacy's own throughput at
+W = 8 moved from
 5.3 to 6.5 M metrics/s between runs: the efficiency cores). "Scaling" is `T(W) / T(1)` of the plan over legacy's. None
 of this is the gate.
 
