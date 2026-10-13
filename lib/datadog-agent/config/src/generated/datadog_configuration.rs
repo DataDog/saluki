@@ -429,6 +429,7 @@ pub struct DatadogConfiguration {
     pub metric_filterlist_match_prefix: bool,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_json_array_or_string")]
     pub metric_filterlist_prefix: Vec<::serde_json::Map<String, ::serde_json::Value>>,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]

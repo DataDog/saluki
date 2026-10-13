@@ -411,7 +411,7 @@ fn listize(file: &mut syn::File) {
                 field.attrs.push(parse_quote!(
                     #[serde(deserialize_with = "crate::list_de::deserialize_string_map_scalar_or_seq")]
                 ));
-            } else if is_vec_json_value(&field.ty) || is_vec_string_map(&field.ty) {
+            } else if is_vec_json_value(&field.ty) || is_vec_json_map(&field.ty) || is_vec_string_map(&field.ty) {
                 field.attrs.push(parse_quote!(
                     #[serde(deserialize_with = "crate::list_de::deserialize_json_array_or_string")]
                 ));
@@ -460,6 +460,51 @@ fn is_vec_json_value(ty: &syn::Type) -> bool {
             .segments
             .last()
             .is_some_and(|segment| segment.ident == "Value")
+}
+
+/// Returns whether `ty` is exactly `Vec<serde_json::Map<String, serde_json::Value>>`.
+fn is_vec_json_map(ty: &syn::Type) -> bool {
+    let syn::Type::Path(tp) = ty else { return false };
+    let Some(last) = tp.path.segments.last() else {
+        return false;
+    };
+    if last.ident != "Vec" {
+        return false;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
+        return false;
+    };
+    let Some(syn::GenericArgument::Type(inner)) = args.args.first() else {
+        return false;
+    };
+    is_json_map(inner)
+}
+
+/// Returns whether `ty` is exactly `serde_json::Map<String, serde_json::Value>`.
+fn is_json_map(ty: &syn::Type) -> bool {
+    let syn::Type::Path(tp) = ty else { return false };
+    if !tp.path.segments.iter().any(|segment| segment.ident == "serde_json") {
+        return false;
+    }
+    let Some(last) = tp.path.segments.last() else {
+        return false;
+    };
+    if last.ident != "Map" {
+        return false;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
+        return false;
+    };
+    let mut args = args.args.iter();
+    let Some(syn::GenericArgument::Type(key)) = args.next() else {
+        return false;
+    };
+    let Some(syn::GenericArgument::Type(value)) = args.next() else {
+        return false;
+    };
+    is_string(key)
+        && matches!(value, syn::Type::Path(value_path) if value_path.path.segments.iter().any(|segment| segment.ident == "serde_json")
+            && value_path.path.segments.last().is_some_and(|segment| segment.ident == "Value"))
 }
 
 /// Returns whether `ty` is exactly `HashMap<String, Vec<String>>`.
