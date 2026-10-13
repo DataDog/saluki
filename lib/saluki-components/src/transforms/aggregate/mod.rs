@@ -691,9 +691,13 @@ impl AggregationState {
         let bucket_width_secs = self.bucket_width_secs;
         let counter_expire_secs = self.counter_expire_secs.map(|d| d.get()).unwrap_or(0);
 
-        // We want our split timestamp to be before the start of the current bucket, which ensures any timestamp that is
-        // less than or equal to `split_timestamp` resides in a closed bucket.
-        let split_timestamp = align_to_bucket_start(current_time, bucket_width_secs).saturating_sub(1);
+        // Values with a timestamp less than or equal to `split_timestamp` are flushed. Normally that's just before the
+        // start of the current bucket, so only closed buckets are flushed. When flushing open buckets, it's every value.
+        let split_timestamp = if flush_open_buckets {
+            u64::MAX
+        } else {
+            align_to_bucket_start(current_time, bucket_width_secs).saturating_sub(1)
+        };
 
         // Calculate the buckets we need to potentially generate zero-value counters for.
         //
@@ -1782,6 +1786,49 @@ mod tests {
 
         assert_eq!(flushed.len(), 1);
         assert_flushed_scalar_metric!(&counter, &flushed[0], [1_000 => 7.0]);
+    }
+
+    /// Regression test: flushing open windows (`dogstatsd_flush_incomplete_buckets`) only affected idle-counter zero
+    /// values. Real values in the still-open window stayed behind the closed-bucket cutoff, so a shutdown flush
+    /// discarded them. The Core Agent flushes every bucket, open or not, when forced:
+    /// https://github.com/DataDog/datadog-agent/blob/78c2c984e848055b4aa63c5f6a9e94a534a07a44/pkg/aggregator/time_sampler.go#L184
+    #[tokio::test]
+    async fn flushing_open_windows_emits_values_in_the_open_window() {
+        for flush_open_buckets in [false, true] {
+            let mut state = AggregationState::new(
+                BUCKET_WIDTH_SECS,
+                10,
+                COUNTER_EXPIRE,
+                HistogramConfiguration::default(),
+                Telemetry::noop(),
+            );
+            let gauge = Metric::gauge("gauge", 1.0);
+            let counter = Metric::counter("counter", 2.0);
+            let distribution = Metric::distribution("distribution", 3.0);
+            for metric in [&gauge, &counter, &distribution] {
+                assert!(state.insert(1_001, metric.clone()));
+            }
+
+            // The window [1000, 1010) is still open at 1005.
+            let mut flushed = get_flushed_metrics_with_open_windows(1_005, flush_open_buckets, &mut state).await;
+            if !flush_open_buckets {
+                assert!(
+                    flushed.is_empty(),
+                    "open windows must wait unless they're being flushed"
+                );
+                continue;
+            }
+
+            flushed.sort_by(|a, b| a.context().name().cmp(b.context().name()));
+            let names = flushed
+                .iter()
+                .map(|metric| metric.context().name().as_ref())
+                .collect::<Vec<_>>();
+            assert_eq!(names, ["counter", "distribution", "gauge"]);
+            assert_flushed_scalar_metric!(&counter, &flushed[0], [1_000 => 2.0]);
+            assert_flushed_distribution_metric!(&distribution, &flushed[1], [1_000 => &[3.0][..]]);
+            assert_flushed_scalar_metric!(&gauge, &flushed[2], [1_000 => 1.0]);
+        }
     }
 
     #[tokio::test]
