@@ -165,6 +165,54 @@ impl Blocklist {
         }
     }
 
+    /// Returns whether `name` is blocked by a prefix rule but has an exception below its namespace.
+    ///
+    /// This is used to preserve histogram inputs that are needed to generate allowed post-aggregate
+    /// series (for example, preserving `foo` when `foo.avg` is explicitly excepted).
+    pub(super) fn has_descendant_exception(&self, name: &str) -> bool {
+        if self.rule_prefixes.is_empty() || (self.except_exact.is_empty() && self.except_prefix.is_empty()) {
+            return false;
+        }
+
+        // Fast path: already normalized, so compare the name as given.
+        if is_normalized(name) {
+            return self.has_descendant_exception_normalized(name.as_bytes());
+        }
+
+        let mut buf = NameBuf::new();
+        match normalize_into(&mut buf, name) {
+            Some(normalized) => self.has_descendant_exception_normalized(normalized),
+            None => false,
+        }
+    }
+
+    fn has_descendant_exception_normalized(&self, name: &[u8]) -> bool {
+        // metric_filterlist exact/prefix entries always win over metric_filterlist_prefix rules.
+        if binary_search_exact(&self.exact, name) || test_prefixes(&self.prefixes, name) {
+            return false;
+        }
+
+        // Not blocked by a prefix rule, or already excepted as-is.
+        if !test_prefixes(&self.rule_prefixes, name)
+            || test_prefixes(&self.except_prefix, name)
+            || binary_search_exact(&self.except_exact, name)
+        {
+            return false;
+        }
+
+        let mut descendant_prefix = Vec::with_capacity(name.len() + 1);
+        descendant_prefix.extend_from_slice(name);
+        descendant_prefix.push(b'.');
+
+        self.except_exact
+            .iter()
+            .any(|candidate| candidate.as_bytes().starts_with(&descendant_prefix))
+            || self
+                .except_prefix
+                .iter()
+                .any(|candidate| candidate.as_bytes().starts_with(&descendant_prefix))
+    }
+
     /// Restricts exact entries and keeps all prefix behavior unchanged.
     pub(super) fn restrict_exact(&self, keep: impl Fn(&str) -> bool) -> Self {
         let exact = self
