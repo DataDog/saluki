@@ -41,16 +41,18 @@ started. Current state, in detail: [status: where things stand](programmable-met
    changes are proposed as numbered amendments in the design documents.
 3. [Status](programmable-metrics-status.md): the current state, how to run everything, a code map, changes users can
    see, **decisions awaiting the owner**, the amendments index, known limitations, and deferred work by stage.
-4. [Implementation log](programmable-metrics-log.md): the history. What was tried, what failed, what reviews and
+4. [Deployment context and next steps](programmable-metrics-next.md): **what production looks like (limits of 0.3 to
+   1.2 cores, 50 millicores in the worst case), what that means for the work, and the next chunk of work.**
+5. [Implementation log](programmable-metrics-log.md): the history. What was tried, what failed, what reviews and
    integration found, measured results, and the decisions made along the way.
-5. The designs as built, for depth:
+6. The designs as built, for depth:
    - [Implementation design, stages 1 to 6](programmable-metrics-implementation.md), with short as-built sections for
      [stage 7](programmable-metrics-implementation.md#stage-7-resource-generations-as-built) and
      [stage 9](programmable-metrics-implementation.md#stage-9-partitioned-execution-as-built).
    - [Design for stages 7 and 9](programmable-metrics-stages-7-and-9.md), with
      [stage 7 as built](programmable-metrics-stages-7-and-9.md#stage-7-as-built) and
      [stage 9 as built](programmable-metrics-stages-7-and-9.md#stage-9-as-built).
-6. Reference: [artifact channel stub protocol](programmable-metrics-stub-protocol.md) and the
+7. Reference: [artifact channel stub protocol](programmable-metrics-stub-protocol.md) and the
    [measurement runbook](programmable-metrics-measurement.md).
 
 ## Where to find
@@ -64,6 +66,7 @@ started. Current state, in detail: [status: where things stand](programmable-met
 | What is waiting on a decision? | [Status: decisions awaiting the owner](programmable-metrics-status.md#decisions-awaiting-the-owner); [stages 7 and 9 open questions](programmable-metrics-stages-7-and-9.md#12-open-questions) |
 | Which spec amendments are proposed? | [Status: amendments index](programmable-metrics-status.md#spec-amendments-index) (1 to 87); [stages 7 and 9 amendments](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments) (88 on) |
 | What are the risks and limitations? | [Status](programmable-metrics-status.md#known-limitations-and-risks); [implementation risks](programmable-metrics-implementation.md#risks); [stages 7 and 9 risks](programmable-metrics-stages-7-and-9.md#11-risks) |
+| What should we work on next? | [Next steps](programmable-metrics-next.md#the-next-chunk-of-work) |
 | What is left to build? | [Status: deferred work by stage](programmable-metrics-status.md#deferred-work-by-stage) |
 | What alternatives were rejected? | [Stage 7](programmable-metrics-stages-7-and-9.md#418-alternatives-considered), [stage 9](programmable-metrics-stages-7-and-9.md#516-alternatives-considered), and the [log](programmable-metrics-log.md) |
 | What are the performance numbers? | [Implementation risks](programmable-metrics-implementation.md#risks) (stages 3 to 6); [stage 9 measurements](programmable-metrics-stages-7-and-9.md#86-measurement-harness-and-what-is-measured-first); the [log](programmable-metrics-log.md) |
@@ -83,9 +86,21 @@ started. Current state, in detail: [status: where things stand](programmable-met
   - CPU per metric on lanes is 4 to 13% above native at 4 workers and more, from a fixed cost per buffer: the main
     open performance item.
 
+## What we learned about deployment
+
+Production ADP runs with CPU limits of 0.3, 0.6, or 1.2 cores, and only 50 millicores guaranteed in Nodeless, where the
+largest metric bursts arrive during CPU crunches. So **efficiency per metric and behavior under a CPU crunch matter
+most; multi-core scaling barely matters.** Fusion (stages 3 to 6) is the relevant win; stage 9's lanes are off at these
+sizes; R1's cost model adds hops for nothing; and the serial, blocking aggregation flush is the biggest practical
+problem. The next chunk of work is to measure at the production limits, make the flush non-blocking without sharding,
+fuse maximally at small budgets, and improve efficiency per metric: see
+[deployment context and next steps](programmable-metrics-next.md).
+
 ## Main open questions
 
-- A **Linux gate host** with at least 20 homogeneous cores is needed to decide the stage 9 gate
+- The open questions of the [next steps](programmable-metrics-next.md#open-questions): which workloads and bursts to
+  model, and what is acceptable during a CPU crunch.
+- A **Linux gate host** with at least 20 homogeneous cores is needed to decide the stage 9 gate, now a lower priority
   ([Q2](programmable-metrics-stages-7-and-9.md#12-open-questions)). Lanes are on by default before that gate
   ([Q7](programmable-metrics-stages-7-and-9.md#12-open-questions)).
 - Whether to delete R1's fusion cost model ([P9.7](programmable-metrics-stages-7-and-9.md#p97-r1s-cost-model)).

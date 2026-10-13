@@ -318,3 +318,8 @@ inlines
 [Uu]ndescribed
 uncontended
 [Dd]efunctionaliz(e|ed|es|ing|ation)
+Nodeless
+millicores?
+shard(s|ing|ed)?
+CPUs
+bursty

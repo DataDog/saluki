@@ -8,6 +8,7 @@ decisions live in the documents this log links to; start at the [index](programm
 
 - [Stages 1 to 6](#stages-1-to-6)
 - [Stages 7 and 9](#stages-7-and-9)
+- [After stage 9: deployment context](#after-stage-9-deployment-context)
 
 ## Stages 1 to 6
 
@@ -882,3 +883,13 @@ owner's call.
   `http` request through an `http` proxy carries no proxy credentials natively, so a password rotation shows only for
   `https` targets; a state owner fed by a point and by another owner's time-driven output passes the frame checks at
   one lane (`state_upstream` counts only points), left for stage 10.
+
+## After stage 9: deployment context
+
+On 2026-10-13 the ADP team described how ADP is deployed: no production container has a CPU limit above 1.2 cores,
+most are at 0.3, and Nodeless guarantees 50 millicores, with the largest bursts arriving during CPU crunches. That
+changed what the work should optimize: efficiency per metric and worst-case behavior matter most, stage 9's multi-core
+lanes matter little (and are off at those sizes), R1's cost model adds hops for nothing at one core, and the serial, blocking
+aggregation flush is the biggest practical problem. The consequences and the next chunk of work are in
+[deployment context and next steps](programmable-metrics-next.md).
+
