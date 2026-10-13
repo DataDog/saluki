@@ -75,7 +75,7 @@ use saluki_common::sync::shutdown::ShutdownHandle;
 use tokio::runtime::Handle;
 
 use super::{
-    scope::{self, Edge, Scope},
+    scope::{self, Edge, Scope, UnadoptedScope},
     ChildId, ChildSpecification, FnWorker, IntoWorkerResult, RestartType, ShutdownStrategy, Supervisable, Supervisor,
     SupervisorHandle, SupervisorSpec, WorkerSpec,
 };
@@ -432,6 +432,11 @@ impl<'a, S: BuilderState> ChildBuilder<'a, S> {
     /// fails.
     pub fn needed(self) -> Self {
         self.map_spec(|spec| spec.with_edge(Edge::Needed))
+    }
+
+    /// Makes this child adopt `scope` as its own and start what was spawned into it before the child started.
+    pub(crate) fn adopting(self, scope: UnadoptedScope) -> Self {
+        self.map_spec(|spec| spec.adopting(scope))
     }
 
     /// Spawns the child into the scope of the current process, so that the child belongs to that process.
