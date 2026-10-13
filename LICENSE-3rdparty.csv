@@ -123,6 +123,7 @@ enum_dispatch,https://gitlab.com/antonok/enum_dispatch,MIT OR Apache-2.0,Anton L
 equivalent,https://github.com/indexmap-rs/equivalent,Apache-2.0 OR MIT,The equivalent Authors
 errno,https://github.com/lambda-fairy/rust-errno,MIT OR Apache-2.0,"Chris Wong <lambda.fairy@gmail.com>, Dan Gohman <dev@sunfishcode.online>"
 faster-hex,https://github.com/NervosFoundation/faster-hex,MIT,zhangsoledad <787953403@qq.com>
+faster-hex,https://github.com/nervosnetwork/faster-hex,MIT,zhangsoledad <787953403@qq.com>
 fastrand,https://github.com/smol-rs/fastrand,Apache-2.0 OR MIT,Stjepan Glavina <stjepang@gmail.com>
 figment,https://github.com/SergioBenitez/Figment,MIT OR Apache-2.0,Sergio Benitez <sb@sergio.bz>
 filetime,https://github.com/alexcrichton/filetime,MIT OR Apache-2.0,Alex Crichton <alex@alexcrichton.com>
