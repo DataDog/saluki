@@ -262,29 +262,30 @@ apply **per worker**, so the process-wide totals are each value times
 
 | Setting | Environment variable | Default |
 | --- | --- | --- |
-| `data_plane.stateful_metrics_dictionary_max_entries` | `DD_DATA_PLANE_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES` | `150000` |
-| `data_plane.stateful_metrics_dictionary_max_bytes` | `DD_DATA_PLANE_STATEFUL_METRICS_DICTIONARY_MAX_BYTES` | `640MiB` (671088640) |
+| `data_plane.stateful_metrics_dictionary_max_entries` | `DD_DATA_PLANE_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES` | `60000` |
+| `data_plane.stateful_metrics_dictionary_max_bytes` | `DD_DATA_PLANE_STATEFUL_METRICS_DICTIONARY_MAX_BYTES` | `256MiB` (268435456) |
 
 Both must be positive; zero, negative, and non-numeric values fail startup. The byte cap accepts a
 bare byte count or a byte-size string such as `128MiB`, up to `i64::MAX`. Entries no payload has
 referenced for 30 minutes are removed regardless of the caps; that interval is not configurable.
 
 The caps are a ceiling, not a reservation: a worker's dictionary grows only with the series routed
-to it. The defaults sit above the live working set of most nodes, so in normal operation eviction
-only removes definitions for series that stopped reporting, such as departed pods, and raising the
-caps costs memory only on nodes that actually have that many contexts. The one fixed cost is the
-frequency sketch described below, which is sized from the caps: about 2 MiB per worker at the
-defaults.
+to it. The defaults cover the live working set of most nodes, so in normal operation eviction only
+removes definitions for series that stopped reporting, such as departed pods. Raising the caps
+costs memory only on nodes that actually have that many contexts; nodes whose working set exceeds
+the caps fall back to admission control, described below. The one fixed cost is the frequency
+sketch described below, which is sized from the caps: about 512 KiB per worker at the defaults.
 
 A cap below the live working set evicts definitions that are still in use and re-sends them on later
 flushes, which slows draining under load. In local load tests on traffic shaped like real tags, the
 earlier 16 MiB byte cap was reached at about 5,000 entries per worker, with heavy definition churn.
 Caps below the live working set churned nearly as much as that default did, while a cap about 10%
-above it behaved like no cap at all. Lower the caps only on memory-constrained hosts, for example:
+above it behaved like no cap at all. In those tests, 60,000 entries per worker covered about
+350,000 active contexts per node. Lower the caps only on memory-constrained hosts, for example:
 
 ```yaml
 data_plane:
-  stateful_metrics_dictionary_max_entries: 50000
+  stateful_metrics_dictionary_max_entries: 30000
   stateful_metrics_dictionary_max_bytes: 128MiB
 ```
 

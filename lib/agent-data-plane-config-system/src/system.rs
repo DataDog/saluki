@@ -483,8 +483,8 @@ mod tests {
 
         let default = standalone_system(None, None).await.unwrap();
         let stateful = &default.config().domains.stateful_metrics;
-        assert_eq!(stateful.dictionary_max_entries.get(), 150_000);
-        assert_eq!(stateful.dictionary_max_bytes.get(), 640 * 1024 * 1024);
+        assert_eq!(stateful.dictionary_max_entries.get(), 60_000);
+        assert_eq!(stateful.dictionary_max_bytes.get(), 256 * 1024 * 1024);
 
         for max_bytes in [json!(MIB_128), json!("128MiB")] {
             let from_file = standalone_system(

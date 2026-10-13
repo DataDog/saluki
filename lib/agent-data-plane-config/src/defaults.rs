@@ -14,10 +14,10 @@ use std::{
 pub const DEFAULT_STATEFUL_METRICS_WORKERS: NonZeroUsize = NonZeroUsize::new(3).unwrap();
 
 /// Default stateful metrics dictionary entry cap, per sender worker.
-pub const DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES: NonZeroUsize = NonZeroUsize::new(150_000).unwrap();
+pub const DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES: NonZeroUsize = NonZeroUsize::new(60_000).unwrap();
 
-/// Default stateful metrics dictionary estimated-byte cap, per sender worker (640 MiB).
-pub const DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES: NonZeroU64 = NonZeroU64::new(640 * 1024 * 1024).unwrap();
+/// Default stateful metrics dictionary estimated-byte cap, per sender worker (256 MiB).
+pub const DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES: NonZeroU64 = NonZeroU64::new(256 * 1024 * 1024).unwrap();
 
 /// Largest accepted stateful metrics dictionary byte cap; the dictionary tracks its estimate as an `i64`.
 pub const MAX_STATEFUL_METRICS_DICTIONARY_MAX_BYTES: u64 = i64::MAX as u64;
