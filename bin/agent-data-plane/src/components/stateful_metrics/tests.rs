@@ -37,6 +37,7 @@ use saluki_core::{
     },
 };
 use saluki_io::net::util::retry::{EventContainer, Retryable};
+use saluki_metrics::test::TestRecorder;
 use tempfile::TempDir;
 use tokio::{
     net::TcpListener,
@@ -1818,4 +1819,32 @@ fn core_config_applies_configured_dictionary_caps_to_each_worker_unchanged() {
     configuration.dictionary_max_bytes = NonZeroU64::MAX;
     let eviction = configuration.core_config().metrics_dictionary_eviction.unwrap();
     assert_eq!(eviction.max_memory_bytes, i64::MAX);
+}
+
+#[tokio::test]
+async fn dictionary_gauges_report_core_dictionary_stats() {
+    let recorder = TestRecorder::default();
+    let _local = metrics::set_default_local_recorder(&recorder);
+    let (mut worker, _wire, _) = open_worker().await;
+    submit(&mut worker, "requests").await;
+    worker.telemetry.record_dictionary(worker.core.dictionary_stats());
+
+    let stats = worker.core.dictionary_stats();
+    assert!(stats.entries > 0);
+    assert!(stats.estimated_bytes > 0);
+    // Below the caps every definition is retained.
+    assert_eq!(stats.transient_entries, 0);
+    assert!(stats.frequency_sketch_bytes > 0);
+    for (name, value) in [
+        ("stateful_metrics_dictionary_entries", stats.entries),
+        ("stateful_metrics_dictionary_estimated_bytes", stats.estimated_bytes),
+        ("stateful_metrics_dictionary_transient_entries", stats.transient_entries),
+        ("stateful_metrics_dictionary_transient_bytes", stats.transient_bytes),
+        (
+            "stateful_metrics_dictionary_frequency_sketch_bytes",
+            stats.frequency_sketch_bytes,
+        ),
+    ] {
+        assert_eq!(recorder.gauge(name), Some(value as f64), "{name}");
+    }
 }

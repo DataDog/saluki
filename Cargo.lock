@@ -1767,12 +1767,13 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 [[package]]
 name = "foldspace-core"
 version = "0.1.0"
-source = "git+https://github.com/DataDog/foldspace?rev=c288e5a3fd6883f7ae5d88b023c1064cdfbc465b#c288e5a3fd6883f7ae5d88b023c1064cdfbc465b"
+source = "git+https://github.com/DataDog/foldspace?rev=71ad0b2e4634df39da943afe9c2f9a418ddff51f#71ad0b2e4634df39da943afe9c2f9a418ddff51f"
 dependencies = [
  "patterns",
  "prost",
  "serde",
  "serde_json",
+ "siphasher",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",

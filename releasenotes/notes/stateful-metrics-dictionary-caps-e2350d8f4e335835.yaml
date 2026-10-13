@@ -7,3 +7,13 @@ enhancements:
     each value times ``data_plane.stateful_metrics_workers``. Raise them for
     high-cardinality workloads whose live series exceed the defaults. Both
     require a restart and reject zero.
+  - |
+    Report each stateful metrics sender worker's dictionary size through the
+    ``stateful_metrics_dictionary_entries``,
+    ``stateful_metrics_dictionary_estimated_bytes``,
+    ``stateful_metrics_dictionary_transient_entries``,
+    ``stateful_metrics_dictionary_transient_bytes``, and
+    ``stateful_metrics_dictionary_frequency_sketch_bytes`` gauges. Entries and
+    estimated bytes count only retained definitions, which the caps govern;
+    transient definitions, sent only with the payloads that need them once the
+    dictionary is full, are reported separately.

@@ -286,6 +286,23 @@ each definition and per-endpoint sent sets. The caps cannot shrink the dictionar
 working set: recently created definitions are protected by Foldspace's 30-second grace period. The
 aggregator's context limit bounds the live set instead.
 
+Once an eviction pass has had to relieve pressure and the dictionary is at its cap, Foldspace admits
+a new or returning definition only if a fixed-size frequency sketch counts it more often than the
+entry it would displace. Otherwise the definition is **transient**: it is sent with the payload that
+needs it but is not counted against the caps, and it is removed once no payload in progress
+references it. A working set above the caps therefore costs one definition per payload that
+references each value outside the retained set, rather than churning the retained set itself.
+
+Each worker reports its dictionary through these gauges, tagged with `worker`:
+
+- `stateful_metrics_dictionary_entries` and `stateful_metrics_dictionary_estimated_bytes`: retained
+  definitions only, the figures the caps govern. Transient definitions are not included.
+- `stateful_metrics_dictionary_transient_entries` and `stateful_metrics_dictionary_transient_bytes`:
+  transient definitions, outside the caps. Sustained nonzero values mean the live working set
+  exceeds the caps.
+- `stateful_metrics_dictionary_frequency_sketch_bytes`: the fixed size of the frequency sketch,
+  sized from the caps when the worker starts and not part of the estimate.
+
 Closing destination input closes all worker input queues before waiting for completion. Workers drain
 accepted input, run their delivery budgets concurrently, recover remaining logical data, and flush
 their own retry storage. Increasing the worker count does not serialize delivery timeouts. Disk

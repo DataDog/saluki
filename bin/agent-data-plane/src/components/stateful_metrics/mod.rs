@@ -334,6 +334,7 @@ impl StatefulMetricsWorker {
         let mut shutdown_deadline = None;
         loop {
             self.pump().await?;
+            self.telemetry.record_dictionary(self.core.dictionary_stats());
             if input_closed {
                 if self.core.has_send_capacity() {
                     self.flush().await?;
