@@ -78,6 +78,11 @@
 //! the cache stops, whichever occurs first. In both cases, nothing restarts the tasks, because they were told to stop.
 //! If the process stops before the nested scope can start, the nested scope closes at once, and its tasks never run.
 //!
+//! A value can also own the scopes of the values that it builds. To do this, it builds them inside
+//! [`ScopeGuard::enter_sync`]. For example, a resolver that builds its own cache holds a guard, and builds the cache
+//! inside that guard. The scope of the cache is then nested in the scope of the resolver, and the tasks of the cache
+//! stop when the resolver stops. Only build a value inside the scope of another value if it never outlives that value.
+//!
 //! # Pre-created scopes
 //!
 //! [`UnadoptedScope::new`] creates a scope before the process that later owns it exists. The scope holds the children
@@ -565,6 +570,22 @@ impl ScopeGuard {
                 spawn_detached(child.into(), coordinator.register());
                 None
             }
+        }
+    }
+
+    /// Runs `f` with the scope of this guard as the current scope.
+    ///
+    /// Each spawn into the current scope inside `f` goes into this scope instead. This includes each scope that `f`
+    /// creates with [`nested_or_detached`]. Thus, a value that builds other values can also own their background tasks.
+    /// For example, a resolver builds its caches inside its own scope. The tasks of the caches then appear below the
+    /// resolver, and they stop when the resolver is dropped.
+    ///
+    /// A detached guard has no scope, so it runs `f` with no change. The values that `f` builds then also run their
+    /// tasks detached.
+    pub fn enter_sync<R>(&self, f: impl FnOnce() -> R) -> R {
+        match &self.inner {
+            GuardInner::Scoped { scope, .. } => scope.enter_sync(f),
+            GuardInner::Detached { .. } => f(),
         }
     }
 
