@@ -57,11 +57,11 @@ const MIN_BYTES_PER_TRACE_CHUNK: u32 = 22;
 /// Plausible minimum average wire size of a span containing a random span ID and epoch-nanosecond start time.
 const MIN_BYTES_PER_SPAN: u32 = 21;
 
-/// TODO: doc
+/// Configuration for the APM V1 trace decoder.
 pub struct ApmTraceV1DecoderConfiguration {}
 
 impl ApmTraceV1DecoderConfiguration {
-    /// TODO: doc
+    /// Creates a new [`ApmTraceV1DecoderConfiguration`].
     pub fn new() -> Self {
         Self {}
     }
