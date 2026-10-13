@@ -83,8 +83,10 @@ impl DecoderBuilder for ApmTraceV1DecoderConfiguration {
 }
 
 impl MemoryBounds for ApmTraceV1DecoderConfiguration {
-    fn specify_bounds(&self, _builder: &mut saluki_core::accounting::MemoryBoundsBuilder) {
-        // TODO: this uses no memory right ?
+    fn specify_bounds(&self, builder: &mut saluki_core::accounting::MemoryBoundsBuilder) {
+        builder
+            .minimum()
+            .with_single_value::<ApmTraceV1Decoder>("decoder struct");
     }
 }
 

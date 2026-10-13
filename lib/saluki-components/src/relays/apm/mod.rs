@@ -124,8 +124,11 @@ impl ApmRelayConfiguration {
 }
 
 impl MemoryBounds for ApmRelayConfiguration {
-    fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {
-        // TODO: find size of ApmRelay/RelayState
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        builder
+            .minimum()
+            .with_single_value::<ApmRelay>("component struct")
+            .with_single_value::<RelayState>("component struct");
     }
 }
 
