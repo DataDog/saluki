@@ -4,11 +4,12 @@
 //! see `expectations.rs` for the rules. A fix in ADP makes its entry fail with "remove this
 //! check's expectation". Entries are written as [`Entry`] data and sorted by check identity:
 //! origin, tier, checkpoint, getter, key. Entries whose [`Cause`] is `agent-load-write`,
-//! `translator-rejects-value`, `wire-number-loss` or `raw-json-representation` are `intentional`:
-//! the Agent writes the value only while starting up, ADP deliberately rejects an invalid enum or
-//! size string, the Agent's wire format loses the number, or the compared getter reads a raw
-//! string where ADP decodes structure (see `RAW_JSON_REPRESENTATION`). Every other entry is a
-//! `known_bug`. Causes link tracking issues without changing which individual checks they explain.
+//! `translator-rejects-value`, `wire-number-loss`, `raw-json-representation` or `nil-map-element`
+//! are `intentional`: the Agent writes the value only while starting up, ADP deliberately rejects an
+//! invalid enum or size string, the Agent's wire format loses the number, the compared getter reads
+//! a raw string where ADP decodes structure (see `RAW_JSON_REPRESENTATION`), or ADP cannot hold the
+//! nil map the Agent keeps. Every other entry is a `known_bug`. Causes link tracking issues without
+//! changing which individual checks they explain.
 
 use super::expectations::Tier::{Bootstrap, Derived, Deserialize, Leaf, Translate};
 use super::expectations::{intentional, known_bug, Adp, Cause, Entry, Expectation};
@@ -627,14 +628,14 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             ),
             cause: BOOTSTRAP_ENV_PARSING,
         }),
-        known_bug(Entry {
+        intentional(Entry {
             origin: "depth-env-json-list",
             tier: Leaf,
             at: "snapshot",
             getter: "Get",
             key: "apm_config.replace_tags",
-            adp: Adp::error("data did not match any variant of untagged enum JsonArrayOrString"),
-            cause: NULL_COLLECTION,
+            adp: Adp::value("[{}, {}]"),
+            cause: NIL_MAP_ELEMENT,
         }),
         intentional(Entry {
             origin: "depth-env-json-list",
@@ -672,25 +673,27 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             adp: Adp::value("[\"[\\\"cr-a\\\",\\\"cr-b\\\"]\"]"),
             cause: BOOTSTRAP_ENV_PARSING,
         }),
-        known_bug(Entry {
+        intentional(Entry {
             origin: "depth-env-json-list",
-            tier: Deserialize,
+            tier: Translate,
             at: "snapshot",
             getter: "-",
-            key: "apm_config.replace_tags",
+            key: "dogstatsd_mapper_profiles",
             adp: Adp::error(
-                "data did not match any variant of untagged enum JsonArrayOrString",
+                "error translating config key `dogstatsd_mapper_profiles`: invalid type: string \"cr-a\", expected struct RawProfile",
             ),
-            cause: NULL_COLLECTION,
+            cause: TRANSLATOR_REJECTS_VALUE,
         }),
-        known_bug(Entry {
-            origin: "depth-env-mixed-string",
-            tier: Leaf,
+        intentional(Entry {
+            origin: "depth-env-json-list",
+            tier: Translate,
             at: "snapshot",
-            getter: "Get",
-            key: "apm_config.replace_tags",
-            adp: Adp::error("data did not match any variant of untagged enum JsonArrayOrString"),
-            cause: NULL_COLLECTION,
+            getter: "-",
+            key: "metric_tag_filterlist",
+            adp: Adp::error(
+                "error translating config key `metric_tag_filterlist`: invalid type: string \"cr-a\", expected struct RawEntry\nerror translating config key `metric_tag_filterlist`: invalid type: string \"cr-b\", expected struct RawEntry",
+            ),
+            cause: TRANSLATOR_REJECTS_VALUE,
         }),
         known_bug(Entry {
             origin: "depth-env-mixed-string",
@@ -703,15 +706,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
         }),
         known_bug(Entry {
             origin: "depth-env-mixed-string",
-            tier: Leaf,
-            at: "snapshot",
-            getter: "GetStringSlice",
-            key: "apm_config.peer_tags",
-            adp: Adp::error("invalid type: null, expected a sequence or a space-separated string"),
-            cause: NULL_COLLECTION,
-        }),
-        known_bug(Entry {
-            origin: "depth-env-mixed-string",
             tier: Bootstrap,
             at: "snapshot",
             getter: "-",
@@ -720,28 +714,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
                 "failed to build the configuration base: environment variable `DD_APM_PEER_TAGS` (apm_config.peer_tags): invalid JSON: expected value at line 1 column 1",
             ),
             cause: MALFORMED_JSON_STRING,
-        }),
-        known_bug(Entry {
-            origin: "depth-env-mixed-string",
-            tier: Deserialize,
-            at: "snapshot",
-            getter: "-",
-            key: "apm_config.peer_tags",
-            adp: Adp::error(
-                "invalid type: null, expected a sequence or a space-separated string",
-            ),
-            cause: NULL_COLLECTION,
-        }),
-        known_bug(Entry {
-            origin: "depth-env-mixed-string",
-            tier: Deserialize,
-            at: "snapshot",
-            getter: "-",
-            key: "apm_config.replace_tags",
-            adp: Adp::error(
-                "data did not match any variant of untagged enum JsonArrayOrString",
-            ),
-            cause: NULL_COLLECTION,
         }),
         known_bug(Entry {
             origin: "depth-env-mixed-string",
@@ -854,15 +826,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
         }),
         known_bug(Entry {
             origin: "depth-set-empty-list",
-            tier: Leaf,
-            at: "final",
-            getter: "GetStringSlice",
-            key: "apm_config.features",
-            adp: Adp::error("invalid type: null, expected a sequence or a space-separated string"),
-            cause: NULL_COLLECTION,
-        }),
-        known_bug(Entry {
-            origin: "depth-set-empty-list",
             tier: Deserialize,
             at: "update additional_endpoints #1",
             getter: "-",
@@ -871,17 +834,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
                 "invalid type: sequence, expected a map or a JSON-encoded map string",
             ),
             cause: COLLECTION_SHAPE_MISMATCH,
-        }),
-        known_bug(Entry {
-            origin: "depth-set-empty-list",
-            tier: Deserialize,
-            at: "update apm_config.features #1",
-            getter: "-",
-            key: "apm_config.features",
-            adp: Adp::error(
-                "invalid type: null, expected a sequence or a space-separated string",
-            ),
-            cause: NULL_COLLECTION,
         }),
         known_bug(Entry {
             origin: "depth-set-empty-list",
@@ -1066,15 +1018,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
         }),
         known_bug(Entry {
             origin: "depth-yaml-empty-list",
-            tier: Leaf,
-            at: "snapshot",
-            getter: "GetStringSlice",
-            key: "apm_config.features",
-            adp: Adp::error("invalid type: null, expected a sequence or a space-separated string"),
-            cause: NULL_COLLECTION,
-        }),
-        known_bug(Entry {
-            origin: "depth-yaml-empty-list",
             tier: Bootstrap,
             at: "snapshot",
             getter: "GetBool",
@@ -1201,17 +1144,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
                 "invalid type: sequence, expected a number, a numeric string, or a boolean",
             ),
             cause: SCALAR_GIVEN_COLLECTION,
-        }),
-        known_bug(Entry {
-            origin: "depth-yaml-empty-list",
-            tier: Deserialize,
-            at: "snapshot",
-            getter: "-",
-            key: "apm_config.features",
-            adp: Adp::error(
-                "invalid type: null, expected a sequence or a space-separated string",
-            ),
-            cause: NULL_COLLECTION,
         }),
         known_bug(Entry {
             origin: "depth-yaml-empty-list",
@@ -1925,26 +1857,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             cause: UNRESOLVED_AGENT_DEFAULT,
         }),
         known_bug(Entry {
-            origin: "empty-list-yaml-and-env",
-            tier: Leaf,
-            at: "snapshot",
-            getter: "GetStringSlice",
-            key: "histogram_aggregates",
-            adp: Adp::error("invalid type: null, expected a sequence or a space-separated string"),
-            cause: NULL_COLLECTION,
-        }),
-        known_bug(Entry {
-            origin: "empty-list-yaml-and-env",
-            tier: Deserialize,
-            at: "snapshot",
-            getter: "-",
-            key: "histogram_aggregates",
-            adp: Adp::error(
-                "invalid type: null, expected a sequence or a space-separated string",
-            ),
-            cause: NULL_COLLECTION,
-        }),
-        known_bug(Entry {
             origin: "env-bool-unparseable-kept-raw",
             tier: Leaf,
             at: "snapshot",
@@ -2121,46 +2033,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             key: "proxy.no_proxy",
             adp: Adp::value("[]"),
             cause: AGENT_LOAD_WRITE,
-        }),
-        known_bug(Entry {
-            origin: "proxy-yaml-source-post-init",
-            tier: Leaf,
-            at: "snapshot",
-            getter: "GetStringSlice",
-            key: "proxy.no_proxy",
-            adp: Adp::error("invalid type: null, expected a sequence or a space-separated string"),
-            cause: NULL_COLLECTION,
-        }),
-        known_bug(Entry {
-            origin: "proxy-yaml-source-post-init",
-            tier: Deserialize,
-            at: "snapshot",
-            getter: "-",
-            key: "proxy.no_proxy",
-            adp: Adp::error(
-                "invalid type: null, expected a sequence or a space-separated string",
-            ),
-            cause: NULL_COLLECTION,
-        }),
-        known_bug(Entry {
-            origin: "set-nil-map-key",
-            tier: Leaf,
-            at: "final",
-            getter: "GetStringMapStringSlice",
-            key: "additional_endpoints",
-            adp: Adp::error("invalid type: null, expected a map or a JSON-encoded map string"),
-            cause: NULL_COLLECTION,
-        }),
-        known_bug(Entry {
-            origin: "set-nil-map-key",
-            tier: Deserialize,
-            at: "update additional_endpoints #1",
-            getter: "-",
-            key: "additional_endpoints",
-            adp: Adp::error(
-                "invalid type: null, expected a map or a JSON-encoded map string",
-            ),
-            cause: NULL_COLLECTION,
         }),
         known_bug(Entry {
             origin: "size-in-bytes-kb",
@@ -2365,10 +2237,10 @@ const NON_STRING_MAP_VALUE: Cause = Cause {
     issue: Some(2752),
 };
 
-const NULL_COLLECTION: Cause = Cause {
-    name: "null-collection",
-    why: "the stream carries null for an empty or unset list or map; the Agent's getter reads empty, ADP rejects",
-    issue: Some(2750),
+const NIL_MAP_ELEMENT: Cause = Cause {
+    name: "nil-map-element",
+    why: "a list element the Agent could not decode as a map; the Agent keeps a nil map, ADP an empty one",
+    issue: None,
 };
 
 const SCALAR_GIVEN_COLLECTION: Cause = Cause {
