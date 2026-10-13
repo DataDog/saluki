@@ -632,6 +632,13 @@ impl AggregationState {
             return false;
         }
 
+        // An empty state has no counters to keep alive. The owner skips flushing an empty state, so its last flush can
+        // be arbitrarily old; carrying that timestamp into a newly inserted counter would synthesize zero buckets from
+        // before the counter existed.
+        if self.contexts.is_empty() {
+            self.last_flush = 0;
+        }
+
         let (context, mut values, metadata) = metric.into_parts();
 
         // Collapse all non-timestamped values into a single timestamped value.
@@ -1108,12 +1115,18 @@ mod tests {
     }
 
     async fn get_flushed_metrics(timestamp: u64, state: &mut AggregationState) -> Vec<Metric> {
+        get_flushed_metrics_with_open_windows(timestamp, true, state).await
+    }
+
+    async fn get_flushed_metrics_with_open_windows(
+        timestamp: u64, flush_open_buckets: bool, state: &mut AggregationState,
+    ) -> Vec<Metric> {
         let (dispatcher, mut dispatcher_receiver) = build_basic_dispatcher();
         let mut buffered_dispatcher = dispatcher.buffered().expect("default output should always exist");
 
         // Flush the metrics to an event buffer.
         state
-            .flush(timestamp, true, &mut buffered_dispatcher)
+            .flush(timestamp, flush_open_buckets, &mut buffered_dispatcher)
             .await
             .expect("should not fail to flush aggregation state");
 
@@ -1743,6 +1756,32 @@ mod tests {
 
         assert_eq!(flushed.len(), 1);
         assert!(state.is_empty());
+    }
+
+    /// Regression test: after the state emptied and sat idle, its last flush time stayed behind. The next flush then
+    /// generated zero-value buckets for the whole idle period and merged them into a counter inserted afterward, so
+    /// the counter reported points from before it existed (97 extra zeros in this scenario).
+    #[tokio::test]
+    async fn counter_after_idle_single_window_does_not_backfill_zeros() {
+        let mut state = AggregationState::new(
+            BUCKET_WIDTH_SECS,
+            10,
+            Some(Duration::from_secs(300)),
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+
+        assert!(state.insert(11, Metric::gauge("previous", 1.0)));
+        let flushed = get_flushed_metrics_with_open_windows(30, false, &mut state).await;
+        assert_eq!(flushed.len(), 1);
+        assert!(state.is_empty());
+
+        let counter = Metric::counter("counter", 7.0);
+        assert!(state.insert(1_000, counter.clone()));
+        let flushed = get_flushed_metrics_with_open_windows(1_010, false, &mut state).await;
+
+        assert_eq!(flushed.len(), 1);
+        assert_flushed_scalar_metric!(&counter, &flushed[0], [1_000 => 7.0]);
     }
 
     #[tokio::test]
