@@ -395,7 +395,7 @@ pub struct EnablePayloads {
 pub struct MetricPrefixRule {
     /// Prefix of metric names to drop.
     ///
-    /// The empty string matches every storable metric name.
+    /// The empty string matches every stored metric name.
     pub prefix: String,
 
     /// Prefix exceptions that are kept.
