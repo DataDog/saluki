@@ -2,7 +2,7 @@ type: correctness
 runtime: docker
 analysis_mode: metrics
 baseline:
-  image: saluki-images/datadog-agent:testing-release
+  image: datadog/agent-dev:master-py3
   files:
     - datadog.yaml:/etc/datadog-agent/datadog.yaml
   env:
