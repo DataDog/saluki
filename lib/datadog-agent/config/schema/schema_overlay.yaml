@@ -2187,8 +2187,8 @@ inventory:
       matches another prefix rule. Exact or prefix matches from `metric_filterlist` still drop the
       metric.
 
-      The empty `prefix` matches every storable metric name. The empty `except_prefix` keeps every
-      storable metric name, making the rule a no-op.
+      The empty `prefix` matches every stored metric name. The empty `except_prefix` keeps every
+      stored metric name, making the rule a no-op.
     test_support:
       used_by: [TypedConfigSystem]
       test_json: '[{"prefix":"svc.","except_exact":["svc.keep"],"except_prefix":["svc.keep."]}]'
