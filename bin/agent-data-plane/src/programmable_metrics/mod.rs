@@ -12,6 +12,7 @@
 //! - [`catalog`]: the plan crate's catalog over the bindings, the outputs, and the delivery hosts;
 //! - [`telemetry_profiles`]: the native telemetry identity of each reserved node and each lease, outside the IR;
 //! - [`lowering`]: native configuration into the default program;
+//! - [`lanes`]: how many lanes the slots of the metrics path run on, fixed at boot;
 //! - [`topology`]: the metrics path of the topology, built from the default program's physical frame;
 //! - [`installer`]: booting the metrics path, and installing a new generation of the plan whenever a configuration
 //!   change, a policy artifact, or a resources artifact changes it, with the resources its delivery hosts run;
@@ -29,6 +30,7 @@ pub mod channel_stub;
 pub mod credentials;
 pub mod host_facts;
 pub mod installer;
+pub mod lanes;
 pub mod lowering;
 pub mod resources;
 pub mod snapshot_bridge;

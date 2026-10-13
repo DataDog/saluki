@@ -787,3 +787,283 @@ fn time_driven_output_is_stamped_with_times_that_only_grow_within_an_epoch() {
     clock.reset();
     assert_eq!(clock.epoch(), 0);
 }
+
+#[test]
+fn a_trackers_view_of_one_epoch_counts_the_points_in_it() {
+    let mut tracker = WatermarkTracker::new([A, B]);
+    assert_eq!(tracker.watermark_in(0), None);
+    assert!(
+        !tracker.switched_epoch(0),
+        "a point that sent nothing has switched to no epoch"
+    );
+    tracker.observe(&stamped(A, 100, 0, 1));
+    tracker.observe(&stamped(B, 90, 0, 1));
+    assert_eq!(tracker.watermark_in(0), Some(secs(90)));
+    assert_eq!(tracker.max_latest_in(0), Some(secs(100)));
+    assert!(tracker.switched_epoch(0));
+    assert!(!tracker.switched_epoch(1));
+
+    // A switches to epoch 1: until B does, epoch 1 has no watermark, and epoch 0's counts A's final latest time there.
+    tracker.observe(&stamped(A, 5, 1, 1));
+    assert_eq!(tracker.watermark_in(1), None);
+    assert_eq!(tracker.max_latest_in(1), Some(secs(5)));
+    assert_eq!(tracker.watermark_in(0), Some(secs(90)));
+    assert_eq!(tracker.max_latest_in(0), Some(secs(100)));
+    assert!(!tracker.switched_epoch(1));
+    tracker.observe(&stamped(B, 95, 0, 1));
+    assert_eq!(
+        tracker.watermark_in(0),
+        Some(secs(95)),
+        "B's old-epoch batches still raise epoch 0's watermark"
+    );
+    tracker.observe(&stamped(B, 7, 1, 1));
+    assert!(tracker.switched_epoch(1));
+    assert!(tracker.switched_epoch(0), "every point is newer than epoch 0");
+    assert_eq!(tracker.watermark_in(1), Some(secs(5)));
+    assert_eq!(
+        tracker.watermark_in(0),
+        Some(secs(95)),
+        "the final latest times are exact once both left"
+    );
+    assert_eq!(WatermarkTracker::new([]).watermark_in(0), None);
+}
+
+#[test]
+fn a_point_that_skips_an_epoch_is_left_out_of_its_watermark_and_finals_are_kept_for_the_open_epochs_only() {
+    let mut tracker = WatermarkTracker::new([A, B]);
+    tracker.observe(&stamped(A, 100, 0, 1));
+    tracker.observe(&stamped(B, 90, 0, 1));
+    // A stamps in epochs 1 and 2; B goes from 0 to 2 directly, two resets while it was blocked.
+    tracker.observe(&stamped(A, 10, 1, 1));
+    tracker.observe(&stamped(A, 20, 2, 1));
+    tracker.observe(&stamped(B, 30, 2, 1));
+    assert_eq!(tracker.watermark_in(1), Some(secs(10)), "only A stamped in epoch 1");
+    assert_eq!(tracker.max_latest_in(1), Some(secs(10)));
+    assert_eq!(tracker.watermark_in(0), Some(secs(90)));
+    assert_eq!(tracker.watermark_in(2), Some(secs(20)));
+
+    // Past `MAX_OPEN_EPOCHS` switches, the oldest final time is no longer kept: the point is left out of it. B's time
+    // in epoch 0 is later than A's, so only A's absence makes the watermark B's.
+    let mut tracker = WatermarkTracker::new([A, B]);
+    tracker.observe(&stamped(B, 150, 0, 1));
+    for epoch in 0..=MAX_OPEN_EPOCHS as u32 {
+        tracker.observe(&stamped(A, 100 + u64::from(epoch), epoch, 1));
+    }
+    assert_eq!(
+        tracker.watermark_in(0),
+        Some(secs(100)),
+        "A's final time in 0 is still kept after `MAX_OPEN_EPOCHS` switches"
+    );
+    tracker.observe(&stamped(A, 200, MAX_OPEN_EPOCHS as u32 + 1, 1));
+    assert_eq!(tracker.watermark_in(0), Some(secs(150)), "A's final time in 0 is gone");
+    assert_eq!(tracker.watermark_in(1), None, "B has not reached epoch 1");
+}
+
+#[test]
+fn points_with_consecutive_ids_are_found_by_index_and_others_by_search() {
+    let lanes = (10..14).map(AdmissionPointId::new).collect::<Vec<_>>();
+    let mut tracker = WatermarkTracker::new(lanes.iter().copied());
+    for (offset, point) in lanes.iter().enumerate() {
+        assert_eq!(
+            tracker.observe(&stamped(*point, 100 + offset as u64, 0, 1)),
+            Observation::Ok
+        );
+    }
+    assert_eq!(
+        tracker.observe(&stamped(AdmissionPointId::new(14), 1, 0, 1)),
+        Observation::Fault
+    );
+    assert_eq!(
+        tracker.observe(&stamped(AdmissionPointId::new(9), 1, 0, 1)),
+        Observation::Fault
+    );
+    assert_eq!(tracker.watermark(), Some(secs(100)));
+    assert_eq!(tracker.progress(AdmissionPointId::new(13)).unwrap().latest, secs(103));
+
+    let mut sparse = WatermarkTracker::new([OTHER, A]);
+    assert_eq!(sparse.observe(&stamped(OTHER, 5, 0, 1)), Observation::Ok);
+    assert_eq!(sparse.observe(&stamped(B, 5, 0, 1)), Observation::Fault);
+    assert_eq!(sparse.progress(OTHER).unwrap().latest, secs(5));
+}
+
+/// Observes `header` and steps `window` with it, as a state lane does.
+fn step(tracker: &mut WatermarkTracker, window: &mut ResetWindow, header: BatchHeader) -> WindowStep {
+    assert_ne!(tracker.observe(&header), Observation::Fault);
+    window.step(tracker, &header)
+}
+
+#[test]
+fn with_one_point_a_reset_window_opens_and_closes_on_one_header() {
+    let mut tracker = WatermarkTracker::new([A]);
+    let mut window = ResetWindow::default();
+    assert_eq!(step(&mut tracker, &mut window, stamped(A, 100, 0, 1)), WindowStep::None);
+    assert_eq!(step(&mut tracker, &mut window, stamped(A, 110, 0, 1)), WindowStep::None);
+    assert_eq!(
+        step(&mut tracker, &mut window, stamped(A, 5, 1, 1)),
+        WindowStep::Closed {
+            epochs: vec![(0, Some(secs(110)))]
+        },
+        "epoch 0 closes at the point's final latest time, the watermark before the reset"
+    );
+    assert!(!window.is_open());
+    assert_eq!(window.target(), 1);
+    assert_eq!(step(&mut tracker, &mut window, stamped(A, 6, 1, 1)), WindowStep::None);
+}
+
+#[test]
+fn a_reset_window_routes_each_batch_by_its_epoch_until_every_point_switched() {
+    let mut tracker = WatermarkTracker::new([A, B]);
+    let mut window = ResetWindow::default();
+    step(&mut tracker, &mut window, stamped(A, 100, 0, 1));
+    step(&mut tracker, &mut window, stamped(B, 90, 0, 1));
+    assert_eq!(
+        step(&mut tracker, &mut window, stamped(A, 5, 1, 1)),
+        WindowStep::Opened { older: 0, target: 1 }
+    );
+    assert!(window.is_open() && window.holds(0) && window.holds(1));
+    assert_eq!(
+        step(&mut tracker, &mut window, stamped(B, 95, 0, 1)),
+        WindowStep::Route(EpochSide::Older(0))
+    );
+    assert_eq!(
+        step(&mut tracker, &mut window, stamped(A, 6, 1, 1)),
+        WindowStep::Route(EpochSide::Target)
+    );
+    assert_eq!(
+        step(&mut tracker, &mut window, stamped(B, 7, 1, 1)),
+        WindowStep::Closed {
+            epochs: vec![(0, Some(secs(95)))]
+        },
+        "epoch 0 drains at the earliest final latest time: B's last old-epoch stamp"
+    );
+    assert!(!window.is_open() && !window.holds(0));
+}
+
+#[test]
+fn a_reset_inside_a_window_moves_its_target_and_closes_every_older_epoch_together() {
+    let mut tracker = WatermarkTracker::new([A, B]);
+    let mut window = ResetWindow::default();
+    step(&mut tracker, &mut window, stamped(A, 100, 0, 1));
+    step(&mut tracker, &mut window, stamped(B, 90, 0, 1));
+    step(&mut tracker, &mut window, stamped(A, 5, 1, 1));
+    assert_eq!(
+        step(&mut tracker, &mut window, stamped(A, 50, 2, 1)),
+        WindowStep::Opened { older: 1, target: 2 }
+    );
+    assert_eq!(window.older(), &[0, 1]);
+    // B skips epoch 1: once it is in 2, both older epochs close, oldest first, epoch 1 at A's final time alone.
+    assert_eq!(
+        step(&mut tracker, &mut window, stamped(B, 60, 2, 1)),
+        WindowStep::Closed {
+            epochs: vec![(0, Some(secs(90))), (1, Some(secs(5)))]
+        }
+    );
+}
+
+#[test]
+fn a_window_that_would_keep_more_than_the_most_epochs_open_closes_the_oldest_at_once() {
+    let mut tracker = WatermarkTracker::new([A, B]);
+    let mut window = ResetWindow::default();
+    step(&mut tracker, &mut window, stamped(A, 100, 0, 1));
+    step(&mut tracker, &mut window, stamped(B, 90, 0, 1));
+    for epoch in 1..=MAX_OPEN_EPOCHS as u32 {
+        assert!(matches!(
+            step(&mut tracker, &mut window, stamped(A, u64::from(epoch), epoch, 1)),
+            WindowStep::Opened { .. }
+        ));
+    }
+    let overflow = MAX_OPEN_EPOCHS as u32 + 1;
+    assert_eq!(
+        step(&mut tracker, &mut window, stamped(A, 50, overflow, 1)),
+        WindowStep::Closed {
+            epochs: vec![(0, Some(secs(90)))]
+        },
+        "epoch 0 closes at its watermark so far, B's latest there"
+    );
+    assert!(window.is_open() && !window.holds(0));
+    assert_eq!(window.older().len(), MAX_OPEN_EPOCHS as usize);
+}
+
+#[test]
+fn a_header_several_epochs_newer_holds_every_epoch_in_between_open() {
+    // B skipped epoch 1, two resets while it was blocked, and its first header in epoch 2 reaches the lane before A's
+    // batch of epoch 1: epoch 1 is held open all the same, and closes at A's final time there, B left out.
+    let mut tracker = WatermarkTracker::new([A, B]);
+    let mut window = ResetWindow::default();
+    step(&mut tracker, &mut window, stamped(A, 100, 0, 1));
+    step(&mut tracker, &mut window, stamped(B, 90, 0, 1));
+    assert_eq!(
+        step(&mut tracker, &mut window, stamped(B, 30, 2, 1)),
+        WindowStep::Opened { older: 0, target: 2 }
+    );
+    assert_eq!(window.older(), &[0, 1]);
+    assert!(window.holds(1));
+    assert_eq!(
+        step(&mut tracker, &mut window, stamped(A, 10, 1, 1)),
+        WindowStep::Route(EpochSide::Older(1))
+    );
+    assert_eq!(
+        step(&mut tracker, &mut window, stamped(A, 20, 2, 1)),
+        WindowStep::Closed {
+            epochs: vec![(0, Some(secs(90))), (1, Some(secs(10)))]
+        }
+    );
+    assert!(!window.is_open());
+}
+
+#[test]
+fn a_header_further_ahead_than_the_most_epochs_a_window_keeps_closes_the_oldest_between_at_once() {
+    let mut tracker = WatermarkTracker::new([A, B]);
+    let mut window = ResetWindow::default();
+    step(&mut tracker, &mut window, stamped(A, 100, 0, 1));
+    step(&mut tracker, &mut window, stamped(B, 90, 0, 1));
+    let ahead = MAX_OPEN_EPOCHS as u32 + 2;
+    // Epochs 0 to `ahead - 1` would be open: the two oldest close at once, epoch 1, which no point stamped in yet,
+    // with no watermark, since B has not reached it.
+    assert_eq!(
+        step(&mut tracker, &mut window, stamped(A, 5, ahead, 1)),
+        WindowStep::Closed {
+            epochs: vec![(0, Some(secs(90))), (1, None)]
+        }
+    );
+    assert!(window.is_open() && !window.holds(1) && window.holds(2));
+    assert_eq!(window.older(), (2..ahead).collect::<Vec<_>>().as_slice());
+}
+
+#[test]
+fn a_lane_whose_input_ends_inside_a_window_closes_every_older_epoch() {
+    let mut tracker = WatermarkTracker::new([A, B]);
+    let mut window = ResetWindow::default();
+    step(&mut tracker, &mut window, stamped(A, 100, 0, 1));
+    step(&mut tracker, &mut window, stamped(B, 90, 0, 1));
+    step(&mut tracker, &mut window, stamped(A, 5, 1, 1));
+    assert_eq!(window.close(&tracker), vec![(0, Some(secs(90)))]);
+    assert!(!window.is_open());
+    assert_eq!(window.target(), 1);
+}
+
+#[test]
+fn an_epoch_is_the_publication_epoch_when_every_recorded_point_was_in_it() {
+    let tracker = WatermarkTracker::new([A, B]);
+    assert!(tracker.is_publication_epoch(&cut(100, &[(A, 3), (B, 3)]), 3));
+    assert!(!tracker.is_publication_epoch(&cut(100, &[(A, 3), (B, 3)]), 4));
+    assert!(
+        tracker.is_publication_epoch(&cut(100, &[(OTHER, 1)]), 4),
+        "a cut recording neither point"
+    );
+}
+
+#[test]
+fn a_tick_decided_at_a_shared_second_is_the_tick_decided_at_the_wall_clocks() {
+    let gate = TickGate::default();
+    for (watermark, second) in [(Some(secs(100)), 100), (Some(secs(99)), 100), (None, 100)] {
+        assert_eq!(
+            gate.due_at_second(true, watermark, second, Some(secs(80))),
+            gate.due(true, watermark, millis(second * 1_000 + 400), Some(secs(80)))
+        );
+    }
+    assert_eq!(
+        gate.due_at_second(false, Some(secs(100)), 100, None),
+        TickDecision::Skip
+    );
+}

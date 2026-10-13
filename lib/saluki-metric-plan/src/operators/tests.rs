@@ -1907,3 +1907,43 @@ fn aggregations_lineage_is_its_window_and_its_other_parameters_reach_its_kernel_
     drop(shared);
     assert_eq!(budgets.global().used(), 0, "a dropped kernel gives its contexts back");
 }
+
+#[test]
+fn every_lanes_instance_of_a_lineage_built_against_one_cell_shares_one_record() {
+    use saluki_metric_kernels::aggregate::LaneShared;
+
+    let node: NodeId = "dsd_agg".parse().unwrap();
+    let detached = KernelBuildContext::detached(&node);
+    assert!(detached.lanes().is_none());
+    assert!(
+        detached.lane_share(LaneShared::new).is_none(),
+        "a kernel without lanes shares nothing"
+    );
+
+    let cell = LaneCell::new();
+    assert!(cell.share().is_none());
+    let lane = |lane| {
+        KernelBuildContext::detached(&node).with_lanes(LaneBinding {
+            cell: Arc::clone(&cell),
+            lane,
+            lanes: 3,
+        })
+    };
+    let first = lane(0).lane_share(LaneShared::new).unwrap();
+    assert_eq!(first.lanes(), 3, "the first instance creates the record for every lane");
+    let second = lane(2).lane_share(|_| panic!("the record exists")).unwrap();
+    assert!(Arc::ptr_eq(&first, &second));
+    assert_eq!(lane(1).lanes().map(|binding| binding.lane), Some(1));
+    assert!(cell.share().is_some(), "the host reads the record the kernels share");
+
+    // Aggregation builds its kernels against the cell, and the aggregation operator partitions by context.
+    let aggregate = OperatorRegistry::native().get("aggregate").unwrap();
+    assert_eq!(aggregate.partition_key(), Some(PartitionKey::Context));
+    assert_eq!(
+        OperatorRegistry::native()
+            .get("dogstatsd_mapper")
+            .unwrap()
+            .partition_key(),
+        None
+    );
+}

@@ -10,10 +10,10 @@ use std::{
     collections::VecDeque,
     future::Future,
     io, mem,
-    num::NonZeroUsize,
+    num::{NonZeroU16, NonZeroUsize},
     path::PathBuf,
     pin::Pin,
-    sync::{Arc, LazyLock, Mutex as StdMutex},
+    sync::{Arc, LazyLock, Mutex as StdMutex, OnceLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -27,7 +27,7 @@ use saluki_core::{
     data_model::{
         event::{
             eventd::EventD,
-            metric::{Metric, MetricMetadata, MetricOrigin},
+            metric::{context::ContextResolver, Metric, MetricMetadata, MetricOrigin},
             service_check::ServiceCheck,
             Event, EventType,
         },
@@ -58,10 +58,13 @@ use snafu::{ResultExt as _, Snafu};
 use stringtheory::MetaString;
 use tokio::{
     pin, select,
-    sync::{mpsc, oneshot, Mutex},
+    sync::{mpsc, oneshot},
     time::{interval, MissedTickBehavior},
 };
 use tracing::{debug, error, info, trace, warn};
+
+mod datagram_queue;
+use self::datagram_queue::{datagram_queue, DatagramReceiver, DatagramSender};
 
 mod forwarder;
 use self::forwarder::{PacketForwarder, PacketForwarderTarget};
@@ -91,7 +94,7 @@ use self::origin::{
 };
 
 mod resolver;
-use self::resolver::ContextResolvers;
+use self::resolver::{ContextResolvers, DECODER_FRONT_CACHE_ENTRIES};
 
 mod tags;
 
@@ -130,6 +133,107 @@ fn default_decoder_worker_count(vcpus: usize) -> usize {
     vcpus
         .saturating_sub(DOGSTATSD_LISTENER_WORKER_COUNT + DOGSTATSD_PIPELINE_COUNT)
         .max(MIN_DOGSTATSD_WORKER_COUNT)
+}
+
+/// Returns the number of datagram decoders the DogStatsD source runs for a configured `dogstatsd_workers_count` of
+/// `configured`: that count, or, for `0`, the default derived from the host's vCPUs (`max(vCPUs - 2, 2)`).
+pub fn decoder_workers(configured: usize) -> NonZeroUsize {
+    let workers = if configured == 0 {
+        let vcpus = std::thread::available_parallelism().map(NonZeroUsize::get).unwrap_or(1);
+        default_decoder_worker_count(vcpus)
+    } else {
+        configured
+    };
+    // The default is at least `MIN_DOGSTATSD_WORKER_COUNT`, and a configured count is not zero.
+    NonZeroUsize::new(workers).unwrap_or(NonZeroUsize::MIN)
+}
+
+/// The most lanes the source's metrics split into.
+pub const METRIC_LANES_MAX: u16 = 64;
+
+/// Returns the name of the output that lane `lane` of `lanes` metric lanes dispatches on: `metrics` for the one lane of
+/// a source without lanes, and `metrics_<lane>` otherwise.
+pub fn metric_lane_output(lane: u16, lanes: NonZeroU16) -> String {
+    if lanes.get() == 1 {
+        "metrics".to_string()
+    } else {
+        format!("metrics_{}", lane)
+    }
+}
+
+/// Returns the output each of `decoders` datagram decoders dispatches its metrics on, in decoder order: decoder `d`
+/// dispatches on lane `d mod lanes`.
+fn decoder_metrics_outputs(decoders: NonZeroUsize, lanes: NonZeroU16) -> Vec<MetaString> {
+    (0..decoders.get())
+        .map(|decoder| {
+            // Below `lanes`, which fits.
+            let lane = u16::try_from(decoder % usize::from(lanes.get())).unwrap_or_default();
+            MetaString::from(metric_lane_output(lane, lanes))
+        })
+        .collect()
+}
+
+/// The outputs of a source whose metrics split into a given number of lanes, from two to [`METRIC_LANES_MAX`], built
+/// once per count: index `n - 2` holds those of `n` lanes.
+static LANE_OUTPUTS: [OnceLock<Vec<OutputDefinition<EventType>>>; METRIC_LANES_MAX as usize - 1] =
+    [const { OnceLock::new() }; METRIC_LANES_MAX as usize - 1];
+
+/// The live connections on each metric lane of one listener, which assigns each stream connection, when it is
+/// accepted, to the lane with the fewest.
+#[derive(Clone)]
+struct LaneConnections {
+    live: Arc<StdMutex<Vec<usize>>>,
+}
+
+impl LaneConnections {
+    fn new(lanes: NonZeroU16) -> Self {
+        Self {
+            live: Arc::new(StdMutex::new(vec![0; usize::from(lanes.get())])),
+        }
+    }
+
+    /// Assigns a new connection to the lane with the fewest live connections, the lowest such lane on a tie, for as
+    /// long as the returned assignment lives.
+    fn assign(&self) -> LaneAssignment {
+        let mut live = self.live.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let lane = live
+            .iter()
+            .enumerate()
+            .min_by_key(|(lane, connections)| (**connections, *lane))
+            .map_or(0, |(lane, _)| lane);
+        if let Some(connections) = live.get_mut(lane) {
+            *connections += 1;
+        }
+        LaneAssignment {
+            // At most `METRIC_LANES_MAX` lanes, which fit.
+            lane: u16::try_from(lane).unwrap_or_default(),
+            live: Arc::clone(&self.live),
+        }
+    }
+
+    /// Returns the live connections on each lane, in lane order.
+    #[cfg(test)]
+    fn live(&self) -> Vec<usize> {
+        self.live
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+}
+
+/// One connection's lane, held while the connection lives: dropping it counts the connection as closed.
+struct LaneAssignment {
+    lane: u16,
+    live: Arc<StdMutex<Vec<usize>>>,
+}
+
+impl Drop for LaneAssignment {
+    fn drop(&mut self) {
+        let mut live = self.live.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(connections) = live.get_mut(usize::from(self.lane)) {
+            *connections = connections.saturating_sub(1);
+        }
+    }
 }
 
 /// Controls which payload types are forwarded to the backend.
@@ -400,6 +504,31 @@ pub struct DogStatsDConfiguration {
     /// This is runtime wiring rather than configuration: the source binds the captured tagger to this handle, so the
     /// caller creates the handle and keeps a clone to serve the replay API.
     pub replay_control: DogStatsDReplayControl,
+
+    /// The number of lanes the source's metrics are split into, each its own output: one is the single `metrics`
+    /// output.
+    ///
+    /// This is topology layout rather than configuration; see [`with_metric_lanes`][Self::with_metric_lanes].
+    pub metric_lanes: NonZeroU16,
+}
+
+impl DogStatsDConfiguration {
+    /// Splits the source's metrics into `lanes` outputs, `metrics_0` to `metrics_<lanes - 1>`, in place of the single
+    /// `metrics` output: datagram decoder `d` dispatches on lane `d mod lanes`, and each stream connection on the lane
+    /// with the fewest live connections when it is accepted, for its lifetime. No output is an admission point: the
+    /// component each lane feeds stamps what it receives.
+    ///
+    /// One lane is the single `metrics` output, as without lanes. A source has at most [`METRIC_LANES_MAX`] (64) metric
+    /// lanes: building one with more fails.
+    pub fn with_metric_lanes(mut self, lanes: NonZeroU16) -> Self {
+        self.metric_lanes = lanes;
+        self
+    }
+
+    /// Returns the number of lanes the source's metrics are split into.
+    pub fn metric_lanes(&self) -> NonZeroU16 {
+        self.metric_lanes
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -506,6 +635,7 @@ impl DogStatsDConfiguration {
             capture_depth: MIN_CAPTURE_DEPTH,
             capture_control: DogStatsDCaptureControl::default(),
             replay_control: DogStatsDReplayControl::default(),
+            metric_lanes: NonZeroU16::MIN,
         }
     }
 }
@@ -590,14 +720,7 @@ impl DogStatsDConfiguration {
     }
 
     fn decoder_worker_count(&self) -> NonZeroUsize {
-        let worker_count = if self.workers_count == 0 {
-            let vcpus = std::thread::available_parallelism().map(NonZeroUsize::get).unwrap_or(1);
-            default_decoder_worker_count(vcpus)
-        } else {
-            self.workers_count
-        };
-
-        NonZeroUsize::new(worker_count).expect("DogStatsD decoder worker count must be non-zero")
+        decoder_workers(self.workers_count)
     }
 
     /// Using the current configuration, determines which listeners should be created and adds an address for each into
@@ -707,6 +830,14 @@ impl DogStatsDConfiguration {
 #[async_trait]
 impl SourceBuilder for DogStatsDConfiguration {
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
+        if self.metric_lanes.get() > METRIC_LANES_MAX {
+            return Err(generic_error!(
+                "The DogStatsD source was asked to split its metrics into {} lanes, but it splits them into at most \
+                 {}. Ask for fewer metric lanes.",
+                self.metric_lanes,
+                METRIC_LANES_MAX
+            ));
+        }
         let listeners = self.build_listeners(&context).await?;
         if listeners.is_empty() {
             return Err(Error::NoListenersConfigured.into());
@@ -766,6 +897,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             build_io_buffer_pool(self.buffer_count, max_buffers, self.buffer_size);
         Ok(Box::new(DogStatsD {
             listeners,
+            metric_lanes: self.metric_lanes,
             decoder_worker_count: self.decoder_worker_count(),
             io_buffer_pool,
             io_buffer_queue_capacity: max_buffers,
@@ -794,7 +926,21 @@ impl SourceBuilder for DogStatsDConfiguration {
                 OutputDefinition::named_output("service_checks", EventType::ServiceCheck),
             ]
         });
-        &OUTPUTS
+        // A source asked for more lanes than it has fails to build; until then it declares its most.
+        let lanes = self.metric_lanes.get().min(METRIC_LANES_MAX);
+        if lanes == 1 {
+            return &OUTPUTS;
+        }
+        LANE_OUTPUTS[usize::from(lanes) - 2].get_or_init(|| {
+            let lanes = NonZeroU16::new(lanes).unwrap_or(NonZeroU16::MIN);
+            (0..lanes.get())
+                .map(|lane| OutputDefinition::named_output(metric_lane_output(lane, lanes), EventType::Metric))
+                .chain([
+                    OutputDefinition::named_output("events", EventType::EventD),
+                    OutputDefinition::named_output("service_checks", EventType::ServiceCheck),
+                ])
+                .collect()
+        })
     }
 }
 
@@ -818,20 +964,42 @@ impl MemoryBounds for DogStatsDConfiguration {
             .with_expr(UsageExpr::config(
                 "dogstatsd_string_interner_size_bytes",
                 self.effective_context_string_interner_bytes().as_u64() as usize,
+            ))
+            // Every datagram decoder allocates a front cache of resolved contexts when it starts, and the context
+            // cache they share keeps change stamps for them.
+            .with_expr(UsageExpr::product(
+                "decoder front caches",
+                UsageExpr::constant("datagram decoders", self.decoder_worker_count().get()),
+                UsageExpr::constant(
+                    "front cache bytes",
+                    ContextResolver::front_cache_bytes(DECODER_FRONT_CACHE_ENTRIES),
+                ),
+            ))
+            .with_expr(UsageExpr::constant(
+                "context cache change stamps",
+                ContextResolver::change_stamps_bytes(),
             ));
 
         // The pool can grow on demand up to its maximum, so account for the additional headroom as firm usage.
-        builder.firm().with_expr(UsageExpr::product(
-            "elastic buffers",
-            UsageExpr::constant("dogstatsd_buffer_count_max_extra", additional_buffers),
-            UsageExpr::config("dogstatsd_buffer_size", adjusted_buffer_size),
-        ));
+        builder
+            .firm()
+            .with_expr(UsageExpr::product(
+                "elastic buffers",
+                UsageExpr::constant("dogstatsd_buffer_count_max_extra", additional_buffers),
+                UsageExpr::config("dogstatsd_buffer_size", adjusted_buffer_size),
+            ))
+            // The datagram queue allocates its slots as datagrams arrive, up to one per buffer the pool can hand out.
+            .with_expr(UsageExpr::config(
+                "datagram queue at dogstatsd_buffer_count_max",
+                datagram_queue::bytes_when_full::<QueuedDatagram>(self.effective_max_buffer_count()),
+            ));
     }
 }
 
 /// DogStatsD source.
 pub struct DogStatsD {
     listeners: Vec<ResourceLease<Listener>>,
+    metric_lanes: NonZeroU16,
     decoder_worker_count: NonZeroUsize,
     io_buffer_pool: ElasticObjectPool<BytesBuffer>,
     io_buffer_queue_capacity: usize,
@@ -854,7 +1022,8 @@ pub struct DogStatsD {
 struct ListenerContext {
     shutdown_handle: ShutdownHandle,
     listener: ResourceLease<Listener>,
-    datagram_sender: mpsc::Sender<QueuedDatagram>,
+    metric_lanes: NonZeroU16,
+    datagram_sender: DatagramSender<QueuedDatagram>,
     io_buffer_pool: ElasticObjectPool<BytesBuffer>,
     origin_telemetry_enabled: bool,
     eol_required: EolRequired,
@@ -866,9 +1035,11 @@ struct ListenerContext {
 #[derive(Clone)]
 struct HandlerContext {
     listen_addr: ListenAddress,
+    /// The output a connected stream dispatches its metrics on: its lane's.
+    metrics_output: MetaString,
     eol_required: bool,
     io_buffer_pool: ElasticObjectPool<BytesBuffer>,
-    datagram_sender: mpsc::Sender<QueuedDatagram>,
+    datagram_sender: DatagramSender<QueuedDatagram>,
     datagram_context: Option<Arc<DatagramSocketContext>>,
     metrics: Metrics,
     decoder_context: DecoderContext,
@@ -903,6 +1074,7 @@ struct QueuedDatagram {
 
 struct DogStatsDDecoder {
     source_context: SourceContext,
+    metrics_output: MetaString,
     codec: DogStatsDCodec,
     context_resolvers: ContextResolvers,
     default_hostname: MetaString,
@@ -983,8 +1155,7 @@ impl Source for DogStatsD {
             .with_shutdown_strategy(ShutdownStrategy::Brutal)
             .spawn();
 
-        let (datagram_sender, datagram_receiver) = mpsc::channel(self.io_buffer_queue_capacity);
-        let datagram_receiver = Arc::new(Mutex::new(datagram_receiver));
+        let (datagram_sender, datagram_receiver) = datagram_queue(self.io_buffer_queue_capacity);
         let decoder_context = DecoderContext {
             codec: self.codec.clone(),
             context_resolvers: self.context_resolvers.clone(),
@@ -1002,7 +1173,8 @@ impl Source for DogStatsD {
         // sender. The coordinator here is only used for its handle-drop accounting, so we can wait for that draining
         // to finish; see `shutdown_listeners_and_drain_datagram_decoders`.
         let mut decoder_shutdown_coordinator = ShutdownCoordinator::default();
-        for worker_id in 0..self.decoder_worker_count.get() {
+        let decoder_outputs = decoder_metrics_outputs(self.decoder_worker_count, self.metric_lanes);
+        for (worker_id, metrics_output) in decoder_outputs.into_iter().enumerate() {
             let decoder_shutdown = decoder_shutdown_coordinator.register();
             let datagram_receiver = datagram_receiver.clone();
             let decoder_source_context = context.clone();
@@ -1010,7 +1182,13 @@ impl Source for DogStatsD {
 
             runtime::worker(format!("datagram_decoder_{worker_id}"), async move {
                 let _decoder_shutdown = decoder_shutdown;
-                process_datagram_decoder(datagram_receiver, decoder_source_context, decoder_context).await;
+                process_datagram_decoder(
+                    datagram_receiver,
+                    decoder_source_context,
+                    decoder_context,
+                    metrics_output,
+                )
+                .await;
             })
             .spawn();
         }
@@ -1031,6 +1209,7 @@ impl Source for DogStatsD {
             let listener_context = ListenerContext {
                 shutdown_handle: listener_shutdown_coordinator.register(),
                 listener,
+                metric_lanes: self.metric_lanes,
                 datagram_sender: datagram_sender.clone(),
                 io_buffer_pool: self.io_buffer_pool.clone(),
                 origin_telemetry_enabled: self.origin_telemetry_enabled,
@@ -1155,6 +1334,7 @@ async fn process_listener(
     let ListenerContext {
         shutdown_handle,
         mut listener,
+        metric_lanes,
         datagram_sender,
         io_buffer_pool,
         origin_telemetry_enabled,
@@ -1188,6 +1368,10 @@ async fn process_listener(
     });
 
     let mut stream_shutdown_coordinator = ShutdownCoordinator::default();
+    // Each stream connection dispatches its metrics on one lane for its lifetime, so that its batches stay in order:
+    // the lane with the fewest live connections of this listener when it is accepted. Connectionless streams hand
+    // their datagrams to the decoders, which have lanes of their own.
+    let lane_connections = LaneConnections::new(metric_lanes);
 
     info!(%listen_addr, "DogStatsD listener started.");
 
@@ -1209,8 +1393,11 @@ async fn process_listener(
                 Ok(stream) => {
                     debug!(%listen_addr, "Spawning new stream handler.");
 
+                    let lane = (!stream.is_connectionless()).then(|| lane_connections.assign());
+                    let metrics_output = metric_lane_output(lane.as_ref().map_or(0, |lane| lane.lane), metric_lanes);
                     let handler_context = HandlerContext {
                         listen_addr: listen_addr.clone(),
+                        metrics_output: metrics_output.into(),
                         eol_required: eol_required.for_listener(&listen_addr),
                         io_buffer_pool: io_buffer_pool.clone(),
                         datagram_sender: datagram_sender.clone(),
@@ -1230,7 +1417,12 @@ async fn process_listener(
                     let handler_source_context = source_context.clone();
                     let handler = process_stream(stream, handler_source_context, handler_context, stream_shutdown);
 
-                    runtime::worker(task_name, handler).spawn();
+                    runtime::worker(task_name, async move {
+                        // The connection counts on its lane until its handler ends.
+                        let _lane = lane;
+                        handler.await;
+                    })
+                    .spawn();
                 }
                 Err(e) => {
                     error!(%listen_addr, error = %e, "Failed to accept connection. Stopping listener.");
@@ -1442,7 +1634,7 @@ async fn receive_connectionless_stream(
     mut stream: Stream, io_buffer_pool: ElasticObjectPool<BytesBuffer>, memory_limiter: MemoryLimiter,
     origin_detection_enabled: bool, traffic_capture: TrafficCapture,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
-    datagram_sender: mpsc::Sender<QueuedDatagram>, socket_context: Arc<DatagramSocketContext>,
+    datagram_sender: DatagramSender<QueuedDatagram>, socket_context: Arc<DatagramSocketContext>,
 ) {
     debug!(listen_addr = %socket_context.listen_addr, "Datagram reader started.");
 
@@ -1469,11 +1661,12 @@ async fn receive_connectionless_stream(
         };
 
         let receive_failed = result.is_err();
+        let bytes = result.as_ref().map_or(0, |received| received.bytes_read);
         let queued = QueuedDatagram {
             result,
             socket_context: socket_context.clone(),
         };
-        if datagram_sender.send(queued).await.is_err() {
+        if datagram_sender.send_sized(queued, bytes).await.is_err() {
             debug!(
                 listen_addr = %socket_context.listen_addr,
                 "Failed to enqueue DogStatsD packet for decoding: receiver dropped."
@@ -1499,10 +1692,10 @@ async fn acquire_io_buffer(io_buffer_pool: &ElasticObjectPool<BytesBuffer>) -> B
 }
 
 async fn process_datagram_decoder(
-    datagram_receiver: Arc<Mutex<mpsc::Receiver<QueuedDatagram>>>, source_context: SourceContext,
-    decoder_context: DecoderContext,
+    datagram_receiver: DatagramReceiver<QueuedDatagram>, source_context: SourceContext,
+    decoder_context: DecoderContext, metrics_output: MetaString,
 ) {
-    drive_datagram_decoder(datagram_receiver, source_context, decoder_context).await;
+    drive_datagram_decoder(datagram_receiver, source_context, decoder_context, metrics_output).await;
     debug!("Datagram decoder drained its queue.");
 }
 
@@ -1534,6 +1727,7 @@ impl DogStatsDDecoder {
 
         Self {
             source_context,
+            metrics_output: MetaString::from_static("metrics"),
             codec,
             context_resolvers,
             default_hostname,
@@ -1545,6 +1739,12 @@ impl DogStatsDDecoder {
             traffic_capture,
             event_buffer: None,
         }
+    }
+
+    /// Makes the decoder dispatch its metrics on `output`, its metric lane's output, rather than on `metrics`.
+    fn with_metrics_output(mut self, output: MetaString) -> Self {
+        self.metrics_output = output;
+        self
     }
 
     async fn decode_buffer(
@@ -1679,7 +1879,7 @@ impl DogStatsDDecoder {
             Ok(Some(event)) => {
                 if let Some(event_buffer) = self.buffer_event(event) {
                     debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
-                    dispatch_events(event_buffer, &self.source_context).await;
+                    dispatch_events(event_buffer, &self.source_context, &self.metrics_output).await;
                 }
             }
             Ok(None) => {}
@@ -1687,6 +1887,13 @@ impl DogStatsDDecoder {
                 log_parse_failure(self.disable_verbose_logs, listen_addr, peer_addr, &frame, &error);
             }
         }
+    }
+
+    /// Gives the decoder's primary context resolver a front cache, as every datagram decoder has; see
+    /// [`ContextResolvers::with_front_cache`].
+    fn with_front_cache(mut self) -> Self {
+        self.context_resolvers = self.context_resolvers.with_front_cache();
+        self
     }
 
     fn buffer_event(&mut self, event: Event) -> Option<EventsBuffer> {
@@ -1706,17 +1913,14 @@ impl DogStatsDDecoder {
 
     async fn flush_events(&mut self) {
         if let Some(event_buffer) = self.event_buffer.take() {
-            dispatch_events(event_buffer, &self.source_context).await;
+            dispatch_events(event_buffer, &self.source_context, &self.metrics_output).await;
         }
     }
 }
 
-/// The measurement probes of the datagram decoders' shared receiver, with the `measurement` feature (see
-/// `saluki_core::probes`): how long a decoder waits for the receiver's lock, and then, holding it, for a datagram.
-/// Without the feature, there are none.
+/// The measurement probes of the datagram decoders' queue, with the `measurement` feature (see `saluki_core::probes`):
+/// how long a decoder waits for a datagram. Without the feature, there are none.
 struct ReceiverProbes {
-    #[cfg(feature = "measurement")]
-    lock_wait: Arc<saluki_core::probes::Histogram>,
     #[cfg(feature = "measurement")]
     recv_wait: Arc<saluki_core::probes::Histogram>,
 }
@@ -1729,11 +1933,6 @@ impl ReceiverProbes {
     fn new(context: &ComponentContext) -> Self {
         Self {
             #[cfg(feature = "measurement")]
-            lock_wait: saluki_core::probes::histogram(&format!(
-                "dogstatsd_receiver_lock_wait/{}",
-                context.component_id()
-            )),
-            #[cfg(feature = "measurement")]
             recv_wait: saluki_core::probes::histogram(&format!(
                 "dogstatsd_receiver_recv_wait/{}",
                 context.component_id()
@@ -1742,31 +1941,27 @@ impl ReceiverProbes {
     }
 }
 
-/// Receives the next datagram from the receiver the datagram decoders share, holding its lock while waiting for one.
+/// Receives the next datagram from the queue the datagram decoders share, waiting while it is empty.
 #[cfg_attr(
     not(feature = "measurement"),
     expect(unused_variables, reason = "only measurement builds record probes")
 )]
 async fn receive_datagram(
-    receiver: &Mutex<mpsc::Receiver<QueuedDatagram>>, probes: &ReceiverProbes,
+    receiver: &DatagramReceiver<QueuedDatagram>, probes: &ReceiverProbes,
 ) -> Option<QueuedDatagram> {
     #[cfg(feature = "measurement")]
-    let lock_wait = saluki_core::probes::Span::start(&probes.lock_wait);
-    let mut receiver = receiver.lock().await;
-    #[cfg(feature = "measurement")]
-    let _recv_wait = {
-        drop(lock_wait);
-        saluki_core::probes::Span::start(&probes.recv_wait)
-    };
+    let _recv_wait = saluki_core::probes::Span::start(&probes.recv_wait);
     receiver.recv().await
 }
 
 async fn drive_datagram_decoder(
-    datagram_receiver: Arc<Mutex<mpsc::Receiver<QueuedDatagram>>>, source_context: SourceContext,
-    decoder_context: DecoderContext,
+    datagram_receiver: DatagramReceiver<QueuedDatagram>, source_context: SourceContext,
+    decoder_context: DecoderContext, metrics_output: MetaString,
 ) {
     let probes = ReceiverProbes::new(source_context.component_context());
-    let mut decoder = DogStatsDDecoder::new(source_context, decoder_context);
+    let mut decoder = DogStatsDDecoder::new(source_context, decoder_context)
+        .with_front_cache()
+        .with_metrics_output(metrics_output);
     let mut buffer_flush = interval(Duration::from_millis(100));
     buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
@@ -1806,6 +2001,9 @@ async fn drive_datagram_decoder(
             }
             _ = buffer_flush.tick() => {
                 decoder.flush_events().await;
+                // At most 100 ms behind: the front cache's hits reach the resolver's telemetry, and what it copied
+                // that the shared cache let go of is dropped.
+                decoder.context_resolvers.maintain_front_cache();
             }
         }
     }
@@ -1866,13 +2064,14 @@ async fn drive_decoder(
 ) {
     let HandlerContext {
         listen_addr,
+        metrics_output,
         eol_required,
         metrics,
         decoder_context,
         packet_forwarder,
         ..
     } = handler_context;
-    let mut decoder = DogStatsDDecoder::new(source_context, decoder_context);
+    let mut decoder = DogStatsDDecoder::new(source_context, decoder_context).with_metrics_output(metrics_output);
     // Set a buffer flush interval of 100ms, which will ensure we always flush buffered events at least every 100ms if
     // we're otherwise idle and not receiving packets from the client.
     let mut buffer_flush = interval(Duration::from_millis(100));
@@ -2289,7 +2488,7 @@ fn get_filtered_tags_iterator<'a>(
     RawTagsFilter::exclude(raw_tags, WellKnownTagsFilterPredicate).chain(additional_tags.iter().map(|s| s.as_str()))
 }
 
-async fn dispatch_events(mut event_buffer: EventsBuffer, source_context: &SourceContext) {
+async fn dispatch_events(mut event_buffer: EventsBuffer, source_context: &SourceContext, metrics_output: &str) {
     debug!(events_len = event_buffer.len(), "Forwarding events.");
 
     // TODO: This is maybe a little dicey because if we fail to dispatch the events, we may not have iterated over all of
@@ -2346,7 +2545,7 @@ async fn dispatch_events(mut event_buffer: EventsBuffer, source_context: &Source
     if !event_buffer.is_empty() {
         if let Err(e) = source_context
             .dispatcher()
-            .dispatch_named("metrics", event_buffer)
+            .dispatch_named(metrics_output, event_buffer)
             .await
         {
             error!(error = %e, "Failed to dispatch metric events.");
@@ -2392,7 +2591,7 @@ mod tests {
     use metrics::{Key, Label};
     use saluki_common::sync::shutdown::ShutdownCoordinator;
     use saluki_core::{
-        accounting::{ComponentRegistry, MemoryLimiter},
+        accounting::{ComponentRegistry, MemoryBounds as _, MemoryLimiter},
         components::{sources::SourceContext, ComponentContext},
         data_model::event::metric::context::{ContextResolverBuilder, TagsResolverBuilder},
         health::HealthRegistry,
@@ -2418,18 +2617,14 @@ mod tests {
         io::AsyncWriteExt as _,
         net::{UnixDatagram, UnixStream},
     };
-    use tokio::{
-        runtime::Handle,
-        sync::{mpsc, Mutex},
-        task::yield_now,
-        time::timeout,
-    };
+    use tokio::{runtime::Handle, sync::mpsc, task::yield_now, time::timeout};
 
     use super::{
-        build_io_buffer_pool, capture_named_pipe_frame, default_decoder_worker_count, filters::EnablePayloadsFilter,
-        handle_frame, handle_metric_packet, metrics::build_metrics, origin_detection_error_for_telemetry,
-        resolve_process_origin, resolve_process_origin_if_needed, shutdown_listeners_and_drain_datagram_decoders,
-        BufferDecodeContext, BufferDecodeMode, ContextResolvers, DatagramSocketContext, DecodeOutcome, DecoderContext,
+        build_io_buffer_pool, capture_named_pipe_frame, datagram_queue::datagram_queue, default_decoder_worker_count,
+        drive_datagram_decoder, filters::EnablePayloadsFilter, get_adjusted_buffer_size, handle_frame,
+        handle_metric_packet, metrics::build_metrics, origin_detection_error_for_telemetry, resolve_process_origin,
+        resolve_process_origin_if_needed, shutdown_listeners_and_drain_datagram_decoders, BufferDecodeContext,
+        BufferDecodeMode, ContextResolvers, DatagramSocketContext, DecodeOutcome, DecoderContext, DogStatsD,
         DogStatsDConfiguration, DogStatsDDecoder, OriginEnrichmentConfiguration, ProcessOrigin, QueuedDatagram,
         ReceivedBuffer, TrafficCapture, TrafficCaptureReader,
     };
@@ -3353,9 +3548,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn global_datagram_receiver_distributes_packets_to_workers() {
-        let (sender, receiver) = mpsc::channel(2);
-        let receiver = Arc::new(Mutex::new(receiver));
+    async fn the_datagram_queue_distributes_packets_to_workers() {
+        let (sender, receiver) = datagram_queue(2);
         let first_worker = receiver.clone();
         let second_worker = receiver;
         let socket_context = test_datagram_socket_context(udp_listen_address());
@@ -3366,6 +3560,7 @@ mod tests {
                 socket_context: socket_context.clone(),
             })
             .await
+            .map_err(|_| ())
             .expect("first packet should be queued");
         sender
             .send(QueuedDatagram {
@@ -3373,21 +3568,128 @@ mod tests {
                 socket_context,
             })
             .await
+            .map_err(|_| ())
             .expect("second packet should be queued");
 
-        let (first, second) = tokio::join!(async { first_worker.lock().await.recv().await }, async {
-            second_worker.lock().await.recv().await
-        },);
+        let (first, second) = tokio::join!(first_worker.recv(), second_worker.recv());
 
         assert!(first.expect("first worker should receive a packet").result.is_err());
         assert!(second.expect("second worker should receive a packet").result.is_err());
     }
 
+    #[test]
+    fn memory_bounds_count_the_front_caches_and_their_stamps_up_front_and_the_datagram_queue_when_full() {
+        let config = DogStatsDConfiguration {
+            workers_count: 3,
+            buffer_count: 64,
+            buffer_count_max: 1_000,
+            ..DogStatsDConfiguration::for_test()
+        };
+        let registry = ComponentRegistry::default();
+        config.specify_bounds(&mut registry.bounds_builder(&SubsystemIdentifier::from_dotted("test")));
+        let bounds = registry.as_bounds();
+
+        // Up front: the source, its buffers and interner, a front cache of 4,096 contexts of 24 bytes per decoder, and
+        // 4,096 four-byte change stamps in the context cache they share.
+        let buffer_size = get_adjusted_buffer_size(config.buffer_size);
+        let interner = config.effective_context_string_interner_bytes().as_u64() as usize;
+        let minimum = size_of::<DogStatsD>() + 64 * buffer_size + interner + 3 * 4_096 * 24 + 4_096 * 4;
+        assert_eq!(bounds.total_minimum_required_bytes(), minimum);
+
+        // At most: the pool's other buffers, and a full queue, one datagram per buffer: blocks of 31 slots, each a
+        // queued datagram and a state word, plus a next pointer, and one block more.
+        let queue = (1_000usize.div_ceil(31) + 1) * (8 + 31 * (size_of::<QueuedDatagram>() + 8));
+        assert_eq!(
+            bounds.total_firm_limit_bytes(),
+            minimum + (1_000 - 64) * buffer_size + queue
+        );
+    }
+
+    #[tokio::test]
+    async fn an_idle_datagram_decoder_publishes_its_front_cache_hits_and_lets_expired_contexts_go_at_its_tick() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let active_contexts = || recorder.gauge(("context_resolver_active_contexts", &[("resolver_id", "tick_test")]));
+        let resolved_existing = || {
+            recorder.counter((
+                "context_resolver_resolved_existing_context_total",
+                &[("resolver_id", "tick_test")],
+            ))
+        };
+
+        // A primary resolver as the source's, whose contexts expire after a second idle.
+        let tags_resolver = TagsResolverBuilder::for_tests().build();
+        let primary = ContextResolverBuilder::from_name("tick_test")
+            .expect("the name is not empty")
+            .with_idle_context_expiration(Duration::from_secs(1))
+            .with_heap_allocations(true)
+            .with_tags_resolver(Some(tags_resolver.clone()))
+            .with_front_caches()
+            .build();
+        let no_agg = ContextResolverBuilder::for_tests().without_caching().build();
+        let mut decoder_context = test_decoder_context(false);
+        decoder_context.context_resolvers = ContextResolvers::manual(primary, no_agg, tags_resolver);
+        let (source_context, mut metrics_rx) = test_source_context();
+        let (sender, receiver) = datagram_queue(4);
+        let decoder = tokio::spawn(drive_datagram_decoder(
+            receiver,
+            source_context,
+            decoder_context,
+            MetaString::from_static("metrics"),
+        ));
+
+        // One context, 20 times in one datagram: a new context, a hit in the shared cache that fills the decoder's
+        // front cache, and 18 the front cache answers and counts on its own (unless the coarse second turns in between,
+        // which only moves some of them to the shared cache).
+        let payload = b"tick.metric:1|c\n".repeat(20);
+        let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable);
+        let (received, _returned_buffer) =
+            ReceivedBuffer::with_return(test_io_buffer(&payload, payload.len()), payload.len(), peer_addr, None);
+        sender
+            .send(QueuedDatagram {
+                result: Ok(received),
+                socket_context: test_datagram_socket_context(udp_listen_address()),
+            })
+            .await
+            .map_err(|_| ())
+            .expect("the datagram is queued");
+        let events = timeout(Duration::from_secs(5), metrics_rx.recv())
+            .await
+            .expect("the decoder flushes its events at its tick")
+            .expect("the metrics output stays open");
+        assert_eq!(events.len(), 20);
+        drop(events);
+
+        // Idle from here: within a tick, every resolution is counted, as without a front cache.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(resolved_existing(), Some(19));
+
+        // Once the shared cache expires the context, the idle decoder's front cache lets it go at its next tick, and
+        // with it the last reference.
+        assert_eq!(
+            active_contexts(),
+            Some(1.0),
+            "the shared cache and the front cache hold the context"
+        );
+        timeout(Duration::from_secs(10), async {
+            while active_contexts() != Some(0.0) {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the context is let go within a tick of its expiry");
+
+        drop(sender);
+        timeout(Duration::from_secs(5), decoder)
+            .await
+            .expect("the decoder drains and stops")
+            .expect("the decoder does not panic");
+    }
+
     #[cfg(feature = "measurement")]
     #[tokio::test]
-    async fn receiver_probes_record_the_lock_wait_and_the_receive_wait_of_each_datagram() {
-        let (sender, receiver) = mpsc::channel(2);
-        let receiver = Mutex::new(receiver);
+    async fn receiver_probes_record_the_wait_for_each_datagram() {
+        let (sender, receiver) = datagram_queue(2);
         let probes = ReceiverProbes::new(&test_component_context());
         let socket_context = test_datagram_socket_context(udp_listen_address());
         for _ in 0..2 {
@@ -3397,17 +3699,17 @@ mod tests {
                     socket_context: socket_context.clone(),
                 })
                 .await
+                .map_err(|_| ())
                 .expect("the datagram is queued");
         }
 
         // Nothing is timed until timing is turned on.
         saluki_core::probes::set_timing(false);
         assert!(receive_datagram(&receiver, &probes).await.is_some());
-        assert_eq!(probes.lock_wait.snapshot().count, 0);
+        assert_eq!(probes.recv_wait.snapshot().count, 0);
         saluki_core::probes::set_timing(true);
         assert!(receive_datagram(&receiver, &probes).await.is_some());
         saluki_core::probes::set_timing(false);
-        assert_eq!(probes.lock_wait.snapshot().count, 1);
         assert_eq!(probes.recv_wait.snapshot().count, 1);
     }
 
@@ -3482,7 +3784,7 @@ mod tests {
         let receiver = UnixDatagram::bind(&socket_path).expect("receiver should bind");
         let sender = UnixDatagram::unbound().expect("sender should be created");
         let (pool, shrinker) = build_io_buffer_pool(2, 2, TEST_BUFFER_SIZE);
-        let (packets_tx, mut packets_rx) = mpsc::channel(3);
+        let (packets_tx, packets_rx) = datagram_queue(3);
         let listen_addr = ListenAddress::Unixgram(socket_path.clone());
         let socket_context = Arc::new(DatagramSocketContext {
             metrics: build_metrics(&listen_addr, &test_component_context(), false),
@@ -3576,7 +3878,7 @@ mod tests {
             original_entity.clone(),
         ));
         let (pool, shrinker) = build_io_buffer_pool(1, 1, TEST_BUFFER_SIZE);
-        let (packets_tx, mut packets_rx) = mpsc::channel(1);
+        let (packets_tx, packets_rx) = datagram_queue(1);
         let reader = tokio::spawn(receive_connectionless_stream(
             stream,
             pool,
@@ -4381,6 +4683,7 @@ mod supervision {
     use saluki_io::net::listener::Listener;
     use saluki_io::net::{BoundListenAddress, ListenAddress};
     use stringtheory::MetaString;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::UdpSocket;
     use tokio::runtime::Handle;
     use tokio::sync::mpsc;
@@ -4460,6 +4763,7 @@ mod supervision {
 
         let source = Box::new(DogStatsD {
             listeners: vec![listener],
+            metric_lanes: NonZeroU16::MIN,
             decoder_worker_count: NonZeroUsize::new(DECODER_WORKERS).expect("decoder count should be non-zero"),
             io_buffer_pool,
             io_buffer_queue_capacity: 16,
@@ -4602,11 +4906,13 @@ mod supervision {
             .expect("the metrics output should stay open");
         assert_eq!(buffer.len(), 1);
 
-        // Now back the output up: the first of these fills the single slot, the second blocks a decoder.
+        // Now back the output up: the first of these fills the single slot, the second blocks a decoder. Each is sent
+        // only after the one before was flushed, since one decoder may take both (any decoder takes the next
+        // datagram), and one buffer holding both would fill the slot without blocking.
         for payload in [b"second.metric:1|c".as_slice(), b"third.metric:1|c".as_slice()] {
             client.send_to(payload, listen_addr).await.expect("client should send");
+            tokio::time::sleep(BACKPRESSURE_SETTLE).await;
         }
-        tokio::time::sleep(BACKPRESSURE_SETTLE).await;
 
         supervisor.signal_shutdown();
 
@@ -4811,6 +5117,273 @@ mod supervision {
         };
         let error = error.to_string();
         assert!(error.contains("already leased"), "unexpected error: {error}");
+    }
+
+    fn output_names(config: &DogStatsDConfiguration) -> Vec<String> {
+        config
+            .outputs()
+            .iter()
+            .filter_map(|output| output.output_name().map(str::to_string))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn metric_lanes_split_the_metrics_output_into_one_output_per_lane_up_to_the_most_a_source_has() {
+        let one = DogStatsDConfiguration::for_test().with_metric_lanes(NonZeroU16::MIN);
+        assert_eq!(one.metric_lanes().get(), 1);
+        assert_eq!(output_names(&one), ["metrics", "events", "service_checks"]);
+
+        let three = DogStatsDConfiguration::for_test().with_metric_lanes(NonZeroU16::new(3).unwrap());
+        assert_eq!(
+            output_names(&three),
+            ["metrics_0", "metrics_1", "metrics_2", "events", "service_checks"]
+        );
+        let lanes = NonZeroU16::new(3).unwrap();
+        assert_eq!(metric_lane_output(2, lanes), "metrics_2");
+        assert_eq!(metric_lane_output(0, NonZeroU16::MIN), "metrics");
+
+        let most = DogStatsDConfiguration::for_test().with_metric_lanes(NonZeroU16::new(METRIC_LANES_MAX).unwrap());
+        assert_eq!(output_names(&most).len(), usize::from(METRIC_LANES_MAX) + 2);
+
+        let too_many =
+            DogStatsDConfiguration::for_test().with_metric_lanes(NonZeroU16::new(METRIC_LANES_MAX + 1).unwrap());
+        let Err(error) = too_many.build(BuildContext::test_source("dogstatsd")).await else {
+            panic!("more metric lanes than a source has are refused");
+        };
+        assert!(error.to_string().contains("65 lanes"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn a_stream_connection_takes_the_lane_with_the_fewest_live_connections_until_it_closes() {
+        let lanes = LaneConnections::new(NonZeroU16::new(3).unwrap());
+        // Every lane is empty, so the lowest takes the first, and the next ones fill the others.
+        let first = lanes.assign();
+        let second = lanes.assign();
+        let third = lanes.assign();
+        assert_eq!((first.lane, second.lane, third.lane), (0, 1, 2));
+        // A tie goes to the lowest lane.
+        let fourth = lanes.assign();
+        assert_eq!(fourth.lane, 0);
+        assert_eq!(lanes.live(), [2, 1, 1]);
+
+        // A closed connection leaves its lane, which the next connection takes.
+        drop(second);
+        assert_eq!(lanes.live(), [2, 0, 1]);
+        let fifth = lanes.assign();
+        assert_eq!(fifth.lane, 1);
+        drop((first, third, fourth, fifth));
+        assert_eq!(lanes.live(), [0, 0, 0]);
+    }
+
+    #[test]
+    fn datagram_decoder_d_dispatches_on_lane_d_mod_the_lanes() {
+        let outputs = |decoders: usize, lanes: u16| {
+            decoder_metrics_outputs(NonZeroUsize::new(decoders).unwrap(), NonZeroU16::new(lanes).unwrap())
+                .iter()
+                .map(|output| output.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            outputs(5, 2),
+            ["metrics_0", "metrics_1", "metrics_0", "metrics_1", "metrics_0"]
+        );
+        assert_eq!(outputs(2, 4), ["metrics_0", "metrics_1"]);
+        assert_eq!(outputs(3, 1), ["metrics", "metrics", "metrics"]);
+    }
+
+    #[test]
+    fn the_configured_decoder_count_is_kept_and_zero_is_the_default_of_the_host() {
+        assert_eq!(decoder_workers(5).get(), 5);
+        let vcpus = std::thread::available_parallelism().map(NonZeroUsize::get).unwrap_or(1);
+        assert_eq!(decoder_workers(0).get(), default_decoder_worker_count(vcpus));
+        assert!(decoder_workers(0).get() >= MIN_DOGSTATSD_WORKER_COUNT);
+    }
+
+    /// Builds a source context whose metrics split into `lanes` lanes, with the receiver of each lane's output.
+    fn laned_context(
+        health_registry: &HealthRegistry, shutdown: ShutdownHandle, lanes: NonZeroU16,
+    ) -> (SourceContext, Vec<mpsc::Receiver<EventsBuffer>>) {
+        let component_context = ComponentContext::test_source("dogstatsd");
+        let mut dispatcher = EventsDispatcher::new(component_context.clone());
+        let mut receivers = Vec::new();
+        for lane in 0..lanes.get() {
+            let output = OutputName::Given(metric_lane_output(lane, lanes).into());
+            dispatcher.add_output(output.clone()).expect("a lane's output is added");
+            let (sender, receiver) = mpsc::channel(16);
+            dispatcher
+                .attach_sender_to_output(&output, sender)
+                .expect("a lane's output accepts a sender");
+            receivers.push(receiver);
+        }
+        let topology_context = TopologyContext::new(
+            Arc::from("test"),
+            MemoryLimiter::noop(),
+            health_registry.clone(),
+            Handle::current(),
+            DataspaceRegistry::new(),
+        );
+        let health = health_registry
+            .register_component(&SubsystemIdentifier::from_dotted("test.dogstatsd_lanes"))
+            .expect("component was not previously registered");
+        let mut context = SourceContext::new(
+            &topology_context,
+            &component_context,
+            ComponentRegistry::default(),
+            health,
+            dispatcher,
+        );
+        context.set_shutdown_handle_for_test(shutdown);
+        (context, receivers)
+    }
+
+    /// Frames a payload as a stream connection sends it: its length, as four little-endian bytes, and then it.
+    fn framed(payload: &[u8]) -> Vec<u8> {
+        let length = u32::try_from(payload.len()).expect("a test payload is small");
+        length.to_le_bytes().iter().chain(payload).copied().collect()
+    }
+
+    /// Waits until `receiver` delivers a buffer, and returns the names of its metrics.
+    async fn next_names(receiver: &mut mpsc::Receiver<EventsBuffer>) -> Vec<String> {
+        let buffer = timeout(RUN_TIMEOUT, receiver.recv())
+            .await
+            .expect("a lane delivers in time")
+            .expect("a lane's output stays open");
+        buffer
+            .into_iter()
+            .filter_map(|event| event.try_into_metric())
+            .map(|metric| metric.context().name().to_string())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn each_stream_connection_dispatches_on_the_lane_it_took_when_it_was_accepted() {
+        let mut supervisor = TestComponentSupervisor::start("dogstatsd").await;
+        let health_registry = HealthRegistry::new();
+        let tcp_listener = leased_listener(ListenAddress::Tcp("127.0.0.1:0".parse().unwrap())).await;
+        let listen_addr = match tcp_listener.bound_listen_address() {
+            BoundListenAddress::Tcp(addr) => addr,
+            other => panic!("expected a bound TCP address, got {other:?}"),
+        };
+        let lanes = NonZeroU16::new(2).unwrap();
+        let harness = build_source(&health_registry, supervisor.component_shutdown_handle()).await;
+        let mut source = harness.source;
+        source.listeners = vec![tcp_listener];
+        source.metric_lanes = lanes;
+        let (context, mut receivers) = laned_context(&health_registry, supervisor.component_shutdown_handle(), lanes);
+
+        let run = tokio::spawn(supervisor.handle().scope(async move { source.run(context).await }));
+        let baseline = 1 + DECODER_WORKERS + 1;
+        supervisor.wait_for_children(baseline).await;
+
+        // The first connection takes lane 0, the second lane 1; each dispatches on its own lane's output.
+        let mut first = tokio::net::TcpStream::connect(listen_addr)
+            .await
+            .expect("client connects");
+        supervisor.wait_for_children(baseline + 2).await;
+        let mut second = tokio::net::TcpStream::connect(listen_addr)
+            .await
+            .expect("client connects");
+        supervisor.wait_for_children(baseline + 4).await;
+        first
+            .write_all(&framed(b"lane.first:1|c\n"))
+            .await
+            .expect("the first client writes");
+        second
+            .write_all(&framed(b"lane.second:1|c\n"))
+            .await
+            .expect("the second client writes");
+        assert_eq!(next_names(&mut receivers[0]).await, ["lane.first"]);
+        assert_eq!(next_names(&mut receivers[1]).await, ["lane.second"]);
+
+        // Once the second connection closes, its lane has the fewest live connections, and the next one takes it.
+        drop(second);
+        supervisor.wait_for_children(baseline + 2).await;
+        let mut third = tokio::net::TcpStream::connect(listen_addr)
+            .await
+            .expect("client connects");
+        supervisor.wait_for_children(baseline + 4).await;
+        third
+            .write_all(&framed(b"lane.third:1|c\n"))
+            .await
+            .expect("the third client writes");
+        assert_eq!(next_names(&mut receivers[1]).await, ["lane.third"]);
+        assert!(receivers[0].try_recv().is_err(), "nothing else reached lane 0");
+
+        drop((first, third));
+        supervisor.signal_shutdown();
+        timeout(RUN_TIMEOUT, run)
+            .await
+            .expect("source should stop on shutdown")
+            .expect("source task should not panic")
+            .expect("source should stop cleanly");
+    }
+
+    #[tokio::test]
+    async fn a_stream_connection_whose_lane_failed_stops_with_the_source_and_the_other_lanes_connections_run_on() {
+        // A lane whose component failed has its channel closed: its connection's dispatches fail, as natively when the
+        // source's one downstream component fails, and every other lane's connection keeps delivering. The failure
+        // stops the topology, whose shutdown stops the source, and every connection with it.
+        let mut supervisor = TestComponentSupervisor::start("dogstatsd").await;
+        let health_registry = HealthRegistry::new();
+        let tcp_listener = leased_listener(ListenAddress::Tcp("127.0.0.1:0".parse().unwrap())).await;
+        let listen_addr = match tcp_listener.bound_listen_address() {
+            BoundListenAddress::Tcp(addr) => addr,
+            other => panic!("expected a bound TCP address, got {other:?}"),
+        };
+        let lanes = NonZeroU16::new(2).unwrap();
+        let harness = build_source(&health_registry, supervisor.component_shutdown_handle()).await;
+        let mut source = harness.source;
+        source.listeners = vec![tcp_listener];
+        source.metric_lanes = lanes;
+        let (context, mut receivers) = laned_context(&health_registry, supervisor.component_shutdown_handle(), lanes);
+        let run = tokio::spawn(supervisor.handle().scope(async move { source.run(context).await }));
+        let baseline = 1 + DECODER_WORKERS + 1;
+        supervisor.wait_for_children(baseline).await;
+
+        // The first connection takes lane 0, the second lane 1, whose component then fails.
+        let mut first = tokio::net::TcpStream::connect(listen_addr)
+            .await
+            .expect("client connects");
+        supervisor.wait_for_children(baseline + 2).await;
+        let mut second = tokio::net::TcpStream::connect(listen_addr)
+            .await
+            .expect("client connects");
+        supervisor.wait_for_children(baseline + 4).await;
+        drop(receivers.pop());
+        second
+            .write_all(&framed(b"lane.failed:1|c\n"))
+            .await
+            .expect("the second client writes");
+        first
+            .write_all(&framed(b"lane.running:1|c\n"))
+            .await
+            .expect("the first client writes");
+        assert_eq!(next_names(&mut receivers[0]).await, ["lane.running"]);
+        first
+            .write_all(&framed(b"lane.running:2|c\n"))
+            .await
+            .expect("the first client writes again");
+        assert_eq!(next_names(&mut receivers[0]).await, ["lane.running"]);
+
+        // The topology stops on the failure: its shutdown stops the source, which closes both connections.
+        supervisor.signal_shutdown();
+        timeout(RUN_TIMEOUT, run)
+            .await
+            .expect("source should stop on shutdown")
+            .expect("source task should not panic")
+            .expect("source should stop cleanly");
+        for (client, name) in [(&mut first, "first"), (&mut second, "second")] {
+            let mut buffer = [0u8; 16];
+            let read = timeout(RUN_TIMEOUT, client.read(&mut buffer))
+                .await
+                .unwrap_or_else(|_| panic!("the {} connection is closed in time", name));
+            assert!(
+                matches!(read, Ok(0) | Err(_)),
+                "the {} connection is closed: {:?}",
+                name,
+                read
+            );
+        }
     }
 
     #[tokio::test]

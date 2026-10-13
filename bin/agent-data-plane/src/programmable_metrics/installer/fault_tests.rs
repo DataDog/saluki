@@ -111,7 +111,18 @@ async fn start(
     TestTopology,
     tokio::sync::mpsc::Sender<saluki_config::dynamic::ConfigUpdate>,
 ) {
-    let (system, updates, stream) = connected_configuration_system("").await;
+    start_with("", options).await
+}
+
+/// Starts the plan-driven topology of the local configuration `yaml` on the connected configuration path, with
+/// `options`.
+async fn start_with(
+    yaml: &str, options: Options,
+) -> (
+    TestTopology,
+    tokio::sync::mpsc::Sender<saluki_config::dynamic::ConfigUpdate>,
+) {
+    let (system, updates, stream) = connected_configuration_system(yaml).await;
     let topology = TestTopology::start(&system, options, |supervisor| {
         supervisor.add_worker(ConfigUpdatesWorker::new(updates))
     })
@@ -498,14 +509,28 @@ pub(super) async fn wait_until_healthy(health: &HealthRegistry) {
 
 #[tokio::test]
 async fn repeated_installs_leave_health_registrations_resource_groups_bounds_and_metric_series_as_they_were() {
+    repeated_installs_leave_everything_as_it_was("", |_| "dsd_in.metrics".to_string()).await;
+}
+
+#[tokio::test]
+async fn repeated_installs_on_lanes_leave_health_registrations_resource_groups_bounds_and_metric_series_as_they_were() {
+    // Three producer lanes and two post-aggregation lanes, each install fed through another producer lane.
+    const LANES: &str =
+        "dogstatsd_workers_count: 3\nexperimental: {programmable_metrics: {lanes: {mode: auto, state: 1, post: 2}}}";
+    repeated_installs_leave_everything_as_it_was(LANES, |install| format!("dsd_in.metrics_{}", install % 3)).await;
+}
+
+/// Installs a generation twenty times in the topology of the local configuration `yaml`, each with a batch fed on the
+/// feed `feed` gives for it, and checks that the process looks as it did before them.
+async fn repeated_installs_leave_everything_as_it_was(yaml: &str, feed: fn(usize) -> String) {
     let recorder = TestRecorder::default();
     let _recorder = metrics::set_default_local_recorder(&recorder);
     let options = Options::new(MetricsPath::Plan, Aggregation::Native);
     let (health, registry) = (options.health.clone(), options.registry.clone());
-    let (mut topology, stream) = start(options).await;
+    let (mut topology, stream) = start_with(yaml, options).await;
     let status = topology.status().expect("the plan-driven path has an installer");
     wait_until_healthy(&health).await;
-    topology.feed("dsd_in.metrics", vec![counter("kept", 0)]);
+    topology.feed(&feed(0), vec![counter("kept", 0)]);
     topology
         .wait_for("the first batch", |deliveries| {
             count(deliveries, "dd_metrics_encode", "kept") == 1
@@ -535,7 +560,7 @@ async fn repeated_installs_leave_health_registrations_resource_groups_bounds_and
             active(status) == Some(generation) && live(status) == [generation]
         })
         .await;
-        topology.feed("dsd_in.metrics", vec![counter("kept", install)]);
+        topology.feed(&feed(install), vec![counter("kept", install)]);
         topology
             .wait_for("the batch", |deliveries| {
                 count(deliveries, "dd_metrics_encode", "kept") == install + 1
@@ -568,4 +593,273 @@ async fn repeated_installs_leave_health_registrations_resource_groups_bounds_and
         Some(1.0)
     );
     drop(topology.stop().await);
+}
+
+// Faults on lanes: a stalled producer lane, and shutdown with lanes holding what they have not sent.
+
+/// Three producer lanes, one lane of each other kind.
+const PRODUCER_LANES: &str =
+    "dogstatsd_workers_count: 3\nexperimental: {programmable_metrics: {lanes: {mode: auto, state: 1, post: 1}}}";
+
+/// Returns whether the component `component` of the primary topology reads live in `health`.
+fn is_live(health: &HealthRegistry, component: &str) -> bool {
+    let name = format!("topology.primary.transforms.{}", component);
+    health_components(health)
+        .iter()
+        .any(|(registered, live, _)| *registered == name && *live)
+}
+
+/// Waits until the component `component` of the primary topology reads live in `health`, or not, as `live` says.
+async fn wait_live(health: &HealthRegistry, component: &str, live: bool) {
+    tokio::time::timeout(PATIENCE, async {
+        while is_live(health, component) != live {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "`{}` never read {}: {}",
+            component,
+            if live { "live" } else { "dead" },
+            health.snapshot_json()
+        )
+    });
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stalled_producer_lane_reads_dead_to_liveness_while_the_others_deliver_and_live_again_once_it_runs() {
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let mut options = Options::new(MetricsPath::Plan, Aggregation::Native);
+    options.before_topology = Some(Box::new({
+        let captured = std::sync::Arc::clone(&captured);
+        move |boot: &mut BootTopology| {
+            *captured.lock().unwrap() = Some((std::sync::Arc::clone(&boot.frame), boot.admission.clone()));
+        }
+    }));
+    let health = options.health.clone();
+    let (mut topology, _stream) = start_with(PRODUCER_LANES, options).await;
+    wait_until_healthy(&health).await;
+    let (frame, admission) = captured.lock().unwrap().take().expect("the topology was built");
+    let lane_1 = frame
+        .admission_points()
+        .iter()
+        .find(|point| point.node.local().as_str() == "dsd_in" && point.port.as_str() == "metrics")
+        .and_then(|point| point.lane_id(1))
+        .expect("the DogStatsD source's metrics run on three producer lanes");
+
+    // A transaction holds producer lane 1's point, as an installer's does, so the lane's next batch waits to be
+    // stamped, and the lane answers no probe meanwhile: a stuck lane reads as a stuck component.
+    let transaction = admission
+        .transaction(&[lane_1], std::time::Duration::from_secs(1))
+        .await
+        .expect("the point is free");
+    topology.feed("dsd_in.metrics_1", vec![counter("stalled", 0)]);
+    wait_live(&health, "dsd_pre_aggregation", false).await;
+    // The other lanes run meanwhile.
+    topology.feed("dsd_in.metrics_0", vec![counter("running", 1)]);
+    topology.feed("dsd_in.metrics_2", vec![counter("running", 2)]);
+    let delivered = topology
+        .wait_for("the other lanes' counters", |deliveries| {
+            count(deliveries, "dd_metrics_encode", "running") == 2
+        })
+        .await;
+    assert_eq!(count(delivered, "dd_metrics_encode", "stalled"), 0);
+
+    // Once the transaction ends, the lane stamps its batch, sends it on, and answers again.
+    transaction.abandon();
+    topology
+        .wait_for("the stalled lane's counter", |deliveries| {
+            count(deliveries, "dd_metrics_encode", "stalled") == 1
+        })
+        .await;
+    wait_live(&health, "dsd_pre_aggregation", true).await;
+    drop(topology.stop().await);
+}
+
+/// Returns the sum of the points of each context named `name` that `output` received, by the context's first tag.
+fn sums_by_tag(deliveries: &[Delivery], output: &str, name: &str) -> std::collections::BTreeMap<String, f64> {
+    let mut sums = std::collections::BTreeMap::<String, f64>::new();
+    for metric in deliveries
+        .iter()
+        .filter(|delivery| delivery.output == output)
+        .flat_map(|delivery| &delivery.metrics)
+        .filter(|metric| metric.context().name() == name)
+    {
+        let tag = metric
+            .context()
+            .tags()
+            .into_iter()
+            .next()
+            .map(|tag| tag.as_str().to_string())
+            .unwrap_or_default();
+        let saluki_core::data_model::event::metric::MetricValues::Rate(points, _) = metric.values() else {
+            panic!("`{}` leaves aggregation as a rate: {:?}", name, metric.values());
+        };
+        *sums.entry(tag).or_default() += points.into_iter().map(|(_, value)| value).sum::<f64>();
+    }
+    sums
+}
+
+/// Checks that stopping the topology of the lanes `lanes`, with two producer lanes, while their keyed exits hold
+/// routed buffers open, loses nothing: each exit sends what it holds, and its last header, as the lane finishes.
+async fn shutdown_with_open_routed_buffers_loses_nothing(lanes: &str) {
+    const PER_LANE: usize = 64;
+    let system = crate::programmable_metrics::test_support::layered_configuration_system(&[lanes]).await;
+    // Aggregation flushes once, when its input ends, so every count fed is in a closed bucket by then.
+    let topology = TestTopology::start(&system, Options::new(MetricsPath::Plan, Aggregation::Clocked), |_| {}).await;
+    // Fewer events per lane than a routed buffer holds, untimestamped, so aggregation aggregates them: the keyed exits
+    // hold them, coalescing, until the hold passes or the lanes finish, and the topology stops at once.
+    for lane in 0..2 {
+        let metrics = (0..PER_LANE)
+            .map(|index| {
+                Metric::counter(
+                    Context::from_parts(
+                        "open.routed",
+                        TagSet::from_iter([Tag::from(format!("c:{}", lane * PER_LANE + index))]),
+                    ),
+                    1.0,
+                )
+            })
+            .collect();
+        topology.feed(&format!("dsd_in.metrics_{}", lane), metrics);
+    }
+    let deliveries = topology.stop().await;
+    let sums = sums_by_tag(&deliveries, "dd_metrics_encode", "open.routed");
+    assert_eq!(sums.len(), 2 * PER_LANE, "every context arrives: {:?}", sums);
+    assert!(sums.values().all(|sum| *sum == 1.0), "each once: {:?}", sums);
+}
+
+#[tokio::test]
+async fn on_two_state_lanes_shutdown_with_open_routed_buffers_loses_nothing() {
+    shutdown_with_open_routed_buffers_loses_nothing(
+        "dogstatsd_workers_count: 2\nexperimental: {programmable_metrics: {lanes: {mode: auto, state: 2, post: 1}}}",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn on_four_state_lanes_shutdown_with_open_routed_buffers_loses_nothing() {
+    shutdown_with_open_routed_buffers_loses_nothing(
+        "dogstatsd_workers_count: 2\nexperimental: {programmable_metrics: {lanes: {mode: auto, state: 4, post: 1}}}",
+    )
+    .await;
+}
+
+/// Checks a shutdown inside a reset window, on the lanes of `lanes`, with two producer lanes on one manual wall clock:
+/// both stamp in the epoch before a jump back from 7,201 to 3,600, and only producer lane 0 after it, so the window
+/// is open when the topology stops, producer lane 1 never having switched.
+///
+/// The shutdown closes the window first, when producer lane 1's last header, which it forwards as it finishes, says
+/// its point will stamp nothing more in the older epoch: the older epoch drains at the exact final watermark, 7,201,
+/// and delivers every point it holds, whatever its bucket. Then the new timeline's last flush runs at its own time,
+/// 3,600, not at 7,201: its bucket [3,600, 3,610) is open then, and discarded, as native aggregation's last flush
+/// discards open buckets. (The topology stops a few milliseconds after the jump, so producer lane 1's heartbeat,
+/// once a second, rarely switches it first; if it does, the window closes before the stop, and the outcome is the
+/// same.)
+async fn a_shutdown_inside_a_reset_window_closes_it_first_and_each_timeline_at_its_own_time(lanes: &str) {
+    use saluki_core::execution::{AdmissionTime, ManualWallClock};
+
+    let clock = ManualWallClock::new(AdmissionTime::from_unix_secs(7_195));
+    let system = crate::programmable_metrics::test_support::layered_configuration_system(&[lanes]).await;
+    let mut options = Options::new(MetricsPath::Plan, Aggregation::Native);
+    options.aggregation_clock = Some(clock.clone());
+    options.before_topology = Some(Box::new({
+        let clock = clock.clone();
+        move |boot: &mut BootTopology| {
+            boot.state_admission_clock = Some(clock.clone());
+            boot.wall_clock = std::sync::Arc::new(clock.clone());
+        }
+    }));
+    let mut topology = TestTopology::start(&system, options, |_| {}).await;
+    // Feeds a counter of `name` on producer lane `lane`, with a timestamped marker, which takes the passthrough to the
+    // main output: once the marker arrived, the lane stamped the batch, at the time the clock read.
+    let mut markers = 0;
+    let mut feed = async |topology: &mut TestTopology, lane: usize, name: &'static str| {
+        markers += 1;
+        topology.feed(
+            &format!("dsd_in.metrics_{}", lane),
+            vec![
+                Metric::counter(
+                    Context::from_parts(name, TagSet::from_iter([Tag::from(format!("lane:{}", lane))])),
+                    1.0,
+                ),
+                counter("reset.marker", markers),
+            ],
+        );
+        let sent = markers;
+        topology
+            .wait_for("the batch's marker", |deliveries| {
+                count(deliveries, "dd_metrics_encode", "reset.marker") == sent
+            })
+            .await;
+    };
+
+    // Both lanes in the older epoch, in its buckets [7,190, 7,200) and [7,200, 7,210).
+    for lane in 0..2 {
+        feed(&mut topology, lane, "reset.old").await;
+    }
+    clock.set(AdmissionTime::from_unix_secs(7_201));
+    for lane in 0..2 {
+        feed(&mut topology, lane, "reset.late").await;
+    }
+    // The clock jumps back by more than the reset threshold: producer lane 0 stamps in the new epoch, and producer
+    // lane 1 stamps nothing more before the topology stops.
+    clock.set(AdmissionTime::from_unix_secs(3_600));
+    feed(&mut topology, 0, "reset.new").await;
+    let deliveries = topology.stop().await;
+
+    let main = "dd_metrics_encode";
+    let one_each = std::collections::BTreeMap::from([("lane:0".to_string(), 1.0), ("lane:1".to_string(), 1.0)]);
+    assert_eq!(
+        sums_by_tag(&deliveries, main, "reset.old"),
+        one_each,
+        "the older epoch drains its first bucket"
+    );
+    assert_eq!(
+        sums_by_tag(&deliveries, main, "reset.late"),
+        one_each,
+        "the older epoch drains its open bucket at its final watermark"
+    );
+    assert!(
+        sums_by_tag(&deliveries, main, "reset.new")
+            .values()
+            .all(|sum| *sum == 0.0),
+        "the new timeline's bucket is open at its own time, 3,600, and discarded"
+    );
+    // Every point of the older epoch carries its bucket's time, in that epoch's timeline.
+    let buckets = |name: &str| {
+        deliveries
+            .iter()
+            .filter(|delivery| delivery.output == main)
+            .flat_map(|delivery| &delivery.metrics)
+            .filter(|metric| metric.context().name() == name)
+            .flat_map(|metric| match metric.values() {
+                saluki_core::data_model::event::metric::MetricValues::Rate(points, _) => points
+                    .into_iter()
+                    .filter(|(_, value)| *value > 0.0)
+                    .filter_map(|(timestamp, _)| timestamp.map(|timestamp| timestamp.get()))
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .collect::<BTreeSet<_>>()
+    };
+    assert_eq!(buckets("reset.old"), BTreeSet::from([7_190]));
+    assert_eq!(buckets("reset.late"), BTreeSet::from([7_200]));
+}
+
+#[tokio::test]
+async fn on_producer_lanes_and_one_state_lane_a_shutdown_inside_a_reset_window_closes_each_timeline_at_its_own_time() {
+    a_shutdown_inside_a_reset_window_closes_it_first_and_each_timeline_at_its_own_time(
+        "dogstatsd_workers_count: 2\nexperimental: {programmable_metrics: {lanes: {mode: auto, state: 1, post: 1}}}",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn on_state_lanes_a_shutdown_inside_a_reset_window_closes_it_first_and_each_timeline_at_its_own_time() {
+    a_shutdown_inside_a_reset_window_closes_it_first_and_each_timeline_at_its_own_time(
+        "dogstatsd_workers_count: 2\nexperimental: {programmable_metrics: {lanes: {mode: auto, state: 2, post: 1}}}",
+    )
+    .await;
 }

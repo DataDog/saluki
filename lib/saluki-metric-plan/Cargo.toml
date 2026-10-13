@@ -11,9 +11,13 @@ workspace = true
 [features]
 # Exposes shared test helpers (proptest strategies and fixtures) as plain `pub` items so that other crates can use them
 # in their own tests. Not enabled in normal builds.
-test-util = ["dep:proptest", "saluki-metric-kernels/test-util"]
+test-util = ["dep:proptest", "saluki-core/test-util", "saluki-metric-kernels/test-util"]
+# Runs the records the lanes of a slot share on `loom`'s primitives in the crate's own tests, for the `loom` models
+# (`make test-loom`). Not enabled in normal builds.
+loom = ["dep:loom"]
 
 [dependencies]
+loom = { workspace = true, optional = true }
 proptest = { workspace = true, optional = true }
 saluki-common = { workspace = true }
 saluki-core = { workspace = true }
@@ -33,6 +37,7 @@ url = { workspace = true, features = ["std"] }
 criterion = { workspace = true }
 metrics = { workspace = true }
 proptest = { workspace = true }
+saluki-core = { workspace = true, features = ["test-util"] }
 saluki-metric-kernels = { workspace = true, features = ["test-util"] }
 saluki-metrics = { workspace = true, features = ["test"] }
 stringtheory = { workspace = true }

@@ -1,16 +1,18 @@
 use std::{
     borrow::Cow,
+    num::NonZeroU16,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU16, Ordering},
         Arc,
     },
     time::Instant,
 };
 
+use futures::future::select_all;
 use saluki_common::collections::FastHashMap;
 use saluki_error::{generic_error, GenericError};
 use saluki_metrics::{static_metrics, Counter, Histogram};
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::{self, error::TrySendError, Permit};
 
 use super::{consumer::ReceivedMetrics, Dispatchable};
 #[cfg(feature = "measurement")]
@@ -18,7 +20,7 @@ use crate::probes;
 use crate::{
     components::ComponentContext,
     execution::{AdmissionPoint, OwnerToken},
-    topology::{ComponentId, EventsBuffer, OutputName},
+    topology::{ComponentId, EventsBuffer, LaneEdge, LaneRoute, OutputName},
 };
 
 // TODO: When we have support for additional static labels on a per-metric basis, add `discard_reason` to
@@ -133,17 +135,166 @@ struct GatedSender {
     received: ReceivedMetrics,
 }
 
+/// Returns the error of a send to a channel whose receiving component has stopped.
+fn closed_output() -> GenericError {
+    generic_error!("Failed to send to output.")
+}
+
+/// The lane of the one component an output routes to, as the route of a send resolved it (see
+/// [`DispatchTarget::routed`]).
+enum RoutedLane<'a> {
+    /// This lane.
+    Lane(usize),
+
+    /// The first lane with room, in rotation from this counter, or from the output's own rotation without one.
+    Spread(Option<&'a mut u16>),
+}
+
+/// The senders to one component that an output feeds: one per input lane of the component, and how a send picks one.
+struct OutputSender<T> {
+    /// One sender per lane, in lane order: one for a component without lanes.
+    lanes: Vec<mpsc::Sender<T>>,
+
+    /// How a send picks a lane: `Fixed(0)` for a component with one lane.
+    edge: LaneEdge,
+
+    /// Where the next spread send that brings no rotation counter of its own starts trying lanes.
+    ///
+    /// Several tasks may share a dispatcher; on an admission point, they update it under the point's lock, as they
+    /// send, and otherwise a race between them only changes which lane with room a buffer goes to.
+    rotation: AtomicU16,
+
+    /// The component the senders feed, where it is known, so that heartbeats can go to some components only.
+    component: Option<ComponentId>,
+
+    /// The gate of the component's input, for a component that has one.
+    gate: Option<GatedSender>,
+}
+
+impl<T> OutputSender<T>
+where
+    T: Dispatchable,
+{
+    /// Returns the senders to the lanes that receive an admission point's heartbeats on the output: the lane a fixed
+    /// edge leads to, the same path as the point's batches, and every lane of a routed edge, since each lane follows
+    /// the point's progress on its own.
+    fn heartbeat_lanes(&self) -> &[mpsc::Sender<T>] {
+        match self.edge {
+            LaneEdge::Fixed(lane) => {
+                let lane = usize::from(lane);
+                &self.lanes[lane..=lane]
+            }
+            _ => &self.lanes,
+        }
+    }
+
+    /// Returns the lane after `lane`, which a spread send leaves its rotation at.
+    fn lane_after(&self, lane: usize) -> u16 {
+        // There are at most `u16::MAX` lanes (checked when the senders are attached), so every lane index fits.
+        u16::try_from((lane + 1) % self.lanes.len()).unwrap_or_default()
+    }
+
+    /// Returns the lane a spread send starts trying lanes at: `counter`, or the output's own rotation without one.
+    fn spread_start(&self, counter: Option<&u16>) -> usize {
+        let start = counter
+            .copied()
+            .unwrap_or_else(|| self.rotation.load(Ordering::Relaxed));
+        usize::from(start) % self.lanes.len()
+    }
+
+    /// Leaves the rotation of a spread send at the lane after `lane`, which it sent to.
+    fn advance(&self, counter: Option<&mut u16>, lane: usize) {
+        let next = self.lane_after(lane);
+        match counter {
+            Some(counter) => *counter = next,
+            None => self.rotation.store(next, Ordering::Relaxed),
+        }
+    }
+
+    /// Sends `item` to the lane its route picked, or, on an edge that is not routed, to the edge's lane.
+    ///
+    /// A spread send goes to the first lane with room, in rotation, and waits only when every lane is full.
+    async fn send(&self, item: T, routed: Option<RoutedLane<'_>>) -> Result<(), GenericError> {
+        let lane = match (self.edge, routed) {
+            (LaneEdge::Fixed(lane), _) => usize::from(lane),
+            (_, Some(RoutedLane::Lane(lane))) => lane,
+            (_, Some(RoutedLane::Spread(counter))) => return self.send_spread(item, counter).await,
+            // The output resolves the route of its routed sender before every send, so this sends nowhere else.
+            (_, None) => 0,
+        };
+        self.lanes[lane].send(item).await.map_err(|_| closed_output())
+    }
+
+    async fn send_spread(&self, item: T, mut counter: Option<&mut u16>) -> Result<(), GenericError> {
+        let start = self.spread_start(counter.as_deref());
+        let (lane, permit) = match self.try_reserve_spread(start)? {
+            Some(reserved) => reserved,
+            None => self.reserve_first().await?,
+        };
+        permit.send(item);
+        self.advance(counter.take(), lane);
+        Ok(())
+    }
+
+    /// Reserves room in the first lane that has room, trying lanes in rotation from `start`, or returns `None` if every
+    /// lane is full.
+    fn try_reserve_spread(&self, start: usize) -> Result<Option<(usize, Permit<'_, T>)>, GenericError> {
+        let lanes = self.lanes.len();
+        for offset in 0..lanes {
+            let lane = (start + offset) % lanes;
+            match self.lanes[lane].try_reserve() {
+                Ok(permit) => return Ok(Some((lane, permit))),
+                Err(TrySendError::Full(())) => {}
+                Err(TrySendError::Closed(())) => return Err(closed_output()),
+            }
+        }
+        Ok(None)
+    }
+
+    /// Waits for room in whichever lane has room first.
+    async fn reserve_first(&self) -> Result<(usize, Permit<'_, T>), GenericError> {
+        // Dropping the other reservations gives back whatever room they were granted meanwhile.
+        let reservations = self
+            .lanes
+            .iter()
+            .enumerate()
+            .map(|(lane, sender)| Box::pin(async move { (lane, sender.reserve().await) }));
+        let ((lane, reserved), _, _) = select_all(reservations).await;
+        let permit = reserved.map_err(|_| closed_output())?;
+        Ok((lane, permit))
+    }
+
+    /// Reserves room in the lane a send with `routed` goes to, without waiting: `None` if that lane is full, or, for a
+    /// spread send, if every lane is.
+    fn try_reserve(&self, routed: Option<&RoutedLane<'_>>) -> Result<Option<(usize, Permit<'_, T>)>, GenericError> {
+        let lane = match (self.edge, routed) {
+            (LaneEdge::Fixed(lane), _) => usize::from(lane),
+            (_, Some(RoutedLane::Lane(lane))) => *lane,
+            (_, Some(RoutedLane::Spread(counter))) => {
+                return self.try_reserve_spread(self.spread_start(counter.as_deref()))
+            }
+            (_, None) => 0,
+        };
+        match self.lanes[lane].try_reserve() {
+            Ok(permit) => Ok(Some((lane, permit))),
+            Err(TrySendError::Full(())) => Ok(None),
+            Err(TrySendError::Closed(())) => Err(closed_output()),
+        }
+    }
+}
+
 struct DispatchTarget<T> {
+    output: OutputName,
     metrics: DispatcherMetrics,
     #[cfg(feature = "measurement")]
     probes: DispatchProbes,
-    senders: Vec<mpsc::Sender<T>>,
 
-    // The component each sender feeds, where it is known, so that heartbeats can go to some of them only.
-    sender_components: Vec<Option<ComponentId>>,
+    // One per component the output feeds, in the order they were attached.
+    senders: Vec<OutputSender<T>>,
 
-    // The gate of each sender's component, for the components that have one.
-    sender_gates: Vec<Option<GatedSender>>,
+    // The index of the one sender whose lanes the output routes to by key, by affinity, or by spreading, if any. Each
+    // send names one route, which only that sender follows; every other sender has one lane, or is fixed to one.
+    routed: Option<usize>,
     admission: Option<Arc<AdmissionPoint>>,
 
     // Held while the dispatcher lives, so that the admission point sends no heartbeat once the component stops.
@@ -156,51 +307,180 @@ where
 {
     fn default_output(context: ComponentContext) -> Self {
         Self {
+            output: OutputName::Default,
             #[cfg(feature = "measurement")]
             probes: DispatchProbes::new(&context, "_default"),
             metrics: DispatcherMetrics::default_output(context),
             senders: Vec::new(),
-            sender_components: Vec::new(),
-            sender_gates: Vec::new(),
+            routed: None,
             admission: None,
             _admission_owner: None,
         }
     }
 
-    fn named_output(context: ComponentContext, output_name: &str) -> Self {
+    fn named_output(context: ComponentContext, output_name: Cow<'static, str>) -> Self {
         Self {
             #[cfg(feature = "measurement")]
-            probes: DispatchProbes::new(&context, output_name),
-            metrics: DispatcherMetrics::named_output(context, output_name),
+            probes: DispatchProbes::new(&context, &output_name),
+            metrics: DispatcherMetrics::named_output(context, &output_name),
+            output: OutputName::Given(output_name),
             senders: Vec::new(),
-            sender_components: Vec::new(),
-            sender_gates: Vec::new(),
+            routed: None,
             admission: None,
             _admission_owner: None,
         }
     }
 
-    fn add_sender(&mut self, sender: mpsc::Sender<T>, component: Option<ComponentId>, gate: Option<GatedSender>) {
-        self.senders.push(sender);
-        self.sender_components.push(component);
-        self.sender_gates.push(gate);
+    /// Adds the senders to one component's lanes, which a send picks among by `edge`.
+    fn add_sender(
+        &mut self, lanes: Vec<mpsc::Sender<T>>, edge: LaneEdge, component: Option<ComponentId>,
+        gate: Option<GatedSender>,
+    ) -> Result<(), GenericError> {
+        let feeds = || {
+            component
+                .as_ref()
+                .map_or_else(|| "a component".to_string(), |component| format!("'{}'", component))
+        };
+        if lanes.is_empty() || lanes.len() > usize::from(u16::MAX) {
+            return Err(generic_error!(
+                "Cannot attach {} senders to output '{}' for {}: a component has 1 to {} input lanes, and each lane \
+                 one sender.",
+                lanes.len(),
+                self.output,
+                feeds(),
+                u16::MAX
+            ));
+        }
+        // An edge into a component with one lane leads to that lane, whatever it names.
+        let edge = if lanes.len() == 1 && edge.is_routed() {
+            LaneEdge::Fixed(0)
+        } else {
+            edge
+        };
+        if let LaneEdge::Fixed(lane) = edge {
+            if usize::from(lane) >= lanes.len() {
+                return Err(generic_error!(
+                    "Cannot attach output '{}' to lane {} of {}, which has {} input lane(s). Attach it to a lane the \
+                     component has.",
+                    self.output,
+                    lane,
+                    feeds(),
+                    lanes.len()
+                ));
+            }
+        } else if let Some(routed) = self.routed {
+            return Err(generic_error!(
+                "Cannot route output '{}' to the lanes of {}: it already routes to the lanes of {}, and each send \
+                 names one route. Give each component with lanes an output of its own.",
+                self.output,
+                feeds(),
+                self.senders[routed].component.as_ref().map_or_else(
+                    || "another component".to_string(),
+                    |component| format!("'{}'", component)
+                )
+            ));
+        } else {
+            self.routed = Some(self.senders.len());
+        }
+        self.senders.push(OutputSender {
+            lanes,
+            edge,
+            rotation: AtomicU16::new(0),
+            component,
+            gate,
+        });
+        Ok(())
     }
 
     /// Returns `true` if the sender at `index` delivers: it has no gate, or its gate is open.
     fn delivers(&self, index: usize) -> bool {
-        self.sender_gates[index]
+        self.senders[index]
+            .gate
             .as_ref()
             .is_none_or(|gated| gated.gate.is_open())
     }
 
     /// Counts an item the sender at `index` skipped as received by its component, which must have a gate.
     fn count_skipped(&self, index: usize, item_count: usize) {
-        if let Some(gated) = &self.sender_gates[index] {
+        if let Some(gated) = &self.senders[index].gate {
             gated.received.record(item_count);
         }
     }
 
-    async fn send(&self, mut item: T) -> Result<(), GenericError> {
+    /// Resolves the lane that `route` names for the one sender the output routes to by key, by affinity, or by
+    /// spreading, which is `None` if there is none: every other sender ignores the route, and a spread counter is left
+    /// at 0, the lane after the only lane.
+    ///
+    /// A send that names no route is the send of a sender without lanes, whose only lane is lane 0.
+    ///
+    /// # Errors
+    ///
+    /// If the route does not fit the routing of the sender's edge, or names a lane its component does not have, an
+    /// error is returned.
+    fn resolve_route<'r>(&self, route: Option<LaneRoute<'r>>) -> Result<Option<RoutedLane<'r>>, GenericError> {
+        let Some(index) = self.routed else {
+            if let Some(LaneRoute::Spread(counter)) = route {
+                *counter = 0;
+            }
+            return Ok(None);
+        };
+        let sender = &self.senders[index];
+        let lanes = sender.lanes.len();
+        let routed = match (sender.edge, route) {
+            (LaneEdge::Keyed, Some(LaneRoute::Target(lane))) if usize::from(lane) < lanes => {
+                RoutedLane::Lane(usize::from(lane))
+            }
+            (LaneEdge::Affinity, Some(LaneRoute::From(lane))) => RoutedLane::Lane(usize::from(lane) % lanes),
+            (LaneEdge::Affinity, None) => RoutedLane::Lane(0),
+            (LaneEdge::Spread, Some(LaneRoute::Spread(counter))) => RoutedLane::Spread(Some(counter)),
+            (LaneEdge::Spread, None) => RoutedLane::Spread(None),
+            (edge, route) => return Err(self.route_error(sender, edge, route.as_ref())),
+        };
+        Ok(Some(routed))
+    }
+
+    /// Returns the error of a send whose route does not fit the edge of the sender the output routes to.
+    fn route_error(&self, sender: &OutputSender<T>, edge: LaneEdge, route: Option<&LaneRoute<'_>>) -> GenericError {
+        let component = sender
+            .component
+            .as_ref()
+            .map_or_else(|| "its component".to_string(), |component| format!("'{}'", component));
+        let named = match route {
+            None => "no route".to_string(),
+            Some(LaneRoute::Target(lane)) => format!("a route to lane {}", lane),
+            Some(LaneRoute::From(lane)) => format!("a route from lane {}", lane),
+            Some(LaneRoute::Spread(_)) => "a spread route".to_string(),
+        };
+        if let (LaneEdge::Keyed, Some(LaneRoute::Target(lane))) = (edge, route) {
+            return generic_error!(
+                "Cannot send on output '{}' to lane {} of {}, which has {} input lanes. Route each send to a lane the \
+                 component has.",
+                self.output,
+                lane,
+                component,
+                sender.lanes.len()
+            );
+        }
+        let needed = match edge {
+            LaneEdge::Keyed => "the lane the sender chose for it (`LaneRoute::Target`)",
+            LaneEdge::Affinity => "the sender's own lane (`LaneRoute::From`), or no route",
+            _ => "a rotation counter (`LaneRoute::Spread`), or no route",
+        };
+        generic_error!(
+            "Cannot send on output '{}' with {}: the output routes to the lanes of {} by {} routing, so each send \
+             names {}.",
+            self.output,
+            named,
+            component,
+            edge,
+            needed
+        )
+    }
+
+    async fn send(&self, mut item: T, route: Option<LaneRoute<'_>>) -> Result<(), GenericError> {
+        // Resolve the route first, so that a send whose route does not fit the output stamps and sends nothing.
+        let mut routed = self.resolve_route(route)?;
+
         // On an admission point, stamp the item and keep the point locked until the item has been sent to every
         // sender: every downstream channel then receives the point's items in stamp order, even when several tasks
         // share this dispatcher.
@@ -226,16 +506,7 @@ where
             .map(|_| probes::Span::start(&self.probes.lock_hold));
 
         if self.senders.is_empty() {
-            // Track discarded events when no senders are attached to this output
-            let item_count = item.item_count() as u64;
-            self.metrics.events_discarded_total().increment(item_count);
-            // Anchor the legitimate zero-sender discard. A wired edge never reaches this branch, so this stays a
-            // disconnected-output signal — not a silent-loss-on-a-wired-edge violation.
-            saluki_antithesis::sometimes!(
-                true,
-                "events discarded on a zero-sender output",
-                { "items": item_count }
-            );
+            self.discard(&item);
             return Ok(());
         }
 
@@ -247,7 +518,8 @@ where
         // The last sender that delivers takes the item itself, and every other one that delivers a clone. A sender
         // whose component's gate is closed is skipped, and what it would have sent counted as received there. Each
         // gate is decided once: a sender after the last one found delivering is skipped even if its gate opens in the
-        // meantime, and the last one takes the item even if its gate closes.
+        // meantime, and the last one takes the item even if its gate closes. Each sender sends to one lane of its
+        // component: the lane its edge is fixed to, or, for the sender the output routes to, the lane the route picks.
         saluki_antithesis::always_gt!(self.senders.len(), 0, "dispatcher fanout has at least one sender");
         let last_delivering = (0..self.senders.len()).rev().find(|&index| self.delivers(index));
         let mut item = Some(item);
@@ -265,15 +537,75 @@ where
                 Some(to_send) => {
                     #[cfg(feature = "measurement")]
                     let _send_wait = probes::Span::start(&self.probes.send_wait);
-                    sender
-                        .send(to_send)
-                        .await
-                        .map_err(|_| generic_error!("Failed to send to output."))?
+                    let lane = if self.routed == Some(index) {
+                        routed.take()
+                    } else {
+                        None
+                    };
+                    sender.send(to_send, lane).await?
                 }
                 None => self.count_skipped(index, item_count),
             }
         }
 
+        self.record_sent(start, item_count);
+        Ok(())
+    }
+
+    /// Sends `item` as [`send`][Self::send] does if the lane it goes to has room now, and otherwise returns it, unsent.
+    ///
+    /// Only an output that feeds one component tries: on an output that feeds several, the item is always returned,
+    /// since a caller that holds back its later items only for the lanes a returned item could go to would otherwise
+    /// let them overtake it in a full component it cannot see. An item on an admission point is always returned too,
+    /// since its stamp takes the point's lock, which a send may have to wait for.
+    fn try_send(&self, item: T, route: Option<LaneRoute<'_>>) -> Result<Option<T>, GenericError> {
+        let routed = self.resolve_route(route)?;
+        if self.admission.is_some() || self.senders.len() > 1 {
+            return Ok(Some(item));
+        }
+        let Some(sender) = self.senders.first() else {
+            self.discard(&item);
+            return Ok(None);
+        };
+
+        // The one sender is the routed one, if the output routes to any.
+        let start = Instant::now();
+        let item_count = item.item_count();
+        if self.delivers(0) {
+            let Some((lane, permit)) = sender.try_reserve(routed.as_ref())? else {
+                return Ok(Some(item));
+            };
+            permit.send(item);
+            if let Some(RoutedLane::Spread(counter)) = routed {
+                sender.advance(counter, lane);
+            }
+        } else {
+            self.count_skipped(0, item_count);
+        }
+
+        // A returned item is recorded when it is sent.
+        #[cfg(feature = "measurement")]
+        self.probes.items.record(item_count as u64);
+        self.record_sent(start, item_count);
+        Ok(None)
+    }
+
+    /// Counts an item sent on an output without senders as discarded.
+    fn discard(&self, item: &T) {
+        // Track discarded events when no senders are attached to this output
+        let item_count = item.item_count() as u64;
+        self.metrics.events_discarded_total().increment(item_count);
+        // Anchor the legitimate zero-sender discard. A wired edge never reaches this branch, so this stays a
+        // disconnected-output signal — not a silent-loss-on-a-wired-edge violation.
+        saluki_antithesis::sometimes!(
+            true,
+            "events discarded on a zero-sender output",
+            { "items": item_count }
+        );
+    }
+
+    /// Records the latency of a send that started at `start`, and its `item_count` items as sent to every sender.
+    fn record_sent(&self, start: Instant, item_count: usize) {
         let elapsed = start.elapsed();
 
         // TODO: We should consider splitting this out per-sender somehow. We would need to carry around the
@@ -282,8 +614,6 @@ where
 
         let total_events_sent = (self.senders.len() * item_count) as u64;
         self.metrics.events_sent_total().increment(total_events_sent);
-
-        Ok(())
     }
 }
 
@@ -318,7 +648,7 @@ where
     async fn try_flush_buffer(&self, buffer: T) -> Result<(), GenericError> {
         let buffer_len = buffer.len();
         if buffer_len > 0 {
-            self.target.send(buffer).await
+            self.target.send(buffer, None).await
         } else {
             Ok(())
         }
@@ -435,7 +765,7 @@ where
                 if self.targets.contains_key(&name) {
                     return Err(generic_error!("Output '{}' already exists.", name));
                 }
-                let target = DispatchTarget::named_output(self.context.clone(), &name);
+                let target = DispatchTarget::named_output(self.context.clone(), name.clone());
                 self.targets.insert(name, target);
             }
         }
@@ -451,7 +781,7 @@ where
     pub fn attach_sender_to_output(
         &mut self, output_name: &OutputName, sender: mpsc::Sender<T>,
     ) -> Result<(), GenericError> {
-        self.attach_sender(output_name, sender, None, None)
+        self.attach_lanes(output_name, vec![sender], LaneEdge::Fixed(0), None, None)
     }
 
     /// Attaches a sender that feeds the component `component_id` to the given output.
@@ -466,27 +796,49 @@ where
     pub fn attach_component_sender_to_output(
         &mut self, output_name: &OutputName, component_id: ComponentId, sender: mpsc::Sender<T>,
     ) -> Result<(), GenericError> {
-        self.attach_sender(output_name, sender, Some(component_id), None)
+        self.attach_lanes(output_name, vec![sender], LaneEdge::Fixed(0), Some(component_id), None)
     }
 
-    /// Attaches a sender that feeds the component `component_id`, whose input has the gate `gate`, to the given
-    /// output: while the gate is closed, the output skips the sender, and records what it skipped in `received`, the
-    /// counters of what the component received. See [`InputGate`].
+    /// Attaches the senders to the input lanes of the component `component_id`, one per lane in lane order, to the
+    /// given output, which picks the lane of each send by `edge` (see [`LaneEdge`]).
+    ///
+    /// The output then sends each item to one lane of the component: the lane a fixed edge leads to, or the lane the
+    /// route of a send picks ([`dispatch_named_to_lane`][Self::dispatch_named_to_lane]). With one sender, every item
+    /// goes to it, whatever `edge` names, as
+    /// [`attach_component_sender_to_output`][Self::attach_component_sender_to_output] attaches it. An admission point
+    /// on the output sends its heartbeats to the lane a fixed edge leads to, or to every lane of a routed one.
     ///
     /// # Errors
     ///
-    /// If the output doesn't exist, or already has an admission point, an error is returned.
-    pub(crate) fn attach_gated_sender_to_output(
-        &mut self, output_name: &OutputName, component_id: ComponentId, sender: mpsc::Sender<T>, gate: InputGate,
-        received: ReceivedMetrics,
+    /// If the output doesn't exist or already has an admission point, if `lanes` is empty or holds more than `u16::MAX`
+    /// senders, if `edge` is fixed to a lane the component does not have, or if `edge` routes to the lanes of a
+    /// component with lanes and the output already routes to another one's, an error is returned. A send names one
+    /// route, so an output routes by key, by affinity, or by spreading to the lanes of one component only.
+    pub fn attach_component_lanes_to_output(
+        &mut self, output_name: &OutputName, component_id: ComponentId, lanes: Vec<mpsc::Sender<T>>, edge: LaneEdge,
     ) -> Result<(), GenericError> {
-        let gated = GatedSender { gate, received };
-        self.attach_sender(output_name, sender, Some(component_id), Some(gated))
+        self.attach_lanes(output_name, lanes, edge, Some(component_id), None)
     }
 
-    fn attach_sender(
-        &mut self, output_name: &OutputName, sender: mpsc::Sender<T>, component_id: Option<ComponentId>,
-        gate: Option<GatedSender>,
+    /// Attaches the senders to the input lanes of the component `component_id`, whose input has the gate `gate`, to
+    /// the given output, as [`attach_component_lanes_to_output`][Self::attach_component_lanes_to_output] does: while
+    /// the gate is closed, the output skips the component, and records what it skipped in `received`, the counters of
+    /// what the component received. See [`InputGate`].
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`attach_component_lanes_to_output`][Self::attach_component_lanes_to_output].
+    pub(crate) fn attach_gated_lanes_to_output(
+        &mut self, output_name: &OutputName, component_id: ComponentId, lanes: Vec<mpsc::Sender<T>>, edge: LaneEdge,
+        gate: InputGate, received: ReceivedMetrics,
+    ) -> Result<(), GenericError> {
+        let gated = GatedSender { gate, received };
+        self.attach_lanes(output_name, lanes, edge, Some(component_id), Some(gated))
+    }
+
+    fn attach_lanes(
+        &mut self, output_name: &OutputName, lanes: Vec<mpsc::Sender<T>>, edge: LaneEdge,
+        component_id: Option<ComponentId>, gate: Option<GatedSender>,
     ) -> Result<(), GenericError> {
         let target = self.get_output_mut(output_name)?;
         if target.admission.is_some() {
@@ -497,9 +849,7 @@ where
                 output_name
             ));
         }
-        target.add_sender(sender, component_id, gate);
-
-        Ok(())
+        target.add_sender(lanes, edge, component_id, gate)
     }
 
     fn get_output_mut(&mut self, output_name: &OutputName) -> Result<&mut DispatchTarget<T>, GenericError> {
@@ -537,6 +887,21 @@ where
         self.targets.get(name).is_some_and(|target| !target.senders.is_empty())
     }
 
+    /// Returns the routing of the edge by which the named output sends to the lanes of a component, by key, by
+    /// affinity, or by spreading, with the number of lanes that component has: what the route of every send on the
+    /// output must fit ([`dispatch_named_to_lane`][Self::dispatch_named_to_lane]).
+    ///
+    /// Returns `None` if the output routes to no component's lanes, so that it ignores the route of every send: each of
+    /// its edges leads to a component with one lane, or is fixed to one lane. Returns `None`, too, if the dispatcher
+    /// has no output of that name.
+    pub fn lane_edge(&self, output_name: &str) -> Option<(LaneEdge, NonZeroU16)> {
+        let target = self.targets.get(output_name)?;
+        let sender = &target.senders[target.routed?];
+        // Attaching senders checks that a component has 1 to `u16::MAX` lanes.
+        let lanes = u16::try_from(sender.lanes.len()).ok().and_then(NonZeroU16::new)?;
+        Some((sender.edge, lanes))
+    }
+
     /// Dispatches the given item to the default output.
     ///
     /// # Errors
@@ -564,9 +929,56 @@ where
             Some(name) => self.get_named_output(name)?,
         };
 
-        target.send(item).await?;
+        target.send(item, None).await?;
 
         Ok(())
+    }
+
+    /// Sends `item` on the named output, to the lane of the output's target that `route` names, as the edge's
+    /// [routing][crate::topology::LaneEdge] asks.
+    ///
+    /// Every component the output feeds receives the item once, in one of its lanes. An edge fixed to a lane, and an
+    /// edge into a component with one lane, ignore `route`. Of the one component whose lanes the output routes to, if
+    /// any: a keyed edge sends to the lane `route` names ([`LaneRoute::Target`]); an affinity edge to the sender's lane
+    /// ([`LaneRoute::From`]) modulo the component's lanes; a spread edge ([`LaneRoute::Spread`]) to the first lane with
+    /// room, trying the lanes in rotation from the counter and waiting only when every lane is full, and it leaves the
+    /// counter at the lane after the one it sent to. Each lane receives the sends of one sender in the order they were
+    /// made. A spread counter that no component's lanes follow is left at 0.
+    ///
+    /// # Errors
+    ///
+    /// If an output of the given name isn't set, if `route` does not fit the routing of the output's edge into a
+    /// component with lanes, if it names a lane that component does not have, or if there is an error sending to the
+    /// output, an error is returned. Nothing is sent when the route is refused.
+    pub async fn dispatch_named_to_lane(
+        &self, output: &str, route: LaneRoute<'_>, item: T,
+    ) -> Result<(), GenericError> {
+        self.get_named_output(output)?.send(item, Some(route)).await
+    }
+
+    /// Sends `item` on the named output, to the lane `route` names, as
+    /// [`dispatch_named_to_lane`][Self::dispatch_named_to_lane] does, if every lane it goes to has room now, and
+    /// otherwise returns it, unsent.
+    ///
+    /// Returns `Ok(None)` once the item is sent, and `Ok(Some(item))`, sending it nowhere, when the send would wait:
+    /// when the lane it goes to is full (for a spread route, when every lane is), or when the output is an admission
+    /// point, whose stamp takes the point's lock. An output that feeds more than one component, such as one that also
+    /// feeds a tap, always returns the item: the caller cannot see which component is full, and every later item goes
+    /// to every component the output feeds.
+    ///
+    /// A caller that sends several items before awaiting the ones returned, so that one full lane does not hold up the
+    /// others, keeps each lane's order only if, once it holds a returned item, it holds every later item for a lane the
+    /// returned one could go to, until it sent the returned one: the lane a keyed or affinity route names, every lane
+    /// for a spread route, and the lane of an edge fixed to one or of a component with one lane, which every item goes
+    /// to.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`dispatch_named_to_lane`][Self::dispatch_named_to_lane].
+    pub fn try_dispatch_named_to_lane(
+        &self, output: &str, route: LaneRoute<'_>, item: T,
+    ) -> Result<Option<T>, GenericError> {
+        self.get_named_output(output)?.try_send(item, Some(route))
     }
 }
 
@@ -574,11 +986,12 @@ impl Dispatcher<EventsBuffer> {
     /// Makes the given output an admission point.
     ///
     /// From then on, every buffer sent on the output, including the buffers of buffered dispatchers, is stamped by
-    /// `point` before it is sent, and the point can send heartbeats through the output's senders: through every
-    /// sender, or, if the point has [heartbeat recipients][AdmissionPoint::heartbeat_recipients], through the senders
-    /// attached for those components with
-    /// [`attach_component_sender_to_output`][Self::attach_component_sender_to_output]. Outputs without an admission
-    /// point send buffers unchanged.
+    /// `point` before it is sent, and the point can send heartbeats through the output's senders: through every sender,
+    /// or, if the point has [heartbeat recipients][AdmissionPoint::heartbeat_recipients], through the senders attached
+    /// for those components with [`attach_component_sender_to_output`][Self::attach_component_sender_to_output] or
+    /// [`attach_component_lanes_to_output`][Self::attach_component_lanes_to_output]. A component with lanes receives
+    /// the point's heartbeats in the lane a fixed edge leads to, or in every lane of a routed edge. Outputs without an
+    /// admission point send buffers unchanged.
     ///
     /// Call this after attaching every sender to the output: the point captures the output's senders, holding them
     /// weakly.
@@ -600,10 +1013,12 @@ impl Dispatcher<EventsBuffer> {
         }
 
         let recipients = point.heartbeat_recipients();
-        if let Some(missing) = recipients
-            .iter()
-            .find(|recipient| !target.sender_components.iter().flatten().any(|fed| fed == *recipient))
-        {
+        if let Some(missing) = recipients.iter().find(|recipient| {
+            !target
+                .senders
+                .iter()
+                .any(|sender| sender.component.as_ref() == Some(*recipient))
+        }) {
             return Err(generic_error!(
                 "Admission point {} sends heartbeats to '{}', but output '{}' has no sender to it. Attach a sender for \
                  every heartbeat recipient before setting the admission point.",
@@ -615,14 +1030,15 @@ impl Dispatcher<EventsBuffer> {
         let heartbeat_senders = target
             .senders
             .iter()
-            .zip(&target.sender_components)
-            .filter(|(_, component)| {
+            .filter(|sender| {
                 recipients.is_empty()
-                    || component
+                    || sender
+                        .component
                         .as_ref()
                         .is_some_and(|component| recipients.contains(component))
             })
-            .map(|(sender, _)| sender.downgrade())
+            .flat_map(OutputSender::heartbeat_lanes)
+            .map(mpsc::Sender::downgrade)
             .collect();
 
         let owner = point.attach_senders(heartbeat_senders)?;
@@ -697,7 +1113,7 @@ where
         if buffer.try_push(item).is_some() {
             return Err(generic_error!("Default-constructed buffer rejected a single item."));
         }
-        target.send(buffer).await
+        target.send(buffer, None).await
     }
 }
 
@@ -714,11 +1130,12 @@ mod tests {
         CompositeKey, MetricKind,
     };
     use ordered_float::OrderedFloat;
+    use proptest::prelude::*;
 
     use super::*;
     use crate::execution::{
         AdmissionMode, AdmissionPointConfig, AdmissionPointId, AdmissionSchedule, AdmissionTime, BatchHeader, EntryId,
-        GenerationId, GenerationToken,
+        GenerationId, GenerationToken, HeartbeatOutcome,
     };
     use crate::topology::interconnect::Consumer;
 
@@ -1235,6 +1652,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_send_to_a_lane_of_a_target_with_one_lane_goes_to_that_lane_whatever_its_route() {
+        let mut dispatcher = unbuffered_dispatcher::<EventsBuffer>();
+        let output = OutputName::Given("exit".into());
+        let (tx, mut rx) = mpsc::channel(4);
+        add_output_with_senders(&mut dispatcher, &output, [tx]);
+
+        let mut counter = 0;
+        for route in [
+            LaneRoute::Target(0),
+            LaneRoute::From(3),
+            LaneRoute::Spread(&mut counter),
+        ] {
+            dispatcher
+                .dispatch_named_to_lane("exit", route, EventsBuffer::with_capacity(0))
+                .await
+                .unwrap();
+        }
+        assert_eq!(counter, 0, "a spread over one lane stays at lane 0");
+        for _ in 0..3 {
+            rx.try_recv().expect("every send reaches the one lane");
+        }
+        assert!(dispatcher
+            .dispatch_named_to_lane("missing", LaneRoute::Target(0), EventsBuffer::with_capacity(0))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
     async fn fan_out_copies_the_header_to_every_sender() {
         // Without an admission point, buffers keep whatever header they carry: every copy of a stamped buffer carries
         // the same stamp, and unstamped buffers stay unstamped.
@@ -1395,10 +1840,11 @@ mod tests {
             let gate = InputGate::closed();
             // The tap first: open, it takes a clone and the owner the buffer itself.
             dispatcher
-                .attach_gated_sender_to_output(
+                .attach_gated_lanes_to_output(
                     &OutputName::Default,
                     ComponentId::try_from("tap").unwrap(),
-                    tap_tx,
+                    vec![tap_tx],
+                    LaneEdge::Fixed(0),
                     gate.clone(),
                     tap.received_metrics(),
                 )
@@ -1497,10 +1943,11 @@ mod tests {
             let gate = InputGate::closed();
             let attach_tap = |dispatcher: &mut Dispatcher<CountedClones>, tap_tx| {
                 dispatcher
-                    .attach_gated_sender_to_output(
+                    .attach_gated_lanes_to_output(
                         &OutputName::Default,
                         ComponentId::try_from("tap").unwrap(),
-                        tap_tx,
+                        vec![tap_tx],
+                        LaneEdge::Fixed(0),
                         gate.clone(),
                         tap.received_metrics(),
                     )
@@ -1563,10 +2010,11 @@ mod tests {
                 .attach_sender_to_output(&OutputName::Default, owner_tx)
                 .unwrap();
             dispatcher
-                .attach_gated_sender_to_output(
+                .attach_gated_lanes_to_output(
                     &OutputName::Default,
                     ComponentId::try_from("tap").unwrap(),
-                    tap_tx,
+                    vec![tap_tx],
+                    LaneEdge::Fixed(0),
                     gate.clone(),
                     tap.received_metrics(),
                 )
@@ -1578,5 +2026,492 @@ mod tests {
         let (sent, _, _) = get_output_metrics(&snapshotter, "_default");
         assert_eq!(sent, 2, "one event to each of the two senders");
         drop((dispatcher, gate));
+    }
+
+    /// Returns a dispatcher whose output `routed` feeds the `lanes` lanes of the component `lanes` by `edge`, each lane
+    /// a channel of `capacity` items, and the receivers of the lanes, in lane order.
+    fn laned_dispatcher(
+        edge: LaneEdge, lanes: usize, capacity: usize,
+    ) -> (Dispatcher<SingleEvent<u32>>, Vec<mpsc::Receiver<SingleEvent<u32>>>) {
+        let mut dispatcher = unbuffered_dispatcher::<SingleEvent<u32>>();
+        let output = OutputName::Given("routed".into());
+        dispatcher.add_output(output.clone()).unwrap();
+        let (senders, receivers) = (0..lanes).map(|_| mpsc::channel(capacity)).unzip();
+        dispatcher
+            .attach_component_lanes_to_output(&output, ComponentId::try_from("lanes").unwrap(), senders, edge)
+            .unwrap();
+        (dispatcher, receivers)
+    }
+
+    /// Takes every item each lane holds now, in lane order.
+    fn drain_lanes<T: Copy>(receivers: &mut [mpsc::Receiver<SingleEvent<T>>]) -> Vec<Vec<T>> {
+        receivers
+            .iter_mut()
+            .map(|receiver| {
+                let mut items = Vec::new();
+                while let Ok(SingleEvent(item)) = receiver.try_recv() {
+                    items.push(item);
+                }
+                items
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_fixed_edge_sends_every_item_to_its_lane_whatever_the_route() {
+        let (dispatcher, mut lanes) = laned_dispatcher(LaneEdge::Fixed(2), 3, 4);
+        let mut counter = 5;
+        dispatcher.dispatch_named("routed", SingleEvent(1)).await.unwrap();
+        for (route, value) in [
+            (LaneRoute::Target(0), 2),
+            (LaneRoute::From(1), 3),
+            (LaneRoute::Spread(&mut counter), 4),
+        ] {
+            dispatcher
+                .dispatch_named_to_lane("routed", route, SingleEvent(value))
+                .await
+                .unwrap();
+        }
+        assert_eq!(counter, 0, "no component's lanes follow the counter");
+        assert_eq!(drain_lanes(&mut lanes), vec![vec![], vec![], vec![1, 2, 3, 4]]);
+    }
+
+    #[tokio::test]
+    async fn a_keyed_edge_sends_to_the_lane_the_route_names_and_refuses_any_other_route() {
+        let (dispatcher, mut lanes) = laned_dispatcher(LaneEdge::Keyed, 3, 4);
+        for (lane, value) in [(2, 1), (0, 2), (2, 3)] {
+            dispatcher
+                .dispatch_named_to_lane("routed", LaneRoute::Target(lane), SingleEvent(value))
+                .await
+                .unwrap();
+        }
+        assert_eq!(drain_lanes(&mut lanes), vec![vec![2], vec![], vec![1, 3]]);
+
+        let error = dispatcher
+            .dispatch_named_to_lane("routed", LaneRoute::Target(3), SingleEvent(4))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Cannot send on output 'routed' to lane 3 of 'lanes', which has 3 input lanes. Route each send to a lane \
+             the component has."
+        );
+        // A dispatch that names no lane cannot follow keyed routing.
+        let error = dispatcher.dispatch_named("routed", SingleEvent(5)).await.unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Cannot send on output 'routed' with no route: the output routes to the lanes of 'lanes' by keyed routing, \
+             so each send names the lane the sender chose for it (`LaneRoute::Target`)."
+        );
+        let mut counter = 0;
+        assert!(dispatcher
+            .dispatch_named_to_lane("routed", LaneRoute::Spread(&mut counter), SingleEvent(6))
+            .await
+            .is_err());
+        assert!(dispatcher
+            .dispatch_named_to_lane("routed", LaneRoute::From(0), SingleEvent(7))
+            .await
+            .is_err());
+        assert!(dispatcher
+            .try_dispatch_named_to_lane("routed", LaneRoute::From(0), SingleEvent(8))
+            .is_err());
+        assert_eq!(
+            drain_lanes(&mut lanes),
+            vec![Vec::<u32>::new(); 3],
+            "a refused send sends nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_affinity_edge_sends_to_the_senders_lane_modulo_the_lanes() {
+        let (dispatcher, mut lanes) = laned_dispatcher(LaneEdge::Affinity, 3, 4);
+        for (lane, value) in [(0, 1), (4, 2), (2, 3)] {
+            dispatcher
+                .dispatch_named_to_lane("routed", LaneRoute::From(lane), SingleEvent(value))
+                .await
+                .unwrap();
+        }
+        // A sender without lanes is lane 0.
+        dispatcher.dispatch_named("routed", SingleEvent(4)).await.unwrap();
+        assert_eq!(drain_lanes(&mut lanes), vec![vec![1, 4], vec![2], vec![3]]);
+
+        let error = dispatcher
+            .dispatch_named_to_lane("routed", LaneRoute::Target(1), SingleEvent(5))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Cannot send on output 'routed' with a route to lane 1: the output routes to the lanes of 'lanes' by \
+             affinity routing, so each send names the sender's own lane (`LaneRoute::From`), or no route."
+        );
+    }
+
+    #[tokio::test]
+    async fn a_spread_edge_sends_to_the_first_lane_with_room_and_waits_only_when_every_lane_is_full() {
+        let (dispatcher, mut lanes) = laned_dispatcher(LaneEdge::Spread, 3, 1);
+        let spread = |counter: &mut u16, value| {
+            dispatcher
+                .dispatch_named_to_lane("routed", LaneRoute::Spread(counter), SingleEvent(value))
+                .now_or_never()
+                .expect("a lane has room, so the send does not wait")
+                .unwrap()
+        };
+
+        // From the counter, in rotation, and the counter is left at the lane after the one sent to.
+        let mut counter = 1;
+        spread(&mut counter, 1);
+        assert_eq!(counter, 2);
+        // A full lane is passed over for the next one with room.
+        counter = 1;
+        spread(&mut counter, 2);
+        assert_eq!(counter, 0);
+        spread(&mut counter, 3);
+        assert_eq!(counter, 1);
+
+        // Every lane is full: the send waits, and goes to the first lane that has room.
+        let mut send = tokio_test::task::spawn(dispatcher.dispatch_named_to_lane(
+            "routed",
+            LaneRoute::Spread(&mut counter),
+            SingleEvent(4),
+        ));
+        assert!(send.poll().is_pending(), "every lane is full");
+        assert_eq!(lanes[2].recv().await, Some(SingleEvent(2)));
+        assert!(send.is_woken());
+        assert!(matches!(send.poll(), std::task::Poll::Ready(Ok(()))));
+        drop(send);
+        assert_eq!(counter, 0);
+        assert_eq!(drain_lanes(&mut lanes), vec![vec![3], vec![1], vec![4]]);
+
+        // A route of another kind does not fit.
+        assert!(dispatcher
+            .dispatch_named_to_lane("routed", LaneRoute::From(0), SingleEvent(5))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn a_dispatch_without_a_route_spreads_from_the_outputs_own_rotation() {
+        let (dispatcher, mut lanes) = laned_dispatcher(LaneEdge::Spread, 2, 4);
+        for value in 0..5 {
+            dispatcher.dispatch_named("routed", SingleEvent(value)).await.unwrap();
+        }
+        assert_eq!(drain_lanes(&mut lanes), vec![vec![0, 2, 4], vec![1, 3]]);
+    }
+
+    #[tokio::test]
+    async fn a_try_dispatch_sends_only_when_its_lane_has_room_and_only_on_an_output_that_feeds_one_component() {
+        // `routed` feeds two keyed lanes, each a channel of one item.
+        let (dispatcher, mut lanes) = laned_dispatcher(LaneEdge::Keyed, 2, 1);
+        let try_send =
+            |lane, value| dispatcher.try_dispatch_named_to_lane("routed", LaneRoute::Target(lane), SingleEvent(value));
+        assert_eq!(try_send(0, 1).unwrap(), None);
+        // The lane is full: the item is returned, and no lane receives it.
+        assert_eq!(try_send(0, 2).unwrap(), Some(SingleEvent(2)));
+        assert_eq!(try_send(1, 3).unwrap(), None);
+        assert_eq!(drain_lanes(&mut lanes), vec![vec![1], vec![3]]);
+
+        // Once `routed` also feeds a tap, every item is returned, even with room in every channel.
+        let mut dispatcher = unbuffered_dispatcher::<SingleEvent<u32>>();
+        let output = OutputName::Given("routed".into());
+        dispatcher.add_output(output.clone()).unwrap();
+        let (senders, receivers): (Vec<_>, Vec<_>) = (0..2).map(|_| mpsc::channel(4)).unzip();
+        let mut lanes = receivers;
+        dispatcher
+            .attach_component_lanes_to_output(
+                &output,
+                ComponentId::try_from("lanes").unwrap(),
+                senders,
+                LaneEdge::Keyed,
+            )
+            .unwrap();
+        let (tap_tx, tap_rx) = mpsc::channel(4);
+        let mut tap = [tap_rx];
+        dispatcher
+            .attach_component_sender_to_output(&output, ComponentId::try_from("tap").unwrap(), tap_tx)
+            .unwrap();
+        let returned = dispatcher
+            .try_dispatch_named_to_lane("routed", LaneRoute::Target(0), SingleEvent(4))
+            .unwrap();
+        assert_eq!(returned, Some(SingleEvent(4)));
+        assert_eq!(drain_lanes(&mut lanes), vec![Vec::<u32>::new(); 2]);
+        assert_eq!(drain_lanes(&mut tap), vec![Vec::<u32>::new()]);
+
+        // A spread try leaves its counter where it was when every lane is full.
+        let (dispatcher, mut lanes) = laned_dispatcher(LaneEdge::Spread, 2, 1);
+        let mut counter = 0;
+        for (value, sent, after) in [(1, true, 1), (2, true, 0), (3, false, 0)] {
+            let returned = dispatcher
+                .try_dispatch_named_to_lane("routed", LaneRoute::Spread(&mut counter), SingleEvent(value))
+                .unwrap();
+            assert_eq!(returned.is_none(), sent, "{}", value);
+            assert_eq!(counter, after, "{}", value);
+        }
+        assert_eq!(drain_lanes(&mut lanes), vec![vec![1], vec![2]]);
+    }
+
+    #[tokio::test]
+    async fn a_caller_holding_returned_items_by_lane_keeps_the_order_of_every_component_the_output_feeds() {
+        // `routed` feeds two keyed lanes, each a channel of four items, and a tap with one lane, a channel of one item.
+        // The caller keeps the rule of `try_dispatch_named_to_lane`: once it holds a returned item, it holds every
+        // later item for a lane the returned one could go to, and once its tries are done it sends what it holds, in
+        // order.
+        let mut dispatcher = unbuffered_dispatcher::<SingleEvent<u32>>();
+        let output = OutputName::Given("routed".into());
+        dispatcher.add_output(output.clone()).unwrap();
+        let (senders, receivers): (Vec<_>, Vec<_>) = (0..2).map(|_| mpsc::channel(4)).unzip();
+        let mut lanes = receivers;
+        dispatcher
+            .attach_component_lanes_to_output(
+                &output,
+                ComponentId::try_from("lanes").unwrap(),
+                senders,
+                LaneEdge::Keyed,
+            )
+            .unwrap();
+        let (tap_tx, tap_rx) = mpsc::channel(1);
+        let mut tap = [tap_rx];
+        dispatcher
+            .attach_component_sender_to_output(&output, ComponentId::try_from("tap").unwrap(), tap_tx)
+            .unwrap();
+
+        let mut tapped = Vec::new();
+        let mut held = Vec::new();
+        for (lane, value) in [(0, 1), (0, 2), (1, 3)] {
+            // The tap takes what it holds before the last item, so it has room for that one.
+            if value == 3 {
+                tapped.extend(drain_lanes(&mut tap).remove(0));
+            }
+            if held.iter().any(|(held_lane, _)| *held_lane == lane) {
+                held.push((lane, SingleEvent(value)));
+                continue;
+            }
+            let returned = dispatcher
+                .try_dispatch_named_to_lane("routed", LaneRoute::Target(lane), SingleEvent(value))
+                .unwrap();
+            if let Some(item) = returned {
+                held.push((lane, item));
+            }
+        }
+        for (lane, item) in held {
+            tapped.extend(drain_lanes(&mut tap).remove(0));
+            dispatcher
+                .dispatch_named_to_lane("routed", LaneRoute::Target(lane), item)
+                .await
+                .unwrap();
+        }
+        tapped.extend(drain_lanes(&mut tap).remove(0));
+
+        assert_eq!(
+            tapped,
+            vec![1, 2, 3],
+            "the tap receives the items in the order they were sent"
+        );
+        assert_eq!(drain_lanes(&mut lanes), vec![vec![1, 2], vec![3]]);
+    }
+
+    #[tokio::test]
+    async fn a_try_dispatch_on_an_admission_point_returns_the_buffer_unstamped() {
+        let mut dispatcher = unbuffered_dispatcher::<EventsBuffer>();
+        let output = OutputName::Given("exit".into());
+        let (tx, mut rx) = mpsc::channel(4);
+        add_output_with_senders(&mut dispatcher, &output, [tx]);
+        dispatcher.set_admission_point(&output, admission_point(1)).unwrap();
+
+        let returned = dispatcher
+            .try_dispatch_named_to_lane("exit", LaneRoute::Target(0), EventsBuffer::with_capacity(0))
+            .unwrap()
+            .expect("an admission point's stamp may wait for its lock");
+        assert!(!returned.header().is_stamped());
+        assert!(rx.try_recv().is_err());
+        dispatcher
+            .dispatch_named_to_lane("exit", LaneRoute::Target(0), returned)
+            .await
+            .unwrap();
+        assert!(rx.try_recv().unwrap().header().is_stamped());
+    }
+
+    #[test]
+    fn an_output_routes_to_the_lanes_of_one_component_only() {
+        let mut dispatcher = unbuffered_dispatcher::<SingleEvent<u32>>();
+        let output = OutputName::Given("routed".into());
+        dispatcher.add_output(output.clone()).unwrap();
+        let lanes = |count| (0..count).map(|_| mpsc::channel(1).0).collect::<Vec<_>>();
+        let mut attach = |component: &str, senders, edge| {
+            dispatcher
+                .attach_component_lanes_to_output(&output, ComponentId::try_from(component).unwrap(), senders, edge)
+                .map_err(|error| error.to_string())
+        };
+
+        attach("first", lanes(2), LaneEdge::Spread).unwrap();
+        // Lanes the output is fixed to, and components with one lane, ignore the route.
+        attach("fixed", lanes(2), LaneEdge::Fixed(1)).unwrap();
+        attach("tap", lanes(1), LaneEdge::Keyed).unwrap();
+        assert_eq!(
+            attach("second", lanes(3), LaneEdge::Keyed).unwrap_err(),
+            "Cannot route output 'routed' to the lanes of 'second': it already routes to the lanes of 'first', and \
+             each send names one route. Give each component with lanes an output of its own."
+        );
+        assert_eq!(
+            attach("short", lanes(2), LaneEdge::Fixed(2)).unwrap_err(),
+            "Cannot attach output 'routed' to lane 2 of 'short', which has 2 input lane(s). Attach it to a lane the \
+             component has."
+        );
+        assert_eq!(
+            attach("none", lanes(0), LaneEdge::Spread).unwrap_err(),
+            "Cannot attach 0 senders to output 'routed' for 'none': a component has 1 to 65535 input lanes, and each \
+             lane one sender."
+        );
+    }
+
+    #[test]
+    fn an_output_reports_the_edge_it_routes_to_lanes_by_and_none_when_it_routes_to_no_lanes() {
+        let mut dispatcher = unbuffered_dispatcher::<SingleEvent<u32>>();
+        let lanes = |count| (0..count).map(|_| mpsc::channel(1).0).collect::<Vec<_>>();
+        for name in ["keyed", "fixed", "unconnected"] {
+            dispatcher.add_output(OutputName::Given(name.into())).unwrap();
+        }
+        let mut attach = |output: &'static str, component: &str, senders, edge| {
+            dispatcher
+                .attach_component_lanes_to_output(
+                    &OutputName::Given(output.into()),
+                    ComponentId::try_from(component).unwrap(),
+                    senders,
+                    edge,
+                )
+                .unwrap()
+        };
+        attach("keyed", "tap", lanes(1), LaneEdge::Spread);
+        attach("keyed", "state", lanes(3), LaneEdge::Keyed);
+        attach("fixed", "lanes", lanes(2), LaneEdge::Fixed(1));
+        attach("fixed", "one", lanes(1), LaneEdge::Affinity);
+
+        assert_eq!(
+            dispatcher.lane_edge("keyed"),
+            Some((LaneEdge::Keyed, NonZeroU16::new(3).unwrap()))
+        );
+        // Edges fixed to a lane, and edges into a component with one lane, route nothing.
+        assert_eq!(dispatcher.lane_edge("fixed"), None);
+        assert_eq!(dispatcher.lane_edge("unconnected"), None);
+        assert_eq!(dispatcher.lane_edge("missing"), None);
+    }
+
+    #[tokio::test]
+    async fn heartbeats_reach_the_lane_a_fixed_edge_leads_to_and_every_lane_of_a_routed_edge() {
+        let mut dispatcher = unbuffered_dispatcher::<EventsBuffer>();
+        dispatcher.add_output(OutputName::Default).unwrap();
+        let mut attach = |component: &str, lanes: usize, edge| {
+            let (senders, receivers): (Vec<_>, Vec<_>) = (0..lanes).map(|_| mpsc::channel(4)).unzip();
+            dispatcher
+                .attach_component_lanes_to_output(
+                    &OutputName::Default,
+                    ComponentId::try_from(component).unwrap(),
+                    senders,
+                    edge,
+                )
+                .unwrap();
+            receivers
+        };
+        let mut fixed = attach("fixed", 2, LaneEdge::Fixed(1));
+        let mut spread = attach("spread", 3, LaneEdge::Spread);
+        let mut tap = attach("tap", 1, LaneEdge::Fixed(0));
+        let point = admission_point(1);
+        dispatcher
+            .set_admission_point(&OutputName::Default, Arc::clone(&point))
+            .unwrap();
+
+        let received = |lanes: &mut [mpsc::Receiver<EventsBuffer>]| {
+            lanes
+                .iter_mut()
+                .map(|lane| {
+                    let mut stamped = 0;
+                    while let Ok(buffer) = lane.try_recv() {
+                        assert!(buffer.header().is_stamped());
+                        stamped += 1;
+                    }
+                    stamped
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(point.heartbeat().await, HeartbeatOutcome::Sent);
+        assert_eq!(received(&mut fixed), vec![0, 1]);
+        assert_eq!(received(&mut spread), vec![1, 1, 1]);
+        assert_eq!(received(&mut tap), vec![1]);
+
+        // Data goes to one lane of each component, stamped.
+        dispatcher.dispatch(EventsBuffer::with_capacity(0)).await.unwrap();
+        assert_eq!(received(&mut fixed), vec![0, 1]);
+        assert_eq!(received(&mut spread), vec![1, 0, 0]);
+        assert_eq!(received(&mut tap), vec![1]);
+    }
+
+    /// One step of the spread property: a send through `try_dispatch_named_to_lane` or, when `wait` is set and a lane
+    /// has room, through `dispatch_named_to_lane`; or a receive from a lane.
+    #[derive(Clone, Debug)]
+    enum SpreadStep {
+        Send { wait: bool },
+        Receive { lane: usize },
+    }
+
+    fn spread_step() -> impl Strategy<Value = SpreadStep> {
+        prop_oneof![
+            3 => any::<bool>().prop_map(|wait| SpreadStep::Send { wait }),
+            2 => (0usize..8).prop_map(|lane| SpreadStep::Receive { lane }),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn property_test_spread_sends_go_to_the_first_lane_with_room_and_keep_each_lanes_order(
+            lane_count in 2usize..6,
+            capacity in 1usize..4,
+            start in 0u16..8,
+            steps in prop::collection::vec(spread_step(), 1..60),
+        ) {
+            let (dispatcher, mut lanes) = laned_dispatcher(LaneEdge::Spread, lane_count, capacity);
+            // The lanes as they should be: what each holds, in order.
+            let mut expected: Vec<std::collections::VecDeque<u32>> = vec![Default::default(); lane_count];
+            let mut counter = start;
+            let mut model_counter = usize::from(start) % lane_count;
+            for (value, step) in (0u32..).zip(steps) {
+                match step {
+                    SpreadStep::Send { wait } => {
+                        let with_room = (0..lane_count)
+                            .map(|offset| (model_counter + offset) % lane_count)
+                            .find(|lane| expected[*lane].len() < capacity);
+                        let returned = if wait && with_room.is_some() {
+                            dispatcher
+                                .dispatch_named_to_lane("routed", LaneRoute::Spread(&mut counter), SingleEvent(value))
+                                .now_or_never()
+                                .expect("a send with a lane that has room does not wait")
+                                .unwrap();
+                            None
+                        } else {
+                            let route = LaneRoute::Spread(&mut counter);
+                            dispatcher
+                                .try_dispatch_named_to_lane("routed", route, SingleEvent(value))
+                                .unwrap()
+                        };
+                        match with_room {
+                            Some(lane) => {
+                                prop_assert_eq!(returned, None);
+                                expected[lane].push_back(value);
+                                model_counter = (lane + 1) % lane_count;
+                            }
+                            None => prop_assert_eq!(returned, Some(SingleEvent(value))),
+                        }
+                        prop_assert_eq!(usize::from(counter), model_counter);
+                    }
+                    SpreadStep::Receive { lane } => {
+                        let lane = lane % lane_count;
+                        let received = lanes[lane].try_recv().ok().map(|SingleEvent(value)| value);
+                        prop_assert_eq!(received, expected[lane].pop_front());
+                    }
+                }
+            }
+            let remaining = expected.into_iter().map(Vec::from).collect::<Vec<_>>();
+            prop_assert_eq!(drain_lanes(&mut lanes), remaining);
+        }
     }
 }

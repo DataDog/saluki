@@ -1,6 +1,13 @@
 #[cfg(any(test, feature = "test-util"))]
 use std::sync::Arc;
-use std::{collections::HashMap, future::Future, num::NonZeroUsize, pin::Pin, sync::Mutex, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    future::Future,
+    num::NonZeroUsize,
+    pin::Pin,
+    sync::Mutex,
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use saluki_common::resource_tracking::Track as _;
@@ -11,7 +18,7 @@ use tokio::{pin, runtime::Handle, select, sync::oneshot};
 use tracing::info;
 
 use super::{
-    built::{AdmissionPointBinding, BuiltTopology, WorkerPoolConfiguration},
+    built::{AdmissionPointBinding, BuiltTopology, WorkerPoolConfiguration, DEFAULT_WORKER_POOL_THREADS},
     graph::{DataType, Graph, GraphError},
     snapshot::{AdmissionPointSnapshot, BlueprintSnapshot},
     ComponentId, ComponentOutputId,
@@ -31,14 +38,14 @@ use crate::{
         BuildContext, ComponentContext, ComponentType,
     },
     data_model::event::Event,
-    execution::{AdmissionPointConfig, MAX_HEARTBEAT_PERIOD, MIN_HEARTBEAT_PERIOD},
+    execution::{AdmissionPointConfig, Stamper, MAX_HEARTBEAT_PERIOD, MIN_HEARTBEAT_PERIOD},
     health::HealthRegistry,
     runtime::{
         state::{DataspaceRegistry, ResourceRegistry},
         InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture,
     },
     support::SubsystemIdentifier,
-    topology::{ids::AsComponentIds, topology_identifier, EventsBuffer, DEFAULT_EVENTS_BUFFER_CAPACITY},
+    topology::{ids::AsComponentIds, topology_identifier, EventsBuffer, LaneEdge, DEFAULT_EVENTS_BUFFER_CAPACITY},
 };
 
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
@@ -122,7 +129,9 @@ impl TopologyBlueprint {
             interconnect_capacity: super::DEFAULT_INTERCONNECT_CAPACITY,
             input_capacities: HashMap::new(),
             shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
-            worker_pool_config: WorkerPoolConfiguration::Dedicated,
+            worker_pool_config: WorkerPoolConfiguration::Dedicated {
+                threads: DEFAULT_WORKER_POOL_THREADS,
+            },
             environment_ready: None,
             ready_signal: None,
         };
@@ -188,7 +197,10 @@ impl TopologyBlueprint {
     /// capacity stays the component's when the interconnect capacity of the topology changes, and when the component
     /// is replaced.
     ///
-    /// The memory bounds of the topology count the component's interconnect at this capacity. Only transforms and
+    /// A transform with several input lanes ([`TransformBuilder::input_lanes`]) has one input interconnect per lane,
+    /// each of this capacity.
+    ///
+    /// The memory bounds of the topology count the component's interconnects at this capacity. Only transforms and
     /// destinations, whose input interconnects the bounds account for, can have a capacity of their own.
     ///
     /// # Errors
@@ -294,6 +306,16 @@ impl TopologyBlueprint {
     /// Component subtasks will be spawned on the runtime associated with the given handle.
     pub fn with_explicit_worker_pool(&mut self, handle: Handle) -> &mut Self {
         self.state_mut().worker_pool_config = WorkerPoolConfiguration::Explicit(handle);
+        self
+    }
+
+    /// Configures the topology to build a dedicated, multi-threaded Tokio runtime with `threads` worker threads for
+    /// component subtasks, as it does by default with 8.
+    ///
+    /// A process whose components spawn more compute-bound subtasks than 8 threads serve, such as one encoder stream
+    /// per output, sizes the pool from its cores.
+    pub fn with_dedicated_worker_pool(&mut self, threads: NonZeroUsize) -> &mut Self {
+        self.state_mut().worker_pool_config = WorkerPoolConfiguration::Dedicated { threads };
         self
     }
 
@@ -407,8 +429,9 @@ impl TopologyBlueprint {
     ///
     /// # Errors
     ///
-    /// If any of the upstream or downstream component IDs are invalid or don't exist, or if the data types between one
-    /// of the upstream/downstream component pairs is incompatible, an error is returned.
+    /// If any of the upstream or downstream component IDs are invalid or don't exist, if the data types between one
+    /// of the upstream/downstream component pairs is incompatible, or if a downstream component has more than one input
+    /// lane, which [`connect_components_with`][Self::connect_components_with] connects, an error is returned.
     pub fn connect_components<MS, SI, MD, DI>(
         &mut self, upstream_output_component_ids: SI, downstream_component_ids: DI,
     ) -> Result<&mut Self, GenericError>
@@ -418,6 +441,26 @@ impl TopologyBlueprint {
     {
         self.state_mut()
             .connect_components(upstream_output_component_ids, downstream_component_ids)?;
+        Ok(self)
+    }
+
+    /// Connects one upstream component output to one downstream component, naming how the sender picks the lane of
+    /// each buffer when the downstream component has lanes ([`TransformBuilder::input_lanes`]).
+    ///
+    /// An edge into a component with one lane leads to that lane, whatever `edge` names, as
+    /// [`connect_components`][Self::connect_components] connects it. Every edge into a component with more than one
+    /// lane is connected this way: [`connect_components`][Self::connect_components] refuses it. A send names one
+    /// route, so an output can route by key, by affinity, or by spreading to the lanes of one component only, besides
+    /// any number of components with one lane and of lanes it is fixed to (see
+    /// [`Dispatcher::dispatch_named_to_lane`][crate::topology::interconnect::Dispatcher::dispatch_named_to_lane]).
+    ///
+    /// # Errors
+    ///
+    /// If either component ID is invalid or does not exist, if their data types are incompatible, if `edge` is fixed
+    /// to a lane the downstream component does not have, or if `edge` routes to the lanes of the downstream component
+    /// while the output already routes to another component's lanes, an error is returned.
+    pub fn connect_components_with(&mut self, from: &str, to: &str, edge: LaneEdge) -> Result<&mut Self, GenericError> {
+        self.state_mut().connect_components_with(from, to, edge)?;
         Ok(self)
     }
 
@@ -486,8 +529,10 @@ impl TopologyBlueprint {
     /// Replaces the builder of the source `component_id` with `builder`, keeping the source's place in the blueprint.
     ///
     /// The replacement keeps every connection and admission point of the component it replaces, and its memory bounds
-    /// replace the replaced builder's. This lets a test run a blueprint that a builder function assembled, with some
-    /// components swapped for test doubles, such as a scripted source in place of one that listens on a socket.
+    /// replace the replaced builder's. The interconnect bounds of the topology are recalculated, since they depend on
+    /// what a transform declares about its input. This lets a test run a blueprint that a builder function assembled,
+    /// with some components swapped for test doubles, such as a scripted source in place of one that listens on a
+    /// socket.
     ///
     /// # Errors
     ///
@@ -502,6 +547,7 @@ impl TopologyBlueprint {
         let id = state.check_replacement(ComponentType::Source, |graph| graph.add_source(component_id, &builder))?;
         state.replace_bounds(ComponentType::Source, &id, &builder);
         state.sources.insert(id, Box::new(builder));
+        state.recalculate_bounds();
         Ok(self)
     }
 
@@ -523,6 +569,7 @@ impl TopologyBlueprint {
         })?;
         state.replace_bounds(ComponentType::Transform, &id, &builder);
         state.transforms.insert(id, Box::new(builder));
+        state.recalculate_bounds();
         Ok(self)
     }
 
@@ -544,6 +591,7 @@ impl TopologyBlueprint {
         })?;
         state.replace_bounds(ComponentType::Destination, &id, &builder);
         state.destinations.insert(id, Box::new(builder));
+        state.recalculate_bounds();
         Ok(self)
     }
 
@@ -565,6 +613,7 @@ impl TopologyBlueprint {
         })?;
         state.replace_bounds(ComponentType::Encoder, &id, &builder);
         state.encoders.insert(id, Box::new(builder));
+        state.recalculate_bounds();
         Ok(self)
     }
 
@@ -618,6 +667,7 @@ impl TopologyBlueprint {
         })?;
         state.replace_bounds(ComponentType::Forwarder, &id, &builder);
         state.forwarders.insert(id, Box::new(builder));
+        state.recalculate_bounds();
         Ok(self)
     }
 
@@ -746,6 +796,8 @@ impl TopologyBuildState {
     }
 
     /// Returns the capacity of a component's input interconnect: its own, or else the interconnect capacity.
+    ///
+    /// A component with several input lanes has one interconnect of this capacity per lane.
     fn input_capacity(&self, component_id: &ComponentId) -> NonZeroUsize {
         self.input_capacities
             .get(component_id)
@@ -758,16 +810,32 @@ impl TopologyBuildState {
         let mut bounds_builder = bounds_builder.subcomponent("interconnects");
         bounds_builder.reset();
 
+        // The interconnects of every non-source component: one per input lane, each of the component's capacity, and
+        // each holding buffers of at most as many events as the component declares. Only transforms have lanes, or
+        // buffers of fewer events than an events buffer holds.
+        let interconnects = self
+            .transforms
+            .iter()
+            .map(|(component_id, builder)| {
+                let lanes = usize::from(builder.input_lanes().get());
+                let events = input_buffer_events(builder.as_ref());
+                (self.input_capacity(component_id).get().saturating_mul(lanes), events)
+            })
+            .chain(
+                self.destinations
+                    .keys()
+                    .map(|component_id| (self.input_capacity(component_id).get(), DEFAULT_EVENTS_BUFFER_CAPACITY)),
+            )
+            .collect::<Vec<_>>();
+
         // Adjust the bounds related to interconnects.
         //
         // This deals with the minimum size of the interconnects themselves, since they're bounded and thus allocated
-        // up-front. Every non-source component has an interconnect, of the topology's capacity or of its own.
-        let total_interconnect_capacity = self
-            .transforms
-            .keys()
-            .chain(self.destinations.keys())
-            .map(|component_id| self.input_capacity(component_id).get())
-            .sum::<usize>();
+        // up-front. Every non-source component has an interconnect per input lane, of the topology's capacity or of its
+        // own.
+        let total_interconnect_capacity = interconnects
+            .iter()
+            .fold(0usize, |total, (buffers, _)| total.saturating_add(*buffers));
         bounds_builder
             .minimum()
             .with_array::<EventsBuffer>("events", total_interconnect_capacity);
@@ -779,14 +847,27 @@ impl TopologyBuildState {
         // The struct size of an events buffer includes its batch header, which is stored inline. Heartbeats are empty
         // buffers that allocate no event storage, so they occupy only interconnect slots, which the minimum covers.
         //
-        // We calculate the maximum number of event buffers by adding up the total capacity of all non-source components, plus the count
-        // of non-destination components. This is the effective upper bound because once all component channels are full, sending
-        // components can only allocate one more event buffer before being blocked on sending, which is then the effective upper bound.
+        // We calculate the maximum number of event buffers by adding up the total capacity of all non-source
+        // components, plus the count of non-destination tasks: sources, decoders, and each lane of each transform. This
+        // is the effective upper bound because once all component channels are full, sending tasks can only allocate
+        // one more event buffer before being blocked on sending, which is then the effective upper bound.
+        //
+        // An interconnect whose component declares buffers of fewer events holds that many events per buffer, and is
+        // counted apart, so that a component fed with smaller buffers, such as a lane of a partitioned state owner,
+        // can hold more of them in the same memory.
         //
         // TODO: Somewhat fragile. Need to revisit this.
         // TODO: Add a firm subitem for payloads when we have payload interconnects.
-        let max_in_flight_event_buffers =
-            total_interconnect_capacity + self.sources.len() + self.decoders.len() + self.transforms.len();
+        let transform_lanes = self
+            .transforms
+            .values()
+            .map(|builder| usize::from(builder.input_lanes().get()))
+            .sum::<usize>();
+        let max_in_flight_event_buffers = interconnects
+            .iter()
+            .filter(|(_, events)| *events == DEFAULT_EVENTS_BUFFER_CAPACITY)
+            .fold(0usize, |total, (buffers, _)| total.saturating_add(*buffers))
+            .saturating_add(self.sources.len() + self.decoders.len() + transform_lanes);
 
         bounds_builder
             .firm()
@@ -804,6 +885,31 @@ impl TopologyBuildState {
                     ),
                 ),
             ));
+
+        // The interconnects of smaller buffers, by buffer size, smallest first.
+        let mut smaller = BTreeMap::<usize, usize>::new();
+        for (buffers, events) in interconnects
+            .iter()
+            .filter(|(_, events)| *events < DEFAULT_EVENTS_BUFFER_CAPACITY)
+        {
+            let total = smaller.entry(*events).or_default();
+            *total = total.saturating_add(*buffers);
+        }
+        for (events, buffers) in smaller {
+            bounds_builder.firm().with_expr(UsageExpr::product(
+                "events",
+                UsageExpr::constant("in-flight event buffers of fewer events", buffers),
+                UsageExpr::sum(
+                    "",
+                    UsageExpr::struct_size::<EventsBuffer>("events buffer"),
+                    UsageExpr::product(
+                        "",
+                        UsageExpr::struct_size::<Event>("event"),
+                        UsageExpr::constant("events per buffer", events),
+                    ),
+                ),
+            ));
+        }
     }
 
     fn add_admission_point(&mut self, output: &str, config: AdmissionPointConfig) -> Result<(), GenericError> {
@@ -831,6 +937,31 @@ impl TopologyBuildState {
             return Err(generic_error!(
                 "Output '{}' is already an admission point. Each output can have at most one.",
                 output_id
+            ));
+        }
+        if config.stamper() == Stamper::Owned {
+            return Err(generic_error!(
+                "Cannot mark '{}' as an admission point: admission point {} is owned, so the one task that admits \
+                 through it stamps it, and no dispatcher does. Give its configuration to that task, or configure a \
+                 point a dispatcher stamps.",
+                output_id,
+                config.id().get()
+            ));
+        }
+        if config.source_clock().is_some() {
+            return Err(generic_error!(
+                "Cannot mark '{}' as an admission point: admission point {} shares a source clock, which only owned \
+                 points do. Configure it as owned, or give it a clock of its own.",
+                output_id,
+                config.id().get()
+            ));
+        }
+        if config.heartbeat_each_second().is_some() {
+            return Err(generic_error!(
+                "Cannot mark '{}' as an admission point: admission point {} heartbeats in each second, which only an \
+                 owned point's task does. Configure it as owned, or remove the heartbeat in each second.",
+                output_id,
+                config.id().get()
             ));
         }
         if let Some(existing) = self
@@ -1124,6 +1255,13 @@ impl TopologyBuildState {
         Ok(())
     }
 
+    fn connect_components_with(&mut self, from: &str, to: &str, edge: LaneEdge) -> Result<(), GenericError> {
+        self.graph
+            .add_lane_edge(from, to, edge)
+            .error_context("Failed to add component connection to topology graph.")?;
+        Ok(())
+    }
+
     fn connect_components_in_order<IT, I>(&mut self, ordered_component_ids: IT) -> Result<(), GenericError>
     where
         IT: IntoIterator<Item = I>,
@@ -1210,6 +1348,14 @@ impl TopologyBuildState {
             decoders.insert(component_context, (decoder, self.component_registry.clone()));
         }
 
+        // A transform whose input holds buffers of fewer events than an events buffer checks, in a debug build, that
+        // its senders keep to that, since the bounds count no more per buffer.
+        let input_buffer_events = self
+            .transforms
+            .iter()
+            .map(|(id, builder)| (id.clone(), input_buffer_events(builder.as_ref())))
+            .filter(|(_, events)| *events < DEFAULT_EVENTS_BUFFER_CAPACITY)
+            .collect::<HashMap<_, _>>();
         let mut transforms = HashMap::new();
         for (id, builder) in self.transforms {
             let component_context = ComponentContext::transform(&self.topology_id, id.clone());
@@ -1294,6 +1440,7 @@ impl TopologyBuildState {
             self.interconnect_capacity,
             self.input_capacities,
             input_gates,
+            input_buffer_events,
             self.worker_pool_config,
         ))
     }
@@ -1400,12 +1547,20 @@ impl Supervisable for TopologyBlueprint {
     }
 }
 
+/// Returns the number of events each buffer in the input of the transform `builder` builds holds at most, as the
+/// topology counts it: what the builder declares, at least one and at most the capacity of an events buffer.
+fn input_buffer_events(builder: &dyn TransformBuilder) -> usize {
+    builder.input_buffer_events().clamp(1, DEFAULT_EVENTS_BUFFER_CAPACITY)
+}
+
 /// Describes a component's input and outputs, for errors about replacing it.
 #[cfg(any(test, feature = "test-util"))]
 fn describe_shape(component: &super::ComponentSnapshot) -> String {
-    let input = component
-        .input()
-        .map_or_else(|| "no input".to_string(), |input| format!("input {}", input));
+    let input = match (component.input(), component.input_lanes()) {
+        (None, _) => "no input".to_string(),
+        (Some(input), Some(lanes)) if lanes.get() > 1 => format!("input {} on {} lanes", input, lanes),
+        (Some(input), _) => format!("input {}", input),
+    };
     let outputs = component
         .outputs()
         .iter()
@@ -1420,7 +1575,7 @@ fn describe_shape(component: &super::ComponentSnapshot) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroUsize;
+    use std::num::{NonZeroU16, NonZeroUsize};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
     use std::time::Duration;
@@ -1430,7 +1585,7 @@ mod tests {
     use saluki_error::GenericError;
     use tokio::sync::oneshot;
 
-    use super::{TopologyBlueprint, TopologyReady, WorkerPoolConfiguration};
+    use super::{TopologyBlueprint, TopologyReady, WorkerPoolConfiguration, DEFAULT_WORKER_POOL_THREADS};
     use crate::accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder, MemoryLimiter};
     use crate::components::BuildContext;
     use crate::data_model::event::{metric::Metric, Event};
@@ -1442,7 +1597,7 @@ mod tests {
     use crate::runtime::{self, state::ResourceRegistry, Name};
     use crate::test_support::wait_until;
     use crate::topology::{ids::get_component_relative_identifier, topology_identifier, ComponentId};
-    use crate::topology::{DataType, EventsBuffer, OutputName, DEFAULT_EVENTS_BUFFER_CAPACITY};
+    use crate::topology::{DataType, EventsBuffer, LaneEdge, OutputName, DEFAULT_EVENTS_BUFFER_CAPACITY};
     use crate::{
         components::{
             destinations::{Destination, DestinationBuilder, DestinationContext},
@@ -1791,7 +1946,7 @@ mod tests {
         let mut pairs = Vec::new();
         for (from, outputs) in &outbound_edges {
             for targets in outputs.values() {
-                for to in targets {
+                for (to, _) in targets {
                     pairs.push((from.component_id().to_string(), to.component_id().to_string()));
                 }
             }
@@ -2245,6 +2400,534 @@ mod tests {
         assert_eq!(bounds.total_firm_limit_bytes(), expected_firm);
     }
 
+    /// A transform builder that declares `lanes` input lanes and input buffers of at most `buffer_events` events, and
+    /// otherwise builds what `inner` builds.
+    struct LanedTransformBuilder<B = ForwardingTransformBuilder> {
+        lanes: NonZeroU16,
+        buffer_events: usize,
+        inner: B,
+    }
+
+    impl LanedTransformBuilder {
+        fn forwarding(lanes: u16) -> Self {
+            Self {
+                lanes: NonZeroU16::new(lanes).unwrap(),
+                buffer_events: DEFAULT_EVENTS_BUFFER_CAPACITY,
+                inner: ForwardingTransformBuilder::new(),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl<B> TransformBuilder for LanedTransformBuilder<B>
+    where
+        B: TransformBuilder + Send + Sync,
+    {
+        fn input_event_type(&self) -> EventType {
+            self.inner.input_event_type()
+        }
+
+        fn outputs(&self) -> &[OutputDefinition<EventType>] {
+            self.inner.outputs()
+        }
+
+        fn input_lanes(&self) -> NonZeroU16 {
+            self.lanes
+        }
+
+        fn input_buffer_events(&self) -> usize {
+            self.buffer_events
+        }
+
+        async fn build(&self, context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+            self.inner.build(context).await
+        }
+    }
+
+    impl<B> MemoryBounds for LanedTransformBuilder<B> {
+        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    }
+
+    /// Returns every edge of `blueprint`'s snapshot, with the routing it records.
+    fn routed_edges(blueprint: &TopologyBlueprint) -> Vec<(String, String, Option<LaneEdge>)> {
+        blueprint
+            .snapshot()
+            .unwrap()
+            .edges()
+            .iter()
+            .map(|edge| (edge.from().to_string(), edge.to().to_string(), edge.routing()))
+            .collect()
+    }
+
+    #[test]
+    fn a_transform_with_lanes_is_connected_by_routed_edges_and_described_with_its_lanes() {
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+        assert_eq!(ForwardingTransformBuilder::new().input_lanes().get(), 1);
+        assert_eq!(
+            ForwardingTransformBuilder::new().input_buffer_events(),
+            DEFAULT_EVENTS_BUFFER_CAPACITY
+        );
+        blueprint
+            .add_source("source", TestSourceBuilder::default_output(EventType::Metric))
+            .unwrap()
+            .add_source("other", TestSourceBuilder::default_output(EventType::Metric))
+            .unwrap()
+            .add_transform("laned", LanedTransformBuilder::forwarding(3))
+            .unwrap()
+            .with_component_input_capacity("laned", NonZeroUsize::new(5).unwrap())
+            .unwrap();
+
+        // An edge into a component with lanes names its routing, and a lane the component has.
+        let error = blueprint.connect_components("source", "laned").map(|_| ()).unwrap_err();
+        assert!(
+            format!("{error:#}").contains(
+                "cannot connect 'source' to 'laned' without naming how it picks one of the component's 3 input lanes"
+            ),
+            "{error:#}"
+        );
+        let error = blueprint
+            .connect_components_with("source", "laned", LaneEdge::Fixed(3))
+            .map(|_| ())
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("cannot connect 'source' to lane 3 of 'laned', which has 3 input lane(s)"),
+            "{error:#}"
+        );
+        blueprint
+            .connect_components_with("source", "laned", LaneEdge::Fixed(2))
+            .unwrap()
+            .connect_components_with("other", "laned", LaneEdge::Spread)
+            .unwrap();
+
+        let snapshot = blueprint.snapshot().unwrap();
+        let laned = snapshot.component("laned").unwrap();
+        assert_eq!(laned.input_lanes(), NonZeroU16::new(3));
+        assert_eq!(
+            laned.input_capacity(),
+            NonZeroUsize::new(5),
+            "the capacity of each lane"
+        );
+        assert_eq!(snapshot.component("source").unwrap().input_lanes(), None);
+        assert_eq!(
+            routed_edges(&blueprint),
+            vec![
+                ("other".to_string(), "laned".to_string(), Some(LaneEdge::Spread)),
+                ("source".to_string(), "laned".to_string(), Some(LaneEdge::Fixed(2))),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_edge_into_a_component_with_one_lane_leads_to_lane_zero_whatever_it_names() {
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+        blueprint
+            .add_source("source", TestSourceBuilder::default_output(EventType::Metric))
+            .unwrap()
+            .add_source("other", TestSourceBuilder::default_output(EventType::Metric))
+            .unwrap()
+            .add_source("third", TestSourceBuilder::default_output(EventType::Metric))
+            .unwrap()
+            .add_transform("transform", ForwardingTransformBuilder::new())
+            .unwrap();
+        blueprint
+            .connect_components_with("source", "transform", LaneEdge::Fixed(0))
+            .unwrap()
+            .connect_components_with("other", "transform", LaneEdge::Spread)
+            .unwrap();
+        let error = blueprint
+            .connect_components_with("third", "transform", LaneEdge::Fixed(1))
+            .map(|_| ())
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("cannot connect 'third' to lane 1 of 'transform', which has 1 input lane(s)"),
+            "{error:#}"
+        );
+        assert_eq!(LaneEdge::Fixed(3).to_string(), "fixed to lane 3");
+        // Edges into a component with one lane record no routing, whatever they named.
+        assert_eq!(
+            routed_edges(&blueprint),
+            vec![
+                ("other".to_string(), "transform".to_string(), None),
+                ("source".to_string(), "transform".to_string(), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_replacement_keeps_the_input_lanes_of_the_transform_it_replaces() {
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+        blueprint
+            .add_transform("laned", LanedTransformBuilder::forwarding(2))
+            .unwrap();
+        let error = blueprint
+            .replace_transform("laned", ForwardingTransformBuilder::new())
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("but the component it replaces declares input"),
+            "{}",
+            error
+        );
+        assert!(error.contains("on 2 lanes"), "{}", error);
+        blueprint
+            .replace_transform("laned", LanedTransformBuilder::forwarding(2))
+            .unwrap();
+    }
+
+    #[test]
+    fn replacing_a_transform_recalculates_the_bounds_of_its_input_from_the_replacement() {
+        // src -> laned (2 lanes) -> out at an interconnect capacity of 4: built with a transform whose input holds
+        // buffers of 16 events, and built with one of 1,024 events that is then replaced by one of 16.
+        let laned = |buffer_events| LanedTransformBuilder {
+            buffer_events,
+            ..LanedTransformBuilder::forwarding(2)
+        };
+        let blueprint_with = |registry: &ComponentRegistry, buffer_events| {
+            let mut blueprint = TopologyBlueprint::new("test", registry);
+            blueprint.with_interconnect_capacity(NonZeroUsize::new(4).unwrap());
+            blueprint
+                .add_source("src", TestSourceBuilder::default_output(EventType::Metric))
+                .unwrap()
+                .add_transform("laned", laned(buffer_events))
+                .unwrap()
+                .add_destination("out", TestDestinationBuilder::with_input_type(EventType::Metric))
+                .unwrap();
+            blueprint
+        };
+        let fresh = ComponentRegistry::default();
+        let _fresh = blueprint_with(&fresh, 16);
+        let replaced = ComponentRegistry::default();
+        let mut blueprint = blueprint_with(&replaced, DEFAULT_EVENTS_BUFFER_CAPACITY);
+        assert_ne!(total_bytes(&replaced), total_bytes(&fresh));
+
+        blueprint.replace_transform("laned", laned(16)).unwrap();
+        assert_eq!(total_bytes(&replaced), total_bytes(&fresh));
+    }
+
+    #[cfg(debug_assertions)]
+    #[tokio::test]
+    async fn a_transform_whose_input_holds_smaller_buffers_fails_on_a_buffer_allocated_for_more_events() {
+        // The bounds count 4 events per slot of the input of a transform that declares buffers of at most 4 events, so
+        // a buffer with storage for more holds memory they do not count, however few events it holds: a debug build
+        // fails the transform on receiving one. Returns how the topology ended and the lengths of the buffers received.
+        async fn run(source: ScriptedSourceBuilder) -> (Result<(), SupervisorError>, Vec<(usize, usize)>) {
+            let received = Arc::new(StdMutex::new(Vec::new()));
+            let component_registry = ComponentRegistry::default();
+            let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+            blueprint
+                .add_source("src", source)
+                .unwrap()
+                .add_transform(
+                    "small",
+                    LanedTransformBuilder {
+                        lanes: NonZeroU16::MIN,
+                        buffer_events: 4,
+                        inner: LaneRecordingTransformBuilder {
+                            received: Arc::clone(&received),
+                            outputs: vec![OutputDefinition::default_output(EventType::Metric)],
+                        },
+                    },
+                )
+                .unwrap()
+                .connect_components("src", "small")
+                .unwrap()
+                .with_health_registry(HealthRegistry::new())
+                .with_memory_limiter(MemoryLimiter::noop())
+                .with_resource_registry(ResourceRegistry::new());
+            let result = run_blueprint_until_exit(
+                blueprint,
+                RestartStrategy::new(RestartMode::OneForOne, 0, Duration::from_secs(5)),
+            )
+            .await;
+            let received = received.lock().unwrap().clone();
+            (result, received)
+        }
+        let steps = |sizes: &[usize]| {
+            sizes
+                .iter()
+                .map(|&events| ScriptStep {
+                    output: None,
+                    events,
+                    at: AdmissionTime::from_unix_secs(100),
+                })
+                .collect::<Vec<_>>()
+        };
+
+        // A buffer allocated for its 4 events is received; one allocated for its 8 is not.
+        let (result, received) = run(ScriptedSourceBuilder::new(steps(&[4, 8]), ManualWallClock::default())).await;
+        assert!(matches!(result, Err(SupervisorError::Shutdown)), "{:?}", result);
+        assert_eq!(received, vec![(0, 4)]);
+
+        // A buffer of 2 events allocated for a full events buffer, as a decoder's is, is not received either.
+        let source = ScriptedSourceBuilder::new(steps(&[2]), ManualWallClock::default())
+            .allocating(DEFAULT_EVENTS_BUFFER_CAPACITY);
+        let (result, received) = run(source).await;
+        assert!(matches!(result, Err(SupervisorError::Shutdown)), "{:?}", result);
+        assert_eq!(received, Vec::new());
+    }
+
+    #[test]
+    fn the_bounds_count_an_interconnect_per_lane_holding_the_events_its_transform_declares_per_buffer() {
+        // src -> laned (3 lanes of buffers of up to 256 events) -> plain -> out, at an interconnect capacity of 4.
+        let interconnect_capacity = 4usize;
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+        blueprint.with_interconnect_capacity(NonZeroUsize::new(interconnect_capacity).unwrap());
+        blueprint
+            .add_source("src", TestSourceBuilder::default_output(EventType::Metric))
+            .unwrap()
+            .add_transform(
+                "laned",
+                LanedTransformBuilder {
+                    buffer_events: 256,
+                    ..LanedTransformBuilder::forwarding(3)
+                },
+            )
+            .unwrap()
+            .add_transform("plain", ForwardingTransformBuilder::new())
+            .unwrap()
+            .add_destination("out", TestDestinationBuilder::with_input_type(EventType::Metric))
+            .unwrap();
+
+        let buffer_bytes = |events: usize| std::mem::size_of::<EventsBuffer>() + std::mem::size_of::<Event>() * events;
+        let expected = |laned_capacity: usize| {
+            // The laned transform's three interconnects, and one each for the plain transform and the destination.
+            let laned_slots = 3 * laned_capacity;
+            let minimum = (laned_slots + 2 * interconnect_capacity) * std::mem::size_of::<EventsBuffer>();
+            // Buffers of 1,024 events: the plain interconnects, and one in flight in the source and in each of the four
+            // transform lanes; and the laned interconnects' buffers of 256 events.
+            let full = 2 * interconnect_capacity + 1 + 4;
+            let firm = minimum + full * buffer_bytes(DEFAULT_EVENTS_BUFFER_CAPACITY) + laned_slots * buffer_bytes(256);
+            (minimum, firm)
+        };
+        assert_eq!(total_bytes(&component_registry), expected(interconnect_capacity));
+
+        // A capacity of its own applies to each lane.
+        blueprint
+            .with_component_input_capacity("laned", NonZeroUsize::new(5).unwrap())
+            .unwrap();
+        assert_eq!(total_bytes(&component_registry), expected(5));
+
+        // A transform's buffers hold at least one event and at most as many as an events buffer holds.
+        let mut blueprint = TopologyBlueprint::new("clamped", &component_registry);
+        blueprint.with_interconnect_capacity(NonZeroUsize::new(1).unwrap());
+        let before = total_bytes(&component_registry);
+        blueprint
+            .add_transform(
+                "huge",
+                LanedTransformBuilder {
+                    buffer_events: 1 << 20,
+                    ..LanedTransformBuilder::forwarding(1)
+                },
+            )
+            .unwrap()
+            .add_transform(
+                "empty",
+                LanedTransformBuilder {
+                    buffer_events: 0,
+                    ..LanedTransformBuilder::forwarding(1)
+                },
+            )
+            .unwrap();
+        let after = total_bytes(&component_registry);
+        let slot = std::mem::size_of::<EventsBuffer>();
+        assert_eq!(
+            (after.0 - before.0, after.1 - before.1),
+            (
+                2 * slot,
+                2 * slot + 3 * buffer_bytes(DEFAULT_EVENTS_BUFFER_CAPACITY) + buffer_bytes(1)
+            )
+        );
+    }
+
+    /// A transform that records the lane and length of every buffer each of its lanes receives, until every lane's
+    /// input closes.
+    struct LaneRecordingTransform {
+        received: Arc<StdMutex<Vec<(usize, usize)>>>,
+    }
+
+    #[async_trait]
+    impl Transform for LaneRecordingTransform {
+        async fn run(self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
+            let lanes = context
+                .take_lane_inputs()
+                .into_iter()
+                .enumerate()
+                .map(|(lane, mut input)| {
+                    let received = Arc::clone(&self.received);
+                    tokio::spawn(async move {
+                        while let Some(buffer) = input.next().await {
+                            received.lock().unwrap().push((lane, buffer.len()));
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+            for lane in lanes {
+                lane.await
+                    .map_err(|error| saluki_error::generic_error!("A lane task failed: {}", error))?;
+            }
+            Ok(())
+        }
+    }
+
+    struct LaneRecordingTransformBuilder {
+        received: Arc<StdMutex<Vec<(usize, usize)>>>,
+        outputs: Vec<OutputDefinition<EventType>>,
+    }
+
+    #[async_trait]
+    impl TransformBuilder for LaneRecordingTransformBuilder {
+        fn input_event_type(&self) -> EventType {
+            EventType::Metric
+        }
+
+        fn outputs(&self) -> &[OutputDefinition<EventType>] {
+            &self.outputs
+        }
+
+        async fn build(&self, _: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+            Ok(Box::new(LaneRecordingTransform {
+                received: Arc::clone(&self.received),
+            }))
+        }
+    }
+
+    impl MemoryBounds for LaneRecordingTransformBuilder {
+        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    }
+
+    #[tokio::test]
+    async fn a_running_topology_feeds_each_lane_of_a_transform_by_the_routing_of_its_edges() {
+        // fixed -> laned (lane 1); spread -> {laned (spread over two lanes), tap}. The sources' batches are told apart
+        // by their sizes: the fixed source sends batches of 1 to 3 events, the spread source of 4 to 7.
+        let steps = |sizes: std::ops::RangeInclusive<usize>| {
+            sizes
+                .map(|events| ScriptStep {
+                    output: None,
+                    events,
+                    at: AdmissionTime::from_unix_secs(100),
+                })
+                .collect::<Vec<_>>()
+        };
+        let received = Arc::new(StdMutex::new(Vec::new()));
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+        blueprint
+            .add_source(
+                "fixed",
+                ScriptedSourceBuilder::new(steps(1..=3), ManualWallClock::default()),
+            )
+            .unwrap()
+            .add_source(
+                "spread",
+                ScriptedSourceBuilder::new(steps(4..=7), ManualWallClock::default()),
+            )
+            .unwrap()
+            .add_transform(
+                "laned",
+                LanedTransformBuilder {
+                    lanes: NonZeroU16::new(2).unwrap(),
+                    buffer_events: DEFAULT_EVENTS_BUFFER_CAPACITY,
+                    inner: LaneRecordingTransformBuilder {
+                        received: Arc::clone(&received),
+                        outputs: vec![OutputDefinition::default_output(EventType::Metric)],
+                    },
+                },
+            )
+            .unwrap();
+        let tap = add_collector(&mut blueprint, "tap");
+        blueprint
+            .connect_components_with("fixed", "laned", LaneEdge::Fixed(1))
+            .unwrap()
+            .connect_components_with("spread", "laned", LaneEdge::Spread)
+            .unwrap()
+            .connect_components("spread", "tap")
+            .unwrap()
+            .with_health_registry(HealthRegistry::new())
+            .with_memory_limiter(MemoryLimiter::noop())
+            .with_resource_registry(ResourceRegistry::new());
+
+        let (tx, handle) = spawn_supervised_blueprint(blueprint);
+        wait_until("every lane and the tap received their batches", || {
+            received.lock().unwrap().len() == 7 && tap.lock().unwrap().len() == 4
+        })
+        .await;
+        tx.send(()).expect("should send shutdown signal");
+        let result = join_topology(handle).await;
+        assert!(result.is_ok(), "topology should shut down cleanly, got: {:?}", result);
+
+        let received = received.lock().unwrap().clone();
+        let from = |sizes: std::ops::RangeInclusive<usize>, lane: usize| {
+            received
+                .iter()
+                .filter(|(at, events)| *at == lane && sizes.contains(events))
+                .map(|(_, events)| *events)
+                .collect::<Vec<_>>()
+        };
+        // Every batch of the fixed source reaches lane 1, in order; the spread source's alternate, starting at lane 0.
+        assert_eq!(from(1..=3, 0), Vec::<usize>::new());
+        assert_eq!(from(1..=3, 1), vec![1, 2, 3]);
+        assert_eq!(from(4..=7, 0), vec![4, 6]);
+        assert_eq!(from(4..=7, 1), vec![5, 7]);
+        // The tap, with one lane, receives every batch of the spread source.
+        let tap_sizes = tap.lock().unwrap().iter().map(EventsBuffer::len).collect::<Vec<_>>();
+        assert_eq!(tap_sizes, vec![4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn a_dedicated_worker_pool_can_be_sized() {
+        let mut blueprint = blueprint_with_components();
+        blueprint.with_dedicated_worker_pool(NonZeroUsize::new(12).unwrap());
+        let guard = blueprint.build_state.lock().expect("topology blueprint mutex poisoned");
+        let config = &guard
+            .as_ref()
+            .expect("topology blueprint already initialized")
+            .worker_pool_config;
+        assert!(matches!(config, WorkerPoolConfiguration::Dedicated { threads } if threads.get() == 12));
+    }
+
+    #[test]
+    fn owned_points_shared_clocks_and_heartbeats_in_each_second_are_never_a_dispatchers() {
+        let schedule = AdmissionSchedule::Steady(Arc::new(GenerationToken::new(GenerationId::new(1)))).into_handle();
+        let config = |id| {
+            AdmissionPointConfig::new(
+                AdmissionPointId::new(id),
+                AdmissionMode::Admit,
+                Arc::clone(&schedule),
+                Duration::from_secs(300),
+            )
+        };
+        let mut blueprint = blueprint_with_components();
+        let error = blueprint
+            .with_admission_point("source", config(1).owned())
+            .err()
+            .expect("an owned point is refused")
+            .to_string();
+        assert!(error.contains("is owned"), "{}", error);
+        let clock = crate::execution::SourceClock::new(crate::execution::AdmissionClock::new(Duration::from_secs(300)));
+        let error = blueprint
+            .with_admission_point("source", config(2).with_source_clock(clock))
+            .err()
+            .expect("a shared clock is refused")
+            .to_string();
+        assert!(error.contains("shares a source clock"), "{}", error);
+        let error = blueprint
+            .with_admission_point(
+                "source",
+                config(3)
+                    .with_heartbeat(Duration::from_secs(1))
+                    .with_heartbeat_each_second(Duration::from_millis(100)),
+            )
+            .err()
+            .expect("a heartbeat in each second is refused")
+            .to_string();
+        assert!(error.contains("heartbeats in each second"), "{}", error);
+    }
+
     #[test]
     fn worker_pool_configuration_defaults_to_dedicated() {
         let blueprint = blueprint_with_components();
@@ -2254,7 +2937,7 @@ mod tests {
             .expect("topology blueprint already initialized")
             .worker_pool_config;
         assert!(
-            matches!(config, WorkerPoolConfiguration::Dedicated),
+            matches!(config, WorkerPoolConfiguration::Dedicated { threads } if *threads == DEFAULT_WORKER_POOL_THREADS),
             "the default worker-pool configuration must be dedicated"
         );
     }
@@ -2281,10 +2964,12 @@ mod tests {
         at: AdmissionTime,
     }
 
-    /// A source that sends a scripted sequence of batches, then runs until shutdown.
+    /// A source that sends a scripted sequence of batches, each in a buffer allocated for its events or for `allocated`
+    /// events, whichever is more, then runs until shutdown.
     struct ScriptedSource {
         script: Vec<ScriptStep>,
         wall: ManualWallClock,
+        allocated: usize,
     }
 
     #[async_trait]
@@ -2293,7 +2978,7 @@ mod tests {
             let shutdown = context.take_shutdown_handle();
             for step in &self.script {
                 self.wall.set(step.at);
-                let mut buffer = EventsBuffer::with_capacity(step.events);
+                let mut buffer = EventsBuffer::with_capacity(step.events.max(self.allocated));
                 for value in 0..step.events {
                     assert!(buffer
                         .try_push(Event::Metric(Metric::gauge("m", value as f64)))
@@ -2314,6 +2999,7 @@ mod tests {
         outputs: Vec<OutputDefinition<EventType>>,
         script: Vec<ScriptStep>,
         wall: ManualWallClock,
+        allocated: usize,
     }
 
     impl ScriptedSourceBuilder {
@@ -2325,7 +3011,15 @@ mod tests {
                 ],
                 script,
                 wall,
+                allocated: 0,
             }
+        }
+
+        /// Returns this builder with every buffer allocated for at least `events` events, as a decoder allocates a full
+        /// buffer however many events it fills it with.
+        fn allocating(mut self, events: usize) -> Self {
+            self.allocated = events;
+            self
         }
     }
 
@@ -2339,6 +3033,7 @@ mod tests {
             Ok(Box::new(ScriptedSource {
                 script: self.script.clone(),
                 wall: self.wall.clone(),
+                allocated: self.allocated,
             }))
         }
     }

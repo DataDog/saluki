@@ -80,8 +80,8 @@ architecture is fundamentally different or the feature is platform-specific.
 | `dogstatsd_no_aggregation_pipeline_workers_count`                                        | No-aggregation pipeline worker count               | See below                                                                                                                                                                                                                                                                 |
 | `dogstatsd_packet_buffer_flush_timeout`                                                  | Packet buffer flush timeout                        | ADP queues individual datagrams without packet batching.                                                                                                                                                                                                                  |
 | `dogstatsd_packet_buffer_size`                                                           | Datagrams per packet buffer                        | ADP queues individual datagrams in its bounded I/O buffer pool.                                                                                                                                                                                                           |
-| `dogstatsd_pipeline_autoadjust`                                                          | Auto-adjust pipeline workers                       | ADP uses async tasks.                                                                                                                                                                                                                                                     |
-| `dogstatsd_pipeline_count`                                                               | Parallel processing pipelines                      | ADP uses async tasks.                                                                                                                                                                                                                                                     |
+| `dogstatsd_pipeline_autoadjust`                                                          | Auto-adjust pipeline workers                       | ADP partitions aggregation by lanes (`experimental.programmable_metrics.lanes.*`).                                                                                                                                                                                        |
+| `dogstatsd_pipeline_count`                                                               | Parallel processing pipelines                      | ADP partitions aggregation by lanes (`experimental.programmable_metrics.lanes.*`).                                                                                                                                                                                        |
 | `dogstatsd_queue_size`                                                                   | Packet channel buffer size                         | ADP bounds datagram queues with `dogstatsd_buffer_count_max`.                                                                                                                                                                                                             |
 | `dogstatsd_stats_buffer`                                                                 | Internal stats buffer size                         | ADP does not expose the core agent's packet-per-second expvar endpoint, so there is no persistent stats endpoint buffer to configure.                                                                                                                                     |
 | `dogstatsd_stats_enable`                                                                 | Enable internal stats endpoint                     | See below                                                                                                                                                                                                                                                                 |
@@ -500,6 +500,10 @@ the regex evaluation cost without amortization.
 If you previously set `dogstatsd_mapper_cache_size: 0` in the core agent to turn off the
 mapper, clear `dogstatsd_mapper_profiles` instead when running ADP.
 
+With `experimental.programmable_metrics.lanes.mode: auto`, the default, the size is per
+producer lane: each producer lane of the metrics path keeps a cache of its own of this size,
+so the memory bounds count it once for every producer lane.
+
 ### `dogstatsd_metrics_stats_enable`
 
 See `dogstatsd_stats_enable`
@@ -511,9 +515,16 @@ all DogStatsD listeners. When this setting is `0`, it derives the count from ava
 and the DogStatsD pipeline configuration.
 
 ADP uses the same explicit override for one decoder worker pool shared by all connectionless
-UDP and UDS datagram listeners. When this setting is `0`, ADP matches the core Agent's default
-pipeline settings: one listener worker, one aggregation pipeline, and at least two decoder
-workers. Connection-oriented listeners continue to use one decoder per connection.
+UDP and UDS datagram listeners. When this setting is `0`, ADP derives the decoder count from
+available vCPUs as the core Agent does for one listener worker and one aggregation pipeline:
+`max(vCPUs - 2, 2)`, at least two decoder workers. Aggregation itself runs on the state lanes
+of `experimental.programmable_metrics.lanes.*`. Connection-oriented listeners continue to use
+one decoder per connection.
+
+With `experimental.programmable_metrics.lanes.mode: auto`, the default, the decoder count also
+sets the producer lanes of the metrics path, up to 16, and the default of its post-aggregation
+lanes. Below three worker threads, where every lane count comes to one, the metrics path runs
+without lanes, as with `mode: off`.
 
 ### `env`
 
@@ -731,6 +742,9 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `experimental.metrics_endpoint_routing.metric_prefix_allowlist`    | Per-endpoint literal metric-prefix allow lists                              | {}             |
 | `experimental.programmable_metrics.artifact_channel.poll_interval` | Artifact channel stub poll interval                                         | 1 second       |
 | `experimental.programmable_metrics.artifact_channel.stub_url`      | Artifact channel stub URL (development only)                                |                |
+| `experimental.programmable_metrics.lanes.mode`                     | Whether the slots of the metrics path run on lanes                          | auto           |
+| `experimental.programmable_metrics.lanes.post`                     | Post-aggregation lanes of the metrics path (0 is automatic)                 | 0              |
+| `experimental.programmable_metrics.lanes.state`                    | State lanes of DogStatsD aggregation (0 is automatic)                       | 0              |
 | `experimental.programmable_metrics.resources.credentials`          | Credentials resources artifacts may send with, by name                      | {}             |
 | `flush_timeout_secs`                                               | Encoder flush timeout (secs)                                                |                |
 | `memory_limit`                                                     | Process memory limit                                                        |                |
@@ -854,6 +868,25 @@ experimental:
     resources:
       credentials:
         team_d: <team-d-api-key>
+```
+
+### `experimental.programmable_metrics.lanes.*`
+
+ADP can run the work of its metrics path on lanes: tasks inside one component that each process their own share of the input in parallel. The DogStatsD source's metrics split into producer lanes, one per decoder up to 16, each of which runs the DogStatsD processing before aggregation; DogStatsD aggregation runs on state lanes, each holding a disjoint share of the contexts, so that every context is aggregated in one lane; and the processing after aggregation runs on post-aggregation lanes.
+
+> [!WARNING]
+> Settings under `experimental` are unstable and may change, move, or be removed. Do not rely on backward compatibility.
+
+With `mode: auto`, the default, the producer lanes follow `dogstatsd_workers_count` (up to 16, and one below three worker threads); `state` sets the state lanes and `post` the post-aggregation lanes, where `0`, the default, is automatic: one state lane on fewer than four worker threads, otherwise half the worker threads, between 2 and 4; and as many post-aggregation lanes as producer lanes, up to 8. Where every automatic count comes to one, as below three worker threads, and neither `state` nor `post` is set, the metrics path runs without lanes, as with `mode: off`: one lane per component runs nothing in parallel, and costs less without lanes. ADP logs the lanes it started on. An explicit count above 64 is lowered to 64, with a warning. In `strict` `memory_mode`, automatic counts that would not fit `memory_limit` are lowered, post-aggregation lanes first, then state lanes, then producer lanes, and ADP logs what it chose; they also leave room in the limit for a live configuration change to rebuild the processing of one component on every lane, whenever the metrics path without lanes would leave it. If the configured counts do not fit, ADP refuses to start and names the keys that set them. Caches of the DogStatsD mapper and the tag filterlist are per producer lane, each of the configured size. With `mode: off`, every component of the metrics path runs on one lane, as before lanes existed; a YAML tool that writes an unquoted `off` as the boolean `false` gives the same mode. Every key is read at startup; changing one requires a restart.
+
+```yaml
+# Experimental keys may change, move, or be removed without backward compatibility.
+experimental:
+  programmable_metrics:
+    lanes:
+      mode: auto
+      state: 0
+      post: 0
 ```
 
 ### `data_plane.apm.*`

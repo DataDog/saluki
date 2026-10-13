@@ -175,6 +175,38 @@ pub fn route_to_team_d(source: &str, outputs: &Outputs, team_d_output: &str) -> 
     Ok(with_branch.replacen(&edge, &format!("{}{}", edge, node), 1))
 }
 
+/// The nodes of the pre-aggregation scope whose windows a width change sets: DogStatsD aggregation, and the timestamp
+/// split ahead of it, whose window must equal its aggregation's.
+pub const WINDOWED_NODES: [&str; 2] = ["dsd_no_agg_split", "dsd_agg"];
+
+/// S13: changes DogStatsD aggregation's width in the pre-aggregation scope's source to `width` (a duration literal,
+/// such as `30s`): the `window` of each of [`WINDOWED_NODES`], whatever it was set to, becomes the literal.
+pub fn width_change(source: &str, width: &str) -> Result<String, GenericError> {
+    let mut edited = source.to_string();
+    for node in WINDOWED_NODES {
+        let header = format!("\n  node {} = ", node);
+        let start = edited
+            .find(&header)
+            .ok_or_else(|| generic_error!("The pre-aggregation scope's source has no node `{}`.", node))?;
+        // The node's definition ends at the first line that closes a block at the node's indentation.
+        let end = edited[start + 1..]
+            .find("\n  }\n")
+            .map_or(edited.len(), |end| start + 1 + end);
+        const WINDOW: &str = "\n    window: ";
+        let window = edited[start..end]
+            .find(WINDOW)
+            .map(|offset| start + offset + WINDOW.len())
+            .ok_or_else(|| generic_error!("Node `{}` of the pre-aggregation scope sets no `window`.", node))?;
+        let value_end = edited[window..]
+            .find(",\n")
+            .map(|offset| window + offset)
+            .filter(|value_end| *value_end <= end)
+            .ok_or_else(|| generic_error!("The `window` of node `{}` does not end its line with a comma.", node))?;
+        edited.replace_range(window..value_end, width);
+    }
+    Ok(edited)
+}
+
 /// S5, aggregation without parameters: an aggregation in front of the policy that names only its window, while
 /// validation requires every parameter of an aggregation.
 pub fn aggregation_without_parameters(source: &str) -> Result<String, GenericError> {

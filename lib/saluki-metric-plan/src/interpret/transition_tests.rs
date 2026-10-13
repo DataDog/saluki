@@ -29,31 +29,31 @@ use crate::{
 };
 
 /// The base time: a multiple of 300, and so of every allowed width.
-const B: u64 = 1_700_000_100;
+pub(super) const B: u64 = 1_700_000_100;
 
 /// Returns the time `relative_millis` milliseconds after `B`.
-fn ms(relative_millis: u64) -> AdmissionTime {
+pub(super) fn ms(relative_millis: u64) -> AdmissionTime {
     AdmissionTime::from_unix_nanos((B * 1_000 + relative_millis) * 1_000_000)
 }
 
 /// Returns the time `relative` seconds after `B`.
-fn t(relative: u64) -> AdmissionTime {
+pub(super) fn t(relative: u64) -> AdmissionTime {
     ms(relative * 1_000)
 }
 
-fn id(value: &str) -> NodeId {
+pub(super) fn id(value: &str) -> NodeId {
     value.parse().unwrap()
 }
 
-fn src() -> NodeId {
+pub(super) fn src() -> NodeId {
     id("src")
 }
 
-fn fingerprint(output: &str) -> PlanHash {
+pub(super) fn fingerprint(output: &str) -> PlanHash {
     PlanHash::of_bytes(output.as_bytes())
 }
 
-fn catalog() -> MemoryCatalog {
+pub(super) fn catalog() -> MemoryCatalog {
     ["a", "b"].into_iter().fold(MemoryCatalog::new(), |catalog, output| {
         catalog.with_output(
             OutputId::new(output).unwrap(),
@@ -68,7 +68,7 @@ fn catalog() -> MemoryCatalog {
 }
 
 /// The parameters of an aggregation with the given window and native defaults otherwise.
-fn aggregation(window: &str) -> Value {
+pub(super) fn aggregation(window: &str) -> Value {
     json!({
         "window": window, "flush_interval": "15s", "context_limit": 1000, "counter_expiry": "5m",
         "flush_open_windows": false, "histogram_aggregates": ["max", "count"], "histogram_percentiles": [],
@@ -84,11 +84,11 @@ fn aggregation_limited(window: &str, context_limit: u64) -> Value {
     params
 }
 
-fn node(id: &str, op: &str, params: Value) -> Value {
+pub(super) fn node(id: &str, op: &str, params: Value) -> Value {
     json!({"id": id, "op": op, "params": params, "provenance": {"native": id}})
 }
 
-fn output_decls(outputs: &[&str]) -> Value {
+pub(super) fn output_decls(outputs: &[&str]) -> Value {
     Value::Array(
         outputs
             .iter()
@@ -101,7 +101,7 @@ fn output_decls(outputs: &[&str]) -> Value {
 }
 
 /// Builds a plan from nodes, edges written as `from -> to`, and the outputs it declares, without validating it.
-fn unvalidated_plan(nodes: Vec<Value>, edges: &[&str], outputs: &[&str]) -> Plan {
+pub(super) fn unvalidated_plan(nodes: Vec<Value>, edges: &[&str], outputs: &[&str]) -> Plan {
     let edges = edges
         .iter()
         .map(|edge| {
@@ -116,7 +116,7 @@ fn unvalidated_plan(nodes: Vec<Value>, edges: &[&str], outputs: &[&str]) -> Plan
 }
 
 /// Builds a valid plan from nodes, edges written as `from -> to`, and the outputs it declares.
-fn plan(nodes: Vec<Value>, edges: &[&str], outputs: &[&str]) -> Plan {
+pub(super) fn plan(nodes: Vec<Value>, edges: &[&str], outputs: &[&str]) -> Plan {
     let plan = unvalidated_plan(nodes, edges, outputs);
     let report = Validator::new(&OperatorRegistry::native(), &catalog()).validate(&plan);
     assert!(report.is_valid(), "the fixture plan is invalid:\n{}", report);
@@ -124,7 +124,7 @@ fn plan(nodes: Vec<Value>, edges: &[&str], outputs: &[&str]) -> Plan {
 }
 
 /// A DogStatsD source, whose points are untimestamped unless `timestamps` says otherwise.
-fn dogstatsd(timestamps: &str) -> Value {
+pub(super) fn dogstatsd(timestamps: &str) -> Value {
     node(
         "src",
         "source",
@@ -133,7 +133,7 @@ fn dogstatsd(timestamps: &str) -> Value {
 }
 
 /// `src -> agg -> emit` to `output`, aggregating with `params`.
-fn aggregated_with(params: Value, output: &str, timestamps: &str) -> Plan {
+pub(super) fn aggregated_with(params: Value, output: &str, timestamps: &str) -> Plan {
     plan(
         vec![
             dogstatsd(timestamps),
@@ -146,20 +146,51 @@ fn aggregated_with(params: Value, output: &str, timestamps: &str) -> Plan {
 }
 
 /// `src -> agg -> emit` to `output`, aggregating over `window`.
-fn aggregated(window: &str, output: &str) -> Plan {
+pub(super) fn aggregated(window: &str, output: &str) -> Plan {
     aggregated_with(aggregation(window), output, "untimestamped")
 }
 
+/// The lanes every trace also runs on: its stamps spread over three lanes of `src`, as a trace runs on producer lanes
+/// ([`Trace::over_lanes`]).
+const LANES: u16 = 3;
+
+/// Runs a trace through the interpreter, and runs it again with its source's stamps spread over [`LANES`] lanes,
+/// requiring both runs to deliver and decide the same: the expectations written for one point hold on lanes too.
 fn interpreter_run(trace: Trace, heartbeats_at_ticks: bool) -> RunOutput {
     let registry = OperatorRegistry::native();
     let catalog = catalog();
-    let interpreter = Interpreter::new(&registry, &catalog);
-    let interpreter = if heartbeats_at_ticks {
-        interpreter.with_heartbeats_at_ticks()
-    } else {
-        interpreter
+    let run = |trace: &Trace, lanes: u16| {
+        let interpreter = Interpreter::new(&registry, &catalog).with_source_lanes(src(), lanes);
+        let interpreter = if heartbeats_at_ticks {
+            interpreter.with_heartbeats_at_ticks()
+        } else {
+            interpreter
+        };
+        interpreter.run(trace).unwrap()
     };
-    interpreter.run(&trace).unwrap()
+    let one = run(&trace, 1);
+    let spread = run(&trace.over_lanes(&src(), LANES), LANES);
+    for output in ["a", "b"] {
+        assert_eq!(
+            delivered(&spread, output),
+            delivered(&one, output),
+            "`{}` on {} lanes",
+            output,
+            LANES
+        );
+    }
+    // Mirrored heartbeats move the events after them, so a supersession names another position.
+    let outcomes = |run: &RunOutput| {
+        installs(run)
+            .into_iter()
+            .map(|(_, outcome)| match outcome.strip_prefix("superseded by ") {
+                Some(_) => "superseded".to_string(),
+                None => outcome,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(outcomes(&spread), outcomes(&one), "installations on {} lanes", LANES);
+    one
 }
 
 /// Runs a trace in which sources heartbeat only where the trace says.
@@ -172,7 +203,7 @@ fn run_with_heartbeats(trace: Trace) -> RunOutput {
     interpreter_run(trace, true)
 }
 
-fn counter(name: &'static str, value: f64) -> Metric {
+pub(super) fn counter(name: &'static str, value: f64) -> Metric {
     Metric::counter(Context::from_static_name(name), value)
 }
 
@@ -185,16 +216,16 @@ fn counter_with_unit(name: &'static str, value: f64, unit: &'static str) -> Metr
 }
 
 /// A gauge with one point at `B + relative`.
-fn gauge_at(name: &'static str, relative: u64, value: f64) -> Metric {
+pub(super) fn gauge_at(name: &'static str, relative: u64, value: f64) -> Metric {
     Metric::gauge(Context::from_static_name(name), (B + relative, value))
 }
 
 /// One delivered record: the generation that delivered it, its admission time in milliseconds relative to `B` (a
 /// flush time), and the record, as `name kind [bucket:value, ...]`, buckets relative to `B`, with its unit if it has
 /// one.
-type Delivered = (u64, u64, String);
+pub(super) type Delivered = (u64, u64, String);
 
-fn describe(metric: &Metric) -> String {
+pub(super) fn describe(metric: &Metric) -> String {
     let (kind, points) = match metric.values() {
         MetricValues::Rate(points, interval) => (format!("rate/{}s", interval.as_secs()), points),
         MetricValues::Gauge(points) => ("gauge".to_string(), points),
@@ -218,7 +249,7 @@ fn describe(metric: &Metric) -> String {
 }
 
 /// Returns what `output` received, in delivery order.
-fn delivered(run: &RunOutput, output: &str) -> Vec<Delivered> {
+pub(super) fn delivered(run: &RunOutput, output: &str) -> Vec<Delivered> {
     run.output(&OutputId::new(output).unwrap())
         .iter()
         .map(|record| {
@@ -232,7 +263,7 @@ fn delivered(run: &RunOutput, output: &str) -> Vec<Delivered> {
         .collect()
 }
 
-fn expected(records: &[(u64, u64, &str)]) -> Vec<Delivered> {
+pub(super) fn expected(records: &[(u64, u64, &str)]) -> Vec<Delivered> {
     records
         .iter()
         .map(|(generation, at, record)| (*generation, *at, record.to_string()))
@@ -241,7 +272,7 @@ fn expected(records: &[(u64, u64, &str)]) -> Vec<Delivered> {
 
 /// Returns each `install` and `cancel` event's position and outcome, written as `active 1`, `cut 2 at 100000`
 /// (milliseconds relative to `B`), `cancelled`, `cancel refused`, `superseded by 4`, `waiting`, or `rejected`.
-fn installs(run: &RunOutput) -> Vec<(usize, String)> {
+pub(super) fn installs(run: &RunOutput) -> Vec<(usize, String)> {
     run.installs()
         .iter()
         .map(|record| {
@@ -261,7 +292,7 @@ fn installs(run: &RunOutput) -> Vec<(usize, String)> {
         .collect()
 }
 
-fn outcomes(records: &[(usize, &str)]) -> Vec<(usize, String)> {
+pub(super) fn outcomes(records: &[(usize, &str)]) -> Vec<(usize, String)> {
     records
         .iter()
         .map(|(event, outcome)| (*event, outcome.to_string()))

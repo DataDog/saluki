@@ -29,5 +29,8 @@ pub use self::driver::{
 mod host;
 pub use self::host::RegionHostBuilder;
 
+pub mod lanes;
+pub use self::lanes::{LaneContext, LaneSplit, LaneStats};
+
 #[cfg(test)]
 mod tests;

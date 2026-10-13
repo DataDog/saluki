@@ -1,4 +1,5 @@
 use std::{
+    num::NonZeroU16,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant, SystemTime},
@@ -17,11 +18,12 @@ use bytesize::ByteSize;
 use datadog_agent_commons::ipc::config::RemoteAgentClientConfiguration;
 use datadog_agent_commons::platform::PlatformSettings;
 use saluki_app::{
-    accounting::{initialize_memory_bounds, MemoryBoundsConfiguration, MemoryMode as AppMemoryMode},
+    accounting::{initialize_memory_bounds, memory_grant, MemoryBoundsConfiguration, MemoryMode as AppMemoryMode},
     bootstrap::BootstrapGuard,
     metrics::emit_startup_metrics,
     util::wait_for_shutdown_signal,
 };
+use saluki_common::resource_tracking::set_cpu_time_sampling;
 use saluki_components::{
     config::{
         metrics_endpoint_routing::EndpointAllowlistGroup, AutoscalingFailoverConfiguration,
@@ -37,9 +39,9 @@ use saluki_components::{
     forwarders::{DatadogForwarderConfiguration, OtlpForwarderConfiguration},
     relays::otlp::OtlpRelayConfiguration,
     sources::{
-        ChecksIPCConfiguration, DogStatsDCaptureAPIHandler, DogStatsDCaptureControl, DogStatsDConfiguration,
-        DogStatsDReplayAPIHandler, DogStatsDReplayControl, EnablePayloadsConfiguration, OriginEnrichmentConfiguration,
-        OtlpConfiguration,
+        dogstatsd_metric_lane_output, ChecksIPCConfiguration, DogStatsDCaptureAPIHandler, DogStatsDCaptureControl,
+        DogStatsDConfiguration, DogStatsDReplayAPIHandler, DogStatsDReplayControl, EnablePayloadsConfiguration,
+        OriginEnrichmentConfiguration, OtlpConfiguration,
     },
     transforms::{
         AggregateContextSnapshotHandle, ApmStatsTransformConfiguration, ChainedConfiguration,
@@ -52,7 +54,8 @@ use saluki_core::{
     data_model::origin::OriginTagCardinality,
     health::HealthRegistry,
     runtime::{state::ResourceRegistry, RestartMode, RestartStrategy, Supervisor, SupervisorError},
-    topology::TopologyBlueprint,
+    support::SubsystemIdentifier,
+    topology::{topology_identifier, worker_pool_threads, TopologyBlueprint},
 };
 use saluki_env::{features, EnvironmentProvider as _, HostProvider as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -74,7 +77,10 @@ use crate::{
     programmable_metrics::{
         api::ControlSurfaceWorker,
         channel_stub::{ClientInfo, StubChannelConfig, StubChannelWorker},
-        installer::ProgrammableMetrics,
+        installer::{BootCapture, ProgrammableMetrics},
+        lanes::{
+            cpu_time_sampling, log_booted_lanes, LaneBound, LaneCounts, LaneFit, LaneSettings, CPU_TIME_SAMPLING_ENV,
+        },
         topology::PlanTopology,
     },
 };
@@ -213,24 +219,58 @@ pub async fn handle_run_command(
     .await?;
 
     // Lower the metrics configuration into the default program, which the metrics path of the topology is built from,
-    // and prepare the installer that keeps it current as the configuration changes.
-    let mut programmable_metrics = ProgrammableMetrics::boot(
+    // and prepare the installer that keeps it current as the configuration changes. The lanes the metrics path's slots
+    // run on are fixed now, from the configuration and the primary runtime's workers.
+    let workers = saluki_app::util::get_async_runtime_parallelism().unwrap_or(1);
+    let lane_settings = LaneSettings::from_config(&config_sys.config(), workers);
+    let metrics_capture = ProgrammableMetrics::capture(
         started_at,
         &config_sys,
         &env_provider,
         remote_agent_client_config.as_ref(),
-        &component_registry,
     )
     .await?;
+    let mut programmable_metrics = boot_metrics(metrics_capture.as_ref(), lane_settings.counts, &component_registry)?;
 
     // Create the blueprint for our primary topology.
-    let (mut blueprint, control_surfaces) = create_topology(
+    let (blueprint, control_surfaces) = create_topology(
         &config_sys,
         &env_provider,
         &component_registry,
         programmable_metrics.as_mut(),
     )
     .await?;
+
+    // In `strict` memory mode, automatic lanes that would not fit the memory grant are lowered, and the topology is
+    // built again on the lanes that fit.
+    let bounds_config = memory_bounds_configuration(&config_sys);
+    let fitted = fit_lanes_to_memory(
+        &LaneFitInputs {
+            config_system: &config_sys,
+            env_provider: &env_provider,
+            component_registry: &component_registry,
+            bounds: &bounds_config,
+            settings: &lane_settings,
+            capture: metrics_capture.as_ref(),
+        },
+        (blueprint, control_surfaces, programmable_metrics),
+    )
+    .await?;
+    let (mut blueprint, control_surfaces, mut programmable_metrics) = fitted;
+    let lanes = programmable_metrics
+        .as_ref()
+        .map_or(LaneCounts::OFF, ProgrammableMetrics::boot_lanes);
+    // Resource groups read their CPU time on a sampled entry only, on lanes, where entries multiply.
+    let sampling = cpu_time_sampling(std::env::var(CPU_TIME_SAMPLING_ENV).ok().as_deref(), lanes.lanes_on());
+    set_cpu_time_sampling(sampling);
+    if programmable_metrics.is_some() {
+        log_booted_lanes(&config_sys.config(), &lanes, workers, sampling);
+    }
+    // On lanes, compute-heavy subtasks, such as an encode host's builders that lanes feed, run on a global pool that
+    // grows with the workers.
+    if lanes.lanes_on() {
+        blueprint.with_dedicated_worker_pool(worker_pool_threads(workers));
+    }
 
     // Create the root supervisor up front so that a handle to the whole supervision tree can be handed to the
     // control plane below, which serves it over the API. Nothing is added to it until the rest of the tree is built.
@@ -252,19 +292,6 @@ pub async fn handle_run_command(
     .error_context("Failed to create internal supervisor.")?;
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
-    let bounds_config = {
-        let control = &config_sys.config().control;
-        MemoryBoundsConfiguration {
-            memory_limit: control.memory_limit.map(ByteSize::b),
-            memory_slop_factor: control.memory_slop_factor,
-            enable_global_limiter: control.enable_global_limiter,
-            memory_mode: match control.memory_mode {
-                MemoryMode::Disabled => AppMemoryMode::Disabled,
-                MemoryMode::Permissive => AppMemoryMode::Permissive,
-                MemoryMode::Strict => AppMemoryMode::Strict,
-            },
-        }
-    };
     let memory_bounds = initialize_memory_bounds(bounds_config, component_registry.root())?;
     let memory_limiter = memory_bounds.limiter;
     // What a generation or a resource transaction adds after boot is admitted against what verification left.
@@ -326,6 +353,9 @@ pub async fn handle_run_command(
             if let Some(bridge) = programmable_metrics.snapshot_bridge() {
                 internal_supervisor.add_worker(bridge);
             }
+            if let Some(lanes) = programmable_metrics.lane_telemetry() {
+                internal_supervisor.add_worker(lanes);
+            }
             internal_supervisor.add_worker(programmable_metrics.into_installer());
         }
         None if artifact_channel_stub.is_some() => {
@@ -377,6 +407,129 @@ pub async fn handle_run_command(
         }
         Err(e) => Err(e.into()),
     }
+}
+
+/// Returns the memory bounds configuration of the process, as `config_sys` configures it.
+fn memory_bounds_configuration(config_sys: &ConfigurationSystem) -> MemoryBoundsConfiguration {
+    let control = &config_sys.config().control;
+    MemoryBoundsConfiguration {
+        memory_limit: control.memory_limit.map(ByteSize::b),
+        memory_slop_factor: control.memory_slop_factor,
+        enable_global_limiter: control.enable_global_limiter,
+        memory_mode: match control.memory_mode {
+            MemoryMode::Disabled => AppMemoryMode::Disabled,
+            MemoryMode::Permissive => AppMemoryMode::Permissive,
+            MemoryMode::Strict => AppMemoryMode::Strict,
+        },
+    }
+}
+
+/// Prepares the programmable metrics path from what boot captured, on `lanes`, or `None` without a metrics pipeline.
+pub(crate) fn boot_metrics(
+    capture: Option<&BootCapture>, lanes: LaneCounts, component_registry: &ComponentRegistry,
+) -> Result<Option<ProgrammableMetrics>, GenericError> {
+    match capture {
+        Some(capture) => ProgrammableMetrics::boot(capture, lanes, component_registry),
+        None => Ok(None),
+    }
+}
+
+/// The blueprint of the primary topology, its control surfaces, and the programmable metrics path it was built with.
+pub(crate) type BuiltTopology = (TopologyBlueprint, TopologyControlSurfaces, Option<ProgrammableMetrics>);
+
+/// What fitting the metrics path's lanes to the memory grant reads.
+pub(crate) struct LaneFitInputs<'a> {
+    pub(crate) config_system: &'a ConfigurationSystem,
+    pub(crate) env_provider: &'a ADPEnvironmentProvider,
+    pub(crate) component_registry: &'a ComponentRegistry,
+    pub(crate) bounds: &'a MemoryBoundsConfiguration,
+    pub(crate) settings: &'a LaneSettings,
+    pub(crate) capture: Option<&'a BootCapture>,
+}
+
+/// Fits the lanes of the metrics path to the memory grant in `strict` memory mode, returning the topology to run: the
+/// one built, or, when its automatic lanes do not fit the grant while fewer would, one built again on fewer lanes (see
+/// [`LaneSettings::fit`]).
+///
+/// The firm bound of a candidate's lanes is measured by building the blueprint of its topology into a registry of its
+/// own, which nothing runs: everything outside the topology, registered already, is the same at every lane count. The
+/// room a live change's overlap takes beside it is the candidate's largest kernel-instance credit of one slot
+/// ([`ProgrammableMetrics::instance_overlap_bytes`]). Without a grant, outside `strict` mode, or without lanes, the
+/// built topology runs as built.
+///
+/// # Errors
+///
+/// Returns an error if the counts the configuration sets do not fit the grant, or if a topology cannot be built.
+pub(crate) async fn fit_lanes_to_memory(
+    inputs: &LaneFitInputs<'_>, built: BuiltTopology,
+) -> Result<BuiltTopology, GenericError> {
+    let LaneFitInputs {
+        config_system,
+        env_provider,
+        component_registry,
+        bounds,
+        settings,
+        capture,
+    } = inputs;
+    let Some(capture) = capture.filter(|_| bounds.memory_mode == AppMemoryMode::Strict) else {
+        return Ok(built);
+    };
+    let Some(grant) = memory_grant(bounds)? else {
+        return Ok(built);
+    };
+    let grant = u64::try_from(grant.effective_limit_bytes()).unwrap_or(u64::MAX);
+    let topology = topology_identifier(PRIMARY_TOPOLOGY);
+    let everything = component_registry.as_bounds();
+    let built_topology = subtree_firm_bytes(&everything, &topology);
+    let outside = (everything.total_firm_limit_bytes() as u64).saturating_sub(built_topology);
+    let asked = settings.counts;
+    let overlap_of =
+        |metrics: Option<&ProgrammableMetrics>| metrics.map_or(0, ProgrammableMetrics::instance_overlap_bytes);
+    let asked_overlap = overlap_of(built.2.as_ref());
+    let fit = settings
+        .fit(grant, async |counts| {
+            if counts == asked {
+                return Ok(LaneBound {
+                    firm: outside.saturating_add(built_topology),
+                    overlap: asked_overlap,
+                });
+            }
+            let scratch = ComponentRegistry::default();
+            let mut metrics = ProgrammableMetrics::boot(capture, counts, &scratch)?;
+            create_topology(config_system, env_provider, &scratch, metrics.as_mut()).await?;
+            Ok(LaneBound {
+                firm: outside.saturating_add(subtree_firm_bytes(&scratch.as_bounds(), &topology)),
+                overlap: overlap_of(metrics.as_ref()),
+            })
+        })
+        .await?;
+    let LaneFit::Lowered(counts) = fit else {
+        return Ok(built);
+    };
+    // The topology built first is dropped unrun, with what it registered.
+    drop(built);
+    component_registry.bounds_builder(&topology).reset();
+    let mut metrics = ProgrammableMetrics::boot(capture, counts, component_registry)?;
+    let (blueprint, control_surfaces) =
+        create_topology(config_system, env_provider, component_registry, metrics.as_mut()).await?;
+    Ok((blueprint, control_surfaces, metrics))
+}
+
+/// Returns the firm bytes of the component `id` and everything below it in `bounds`, or zero if it has none.
+fn subtree_firm_bytes(bounds: &ComponentBounds, id: &SubsystemIdentifier) -> u64 {
+    let path = id.to_string();
+    let mut current = bounds;
+    for segment in path.split('.') {
+        match current
+            .subcomponents()
+            .into_iter()
+            .find(|(name, _)| name.as_str() == segment)
+        {
+            Some((_, below)) => current = below,
+            None => return 0,
+        }
+    }
+    current.total_firm_limit_bytes() as u64
 }
 
 /// Creates the blueprint of the primary topology.
@@ -479,6 +632,17 @@ impl MetricsWiring<'_> {
             }
             #[cfg(test)]
             Self::Legacy(_) => Some(legacy::METRICS_DESTINATION),
+        }
+    }
+
+    /// Returns the number of lanes the DogStatsD source's metrics split into: the plan-driven metrics path's producer
+    /// lanes, and one otherwise.
+    fn dogstatsd_metric_lanes(&self) -> NonZeroU16 {
+        match self {
+            Self::Plan(plan) => plan.dogstatsd_metric_lanes(),
+            Self::None => NonZeroU16::MIN,
+            #[cfg(test)]
+            Self::Legacy(_) => NonZeroU16::MIN,
         }
     }
 
@@ -1072,6 +1236,8 @@ fn dogstatsd_source_configuration(
         capture_depth: listeners.capture_depth,
         capture_control,
         replay_control,
+        // One lane until the metrics path splits the source's metrics into its producer lanes.
+        metric_lanes: NonZeroU16::MIN,
     }
 }
 
@@ -1141,14 +1307,21 @@ async fn add_dsd_pipeline_to_blueprint(
     let typed = config_system.config();
     let dsd_capture_control = DogStatsDCaptureControl::default();
     let dsd_replay_control = DogStatsDReplayControl::default();
+    // The source's metrics split into the metrics path's producer lanes, each an output of its own, which the taps
+    // below read every one of.
+    let metric_lanes = metrics.dogstatsd_metric_lanes();
     let dsd_config = dogstatsd_source_configuration(
         &typed,
         env_provider,
         default_hostname.into(),
         dsd_capture_control.clone(),
         dsd_replay_control.clone(),
-    );
+    )
+    .with_metric_lanes(metric_lanes);
     blueprint.add_source("dsd_in", dsd_config)?;
+    let metric_outputs = (0..metric_lanes.get())
+        .map(|lane| format!("dsd_in.{}", dogstatsd_metric_lane_output(lane, metric_lanes)))
+        .collect::<Vec<_>>();
     let dsd_context_snapshot_handle = metrics.add_dogstatsd(blueprint, &typed)?;
 
     let events_enrich_config = ChainedConfiguration::default().with_transform_builder(
@@ -1173,12 +1346,12 @@ async fn add_dsd_pipeline_to_blueprint(
         ));
     }
 
-    let dsd_debug_log_config = DogStatsDDebugLogConfiguration {
-        metrics_stats_enabled: config_system.live(|config| &config.domains.dogstatsd.debug_log.metrics_stats_enable),
-        log_file: debug_log_file,
-        log_file_max_size: debug_log.log_file_max_size,
-        log_file_max_rolls: debug_log.log_file_max_rolls,
-    };
+    let dsd_debug_log_config = DogStatsDDebugLogConfiguration::new(
+        config_system.live(|config| &config.domains.dogstatsd.debug_log.metrics_stats_enable),
+        debug_log_file,
+        debug_log.log_file_max_size,
+        debug_log.log_file_max_rolls,
+    );
     let dsd_stats_config = DogStatsDStatisticsConfiguration::new();
 
     let stats_api_handler = dsd_stats_config.api_handler();
@@ -1201,15 +1374,18 @@ async fn add_dsd_pipeline_to_blueprint(
             "dsd_in.service_checks",
             "service_checks_enrich",
             "dd_service_checks_encode",
-        ])?
-        // DogStatsD Stats, a tap on every metric the source receives.
-        .connect_components("dsd_in.metrics", "dsd_stats_out")?;
+        ])?;
+    // DogStatsD Stats, a tap on every metric the source receives.
+    for output in &metric_outputs {
+        blueprint.connect_components(output.as_str(), "dsd_stats_out")?;
+    }
 
     if debug_log.logging_enabled {
-        blueprint
-            // DogStatsD debug log, another tap.
-            .add_destination("dsd_debug_log_out", dsd_debug_log_config)?
-            .connect_components("dsd_in.metrics", "dsd_debug_log_out")?;
+        // DogStatsD debug log, another tap.
+        blueprint.add_destination("dsd_debug_log_out", dsd_debug_log_config)?;
+        for output in &metric_outputs {
+            blueprint.connect_components(output.as_str(), "dsd_debug_log_out")?;
+        }
     }
     Ok(DogStatsDControlSurface {
         stats_api_handler,

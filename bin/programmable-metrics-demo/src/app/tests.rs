@@ -46,6 +46,8 @@ async fn harness() -> Harness {
         counter_expiry_secs: 0,
         traffic_rate: 20.0,
         traffic_paused: true,
+        contexts: 0,
+        lanes: Default::default(),
     });
     launcher::prepare_run_dir(&settings).unwrap();
     let api = AdpApi::new(settings.ports.api, settings.ports.secure_api, &settings.ipc_cert_path())
@@ -59,7 +61,7 @@ async fn harness() -> Harness {
         .collect();
     let app = App::new(Components {
         intakes,
-        traffic: TrafficGenerator::new(SocketAddr::from(([127, 0, 0, 1], closed_port())), 20.0, false),
+        traffic: TrafficGenerator::new(SocketAddr::from(([127, 0, 0, 1], closed_port())), 20.0, false, 0),
         telemetry: TelemetryScraper::new(),
         channel: StubChannel::new(ArtifactStore::open(&settings.store_dir()).unwrap()),
         control: ControlSurface::new(),
@@ -527,4 +529,213 @@ async fn publishing_resources_approves_exactly_the_last_checked_draft_once_and_c
     assert_eq!(body["revoked"], false);
     let (_, state) = call(app, "GET", "/api/state", None).await;
     assert_eq!(state["channel"]["resources"]["current"], Value::Null);
+}
+
+/// Returns the source of the pre-aggregation scope's default program with both of its windows set to `window`.
+fn pre_aggregation_source(window: &str) -> String {
+    let (_, export) = crate::preview::tests::fixture_of_scope("dogstatsd_pre_aggregation");
+    default_program_source(&export).replace(
+        "window: config(\"dogstatsd.aggregation.window_duration_seconds\")",
+        &format!("window: {}", window),
+    )
+}
+
+/// Returns the pre-aggregation scope's default program with both of its windows set to `window`, compiled.
+fn pre_aggregation_artifact(window: &str) -> Value {
+    use crate::{compile::compile, preview::CompileContext};
+
+    let (plan, export) = crate::preview::tests::fixture_of_scope("dogstatsd_pre_aggregation");
+    let source = pre_aggregation_source(window);
+    let context = CompileContext {
+        export: &export,
+        default_program: Some(&plan),
+        active: None,
+        others: &[],
+        revision: 1,
+    };
+    let (_, compiled) = compile(&source, Some(&context));
+    compiled.unwrap().document
+}
+
+#[tokio::test]
+async fn the_canary_check_aligns_to_the_widths_a_pre_aggregation_artifact_serves_and_reports_its_range_by_bucket() {
+    let harness = harness().await;
+    let app = &harness.app;
+    let (_, state) = call(app, "GET", "/api/state", None).await;
+    assert_eq!(state["canary_width_secs"], 1);
+    assert_eq!(state["lanes"]["on"], false);
+
+    // A pre-aggregation artifact with 30-second windows, served by the stub.
+    app.channel
+        .publish(pre_aggregation_artifact("30s"), None, None, unix_millis())
+        .unwrap();
+    let (_, state) = call(app, "GET", "/api/state", None).await;
+    assert_eq!(state["canary_width_secs"], 30);
+    let (from_s, to_s) = (
+        state["canary"]["from_s"].as_u64().unwrap(),
+        state["canary"]["to_s"].as_u64().unwrap(),
+    );
+    assert_eq!((from_s % 30, to_s - from_s), (0, 30));
+
+    // Revoked through the API, its buckets stay in the history the check reads: the alignment stays, at every later
+    // look, until the history no longer holds them.
+    let (status, body) = call(
+        app,
+        "POST",
+        "/api/revoke",
+        Some(json!({"scope": "dogstatsd_pre_aggregation"})),
+    )
+    .await;
+    assert_eq!((status, &body["revoked"]), (StatusCode::OK, &json!(true)));
+    let revoked_ms = unix_millis();
+    for _ in 0..2 {
+        let (_, state) = call(app, "GET", "/api/state", None).await;
+        assert_eq!(state["canary_width_secs"], 30);
+    }
+
+    // Served and revoked with no look at the state in between, an artifact's width still counts from its revoke on.
+    app.channel
+        .publish(pre_aggregation_artifact("20s"), None, None, unix_millis())
+        .unwrap();
+    let (status, _) = call(
+        app,
+        "POST",
+        "/api/revoke",
+        Some(json!({"scope": "dogstatsd_pre_aggregation"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, state) = call(app, "GET", "/api/state", None).await;
+    assert_eq!(state["canary_width_secs"], 60);
+    assert_eq!(
+        app.canary_width(revoked_ms + CANARY_HISTORY_SECS * 1000 - 1_000),
+        Some(60)
+    );
+    assert_eq!(
+        app.canary_width(revoked_ms + CANARY_HISTORY_SECS * 1000 + 1_000),
+        Some(1)
+    );
+
+    // A range ending seven seconds ago is answered, with what was sent each second and received for each bucket.
+    let now_s = unix_millis() / 1000;
+    let path = format!("/api/canary?from_s={}&to_s={}", now_s - 20, now_s - 7);
+    let (status, range) = call(app, "GET", &path, None).await;
+    assert_eq!(status, StatusCode::OK, "{}", range);
+    assert_eq!(range["sent_by_second"], json!([]));
+    assert_eq!(range["received_by_timestamp"], json!([]));
+    assert_eq!(range["sent"], 0);
+    let path = format!("/api/canary?from_s={}&to_s={}", now_s - 20, now_s - 5);
+    let (status, _) = call(app, "GET", &path, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn artifacts_that_cannot_set_the_canarys_width_leave_its_alignment_alone() {
+    let harness = harness().await;
+    let app = &harness.app;
+
+    // A policy artifact with literal windows, as the check's guardrail steps publish: ADP refuses an aggregation in
+    // the policy scope, so its windows never take effect.
+    let mut policy = pre_aggregation_artifact("10s");
+    policy["scope"] = json!(POLICY_SCOPE);
+    let served = app.channel.publish(policy, None, None, unix_millis()).unwrap();
+    assert_eq!(app.channel.configs()[0].scope, POLICY_SCOPE);
+    let (_, state) = call(app, "GET", "/api/state", None).await;
+    assert_eq!(state["canary_width_secs"], 1);
+    assert!(app.channel.revoke(None, unix_millis()).unwrap());
+
+    // A pre-aggregation artifact ADP rejected: its width counts only until the rejection is known.
+    let rejected = app
+        .channel
+        .publish(pre_aggregation_artifact("30s"), None, None, unix_millis())
+        .unwrap();
+    assert!(rejected.revision > served.revision);
+    let (_, state) = call(app, "GET", "/api/state", None).await;
+    assert_eq!(state["canary_width_secs"], 30);
+    let status = json!({"config_states": [
+        {"product": "policy", "id": "demo-dogstatsd_pre_aggregation", "revision": rejected.revision,
+         "state": "rejected", "error": "the artifact does not validate"}
+    ]});
+    app.control.record_status(Surface::Available(status), unix_millis());
+    let (_, state) = call(app, "GET", "/api/state", None).await;
+    assert_eq!(state["canary_width_secs"], 1);
+    assert!(app.channel.revoke(None, unix_millis()).unwrap());
+
+    // Windows of 7 and 60 seconds share a bucket boundary every 420 seconds, beyond the history: the check waits, and
+    // says why, until the older width leaves. Published through the API, one replacing the other with no look at the
+    // state in between, each width counts.
+    for window in ["7s", "60s"] {
+        let source = pre_aggregation_source(window);
+        let (status, compiled) = call(app, "POST", "/api/compile", Some(json!({ "source": source }))).await;
+        assert_eq!(
+            (status, &compiled["ok"]),
+            (StatusCode::OK, &json!(true)),
+            "{}",
+            compiled
+        );
+        let hash = compiled["artifact_hash"].clone();
+        let (status, published) = call(app, "POST", "/api/publish", Some(json!({ "artifact_hash": hash }))).await;
+        assert_eq!(status, StatusCode::OK, "{}", published);
+    }
+    let replaced_ms = unix_millis();
+    let (_, state) = call(app, "GET", "/api/state", None).await;
+    assert_eq!(state["canary_width_secs"], Value::Null);
+    assert_eq!(state["canary"]["state"], "waiting");
+    assert!(state["canary"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("7 and 60 s with the configured 1 s"));
+    assert_eq!(
+        app.canary_width(replaced_ms + CANARY_HISTORY_SECS * 1000 + 1_000),
+        Some(60)
+    );
+}
+
+#[test]
+fn adp_the_demo_launched_is_up_from_ready_while_its_process_runs_whatever_the_scrapes() {
+    let launch = |phase: Phase, ready_ms: Option<u64>| LaunchView {
+        phase,
+        pid: None,
+        started_ms: Some(500),
+        ready_ms,
+        exit: None,
+        command: String::new(),
+        log_path: String::new(),
+        console_log_path: String::new(),
+    };
+    let telemetry = |up_since_ms: Option<u64>| TelemetrySnapshot {
+        state: if up_since_ms.is_some() { "ok" } else { "unreachable" },
+        last_scrape_ms: None,
+        last_success_ms: None,
+        up_since_ms,
+        error: None,
+        skipped_lines: 0,
+        plan: Vec::new(),
+        nodes: Vec::new(),
+        components: Vec::new(),
+    };
+    // Launched and ready: up from ready, through a failed scrape and after it.
+    assert_eq!(
+        up_since_ms(&launch(Phase::Ready, Some(1_000)), &telemetry(None)),
+        Some(1_000)
+    );
+    assert_eq!(
+        up_since_ms(&launch(Phase::Ready, Some(1_000)), &telemetry(Some(9_000))),
+        Some(1_000)
+    );
+    // Started separately: up while it answers, since the scrapes began succeeding.
+    assert_eq!(
+        up_since_ms(&launch(Phase::External, None), &telemetry(Some(9_000))),
+        Some(9_000)
+    );
+    assert_eq!(up_since_ms(&launch(Phase::External, None), &telemetry(None)), None);
+    // Not ready yet, or exited: not up.
+    assert_eq!(
+        up_since_ms(&launch(Phase::Starting, None), &telemetry(Some(9_000))),
+        None
+    );
+    assert_eq!(
+        up_since_ms(&launch(Phase::Exited, Some(1_000)), &telemetry(Some(9_000))),
+        None
+    );
 }

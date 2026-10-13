@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc f1b18509e6cd4496c0ad2536ace6ba5b55803b6f4f486e22ce7351c26dd89ba0 # shrinks to capacity = 4, one_node = false, rounds = [InterleavedRound { first: [3, 5, 0, 3], second: [0], pause: 3, limits: [4, 1], flush: false }]

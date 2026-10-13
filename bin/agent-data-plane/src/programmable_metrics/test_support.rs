@@ -22,6 +22,7 @@ use tokio::sync::{mpsc, watch};
 use super::{
     host_facts::{cluster_agent_configuration, host_tags_enabled, HostFacts},
     installer::ProgrammableMetrics,
+    lanes::{LaneCounts, LaneSettings},
     lowering::Lowering,
 };
 use crate::internal::env::ADPEnvironmentProvider;
@@ -34,8 +35,23 @@ data_plane:
   standalone_mode: true
 ";
 
+/// The lanes every test runs the metrics path on unless its configuration sets them: none, the layout before lanes,
+/// rather than the default automatic counts, which follow the cores and decoders of the host running the test. Tests
+/// of lanes set `lanes.mode: auto` and the counts they need, and
+/// [`configuration_system_with_default_lanes`] keeps the defaults.
+const LANES_OFF: &str = "
+experimental:
+  programmable_metrics:
+    lanes:
+      mode: off
+";
+
 /// The wall-clock time the process starts at in tests.
 pub(super) const PROCESS_START_SECS: u64 = 1_700_000_000;
+
+/// The workers of the primary runtime that the automatic lane counts of tests follow, so that a test's lanes do not
+/// depend on the host running it: four, on which every kind of lane runs more than one lane.
+pub(super) const TEST_WORKERS: usize = 4;
 
 /// The host tags host facts carry in tests, when host tags enrichment is enabled.
 pub(super) const HOST_TAGS: [&str; 2] = ["cloud_provider:example", "zone:a"];
@@ -76,15 +92,33 @@ pub(super) async fn layered_configuration_system(layers: &[&str]) -> Configurati
         .expect("test configuration is valid")
 }
 
+/// Loads the configuration system for the YAML configuration `yaml`, as [`configuration_system`] does, but with the
+/// default lanes rather than none ([`LANES_OFF`]): the automatic counts unless `yaml` sets others.
+pub(super) async fn configuration_system_with_default_lanes(yaml: &str) -> ConfigurationSystem {
+    load_over(BASE, &[yaml])
+        .await
+        .expect("test configuration loads")
+        .standalone()
+        .await
+        .expect("test configuration is valid")
+}
+
 /// Loads the local configuration for the YAML configurations `layers`, as [`layered_configuration_system`] does.
 async fn loaded_configuration(layers: &[&str]) -> LoadedConfiguration {
     load(layers).await.expect("test configuration loads")
 }
 
 /// Loads the local configuration for the YAML configurations `layers`, each merged over the previous ones and the
-/// first over the base configuration.
+/// first over the base configuration and the lanes of tests ([`LANES_OFF`]).
 async fn load(layers: &[&str]) -> Result<LoadedConfiguration, ConfigurationError> {
-    let mut config = serde_yaml::from_str::<serde_yaml::Value>(BASE).unwrap();
+    let base = [BASE, LANES_OFF].join("");
+    load_over(&base, layers).await
+}
+
+/// Loads the local configuration for the YAML configurations `layers`, each merged over the previous ones and the
+/// first over `base`.
+async fn load_over(base: &str, layers: &[&str]) -> Result<LoadedConfiguration, ConfigurationError> {
+    let mut config = serde_yaml::from_str::<serde_yaml::Value>(base).unwrap();
     for layer in layers.iter().filter(|layer| !layer.trim().is_empty()) {
         merge(
             &mut config,
@@ -119,7 +153,16 @@ pub(super) async fn configuration_error(yaml: &str) -> String {
 pub(super) async fn connected_configuration_system(
     yaml: &str,
 ) -> (ConfigurationSystem, ConfigurationUpdates, mpsc::Sender<ConfigUpdate>) {
-    let loaded = loaded_configuration(&[yaml]).await;
+    connected_layered_configuration_system(&[yaml]).await
+}
+
+/// Starts the configuration system on the connected path as [`connected_configuration_system`] does, from the YAML
+/// configurations `layers`, each merged over the previous ones and the first over the base configuration: a layer can
+/// add keys under a section an earlier one has, such as `experimental`, which concatenating them as text cannot.
+pub(super) async fn connected_layered_configuration_system(
+    layers: &[&str],
+) -> (ConfigurationSystem, ConfigurationUpdates, mpsc::Sender<ConfigUpdate>) {
+    let loaded = loaded_configuration(layers).await;
     let (stream, updates) = mpsc::channel(64);
     stream
         .send(ConfigUpdate::snapshot([]))
@@ -236,10 +279,44 @@ pub(super) fn programmable_metrics_with_operators(
     config: &SalukiConfiguration, live: Live<SalukiConfiguration>, registry: &ComponentRegistry,
     operators: OperatorRegistry,
 ) -> Option<ProgrammableMetrics> {
+    // The lanes `config` asks for, on as many workers as the test topology's runtime would have.
+    let lanes = LaneSettings::from_config(config, TEST_WORKERS).counts;
+    prepared(config, live, registry, operators, lanes)
+}
+
+/// Prepares the programmable metrics path as [`programmable_metrics`] does, on `lanes` rather than the lanes `config`
+/// asks for.
+///
+/// # Panics
+///
+/// Panics if the configuration does not lower, or the metrics path cannot be prepared from it.
+pub(super) fn programmable_metrics_on(
+    config: &SalukiConfiguration, live: Live<SalukiConfiguration>, registry: &ComponentRegistry, lanes: LaneCounts,
+) -> Option<ProgrammableMetrics> {
+    prepared(config, live, registry, OperatorRegistry::native(), lanes)
+}
+
+/// Prepares the programmable metrics path as [`programmable_metrics_with_operators`] does, on `lanes` rather than the
+/// lanes `config` asks for.
+///
+/// # Panics
+///
+/// Panics if the configuration does not lower, or the metrics path cannot be prepared from it.
+pub(super) fn programmable_metrics_with_operators_on(
+    config: &SalukiConfiguration, live: Live<SalukiConfiguration>, registry: &ComponentRegistry,
+    operators: OperatorRegistry, lanes: LaneCounts,
+) -> Option<ProgrammableMetrics> {
+    prepared(config, live, registry, operators, lanes)
+}
+
+fn prepared(
+    config: &SalukiConfiguration, live: Live<SalukiConfiguration>, registry: &ComponentRegistry,
+    operators: OperatorRegistry, lanes: LaneCounts,
+) -> Option<ProgrammableMetrics> {
     let facts = facts(config);
     let lowering = Lowering::new(Arc::new(config.clone()), facts.clone()).expect("the configuration lowers")?;
     Some(
-        ProgrammableMetrics::from_lowering(lowering, facts, config, live, registry, operators)
+        ProgrammableMetrics::from_lowering(lowering, facts, config, live, registry, operators, lanes)
             .expect("the programmable metrics path is prepared"),
     )
 }

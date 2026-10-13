@@ -1,8 +1,9 @@
 # Programmable metric processing: implementation design
 
 **Status:** working design for implementing [the specification](programmable-metrics.md), stages 1 through 6, plus a
-local demo; stage 7, designed in [the stages 7 and 9 plan](programmable-metrics-stages-7-and-9.md), is summarized as
-built in [its own section](#stage-7-resource-generations-as-built). The specification stays authoritative for semantics.
+local demo; stages 7 and 9, designed in [the stages 7 and 9 plan](programmable-metrics-stages-7-and-9.md), are
+summarized as built in sections of their own ([stage 7](#stage-7-resource-generations-as-built), [stage
+9](#stage-9-partitioned-execution-as-built)). The specification stays authoritative for semantics.
 This document fixes code layout, interfaces, and the decisions the specification leaves open. Where the code contradicts
 the specification, [proposed spec amendments](#proposed-spec-amendments) records what we do and why. Revision 2
 incorporates a five-lens design review.
@@ -20,8 +21,9 @@ incorporates a five-lens design review.
 9. [Stage plan](#stage-plan)
 10. [Stage 6: stateful kernels](#stage-6-stateful-kernels)
 11. [Stage 7: resource generations, as built](#stage-7-resource-generations-as-built)
-12. [Proposed spec amendments](#proposed-spec-amendments)
-13. [Risks](#risks)
+12. [Stage 9: partitioned execution, as built](#stage-9-partitioned-execution-as-built)
+13. [Proposed spec amendments](#proposed-spec-amendments)
+14. [Risks](#risks)
 
 ## Scope
 
@@ -31,8 +33,9 @@ telemetry viewer.
 
 Out of scope here: stage 7 resource generations (new outputs, recipients, encoder settings as plan parameters), which
 [the stages 7 and 9 plan](programmable-metrics-stages-7-and-9.md) designs and [a section
-below](#stage-7-resource-generations-as-built) summarizes as built, stage 8 Remote Config, stage 9 partitioning, stage
-10 extensions. The extension-point **types** for those stages exist from stage 1, and only native defaults are accepted.
+below](#stage-7-resource-generations-as-built) summarizes as built, stage 8 Remote Config, stage 9 partitioning (the
+same plan; [summarized below](#stage-9-partitioned-execution-as-built) as built), stage 10 extensions. The
+extension-point **types** for those stages exist from stage 1, and only native defaults are accepted.
 
 Easily changed layers get first-pass implementations behind narrow interfaces: the surface syntax
 (`parse(&str) -> Result<Parsed, Diagnostics>`, `print(&PolicyArtifact, &PrintOptions) -> String`) and the demo UI (an
@@ -3901,6 +3904,85 @@ mode is the native forwarder itself. Changed, and release-noted: live endpoint c
 loses, idle failover hosts, a burst's slack where outputs share an encode host, the task and series changes of 4.15, and
 two static-mode fixes (two keys of one URL no longer overwrite each other's queue gauges; a failed flush no longer loses
 the rest uncounted).
+
+## Stage 9: partitioned execution, as built
+
+[The stages 7 and 9 plan](programmable-metrics-stages-7-and-9.md) is the design: section 3 the physical model, section
+5 the decisions, section 6 the semantics and their checks, 8.4's "Stage 9 as built" what the parts and the integration
+steps changed, with the amendments it implies (141 to 167 of its section 10, after its own 108 to 128 and P9.F's 139
+and 140; 163 to 167 from the stage 9 review), and 8.5 and 8.6 the increments as enabled and what they measured. This
+section is the map of what exists.
+
+### The model in one paragraph
+
+Three slot components run on **lanes**, tasks inside one component, each running the slot's region program on an input
+of its own, fixed at boot: `dsd_pre_aggregation` on D **producer lanes**, one per DogStatsD decoder up to 16 (decoder
+`d` dispatches on the source's output `metrics_<d mod D>`, a stream connection on the lane with the fewest live
+connections); `dsd_agg` on P **state lanes**; `metrics_enrich` on M **post-aggregation lanes**. Each producer lane is
+the only stamper of its own admission point (`dsd_in.metrics#d`), on one `SourceClock` shared by the source's points,
+and drives its own heartbeats, with several lanes also 100 ms into each second it stamped nothing in, so that an idle
+lane holds the others' ticks back by at most the progress throttle. At the exit into `dsd_agg`, after every quotient, a
+**keyed exit** routes each event by its context key through 256 fixed key groups to the state lane that owns its group,
+coalescing a lane's events of one second, generation, epoch, and entry into buffers of at most B events held for at most
+5 ms; contexts are therefore disjoint across state lanes, and every per-context rule is exact. The few rules that couple
+contexts (a tick's instant and flush second, the idle-counter back-fill start, the flush count, the breach warning, the
+shutdown time) are small records shared by the lanes of one lineage instance (`LineageLanes` and the aggregate kernel's
+`LaneShared`), touched a few times per tick, and kept past their last lane while another lane may still reach their
+epoch; a clock reset opens a **reset window** per state lane, with instances per lineage and epoch, which drains every
+older epoch at its exact final watermark once every point switched. Budget units are taken in per-batch **reservations**
+on several lanes. The passthrough keeps its producer lane's order into `metrics_enrich` (affinity), and the state lanes'
+output spreads over the post-aggregation lanes. One coordinator per component serves its control mailbox and health,
+splitting each control message per lane and joining the acknowledgments, so the installer still sees one acknowledgment
+per slot. With one lane per slot every rule is stage 6's. `lanes.mode: auto` is the default, and on lanes fusion is
+maximal between fences; with `lanes.mode: off`, and where every automatic count comes to one, as below three workers,
+every slot runs one lane, the source keeps its dispatcher-side point, and R1's cost model still pipelines the slots,
+which stage 9 kept (the plan's 8.5, P9.7).
+
+### Where it lives
+
+| Concern | Code |
+|---|---|
+| Lane channels and edges, routing (`LaneEdge`, `LaneRoute`), spread by first lane with room, the try-first send, per-lane capacities and bounds, the pool size | `lib/saluki-core/src/topology/{lanes.rs, graph.rs, blueprint.rs, built.rs, interconnect/dispatcher.rs}`, `components/transforms/context.rs` (`take_lane_inputs`, `shared_dispatcher`) |
+| The coordinator, lane tasks, lane admission, heartbeats, the reset check, `end_turn`, `LaneStats` | `lib/saluki-core/src/execution/region/{host.rs, lanes.rs}`, `execution/lanes` (`lane_link`, `LaneSplit`) |
+| Owned admission, the shared clock, the boundary epoch rule | `lib/saluki-core/src/execution/{admission.rs (OwnedAdmission, PointState), clock.rs (SourceClock)}` |
+| Budget reservations | `lib/saluki-core/src/execution/budget.rs` (`BudgetReservation`, `try_acquire_up_to`, and the `loom` models) |
+| Summed cache gauges, change stamps, the front cache | `lib/saluki-core/src/cache/{mod.rs (GaugeMode), stamps.rs}`, `data_model/event/metric/context/{resolver.rs, front.rs}` |
+| The frame with lanes: lane points, slot lanes, routing, key groups, `LanePolicy` | `lib/saluki-metric-plan/src/compile/frame.rs` (`Frame::compute_with`, `KeyGroups`, `ExitRouting`, `PointRouting`), `placement.rs` (entries per lane ID) |
+| Keyed exits: coalescing, progress per point and lane, the final old-epoch header, finish | `lib/saluki-metric-plan/src/runtime/driver/keyed.rs` (`KeyedExit`) |
+| State lanes: the O(1) tracker, the reset window, per-epoch instances, crossings, lane telemetry and time events | `lib/saluki-metric-plan/src/runtime/driver/isolation.rs`, `runtime/state/rules.rs` (`ResetWindow`, `WatermarkTracker`) |
+| Shared lineage records | `lib/saluki-metric-plan/src/runtime/state/lanes.rs` (`SlotLanes`, `LineageLanes`), `lib/saluki-metric-kernels/src/aggregate/lanes.rs` (`LaneShared`, `FlushRecord`) |
+| The shared panic ledger | `lib/saluki-metric-plan/src/runtime/supervision.rs` (`PanicLedger`, `GenerationLedger`) |
+| Oracles, harness, replay | `lib/saluki-metric-plan/src/equivalence.rs` (`compare_partitioned`, `check_capacity`, `check_balance`), `runtime/harness.rs` (`LanedFrameHarness`, `DeliverySchedule`), `interpret/replay.rs` (`ArrivalReplay`) |
+| ADP: lane counts, keys, the `Strict` fit, CPU-time sampling | `bin/agent-data-plane/src/programmable_metrics/lanes.rs` (`LaneCounts`, `LaneSettings`), `cli/run.rs` (`fit_lanes_to_memory`), `lib/agent-data-plane-config/src/control.rs` (`ProgrammableMetricsLanes`) |
+| ADP: the topology on lanes, per-lane preparations, the snapshot fan-out, `plan_lane_*` | `programmable_metrics/{topology.rs, installer.rs, snapshot_bridge.rs, telemetry.rs (LaneTelemetry)}` |
+| DogStatsD: lane outputs, stream lane assignment, the datagram queue, the decoders' front caches; the debug-log tap's gate | `lib/saluki-components/src/sources/dogstatsd/{mod.rs, datagram_queue.rs}`, `destinations/dsd_debug_log/mod.rs` |
+| The demo's lane view and check steps S12 to S14 | `bin/programmable-metrics-demo/src/{telemetry/lanes.rs, scenario/lanes.rs, loopback.rs}` |
+
+### Tests that cross parts
+
+`lib/saluki-metric-plan/src/runtime/partitioned_tests.rs` runs the 6.4 properties against the real drivers through
+`LanedFrameHarness` (trace order, arrival replay, lane count invariance, interleaving, idle counters, the multi-point
+reset, cuts, capacity) and fixtures X1 to X7; `runtime/transition_tests.rs` replays stage 6's traces on three producer
+lanes and two state lanes and the lane traces T-L1 to T-L7; `runtime/state_tests/lanes.rs` the state lanes alone. In
+ADP, `topology/lane_tests.rs` (layouts, the firm bound up to 64 workers, routing and contexts telemetry),
+`topology/differential_tests.rs` (the lowering and gateway matrices on producer and state lanes against legacy, tick
+parity on four state lanes), `telemetry/tests.rs` (telemetry parity at P = 4, the summed cache gauges),
+`installer/fault_tests.rs` and `installer/lifecycle_tests.rs` (panics per lane kind, shutdown with open routed buffers
+and inside a reset window, a stalled lane, the `Strict` fit, the 30 s stress run of live installs and width cuts near
+the context limit, which the gate runs with `--run-ignored only`). `make test-loom` runs 46 models in five crates; the
+demo's second launch runs S12 to S14 on `{2, 2, 3}`.
+
+### Native behavior preserved and changed
+
+Preserved at one lane per slot: everything stage 6 and 7 pin (the whole suite runs with `lanes.mode: off` in its base
+configuration). Preserved on lanes, and pinned against legacy: what every output receives (the differentials), the
+`aggregator.*` remaps and the flush count (telemetry parity at P = 4), tick by tick output on four state lanes. Changed,
+and release-noted: admission time is taken at the lane, one queue later; arrival order at a state lane decides gauges,
+first metadata, and kinds across producers, as the decoders' race for one mutex decided them natively; a counter's
+`last_seen` is a maximum; a lane's input holds its share of the native capacity; which contexts win at the context limit
+is a race across lanes, and a lane's reserved units can refuse another lane's context; memory bounds grow with every
+lane's kernels and memos; per-lane resource groups, sampled CPU time on Linux, summed cache gauges, `dsd_in`'s lane
+outputs, and the `plan_lane_*` series.
 
 ## Proposed spec amendments
 

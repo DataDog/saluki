@@ -322,6 +322,7 @@ fn a_partial_push_down_keeps_the_order_in_which_an_output_receives_records() {
         },
         crate::interpret::TraceEvent::Admit {
             source: id("src"),
+            lane: 0,
             admitted_at: saluki_core::execution::AdmissionTime::from_unix_secs(1_000),
             batch: vec![metric("other", "db"), metric("first", "web-1")],
         },
@@ -1083,6 +1084,7 @@ fn a_filter_moved_above_an_operator_that_sheds_relies_on_the_capacity_rule() {
     };
     let events = vec![crate::interpret::TraceEvent::Admit {
         source: id("src"),
+        lane: 0,
         admitted_at: saluki_core::execution::AdmissionTime::from_unix_secs(1_000),
         batch: vec![
             on("kept", "web-1", &[1.0]),

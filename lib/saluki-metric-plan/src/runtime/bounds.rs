@@ -1,6 +1,6 @@
 //! The memory a region driver declares: its kernels', by their operators, its decisions' predicates, the buffers it
-//! holds between steps, and what its decisions keep: their memos, their counts per exit set, and the scratch a
-//! decision step reuses.
+//! holds between steps and, at keyed exits, across calls, and what its decisions keep: their memos, their counts per
+//! exit set, and the scratch a decision step reuses.
 
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr},
@@ -8,9 +8,11 @@ use saluki_core::{
     topology::EventsBuffer,
 };
 
-use super::RegionError;
+use super::{driver::routed_buffer_events, RegionError};
 use crate::{
-    compile::{DecisionMemo, ExitSet, ExitSetCounts, RegionProgram, SharedPredicate, Slot, COUNTED_EXIT_SETS},
+    compile::{
+        DecisionMemo, ExitRouting, ExitSet, ExitSetCounts, RegionProgram, SharedPredicate, Slot, COUNTED_EXIT_SETS,
+    },
     ir::{Namespace, NodeId, Plan},
     limits,
     operators::{ConfiguredOperator, OperatorRegistry, MAX_HISTOGRAM_SERIES},
@@ -84,7 +86,9 @@ struct PredicateBounds {
 /// An isolation slot's bounds ([`for_slot`][Self::for_slot]) also hold one step of a drain of its state owners'
 /// time-driven output, which the region holds at once: at most [`DRAIN_STEP_EVENTS`][limits::values::DRAIN_STEP_EVENTS]
 /// events, and one context's whole expansion beyond them; and its state owner's kernel is accounted at the region's
-/// top level when the region is named after it ([`kernel_accounting_in`]).
+/// top level when the region is named after it ([`kernel_accounting_in`]). The bounds of a slot with keyed exits, into
+/// a state owner on several lanes, hold the routed buffer each such exit keeps open for each target lane, with room for
+/// the events it takes before it is sent.
 #[derive(Clone, Debug)]
 pub struct RegionBounds {
     /// Each kernel's node, operator, and the subcomponent it is accounted under, if not the region's own group.
@@ -99,6 +103,10 @@ pub struct RegionBounds {
     decisions: usize,
     /// The exits of its widest decision.
     widest_decision: usize,
+    /// The routed buffers its keyed exits keep open, one per exit and target lane.
+    routed_buffers: usize,
+    /// The events those buffers take before they are sent.
+    routed_events: usize,
 }
 
 impl RegionBounds {
@@ -112,9 +120,9 @@ impl RegionBounds {
         Self::accounted(plan, registry, program, |node| Some(kernel_accounting_name(node)))
     }
 
-    /// Returns the bounds of the region of `slot` running `program`, a program compiled from `plan`: those of
-    /// [`new`][Self::new], with each kernel accounted as [`kernel_accounting_in`] says and, for an isolation slot, one
-    /// drain step.
+    /// Returns the bounds of the region of `slot` running `program`, a program compiled from `plan`, on one of the
+    /// slot's lanes: those of [`new`][Self::new], with each kernel accounted as [`kernel_accounting_in`] says, for an
+    /// isolation slot one drain step, and the open routed buffers of its keyed exits.
     ///
     /// # Errors
     ///
@@ -125,6 +133,13 @@ impl RegionBounds {
     ) -> Result<Self, RegionError> {
         let mut bounds = Self::accounted(plan, registry, program, |node| kernel_accounting_in(slot, node))?;
         bounds.drains = slot.is_isolation();
+        for exit in &slot.exits {
+            if let ExitRouting::Keyed(groups) = &exit.routing {
+                let lanes = groups.lanes();
+                bounds.routed_buffers += usize::from(lanes);
+                bounds.routed_events += usize::from(lanes) * routed_buffer_events(lanes);
+            }
+        }
         Ok(bounds)
     }
 
@@ -183,6 +198,8 @@ impl RegionBounds {
                 .map(|decision| decision.exits.len())
                 .max()
                 .unwrap_or_default(),
+            routed_buffers: 0,
+            routed_events: 0,
         })
     }
 }
@@ -234,6 +251,22 @@ impl MemoryBounds for RegionBounds {
                 ),
             ),
         ));
+        if self.routed_buffers > 0 {
+            // Each keyed exit's open buffer for each target lane, with room for the events it takes before it is sent.
+            builder.firm().with_expr(UsageExpr::sum(
+                "open routed buffers",
+                UsageExpr::product(
+                    "routed buffers",
+                    UsageExpr::constant("buffers", self.routed_buffers),
+                    UsageExpr::struct_size::<EventsBuffer>("events buffer"),
+                ),
+                UsageExpr::product(
+                    "routed events",
+                    UsageExpr::constant("events", self.routed_events),
+                    UsageExpr::struct_size::<Event>("event"),
+                ),
+            ));
+        }
         if self.memos > 0 {
             builder
                 .firm()

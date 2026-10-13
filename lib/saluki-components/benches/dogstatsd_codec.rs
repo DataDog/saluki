@@ -2,12 +2,13 @@
 //! context, through the source's own decode path (`sources::dogstatsd_measurement::DatagramDecoder`, with the
 //! `measurement` feature), with the source's default configuration.
 //!
-//! - **`decode`**: one decoder, for two traffic profiles and two context counts, with one metric per datagram and with
-//!   full datagrams: the cost per metric.
+//! - **`decode`**: one decoder, as a stream connection's (no front cache), for two traffic profiles and two context
+//!   counts, with one metric per datagram and with full datagrams: the cost per metric.
 //! - **`shared_resolvers`**: 1, 2, 4, and 8 threads, each decoding its own share of the same traffic through a clone of
 //!   one decoder, so that every thread resolves on the shared context cache, tag cache, and interner, as the source's
-//!   datagram decoders do: resolver throughput by threads. The time is from the release of every thread to the end
-//!   of the last one, so a flat curve means the shared resolvers, not the threads, set the rate.
+//!   datagram decoders do, each through a front cache of its own: resolver throughput by threads. The time is from the
+//!   release of every thread to the end of the last one, so a flat curve means the shared resolvers, not the threads,
+//!   set the rate. The same cases `without_front_cache` measure the shared resolvers alone.
 //!
 //! The profiles approximate lading's DogStatsD generator, deterministically:
 //!
@@ -226,10 +227,18 @@ fn shared_resolvers(c: &mut Criterion) {
         for per_datagram in [1, 50] {
             let datagrams = datagrams(&lines, per_datagram);
             let metrics = datagrams.iter().map(|(_, held)| held).sum::<usize>();
-            let decoder = DatagramDecoder::with_defaults().expect("the default decoder builds");
-            decode_all(&mut decoder.clone(), &datagrams, &mut Vec::new());
             group.throughput(Throughput::Elements(metrics as u64));
-            for threads in [1, 2, 4, 8] {
+            for (threads, front_cache) in [1, 2, 4, 8]
+                .into_iter()
+                .flat_map(|threads| [(threads, true), (threads, false)])
+            {
+                let decoder = DatagramDecoder::with_defaults().expect("the default decoder builds");
+                let decoder = if front_cache {
+                    decoder.with_front_cache()
+                } else {
+                    decoder
+                };
+                decode_all(&mut decoder.clone(), &datagrams, &mut Vec::new());
                 // Each thread decodes an interleaved share of the datagrams, so every thread sees every context.
                 let shares = (0..threads)
                     .map(|thread| {
@@ -243,8 +252,11 @@ fn shared_resolvers(c: &mut Criterion) {
                     .collect::<Vec<_>>();
                 let mut decoders = (0..threads).map(|_| decoder.clone()).collect::<Vec<_>>();
                 let id = format!(
-                    "{}_contexts/{}_per_datagram/{}_threads",
-                    context_count, per_datagram, threads
+                    "{}_contexts/{}_per_datagram/{}_threads{}",
+                    context_count,
+                    per_datagram,
+                    threads,
+                    if front_cache { "" } else { "/without_front_cache" }
                 );
                 group.bench_function(BenchmarkId::from_parameter(id), |b| {
                     b.iter_custom(|iterations| (0..iterations).map(|_| decode_together(&mut decoders, &shares)).sum());

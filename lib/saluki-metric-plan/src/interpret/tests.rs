@@ -1847,6 +1847,7 @@ fn batched_trace(plan: &Arc<Plan>, metrics: &[Metric], cuts: &[usize]) -> Trace 
         for (source, batch_metrics) in [("dsd", others), ("otlp", rates)] {
             trace.push(TraceEvent::Admit {
                 source: id(source),
+                lane: 0,
                 admitted_at: t(1_000 + batch as u64),
                 batch: batch_metrics,
             });

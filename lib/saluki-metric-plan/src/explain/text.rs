@@ -308,9 +308,31 @@ fn write_rewrites(rewrites: &[RewriteEntry], out: &mut String) -> std::fmt::Resu
     Ok(())
 }
 
+/// Renders the physical sections of a document alone as text, as [`render`] renders them after the logical ones.
+pub(super) fn render_physical(physical: &PhysicalPlan) -> String {
+    let mut out = String::new();
+    // Writing to a `String` cannot fail.
+    let _ = write_physical(physical, &mut out);
+    // The sections start with the blank line that separates them from the logical ones in a whole document.
+    match out.strip_prefix('\n') {
+        Some(alone) => alone.to_string(),
+        None => out,
+    }
+}
+
 fn write_physical(physical: &PhysicalPlan, out: &mut String) -> std::fmt::Result {
     writeln!(out)?;
     writeln!(out, "frame")?;
+    if let Some(layout) = &physical.layout {
+        writeln!(
+            out,
+            "  laid out on {}, {}, and {}, {} R1's pipelining",
+            count(usize::from(layout.dogstatsd_lanes), "DogStatsD producer lane"),
+            count(usize::from(layout.state_lanes), "state lane"),
+            count(usize::from(layout.post_lanes), "post-aggregation lane"),
+            if layout.pipelining { "with" } else { "without" }
+        )?;
+    }
     writeln!(out, "  fixed ({})", physical.fixed.len())?;
     for fixed in &physical.fixed {
         write!(out, "    {}: {} [{}]", fixed.node, fixed.op, fixed.boundary)?;
@@ -324,11 +346,13 @@ fn write_physical(physical: &PhysicalPlan, out: &mut String) -> std::fmt::Result
         for point in &fixed.admission_points {
             writeln!(
                 out,
-                "      admission point {} {} ({}) -> {}{}",
-                point.id,
+                "      {} {} ({}{}) -> {}{}{}",
+                points("admission", point.id, point.lanes),
                 point.port,
                 point.mode,
+                lanes_suffix(point.lanes),
                 point.to.as_deref().unwrap_or("nothing"),
+                routing_suffix(&point.routing),
                 if point.feeds_state { ", feeds state" } else { "" }
             )?;
         }
@@ -337,15 +361,36 @@ fn write_physical(physical: &PhysicalPlan, out: &mut String) -> std::fmt::Result
     for slot in &physical.slots {
         // R1 never fuses an isolation slot, so its cost model does not price one.
         match &slot.isolation {
-            Some(_) => writeln!(out, "    {} (not priced: R1 never fuses an isolation slot)", slot.name)?,
-            None => writeln!(out, "    {} (estimated {} ns per event)", slot.name, slot.cost)?,
+            Some(_) => writeln!(
+                out,
+                "    {} (not priced: R1 never fuses an isolation slot){}",
+                slot.name,
+                lanes_suffix(slot.lanes)
+            )?,
+            None => writeln!(
+                out,
+                "    {} (estimated {} ns per event){}",
+                slot.name,
+                slot.cost,
+                lanes_suffix(slot.lanes)
+            )?,
         }
         if let Some(isolation) = &slot.isolation {
             let upstream = isolation.upstream.iter().map(ToString::to_string).collect::<Vec<_>>();
+            let output = if isolation.output_points.is_empty() {
+                format!("output point {}", isolation.output_point)
+            } else {
+                let lanes = isolation
+                    .output_points
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>();
+                format!("output points {}", list(&lanes))
+            };
             writeln!(
                 out,
-                "      isolation slot, output point {}, watermark of admission points {}",
-                isolation.output_point,
+                "      isolation slot, {}, watermark of admission points {}",
+                output,
                 list(&upstream)
             )?;
         }
@@ -361,12 +406,23 @@ fn write_physical(physical: &PhysicalPlan, out: &mut String) -> std::fmt::Result
                 let points = exit.progress_points.iter().map(ToString::to_string).collect::<Vec<_>>();
                 format!(", progress of admission points {}", list(&points))
             };
+            let routing = if exit.key_groups.is_empty() {
+                routing_suffix(&exit.routing).to_string()
+            } else {
+                let groups = exit
+                    .key_groups
+                    .iter()
+                    .map(|owned| format!("{} to {} on lane {}", owned.first, owned.last, owned.lane))
+                    .collect::<Vec<_>>();
+                format!("{} (key groups {})", routing_suffix(&exit.routing), list(&groups))
+            };
             writeln!(
                 out,
-                "      exit {} {} -> {}{}{}",
+                "      exit {} {} -> {}{}{}{}",
                 exit.index,
                 exit.name,
                 exit.to,
+                routing,
                 if exit.idle { ", idle" } else { "" },
                 progress
             )?;
@@ -374,7 +430,14 @@ fn write_physical(physical: &PhysicalPlan, out: &mut String) -> std::fmt::Result
     }
     writeln!(out, "  edges ({})", physical.edges.len())?;
     for edge in &physical.edges {
-        writeln!(out, "    {} -> {} ({})", edge.from, edge.to, edge.kind)?;
+        writeln!(
+            out,
+            "    {} -> {} ({}{})",
+            edge.from,
+            edge.to,
+            edge.kind,
+            routing_suffix(&edge.routing)
+        )?;
     }
 
     writeln!(out)?;
@@ -391,15 +454,17 @@ fn write_physical(physical: &PhysicalPlan, out: &mut String) -> std::fmt::Result
     writeln!(out, "segments ({})", physical.segments.len())?;
     for segment in &physical.segments {
         // An isolation slot's output point stamps time-driven output; it admits nothing.
-        let point = if segment.mode == "time-driven" {
-            "output point"
+        let kind = if segment.mode == "time-driven" {
+            "output"
         } else {
-            "admission point"
+            "admission"
         };
         writeln!(
             out,
-            "  {} {} {} ({})",
-            point, segment.admission_point, segment.from, segment.mode
+            "  {} {} ({})",
+            points(kind, segment.admission_point, segment.lanes),
+            segment.from,
+            segment.mode
         )?;
         writeln!(out, "    slots {}", list(&segment.slots))?;
         let nodes = segment.nodes.iter().map(ToString::to_string).collect::<Vec<_>>();
@@ -433,6 +498,34 @@ fn write_physical(physical: &PhysicalPlan, out: &mut String) -> std::fmt::Result
         writeln!(out, "    idle {}", list(&binding.idle))?;
     }
     Ok(())
+}
+
+/// Names the points of one output or slot, of `kind` (`admission` or `output`): `<kind> point <id>` for one lane, and
+/// `<kind> points <first> to <last>` for its consecutive lanes' points.
+fn points(kind: &str, first: u32, lanes: u16) -> String {
+    match lanes {
+        0 | 1 => format!("{} point {}", kind, first),
+        lanes => format!("{} points {} to {}", kind, first, first + u32::from(lanes) - 1),
+    }
+}
+
+/// Says how many lanes something runs on, after what it describes: nothing for one lane.
+fn lanes_suffix(lanes: u16) -> String {
+    match lanes {
+        0 | 1 => String::new(),
+        lanes => format!(", {} lanes", lanes),
+    }
+}
+
+/// Says how an edge reaches the lanes of its target, after the target: nothing when it reaches one lane.
+fn routing_suffix(routing: &str) -> &'static str {
+    match routing {
+        "fixed" => ", lane by lane",
+        "keyed" => ", keyed",
+        "affinity" => ", affinity",
+        "spread" => ", spread",
+        _ => "",
+    }
 }
 
 fn bound_line(bound: &BoundEntry) -> String {

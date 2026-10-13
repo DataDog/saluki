@@ -7,7 +7,9 @@ use datadog_protos::metrics::{
 use tower::ServiceExt as _;
 
 use super::{
-    recorder::{family_of, FamilySummary, FamilyUnit, SeriesKind, HISTORY_SECS, MAX_API_KEYS, MAX_FAMILIES},
+    recorder::{
+        family_of, FamilySummary, FamilyUnit, RecordedPoint, SeriesKind, HISTORY_SECS, MAX_API_KEYS, MAX_FAMILIES,
+    },
     *,
 };
 use crate::settings::DemoPorts;
@@ -104,6 +106,14 @@ async fn zstd_compressed_series_payloads_are_decoded_and_recorded() {
     assert_eq!(recent[0].kind, SeriesKind::Rate);
     // A rate's total is its value times its interval.
     assert_eq!(recent[0].total, 5.0);
+    // Each point is kept with its timestamp and what it counts: a gauge its value, a rate its count.
+    let point = |timestamp, value| RecordedPoint { timestamp, value };
+    assert_eq!(
+        recent[2].values,
+        [point(1_700_000_000, 20.0), point(1_700_000_001, 19.0)]
+    );
+    assert_eq!(recent[1].values, [point(1_700_000_001, 57.0)]);
+    assert_eq!(recent[0].values, [point(1_700_000_001, 5.0)]);
 
     let summary = recorder.summary(unix_millis());
     assert_eq!(summary.requests_total, 1);
@@ -168,6 +178,13 @@ async fn sketch_and_json_payloads_are_decoded_and_counted() {
     assert_eq!(recent[1].kind, SeriesKind::Sketch);
     assert_eq!(recent[1].points, 1);
     assert_eq!(recent[1].total, 3.0);
+    assert_eq!(
+        recent[1].values,
+        [RecordedPoint {
+            timestamp: 1_700_000_000,
+            value: 3.0
+        }]
+    );
     assert_eq!(
         recent[1].tags,
         vec!["team:checkout".to_string(), "host:adp-demo".to_string()]
@@ -359,6 +376,28 @@ fn canary_counts_are_kept_by_point_timestamp_for_conservation_checks() {
     record_flush(&recorder, 1_003_000, &canary, 10);
     assert_eq!(recorder.canaries_between(0, u64::MAX), 40.0);
     assert_eq!(recorder.summary(1_003_000).canary_total, 80.0);
+
+    // The canary's shards, one context each, count together, by name.
+    let request = RequestRecord {
+        received_ms: 1_004_100,
+        path: "/api/v2/series".to_string(),
+        api_key: Some("demo-primary".to_string()),
+        status: 202,
+        series: 3,
+        error: None,
+    };
+    let mut payload = MetricPayload::new();
+    for (shard, count) in [("shard:0", 7.0), ("shard:1", 6.0), ("shard:15", 7.0)] {
+        payload
+            .series
+            .push(series("demo.canary", MetricType::COUNT, &[shard], &[(1_003, count)]));
+    }
+    recorder.record(request, Metric::try_from_series_v2(payload).unwrap());
+    assert_eq!(recorder.canaries_between(1_003, 1_004), 20.0);
+    assert_eq!(
+        recorder.canaries_by_timestamp(1_000, 1_010),
+        [(1_000, 20.0), (1_001, 20.0), (1_003, 20.0)]
+    );
 }
 
 #[test]

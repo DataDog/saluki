@@ -33,8 +33,11 @@ use super::{
 /// except pushing the event into an event buffer and dispatching it. The source's telemetry is recorded as the source
 /// records it.
 ///
-/// Clones share the context resolvers, and so their caches and interner, as the source's decoders share them: give
-/// each thread of a benchmark a clone to measure decoding on shared resolvers.
+/// A decoder resolves on the context resolvers as a stream connection's decoder does; with
+/// [`with_front_cache`][Self::with_front_cache], through a front cache of its own, as the source's datagram decoders
+/// do. Clones share the context resolvers, and so their caches and interner, as the source's decoders share them, and
+/// each clone of a decoder with a front cache has an empty one of its own: give each thread of a benchmark a clone to
+/// measure decoding on shared resolvers.
 pub struct DatagramDecoder {
     codec: DogStatsDCodec,
     context_resolvers: ContextResolvers,
@@ -116,6 +119,13 @@ impl DatagramDecoder {
             buffer_capacity: get_adjusted_buffer_size(config.buffer_size),
             buffer: None,
         })
+    }
+
+    /// Gives the decoder a front cache in front of the shared context resolvers, as each of the source's datagram
+    /// decoders has (stream connections have none).
+    pub fn with_front_cache(mut self) -> Self {
+        self.context_resolvers = self.context_resolvers.with_front_cache();
+        self
     }
 
     /// Creates a decoder with the source's default configuration: the defaults the configuration system resolves.

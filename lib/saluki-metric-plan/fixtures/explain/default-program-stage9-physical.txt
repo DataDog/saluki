@@ -1,0 +1,162 @@
+frame
+  laid out on 2 DogStatsD producer lanes, 2 state lanes, and 2 post-aggregation lanes, without R1's pipelining
+  fixed (5)
+    dsd_in: source [io_host]
+      admission points 0 to 1 metrics (admit, 2 lanes) -> dsd_pre_aggregation, lane by lane, feeds state
+    otlp_in: source [io_host]
+      admission point 2 metrics (admit) -> metrics_enrich, spread
+    checks_ipc_in: source [io_host]
+      admission point 3 metrics (admit) -> metrics_enrich, spread
+    liveness_in: source [io_host]
+      admission point 4 metrics (admit) -> metrics_enrich, spread
+    trace_sampler: source [io_host]
+      admission point 5 metrics (admit) -> metrics_enrich, spread
+  slots (3)
+    dsd_pre_aggregation (estimated 200 ns per event), 2 lanes
+      nodes dsd_enrich, dsd_prefix_filter, dsd_prefix_filter_blocklist, dsd_prefix_filter_blocklist_true, dsd_no_agg_split, dsd_tag_filterlist
+      admission point 0: dsd_in.metrics -> dsd_enrich.in
+      admission point 1: dsd_in.metrics -> dsd_enrich.in
+      exit 0 dsd_agg -> dsd_agg, keyed (key groups 0 to 127 on lane 0, 128 to 255 on lane 1), progress of admission points 0, 1
+      exit 1 metrics_enrich -> metrics_enrich, affinity
+      exit 2 dsd_client_telemetry -> output dsd_client_telemetry, idle
+      exit 3 dd_metrics_encode -> encode host dd_metrics_encode of dd_out, idle
+      exit 4 mrf_metrics_encode -> encode host mrf_metrics_encode of mrf_dd_out, idle
+      exit 5 af_metrics_encode -> encode host af_metrics_encode of cluster_agent_out, idle
+    dsd_agg (not priced: R1 never fuses an isolation slot), 2 lanes
+      isolation slot, output points 6, 7, watermark of admission points 0, 1
+      nodes dsd_agg
+      entry 0: dsd_tag_filterlist.out -> dsd_agg.in
+      exit 0 metrics_enrich -> metrics_enrich, spread
+    metrics_enrich (estimated 141 ns per event), 2 lanes
+      nodes dsd_post_agg_filter_in, dsd_post_agg_filter, dsd_post_agg_filter_true, dsd_post_agg_filter_fanout, dsd_post_agg_filter_fanout_0, metrics_enrich_in, metrics_enrich, metrics_enrich_host_tags, metrics_policy, metrics_policy_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false
+      admission point 2: otlp_in.metrics -> metrics_enrich_in.1
+      admission point 3: checks_ipc_in.metrics -> metrics_enrich_in.2
+      admission point 4: liveness_in.metrics -> metrics_enrich_in.3
+      admission point 5: trace_sampler.metrics -> metrics_enrich_in.4
+      entry 0: dsd_agg.out -> dsd_post_agg_filter_in.0
+      entry 1: dsd_no_agg_split.passthrough -> dsd_post_agg_filter_in.1
+      exit 0 dsd_client_telemetry -> output dsd_client_telemetry
+      exit 1 dd_metrics_encode -> encode host dd_metrics_encode of dd_out
+      exit 2 mrf_metrics_encode -> encode host mrf_metrics_encode of mrf_dd_out
+      exit 3 af_metrics_encode -> encode host af_metrics_encode of cluster_agent_out
+  edges (16)
+    dsd_in.metrics -> dsd_pre_aggregation (admission, lane by lane)
+    otlp_in.metrics -> metrics_enrich (admission, spread)
+    checks_ipc_in.metrics -> metrics_enrich (admission, spread)
+    liveness_in.metrics -> metrics_enrich (admission, spread)
+    trace_sampler.metrics -> metrics_enrich (admission, spread)
+    dsd_pre_aggregation.dsd_agg -> dsd_agg (exit, keyed)
+    dsd_pre_aggregation.metrics_enrich -> metrics_enrich (exit, affinity)
+    dsd_pre_aggregation.dsd_client_telemetry -> output dsd_client_telemetry (exit)
+    dsd_pre_aggregation.dd_metrics_encode -> encode host dd_metrics_encode of dd_out (exit)
+    dsd_pre_aggregation.mrf_metrics_encode -> encode host mrf_metrics_encode of mrf_dd_out (exit)
+    dsd_pre_aggregation.af_metrics_encode -> encode host af_metrics_encode of cluster_agent_out (exit)
+    dsd_agg.metrics_enrich -> metrics_enrich (exit, spread)
+    metrics_enrich.dsd_client_telemetry -> output dsd_client_telemetry (exit)
+    metrics_enrich.dd_metrics_encode -> encode host dd_metrics_encode of dd_out (exit)
+    metrics_enrich.mrf_metrics_encode -> encode host mrf_metrics_encode of mrf_dd_out (exit)
+    metrics_enrich.af_metrics_encode -> encode host af_metrics_encode of cluster_agent_out (exit)
+
+fusion (34)
+  dsd_in.metrics -> dsd_enrich.in: fence (`dsd_in` is an io_host, a fence that fusion never crosses)
+  dsd_enrich.out -> dsd_prefix_filter.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`)
+  dsd_prefix_filter.out -> dsd_prefix_filter_blocklist.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`)
+  dsd_prefix_filter_blocklist.true -> dsd_prefix_filter_blocklist_true.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`)
+  dsd_prefix_filter_blocklist.false -> dsd_no_agg_split.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`)
+  dsd_no_agg_split.default -> dsd_tag_filterlist.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`)
+  dsd_tag_filterlist.out -> dsd_agg.in: isolation (the edge enters or leaves the isolation slot `dsd_agg`, which runs its state owner alone)
+  dsd_agg.out -> dsd_post_agg_filter_in.0: isolation (the edge enters or leaves the isolation slot `dsd_agg`, which runs its state owner alone)
+  dsd_no_agg_split.passthrough -> dsd_post_agg_filter_in.1: separated (fusing would form a cycle through `dsd_agg`: slots `dsd_pre_aggregation` and `metrics_enrich` stay apart)
+  dsd_post_agg_filter_in.out -> dsd_post_agg_filter.in: fused (both nodes are synchronous and nothing separates them: slot `metrics_enrich`)
+  dsd_post_agg_filter.true -> dsd_post_agg_filter_true.in: fused (both nodes are synchronous and nothing separates them: slot `metrics_enrich`)
+  dsd_post_agg_filter.false -> dsd_post_agg_filter_fanout.in: fused (both nodes are synchronous and nothing separates them: slot `metrics_enrich`)
+  dsd_post_agg_filter_fanout.0 -> dsd_post_agg_filter_fanout_0.in: fused (both nodes are synchronous and nothing separates them: slot `metrics_enrich`)
+  dsd_post_agg_filter_fanout.1 -> metrics_enrich_in.0: fused (both nodes are synchronous and nothing separates them: slot `metrics_enrich`)
+  otlp_in.metrics -> metrics_enrich_in.1: fence (`otlp_in` is an io_host, a fence that fusion never crosses)
+  checks_ipc_in.metrics -> metrics_enrich_in.2: fence (`checks_ipc_in` is an io_host, a fence that fusion never crosses)
+  liveness_in.metrics -> metrics_enrich_in.3: fence (`liveness_in` is an io_host, a fence that fusion never crosses)
+  trace_sampler.metrics -> metrics_enrich_in.4: fence (`trace_sampler` is an io_host, a fence that fusion never crosses)
+  metrics_enrich_in.out -> metrics_enrich.in: fused (both nodes are synchronous and nothing separates them: slot `metrics_enrich`)
+  metrics_enrich.out -> metrics_enrich_host_tags.in: fused (both nodes are synchronous and nothing separates them: slot `metrics_enrich`)
+  metrics_enrich_host_tags.out -> metrics_policy.in: fused (both nodes are synchronous and nothing separates them: slot `metrics_enrich`)
+  metrics_policy.0 -> metrics_policy_0.in: fused (both nodes are synchronous and nothing separates them: slot `metrics_enrich`)
+  metrics_policy.1 -> metrics_routing_filter_0.in: fused (both nodes are synchronous and nothing separates them: slot `metrics_enrich`)
+  metrics_routing_filter_0.true -> metrics_routing_filter_0_true.in: fused (both nodes are synchronous and nothing separates them: slot `metrics_enrich`)
+  metrics_routing_filter_0.false -> metrics_routing_filter_0_false.in: fused (both nodes are synchronous and nothing separates them: slot `metrics_enrich`)
+  metrics_policy.2 -> metrics_routing_filter_1.in: fused (both nodes are synchronous and nothing separates them: slot `metrics_enrich`)
+  metrics_routing_filter_1.true -> metrics_routing_filter_1_true.in: fused (both nodes are synchronous and nothing separates them: slot `metrics_enrich`)
+  metrics_routing_filter_1.false -> metrics_routing_filter_1_false.in: fused (both nodes are synchronous and nothing separates them: slot `metrics_enrich`)
+  metrics_policy.3 -> mrf_metrics_gateway.in: fused (both nodes are synchronous and nothing separates them: slot `metrics_enrich`)
+  mrf_metrics_gateway.true -> mrf_metrics_gateway_true.in: fused (both nodes are synchronous and nothing separates them: slot `metrics_enrich`)
+  mrf_metrics_gateway.false -> mrf_metrics_gateway_false.in: fused (both nodes are synchronous and nothing separates them: slot `metrics_enrich`)
+  metrics_policy.4 -> af_metrics_gateway.in: fused (both nodes are synchronous and nothing separates them: slot `metrics_enrich`)
+  af_metrics_gateway.true -> af_metrics_gateway_true.in: fused (both nodes are synchronous and nothing separates them: slot `metrics_enrich`)
+  af_metrics_gateway.false -> af_metrics_gateway_false.in: fused (both nodes are synchronous and nothing separates them: slot `metrics_enrich`)
+
+segments (6)
+  admission points 0 to 1 dsd_in.metrics (admit)
+    slots dsd_pre_aggregation, metrics_enrich
+    nodes dsd_enrich, dsd_prefix_filter, dsd_prefix_filter_blocklist, dsd_prefix_filter_blocklist_true, dsd_no_agg_split, dsd_tag_filterlist, dsd_post_agg_filter_in, dsd_post_agg_filter, dsd_post_agg_filter_true, dsd_post_agg_filter_fanout, dsd_post_agg_filter_fanout_0, metrics_enrich_in, metrics_enrich, metrics_enrich_host_tags, metrics_policy, metrics_policy_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false
+    ends dsd_agg, output af_metrics_encode, output dd_metrics_encode, output dsd_client_telemetry, output metrics_routing_encode_0, output metrics_routing_encode_1, output mrf_metrics_encode
+  admission point 2 otlp_in.metrics (admit)
+    slots metrics_enrich
+    nodes metrics_enrich_in, metrics_enrich, metrics_enrich_host_tags, metrics_policy, metrics_policy_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false
+    ends output af_metrics_encode, output dd_metrics_encode, output metrics_routing_encode_0, output metrics_routing_encode_1, output mrf_metrics_encode
+  admission point 3 checks_ipc_in.metrics (admit)
+    slots metrics_enrich
+    nodes metrics_enrich_in, metrics_enrich, metrics_enrich_host_tags, metrics_policy, metrics_policy_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false
+    ends output af_metrics_encode, output dd_metrics_encode, output metrics_routing_encode_0, output metrics_routing_encode_1, output mrf_metrics_encode
+  admission point 4 liveness_in.metrics (admit)
+    slots metrics_enrich
+    nodes metrics_enrich_in, metrics_enrich, metrics_enrich_host_tags, metrics_policy, metrics_policy_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false
+    ends output af_metrics_encode, output dd_metrics_encode, output metrics_routing_encode_0, output metrics_routing_encode_1, output mrf_metrics_encode
+  admission point 5 trace_sampler.metrics (admit)
+    slots metrics_enrich
+    nodes metrics_enrich_in, metrics_enrich, metrics_enrich_host_tags, metrics_policy, metrics_policy_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false
+    ends output af_metrics_encode, output dd_metrics_encode, output metrics_routing_encode_0, output metrics_routing_encode_1, output mrf_metrics_encode
+  output points 6 to 7 dsd_agg.out (time-driven)
+    slots metrics_enrich
+    nodes dsd_post_agg_filter_in, dsd_post_agg_filter, dsd_post_agg_filter_true, dsd_post_agg_filter_fanout, dsd_post_agg_filter_fanout_0, metrics_enrich_in, metrics_enrich, metrics_enrich_host_tags, metrics_policy, metrics_policy_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false
+    ends output af_metrics_encode, output dd_metrics_encode, output dsd_client_telemetry, output metrics_routing_encode_0, output metrics_routing_encode_1, output mrf_metrics_encode
+
+output bindings (8)
+  dsd_client_telemetry
+    recipients none
+    delivery native (overflow wait, closure native)
+    fed by metrics_enrich.dsd_client_telemetry
+    idle dsd_pre_aggregation.dsd_client_telemetry
+  dd_metrics_encode: a lease in encode host dd_metrics_encode of dd_out
+    recipients dd_out/primary/0
+    delivery native (overflow wait, closure native)
+    fed by metrics_enrich.dd_metrics_encode
+    idle dsd_pre_aggregation.dd_metrics_encode
+  metrics_routing_encode_0: a lease in encode host dd_metrics_encode of dd_out
+    recipients dd_out/additional_0/0
+    delivery native (overflow wait, closure native)
+    fed by metrics_enrich.dd_metrics_encode
+    idle dsd_pre_aggregation.dd_metrics_encode
+  metrics_routing_encode_1: a lease in encode host dd_metrics_encode of dd_out
+    recipients dd_out/additional_1/0, dd_out/additional_1/1
+    delivery native (overflow wait, closure native)
+    fed by metrics_enrich.dd_metrics_encode
+    idle dsd_pre_aggregation.dd_metrics_encode
+  mrf_metrics_encode: a lease in encode host mrf_metrics_encode of mrf_dd_out
+    recipients mrf_dd_out/primary/0
+    delivery native (overflow wait, closure native)
+    fed by metrics_enrich.mrf_metrics_encode
+    idle dsd_pre_aggregation.mrf_metrics_encode
+  af_metrics_encode: a lease in encode host af_metrics_encode of cluster_agent_out
+    recipients cluster_agent_out/primary/0
+    delivery native (overflow wait, closure native)
+    fed by metrics_enrich.af_metrics_encode
+    idle dsd_pre_aggregation.af_metrics_encode
+  resources_team_d: a lease in encode host dd_metrics_encode of dd_out
+    recipients dd_out/declared/team_d/http://127.0.0.1:17105
+    delivery native (overflow wait, closure native)
+    fed by none
+    idle dsd_pre_aggregation.dd_metrics_encode, metrics_enrich.dd_metrics_encode
+  resources_team_e: a lease in encode host dd_metrics_encode of dd_out
+    recipients dd_out/declared/team_e/https://e.example.com
+    delivery native (overflow wait, closure native)
+    fed by none
+    idle dsd_pre_aggregation.dd_metrics_encode, metrics_enrich.dd_metrics_encode

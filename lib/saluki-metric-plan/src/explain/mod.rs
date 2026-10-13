@@ -22,8 +22,12 @@
 //! justification, whether it relies on the capacity rule, and its telemetry effects. Stage 7 adds, within version 1,
 //! the resources section: every output binding, delivery host setting, and recipient, with its provenance, and, against
 //! the active plan ([`Explain::with_resource_changes`]), whether each is reused or new; and, in the physical
-//! sections, the encode host each bound output's lease runs in. Later stages add the plan diff, and state owners with
-//! their transitions.
+//! sections, the encode host each bound output's lease runs in. Stage 9 adds, within version 1, the lanes of a frame
+//! laid out on them, in the physical sections only: the lane counts and whether R1 pipelines slots, the lanes of each
+//! admission point and slot, how each edge reaches the lanes of its target (with the key groups behind a keyed exit),
+//! and each lane's output point of an isolation slot. A frame on one lane laid out with R1's pipelining has none of
+//! them; lanes never enter the logical sections or the plan's hash. Later stages add the plan diff, and state owners
+//! with their transitions.
 
 use std::collections::BTreeMap;
 
@@ -45,8 +49,8 @@ use crate::{
 
 mod physical;
 pub use self::physical::{
-    AdmissionPointEntry, ExitEntry, FixedEntry, FusionEntry, IsolationEntry, OutputBindingEntry, PhysicalEdgeEntry,
-    PhysicalPlan, SegmentEntry, SlotEntry, SlotInputEntry,
+    AdmissionPointEntry, ExitEntry, FixedEntry, FusionEntry, IsolationEntry, KeyGroupsEntry, LayoutEntry,
+    OutputBindingEntry, PhysicalEdgeEntry, PhysicalPlan, SegmentEntry, SlotEntry, SlotInputEntry,
 };
 
 mod resources;

@@ -1072,7 +1072,13 @@ impl InstallerCore {
             .iter()
             .map(|slot| {
                 let held = slot.build.iter().map(|key| (key.clone(), id)).collect::<Vec<_>>();
-                let bytes = self::resources::instance_bytes(&queued.plan, &core.registry, &slot.build);
+                let bytes = self::resources::slot_instance_bytes(
+                    &queued.plan,
+                    &core.registry,
+                    &core.frame,
+                    slot.slot,
+                    &slot.build,
+                );
                 (slot.slot, (held, bytes))
             })
             .collect();

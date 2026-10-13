@@ -28,7 +28,7 @@ use saluki_core::execution::{
 };
 use snafu::Snafu;
 
-use crate::limits::values::{MAX_TRANSITION_LCM, TICK_GRACE};
+use crate::limits::values::{MAX_OPEN_EPOCHS, MAX_TRANSITION_LCM, TICK_GRACE};
 
 const NANOS_PER_SEC: u64 = 1_000_000_000;
 
@@ -93,9 +93,36 @@ pub enum Observation {
 ///
 /// The **watermark** is the earliest latest admission time over the upstream points, and unknown while any of them has
 /// sent nothing: everything stamped before it has arrived, so a bucket ending by it can close.
+///
+/// When a point switches epochs, the tracker keeps the final latest time it recorded in the epoch it left, for the
+/// last [`MAX_OPEN_EPOCHS`] epochs it left, so that the instances of an epoch some points have left and others not yet
+/// have a watermark of their own ([`watermark_in`][Self::watermark_in]): what a [reset window][ResetWindow] drains
+/// them at.
+///
+/// A point is found by its ID in constant time when the upstream points' IDs follow one another, as the lane points of
+/// one source do, and by binary search otherwise.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WatermarkTracker {
     points: Vec<(AdmissionPointId, Option<PointProgress>)>,
+    /// The ID of the first point, when every point's ID follows the one before it: a point's index is then its ID
+    /// minus this.
+    first: Option<u32>,
+    /// Per point, in the order of `points`, the final latest admission time it recorded in each earlier epoch it left,
+    /// oldest first.
+    finals: Vec<Vec<(u32, AdmissionTime)>>,
+}
+
+/// Where one point stands toward one epoch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InEpoch {
+    /// The point's latest admission time in the epoch: its current one, or its final one there.
+    At(AdmissionTime),
+
+    /// The point went past the epoch without the tracker knowing a stamp of it there.
+    Passed,
+
+    /// The point has not reached the epoch: it sent nothing yet, or is in an older one.
+    NotReached,
 }
 
 impl WatermarkTracker {
@@ -109,7 +136,26 @@ impl WatermarkTracker {
         let mut points = upstream.into_iter().map(|point| (point, None)).collect::<Vec<_>>();
         points.sort_by_key(|(point, _)| *point);
         points.dedup_by_key(|(point, _)| *point);
-        Self { points }
+        let first = points.first().map(|(point, _)| point.get()).filter(|first| {
+            points
+                .iter()
+                .enumerate()
+                .all(|(index, (point, _))| u64::from(point.get()) == u64::from(*first) + index as u64)
+        });
+        let finals = vec![Vec::new(); points.len()];
+        Self { points, first, finals }
+    }
+
+    /// Returns the index of an upstream point, if it is one.
+    fn index_of(&self, point: AdmissionPointId) -> Option<usize> {
+        match self.first {
+            Some(first) => point
+                .get()
+                .checked_sub(first)
+                .and_then(|index| usize::try_from(index).ok())
+                .filter(|index| *index < self.points.len()),
+            None => self.points.binary_search_by_key(&point, |(upstream, _)| *upstream).ok(),
+        }
     }
 
     /// Returns the upstream admission points, in ID order.
@@ -119,10 +165,7 @@ impl WatermarkTracker {
 
     /// Returns what the tracker knows about an upstream point, if the point has sent anything.
     pub fn progress(&self, point: AdmissionPointId) -> Option<&PointProgress> {
-        self.points
-            .iter()
-            .find(|(upstream, _)| *upstream == point)
-            .and_then(|(_, progress)| progress.as_ref())
+        self.index_of(point).and_then(|index| self.points[index].1.as_ref())
     }
 
     /// Observes one header that reached the state owner, in arrival order.
@@ -130,58 +173,64 @@ impl WatermarkTracker {
         let (Some(admitted_at), Some(point)) = (header.admitted_at, header.admission_point) else {
             return Observation::Fault;
         };
-        let pre = self.watermark();
-        let Some((_, progress)) = self.points.iter_mut().find(|(upstream, _)| *upstream == point) else {
+        let Some(index) = self.index_of(point) else {
             return Observation::Fault;
         };
         let generation = header.generation_id();
-        let observation = match progress {
+        let known = match self.points[index].1 {
             None => {
-                *progress = Some(PointProgress {
+                self.points[index].1 = Some(PointProgress {
                     epoch: header.epoch,
                     latest: admitted_at,
                     max_generation: generation,
                 });
                 return Observation::Ok;
             }
-            Some(known) if !epoch_newer(header.epoch, known.epoch) && known.epoch != header.epoch => {
-                debug_assert!(
-                    false,
-                    "admission point {} stamped epoch {} after epoch {}, which one path in stamping order rules out",
-                    point.get(),
-                    header.epoch,
-                    known.epoch
-                );
-                // Release builds drop the batch: its timeline is one this point already closed.
-                return Observation::Fault;
-            }
-            Some(known) if known.epoch != header.epoch => {
-                // A newer epoch is a reset; the point's timeline restarts from this header.
-                let (previous, final_latest) = (known.epoch, known.latest);
-                known.epoch = header.epoch;
-                known.latest = admitted_at;
-                Observation::EpochSwitched {
-                    point,
-                    previous,
-                    final_latest,
-                    pre,
-                }
-            }
-            Some(known) => {
-                debug_assert!(
-                    admitted_at >= known.latest,
-                    "admission point {} stamped {} after {} in one epoch, which one path in stamping order rules out",
-                    point.get(),
-                    admitted_at,
-                    known.latest
-                );
-                known.latest = known.latest.max(admitted_at);
-                Observation::Ok
-            }
+            Some(known) => known,
         };
-        if let Some(known) = progress {
-            known.max_generation = known.max_generation.max(generation);
+        let observation = if known.epoch == header.epoch {
+            debug_assert!(
+                admitted_at >= known.latest,
+                "admission point {} stamped {} after {} in one epoch, which one path in stamping order rules out",
+                point.get(),
+                admitted_at,
+                known.latest
+            );
+            Observation::Ok
+        } else if epoch_newer(header.epoch, known.epoch) {
+            // A newer epoch is a reset; the point's timeline restarts from this header. The watermark before it is
+            // what the state owner knew before the header.
+            let pre = self.watermark();
+            let finals = &mut self.finals[index];
+            finals.push((known.epoch, known.latest));
+            if finals.len() > MAX_OPEN_EPOCHS as usize {
+                finals.remove(0);
+            }
+            Observation::EpochSwitched {
+                point,
+                previous: known.epoch,
+                final_latest: known.latest,
+                pre,
+            }
+        } else {
+            debug_assert!(
+                false,
+                "admission point {} stamped epoch {} after epoch {}, which one path in stamping order rules out",
+                point.get(),
+                header.epoch,
+                known.epoch
+            );
+            // Release builds drop the batch: its timeline is one this point already closed.
+            return Observation::Fault;
+        };
+        let progress = self.points[index].1.as_mut().expect("the point has sent a header");
+        if observation == Observation::Ok {
+            progress.latest = progress.latest.max(admitted_at);
+        } else {
+            progress.epoch = header.epoch;
+            progress.latest = admitted_at;
         }
+        progress.max_generation = progress.max_generation.max(generation);
         observation
     }
 
@@ -237,6 +286,73 @@ impl WatermarkTracker {
         })
     }
 
+    /// Returns `true` if `epoch` is the epoch every upstream point the cut records had when the cut was published: the
+    /// rule [`in_publication_epoch`][Self::in_publication_epoch] applies to the instances holding data of `epoch`,
+    /// whatever epoch the points are in now, as a reset window draining them needs.
+    pub fn is_publication_epoch(&self, cut: &CutBoundary, epoch: u32) -> bool {
+        self.points
+            .iter()
+            .all(|(point, _)| cut.epoch_of(*point).is_none_or(|published| published == epoch))
+    }
+
+    /// Returns where the point at `index` stands toward `epoch`.
+    fn in_epoch(&self, index: usize, epoch: u32) -> InEpoch {
+        let Some(progress) = self.points[index].1 else {
+            return InEpoch::NotReached;
+        };
+        if progress.epoch == epoch {
+            return InEpoch::At(progress.latest);
+        }
+        if let Some((_, latest)) = self.finals[index].iter().find(|(left, _)| *left == epoch) {
+            return InEpoch::At(*latest);
+        }
+        if epoch_newer(progress.epoch, epoch) {
+            InEpoch::Passed
+        } else {
+            InEpoch::NotReached
+        }
+    }
+
+    /// Returns the watermark of the instances holding data of `epoch`: per point, its latest admission time in `epoch`,
+    /// its current one or the final one it recorded when it left `epoch`, and `None` while some point has not reached
+    /// `epoch` yet.
+    ///
+    /// A point that went past `epoch` without stamping in it, or whose final time there the tracker no longer keeps, is
+    /// left out of the minimum; with no point left, there is no watermark. With one point, this is the watermark of its
+    /// current epoch.
+    pub fn watermark_in(&self, epoch: u32) -> Option<AdmissionTime> {
+        let mut earliest = None;
+        for index in 0..self.points.len() {
+            match self.in_epoch(index, epoch) {
+                InEpoch::At(latest) => {
+                    earliest = Some(earliest.map_or(latest, |earliest: AdmissionTime| earliest.min(latest)))
+                }
+                InEpoch::Passed => {}
+                InEpoch::NotReached => return None,
+            }
+        }
+        earliest
+    }
+
+    /// Returns the latest admission time any upstream point stamped in `epoch`, as far as the tracker knows: the close
+    /// time of the instances holding data of `epoch` at shutdown, with the wall clock.
+    pub fn max_latest_in(&self, epoch: u32) -> Option<AdmissionTime> {
+        (0..self.points.len())
+            .filter_map(|index| match self.in_epoch(index, epoch) {
+                InEpoch::At(latest) => Some(latest),
+                InEpoch::Passed | InEpoch::NotReached => None,
+            })
+            .max()
+    }
+
+    /// Returns `true` if every upstream point's current epoch is `epoch` or newer: every point has switched to it, so a
+    /// reset window into it closes.
+    pub fn switched_epoch(&self, epoch: u32) -> bool {
+        self.points.iter().all(|(_, progress)| {
+            progress.is_some_and(|progress| progress.epoch == epoch || epoch_newer(progress.epoch, epoch))
+        })
+    }
+
     /// Returns what [`in_publication_epoch`][Self::in_publication_epoch] returned before the tracker observed a header
     /// of `point` that switched it from the epoch `previous`, as an [`Observation::EpochSwitched`] reports.
     ///
@@ -259,6 +375,155 @@ impl WatermarkTracker {
 /// is less than half the epoch range ahead of it: `(a - b) mod 2^32` read as a signed number is positive.
 pub fn epoch_newer(a: u32, b: u32) -> bool {
     (a.wrapping_sub(b) as i32) > 0
+}
+
+/// The reset window of one state lane: the lane's epoch, and the clock epochs not yet closed at the lane, because some
+/// upstream point has not switched past them.
+///
+/// With several upstream points of one source clock, a state lane receives each point's switch to a newer epoch at a
+/// different time. The window opens at the first header of a newer epoch from any point, routes each batch to the
+/// instances of its own epoch while it is open, and closes once every point switched to the newest epoch
+/// ([`WatermarkTracker::switched_epoch`]), when each older epoch's instances drain at that epoch's watermark
+/// ([`WatermarkTracker::watermark_in`]), oldest first. A later reset inside an open window moves its target, and
+/// leaves the older epochs open. A header several epochs newer than the lane's newest holds every epoch in between
+/// open as well: each is one reset of the clock, whose batches may still arrive from points that have not switched past
+/// it. With one point the window opens and closes on one header. The driver and the interpreter share this rule.
+///
+/// A reset that would leave more than [`MAX_OPEN_EPOCHS`] older epochs open closes the oldest at once, at its
+/// watermark so far: the step reports them closed while the window stays open.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResetWindow {
+    older: Vec<u32>,
+    target: u32,
+}
+
+/// What one header did to a state lane's reset window.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WindowStep {
+    /// No window is open, and the header opens none.
+    None,
+
+    /// The header opened a window from `older` into `target`, or moved an open window's target to `target`.
+    Opened {
+        /// The epoch the lane was in: the newest it had reached before the header.
+        older: u32,
+
+        /// The epoch the header is in.
+        target: u32,
+    },
+
+    /// A window is open: the header's batch goes to the instances of this side of it.
+    Route(EpochSide),
+
+    /// The header closed epochs of the window: each closed epoch, oldest first, with its watermark, which its instances
+    /// drain at. The window is closed afterwards unless it closed only its oldest epochs, past the most it keeps open.
+    Closed {
+        /// The closed epochs, oldest first, each with its watermark.
+        epochs: Vec<(u32, Option<AdmissionTime>)>,
+    },
+}
+
+/// Which side of an open reset window a batch belongs to.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EpochSide {
+    /// An older epoch, still open at the lane.
+    Older(u32),
+
+    /// The window's target epoch.
+    Target,
+}
+
+impl ResetWindow {
+    /// Creates the window of a lane in `epoch`, with none open: `0` for a lane whose upstream clock has not reset.
+    pub const fn new(epoch: u32) -> Self {
+        Self {
+            older: Vec::new(),
+            target: epoch,
+        }
+    }
+
+    /// Steps the lane's window with one header, which `tracker` has observed, and says what the header did.
+    ///
+    /// Epochs follow one another, one per reset of the clock, so a header more than one epoch newer than the lane's
+    /// newest holds every epoch in between open too: a point that skipped one, because the clock reset twice while it
+    /// was blocked, says nothing of the others, whose batches of that epoch may still be on their way.
+    pub fn step(&mut self, tracker: &WatermarkTracker, header: &BatchHeader) -> WindowStep {
+        let epoch = header.epoch;
+        let mut overflowed = Vec::new();
+        let opened = epoch_newer(epoch, self.target).then(|| {
+            let older = self.target;
+            let resets = epoch.wrapping_sub(older);
+            self.older.extend((0..resets).map(|offset| older.wrapping_add(offset)));
+            self.target = epoch;
+            let excess = self.older.len().saturating_sub(MAX_OPEN_EPOCHS as usize);
+            overflowed.extend(self.older.drain(..excess));
+            older
+        });
+        if !self.is_open() {
+            return WindowStep::None;
+        }
+        if tracker.switched_epoch(self.target) {
+            let epochs = overflowed
+                .into_iter()
+                .chain(std::mem::take(&mut self.older))
+                .map(|older| (older, tracker.watermark_in(older)))
+                .collect();
+            return WindowStep::Closed { epochs };
+        }
+        if !overflowed.is_empty() {
+            return WindowStep::Closed {
+                epochs: overflowed
+                    .into_iter()
+                    .map(|older| (older, tracker.watermark_in(older)))
+                    .collect(),
+            };
+        }
+        match opened {
+            Some(older) => WindowStep::Opened {
+                older,
+                target: self.target,
+            },
+            None if epoch == self.target => WindowStep::Route(EpochSide::Target),
+            None => WindowStep::Route(EpochSide::Older(epoch)),
+        }
+    }
+
+    /// Returns `true` if a window is open: some older epoch is not closed at the lane yet.
+    pub fn is_open(&self) -> bool {
+        !self.older.is_empty()
+    }
+
+    /// Returns `true` if the lane holds `epoch` open: it is the lane's epoch, the window's target, or an older epoch
+    /// the window has not closed.
+    pub fn holds(&self, epoch: u32) -> bool {
+        epoch == self.target || self.older.contains(&epoch)
+    }
+
+    /// Returns the epochs not yet closed at the lane, oldest first: none while no window is open.
+    pub fn older(&self) -> &[u32] {
+        &self.older
+    }
+
+    /// Returns the newest epoch a reset leads to: the lane's epoch, which instances bound now hold data of.
+    pub fn target(&self) -> u32 {
+        self.target
+    }
+
+    /// Closes every older epoch at once, as a lane whose input ended does: returns each, oldest first, with its
+    /// watermark so far, which is exact once every point's last header reached the lane.
+    pub fn close(&mut self, tracker: &WatermarkTracker) -> Vec<(u32, Option<AdmissionTime>)> {
+        std::mem::take(&mut self.older)
+            .into_iter()
+            .map(|older| (older, tracker.watermark_in(older)))
+            .collect()
+    }
+}
+
+impl Default for ResetWindow {
+    /// Returns the window of a lane in epoch 0, the first epoch of every admission clock.
+    fn default() -> Self {
+        Self::new(0)
+    }
 }
 
 /// What the [tick gate][TickGate] decides at a flush tick's deadline.
@@ -323,10 +588,18 @@ impl TickGate {
     pub fn due(
         &self, bound: bool, watermark: Option<AdmissionTime>, wall: AdmissionTime, last: Option<AdmissionTime>,
     ) -> TickDecision {
+        self.due_at_second(bound, watermark, wall.as_unix_secs(), last)
+    }
+
+    /// Decides a scheduled tick of a lineage whose tick's wall-clock second is `second`, as [`due`][Self::due] does:
+    /// for a lane of a lineage on several lanes, the second the first lane to reach the tick read, which every lane
+    /// shares.
+    pub fn due_at_second(
+        &self, bound: bool, watermark: Option<AdmissionTime>, second: u64, last: Option<AdmissionTime>,
+    ) -> TickDecision {
         let Some(watermark) = watermark.filter(|_| bound) else {
             return TickDecision::Skip;
         };
-        let second = wall.as_unix_secs();
         if watermark.as_unix_secs() >= second {
             TickDecision::Fire {
                 flush: later(last, AdmissionTime::from_unix_secs(second)),

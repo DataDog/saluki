@@ -81,10 +81,47 @@
 //! and every exit on its path [forwards its progress][Exit::progress_points]. The slot stamps its time-driven output
 //! as if its output were an admission point of its own, numbered after every admission point of the fixed
 //! components.
+//!
+//! # Lanes
+//!
+//! A slot may run on several **lanes**: tasks inside its one component, each running the slot's program on an input of
+//! its own. Lane counts are runtime layout, fixed at boot by the host's [`LanePolicy`], and never plan content: the
+//! plan's hash and its logical explanation do not depend on them. A frame with lanes is laid out without R1's
+//! pipelining ([`FrameOptions`]), so fusion is maximal between fences. [`Frame::compute_with`] gives:
+//!
+//! - **Lane points.** The DogStatsD source's `metrics` output is split into
+//!   [`LanePolicy::dogstatsd`] admission points, one per lane, with consecutive IDs from the point's
+//!   [`id`][AdmissionPointInfo::id] ([`AdmissionPointInfo::lanes`]). They share one clock, so they count as one
+//!   point for [`FrameError::StateOwnerPoints`]; a state owner downstream has every lane's point upstream of it.
+//! - **Slot lanes** ([`Slot::lanes`]). A fused slot the DogStatsD points feed runs one lane per point, the producer
+//!   lanes; an isolation slot whose state owner has a [partition key][crate::operators::OperatorDef::partition_key]
+//!   runs [`state`][LanePolicy::state] lanes, each holding a disjoint share of its state and stamping its time-driven
+//!   output at an output point of its own (`output_points` of [`SlotKind::Isolation`]), when only other slots' exits
+//!   feed it: an admission point sends whole buffers and routes nothing by key, so a state owner that a point with one
+//!   lane feeds straight keeps its state on one lane, and one that the DogStatsD points feed straight on several lanes
+//!   has no frame ([`FrameError::Lanes`]), since each producer lane stamps its point in the lane of the slot it feeds;
+//!   a fused slot with no state owner downstream that the DogStatsD points do not feed runs [`post`][LanePolicy::post]
+//!   lanes; every other slot runs one.
+//! - **Routing** of every edge into a slot, from the lanes of its ends ([`Exit::routing`],
+//!   [`AdmissionPointInfo::routing`]): into an isolation slot on several lanes, an exit is [keyed][ExitRouting::Keyed],
+//!   routing each event by its partition key through fixed [key groups][KeyGroups]; from a fused slot into a fused
+//!   slot with lanes it keeps the sender's lane ([affinity][ExitRouting::Affinity]) when the sender runs several lanes
+//!   or the DogStatsD points reach it through fused slots only, so a producer lane's batches keep their order at one
+//!   producer lane as at several; from an isolation slot, or from another fused slot with one lane, into a fused slot
+//!   with lanes, it [spreads][ExitRouting::Spread] whole buffers, as a point with one lane does
+//!   ([`PointRouting::Spread`]); a point with lanes feeds its slot lane by lane ([`PointRouting::Fixed`]). Every path
+//!   to a state owner keeps one path per admission point and state lane: an edge that would spread on such a path is
+//!   an error. Routing is checked after the state owners' points, so a plan whose state owner several sources feed is
+//!   told that, not how its edges would route.
+//! - **Entries.** Physical edges and slot inputs name a point with lanes by its first lane's ID ([`FrameEdge`],
+//!   [`Slot::inputs`]), while the program of a slot it feeds has an entry for every lane's ID (see
+//!   [placement](super::placement#entries)): each lane receives the batches its own lane of the point stamped.
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fmt,
+    ops::Range,
+    sync::Arc,
 };
 
 use saluki_core::execution::{AdmissionMode, AdmissionPointId};
@@ -97,7 +134,7 @@ use crate::{
         HostId, Namespace, NativeComponentId, NodeId, OperatorName, OutputDecl, OutputId, Params, Plan, PortName,
         PortRef, Provenance,
     },
-    operators::{decision_cost, names, Boundary, OperatorRegistry, StateContract},
+    operators::{decision_cost, names, Boundary, OperatorRegistry, SourceBinding, StateContract, METRICS_PORT},
     validate::graph::{emit_output, Graph},
 };
 
@@ -247,6 +284,189 @@ impl FrameHosts {
     }
 }
 
+/// How many lanes the slots of a frame run on: runtime layout the host chooses at boot, never plan content.
+///
+/// A **lane** is a task inside a slot's component that runs the slot's program on an input of its own. Three kinds of
+/// slot take lanes from the policy (see [Lanes](self#lanes)):
+///
+/// - the DogStatsD source's `metrics` output is split into [`Self::dogstatsd`] admission points, and the
+///   slot it feeds runs one lane per point, so that each lane stamps its own point: with several points, that slot must
+///   be a fused slot;
+/// - each isolation slot whose state owner has a [partition key][crate::operators::OperatorDef::partition_key] runs
+///   [`state`][Self::state] lanes, each holding a disjoint share of its state, when only other slots' exits feed it,
+///   since only an exit routes events by key;
+/// - each fused slot with no state owner downstream that the DogStatsD points do not feed runs [`post`][Self::post]
+///   lanes.
+///
+/// Every other slot runs one lane. With one lane everywhere ([`ONE`][Self::ONE]), the frame is laid out as without
+/// lanes. Lane counts never enter the plan's hash or its logical explanation.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct LanePolicy {
+    /// The admission points of the DogStatsD source's metrics, and the lanes of the slot they feed: the producer
+    /// lanes.
+    pub dogstatsd: u16,
+
+    /// The lanes of each isolation slot whose state owner's state can be partitioned, fed by other slots' exits only:
+    /// the state lanes.
+    pub state: u16,
+
+    /// The lanes of each fused slot with no state owner downstream that the DogStatsD points do not feed: the
+    /// post-aggregation lanes.
+    pub post: u16,
+}
+
+impl LanePolicy {
+    /// One lane in every slot: the frame without lanes.
+    pub const ONE: Self = Self {
+        dogstatsd: 1,
+        state: 1,
+        post: 1,
+    };
+
+    /// Returns `true` if every slot runs one lane.
+    pub fn is_one(&self) -> bool {
+        *self == Self::ONE
+    }
+}
+
+impl Default for LanePolicy {
+    fn default() -> Self {
+        Self::ONE
+    }
+}
+
+/// Choices of the frame's layout that the host makes at boot, besides the lanes.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct FrameOptions {
+    /// Whether R1's cost model cuts chains of synchronous nodes into pipelined slots (see
+    /// [Pipelining](self#pipelining)).
+    ///
+    /// Without it, fusion is maximal between fences: every connected set of synchronous nodes at one fence depth is one
+    /// slot, and lanes give the parallelism. A frame with lanes needs it off. On by default.
+    pub pipelining: bool,
+}
+
+impl Default for FrameOptions {
+    fn default() -> Self {
+        Self { pipelining: true }
+    }
+}
+
+/// The fixed table that routes partition keys to the lanes of a state owner's isolation slot, through
+/// [`KEY_GROUPS`][crate::limits::values::KEY_GROUPS] (256) key groups.
+///
+/// A key's group is its high byte, and the groups belong to the lanes in contiguous ranges: group `g` belongs to lane
+/// `g × lanes / 256`. The table is fixed for the life of the process, so every event with one key reaches one lane.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct KeyGroups {
+    owner: [u16; KEY_GROUP_COUNT],
+    lanes: u16,
+}
+
+/// The number of key groups, as an array length.
+const KEY_GROUP_COUNT: usize = crate::limits::values::KEY_GROUPS as usize;
+
+impl KeyGroups {
+    /// Creates the table of `lanes` lanes, at least one.
+    pub fn new(lanes: u16) -> Self {
+        let lanes = lanes.max(1);
+        let mut owner = [0u16; KEY_GROUP_COUNT];
+        for (group, owner) in owner.iter_mut().enumerate() {
+            // Below `lanes`, since `group` is below the group count.
+            *owner = (group * usize::from(lanes) / KEY_GROUP_COUNT) as u16;
+        }
+        Self { owner, lanes }
+    }
+
+    /// Returns the number of lanes the table routes to.
+    pub fn lanes(&self) -> u16 {
+        self.lanes
+    }
+
+    /// Returns the key group of a partition key: its high byte.
+    pub const fn group_of(key: u64) -> usize {
+        (key >> 56) as usize
+    }
+
+    /// Returns the lane that owns a key group.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `group` is not a key group, below 256.
+    pub fn owner(&self, group: usize) -> u16 {
+        self.owner[group]
+    }
+
+    /// Returns the lane that owns a partition key.
+    pub fn lane_of(&self, key: u64) -> u16 {
+        self.owner[Self::group_of(key)]
+    }
+
+    /// Returns the key groups a lane owns: a contiguous range, empty for a lane the table does not route to.
+    pub fn groups_of(&self, lane: u16) -> Range<usize> {
+        // Owners never decrease from one group to the next, so each lane's groups are one run.
+        self.owner.partition_point(|&owner| owner < lane)..self.owner.partition_point(|&owner| owner <= lane)
+    }
+}
+
+/// How an exit sends to the lanes of its target.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExitRouting {
+    /// The target runs one lane, which every buffer goes to, whole.
+    One,
+
+    /// The target is a state owner's isolation slot on several lanes: each event goes, by its partition key, through
+    /// the key groups, to the lane that owns it (the repartition edge).
+    Keyed(Arc<KeyGroups>),
+
+    /// The target runs several lanes and holds no state, and the sender is a fused slot that runs several lanes or
+    /// carries a producer point's batches in their order: lane `i` of the sender sends to lane `i mod lanes` of the
+    /// target, whole buffers, so each sender lane's buffers stay in order.
+    Affinity,
+
+    /// The target runs several lanes and holds no state downstream that needs the sender's buffers in order, and the
+    /// sender is an isolation slot, whose time-driven output has no order to keep, or a fused slot with one lane that
+    /// no producer point reaches: each whole buffer goes to the first lane with room, in rotation.
+    Spread,
+}
+
+impl ExitRouting {
+    /// Returns the name of the routing, as explain documents say it: `one`, `keyed`, `affinity`, or `spread`.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::One => "one",
+            Self::Keyed(_) => "keyed",
+            Self::Affinity => "affinity",
+            Self::Spread => "spread",
+        }
+    }
+}
+
+/// How an admission point's edge reaches the lanes of its target.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum PointRouting {
+    /// The target runs one lane, which every lane of the point feeds.
+    One,
+
+    /// The point has as many lanes as its target, and lane `i` of the point feeds lane `i` of the target.
+    Fixed,
+
+    /// The point has one lane and the target several, with no state downstream: each whole buffer goes to the first
+    /// lane with room, in rotation.
+    Spread,
+}
+
+impl PointRouting {
+    /// Returns the name of the routing, as explain documents say it: `one`, `fixed`, or `spread`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::One => "one",
+            Self::Fixed => "fixed",
+            Self::Spread => "spread",
+        }
+    }
+}
+
 /// Where a physical edge starts.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum FrameSource {
@@ -274,10 +494,20 @@ pub struct FrameEdge {
 }
 
 /// An admission point: one output port of a fixed component.
+///
+/// The output of a source with lanes is a group of admission points, one per lane, each stamped by its lane, with
+/// consecutive IDs that start at [`id`][Self::id]; the source's points share one clock. Edges and slot inputs name such
+/// a group by its first lane's ID.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdmissionPointInfo {
-    /// The point's ID, unique within the frame.
+    /// The point's ID, unique within the frame: with lanes, the ID of its first lane's point.
     pub id: AdmissionPointId,
+
+    /// The number of lanes of the output, each an admission point of its own: one for an output without lanes.
+    pub lanes: u16,
+
+    /// How the point's edge reaches the lanes of its target.
+    pub routing: PointRouting,
 
     /// The fixed component's node.
     pub node: NodeId,
@@ -295,6 +525,25 @@ pub struct AdmissionPointInfo {
     /// Whether the point feeds a state owner: whether it is upstream of an isolation slot, so that it sends heartbeats
     /// toward it and a cut is armed over it.
     pub feeds_state: bool,
+}
+
+impl AdmissionPointInfo {
+    /// Returns the IDs of the point's lanes, in lane order: the point's own ID alone for an output without lanes.
+    pub fn lane_ids(&self) -> impl Iterator<Item = AdmissionPointId> {
+        let first = self.id.get();
+        (0..u32::from(self.lanes)).map(move |lane| AdmissionPointId::new(first + lane))
+    }
+
+    /// Returns the ID of one lane's point, if the point has the lane.
+    pub fn lane_id(&self, lane: u16) -> Option<AdmissionPointId> {
+        (lane < self.lanes).then(|| AdmissionPointId::new(self.id.get() + u32::from(lane)))
+    }
+
+    /// Returns the lane whose point has `id`, if `id` is one of the point's lanes.
+    pub fn lane_of(&self, id: AdmissionPointId) -> Option<u16> {
+        let lane = id.get().checked_sub(self.id.get())?;
+        u16::try_from(lane).ok().filter(|&lane| lane < self.lanes)
+    }
 }
 
 /// A fixed component: a fence of the boot plan, run by a host component of its own.
@@ -337,8 +586,11 @@ pub struct Exit {
 
     /// The admission points whose progress the exit forwards: those upstream of the state owners downstream of it,
     /// whose watermarks need progress through the exit even when a batch leaves the slot without output. Empty for
-    /// an exit that leads to no state owner.
+    /// an exit that leads to no state owner. A point with lanes is listed by every lane's ID.
     pub progress_points: Vec<AdmissionPointId>,
+
+    /// How the exit sends to the lanes of its target.
+    pub routing: ExitRouting,
 }
 
 /// What kind of slot a slot is.
@@ -350,12 +602,12 @@ pub enum SlotKind {
     /// An isolation slot: the region of a state owner behind a declared isolation fence, which owns its state, its
     /// watermark, and its flush ticks.
     Isolation {
-        /// The ID that stamps the slot's time-driven output: numbered after every admission point of the frame's fixed
-        /// components, and only ever seen in headers, never registered.
-        output_point: AdmissionPointId,
+        /// The IDs that stamp the slot's time-driven output, one per lane, in lane order: numbered after every
+        /// admission point of the frame's fixed components, and only ever seen in headers, never registered.
+        output_points: Vec<AdmissionPointId>,
 
         /// The admission points with a physical path to the slot, in ID order, whose latest admission times make up
-        /// its watermark.
+        /// its watermark: every lane's point of a point with lanes.
         upstream: Vec<AdmissionPointId>,
     },
 }
@@ -384,6 +636,10 @@ pub struct Slot {
     /// The estimated cost per event of the slot's boot nodes, in nanoseconds: the sum of their operators' estimates,
     /// with the `split`s of each decision priced together (see [Pipelining](self#pipelining)).
     pub cost: u32,
+
+    /// The number of lanes the slot runs on: one task per lane, each with an input of its own (see
+    /// [Lanes](self#lanes)).
+    pub lanes: u16,
 }
 
 impl Slot {
@@ -395,6 +651,14 @@ impl Slot {
     /// Returns `true` if the slot is an isolation slot.
     pub fn is_isolation(&self) -> bool {
         matches!(self.kind, SlotKind::Isolation { .. })
+    }
+
+    /// Returns the ID that stamps one lane's time-driven output, for an isolation slot that has the lane.
+    pub fn output_point(&self, lane: u16) -> Option<AdmissionPointId> {
+        match &self.kind {
+            SlotKind::Isolation { output_points, .. } => output_points.get(usize::from(lane)).copied(),
+            SlotKind::Fused => None,
+        }
     }
 }
 
@@ -620,6 +884,13 @@ pub enum FrameError {
         point: PortRef,
     },
 
+    /// The boot plan cannot be laid out on the lanes the host asked for.
+    #[snafu(display("The boot plan cannot run on the lanes asked for: {}", message))]
+    Lanes {
+        /// What is wrong, and how to fix it.
+        message: String,
+    },
+
     /// The plan has more slots, exits, or admission points than a frame can number.
     #[snafu(display("The boot plan has more {} than a frame supports ({}).", what, limit))]
     TooLarge {
@@ -660,25 +931,46 @@ pub struct Frame {
     fusion: Vec<FusionDecision>,
     sites: BTreeMap<NodeId, Site>,
     cost_budget: u32,
+    lanes: LanePolicy,
+    options: FrameOptions,
 }
 
 impl Frame {
-    /// Computes the frame of a boot plan without delivery hosts: every output is a fixed destination.
+    /// Computes the frame of a boot plan without delivery hosts or lanes, with the default options: every output is a
+    /// fixed destination.
     ///
-    /// This is [`compute_with_hosts`][Self::compute_with_hosts] with no hosts; see there.
+    /// This is [`compute_with`][Self::compute_with] with no hosts, [`LanePolicy::ONE`], and the default
+    /// [`FrameOptions`]; see there.
     ///
     /// # Errors
     ///
-    /// Returns an error for any reason `compute_with_hosts` does, and so for a boot plan with a bound output.
+    /// Returns an error for any reason `compute_with` does, and so for a boot plan with a bound output.
     pub fn compute(plan: &Plan, registry: &OperatorRegistry, namer: &SlotNamer<'_>) -> Result<Self, FrameError> {
         Self::compute_with_hosts(plan, registry, namer, &FrameHosts::new())
     }
 
-    /// Computes the frame of a boot plan, with the delivery hosts and encode hosts the host builds.
+    /// Computes the frame of a boot plan with the delivery hosts and encode hosts the host builds, without lanes, with
+    /// the default options.
+    ///
+    /// This is [`compute_with`][Self::compute_with] with [`LanePolicy::ONE`] and the default [`FrameOptions`]; see
+    /// there.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for any reason `compute_with` does.
+    pub fn compute_with_hosts(
+        plan: &Plan, registry: &OperatorRegistry, namer: &SlotNamer<'_>, hosts: &FrameHosts,
+    ) -> Result<Self, FrameError> {
+        Self::compute_with(plan, registry, namer, hosts, &LanePolicy::ONE, FrameOptions::default())
+    }
+
+    /// Computes the frame of a boot plan, with the delivery hosts and encode hosts the host builds, the lanes its slots
+    /// run on, and the layout options.
     ///
     /// The plan must be structurally sound: every operator known and configured, every edge resolved, and no cycle.
     /// `namer` names each slot's region host component. A bound output delivers through the encode host of its
-    /// delivery host, which `hosts` must have; an output without a binding is a fixed destination.
+    /// delivery host, which `hosts` must have; an output without a binding is a fixed destination. `lanes` says how
+    /// many lanes which slots run on (see [Lanes](self#lanes)), and `options` whether R1's cost model pipelines slots.
     ///
     /// # Errors
     ///
@@ -686,11 +978,13 @@ impl Frame {
     /// fence, one behind an isolation fence that keeps no keyed state, or one that reads a signal (no region runs one
     /// in this stage), if a state owner is fed by no admission point, by several, or by one over several paths, if the
     /// namer refuses a slot or names two alike, if a slot's exits would share a name, if an output is bound to a
-    /// delivery host `hosts` does not have, if an admission point would feed an encode host directly, or if the plan
-    /// is too large to number.
-    pub fn compute_with_hosts(
-        plan: &Plan, registry: &OperatorRegistry, namer: &SlotNamer<'_>, hosts: &FrameHosts,
+    /// delivery host `hosts` does not have, if an admission point would feed an encode host directly, if the plan
+    /// cannot run on the lanes asked for, or if the plan is too large to number.
+    pub fn compute_with(
+        plan: &Plan, registry: &OperatorRegistry, namer: &SlotNamer<'_>, hosts: &FrameHosts, lanes: &LanePolicy,
+        options: FrameOptions,
     ) -> Result<Self, FrameError> {
+        check_lane_policy(lanes, options)?;
         let graph = resolve(plan, registry).map_err(|problems| FrameError::InvalidPlan { problems })?;
         let roles = super::roles(&graph);
         check_supported(&graph, &roles)?;
@@ -705,7 +999,7 @@ impl Frame {
             }
         }
 
-        let layout = Layout::compute(plan, &graph, &roles);
+        let layout = Layout::compute(plan, &graph, &roles, options.pipelining);
         let mut slots = Vec::with_capacity(layout.slots.len());
         let mut names = BTreeSet::new();
         for (index, members) in layout.slots.iter().enumerate() {
@@ -730,6 +1024,7 @@ impl Frame {
                 exits: Vec::new(),
                 kind: SlotKind::Fused,
                 cost,
+                lanes: 1,
             });
         }
 
@@ -805,14 +1100,19 @@ impl Frame {
                     name,
                     target,
                     progress_points: Vec::new(),
+                    routing: ExitRouting::One,
                 });
             }
         }
 
-        // Admission points: every output port of every fixed component, in plan order.
+        // Admission points: every output port of every fixed component, in plan order. The point of an output with
+        // lanes takes one ID per lane; the outputs the policy splits into lanes are the producer points, whatever
+        // their number of lanes.
         let mut admission_points = Vec::new();
+        let mut producers = BTreeSet::new();
         let mut point_of = BTreeMap::new();
         let mut fixed = Vec::new();
+        let mut next_id = 0u32;
         for node in 0..graph.nodes.len() {
             if roles[node] != Role::Fixed {
                 continue;
@@ -820,7 +1120,16 @@ impl Frame {
             let op = graph.op(node).expect("a resolved plan configures every node");
             let mut points = Vec::new();
             for (port, output) in op.ports().outputs.iter().enumerate() {
-                let id = AdmissionPointId::new(u32::try_from(admission_points.len()).map_err(|_| too_large("ports"))?);
+                let id = AdmissionPointId::new(next_id);
+                let point_lanes = if is_dogstatsd_metrics(op, &output.name) {
+                    producers.insert(id);
+                    lanes.dogstatsd
+                } else {
+                    1
+                };
+                next_id = next_id
+                    .checked_add(u32::from(point_lanes))
+                    .ok_or_else(|| too_large("ports"))?;
                 let route = graph.target(node, port).and_then(|(to, _)| match roles[to] {
                     Role::Fixed => Some(FrameTarget::Fixed(graph.id(to).clone())),
                     Role::Synchronous | Role::Isolated => slot_of(to).map(FrameTarget::Slot),
@@ -846,6 +1155,8 @@ impl Frame {
                 points.push(id);
                 admission_points.push(AdmissionPointInfo {
                     id,
+                    lanes: point_lanes,
+                    routing: PointRouting::One,
                     node: graph.id(node).clone(),
                     port: output.name.clone(),
                     mode: if op.contract().boundary == Boundary::IoHost {
@@ -919,20 +1230,35 @@ impl Frame {
             slots[target.get()].inputs.push(from);
         }
 
-        // Isolation slots: their output points, and the admission points upstream of them, with the exits that carry
-        // those points' progress.
-        let mut next_point = admission_points.len();
         for (index, members) in layout.slots.iter().enumerate() {
             if members.iter().any(|&node| roles[node] == Role::Isolated) {
-                let point = AdmissionPointId::new(u32::try_from(next_point).map_err(|_| too_large("ports"))?);
-                next_point += 1;
                 slots[index].kind = SlotKind::Isolation {
-                    output_point: point,
+                    output_points: Vec::new(),
                     upstream: Vec::new(),
                 };
             }
         }
+
+        // Lanes of each slot (see the module documentation).
+        assign_lanes(&graph, &layout, lanes, &admission_points, &producers, &mut slots)?;
+
+        // Isolation slots: their output points, one per lane, numbered after every admission point of the fixed
+        // components, and the admission points upstream of them, with the exits that carry those points' progress.
+        let mut next_point = next_id;
+        for slot in &mut slots {
+            let lanes = slot.lanes;
+            if let SlotKind::Isolation { output_points, .. } = &mut slot.kind {
+                for _ in 0..lanes {
+                    output_points.push(AdmissionPointId::new(next_point));
+                    next_point = next_point.checked_add(1).ok_or_else(|| too_large("ports"))?;
+                }
+            }
+        }
         state_upstream(&graph, &layout, &mut admission_points, &mut slots)?;
+
+        // The routing of every edge into a slot with lanes, once a state owner's points are known to be one point over
+        // one path, so that a plan that breaks that rule is told so, not how its edges would route.
+        route_lanes(&mut admission_points, &producers, &mut slots)?;
 
         let fusion = layout
             .edges
@@ -1014,7 +1340,25 @@ impl Frame {
             fusion,
             sites,
             cost_budget: layout.budget,
+            lanes: *lanes,
+            options,
         })
+    }
+
+    /// Returns the lanes the frame was laid out on.
+    pub fn lane_policy(&self) -> &LanePolicy {
+        &self.lanes
+    }
+
+    /// Returns the options the frame was laid out with.
+    pub fn options(&self) -> FrameOptions {
+        self.options
+    }
+
+    /// Returns the ID of every admission point of the fixed components, every lane's point of a point with lanes, in
+    /// ID order.
+    pub fn admission_point_ids(&self) -> impl Iterator<Item = AdmissionPointId> + '_ {
+        self.admission_points.iter().flat_map(AdmissionPointInfo::lane_ids)
     }
 
     /// Returns the frame's delivery hosts, each with its encode host.
@@ -1053,9 +1397,10 @@ impl Frame {
         &self.admission_points
     }
 
-    /// Returns the admission point with the given ID, if there is one.
+    /// Returns the admission point with the given ID, if there is one: for the ID of one lane of a point with lanes,
+    /// the point all its lanes belong to.
     pub fn admission_point(&self, id: AdmissionPointId) -> Option<&AdmissionPointInfo> {
-        self.admission_points.iter().find(|point| point.id == id)
+        self.admission_points.iter().find(|point| point.lane_of(id).is_some())
     }
 
     /// Returns the admission point at one output port of a fixed component, if there is one.
@@ -1096,7 +1441,7 @@ impl Frame {
     /// only for the check and the store, never while waiting for another point's lock.
     pub fn cancel_lock_order(&self) -> Vec<AdmissionPointId> {
         let (state, other): (Vec<_>, Vec<_>) = self.admission_points.iter().partition(|point| point.feeds_state);
-        other.iter().chain(&state).map(|point| point.id).collect()
+        other.iter().chain(&state).flat_map(|point| point.lane_ids()).collect()
     }
 
     /// Returns the boot plan's declared outputs, in plan order: its fixed destinations, which a candidate declares as
@@ -1211,6 +1556,256 @@ fn check_supported(graph: &Graph<'_>, roles: &[Role]) -> Result<(), FrameError> 
     Ok(())
 }
 
+/// Checks that every lane count is between one and [`MAX_LANES`][crate::limits::values::MAX_LANES], and that a frame
+/// with lanes fuses maximally: R1's pipelined slots get no lanes.
+fn check_lane_policy(lanes: &LanePolicy, options: FrameOptions) -> Result<(), FrameError> {
+    let max = crate::limits::values::MAX_LANES;
+    for (what, count) in [
+        ("DogStatsD producer lanes", lanes.dogstatsd),
+        ("state lanes", lanes.state),
+        ("post-aggregation lanes", lanes.post),
+    ] {
+        if count == 0 || u64::from(count) > max {
+            return Err(FrameError::Lanes {
+                message: format!(
+                    "{} {} were asked for, and a slot runs on 1 to {} lanes. Ask for a count in that range.",
+                    count, what, max
+                ),
+            });
+        }
+    }
+    if options.pipelining && !lanes.is_one() {
+        return Err(FrameError::Lanes {
+            message: "R1's cost model pipelines slots, and slots with lanes need fusion to be maximal between fences. \
+                      Lay the frame out without pipelining, or on one lane."
+                .to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Returns `true` if `port` of the operator is the metrics output of the DogStatsD source, which the lane policy
+/// splits into producer lanes.
+fn is_dogstatsd_metrics(op: &crate::operators::ConfiguredOperator, port: &PortName) -> bool {
+    op.name() == names::SOURCE
+        && op.params().str("binding") == Some(SourceBinding::Dogstatsd.as_str())
+        && port.as_str() == METRICS_PORT
+}
+
+/// Returns, for every slot, whether a state owner is downstream of it through slots only: through exits to slots, to
+/// an isolation slot. A fixed component downstream readmits what it receives, so nothing beyond it counts.
+fn reaches_state(slots: &[Slot]) -> Vec<bool> {
+    fn visit(slot: usize, slots: &[Slot], memo: &mut [Option<bool>]) -> bool {
+        if let Some(known) = memo[slot] {
+            return known;
+        }
+        // Slots form an acyclic graph, so the walk ends; a slot is marked before its targets, which never lead back.
+        memo[slot] = Some(false);
+        let reaches = slots[slot].exits.iter().any(|exit| match exit.target {
+            FrameTarget::Slot(next) => slots[next.get()].is_isolation() || visit(next.get(), slots, memo),
+            _ => false,
+        });
+        memo[slot] = Some(reaches);
+        reaches
+    }
+    let mut memo = vec![None; slots.len()];
+    (0..slots.len()).map(|slot| visit(slot, slots, &mut memo)).collect()
+}
+
+/// Sets each slot's lanes from the policy: an isolation slot whose state owner has a partition key and that only
+/// other slots' exits feed runs the state lanes, a fused slot a producer point feeds (`producers`, the outputs the
+/// policy splits into lanes) runs one lane per lane of the point, even when it has one, a fused slot with no state
+/// owner downstream runs the post-aggregation lanes, and every other slot one lane.
+///
+/// Each lane of a producer point is stamped by the lane of the slot it feeds, the point's only stamper, so the slot
+/// runs exactly the point's lanes, one point to each: spreading a point over several lanes would give it several
+/// stampers. A producer point with several lanes that feeds a state owner straight is refused, since an isolation slot
+/// cannot run one lane per point: on several lanes, each lane holds the share of the state that keyed exits route to
+/// it, which a point does not route by, and on one lane, that lane would stamp every lane's point.
+fn assign_lanes(
+    graph: &Graph<'_>, layout: &Layout, lanes: &LanePolicy, points: &[AdmissionPointInfo],
+    producers: &BTreeSet<AdmissionPointId>, slots: &mut [Slot],
+) -> Result<(), FrameError> {
+    let downstream_state = reaches_state(slots);
+    for slot in slots.iter_mut() {
+        if slot.is_isolation() {
+            let members = &layout.slots[slot.id.get()];
+            let producer = slot.inputs.iter().find_map(|input| match input {
+                FrameSource::Admission(id) if producers.contains(id) => {
+                    points.iter().find(|point| point.id == *id && point.lanes > 1)
+                }
+                _ => None,
+            });
+            if let Some(point) = producer {
+                return Err(FrameError::Lanes {
+                    message: format!(
+                        "the {} producer lanes of `{}.{}` feed state owner `{}` straight, and each producer lane \
+                         stamps its own admission point in the lane of the slot it feeds, which an isolation slot \
+                         cannot give it. Put a stateless node between them, or lay the frame out on one producer lane.",
+                        point.lanes,
+                        point.node,
+                        point.port,
+                        graph.id(members[0])
+                    ),
+                });
+            }
+            let partitioned = members
+                .iter()
+                .filter_map(|&node| graph.op(node))
+                .all(|op| op.partition_key().is_some());
+            // Only an exit routes events by key: an admission point sends whole buffers, so a state owner that a
+            // point with one lane feeds straight keeps its state on one lane.
+            let routed = slot
+                .inputs
+                .iter()
+                .all(|input| matches!(input, FrameSource::Exit { .. }));
+            slot.lanes = if partitioned && routed { lanes.state } else { 1 };
+            continue;
+        }
+        let mut fed_by_lanes = None;
+        for input in &slot.inputs {
+            let FrameSource::Admission(id) = input else {
+                continue;
+            };
+            let Some(point) = points
+                .iter()
+                .find(|point| point.id == *id)
+                .filter(|point| producers.contains(&point.id))
+            else {
+                continue;
+            };
+            match fed_by_lanes {
+                Some(lanes) if lanes != point.lanes => {
+                    return Err(FrameError::Lanes {
+                        message: format!(
+                            "slot `{}` is fed by admission points with {} and {} lanes, and a slot runs one lane per \
+                             lane of the points that feed it. Give the points equal lane counts.",
+                            slot.name, lanes, point.lanes
+                        ),
+                    });
+                }
+                _ => fed_by_lanes = Some(point.lanes),
+            }
+        }
+        slot.lanes = match fed_by_lanes {
+            Some(lanes) => lanes,
+            None if !downstream_state[slot.id.get()] => lanes.post,
+            None => 1,
+        };
+    }
+    Ok(())
+}
+
+/// Sets the routing of every exit and admission point edge into a slot, from the lanes of both ends, and refuses
+/// routing that would break the order a state owner downstream needs: a spread edge on a path to a state owner, or an
+/// admission point with lanes into a slot with a different number of lanes.
+///
+/// Every routing but a spread sends each lane of the sender to one lane of the target, or, keyed, to each lane of a
+/// state owner's slot over one channel, so refusing spreads on paths to state owners keeps one path per admission
+/// point lane and state lane wherever the slots keep one path per point.
+///
+/// An exit of a fused slot into a stateless slot with lanes keeps the sender's lane when the sender has several lanes,
+/// and also when it has one but carries a producer point's batches (`producers`) in their order: a producer lane's
+/// batches, which keep each stream connection's order, then stay on one lane of the target, at one producer lane as at
+/// several. Only an isolation slot's time-driven output and the output of a slot with one lane that no producer point
+/// reaches spread.
+fn route_lanes(
+    points: &mut [AdmissionPointInfo], producers: &BTreeSet<AdmissionPointId>, slots: &mut [Slot],
+) -> Result<(), FrameError> {
+    let downstream_state = reaches_state(slots);
+    let producer_order = carries_producer_order(points, producers, slots);
+    let target_lanes = slots
+        .iter()
+        .map(|slot| (slot.lanes, slot.is_isolation()))
+        .collect::<Vec<_>>();
+    let mut groups: BTreeMap<u16, Arc<KeyGroups>> = BTreeMap::new();
+    let ordered = |slot: usize| target_lanes[slot].1 || downstream_state[slot];
+
+    for slot in slots.iter_mut() {
+        let keeps_lane = !slot.is_isolation() && (slot.lanes > 1 || producer_order[slot.id.get()]);
+        for exit in &mut slot.exits {
+            let FrameTarget::Slot(target) = exit.target else {
+                continue;
+            };
+            let (lanes, isolated) = target_lanes[target.get()];
+            exit.routing = match (lanes, isolated) {
+                (1, _) => ExitRouting::One,
+                (lanes, true) => ExitRouting::Keyed(Arc::clone(
+                    groups.entry(lanes).or_insert_with(|| Arc::new(KeyGroups::new(lanes))),
+                )),
+                (_, false) if keeps_lane => ExitRouting::Affinity,
+                (_, false) => ExitRouting::Spread,
+            };
+            if exit.routing == ExitRouting::Spread && ordered(target.get()) {
+                return Err(FrameError::Lanes {
+                    message: format!(
+                        "exit `{}` of slot `{}` would spread its buffers over the lanes of a slot with a state owner \
+                         downstream, which needs each admission point's batches on one path to each of its lanes. Lay \
+                         the frame out on one lane, or feed the state owner from admission points through slots only.",
+                        exit.name, slot.name
+                    ),
+                });
+            }
+        }
+    }
+
+    for point in points.iter_mut() {
+        let Some(FrameTarget::Slot(target)) = point.route else {
+            continue;
+        };
+        let (lanes, isolated) = target_lanes[target.get()];
+        point.routing = match (point.lanes, lanes) {
+            (_, 1) => PointRouting::One,
+            (from, to) if from == to && !isolated => PointRouting::Fixed,
+            (1, _) if !ordered(target.get()) => PointRouting::Spread,
+            (from, to) => {
+                return Err(FrameError::Lanes {
+                    message: format!(
+                        "admission point `{}.{}` has {} lanes and feeds slot `{}`, which runs {} lanes, and a point \
+                         feeds a slot with lanes only lane by lane, from as many lanes as the slot runs, or spread, \
+                         with no state owner downstream of the slot. Lay the frame out on one lane.",
+                        point.node,
+                        point.port,
+                        from,
+                        slots[target.get()].name,
+                        to
+                    ),
+                });
+            }
+        };
+    }
+    Ok(())
+}
+
+/// Returns, for every slot, whether it carries a producer point's batches in the order its lanes stamped them: whether
+/// a producer point's edge leads to it through fused slots only. An isolation slot stamps its own time-driven output,
+/// and a fixed component readmits what it receives, so neither passes the order on.
+fn carries_producer_order(
+    points: &[AdmissionPointInfo], producers: &BTreeSet<AdmissionPointId>, slots: &[Slot],
+) -> Vec<bool> {
+    let mut carries = vec![false; slots.len()];
+    let mut queue = points
+        .iter()
+        .filter(|point| producers.contains(&point.id))
+        .filter_map(|point| match point.route {
+            Some(FrameTarget::Slot(slot)) => Some(slot),
+            _ => None,
+        })
+        .collect::<VecDeque<_>>();
+    while let Some(slot) = queue.pop_front() {
+        let slot = &slots[slot.get()];
+        if carries[slot.id.get()] || slot.is_isolation() {
+            continue;
+        }
+        carries[slot.id.get()] = true;
+        queue.extend(slot.exits.iter().filter_map(|exit| match exit.target {
+            FrameTarget::Slot(next) => Some(next),
+            _ => None,
+        }));
+    }
+    carries
+}
+
 /// Finds the admission points upstream of each isolation slot, whose latest admission times make up its state owner's
 /// watermark, and the exits that carry their progress toward it.
 ///
@@ -1280,15 +1875,22 @@ fn state_upstream(
             let FrameTarget::Slot(next) = exit.target else { break };
             current = next;
         }
+        // A point with lanes is upstream by every lane's point, all of them stamped from one clock.
+        let lane_points = points
+            .iter()
+            .find(|info| info.id == point)
+            .map_or_else(|| vec![point], |info| info.lane_ids().collect::<Vec<_>>());
         for (slot, exit) in on_path {
             let progress = &mut slots[slot.get()].exits[exit.get()].progress_points;
-            if !progress.contains(&point) {
-                progress.push(point);
-                progress.sort();
+            for &lane_point in &lane_points {
+                if !progress.contains(&lane_point) {
+                    progress.push(lane_point);
+                }
             }
+            progress.sort();
         }
         if let SlotKind::Isolation { upstream, .. } = &mut slots[target.get()].kind {
-            *upstream = vec![point];
+            *upstream = lane_points;
         }
         if let Some(info) = points.iter_mut().find(|info| info.id == point) {
             info.feeds_state = true;
@@ -1377,7 +1979,7 @@ struct Layout {
 }
 
 impl Layout {
-    fn compute(plan: &Plan, graph: &Graph<'_>, roles: &[Role]) -> Self {
+    fn compute(plan: &Plan, graph: &Graph<'_>, roles: &[Role], pipelining: bool) -> Self {
         let count = graph.nodes.len();
         // Every edge, in plan order. A structurally sound plan resolves every edge on both ends.
         let edges = plan
@@ -1555,7 +2157,7 @@ impl Layout {
                         .fold(added, u32::saturating_add);
                     // A unit that adds no work to the one region it joins stays with it, even past the budget (behind
                     // a unit that alone costs more): moving it would only add a region for a lone `emit` or `drop`.
-                    if !joined.is_empty() && merged > budget && (added > 0 || joined.len() > 1) {
+                    if pipelining && !joined.is_empty() && merged > budget && (added > 0 || joined.len() > 1) {
                         at += 1;
                     }
                     unit_stage[unit] = Some(at);

@@ -574,6 +574,24 @@ td.detail.warn { color: var(--warn); }
 .nodes.stale td { color: var(--faint); }
 .nodes.stale svg { opacity: 0.35; }
 
+/* Lanes */
+.lanes { display: flex; flex-direction: column; gap: 10px; }
+.lanes .hint { margin: 0; }
+.lane-slot-head { font-size: 14px; }
+.lane-slot-head .id { font-family: var(--mono); font-weight: 650; }
+.lane-slot-head .muted { color: var(--muted); }
+.lane-slot-head .skew { color: var(--warn); }
+.lane-exit { font-family: var(--mono); font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.lanes-table td.mono { font-family: var(--mono); }
+.lanes-table td.err { color: var(--err); font-weight: 650; }
+.lanes-table svg { width: 90px; height: 16px; display: block; }
+.lanes-table.stale td { color: var(--faint); }
+.lanes-table.stale svg { opacity: 0.35; }
+.lane-base { stroke: var(--border); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.lane-tick { fill: var(--accent); }
+.lane-cross { fill: var(--intake-mrf); }
+.mix { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 14px; }
+
 /* Traffic */
 .traffic-controls { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .traffic-controls button { padding: 6px 10px; }

@@ -14,14 +14,29 @@
 //!   cancellations of cuts, and the rewrites applied in compiling the active generation, and the native metrics that
 //!   telemetry profiles say the installer records from the plan a generation runs (`MetricSource::BindingLength`,
 //!   `MatcherEntries`, `TagProjectionRules`, and `BindingChanges`).
+//! - [`LaneTelemetry`] publishes what the lanes of each slot measure of their own work, once a second, per
+//!   `component_id` and `lane`: the `plan_lane_*` series. Lanes are fixed at boot, so these series are bounded by the
+//!   lanes of each slot. A kernel of a slot on several lanes is accounted to `<region>.lane_<i>.<node>`, under the
+//!   lane's own group.
 
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
+    time::Duration,
+};
 
+use async_trait::async_trait;
+use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_core::{
     accounting::ComponentRegistry,
+    cache::GaugeMode,
     components::ComponentContext,
-    execution::{GenerationId, LossClass},
+    execution::{GenerationId, LaneContext, LaneStats, LossClass},
     observability::ComponentMetricsExt as _,
+    runtime::{InitializationError, Supervisable, SupervisorFuture},
     support::SubsystemIdentifier,
     topology::ComponentId,
 };
@@ -34,7 +49,8 @@ use saluki_metric_plan::{
     ir::{BindingName, Namespace, Node, NodeId, Plan, PortName},
     operators::{decode_tag_filter_rules, decode_tag_value_rules, KernelBuildContext, OperatorRegistry},
     runtime::{
-        kernel_accounting_name, kernel_accounting_path, PlanTelemetry, RegisterTelemetry, StateBudgets, StateTelemetry,
+        kernel_accounting_name, kernel_accounting_path, PlanTelemetry, RegisterTelemetry, StateBudgets,
+        StateLaneTelemetry, StateTelemetry,
     },
 };
 use saluki_metrics::{Counter, Gauge, MetricsBuilder};
@@ -217,6 +233,12 @@ impl RegionTelemetry {
         ComponentContext::transform(&self.topology, component_id)
     }
 
+    /// Registers the handles lane `lane` of the isolation slot `region` publishes its own telemetry to, its
+    /// `plan_lane_*` series (see [`PlanTelemetry::state_lane`]).
+    pub fn state_lane(&self, region: &str, lane: u16) -> StateLaneTelemetry {
+        self.plan.state_lane(region, lane)
+    }
+
     /// Returns the context to build the kernel of `node`, of `program`, in: reported as [`component`][Self::component]
     /// says, and accounted to the resource group `<region>.<node>` (`<region>.policy` for a node in the policy
     /// namespace), whose bounds `RegionBounds` declares under the same name.
@@ -226,12 +248,27 @@ impl RegionTelemetry {
     /// aggregation, the region stands for the node's native component, and the kernel is accounted in the region's own
     /// group (see `kernel_accounting_path`).
     pub fn kernel_context(&self, program: &RegionProgram, node: &NodeId) -> KernelBuildContext {
+        self.kernel_context_in(program, node, LaneContext::ONE)
+    }
+
+    /// Returns the context to build the kernel of `node`, of `program`, in, for `lane` of its region: as
+    /// [`kernel_context`][Self::kernel_context] says, accounted under the lane's own group, `<region>.lane_<i>`, when
+    /// the region runs on several lanes, and under the region's own when it runs on one. On several lanes, the kernel's
+    /// caches sum their gauges with the other lanes' ([`GaugeMode::Summed`]), since every lane's instance reports under
+    /// the same identifiers.
+    pub fn kernel_context_in(&self, program: &RegionProgram, node: &NodeId, lane: LaneContext) -> KernelBuildContext {
         let operator = program
             .kernels()
             .iter()
             .find(|kernel| &kernel.key.node == node)
             .map_or("", |kernel| kernel.operator);
         let context = KernelBuildContext::new(node.clone(), self.component(node, operator));
+        // Every lane builds the kernel under the same identity, so its caches sum their gauges over the lanes.
+        let context = if lane.is_only() {
+            context
+        } else {
+            context.with_cache_gauges(GaugeMode::Summed)
+        };
         let isolation = self.isolation.get(&program.slot());
         let context = match isolation {
             Some(_) => context.with_state_budget(self.state_budgets.context_budget(node)),
@@ -239,6 +276,11 @@ impl RegionTelemetry {
         };
         let group = self.accounting.as_ref().and_then(|accounting| {
             let region = accounting.regions.get(program.slot().get())?.clone();
+            let region = if lane.is_only() {
+                region
+            } else {
+                region.child(lane_group_name(lane))
+            };
             let name = match isolation {
                 Some(region_name) => kernel_accounting_path(region_name, node),
                 None => Some(kernel_accounting_name(node)),
@@ -279,6 +321,258 @@ impl RegisterTelemetry for RegionTelemetry {
 
     fn state(&self, region: &str) -> StateTelemetry {
         self.plan.state(region)
+    }
+}
+
+/// Returns the name of the resource group of one lane of a region with several lanes, under the region's own: the name
+/// the region host gives the lane's task.
+pub fn lane_group_name(lane: LaneContext) -> String {
+    format!("lane_{}", lane.index)
+}
+
+/// The name of the counter of the batches each lane received on its input, header-only ones included, tagged
+/// `component_id` and `lane`.
+pub const PLAN_LANE_BATCHES_TOTAL: &str = "plan_lane_batches_total";
+
+/// The name of the counter of the events in the batches each lane received on its input, tagged `component_id` and
+/// `lane`.
+pub const PLAN_LANE_EVENTS_TOTAL: &str = "plan_lane_events_total";
+
+/// The name of the counter of the nanoseconds each lane spent in calls into its driver, tagged `component_id` and
+/// `lane`.
+pub const PLAN_LANE_BUSY_NANOS_TOTAL: &str = "plan_lane_busy_nanos_total";
+
+/// The name of the gauge of the batches waiting on each lane's input when it last ended a turn of input, tagged
+/// `component_id` and `lane`.
+pub const PLAN_LANE_INPUT_DEPTH: &str = "plan_lane_input_depth";
+
+/// The name of the counter of the nanoseconds the stamps of each lane's admission point waited for the point's lock,
+/// tagged `component_id` and `lane`: they wait only while an installer transaction holds the lock. Zero for a lane
+/// without an admission point.
+pub const PLAN_LANE_STAMP_WAIT_NANOS_TOTAL: &str = "plan_lane_stamp_wait_nanos_total";
+
+/// The name of the counter of the routed buffers each lane's keyed exits sent to the lanes of a state owner, which
+/// carry events, tagged `component_id` and `lane`: registered for the lanes of a slot with keyed exits.
+pub const PLAN_LANE_ROUTED_BUFFERS_TOTAL: &str = "plan_lane_routed_buffers_total";
+
+/// The name of the counter of the events in the routed buffers each lane's keyed exits sent, tagged `component_id` and
+/// `lane`: registered for the lanes of a slot with keyed exits.
+pub const PLAN_LANE_ROUTED_EVENTS_TOTAL: &str = "plan_lane_routed_events_total";
+
+/// The name of the counter of the header-only buffers each lane's keyed exits sent, which carry an upstream point's
+/// progress to the lanes that saw nothing of it, tagged `component_id` and `lane`: registered for the lanes of a slot
+/// with keyed exits.
+pub const PLAN_LANE_PROGRESS_TOTAL: &str = "plan_lane_progress_total";
+
+/// The name of the gauge of the contexts each state lane's state owners hold, tagged `component_id` and `lane`:
+/// registered for the lanes of an isolation slot whose program runs state owners.
+pub const PLAN_LANE_CONTEXTS: &str = "plan_lane_contexts";
+
+/// How often [`LaneTelemetry`] publishes what the lanes measured.
+const LANE_PUBLISH_INTERVAL: Duration = Duration::from_secs(1);
+
+/// What the driver of one lane counts of its own work, beside what its host measures ([`LaneStats`]): what its keyed
+/// exits route, and what its state owners hold.
+///
+/// Each value is a plain atomic, which a driver writes through a handle built on it (`metrics::Counter::from_arc`, and
+/// `metrics::Gauge::from_arc` for the contexts, which hold a gauge's bits), and [`LaneTelemetry`] reads once a second,
+/// publishing counters as the deltas of their totals, so a restarted telemetry worker never publishes twice.
+#[derive(Debug, Default)]
+pub struct LaneDriverStats {
+    /// The routed buffers the lane's keyed exits sent, which carry events.
+    pub routed_buffers: Arc<AtomicU64>,
+
+    /// The events in those buffers.
+    pub routed_events: Arc<AtomicU64>,
+
+    /// The header-only buffers the lane's keyed exits sent.
+    pub progress: Arc<AtomicU64>,
+
+    /// The contexts the lane's state owners hold, as the bits of an `f64`.
+    pub contexts: Arc<AtomicU64>,
+}
+
+/// What the lanes of one slot measure of their own work: what their region host updates, and what their drivers count.
+#[derive(Clone, Debug)]
+pub struct SlotLaneStats {
+    /// The slot's region, as its component ID.
+    pub component: String,
+
+    /// One per lane, in lane order.
+    pub lanes: Vec<Arc<LaneStats>>,
+
+    /// One per lane, in lane order.
+    pub drivers: Vec<Arc<LaneDriverStats>>,
+
+    /// Whether the slot's exits route by key to the lanes of a state owner, whose routed buffers and progress its
+    /// lanes count.
+    pub routes: bool,
+
+    /// Whether the slot's program runs state owners, whose contexts its lanes count.
+    pub holds_state: bool,
+}
+
+impl SlotLaneStats {
+    /// Returns the statistics of a slot `component` on `lanes` lanes, none of which has done anything yet.
+    pub fn new(component: &str, lanes: u16, routes: bool, holds_state: bool) -> Self {
+        Self {
+            component: component.to_string(),
+            lanes: (0..lanes).map(|_| Arc::new(LaneStats::new())).collect(),
+            drivers: (0..lanes).map(|_| Arc::new(LaneDriverStats::default())).collect(),
+            routes,
+            holds_state,
+        }
+    }
+}
+
+/// A counter of a lane, and the total it last published.
+struct LaneCounter {
+    counter: Counter,
+    published: u64,
+}
+
+impl LaneCounter {
+    fn new(counter: Counter) -> Self {
+        Self { counter, published: 0 }
+    }
+
+    /// Publishes what the total gained since the last publication.
+    fn publish(&mut self, total: u64) {
+        self.counter.increment(total.saturating_sub(self.published));
+        self.published = total;
+    }
+}
+
+/// The series of a lane's keyed exits.
+struct RoutingSeries {
+    buffers: LaneCounter,
+    events: LaneCounter,
+    progress: LaneCounter,
+}
+
+/// The `plan_lane_*` series of one lane, and the totals of its counters as last published.
+struct LaneSeries {
+    stats: Arc<LaneStats>,
+    driver: Arc<LaneDriverStats>,
+    batches: LaneCounter,
+    events: LaneCounter,
+    busy: LaneCounter,
+    input_depth: Gauge,
+    stamp_wait: LaneCounter,
+    routing: Option<RoutingSeries>,
+    contexts: Option<Gauge>,
+}
+
+impl LaneSeries {
+    fn new(builder: &MetricsBuilder, slot: &SlotLaneStats, lane: usize) -> Self {
+        let tags = || [("component_id", slot.component.clone()), ("lane", lane.to_string())];
+        let counter = |name: &'static str| LaneCounter::new(builder.register_counter_with_tags(name, tags()));
+        Self {
+            stats: Arc::clone(&slot.lanes[lane]),
+            driver: Arc::clone(&slot.drivers[lane]),
+            batches: counter(PLAN_LANE_BATCHES_TOTAL),
+            events: counter(PLAN_LANE_EVENTS_TOTAL),
+            busy: counter(PLAN_LANE_BUSY_NANOS_TOTAL),
+            input_depth: builder.register_gauge_with_tags(PLAN_LANE_INPUT_DEPTH, tags()),
+            stamp_wait: counter(PLAN_LANE_STAMP_WAIT_NANOS_TOTAL),
+            routing: slot.routes.then(|| RoutingSeries {
+                buffers: counter(PLAN_LANE_ROUTED_BUFFERS_TOTAL),
+                events: counter(PLAN_LANE_ROUTED_EVENTS_TOTAL),
+                progress: counter(PLAN_LANE_PROGRESS_TOTAL),
+            }),
+            contexts: slot
+                .holds_state
+                .then(|| builder.register_gauge_with_tags(PLAN_LANE_CONTEXTS, tags())),
+        }
+    }
+
+    /// Publishes what the lane measured since the last publication: its counters by the deltas of their totals, its
+    /// gauges as they read now.
+    fn publish(&mut self) {
+        self.batches.publish(self.stats.batches());
+        self.events.publish(self.stats.events());
+        self.busy.publish(nanos(self.stats.busy()));
+        self.input_depth.set(self.stats.input_depth() as f64);
+        self.stamp_wait.publish(nanos(self.stats.stamp_wait()));
+        if let Some(routing) = &mut self.routing {
+            routing
+                .buffers
+                .publish(self.driver.routed_buffers.load(Ordering::Relaxed));
+            routing
+                .events
+                .publish(self.driver.routed_events.load(Ordering::Relaxed));
+            routing.progress.publish(self.driver.progress.load(Ordering::Relaxed));
+        }
+        if let Some(contexts) = &self.contexts {
+            contexts.set(f64::from_bits(self.driver.contexts.load(Ordering::Relaxed)));
+        }
+    }
+}
+
+/// Returns a duration in nanoseconds, saturating at `u64::MAX` (about 584 years).
+fn nanos(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+}
+
+/// Publishes the `plan_lane_*` series of every lane of the metrics path's slots, once a second, as a supervised
+/// worker.
+///
+/// What it published lives outside the worker, so a restarted worker publishes only what the lanes measured since,
+/// never twice.
+pub struct LaneTelemetry {
+    series: Arc<Mutex<Vec<LaneSeries>>>,
+}
+
+impl LaneTelemetry {
+    /// Creates the worker of the lanes of `slots`, registering their series.
+    pub fn new(slots: &[SlotLaneStats]) -> Self {
+        let builder = MetricsBuilder::default();
+        let series = slots
+            .iter()
+            .flat_map(|slot| {
+                (0..slot.lanes.len())
+                    .map(|lane| LaneSeries::new(&builder, slot, lane))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        Self {
+            series: Arc::new(Mutex::new(series)),
+        }
+    }
+
+    /// Publishes what every lane measured since the last publication.
+    pub fn publish(&self) {
+        let mut series = self.series.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        for lane in series.iter_mut() {
+            lane.publish();
+        }
+    }
+}
+
+#[async_trait]
+impl Supervisable for LaneTelemetry {
+    fn name(&self) -> &str {
+        "programmable-metrics-lane-telemetry"
+    }
+
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
+        let telemetry = Self {
+            series: Arc::clone(&self.series),
+        };
+        Ok(Box::pin(async move {
+            tokio::pin!(process_shutdown);
+            let mut ticks = tokio::time::interval(LANE_PUBLISH_INTERVAL);
+            ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    _ = &mut process_shutdown => {
+                        telemetry.publish();
+                        return Ok(());
+                    }
+                    _ = ticks.tick() => telemetry.publish(),
+                }
+            }
+        }))
     }
 }
 

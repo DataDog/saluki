@@ -22,6 +22,11 @@
 //! The exports of the default program's other scopes ([`OTHER_SCOPES`]) are fetched with the policy scope's, and kept
 //! per scope with why one could not be read, if it could not; the editor checks an artifact against the export of the
 //! scope it replaces ([`ControlSurface::export_of_scope`]).
+//!
+//! The lanes ADP's metrics path was laid out on at boot, which the Lanes panel shows, are read from the physical
+//! sections of the explain document (`GET /programmable-metrics/explain`) whenever the active generation ADP reports
+//! differs from the one they were read at, which a restart with other lane counts also does
+//! ([`ControlSurface::lane_layout`]).
 
 use std::{
     collections::BTreeMap,
@@ -43,6 +48,7 @@ use crate::{
     export::ExportBundle,
     recipients::{RecipientLog, RecipientsView},
     stub::protocol::{AdpStatus, POLICY_SCOPE},
+    telemetry::lanes::LaneLayout,
 };
 
 /// How often the watcher asks for ADP's status.
@@ -126,6 +132,14 @@ struct ControlState {
     active_plan_error: Option<String>,
     /// The exports of the other scopes, by scope.
     scope_exports: BTreeMap<String, ScopeExport>,
+    /// The lanes ADP's metrics path was laid out on, from its explain document.
+    lane_layout: Option<Arc<LaneLayout>>,
+    /// Why the lane layout could not be read, if it could not.
+    lane_layout_error: Option<String>,
+    /// The active generation and the time of the last request for the lane layout.
+    lane_layout_asked: Option<(Option<u64>, u64)>,
+    /// The active generation the status reported when the lane layout in hand was read.
+    lane_layout_generation: Option<u64>,
 }
 
 impl ControlState {
@@ -510,6 +524,50 @@ impl ControlSurface {
             .map(|(_, plan)| plan)
     }
 
+    /// Returns the lanes ADP's metrics path was laid out on, if its explain document said, with why it could not be
+    /// read, if it could not.
+    pub fn lane_layout(&self) -> (Option<Arc<LaneLayout>>, Option<String>) {
+        let state = self.lock();
+        (state.lane_layout.clone(), state.lane_layout_error.clone())
+    }
+
+    /// Returns `true` if the lane layout should be read at `now_ms`: ADP reports an active generation other than the
+    /// one the layout in hand was read at (a new generation, or a restart, which may have changed the lanes), and the
+    /// layout was not asked for at this generation within the last [`EXPORT_RETRY`].
+    pub fn lane_layout_wanted(&self, now_ms: u64) -> bool {
+        let state = self.lock();
+        let Some(generation) = state.status.as_ref().and_then(|status| status.status.active_generation) else {
+            return false;
+        };
+        if state.lane_layout.is_some() && state.lane_layout_generation == Some(generation) {
+            return false;
+        }
+        match state.lane_layout_asked {
+            Some((asked, at_ms)) => asked != Some(generation) || now_ms.saturating_sub(at_ms) >= EXPORT_RETRY,
+            None => true,
+        }
+    }
+
+    /// Records the answer of the explain route, asked at `at_ms`, as the lane layout.
+    pub fn record_lane_layout(&self, answer: Surface<Value>, at_ms: u64) {
+        let mut state = self.lock();
+        let generation = state.status.as_ref().and_then(|status| status.status.active_generation);
+        state.lane_layout_asked = Some((generation, at_ms));
+        match answer.map(|explain| LaneLayout::of_explain(&explain)) {
+            Surface::Available(layout) => {
+                state.lane_layout = layout.map(Arc::new);
+                state.lane_layout_generation = generation;
+                state.lane_layout_error = None;
+            }
+            // An ADP that serves no explain document, or no active generation (503), has no layout to show.
+            Surface::NotExposed => {
+                state.lane_layout = None;
+                state.lane_layout_error = None;
+            }
+            Surface::Failed(error) => state.lane_layout_error = Some(error),
+        }
+    }
+
     /// Returns the active plan hash ADP's status reports, if it reports one that can be read.
     pub fn reported_active_plan_hash(&self) -> Option<PlanHash> {
         self.lock()
@@ -535,6 +593,10 @@ impl ControlSurface {
             }
             if let Some(active) = self.reported_active_plan_hash() {
                 self.refresh_active_plan(&api, &active).await;
+            }
+            if self.lane_layout_wanted(unix_millis()) {
+                let explain = api.control_json::<Value>(routes::EXPLAIN).await;
+                self.record_lane_layout(explain, unix_millis());
             }
         }
     }
@@ -798,5 +860,51 @@ mod tests {
             "/programmable-metrics/export?scope=dogstatsd_pre_aggregation"
         );
         assert_eq!(routes::export_of(POLICY_SCOPE), routes::EXPORT);
+    }
+
+    #[test]
+    fn the_lane_layout_is_read_once_per_active_generation_and_again_after_a_failure_only_after_a_while() {
+        let control = ControlSurface::new();
+        let status = |generation: u64| Surface::Available(serde_json::json!({ "active_generation": generation }));
+        let explain = |state_lanes: u16| {
+            serde_json::json!({"physical": {
+                "layout": {"dogstatsd_lanes": 2, "state_lanes": state_lanes, "post_lanes": 3, "pipelining": false},
+                "fixed": [], "slots": [], "edges": [], "fusion": [], "segments": [], "output_bindings": []
+            }})
+        };
+        let state_lanes = |control: &ControlSurface| {
+            control
+                .lane_layout()
+                .0
+                .and_then(|layout| layout.policy.clone())
+                .map(|policy| policy.state_lanes)
+        };
+
+        // No active generation: nothing to explain yet.
+        assert!(!control.lane_layout_wanted(1_000));
+        control.record_status(status(1), 1_000);
+        assert!(control.lane_layout_wanted(1_000));
+        control.record_lane_layout(Surface::Available(explain(2)), 1_000);
+        assert_eq!(state_lanes(&control), Some(2));
+        assert!(!control.lane_layout_wanted(100_000));
+
+        // A new generation (or a restart) reads it again; a failure keeps the layout in hand, says why, and is retried
+        // after a while, or at once for another generation.
+        control.record_status(status(2), 2_000);
+        assert!(control.lane_layout_wanted(2_000));
+        control.record_lane_layout(Surface::Failed("ADP answered 503".to_string()), 2_000);
+        assert_eq!(state_lanes(&control), Some(2));
+        assert_eq!(control.lane_layout().1.as_deref(), Some("ADP answered 503"));
+        assert!(!control.lane_layout_wanted(2_000 + EXPORT_RETRY - 1));
+        assert!(control.lane_layout_wanted(2_000 + EXPORT_RETRY));
+        control.record_status(status(3), 3_000);
+        assert!(control.lane_layout_wanted(3_000));
+        control.record_lane_layout(Surface::Available(explain(4)), 3_000);
+        assert_eq!((state_lanes(&control), control.lane_layout().1), (Some(4), None));
+
+        // An explain document without physical sections has no layout.
+        control.record_status(status(4), 4_000);
+        control.record_lane_layout(Surface::Available(serde_json::json!({"explain_version": 1})), 4_000);
+        assert!(control.lane_layout().0.is_none());
     }
 }

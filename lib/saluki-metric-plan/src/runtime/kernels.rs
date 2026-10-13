@@ -29,13 +29,13 @@ pub struct PreparedKernel {
 
 impl PreparedKernel {
     /// Builds a kernel of a program, in the context the host reports it under, and inside the context's resource
-    /// group, if it has one.
+    /// group, if it has one, whose CPU time the build always measures (a build is long and rare).
     ///
     /// # Errors
     ///
     /// Returns an error if the kernel cannot be built from its parameters.
     pub fn build(kernel: &ProgramKernel, context: KernelBuildContext) -> Result<Self, KernelBuildError> {
-        let instance = context.accounted(|| kernel.spec.build(&context))?;
+        let instance = context.accounted_measured(|| kernel.spec.build(&context))?;
         Ok(Self {
             key: kernel.key.clone(),
             spec: kernel.spec.clone(),
@@ -122,6 +122,31 @@ impl KernelSlot {
             ports: PortOutputs::new(port_count),
             users: 0,
         }
+    }
+
+    /// Builds another, empty instance of the slot's kernel from its spec, in its context, with as many ports: a state
+    /// owner's instance of its lineage for another clock epoch, which a reset window creates beside this one.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the kernel could not be built, because its factory failed or panicked.
+    pub fn build_fresh(&self) -> Result<Self, String> {
+        let built = catch_unwind(AssertUnwindSafe(|| {
+            self.context.accounted(|| self.spec.build(&self.context))
+        }));
+        let kernel = match built {
+            Ok(Ok(kernel)) => kernel,
+            Ok(Err(error)) => return Err(error.to_string()),
+            Err(payload) => return Err(format!("its factory panicked: {}", panic_message(&*payload))),
+        };
+        Ok(Self {
+            key: self.key.clone(),
+            spec: self.spec.clone(),
+            context: self.context.clone(),
+            kernel,
+            ports: PortOutputs::new(self.ports.port_count()),
+            users: 0,
+        })
     }
 
     /// Replaces the kernel with a new instance built from its spec, in its context, after a panic left it

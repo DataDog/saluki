@@ -95,6 +95,12 @@ integration-test-targets-linux-amd64:
   script:
     - make test-integration-targets
 
+stress-tests:
+  extends: .linux-arm64-test-job-heavy
+  stage: test
+  script:
+    - make test-stress
+
 check-clippy:
   extends: .linux-arm64-test-job-heavy
   stage: test

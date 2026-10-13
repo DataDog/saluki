@@ -44,13 +44,17 @@
 //! The submodules measure what the plan's stage 9 decides on first (plan section 8.6), and need ADP's `measurement`
 //! feature, which compiles the probes of saluki-core and of the DogStatsD source: `source_feed` feeds both topologies
 //! through the real DogStatsD source, over loopback UDP and Unix sockets, at any number of workers (the scaling curves,
-//! and M1, M2, M6 to M8); `key_skew` measures how DogStatsD contexts spread over key groups and state lanes (M5).
+//! and M1, M2, M6 to M8); `key_skew` measures how DogStatsD contexts spread over key groups and state lanes (M5);
+//! `post_aggregation` measures the throughput of OTLP and the checks source over post-aggregation lanes (increment
+//! 9.2).
 //! `per_buffer_fixed_cost` and `allocator_group_contention` here measure the cost of a buffer apart from its events
 //! and what it is made of (M6). `make test-measurement` runs the tests of the harness and the probes that are not
 //! ignored, with the feature.
 
 #[cfg(feature = "measurement")]
 mod key_skew;
+#[cfg(feature = "measurement")]
+mod post_aggregation;
 #[cfg(all(unix, feature = "measurement"))]
 mod source_feed;
 
@@ -64,6 +68,7 @@ use saluki_core::data_model::{
     event::metric::{context::Context, Metric, ScalarPoints},
     tags::{Tag, TagSet},
 };
+use saluki_metric_plan::compile::LanePolicy;
 use serde_json::json;
 use tokio::{
     runtime::Handle,
@@ -73,6 +78,7 @@ use tokio::{
 use crate::{
     internal::ConfigUpdatesWorker,
     programmable_metrics::{
+        lanes::LaneCounts,
         test_support::{connected_configuration_system, update},
         test_topology::{Aggregation, Encoders, MetricsPath, Options, TestTopology},
     },
@@ -439,11 +445,24 @@ async fn start(
     TestTopology,
     tokio::sync::mpsc::Sender<saluki_config::dynamic::ConfigUpdate>,
 ) {
+    start_on(path, config, pool, None).await
+}
+
+/// Starts the topology of `path` as [`start`] does, the plan-driven one on `lanes` when given.
+async fn start_on(
+    path: MetricsPath, config: &str, pool: &Handle, lanes: Option<LaneCounts>,
+) -> (
+    TestTopology,
+    tokio::sync::mpsc::Sender<saluki_config::dynamic::ConfigUpdate>,
+) {
     let (system, updates, stream) = connected_configuration_system(config).await;
     let mut options = Options::new(path, Aggregation::Native);
     options.keep = |metric| metric.context().name() == SENTINEL;
     options.encoders = Encoders::Real;
     options.worker_pool = Some(pool.clone());
+    if path == MetricsPath::Plan {
+        options.lanes = lanes;
+    }
     let topology = TestTopology::start(&system, options, |supervisor| {
         supervisor.add_worker(ConfigUpdatesWorker::new(updates))
     })
@@ -656,6 +675,13 @@ struct BufferCosts {
     /// Times a worker of the primary runtime parked: a sleep, and the wake that ends it.
     parks: f64,
 
+    /// The primary runtime's worker busy time, in nanoseconds: the time inside tasks, so that the CPU time outside it
+    /// is the workers' parking, waking, and searching.
+    busy: f64,
+
+    /// Metrics per second, which the costs per metric are measured at.
+    throughput: f64,
+
     /// Objects allocated, by resource group: each allocation and its free add to four counters of its group.
     groups: BTreeMap<String, f64>,
 }
@@ -683,9 +709,12 @@ fn polls_and_parks(handle: &Handle) -> (u64, u64) {
 }
 
 /// Returns what `path` costs per metric at saturation with batches of `batch` metrics: the medians over [`ROUNDS`]
-/// phases of `metrics` metrics each, on one topology, on the current runtime.
-async fn saturated_costs(path: MetricsPath, batch: usize, metrics: usize, pool: &Handle) -> BufferCosts {
-    let (mut topology, stream) = start(path, CONFIG, pool).await;
+/// phases of `metrics` metrics each, on one topology, on the current runtime, the plan-driven one on `lanes` when
+/// given.
+async fn saturated_costs(
+    path: MetricsPath, batch: usize, metrics: usize, pool: &Handle, lanes: Option<LaneCounts>,
+) -> BufferCosts {
+    let (mut topology, stream) = start_on(path, CONFIG, pool, lanes).await;
     let templates = templates(batch);
     let count = metrics / batch;
     let handle = Handle::current();
@@ -703,6 +732,8 @@ async fn saturated_costs(path: MetricsPath, batch: usize, metrics: usize, pool: 
             bytes: measured.bytes_per_metric,
             polls: per_metric(polls_after - polls_before),
             parks: per_metric(parks_after - parks_before),
+            busy: measured.busy_per_metric,
+            throughput: measured.throughput,
             groups: groups_after
                 .iter()
                 .map(|(name, after)| {
@@ -730,6 +761,8 @@ async fn saturated_costs(path: MetricsPath, batch: usize, metrics: usize, pool: 
         bytes: median(&|costs| costs.bytes),
         polls: median(&|costs| costs.polls),
         parks: median(&|costs| costs.parks),
+        busy: median(&|costs| costs.busy),
+        throughput: median(&|costs| costs.throughput),
         groups: names
             .into_iter()
             .map(|name| {
@@ -749,12 +782,49 @@ async fn per_buffer_fixed_cost() {
     // group. Batches of both sizes cycle through the same metrics and contexts (see `templates`). Each batch is one
     // buffer from the scripted source to the first region. On Linux, the CPU includes the CPU-time reads of each task
     // poll (F7); on macOS those reads cost nothing. `allocator_group_contention` measures whether the allocations'
-    // counter writes contend.
+    // counter writes contend. The CPU time splits into the workers' busy time, inside tasks, and the rest, outside
+    // them: the workers' parking, waking, and searching, which depends on how many workers idle around the tasks that
+    // run, so the throughput each cost was measured at, and the parks per millisecond, are printed beside it.
+    //
+    // `SALUKI_MEASURE_PLAN_LANES=<producer>,<state>,<post>` runs the plan-driven path on those lanes: the feed reaches
+    // producer lane 0, whose keyed exit routes each buffer's events to the state lanes, so that the fixed cost includes
+    // the routed buffers' (increment 9.4). The rate of CPU-time sampling is the one ADP sets at startup:
+    // `SALUKI_CPU_TIME_SAMPLING`, or, without it, the default for the lanes the plan-driven path runs on.
     let pool = global_pool();
     let metrics = std::env::var("SALUKI_MEASURE_METRICS")
         .ok()
         .and_then(|metrics| metrics.parse().ok())
         .unwrap_or(2_048_000);
+    let lanes = std::env::var("SALUKI_MEASURE_PLAN_LANES")
+        .ok()
+        .filter(|lanes| !lanes.is_empty())
+        .map(|lanes| {
+            let counts = lanes
+                .split(',')
+                .map(|count| {
+                    count
+                        .trim()
+                        .parse::<u16>()
+                        .expect("SALUKI_MEASURE_PLAN_LANES lists three counts")
+                })
+                .collect::<Vec<_>>();
+            let [dogstatsd, state, post] = counts[..] else {
+                panic!("SALUKI_MEASURE_PLAN_LANES lists three counts: producer, state, post");
+            };
+            LaneCounts::on(LanePolicy { dogstatsd, state, post })
+        });
+    let sampling = crate::programmable_metrics::lanes::cpu_time_sampling(
+        std::env::var(crate::programmable_metrics::lanes::CPU_TIME_SAMPLING_ENV)
+            .ok()
+            .as_deref(),
+        lanes.is_some(),
+    );
+    saluki_common::resource_tracking::set_cpu_time_sampling(sampling);
+    println!(
+        "Plan lanes {:?}, CPU-time sampling 1 in {}",
+        lanes.map(|lanes| lanes.lanes),
+        sampling
+    );
     let (inverse_full, inverse_small) = (1.0 / PER_BUFFER_BATCHES[0] as f64, 1.0 / PER_BUFFER_BATCHES[1] as f64);
     let fixed = |full: f64, small: f64| (small - full) / (inverse_small - inverse_full);
     let row = |path: MetricsPath, measure: &str, full: f64, small: f64| {
@@ -775,10 +845,30 @@ async fn per_buffer_fixed_cost() {
     for path in [MetricsPath::Legacy, MetricsPath::Plan] {
         let mut costs = Vec::new();
         for batch in PER_BUFFER_BATCHES {
-            costs.push(saturated_costs(path, batch, metrics, pool.handle()).await);
+            costs.push(saturated_costs(path, batch, metrics, pool.handle(), lanes).await);
         }
         let (full, small) = (&costs[0], &costs[1]);
+        println!(
+            "| {:?} | at 1,024 and at 128: {:.3} and {:.3} M metrics/s; per buffer {:.2} and {:.2} task polls, \
+             {:.2} and {:.2} worker parks; {:.1} and {:.1} worker parks per ms |",
+            path,
+            full.throughput / 1e6,
+            small.throughput / 1e6,
+            full.polls * PER_BUFFER_BATCHES[0] as f64,
+            small.polls * PER_BUFFER_BATCHES[1] as f64,
+            full.parks * PER_BUFFER_BATCHES[0] as f64,
+            small.parks * PER_BUFFER_BATCHES[1] as f64,
+            full.parks * full.throughput / 1e3,
+            small.parks * small.throughput / 1e3,
+        );
         row(path, "CPU ns", full.cpu, small.cpu);
+        row(path, "worker busy ns (inside tasks)", full.busy, small.busy);
+        row(
+            path,
+            "CPU ns outside tasks (parking, waking, searching)",
+            full.cpu - full.busy,
+            small.cpu - small.busy,
+        );
         let objects = row(path, "allocations", full.objects, small.objects);
         row(path, "allocated bytes", full.bytes, small.bytes);
         let polls = row(path, "task polls (primary runtime)", full.polls, small.polls);

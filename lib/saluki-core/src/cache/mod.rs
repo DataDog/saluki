@@ -15,6 +15,9 @@ pub(crate) use self::accumulated::AccumulatedCounters;
 mod expiry;
 use self::expiry::{Expiration, ExpirationBuilder, ExpiryCapableLifecycle};
 
+mod stamps;
+pub(crate) use self::stamps::ChangeStamps;
+
 pub mod weight;
 use self::weight::{ItemCountWeighter, Weighter, WrappedWeighter};
 
@@ -80,10 +83,49 @@ fn accumulated(telemetry: &Telemetry) -> (AccumulatedCounters, OperationCounters
     (accumulated, counters, evicted)
 }
 
+/// How a cache, or a context resolver, reports the gauges its build and its background task set: a cache's items,
+/// weight, and weight limit, and the interner of a context resolver.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum GaugeMode {
+    /// Each gauge is set to this cache's value, so the gauges of caches that share an identifier show the value of
+    /// whichever wrote last.
+    #[default]
+    Set,
+
+    /// This cache's values are added to each gauge, and withdrawn once its last clone is dropped, so the gauges of the
+    /// caches that share an identifier, such as one per task of a component, sum what every one of them holds.
+    Summed,
+}
+
+/// A value added to a gauge, and withdrawn from it when dropped: what one of several caches that share an identifier
+/// contributes to a gauge it set at build.
+pub(crate) struct GaugeContribution {
+    gauge: Gauge,
+    value: f64,
+}
+
+impl GaugeContribution {
+    /// Adds `value` to `gauge`, until the contribution is dropped.
+    pub(crate) fn add(gauge: Gauge, value: f64) -> Self {
+        gauge.increment(value);
+        Self { gauge, value }
+    }
+}
+
+impl Drop for GaugeContribution {
+    fn drop(&mut self) {
+        self.gauge.decrement(self.value);
+    }
+}
+
 struct InnerCache<K, V, W, H> {
     cache: Arc<RawCache<K, V, W, H>>,
     /// What an accumulating cache counted and has not published; published when the last clone is dropped, too.
     accumulated: Option<AccumulatedCounters>,
+    /// The stamps of a cache built with change stamps, which every change to a key advances.
+    stamps: Option<Arc<ChangeStamps<H>>>,
+    /// What a cache whose gauges are summed adds to its weight limit's gauge, withdrawn with its last clone.
+    _weight_limit: Option<GaugeContribution>,
     _task_shutdown_guard: DropGuard,
 }
 
@@ -96,6 +138,8 @@ pub struct CacheBuilder<K, V, W = ItemCountWeighter, H = FastBuildHasher> {
     expiration_interval: Option<Duration>,
     telemetry_enabled: bool,
     accumulated_telemetry: bool,
+    gauges: GaugeMode,
+    change_stamps: bool,
     _key: PhantomData<K>,
     _value: PhantomData<V>,
     _hasher: PhantomData<H>,
@@ -125,6 +169,8 @@ impl<K, V> CacheBuilder<K, V> {
             expiration_interval: None,
             telemetry_enabled: true,
             accumulated_telemetry: false,
+            gauges: GaugeMode::Set,
+            change_stamps: false,
             _key: PhantomData,
             _value: PhantomData,
             _hasher: PhantomData,
@@ -220,6 +266,8 @@ impl<K, V, W, H> CacheBuilder<K, V, W, H> {
             expiration_interval: self.expiration_interval,
             telemetry_enabled: self.telemetry_enabled,
             accumulated_telemetry: self.accumulated_telemetry,
+            gauges: self.gauges,
+            change_stamps: self.change_stamps,
             _key: PhantomData,
             _value: PhantomData,
             _hasher: PhantomData,
@@ -242,6 +290,8 @@ impl<K, V, W, H> CacheBuilder<K, V, W, H> {
             expiration_interval: self.expiration_interval,
             telemetry_enabled: self.telemetry_enabled,
             accumulated_telemetry: self.accumulated_telemetry,
+            gauges: self.gauges,
+            change_stamps: self.change_stamps,
             _key: PhantomData,
             _value: PhantomData,
             _hasher: PhantomData,
@@ -276,6 +326,29 @@ impl<K, V, W, H> CacheBuilder<K, V, W, H> {
         self.accumulated_telemetry = true;
         self
     }
+
+    /// Sets how the cache reports its items, weight, and weight limit: set to its own values, or summed with the other
+    /// caches of its identifier (see [`GaugeMode`]).
+    ///
+    /// A summed cache adds its weight limit to its gauge when it is built, and its items and weight to theirs once a
+    /// second, as their changes, and withdraws all three once its last clone is dropped, so the series of caches used
+    /// in parallel under one identifier, such as one per task of a component, show what all of them hold. Without
+    /// telemetry, nothing is reported either way.
+    ///
+    /// Defaults to [`GaugeMode::Set`].
+    pub fn with_gauges(mut self, gauges: GaugeMode) -> Self {
+        self.gauges = gauges;
+        self
+    }
+
+    /// Makes the cache advance a change stamp for every insertion, removal, eviction, and expiry, so that a copy of an
+    /// entry kept outside the cache can tell whether the cache may have changed it since (see [`ChangeStamps`]).
+    ///
+    /// Defaults to no change stamps.
+    pub(crate) fn with_change_stamps(mut self) -> Self {
+        self.change_stamps = true;
+        self
+    }
 }
 
 impl<K, V, W, H> CacheBuilder<K, V, W, H>
@@ -290,7 +363,16 @@ where
         let capacity = self.capacity.get();
 
         let telemetry = Telemetry::new(self.identifier);
-        telemetry.weight_limit().set(capacity as f64);
+        let summed = self.telemetry_enabled && self.gauges == GaugeMode::Summed;
+        let weight_limit = if summed {
+            Some(GaugeContribution::add(
+                telemetry.weight_limit().clone(),
+                capacity as f64,
+            ))
+        } else {
+            telemetry.weight_limit().set(capacity as f64);
+            None
+        };
 
         // An accumulating cache writes its operations to counters of its own, which it publishes to its telemetry.
         let (accumulated, counters, accumulated_evictions) = if self.accumulated_telemetry {
@@ -306,9 +388,13 @@ where
             Some(evictions) => evictions,
             None => telemetry.items_evicted_total().clone(),
         };
+        let stamps = self.change_stamps.then(|| Arc::new(ChangeStamps::new(H::default())));
         let mut expiration_builder = ExpirationBuilder::new(eviction_counter);
         if let Some(time_to_idle) = self.idle_period {
             expiration_builder = expiration_builder.with_time_to_idle(time_to_idle);
+        }
+        if let Some(stamps) = &stamps {
+            expiration_builder = expiration_builder.with_change_stamps(Arc::clone(stamps) as _);
         }
         let (expiration, expiry_lifecycle) = expiration_builder.build();
 
@@ -326,6 +412,8 @@ where
             inner: Arc::new(InnerCache {
                 cache: Arc::clone(&raw_cache),
                 accumulated,
+                stamps: stamps.clone(),
+                _weight_limit: weight_limit,
                 _task_shutdown_guard: shutdown_token.clone().drop_guard(),
             }),
             expiration: expiration.clone(),
@@ -340,6 +428,7 @@ where
                 Arc::clone(&raw_cache),
                 telemetry.clone(),
                 expiration,
+                stamps,
                 expiration_interval,
                 shutdown_token.clone(),
             ));
@@ -347,7 +436,12 @@ where
 
         // If telemetry is enabled, spawn a background task to drive telemetry reporting.
         if self.telemetry_enabled {
-            spawn_traced(drive_telemetry(Arc::clone(&raw_cache), telemetry, shutdown_token));
+            spawn_traced(drive_telemetry(
+                Arc::clone(&raw_cache),
+                telemetry,
+                summed,
+                shutdown_token,
+            ));
         }
 
         cache
@@ -391,6 +485,9 @@ where
     /// weighter and the weight of the new item.
     pub fn insert(&self, key: K, value: V) {
         self.inner.cache.insert(key.clone(), value);
+        if let Some(stamps) = &self.inner.stamps {
+            stamps.advance(&key);
+        }
         self.expiration.mark_entry_accessed(key);
         self.counters.inserted.increment(1);
     }
@@ -422,14 +519,41 @@ where
     /// Removes an item from the cache by its key.
     pub fn remove(&self, key: &K) {
         self.inner.cache.remove(key);
+        if let Some(stamps) = &self.inner.stamps {
+            stamps.advance(key);
+        }
         self.expiration.mark_entry_removed(key.clone());
         self.counters.removed.increment(1);
+    }
+
+    /// Returns the change stamp of `key`, if the cache was built with change stamps.
+    ///
+    /// Read it before the lookup whose result is kept outside the cache; see [`ChangeStamps`].
+    #[cfg(test)]
+    pub(crate) fn change_stamp(&self, key: &K) -> Option<u32> {
+        self.inner.stamps.as_ref().map(|stamps| stamps.current(key))
+    }
+
+    /// Returns the cache's change stamps, if it was built with them.
+    pub(crate) fn change_stamps(&self) -> Option<Arc<ChangeStamps<H>>> {
+        self.inner.stamps.clone()
+    }
+
+    /// Counts `hits` lookups that hit, made outside the cache on copies of its entries, as its own hits.
+    pub(crate) fn count_hits(&self, hits: u64) {
+        self.counters.hits.increment(hits);
+    }
+
+    /// Returns what the cache holds for `key`, without counting, recording an access, or changing its eviction order.
+    #[cfg(test)]
+    pub(crate) fn peek(&self, key: &K) -> Option<V> {
+        self.inner.cache.peek(key)
     }
 }
 
 async fn drive_expiration<K, V, W, H>(
-    cache: Arc<RawCache<K, V, W, H>>, telemetry: Telemetry, expiration: Expiration<K>, expiration_interval: Duration,
-    shutdown: CancellationToken,
+    cache: Arc<RawCache<K, V, W, H>>, telemetry: Telemetry, expiration: Expiration<K>,
+    stamps: Option<Arc<ChangeStamps<H>>>, expiration_interval: Duration, shutdown: CancellationToken,
 ) where
     K: Eq + std::hash::Hash + Clone,
     V: Clone,
@@ -457,6 +581,9 @@ async fn drive_expiration<K, V, W, H>(
 
         for item_key in expired_item_keys.drain(..) {
             cache.remove(&item_key);
+            if let Some(stamps) = &stamps {
+                stamps.advance(&item_key);
+            }
             telemetry.items_removed_total().increment(1);
             expiration.mark_entry_removed(item_key);
         }
@@ -465,22 +592,63 @@ async fn drive_expiration<K, V, W, H>(
     }
 }
 
+/// Reports the cache's items and weight once a second until the cache is dropped: sets them, or, when `summed`, adds
+/// their changes to the gauges and withdraws what it added once the cache is dropped.
 async fn drive_telemetry<K, V, W, H>(
-    cache: Arc<RawCache<K, V, W, H>>, telemetry: Telemetry, shutdown: CancellationToken,
+    cache: Arc<RawCache<K, V, W, H>>, telemetry: Telemetry, summed: bool, shutdown: CancellationToken,
 ) where
     K: Eq + std::hash::Hash + Clone,
     V: Clone,
     W: Weighter<K, V> + Clone,
     H: std::hash::BuildHasher + Clone,
 {
+    let mut items = SummedGauge::new(telemetry.current_items().clone(), summed);
+    let mut weight = SummedGauge::new(telemetry.current_weight().clone(), summed);
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => break,
             _ = sleep(Duration::from_secs(1)) => {}
         }
 
-        telemetry.current_items().set(cache.len() as f64);
-        telemetry.current_weight().set(cache.weight() as f64);
+        items.report(cache.len() as f64);
+        weight.report(cache.weight() as f64);
+    }
+}
+
+/// A gauge a background task reports one value of: set to it, or, when summed with the values of the other caches or
+/// resolvers of its identifier, changed by what the value changed since the last report, and withdrawn when dropped.
+pub(crate) struct SummedGauge {
+    gauge: Gauge,
+    summed: bool,
+    reported: f64,
+}
+
+impl SummedGauge {
+    /// Creates a reporter of one value to `gauge`, which sets the gauge unless `summed`.
+    pub(crate) fn new(gauge: Gauge, summed: bool) -> Self {
+        Self {
+            gauge,
+            summed,
+            reported: 0.0,
+        }
+    }
+
+    /// Reports `value`.
+    pub(crate) fn report(&mut self, value: f64) {
+        if self.summed {
+            self.gauge.increment(value - self.reported);
+        } else {
+            self.gauge.set(value);
+        }
+        self.reported = value;
+    }
+}
+
+impl Drop for SummedGauge {
+    fn drop(&mut self) {
+        if self.summed {
+            self.gauge.decrement(self.reported);
+        }
     }
 }
 
@@ -680,6 +848,136 @@ mod tests {
             operation_counts(&recorder, "accumulating"),
             [Some(4), Some(1), Some(4), Some(2), Some(1)]
         );
+    }
+
+    /// Returns the gauges of the cache `identifier` in `recorder`: items, weight, and weight limit.
+    fn gauges(recorder: &saluki_metrics::test::TestRecorder, identifier: &'static str) -> [Option<f64>; 3] {
+        ["current_items", "current_weight", "weight_limit"].map(|name| {
+            recorder.gauge(metrics::Key::from_parts(
+                format!("cache_{}", name),
+                vec![metrics::Label::new("cache_id", identifier)],
+            ))
+        })
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_gauges_of_summed_caches_of_one_identifier_sum_and_each_cache_withdraws_its_share_when_dropped() {
+        let recorder = saluki_metrics::test::TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+        let build = |identifier: &'static str, capacity: usize, gauges: GaugeMode| {
+            CacheBuilder::<u64, u64>::from_identifier(identifier)
+                .unwrap()
+                .with_capacity(NonZeroUsize::new(capacity).unwrap())
+                .with_gauges(gauges)
+                .build()
+        };
+        let (first, second) = (
+            build("summed", 4, GaugeMode::Summed),
+            build("summed", 6, GaugeMode::Summed),
+        );
+        assert_eq!(gauges(&recorder, "summed")[2], Some(10.0), "the limits sum at build");
+        first.insert(1, 1);
+        first.insert(2, 2);
+        (10..13).for_each(|key| second.insert(key, key));
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        assert_eq!(gauges(&recorder, "summed"), [Some(5.0), Some(5.0), Some(10.0)]);
+        first.remove(&1);
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(
+            gauges(&recorder, "summed"),
+            [Some(4.0), Some(4.0), Some(10.0)],
+            "only changes are added"
+        );
+
+        // A clone keeps the cache's share; the last one dropped withdraws it.
+        let clone = first.clone();
+        drop(first);
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(gauges(&recorder, "summed"), [Some(4.0), Some(4.0), Some(10.0)]);
+        drop(clone);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert_eq!(gauges(&recorder, "summed"), [Some(3.0), Some(3.0), Some(6.0)]);
+        drop(second);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert_eq!(gauges(&recorder, "summed"), [Some(0.0), Some(0.0), Some(0.0)]);
+
+        // Caches whose gauges are set show the last writer's values, and keep them once dropped.
+        let (first, second) = (build("set", 4, GaugeMode::Set), build("set", 6, GaugeMode::Set));
+        first.insert(1, 1);
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        assert_eq!(gauges(&recorder, "set")[2], Some(6.0));
+        assert!([Some(0.0), Some(1.0)].contains(&gauges(&recorder, "set")[0]));
+        drop((first, second));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert_eq!(gauges(&recorder, "set")[2], Some(6.0));
+    }
+
+    #[test]
+    fn every_change_to_a_key_advances_its_change_stamp_and_lookups_do_not() {
+        // Keys hash to themselves, so that keys below 4,096 apart never share a stamp.
+        let cache = CacheBuilder::<u64, u64>::for_tests()
+            .with_capacity(NonZeroUsize::new(4).unwrap())
+            .with_hasher::<saluki_common::hash::NoopU64BuildHasher>()
+            .with_change_stamps()
+            .build();
+
+        let before = cache.change_stamp(&1).unwrap();
+        cache.insert(1, 10);
+        let inserted = cache.change_stamp(&1).unwrap();
+        assert_ne!(inserted, before, "an insertion advances the stamp");
+        assert_eq!(cache.get(&1), Some(10));
+        assert_eq!(cache.get(&2), None);
+        assert_eq!(cache.change_stamp(&1), Some(inserted), "lookups leave it");
+        cache.remove(&1);
+        assert_ne!(cache.change_stamp(&1), Some(inserted), "a removal advances it");
+
+        // Evictions: of keys inserted once into a cache of four, exactly those the cache evicted have a stamp that
+        // moved since their insertion.
+        let inserted = (100..120)
+            .map(|key| {
+                cache.insert(key, 1);
+                (key, cache.change_stamp(&key).unwrap())
+            })
+            .collect::<Vec<_>>();
+        let mut evicted = 0;
+        for (key, stamp) in inserted {
+            if cache.peek(&key).is_some() {
+                assert_eq!(cache.change_stamp(&key), Some(stamp), "nothing changed key {}", key);
+            } else {
+                assert_ne!(
+                    cache.change_stamp(&key),
+                    Some(stamp),
+                    "the eviction of key {} advanced it",
+                    key
+                );
+                evicted += 1;
+            }
+        }
+        assert!(evicted >= 16, "a cache of four holds at most four of 20 keys");
+
+        let without = CacheBuilder::<u64, u64>::for_tests().build();
+        without.insert(1, 10);
+        assert_eq!(without.change_stamp(&1), None, "a cache without change stamps has none");
+    }
+
+    #[tokio::test]
+    async fn an_expired_key_advances_its_change_stamp() {
+        let cache = CacheBuilder::<u64, u64>::for_tests()
+            .with_time_to_idle(Some(Duration::from_secs(1)))
+            .with_expiration_interval(Duration::from_millis(50))
+            .with_change_stamps()
+            .build();
+        cache.insert(1, 10);
+        let inserted = cache.change_stamp(&1).unwrap();
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while cache.peek(&1).is_some() {
+                sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("an idle key expires within a few seconds");
+        assert_ne!(cache.change_stamp(&1), Some(inserted));
     }
 
     #[tokio::test]

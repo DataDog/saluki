@@ -43,16 +43,33 @@
 //! Each step after S0 also checks that the active plan hash ADP reports is the hash of the plan the editor composed, so
 //! the editor's preview is what ADP installs. Throughout, every sample of the demo's state checks the canary
 //! conservation of the moment (the canaries the primary endpoint received for a recent range of seconds, against those
-//! sent), that no other endpoint receives canaries, and that no intake refused a request or saw an unexpected API key;
-//! at the end, the canaries of the whole run, from the first balanced range to the last, are checked at once. Every
-//! install is in the ranges checked, but a check balances within an allowance for canaries counted in the second next
-//! to its range's edges (6 at the default 20 datagrams per second): an aggregated canary point lost or delivered twice
-//! (20 canaries at that rate, with the demo's 1-second windows) fails it, while a few datagrams lost or doubled ahead
-//! of aggregation do not. ADP's continuous-input tests (`installer::lifecycle_tests`) check that no point is lost or
-//! duplicated across installs, exactly.
+//! sent), that no other endpoint receives canaries, that no intake refused a request or saw an unexpected API key, and
+//! that no lane admitted an event another lane owns (`plan_lane_misrouted_total` stays 0); at the end, the canaries of
+//! the whole run, from the first balanced range to the last, are checked at once. The demo keeps five minutes of
+//! canary counts, so the runner reads the whole run's counts a minute at a time as it goes ([`CanaryTotals`]) and
+//! checks their sum. Every install is in the ranges checked, but a check balances within an allowance for canaries
+//! counted in the second next to its range's edges (6 at the default 20 datagrams per second): an aggregated canary
+//! point lost or delivered twice (20 canaries at that rate, with the demo's 1-second windows) fails it, while a few
+//! datagrams lost or doubled ahead of aggregation do not. ADP's continuous-input tests (`installer::lifecycle_tests`)
+//! check that no point is lost or duplicated across installs, exactly.
+//!
+//! Canaries the host dropped before ADP read them, as it does while another process on the host floods UDP, are no
+//! loss of ADP's: a range in which the demo's control datagrams were dropped too, and ADP's DogStatsD source received
+//! fewer datagrams than were sent by as many as the canaries missing, is `host_dropped`
+//! ([`CanaryState::HostDropped`]), which the runner logs once per stretch of such ranges and counts
+//! ([`Report::host_dropped_samples`]), and the whole run's check subtracts what the host dropped
+//! ([`canary::classify_run`]). A range of the whole run that the check cannot say yet, because no scrape of ADP's
+//! telemetry has covered its end while the host was dropping datagrams, is read again later, to a later end.
+//!
+//! Lane counts are fixed when ADP boots, so S12 to S14 of stage 9 run in a second launch of ADP, its metrics path on
+//! lanes, with 10-second windows ([`run_lanes`]; see [`lanes`]): the frame on the lanes asked for, a counter whose
+//! state lane is empty at a tick, a width change in the pre-aggregation scope with per-lane crossings, and S8's
+//! endpoint scenario on the post-aggregation lanes. With longer windows, a family counts as arriving for a window
+//! longer ([`present_ms`]), and the endpoints must hold what a step says for one window ([`Runner::stable`]).
 //!
 //! The steps are timed: compile, publish to acknowledgment, and publish to the endpoints showing the change. The
-//! report ([`Report`]) is written to `check-report.json` in the run directory.
+//! report ([`Report`]) is written to `check-report.json` in the run directory, the second launch's under
+//! `second_launch`.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -69,14 +86,16 @@ use self::{
     edits::{Outputs, MIRRORED_METRIC, UNDECLARED_OUTPUT},
 };
 use crate::{
+    canary::{self, CanaryState},
     clock::unix_millis,
     resources::{document_text, team_d_template},
     settings::RunSettings,
-    stub::protocol::POLICY_PRODUCT,
+    stub::protocol::{POLICY_PRODUCT, POLICY_SCOPE},
 };
 
 pub mod client;
 mod edits;
+mod lanes;
 mod resources;
 
 /// How often the runner samples the demo's state while it waits.
@@ -97,6 +116,15 @@ const ACK_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// How long the endpoints may take to show a change.
 const ROUTING_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How many seconds of canaries the runner adds to the whole run's totals at once, as soon as the rolling check's
+/// range has moved that far past them: well within the five minutes of counts the demo keeps, so that the range read
+/// is still held whole however long the runner then goes without sampling the demo's state.
+const CANARY_SEGMENT_SECS: u64 = 60;
+
+/// How long the runner goes at most without sampling the demo's state, which checks the canaries, the intakes, and
+/// the lanes, and adds to the whole run's canary totals: steps that wait on ADP's status alone sample it this often.
+const SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
 
 /// The metric families the traffic generator sends.
 const FAMILIES: [&str; 6] = [
@@ -150,9 +178,16 @@ fn changed(mut routing: Routing, intake: &str, families: &[&str], remove: bool) 
     routing
 }
 
+/// Returns how recently a family must have reached an intake to count as arriving there, in milliseconds, with
+/// aggregation windows of `window_s` seconds: [`PRESENT_MS`] with one-second windows, and a window longer for each
+/// second more, since a family arrives once per window.
+fn present_ms(window_s: u64) -> u64 {
+    PRESENT_MS + window_s.saturating_sub(1) * 1000
+}
+
 /// Returns the families each intake receives now, according to the demo's state: the `demo.` families seen within
-/// [`PRESENT_MS`].
-fn present(state: &Value) -> Routing {
+/// `present_ms` milliseconds.
+fn present(state: &Value, present_ms: u64) -> Routing {
     let mut found = Routing::new();
     for intake in state["intakes"].as_array().into_iter().flatten() {
         let name = intake["name"].as_str().unwrap_or_default().to_string();
@@ -160,7 +195,7 @@ fn present(state: &Value) -> Routing {
             .as_array()
             .into_iter()
             .flatten()
-            .filter(|family| family["age_ms"].as_u64().is_some_and(|age| age <= PRESENT_MS))
+            .filter(|family| family["age_ms"].as_u64().is_some_and(|age| age <= present_ms))
             .filter_map(|family| family["family"].as_str())
             .filter(|family| family.starts_with("demo."))
             .map(ToString::to_string)
@@ -262,13 +297,124 @@ pub struct CanaryReport {
     /// Canaries the primary endpoint received for the range.
     pub received: f64,
 
-    /// The check's state: `balanced`, `missing`, or `excess`.
+    /// Canaries of the range that the host dropped before ADP read them: the shortfall of its ranges whose check found
+    /// the host dropped them.
+    pub host_dropped: f64,
+
+    /// The check's state: `balanced`, `host_dropped` (balanced once the host's drops are counted), `missing`, or
+    /// `excess`.
     pub state: String,
 }
 
-/// The report of a run.
+/// The canaries of the whole run so far, from the first balanced range of the rolling check: what the demo's canary
+/// check says of contiguous ranges of seconds, each read while it is within the history the demo keeps, summed.
+///
+/// The sums over contiguous ranges are the sums over the whole, whatever the bucket widths: each range ends where the
+/// rolling check's range ended when it was read, at a boundary of every bucket width in use, with every bucket before
+/// it delivered, so that each canary is counted in exactly one range, as sent and as received.
+#[derive(Clone, Debug, PartialEq)]
+struct CanaryTotals {
+    /// The first second of the whole run's range.
+    from_s: u64,
+
+    /// The second just past the ranges added so far.
+    to_s: u64,
+
+    /// Canaries sent in the ranges added.
+    sent: u64,
+
+    /// Canaries the primary endpoint received for the ranges added.
+    received: f64,
+
+    /// Canaries the host dropped before ADP read them, in the ranges added: the shortfall of those whose check found
+    /// that the host dropped them.
+    host_dropped: f64,
+
+    /// The allowance of the last range added: that of the traffic's rate, whatever the range.
+    allowance: f64,
+
+    /// Whether the check could not say what a range added holds, since ADP was not up for all of it.
+    waiting: bool,
+}
+
+impl CanaryTotals {
+    /// Returns the totals of a run whose first balanced range starts at `from_s`: nothing added yet.
+    fn starting_at(from_s: u64) -> Self {
+        Self {
+            from_s,
+            to_s: from_s,
+            sent: 0,
+            received: 0.0,
+            host_dropped: 0.0,
+            allowance: 0.0,
+            waiting: false,
+        }
+    }
+
+    /// Returns the range to add next, once the rolling check's range ends at `rolling_to_s`: none until that is
+    /// [`CANARY_SEGMENT_SECS`] past what was added.
+    fn due(&self, rolling_to_s: u64) -> Option<(u64, u64)> {
+        (rolling_to_s >= self.to_s + CANARY_SEGMENT_SECS).then_some((self.to_s, rolling_to_s))
+    }
+
+    /// Adds what the demo's canary check says of `range` (`GET /api/canary`), which must start where the ranges added
+    /// so far end.
+    fn add(&mut self, range: (u64, u64), check: &Value) -> Result<(), GenericError> {
+        if range.0 != self.to_s || range.1 <= range.0 {
+            return Err(generic_error!(
+                "The canaries of seconds {} to {} do not continue the whole run's, which end at {}.",
+                range.0,
+                range.1,
+                self.to_s
+            ));
+        }
+        let (Some(sent), Some(received), Some(allowance)) = (
+            check["sent"].as_u64(),
+            check["received"].as_f64(),
+            check["allowance"].as_f64(),
+        ) else {
+            return Err(generic_error!(
+                "The canary check of seconds {} to {} answered without its counts: {}",
+                range.0,
+                range.1,
+                check
+            ));
+        };
+        self.to_s = range.1;
+        self.sent += sent;
+        self.received += received;
+        if check["state"] == CanaryState::HostDropped.name() {
+            self.host_dropped += sent as f64 - received;
+        }
+        self.allowance = allowance;
+        self.waiting |= check["state"] == CanaryState::Waiting.name();
+        Ok(())
+    }
+
+    /// Returns the whole-run check over the ranges added.
+    fn report(&self) -> CanaryReport {
+        let state = if self.waiting {
+            CanaryState::Waiting
+        } else {
+            canary::classify_run(self.sent, self.received, self.host_dropped, self.allowance)
+        };
+        CanaryReport {
+            from_s: self.from_s,
+            to_s: self.to_s,
+            sent: self.sent,
+            received: self.received,
+            host_dropped: self.host_dropped,
+            state: state.name().to_string(),
+        }
+    }
+}
+
+/// The report of a run: of one launch of ADP, and of the second launch, on lanes, when the check ran one.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Report {
+    /// What ADP ran on in this launch: its aggregation window and its lanes.
+    pub launch: String,
+
     /// The run directory.
     pub run_dir: String,
 
@@ -290,17 +436,35 @@ pub struct Report {
     /// How many samples of the demo's state checked canary conservation, balanced.
     pub canary_samples: u64,
 
+    /// How many samples of the demo's state found canaries that the host dropped before ADP read them, and none lost
+    /// in ADP.
+    pub host_dropped_samples: u64,
+
     /// Problems seen while sampling: canaries missing, doubled, or at another endpoint; refused requests; unexpected
     /// API keys.
     pub violations: Vec<String>,
 
     /// Why the run stopped, if a step failed.
     pub error: Option<String>,
+
+    /// The report of the second launch, on lanes (S12 to S14), if the check ran it after this one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub second_launch: Option<Box<Report>>,
 }
 
 impl Report {
-    /// Returns why the check failed, if it did.
+    /// Returns why the check failed, if it did: in this launch, or else in the second.
     pub fn failure(&self) -> Option<String> {
+        self.own_failure().or_else(|| {
+            let second = self.second_launch.as_ref()?;
+            second
+                .own_failure()
+                .map(|failure| format!("in the second launch ({}): {}", second.launch, failure))
+        })
+    }
+
+    /// Returns why this launch failed, if it did.
+    fn own_failure(&self) -> Option<String> {
         if let Some(error) = &self.error {
             return Some(error.clone());
         }
@@ -313,21 +477,29 @@ impl Report {
         }
         match &self.canary {
             None => Some("The whole-run canary check did not run.".to_string()),
-            Some(canary) if canary.state != "balanced" => Some(format!(
-                "The whole-run canary check is {}: {} sent, {} received at the primary endpoint.",
-                canary.state, canary.sent, canary.received
-            )),
+            Some(canary)
+                if canary.state != CanaryState::Balanced.name() && canary.state != CanaryState::HostDropped.name() =>
+            {
+                Some(format!(
+                    "The whole-run canary check is {}: {} sent, {} received at the primary endpoint.",
+                    canary.state, canary.sent, canary.received
+                ))
+            }
             Some(_) => None,
         }
     }
 
-    /// Returns the report as lines for the console: one per step, then the canary check.
+    /// Returns the report as lines for the console: the launch, one line per step, then the canary check; then the
+    /// second launch's, if any.
     pub fn summary_lines(&self) -> Vec<String> {
         let seconds = |ms: Option<u64>| ms.map_or_else(|| "-".to_string(), |ms| format!("{:.1} s", ms as f64 / 1000.0));
-        let mut lines = vec![format!(
-            "{:<4} {:<52} {:>4} {:>8} {:>8} {:>8}  outcome; plan diff",
-            "step", "", "rev", "compile", "ack", "visible"
-        )];
+        let mut lines = vec![
+            format!("launch: {}", self.launch),
+            format!(
+                "{:<4} {:<52} {:>4} {:>8} {:>8} {:>8}  outcome; plan diff",
+                "step", "", "rev", "compile", "ack", "visible"
+            ),
+        ];
         for step in &self.steps {
             lines.push(format!(
                 "{:<4} {:<52} {:>4} {:>8} {:>8} {:>8}  {}; {}",
@@ -343,13 +515,22 @@ impl Report {
             ));
         }
         if let Some(canary) = &self.canary {
+            let host_dropped = if self.host_dropped_samples > 0 || canary.host_dropped > 0.0 {
+                format!(
+                    "; the host dropped {} before ADP read them ({} rolling checks)",
+                    canary.host_dropped, self.host_dropped_samples
+                )
+            } else {
+                String::new()
+            };
             lines.push(format!(
-                "canary: {} sent and {} received at the primary endpoint over {} s ({}); {} rolling checks balanced",
+                "canary: {} sent and {} received at the primary endpoint over {} s ({}); {} rolling checks balanced{}",
                 canary.sent,
                 canary.received,
                 canary.to_s - canary.from_s,
                 canary.state,
-                self.canary_samples
+                self.canary_samples,
+                host_dropped
             ));
         }
         lines.push(format!(
@@ -357,51 +538,73 @@ impl Report {
             self.duration_ms as f64 / 1000.0,
             seconds(self.baseline_ms)
         ));
+        if let Some(second) = &self.second_launch {
+            lines.extend(second.summary_lines());
+        }
         lines
     }
 }
 
-/// Runs the scenarios against the demo server of `settings`, and returns the report. A failed step stops the run, and
-/// the report says why.
+/// Runs the scenarios S0 to S6 and S8 to S11 against the demo server of `settings`, and returns the report. A failed
+/// step stops the run, and the report says why.
 pub async fn run(settings: &RunSettings) -> Report {
     let started = Instant::now();
-    let Some(team_d) = settings
-        .ports
-        .recipients()
-        .into_iter()
-        .find(|recipient| recipient.declared)
-    else {
-        return Report {
-            error: Some("The demo has no intake for a declared recipient (team D).".to_string()),
-            ..Report::default()
-        };
-    };
-    let template = document_text(&team_d_template(&team_d));
-    let mut runner = match DemoClient::new(settings.ports.ui) {
-        Ok(client) => Runner {
-            client,
-            report: Report {
-                run_dir: settings.run_dir.display().to_string(),
-                ..Report::default()
-            },
-            first_range: None,
-            last_change_s: 0,
-            alerted: BTreeSet::new(),
-            resources_draft: None,
-            template,
-        },
-        Err(error) => {
-            return Report {
-                error: Some(format!("{:#}", error)),
-                ..Report::default()
-            }
-        }
+    let mut runner = match Runner::new(settings) {
+        Ok(runner) => runner,
+        Err(error) => return not_started(settings, error),
     };
     if let Err(error) = runner.scenarios().await {
         runner.report.error = Some(format!("{:#}", error));
     }
     runner.report.duration_ms = started.elapsed().as_millis() as u64;
     runner.report
+}
+
+/// Runs the scenarios S12 to S14 against the demo server of `settings`, whose ADP runs its metrics path on the lanes
+/// `settings` asks for (see [`lanes`]), and returns the report. A failed step stops the run, and the report says why.
+pub async fn run_lanes(settings: &RunSettings) -> Report {
+    let started = Instant::now();
+    let mut runner = match Runner::new(settings) {
+        Ok(runner) => runner,
+        Err(error) => return not_started(settings, error),
+    };
+    if let Err(error) = runner.lane_scenarios(settings).await {
+        runner.report.error = Some(format!("{:#}", error));
+    }
+    runner.report.duration_ms = started.elapsed().as_millis() as u64;
+    runner.report
+}
+
+/// Returns the report of a launch of `settings` that did not run its scenarios to the end: its runner could not be
+/// created, or the launch itself failed (the demo or ADP did not start, ADP exited, or a stop signal arrived), as
+/// `error` says.
+pub fn not_started(settings: &RunSettings, error: GenericError) -> Report {
+    Report {
+        launch: describe_launch(settings),
+        error: Some(format!("{:#}", error)),
+        ..Report::default()
+    }
+}
+
+/// Describes what ADP runs on in a launch, for the report: its aggregation window, and the lanes the launcher asked
+/// for.
+fn describe_launch(settings: &RunSettings) -> String {
+    let lanes = settings.lanes;
+    let count = |count: Option<u16>| count.map_or_else(|| "automatic".to_string(), |count| count.to_string());
+    let lanes = if lanes.any() {
+        format!(
+            "on lanes: decoders {}, state lanes {}, post-aggregation lanes {}",
+            count(lanes.decoders),
+            count(lanes.state),
+            count(lanes.post)
+        )
+    } else {
+        "with ADP's default lanes".to_string()
+    };
+    format!(
+        "{}-second aggregation windows, counter expiry {} s, {}",
+        settings.aggregate_window_secs, settings.counter_expiry_secs, lanes
+    )
 }
 
 /// What the runner knows about ADP's status at one moment.
@@ -440,6 +643,15 @@ impl Status {
     /// Returns ADP's degraded reason, if it reports one.
     fn degraded(&self) -> Option<&str> {
         self.document["degraded"].as_str()
+    }
+
+    /// Returns the revision of the artifact active for `scope`: the policy scope's from the top-level member, another
+    /// scope's from `scopes`.
+    fn artifact_revision_in(&self, scope: &str) -> Option<u64> {
+        if scope == POLICY_SCOPE {
+            return self.artifact_revision;
+        }
+        self.document["scopes"][scope]["active_artifact"]["revision"].as_u64()
     }
 }
 
@@ -485,10 +697,30 @@ enum Compiled {
 /// lacks, since a state owner runs only in an isolation slot, and none is behind the policy scope.
 const AGGREGATION_OUTSIDE_ITS_SLOT: &[&str] = &["runs only in an isolation slot"];
 
+/// The scope a step's artifact replaces, and how long ADP may take to acknowledge it.
+#[derive(Clone, Copy, Debug)]
+struct Target {
+    /// The scope.
+    scope: &'static str,
+
+    /// How long ADP may take to acknowledge the artifact.
+    ack_timeout: Duration,
+}
+
+/// The policy scope, whose artifacts install without a cut.
+const POLICY_TARGET: Target = Target {
+    scope: POLICY_SCOPE,
+    ack_timeout: ACK_TIMEOUT,
+};
+
 /// What a scenario expects ADP to do with a publish.
 enum Installed {
-    /// Activate the artifact; with `new_generation` false, in the generation already active.
-    Active { new_generation: bool, routing: Routing },
+    /// Activate the artifact; with `new_generation` false, in the generation already active. With `routing`, the
+    /// endpoints then receive what it says; without, the step checks what they receive itself.
+    Active {
+        new_generation: bool,
+        routing: Option<Routing>,
+    },
 
     /// Reject it with an error that has one of these fragments, and keep the active generation running.
     Rejected { fragments: &'static [&'static str] },
@@ -500,22 +732,79 @@ enum Installed {
 struct Runner {
     client: DemoClient,
     report: Report,
-    /// The first canary range found balanced: where the whole-run check starts.
-    first_range: Option<(u64, u64)>,
+    /// The whole run's canaries so far, from the first canary range found balanced.
+    whole_run: Option<CanaryTotals>,
+    /// When the runner last sampled the demo's state.
+    sampled: Option<Instant>,
     /// When the last publish or revoke was made, in Unix seconds.
     last_change_s: u64,
     /// The intake problems already reported, so that each is reported once.
     alerted: BTreeSet<String>,
+    /// Whether the last sample's canary check found that the host dropped canaries, so that each stretch of such
+    /// samples is logged once.
+    host_dropping: bool,
     /// The Resources tab's draft, sent with every compile once the resources steps start, as the UI sends it.
     resources_draft: Option<String>,
     /// The team D resources template, as the Resources tab starts from it.
     template: String,
+    /// ADP's aggregation window, in seconds, which sets how often each family reaches the intakes.
+    window_s: u64,
 }
 
 impl Runner {
-    async fn scenarios(&mut self) -> Result<(), GenericError> {
+    /// Creates the runner of the demo server of `settings`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the demo has no intake for team D, or its server's client cannot be built.
+    fn new(settings: &RunSettings) -> Result<Self, GenericError> {
+        let team_d = settings
+            .ports
+            .recipients()
+            .into_iter()
+            .find(|recipient| recipient.declared)
+            .ok_or_else(|| generic_error!("The demo has no intake for a declared recipient (team D)."))?;
+        let client = DemoClient::new(settings.ports.ui)?;
+        Ok(Self {
+            client,
+            report: Report {
+                launch: describe_launch(settings),
+                run_dir: settings.run_dir.display().to_string(),
+                ..Report::default()
+            },
+            whole_run: None,
+            sampled: None,
+            last_change_s: 0,
+            alerted: BTreeSet::new(),
+            host_dropping: false,
+            resources_draft: None,
+            template: document_text(&team_d_template(&team_d)),
+            window_s: settings.aggregate_window_secs.max(1),
+        })
+    }
+
+    /// Returns how recently a family must have reached an intake to count as arriving there (see [`present_ms`]).
+    fn present_ms(&self) -> u64 {
+        present_ms(self.window_s)
+    }
+
+    /// Returns how long the endpoints must keep receiving what a scenario says once they do: [`STABLE`], or one
+    /// aggregation window if longer, so that at least one more flush shows the same.
+    fn stable(&self) -> Duration {
+        STABLE.max(Duration::from_secs(self.window_s))
+    }
+
+    /// Returns how long the endpoints may take to show a change: [`ROUTING_TIMEOUT`], or, with long windows, long
+    /// enough for a family to stop counting as present and for one to arrive, twice.
+    fn routing_timeout(&self) -> Duration {
+        ROUTING_TIMEOUT.max(Duration::from_millis(2 * self.present_ms()) + Duration::from_secs(self.window_s))
+    }
+
+    /// Waits for ADP to serve its export and default program, and for the canary check to have a whole range of
+    /// seconds behind it, and checks that the endpoints receive what the default program routes. Returns the policy
+    /// scope's default program as the editor shows it, the outputs that feed each intake, and ADP's status.
+    async fn baseline(&mut self) -> Result<(String, Outputs, Status), GenericError> {
         let baseline = Instant::now();
-        // ADP serves its export and default program, and the canary check has a whole range of seconds behind it.
         self.wait_for(
             "ADP's export and default program, and a balanced canary check",
             BASELINE_TIMEOUT,
@@ -550,6 +839,11 @@ impl Runner {
         let boot = self.status().await?;
         self.expect_routing("baseline", &default_routing(), Instant::now())
             .await?;
+        Ok((source, outputs, boot))
+    }
+
+    async fn scenarios(&mut self) -> Result<(), GenericError> {
+        let (source, outputs, boot) = self.baseline().await?;
 
         self.step(
             "S0",
@@ -558,7 +852,7 @@ impl Runner {
             Compiled::Clean { unchanged: true },
             Installed::Active {
                 new_generation: false,
-                routing: default_routing(),
+                routing: Some(default_routing()),
             },
         )
         .await?;
@@ -572,7 +866,7 @@ impl Runner {
             Compiled::Clean { unchanged: false },
             Installed::Active {
                 new_generation: true,
-                routing: changed(default_routing(), "primary", &["demo.debug.*"], true),
+                routing: Some(changed(default_routing(), "primary", &["demo.debug.*"], true)),
             },
         )
         .await?;
@@ -586,7 +880,12 @@ impl Runner {
             Compiled::Clean { unchanged: false },
             Installed::Active {
                 new_generation: true,
-                routing: changed(default_routing(), "team-b", &["demo.platform.queue_depth"], false),
+                routing: Some(changed(
+                    default_routing(),
+                    "team-b",
+                    &["demo.platform.queue_depth"],
+                    false,
+                )),
             },
         )
         .await?;
@@ -598,7 +897,7 @@ impl Runner {
             Compiled::Clean { unchanged: false },
             Installed::Active {
                 new_generation: true,
-                routing: changed(default_routing(), "primary", &CHECKOUT, true),
+                routing: Some(changed(default_routing(), "primary", &CHECKOUT, true)),
             },
         )
         .await?;
@@ -611,7 +910,7 @@ impl Runner {
             Compiled::Clean { unchanged: false },
             Installed::Active {
                 new_generation: true,
-                routing: mirrored.clone(),
+                routing: Some(mirrored.clone()),
             },
         )
         .await?;
@@ -659,23 +958,33 @@ impl Runner {
         self.whole_run_canary().await
     }
 
-    /// Runs one scenario step: compile, publish, acknowledgment, and what the endpoints receive.
+    /// Runs one scenario step of the policy scope: compile, publish, acknowledgment, and what the endpoints receive.
     async fn step(
         &mut self, id: &'static str, title: &'static str, source: String, compiled: Compiled, installed: Installed,
     ) -> Result<(), GenericError> {
+        self.step_in(POLICY_TARGET, id, title, source, compiled, installed)
+            .await
+            .map(|_| ())
+    }
+
+    /// Runs one scenario step whose artifact replaces the scope of `target`, and returns ADP's status once it settled.
+    async fn step_in(
+        &mut self, target: Target, id: &'static str, title: &'static str, source: String, compiled: Compiled,
+        installed: Installed,
+    ) -> Result<Status, GenericError> {
         let mut step = StepReport {
             id,
             title,
             ..StepReport::default()
         };
-        let result = self.run_step(&mut step, source, compiled, installed).await;
+        let result = self.run_step(target, &mut step, source, compiled, installed).await;
         self.report.steps.push(step);
         result.with_error_context(|| format!("{} ({}) failed", id, title))
     }
 
     async fn run_step(
-        &mut self, step: &mut StepReport, source: String, compiled: Compiled, installed: Installed,
-    ) -> Result<(), GenericError> {
+        &mut self, target: Target, step: &mut StepReport, source: String, compiled: Compiled, installed: Installed,
+    ) -> Result<Status, GenericError> {
         let before = self.status().await?;
         let compile_started = Instant::now();
         let (status, outcome) = self
@@ -794,8 +1103,11 @@ impl Runner {
             Some(output) => waiting_for(acknowledgment, output),
             None => settled(acknowledgment),
         };
-        let (acknowledgment, after) = self.wait_ack(POLICY_PRODUCT, revision, published, expected).await?;
+        let (acknowledgment, after) = self
+            .wait_ack_within(POLICY_PRODUCT, revision, published, target.ack_timeout, expected)
+            .await?;
         step.ack_ms = Some(published.elapsed().as_millis() as u64);
+        let artifact_revision = |status: &Status| status.artifact_revision_in(target.scope);
         let state = acknowledgment["state"].as_str().unwrap_or_default().to_string();
         let error = acknowledgment["error"].as_str().unwrap_or_default().to_string();
         step.generation = after.generation;
@@ -812,10 +1124,11 @@ impl Runner {
                         error
                     ));
                 }
-                if after.artifact_revision != Some(revision) {
+                if artifact_revision(&after) != Some(revision) {
                     return Err(generic_error!(
-                        "ADP reports artifact revision {:?} active, not {}.",
-                        after.artifact_revision,
+                        "ADP reports artifact revision {:?} active for scope `{}`, not {}.",
+                        artifact_revision(&after),
+                        target.scope,
                         revision
                     ));
                 }
@@ -850,8 +1163,10 @@ impl Runner {
                     after.generation.unwrap_or_default(),
                     if new_generation { "" } else { " (no new generation)" }
                 );
-                let visible = self.expect_routing(step.id, &routing, published).await?;
-                step.visible_ms = Some(visible.as_millis() as u64);
+                if let Some(routing) = routing {
+                    let visible = self.expect_routing(step.id, &routing, published).await?;
+                    step.visible_ms = Some(visible.as_millis() as u64);
+                }
             }
             Installed::Rejected { fragments } => {
                 if state != "rejected" {
@@ -869,15 +1184,15 @@ impl Runner {
                         error
                     ));
                 }
-                if (after.generation, after.artifact_revision) != (before.generation, before.artifact_revision) {
+                if (after.generation, artifact_revision(&after)) != (before.generation, artifact_revision(&before)) {
                     return Err(generic_error!(
                         "After rejecting revision {}, ADP runs generation {:?} (artifact {:?}), not generation {:?} \
                          (artifact {:?}) as before.",
                         revision,
                         after.generation,
-                        after.artifact_revision,
+                        artifact_revision(&after),
                         before.generation,
-                        before.artifact_revision
+                        artifact_revision(&before)
                     ));
                 }
                 step.outcome = format!(
@@ -887,15 +1202,15 @@ impl Runner {
                 );
             }
             Installed::Pending { .. } => {
-                if (after.generation, after.artifact_revision) != (before.generation, before.artifact_revision) {
+                if (after.generation, artifact_revision(&after)) != (before.generation, artifact_revision(&before)) {
                     return Err(generic_error!(
                         "While revision {} waits, ADP runs generation {:?} (artifact {:?}), not generation {:?} \
                          (artifact {:?}) as before.",
                         revision,
                         after.generation,
-                        after.artifact_revision,
+                        artifact_revision(&after),
                         before.generation,
-                        before.artifact_revision
+                        artifact_revision(&before)
                     ));
                 }
                 step.outcome = format!(
@@ -905,7 +1220,7 @@ impl Runner {
                 );
             }
         }
-        Ok(())
+        Ok(after)
     }
 
     /// S6: revokes the artifact, and checks that the default program comes back, with what the endpoints receive.
@@ -1059,25 +1374,81 @@ impl Runner {
                 },
             )
             .await?;
-        let (from_s, _) = self
-            .first_range
-            .ok_or_else(|| generic_error!("No canary range was balanced."))?;
-        let check = self
-            .client
-            .get_json(&format!("/api/canary?from_s={}&to_s={}", from_s, last_range))
-            .await?;
-        self.report.canary = Some(CanaryReport {
-            from_s,
-            to_s: last_range,
-            sent: check["sent"].as_u64().unwrap_or_default(),
-            received: check["received"].as_f64().unwrap_or_default(),
-            state: check["state"].as_str().unwrap_or_default().to_string(),
-        });
+        let to_s = self
+            .whole_run
+            .as_ref()
+            .ok_or_else(|| generic_error!("No canary range was balanced."))?
+            .to_s;
+        if last_range > to_s {
+            // While the check waits for a scrape of ADP's telemetry, read the range again; past the deadline, add it as
+            // it is, waiting, which the whole run's check reports.
+            let deadline = Instant::now() + ROUTING_TIMEOUT;
+            while !self.add_canary_range((to_s, last_range)).await? {
+                if Instant::now() >= deadline {
+                    tracing::warn!(
+                        "The canary check of seconds {} to {} still waits for a scrape of ADP's telemetry after {} s; \
+                         adding it as it is.",
+                        to_s,
+                        last_range,
+                        ROUTING_TIMEOUT.as_secs()
+                    );
+                    self.add_canary_range_as_it_is((to_s, last_range)).await?;
+                    break;
+                }
+                tokio::time::sleep(POLL).await;
+            }
+        }
+        self.report.canary = self.whole_run.as_ref().map(CanaryTotals::report);
         Ok(())
     }
 
-    /// Returns ADP's status, read through the demo's pass-through of the privileged status route.
+    /// Reads what the demo's canary check says of `range`, and adds it to the whole run's totals, unless the check
+    /// waits for a scrape of ADP's telemetry, so that the range read later can say more. Returns `true` if the range
+    /// was added.
+    async fn add_canary_range(&mut self, range: (u64, u64)) -> Result<bool, GenericError> {
+        let check = self.read_canary_range(range).await?;
+        if check["pending_telemetry"] == true {
+            return Ok(false);
+        }
+        if check["state"] == CanaryState::Waiting.name() {
+            tracing::warn!(
+                "The canary check of seconds {} to {}, added to the whole run's, waits: {}",
+                range.0,
+                range.1,
+                check["reason"].as_str().unwrap_or_default()
+            );
+        }
+        self.add_canary_check(range, &check)?;
+        Ok(true)
+    }
+
+    /// Reads what the demo's canary check says of `range`, and adds it to the whole run's totals, whatever it says.
+    async fn add_canary_range_as_it_is(&mut self, range: (u64, u64)) -> Result<(), GenericError> {
+        let check = self.read_canary_range(range).await?;
+        self.add_canary_check(range, &check)
+    }
+
+    /// Reads what the demo's canary check says of `range` (`GET /api/canary`).
+    async fn read_canary_range(&mut self, range: (u64, u64)) -> Result<Value, GenericError> {
+        self.client
+            .get_json(&format!("/api/canary?from_s={}&to_s={}", range.0, range.1))
+            .await
+    }
+
+    /// Adds what the demo's canary check said of `range` to the whole run's totals.
+    fn add_canary_check(&mut self, range: (u64, u64), check: &Value) -> Result<(), GenericError> {
+        match self.whole_run.as_mut() {
+            Some(totals) => totals.add(range, check),
+            None => Err(generic_error!("No canary range was balanced.")),
+        }
+    }
+
+    /// Returns ADP's status, read through the demo's pass-through of the privileged status route, after sampling the
+    /// demo's state if the runner has not for [`SAMPLE_INTERVAL`].
     async fn status(&mut self) -> Result<Status, GenericError> {
+        if self.sampled.is_none_or(|sampled| sampled.elapsed() >= SAMPLE_INTERVAL) {
+            self.state().await?;
+        }
         Ok(Status::read(self.client.get_json("/api/adp/status").await?))
     }
 
@@ -1086,7 +1457,15 @@ impl Runner {
     async fn wait_ack(
         &mut self, product: &str, revision: u64, since: Instant, expected: impl Fn(&Value) -> bool,
     ) -> Result<(Value, Status), GenericError> {
-        let deadline = since + ACK_TIMEOUT;
+        self.wait_ack_within(product, revision, since, ACK_TIMEOUT, expected)
+            .await
+    }
+
+    /// Waits as [`Runner::wait_ack`] does, for up to `timeout` from `since` for the acknowledgment on the status route.
+    async fn wait_ack_within(
+        &mut self, product: &str, revision: u64, since: Instant, timeout: Duration, expected: impl Fn(&Value) -> bool,
+    ) -> Result<(Value, Status), GenericError> {
+        let deadline = since + timeout;
         let (acknowledgment, status) = loop {
             let status = self.status().await?;
             if let Some(acknowledgment) = status.acknowledgment(product, revision) {
@@ -1099,7 +1478,7 @@ impl Runner {
                     "ADP did not acknowledge {} revision {} as expected within {} s; its status: {}",
                     product,
                     revision,
-                    ACK_TIMEOUT.as_secs(),
+                    timeout.as_secs(),
                     status.document
                 ));
             }
@@ -1126,25 +1505,27 @@ impl Runner {
         Ok((acknowledgment, status))
     }
 
-    /// Waits until the endpoints receive what `expected` says, and keep doing so for [`STABLE`]. Returns the time from
-    /// `since` until they first did.
+    /// Waits until the endpoints receive what `expected` says, and keep doing so for [`Runner::stable`]. Returns the
+    /// time from `since` until they first did.
     async fn expect_routing(
         &mut self, what: &str, expected: &Routing, since: Instant,
     ) -> Result<Duration, GenericError> {
-        let deadline = Instant::now() + ROUTING_TIMEOUT;
+        let timeout = self.routing_timeout();
+        let deadline = Instant::now() + timeout;
+        let stable = self.stable();
         let mut reached: Option<Duration> = None;
         let mut held_since: Option<Instant> = None;
         let mut flapped = 0;
         loop {
             let state = self.state().await?;
-            let found = present(&state);
+            let found = present(&state, self.present_ms());
             let holds = INTAKES.iter().all(|intake| found.get(*intake) == expected.get(*intake));
             match (holds, held_since) {
                 (true, None) => {
                     reached.get_or_insert_with(|| since.elapsed());
                     held_since = Some(Instant::now());
                 }
-                (true, Some(start)) if start.elapsed() >= STABLE => {
+                (true, Some(start)) if start.elapsed() >= stable => {
                     return Ok(reached.unwrap_or_default());
                 }
                 (true, Some(_)) => {}
@@ -1159,7 +1540,7 @@ impl Runner {
                     "{}: the endpoints did not receive what the scenario says within {} s ({} times they did, then \
                      stopped): {}",
                     what,
-                    ROUTING_TIMEOUT.as_secs(),
+                    timeout.as_secs(),
                     flapped,
                     routing_difference(expected, &found)
                 ));
@@ -1192,36 +1573,72 @@ impl Runner {
         }
     }
 
-    /// Returns the demo's state, after checking the canary conservation and the intakes in it.
+    /// Returns the demo's state, after checking the canary conservation, the intakes, and the lanes in it, and adding
+    /// to the whole run's canary totals once a range is due.
     async fn state(&mut self) -> Result<Value, GenericError> {
         let state = self.client.get_json("/api/state").await?;
+        self.sampled = Some(Instant::now());
         self.observe(&state);
+        // The rolling check's range ends at a boundary of every bucket width in use, unless no width is aligned to.
+        let aligned_to_s = state["canary_width_secs"]
+            .as_u64()
+            .and(state["canary"]["to_s"].as_u64());
+        let due = self
+            .whole_run
+            .as_ref()
+            .zip(aligned_to_s)
+            .and_then(|(totals, rolling_to_s)| totals.due(rolling_to_s));
+        if let Some(range) = due {
+            // A range the check cannot say yet waits for a later sample, which reads it to a later end.
+            self.add_canary_range(range).await?;
+        }
         Ok(state)
     }
 
-    /// Records the canary check and the intakes' problems in a sample of the demo's state.
+    /// Records the canary check, the intakes' problems, and lane events admitted by a lane that does not own their key
+    /// in a sample of the demo's state.
     fn observe(&mut self, state: &Value) {
         let canary = &state["canary"];
         let range = (
             canary["from_s"].as_u64().unwrap_or_default(),
             canary["to_s"].as_u64().unwrap_or_default(),
         );
+        let host_dropping = canary["state"] == CanaryState::HostDropped.name();
         match canary["state"].as_str() {
             Some("balanced") => {
-                self.first_range.get_or_insert(range);
+                self.whole_run.get_or_insert_with(|| CanaryTotals::starting_at(range.0));
                 self.report.canary_samples += 1;
             }
+            Some("host_dropped") => {
+                self.report.host_dropped_samples += 1;
+                if !self.host_dropping {
+                    tracing::warn!(
+                        "canaries short for seconds {} to {}, which the host dropped: {} sent, {} received at the \
+                         primary endpoint. {}",
+                        range.0,
+                        range.1,
+                        canary["sent"],
+                        canary["received"],
+                        canary["reason"].as_str().unwrap_or_default()
+                    );
+                }
+            }
             Some(problem @ ("missing" | "excess")) => {
+                let reason = canary["reason"]
+                    .as_str()
+                    .map(|reason| format!(" ({})", reason))
+                    .unwrap_or_default();
                 self.alert(
                     format!("canary {} {}-{}", problem, range.0, range.1),
                     format!(
-                        "canaries {} for seconds {} to {}: {} sent, {} received at the primary endpoint",
-                        problem, range.0, range.1, canary["sent"], canary["received"]
+                        "canaries {} for seconds {} to {}: {} sent, {} received at the primary endpoint{}",
+                        problem, range.0, range.1, canary["sent"], canary["received"], reason
                     ),
                 );
             }
             _ => {}
         }
+        self.host_dropping = host_dropping;
         for elsewhere in canary["elsewhere"].as_array().into_iter().flatten() {
             self.alert(
                 format!("canary at {}", elsewhere["intake"]),
@@ -1253,6 +1670,24 @@ impl Runner {
                     ),
                 );
             }
+        }
+        // An event a lane admitted whose key another lane owns: the partitioning is wrong, whatever else holds.
+        for entry in state["telemetry"]["plan"].as_array().into_iter().flatten() {
+            let Some(misrouted) = entry["value"].as_f64().filter(|value| *value > 0.0) else {
+                continue;
+            };
+            if entry["name"] != "plan_lane_misrouted_total" {
+                continue;
+            }
+            let component = entry["labels"]["component_id"].as_str().unwrap_or_default();
+            let lane = entry["labels"]["lane"].as_str().unwrap_or_default();
+            self.alert(
+                format!("misrouted {} {}", component, lane),
+                format!(
+                    "lane {} of {} admitted {} events whose key another lane owns (plan_lane_misrouted_total)",
+                    lane, component, misrouted
+                ),
+            );
         }
     }
 

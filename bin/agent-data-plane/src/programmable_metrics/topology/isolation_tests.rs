@@ -269,11 +269,11 @@ fn aggregation_terms(bounds: &ComponentBounds) -> Vec<String> {
     terms
 }
 
-/// Checks that the inputs the sizing guide's page sets from the cardinality resolve on the plan-driven topology whose
-/// metrics path runs `operators`, and that aggregation's and the DogStatsD source's inputs are those of the legacy
-/// topology.
-async fn check_sizing_guide_inputs(operators: OperatorRegistry) {
-    let (legacy, plan) = bounds("", operators).await;
+/// Checks that the inputs the sizing guide's page sets from the cardinality resolve on the plan-driven topology of
+/// `yaml` whose metrics path runs `operators`, and that aggregation's and the DogStatsD source's inputs are those of
+/// the legacy topology.
+async fn check_sizing_guide_inputs(yaml: &str, operators: OperatorRegistry) {
+    let (legacy, plan) = bounds(yaml, operators).await;
     let (legacy, plan) = (sizing_guide_inputs(&legacy), sizing_guide_inputs(&plan));
     for input in CARDINALITY_INPUTS {
         assert!(
@@ -301,7 +301,16 @@ async fn check_sizing_guide_inputs(operators: OperatorRegistry) {
 
 #[tokio::test]
 async fn the_sizing_guides_cardinality_inputs_resolve_with_aggregation_in_its_region_as_on_the_legacy_topology() {
-    check_sizing_guide_inputs(OperatorRegistry::native()).await;
+    check_sizing_guide_inputs("", OperatorRegistry::native()).await;
+}
+
+#[tokio::test]
+async fn the_sizing_guides_cardinality_inputs_resolve_with_aggregation_on_state_lanes_as_on_the_legacy_topology() {
+    // Three producer lanes, two state lanes, and two post-aggregation lanes: aggregation's state, which its lanes
+    // partition, is declared once, at the path the sizing guide's page sets.
+    let lanes =
+        "dogstatsd_workers_count: 3\nexperimental: {programmable_metrics: {lanes: {mode: auto, state: 2, post: 2}}}";
+    check_sizing_guide_inputs(lanes, OperatorRegistry::native()).await;
 }
 
 /// Returns whether each component registered with `health` is ready, by name.

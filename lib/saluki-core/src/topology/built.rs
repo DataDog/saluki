@@ -1,4 +1,9 @@
-use std::{collections::HashMap, num::NonZeroUsize, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    num::{NonZeroU16, NonZeroUsize},
+    sync::Arc,
+    time::Duration,
+};
 
 use saluki_common::resource_tracking::ResourceGroupToken;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -13,6 +18,23 @@ use crate::accounting::{ComponentRegistry, MemoryLimiter};
 /// down on the first occurrence; the period only needs to be a sane non-zero value.
 const TOPOLOGY_RESTART_PERIOD: Duration = Duration::from_secs(5);
 
+/// The number of worker threads of the dedicated worker pool a topology builds by default.
+pub const DEFAULT_WORKER_POOL_THREADS: NonZeroUsize = NonZeroUsize::new(8).unwrap();
+
+/// Returns the number of worker threads for the dedicated worker pool of a process whose primary runtime has
+/// `primary_workers` worker threads: the default of [`DEFAULT_WORKER_POOL_THREADS`] (8), or one per primary worker
+/// when there are more.
+///
+/// A topology whose components spawn compute-bound subtasks that grow in number with the cores, such as one encoder
+/// stream per output fed by components with lanes, passes this to
+/// [`TopologyBlueprint::with_dedicated_worker_pool`][super::TopologyBlueprint::with_dedicated_worker_pool], so that
+/// those subtasks are never limited to fewer threads than the default gives them, nor to 8 threads on a larger host.
+pub fn worker_pool_threads(primary_workers: usize) -> NonZeroUsize {
+    NonZeroUsize::new(primary_workers).map_or(DEFAULT_WORKER_POOL_THREADS, |workers| {
+        workers.max(DEFAULT_WORKER_POOL_THREADS)
+    })
+}
+
 /// Configuration for the worker pool used by the topology.
 ///
 /// This controls where tasks spawned by components themselves are executed. When components
@@ -26,10 +48,13 @@ pub enum WorkerPoolConfiguration {
     /// manages its own runtime, such as a Lambda extension.
     Ambient,
 
-    /// Create a dedicated, multi-threaded Tokio runtime with 8 worker threads.
+    /// Create a dedicated, multi-threaded Tokio runtime with `threads` worker threads.
     ///
-    /// This is the default behavior.
-    Dedicated,
+    /// This is the default behavior, with [`DEFAULT_WORKER_POOL_THREADS`] (8) threads.
+    Dedicated {
+        /// The number of worker threads.
+        threads: NonZeroUsize,
+    },
 
     /// Use an externally provided runtime.
     ///
@@ -42,7 +67,8 @@ use super::component_worker::{
     RunnableComponent, SourceRunnable, TransformRunnable,
 };
 use super::{
-    graph::Graph, ComponentId, ComponentOutputId, EventsBuffer, EventsConsumer, OutputName, PayloadsConsumer,
+    graph::{Graph, OutboundEdge},
+    ComponentId, ComponentOutputId, EventsBuffer, EventsConsumer, LaneEdge, OutputName, PayloadsConsumer,
     TypedComponentId,
 };
 use crate::execution::{AdmissionPoint, AdmissionPointConfig};
@@ -102,6 +128,7 @@ pub(crate) struct BuiltTopology {
     interconnect_capacity: NonZeroUsize,
     input_capacities: HashMap<ComponentId, NonZeroUsize>,
     input_gates: HashMap<ComponentId, InputGate>,
+    input_buffer_events: HashMap<ComponentId, usize>,
     worker_pool_config: WorkerPoolConfiguration,
 }
 
@@ -118,7 +145,8 @@ impl BuiltTopology {
         forwarders: HashMap<ComponentContext, (Box<dyn Forwarder + Send>, ComponentRegistry)>,
         admission_points: Vec<AdmissionPointBinding>, component_token: ResourceGroupToken,
         interconnect_capacity: NonZeroUsize, input_capacities: HashMap<ComponentId, NonZeroUsize>,
-        input_gates: HashMap<ComponentId, InputGate>, worker_pool_config: WorkerPoolConfiguration,
+        input_gates: HashMap<ComponentId, InputGate>, input_buffer_events: HashMap<ComponentId, usize>,
+        worker_pool_config: WorkerPoolConfiguration,
     ) -> Self {
         Self {
             name,
@@ -136,6 +164,7 @@ impl BuiltTopology {
             interconnect_capacity,
             input_capacities,
             input_gates,
+            input_buffer_events,
             worker_pool_config,
         }
     }
@@ -143,9 +172,9 @@ impl BuiltTopology {
     fn resolve_worker_pool_handle(&self) -> Result<Handle, GenericError> {
         match &self.worker_pool_config {
             WorkerPoolConfiguration::Ambient => Ok(Handle::current()),
-            WorkerPoolConfiguration::Dedicated => {
+            WorkerPoolConfiguration::Dedicated { threads } => {
                 let thread_pool = tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(8)
+                    .worker_threads(threads.get())
                     .enable_all()
                     .build()
                     .error_context("Failed to build asynchronous thread pool runtime.")?;
@@ -196,6 +225,7 @@ impl BuiltTopology {
             self.interconnect_capacity,
             self.input_capacities,
             self.input_gates,
+            self.input_buffer_events,
             &self.topology_id,
             &self.graph,
             &self.admission_points,
@@ -277,22 +307,22 @@ impl BuiltTopology {
             topology_sup.add_worker(component_sup);
         }
 
-        // Build our transforms.
+        // Build our transforms, each with one input consumer per lane.
         for (component_context, (component, component_registry)) in self.transforms {
-            let consumer = interconnects.take_events_consumer(&component_context)?;
+            let consumers = interconnects.take_events_lane_consumers(&component_context)?;
             let dispatcher = interconnects.take_events_dispatcher(&component_context)?;
             let health_handle = build_health_handle(health_registry, &component_context)?;
 
             let mut component_sup =
                 build_component_supervisor(&component_context, shutdown_timeout, || TransformRunnable {
                     component,
-                    context: TransformContext::new(
+                    context: TransformContext::with_lane_inputs(
                         &topology_context,
                         &component_context,
                         component_registry,
                         health_handle,
                         dispatcher,
-                        consumer,
+                        consumers,
                     ),
                 })?;
             add_heartbeat_drivers(
@@ -364,31 +394,60 @@ impl BuiltTopology {
     }
 }
 
+/// The input channels of a component that consumes events: one per input lane, in lane order.
+struct EventsInput {
+    senders: Vec<mpsc::Sender<EventsBuffer>>,
+    consumers: Vec<EventsConsumer>,
+}
+
+impl EventsInput {
+    /// Creates `lanes` channels, each of `capacity` buffers, whose consumers record what they receive as received by
+    /// the component `component_context`, and check, in a debug build, that each buffer has storage for at most
+    /// `buffer_events` events, if the component declares that its buffers hold fewer than an events buffer.
+    fn new(
+        component_context: &ComponentContext, capacity: NonZeroUsize, lanes: NonZeroU16, buffer_events: Option<usize>,
+    ) -> Self {
+        let (senders, consumers) = (0..lanes.get())
+            .map(|_| {
+                let (sender, consumer) = build_consumer_pair(component_context.clone(), capacity);
+                match buffer_events {
+                    Some(events) => (sender, consumer.with_max_allocated_items(events)),
+                    None => (sender, consumer),
+                }
+            })
+            .unzip();
+        Self { senders, consumers }
+    }
+}
+
 struct ComponentInterconnects {
     interconnect_capacity: NonZeroUsize,
     input_capacities: HashMap<ComponentId, NonZeroUsize>,
     input_gates: HashMap<ComponentId, InputGate>,
+    input_buffer_events: HashMap<ComponentId, usize>,
     topology_id: SubsystemIdentifier,
     events_dispatchers: HashMap<ComponentContext, EventsDispatcher>,
     payloads_dispatchers: HashMap<ComponentContext, PayloadsDispatcher>,
-    events_consumers: HashMap<ComponentContext, (mpsc::Sender<EventsBuffer>, EventsConsumer)>,
+    events_consumers: HashMap<ComponentContext, EventsInput>,
     payloads_consumers: HashMap<ComponentContext, (mpsc::Sender<PayloadsBuffer>, PayloadsConsumer)>,
     heartbeat_drivers: HashMap<ComponentContext, Vec<Arc<AdmissionPoint>>>,
 }
 
 impl ComponentInterconnects {
     /// Creates the interconnects of `graph`: each component's input holds `interconnect_capacity` items, or the
-    /// component's own capacity in `input_capacities`, and the senders to a component with a gate in `input_gates`
-    /// skip it while the gate is closed.
+    /// component's own capacity in `input_capacities`, in each of its input lanes, and the senders to a component with
+    /// a gate in `input_gates` skip it while the gate is closed. A component in `input_buffer_events` declares that
+    /// each buffer it receives has storage for at most that many events, which its consumers check in a debug build.
     fn from_graph(
         interconnect_capacity: NonZeroUsize, input_capacities: HashMap<ComponentId, NonZeroUsize>,
-        input_gates: HashMap<ComponentId, InputGate>, topology_id: &SubsystemIdentifier, graph: &Graph,
-        admission_points: &[AdmissionPointBinding],
+        input_gates: HashMap<ComponentId, InputGate>, input_buffer_events: HashMap<ComponentId, usize>,
+        topology_id: &SubsystemIdentifier, graph: &Graph, admission_points: &[AdmissionPointBinding],
     ) -> Result<Self, GenericError> {
         let mut interconnects = Self {
             interconnect_capacity,
             input_capacities,
             input_gates,
+            input_buffer_events,
             topology_id: topology_id.clone(),
             events_dispatchers: HashMap::new(),
             payloads_dispatchers: HashMap::new(),
@@ -463,10 +522,27 @@ impl ComponentInterconnects {
         })
     }
 
+    /// Takes the one input consumer of a component that consumes events and has one lane, such as a destination.
     fn take_events_consumer(&mut self, component_context: &ComponentContext) -> Result<EventsConsumer, GenericError> {
+        let mut consumers = self.take_events_lane_consumers(component_context)?;
+        match consumers.len() {
+            1 => Ok(consumers.remove(0)),
+            lanes => Err(generic_error!(
+                "{} component '{}' has {} input lanes, but only transforms can have more than one.",
+                component_context.component_type().as_str(),
+                component_context.component_id(),
+                lanes
+            )),
+        }
+    }
+
+    /// Takes the input consumers of a component that consumes events, one per input lane, in lane order.
+    fn take_events_lane_consumers(
+        &mut self, component_context: &ComponentContext,
+    ) -> Result<Vec<EventsConsumer>, GenericError> {
         self.events_consumers
             .remove(component_context)
-            .map(|(_, consumer)| consumer)
+            .map(|input| input.consumers)
             .ok_or_else(|| {
                 generic_error!(
                     "No events consumer found for {} component '{}'",
@@ -500,7 +576,7 @@ impl ComponentInterconnects {
         for (upstream_id, output_map) in outbound_edges {
             match upstream_id.component_type() {
                 ComponentType::Source | ComponentType::Decoder | ComponentType::Transform => {
-                    self.generate_event_interconnect(upstream_id, output_map)?;
+                    self.generate_event_interconnect(graph, upstream_id, output_map)?;
                 }
                 ComponentType::Relay | ComponentType::Encoder => {
                     self.generate_payload_interconnect(upstream_id, output_map)?
@@ -515,34 +591,50 @@ impl ComponentInterconnects {
     }
 
     fn generate_event_interconnect(
-        &mut self, upstream_id: TypedComponentId, output_map: HashMap<OutputName, Vec<TypedComponentId>>,
+        &mut self, graph: &Graph, upstream_id: TypedComponentId, output_map: HashMap<OutputName, Vec<OutboundEdge>>,
     ) -> Result<(), GenericError> {
-        for (upstream_output_id, downstream_ids) in output_map {
+        for (upstream_output_id, downstream) in output_map {
             let mut senders = Vec::new();
-            for downstream_id in downstream_ids {
-                debug!(upstream_id = %upstream_id.component_id(), %upstream_output_id, downstream_id = %downstream_id.component_id(), "Adding dispatcher output.");
+            for (downstream_id, routing) in downstream {
+                debug!(
+                    upstream_id = %upstream_id.component_id(),
+                    %upstream_output_id,
+                    downstream_id = %downstream_id.component_id(),
+                    ?routing,
+                    "Adding dispatcher output."
+                );
                 let component_id = downstream_id.component_id().clone();
                 let gate = self.input_gates.get(&component_id).cloned();
-                let (sender, received) = self.get_or_create_events_sender(downstream_id);
-                senders.push((component_id, sender, gate.map(|gate| (gate, received))));
+                let lanes = graph.input_lanes(&component_id);
+                let (lane_senders, received) = self.get_or_create_events_senders(downstream_id, lanes);
+                // An edge into a component with one lane records no routing: it leads to that lane.
+                let edge = routing.unwrap_or(LaneEdge::Fixed(0));
+                senders.push((component_id, lane_senders, edge, gate.map(|gate| (gate, received))));
             }
 
             let dispatcher = self.get_or_create_events_dispatcher(upstream_id.clone());
             dispatcher.add_output(upstream_output_id.clone())?;
 
             // Each sender records the component it feeds, so that an admission point on the output can send its
-            // heartbeats to some of them only. A sender to a component with an input gate skips it while the gate is
+            // heartbeats to some of them only, and one sender per lane of that component, which the output picks
+            // among by the edge's routing. A sender to a component with an input gate skips it while the gate is
             // closed, and counts what it skipped in the counters of that component's consumer.
-            for (component_id, sender, gate) in senders {
+            for (component_id, lane_senders, edge, gate) in senders {
                 match gate {
-                    Some((gate, received)) => dispatcher.attach_gated_sender_to_output(
+                    Some((gate, received)) => dispatcher.attach_gated_lanes_to_output(
                         &upstream_output_id,
                         component_id,
-                        sender,
+                        lane_senders,
+                        edge,
                         gate,
                         received,
                     )?,
-                    None => dispatcher.attach_component_sender_to_output(&upstream_output_id, component_id, sender)?,
+                    None => dispatcher.attach_component_lanes_to_output(
+                        &upstream_output_id,
+                        component_id,
+                        lane_senders,
+                        edge,
+                    )?,
                 }
             }
         }
@@ -551,11 +643,12 @@ impl ComponentInterconnects {
     }
 
     fn generate_payload_interconnect(
-        &mut self, upstream_id: TypedComponentId, output_map: HashMap<OutputName, Vec<TypedComponentId>>,
+        &mut self, upstream_id: TypedComponentId, output_map: HashMap<OutputName, Vec<OutboundEdge>>,
     ) -> Result<(), GenericError> {
-        for (upstream_output_id, downstream_ids) in output_map {
+        for (upstream_output_id, downstream) in output_map {
             let mut senders = Vec::new();
-            for downstream_id in downstream_ids {
+            // Components that consume payloads have one lane.
+            for (downstream_id, _) in downstream {
                 debug!(upstream_id = %upstream_id.component_id(), %upstream_output_id, downstream_id = %downstream_id.component_id(), "Adding dispatcher output.");
                 let sender = self.get_or_create_payloads_sender(downstream_id);
                 senders.push(sender);
@@ -595,24 +688,26 @@ impl ComponentInterconnects {
             .unwrap_or(self.interconnect_capacity)
     }
 
-    /// Returns a sender to the input of a component that consumes events, and the counters its consumer records what it
-    /// receives in.
-    fn get_or_create_events_sender(
-        &mut self, component_id: TypedComponentId,
-    ) -> (mpsc::Sender<EventsBuffer>, ReceivedMetrics) {
+    /// Returns a sender to each of the `lanes` input lanes of a component that consumes events, in lane order, and the
+    /// counters its consumers record what they receive in.
+    fn get_or_create_events_senders(
+        &mut self, component_id: TypedComponentId, lanes: NonZeroU16,
+    ) -> (Vec<mpsc::Sender<EventsBuffer>>, ReceivedMetrics) {
         let (component_id, component_type) = component_id.into_parts();
         let interconnect_capacity = self.input_capacity(&component_id);
+        let buffer_events = self.input_buffer_events.get(&component_id).copied();
         let component_context = ComponentContext::new(&self.topology_id, component_id, component_type);
 
-        let (sender, consumer) = match component_type {
+        let input = match component_type {
             ComponentType::Transform | ComponentType::Destination | ComponentType::Encoder => self
                 .events_consumers
                 .entry(component_context.clone())
-                .or_insert_with(|| build_consumer_pair(component_context, interconnect_capacity)),
+                .or_insert_with(|| EventsInput::new(&component_context, interconnect_capacity, lanes, buffer_events)),
             _ => panic!("Only transforms, destinations, and encoders can consume events."),
         };
 
-        (sender.clone(), consumer.received_metrics())
+        // Every lane's consumer records into the component's one set of counters.
+        (input.senders.clone(), input.consumers[0].received_metrics())
     }
 
     fn get_or_create_payloads_dispatcher(&mut self, component_id: TypedComponentId) -> &mut PayloadsDispatcher {
@@ -729,7 +824,7 @@ mod tests {
     use futures::FutureExt as _;
 
     use super::*;
-    use crate::data_model::event::EventType;
+    use crate::data_model::event::{metric::Metric, Event, EventType};
     use crate::data_model::payload::PayloadType;
     use crate::execution::{
         AdmissionMode, AdmissionPointId, AdmissionRegistry, AdmissionSchedule, GenerationId, GenerationToken,
@@ -759,6 +854,7 @@ mod tests {
         let interconnect_capacity = NonZeroUsize::new(10).unwrap();
         let _ = ComponentInterconnects::from_graph(
             interconnect_capacity,
+            HashMap::new(),
             HashMap::new(),
             HashMap::new(),
             &topology_id,
@@ -796,6 +892,7 @@ mod tests {
             NonZeroUsize::new(4).unwrap(),
             HashMap::new(),
             HashMap::new(),
+            HashMap::new(),
             &SubsystemIdentifier::from_segments(["test"]),
             &graph,
             &[binding],
@@ -825,6 +922,7 @@ mod tests {
             NonZeroUsize::new(4).unwrap(),
             HashMap::new(),
             HashMap::from([(ComponentId::try_from("tap").unwrap(), gate.clone())]),
+            HashMap::new(),
             &SubsystemIdentifier::from_segments(["test"]),
             &graph,
             &[],
@@ -919,6 +1017,7 @@ mod tests {
             NonZeroUsize::new(128).unwrap(),
             HashMap::new(),
             HashMap::new(),
+            HashMap::new(),
             worker_pool_config,
         )
     }
@@ -985,7 +1084,9 @@ mod tests {
             .expect("should build ambient runtime");
 
         let thread_name = ambient.block_on(async {
-            let built = empty_built_topology(WorkerPoolConfiguration::Dedicated);
+            let built = empty_built_topology(WorkerPoolConfiguration::Dedicated {
+                threads: DEFAULT_WORKER_POOL_THREADS,
+            });
             let resolved = built
                 .resolve_worker_pool_handle()
                 .expect("dedicated handle should resolve");
@@ -1000,6 +1101,159 @@ mod tests {
         assert!(
             thread_name.contains("worker"),
             "dedicated pool should run on its own Tokio worker thread, got {thread_name}"
+        );
+    }
+
+    /// Returns a buffer of `events` metrics.
+    fn buffer_of(events: usize) -> EventsBuffer {
+        let mut buffer = EventsBuffer::with_capacity(events);
+        for value in 0..events {
+            assert!(buffer
+                .try_push(Event::Metric(Metric::gauge("m", value as f64)))
+                .is_none());
+        }
+        buffer
+    }
+
+    /// Returns the length of every buffer `consumer` holds now.
+    fn queued_lengths(consumer: &mut EventsConsumer) -> Vec<usize> {
+        let mut lengths = Vec::new();
+        while let Some(Some(buffer)) = consumer.next().now_or_never() {
+            lengths.push(buffer.len());
+        }
+        lengths
+    }
+
+    #[tokio::test]
+    async fn interconnects_give_each_lane_of_a_transform_a_channel_of_the_transforms_input_capacity() {
+        // spread -> laned (3 lanes, input capacity 2, spread), fixed -> laned (lane 1), laned -> out.
+        let topology_id = SubsystemIdentifier::from_segments(["test"]);
+        let mut graph = Graph::default();
+        graph
+            .with_source("spread", EventType::Metric)
+            .with_source("fixed", EventType::Metric)
+            .with_laned_transform("laned", 3)
+            .with_destination("out", EventType::Metric)
+            .with_lane_edge("spread", "laned", LaneEdge::Spread)
+            .with_lane_edge("fixed", "laned", LaneEdge::Fixed(1))
+            .with_edge("laned", "out");
+        let laned_id = ComponentId::try_from("laned").unwrap();
+        let mut interconnects = ComponentInterconnects::from_graph(
+            NonZeroUsize::new(8).unwrap(),
+            HashMap::from([(laned_id.clone(), NonZeroUsize::new(2).unwrap())]),
+            HashMap::new(),
+            HashMap::new(),
+            &topology_id,
+            &graph,
+            &[],
+        )
+        .expect("should build interconnects");
+
+        let laned = ComponentContext::transform(&topology_id, laned_id);
+        let mut lanes = interconnects
+            .take_events_lane_consumers(&laned)
+            .expect("the transform has inputs");
+        assert_eq!(lanes.len(), 3);
+        let source = |id: &str| ComponentContext::source(&topology_id, ComponentId::try_from(id).unwrap());
+        let spread = interconnects.take_events_dispatcher(&source("spread")).unwrap();
+        let fixed = interconnects.take_events_dispatcher(&source("fixed")).unwrap();
+
+        // Each lane holds two buffers: the spread source sends six, one lane after another, and then every lane is
+        // full, so the seventh waits, and so does a buffer for lane 1.
+        for events in 1..=6 {
+            spread
+                .dispatch(buffer_of(events))
+                .now_or_never()
+                .expect("a lane has room")
+                .unwrap();
+        }
+        assert!(
+            spread.dispatch(buffer_of(7)).now_or_never().is_none(),
+            "every lane is full"
+        );
+        assert!(fixed.dispatch(buffer_of(8)).now_or_never().is_none(), "lane 1 is full");
+        assert_eq!(
+            lanes.iter_mut().map(queued_lengths).collect::<Vec<_>>(),
+            vec![vec![1, 4], vec![2, 5], vec![3, 6]]
+        );
+        fixed.dispatch(buffer_of(8)).await.unwrap();
+        assert_eq!(
+            lanes.iter_mut().map(queued_lengths).collect::<Vec<_>>(),
+            vec![vec![], vec![8], vec![]]
+        );
+
+        // A destination has one lane.
+        let out = interconnects
+            .take_events_consumer(&destination_context("out"))
+            .expect("the destination has one input");
+        drop(out);
+    }
+
+    #[test]
+    fn a_worker_pool_sized_for_the_primary_runtime_has_the_default_threads_or_one_per_primary_worker() {
+        for (workers, threads) in [(0, 8), (1, 8), (4, 8), (8, 8), (9, 9), (16, 16), (64, 64)] {
+            assert_eq!(worker_pool_threads(workers).get(), threads, "{} workers", workers);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_tap_fed_by_outputs_fixed_to_lanes_is_gated_on_every_one_of_them() {
+        // Two outputs, each fixed to its lane of `laned` (as a source's lane outputs are), both feed a gated `tap`.
+        let topology_id = SubsystemIdentifier::from_segments(["test"]);
+        let mut graph = Graph::default();
+        graph
+            .with_source("lane_0", EventType::Metric)
+            .with_source("lane_1", EventType::Metric)
+            .with_laned_transform("laned", 2)
+            .with_destination("tap", EventType::Metric)
+            .with_lane_edge("lane_0", "laned", LaneEdge::Fixed(0))
+            .with_lane_edge("lane_1", "laned", LaneEdge::Fixed(1))
+            .with_edge("lane_0", "tap")
+            .with_edge("lane_1", "tap");
+        let gate = InputGate::closed();
+        let mut interconnects = ComponentInterconnects::from_graph(
+            NonZeroUsize::new(4).unwrap(),
+            HashMap::new(),
+            HashMap::from([(ComponentId::try_from("tap").unwrap(), gate.clone())]),
+            HashMap::new(),
+            &topology_id,
+            &graph,
+            &[],
+        )
+        .expect("should build interconnects");
+        let laned = ComponentContext::transform(&topology_id, ComponentId::try_from("laned").unwrap());
+        let mut lanes = interconnects.take_events_lane_consumers(&laned).unwrap();
+        let mut tap = interconnects.take_events_consumer(&destination_context("tap")).unwrap();
+        let source = |id: &str| ComponentContext::source(&topology_id, ComponentId::try_from(id).unwrap());
+        let outputs = [
+            interconnects.take_events_dispatcher(&source("lane_0")).unwrap(),
+            interconnects.take_events_dispatcher(&source("lane_1")).unwrap(),
+        ];
+
+        for (events, output) in (1..).zip(&outputs) {
+            output.dispatch(buffer_of(events)).await.unwrap();
+        }
+        assert_eq!(
+            lanes.iter_mut().map(queued_lengths).collect::<Vec<_>>(),
+            vec![vec![1], vec![2]]
+        );
+        assert!(
+            queued_lengths(&mut tap).is_empty(),
+            "the closed tap is skipped on both outputs"
+        );
+
+        gate.open();
+        for (events, output) in (3..).zip(&outputs) {
+            output.dispatch(buffer_of(events)).await.unwrap();
+        }
+        assert_eq!(
+            lanes.iter_mut().map(queued_lengths).collect::<Vec<_>>(),
+            vec![vec![3], vec![4]]
+        );
+        assert_eq!(
+            queued_lengths(&mut tap),
+            vec![3, 4],
+            "the open tap receives from both outputs"
         );
     }
 }

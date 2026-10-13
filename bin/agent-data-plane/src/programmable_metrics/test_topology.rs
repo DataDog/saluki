@@ -72,7 +72,7 @@ use saluki_core::{
 use saluki_error::{generic_error, GenericError};
 use saluki_metric_kernels::aggregate::{AggregateCore, AggregateParams, AggregateTelemetry};
 use saluki_metric_plan::{
-    compile::{EntryKey, SlotKind, Step},
+    compile::{EntryKey, Step},
     equivalence::OutputPoints,
     ir::OutputId,
     operators::OperatorRegistry,
@@ -87,7 +87,11 @@ use tokio::{
 
 use super::{
     installer::{BootTopology, InstallerWorker, PlanStatus, ProgrammableMetrics},
-    test_support::{environment_provider, init_test_tls, programmable_metrics_with_operators},
+    lanes::LaneCounts,
+    test_support::{
+        environment_provider, init_test_tls, programmable_metrics_with_operators,
+        programmable_metrics_with_operators_on,
+    },
     topology::{aggregation_slot, HostDoubles},
 };
 use crate::{
@@ -136,11 +140,11 @@ pub(super) enum Aggregation {
     Clocked,
 
     /// A transform that reads nothing until its gate, `dsd_agg`, [opens](TestTopology::open_gate), so that what is sent
-    /// to aggregation backs up, and then sends what it reads on unchanged.
+    /// to aggregation backs up, and then sends what it reads on unchanged. On one state lane only.
     Gated,
 
     /// A scripted transform that drops what it reads and sends each batch the test feeds it on `dsd_agg`, as
-    /// aggregation's output.
+    /// aggregation's output. On one state lane only.
     Scripted,
 }
 
@@ -262,6 +266,10 @@ pub(super) struct Options {
     /// The runtime the topology runs compute-heavy subtasks of components on, such as the encoders' request builders,
     /// as ADP's global thread pool; the test's runtime by default.
     pub worker_pool: Option<Handle>,
+
+    /// The lanes the plan-driven path runs on, in place of the ones its configuration asks for, such as fewer producer
+    /// lanes than the source has decoders, which no configuration key sets; the configuration's by default.
+    pub lanes: Option<LaneCounts>,
 }
 
 impl Options {
@@ -286,28 +294,51 @@ impl Options {
             recipients: Recipients::Discarding,
             real_trace_sampler: false,
             worker_pool: None,
+            lanes: None,
         }
     }
 }
 
+/// A batch a test feeds a scripted component, with the output it goes on if not the one of its events' type: one of the
+/// DogStatsD source's metrics lanes, `metrics_<d>`.
+type FedBatch = (Option<String>, Vec<Event>);
+
 /// The input a test feeds into one component output, and how many of the batches fed the component has sent.
 #[derive(Clone)]
 struct Feed {
-    batches: mpsc::UnboundedSender<Vec<Event>>,
+    batches: mpsc::UnboundedSender<FedBatch>,
     sent: Arc<AtomicUsize>,
+    /// The output the feed's batches go on, if not the one of their events' type.
+    output: Option<String>,
 }
 
 impl Feed {
     /// Returns a feed, with the receiving side of its batches and its count of sends for the scripted component that
     /// sends them.
-    fn new() -> (Self, mpsc::UnboundedReceiver<Vec<Event>>, Arc<AtomicUsize>) {
+    fn new() -> (Self, mpsc::UnboundedReceiver<FedBatch>, Arc<AtomicUsize>) {
         let (batches, receiver) = mpsc::unbounded_channel();
         let sent = Arc::new(AtomicUsize::new(0));
         let feed = Self {
             batches,
             sent: Arc::clone(&sent),
+            output: None,
         };
         (feed, receiver, sent)
+    }
+
+    /// Returns the feed of the same component that sends its batches on `output`.
+    fn on(&self, output: &str) -> Self {
+        Self {
+            output: Some(output.to_string()),
+            ..self.clone()
+        }
+    }
+
+    /// Feeds `events` as one batch.
+    fn send(&self, events: Vec<Event>) {
+        self.batches
+            .send((self.output.clone(), events))
+            .expect("the scripted component runs until its feed closes");
     }
 }
 
@@ -353,6 +384,7 @@ impl TestTopology {
             recipients,
             real_trace_sampler,
             worker_pool,
+            lanes,
         } = options;
         assert!(
             recipients == Recipients::Discarding || encoders == Encoders::Real,
@@ -381,8 +413,9 @@ impl TestTopology {
         // How the isolation slot of aggregation stamps its time-driven output, for a scripted stand-in.
         let mut aggregation_stamp = None;
         // The snapshot bridge, which `run.rs` runs beside the installer, answers the context dump API from the region
-        // running aggregation.
+        // running aggregation; on lanes, the lanes' telemetry is published beside them.
         let mut bridge = None;
+        let mut lane_telemetry = None;
         let (mut blueprint, control_surfaces, installer) = match path {
             MetricsPath::Legacy => {
                 let client = (!config.control.standalone_mode)
@@ -394,11 +427,26 @@ impl TestTopology {
             }
             MetricsPath::Plan => {
                 let boot = |config: &SalukiConfiguration| {
-                    programmable_metrics_with_operators(config, system.live(|config| config), &registry, operators)
-                        .expect("a metrics pipeline is required")
+                    let live = system.live(|config| config);
+                    match lanes {
+                        Some(lanes) => {
+                            programmable_metrics_with_operators_on(config, live, &registry, operators, lanes)
+                        }
+                        None => programmable_metrics_with_operators(config, live, &registry, operators),
+                    }
+                    .expect("a metrics pipeline is required")
                 };
                 let mut metrics = boot(&config);
                 isolated_aggregation = aggregation_slot(&metrics.boot_topology().frame).is_some();
+                // A stand-in is one transform, with one input and one output: it cannot take routed buffers on several
+                // state lanes' channels, nor stamp several lanes' output points.
+                assert!(
+                    !isolated_aggregation
+                        || matches!(aggregation, Aggregation::Native | Aggregation::Clocked)
+                        || metrics.boot_topology().lanes.lanes.state == 1,
+                    "{:?} aggregation stands in for one state lane: run it with `lanes.state: 1`",
+                    aggregation
+                );
                 if isolated_aggregation && aggregation == Aggregation::Clocked {
                     // The slot flushes only when its input ends; only the boot program has this flush interval.
                     let mut clocked = config.clone();
@@ -446,6 +494,7 @@ impl TestTopology {
                     before_install(&mut metrics);
                 }
                 bridge = metrics.snapshot_bridge();
+                lane_telemetry = metrics.lane_telemetry();
                 (blueprint, control_surfaces, Some(metrics.into_installer()))
             }
         };
@@ -468,11 +517,24 @@ impl TestTopology {
                 ComponentType::Source => {
                     let (feed, batches, sent) = Feed::new();
                     let source = ScriptedSourceBuilder::new(component, batches, sent);
-                    // One feed for every output: the source sends each batch on the output of its events' type.
-                    for name in source.outputs.iter().filter_map(OutputDefinition::output_name) {
-                        feeds.insert(format!("{}.{}", id, name), feed.clone());
+                    // One feed for every output: the source sends each batch on the output of its events' type, and
+                    // a feed of one of the DogStatsD source's metrics lanes on that lane's output.
+                    let names = source
+                        .outputs
+                        .iter()
+                        .filter_map(OutputDefinition::output_name)
+                        .map(str::to_string)
+                        .collect::<Vec<_>>();
+                    for name in &names {
+                        let lane = name.starts_with("metrics_").then(|| feed.on(name));
+                        feeds.insert(format!("{}.{}", id, name), lane.unwrap_or_else(|| feed.clone()));
                     }
-                    feeds.insert(format!("{}.metrics", id), feed);
+                    // `metrics` feeds the first metrics lane of a source whose metrics split into lanes.
+                    let metrics = match names.iter().any(|name| name == "metrics") {
+                        true => feed,
+                        false => feed.on("metrics_0"),
+                    };
+                    feeds.insert(format!("{}.metrics", id), metrics);
                     blueprint
                         .replace_source(&id, source)
                         .expect("a scripted source declares what it replaces");
@@ -614,6 +676,9 @@ impl TestTopology {
         if let Some(bridge) = bridge {
             supervisor.add_worker(bridge);
         }
+        if let Some(lane_telemetry) = lane_telemetry {
+            supervisor.add_worker(lane_telemetry);
+        }
         let installer = match installer {
             Some(installer) if supervise_installer => {
                 supervisor.add_worker(installer);
@@ -696,10 +761,7 @@ impl TestTopology {
             .feeds
             .get(feed)
             .unwrap_or_else(|| panic!("the topology has no feed `{}`; it has {:?}", feed, self.feeds.keys()));
-        sender
-            .batches
-            .send(metrics.into_iter().map(Event::Metric).collect())
-            .expect("the scripted component runs until its feed closes");
+        sender.send(metrics.into_iter().map(Event::Metric).collect());
     }
 
     /// Returns `true` if the topology has the feed `feed`.
@@ -718,10 +780,7 @@ impl TestTopology {
             .feeds
             .get(feed)
             .unwrap_or_else(|| panic!("the topology has no feed `{}`; it has {:?}", feed, self.feeds.keys()));
-        sender
-            .batches
-            .send(events)
-            .expect("the scripted component runs until its feed closes");
+        sender.send(events);
     }
 
     /// Returns how many of the batches fed on `feed` its scripted component has sent so far. A send completes once
@@ -920,7 +979,7 @@ fn first_output(component: &ComponentSnapshot) -> OutputName {
 /// [`FLUSHED_AT`].
 fn time_driven_stamp(boot: &BootTopology) -> BatchHeader {
     let slot = aggregation_slot(&boot.frame).expect("aggregation runs in an isolation slot");
-    let SlotKind::Isolation { output_point, .. } = &slot.kind else {
+    let Some(output_point) = slot.output_point(0) else {
         unreachable!("aggregation's slot is an isolation slot");
     };
     let entry = boot.programs[slot.id.get()]
@@ -935,7 +994,7 @@ fn time_driven_stamp(boot: &BootTopology) -> BatchHeader {
         .expect("aggregation's time-driven output leads to a region");
     BatchHeader {
         admitted_at: Some(AdmissionTime::from_unix_secs(FLUSHED_AT)),
-        admission_point: Some(*output_point),
+        admission_point: Some(output_point),
         epoch: 0,
         generation: Some(boot.generation.clone()),
         entry: Some(entry),
@@ -956,12 +1015,12 @@ fn buffer_of(events: Vec<Event>) -> EventsBuffer {
 /// the source it replaces.
 struct ScriptedSourceBuilder {
     outputs: Vec<OutputDefinition<EventType>>,
-    batches: StdMutex<Option<mpsc::UnboundedReceiver<Vec<Event>>>>,
+    batches: StdMutex<Option<mpsc::UnboundedReceiver<FedBatch>>>,
     sent: Arc<AtomicUsize>,
 }
 
 impl ScriptedSourceBuilder {
-    fn new(replaced: &ComponentSnapshot, batches: mpsc::UnboundedReceiver<Vec<Event>>, sent: Arc<AtomicUsize>) -> Self {
+    fn new(replaced: &ComponentSnapshot, batches: mpsc::UnboundedReceiver<FedBatch>, sent: Arc<AtomicUsize>) -> Self {
         Self {
             outputs: event_outputs(replaced),
             batches: StdMutex::new(Some(batches)),
@@ -995,7 +1054,7 @@ impl MemoryBounds for ScriptedSourceBuilder {
 }
 
 struct ScriptedSource {
-    batches: mpsc::UnboundedReceiver<Vec<Event>>,
+    batches: mpsc::UnboundedReceiver<FedBatch>,
     sent: Arc<AtomicUsize>,
 }
 
@@ -1012,14 +1071,14 @@ impl Source for ScriptedSource {
             tokio::select! {
                 _ = health.live() => {}
                 batch = self.batches.recv() => match batch {
-                    Some(events) => {
-                        let output = match events.first() {
-                            Some(Event::EventD(_)) => "events",
-                            Some(Event::ServiceCheck(_)) => "service_checks",
-                            Some(Event::Log(_)) => "logs",
-                            Some(Event::Trace(_)) => "traces",
-                            _ => "metrics",
-                        };
+                    Some((output, events)) => {
+                        let output = output.unwrap_or_else(|| match events.first() {
+                            Some(Event::EventD(_)) => "events".to_string(),
+                            Some(Event::ServiceCheck(_)) => "service_checks".to_string(),
+                            Some(Event::Log(_)) => "logs".to_string(),
+                            Some(Event::Trace(_)) => "traces".to_string(),
+                            _ => "metrics".to_string(),
+                        });
                         context.dispatcher().dispatch_named(output, buffer_of(events)).await?;
                         self.sent.fetch_add(1, Ordering::SeqCst);
                     }
@@ -1043,14 +1102,14 @@ struct ScriptedTransformBuilder {
     input: EventType,
     outputs: Vec<OutputDefinition<EventType>>,
     output: OutputName,
-    batches: StdMutex<Option<mpsc::UnboundedReceiver<Vec<Event>>>>,
+    batches: StdMutex<Option<mpsc::UnboundedReceiver<FedBatch>>>,
     sent: Arc<AtomicUsize>,
     stamp: Option<BatchHeader>,
 }
 
 impl ScriptedTransformBuilder {
     fn new(
-        replaced: &ComponentSnapshot, output: OutputName, batches: mpsc::UnboundedReceiver<Vec<Event>>,
+        replaced: &ComponentSnapshot, output: OutputName, batches: mpsc::UnboundedReceiver<FedBatch>,
         sent: Arc<AtomicUsize>,
     ) -> Self {
         Self {
@@ -1102,7 +1161,7 @@ impl MemoryBounds for ScriptedTransformBuilder {
 
 struct ScriptedTransform {
     output: OutputName,
-    batches: mpsc::UnboundedReceiver<Vec<Event>>,
+    batches: mpsc::UnboundedReceiver<FedBatch>,
     sent: Arc<AtomicUsize>,
     stamp: Option<BatchHeader>,
 }
@@ -1118,7 +1177,7 @@ impl Transform for ScriptedTransform {
                 _ = health.live() => {}
                 events = context.events().next(), if input_open => input_open = events.is_some(),
                 batch = self.batches.recv(), if feed_open => match batch {
-                    Some(events) => {
+                    Some((_, events)) => {
                         let mut buffer = buffer_of(events);
                         if let Some(stamp) = &self.stamp {
                             buffer.set_header(stamp.clone());

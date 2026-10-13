@@ -35,12 +35,22 @@
 //!   fixed component, a slot, or an output's component. Exits the default program does not use are connected and stay
 //!   idle, so that later generations can use them.
 //!
-//! The DogStatsD taps on `dsd_in.metrics` (`dsd_stats_out`, `dsd_debug_log_out`) and everything outside the metrics
-//! path keep their native construction, in `run.rs`.
+//! - **Lanes.** On lanes ([`LaneCounts::lanes_on`](super::lanes::LaneCounts::lanes_on)), every slot runs the lanes the
+//!   frame gives it ([`Slot::lanes`]): one task per lane inside the slot's one component, each with its own driver,
+//!   kernels (accounted under `<region>.lane_<i>`), input of its share of the slot's capacity, and statistics of its
+//!   work, which the `plan_lane_*` series publish. The DogStatsD source's metrics split into one output per producer
+//!   lane, `dsd_in.metrics_<d>` (`metrics` with one), each feeding its lane of `dsd_pre_aggregation`; the lane, not the
+//!   source's dispatcher, stamps its own admission point, every lane's point sharing one source clock. Every edge into
+//!   a slot on several lanes routes as the frame says: by key into aggregation's state lanes, by the sender's lane
+//!   from the producer lanes, and spread over the lanes from aggregation and the other sources. Without lanes, the
+//!   metrics path is laid out as before lanes existed.
+//!
+//! The DogStatsD taps on the source's metrics outputs (`dsd_stats_out`, `dsd_debug_log_out`) and everything outside the
+//! metrics path keep their native construction, in `run.rs`.
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
-    num::NonZeroUsize,
+    num::{NonZeroU16, NonZeroUsize},
     sync::Arc,
     time::Duration,
 };
@@ -54,20 +64,33 @@ use saluki_components::{
         delivery::{BootPublication, DeliveryHostConfiguration},
         ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration,
     },
+    sources::dogstatsd_metric_lane_output,
     transforms::{aggregate_context_snapshot_channel, AggregateContextSnapshotHandle},
 };
 use saluki_core::{
-    execution::{AdmissionPointConfig, AdmissionPointId, Budget, RegionHostBuilder, WorkKind, MIN_HEARTBEAT_PERIOD},
-    topology::{ComponentId, TopologyBlueprint},
+    accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder},
+    execution::{
+        AdmissionClock, AdmissionPointConfig, AdmissionPointId, Budget, LaneContext, RegionHostBuilder, SourceClock,
+        SystemWallClock, WallClock, WorkKind, MIN_HEARTBEAT_PERIOD,
+    },
+    support::SubsystemIdentifier,
+    topology::{ComponentId, LaneEdge, TopologyBlueprint},
 };
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_metric_plan::{
-    compile::{FixedComponent, Frame, FrameSource, FrameTarget, RegionProgram, Slot, SlotKind},
+    compile::{
+        AdmissionPointInfo, ExitRouting, FixedComponent, Frame, FrameSource, FrameTarget, PointRouting, RegionProgram,
+        Slot, SlotId, SlotKind,
+    },
     ir::{NativeComponentId, NodeId, Plan, Provenance, Resources},
     limits,
-    operators::names,
-    runtime::{build_kernels, MetricRegionDriver, PanicBudget, PrepareRegion, RegionBounds, RegionConfig},
+    operators::{names, ConfiguredOperator, LaneBinding, LaneCell, OperatorRegistry},
+    runtime::{
+        build_kernels, kernel_accounting_in, state::lanes::SlotLanes, MetricRegionDriver, PanicBudget, PrepareRegion,
+        RegionBounds, RegionConfig, RoutingTelemetry,
+    },
 };
+use saluki_metrics::{Counter, Gauge};
 
 use super::{
     installer::{BootTopology, HostWiring, ProgrammableMetrics},
@@ -77,6 +100,7 @@ use super::{
         FixedHost, NativeOutputs, OutputKind, CLUSTER_AGENT_OUT, DD_OUT, MRF_DD_OUT,
     },
     snapshot_bridge::SnapshotBridgeState,
+    telemetry::{lane_group_name, SlotLaneStats},
 };
 use crate::cli::run::{autoscaling_failover_wired, mrf_metrics_endpoint};
 
@@ -265,6 +289,15 @@ impl<'a> PlanTopology<'a> {
         };
         self.encode_hosts.push(encoder);
         Ok(delivery)
+    }
+
+    /// Returns the number of lanes the DogStatsD source's metrics split into, which its configuration takes
+    /// ([`with_metric_lanes`]): one per producer lane of the frame, each a component output that its producer lane
+    /// stamps.
+    ///
+    /// [`with_metric_lanes`]: saluki_components::sources::DogStatsDConfiguration::with_metric_lanes
+    pub fn dogstatsd_metric_lanes(&self) -> NonZeroU16 {
+        dogstatsd_metric_lanes(&self.boot.frame)
     }
 
     /// Registers a component output that carries metrics into the metrics path, which the frame must read.
@@ -478,17 +511,268 @@ pub(super) fn configure_wired_host(
 
 /// Adds a region host per slot of the frame, each starting with the boot generation's program for its slot, and with
 /// the input capacity of the native components it replaces.
+///
+/// With lanes ([`LaneCounts::lanes_on`](super::lanes::LaneCounts::lanes_on)), every slot runs its lanes
+/// ([`Slot::lanes`]), each lane with its own driver and kernels and with statistics of its own work, which
+/// [`BootTopology::lane_stats`] keeps; and the DogStatsD source's producer lanes stamp its admission points themselves
+/// (see [`connect_frame`]).
 pub(super) fn add_regions(blueprint: &mut TopologyBlueprint, boot: &mut BootTopology) -> Result<(), GenericError> {
     let frame = Arc::clone(&boot.frame);
     let interconnect = blueprint.interconnect_capacity();
+    let (owner, mut owned) = owned_lane_points(boot).unzip();
+    let mut lane_stats = Vec::new();
     for slot in frame.slots() {
-        let capacity = region_input_capacity(&boot.plan, &frame, &boot.outputs, slot, interconnect)?;
-        let host = region_host(boot, slot)?;
+        let native = region_input_capacity(&boot.plan, &frame, &boot.outputs, slot, interconnect)?;
+        let capacity = lane_input_capacity(slot, native);
+        let admission = if owner == Some(slot.id) { owned.take() } else { None };
+        let stats = boot.lanes.lanes_on().then(|| {
+            let routes = slot
+                .exits
+                .iter()
+                .any(|exit| matches!(exit.routing, ExitRouting::Keyed(_)));
+            let holds_state = boot
+                .programs
+                .get(slot.id.get())
+                .is_some_and(|program| program.kernels().iter().any(|kernel| kernel.lineage.is_some()));
+            SlotLaneStats::new(slot.name.as_str(), slot.lanes, routes, holds_state)
+        });
+        let mut host = region_host(boot, slot, admission, stats.as_ref())?;
+        if let Some(events) = routed_buffer_events(&frame, slot) {
+            host = host.with_input_buffer_events(events);
+        }
         blueprint
             .add_transform(slot.name.as_str(), host)?
             .with_component_input_capacity(slot.name.as_str(), capacity)?;
+        lane_stats.extend(stats);
     }
+    if let (Some(slot), Some(_)) = (owner, owned) {
+        return Err(generic_error!(
+            "The DogStatsD source's admission points lead to slot {}, which the frame does not have; this is a bug.",
+            slot
+        ));
+    }
+    boot.lane_stats = lane_stats;
     Ok(())
+}
+
+/// Returns the capacity of each lane's input of a slot whose region's input holds `native` buffers on one lane.
+///
+/// A slot on several lanes holds what its region holds on one lane, in all: a stateless slot `ceil(native / lanes)`
+/// buffers per lane; the lanes of a state owner's slot, fed buffers routed per key of [`routed_buffer_events`] events
+/// each, `ceil(native × 1,024 / (lanes × events))` buffers per lane, so that the events allocated in its inputs, and
+/// the firm bound of its interconnects, keep their native totals, rounding aside.
+fn lane_input_capacity(slot: &Slot, native: NonZeroUsize) -> NonZeroUsize {
+    let lanes = usize::from(slot.lanes.max(1));
+    if lanes == 1 {
+        return native;
+    }
+    let events = if slot.is_isolation() {
+        limits::routed_buffer_events(slot.lanes)
+    } else {
+        limits::values::BATCH_SIZE
+    };
+    let held = native.get().saturating_mul(limits::values::BATCH_SIZE);
+    let per_lane = held.div_ceil(lanes.saturating_mul(events));
+    NonZeroUsize::new(per_lane).unwrap_or(NonZeroUsize::MIN)
+}
+
+/// Returns the events each buffer sent to `slot` holds at most, if fewer than an events buffer holds: those of buffers
+/// routed per key ([`limits::routed_buffer_events`], which the keyed exits fill to), for the lanes of a state owner's
+/// slot that keyed exits feed.
+fn routed_buffer_events(frame: &Frame, slot: &Slot) -> Option<usize> {
+    let keyed = frame
+        .slots()
+        .iter()
+        .flat_map(|sender| &sender.exits)
+        .any(|exit| exit.target == FrameTarget::Slot(slot.id) && matches!(exit.routing, ExitRouting::Keyed(_)));
+    let events = limits::routed_buffer_events(slot.lanes);
+    (keyed && slot.lanes > 1 && events < limits::values::BATCH_SIZE).then_some(events)
+}
+
+/// Returns the admission point of the DogStatsD source's metrics, if the frame has one: the point the source's metrics
+/// lanes split, when the metrics path runs on lanes.
+fn dogstatsd_point(frame: &Frame) -> Option<&AdmissionPointInfo> {
+    frame
+        .admission_points()
+        .iter()
+        .find(|point| point.node.local().as_str() == ids::DSD_IN && point.port.as_str() == "metrics")
+}
+
+/// Returns `true` if the producer lanes stamp `point` themselves, each lane its own point, rather than the source's
+/// dispatcher: the DogStatsD source's metrics, whenever the metrics path runs on lanes and they lead to a slot, whose
+/// lanes they are.
+fn lanes_own(boot: &BootTopology, point: &AdmissionPointInfo) -> bool {
+    boot.lanes.lanes_on()
+        && matches!(point.route, Some(FrameTarget::Slot(_)))
+        && dogstatsd_point(&boot.frame).is_some_and(|dogstatsd| dogstatsd.id == point.id)
+}
+
+/// Returns the slot whose lanes stamp the DogStatsD source's points, and the configuration of each lane's point, in
+/// lane order, when the metrics path runs on lanes.
+///
+/// Every lane's point shares one clock, `dsd_in`'s, so that the source has one latest admission time, one epoch, and
+/// one reset decision. A point that feeds a state owner stamps heartbeats while it is idle, every
+/// [`heartbeat_period`], and its lane forwards them; with several lanes, also
+/// [`PROGRESS_PERIOD`][limits::values::PROGRESS_PERIOD] into each second it stamps nothing in, since a state lane's
+/// watermark is the minimum over the lanes' points, and a tick waits for it to reach the tick's second: an idle lane
+/// would otherwise hold every flush of the busy ones back by up to its period.
+fn owned_lane_points(boot: &BootTopology) -> Option<(SlotId, Vec<AdmissionPointConfig>)> {
+    let point = dogstatsd_point(&boot.frame).filter(|point| lanes_own(boot, point))?;
+    let Some(FrameTarget::Slot(slot)) = point.route else {
+        return None;
+    };
+    let wall: Arc<dyn WallClock> = Arc::new(SystemWallClock);
+    #[cfg(test)]
+    let wall: Arc<dyn WallClock> = match &boot.state_admission_clock {
+        Some(clock) if point.feeds_state => Arc::new(clock.clone()),
+        _ => wall,
+    };
+    let clock = SourceClock::named(
+        AdmissionClock::with_wall_clock(limits::values::CLOCK_RESET_THRESHOLD, wall),
+        ids::DSD_IN,
+    );
+    let several = point.lane_ids().nth(1).is_some();
+    let points = point
+        .lane_ids()
+        .map(|id| {
+            let mut config = AdmissionPointConfig::new(
+                id,
+                point.mode,
+                Arc::clone(&boot.schedule),
+                limits::values::CLOCK_RESET_THRESHOLD,
+            )
+            .with_registry(boot.admission.clone())
+            .owned()
+            .with_source_clock(Arc::clone(&clock));
+            if point.feeds_state {
+                config = config.with_heartbeat(heartbeat_period(&boot.frame, &boot.programs, id));
+                if several {
+                    config = config.with_heartbeat_each_second(limits::values::PROGRESS_PERIOD);
+                }
+            }
+            config
+        })
+        .collect();
+    Some((slot, points))
+}
+
+/// The memory bounds of the drivers of a slot's lanes: one lane's bounds per lane, each under the lane's own
+/// subcomponent, `lane_<i>`, as the lane's kernels are accounted under its resource group; except the state of the
+/// slot's state owners, which their lanes partition and the host's state budget bounds in all.
+///
+/// That state is declared once, where the slot on one lane declares it: under the subcomponent its kernel is accounted
+/// under, or at the slot's own level for the state owner the slot is named after, as aggregation's is at
+/// `dsd_agg.aggregate_context_limit`, which the sizing guide sets. Every lane, the first included, then declares the
+/// rest of one lane's bounds.
+struct LaneRegionBounds {
+    bounds: RegionBounds,
+    lanes: u16,
+    /// For a state owner's slot on several lanes, its state owners' state, declared once, and the bytes of one lane's
+    /// bounds without it: the minimum, and the firm beyond the minimum.
+    partitioned: Option<(StateBounds, usize, usize)>,
+}
+
+impl LaneRegionBounds {
+    /// Returns the bounds of the lanes of `slot`, one lane of which has `bounds`, and whose state owners keep
+    /// `state`.
+    fn new(bounds: RegionBounds, slot: &Slot, state: StateBounds) -> Self {
+        let partitioned = (slot.lanes > 1 && !state.0.is_empty()).then(|| {
+            let (minimum, firm) = bytes_of(&bounds);
+            let (state_minimum, state_firm) = bytes_of(&state);
+            let stateless_minimum = minimum.saturating_sub(state_minimum);
+            let stateless_firm = firm
+                .saturating_sub(minimum)
+                .saturating_sub(state_firm.saturating_sub(state_minimum));
+            (state, stateless_minimum, stateless_firm)
+        });
+        Self {
+            bounds,
+            lanes: slot.lanes,
+            partitioned,
+        }
+    }
+}
+
+impl MemoryBounds for LaneRegionBounds {
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        if self.lanes <= 1 {
+            self.bounds.specify_bounds(builder);
+            return;
+        }
+        if let Some((state, _, _)) = &self.partitioned {
+            state.specify_bounds(builder);
+        }
+        for lane in 0..self.lanes {
+            let mut lane_builder = builder.subcomponent(lane_group_name(LaneContext {
+                index: lane,
+                count: self.lanes,
+            }));
+            match &self.partitioned {
+                Some((_, minimum, firm)) => {
+                    lane_builder
+                        .minimum()
+                        .with_fixed_amount("lane driver without partitioned state", *minimum);
+                    lane_builder
+                        .firm()
+                        .with_fixed_amount("lane driver without partitioned state", *firm);
+                }
+                None => self.bounds.specify_bounds(&mut lane_builder),
+            }
+        }
+    }
+}
+
+/// The bounds of the state that state owners keep in entries drawn from the host's state budget, each under the
+/// subcomponent its kernel is accounted under, or at the region's own level.
+struct StateBounds(Vec<(ConfiguredOperator, Option<String>)>);
+
+impl MemoryBounds for StateBounds {
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        for (operator, accounted) in &self.0 {
+            match accounted {
+                Some(name) => operator.specify_state_bounds(&mut builder.subcomponent(name)),
+                None => operator.specify_state_bounds(builder),
+            }
+        }
+    }
+}
+
+/// Returns the minimum and firm bytes `bounds` declare, the firm bytes including the minimum.
+fn bytes_of(bounds: &dyn MemoryBounds) -> (usize, usize) {
+    let registry = ComponentRegistry::default();
+    let id = SubsystemIdentifier::from_dotted("bounds");
+    bounds.specify_bounds(&mut registry.bounds_builder(&id));
+    let bounds = registry.as_bounds();
+    (bounds.total_minimum_required_bytes(), bounds.total_firm_limit_bytes())
+}
+
+/// Returns the state of the state owners of `program`, a program of `plan` that `slot` runs, configured with their
+/// parameters, each where `slot`'s region accounts its kernel ([`kernel_accounting_in`]).
+fn state_owners(
+    plan: &Plan, registry: &OperatorRegistry, program: &RegionProgram, slot: &Slot,
+) -> Result<StateBounds, GenericError> {
+    program
+        .kernels()
+        .iter()
+        .filter(|kernel| kernel.lineage.is_some())
+        .map(|kernel| {
+            let node = plan.node(&kernel.key.node).ok_or_else(|| {
+                generic_error!(
+                    "The boot program runs state owner `{}`, which its plan does not have; this is a bug.",
+                    kernel.key.node
+                )
+            })?;
+            let operator = registry.configure(node.op.as_str(), &node.params).map_err(|error| {
+                generic_error!(
+                    "State owner `{}` of the boot program cannot be configured: {}; this is a lowering bug.",
+                    node.id,
+                    error
+                )
+            })?;
+            Ok((operator, kernel_accounting_in(slot, &node.id)))
+        })
+        .collect::<Result<_, GenericError>>()
+        .map(StateBounds)
 }
 
 /// Returns the input capacity of a slot's region host: as many buffers as the native components the region replaces
@@ -598,18 +882,64 @@ fn region_input_capacity(
 
 /// Connects every physical edge of the frame, and marks every admission point, reading the boot schedule.
 ///
+/// An edge into a slot on several lanes routes each buffer to a lane as the frame says: a point with lanes feeds the
+/// slot lane by lane, each of the DogStatsD source's metrics lanes its own (`dsd_in.metrics_<d>` to lane `d`); an exit
+/// into a state owner's lanes routes each event by its partition key; one that carries a producer lane's batches keeps
+/// to the sender's lane; and the other edges spread whole buffers over the lanes. Every edge into a slot on one lane
+/// leads to that lane.
+///
 /// Every admission point registers in the installer's admission registry. A point upstream of a state owner sends
 /// heartbeats while it is idle, every [`heartbeat_period`], to the component its route leads to and to no other, so
 /// that the state owner's watermark advances, while the DogStatsD taps on the same output keep their native traffic.
+/// On lanes, the DogStatsD source's points are its producer lanes', which stamp them and drive their heartbeats (see
+/// [`add_regions`]), so no dispatcher stamps them.
 pub(super) fn connect_frame(blueprint: &mut TopologyBlueprint, boot: &BootTopology) -> Result<(), GenericError> {
     let frame = &boot.frame;
     for edge in frame.edges() {
-        let from = source_output(frame, &edge.from)?;
         let to = target_component(frame, &boot.outputs, &edge.to)?;
-        blueprint.connect_components(from.as_str(), to.as_str())?;
+        match &edge.from {
+            FrameSource::Admission(id) => {
+                let point = frame
+                    .admission_point(*id)
+                    .ok_or_else(|| generic_error!("The frame has no admission point {}; this is a bug.", id.get()))?;
+                for (lane, from) in point_outputs(frame, point)?.iter().enumerate() {
+                    match point.routing {
+                        PointRouting::One => blueprint.connect_components(from.as_str(), to.as_str())?,
+                        PointRouting::Spread => {
+                            blueprint.connect_components_with(from.as_str(), to.as_str(), LaneEdge::Spread)?
+                        }
+                        PointRouting::Fixed => {
+                            // At most `MAX_LANES` lanes, which fit.
+                            let lane = u16::try_from(lane).map_err(|_| {
+                                generic_error!("Admission point {} has too many lanes; this is a bug.", id.get())
+                            })?;
+                            blueprint.connect_components_with(from.as_str(), to.as_str(), LaneEdge::Fixed(lane))?
+                        }
+                    };
+                }
+            }
+            FrameSource::Exit { .. } => {
+                let from = source_output(frame, &edge.from)?;
+                match exit_routing(frame, &edge.from)? {
+                    ExitRouting::One => blueprint.connect_components(from.as_str(), to.as_str())?,
+                    ExitRouting::Keyed(_) => {
+                        blueprint.connect_components_with(from.as_str(), to.as_str(), LaneEdge::Keyed)?
+                    }
+                    ExitRouting::Affinity => {
+                        blueprint.connect_components_with(from.as_str(), to.as_str(), LaneEdge::Affinity)?
+                    }
+                    ExitRouting::Spread => {
+                        blueprint.connect_components_with(from.as_str(), to.as_str(), LaneEdge::Spread)?
+                    }
+                };
+            }
+        }
     }
 
     for point in frame.admission_points() {
+        if lanes_own(boot, point) {
+            continue;
+        }
         let output = admission_output(frame, &point.node)?;
         let mut config = AdmissionPointConfig::new(
             point.id,
@@ -645,6 +975,45 @@ pub(super) fn connect_frame(blueprint: &mut TopologyBlueprint, boot: &BootTopolo
         blueprint.with_admission_point(output, config)?;
     }
     Ok(())
+}
+
+/// Returns the component outputs an admission point's lanes are, in lane order: the source's metrics lanes,
+/// `<component>.metrics_<lane>`, for a point with lanes, and the point's one output otherwise.
+pub(super) fn point_outputs(frame: &Frame, point: &AdmissionPointInfo) -> Result<Vec<String>, GenericError> {
+    let output = admission_output(frame, &point.node)?;
+    let Some(lanes) = NonZeroU16::new(point.lanes).filter(|lanes| lanes.get() > 1) else {
+        return Ok(vec![output]);
+    };
+    let component = component_id(
+        frame
+            .fixed_component(&point.node)
+            .ok_or_else(|| generic_error!("The frame has no fixed component `{}`; this is a bug.", point.node))?,
+    );
+    Ok((0..lanes.get())
+        .map(|lane| format!("{}.{}", component, dogstatsd_metric_lane_output(lane, lanes)))
+        .collect())
+}
+
+/// Returns the number of lanes the DogStatsD source's metrics split into, which its producer lanes stamp: one without
+/// lanes, or without DogStatsD.
+pub(super) fn dogstatsd_metric_lanes(frame: &Frame) -> NonZeroU16 {
+    dogstatsd_point(frame)
+        .and_then(|point| NonZeroU16::new(point.lanes))
+        .unwrap_or(NonZeroU16::MIN)
+}
+
+/// Returns how the slot exit an edge starts at sends to the lanes of its target.
+fn exit_routing<'f>(frame: &'f Frame, source: &FrameSource) -> Result<&'f ExitRouting, GenericError> {
+    let FrameSource::Exit { slot, exit } = source else {
+        return Err(generic_error!("An admission point has no exit routing; this is a bug."));
+    };
+    let slot = frame
+        .slot(*slot)
+        .ok_or_else(|| generic_error!("The frame has no slot {}; this is a bug.", slot))?;
+    slot.exits
+        .get(exit.get())
+        .map(|exit| &exit.routing)
+        .ok_or_else(|| generic_error!("Region `{}` has no exit {}; this is a bug.", slot.name, exit))
 }
 
 /// Returns the heartbeat period of the admission point `point`: [`HEARTBEAT_PERIOD`][limits::values::HEARTBEAT_PERIOD],
@@ -717,8 +1086,15 @@ fn check_fixed_components(frame: &Frame, sources: &BTreeSet<String>, dogstatsd: 
 
 /// Returns the region host of a slot, whose driver runs the boot generation's program for the slot.
 ///
-/// The driver and the boot program's kernels are built when the topology builds the region, inside its runtime.
-fn region_host(boot: &mut BootTopology, slot: &Slot) -> Result<RegionHostBuilder<MetricRegionDriver>, GenericError> {
+/// The driver and the boot program's kernels are built when the topology builds the region, inside its runtime. On
+/// lanes, the host builds one driver per lane, each with kernels of its own accounted under the lane's group; the lanes
+/// of a slot on several lanes share one [`SlotLanes`], whose panic ledger counts their panics against each generation's
+/// one budget, and one [`LaneCell`] per lineage of the boot program, which every lane's instance of a state owner is
+/// built against. `admission` gives each lane the admission point it stamps, and `stats` what each lane measures of
+/// its work.
+fn region_host(
+    boot: &mut BootTopology, slot: &Slot, admission: Option<Vec<AdmissionPointConfig>>, stats: Option<&SlotLaneStats>,
+) -> Result<RegionHostBuilder<MetricRegionDriver>, GenericError> {
     let program = boot.programs.get(slot.id.get()).cloned().ok_or_else(|| {
         generic_error!(
             "The boot generation has no program for region `{}`; this is a bug.",
@@ -736,8 +1112,9 @@ fn region_host(boot: &mut BootTopology, slot: &Slot) -> Result<RegionHostBuilder
             )
         })?;
     // An isolation slot accounts the state owner it is named after in its own group, with its bounds at its top level,
-    // as the native component it stands for did, and bounds one drain step.
+    // as the native component it stands for did, and bounds one drain step. Each lane holds a driver of its own.
     let bounds = RegionBounds::for_slot(&boot.plan, &boot.registry, &program, slot)?;
+    let bounds = LaneRegionBounds::new(bounds, slot, state_owners(&boot.plan, &boot.registry, &program, slot)?);
     let work_per_turn = usize::try_from(limits::values::WORK_PER_TURN)
         .ok()
         .and_then(NonZeroUsize::new)
@@ -758,10 +1135,34 @@ fn region_host(boot: &mut BootTopology, slot: &Slot) -> Result<RegionHostBuilder
         )
     });
     let isolation = state.is_some();
-    let slot = slot.clone();
-    let host = RegionHostBuilder::new(exits, work_per_turn, mailbox, move |_| {
+    // What a slot's lanes share: one record of the slot's lanes, and one cell per lineage of the boot program, which
+    // every lane's instance of the lineage is built against.
+    let shared = (slot.lanes > 1).then(|| {
+        let cells = program
+            .kernels()
+            .iter()
+            .filter(|kernel| kernel.lineage.is_some())
+            .map(|kernel| (kernel.key.node.clone(), LaneCell::new()))
+            .collect::<BTreeMap<_, _>>();
+        (SlotLanes::new(slot.lanes), cells)
+    });
+    let slot_config = slot.clone();
+    // On lanes, each lane's driver publishes what its keyed exits sent, and a state lane what it holds and the rules
+    // of its lineages decided, into the lane's own series.
+    let lane_stats = stats.cloned();
+    let build = move |lane: LaneContext| -> Result<MetricRegionDriver, GenericError> {
         let keys = program.kernels().iter().map(|kernel| &kernel.key);
-        let kernels = build_kernels(&program, keys, |node| telemetry.kernel_context(&program, node))?;
+        let kernels = build_kernels(&program, keys, |node| {
+            let context = telemetry.kernel_context_in(&program, node, lane);
+            match shared.as_ref().and_then(|(_, cells)| cells.get(node)) {
+                Some(cell) => context.with_lanes(LaneBinding {
+                    cell: Arc::clone(cell),
+                    lane: lane.index,
+                    lanes: lane.count,
+                }),
+                None => context,
+            }
+        })?;
         let prepare = PrepareRegion::new(
             generation.clone(),
             Arc::clone(&program),
@@ -770,15 +1171,47 @@ fn region_host(boot: &mut BootTopology, slot: &Slot) -> Result<RegionHostBuilder
             &telemetry,
         )
         .with_leases(Arc::clone(&leases));
-        let mut config = RegionConfig::for_slot(&slot, &telemetry).with_failure_reporter(Arc::clone(&failures));
+        let mut config = RegionConfig::for_slot(&slot_config, &telemetry).with_failure_reporter(Arc::clone(&failures));
+        if let Some((lanes, _)) = &shared {
+            config = config.with_lane(lane, Arc::clone(lanes));
+        }
         if let Some((schedule, wall_clock, budgets)) = &state {
             config = config
                 .with_schedule(Arc::clone(schedule))
                 .with_wall_clock(Arc::clone(wall_clock))
                 .with_state_budgets(budgets.clone());
         }
+        if let Some(driver) = lane_stats
+            .as_ref()
+            .and_then(|stats| stats.drivers.get(usize::from(lane.index)))
+        {
+            config = config.with_routing_telemetry(RoutingTelemetry {
+                routed_buffers: Counter::from_arc(Arc::clone(&driver.routed_buffers)),
+                routed_events: Counter::from_arc(Arc::clone(&driver.routed_events)),
+                progress: Counter::from_arc(Arc::clone(&driver.progress)),
+            });
+            if state.is_some() {
+                let mut lane_telemetry = telemetry.state_lane(slot_config.name.as_str(), lane.index);
+                lane_telemetry.contexts = Gauge::from_arc(Arc::clone(&driver.contexts));
+                config = config.with_state_lane_telemetry(lane_telemetry);
+            }
+        }
         Ok(MetricRegionDriver::new(config, prepare)?)
-    })?;
+    };
+    let build = Arc::new(build);
+    let one = Arc::clone(&build);
+    let mut host = RegionHostBuilder::new(exits, work_per_turn, mailbox, move |_| one(LaneContext::ONE))?;
+    if boot.lanes.lanes_on() {
+        let lanes = NonZeroU16::new(slot.lanes)
+            .ok_or_else(|| generic_error!("The frame lays region `{}` out on no lanes; this is a bug.", slot.name))?;
+        host = host.with_lanes(lanes, move |_, lane| build(lane));
+        if let Some(points) = admission {
+            host = host.with_lane_admission(points);
+        }
+        if let Some(stats) = stats {
+            host = host.with_lane_stats(stats.lanes.clone());
+        }
+    }
     // A flush emits what a state owner holds: an isolation slot works through it in bounded steps, between which it
     // answers control messages and liveness probes.
     let host = if isolation {
@@ -896,6 +1329,8 @@ mod burst_tests;
 mod differential_tests;
 #[cfg(test)]
 mod isolation_tests;
+#[cfg(test)]
+mod lane_tests;
 #[cfg(test)]
 mod measurement_tests;
 #[cfg(test)]

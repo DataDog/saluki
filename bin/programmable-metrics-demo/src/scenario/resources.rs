@@ -38,7 +38,7 @@ const DELIVERY_HOST: &str = "dd_out";
 
 /// Returns the families each intake receives once team D's route is in effect: the default routing, and the platform
 /// family at team D as well.
-fn routed_to_team_d() -> Routing {
+pub(super) fn routed_to_team_d() -> Routing {
     changed(default_routing(), TEAM_D_INTAKE, &[TEAM_D_FAMILY], false)
 }
 
@@ -84,7 +84,7 @@ fn team_d_recipient<'a>(state: &'a Value, wanted: &str, since_ms: u64) -> Option
 
 /// Returns the total of a native component counter of one component in a sample of the demo's state, summed over its
 /// series, if the scraper has any.
-fn component_total(state: &Value, name: &str, component_id: &str) -> Option<f64> {
+pub(super) fn component_total(state: &Value, name: &str, component_id: &str) -> Option<f64> {
     let series = state["telemetry"]["components"]
         .as_array()?
         .iter()
@@ -145,7 +145,7 @@ impl Runner {
             Compiled::Clean { unchanged: false },
             Installed::Active {
                 new_generation: true,
-                routing: routed_to_team_d(),
+                routing: Some(routed_to_team_d()),
             },
         )
         .await?;
@@ -184,7 +184,7 @@ impl Runner {
     }
 
     /// Records a step's report, whatever its outcome, and names the step in its error.
-    fn finish(&mut self, step: StepReport, result: Result<(), GenericError>) -> Result<(), GenericError> {
+    pub(super) fn finish(&mut self, step: StepReport, result: Result<(), GenericError>) -> Result<(), GenericError> {
         let (id, title) = (step.id, step.title);
         self.report.steps.push(step);
         result.with_error_context(|| format!("{} ({}) failed", id, title))
@@ -352,7 +352,7 @@ impl Runner {
 
     /// S8a: publishes the team D resources and checks that ADP declares them, with the endpoints unchanged, since
     /// nothing emits to the output yet.
-    async fn publish_resources_step(&mut self, step: &mut StepReport) -> Result<(), GenericError> {
+    pub(super) async fn publish_resources_step(&mut self, step: &mut StepReport) -> Result<(), GenericError> {
         let (revision, published) = self.publish_resources().await?;
         step.revision = Some(revision);
         let after = self.wait_resources_active(revision, published).await?;

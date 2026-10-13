@@ -72,7 +72,8 @@ SCALING_WORKERS="1 2 4" SCALING_ROUNDS=3 SCALING_WINDOW_SECONDS=30 SCALING_RATE=
 | `SCALING_GENERATORS` | 2 | lading generator entries, each a task of its own with its own block cache |
 | `SCALING_CONNECTIONS` | 1 | connections per generator entry (`parallel_connections`); every connection sends `SCALING_RATE / (generators x connections)`, at most 4 GiB/s |
 | `SCALING_RATE` | `4 GiB` | lading's total rate, in bytes per second (saturation by default); for a paced run, 70% of saturation is 0.7 times the saturated decoded rate times lading's bytes per metric, from an earlier saturated series |
-| `SCALING_CONTEXTS` | 3000 | contexts lading generates; the aggregation context limit follows |
+| `SCALING_CONTEXTS` | 3000 | contexts lading generates |
+| `SCALING_CONTEXT_LIMIT` | `SCALING_CONTEXTS` × 10 + 1000 | `aggregate_context_limit` of both images: above what lading's contexts become per metric kind and tag set, so that no run drops at aggregation |
 | `SCALING_METRIC_WEIGHTS` | `208:66:72:9:1` | lading's weights of counts, gauges, distributions, sets, and histograms, each 0 to 255 |
 | `SCALING_TIMESTAMP_PROBABILITY` | 0 | the share of counts and gauges that carry a timestamp (`\|T`), which takes them through the passthrough instead of aggregation |
 | `SCALING_CACHE` | `500 Mb` | lading's block cache per generator entry, as lading reads it (`Mb` is megabits); a stream connection builds a cache of its own, so `unix_stream` divides it among the connections, 1 MiB each at least |

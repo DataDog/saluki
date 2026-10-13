@@ -11,8 +11,8 @@ use std::{
 use saluki_core::{
     data_model::event::Event,
     execution::{
-        AdmissionPointId, AdmissionTime, BatchHeader, DrainPolicy, ExitId, ExitSink, GenerationId, GenerationRef,
-        GenerationToken, LossClass, LossCount, PanicOutcome, PortIndex, Progress, RegionDriver, RegionFailure,
+        AdmissionPointId, BatchHeader, DrainPolicy, ExitId, ExitSink, GenerationId, GenerationRef, GenerationToken,
+        LaneContext, LaneSplit, LossClass, LossCount, PanicOutcome, PortIndex, Progress, RegionDriver, RegionFailure,
         RegionPanic, RegionTurn, ScheduleHandle, SystemWallClock, Turn, TurnCounters, WallClock,
     },
     topology::EventsBuffer,
@@ -24,15 +24,18 @@ use tracing::{debug, error, warn};
 use super::{
     code::{DecisionCode, EntryCode, Op, ProgramCode, Target},
     kernels::{KernelSlab, KernelSlot, PreparedKernel},
-    state::{slab::InstanceHandle, StateBudgets},
-    supervision::{PanicBudget, PanicHistory},
-    telemetry::{add_loss, Layout, ProgramCounts, ProgramTelemetry, RegisterTelemetry, StateTelemetry, LOSS_CLASSES},
+    state::{lanes::SlotLanes, rules::epoch_newer, slab::InstanceHandle, StateBudgets},
+    supervision::{GenerationLedger, GenerationMode, PanicBudget, PanicLedger},
+    telemetry::{
+        add_loss, Layout, ProgramCounts, ProgramTelemetry, RegisterTelemetry, StateLaneTelemetry, StateTelemetry,
+        LOSS_CLASSES,
+    },
     RegionError,
 };
 use crate::{
     compile::{
-        DecisionIndex, DecisionMemo, ExitSet, ExitSetCounts, KernelIndex, LeaseTable, RegionProgram, Slot, SlotId,
-        SlotKind, StateParamsEntry, COUNTED_EXIT_SETS,
+        DecisionIndex, DecisionMemo, ExitRouting, ExitSet, ExitSetCounts, KernelIndex, KeyGroups, LeaseTable,
+        RegionProgram, Slot, SlotId, SlotKind, StateParamsEntry, COUNTED_EXIT_SETS,
     },
     install::StateBinding,
     ir::{NativeComponentId, NodeId},
@@ -40,7 +43,11 @@ use crate::{
 };
 
 mod isolation;
-use self::isolation::{StateResolution, StateSlot};
+use self::isolation::{StateAdmission, StateResolution, StateSlot};
+
+mod keyed;
+pub(super) use self::keyed::routed_buffer_events;
+use self::keyed::{KeyedExit, SentMark};
 
 /// The most times a kernel may yield on one batch before the driver treats it as broken.
 ///
@@ -93,6 +100,48 @@ pub struct RegionConfig {
 
     /// The handles an isolation slot publishes its own telemetry to.
     pub(crate) state_telemetry: Option<StateTelemetry>,
+
+    /// The number of lanes the slot runs on, as its frame laid it out.
+    pub(crate) slot_lanes: u16,
+
+    /// The exits that route each event to a lane of a state owner's slot by its partition key, with their key groups.
+    pub(crate) keyed: Vec<(ExitId, Arc<KeyGroups>)>,
+
+    /// The lane the region runs as, and what the slot's lanes share, for a slot with lanes.
+    pub(crate) lane: Option<(LaneContext, Arc<SlotLanes>)>,
+
+    /// The counters the region's keyed exits add what they send to.
+    pub(crate) routing: RoutingTelemetry,
+
+    /// The handles one state lane publishes its own telemetry to, for an isolation slot on several lanes.
+    pub(crate) state_lane_telemetry: Option<StateLaneTelemetry>,
+}
+
+/// The counters a region adds what its keyed exits send to, for its lane: the routed buffers, the events in them, and
+/// the header-only buffers that carry progress.
+///
+/// Routed events over routed buffers is how full the routed buffers are, which coalescing decides.
+#[derive(Clone, Debug)]
+pub struct RoutingTelemetry {
+    /// The routed buffers the region's keyed exits sent, which carry events.
+    pub routed_buffers: Counter,
+
+    /// The events in those buffers.
+    pub routed_events: Counter,
+
+    /// The header-only buffers the region's keyed exits sent, which carry the progress of an upstream point.
+    pub progress: Counter,
+}
+
+impl RoutingTelemetry {
+    /// Returns counters that record nothing.
+    pub fn noop() -> Self {
+        Self {
+            routed_buffers: Counter::noop(),
+            routed_events: Counter::noop(),
+            progress: Counter::noop(),
+        }
+    }
 }
 
 impl RegionConfig {
@@ -109,6 +158,14 @@ impl RegionConfig {
             .filter(|exit| !exit.progress_points.is_empty())
             .map(|exit| (ExitId::new(exit.index.get() as u16), exit.progress_points.clone()))
             .collect();
+        let keyed = slot
+            .exits
+            .iter()
+            .filter_map(|exit| match &exit.routing {
+                ExitRouting::Keyed(groups) => Some((ExitId::new(exit.index.get() as u16), Arc::clone(groups))),
+                ExitRouting::One | ExitRouting::Affinity | ExitRouting::Spread => None,
+            })
+            .collect();
         Self {
             slot: slot.id,
             name: slot.name.clone(),
@@ -123,7 +180,39 @@ impl RegionConfig {
             kind: slot.kind.clone(),
             progress,
             state_telemetry: slot.is_isolation().then(|| telemetry.state(slot.name.as_str())),
+            slot_lanes: slot.lanes,
+            keyed,
+            lane: None,
+            routing: RoutingTelemetry::noop(),
+            state_lane_telemetry: None,
         }
+    }
+
+    /// Makes the region the driver of one lane of a slot with lanes: `lane` says which, and `lanes` is what the slot's
+    /// lanes share, such as the panic ledger of the generations they run, which the host creates once per slot and
+    /// gives to every lane.
+    ///
+    /// A region of a slot with lanes needs it, and one of a slot without lanes may take it with
+    /// [`LaneContext::ONE`]. Regions run a fused slot's lane as they run a slot without lanes; an isolation slot's lane
+    /// holds the share of its state owners' contexts its lane owns, and keeps the rules that couple them in records
+    /// the lanes share through `lanes` (see [`SlotLanes`]).
+    pub fn with_lane(mut self, lane: LaneContext, lanes: Arc<SlotLanes>) -> Self {
+        self.lane = Some((lane, lanes));
+        self
+    }
+
+    /// Gives the region the counters its keyed exits add what they send to, which record nothing by default.
+    pub fn with_routing_telemetry(mut self, routing: RoutingTelemetry) -> Self {
+        self.routing = routing;
+        self
+    }
+
+    /// Gives one lane of an isolation slot on several lanes the handles it publishes its own telemetry to, such as
+    /// [`PlanTelemetry::state_lane`][super::PlanTelemetry::state_lane] registers; handles that record nothing by
+    /// default.
+    pub fn with_state_lane_telemetry(mut self, telemetry: StateLaneTelemetry) -> Self {
+        self.state_lane_telemetry = Some(telemetry);
+        self
     }
 
     /// Gives the region the schedule handle of the topology, read only: an isolation slot decides from it which
@@ -194,6 +283,9 @@ impl fmt::Debug for RegionConfig {
             .field("state_budgets", &self.state_budgets)
             .field("kind", &self.kind)
             .field("progress", &self.progress)
+            .field("slot_lanes", &self.slot_lanes)
+            .field("keyed", &self.keyed.len())
+            .field("lane", &self.lane.as_ref().map(|(lane, _)| lane))
             .finish_non_exhaustive()
     }
 }
@@ -211,8 +303,24 @@ pub struct PrepareRegion {
     state: Vec<StateBinding>,
     /// The lease of each output the program delivers to, or `None` if exits to outputs write no entry.
     leases: Option<Arc<LeaseTable>>,
+    /// For a slot with lanes, each lane's kernels and state bindings, in lane order, in place of `kernels` and `state`.
+    lanes: Vec<LanePreparation>,
     layout: Layout,
     telemetry: ProgramTelemetry,
+}
+
+/// One lane's share of a preparation, for a slot with lanes: the kernels built for that lane, and how that lane binds
+/// the program's state owners.
+///
+/// Kernels are not shared between lanes, so every lane receives instances of its own, built from the same specs; state
+/// bindings name lineages, never instances, so they also bind instances a lane creates later.
+#[derive(Debug, Default)]
+pub struct LanePreparation {
+    /// The program's kernels the lane does not hold yet.
+    pub kernels: Vec<PreparedKernel>,
+
+    /// How the lane binds the program's state owners to instances of their state, in an isolation slot.
+    pub state: Vec<StateBinding>,
 }
 
 impl PrepareRegion {
@@ -238,6 +346,7 @@ impl PrepareRegion {
             budgeted: None,
             state: Vec::new(),
             leases: None,
+            lanes: Vec::new(),
             layout,
             telemetry,
         }
@@ -309,6 +418,45 @@ impl PrepareRegion {
     pub fn budget(&self) -> PanicBudget {
         self.budget
     }
+
+    /// Gives the preparation one share per lane of a slot with lanes, in lane order, in place of its own kernels and
+    /// state bindings: the slot's coordinator splits it ([`LaneSplit`]), and each lane prepares with its share.
+    pub fn with_lanes(mut self, lanes: Vec<LanePreparation>) -> Self {
+        self.lanes = lanes;
+        self
+    }
+
+    /// Returns the number of lane shares the preparation carries: none for a slot without lanes.
+    pub fn lane_count(&self) -> usize {
+        self.lanes.len()
+    }
+
+    /// Splits the preparation into one per lane, each with that lane's kernels and state bindings, or returns it whole
+    /// if it does not carry exactly `lanes` shares. A preparation without shares splits for one lane into itself.
+    fn split_lanes(mut self: Box<Self>, lanes: u16) -> Result<Vec<Self>, Box<Self>> {
+        if self.lanes.is_empty() && lanes == 1 {
+            return Ok(vec![*self]);
+        }
+        if self.lanes.len() != usize::from(lanes) {
+            return Err(self);
+        }
+        let shares = std::mem::take(&mut self.lanes);
+        Ok(shares
+            .into_iter()
+            .map(|share| Self {
+                generation: Arc::clone(&self.generation),
+                program: Arc::clone(&self.program),
+                kernels: share.kernels,
+                budget: self.budget,
+                budgeted: self.budgeted.clone(),
+                state: share.state,
+                leases: self.leases.clone(),
+                lanes: Vec::new(),
+                layout: self.layout.clone(),
+                telemetry: self.telemetry.clone(),
+            })
+            .collect())
+    }
 }
 
 impl fmt::Debug for PrepareRegion {
@@ -322,6 +470,7 @@ impl fmt::Debug for PrepareRegion {
             .field("budgeted", &self.budgeted)
             .field("state", &self.state)
             .field("leases", &self.leases)
+            .field("lanes", &self.lanes)
             .finish_non_exhaustive()
     }
 }
@@ -352,6 +501,31 @@ pub enum RegionControl {
     Kernel(KernelControl),
 }
 
+impl LaneSplit for RegionControl {
+    /// Splits a preparation into one per lane, each with that lane's share ([`PrepareRegion::with_lanes`]), and an
+    /// abort or a release into one copy per lane. A kernel control message is for the one lane it names
+    /// ([`KernelControl::lane`]), so it never splits.
+    fn split(self, lanes: u16) -> Result<Vec<Self>, Self> {
+        match self {
+            Self::Prepare(prepare) => match prepare.split_lanes(lanes) {
+                Ok(parts) => Ok(parts.into_iter().map(|part| Self::Prepare(Box::new(part))).collect()),
+                Err(prepare) => Err(Self::Prepare(prepare)),
+            },
+            Self::Abort { generation } => Ok((0..lanes).map(|_| Self::Abort { generation }).collect()),
+            Self::Release => Ok((0..lanes).map(|_| Self::Release).collect()),
+            Self::Kernel(control) => Err(Self::Kernel(control)),
+        }
+    }
+
+    /// Returns the lane a kernel control message names; no other message is for one lane.
+    fn lane(&self) -> Option<u16> {
+        match self {
+            Self::Kernel(control) => control.lane,
+            Self::Prepare(_) | Self::Abort { .. } | Self::Release => None,
+        }
+    }
+}
+
 /// Called with a [`KernelControl`]'s message once every kernel it targets has handled it.
 pub type KernelReply = Box<dyn FnOnce(Box<dyn Any + Send>) + Send>;
 
@@ -376,6 +550,11 @@ pub struct KernelControl {
     /// The kernels the message goes to.
     pub target: KernelTarget,
 
+    /// The lane of a slot with lanes whose kernels the message goes to, which the slot's coordinator routes it to; a
+    /// requester that wants every lane's sends one message per lane. `None` for a slot without lanes, whose coordinator
+    /// rejects a message without a lane once it runs lanes.
+    pub lane: Option<u16>,
+
     /// The message, which each kernel reads as the type it handles.
     pub message: Box<dyn Any + Send>,
 
@@ -387,6 +566,7 @@ impl fmt::Debug for KernelControl {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("KernelControl")
             .field("target", &self.target)
+            .field("lane", &self.lane)
             .finish_non_exhaustive()
     }
 }
@@ -409,28 +589,6 @@ enum KernelBinding {
     Instance(InstanceHandle),
 }
 
-/// How a region treats a generation after its program panicked.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum GenerationMode {
-    /// Its batches are processed.
-    Healthy,
-
-    /// A state owner's kernel panicked under it, and the installer was asked to roll it back: its batches are still
-    /// processed, on the rebuilt instance, until a replacement takes over.
-    RollingBack,
-
-    /// It exceeded its panic budget, or a kernel it uses could not be rebuilt: its batches are dropped as invalid
-    /// loss.
-    Dropping,
-}
-
-impl GenerationMode {
-    /// Returns `true` if the generation's batches are processed.
-    fn processes(self) -> bool {
-        !matches!(self, Self::Dropping)
-    }
-}
-
 /// A generation the region can process batches of.
 struct LiveGeneration {
     id: GenerationId,
@@ -450,9 +608,9 @@ struct LiveGeneration {
     native_kernels: Vec<bool>,
     /// Whether each of the program's decisions, by decision index, has only nodes the budget does not cover.
     native_decisions: Vec<bool>,
-    panics: PanicHistory,
-    /// What the region does with the generation's batches after its program panicked.
-    mode: GenerationMode,
+    /// The generation's panics and what the region does with its batches after its program panicked, shared by the
+    /// lanes of the slot (see [`PanicLedger`]).
+    ledger: Arc<GenerationLedger>,
 }
 
 impl LiveGeneration {
@@ -567,12 +725,29 @@ impl Fault {
     }
 }
 
-/// One exit that forwards the progress of admission points upstream of a state owner, and the progress it last
-/// forwarded for each, as `(epoch, admission time)`.
+/// One exit that forwards the progress of admission points upstream of a state owner, sending whole buffers to its
+/// target, and what it last carried for each point.
 struct ProgressExit {
     exit: ExitId,
     points: Vec<AdmissionPointId>,
-    last: Vec<Option<(u32, AdmissionTime)>>,
+    /// The header the exit last carried for each point, by a buffer the region wrote to it or as progress.
+    last: Vec<Option<SentMark>>,
+    /// For an exit toward a state owner with several upstream points, the header of the last batch the region
+    /// completed from each point, without its entry: its final header in an epoch once the point's epoch changes, and
+    /// its last when input ends, which the state owner receives before anything newer, and before its input closes.
+    latest: Option<Vec<Option<BatchHeader>>>,
+}
+
+impl ProgressExit {
+    /// Creates the progress state of an exit that forwards the progress of `points`.
+    fn new(exit: ExitId, points: Vec<AdmissionPointId>) -> Self {
+        Self {
+            exit,
+            last: vec![None; points.len()],
+            latest: (points.len() > 1).then(|| vec![None; points.len()]),
+            points,
+        }
+    }
 }
 
 /// Points lost to wiring faults, outside any node.
@@ -659,6 +834,22 @@ struct InvalidLoss {
 /// admission time moved at least [`PROGRESS_PERIOD`] past what the exit last carried. Progress follows the call's data
 /// on the same exit, so each point's batches stay in stamping order.
 ///
+/// A state owner with several upstream points, the lane points of one source clock, needs more, since its watermark is
+/// the minimum over the points and its reset window drains at each point's final stamp in the older epoch. On an exit
+/// toward such a state owner, the driver forwards a generation change at once, as it does an epoch change, so that a
+/// cut's crossing never waits for the throttle; before a call in a newer epoch writes anything, it sends the point's
+/// previous header, the final one of the older epoch, if the exit last carried another; and when input ends, it sends
+/// each point's last header if the exit last carried another. With one upstream point, none of this applies.
+///
+/// A **keyed exit**, into a state owner on several lanes, routes each event to the lane that owns its partition key and
+/// coalesces what it routes to each lane across calls, for at most [`COALESCE_HOLD`]; it judges progress per target
+/// lane against what it actually sent, with the same final headers, and also forwards a new admission second at once,
+/// so that a lane none of the second's events went to gates its ticks as a state owner on one lane would (see
+/// `driver::keyed`). The host ends each turn of input with [`end_turn`][RegionDriver::end_turn], which sends the routed
+/// buffers whose hold expired.
+///
+/// [`COALESCE_HOLD`]: crate::limits::values::COALESCE_HOLD
+///
 /// # Isolation slots
 ///
 /// The region of an isolation slot runs one or more lineages of its state owners' state: **instances**, keyed by their
@@ -687,6 +878,10 @@ struct InvalidLoss {
 ///   resumes it; no input is read until it completes, and the batch that started it is admitted afterwards.
 /// - **Shutdown.** When input ends, every instance makes its final flush at the later of the latest admission time and
 ///   the wall clock, and discards its open buckets as shutdown loss.
+/// - **Several points and lanes.** With several upstream points of one source clock, a clock reset opens a reset
+///   window, which keeps an instance per lineage and epoch until every point switched; and an isolation slot on
+///   several lanes keeps the rules that couple a lineage's contexts in records its lanes share
+///   ([`RegionConfig::with_lane`]). With one point and one lane, both are the rules above.
 ///
 /// A panic in a state owner's kernel is charged to the generation whose call ran: the batch's for a batch, and the
 /// drain's for time-driven work. The instance restarts empty, its points counted as invalid loss, and every
@@ -708,10 +903,19 @@ pub struct MetricRegionDriver {
     cursor: Cursor,
     now: Option<Instant>,
     failures: Option<GenerationFailureReporter>,
-    /// The exits that forward the progress of admission points toward state owners.
+    /// The exits that forward the progress of admission points toward state owners, whole: every one but the keyed
+    /// exits, which forward it per target lane.
     progress: Vec<ProgressExit>,
     /// The state of an isolation slot, which only an isolation slot's region has.
     state: Option<Box<StateSlot>>,
+    /// The lane of its slot the region runs as.
+    lane: LaneContext,
+    /// The panics of every generation the region runs, shared by the lanes of its slot.
+    ledger: Arc<PanicLedger>,
+    /// The exits that route events by partition key to the lanes of a state owner's slot.
+    keyed: Vec<KeyedExit>,
+    /// The counters the keyed exits' counts are published to.
+    routing: RoutingTelemetry,
 }
 
 impl fmt::Debug for MetricRegionDriver {
@@ -749,10 +953,36 @@ impl MetricRegionDriver {
             kind,
             progress,
             state_telemetry,
+            slot_lanes,
+            keyed,
+            lane,
+            routing,
+            state_lane_telemetry,
         } = config;
+        let (lane, lanes, ledger) = match lane {
+            Some((lane, lanes)) => {
+                let ledger = Arc::clone(lanes.panic_ledger());
+                (lane, Some(lanes), ledger)
+            }
+            None => (LaneContext::ONE, None, PanicLedger::new()),
+        };
+        let lane_error = |message: String| RegionError::Lanes {
+            region: name.to_string(),
+            message,
+        };
+        if lane.count != slot_lanes.max(1) || lane.index >= lane.count {
+            return Err(lane_error(format!(
+                "it was configured as {}, and its slot runs {} lanes; give each lane's region its own lane of the slot \
+                 with `RegionConfig::with_lane`",
+                lane, slot_lanes
+            )));
+        }
         let state = match kind {
             SlotKind::Fused => None,
-            SlotKind::Isolation { output_point, upstream } => {
+            SlotKind::Isolation {
+                output_points,
+                upstream,
+            } => {
                 let schedule = schedule.ok_or_else(|| RegionError::StateConfig {
                     region: name.to_string(),
                     message: "it runs an isolation slot, which needs the topology's schedule to decide which \
@@ -760,6 +990,10 @@ impl MetricRegionDriver {
                               with `RegionConfig::with_schedule`"
                         .to_string(),
                 })?;
+                let output_point = output_points
+                    .get(usize::from(lane.index))
+                    .copied()
+                    .ok_or_else(|| lane_error(format!("its slot has no output point for {}", lane)))?;
                 Some(Box::new(StateSlot::new(
                     output_point,
                     upstream,
@@ -767,16 +1001,27 @@ impl MetricRegionDriver {
                     wall_clock.unwrap_or_else(|| Arc::new(SystemWallClock)),
                     state_budgets,
                     state_telemetry.unwrap_or_else(StateTelemetry::noop),
+                    lanes.map(|lanes| (lane, lanes)),
+                    state_lane_telemetry.unwrap_or_else(StateLaneTelemetry::noop),
                 )))
             }
         };
+        // A keyed exit forwards the progress of its points per target lane; every other exit, whole.
+        let keyed = keyed
+            .into_iter()
+            .map(|(exit, groups)| {
+                let points = progress
+                    .iter()
+                    .find(|(progress, _)| *progress == exit)
+                    .map(|(_, points)| points.clone())
+                    .unwrap_or_default();
+                KeyedExit::new(exit, groups, points)
+            })
+            .collect::<Vec<_>>();
         let progress = progress
             .into_iter()
-            .map(|(exit, points)| ProgressExit {
-                exit,
-                last: vec![None; points.len()],
-                points,
-            })
+            .filter(|(exit, _)| !keyed.iter().any(|keyed| keyed.exit() == *exit))
+            .map(|(exit, points)| ProgressExit::new(exit, points))
             .collect();
         let mut driver = Self {
             slot,
@@ -796,10 +1041,19 @@ impl MetricRegionDriver {
             failures,
             progress,
             state,
+            lane,
+            ledger,
+            keyed,
+            routing,
         };
         driver.scratch.written = vec![false; exits];
         driver.prepare(boot)?;
         Ok(driver)
+    }
+
+    /// Returns the lane of its slot the region runs as.
+    pub fn lane(&self) -> LaneContext {
+        self.lane
     }
 
     /// Returns the slot the driver runs.
@@ -841,9 +1095,29 @@ impl MetricRegionDriver {
             budgeted,
             state: bindings,
             leases,
+            lanes,
             layout,
             telemetry,
         } = prepare;
+        // A preparation that still carries one share per lane prepares this lane's.
+        let (kernels, bindings) = if lanes.is_empty() {
+            (kernels, bindings)
+        } else {
+            let count = lanes.len();
+            let share = lanes
+                .into_iter()
+                .nth(usize::from(self.lane.index))
+                .filter(|_| count == usize::from(self.lane.count))
+                .ok_or_else(|| RegionError::Lanes {
+                    region: self.name.to_string(),
+                    message: format!(
+                        "it runs {}, and was given a preparation with {} lane shares; split each preparation into one \
+                         share per lane of the slot",
+                        self.lane, count
+                    ),
+                })?;
+            (share.kernels, share.state)
+        };
         let id = generation.id();
         if program.slot() != self.slot {
             return Err(RegionError::WrongSlot {
@@ -1007,8 +1281,7 @@ impl MetricRegionDriver {
             budget,
             native_kernels,
             native_decisions,
-            panics: PanicHistory::default(),
-            mode: GenerationMode::Healthy,
+            ledger: self.ledger.generation(id),
         };
         if self.scratch.registers.len() < live.code.registers {
             self.scratch.registers.resize_with(live.code.registers, Vec::new);
@@ -1130,7 +1403,8 @@ impl MetricRegionDriver {
     /// reported, unless it was reported already.
     fn fail_generation(&mut self, index: usize, reason: &str) {
         let generation = &mut self.generations[index];
-        let previous = std::mem::replace(&mut generation.mode, GenerationMode::Dropping);
+        // The mode is the generation's across the slot's lanes: the lane that fails it first reports it.
+        let previous = generation.ledger.fail();
         if previous == GenerationMode::Dropping {
             return;
         }
@@ -1149,10 +1423,10 @@ impl MetricRegionDriver {
 
     /// Asks for the live generation at `index` to be rolled back, once, while the region keeps processing its batches.
     fn roll_back_generation(&mut self, index: usize, node: &str, reason: &str) {
-        if self.generations[index].mode != GenerationMode::Healthy {
+        // Across the slot's lanes, only the lane that moves the generation from healthy asks for its rollback.
+        if !self.generations[index].ledger.roll_back() {
             return;
         }
-        self.generations[index].mode = GenerationMode::RollingBack;
         self.log_rolling_back(index, node, reason);
         if let Some(failures) = &self.failures {
             failures(self.generations[index].id, reason);
@@ -1170,7 +1444,7 @@ impl MetricRegionDriver {
             self.reject(Fault::UnknownGeneration, header, batch);
             return None;
         };
-        if !self.generations[index].mode.processes() {
+        if !self.generations[index].ledger.mode().processes() {
             self.reject(Fault::FailedGeneration, header, batch);
             return None;
         }
@@ -1193,6 +1467,7 @@ impl MetricRegionDriver {
             generations,
             scratch,
             cursor,
+            keyed,
             ..
         } = self;
         let LiveGeneration {
@@ -1214,6 +1489,7 @@ impl MetricRegionDriver {
             counts,
             slab: kernels,
             instances: None,
+            keyed,
             state_params: program.state_params(),
             scratch,
             cursor,
@@ -1225,33 +1501,105 @@ impl MetricRegionDriver {
         *cursor = Cursor::default();
     }
 
-    /// Forwards the progress of the batch's admission point on every exit toward a state owner that the call wrote
-    /// nothing to, as a header-only batch, when it is due (see [Progress](Self#progress)).
-    fn forward_progress(&mut self, header: &BatchHeader, header_only: bool, exits: &mut ExitSink) {
+    /// Before a call writes anything, sends the final header of its point's older epoch on every exit toward a state
+    /// owner with several upstream points that last carried another header from the point, when the call's header is
+    /// in a newer epoch (see [Progress](Self#progress)).
+    ///
+    /// It records nothing: the call's progress, recorded once its program ran, supersedes what it sends, and a call
+    /// that panics, whose output the host discards, leaves the header to send again with the point's next call.
+    fn forward_final_headers(&mut self, header: &BatchHeader, exits: &mut ExitSink) {
+        let Some(point) = header.admission_point else {
+            return;
+        };
+        for exit in &self.progress {
+            let Some(latest) = &exit.latest else {
+                continue;
+            };
+            let Some(position) = exit.points.iter().position(|upstream| *upstream == point) else {
+                continue;
+            };
+            let Some(previous) = &latest[position] else {
+                continue;
+            };
+            if epoch_newer(header.epoch, previous.epoch) && exit.last[position] != SentMark::of(previous) {
+                exits.emit(exit.exit, EventsBuffer::with_capacity(0).with_header(previous.clone()));
+            }
+        }
+    }
+
+    /// Completes a call on every exit toward a state owner: a keyed exit routes what the call wrote to it, and every
+    /// exit forwards the progress of the batch's admission point when it is due (see [Progress](Self#progress)).
+    fn forward_progress(&mut self, header: &BatchHeader, header_only: bool, now: Instant, exits: &mut ExitSink) {
+        for keyed in &mut self.keyed {
+            keyed.complete_call(header, header_only, now, exits);
+        }
         if self.progress.is_empty() {
             return;
         }
-        let (Some(point), Some(admitted_at)) = (header.admission_point, header.admitted_at) else {
+        let (Some(point), Some(mark)) = (header.admission_point, SentMark::of(header)) else {
             return;
+        };
+        let progress = || {
+            let mut progress = header.clone();
+            progress.entry = None;
+            progress
         };
         for exit in &mut self.progress {
             let Some(position) = exit.points.iter().position(|upstream| *upstream == point) else {
                 continue;
             };
+            // With several upstream points, the state owner crosses at a cut once every point's new generation reached
+            // it, so a generation change is forwarded at once.
+            let several = exit.latest.is_some();
             let last = &mut exit.last[position];
             if self.scratch.written.get(exit.exit.get()).copied().unwrap_or(false) {
-                *last = Some((header.epoch, admitted_at));
-                continue;
+                *last = Some(mark);
+            } else {
+                let due = header_only
+                    || last.is_none_or(|sent| {
+                        sent.epoch() != mark.epoch()
+                            || mark.admitted_at() >= sent.admitted_at().saturating_add(PROGRESS_PERIOD)
+                            || (several && sent.generation() != mark.generation())
+                    });
+                if due {
+                    exits.emit(exit.exit, EventsBuffer::with_capacity(0).with_header(progress()));
+                    *last = Some(mark);
+                }
             }
-            let due = header_only
-                || last.is_none_or(|(epoch, sent)| {
-                    epoch != header.epoch || admitted_at >= sent.saturating_add(PROGRESS_PERIOD)
-                });
-            if due {
-                let mut progress = header.clone();
-                progress.entry = None;
-                exits.emit(exit.exit, EventsBuffer::with_capacity(0).with_header(progress));
-                *last = Some((header.epoch, admitted_at));
+            // A header of an epoch older than the point's latest, which only a wiring fault produces and the state
+            // owner counts as such, is never the point's final header of an epoch.
+            if let Some(latest) = &mut exit.latest {
+                let latest = &mut latest[position];
+                if latest
+                    .as_ref()
+                    .is_none_or(|latest| !epoch_newer(latest.epoch, mark.epoch()))
+                {
+                    *latest = Some(progress());
+                }
+            }
+        }
+    }
+
+    /// Finishes every exit toward a state owner when input ends: a keyed exit sends what it holds, and every exit sends
+    /// each point's last header to the lanes whose last header from the point is another, so that the state owner's
+    /// watermark holds each point's last stamp when its input closes (see [Progress](Self#progress)).
+    fn finish_progress(&mut self, exits: &mut ExitSink) {
+        for keyed in &mut self.keyed {
+            keyed.finish(exits);
+        }
+        for exit in &mut self.progress {
+            let Some(latest) = &exit.latest else {
+                continue;
+            };
+            for (previous, last) in latest.iter().zip(&mut exit.last) {
+                let Some(previous) = previous else {
+                    continue;
+                };
+                let mark = SentMark::of(previous);
+                if *last != mark {
+                    exits.emit(exit.exit, EventsBuffer::with_capacity(0).with_header(previous.clone()));
+                    *last = mark;
+                }
             }
         }
     }
@@ -1363,7 +1711,9 @@ impl MetricRegionDriver {
         .unwrap_or(false);
         let budget = if native { PanicBudget::Zero } else { generation.budget };
 
-        if !generation.panics.record(budget, now) {
+        // The budget is the generation's across the slot's lanes.
+        let (survives, total) = generation.ledger.record(budget, now);
+        if !survives {
             if native && generation.budget != PanicBudget::Zero {
                 return Some(PanicOutcome::Fail(generic_error!(
                     "Region `{}` panicked in {} of generation {}, which native configuration placed: a native node's \
@@ -1385,8 +1735,7 @@ impl MetricRegionDriver {
             }
             let reason = format!(
                 "it exceeded its panic budget, with {} panics, the last in {}",
-                generation.panics.total(),
-                node
+                total, node
             );
             self.fail_generation(index, &reason);
         } else {
@@ -1456,10 +1805,11 @@ impl RegionDriver for MetricRegionDriver {
         // A header-only batch, such as a heartbeat, carries nothing to process, only its progress.
         let header_only = batch.is_empty();
         let header = batch.take_header();
+        self.forward_final_headers(&header, exits);
         if !header_only {
             self.run_fused(turn, &header, batch, exits);
         }
-        self.forward_progress(&header, header_only, exits);
+        self.forward_progress(&header, header_only, turn.now(), exits);
         Progress::Done
     }
 
@@ -1493,7 +1843,18 @@ impl RegionDriver for MetricRegionDriver {
         if self.state.is_some() {
             return self.finish_isolated(turn, exits);
         }
+        // What a keyed exit still holds, and each point's last header, reach the state owners before the region stops.
+        self.finish_progress(exits);
         Progress::Done
+    }
+
+    fn end_turn(&mut self, turn: &mut RegionTurn<'_>, _input_idle: bool, exits: &mut ExitSink) -> Option<Instant> {
+        // A keyed exit holds its open buffers for their hold whether input is idle or not.
+        let now = turn.now();
+        self.keyed
+            .iter_mut()
+            .filter_map(|keyed| keyed.end_turn(now, exits))
+            .min()
     }
 
     fn control(
@@ -1517,7 +1878,9 @@ impl RegionDriver for MetricRegionDriver {
                     self.kernel_control_isolated(turn, control);
                 } else {
                     // A stateless kernel handles no control message, so nothing here adds to the message.
-                    let KernelControl { target, message, reply } = control;
+                    let KernelControl {
+                        target, message, reply, ..
+                    } = control;
                     debug!(
                         region = %self.name,
                         target = ?target,
@@ -1533,6 +1896,10 @@ impl RegionDriver for MetricRegionDriver {
     fn reset_after_panic(&mut self, panic: &RegionPanic) -> PanicOutcome {
         let cursor = std::mem::take(&mut self.cursor);
         self.scratch.clear();
+        // What the call wrote to a keyed exit is lost with it; what earlier calls left open there is kept.
+        for keyed in &mut self.keyed {
+            keyed.abandon_call();
+        }
         for slot in self.kernels.iter_mut() {
             slot.ports.clear();
         }
@@ -1557,6 +1924,18 @@ impl RegionDriver for MetricRegionDriver {
         let invalid = std::mem::take(&mut self.invalid.pending);
         if invalid.points > 0 {
             self.invalid.counter.increment(invalid.points);
+        }
+        for keyed in &mut self.keyed {
+            let counts = keyed.take_counts();
+            for (counter, count) in [
+                (&self.routing.routed_buffers, counts.buffers),
+                (&self.routing.routed_events, counts.events),
+                (&self.routing.progress, counts.progress),
+            ] {
+                if count > 0 {
+                    counter.increment(count);
+                }
+            }
         }
         self.publish_state();
     }
@@ -1673,8 +2052,10 @@ struct Run<'a, 't> {
     decisions: &'a mut [DecisionState],
     counts: &'a mut ProgramCounts,
     slab: &'a mut KernelSlab,
-    /// The instances of an isolation slot's state, which its state steps feed.
-    instances: Option<&'a mut crate::runtime::state::slab::Slab<isolation::Instance>>,
+    /// What an isolation slot's state steps admit into: the instances of its state, through the state lane's admission.
+    instances: Option<StateAdmission<'a>>,
+    /// The region's keyed exits, which route what an exit step writes to the lanes of a state owner's slot.
+    keyed: &'a mut [KeyedExit],
     /// The program's state parameter table.
     state_params: &'a [StateParamsEntry],
     scratch: &'a mut Scratch,
@@ -1712,6 +2093,7 @@ impl Run<'_, '_> {
             counts,
             slab,
             mut instances,
+            keyed,
             state_params,
             scratch,
             cursor,
@@ -1809,17 +2191,25 @@ impl Run<'_, '_> {
                 }
                 Op::Exit { register, exit, entry } => {
                     cursor.node = None;
+                    // A keyed exit routes each event to the lane of the state owner's slot that owns its key, once the
+                    // call's program has run.
+                    let mut keyed_exit = keyed.iter_mut().find(|keyed| keyed.exit() == *exit);
                     for mut buffer in registers[*register].drain(..) {
                         if buffer.is_empty() {
                             continue;
                         }
-                        let mut stamped = header.clone();
-                        stamped.entry = *entry;
-                        buffer.set_header(stamped);
                         if let Some(written) = written.get_mut(exit.get()) {
                             *written = true;
                         }
-                        exits.emit(*exit, buffer);
+                        match keyed_exit.as_mut() {
+                            Some(keyed) => keyed.stage(*entry, buffer),
+                            None => {
+                                let mut stamped = header.clone();
+                                stamped.entry = *entry;
+                                buffer.set_header(stamped);
+                                exits.emit(*exit, buffer);
+                            }
+                        }
                     }
                 }
                 Op::Drop { register, drop } => {
@@ -1834,15 +2224,22 @@ impl Run<'_, '_> {
                     params,
                 } => {
                     cursor.node = Some(NodeRef::Kernel(*kernel));
-                    // Translation lets state steps run only in an isolation slot, whose generations bind instances.
-                    let instance = match (instances.as_deref_mut(), kernel_slots[*kernel]) {
-                        (Some(instances), KernelBinding::Instance(handle)) => {
-                            instances.get_mut(handle).map(|instance| (handle, instance))
+                    if let Some(admission) = instances.as_mut() {
+                        for buffer in &registers[*register] {
+                            admission.check_routing(buffer);
                         }
+                    }
+                    // Translation lets state steps run only in an isolation slot, whose generations bind instances.
+                    let instance = match (instances.as_mut(), kernel_slots[*kernel]) {
+                        (Some(admission), KernelBinding::Instance(handle)) => admission.instance(handle, header),
                         _ => None,
                     };
                     let Some((handle, instance)) = instance else {
-                        debug_assert!(false, "a state step's generation binds an instance");
+                        // Unless the lineage's instance of another clock epoch could not be built.
+                        debug_assert!(
+                            instances.as_ref().is_some_and(StateAdmission::unbuilt),
+                            "a state step's generation binds an instance"
+                        );
                         for buffer in registers[*register].drain(..) {
                             counters.record_loss(LossClass::Invalid, buffer.len() as u64, points_in(&buffer));
                         }

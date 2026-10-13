@@ -244,7 +244,7 @@ pub enum CreditKey {
     /// An idle delivery host's queue bound, held while it has any live or draining recipient.
     HostQueue(HostId),
 
-    /// A generation's new kernel instances in one slot.
+    /// A generation's new kernel instances in one slot, on every lane of the slot.
     Instances(GenerationId, SlotId),
 }
 

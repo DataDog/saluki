@@ -73,6 +73,16 @@
 //!   global budget has room; the new context then holds one unit of each. Metrics for held contexts are always
 //!   admitted. With one core per budget, and a global capacity of at least `context_limit`, this is exactly native
 //!   admission.
+//! - A batch takes the units of its new contexts through one
+//!   [`BudgetReservation`][saluki_core::execution::BudgetReservation] of both budgets. A core on one lane takes each
+//!   unit as it admits the context, one acquisition of each budget per new context, so it is refused only while
+//!   admitted contexts fill a budget, whatever other cores do at once. A core that is one lane's share of a state owner
+//!   on several lanes ([`with_lanes`][AggregateCore::with_lanes]), whose lanes admit at once from tasks of their own,
+//!   takes them in blocks instead, one acquisition of each budget per block, starting with as many as its previous
+//!   batch admitted, and returns the units it did not use when the batch ends. The budgets count reserved units as in
+//!   use, so neither limit is ever exceeded; but while another lane's batch holds units it has not used, a new context
+//!   can be refused for them, fewer than [`MAX_BLOCK`][saluki_core::execution::BudgetReservation::MAX_BLOCK] for each
+//!   such batch, and a flush can count them and keep the breach flag until a later pass.
 //! - Removing a context, by a flush, a drain, or a discard, releases its units, and a flush clears the breach flag if
 //!   the node's budget then counts fewer than the flush's `context_limit` contexts and the global budget has room.
 //! - Dropping the core releases every unit it holds, and removes its contexts from its context gauges, so that a host
@@ -107,6 +117,10 @@ pub use self::histogram::{HistogramConfiguration, HistogramStatistic};
 
 mod kernel;
 pub use self::kernel::{AggregateKernel, TakeSuppressed};
+
+pub mod lanes;
+pub use self::lanes::LaneShared;
+use self::lanes::{FlushRecord, Previous};
 
 mod snapshot;
 pub use self::snapshot::{AggregateContextSnapshotEntry, AggregateMetricType, ContextSnapshot};
@@ -390,6 +404,9 @@ pub struct FlushOutcome {
 pub struct FlushState {
     cursor: FlushCursor,
     was_breached: bool,
+    /// Whether the flush counts in `aggregate_flushes_total`: one lane's flush of a lineage on several lanes counts
+    /// only when no other lane counted its tick ([`FlushRecord::first`]).
+    counted: bool,
     params: FlushParams,
 }
 
@@ -442,6 +459,11 @@ pub struct AggregateCore {
     shared: bool,
     admit: AdmitParams,
     flush: FlushParams,
+    /// The record the core shares with the other lanes' cores of its lineage, if the lineage runs on lanes.
+    lanes: Option<Arc<LaneShared>>,
+    /// The new contexts the last batch admitted against shared budgets: on lanes, the size of the next batch's first
+    /// block of budget units.
+    admitted_last_batch: u64,
 }
 
 impl AggregateCore {
@@ -478,7 +500,27 @@ impl AggregateCore {
             shared,
             admit,
             flush,
+            lanes: None,
+            admitted_last_batch: 0,
         }
+    }
+
+    /// Makes the core one lane's share of a lineage that runs on several lanes, keeping the rules that couple all of
+    /// the lineage's contexts in `lanes`, which every lane's core of the lineage shares; see the
+    /// [`lanes`] module.
+    ///
+    /// A core with lanes holds only the contexts routed to its lane, and draws on a budget shared by every lane: with
+    /// more than one lane, it takes its new contexts' budget units in blocks; see [Budgets](self#budgets). Its
+    /// lane receives the batches of several admission points, interleaved, so it also needs [`LastSeen::Latest`]
+    /// ([`with_last_seen`][Self::with_last_seen]), as [`AggregateKernel::new`] sets.
+    pub fn with_lanes(mut self, lanes: Arc<LaneShared>) -> Self {
+        self.lanes = Some(lanes);
+        self
+    }
+
+    /// Returns the record the core shares with the other lanes' cores of its lineage, if the lineage runs on lanes.
+    pub fn lanes(&self) -> Option<&Arc<LaneShared>> {
+        self.lanes.as_ref()
     }
 
     /// Sets which time counts as a held context's last update, for an empty core: the time of the batch that last
@@ -522,6 +564,11 @@ impl AggregateCore {
     /// Returns the number of contexts the core holds, idle counters included.
     pub fn len(&self) -> usize {
         self.state.len()
+    }
+
+    /// Returns `true` if the core holds `context`, idle or not.
+    pub fn holds(&self, context: &Context) -> bool {
+        self.state.contains(context)
     }
 
     /// Returns the context limit the core was created with, which [`admit`][Self::admit] applies.
@@ -574,12 +621,19 @@ impl AggregateCore {
     where
         I: IntoIterator<Item = Metric>,
     {
-        let limit = context_limit(&self.budget, self.shared, params.context_limit);
+        // The limit holds the batch's reservation of budget units, if the core shares budgets. The lanes of a state
+        // owner on several lanes admit at once, on tasks of their own, so a lane takes its new contexts' units in
+        // blocks, starting with as many as its previous batch admitted; a core on one lane takes each unit as it
+        // admits its context, so that it never holds a unit another state owner could be refused for.
+        let mut limit = context_limit(&self.budget, self.shared, params.context_limit);
+        if self.lanes.as_ref().is_some_and(|lanes| lanes.lanes() > 1) {
+            limit = limit.in_blocks(self.admitted_last_batch);
+        }
         let mut outcome = AdmitOutcome::default();
         for metric in metrics {
             let was_breached = self.state.context_limit_breached();
             let points = metric.values().len();
-            match self.state.insert(now, metric, limit) {
+            match self.state.insert(now, metric, &mut limit) {
                 Insertion::Inserted { replaced_points } => {
                     outcome.accepted += 1;
                     if replaced_points > 0 {
@@ -599,6 +653,9 @@ impl AggregateCore {
                 }
             }
         }
+        // The batch is admitted: the units it reserved and no new context took go back to the budgets.
+        self.admitted_last_batch = limit.admitted();
+        drop(limit);
         outcome
     }
 
@@ -637,6 +694,45 @@ impl AggregateCore {
     /// [`end_flush`][Self::end_flush] or [`abandon_flush`][Self::abandon_flush] before anything is admitted.
     pub fn begin_flush(&mut self, now: u64, last: bool, params: &FlushParams) -> Option<FlushState> {
         self.start(FlushMode::Closed, now, last, params.clone())
+    }
+
+    /// Starts a flush as [`begin_flush`][Self::begin_flush] does, as one lane's flush of a lineage on several lanes,
+    /// as the lanes' shared record says it: its idle-counter zeros start from [`FlushRecord::previous`], the latest
+    /// earlier flush at which any lane held contexts, and it counts in `aggregate_flushes_total` only if
+    /// [`FlushRecord::first`].
+    ///
+    /// [`Previous::Known`]`(None)` adds no zeros, as a first flush does, and [`Previous::Unresolved`] starts them from
+    /// the core's own last flush, which is what `begin_flush` does, and what a lineage on one lane always does. A
+    /// previous flush later than `now`, as when this lane's grace expired at a watermark behind the others' flush time,
+    /// adds no zeros either.
+    pub fn begin_flush_with(
+        &mut self, now: u64, last: bool, params: &FlushParams, record: FlushRecord,
+    ) -> Option<FlushState> {
+        if self.state.is_empty() {
+            return None;
+        }
+        let since = match record.previous {
+            Previous::Known(previous) => previous.map_or(0, |previous| previous.min(now)),
+            Previous::Unresolved => self.state.last_flush(),
+        };
+        let was_breached = self.state.context_limit_breached();
+        let cursor = self
+            .state
+            .start_flush_since(now, since, last && params.flush_open_windows, params.counter_expiry);
+        Some(FlushState {
+            cursor,
+            was_breached,
+            counted: record.first,
+            params: params.clone(),
+        })
+    }
+
+    /// Returns `true` if the core, holding what it holds now, is below the context limit `limit`, as the end of a flush
+    /// judges it to clear the breach flag: for a core that shares budgets, its node's budget counts fewer contexts and
+    /// the global budget has room.
+    pub fn is_below_context_limit(&self, limit: usize) -> bool {
+        self.state
+            .is_below_limit(&context_limit(&self.budget, self.shared, limit))
     }
 
     /// Starts a drain, or returns `None` if the core holds no contexts.
@@ -683,6 +779,7 @@ impl AggregateCore {
         Some(FlushState {
             cursor,
             was_breached,
+            counted: true,
             params,
         })
     }
@@ -707,7 +804,8 @@ impl AggregateCore {
     /// expired, releasing their budget units, clears the breach flag if fewer contexts than the flush's context limit
     /// remain, and records the flush.
     ///
-    /// A flush is recorded as the last flush, and counted in `aggregate_flushes_total`. A drain or a discard, which
+    /// A flush is recorded as the last flush, and counted in `aggregate_flushes_total`, unless it is one lane's flush
+    /// of a tick another lane counted ([`begin_flush_with`][Self::begin_flush_with]). A drain or a discard, which
     /// removed each context as it visited it, leaves the core as if it had never flushed, and is not counted as a
     /// flush. The outcome holds what the pass counted since the last [take][FlushState::take_counted], if any.
     pub fn end_flush(&mut self, mut state: FlushState) -> FlushOutcome {
@@ -715,12 +813,13 @@ impl AggregateCore {
         let FlushState {
             cursor,
             was_breached,
+            counted: counts_as_flush,
             params,
         } = state;
         let mode = cursor.mode();
         let limit = context_limit(&self.budget, self.shared, params.context_limit);
         self.state.finish_flush(cursor, limit);
-        if mode == FlushMode::Closed {
+        if mode == FlushMode::Closed && counts_as_flush {
             self.state.telemetry_mut().increment_flushes();
         }
         FlushOutcome {
@@ -736,7 +835,7 @@ impl AggregateCore {
     /// removed. An abandoned flush still counts in `aggregate_flushes_total`, as the native flush that stopped at a
     /// failed delivery did.
     pub fn abandon_flush(&mut self, state: FlushState) {
-        if state.cursor.mode() == FlushMode::Closed {
+        if state.cursor.mode() == FlushMode::Closed && state.counted {
             self.state.telemetry_mut().increment_flushes();
         }
     }

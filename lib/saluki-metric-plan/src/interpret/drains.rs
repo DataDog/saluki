@@ -1,7 +1,11 @@
 //! Time-driven work of isolated state owners: what a stamp makes due before its batch is admitted (reset drains,
 //! final retirements at a cut, gated ticks), flush ticks, and the end of input.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use saluki_core::execution::{AdmissionPointId, AdmissionTime, BatchHeader, ClockReset, DrainPolicy, GenerationId};
 
@@ -9,14 +13,16 @@ use super::{
     port_count, program::Stamp, time_driven_header, with_exec, Drain, DrainKind, Exec, HostFinish, HostOutput,
     HostTick, InstallOutcome, InterpretErrorKind, KernelCall, LocalWork, Program, Queue, Run,
 };
+use crate::equivalence::ContextIdentity;
 use crate::runtime::state::rules::{
-    retiring_flush_time, shutdown_time, stamping_generation, Observation, OutputClock, TickDecision,
+    retiring_flush_time, shutdown_time, stamping_generation, Observation, OutputClock, TickDecision, WindowStep,
 };
 
 impl Run<'_, '_> {
     /// Lets every isolated state owner upstream of a stamp's admission point observe it, and runs what the stamp
-    /// makes due before its batch is admitted, in order: the reset drains of a clock reset, the final retirement of
-    /// lineages whose replacement every upstream point has now switched to, and the gated ticks the stamp releases.
+    /// makes due before its batch is admitted, in order: the reset windows it opens or closes (or, for a state owner
+    /// over points of several clocks, the reset drains of a clock reset), the final retirement of lineages whose
+    /// replacement every upstream point has now switched to, and the gated ticks the stamp releases.
     pub(super) fn before_admission(
         &mut self, header: &BatchHeader, stamp: &Stamp, now: AdmissionTime,
     ) -> Result<(), InterpretErrorKind> {
@@ -26,6 +32,13 @@ impl Run<'_, '_> {
         if stamp.reset {
             self.check_reset_supported(point)?;
         }
+        // The state owners observe the point's progress: in arrival order, its latest time, which a stamp earlier than
+        // it leaves where it is.
+        let progress = BatchHeader {
+            admitted_at: Some(stamp.latest),
+            ..header.clone()
+        };
+        let header = &progress;
 
         let mut resets = Vec::new();
         for index in self.instances.indices() {
@@ -35,9 +48,15 @@ impl Run<'_, '_> {
             if !instance.observes(point) {
                 continue;
             }
+            let one_clock = self
+                .slots
+                .get(&instance.output_clock())
+                .is_some_and(|slot| slot.one_clock);
             let latest = instance.tracker.max_latest();
             match instance.tracker.observe(header) {
                 Observation::Ok => {}
+                // Over the lanes of one clock, the slot's reset window decides what a reset does.
+                Observation::EpochSwitched { .. } if one_clock => {}
                 Observation::EpochSwitched {
                     point, previous, pre, ..
                 } => {
@@ -58,7 +77,30 @@ impl Run<'_, '_> {
             }
         }
 
-        // A reset closes everything each lineage fed by the point holds, in the timeline that ended.
+        // Each slot over the lanes of one clock steps its reset window: the stamp may open one, or close the epochs
+        // every upstream point has now left.
+        let keys = self
+            .slots
+            .keys()
+            .filter(|key| key.contains(&point))
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in keys {
+            let Some(slot) = self.slots.get_mut(&key) else {
+                continue;
+            };
+            if matches!(slot.tracker.observe(header), Observation::Fault) || !slot.one_clock {
+                continue;
+            }
+            match slot.window.step(&slot.tracker, header) {
+                WindowStep::None | WindowStep::Route(_) => {}
+                WindowStep::Opened { .. } => self.open_window(&key),
+                WindowStep::Closed { epochs } => self.close_window(&key, epochs, header.admitted_at, now)?,
+            }
+        }
+
+        // Over points of several clocks, a reset closes everything each lineage fed by the point holds, in the
+        // timeline that ended.
         if !resets.is_empty() {
             let mut drains = Vec::with_capacity(resets.len());
             let mut clocks = BTreeSet::new();
@@ -75,8 +117,8 @@ impl Run<'_, '_> {
                 }
             }
             self.run_drains(drains, now)?;
-            for key in clocks {
-                if let Some(clock) = self.output_clocks.get_mut(&key) {
+            for key in &clocks {
+                if let Some(clock) = self.output_clocks.get_mut(key) {
                     clock.reset();
                 }
             }
@@ -84,7 +126,7 @@ impl Run<'_, '_> {
                 if let Some(instance) = self
                     .instances
                     .get_mut(index)
-                    .filter(|instance| instance.observes(point))
+                    .filter(|instance| clocks.contains(&instance.output_clock()))
                 {
                     instance.last_flush = None;
                     instance.gated = None;
@@ -93,14 +135,15 @@ impl Run<'_, '_> {
         }
 
         // Every upstream point of a retiring lineage has switched: no batch of the generation it served can still come,
-        // so it makes its final flush at the cut before the batch that switched it is admitted.
+        // so it makes its final flush at the cut before the batch that switched it is admitted. A lineage inside a
+        // reset window waits for the window's close, where its reset drain is its final retirement.
         let crossing = self
             .instances
             .indices()
             .into_iter()
             .filter(|&index| {
                 self.instances.get(index).is_some_and(|instance| {
-                    !instance.retired
+                    instance.ticks()
                         && instance.retiring.as_ref().is_some_and(|retiring| {
                             retiring.by.cut().is_some() && instance.tracker.switched(retiring.by.id())
                         })
@@ -114,19 +157,207 @@ impl Run<'_, '_> {
         // Gated ticks the stamp's watermark reached.
         let mut released = Vec::new();
         for index in self.instances.indices() {
+            let one_clock = self.one_clock(index);
             let Some(instance) = self.instances.get_mut(index) else {
                 continue;
             };
             let Some((second, _)) = instance.gated else { continue };
             if let Some(flush) = self
                 .gate
-                .on_watermark(second, instance.tracker.watermark(), instance.last_flush)
+                .on_watermark(second, instance.watermark(one_clock), instance.last_flush)
             {
                 instance.gated = None;
                 released.push((index, flush));
             }
         }
         self.fire_ticks(released, now)
+    }
+
+    /// Returns `true` if the instance at `index` retires at a cut and holds data of the cut's publication epoch, which
+    /// it never flushes past the cut in. Over the lanes of one clock, that is the instance's own epoch, whatever epoch
+    /// each lane has reached, as a state lane decides it; a lane that has stamped nothing yet does not make it another.
+    /// Over points of several clocks, every point must be in the epoch the cut recorded for it.
+    pub(super) fn in_publication_epoch(&self, index: usize) -> bool {
+        let one_clock = self.one_clock(index);
+        let Some(instance) = self.instances.get(index) else {
+            return false;
+        };
+        let Some(cut) = instance.retiring.as_ref().and_then(|retiring| retiring.by.cut()) else {
+            return false;
+        };
+        if one_clock {
+            instance.tracker.is_publication_epoch(cut, instance.epoch)
+        } else {
+            instance.tracker.in_publication_epoch(cut)
+        }
+    }
+
+    /// Returns `true` if the instance at `index` belongs to a slot over the lanes of one clock.
+    pub(super) fn one_clock(&self, index: usize) -> bool {
+        self.instances
+            .get(index)
+            .and_then(|instance| self.slots.get(&instance.output_clock()))
+            .is_some_and(|slot| slot.one_clock)
+    }
+
+    /// Opens or extends the reset window of the slot `key`: every instance holding an older epoch's data is reset-
+    /// retiring from now on. It fires no further tick, and a tick waiting at its gate is dropped, as a reset drops it.
+    fn open_window(&mut self, key: &[AdmissionPointId]) {
+        let Some(target) = self.slots.get(key).map(|slot| slot.window.target()) else {
+            return;
+        };
+        for index in self.instances.indices() {
+            if let Some(instance) = self.instances.get_mut(index) {
+                if !instance.retired && instance.output_clock() == key && instance.epoch != target {
+                    instance.reset_retiring = true;
+                    instance.gated = None;
+                }
+            }
+        }
+    }
+
+    /// Closes epochs of the slot `key`'s reset window, oldest first, each with its watermark: every instance holding
+    /// a closed epoch's data runs the reset drain at that watermark (a cut-retiring one never past its cut, if the
+    /// epoch is the cut's publication epoch), and the slot's output clock starts a new epoch after each. Each lineage
+    /// then continues in the oldest epoch still open, or the window's target once it is closed: through its instance
+    /// of that epoch, which every generation binding the lineage binds from now on, or else through its drained
+    /// instance, which is empty, as if it had never flushed.
+    ///
+    /// A cut-retiring lineage whose drained epoch was the cut's publication epoch has had its last batch of the
+    /// generation it served: every newer-epoch stamp is the cut's new generation, so every point has switched to it,
+    /// and the stamp's crossing check retires it right after, its final flush finding it empty. Its reset drain is its
+    /// final retirement.
+    fn close_window(
+        &mut self, key: &[AdmissionPointId], epochs: Vec<(u32, Option<AdmissionTime>)>,
+        admitted_at: Option<AdmissionTime>, now: AdmissionTime,
+    ) -> Result<(), InterpretErrorKind> {
+        for (epoch, watermark) in epochs {
+            let mut drains = Vec::new();
+            for index in self.instances.indices() {
+                let Some(instance) = self
+                    .instances
+                    .get(index)
+                    .filter(|instance| !instance.retired && instance.output_clock() == key && instance.epoch == epoch)
+                else {
+                    continue;
+                };
+                let Some(slot) = self.slots.get(key) else { continue };
+                let cut = instance.retiring.as_ref().and_then(|retiring| retiring.by.cut());
+                let publication = cut.is_some_and(|cut| slot.tracker.is_publication_epoch(cut, epoch));
+                let flush = watermark.map(|watermark| retiring_flush_time(watermark, cut, publication));
+                let stamp_at = flush
+                    .or_else(|| slot.tracker.max_latest_in(epoch))
+                    .or(admitted_at)
+                    .unwrap_or(now);
+                if let Some(drain) = self.drain(index, DrainKind::Reset, flush, stamp_at) {
+                    drains.push(drain);
+                }
+            }
+            self.run_drains(drains, now)?;
+            if let Some(clock) = self.output_clocks.get_mut(key) {
+                clock.reset();
+            }
+        }
+
+        let Some(slot) = self.slots.get(key) else {
+            return Ok(());
+        };
+        let (target, open) = (slot.window.target(), slot.window.is_open());
+        let next = slot.window.older().first().copied().filter(|_| open).unwrap_or(target);
+        let held = |epoch: u32| epoch == target || slot.window.older().contains(&epoch);
+        let mut lineages = BTreeMap::<usize, Vec<usize>>::new();
+        for index in self.instances.indices() {
+            if let Some(instance) = self
+                .instances
+                .get(index)
+                .filter(|instance| !instance.retired && instance.output_clock() == key)
+            {
+                lineages.entry(instance.root(index)).or_default().push(index);
+            }
+        }
+        let closed = lineages
+            .values()
+            .flatten()
+            .filter(|&&index| self.instances.get(index).is_some_and(|instance| !held(instance.epoch)))
+            .copied()
+            .collect::<BTreeSet<_>>();
+        for (root, members) in lineages {
+            debug_assert!(
+                members.contains(&root),
+                "a lineage whose bound instance retired at a cut has no instance of a newer epoch"
+            );
+            if !members.contains(&root) {
+                continue;
+            }
+            let survivor = members
+                .iter()
+                .copied()
+                .find(|&index| self.instances.get(index).is_some_and(|instance| instance.epoch == next));
+            match survivor {
+                Some(survivor) if survivor != root && closed.contains(&root) => self.rebind(root, survivor),
+                Some(_) => {}
+                None if closed.contains(&root) => {
+                    if let Some(instance) = self.instances.get_mut(root) {
+                        instance.epoch = next;
+                        instance.last_flush = None;
+                        instance.gated = None;
+                        if let Some(admitted) = &mut instance.admitted {
+                            admitted.clear();
+                        }
+                    }
+                }
+                None => {}
+            }
+            for index in members {
+                if index != root && closed.contains(&index) && Some(index) != survivor {
+                    self.instances.remove(index);
+                }
+            }
+        }
+        for index in self.instances.indices() {
+            if let Some(instance) = self
+                .instances
+                .get_mut(index)
+                .filter(|instance| !instance.retired && instance.output_clock() == key)
+            {
+                instance.reset_retiring = open && instance.epoch != target;
+            }
+        }
+        Ok(())
+    }
+
+    /// Moves a lineage from its bound instance `from` to its instance of a newer epoch `to`: every program that binds
+    /// `from` binds `to`, which keeps the lineage's cut, and `from`, drained, is dropped.
+    fn rebind(&mut self, from: usize, to: usize) {
+        for program in self.programs.values_mut() {
+            for node in &mut program.nodes {
+                if let Exec::State { instance, .. } = &mut node.exec {
+                    if *instance == Some(from) {
+                        *instance = Some(to);
+                    }
+                }
+            }
+        }
+        let retiring = self
+            .instances
+            .get_mut(from)
+            .and_then(|instance| instance.retiring.take());
+        for index in self.instances.indices() {
+            if let Some(instance) = self.instances.get_mut(index) {
+                if instance.primary == Some(from) {
+                    instance.primary = (index != to).then_some(to);
+                }
+            }
+        }
+        if let Some(instance) = self.instances.get_mut(to) {
+            instance.primary = None;
+            instance.last_flush = None;
+            instance.gated = None;
+            if retiring.is_some() {
+                instance.retiring = retiring;
+            }
+        }
+        self.instances.remove(from);
     }
 
     /// Fails if a clock reset at `point` reaches a state owner that is not isolated, whose host handles resets itself.
@@ -193,11 +424,11 @@ impl Run<'_, '_> {
     pub(super) fn tick_drains(&mut self, ticks: Vec<(usize, AdmissionTime)>) -> Vec<Drain> {
         let mut drains = Vec::new();
         for (index, flush) in ticks {
+            let in_publication_epoch = self.in_publication_epoch(index);
             let Some(instance) = self.instances.get_mut(index) else {
                 continue;
             };
             let cut = instance.retiring.as_ref().and_then(|retiring| retiring.by.cut());
-            let in_publication_epoch = cut.is_some_and(|cut| instance.tracker.in_publication_epoch(cut));
             let flush = retiring_flush_time(flush, cut, in_publication_epoch);
             instance.last_flush = Some(flush);
             if let Some(drain) = self.drain(index, DrainKind::Tick, Some(flush), flush) {
@@ -214,12 +445,13 @@ impl Run<'_, '_> {
     ) -> Option<Drain> {
         let instance = self.instances.get(index)?;
         let schedule = self.schedule.as_ref()?;
+        let bound = instance.root(index);
         let generation = stamping_generation(
             schedule,
             |generation| {
                 self.programs
                     .get(&generation)
-                    .is_some_and(|program| program.binding(index).is_some())
+                    .is_some_and(|program| program.binding(bound).is_some())
             },
             |generation| instance.tracker.switched(generation),
             instance.retiring_refs(),
@@ -260,7 +492,11 @@ impl Run<'_, '_> {
     ) -> Result<(), InterpretErrorKind> {
         let mut by_node = BTreeMap::<usize, Vec<Drain>>::new();
         for drain in drains {
-            let Some(node) = program.binding(drain.instance) else {
+            let bound = self
+                .instances
+                .get(drain.instance)
+                .map_or(drain.instance, |instance| instance.root(drain.instance));
+            let Some(node) = program.binding(bound) else {
                 return Err(InterpretErrorKind::Internal {
                     message: format!(
                         "generation {} drains instance {}, which it does not bind",
@@ -313,7 +549,15 @@ impl Run<'_, '_> {
             DrainKind::FinalRetire => call.repeat(&id, |turn| kernel.finish(turn, DrainPolicy::Retire))?,
             DrainKind::Shutdown => call.repeat(&id, |turn| kernel.finish(turn, DrainPolicy::Shutdown))?,
         }
-        let queue = self.kernel_output(program, node, call, &header)?;
+        // In candidate mode every record carries what its entry was admitted with, per bucket it holds.
+        let admitted = self
+            .instances
+            .get(drain.instance)
+            .and_then(|instance| instance.admitted.clone());
+        let queue = self.kernel_output(program, node, call, &header, |metric| {
+            let entry = admitted.as_ref()?.get(&ContextIdentity::of(metric))?;
+            Some(Arc::new(entry.tag()))
+        })?;
         if !queue.is_empty() {
             self.output_clocks.insert(key, clock);
         }
@@ -322,7 +566,10 @@ impl Run<'_, '_> {
 
     /// Runs one flush tick for every state owner, in topological order.
     pub(super) fn advance(&mut self, clock: AdmissionTime) -> Result<(), InterpretErrorKind> {
-        if clock < self.clock {
+        // The wall clock the ticks read may jump back as an admission clock's does: by more than the reset threshold,
+        // it is a new timeline, which the lanes of a partitioned frame tick in, as an arrival replay states.
+        let jump = Duration::from_nanos(self.clock.as_unix_nanos().saturating_sub(clock.as_unix_nanos()));
+        if clock < self.clock && jump <= self.points.reset_threshold() {
             return Err(InterpretErrorKind::ClockWentBackward {
                 previous: self.clock,
                 clock,
@@ -337,23 +584,31 @@ impl Run<'_, '_> {
             let mut sources = BTreeMap::new();
             for program in self.programs.values() {
                 for node in program.sources() {
-                    if let Some(point) = program.points[node].first().copied().flatten() {
-                        sources.entry(point).or_insert_with(|| program.nodes[node].id.clone());
+                    if let Some(group) = program.points[node].first().copied().flatten() {
+                        for (lane, point) in group.ids().enumerate() {
+                            sources
+                                .entry(point)
+                                .or_insert_with(|| (program.nodes[node].id.clone(), lane as u16));
+                        }
                     }
                 }
             }
-            for (point, source) in sources {
-                // An admission clock never moves back: a source that stamped later already heartbeats past the tick.
-                if self.points.latest(point).is_some_and(|latest| latest > clock) {
+            for (point, (source, lane)) in sources {
+                // An admission clock never moves back: a lane that stamped later in its clock's epoch already
+                // heartbeats past the tick.
+                if self.points.epoch(point) == self.points.clock_epoch(point)
+                    && self.points.latest(point).is_some_and(|latest| latest > clock)
+                {
                     continue;
                 }
-                self.admit(&source, clock, &[])?;
+                self.admit(&source, lane, clock, &[])?;
             }
         }
 
         // Gated ticks whose grace ended fire at the watermark, before this tick.
         let mut expired = Vec::new();
         for index in self.instances.indices() {
+            let one_clock = self.one_clock(index);
             let Some(instance) = self.instances.get_mut(index) else {
                 continue;
             };
@@ -361,7 +616,7 @@ impl Run<'_, '_> {
                 continue;
             }
             instance.gated = None;
-            if let Some(flush) = self.gate.on_grace(instance.tracker.watermark(), instance.last_flush) {
+            if let Some(flush) = self.gate.on_grace(instance.watermark(one_clock), instance.last_flush) {
                 expired.push((index, flush));
             }
         }
@@ -370,16 +625,19 @@ impl Run<'_, '_> {
         // The tick: each isolated instance by the gate, and every other state owner of the active plan.
         let mut fired = Vec::new();
         for index in self.instances.indices() {
+            let one_clock = self.one_clock(index);
             let Some(instance) = self.instances.get_mut(index) else {
                 continue;
             };
-            // A tick still waiting at the gate is not run again: the earlier one fires first.
-            if instance.retired || instance.gated.is_some() {
+            // A tick still waiting at the gate is not run again: the earlier one fires first. An instance a reset
+            // window holds fires no tick: an older epoch's drains when its epoch closes, and a newer epoch's has no
+            // watermark until every upstream point switched to it.
+            if !instance.ticks() || instance.gated.is_some() {
                 continue;
             }
             match self
                 .gate
-                .due(true, instance.tracker.watermark(), clock, instance.last_flush)
+                .due(true, instance.watermark(one_clock), clock, instance.last_flush)
             {
                 TickDecision::Skip => {}
                 TickDecision::Gate { second } => {
@@ -440,7 +698,7 @@ impl Run<'_, '_> {
                     None => call.repeat(&program.nodes[node].id, |turn| kernel.advance_time(turn))?,
                     Some(policy) => call.repeat(&program.nodes[node].id, |turn| kernel.finish(turn, policy))?,
                 }
-                self.kernel_output(program, node, call, &header)
+                self.kernel_output(program, node, call, &header, |_| None)
             }
             (Exec::Host(Some(adapter)), None) => {
                 let mut output = HostOutput::new(port_count(program, node));
@@ -466,20 +724,37 @@ impl Run<'_, '_> {
             return Ok(());
         };
         let clock = self.clock;
+        // Every upstream point's last stamp has arrived, so an open reset window closes first, each older epoch at its
+        // exact watermark so far.
+        let open = self
+            .slots
+            .iter()
+            .filter(|(_, slot)| slot.one_clock && slot.window.is_open())
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        for key in open {
+            let Some(slot) = self.slots.get_mut(&key) else {
+                continue;
+            };
+            let epochs = slot.window.close(&slot.tracker);
+            self.close_window(&key, epochs, None, clock)?;
+        }
         let mut drains = Vec::new();
         for index in self.instances.indices() {
+            let one_clock = self.one_clock(index);
+            let in_publication_epoch = self.in_publication_epoch(index);
             let Some(instance) = self.instances.get(index).filter(|instance| !instance.retired) else {
                 continue;
             };
-            // Every upstream point's data has arrived, so the state owner closes at the later of what it saw and the
-            // clock; a retiring lineage never past its cut.
+            // Every upstream point's data has arrived, so the state owner closes at the later of what it saw in its
+            // epoch and the clock; a retiring lineage never past its cut.
             let cut = instance.retiring.as_ref().and_then(|retiring| retiring.by.cut());
-            let in_publication_epoch = cut.is_some_and(|cut| instance.tracker.in_publication_epoch(cut));
-            let at = retiring_flush_time(
-                shutdown_time(instance.tracker.max_latest(), clock),
-                cut,
-                in_publication_epoch,
-            );
+            let latest = if one_clock {
+                instance.tracker.max_latest_in(instance.epoch)
+            } else {
+                instance.tracker.max_latest()
+            };
+            let at = retiring_flush_time(shutdown_time(latest, clock), cut, in_publication_epoch);
             if let Some(drain) = self.drain(index, DrainKind::Shutdown, Some(at), at) {
                 drains.push(drain);
             }

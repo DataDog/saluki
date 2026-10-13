@@ -18,7 +18,11 @@
 //!   with its own width in the one isolation slot. A state owner fed straight by an admission point whose edge leads to
 //!   a fused slot runs in the isolation slot that slot has an exit to: the fused slot passes the point's batches
 //!   through, unchanged. A node fed by a state owner runs in a fused slot that the state owner's isolation slot has an
-//!   exit to. A state owner outside the boot plan's isolation slots needs a frame change.
+//!   exit to. A state owner outside the boot plan's isolation slots needs a frame change. An isolation slot on
+//!   several lanes holds a share of its state owner's state per lane, which its keyed exits route by context key
+//!   ([`ExitRouting::Keyed`][super::frame::ExitRouting::Keyed]), so a state owner placed in it must have its state
+//!   partitioned by that key ([`PartitionKey::Context`]); one whose state cannot be partitioned needs the slot on one
+//!   lane, a frame change.
 //! - Every edge between slots, from a slot to a fixed component, and from a slot to an output must use one of the
 //!   slot's exits, and every edge leaving a fixed component must use its physical edge. An edge to an `emit` leads to
 //!   the encode host of the output's delivery host when the output is bound, and to its fixed destination otherwise.
@@ -41,6 +45,14 @@
 //! can share one exit. Entry IDs are numbered per slot and per generation, in plan edge order. A slot that passes an
 //! admission point's batches through to a state owner has an entry for the point whose input is the state owner's,
 //! in the isolation slot, which has the matching entry from the passing slot's exit.
+//!
+//! A point with lanes is one admission point per lane ([`AdmissionPointInfo::lanes`]), each stamping the batches of
+//! its lane, so a logical edge leaving it has one entry per lane's ID, in lane order, each with the same input: the
+//! slot's program runs every lane's batches alike, and each lane of the slot receives its own lane's. The entry of
+//! the isolation slot a passing slot leads to stays one: it is keyed by the entry its batches carry, which every
+//! lane's exit writes alike.
+//!
+//! [`AdmissionPointInfo::lanes`]: super::frame::AdmissionPointInfo::lanes
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -56,7 +68,7 @@ use super::{
 };
 use crate::{
     ir::{NodeId, OutputId, Plan, PortRef, Provenance},
-    operators::{OperatorRegistry, StateContract},
+    operators::{OperatorRegistry, PartitionKey, StateContract},
     validate::{graph::emit_output, ValidationReport},
 };
 
@@ -279,7 +291,8 @@ pub struct SlotPlacement {
     /// The candidate's nodes in the slot, in plan order.
     pub nodes: Vec<NodeId>,
 
-    /// The slot's entries: first those from fixed components, then those from other slots, each in plan edge order.
+    /// The slot's entries: first those from fixed components, then those from other slots, each in plan edge order;
+    /// an edge from a point with lanes has one entry per lane, in lane order.
     pub entries: Vec<PlacedEntry>,
 
     /// The exits the candidate uses, in exit order. The slot's other exits stay idle.
@@ -287,7 +300,8 @@ pub struct SlotPlacement {
 }
 
 impl SlotPlacement {
-    /// Returns the entry of the logical edge entering `input`, if one enters the slot there.
+    /// Returns the entry of the logical edge entering `input`, if one enters the slot there: the first lane's, for an
+    /// edge from a point with lanes.
     pub fn entry_at(&self, input: &PortRef) -> Option<&PlacedEntry> {
         self.entries.iter().find(|entry| &entry.input == input)
     }
@@ -750,6 +764,25 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
                 unplaced[node] = true;
             }
         }
+        // Each lane of an isolation slot on several lanes holds the share of its state owners' state that the slot's
+        // keyed exits route to it by context key, so a state owner there must have its state partitioned by that key.
+        if let Some(slot) = slot_of[node].filter(|_| role == Role::Isolated) {
+            let lanes = frame.slot(slot).map_or(1, |slot| slot.lanes);
+            if lanes > 1 && op.partition_key() != Some(PartitionKey::Context) {
+                problems.push(problem(
+                    Some(id),
+                    asked_by(node),
+                    format!(
+                        "it is a state owner whose state cannot be partitioned by context key, and the topology built \
+                         at boot runs isolation slot {} on {} lanes, each holding the share of the state that the \
+                         slot's keyed exits route to it by context key: {}",
+                        region(slot),
+                        lanes,
+                        asked_by(node).needs("running the isolation slot on one lane")
+                    ),
+                ));
+            }
+        }
     }
 
     // Every edge must use the frame's physical structure.
@@ -907,12 +940,13 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
         match (roles[from], slot_of[from], slot_of[to]) {
             (Role::Fixed, _, Some(target)) => {
                 let point = route_of(from, from_port).expect("checked above");
-                let entry = PlacedEntry {
-                    key: EntryKey::Admission(point.id),
-                    source: FrameSource::Admission(point.id),
+                // One entry per lane of the point, each lane's batches keyed by the point that stamped them.
+                let entries = point.lane_ids().map(|id| PlacedEntry {
+                    key: EntryKey::Admission(id),
+                    source: FrameSource::Admission(id),
                     from: edge.from.clone(),
                     input: edge.to.clone(),
-                };
+                });
                 match &point.route {
                     Some(FrameTarget::Slot(route)) if *route != target => {
                         // The route's slot passes the point's batches through to the state owner's isolation slot.
@@ -921,7 +955,7 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
                             .and_then(|slot| slot.exit_to(&FrameTarget::Slot(target)))
                             .expect("checked above")
                             .index;
-                        slots[route.get()].entries.push(entry);
+                        slots[route.get()].entries.extend(entries);
                         exits_used[route.get()].insert(exit);
                         region_entries.push((
                             target,
@@ -933,7 +967,7 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
                             },
                         ));
                     }
-                    _ => slots[target.get()].entries.push(entry),
+                    _ => slots[target.get()].entries.extend(entries),
                 }
             }
             (Role::Synchronous | Role::Isolated, Some(slot), target) => {

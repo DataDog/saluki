@@ -47,6 +47,7 @@ type Observer<T> = Box<dyn Fn(&T) + Send + Sync>;
 pub struct Consumer<T> {
     inner: mpsc::Receiver<T>,
     metrics: ConsumerMetrics,
+    max_allocated_items: usize,
     #[cfg(any(test, feature = "test-util"))]
     observer: Option<Observer<T>>,
 }
@@ -60,9 +61,20 @@ where
         Self {
             inner,
             metrics: ConsumerMetrics::from_component_context(context),
+            max_allocated_items: usize::MAX,
             #[cfg(any(test, feature = "test-util"))]
             observer: None,
         }
+    }
+
+    /// Returns this consumer, checking that every item it yields has storage for at most `limit` items.
+    ///
+    /// The topology sets this on the input of a component that declares smaller buffers than an events buffer holds,
+    /// whose input's memory bounds count `limit` items per buffer: a sender must keep to it. A debug build panics on
+    /// an item that does not, naming the storage it had; a release build does not check.
+    pub(crate) fn with_max_allocated_items(mut self, limit: usize) -> Self {
+        self.max_allocated_items = limit;
+        self
     }
 
     /// Calls `observer` with every item this consumer yields from now on, before the component receives it, in place
@@ -85,6 +97,13 @@ where
     pub async fn next(&mut self) -> Option<T> {
         match self.inner.recv().await {
             Some(item) => {
+                debug_assert!(
+                    item.allocated_items() <= self.max_allocated_items,
+                    "received an item with storage for {} items, where the component's input holds items of at most \
+                     {}, which its memory bounds count: senders must allocate no more than the component declares",
+                    item.allocated_items(),
+                    self.max_allocated_items
+                );
                 self.metrics.record(item.item_count());
                 #[cfg(any(test, feature = "test-util"))]
                 if let Some(observer) = &self.observer {
@@ -182,6 +201,29 @@ mod tests {
         drop(tx);
 
         assert!(consumer.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_consumer_yields_items_with_storage_for_as_many_items_as_its_limit() {
+        let (consumer, tx) = create_consumer(1);
+        let mut consumer = consumer.with_max_allocated_items(3);
+        let item = DispatchableEvent::with_item_count(3, "fits");
+        tx.send(item.clone()).await.expect("should not fail to send item");
+        assert_eq!(consumer.next().await, Some(item));
+    }
+
+    #[cfg(debug_assertions)]
+    #[tokio::test]
+    #[should_panic(
+        expected = "received an item with storage for 4 items, where the component's input holds items of at most 3"
+    )]
+    async fn a_consumer_panics_in_a_debug_build_on_an_item_with_storage_for_more_items_than_its_limit() {
+        let (consumer, tx) = create_consumer(1);
+        let mut consumer = consumer.with_max_allocated_items(3);
+        tx.send(DispatchableEvent::with_item_count(4, "too large"))
+            .await
+            .expect("should not fail to send item");
+        consumer.next().await;
     }
 
     #[tokio::test]

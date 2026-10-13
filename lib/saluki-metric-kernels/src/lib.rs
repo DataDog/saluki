@@ -34,6 +34,7 @@ pub mod matcher;
 pub mod params;
 pub mod prefix;
 pub mod selection;
+mod sync;
 pub mod tag_projection;
 pub mod timestamp_split;
 

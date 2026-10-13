@@ -4,12 +4,19 @@
 //! reports the average of the last [`RATE_SCRAPES`] of those: payloads leave ADP every couple of seconds, so a single
 //! scrape-to-scrape rate alternates between zero and twice the average. The series kept are the plan-level series
 //! (`adp__plan_*`, such as `plan_node_events_total{component_id, port}`, the per-node counts the plan-driven topology
-//! derives), and the per-component event counters of the native telemetry (`adp__component_events_*`,
-//! `adp__component_errors_total`, and `adp__component_items_dropped_total`, the transactions a forwarder dropped, which
-//! a retired recipient's drain report counts too), which also cover the encoders and forwarders.
+//! derives, and the `plan_lane_*` series the [Lanes panel](lanes) reads), and the per-component event counters of the
+//! native telemetry (`adp__component_events_*`, `adp__component_errors_total`, and
+//! `adp__component_items_dropped_total`, the transactions a forwarder dropped, which a retired recipient's drain report
+//! counts too), which also cover the encoders and forwarders, and the data points a forwarder delivered to each
+//! endpoint (`adp__component_data_points_*`, per `domain`). Of a histogram or a summary, only the count is kept, as a
+//! counter.
 //!
 //! A series that stops appearing, including every series while ADP does not answer, is dropped
 //! [`SERIES_RETENTION_MS`] after it was last seen, so that rates never outlive ADP.
+//!
+//! Apart from those, the scraper keeps every scrape's count of the datagrams ADP's DogStatsD source received
+//! ([`SOURCE_PACKETS`] of [`SOURCE_COMPONENT`]) over the history the canary check reads, so that the check can tell the
+//! datagrams that never reached ADP from canaries lost inside it ([`TelemetryScraper::source_receipts_around`]).
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -19,8 +26,9 @@ use std::{
 
 use serde::Serialize;
 
-use crate::{adp_api::AdpApi, clock::unix_millis};
+use crate::{adp_api::AdpApi, clock::unix_millis, traffic::CANARY_HISTORY_SECS};
 
+pub mod lanes;
 pub mod prometheus;
 use self::prometheus::Exposition;
 
@@ -30,10 +38,21 @@ pub const TRACKED_PREFIXES: &[&str] = &[
     "adp__component_events_",
     "adp__component_errors_total",
     "adp__component_items_dropped_total",
+    "adp__component_data_points_",
 ];
 
 /// The prefix ADP's internal metric names carry in the exposition.
 const ADP_PREFIX: &str = "adp__";
+
+/// The counter of the datagrams (and stream frames) a DogStatsD source received and read, of state `ok`.
+pub const SOURCE_PACKETS: &str = "adp__component_packets_received_total";
+
+/// The DogStatsD source whose received datagrams the scraper keeps.
+pub const SOURCE_COMPONENT: &str = "dsd_in";
+
+/// How long the scraper keeps the source's received datagrams, in milliseconds: the canary check's history, with a
+/// minute to spare for the scrapes around its oldest range.
+const RECEIPTS_RETENTION_MS: u64 = (CANARY_HISTORY_SECS + 60) * 1000;
 
 /// How many scrapes of history each series keeps.
 pub const HISTORY_LEN: usize = 30;
@@ -71,6 +90,17 @@ struct ScrapeState {
     error: Option<String>,
     skipped_lines: usize,
     series: BTreeMap<SeriesKey, SeriesHistory>,
+    /// The datagrams ADP's DogStatsD source had received at each scrape that reported them.
+    receipts: VecDeque<Receipt>,
+}
+
+/// The datagrams ADP's DogStatsD source had received when one scrape read its count, which ADP wrote some time
+/// between when the scrape was requested and when it completed.
+#[derive(Clone, Copy, Debug)]
+struct Receipt {
+    requested_ms: u64,
+    completed_ms: u64,
+    total: f64,
 }
 
 impl ScrapeState {
@@ -134,6 +164,20 @@ pub struct TelemetrySnapshot {
     pub components: Vec<SeriesEntry>,
 }
 
+/// The datagrams ADP's DogStatsD source received between the counts two scrapes read, and a span of time that holds
+/// both counts (see [`TelemetryScraper::source_receipts_around`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SourceReceipts {
+    /// When the first scrape was requested, in milliseconds since the Unix epoch: at or before its count.
+    pub from_ms: u64,
+
+    /// When the second scrape completed: at or after its count.
+    pub to_ms: u64,
+
+    /// The datagrams the source received between the two counts.
+    pub datagrams: f64,
+}
+
 /// The telemetry scraper's record.
 ///
 /// Cheap to clone: clones share the record.
@@ -148,8 +192,14 @@ impl TelemetryScraper {
         Self::default()
     }
 
-    /// Records a successful scrape taken at `at_ms`.
+    /// Records a successful scrape requested and completed at `at_ms`, as tests take them.
+    #[cfg(test)]
     pub fn observe(&self, at_ms: u64, exposition: &Exposition) {
+        self.observe_scrape(at_ms, at_ms, exposition);
+    }
+
+    /// Records a successful scrape requested at `requested_ms` that completed at `at_ms`.
+    pub fn observe_scrape(&self, requested_ms: u64, at_ms: u64, exposition: &Exposition) {
         let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if state.error.is_some() || state.up_since_ms.is_none() {
             state.up_since_ms = Some(at_ms);
@@ -160,11 +210,49 @@ impl TelemetryScraper {
         state.error = None;
         state.skipped_lines = exposition.skipped.len();
 
+        let received = exposition
+            .samples
+            .iter()
+            .filter(|sample| sample.name == SOURCE_PACKETS)
+            .filter(|sample| {
+                let label = |name: &str| {
+                    sample
+                        .labels
+                        .iter()
+                        .find(|(label, _)| label == name)
+                        .map(|(_, value)| value.as_str())
+                };
+                label("component_id") == Some(SOURCE_COMPONENT) && label("state") == Some("ok")
+            })
+            .map(|sample| sample.value)
+            .reduce(|total, value| total + value);
+        if let Some(total) = received {
+            state.receipts.push_back(Receipt {
+                requested_ms: requested_ms.min(at_ms),
+                completed_ms: at_ms,
+                total,
+            });
+            while state
+                .receipts
+                .front()
+                .is_some_and(|receipt| receipt.completed_ms + RECEIPTS_RETENTION_MS < at_ms)
+            {
+                state.receipts.pop_front();
+            }
+        }
+
         for sample in &exposition.samples {
             if !TRACKED_PREFIXES.iter().any(|prefix| sample.name.starts_with(prefix)) {
                 continue;
             }
-            let counter = exposition.type_of(&sample.name) == Some("counter");
+            // Of a histogram or a summary, only the count is kept, as a counter: it grows once per observation.
+            let ty = exposition.type_of(&sample.name);
+            let distribution =
+                matches!(ty, Some("histogram" | "summary")) && !exposition.types.contains_key(&sample.name);
+            if distribution && !sample.name.ends_with("_count") {
+                continue;
+            }
+            let counter = ty == Some("counter") || distribution;
             let key = SeriesKey {
                 name: sample.name.clone(),
                 labels: sample.labels.clone(),
@@ -269,14 +357,55 @@ impl TelemetryScraper {
         snapshot
     }
 
+    /// Returns the datagrams ADP's DogStatsD source received between the counts of the two scrapes that bracket the
+    /// span from `from_ms` to `to_ms` (milliseconds since the Unix epoch), whatever the scrapes' latency: the latest
+    /// that completed at or before `from_ms`, whose count ADP wrote before then, and the earliest requested at or after
+    /// `to_ms`, whose count it wrote after then. The span of time returned holds both counts: from when the first was
+    /// requested to when the second completed.
+    ///
+    /// Before any scrape completed, at the start of ADP's run, the first scrape stands in for the count at `from_ms`,
+    /// which can only have been lower, since the count starts at zero when ADP does, and the span returned starts at
+    /// `from_ms`: what the source received is then counted short, never long.
+    ///
+    /// Returns `None` if no scrape that reported the source's count was requested at or after `to_ms`, or if the count
+    /// went down in between, as it does when ADP restarts.
+    pub fn source_receipts_around(&self, from_ms: u64, to_ms: u64) -> Option<SourceReceipts> {
+        let state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (first, start_ms) = match state
+            .receipts
+            .iter()
+            .rposition(|receipt| receipt.completed_ms <= from_ms)
+        {
+            Some(first) => (first, state.receipts[first].requested_ms),
+            None => (0, from_ms.min(state.receipts.front()?.requested_ms)),
+        };
+        let last = first
+            + state
+                .receipts
+                .iter()
+                .skip(first)
+                .position(|receipt| receipt.requested_ms >= to_ms)?;
+        let span = state.receipts.range(first..=last).collect::<Vec<_>>();
+        if span.windows(2).any(|pair| pair[1].total < pair[0].total) {
+            return None;
+        }
+        let (first, last) = (state.receipts[first], state.receipts[last]);
+        Some(SourceReceipts {
+            from_ms: start_ms,
+            to_ms: last.completed_ms,
+            datagrams: last.total - first.total,
+        })
+    }
+
     /// Scrapes ADP's `/metrics` every [`SCRAPE_INTERVAL`] until the task is dropped.
     pub async fn run(self, api: AdpApi) {
         let mut ticks = tokio::time::interval(SCRAPE_INTERVAL);
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticks.tick().await;
+            let requested_ms = unix_millis();
             match api.metrics_text().await {
-                Ok(text) => self.observe(unix_millis(), &prometheus::parse(&text)),
+                Ok(text) => self.observe_scrape(requested_ms, unix_millis(), &prometheus::parse(&text)),
                 Err(error) => self.observe_failure(unix_millis(), error),
             }
         }
@@ -381,6 +510,39 @@ mod tests {
     }
 
     #[test]
+    fn of_a_histogram_only_its_count_is_kept_as_a_counter_and_delivered_data_points_are_kept() {
+        let scraper = TelemetryScraper::new();
+        let text = |count: u64| {
+            format!(
+                "# TYPE adp__plan_lane_flush_seconds histogram\n\
+                 adp__plan_lane_flush_seconds_bucket{{component_id=\"dsd_agg\",lane=\"0\",le=\"0.5\"}} {count}\n\
+                 adp__plan_lane_flush_seconds_sum{{component_id=\"dsd_agg\",lane=\"0\"}} 0.25\n\
+                 adp__plan_lane_flush_seconds_count{{component_id=\"dsd_agg\",lane=\"0\"}} {count}\n\
+                 # TYPE adp__component_data_points_sent_total gauge\n\
+                 adp__component_data_points_sent_total{{component_id=\"dd_out\",domain=\"http://127.0.0.1:17105\"}} \
+                 {count}\n"
+            )
+        };
+        scraper.observe(1_000, &exposition(&text(3)));
+        scraper.observe(2_000, &exposition(&text(5)));
+        let snapshot = scraper.snapshot(2_000);
+        let names = snapshot
+            .plan
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["plan_lane_flush_seconds_count"]);
+        assert!(snapshot.plan[0].counter);
+        assert_eq!(snapshot.plan[0].history, [2.0]);
+        assert_eq!(snapshot.components.len(), 1);
+        let points = &snapshot.components[0];
+        assert_eq!(
+            (points.name.as_str(), points.counter, points.value),
+            ("component_data_points_sent_total", false, 5.0)
+        );
+    }
+
+    #[test]
     fn rates_of_bursty_counters_are_averaged_over_several_scrapes() {
         let scraper = TelemetryScraper::new();
         // A payload every two seconds: the counter moves by 56 on every other scrape.
@@ -401,5 +563,102 @@ mod tests {
         assert_eq!(sent.history.last(), Some(&56.0));
         // The last five rates are 56, 0, 56, 0, 56.
         assert_eq!(sent.rate, 56.0 * 3.0 / 5.0);
+    }
+
+    #[test]
+    fn the_datagrams_the_source_received_are_read_between_the_scrapes_around_a_span() {
+        let scraper = TelemetryScraper::new();
+        let scrape = |ok: u64, other: u64| {
+            exposition(&format!(
+                "# TYPE adp__component_packets_received_total counter\n\
+                 adp__component_packets_received_total{{component_id=\"dsd_in\",component_type=\"source\",\
+                 listener_type=\"udp\",state=\"ok\"}} {}\n\
+                 adp__component_packets_received_total{{component_id=\"dsd_in\",component_type=\"source\",\
+                 listener_type=\"udp\",state=\"error\"}} {}\n\
+                 adp__component_packets_received_total{{component_id=\"other\",component_type=\"source\",\
+                 listener_type=\"udp\",state=\"ok\"}} {}\n",
+                ok, other, other
+            ))
+        };
+        let receipts = |from_ms, to_ms, datagrams| {
+            Some(SourceReceipts {
+                from_ms,
+                to_ms,
+                datagrams,
+            })
+        };
+        assert_eq!(scraper.source_receipts_around(0, 1), None);
+        scraper.observe(10_000, &scrape(100, 7));
+        scraper.observe(11_000, &scrape(120, 9));
+        scraper.observe(12_100, &scrape(135, 11));
+        scraper.observe(13_000, &scrape(155, 13));
+
+        // The scrapes around a span, or at its ends; only `dsd_in`'s datagrams count, of state `ok`.
+        assert_eq!(
+            scraper.source_receipts_around(11_500, 12_500),
+            receipts(11_000, 13_000, 35.0)
+        );
+        assert_eq!(
+            scraper.source_receipts_around(11_000, 12_100),
+            receipts(11_000, 12_100, 15.0)
+        );
+        assert_eq!(
+            scraper.source_receipts_around(10_000, 13_000),
+            receipts(10_000, 13_000, 55.0)
+        );
+        // No scrape after the span: no count. No scrape before it: the first scrape stands in for the count at its
+        // start, which was no higher.
+        assert_eq!(scraper.source_receipts_around(11_000, 13_001), None);
+        assert_eq!(
+            scraper.source_receipts_around(9_999, 12_000),
+            receipts(9_999, 12_100, 35.0)
+        );
+
+        // ADP restarted: a span across the restart has no count, one after it does.
+        scraper.observe(14_000, &scrape(4, 0));
+        scraper.observe(15_000, &scrape(24, 0));
+        assert_eq!(scraper.source_receipts_around(12_500, 14_500), None);
+        assert_eq!(
+            scraper.source_receipts_around(14_000, 15_000),
+            receipts(14_000, 15_000, 20.0)
+        );
+        // A scrape without the source's counter adds no count, so it brackets nothing.
+        scraper.observe(16_000, &exposition("adp__unrelated_total 5\n"));
+        assert_eq!(scraper.source_receipts_around(14_500, 15_500), None);
+
+        // A slow scrape's count was written some time between its request and its completion: a span starting after
+        // it was requested and before it completed is bracketed by the scrape before it, and one ending then by the
+        // scrape after it, and the span returned runs from the first one's request to the last one's completion.
+        scraper.observe(17_000, &scrape(30, 0));
+        scraper.observe_scrape(18_000, 20_000, &scrape(50, 0));
+        scraper.observe(21_000, &scrape(80, 0));
+        assert_eq!(
+            scraper.source_receipts_around(19_000, 20_500),
+            receipts(17_000, 21_000, 50.0)
+        );
+        assert_eq!(
+            scraper.source_receipts_around(20_000, 21_000),
+            receipts(18_000, 21_000, 30.0)
+        );
+        assert_eq!(
+            scraper.source_receipts_around(17_000, 18_000),
+            receipts(17_000, 20_000, 20.0)
+        );
+        // A span ending while the slow scrape was under way: its count may have been written before the end.
+        assert_eq!(
+            scraper.source_receipts_around(17_000, 19_000),
+            receipts(17_000, 21_000, 50.0)
+        );
+
+        // Counts older than the canary check's history, and a minute more, are forgotten.
+        scraper.observe(10_000 + RECEIPTS_RETENTION_MS + 1, &scrape(300, 0));
+        assert_eq!(
+            scraper.source_receipts_around(10_500, 11_500),
+            receipts(10_500, 12_100, 15.0)
+        );
+        assert_eq!(
+            scraper.source_receipts_around(11_000, 12_100),
+            receipts(11_000, 12_100, 15.0)
+        );
     }
 }

@@ -81,7 +81,10 @@ pub mod values {
     ///
     /// Decision log: lowered from 5 seconds to 1 second when aggregation became a kernel. Heartbeats bound how long an
     /// idle source holds a state owner's watermark back, so the period bounds how late a flush tick closes buckets
-    /// when nothing arrives; 1 second keeps that lag within the tick grace.
+    /// when nothing arrives; 1 second keeps that lag within the tick grace. On producer lanes a state lane's watermark
+    /// is the minimum over several points, so one idle lane would hold back the ticks of busy ones by up to this
+    /// period while data arrives: their points also heartbeat [`PROGRESS_PERIOD`] into each second they stamp nothing
+    /// in, which bounds that lag by the progress throttle.
     pub const HEARTBEAT_PERIOD: Duration = Duration::from_secs(1);
 
     /// The backward wall-clock jump that resets an admission clock.
@@ -150,6 +153,72 @@ pub mod values {
 
     /// The relative tolerance for comparing floating-point sums under reordering.
     pub const FLOAT_TOLERANCE: f64 = 1e-9;
+
+    /// The number of key groups a keyed exit routes partition keys through to the lanes of a state owner.
+    ///
+    /// Decision log: new with partitioned execution. A key's group is its high byte, and each group belongs to one
+    /// lane, in contiguous ranges fixed at boot; the indirection costs one table load per event and leaves room to move
+    /// a group between lanes later without changing the key's group.
+    pub const KEY_GROUPS: u64 = 256;
+
+    /// The most lanes one slot runs on.
+    ///
+    /// Decision log: new with partitioned execution. Lanes are tasks with input channels, resource groups, and per-lane
+    /// series, created at boot, so their number is bounded; an explicit count above it is capped.
+    pub const MAX_LANES: u64 = 64;
+
+    /// The most producer lanes, the lanes of the slot that admission points with lanes feed, that lane counts default
+    /// to.
+    ///
+    /// Decision log: new with partitioned execution. Nothing above eight workers has been measured, so 16 is
+    /// provisional until a gate host runs 16 workers; a gate run at 32 workers raises this to `MAX_LANES`.
+    pub const PRODUCER_LANES_MAX: u64 = 16;
+
+    /// The events a keyed exit's routed buffers hold in all, across the lanes it routes to: each routed buffer holds
+    /// `clamp(ROUTE_BUFFER_EVENTS / lanes, 256, 1024)` events.
+    ///
+    /// Decision log: new with partitioned execution. It bounds the events a producer lane holds in open routed buffers
+    /// at 2,048 at any automatic lane count, while keeping routed buffers large enough that per-buffer costs at the
+    /// state lanes stay small.
+    pub const ROUTE_BUFFER_EVENTS: u64 = 2_048;
+
+    /// The longest a keyed exit holds an open routed buffer for more events before it sends it.
+    ///
+    /// Decision log: new with partitioned execution. Holding routed buffers across batches and idle input lets them
+    /// fill at the decoders' rate; a buffer can therefore reach a state lane up to this much later relative to a tick's
+    /// deadline, which only the state owner's flush output observes, at its ticks.
+    pub const COALESCE_HOLD: Duration = Duration::from_millis(5);
+
+    /// The most recent ticks of a lineage whose instants and flush times its lanes share.
+    ///
+    /// Decision log: new with partitioned execution. A lane more than this many ticks behind the others is a straggler:
+    /// it uses its own flush time, and is counted.
+    pub const TICK_RECORD_DEPTH: u64 = 4;
+
+    /// The most earlier clock epochs a state lane keeps open for one admission point, waiting for every other point to
+    /// switch, before it closes the oldest at once.
+    ///
+    /// Decision log: new with partitioned execution. Five resets before every point switched need a clock flapping by
+    /// more than the reset threshold that often; closing the oldest bounds the instances a lineage holds.
+    pub const MAX_OPEN_EPOCHS: u64 = 4;
+
+    /// How much later within a second the lanes of a state owner tick, one after another: lane `j` ticks
+    /// `j * stagger / lanes` after lane 0.
+    ///
+    /// Decision log: new with partitioned execution, off by default. Staggering spreads a tick's flush storm over the
+    /// stagger, and widens the tick timing that equivalence excludes by as much.
+    pub const LANE_FLUSH_STAGGER: Duration = Duration::ZERO;
+
+    /// The most context budget units a state lane's batch takes in one block, for the new contexts of a state owner on
+    /// several lanes: `saluki-core`'s `BudgetReservation::MAX_BLOCK`.
+    ///
+    /// Decision log: new with partitioned execution. Under churn, one bounded acquisition of each budget per new
+    /// context took most of a state lane's time on two lanes or more (104 ns per new context per lane at two lanes, 851
+    /// at eight, measured on a re-insertion burst of a million contexts); blocks of up to 64, which a lane starts at
+    /// what its previous batch admitted, take one acquisition of each budget per 64 new contexts. Units a batch
+    /// reserved and has not used, fewer than 64, count as held until it ends, so a new context of another lane can be
+    /// refused for them, which is capacity behavior. A state owner on one lane takes one unit per block.
+    pub const CONTEXT_RESERVATION_BLOCK: u64 = 64;
 }
 
 /// The value of a limit.
@@ -228,6 +297,22 @@ const BUCKET_WIDTH_DURATIONS: [Duration; BUCKET_WIDTH_COUNT] = {
 /// Returns `true` if `width` is an allowed bucket width: a whole number of seconds the kernels crate allows.
 pub fn is_allowed_bucket_width(width: Duration) -> bool {
     width.subsec_nanos() == 0 && saluki_metric_kernels::params::is_allowed_bucket_width(width.as_secs())
+}
+
+/// The fewest events a keyed exit's routed buffer holds before it is sent, at any number of lanes.
+const ROUTED_BUFFER_EVENTS_MIN: usize = 256;
+
+/// Returns the number of events a keyed exit's routed buffer holds before it is sent, when the exit routes to `lanes`
+/// lanes: [`ROUTE_BUFFER_EVENTS`][values::ROUTE_BUFFER_EVENTS] divided over the lanes, between 256 and
+/// [`BATCH_SIZE`][values::BATCH_SIZE].
+///
+/// Every part that sizes something by routed buffers reads it here: the keyed exits that fill them, the bounds of the
+/// open ones, and the capacity of the lane inputs they are sent to, whose consumers check every buffer they receive
+/// against it.
+pub fn routed_buffer_events(lanes: u16) -> usize {
+    // The limit is a count of events, which every platform's memory addresses.
+    let total = usize::try_from(values::ROUTE_BUFFER_EVENTS).unwrap_or(usize::MAX);
+    (total / usize::from(lanes.max(1))).clamp(ROUTED_BUFFER_EVENTS_MIN, values::BATCH_SIZE)
 }
 
 /// The maximum number of contexts held in aggregation state.
@@ -545,6 +630,87 @@ pub const FLOAT_TOLERANCE: LimitSpec = LimitSpec {
                   as under partitioned execution.",
 };
 
+/// The number of key groups a keyed exit routes partition keys through.
+pub const KEY_GROUPS: LimitSpec = LimitSpec {
+    name: "key_groups",
+    default: LimitValue::Count(values::KEY_GROUPS),
+    source: LimitSource::Fixed,
+    description: "Number of key groups a state owner's partition keys are routed through to its lanes: a key's group \
+                  is its high byte, and each group belongs to one lane for the life of the process.",
+};
+
+/// The most lanes one slot runs on.
+pub const MAX_LANES: LimitSpec = LimitSpec {
+    name: "max_lanes",
+    default: LimitValue::Count(values::MAX_LANES),
+    source: LimitSource::Fixed,
+    description: "Maximum number of lanes one slot runs on. A configured lane count above it is capped.",
+};
+
+/// The most producer lanes the lane counts default to.
+pub const PRODUCER_LANES_MAX: LimitSpec = LimitSpec {
+    name: "producer_lanes_max",
+    default: LimitValue::Count(values::PRODUCER_LANES_MAX),
+    source: LimitSource::Fixed,
+    description: "Maximum number of producer lanes, one per decoder, that the lane counts default to. More decoders \
+                  share lanes.",
+};
+
+/// The events a keyed exit's routed buffers hold in all, across its target lanes.
+pub const ROUTE_BUFFER_EVENTS: LimitSpec = LimitSpec {
+    name: "route_buffer_events",
+    default: LimitValue::Count(values::ROUTE_BUFFER_EVENTS),
+    source: LimitSource::Fixed,
+    description: "Events a keyed exit's open routed buffers hold in all: each target lane's buffer holds this many \
+                  divided by the lanes, between 256 and 1,024 events.",
+};
+
+/// The longest a keyed exit holds an open routed buffer.
+pub const COALESCE_HOLD: LimitSpec = LimitSpec {
+    name: "coalesce_hold",
+    default: LimitValue::Duration(values::COALESCE_HOLD),
+    source: LimitSource::Fixed,
+    description: "Longest a keyed exit holds an open routed buffer for more events before it sends it to its state \
+                  lane.",
+};
+
+/// The most recent ticks of a lineage whose instants and flush times its lanes share.
+pub const TICK_RECORD_DEPTH: LimitSpec = LimitSpec {
+    name: "tick_record_depth",
+    default: LimitValue::Count(values::TICK_RECORD_DEPTH),
+    source: LimitSource::Fixed,
+    description: "Number of recent ticks of a lineage whose instants and flush times its lanes share; a lane further \
+                  behind uses its own flush time, and is counted.",
+};
+
+/// The most earlier clock epochs a state lane keeps open for one admission point.
+pub const MAX_OPEN_EPOCHS: LimitSpec = LimitSpec {
+    name: "max_open_epochs",
+    default: LimitValue::Count(values::MAX_OPEN_EPOCHS),
+    source: LimitSource::Fixed,
+    description: "Maximum number of earlier clock epochs a state lane keeps open for one admission point, waiting for \
+                  every other point to switch, before it closes the oldest at once.",
+};
+
+/// How much later within a second the lanes of a state owner tick, one after another.
+pub const LANE_FLUSH_STAGGER: LimitSpec = LimitSpec {
+    name: "lane_flush_stagger",
+    default: LimitValue::Duration(values::LANE_FLUSH_STAGGER),
+    source: LimitSource::Fixed,
+    description: "How much later within a second the lanes of a state owner tick, one after another; zero ticks every \
+                  lane together.",
+};
+
+/// The most context budget units a state lane's batch takes in one block.
+pub const CONTEXT_RESERVATION_BLOCK: LimitSpec = LimitSpec {
+    name: "context_reservation_block",
+    default: LimitValue::Count(values::CONTEXT_RESERVATION_BLOCK),
+    source: LimitSource::Fixed,
+    description: "Most context budget units a state lane's batch takes at once for its new contexts, when its state \
+                  owner runs on several lanes; units it has not used count as held until the batch ends, and can \
+                  refuse another lane's new context.",
+};
+
 /// Every limit.
 pub const LIMITS: &[LimitSpec] = &[
     AGGREGATION_CONTEXT_LIMIT,
@@ -580,6 +746,15 @@ pub const LIMITS: &[LimitSpec] = &[
     BATCH_SIZE,
     WORK_PER_TURN,
     FLOAT_TOLERANCE,
+    KEY_GROUPS,
+    MAX_LANES,
+    PRODUCER_LANES_MAX,
+    ROUTE_BUFFER_EVENTS,
+    COALESCE_HOLD,
+    TICK_RECORD_DEPTH,
+    MAX_OPEN_EPOCHS,
+    LANE_FLUSH_STAGGER,
+    CONTEXT_RESERVATION_BLOCK,
 ];
 
 /// Returns the limit with the given name, if there is one.
@@ -658,6 +833,15 @@ mod tests {
         assert_eq!(duration(&CUT_ARM_RETRY), Duration::from_secs(1));
         assert_eq!(count(&CUT_ARM_ATTEMPTS), 10);
         assert_eq!(duration(&MAX_TRANSITION_LCM), Duration::from_secs(300));
+        assert_eq!(count(&KEY_GROUPS), 256);
+        assert_eq!(count(&MAX_LANES), 64);
+        assert_eq!(count(&PRODUCER_LANES_MAX), 16);
+        assert_eq!(count(&ROUTE_BUFFER_EVENTS), 2_048);
+        assert_eq!(duration(&COALESCE_HOLD), Duration::from_millis(5));
+        assert_eq!(count(&TICK_RECORD_DEPTH), 4);
+        assert_eq!(count(&MAX_OPEN_EPOCHS), 4);
+        assert_eq!(duration(&LANE_FLUSH_STAGGER), Duration::ZERO);
+        assert_eq!(count(&CONTEXT_RESERVATION_BLOCK), 64);
     }
 
     #[test]
@@ -685,6 +869,12 @@ mod tests {
         assert_eq!(count(&WORK_PER_INPUT), values::WORK_PER_INPUT);
         assert_eq!(duration(&PREPARE_TIMEOUT), values::PREPARE_TIMEOUT);
         assert_eq!(FLOAT_TOLERANCE.default, LimitValue::Ratio(values::FLOAT_TOLERANCE));
+        // The reservation block is enforced in `saluki-core`, which knows nothing of plans.
+        assert_eq!(
+            values::CONTEXT_RESERVATION_BLOCK,
+            saluki_core::execution::BudgetReservation::MAX_BLOCK
+        );
+        assert_eq!(count(&CONTEXT_RESERVATION_BLOCK), values::CONTEXT_RESERVATION_BLOCK);
     }
 
     #[test]
@@ -736,5 +926,23 @@ mod tests {
         // The table's widths are the kernels crate's, in its order.
         let secs = ALLOWED_BUCKET_WIDTHS.iter().map(Duration::as_secs).collect::<Vec<_>>();
         assert_eq!(secs, saluki_metric_kernels::params::ALLOWED_BUCKET_WIDTHS_SECS);
+    }
+
+    #[test]
+    fn routed_buffers_divide_the_route_buffer_events_over_the_lanes_between_256_and_a_full_batch() {
+        // 2,048 events over the lanes: whole batches at one or two lanes, halves at four, the floor from eight on.
+        for (lanes, events) in [
+            (0, 1_024),
+            (1, 1_024),
+            (2, 1_024),
+            (3, 682),
+            (4, 512),
+            (8, 256),
+            (64, 256),
+        ] {
+            assert_eq!(routed_buffer_events(lanes), events, "{} lanes", lanes);
+        }
+        // A routed buffer never holds more than an events buffer does.
+        assert!(routed_buffer_events(1) <= EventsBuffer::default().capacity());
     }
 }

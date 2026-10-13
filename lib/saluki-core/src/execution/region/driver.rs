@@ -37,9 +37,9 @@ use crate::{
 /// The host runs every method that can run kernel code under [`catch_unwind`][std::panic::catch_unwind]. When one
 /// panics, the host discards whatever the call wrote to the exit sink, counts the lost events, and calls
 /// [`reset_after_panic`][Self::reset_after_panic], which decides whether the region continues or fails.
-/// [`start`][Self::start], [`accepts_input`][Self::accepts_input], and [`next_deadline`][Self::next_deadline] only
-/// set or read driver state: they must not run kernel code, and a panic in any of them, or in `reset_after_panic`
-/// itself, fails the component.
+/// [`start`][Self::start], [`accepts_input`][Self::accepts_input], [`next_deadline`][Self::next_deadline], and
+/// [`end_turn`][Self::end_turn] only set or read driver state, or send output the driver already holds: they must not
+/// run kernel code, and a panic in any of them, or in `reset_after_panic` itself, fails the component.
 pub trait RegionDriver: Send + 'static {
     /// The control messages this driver understands, such as preparing or aborting a generation.
     type Control: Send + 'static;
@@ -126,6 +126,24 @@ pub trait RegionDriver: Send + 'static {
     /// The default does nothing.
     fn advance_time(&mut self, _turn: &mut RegionTurn<'_>, _exits: &mut ExitSink) -> Progress {
         Progress::Done
+    }
+
+    /// Ends a turn of input: the host calls this after the batches it processed back to back, once no call is yielded,
+    /// with whether its input has nothing more waiting (`input_idle`), and again when the instant this returned passes
+    /// while the input stays idle.
+    ///
+    /// A driver that holds output across batches, such as buffers it fills from several batches before it sends them,
+    /// writes what is due by [`RegionTurn::now`] to `exits`, and returns the earliest later instant at which more
+    /// becomes due, if it still holds any. The host arms a timer for that instant only while its input is idle, so that
+    /// no timer is reset per batch while input keeps it busy: under a backlog, the next turn ends soon anyway. A
+    /// header-only batch, such as a heartbeat, counts as a turn of input too. An instant that is not later than the
+    /// turn's is a driver bug, which a debug build fails; the host does not arm it.
+    ///
+    /// The host does not supervise this call: it must not run kernel code, and a panic in it fails the component.
+    ///
+    /// The default holds nothing and returns `None`.
+    fn end_turn(&mut self, _turn: &mut RegionTurn<'_>, _input_idle: bool, _exits: &mut ExitSink) -> Option<Instant> {
+        None
     }
 
     /// Finishes the region after its input has ended, following `policy`.
@@ -240,6 +258,10 @@ impl fmt::Display for ExitId {
 /// the driver sets their headers, and an empty buffer is dispatched like any other, so that header-only batches, such
 /// as progress batches, reach downstream.
 ///
+/// A buffer written to one lane of the exit's target ([`emit_to_lane`][Self::emit_to_lane]), as a keyed exit routes
+/// each event to the lane that owns its key, keeps its lane: [`drain_routed`][Self::drain_routed] returns it, and a
+/// host whose exits lead to components with one lane each may ignore it.
+///
 /// # Panics
 ///
 /// Writing to an exit that does not exist is a bug in the driver, and panics. The host runs drivers under
@@ -247,7 +269,7 @@ impl fmt::Display for ExitId {
 #[derive(Debug)]
 pub struct ExitSink {
     exit_count: usize,
-    buffers: Vec<(ExitId, EventsBuffer)>,
+    buffers: Vec<(ExitId, Option<u16>, EventsBuffer)>,
 }
 
 impl ExitSink {
@@ -266,17 +288,38 @@ impl ExitSink {
 
     /// Writes `buffer` to `exit`, after everything already written.
     ///
+    /// The host sends it wherever the exit's edge leads; on an edge that routes to its target's lanes by key, which
+    /// needs every buffer to name its lane ([`emit_to_lane`][Self::emit_to_lane]), it fails the region.
+    ///
     /// # Panics
     ///
     /// Panics if `exit` does not exist.
     pub fn emit(&mut self, exit: ExitId, buffer: EventsBuffer) {
+        self.push(exit, None, buffer);
+    }
+
+    /// Writes `buffer` to lane `lane` of the target of `exit`, after everything already written.
+    ///
+    /// The host sends it to that lane of the exit's target, which must have it, if the exit's edge routes to the
+    /// target's lanes by key; on an edge into a target with one lane, or fixed to one lane, the lane is ignored. A
+    /// buffer written to a lane on an edge that routes by affinity or by spreading, which pick the lane themselves,
+    /// fails the region (see [`RegionHostBuilder`][crate::execution::RegionHostBuilder]'s routing).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `exit` does not exist.
+    pub fn emit_to_lane(&mut self, exit: ExitId, lane: u16, buffer: EventsBuffer) {
+        self.push(exit, Some(lane), buffer);
+    }
+
+    fn push(&mut self, exit: ExitId, lane: Option<u16>, buffer: EventsBuffer) {
         assert!(
             exit.get() < self.exit_count,
             "region wrote to exit {} but has only {} exits",
             exit,
             self.exit_count
         );
-        self.buffers.push((exit, buffer));
+        self.buffers.push((exit, lane, buffer));
     }
 
     /// Returns `true` if nothing has been written.
@@ -291,11 +334,18 @@ impl ExitSink {
 
     /// Returns the number of events in all buffers written.
     pub fn event_count(&self) -> usize {
-        self.buffers.iter().map(|(_, buffer)| buffer.len()).sum()
+        self.buffers.iter().map(|(_, _, buffer)| buffer.len()).sum()
     }
 
-    /// Removes and returns the buffers written, in the order they were written.
-    pub fn drain(&mut self) -> std::vec::Drain<'_, (ExitId, EventsBuffer)> {
+    /// Removes and returns the buffers written, in the order they were written, without the lanes buffers were written
+    /// to: for a host whose exits lead to components with one lane each.
+    pub fn drain(&mut self) -> impl Iterator<Item = (ExitId, EventsBuffer)> + '_ {
+        self.buffers.drain(..).map(|(exit, _, buffer)| (exit, buffer))
+    }
+
+    /// Removes and returns the buffers written, in the order they were written, each with the lane of the exit's target
+    /// it was written to, or `None` if the driver left the lane to the exit's routing.
+    pub fn drain_routed(&mut self) -> impl Iterator<Item = (ExitId, Option<u16>, EventsBuffer)> + '_ {
         self.buffers.drain(..)
     }
 

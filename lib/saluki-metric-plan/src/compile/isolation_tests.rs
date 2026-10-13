@@ -73,7 +73,7 @@ fn the_default_program_runs_aggregation_alone_in_an_isolation_slot_fed_by_dogsta
     assert_eq!(
         agg.kind,
         SlotKind::Isolation {
-            output_point: point(5),
+            output_points: vec![point(5)],
             upstream: vec![point(0)],
         }
     );

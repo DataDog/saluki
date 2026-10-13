@@ -78,6 +78,51 @@ impl Health {
             let _ = self.response_tx.send(response).await;
         }
     }
+
+    /// Waits for the next liveness probe sent to the component, and returns it without responding.
+    ///
+    /// A component that runs its work on several tasks, such as a region with lanes, takes each probe, asks every task
+    /// whether it is live, and [responds][Probe::respond] once all have answered, so that a stuck task reads as a stuck
+    /// component. A probe dropped without a response counts as unanswered, and the registry marks the component not
+    /// live once the probe times out.
+    ///
+    /// Waits forever once the health registry stops sending probes.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel-safe: a probe is taken only when the call returns it.
+    pub async fn next_probe(&mut self) -> Probe {
+        match self.request_rx.recv().await {
+            Some(request) => Probe {
+                request,
+                response_tx: self.response_tx.clone(),
+            },
+            None => std::future::pending().await,
+        }
+    }
+}
+
+/// One liveness probe a component took with [`Health::next_probe`], which it answers with [`respond`][Self::respond].
+#[must_use = "a dropped probe is never answered, and the component reads as not live"]
+pub struct Probe {
+    request: LivenessRequest,
+    response_tx: mpsc::Sender<LivenessResponse>,
+}
+
+impl std::fmt::Debug for Probe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Probe")
+            .field("component_id", &self.request.component_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Probe {
+    /// Responds to the probe: the component is live.
+    pub async fn respond(self) {
+        let response = self.request.into_response();
+        let _ = self.response_tx.send(response).await;
+    }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -1101,6 +1146,28 @@ mod tests {
         // and isn't the initial probe request which is scheduled immediately:
         assert_eq!(runner_state.pending_probe_timeouts(), 0);
         assert_eq!(runner_state.pending_scheduled_probes(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_probe_taken_without_a_response_leaves_the_component_not_live_until_it_responds() {
+        let (mut handle, mut registry, registry_state, _runner_state) =
+            initialize_registry_with_component(COMPONENT_ID);
+        let mut next_probe = spawn(handle.next_probe());
+        assert_pending!(next_probe.poll());
+        drive_until_quiesced(&mut registry);
+
+        // The probe is taken, as a coordinator takes it to ask its lanes, and nothing has responded yet.
+        assert!(next_probe.is_woken());
+        let probe = assert_ready!(next_probe.poll());
+        drive_until_quiesced(&mut registry);
+        assert!(!component_live(&registry_state, COMPONENT_ID));
+
+        // Responding marks the component live.
+        let mut respond = spawn(probe.respond());
+        assert_ready!(respond.poll());
+        assert!(registry.is_woken());
+        drive_until_quiesced(&mut registry);
+        assert!(component_live(&registry_state, COMPONENT_ID));
     }
 
     #[tokio::test(start_paused = true)]

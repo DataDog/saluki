@@ -12,10 +12,13 @@ use saluki_common::{
 };
 use saluki_metrics::reexport::metrics::Counter;
 
+use super::stamps::AdvanceStamp;
+
 /// Builder for creating an expiration configuration.
 pub struct ExpirationBuilder<K> {
     time_to_idle: Option<Duration>,
     items_evicted: Counter,
+    stamps: Option<Arc<dyn AdvanceStamp<K>>>,
     _key: PhantomData<K>,
 }
 
@@ -28,8 +31,17 @@ where
         Self {
             time_to_idle: None,
             items_evicted,
+            stamps: None,
             _key: PhantomData,
         }
+    }
+
+    /// Sets the change stamps that every eviction advances for the evicted key.
+    ///
+    /// Defaults to none.
+    pub(super) fn with_change_stamps(mut self, stamps: Arc<dyn AdvanceStamp<K>>) -> Self {
+        self.stamps = Some(stamps);
+        self
     }
 
     /// Sets the time-to-idle for entries in the cache.
@@ -48,7 +60,7 @@ where
 
     /// Builds the expiration configuration.
     pub fn build(self) -> (Expiration<K>, ExpiryCapableLifecycle<K>) {
-        match self.time_to_idle {
+        let (expiration, mut lifecycle) = match self.time_to_idle {
             None => (
                 Expiration::disabled(),
                 ExpiryCapableLifecycle::disabled(self.items_evicted),
@@ -60,7 +72,9 @@ where
 
                 (expiration, lifecycle)
             }
-        }
+        };
+        lifecycle.stamps = self.stamps;
+        (expiration, lifecycle)
     }
 }
 
@@ -234,6 +248,7 @@ where
 pub(super) struct ExpiryCapableLifecycle<K> {
     state: Option<Arc<State<K>>>,
     items_evicted: Counter,
+    stamps: Option<Arc<dyn AdvanceStamp<K>>>,
 }
 
 impl<K> ExpiryCapableLifecycle<K> {
@@ -241,6 +256,7 @@ impl<K> ExpiryCapableLifecycle<K> {
         Self {
             state: None,
             items_evicted,
+            stamps: None,
         }
     }
 
@@ -248,6 +264,7 @@ impl<K> ExpiryCapableLifecycle<K> {
         Self {
             state: Some(state),
             items_evicted,
+            stamps: None,
         }
     }
 }
@@ -264,6 +281,9 @@ where
         // inserts (items whose weight exceeds the cache capacity). Callers using custom
         // weighters may see slight inflation from rejected inserts.
         self.items_evicted.increment(1);
+        if let Some(stamps) = self.stamps.as_ref() {
+            stamps.advance(&key);
+        }
         if let Some(state) = self.state.as_ref() {
             state.mark_entry_removed(key);
         }

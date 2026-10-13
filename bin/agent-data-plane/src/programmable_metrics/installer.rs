@@ -23,7 +23,9 @@
 //!
 //! 1. **Prepare.** It builds the kernels each slot's program needs and the region lacks, off the data path, in the
 //!    slot's resource group, and sends every region a preparation through its control mailbox, without waiting on it.
-//!    A kernel that fails to build fails the preparation at once.
+//!    A kernel that fails to build fails the preparation at once. A slot on several lanes gets one share of the
+//!    preparation per lane, each with kernels of its own, built as blocking work; the slot's coordinator hands each
+//!    lane its share and acknowledges once for all of them.
 //! 2. **Barrier.** It reports every region's acknowledgment to the core. When every region has acknowledged, the core
 //!    commits; when one fails, or not all acknowledge within the prepare timeout, the core aborts in every region, and
 //!    a default-program candidate is retried with backoff (only the latest candidate is kept).
@@ -133,12 +135,15 @@ use saluki_core::{
     components::ComponentContext,
     execution::{
         control_mailbox, AdmissionPointId, AdmissionRegistry, AdmissionSchedule, AdmissionTime, ControlMailbox,
-        ControlSender, GenerationId, GenerationRef, RetireNotifier, ScheduleHandle, SystemWallClock, WallClock,
+        ControlSender, GenerationId, GenerationRef, LaneContext, RetireNotifier, ScheduleHandle, SystemWallClock,
+        WallClock,
     },
     runtime::{InitializationError, Supervisable, SupervisorFuture},
     topology::{topology_identifier, ComponentId},
 };
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+#[cfg(test)]
+use saluki_metric_plan::runtime::state::BudgetRecordings;
 use saluki_metric_plan::{
     canonical::PlanHash,
     channel::{artifact_channel, ApplyStates, ArtifactProduct, ArtifactSnapshot, InstallerEnd, TransportEnd},
@@ -149,17 +154,18 @@ use saluki_metric_plan::{
     install::{
         Action, ArmCut, Candidate, CandidateId, CreditKey, CutDeferReason, CutPhase, GenerationState, InstallerConfig,
         InstallerCore, InstallerStatus, LeaseRef, Origin, Outcome, PendingReason, Prepare, PrepareOutcome, PrepareSite,
-        RecipientRef, Report, ResourcesEvent, ResourcesRevision, RetirementReport, SlotPrepare,
+        RecipientRef, Report, ResourcesEvent, ResourcesRevision, RetirementReport, SlotPrepare, StateBinding,
     },
     ir::{
         ArtifactRevision, CredentialRef, HostId, NodeId, OutputId, Plan, Provenance, ReceivedArtifact,
         ResourceProvenance, ScopeName,
     },
     limits,
-    operators::OperatorRegistry,
+    operators::{LaneBinding, LaneCell, OperatorRegistry},
     resources::ResourcesArtifact,
     runtime::{
-        build_kernels, GenerationFailureReporter, PanicBudget, PrepareRegion, RegionControl, RegionError, StateBudgets,
+        build_kernels, GenerationFailureReporter, LanePreparation, PanicBudget, PrepareRegion, RegionControl,
+        RegionError, StateBudgets,
     },
     validate::{ValidationReport, Validator},
 };
@@ -182,10 +188,11 @@ use super::{
     catalog::AdpCatalog,
     credentials::{missing_credentials, AdpCredentialSource},
     host_facts::HostFacts,
+    lanes::LaneCounts,
     lowering::Lowering,
     resources::{Declared, FixedHosts, NativeOutputs, NativeResources, OutputKind},
     snapshot_bridge::{SnapshotBridge, SnapshotBridgeState},
-    telemetry::{CutOutcome, InstallOutcome, InstallerTelemetry, RegionTelemetry},
+    telemetry::{CutOutcome, InstallOutcome, InstallerTelemetry, LaneTelemetry, RegionTelemetry, SlotLaneStats},
     topology::{aggregation_slot, slot_name},
 };
 use crate::{cli::run::PRIMARY_TOPOLOGY, config::DataPlaneConfiguration, internal::env::ADPEnvironmentProvider};
@@ -251,6 +258,14 @@ pub struct BootTopology {
     /// DogStatsD pipeline is added, and answered by the [snapshot bridge](ProgrammableMetrics::snapshot_bridge).
     pub snapshots: Option<SnapshotBridgeState>,
 
+    /// The lanes the slots run on, and whether the DogStatsD source's producer lanes stamp its points themselves, which
+    /// they do whenever the metrics path runs on lanes.
+    pub lanes: LaneCounts,
+
+    /// What the lanes of each slot measure of their own work, for the `plan_lane_*` series: set for every slot when the
+    /// topology adds the regions on lanes, and empty without lanes.
+    pub lane_stats: Vec<SlotLaneStats>,
+
     /// The wall clock the admission points that feed state owners read in place of the operating system's, for tests
     /// that clock aggregation.
     #[cfg(test)]
@@ -259,6 +274,16 @@ pub struct BootTopology {
     /// What stands in for the edges of the encode and delivery hosts, for tests.
     #[cfg(test)]
     pub host_doubles: Option<super::topology::HostDoubles>,
+}
+
+/// What booting the programmable metrics path captures once from the process: the configuration it started with, the
+/// view of the configuration the installer wakes on, and the host facts.
+///
+/// The metrics path can be prepared from it more than once, on different lanes, as the `Strict` memory fit does.
+pub struct BootCapture {
+    startup: Arc<SalukiConfiguration>,
+    config: Live<SalukiConfiguration>,
+    facts: HostFacts,
 }
 
 /// The programmable metrics path of one process: what the metrics path of the topology is built from, and the
@@ -270,43 +295,67 @@ pub struct ProgrammableMetrics {
 }
 
 impl ProgrammableMetrics {
-    /// Lowers the boot configuration into the default program and prepares the metrics path and its installer.
+    /// Captures what booting the metrics path needs from the process: the configuration it starts with, and the host
+    /// facts, fetching host tags once.
     ///
     /// `process_start` is the wall-clock time at which the process started. Returns `None` when the configuration
     /// requires no metrics pipeline.
     ///
     /// # Errors
     ///
-    /// Returns an error where the native metrics path fails to build, with the native error: host tags that cannot be
-    /// fetched, or a configuration the native components reject. Returns an error also if the default program cannot
-    /// be laid out or compiled, which only a plan with structural problems causes.
-    pub async fn boot(
+    /// Returns an error if the host facts cannot be captured, such as host tags that cannot be fetched.
+    pub async fn capture(
         process_start: SystemTime, config_system: &ConfigurationSystem, env_provider: &ADPEnvironmentProvider,
-        client_config: Option<&RemoteAgentClientConfiguration>, component_registry: &ComponentRegistry,
-    ) -> Result<Option<Self>, GenericError> {
+        client_config: Option<&RemoteAgentClientConfiguration>,
+    ) -> Result<Option<BootCapture>, GenericError> {
         // The installer wakes on every change after the configuration it boots with.
         let config = config_system.live(|config| config);
         let startup = Arc::new(SalukiConfiguration::clone(&config));
         if !DataPlaneConfiguration::from_configuration(&startup).metrics_pipeline_required() {
             return Ok(None);
         }
-
         let facts = HostFacts::capture(process_start, &startup, env_provider, client_config).await?;
-        let Some(lowering) = Lowering::new(Arc::clone(&startup), facts.clone())? else {
+        Ok(Some(BootCapture { startup, config, facts }))
+    }
+
+    /// Lowers the boot configuration of `capture` into the default program and prepares the metrics path, on `lanes`,
+    /// and its installer.
+    ///
+    /// Returns `None` when the configuration requires no metrics pipeline.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error where the native metrics path fails to build, with the native error, such as a configuration
+    /// the native components reject. Returns an error also if the default program cannot be laid out on the lanes or
+    /// compiled, which only a plan with structural problems causes.
+    pub fn boot(
+        capture: &BootCapture, lanes: LaneCounts, component_registry: &ComponentRegistry,
+    ) -> Result<Option<Self>, GenericError> {
+        let Some(lowering) = Lowering::new(Arc::clone(&capture.startup), capture.facts.clone())? else {
             return Ok(None);
         };
         let operators = OperatorRegistry::native();
-        Self::from_lowering(lowering, facts, &startup, config, component_registry, operators).map(Some)
+        Self::from_lowering(
+            lowering,
+            capture.facts.clone(),
+            &capture.startup,
+            capture.config.clone(),
+            component_registry,
+            operators,
+            lanes,
+        )
+        .map(Some)
     }
 
     /// Prepares the metrics path and its installer from lowering prepared at boot, with the configuration the process
     /// started with and the view the installer wakes on.
     ///
     /// `registry` is the registry of the operators that plans are validated, laid out, composed, and compiled with: the
-    /// native operators, which tests extend with operators of their own.
+    /// native operators, which tests extend with operators of their own. `lanes` are the lanes the slots run on, fixed
+    /// for the life of the process.
     pub(super) fn from_lowering(
         lowering: Lowering, facts: HostFacts, startup: &SalukiConfiguration, config: Live<SalukiConfiguration>,
-        component_registry: &ComponentRegistry, registry: OperatorRegistry,
+        component_registry: &ComponentRegistry, registry: OperatorRegistry, lanes: LaneCounts,
     ) -> Result<Self, GenericError> {
         let lowered = lowering
             .lower(startup)
@@ -324,14 +373,22 @@ impl ProgrammableMetrics {
             );
         }
 
-        let frame = Frame::compute_with_hosts(&lowered.plan, &registry, &slot_name, &lowering.hosts().frame_hosts())
-            .map_err(|error| {
-                generic_error!(
+        // The slots' lanes are fixed at boot.
+        let frame = Frame::compute_with(
+            &lowered.plan,
+            &registry,
+            &slot_name,
+            &lowering.hosts().frame_hosts(),
+            &lanes.lanes,
+            lanes.frame_options(),
+        )
+        .map_err(|error| {
+            generic_error!(
                 "The metrics path cannot be laid out from the default program lowered from the configuration: {} If \
                  a node's parameter is out of range, change the configuration setting it is bound to.",
                 error
             )
-            })?;
+        })?;
         let frame = Arc::new(frame);
         let plan = Arc::new(lowered.plan);
 
@@ -388,7 +445,7 @@ impl ProgrammableMetrics {
         // Every lineage of every state owner, in every generation, draws on the same budgets, which native
         // aggregation's context limit sizes.
         let state_budgets = match lowered.catalog.state_budget() {
-            Some(capacity) => StateBudgets::new(capacity),
+            Some(capacity) => new_state_budgets(capacity),
             None => StateBudgets::unlimited(),
         };
         let region_telemetry = RegionTelemetry::new(topology_root.clone())
@@ -478,6 +535,8 @@ impl ProgrammableMetrics {
                 state_budgets,
                 wall_clock: Arc::new(SystemWallClock),
                 snapshots: None,
+                lanes,
+                lane_stats: Vec::new(),
                 #[cfg(test)]
                 state_admission_clock: None,
                 #[cfg(test)]
@@ -491,6 +550,24 @@ impl ProgrammableMetrics {
     /// Returns what the metrics path of the topology is built from.
     pub(super) fn boot_topology(&mut self) -> &mut BootTopology {
         &mut self.topology
+    }
+
+    /// Returns the lanes the metrics path's slots run on, fixed at boot.
+    pub fn boot_lanes(&self) -> LaneCounts {
+        self.topology.lanes
+    }
+
+    /// Returns the room one generation's overlap takes in the resource budget, in bytes: the most a live change that
+    /// rebuilds the kernels of one slot admits while the generation it replaces still holds its own, as the boot
+    /// generation's largest kernel-instance credit of one slot, on all of the slot's lanes.
+    pub fn instance_overlap_bytes(&self) -> u64 {
+        self.installer
+            .boot_credits
+            .iter()
+            .filter(|(credit, _)| matches!(credit, CreditKey::Instances(..)))
+            .map(|(_, bytes)| *bytes)
+            .max()
+            .unwrap_or(0)
     }
 
     /// Connects the installer to an artifact channel, and returns the channel's other end, for its transport.
@@ -543,9 +620,17 @@ impl ProgrammableMetrics {
     /// Call it once the topology is built: the topology takes the requests when it adds the DogStatsD pipeline.
     pub fn snapshot_bridge(&self) -> Option<SnapshotBridge> {
         let state = self.topology.snapshots.clone()?;
-        let slot = aggregation_slot(&self.topology.frame)?.id;
-        let region = self.installer.regions.get(slot.get())?.clone();
-        Some(SnapshotBridge::new(state, region))
+        let slot = aggregation_slot(&self.topology.frame)?;
+        let region = self.installer.regions.get(slot.id.get())?.clone();
+        Some(SnapshotBridge::new(state, region, slot.lanes))
+    }
+
+    /// Returns the worker that publishes the `plan_lane_*` series of every slot's lanes, or `None` if the metrics path
+    /// runs without lanes.
+    ///
+    /// Call it once the topology is built: the topology creates what the lanes measure when it adds the regions.
+    pub fn lane_telemetry(&self) -> Option<LaneTelemetry> {
+        (!self.topology.lane_stats.is_empty()).then(|| LaneTelemetry::new(&self.topology.lane_stats))
     }
 
     /// Returns the installer worker, to run once the topology is built.
@@ -1920,6 +2005,9 @@ impl Installer {
     }
 
     /// Prepares a generation in every region: builds the kernels each region lacks, and sends the preparation.
+    ///
+    /// The kernels of every region, for every lane of each, are built first, as blocking work (see [`blocking`]), so
+    /// that building them holds up no other task of the runtime; every preparation is then sent in slot order.
     fn prepare(&mut self, prepare: Prepare) {
         let Prepare {
             generation,
@@ -1941,19 +2029,41 @@ impl Installer {
         self.telemetry.resource_budget(usage.granted, usage.used);
         let (budgets, artifact_nodes) = self.preparing_budgets(id);
 
-        for slot in slots {
-            let slot_id = slot.slot;
-            let budget = budgets
-                .get(slot_id.get())
-                .copied()
-                .unwrap_or(PanicBudget::DEFAULT_PROGRAM);
+        // Each slot's preparation, built for the lanes its region runs on.
+        let work = slots
+            .into_iter()
+            .map(|slot| {
+                let budget = budgets
+                    .get(slot.slot.get())
+                    .copied()
+                    .unwrap_or(PanicBudget::DEFAULT_PROGRAM);
+                let lanes = self
+                    .core
+                    .frame()
+                    .slot(slot.slot)
+                    .map_or(1, |frame_slot| frame_slot.lanes);
+                (slot, budget, lanes)
+            })
+            .collect::<Vec<_>>();
+        let telemetry = &self.region_telemetry;
+        let built = blocking(|| {
+            work.into_iter()
+                .map(|(slot, budget, lanes)| {
+                    let slot_id = slot.slot;
+                    let message = region_preparation(telemetry, &generation, slot, budget, &artifact_nodes, lanes);
+                    (slot_id, message)
+                })
+                .collect::<Vec<_>>()
+        });
+
+        for (slot_id, message) in built {
             let Some(region) = self.regions.get(slot_id.get()) else {
                 let failure = Err("the topology has no region for the slot".to_string());
                 let actions = self.core.prepare_acknowledged(id, slot_id, failure);
                 self.actions.extend(actions);
                 return;
             };
-            match self.region_preparation(&generation, slot, budget, &artifact_nodes) {
+            match message {
                 Ok(message) => {
                     let ack = region.send(RegionControl::Prepare(Box::new(message)));
                     self.acks.push(Box::pin(async move {
@@ -1973,42 +2083,6 @@ impl Installer {
             }
         }
         self.prepare_hosts(id, hosts);
-    }
-
-    /// Returns what the region of `slot` prepares for `generation`: the slot's program, the kernels it lacks, built
-    /// here, its panic budget and the nodes the budget covers, and how its state owners bind to instances of their
-    /// state.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a kernel fails to build.
-    fn region_preparation(
-        &self, generation: &GenerationRef, slot: SlotPrepare, budget: PanicBudget, artifact_nodes: &BTreeSet<NodeId>,
-    ) -> Result<PrepareRegion, RegionError> {
-        // Every part of the core's preparation of the slot is named, so that none is left behind: a region reuses the
-        // instances it holds for the kernels the preparation does not list to build, whether or not the program is
-        // unchanged, and an isolation slot needs its bindings of state to carry, start, or retire its state owners'
-        // state.
-        let SlotPrepare {
-            slot: _,
-            program,
-            unchanged: _,
-            reuse: _,
-            build,
-            state,
-            leases,
-        } = slot;
-        // Kernels are built off the data path, each in its own resource group under its region's.
-        let kernels = build_kernels(&program, &build, |node| {
-            self.region_telemetry.kernel_context(&program, node)
-        })?;
-        // The budget covers the artifact's nodes only: a native node's panic fails the region.
-        Ok(
-            PrepareRegion::new(generation.clone(), program, kernels, budget, &self.region_telemetry)
-                .with_artifact_nodes(artifact_nodes.iter().cloned())
-                .with_state_bindings(state)
-                .with_leases(leases),
-        )
     }
 
     /// Returns the panic budget of every slot, in slot order, for generation `id`, which the core is preparing (see
@@ -2363,6 +2437,96 @@ fn artifact_nodes(plan: &Plan) -> BTreeSet<NodeId> {
         .collect()
 }
 
+/// Runs `work`, which blocks its thread for a while, such as building kernels, so that it holds up no other task: on a
+/// worker of a multi-thread runtime, the runtime hands the worker's other tasks to other threads while it runs, and
+/// elsewhere it runs inline.
+///
+/// The work stays on the calling thread either way, so whatever it registers, such as telemetry handles, goes to the
+/// thread's metrics recorder.
+fn blocking<R>(work: impl FnOnce() -> R) -> R {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(work)
+        }
+        _ => work(),
+    }
+}
+
+/// Returns what the region of `slot` prepares for `generation`, on `lanes` lanes: the slot's program, the kernels it
+/// lacks, built here, its panic budget and the nodes the budget covers, and how its state owners bind to instances of
+/// their state.
+///
+/// A region on several lanes is given one share per lane ([`LanePreparation`]), each with kernels of its own, built
+/// from the same specs and accounted under the lane's group, and the same bindings of state. Every lane's instance of
+/// a lineage the generation creates is built against one [`LaneCell`], so that the lanes share its record.
+///
+/// # Errors
+///
+/// Returns an error if a kernel fails to build.
+fn region_preparation(
+    telemetry: &RegionTelemetry, generation: &GenerationRef, slot: SlotPrepare, budget: PanicBudget,
+    artifact_nodes: &BTreeSet<NodeId>, lanes: u16,
+) -> Result<PrepareRegion, RegionError> {
+    // Every part of the core's preparation of the slot is named, so that none is left behind: a region reuses the
+    // instances it holds for the kernels the preparation does not list to build, whether or not the program is
+    // unchanged, and an isolation slot needs its bindings of state to carry, start, or retire its state owners' state.
+    let SlotPrepare {
+        slot: _,
+        program,
+        unchanged: _,
+        reuse: _,
+        build,
+        state,
+        leases,
+    } = slot;
+    if lanes <= 1 {
+        // Kernels are built off the data path, each in its own resource group under its region's.
+        let kernels = build_kernels(&program, &build, |node| telemetry.kernel_context(&program, node))?;
+        // The budget covers the artifact's nodes only: a native node's panic fails the region.
+        return Ok(
+            PrepareRegion::new(generation.clone(), program, kernels, budget, telemetry)
+                .with_artifact_nodes(artifact_nodes.iter().cloned())
+                .with_state_bindings(state)
+                .with_leases(leases),
+        );
+    }
+
+    // One cell per lineage the generation starts, which every lane's new instance of it is built against.
+    let cells = state
+        .iter()
+        .filter_map(|binding| match binding {
+            StateBinding::New { node, .. } => Some((node.clone(), LaneCell::new())),
+            StateBinding::Retain { .. } | StateBinding::Retire { .. } => None,
+        })
+        .collect::<BTreeMap<_, _>>();
+    let shares = (0..lanes)
+        .map(|index| {
+            let lane = LaneContext { index, count: lanes };
+            let kernels = build_kernels(&program, &build, |node| {
+                let context = telemetry.kernel_context_in(&program, node, lane);
+                match cells.get(node) {
+                    Some(cell) => context.with_lanes(LaneBinding {
+                        cell: Arc::clone(cell),
+                        lane: index,
+                        lanes,
+                    }),
+                    None => context,
+                }
+            })?;
+            Ok(LanePreparation {
+                kernels,
+                state: state.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, RegionError>>()?;
+    Ok(
+        PrepareRegion::new(generation.clone(), program, Vec::new(), budget, telemetry)
+            .with_artifact_nodes(artifact_nodes.iter().cloned())
+            .with_leases(leases)
+            .with_lanes(shares),
+    )
+}
+
 /// Returns the panic budget of every slot of `frame`, in slot order, for a generation of `origin` that runs `plan`.
 ///
 /// A default program's budget is zero in every slot. An artifact's budget applies only in the slots where `plan`
@@ -2453,5 +2617,54 @@ mod lifecycle_tests;
 mod live_tests;
 #[cfg(test)]
 mod resource_tests;
+
+/// Creates the state budgets of a metrics path whose global budget holds `capacity` contexts.
+#[cfg(not(test))]
+fn new_state_budgets(capacity: u64) -> StateBudgets {
+    StateBudgets::new(capacity)
+}
+
+/// Creates the state budgets of a metrics path whose global budget holds `capacity` contexts, recording every
+/// operation on them while a test asks for it ([`record_state_budgets`]).
+#[cfg(test)]
+fn new_state_budgets(capacity: u64) -> StateBudgets {
+    let mut recordings = STATE_BUDGET_RECORDINGS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match recordings.as_mut() {
+        Some(recordings) => {
+            let (budgets, recording) = StateBudgets::recorded(capacity);
+            recordings.push(recording);
+            budgets
+        }
+        None => StateBudgets::new(capacity),
+    }
+}
+
+/// The recordings of the state budgets of every metrics path booted in the process since a test asked for them, or
+/// `None` while none does.
+#[cfg(test)]
+static STATE_BUDGET_RECORDINGS: std::sync::Mutex<Option<Vec<BudgetRecordings>>> = std::sync::Mutex::new(None);
+
+/// Makes every metrics path booted in the process from now on record its state budgets' operations, for the
+/// capacity oracle: a test that asks runs in a process of its own, as nextest runs every test.
+#[cfg(test)]
+pub(super) fn record_state_budgets() {
+    STATE_BUDGET_RECORDINGS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get_or_insert_with(Vec::new);
+}
+
+/// Returns the recordings of the state budgets of every metrics path booted since [`record_state_budgets`].
+#[cfg(test)]
+pub(super) fn state_budget_recordings() -> Vec<BudgetRecordings> {
+    STATE_BUDGET_RECORDINGS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests;

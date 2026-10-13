@@ -3,7 +3,10 @@
 use std::{
     collections::{btree_map::Entry, BTreeMap},
     fmt,
-    sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard, OnceLock, PoisonError, Weak},
+    sync::{
+        atomic::{AtomicU64, Ordering as AtomicOrdering},
+        Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard, OnceLock, PoisonError, Weak,
+    },
     time::Duration,
 };
 
@@ -17,7 +20,7 @@ use tokio::{
 use tracing::warn;
 
 use super::{
-    clock::{AdmissionClock, ClockStamp, SystemWallClock, WallClock},
+    clock::{AdmissionClock, ClockStamp, SourceClock, SystemWallClock, WallClock},
     generation::{GenerationId, GenerationRef},
     header::{AdmissionPointId, AdmissionTime, BatchHeader},
 };
@@ -108,6 +111,23 @@ pub enum AdmissionMode {
     Readmit,
 }
 
+/// Who stamps the batches of an admission point.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum Stamper {
+    /// The dispatcher of the point's output stamps every batch it sends, under the point's lock, which it holds across
+    /// the stamp and the whole fan-out to the output's channels. Several tasks may send on the output, and every
+    /// channel still receives the point's batches in stamp order.
+    ///
+    /// This is the default.
+    #[default]
+    Shared,
+
+    /// One task stamps every batch, through an [`OwnedAdmission`], and sends what it stamped in order itself, so the
+    /// lock covers the stamp only. The point is never attached to a dispatcher, and sends no heartbeats of its own: its
+    /// task stamps them ([`OwnedAdmission::stamp_heartbeat`]).
+    Owned,
+}
+
 /// The configuration of an admission point.
 #[derive(Clone, Debug)]
 pub struct AdmissionPointConfig {
@@ -116,9 +136,12 @@ pub struct AdmissionPointConfig {
     schedule: ScheduleHandle,
     clock_reset_threshold: Duration,
     heartbeat: Option<Duration>,
+    heartbeat_each_second: Option<Duration>,
     heartbeat_recipients: Vec<ComponentId>,
     wall_clock: Arc<dyn WallClock>,
     registry: Option<AdmissionRegistry>,
+    stamper: Stamper,
+    source_clock: Option<Arc<SourceClock>>,
 }
 
 impl AdmissionPointConfig {
@@ -137,10 +160,41 @@ impl AdmissionPointConfig {
             schedule,
             clock_reset_threshold,
             heartbeat: None,
+            heartbeat_each_second: None,
             heartbeat_recipients: Vec::new(),
             wall_clock: Arc::new(SystemWallClock),
             registry: None,
+            stamper: Stamper::Shared,
+            source_clock: None,
         }
+    }
+
+    /// Makes the point stamp from `clock`, which it shares with the other points of its source, in place of a clock of
+    /// its own, so that the source has one latest admission time, one epoch, and one reset decision.
+    ///
+    /// The shared clock reads its own wall clock, so [`with_wall_clock`][Self::with_wall_clock] and the reset threshold
+    /// no longer apply. Only an [owned][Self::owned] point shares a clock: a topology rejects a point with a source
+    /// clock that a dispatcher stamps.
+    pub fn with_source_clock(mut self, clock: Arc<SourceClock>) -> Self {
+        self.source_clock = Some(clock);
+        self
+    }
+
+    /// Makes the point [owned][Stamper::Owned]: one task stamps it through an [`OwnedAdmission`], and no dispatcher
+    /// does. An owned point has no heartbeat recipients.
+    pub fn owned(mut self) -> Self {
+        self.stamper = Stamper::Owned;
+        self
+    }
+
+    /// Returns who stamps the point's batches.
+    pub fn stamper(&self) -> Stamper {
+        self.stamper
+    }
+
+    /// Returns the clock the point shares with the other points of its source, if it shares one.
+    pub fn source_clock(&self) -> Option<&Arc<SourceClock>> {
+        self.source_clock.as_ref()
     }
 
     /// Enables periodic heartbeats: whenever the point has stamped nothing for `period`, it sends a heartbeat.
@@ -150,6 +204,22 @@ impl AdmissionPointConfig {
     /// state the point feeds keeps idle points from delaying flushes.
     pub fn with_heartbeat(mut self, period: Duration) -> Self {
         self.heartbeat = Some(period);
+        self
+    }
+
+    /// Also sends a heartbeat `after` into each wall-clock second in which the point has stamped nothing yet, beside
+    /// its periodic ones: an idle point's next heartbeat is then due at the earlier of one period after its latest
+    /// stamp and `after` past the start of the second after that stamp's.
+    ///
+    /// A watermark downstream of several points of one source is the minimum over them, so one idle point holds back
+    /// whatever waits for that watermark to reach a second, while the others are busy, until its next heartbeat: with
+    /// this, at most `after` into the second. A point that stamps data in every second sends none of these.
+    ///
+    /// Only an [owned][Self::owned] point's task sends them, and only with [periodic
+    /// heartbeats][Self::with_heartbeat]: a topology rejects it on a point a dispatcher stamps, and an owned point
+    /// rejects an `after` shorter than [`MIN_HEARTBEAT_PERIOD`] or not shorter than a second.
+    pub fn with_heartbeat_each_second(mut self, after: Duration) -> Self {
+        self.heartbeat_each_second = Some(after);
         self
     }
 
@@ -201,6 +271,12 @@ impl AdmissionPointConfig {
         self.heartbeat
     }
 
+    /// Returns how far into each wall-clock second the point heartbeats, if it has stamped nothing in that second, if
+    /// it does ([`with_heartbeat_each_second`][Self::with_heartbeat_each_second]).
+    pub fn heartbeat_each_second(&self) -> Option<Duration> {
+        self.heartbeat_each_second
+    }
+
     /// Returns the components the point sends heartbeats to; empty means every component its output feeds.
     pub fn heartbeat_recipients(&self) -> &[ComponentId] {
         &self.heartbeat_recipients
@@ -230,11 +306,16 @@ pub enum HeartbeatOutcome {
 /// What an admission point has stamped, as an installer needs to know it to schedule and check a cut.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AdmissionPointStatus {
-    /// The admission time of the point's latest stamp, of data or of a heartbeat, or `None` if it has stamped
-    /// nothing.
+    /// The admission time of the point's own latest stamp, of data or of a heartbeat, if that stamp is in the clock's
+    /// current epoch, `epoch`; otherwise `None`.
+    ///
+    /// It is `None` if the point has stamped nothing, and, for a point that shares its source's clock with other
+    /// points, if another point reset the clock since this point's latest stamp: a stamp in an earlier epoch is on
+    /// another timeline, and says nothing about where this point's next stamp falls. Within one epoch the clock never
+    /// moves back, so this point's next stamp is not earlier than this.
     pub last_admitted_at: Option<AdmissionTime>,
 
-    /// The epoch of the point's clock.
+    /// The epoch of the point's clock when the status was read.
     pub epoch: u32,
 
     /// Whether the point has stamped a batch, of data or a heartbeat, with the `new` generation of the cut the schedule
@@ -271,22 +352,84 @@ struct ObservedCut {
     admitted_to_new: bool,
 }
 
+/// The clock an admission point stamps from.
+#[derive(Debug)]
+enum ClockRef {
+    /// A clock of the point's own, which only the point's stamps move.
+    Own(AdmissionClock),
+
+    /// The clock the point shares with the other points of its source, which every point's stamps move.
+    Shared(Arc<SourceClock>),
+}
+
+impl ClockRef {
+    fn stamp(&mut self) -> ClockStamp {
+        match self {
+            Self::Own(clock) => clock.stamp(),
+            Self::Shared(clock) => clock.stamp(),
+        }
+    }
+
+    #[cfg(test)]
+    fn latest(&self) -> Option<AdmissionTime> {
+        match self {
+            Self::Own(clock) => clock.latest(),
+            Self::Shared(clock) => clock.latest(),
+        }
+    }
+
+    fn epoch(&self) -> u32 {
+        match self {
+            Self::Own(clock) => clock.epoch(),
+            Self::Shared(clock) => clock.epoch(),
+        }
+    }
+
+    fn wall_now(&self) -> AdmissionTime {
+        match self {
+            Self::Own(clock) => clock.wall_now(),
+            Self::Shared(clock) => clock.wall_now(),
+        }
+    }
+}
+
 /// The state an admission point guards with its mutex.
 #[derive(Debug)]
 struct PointState {
-    clock: AdmissionClock,
+    clock: ClockRef,
+    /// The point's own latest stamp, of data or of a heartbeat. With a clock of its own, it is the clock's latest; with
+    /// a shared clock, the clock's latest may be another point's.
+    last: Option<ClockStamp>,
     observed: Option<ObservedCut>,
     last_activity: Instant,
 }
 
 impl PointState {
-    /// Returns what the point recorded about the cut to `new`, recording the clock's current epoch if the point has
-    /// not seen a cut to `new` before.
+    fn new(clock: ClockRef) -> Self {
+        Self {
+            clock,
+            last: None,
+            observed: None,
+            last_activity: Instant::now(),
+        }
+    }
+
+    /// Returns what the point recorded about the cut to `new`, recording the epoch at which the point saw it if the
+    /// point has not seen a cut to `new` before.
+    ///
+    /// That epoch is the one the cut's boundary recorded for the point, under the point's lock, when the cut was
+    /// armed, or the clock's current epoch for a point the boundary does not record (or a cut without a boundary).
+    /// With a shared clock the two differ when another point of the source reset the clock between the arm and this
+    /// point's first stamp under the cut: the reset still happened after the cut was published, so this point's stamps
+    /// in the new epoch belong to `new`, as the other points' do.
     ///
     /// Only a cut to another generation replaces the record, so publishing an equal cut again, or a cut to the same
     /// generation at another time, keeps the epoch the point first saw.
-    fn observe_cut(&mut self, new: &GenerationRef) -> &mut ObservedCut {
-        let epoch = self.clock.epoch();
+    fn observe_cut(&mut self, id: AdmissionPointId, new: &GenerationRef) -> &mut ObservedCut {
+        let epoch = new
+            .cut()
+            .and_then(|boundary| boundary.epoch_of(id))
+            .unwrap_or_else(|| self.clock.epoch());
         let observed = self.observed.get_or_insert(ObservedCut {
             new: new.id(),
             epoch_at_publish: epoch,
@@ -305,10 +448,10 @@ impl PointState {
     /// Returns the epoch at which the point first saw `schedule`'s cut, recording it now if it has not seen it before.
     ///
     /// A steady schedule needs no epoch; the clock's current epoch is returned for it.
-    fn epoch_at_publish(&mut self, schedule: &AdmissionSchedule) -> u32 {
+    fn epoch_at_publish(&mut self, id: AdmissionPointId, schedule: &AdmissionSchedule) -> u32 {
         match schedule {
             AdmissionSchedule::Steady(_) => self.clock.epoch(),
-            AdmissionSchedule::Cut { new, .. } => self.observe_cut(new).epoch_at_publish,
+            AdmissionSchedule::Cut { new, .. } => self.observe_cut(id, new).epoch_at_publish,
         }
     }
 
@@ -317,19 +460,21 @@ impl PointState {
     fn advance(&mut self, id: AdmissionPointId, schedule: &AdmissionSchedule) -> (ClockStamp, u32) {
         // Read the schedule before the clock, so that a reset detected by this very stamp counts as happening after
         // the schedule was published.
-        let epoch_at_publish = self.epoch_at_publish(schedule);
-        let previous = self.clock.latest();
+        let epoch_at_publish = self.epoch_at_publish(id, schedule);
+        // One critical section of the clock, which also says what the clock assigned last: with a shared clock, a
+        // separate read could take another point's stamp made in between.
         let stamp = self.clock.stamp();
         if stamp.reset {
             warn!(
                 admission_point = id.get(),
-                previous = %previous.unwrap_or(AdmissionTime::UNIX_EPOCH),
+                previous = %stamp.previous.unwrap_or(AdmissionTime::UNIX_EPOCH),
                 restarted_at = %stamp.admitted_at,
                 epoch = stamp.epoch,
                 "Wall clock moved backward by more than the clock-reset threshold. Admission clock restarted in a new \
                  epoch."
             );
         }
+        self.last = Some(stamp);
         self.last_activity = Instant::now();
         (stamp, epoch_at_publish)
     }
@@ -343,16 +488,66 @@ impl PointState {
         let generation = schedule.generation_for(stamp.admitted_at, stamp.epoch, epoch_at_publish);
         if let AdmissionSchedule::Cut { new, .. } = schedule {
             if Arc::ptr_eq(generation, new) {
-                self.observe_cut(new).admitted_to_new = true;
+                self.observe_cut(id, new).admitted_to_new = true;
             }
         }
         (stamp, generation)
     }
 
+    /// Stamps `header` according to `mode`, as the admission point `id` reading `schedule`.
+    fn stamp_header(
+        &mut self, id: AdmissionPointId, mode: AdmissionMode, schedule: &AdmissionSchedule, header: &mut BatchHeader,
+    ) {
+        if mode == AdmissionMode::Admit && header.is_stamped() {
+            return;
+        }
+
+        let (stamp, generation) = self.stamp(id, schedule);
+        header.admitted_at = Some(stamp.admitted_at);
+        header.admission_point = Some(id);
+        header.epoch = stamp.epoch;
+        header.generation = Some(Arc::clone(generation));
+        if mode == AdmissionMode::Readmit {
+            header.entry = None;
+        }
+    }
+
+    /// Stamps the header of a heartbeat, as the admission point `id` reading `schedule`: a fresh stamp, exactly as a
+    /// batch of data would get.
+    fn heartbeat_header(&mut self, id: AdmissionPointId, schedule: &AdmissionSchedule) -> BatchHeader {
+        let (stamp, generation) = self.stamp(id, schedule);
+        BatchHeader {
+            admitted_at: Some(stamp.admitted_at),
+            admission_point: Some(id),
+            epoch: stamp.epoch,
+            generation: Some(Arc::clone(generation)),
+            entry: None,
+        }
+    }
+
+    /// Returns the admission time of the point's own latest stamp if it is in `epoch`, the clock's current epoch.
+    ///
+    /// A stamp in an earlier epoch is on another timeline, which says nothing about where the point's next stamp falls:
+    /// with a shared clock, another point of the source may have reset the clock since this point last stamped.
+    fn last_in_epoch(&self, epoch: u32) -> Option<AdmissionTime> {
+        self.last
+            .filter(|last| last.epoch == epoch)
+            .map(|last| last.admitted_at)
+    }
+
+    /// Returns `true` if the point has stamped, and its clock has been reset since its latest stamp, by another point
+    /// of its source.
+    fn reset_since_last_stamp(&self) -> bool {
+        self.last.is_some_and(|last| last.epoch != self.clock.epoch())
+    }
+
     /// Returns what the point has stamped, relative to `schedule`.
+    ///
+    /// A shared clock's epoch can move on while this runs, when another point of the source resets it: it is read
+    /// once, so that the latest stamp reported is one in the epoch reported.
     fn status(&self, schedule: &AdmissionSchedule) -> AdmissionPointStatus {
-        let latest = self.clock.latest();
         let epoch = self.clock.epoch();
+        let latest = self.last_in_epoch(epoch);
         let (admitted_to_new, passed_cut) = match (schedule, &self.observed) {
             (AdmissionSchedule::Cut { new, at, .. }, Some(observed)) if observed.new == new.id() => {
                 let passed = latest.is_some_and(|latest| latest >= *at) || epoch != observed.epoch_at_publish;
@@ -390,14 +585,15 @@ pub(crate) struct OwnerToken {
 /// A place where batches enter plan-driven processing: one output of one component.
 ///
 /// An admission point stamps the [header][BatchHeader] of every batch sent on its output with an admission time from
-/// its own [clock][AdmissionClock], its identifier, the clock's epoch, and the generation its
+/// its [clock][AdmissionClock], its identifier, the clock's epoch, and the generation its
 /// [schedule][AdmissionSchedule] chooses. Its [mode][AdmissionMode] decides whether batches that are already stamped
-/// keep their stamp.
+/// keep their stamp. The clock is the point's own, or a [`SourceClock`] it shares with the other points of its source.
 ///
 /// Stamping happens inside the output's dispatcher, under a mutex that is held across the stamp and the whole
 /// sequential fan-out to the output's downstream channels. Every downstream channel therefore receives the point's
 /// batches in admission-time order, even when several tasks send on the output concurrently. The mutex cannot
-/// deadlock, because a topology is acyclic.
+/// deadlock, because a topology is acyclic. An [owned][Stamper::Owned] point is stamped by the one task that admits
+/// through it instead, through an [`OwnedAdmission`], and its mutex covers only the stamp.
 ///
 /// An idle admission point can send **heartbeats**: header-only batches stamped like data, with an admission time,
 /// epoch, admission point, and the generation the schedule assigns to that admission time, so that downstream state
@@ -415,7 +611,9 @@ pub(crate) struct OwnerToken {
 pub struct AdmissionPoint {
     id: AdmissionPointId,
     mode: AdmissionMode,
+    stamper: Stamper,
     heartbeat: Option<Duration>,
+    heartbeat_each_second: Option<Duration>,
     heartbeat_recipients: Box<[ComponentId]>,
     schedule: ScheduleHandle,
     state: Arc<Mutex<PointState>>,
@@ -425,7 +623,11 @@ pub struct AdmissionPoint {
 impl AdmissionPoint {
     /// Creates an admission point from its configuration.
     ///
-    /// The point is not attached to any output yet: a dispatcher attaches it to one of its outputs.
+    /// The point is not attached to any output yet: a dispatcher attaches it to one of its outputs, unless it is
+    /// [owned][Stamper::Owned], which an [`OwnedAdmission`] stamps instead.
+    ///
+    /// A point stamps from a clock of its own, unless its configuration gives it a [source
+    /// clock][AdmissionPointConfig::with_source_clock] it shares with the other points of its source.
     pub fn new(config: AdmissionPointConfig) -> Self {
         let AdmissionPointConfig {
             id,
@@ -433,23 +635,28 @@ impl AdmissionPoint {
             schedule,
             clock_reset_threshold,
             heartbeat,
+            heartbeat_each_second,
             heartbeat_recipients,
             wall_clock,
             // The topology that builds the point registers it.
             registry: _,
+            stamper,
+            source_clock,
         } = config;
 
+        let clock = match source_clock {
+            Some(clock) => ClockRef::Shared(clock),
+            None => ClockRef::Own(AdmissionClock::with_wall_clock(clock_reset_threshold, wall_clock)),
+        };
         Self {
             id,
             mode,
+            stamper,
             heartbeat,
+            heartbeat_each_second,
             heartbeat_recipients: heartbeat_recipients.into(),
             schedule,
-            state: Arc::new(Mutex::new(PointState {
-                clock: AdmissionClock::with_wall_clock(clock_reset_threshold, wall_clock),
-                observed: None,
-                last_activity: Instant::now(),
-            })),
+            state: Arc::new(Mutex::new(PointState::new(clock))),
             attachment: OnceLock::new(),
         }
     }
@@ -462,6 +669,11 @@ impl AdmissionPoint {
     /// Returns the mode of this admission point.
     pub fn mode(&self) -> AdmissionMode {
         self.mode
+    }
+
+    /// Returns who stamps this admission point's batches.
+    pub fn stamper(&self) -> Stamper {
+        self.stamper
     }
 
     /// Returns the heartbeat period, if periodic heartbeats are enabled.
@@ -553,17 +765,7 @@ impl AdmissionPoint {
             };
 
             // Stamp lazily, so that a point whose channels are all gone stamps nothing.
-            let header = header.get_or_insert_with(|| {
-                let schedule = self.schedule.load();
-                let (stamp, generation) = state.stamp(self.id, &schedule);
-                BatchHeader {
-                    admitted_at: Some(stamp.admitted_at),
-                    admission_point: Some(self.id),
-                    epoch: stamp.epoch,
-                    generation: Some(Arc::clone(generation)),
-                    entry: None,
-                }
-            });
+            let header = header.get_or_insert_with(|| state.heartbeat_header(self.id, &self.schedule.load()));
 
             let heartbeat = EventsBuffer::with_capacity(0).with_header(header.clone());
             if sender.send(heartbeat).await.is_ok() {
@@ -628,21 +830,275 @@ pub(crate) struct AdmissionGuard<'a> {
 impl AdmissionGuard<'_> {
     /// Stamps `header` according to the point's mode.
     pub(crate) fn stamp(&mut self, header: &mut BatchHeader) {
-        let point = self.point;
-        if point.mode == AdmissionMode::Admit && header.is_stamped() {
+        self.point.stamp_locked(&mut self.state, header);
+    }
+}
+
+impl AdmissionPoint {
+    /// Stamps `header` according to the point's mode, with the point's state locked.
+    fn stamp_locked(&self, state: &mut PointState, header: &mut BatchHeader) {
+        state.stamp_header(self.id, self.mode, &self.schedule.load(), header);
+    }
+}
+
+/// The stamping side of an [owned][Stamper::Owned] admission point, held by the one task that admits through it.
+///
+/// The task stamps each batch it receives with [`stamp`][Self::stamp] before it processes it, and sends what it
+/// produces in order itself, so every channel downstream of it receives the point's batches in stamp order without a
+/// lock held across the sends: the point's lock covers the stamp only, and an installer's transaction over the point
+/// waits at most for a stamp in progress.
+///
+/// The task also drives the point's heartbeats. It arms a timer for [`heartbeat_due`][Self::heartbeat_due], and when
+/// the timer fires, stamps a header-only batch with [`stamp_heartbeat`][Self::stamp_heartbeat], which stamps nothing
+/// if a batch was stamped meanwhile; the task then arms the timer again for the new instant. An idle point's next
+/// heartbeat therefore comes one period after its latest stamp, or, for a point that heartbeats in each second
+/// ([`AdmissionPointConfig::with_heartbeat_each_second`]), early in the second after its latest stamp's, if that is
+/// sooner.
+///
+/// # Shared clocks
+///
+/// A point that shares a [`SourceClock`] with the other points of its source, one per lane, sees a reset that another
+/// point's stamp detects only when it next stamps. Its task checks after every batch whether the clock's epoch moved
+/// past the epoch of the point's latest stamp ([`reset_pending`][Self::reset_pending]: two atomic loads, the clock's
+/// epoch mirror and the epoch the task recorded at its latest stamp, and no lock), and if so stamps a heartbeat at once
+/// ([`stamp_reset`][Self::stamp_reset]), so that its first stamp in the new epoch follows its last one in the old
+/// epoch within queueing delay. While its input is idle, it also waits on the clock's
+/// [`subscribe`][SourceClock::subscribe] channel, which keeps the change for a task that was not waiting when it
+/// happened.
+#[derive(Debug)]
+pub struct OwnedAdmission {
+    point: Arc<AdmissionPoint>,
+    source_clock: Option<Arc<SourceClock>>,
+    /// When the owner was created, which [`latest_at_nanos`][Self::latest_at_nanos] counts from.
+    created: Instant,
+    /// When the point last stamped, as the owner saw it, in nanoseconds after `created` (0 until it stamps), so that
+    /// the next heartbeat's instant is known without the point's lock. Only the owner writes it.
+    latest_at_nanos: AtomicU64,
+    /// When the heartbeat of the second after the latest stamp's is due, for a point that heartbeats in each second,
+    /// in nanoseconds after `created`, or [`NO_SECOND_HEARTBEAT`]. Only the owner writes it.
+    second_heartbeat_at_nanos: AtomicU64,
+    /// The epoch of the point's latest stamp, as the owner saw it, or [`NO_STAMP`] if it has stamped nothing, so that
+    /// a pending reset is known without the point's lock. Only the owner writes it.
+    latest_epoch: AtomicU64,
+    /// How long stamps waited for the point's lock, in nanoseconds, in all.
+    lock_wait_nanos: AtomicU64,
+}
+
+/// The [`OwnedAdmission::latest_epoch`] of a point that has stamped nothing: no epoch, which are `u32`s.
+const NO_STAMP: u64 = u64::MAX;
+
+/// The [`OwnedAdmission::second_heartbeat_at_nanos`] of a point that sends no heartbeat in each second, or has not
+/// stamped yet.
+const NO_SECOND_HEARTBEAT: u64 = u64::MAX;
+
+/// One second, the span of the wall-clock seconds a point heartbeats in.
+const SECOND: Duration = Duration::from_secs(1);
+
+impl OwnedAdmission {
+    /// Creates the owned admission point `config` describes, registering it in the configuration's registry, if it
+    /// names one.
+    ///
+    /// # Errors
+    ///
+    /// If the configuration is not [owned][AdmissionPointConfig::owned], if it has heartbeat recipients, which an
+    /// owned point's task reaches itself, if its heartbeat period is shorter than [`MIN_HEARTBEAT_PERIOD`] (1 ms) or
+    /// longer than [`MAX_HEARTBEAT_PERIOD`] (1 hour), if it heartbeats in each second without a heartbeat period or
+    /// at a point of the second shorter than [`MIN_HEARTBEAT_PERIOD`] or not shorter than a second, or if another live
+    /// point of the registry has its identifier, an error is returned.
+    pub fn new(config: AdmissionPointConfig) -> Result<Self, GenericError> {
+        if config.stamper() != Stamper::Owned {
+            return Err(generic_error!(
+                "Admission point {} is stamped by its dispatcher, so it cannot be owned by a task. Configure it with \
+                 `AdmissionPointConfig::owned`.",
+                config.id().get()
+            ));
+        }
+        if !config.heartbeat_recipients().is_empty() {
+            return Err(generic_error!(
+                "Owned admission point {} lists heartbeat recipients, but the task that owns it sends its heartbeats \
+                 where it sends its batches. Remove the recipients.",
+                config.id().get()
+            ));
+        }
+        if let Some(period) = config
+            .heartbeat()
+            .filter(|period| !(MIN_HEARTBEAT_PERIOD..=MAX_HEARTBEAT_PERIOD).contains(period))
+        {
+            return Err(generic_error!(
+                "The heartbeat period of owned admission point {} is {:?}, outside the allowed range of {:?} through \
+                 {:?}. Use a period within that range, or leave heartbeats disabled.",
+                config.id().get(),
+                period,
+                MIN_HEARTBEAT_PERIOD,
+                MAX_HEARTBEAT_PERIOD
+            ));
+        }
+        if let Some(after) = config.heartbeat_each_second() {
+            if config.heartbeat().is_none() {
+                return Err(generic_error!(
+                    "Owned admission point {} heartbeats in each second, but sends no periodic heartbeats. Give it a \
+                     heartbeat period, or remove the heartbeat in each second.",
+                    config.id().get()
+                ));
+            }
+            if !(MIN_HEARTBEAT_PERIOD..SECOND).contains(&after) {
+                return Err(generic_error!(
+                    "Owned admission point {} heartbeats {:?} into each second, outside the allowed range of {:?} up \
+                     to a second. Use a point of the second within that range.",
+                    config.id().get(),
+                    after,
+                    MIN_HEARTBEAT_PERIOD
+                ));
+            }
+        }
+        let registry = config.registry().cloned();
+        let source_clock = config.source_clock().cloned();
+        // Taken before the point exists, so that every instant the point records is at or after it.
+        let created = Instant::now();
+        let point = Arc::new(AdmissionPoint::new(config));
+        if let Some(registry) = registry {
+            registry.register(&point)?;
+        }
+        Ok(Self {
+            point,
+            source_clock,
+            created,
+            latest_at_nanos: AtomicU64::new(0),
+            second_heartbeat_at_nanos: AtomicU64::new(NO_SECOND_HEARTBEAT),
+            latest_epoch: AtomicU64::new(NO_STAMP),
+            lock_wait_nanos: AtomicU64::new(0),
+        })
+    }
+
+    /// Returns the admission point, as an installer's registry reads it.
+    pub fn point(&self) -> &Arc<AdmissionPoint> {
+        &self.point
+    }
+
+    /// Returns the clock the point shares with the other points of its source, if it shares one.
+    pub fn source_clock(&self) -> Option<&Arc<SourceClock>> {
+        self.source_clock.as_ref()
+    }
+
+    /// Stamps `header` according to the point's mode, under the point's lock, which it holds only for the stamp.
+    ///
+    /// A header the point keeps as it is, an already stamped header at an admitting point, takes no lock.
+    pub async fn stamp(&self, header: &mut BatchHeader) {
+        if self.point.mode == AdmissionMode::Admit && header.is_stamped() {
             return;
         }
+        let mut state = self.lock().await;
+        self.point.stamp_locked(&mut state, header);
+        self.record(&state);
+    }
 
-        let schedule = point.schedule.load();
-        let (stamp, generation) = self.state.stamp(point.id, &schedule);
+    /// Returns when the point's next heartbeat is due, one heartbeat period after its last stamp as the owner saw it,
+    /// or, for a point that heartbeats in each second, the heartbeat of the second after that stamp's, if sooner; or
+    /// `None` if heartbeats are disabled.
+    ///
+    /// This reads what the owner recorded at the point's latest stamp, without any lock.
+    pub fn heartbeat_due(&self) -> Option<Instant> {
+        let period = self.point.heartbeat.filter(|period| !period.is_zero())?;
+        let latest = Duration::from_nanos(self.latest_at_nanos.load(AtomicOrdering::Relaxed));
+        let periodic = instant_after(instant_after(self.created, latest), period);
+        Some(match self.second_heartbeat_at_nanos.load(AtomicOrdering::Relaxed) {
+            NO_SECOND_HEARTBEAT => periodic,
+            nanos => periodic.min(instant_after(self.created, Duration::from_nanos(nanos))),
+        })
+    }
 
-        header.admitted_at = Some(stamp.admitted_at);
-        header.admission_point = Some(point.id);
-        header.epoch = stamp.epoch;
-        header.generation = Some(Arc::clone(generation));
-        if point.mode == AdmissionMode::Readmit {
-            header.entry = None;
+    /// Stamps the header of a heartbeat, if the point has stamped nothing for one heartbeat period, or, for a point
+    /// that heartbeats in each second, nothing in the current second by the time into it that it heartbeats at,
+    /// checking under the point's lock; returns `None`, stamping nothing, if heartbeats are disabled or a stamp is more
+    /// recent.
+    ///
+    /// The owner sends the header-only batch on its own channels, in order with its other batches.
+    pub async fn stamp_heartbeat(&self) -> Option<BatchHeader> {
+        let period = self.point.heartbeat.filter(|period| !period.is_zero())?;
+        let mut state = self.lock().await;
+        let periodic = instant_after(state.last_activity, period);
+        let due = self
+            .second_heartbeat_at(&state)
+            .map_or(periodic, |second| second.min(periodic));
+        let header =
+            (due <= Instant::now()).then(|| state.heartbeat_header(self.point.id, &self.point.schedule.load()));
+        self.record(&state);
+        header
+    }
+
+    /// Returns when the heartbeat of the second after the point's latest stamp's is due, for a point that heartbeats in
+    /// each second and has stamped: its point of that second, measured on the monotonic clock from the latest stamp's
+    /// instant and how far into its second the stamp's admission time was.
+    fn second_heartbeat_at(&self, state: &PointState) -> Option<Instant> {
+        let after = self.point.heartbeat_each_second?;
+        let last = state.last?;
+        let into_second = Duration::from_nanos(last.admitted_at.as_unix_nanos() % 1_000_000_000);
+        Some(instant_after(state.last_activity, SECOND - into_second + after))
+    }
+
+    /// Returns `true` if the point shares a source clock, has stamped, and the clock's epoch has moved past the epoch
+    /// of the point's latest stamp: another point of the source detected a reset since.
+    ///
+    /// This reads the clock's epoch mirror and the epoch the owner recorded at the point's latest stamp, two atomic
+    /// loads, without any lock.
+    pub fn reset_pending(&self) -> bool {
+        let Some(clock) = &self.source_clock else {
+            return false;
+        };
+        match self.latest_epoch.load(AtomicOrdering::Relaxed) {
+            NO_STAMP => false,
+            epoch => epoch != u64::from(clock.epoch()),
         }
+    }
+
+    /// Stamps the header of a heartbeat if the point shares a source clock and the clock was reset since the point's
+    /// latest stamp, checking under the point's lock; returns `None`, stamping nothing, otherwise.
+    ///
+    /// The heartbeat carries the clock's new epoch, so that everything downstream of the point learns that the point
+    /// has moved to it, right after the point's last batch of the old epoch. The owner sends the header-only batch on
+    /// its own channels, in order with its other batches.
+    pub async fn stamp_reset(&self) -> Option<BatchHeader> {
+        self.source_clock.as_ref()?;
+        let mut state = self.lock().await;
+        let header = state
+            .reset_since_last_stamp()
+            .then(|| state.heartbeat_header(self.point.id, &self.point.schedule.load()));
+        self.record(&state);
+        header
+    }
+
+    /// Returns how long the point's stamps have waited for its lock, in all: while an installer's transaction held it.
+    pub fn lock_wait(&self) -> Duration {
+        Duration::from_nanos(self.lock_wait_nanos.load(AtomicOrdering::Relaxed))
+    }
+
+    /// Takes the point's lock, timing the wait only when the lock is not free at once.
+    async fn lock(&self) -> MutexGuard<'_, PointState> {
+        if let Ok(state) = self.point.state.try_lock() {
+            return state;
+        }
+        let waiting_since = Instant::now();
+        let state = self.point.state.lock().await;
+        let waited = u64::try_from(waiting_since.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        self.lock_wait_nanos.fetch_add(waited, AtomicOrdering::Relaxed);
+        state
+    }
+
+    /// Records what the owner sees of the point's latest stamp, under the point's lock.
+    ///
+    /// Only the owner stamps the point and reads what it records, from its one task, so relaxed stores suffice: the
+    /// task's own later loads see them.
+    fn record(&self, state: &PointState) {
+        let nanos_after_created =
+            |at: Instant| u64::try_from(at.saturating_duration_since(self.created).as_nanos()).unwrap_or(u64::MAX - 1);
+        self.latest_at_nanos
+            .store(nanos_after_created(state.last_activity), AtomicOrdering::Relaxed);
+        let second = self
+            .second_heartbeat_at(state)
+            .map_or(NO_SECOND_HEARTBEAT, nanos_after_created);
+        self.second_heartbeat_at_nanos.store(second, AtomicOrdering::Relaxed);
+        let epoch = state.last.map_or(NO_STAMP, |last| u64::from(last.epoch));
+        self.latest_epoch.store(epoch, AtomicOrdering::Relaxed);
     }
 }
 
@@ -2578,5 +3034,639 @@ mod tests {
         let disabled = point(2, AdmissionMode::Admit, &schedule, &wall);
         assert_eq!(disabled.heartbeat_period(), None);
         assert_eq!(disabled.run_heartbeats().now_or_never(), Some(()));
+    }
+
+    fn owned_config(id: u32, schedule: &ScheduleHandle, wall: &ManualWallClock) -> AdmissionPointConfig {
+        AdmissionPointConfig::new(
+            AdmissionPointId::new(id),
+            AdmissionMode::Admit,
+            Arc::clone(schedule),
+            THRESHOLD,
+        )
+        .with_wall_clock(wall.clone())
+        .owned()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_owned_point_stamps_for_its_one_task_and_registers_itself() {
+        let schedule = AdmissionSchedule::Steady(generation(1)).into_handle();
+        let wall = ManualWallClock::new(secs(100));
+        let registry = AdmissionRegistry::new();
+        let owned = OwnedAdmission::new(owned_config(3, &schedule, &wall).with_registry(registry.clone())).unwrap();
+        assert_eq!(owned.point().stamper(), Stamper::Owned);
+        assert!(registry.get(AdmissionPointId::new(3)).is_some());
+
+        let mut header = BatchHeader::default();
+        owned.stamp(&mut header).await;
+        assert_eq!(header.admitted_at, Some(secs(100)));
+        assert_eq!(header.admission_point, Some(AdmissionPointId::new(3)));
+        assert_eq!(header.generation_id(), Some(GenerationId::new(1)));
+
+        // An admitting point keeps a stamp it finds, as the dispatcher's does.
+        wall.advance(Duration::from_secs(5));
+        owned.stamp(&mut header).await;
+        assert_eq!(header.admitted_at, Some(secs(100)));
+        assert_eq!(
+            registry
+                .status_within(AdmissionPointId::new(3), Duration::from_secs(1))
+                .await
+                .unwrap()
+                .last_admitted_at,
+            Some(secs(100))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_owned_point_stamps_a_heartbeat_only_once_it_stamped_nothing_for_a_period() {
+        let schedule = AdmissionSchedule::Steady(generation(1)).into_handle();
+        let wall = ManualWallClock::new(secs(100));
+        let period = Duration::from_secs(1);
+        let owned = OwnedAdmission::new(owned_config(1, &schedule, &wall).with_heartbeat(period)).unwrap();
+        let due = owned.heartbeat_due().unwrap();
+        assert!(
+            owned.stamp_heartbeat().await.is_none(),
+            "nothing is due before the period"
+        );
+
+        tokio::time::advance(Duration::from_millis(600)).await;
+        owned.stamp(&mut BatchHeader::default()).await;
+        // The stamp moved the next heartbeat one period after it.
+        let moved = owned.heartbeat_due().unwrap();
+        assert!(moved > due);
+        tokio::time::sleep_until(due).await;
+        assert!(
+            owned.stamp_heartbeat().await.is_none(),
+            "a stamp is more recent than the period"
+        );
+
+        tokio::time::sleep_until(moved).await;
+        wall.advance(Duration::from_secs(2));
+        let heartbeat = owned.stamp_heartbeat().await.expect("the point is idle for a period");
+        assert_eq!(heartbeat.admitted_at, Some(secs(102)));
+        assert_eq!(heartbeat.admission_point, Some(AdmissionPointId::new(1)));
+        assert_eq!(heartbeat.entry, None);
+        assert!(owned.heartbeat_due().unwrap() > moved);
+
+        let silent = OwnedAdmission::new(owned_config(2, &schedule, &wall)).unwrap();
+        assert_eq!(silent.heartbeat_due(), None);
+        assert!(silent.stamp_heartbeat().await.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_owned_point_that_heartbeats_in_each_second_heartbeats_early_in_each_second_it_stamps_nothing_in() {
+        // A point of a source whose other points are busy holds their shared watermark back until it stamps in each
+        // new second: idle, it heartbeats 100 ms into the second after its latest stamp's, before its period ends.
+        let schedule = AdmissionSchedule::Steady(generation(1)).into_handle();
+        let wall = ManualWallClock::new(AdmissionTime::from_unix_nanos(100_400_000_000));
+        let (period, after) = (Duration::from_secs(1), Duration::from_millis(100));
+        let owned = OwnedAdmission::new(
+            owned_config(1, &schedule, &wall)
+                .with_heartbeat(period)
+                .with_heartbeat_each_second(after),
+        )
+        .unwrap();
+        let stamped = Instant::now();
+        owned.stamp(&mut BatchHeader::default()).await;
+        // Stamped at 100.4 s: second 101 starts 600 ms later, so the heartbeat is due at 700 ms, before the period.
+        let due = owned.heartbeat_due().unwrap();
+        assert_eq!(due, stamped + Duration::from_millis(700));
+        tokio::time::sleep_until(due - Duration::from_millis(1)).await;
+        assert!(owned.stamp_heartbeat().await.is_none(), "nothing is due before it");
+        tokio::time::sleep_until(due).await;
+        wall.set(AdmissionTime::from_unix_nanos(101_100_000_000));
+        let heartbeat = owned
+            .stamp_heartbeat()
+            .await
+            .expect("the point stamped nothing in second 101");
+        assert_eq!(
+            heartbeat.admitted_at,
+            Some(AdmissionTime::from_unix_nanos(101_100_000_000))
+        );
+        // Idle on, it heartbeats 100 ms into each second: one period later.
+        assert_eq!(owned.heartbeat_due().unwrap(), due + period);
+
+        // A point that stamps in a second before its point of it sends nothing then: stamped at 102.05 s, its next
+        // heartbeat is one period later, at 103.05 s, which comes before 100 ms into second 103.
+        tokio::time::sleep_until(due + Duration::from_millis(950)).await;
+        wall.set(AdmissionTime::from_unix_nanos(102_050_000_000));
+        owned.stamp(&mut BatchHeader::default()).await;
+        tokio::time::sleep_until(due + period).await;
+        assert!(
+            owned.stamp_heartbeat().await.is_none(),
+            "the point stamped in second 102"
+        );
+        assert_eq!(
+            owned.heartbeat_due().unwrap(),
+            due + Duration::from_millis(950) + period
+        );
+
+        // Without it, an idle point heartbeats one period after its latest stamp.
+        let periodic = OwnedAdmission::new(owned_config(2, &schedule, &wall).with_heartbeat(period)).unwrap();
+        wall.set(AdmissionTime::from_unix_nanos(103_400_000_000));
+        let stamped = Instant::now();
+        periodic.stamp(&mut BatchHeader::default()).await;
+        assert_eq!(periodic.heartbeat_due().unwrap(), stamped + period);
+    }
+
+    #[test]
+    fn an_owned_point_needs_an_owned_configuration_without_recipients_and_a_heartbeat_period_in_range() {
+        let schedule = AdmissionSchedule::Steady(generation(1)).into_handle();
+        let wall = ManualWallClock::new(secs(100));
+        let shared = AdmissionPointConfig::new(
+            AdmissionPointId::new(1),
+            AdmissionMode::Admit,
+            schedule.clone(),
+            THRESHOLD,
+        );
+        assert_eq!(shared.stamper(), Stamper::Shared);
+        let error = OwnedAdmission::new(shared).unwrap_err().to_string();
+        assert!(error.contains("stamped by its dispatcher"), "{}", error);
+
+        let with_recipients =
+            owned_config(1, &schedule, &wall).with_heartbeat_recipients([ComponentId::try_from("agg").unwrap()]);
+        let error = OwnedAdmission::new(with_recipients).unwrap_err().to_string();
+        assert!(error.contains("heartbeat recipients"), "{}", error);
+
+        for period in [Duration::from_micros(999), Duration::from_secs(3_601)] {
+            let error = OwnedAdmission::new(owned_config(1, &schedule, &wall).with_heartbeat(period))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("outside the allowed range"), "{}", error);
+        }
+
+        // A heartbeat in each second needs a period, and a point of the second within it.
+        let error = OwnedAdmission::new(
+            owned_config(1, &schedule, &wall).with_heartbeat_each_second(Duration::from_millis(100)),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("no periodic heartbeats"), "{}", error);
+        for after in [Duration::from_micros(999), Duration::from_secs(1)] {
+            let error = OwnedAdmission::new(
+                owned_config(1, &schedule, &wall)
+                    .with_heartbeat(Duration::from_secs(1))
+                    .with_heartbeat_each_second(after),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("outside the allowed range"), "{}", error);
+        }
+
+        // A point may share its source's clock.
+        let clock = SourceClock::new(AdmissionClock::new(THRESHOLD));
+        let owned =
+            OwnedAdmission::new(owned_config(1, &schedule, &wall).with_source_clock(Arc::clone(&clock))).unwrap();
+        assert!(owned.source_clock().is_some_and(|shared| Arc::ptr_eq(shared, &clock)));
+        assert!(OwnedAdmission::new(owned_config(2, &schedule, &wall))
+            .unwrap()
+            .source_clock()
+            .is_none());
+    }
+
+    /// An owned point `id` that stamps from `clock`, registered in `registry`.
+    fn sharing(
+        id: u32, schedule: &ScheduleHandle, clock: &Arc<SourceClock>, registry: &AdmissionRegistry,
+    ) -> OwnedAdmission {
+        let config = AdmissionPointConfig::new(
+            AdmissionPointId::new(id),
+            AdmissionMode::Admit,
+            Arc::clone(schedule),
+            THRESHOLD,
+        )
+        .with_source_clock(Arc::clone(clock))
+        .with_registry(registry.clone())
+        .owned();
+        OwnedAdmission::new(config).unwrap()
+    }
+
+    /// Stamps a fresh header at `point`, and returns its stamp: admission time, point, epoch, and generation.
+    async fn stamped(point: &OwnedAdmission) -> Received {
+        let mut header = BatchHeader::default();
+        point.stamp(&mut header).await;
+        Received::of(&EventsBuffer::with_capacity(0).with_header(header))
+    }
+
+    #[tokio::test]
+    async fn points_sharing_a_source_clock_reset_it_once_and_each_learns_of_the_reset_at_its_next_check() {
+        let schedule = AdmissionSchedule::Steady(generation(1)).into_handle();
+        let wall = ManualWallClock::new(secs(7_203));
+        let clock = SourceClock::new(AdmissionClock::with_wall_clock(THRESHOLD, Arc::new(wall.clone())));
+        let registry = AdmissionRegistry::new();
+        let (a, b, idle) = (
+            sharing(1, &schedule, &clock, &registry),
+            sharing(2, &schedule, &clock, &registry),
+            sharing(3, &schedule, &clock, &registry),
+        );
+        assert_eq!(stamped(&a).await, Received::heartbeat(secs(7_203), 1, 0, 1));
+        assert_eq!(stamped(&b).await, Received::heartbeat(secs(7_203), 2, 0, 1));
+        assert!(!a.reset_pending() && !b.reset_pending());
+
+        // Point 1 meets a jump back of an hour: one reset, which point 2 sees at its next check without a lock, and
+        // marks with a heartbeat in the new epoch, once.
+        wall.set(secs(3_603));
+        assert_eq!(stamped(&a).await, Received::heartbeat(secs(3_603), 1, 1, 1));
+        assert!(!a.reset_pending());
+        assert!(b.reset_pending());
+        let heartbeat = b
+            .stamp_reset()
+            .await
+            .expect("the clock was reset since point 2 stamped");
+        assert_eq!(
+            Received::of(&EventsBuffer::with_capacity(0).with_header(heartbeat)),
+            Received::heartbeat(secs(3_603), 2, 1, 1)
+        );
+        assert!(!b.reset_pending());
+        assert!(b.stamp_reset().await.is_none());
+        assert_eq!(clock.epoch(), 1);
+
+        // A point that has stamped nothing has nothing to mark, and a point with a clock of its own never learns of
+        // another point's reset.
+        assert!(!idle.reset_pending());
+        assert!(idle.stamp_reset().await.is_none());
+        let own = OwnedAdmission::new(owned_config(4, &schedule, &wall)).unwrap();
+        own.stamp(&mut BatchHeader::default()).await;
+        assert!(!own.reset_pending());
+        assert!(own.stamp_reset().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_point_reports_its_own_latest_stamp_and_none_once_another_point_reset_the_clock() {
+        let schedule = AdmissionSchedule::Steady(generation(1)).into_handle();
+        let wall = ManualWallClock::new(secs(7_203));
+        let clock = SourceClock::new(AdmissionClock::with_wall_clock(THRESHOLD, Arc::new(wall.clone())));
+        let registry = AdmissionRegistry::new();
+        let (a, b) = (
+            sharing(1, &schedule, &clock, &registry),
+            sharing(2, &schedule, &clock, &registry),
+        );
+        let latest = |point: &OwnedAdmission| {
+            let point = Arc::clone(point.point());
+            async move { (point.status().await.last_admitted_at, point.status().await.epoch) }
+        };
+
+        // Each point reports its own latest stamp, not the clock's.
+        stamped(&a).await;
+        wall.set(secs(7_205));
+        stamped(&b).await;
+        assert_eq!(latest(&a).await, (Some(secs(7_203)), 0));
+        assert_eq!(latest(&b).await, (Some(secs(7_205)), 0));
+        assert_eq!(clock.latest(), Some(secs(7_205)));
+
+        // Once point 1 reset the clock, point 2's latest stamp is on the old timeline, which says nothing about where
+        // its next stamp falls: it reports none, in the clock's new epoch, so that a cut is never timed from it.
+        wall.set(secs(3_603));
+        stamped(&a).await;
+        assert_eq!(latest(&a).await, (Some(secs(3_603)), 1));
+        assert_eq!(latest(&b).await, (None, 1));
+    }
+
+    #[tokio::test]
+    async fn a_point_that_first_sees_a_cut_after_another_points_reset_takes_the_epoch_the_cuts_boundary_recorded() {
+        // Two points of one source stamp at 7,203; a cut at 7,300 is armed over both, and then point 1 meets a jump
+        // back of an hour before point 2 stamps again. The reset happened after the cut was published, so point 2's
+        // stamps in the new epoch belong to the new generation, as point 1's do.
+        for recorded in [true, false] {
+            let old = generation(1);
+            let new = generation(2);
+            let schedule = AdmissionSchedule::Steady(Arc::clone(&old)).into_handle();
+            let wall = ManualWallClock::new(secs(7_203));
+            let clock = SourceClock::new(AdmissionClock::with_wall_clock(THRESHOLD, Arc::new(wall.clone())));
+            let registry = AdmissionRegistry::new();
+            let (a, b) = (
+                sharing(1, &schedule, &clock, &registry),
+                sharing(2, &schedule, &clock, &registry),
+            );
+            stamped(&a).await;
+            stamped(&b).await;
+
+            let transaction = registry
+                .transaction(&[id(1), id(2)], Duration::from_secs(1))
+                .await
+                .unwrap();
+            let epochs = transaction
+                .statuses()
+                .into_iter()
+                .map(|(point, status)| (point, status.epoch))
+                .collect::<SmallVec<_>>();
+            assert_eq!(epochs.as_slice(), &[(id(1), 0), (id(2), 0)]);
+            if recorded {
+                new.set_cut(CutBoundary {
+                    at: secs(7_300),
+                    replaces: old.id(),
+                    epochs,
+                })
+                .unwrap();
+            }
+            transaction.publish(AdmissionSchedule::Cut {
+                old: Arc::clone(&old),
+                new: Arc::clone(&new),
+                at: secs(7_300),
+            });
+
+            wall.set(secs(3_603));
+            assert_eq!(stamped(&a).await, Received::heartbeat(secs(3_603), 1, 1, 2));
+            wall.set(secs(3_604));
+            let second = stamped(&b).await;
+            if recorded {
+                assert_eq!(second, Received::heartbeat(secs(3_604), 2, 1, 2));
+                let status = b.point().status().await;
+                assert!(status.admitted_to_new && status.passed_cut);
+            } else {
+                // Without the boundary's epochs, point 2 takes the epoch it finds at its first stamp under the cut,
+                // after the reset, and stamps the new timeline with the old generation: what the boundary prevents.
+                assert_eq!(second, Received::heartbeat(secs(3_604), 2, 1, 1));
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stamp_that_waits_for_a_transaction_counts_its_wait() {
+        let schedule = AdmissionSchedule::Steady(generation(1)).into_handle();
+        let wall = ManualWallClock::new(secs(100));
+        let registry = AdmissionRegistry::new();
+        let owned =
+            Arc::new(OwnedAdmission::new(owned_config(1, &schedule, &wall).with_registry(registry.clone())).unwrap());
+        owned.stamp(&mut BatchHeader::default()).await;
+        assert_eq!(owned.lock_wait(), Duration::ZERO, "a free lock is not waited for");
+
+        let transaction = registry.transaction(&[id(1)], Duration::from_secs(1)).await.unwrap();
+        let stamp = tokio::spawn({
+            let owned = Arc::clone(&owned);
+            async move { owned.stamp(&mut BatchHeader::default()).await }
+        });
+        tokio::time::sleep(Duration::from_millis(3)).await;
+        assert!(!stamp.is_finished(), "a stamp waits for the transaction");
+        transaction.abandon();
+        stamp.await.unwrap();
+        assert_eq!(owned.lock_wait(), Duration::from_millis(3));
+    }
+}
+
+// A loom model of owned admission across lanes: two lanes, each the one task that stamps its own point, share their
+// source's clock, while an installer arms a cut over both points in one transaction, and one lane's stamp meets a
+// backward jump of the wall clock beyond the reset threshold.
+//
+// A tokio mutex cannot be modeled, so each point's state sits behind a `loom` mutex standing in for the point's lock,
+// taken as `OwnedAdmission::stamp` and `AdmissionRegistry::transaction` take it; everything under the lock is the
+// points' own code (`PointState`), and the clock is this crate's `SourceClock`, whose lock and epoch mirror are
+// `loom`'s under the feature. The variant that arms the cut without its boundary shows what the boundary's epochs are
+// for: a lane that first sees the cut after the other lane's reset stamps the new timeline with the old generation.
+#[cfg(all(test, feature = "loom"))]
+mod loom_tests {
+    use loom::{
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Mutex,
+        },
+        thread,
+    };
+
+    use super::*;
+    use crate::execution::{
+        clock::ManualWallClock,
+        generation::{CutBoundary, GenerationId, GenerationToken},
+    };
+
+    const THRESHOLD: Duration = Duration::from_secs(300);
+
+    fn secs(secs: u64) -> AdmissionTime {
+        AdmissionTime::from_unix_secs(secs)
+    }
+
+    /// One point of the model: its identifier, and its state behind the stand-in for its lock.
+    struct Point {
+        id: AdmissionPointId,
+        state: Mutex<PointState>,
+    }
+
+    /// What a lane stamped, and where its critical section fell among the model's.
+    struct Stamped {
+        header: BatchHeader,
+        ticket: usize,
+    }
+
+    /// Runs the lanes and the installer at every interleaving `loom` explores at a preemption bound of three, and
+    /// checks what the transaction saw and what every stamp got:
+    ///
+    /// - under every lock, the points report one epoch, the clock's, since nothing stamps while the transaction holds
+    ///   them;
+    /// - each point's status shows its own latest stamp in that epoch, the one its lane took before the transaction or
+    ///   the one before the model, and nothing half-written;
+    /// - a stamp taken before the transaction gets the old generation, and one taken after it gets the new generation
+    ///   exactly when its admission time reaches the cut or its epoch differs from the one the boundary recorded for
+    ///   its point.
+    fn model(record_boundary: bool) {
+        let mut builder = loom::model::Builder::new();
+        builder.preemption_bound = Some(3);
+        builder.check(move || {
+            let wall = ManualWallClock::new(secs(7_203));
+            let clock = SourceClock::new(AdmissionClock::with_wall_clock(THRESHOLD, Arc::new(wall.clone())));
+            let old: GenerationRef = Arc::new(GenerationToken::new(GenerationId::new(1)));
+            let new: GenerationRef = Arc::new(GenerationToken::new(GenerationId::new(2)));
+            let schedule = AdmissionSchedule::Steady(Arc::clone(&old)).into_handle();
+            let tickets = Arc::new(AtomicUsize::new(0));
+            let points = Arc::new(
+                (0..2)
+                    .map(|index| {
+                        let id = AdmissionPointId::new(index);
+                        let mut state = PointState::new(ClockRef::Shared(Arc::clone(&clock)));
+                        state.stamp_header(id, AdmissionMode::Admit, &schedule.load(), &mut BatchHeader::default());
+                        Point {
+                            id,
+                            state: Mutex::new(state),
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+            );
+
+            let lanes = (0..2)
+                .map(|lane| {
+                    let (points, schedule, tickets, wall) = (
+                        Arc::clone(&points),
+                        Arc::clone(&schedule),
+                        Arc::clone(&tickets),
+                        wall.clone(),
+                    );
+                    thread::spawn(move || {
+                        // The wall clock jumps back an hour as lane 0 starts: whichever lane stamps next resets the
+                        // clock.
+                        if lane == 0 {
+                            wall.set(secs(3_603));
+                        }
+                        let point = &points[lane];
+                        let mut state = point.state.lock().unwrap();
+                        let mut header = BatchHeader::default();
+                        state.stamp_header(point.id, AdmissionMode::Admit, &schedule.load(), &mut header);
+                        Stamped {
+                            header,
+                            ticket: tickets.fetch_add(1, Ordering::SeqCst),
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            // The installer's transaction: every lock, in identifier order; the statuses; the boundary; the publish.
+            let (statuses, at, cut_ticket) = {
+                let locked = points
+                    .iter()
+                    .map(|point| point.state.lock().unwrap())
+                    .collect::<Vec<_>>();
+                let statuses = locked
+                    .iter()
+                    .map(|state| state.status(&schedule.load()))
+                    .collect::<Vec<_>>();
+                let now = statuses
+                    .iter()
+                    .map(|status| {
+                        status
+                            .last_admitted_at
+                            .map_or(status.wall_now, |last| last.max(status.wall_now))
+                    })
+                    .max()
+                    .expect("two points");
+                let at = now.saturating_add(Duration::from_secs(1));
+                if record_boundary {
+                    new.set_cut(CutBoundary {
+                        at,
+                        replaces: old.id(),
+                        epochs: points
+                            .iter()
+                            .zip(&statuses)
+                            .map(|(point, status)| (point.id, status.epoch))
+                            .collect(),
+                    })
+                    .unwrap();
+                }
+                schedule.store(Arc::new(AdmissionSchedule::Cut {
+                    old: Arc::clone(&old),
+                    new: Arc::clone(&new),
+                    at,
+                }));
+                (statuses, at, tickets.fetch_add(1, Ordering::SeqCst))
+            };
+            assert_eq!(
+                statuses[0].epoch, statuses[1].epoch,
+                "violated: the points' epochs differ under every lock"
+            );
+            let boundary_epoch = statuses[0].epoch;
+
+            for (lane, stamped) in lanes.into_iter().enumerate() {
+                let Stamped { header, ticket } =
+                    stamped.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+                let admitted_at = header.admitted_at.expect("stamped");
+                let before = ticket < cut_ticket;
+                let expected_last = if before {
+                    (header.epoch == boundary_epoch).then_some(admitted_at)
+                } else {
+                    (boundary_epoch == 0).then_some(secs(7_203))
+                };
+                assert_eq!(
+                    statuses[lane].last_admitted_at, expected_last,
+                    "violated: the transaction saw point {}'s latest stamp half-written",
+                    lane
+                );
+                let expected = if before || (admitted_at < at && header.epoch == boundary_epoch) {
+                    1
+                } else {
+                    2
+                };
+                assert_eq!(
+                    header.generation_id().map(GenerationId::get),
+                    Some(expected),
+                    "violated: lane {} stamped {} in epoch {} with the wrong generation (cut at {} in epoch {})",
+                    lane,
+                    admitted_at,
+                    header.epoch,
+                    at,
+                    boundary_epoch
+                );
+            }
+            assert_eq!(clock.epoch(), 1, "one reset for the one jump");
+        });
+    }
+
+    #[test]
+    fn owned_points_sharing_a_clock_are_armed_consistently_and_stamp_by_the_boundarys_epochs() {
+        model(true);
+    }
+
+    // Without the boundary, a lane that first stamps under the cut after the other lane's reset takes the new epoch as
+    // the one it saw the cut in, and stamps the new timeline before the cut's time with the old generation: loom finds
+    // the interleaving where the installer arms before either lane stamps.
+    #[test]
+    #[should_panic(expected = "violated: ")]
+    fn without_the_boundarys_epochs_a_lane_that_sees_the_cut_after_a_reset_stamps_the_old_generation() {
+        model(false);
+    }
+
+    /// Reads a point's status with the clock's epoch read twice, once to tell whether the point's latest stamp is in
+    /// the current epoch and once for the epoch reported, as `PointState::status` did before it read the epoch once.
+    fn status_reading_the_epoch_twice(state: &PointState, schedule: &AdmissionSchedule) -> AdmissionPointStatus {
+        let last_admitted_at = state
+            .last
+            .filter(|last| last.epoch == state.clock.epoch())
+            .map(|last| last.admitted_at);
+        AdmissionPointStatus {
+            last_admitted_at,
+            ..state.status(schedule)
+        }
+    }
+
+    /// Reads one point's status, as `AdmissionRegistry::status_within` does under that point's lock alone, while the
+    /// lane of another point of the source meets a backward jump of the wall clock beyond the reset threshold, at every
+    /// interleaving `loom` explores, and checks that the status reports the point's latest stamp, from before the
+    /// jump, exactly when it reports the epoch that stamp is in.
+    fn status_model(read_epoch_once: bool) {
+        let mut builder = loom::model::Builder::new();
+        builder.preemption_bound = Some(3);
+        builder.check(move || {
+            let wall = ManualWallClock::new(secs(7_203));
+            let clock = SourceClock::new(AdmissionClock::with_wall_clock(THRESHOLD, Arc::new(wall.clone())));
+            let schedule =
+                AdmissionSchedule::Steady(Arc::new(GenerationToken::new(GenerationId::new(1)))).into_handle();
+            let mut read = PointState::new(ClockRef::Shared(Arc::clone(&clock)));
+            read.stamp_header(
+                AdmissionPointId::new(0),
+                AdmissionMode::Admit,
+                &schedule.load(),
+                &mut BatchHeader::default(),
+            );
+            wall.set(secs(3_603));
+
+            // Another point of the source stamps the clock, which the jump resets. It stamps the clock alone: a point's
+            // own stamp first reads the epoch mirror, and `loom` checks a store only against the last access to the
+            // atomic, so that read, the lane's own, would keep loom from reordering the store before the status's
+            // reads.
+            let lane = thread::spawn({
+                let clock = Arc::clone(&clock);
+                move || assert!(clock.stamp().reset, "the jump resets the clock")
+            });
+            let status = if read_epoch_once {
+                read.status(&schedule.load())
+            } else {
+                status_reading_the_epoch_twice(&read, &schedule.load())
+            };
+            lane.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+
+            assert_eq!(
+                status.last_admitted_at,
+                (status.epoch == 0).then_some(secs(7_203)),
+                "violated: point 0's status pairs its latest stamp with epoch {}",
+                status.epoch
+            );
+        });
+    }
+
+    #[test]
+    fn a_points_status_reports_its_latest_stamp_with_the_epoch_that_stamp_is_in() {
+        status_model(true);
+    }
+
+    // Reading the epoch twice lets another point's reset fall between the reads: loom finds the interleaving where the
+    // status reports the stamp from before the reset with the epoch after it.
+    #[test]
+    #[should_panic(expected = "violated: ")]
+    fn a_status_that_reads_the_epoch_twice_can_pair_a_stamp_with_a_later_epoch() {
+        status_model(false);
     }
 }

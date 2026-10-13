@@ -1,6 +1,6 @@
 //! Native aggregation as a kernel.
 
-use std::{any::Any, time::Duration};
+use std::{any::Any, sync::Arc, time::Duration};
 
 use saluki_core::{
     data_model::event::Event,
@@ -10,8 +10,10 @@ use saluki_core::{
 use tracing::{debug, info, warn};
 
 use super::{
-    count_suppressed, AggregateCore, AggregateParams, AggregateStepParams, AggregateTelemetry, ContextBudget,
-    ContextSnapshot, FlushParams, FlushState, LastSeen, SuppressedBySite,
+    count_suppressed,
+    lanes::{ContextCount, CountHeld, FlushRecord, Previous, Resolution, Restarted, TakeLaneFallbacks},
+    AggregateCore, AggregateParams, AggregateStepParams, AggregateTelemetry, ContextBudget, ContextSnapshot,
+    FlushParams, FlushState, LaneShared, LastSeen, SuppressedBySite,
 };
 
 /// Native aggregation as a [`Kernel`], driven by admission time and watermarks instead of a clock.
@@ -52,6 +54,23 @@ use super::{
 /// - [`publish_telemetry`][Kernel::publish_telemetry] writes what the core's telemetry counted since it last
 ///   published, when it was built [accumulating][AggregateTelemetry::accumulating], as a kernel in a region is.
 ///
+/// # Lanes
+///
+/// A kernel built [with lanes][Self::with_lanes] is one lane's instance of a lineage partitioned over several lanes,
+/// and keeps the rules that couple every context of the lineage in the record the lanes share ([`LaneShared`]). On
+/// every time-driven call whose turn carries a [lane tick][Turn::lane_tick], a flush tick or a closing flush (a reset,
+/// a retirement, or shutdown), the kernel records its outcome in the record before it flushes: its idle-counter zeros
+/// start from the latest earlier flush at which any lane held contexts, once the record knows it, and only the first
+/// lane to flush contexts at the tick counts it in `aggregate_flushes_total`. The context limit warning is logged
+/// once per episode across lanes, by the lane whose rejection starts it, and its recovery once, by the first lane
+/// whose pass ends below the limit. A [`Restarted`] control message, which a host sends to an instance it rebuilt,
+/// makes its first flush start from its own last flush, of which it has none, as a restarted aggregator's does.
+///
+/// The host of the lanes asks read-only questions with control messages, answered at once whatever pass is pending:
+/// the flushes that started their zeros from the core's own last flush because the record could not say where the
+/// lanes left them ([`TakeLaneFallbacks`]), how many contexts the core holds ([`ContextCount`]), and how many of
+/// another instance's contexts it holds ([`CountHeld`]).
+///
 /// # Budget
 ///
 /// Flushes, drains, and discards visit one context at a time. The kernel charges [`WorkKind::StateWork`] one unit per
@@ -85,6 +104,11 @@ pub struct AggregateKernel {
     defaults: AggregateStepParams,
     pending: Option<Operation>,
     suppressed: SuppressedBySite,
+    /// Whether the kernel was rebuilt and has not flushed since: its next flush starts from its own last flush.
+    restarted: bool,
+    /// The flushes, on lanes, that started their idle-counter zeros from the core's own last flush because the lanes'
+    /// record could not say where the lanes left them, since the host last took them ([`TakeLaneFallbacks`]).
+    fallbacks: u64,
 }
 
 /// A control message that takes the counts of records an [`AggregateKernel`] skipped at emission, by filter site.
@@ -119,7 +143,19 @@ impl AggregateKernel {
             },
             pending: None,
             suppressed: SuppressedBySite::new(),
+            restarted: false,
+            fallbacks: 0,
         }
+    }
+
+    /// Makes the kernel one lane's instance of a lineage that runs on several lanes, sharing `lanes` with the other
+    /// lanes' instances; see [`AggregateCore::with_lanes`].
+    ///
+    /// Its host then sets the turn's [lane tick][saluki_core::execution::Turn::with_lane_tick] on every time-driven
+    /// call, from which the kernel resolves each flush in the shared record; see [Lanes](Self#lanes).
+    pub fn with_lanes(mut self, lanes: Arc<LaneShared>) -> Self {
+        self.core = self.core.with_lanes(lanes);
+        self
     }
 
     /// Takes the counts of records skipped by an emission filter in the calls that returned since the last time, by
@@ -156,10 +192,13 @@ impl AggregateKernel {
             OperationKind::Reset | OperationKind::Retire => (false, Then::Drain),
             OperationKind::Shutdown => (true, Then::Discard),
         };
-        let pass = turn
-            .watermark()
-            .and_then(|watermark| self.core.begin_flush(watermark.as_unix_secs(), last, &params));
+        let now = turn.watermark().map(|watermark| watermark.as_unix_secs());
+        let pass = match self.resolve_lane(turn, now) {
+            Some(record) => now.and_then(|now| self.core.begin_flush_with(now, last, &params, record)),
+            None => now.and_then(|now| self.core.begin_flush(now, last, &params)),
+        };
         if pass.is_some() {
+            self.restarted = false;
             debug!("Flushing aggregated metrics...");
         }
         Operation {
@@ -168,6 +207,28 @@ impl AggregateKernel {
             then,
             params,
         }
+    }
+
+    /// Records the outcome of a time-driven call flushing at `now`, if any, in the record the lanes share, when the
+    /// kernel runs on lanes and its host says which shared flush the call is: a flush holding contexts when the core
+    /// holds any and the call flushes. Returns how the flush starts its idle-counter zeros and whether it counts.
+    ///
+    /// A flush that starts its zeros from the core's own last flush because the record cannot say where the lanes left
+    /// them is counted for the host ([`TakeLaneFallbacks`]).
+    fn resolve_lane(&mut self, turn: &Turn<'_>, now: Option<u64>) -> Option<FlushRecord> {
+        let (lanes, tick) = (self.core.lanes()?, turn.lane_tick()?);
+        let outcome = match now {
+            Some(now) if !self.core.is_empty() => Resolution::Flushed(now),
+            _ => Resolution::Empty,
+        };
+        let mut record = lanes.resolve(tick, outcome);
+        if self.restarted {
+            // A rebuilt instance's first flush is a first flush: it adds no zeros, whatever the other lanes flushed.
+            record.previous = Previous::Unresolved;
+        } else if record.previous == Previous::Unresolved && outcome != Resolution::Empty {
+            self.fallbacks += 1;
+        }
+        Some(record)
     }
 
     /// Runs the operation of `kind`: resumes the pending one if it is of that kind, or starts a new one.
@@ -243,7 +304,16 @@ impl AggregateKernel {
                 // A shutdown's discard follows its final flush: nothing is accepted after it, so it reports no
                 // recovery.
                 let discarding = operation.kind == OperationKind::Shutdown && operation.then == Then::Done;
-                if outcome.recovered && !discarding {
+                let recovered = match self.core.lanes() {
+                    // Across lanes, the episode ends once, at the first pass that ends below the shared limit.
+                    Some(lanes) => {
+                        !discarding
+                            && self.core.is_below_context_limit(operation.params.context_limit)
+                            && lanes.clear_breach()
+                    }
+                    None => outcome.recovered && !discarding,
+                };
+                if recovered {
                     info!("Context limit no longer exceeded, metrics are being accepted again.");
                 }
             }
@@ -344,7 +414,12 @@ impl Kernel for AggregateKernel {
                 outcome.replaced_points as u64,
             );
         }
-        if outcome.limit_reached {
+        let limit_reached = match self.core.lanes() {
+            // Across lanes, the first rejection of an episode in any lane warns.
+            Some(lanes) => outcome.dropped > 0 && lanes.try_breach(),
+            None => outcome.limit_reached,
+        };
+        if limit_reached {
             // First drop since the last recovery: warn once, as native aggregation does.
             warn!(
                 context_limit = params.context_limit,
@@ -373,6 +448,29 @@ impl Kernel for AggregateKernel {
         }
         if control.is::<ClockReset>() {
             return self.call(turn, OperationKind::Reset);
+        }
+        if control.is::<Restarted>() {
+            // Only an instance on lanes reads where its zeros start from outside.
+            self.restarted = self.core.lanes().is_some();
+            return Progress::Done;
+        }
+        // The lanes' host's read-only questions: whatever pass is pending keeps its place.
+        if let Some(take) = control.downcast_mut::<TakeLaneFallbacks>() {
+            take.flushes += std::mem::take(&mut self.fallbacks);
+            return Progress::Done;
+        }
+        if let Some(count) = control.downcast_mut::<ContextCount>() {
+            count.contexts = Some(self.core.len());
+            return Progress::Done;
+        }
+        if let Some(count) = control.downcast_mut::<CountHeld>() {
+            let held = count
+                .entries
+                .iter()
+                .filter(|entry| self.core.holds(entry.context()))
+                .count();
+            count.held += held as u64;
+            return Progress::Done;
         }
         Progress::Done
     }
@@ -430,5 +528,7 @@ enum Then {
     Discard,
 }
 
+#[cfg(all(test, not(feature = "loom")))]
+mod lane_tests;
 #[cfg(test)]
 mod tests;

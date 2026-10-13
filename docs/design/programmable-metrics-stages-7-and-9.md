@@ -2,10 +2,12 @@
 
 **Status:** implementation design for stages 7 (resource generations) and 9 (partitioned execution) of [the
 specification](programmable-metrics.md), written against `b01049372e` on branch `luke/programmable-metrics`, after
-stages 1 to 6. Stage 7 is built ([Stage 7 as built](#stage-7-as-built)), and so are stage 9's measurement harness and
-foundations (P9.0 and P9.F, [8.4](#84-stage-9-foundations-interfaces-step-and-parts)); the rest of stage 9 is not. The
+stages 1 to 6. Both stages are built: [Stage 7 as built](#stage-7-as-built) and [Stage 9 as built](#stage-9-as-built)
+say what changed from this design, and 8.5 and 8.6 how stage 9's increments were enabled and what they measured. The
+stage 9 gate is decided only in part: its Linux items wait for a gate host ([Q2](#12-open-questions)). The
 specification stays authoritative for semantics; where this design departs from it, [proposed spec
-amendments](#10-proposed-spec-amendments) 88 to 140 record what and why. [The implementation
+amendments](#10-proposed-spec-amendments) 88 to 167 record what and why (163 to 167 from the stage 9 review, whose
+fixes are rows of Stage 9 as built). [The implementation
 design](programmable-metrics-implementation.md) describes stages 1 to 6 as built, and [the status
 document](programmable-metrics-status.md) records the state of the branch. Code references are repository paths with
 line numbers at `b01049372e`. **(est.)** marks an estimate that a measurement in [the measurement
@@ -78,8 +80,8 @@ lane.
 | Symbol | Meaning | Default |
 |---|---|---|
 | W | worker threads of the primary runtime (`SALUKI_WORKER_THREADS`, else `available_parallelism().max(2)`) | host |
-| D | producer lanes (pre-aggregation lanes), one per DogStatsD decoder up to `PRODUCER_LANES_MAX` (16); decoder `d` feeds lane `d mod D` | `min(decoders, 16)`, decoders `dogstatsd_workers_count`, else `max(vCPUs − 2, 2)` |
-| P | state lanes of `dsd_agg` | 1 if W < 4, else `clamp(W / 2, 2, 8)` |
+| D | producer lanes (pre-aggregation lanes), one per DogStatsD decoder up to `PRODUCER_LANES_MAX` (16); decoder `d` feeds lane `d mod D` | `min(decoders, 16)`, decoders `dogstatsd_workers_count`, else `max(vCPUs − 2, 2)`; as built, 1 if W < 3 (5.13) |
+| P | state lanes of `dsd_agg` | 1 if W < 4, else `clamp(W / 2, 2, 8)`; as built, `clamp(W / 2, 2, 4)` until a gate host runs W = 16 (5.13) |
 | M | post-aggregation lanes of `metrics_enrich` | `min(D, 8)` |
 | K | key groups | 256 |
 | B | events per routed buffer | `clamp(2,048 / P, 256, 1,024)` |
@@ -116,7 +118,7 @@ The facts below, checked against the code, decide the design.
 | F12 | Idle-counter back-fill starts at the core's own `last_flush`, which advances only when the core is non-empty. | `state.rs:400-440`, `lib/saluki-metric-kernels/src/aggregate/mod.rs:625-637` | Empty lanes would back-fill too far; the rule must be per lineage. |
 | F13 | `Cache::get` writes a shared hit or miss counter on every lookup; memo caches of one node share one identifier. | `lib/saluki-core/src/cache/mod.rs:326-336`, `lib/saluki-metric-plan/src/operators/dogstatsd.rs:661-668` | Per-lane caches need per-lane handles. |
 | F14 | `dsd_stats_out` is always connected and drops every buffer unless a statistics request is running. | `lib/saluki-components/src/destinations/dsd_stats/mod.rs:112-158`, `bin/agent-data-plane/src/cli/run.rs:1152-1162` | A per-event clone and a single-task drop that every curve shares. |
-| F15 | The datagram decoders share one receiver behind a tokio mutex held across `recv().await`; the context resolver writes shared memory on every resolve. | `lib/saluki-components/src/sources/dogstatsd/mod.rs:1720-1723`, `lib/saluki-core/src/cache/expiry.rs:126-161` | Upstream ceilings common to legacy and plan, measured first. |
+| F15 | The datagram decoders share one receiver behind a tokio mutex held across `recv().await`; the context resolver writes shared memory on every resolve. | `lib/saluki-components/src/sources/dogstatsd/mod.rs:1720-1723`, `lib/saluki-core/src/cache/expiry.rs:126-161` | Upstream ceilings common to legacy and plan, measured first. As built, O4 and O5 replace both (8.7). |
 | F16 | Each output is one encoder component with one request builder on a fixed 8-thread pool; encoders have only a default output. | `lib/saluki-components/src/encoders/datadog/metrics/mod.rs:547-583`, `built.rs:140-159`, `graph.rs:388-393` | One encode host per delivery host; one builder per output stream; pool sized from cores. |
 | F17 | The forwarder's endpoint table and loops are built once; per-payload routing is already data. A removed additional endpoint keeps receiving with its last key; an added one is ignored. | `lib/saluki-components/src/common/datadog/io.rs:385`, `:528-597`, `api_key.rs:68-72`, `:331-353` | The table becomes live data; removal must stop delivery. |
 | F18 | Plan outputs are resolved once from the startup configuration, and their fingerprints include the resolved recipients. | `bin/agent-data-plane/src/programmable_metrics/lowering/mod.rs:195-215`, `outputs.rs:326-354` | Lowering from the current configuration; a selector-based fingerprint. |
@@ -201,9 +203,9 @@ natively), and stage 9 may give a lease S > 1 builder shards when measurement sa
 ### 3.4 The frame
 
 ```text
-UDS/UDP listeners ─► datagram queue ─► decoders (shared receiver, as natively; decoder d feeds lane d mod D)
+UDS/UDP listeners ─► datagram queue (O4) ─► decoders (front cache each, O5; decoder d feeds lane d mod D)
 stream connections (one task each, assigned at accept to the lane with the fewest live connections)
-   │ unstamped buffers on dsd_in.metrics_<d>  ──┬─► dsd_stats_out (gated), dsd_debug_log_out (taps; no lock)
+   │ unstamped buffers on dsd_in.metrics_<d>  ──┬─► dsd_stats_out, dsd_debug_log_out (gated taps; no lock)
    ▼                                           │
 dsd_pre_aggregation   lane 0 .. lane D−1        (lane d stamps as point dsd_in.metrics#d; SourceClock shared)
    │ keyed exit dsd_agg (context key → 256 groups → P lanes; held ≤ 5 ms) │ passthrough exit (affinity d mod M)
@@ -225,10 +227,12 @@ the declared output `resources_team_d` as well as to the main output.
 
 1. **Socket.** The UDS datagram reader receives a datagram of 40 metrics into a pooled buffer and queues it on the
    shared datagram queue (unchanged).
-2. **Decode.** Decoder 3 takes it under the receiver mutex, decodes, resolves contexts through the shared resolver, and
-   appends to its 1,024-event buffer. When full, it dispatches on `dsd_in.metrics_3`. That output has no admission
-   point, so no lock is taken: the dispatcher sends the buffer into `dsd_pre_aggregation` lane 3's channel, and gives
-   `dsd_stats_out` a clone only while a statistics collection runs (otherwise only the tap's received count, P9.F).
+2. **Decode.** Decoder 3 takes it from the datagram queue (as built, without a lock: O4), decodes, resolves contexts
+   through its front cache and, on a miss, the shared resolver (O5), and appends to its 1,024-event buffer. When full,
+   it dispatches on `dsd_in.metrics_3`. That output has no admission point, so no lock is taken: the dispatcher sends
+   the buffer into `dsd_pre_aggregation` lane 3's channel, and gives `dsd_stats_out` a clone only while a statistics
+   collection runs (otherwise only the tap's received count, P9.F), and `dsd_debug_log_out` one only while
+   `dogstatsd_metrics_stats_enable` is on (as built, Z1).
 3. **Admit.** Lane 3 receives the buffer and stamps it as the single stamper of `dsd_in.metrics#3`: its point lock
    (uncontended; only installer transactions share it), the source's shared clock (one short critical section), and one
    schedule load. The header becomes `{t_a, point #3, epoch, generation g}`.
@@ -1236,7 +1240,7 @@ tick. Parallelism then comes from lanes, so R1's cost model goes.
 | D10 | **Lanes in `saluki-core`**: a slot component with lanes has one bounded channel per lane, a coordinator for control and health, and a resource group per lane ([5.4](#54-lanes-in-saluki-core-kernels-and-caches)). | 0 | 0 | 0 |
 | D11 | **No shared telemetry handle is written per event on a lane's data path**; kernel and cache counters accumulate per instance and publish deltas every second. | removes shared writes | removes 3 shared gauge updates | 0 |
 | D12 | **Sampled CPU-time accounting**: a resource-group entry always switches the group, but reads the thread's CPU time on one entry in N (N = 16 on Linux), scaling the delta; entries known to be long always read it. | removes about 1.7 µs per kernel per buffer on Linux, 15 of 16 times | 0 | 0 |
-| D13 | **R1's cost model is removed**: off whenever `lanes.mode` is `auto`, deleted once the gate passes ([5.10](#510-removing-r1s-cost-model)). | removes hops | 0 | 0 |
+| D13 | **R1's cost model is removed**: off whenever `lanes.mode` is `auto`, deleted once the gate passes ([5.10](#510-removing-r1s-cost-model)). As built, off whenever lanes are on and kept until the mapper and gateways profiles decide it at W = 1 to 3 (P9.7 in 8.5); `auto` runs without lanes, R1 included, where every count is one. | removes hops | 0 | 0 |
 | D14 | **Lane counts fixed at boot** from Saluki-only keys with host-derived defaults ([5.13](#513-configuration)). | 0 | 0 | 0 |
 
 Everything with one lane per slot is stage 6 behavior, and each part ships behavior-neutral at one lane, with a
@@ -1247,15 +1251,16 @@ measurement of its own ([8.5](#85-stage-9-integration-increments-and-gate)).
 **The source hands buffers over and nothing else.** In plan mode the DogStatsD source is built `with_metric_lanes(D)`:
 its metrics output `metrics` is replaced by `metrics_0` to `metrics_<D−1>`, with no admission point on them. Datagram
 decoder `d` dispatches on `metrics_<d mod D>` (D is the decoder count up to `PRODUCER_LANES_MAX`, 16, 5.13). A stream
-connection (UDS stream, TCP, named pipe) takes, when accepted, the lane with the fewest live connections (a counter
-per lane in its listener, incremented at accept and decremented at close, ties by lowest index), and dispatches on that
+connection (UDS stream, TCP, named pipe) takes, when accepted, the lane with the fewest live connections (a counter per
+lane in its listener, incremented at accept and decremented at close, ties by lowest index), and dispatches on that
 lane's output for its lifetime, so a connection's batches stay in order (one producer, one FIFO channel) and a few heavy
 long-lived connections do not land on one lane by accept order. The taps `dsd_stats_out` and `dsd_debug_log_out` are
 connected to every lane output; each decoder clones its own buffers to them, outside any lock, so the clone work is
 unchanged in total and runs in parallel (and with the tap gate of P9.F, `dsd_stats_out` gets clones only while a
 collection runs). No plan code enters the source, and the decoder count keeps its native default. With `lanes.mode:
-auto` and one decoder, the source still uses `metrics_0` and an owned stamper, and R1 is off (5.10); `off` is the stage
-6 layout.
+auto` and one decoder, the source still uses an owned stamper (as built, on its output `metrics`, whose name one
+producer lane keeps: amendment 161), and R1 is off (5.10); `off` is the stage 6 layout. As built, `dsd_debug_log_out` is
+gated too, on `dogstatsd_metrics_stats_enable` (amendment 158).
 
 **The lane stamps.** `dsd_pre_aggregation` lane `d` owns the admission point `dsd_in.metrics#d` through an
 `OwnedAdmission`. For every input batch with an unstamped header, it calls `stamp` before running the program:
@@ -1339,7 +1344,9 @@ stamp), with the boundary-epoch rule unchanged.
 
 **Upstream of the lanes nothing changes**: the datagram receiver's mutex (F15) and the shared context resolver remain,
 as in legacy. Both are measured first (M2), because they decide where every curve, legacy's included, flattens;
-replacements are conditional parts ([O4, O5](#87-conditional-parts-measured-options)).
+replacements are conditional parts ([O4, O5](#87-conditional-parts-measured-options)). **As built**, M2 triggered both,
+and they landed in phase C: a lock-free datagram queue and a front cache per datagram decoder, in the source legacy
+shares (8.7).
 
 ### 5.3 Routing, key groups, and coalescing
 
@@ -1364,7 +1371,10 @@ their fingerprints do not change. When `Op::Exit` hands a register to a keyed ex
 decision makes (`runtime/driver.rs:1866-1985`): count per lane, then move each event into its lane's open buffer.
 Events keep their order within a lane. A register whose events all map to one lane `j` moves whole through rule 1
 below: it becomes `open[j]` when none is open (no copy), appends when `open[j]`'s key is equal, and otherwise follows
-`open[j]`, which is sent first; it never overtakes an open buffer, so `t_a` never decreases at the state lane. With P =
+`open[j]`, which is sent first; it never overtakes an open buffer, so `t_a` never decreases at the state lane. **As
+built**, a register moves whole only when its storage is at most B events (`allocated_capacity() <= B`); otherwise its
+events are copied into routed buffers of B, as a split register's are, and an open buffer whose storage is full is sent
+rather than grown, so no buffer the exit holds or sends has room for more than B (amendment 146). With P =
 1 the exit is `ExitRouting::One` and buffers move whole, as in stage 6.
 
 **Coalescing.** Splitting a 1,024-event batch P ways would make every per-buffer cost at the state lanes (the host's 70
@@ -1434,12 +1444,14 @@ header. With coalescing a sent buffer can carry an older header (rule 2), so pro
 actually sent. After the call's sends, for every target lane `j` with no open buffer, the exit compares `h` with
 `last_sent[j]` as this call left it, and sends a header-only copy of `h` (entry cleared) when `h` is header-only and
 `h.t_a > last_sent[j].t_a`, or `h`'s epoch or generation differs from `last_sent[j]`'s, or `h.t_a >= last_sent[j].t_a +
-PROGRESS_PERIOD` (100 ms). A generation change therefore reaches every state lane at once (today progress forwards only
-on an epoch change or after 100 ms, `driver.rs:1216-1219`), so a cut's crossing never waits for the throttle, a reset
-window closes within queueing delay, and a heartbeat's watermark advance is never lost. A lane with an open buffer gets
-no copy of `h`: the buffer carries the header of its last append, so until a later call's progress rule or a heartbeat
-reaches that lane, its view of the point lags as it does in stage 6, bounded by the throttle and the heartbeat period,
-not by `COALESCE_HOLD`.
+PROGRESS_PERIOD` (100 ms), or, **as built**, `secs(h.t_a) > secs(last_sent[j].t_a)`: a new second reaches every lane
+with no open buffer at once, so after open buffers are flushed every state lane's `floor(W)` is the interpreter's
+(amendment 145; marks are kept per point and target lane, since stamps compare only within one point). A generation
+change therefore reaches every state lane at once (today progress forwards only on an epoch change or after 100 ms,
+`driver.rs:1216-1219`), so a cut's crossing never waits for the throttle, a reset window closes within queueing delay,
+and a heartbeat's watermark advance is never lost. A lane with an open buffer gets no copy of `h`: the buffer carries
+the header of its last append, so until a later call's progress rule or a heartbeat reaches that lane, its view of the
+point lags as it does in stage 6, bounded by the throttle and the heartbeat period, not by `COALESCE_HOLD`.
 
 **The final old-epoch latest.** At the start of a call whose header `h` is in a newer epoch than the previous header
 this exit handled (`prev`), before routing any of `h`'s events, the exit sends every open buffer (each holds `prev`'s
@@ -1490,7 +1502,10 @@ sending lane, or, for a shared stamper (OTLP, checks, liveness, the trace sample
 its fan-out does today, so nothing shared is written. `Affinity` sends to `lane mod target lanes`; `Keyed` takes the
 lane the driver chose through `ExitSink::emit_to_lane`. The keyed exit's sub-buffers of one call are sent with
 `try_send` first, and the full ones awaited afterward, still before the next call, so one full state lane does not delay
-the call's sub-buffers for every lane after it; FIFO per channel is unchanged.
+the call's sub-buffers for every lane after it; FIFO per channel is unchanged. **As built**, the try-first send
+engages only on an output that feeds one component (a returned item could otherwise wait on any of them, breaking a
+tap's order), and each lane reads every exit's routing from the dispatcher's edge (`EventsDispatcher::lane_edge`), so
+the host needs no routing configuration of its own.
 
 **The region host with lanes.** `RegionHostBuilder::with_lanes(lanes)` makes the factory `Fn(&BuildContext, LaneContext)
 -> D`, with `LaneContext { index: u16, count: u16 }`, and `with_lane_admission(Vec<AdmissionPointConfig>)` gives lane
@@ -1521,14 +1536,17 @@ the call's sub-buffers for every lane after it; FIFO per channel is unchanged.
 **Kernels are `Send` but not `Sync`** (`lib/saluki-core/src/execution/kernel.rs:115-175`), so each lane owns its
 instances. The installer builds them on a blocking thread (`spawn_blocking`) instead of inline in its task
 (`bin/agent-data-plane/src/programmable_metrics/installer.rs:1443-1520`), and lane `i` receives its own kernel set in
-its share of the `Prepare`. To keep D builds cheap, `KernelSpec::with_shared(prepare, build)` computes a kernel's
-immutable part once per spec and builds each instance around it: the mapper shares its compiled profiles and takes a
-fresh result cache and 64 KiB interner per lane; the tag projection shares its rules and takes a fresh `ContextMemo`;
-decisions already share compiled predicates. **As built** (P9.F), the part sits behind a `Mutex<Option<Arc<_>>>`
-rather than a `OnceLock`, which has no fallible initialization on stable Rust, so a failed `prepare` is retried by the
-next build; and each mapper instance clones the shared profiles' regular expressions, since a clone keeps the compiled
-program but has a match-cache pool of its own, so lanes never contend on one. A lane never builds a kernel on its data
-path, except after a panic (`rebuild_kernels`, as today) and for a reset window's empty instance (5.6).
+its share of the `Prepare`. **As built**, the builds are blocking work on the installer's own thread
+(`tokio::task::block_in_place`), every slot's built before any is sent: on another thread, every telemetry handle the
+kernels register went to that thread's recorder. To keep D builds cheap, `KernelSpec::with_shared(prepare, build)`
+computes a kernel's immutable part once per spec and builds each instance around it: the mapper shares its compiled
+profiles and takes a fresh result cache and 64 KiB interner per lane; the tag projection shares its rules and takes a
+fresh `ContextMemo`; decisions already share compiled predicates. **As built** (P9.F), the part sits behind a
+`Mutex<Option<Arc<_>>>` rather than a `OnceLock`, which has no fallible initialization on stable Rust, so a failed
+`prepare` is retried by the next build; and each mapper instance clones the shared profiles' regular expressions, since
+a clone keeps the compiled program but has a match-cache pool of its own, so lanes never contend on one. A lane never
+builds a kernel on its data path, except after a panic (`rebuild_kernels`, as today) and for a reset window's empty
+instance (5.6).
 
 **Caches and memos are per lane, at the configured size.** The mapper's result cache and resolver and the tag
 projection's `ContextMemo` memoize pure functions, so per-lane copies change no output. Each lane gets the configured
@@ -1602,7 +1620,11 @@ limit does not bind: a later generation can lower the node's limit under `retain
 counted. The three shared gauge updates per new or removed context (`aggregate/telemetry.rs:66-87`) become
 per-instance integers published as deltas every second. M4 measures the budget under churn (the re-insertion burst
 after a flush, F9's shape at 1M contexts); if it contends, per-batch reservations or credit cells replace the direct
-operations behind the same `ContextBudget` interface ([O1](#87-conditional-parts-measured-options)). The admission
+operations behind the same `ContextBudget` interface ([O1](#87-conditional-parts-measured-options)). **As built**, M4
+triggered O1 and it landed in phase C: on several lanes a batch takes units in blocks through one `BudgetReservation`
+of the node's and the global budget (each block as large as the units already handed out, starting at the lane's
+previous batch's new contexts, at most 64), and on one lane one unit per new context, exactly as above (amendment
+152). The admission
 policy stays `AdmissionPolicy::FirstCome` (`extension/mod.rs:106-113`): the specification's credit splitting inside
 the admission-policy slot is "no split" ([amendment 118](#10-proposed-spec-amendments)).
 
@@ -1706,7 +1728,9 @@ so they share the lineage's `LaneShared`, keyed by epoch inside, and never an ol
 `AggregateCore::begin_flush_with(now, start_from: Option<u64>)` takes the back-fill start from outside; with one lane it
 equals the core's own `last_flush`, so the legacy core and the frozen references are untouched. `SlotLanes` is looked up
 only when an instance is bound to a record (a `New` binding applied by a lane, a reset window's fresh instance or close)
-and a record is dropped with its last member. A straggler beyond the four ordinals the record keeps, or a lane gated
+and a record is dropped with its last member (**as built**, kept while another lane may still reach its epoch, with
+the state owner's log of the epoch: 8.4's Stage 9 as built). A straggler beyond the four ordinals the record keeps, or a
+lane gated
 past the next ordinal, takes the per-lane behavior and is counted, as single-core native under the same stall bursts
 its ticks (amendment 86's class); the exclusions are listed in the [exactness ledger](#61-the-exactness-ledger).
 
@@ -1738,7 +1762,18 @@ forwarded to every state lane); and at once on a reset or a generation change, p
 old-epoch header. With D = 14 and P = 8 the throttle and the heartbeats give at most 1,120 header-only buffers per
 second (est. a few hundred nanoseconds each with sampled accounting: well under 1% of a core), none while data flows;
 each commit adds one header per (producer lane, state lane), D × P = 112 at that size, which the gate's live change
-every 50 ms makes 2,240 per second while it runs.
+every 50 ms makes 2,240 per second while it runs. **As built, after the stage 9 review**, an idle producer lane's
+heartbeat one period after its latest stamp held every tick of the busy lanes back: a tick fires once `floor(W)` reaches
+its second, `W` is the minimum over the D points, and an idle point reached the new second only at its next heartbeat,
+up to the period later (950 ms in a probe with one point idle at D = 2; 600 ms with three idle at D = 4), which is the
+common case (`lanes.mode: auto` gives D = the decoders from three workers, O4's queue wakes the receiver that waited
+last, and one stream connection keeps D − 1 lanes idle). With several producer lanes, each lane's point therefore also
+heartbeats `PROGRESS_PERIOD` (100 ms) into each wall-clock second in which it stamped nothing
+(`AdmissionPointConfig::with_heartbeat_each_second`, owned points only): an idle lane holds the busy lanes' ticks back
+by at most the progress throttle, at one heartbeat per second as before, and a lane that stamps in every second sends
+none
+(`differential_tests::an_idle_producer_lane_holds_a_flush_tick_of_the_busy_ones_back_by_at_most_the_progress_period`,
+875 ms late without it). With one producer lane nothing changes: its watermark is its own.
 
 **Coupling through `W`.** A producer lane blocked on a full state lane `k` sends nothing to lane `j` either, so `j`'s
 watermark stalls, its tick gates, and after the 2 s grace it fires at `floor(W)`. Closure is late, never wrong, as along
@@ -1777,6 +1812,8 @@ pub enum WindowStep {
 pub enum EpochSide { Older(u32), Target }
 impl ResetWindow {
     pub fn step(window: &mut Option<Self>, tracker: &WatermarkTracker, header: &BatchHeader) -> WindowStep;
+    // As built: a value the lane owns, which keeps its epoch while no window is open:
+    // `new(epoch)`, `step(&mut self, &WatermarkTracker, &BatchHeader)`, `is_open`, `holds(epoch)`, `close(&tracker)`.
 }
 /// Epochs wrap: `a` is newer than `b` when `(a.wrapping_sub(b) as i32) > 0` (today's code compares only for equality).
 pub fn epoch_newer(a: u32, b: u32) -> bool;
@@ -1810,7 +1847,9 @@ as invalid loss, and the arrival replay excludes the case.
    against the lineage's `LaneCell`, 5.5), as `insert_instance` builds a `New` binding's instance
    (`isolation.rs:1054-1090`), never `rebuild_instance`, which replaces a kernel in place (`kernels.rs:136-154`) and
    would destroy the retiring state. It joins the record `(key, created_by, e + 1)`, creating it if no lane has, with
-   `first_at` from its predecessor's record (5.5). It inherits its predecessor's bindings: its users in every live
+   `first_at` from its predecessor's record (5.5); **as built**, the record of the lineage's newest epoch older than
+   `e + 1`, so that a second reset inside an open window starts after the epoch between. It inherits its predecessor's
+   bindings: its users in every live
    generation (each generation binding the predecessor's lineage binds it too) and the `Retiring { owner, by }` mark of
    a cut that retires the lineage, so it crosses as the lineage does and is never freed with its data counted as
    invalid loss (`isolation.rs:916-938` frees an unbound instance that is not retiring). A header-only first newer
@@ -1822,7 +1861,10 @@ as invalid loss, and the arrival replay excludes the case.
    present and later; `Release` releases all of them. Both sides draw on the global budget, so a context seen on both
    is held once per open epoch for the window's length (capacity behavior). The fresh instance cannot tick:
    `watermark_in(e + 1)` is `None` until every point switched, and a deadline meanwhile is skipped as stage 6 skips a
-   tick with no watermark, resolved `Empty`, and counted as divergence when the instance holds contexts (5.5).
+   tick with no watermark, resolved `Empty`, and counted as divergence when the instance holds contexts (5.5). **As
+   built**, the lane ticks no instance at all while its window is open, the newest epoch's included, and once the window
+   closes the deadlines it held come due at once, whichever instance continues the lineage: the two continuations
+   disagreed on the flush count across lanes otherwise (amendment 147).
 5. **Close** when `switched_epoch(target)`: each older-epoch instance, oldest epoch first, runs the stage 6 reset drain
    (a closing flush at `floor(W_pre)` with `W_pre = watermark_in(e)`, the minimum of the points' final old-epoch latest
    times, its back-fill start from the flush log, 5.5, then everything it holds), stamped in its output epoch; then the
@@ -1977,6 +2019,11 @@ job: fusion becomes maximal between fences, and slots follow fence depth only (`
 - **Off whenever lanes are on.** `FrameOptions { pipelining: bool }` is an input of `Frame::compute`; ADP passes `false`
   whenever `lanes.mode` is `auto`, at any D (one decoder included), and `true` with `lanes.mode: off`. So no part builds
   lanes for R1's pipelined slots.
+- **As built, kept** (P9.7 in [8.5](#p97-r1s-cost-model)): with no gate host, Z3 decided P9.7 on the in-process curves,
+  and kept the cost model, off whenever lanes are on. Z3 read the defaults profile's 3 to 10% lead of `lanes.mode: off`
+  on two workers as R1's; the review found R1 cuts no slot there, so the gap is the lane runtime at one lane per slot,
+  which `auto` now avoids by running the layout without lanes where every count is one (5.13). Whether to delete R1 is
+  decided by the mapper and gateways profiles at W = 1 to 3; the list below is what its deletion takes.
 - **Deleted after the gate** passes with lanes on (part P9.7): `REGION_COST_FLOOR`, `Slot::cost`, `Frame::cost_budget`,
   `Layout::budget`, `FusionVerdict::Pipelined`, the layout's cost and staging section and the stage term of slot
   grouping (`frame.rs:40-63`, `:99-102`, `:304-306`, `:384-394`, `:547`, `:849-857`, `:1189-1190`, `:1259-1397`); the
@@ -2013,19 +2060,20 @@ which pipelines with the lane, and may be bound by decoding; M1 measures it, and
 | The 17 aggregation kernel series (`aggregator.*` remaps) | per-instance accumulation under `component_id:dsd_agg`, published as deltas: gauges and counters sum (each context is in one lane); `aggregate_flushes_total` once per non-empty ordinal and closing flush, by the first lane to record it; the breach log once per episode |
 | `plan_clock_resets_total`, `plan_state_tick_grace_expired_total` (counted per isolation slot, `runtime/telemetry.rs:35-40`) | a reset is counted once per (slot, epoch), by the first state lane to open a window into it, through `SlotLanes::resets_counted`, whether or not that lane holds instances (a reset mark is per record, so it cannot count); a grace expiry once per ordinal, by the first lane whose grace expired (`SharedTick::grace_counted`) |
 | Region driver counters (`plan_node_events_total`, port events, loss) | plain integers per lane, published each second as deltas, as today per region |
-| `plan_state_watermark_lag_seconds{component_id}` | the coordinator publishes the maximum over lanes |
+| `plan_state_watermark_lag_seconds{component_id}` | the coordinator publishes the maximum over lanes; as built, the most lagging lane's last published lag, through `SlotLanes` (amendment 154) |
 | `plan_state_lineages{component_id}` | logical lineage instances, not instances times P |
-| Cache series | native identifiers and label sets: each lane accumulates and publishes deltas onto the unlabeled handles, so series shapes are the same at every lane count and no remapped series sees a new label. **As built** (P9.F), the counters do; the gauges a background task sets once a second or at build (`cache_current_items`, `cache_current_weight`, `cache_weight_limit`, `context_resolver_interner_*`) are unchanged and would show the last lane's value: P9.5 decides how they sum |
+| Cache series | native identifiers and label sets: each lane accumulates and publishes deltas onto the unlabeled handles, so series shapes are the same at every lane count and no remapped series sees a new label. **As built** (P9.F), the counters do; the gauges a background task sets once a second or at build (`cache_current_items`, `cache_current_weight`, `cache_weight_limit`, `context_resolver_interner_*`) are unchanged and would show the last lane's value: P9.5 decides how they sum. **As built** (Z2), they sum per identifier on several lanes (`GaugeMode::Summed`: limits added at build, items and weights as changes once a second, each lane's share withdrawn when its kernel drops), and are set as natively at one lane (amendment 154) |
 | `dsd_in`'s output | `metrics` becomes `metrics_0` to `metrics_<D−1>`: `component_events_sent_total{component_id:dsd_in}` and the interconnect series carry `output:metrics_<d>`, and the admission points in `/programmable-metrics/status` and `explain` are `dsd_in.metrics#d`; the remaps read only `component_events_received_total{component_id:dsd_in}` (`state/metrics/rules/dogstatsd.rs:127-131`), so they are unchanged; release-noted |
 | Resource groups | `topology.primary.transforms.<slot>.lane_<i>` per lane, kernels under `<slot>.lane_<i>.<node>`; with one lane, unchanged |
 | Bounds | the context-limit state bounds once, under `dsd_agg.aggregate_context_limit` (the budget is global); lane-local bounds (buffers, kernels, memos, open routed buffers) per lane |
 | Context snapshots | the snapshot bridge sends one request per lane (`KernelControl::lane`, 5.4) and concatenates the entries (the API already takes a `Vec`, `bin/agent-data-plane/src/dogstatsd_contexts/api.rs:103`) |
 
 New series, bounded by `MAX_LANES` per slot, for the demo and diagnosis: `plan_lane_events_total{component_id, lane}`,
-`plan_lane_batches_total`, `plan_lane_busy_seconds_total` (the host's call time from the turn clock),
-`plan_lane_input_depth` (gauge), `plan_lane_routed_buffers_total`, `plan_lane_routed_events_total`,
-`plan_lane_progress_total`, `plan_lane_stamp_wait_seconds_total` (time waiting for the point's lock, timed only when
-`try_lock` fails, so nonzero only during transactions), and for state lanes `plan_lane_contexts`,
+`plan_lane_batches_total`, `plan_lane_busy_seconds_total` (the host's call time from the turn clock; as built
+`plan_lane_busy_nanos_total`, an integer counter), `plan_lane_input_depth` (gauge), `plan_lane_routed_buffers_total`,
+`plan_lane_routed_events_total`, `plan_lane_progress_total`, `plan_lane_stamp_wait_seconds_total` (time waiting for the
+point's lock, timed only when `try_lock` fails, so nonzero only during transactions; as built
+`plan_lane_stamp_wait_nanos_total`), and for state lanes `plan_lane_contexts`,
 `plan_lane_watermark_lag_seconds`, `plan_lane_flush_seconds` (histogram), `plan_lane_flush_blocked_seconds`
 (histogram: the part of a flush spent waiting for room downstream), `plan_lane_crossings_total{kind: cut | reset}`,
 `plan_lane_crossing_overlap_contexts` (gauge), `plan_lane_tick_divergence_total`, `plan_lane_tick_straggler_total`,
@@ -2055,21 +2103,54 @@ lowers the automatic M, then P, then D (decoder `d` still feeds lane `d mod D`),
 and refuses to boot only when `lanes.*` was set explicitly, naming the keys in the error. A unit test computes the firm
 bound at W = 64. M9 checks RSS on the 250,000-context SMP gate at one lane and with defaults.
 
+**As built, the table underestimates the growth about sixfold.** Built topologies at the default configuration
+(`topology::lane_tests::the_firm_bound_grows_by_each_lanes_own_bounds_up_to_64_workers`, as of the stage 9 review) put
+one more producer lane at 9.89 MiB, one more state lane at 2.01 MiB, and one more post-aggregation lane at 3.00 MiB of
+firm bound, so the growth over one lane per slot at the counts as built is 15.7 MiB at W = 4 (`{2, 2, 2}`), 70.3 MiB at
+W = 8 (`{6, 4, 6}`), 160.8 MiB at W = 16 (`{14, 4, 8}`), 186.0 MiB at W = 32 and 189.0 MiB at W = 64 (`{16, 4, 8}`): the
+figures include each decoder's 96 KiB front cache beyond the first (O5), which keeps them growing slightly past W = 32,
+where the lane counts stop. A producer lane's row is dominated by the tag filterlist's `ContextMemo` bound (6,400,000
+bytes at the defaults), not the 0.2 to 0.7 MiB above; every lane task also holds one in-flight full buffer (344 KB)
+beyond the first of each slot (3, 13, 27, and 29 buffers at the four sizes), and the "Region input capacity" row's 0
+holds only because buffers sent to a state lane have storage for at most B (amendment 146), apart from a struct term per
+slot and the rounding of `ceil(native / lanes)` at lane counts that are not powers of two. M11 kept per-lane memos at
+the configured size (each lane sees every context, so a divided memo would miss); the `Strict` fit also leaves room for
+one generation's overlap (amendment 156); M9's RSS check is the gate host's. Since the stage 9 review, automatic counts
+the fit lowers to one each are the layout without lanes, which boots where one lane each on lanes would not, and a grant
+even the layout without lanes exceeds is verified against the smallest layout the fit reaches (the layout without lanes,
+or every automatic count at one beside the counts the configuration sets), with a warning naming its bound and the bound
+without lanes, so that the limit verification names is one that boots. The memory investigation explained the plan's
+higher container peak at N = 2 (the debug-log tap's clone under the admission lock deepened the native datagram queue,
+gated since) and that the container's `memory.peak` includes page cache.
+
 ### 5.13 Configuration
 
 | Key | Meaning | Default |
 |---|---|---|
 | `dogstatsd_workers_count` (native) | the decoder count, and therefore D, the producer lanes, up to `PRODUCER_LANES_MAX` (16); its overlay documentation says it now also sets D and the default of M | `max(vCPUs − 2, 2)`, unchanged |
-| `experimental.programmable_metrics.lanes.mode` (new, Saluki-only) | `auto`, or `off`: one lane per slot and the source's single `metrics` output with its dispatcher-side point; until P9.7, also R1's cost model (the stage 6 layout), and after it maximal fusion at one lane per slot, which runs one stream at 0.68 to 0.72 of legacy on four workers (5.10) | `auto` |
-| `experimental.programmable_metrics.lanes.state` (new) | P; 0 is automatic | 0: 1 if W < 4, else `clamp(W / 2, 2, 8)` |
+| `experimental.programmable_metrics.lanes.mode` (new, Saluki-only) | `auto`, or `off`: one lane per slot and the source's single `metrics` output with its dispatcher-side point; until P9.7, also R1's cost model (the stage 6 layout), and after it maximal fusion at one lane per slot, which runs one stream at 0.68 to 0.72 of legacy on four workers (5.10); as built, P9.7 kept R1, so `off` is the stage 6 layout (8.5) | `auto` |
+| `experimental.programmable_metrics.lanes.state` (new) | P; 0 is automatic | 0: 1 if W < 4, else `clamp(W / 2, 2, 8)`; as built `clamp(W / 2, 2, 4)` (`AUTOMATIC_STATE_LANES_MAX`) |
 | `experimental.programmable_metrics.lanes.post` (new) | M; 0 is automatic | 0: `min(D, 8)` |
 | `dogstatsd_pipeline_count`, `dogstatsd_pipeline_autoadjust` (native) | still `support: none`; the overlay's reason becomes "ADP partitions aggregation by lanes (`experimental.programmable_metrics.lanes.*`)" | — |
 
 Every value is read at startup and changes at restart (`SALUKI_KEYS`, beside `artifact_channel`). An explicit P or M
 above `MAX_LANES` (64) is capped with a warning. The decoder count itself is never capped: with more decoders than
 producer lanes, decoder `d` feeds lane `d mod D`, and a lane stamps whatever it receives, so several decoders per lane
-are fine. The automatic counts stop at what the gate measured
-(8.5): P and M at 8, D at `PRODUCER_LANES_MAX` (16), which a gate run at W = 32 raises to `MAX_LANES`. The automatic P
+are fine. The automatic counts stop at what the measurements support (8.5): P at 4, M at 8, and D at
+`PRODUCER_LANES_MAX` (16), of which only W up to 8 was measured, in process on this Mac: M = 8 and D = 16 stay
+provisional until a gate host runs W = 16, and a gate run at W = 32 raises D to `MAX_LANES`. **As built** (increment
+9.5): `lanes.mode: auto` is the default; the keys are in `agent-data-plane-config`'s `control` model, which only the
+binary reads; the caps live in ADP's `lanes.rs` with decision-log notes (`AUTOMATIC_STATE_LANES_MAX` 4,
+`AUTOMATIC_POST_LANES_MAX` 8); and the automatic D is one below three primary workers (`PRODUCER_LANES_MIN_WORKERS`):
+on two workers one producer lane fed by both decoders beat two, which cost a tenth more CPU per metric (8.6). Where
+every automatic count comes to one, as below three workers, and neither `state` nor `post` is set, the metrics path
+runs without lanes, as with `mode: off` (`LaneSettings::from_config`, after the stage 9 review): one lane per slot runs
+nothing in parallel, and on two workers the lane runtime at one lane cost 4 to 9% more CPU per metric and 3 to 10% of
+throughput against the layout without lanes (8.5, P9.7); the `Strict` fit gives the same layout when it lowers every
+automatic count to one. ADP logs the counts it booted on, the mode, the workers, the decoders, and the CPU-time
+sampling rate, once at startup (`lanes::log_booted_lanes`). `mode` also reads the booleans a YAML 1.1 tool writes for
+an unquoted `off` and `on` (`false` and `true`, also as strings and as `0` and `1`). Explicit counts given with
+`mode: off` are ignored with a warning (amendment 157). The automatic P
 is a first pass the sweep replaces (M5, the scaling curves), whose objective is worker time per metric at equal
 throughput, not throughput alone. In `Strict` memory mode the automatic counts shrink to fit the grant (5.12). The
 Agent's pipeline keys are not reused: their default (one pipeline) would turn state lanes off, and their automatic
@@ -2209,7 +2290,30 @@ kept it. This design keeps the order native has: per lane, per connection, withi
 | Clock resets | one point resets; the core drains and continues empty (amendment 64) | one decision per source; instances per lineage and epoch; a reset window per state lane, draining at the exact final old-epoch watermark; a shared reset mark, so every lane fires the same old-epoch ticks; at the close every lane's instances of a lineage join one successor record | multi-point reset property test; traces T-L2, T-L3, and stage 6's trace 11 at D = 3, P = 2 |
 | Cuts | armed under one point's lock; crossing on that point; the two lineages never hold one context at once | armed over D lane locks (stamp only); each state lane crosses on its own, a reset-retiring instance at its window's close; values exact; between the first and the last point's switch at a lane, or during a reset window, a context may hold units in one instance per (lineage, open epoch) (capacity behavior, amendment 128) | cut property test; trace T-L1; `plan_lane_crossing_overlap_contexts` |
 | Time-driven output generation | one rule per drain | per lane; during a cut's window one lane may stamp `old` and another `new` | transition traces |
+| Time-driven output stamp (admission time) | the slot's one latch, over its drains in drain order | each lane's latch, over the drains it emits: equal to the single latch's while one event's drains flush at times that never decrease, as with one state owner per slot; with a retiring owner beside another in one slot, per lane (6.7) | trace-order stamps; the per-lane latch trace |
 | Admission time | stamped at the source's dispatcher, before the pre-aggregation queue | stamped at the lane, after it (amendment 109) | bucket property tests extended to the lane stamp |
+
+**As built**, three rows differ. Which contexts win at the limit is also decided by reservations: on several lanes a
+new context can be refused for units another lane's batch reserved and has not used, fewer than 64 per such batch,
+returned when it ends, and a state owner on one lane reserves none (amendment 152). The breach recovery can be logged
+one pass late, never early, when a pass ends while another lane's batch holds reserved units
+(`a_flush_during_another_lanes_batch_keeps_the_breach_until_a_pass_after_that_batch`). And a tick resolved apart by
+lanes (an expired grace, an unresolved previous ordinal) is counted and compared with the interpreter but for
+idle-counter zeros, rather than excluded (amendment 153).
+
+The stage 9 review added four. **A lane that reaches an epoch late** (one that hears of a reset after the others
+continued past the epoch or retired their lineages in it) ticks and counts the epoch on the records they shared: the
+slot keeps a lineage's tick record, and the state owner keeps its flush log of the epoch, while another lane may still
+reach the epoch (`SlotLanes::keep_while_reachable`, on every path that leaves a record; `LaneShare::forget` once the
+record goes), so its closing flush counts once and starts its zeros from the others' flushes, and it never renumbers the
+ordinals they fired; what it then fires at expired graces of its own lagging watermark is counted as resolved apart,
+each ordinal once (`partitioned_tests::a_lane_that_reaches_an_epoch_after_*`). **A successor record inside a window open
+over several epochs** starts at the current deadline of the lineage's record of the newest older epoch, marked if the
+lane passes it unmarked, never the oldest epoch's (`a_second_reset_while_a_lane_holds_the_first_window_open_*`,
+`state_tests::lanes::a_lane_closing_a_window_over_two_epochs_*`, `a_lane_passing_an_epoch_it_holds_nothing_of_*`).
+**Output stamps** are per lane for a slot of several state owners with a retiring one (the stamp row, 6.7). **A tick's
+lag behind its deadline** is bounded by the progress throttle, not the heartbeat period, while some producer lanes are
+idle (5.6).
 
 ### 6.2 Reference interpreter changes
 
@@ -2261,13 +2365,23 @@ kept it. This design keeps the order native has: per lane, per connection, withi
    | Metadata | one of the candidates |
    | Kind conflict across points | the emitted kind is one of the per-point last kinds; values not compared; the loss balance must hold |
 
+   **As built** (P9.4): candidates are admissions (per point, its last admission into the bucket, with its kind, gauge
+   value, and instance); a kind conflict is compared per series and instance, by what no order changes: no more points
+   than the reference's, only at a timestamp some admission reached, each delivered kind and gauge value some point's
+   last admission's, and the presence of some point's last admission whenever the reference delivered the entry's
+   last; a counter's or rate's zero counts as no point (which ticks fire while a counter idles depends on when
+   heartbeats arrive); the loss balance is checked apart (`check_balance`).
+
 3. **`check_capacity(trace)`** under pressure, from the budget operations a harness records (`test-util`): held units at
    most the limit after every admit, counting a context once per instance that holds it (one per lineage and open epoch
    during a crossing's spread or a reset window); every refusal justified by the refused operation itself, from the
    `used` value its own compare-and-swap observed (recorded inside the loop, since recordings from several threads are
    not in the order the operations took effect), with outstanding node units counted as held (a unit acquired and not
    yet returned on a global refusal still occupies the node); emitted contexts are a subset of admitted ones; delivered
-   points plus capacity loss plus policy loss equal admitted points.
+   points plus capacity loss plus policy loss equal admitted points. **As built**, an acquisition of as many units as
+   fit (a block, O1) is recorded with the units it took, or as a refused acquisition of one unit, and a block's units
+   count as held from its acquisition until they are handed to contexts, given back, or returned at the batch's end; an
+   order check over the recorded operations, and a node limit (`CapacityTrace::limit`), complete it.
 
 ### 6.4 Property tests
 
@@ -2308,12 +2422,19 @@ be modeled, so the models transcribe each protocol with loom primitives, as `sal
 | Breach flag | rejections and pass ends interleaved | one warning and one recovery per episode |
 | `shutdown_at` | 3 lanes finishing | one close time |
 | `OwnedAdmission` with a transaction | a stamp and an arm interleaved, with the point's lock modeled as a `std` mutex | a transaction never sees a half-written stamp; no stamp while it holds the lock |
+| `BudgetReservation` (as built, O1; replaces the `StateBudget` row's transcription) | in `saluki-core`, running the reservation itself: batches of one context at P9.F's two configurations; a block left over (preemption bound 3); a partial global grant (exhaustive); one unit per block, checked to admit every context that fits; a first block larger than the batch; five negative models (check-then-act, keeping the node's unit, keeping a block's left-over units, keeping the node's units beyond the global grant, blocks where one unit at a time is due) | as the `StateBudget` row, with reserved units held |
+| Change stamps (as built, O5) | `saluki-core` `cache::stamps::loom_tests`, transcribed: a writer replaces then removes a key's value, two readers read the stamp, then look up | a copy whose stamp still holds is what the cache holds |
+| The datagram queue (as built, O4) | `saluki-components` `sources::dogstatsd::datagram_queue::loom_tests`, transcribed (tokio's `Notify` and the list modeled): one sender and one or two receivers, one of which stops waiting once; a sender leaving at once; two senders through a queue of one | no lost wake-up, no item lost at the end, a waiting sender woken for room |
 
-**ADP stress run** (`programmable_metrics::topology::lane_stress_tests`): the test topology with D = 4, P = 4, M = 2 on
-a 4-worker runtime, 30 s of datagram traffic over 10,000 to 100,000 contexts near the context limit, a live install
-every second, and a width cut every 10 s. Checks: `check_capacity` over the recorded budget operations,
-`plan_lane_misrouted_total` zero, the canary balance (every admitted canary point delivered once, or counted as
-capacity loss, which a crossing near the limit may cause), and no debug assertion.
+**ADP stress run** (`programmable_metrics::topology::lane_stress_tests`; as built
+`installer::lifecycle_tests::lane_stress_live_installs_and_width_cuts_near_the_context_limit_deliver_every_canary_once`,
+which feeds scripted batches on the producer lanes through the artifact harness that installs width cuts, ignored for
+its 30 s; `make test-stress` runs it, part of `make test-all` and of the `stress-tests` CI job since the stage 9
+review): the test topology with D = 4, P = 4, M = 2 on a 4-worker runtime, 30 s of datagram traffic over 10,000 to
+100,000 contexts near the context limit, a live install every second, and a width cut every 10 s. Checks:
+`check_capacity` over the recorded budget operations, `plan_lane_misrouted_total` zero, the canary balance (every
+admitted canary point delivered once, or counted as capacity loss, which a crossing near the limit may cause), and no
+debug assertion.
 
 ### 6.6 Differential tests against legacy
 
@@ -2330,14 +2451,30 @@ capacity loss, which a crossing near the limit may cause), and no debug assertio
 ### 6.7 Transition traces
 
 Stage 6's traces 1 to 15 replay through the harness at D = 3 and P = 2 with their hand-written expectations under trace
-order (trace 14 still needs two sources and stays interpreter-only). Each stage 6 trace stamps one point, so the
-mapping is fixed: the trace's `i`-th stamp (an admit or a heartbeat) is stamped at point `i mod 3`, and mirrored at
-the same `t_a` as a heartbeat on the other two points, right after it and before the trace's next event. Every state
-lane's watermark then equals the single point's latest after each event, so ticks, gates, expired graces, `W_pre`, and
-cut crossings happen at the stage 6 instants and seconds, and a reset is one jump on the shared clock. The
-expectations' flush times are compared too: each lane's output latch is max-latched over flush times that never
-decrease within an output epoch, and every lane's latch resets at the same window closes, so every record's stamp
-equals the single latch's. New traces, at both levels (`interpret/transition_tests.rs`, `runtime/transition_tests.rs`):
+order (trace 14 still needs two sources and stays interpreter-only). Each stage 6 trace stamps one point, so the mapping
+is fixed: the trace's `i`-th stamp (an admit or a heartbeat) is stamped at point `i mod 3`, and mirrored at the same
+`t_a` as a heartbeat on the other two points, right after it and before the trace's next event. Every state lane's
+watermark then equals the single point's latest after each event, so ticks, gates, expired graces, `W_pre`, and cut
+crossings happen at the stage 6 instants and seconds, and a reset is one jump on the shared clock. **As built**, that
+holds in the floor: once the producer lanes' open buffers are flushed (as before every trace tick), every state lane's
+watermark is in the single point's latest second, generation, and epoch, so ticks, gates, expired graces, and cut
+crossings happen at the stage 6 instants and seconds, and `W_pre` and the shutdown time come from the exact final and
+last headers (P9.3a R1); stage 6's `source -> aggregate` traces run through a one-port `tee` at D = 3 (amendment 142),
+and traces 5 and 10, which pin one-lane details, stay at one lane. The expectations' flush times are compared too: each
+lane's output latch is max-latched over the flush times of the drains it emits, and every lane's latch resets at the
+same window closes, so a record's stamp equals the single latch's while the drains of one event flush at times that do
+not decrease in drain order, as with one state owner per slot, the default program's. **As amended by the stage 9
+review**, two state owners of one slot can break that within one event: a retiring owner's shutdown drain is clamped to
+its cut (`Shutdown { at }` becomes `min(at, cut.at)`), so after another owner's drain at 7221 it flushes at 7220. One
+latch stamps the second record 7221; on lanes, a lane that holds none of the first owner's contexts emits nothing of
+its drain, its latch never sees 7221, and it stamps the record 7220, its own flush time. A lane cannot know whether
+one core's step would have emitted, so stamps of a multi-owner slot with a retiring owner are per lane, outside stamp
+exactness (`on_lanes_a_lanes_latch_stamps_its_drains_of_one_event_and_never_another_lanes` pins both cases). The other
+stage 6 tests of one trace each run on lanes too, on `TRACE_LANES`, four state lanes, and two producer lanes into three
+(`stage_6_tests_of_one_trace_each_deliver_their_expectations_on_lanes`): a reset while a tick is gated, a cut that gates
+its first tick, and a cut adding an owner of another width; the cut at 70% of the budget and two owners sharing one
+budget pin one point's capacity order, which lanes make capacity behavior. New traces, at both levels
+(`interpret/transition_tests.rs`, `runtime/transition_tests.rs`):
 
 | Trace | What it pins |
 |---|---|
@@ -2353,14 +2490,15 @@ equals the single latch's. New traces, at both levels (`interpret/transition_tes
 
 In ADP: arming while one producer lane is blocked on a full state lane (the arm completes within one attempt, since the
 lock covers stamps only); a cut under sustained backpressure (arming succeeds within `CUT_ARM_ATTEMPTS`); a state lane
-panic under the default program fails the component, and under an artifact budget it continues; a producer lane panic; a
-blocked encoder shard, so one lease waits and the region lanes back up; shutdown with open routed buffers loses nothing;
-a stalled lane reads dead to liveness; a lane task that ends fails the component; a stream connection whose lane failed
-stops; an artifact generation that exhausts its panic budget in one lane stops in every lane; shutdown inside a reset
-window closes it first, drains the older epoch at the exact final watermark although a point never switched (its last
-header forwarded at finish), and, after a jump back from 7,201 to 3,600, closes the new timeline at its own time, not
-at 7,201; a `Strict` grant too small for the automatic lanes boots with fewer lanes and logs it, and
-refuses to boot when `lanes.*` was set explicitly.
+panic under the default program fails the component, and under an artifact budget it continues (as built, the lane's
+instance is rebuilt, the slot runs on, and the artifact is rolled back, as at one lane since stage 6: amendment 159); a
+producer lane panic; a blocked encoder shard, so one lease waits and the region lanes back up; shutdown with open routed
+buffers loses nothing; a stalled lane reads dead to liveness; a lane task that ends fails the component; a stream
+connection whose lane failed stops; an artifact generation that exhausts its panic budget in one lane stops in every
+lane; shutdown inside a reset window closes it first, drains the older epoch at the exact final watermark although a
+point never switched (its last header forwarded at finish), and, after a jump back from 7,201 to 3,600, closes the new
+timeline at its own time, not at 7,201; a `Strict` grant too small for the automatic lanes boots with fewer lanes and
+logs it, and refuses to boot when `lanes.*` was set explicitly.
 
 ### 6.9 Hand-written fixtures
 
@@ -2488,7 +2626,7 @@ baseline=<main image>`), since `dd_out` is rewritten under every pipeline and th
 | `saluki-metric-plan` | [7] | `compose`: dropped emits for removed or rebound outputs (`ComposeOutcome::Degraded`), `ComposeError::{PendingOutput, ReboundOutput}`, version 1 bases, the outcomes of 4.5; `install::resources::{ResourceTable, ResourcePlan, ResourceTransaction, ResourcesRevision, RecipientRef, CreditKey, ResourcesEvent}`, `PrepareSite::{Slot, Host, Budget { resource: CreditKey }}`, `HostPrepare { host, leases, create, reopen, requires }`, `Action::{PrepareResources, PublishResources, AbortResources, ReleaseLeases, ReleaseRecipients, ReleaseCredits}`, `InstallerCore::{resources_prepared, lease_released, recipient_retired, recipient_failed, on_resources(ResourcesEvent), credentials_changed, accepted_resources}`, the keep rule at every lowering; `compile::{FrameHosts, FrameTarget::{EncodeHost, Destination}}`, placement by host, `EntrySource::Lease` and lease tables in `PrepareRegion` and `runtime::code`; the `MissingCapability` messages; `explain` and `diff` resources sections; limits `MAX_DECLARED_RECIPIENTS` (16), `MAX_DECLARED_OUTPUTS` (16), `RESOURCES_ARTIFACT_SIZE` (64 KiB), `LEASE_QUEUE_BUFFERS` (8), `MAX_DRAINING_RECIPIENTS` (16) | |
 | `saluki-metric-plan` | [9] | `compile::frame::{LanePolicy { dogstatsd: u16, state: u16, post: u16 }, FrameOptions { pipelining: bool }, KeyGroups, ExitRouting::{One, Keyed, Affinity, Spread}}`; `Frame::compute(plan, registry, namer, &FrameHosts, &LanePolicy, FrameOptions)`, which computes the lane layout in I9; `AdmissionPointInfo::lanes`, `Slot::lanes`, `Exit::routing`, `SlotKind::Isolation::{output_points, upstream}`; `OperatorDef::partition_key`, `PartitionKey`; `KernelSpec::with_shared`; `KernelBuildContext::{with_lanes, lane_share}`, `LaneBinding`, `LaneCell`; `PrepareRegion` with one kernel set and binding list per lane, bindings by lineage; `KernelControl::lane` | lane layout never enters the plan hash or the logical explain |
 | `saluki-metric-plan` | [9] | `runtime`: `RegionConfig::with_lane(LaneContext, Arc<SlotLanes>)`, keyed exits with coalescing, the final old-epoch header, and per-lane progress; `state::lanes::{SlotLanes, LineageLanes, LogicalInstance, ResetMark}`; `state::rules::{ResetWindow, WindowStep, EpochSide, Observation::EpochSwitched, epoch_newer}`, `WatermarkTracker::{watermark_in, max_latest_in, switched_epoch, in_publication_epoch_with}`, `TickGate::due_at_second`; `harness::{LanedFrameHarness, DeliverySchedule::{TraceOrder, Seeded(u64), Delay { point, lane, by }}}` (`test-util`) | the interpreter and the driver share `rules` |
-| `saluki-metric-plan` | [9] | `interpret`: `TraceEvent::Admit { source, lane, at, batch }`, `Interpreter::with_candidates`, `replay::ArrivalReplay`; `equivalence::{Candidates, compare_partitioned, check_capacity}`; lanes per slot and routing per exit in the physical explain; R1's cost model removed (P9.7); limits `KEY_GROUPS`, `MAX_LANES`, `PRODUCER_LANES_MAX`, `ROUTE_BUFFER_EVENTS`, `COALESCE_HOLD`, `TICK_RECORD_DEPTH`, `MAX_OPEN_EPOCHS`, `LANE_FLUSH_STAGGER` | |
+| `saluki-metric-plan` | [9] | `interpret`: `TraceEvent::Admit { source, lane, at, batch }`, `Interpreter::with_candidates`, `replay::ArrivalReplay`; `equivalence::{Candidates, compare_partitioned, check_capacity}`; lanes per slot and routing per exit in the physical explain; R1's cost model removed (P9.7; as built, kept, off on lanes: 8.5); limits `KEY_GROUPS`, `MAX_LANES`, `PRODUCER_LANES_MAX`, `ROUTE_BUFFER_EVENTS`, `COALESCE_HOLD`, `TICK_RECORD_DEPTH`, `MAX_OPEN_EPOCHS`, `LANE_FLUSH_STAGGER` | |
 | `agent-data-plane` | [7] | `programmable_metrics::resources` (from `outputs.rs`): `NativeResources::resolve(current, startup, facts, declared)` producing output bindings, recipients, and host bindings, fingerprint versions 2 and 1; `resources::params`: the `Params` codec for the typed specs; `credentials.rs`: `AdpCredentialSource` over configuration views; `host_facts.rs`: the Cluster Agent endpoint fact without `enabled` or a token; `catalog.rs`: declared outputs with labels, host schemas, each native output's version 1 digest; `topology.rs`: the fixed hosts (idle MRF, Cluster Agent by fact) with mailboxes and `FrameHosts`; `installer.rs`: resource actions and transactions, the resource budget and its credit ledger, the hosts' event channels, `ResourcesEvent` and `credentials_changed` from snapshots and configuration changes, status; `channel_stub.rs`: both products, one slot each; `api.rs`: status additions; `bindings.rs`: the newly live keys (its "liveness follows native behavior" comment revised, amendment 104); `telemetry_profiles.rs`: lease identities; `lib/saluki-app/src/accounting.rs`: the verified bounds returned; `agent-data-plane-config`, `config-overlay-model` (a string-map value type), `agent-data-plane-config-system/src/saluki_only.rs`, `schema_overlay.yaml`, and the generated `docs/agent-data-plane/configuration/configuration.md`: the credentials key and the support levels of the newly live keys | |
 | `agent-data-plane` | [9] | `LaneCounts`, `lane_counts(&SalukiConfiguration, workers, grant) -> LaneCounts` (with the `Strict` fit); `PlanTopology` with lanes (D source outputs, slot components with lanes, lane edges, lane admission configurations, per-lane capacities, heartbeat periods); per-lane prepares with builds on a blocking thread; the snapshot bridge's request per lane; `plan_lane_*` telemetry; CPU-time sampling (`SALUKI_CPU_TIME_SAMPLING`) and the global pool size at startup; overlay entries for `dogstatsd_pipeline_*` and `dogstatsd_workers_count`; the measurement harness through the decoder pool; the stress test | |
 | `programmable-metrics-demo` | [7] | the Team D intake, the `resources` product in the stub, the Resources tab, editor fingerprints for declared outputs, the Recipients panel, steps S8 to S11 | a first pass behind the stub protocol and the export catalog |
@@ -2504,7 +2642,7 @@ Stage 7 lands first, then stage 9, with stage 9's measurements and behavior-neut
 |---|---|---|---|
 | A | I7 (stage 7 interfaces); P9.0 (measurement harness and probes on today's code); P9.F (stage 9 foundations, neutral at one lane) | `b01049372e` | I7 merged; P9.0 merged onto I7 before phase B starts, since the stage 7 gate extends the same measurement file; first measurements M1, M2, and M4 to M8, with M3 on today's `run_request_builder` |
 | B | P7.1a, P7.1b, P7.2, P7.3, P7.4 in parallel against I7; P7.5 and P7.6 against fakes; P9.F continues | I7 | I7-Z: stage 7 integrated, gated, committed; P9.F merged into it or right after |
-| C | I9 (stage 9 interfaces, with the lane layout computed for real); then P9.1a, P9.1b, P9.2, P9.3a, P9.3b, P9.4 in parallel; P9.5 once P9.1a, P9.1b, and P9.2 merged; P9.6 against P9.5 | the stage 7 commit | I9-Z: increments 9.2 to 9.5 enabled one by one, the gate, P9.7 (R1 deleted), committed |
+| C | I9 (stage 9 interfaces, with the lane layout computed for real); then P9.1a, P9.1b, P9.2, P9.3a, P9.3b, P9.4 in parallel; P9.5 once P9.1a, P9.1b, and P9.2 merged; P9.6 against P9.5 | the stage 7 commit | I9-Z: increments 9.2 to 9.5 enabled one by one, the gate, P9.7 (R1 deleted), committed. As built: O1, O4, and O5 joined phase C; the gate was called in part and P9.7 kept R1 (8.5) |
 | D | conditional parts O1, O2, and O4 to O10, each only on the evidence its measurement names (O4 and O5 move into phase C when M2 shows a ceiling below the gate's top W, 8.5) | the stage 9 commit | each its own small commit |
 
 Why this order: stage 9's encode-host requirements (5.8) are met by stage 7's encode host, so stage 9 builds on it
@@ -2743,7 +2881,7 @@ every change is behavior-neutral at one lane, and the amendments it implies are 
 | Change | As built | Why, and the test |
 |---|---|---|
 | `last_seen` (5.5) | A property of the core: `aggregate::LastSeen::{LastArrival, Latest}` and `AggregateCore::with_last_seen`. `AggregateKernel::new` builds its core with `Latest`, the maximum; `AggregateCore::new` and `with_budget` keep native assignment (`LastArrival`), so native aggregation and the legacy transform are unchanged. **For P9.3b and P9.4:** every lane-side or oracle core not built through `AggregateKernel::new` (`with_budget(.., lanes)`, one-core oracles, an arrival replay fed out of stamp order) calls `.with_last_seen(LastSeen::Latest)`, or a delayed earlier batch moves a counter's expiry back (X5) | a universal maximum fails four frozen-reference properties, whose generators step the clock back between batches (`arb_steps` in `aggregate/tests.rs`, up to 30 s back), as native's wall clock can; three stay unchanged, and the kernel's resumable-flush property now latches admission times within a timeline, as an admission clock does (`property_test_last_seen_is_max_under_reordering`; X5 at core and kernel level) |
-| Bounded node acquire (5.5, 6.5) | `StateBudget::try_acquire_below(units, limit)`, which `try_acquire` calls; `ContextLimit::try_admit` takes the node's unit first and gives it back on a global refusal. The `loom` models are in `saluki-core` (`execution::budget::loom_tests`), run `StateBudget` itself, and transcribe `try_admit`, which must change with them (a comment there says so), until P9.3b gives the kernels crate its `loom` feature and moves them; `StateBudget`'s atomics are `loom`'s under `cfg(all(test, feature = "loom"))` only, so `saluki-core`'s `loom` build runs only with the `loom_tests` filter, as `make test-loom` does | four threads were not tractable exhaustively (12 CPU minutes unfinished), so three lanes of one node and one of another run at a preemption bound of 3 (about 15 s), and a capacity of one, which reaches a global refusal, runs exhaustively (about 2.5 s); two `should_panic` models show that check-then-act and keeping the node's unit on a global refusal are caught (`property_test_bounded_node_acquire_never_exceeds_the_limit` on real threads, which fails 3 runs in 3 with check-then-act; `a_new_context_takes_its_nodes_unit_first_and_gives_it_back_when_the_global_budget_is_full`) |
+| Bounded node acquire (5.5, 6.5) | `StateBudget::try_acquire_below(units, limit)`, which `try_acquire` calls; `ContextLimit::try_admit` takes the node's unit first and gives it back on a global refusal. The `loom` models are in `saluki-core` (`execution::budget::loom_tests`), run `StateBudget` itself, and transcribe `try_admit`, which must change with them (a comment there says so), until P9.3b gives the kernels crate its `loom` feature and moves them (as built, they stay in `saluki-core` and run O1's `BudgetReservation` itself, so nothing is left to transcribe: Stage 9 as built); `StateBudget`'s atomics are `loom`'s under `cfg(all(test, feature = "loom"))` only, so `saluki-core`'s `loom` build runs only with the `loom_tests` filter, as `make test-loom` does | four threads were not tractable exhaustively (12 CPU minutes unfinished), so three lanes of one node and one of another run at a preemption bound of 3 (about 15 s), and a capacity of one, which reaches a global refusal, runs exhaustively (about 2.5 s); two `should_panic` models show that check-then-act and keeping the node's unit on a global refusal are caught (`property_test_bounded_node_acquire_never_exceeds_the_limit` on real threads, which fails 3 runs in 3 with check-then-act; `a_new_context_takes_its_nodes_unit_first_and_gives_it_back_when_the_global_budget_is_full`) |
 | Budget recording (change 2) | `StateBudget::recorded(capacity) -> (StateBudget, BudgetRecording)`, `BudgetRecording::operations`, `BudgetOperation::{Acquire { units, bound, observed, granted }, Release { units, observed }}` (`test-util`, re-exported from `saluki_core::execution`), in recording order, which under races can differ from the order the compare-and-swaps took effect; each operation carries the `used` value it observed itself | what `check_capacity` (P9.4) reads; a node unit given back on a global refusal appears as an acquisition and a release, held in between |
 | Aggregation telemetry (5.11) | `AggregateTelemetry::accumulating` accumulates all 17 series (gauges as signed deltas) and publishes them through `Kernel::publish_telemetry` and on drop (a clone accumulates from zero); the region driver's `publish_telemetry` publishes every slab kernel and every state instance, each in its resource group | a dropped or rebuilt kernel loses nothing (`property_test_accumulated_telemetry_publishes_what_direct_telemetry_writes`; `accumulated_telemetry_writes_each_series_once_per_publication`, which counts writes; `a_state_owner_publishes_the_telemetry_it_accumulated_when_its_region_publishes`; ADP's telemetry parity tests) |
 | Cache and kernel telemetry (5.4, 5.11) | Wider than the row: `CacheBuilder::with_accumulated_telemetry` and `Cache::publish_telemetry` (hits, misses, insertions, removals, evictions), the same for the context and tags resolvers, and kernel constructors that use them: `MetricMapper::for_kernel`, `ContextMemo::for_kernel`, `TagProjectionTelemetry::for_kernel`; `MetricMapper` and `TagProjection` implement `Kernel::publish_telemetry`. Native components keep writing as they go | the audit found these written per event on the lane data path. The audit (`runtime::telemetry_audit_tests`) runs the default program through a `FrameHarness` over four workloads that differ in one dimension and lists every handle not written a fixed number of times: the timestamp split's two passthrough counters (per buffer) and the active-contexts gauge of the mapper's resolver (per new context), none per event; `the_pre_aggregation_kernels_publish_what_they_counted_each_time_their_region_publishes` pins when the fused pre-aggregation slot publishes |
@@ -2776,11 +2914,97 @@ Exit: the workspace compiles, and every existing test passes at D = P = M = 1, w
 | P9.4 semantics | `lib/saluki-metric-plan/src/{interpret/, equivalence.rs}`, `interpret/replay.rs`, `runtime/harness.rs` (`LanedFrameHarness`, `DeliverySchedule`), transition tests at both levels | 2,000 | interpreter lane traces, the shared reset window, candidate mode, the arrival replay (old-epoch admits first), `compare_partitioned`, `check_capacity` (from each operation's observed `used`); fixtures X1 to X7; in its work tree against hand-built lane logs; every 6.4 property and traces T-L1 to T-L7 and stage 6's at D = 3, P = 2 under 6.7's point mapping at I9-Z | the oracles' own tests in its work tree; all of 6.4 and 6.7 at I9-Z |
 | P9.5 ADP and DogStatsD | `lib/saluki-components/src/sources/dogstatsd/mod.rs`; `bin/agent-data-plane/src/programmable_metrics/{topology.rs, installer.rs, snapshot_bridge.rs, telemetry.rs, telemetry_profiles.rs}`, `lib/agent-data-plane-config/src/domains/` (the `lanes.*` keys), `lib/agent-data-plane-config-system/src/saluki_only.rs`, `schema_overlay.yaml`, `cli/run.rs` | 1,500 | lane counts and keys with the `Strict` fit, the source's lane outputs and stream lane assignment, `PlanTopology` with lanes, installer fan-out with blocking builds, the snapshot requests per lane, `plan_lane_*` telemetry, capacities; differential, lifecycle, stress, fault, and measurement tests with D producers | 6.5, 6.6, 6.8 pass; telemetry parity; lifecycle leaves registrations as they were |
 | P9.6 demo | `bin/programmable-metrics-demo/src/{launcher/, ui/, scenario/, traffic.rs, telemetry/, checks.rs}` | 800 | flags, the Lanes panel, S12 to S14 in a second launch, pre-aggregation scope support in the check | the headless check passes S0 to S14 twice |
-| P9.7 R1 removal | `compile/{frame.rs, decision.rs, program.rs, tests.rs, isolation_tests.rs}`, `operators/{mod.rs, routing.rs, dogstatsd.rs, enrich.rs, tests.rs}`, `explain/{physical.rs, text.rs}`, `testing/fixtures.rs`, `runtime/frame_tests.rs`, ADP `topology.rs` and its tests, benches | 800 | 5.10's replacements; the memo floor's tests and the split estimate move to decision compilation | runs only after the gate passed; the gate rerun after it |
+| P9.7 R1 removal | `compile/{frame.rs, decision.rs, program.rs, tests.rs, isolation_tests.rs}`, `operators/{mod.rs, routing.rs, dogstatsd.rs, enrich.rs, tests.rs}`, `explain/{physical.rs, text.rs}`, `testing/fixtures.rs`, `runtime/frame_tests.rs`, ADP `topology.rs` and its tests, benches | 800 | 5.10's replacements; the memo floor's tests and the split estimate move to decision compilation | runs only after the gate passed; the gate rerun after it. As built, not run: 8.5's decision rule kept R1 (P9.7 in 8.5) |
 
 Dependencies: P9.1a, P9.1b, P9.2, P9.3a, P9.3b, and P9.4 run in parallel against I9; P9.5 starts once P9.1a, P9.1b, and
 P9.2 merged, and P9.6 against P9.5. Exit evidence that needs other parts (P9.4's properties against the real drivers,
 P9.5's stress and differential tests) is produced at I9-Z.
+
+#### Stage 9 as built
+
+What the parts and the integration steps changed from sections 3, 5, 6, and 7, beyond the corrections folded into
+those sections (marked "as built" there). The integration ran in three steps: Z1 merged every part at one lane, Z2
+enabled the increments of 8.5 one by one and measured them (8.6), and Z3 decided P9.7 and wrote these documents. Each
+item names the test that pins it and the design note it comes from (I9 note 2, P9.3b R2, Z1 item 5, and so on: the
+notes each part kept with its work, outside this repository, whose substance this table carries); the amendments it
+implies are 141 to 162 of [section 10](#10-proposed-spec-amendments), and the stage 9 review's rows 163 to 167.
+
+| Area | As built | Why, and the test |
+|---|---|---|
+| Frame (3.2, 5.3) | `Frame::compute_with(plan, registry, namer, &FrameHosts, &LanePolicy, FrameOptions)`; `compute` and `compute_with_hosts` keep their signatures at `LanePolicy::ONE` | 56 call sites, most of them other parts' tests (I9 note 1) |
+| Frame (3.2) | A point with lanes is one `AdmissionPointInfo` with consecutive IDs (`lanes`, `lane_ids`, `lane_of`); edges, slot inputs, and placement's entry keys name it by its first lane's ID, and placement gives the program of the slot it feeds one entry per lane ID, so `ProgramCode::entry_index` works unchanged | the plan did not say how lane points appear in edges and entries (I9 note 2, P9.2 note 1; amendment 141). `compile::lane_tests` |
+| Frame (3.2) | `PointRouting::{One, Fixed, Spread}` beside `ExitRouting`; the layout rule is generic: the DogStatsD `metrics` port gets the producer lanes, and the slot it feeds runs exactly D lanes, D = 1 included, so a producer point is never spread | a producer lane is its point's only stamper (I9 notes 3 and 4, P9.2 note 3: `the_slot_dogstatsd_feeds_runs_the_producer_lanes_even_on_one_and_never_the_post_aggregation_lanes`) |
+| Frame (5.3, 5.5) | A state owner fed straight by the DogStatsD points on several lanes has no frame (`FrameError::Lanes`, at every P); one fed straight by a point with one lane keeps one state lane | the region host refuses lane admission whose point count differs from the lane count, and each producer lane stamps its point in the lane of the slot it feeds (P9.2 R1, A1; amendment 142: `a_state_owner_fed_straight_by_dogstatsd_has_no_frame_on_several_producer_lanes_at_any_number_of_state_lanes`). ADP's lowering always puts the pre-aggregation chain first. Stage 6's `source -> aggregate` traces replay at D = 3 through a one-port `tee` (P9.2 A2) |
+| Frame (3.2, 5.8) | An exit from a fused slot into a stateless slot with lanes is affinity when the sender runs several lanes **or carries the producer points' batches** (reached from them through fused slots only), at any D; spread from isolation outputs and one-lane slots that no producer point reaches | per-connection order at D = 1 (P9.2 R2, A3; amendment 143: `one_producer_lane_keeps_its_passthrough_on_one_post_aggregation_lane`, `a_slot_with_one_lane_that_carries_the_producer_lanes_batches_keeps_them_on_one_lane_downstream`) |
+| Frame, placement (5.3) | Lane routing is checked after the state owners' points; placement refuses a state owner on state lanes unless its state is partitioned by context key (`Restart` for native configuration, `FrameChanges` for an artifact) | a several-source plan is told that, not how its edges would route; placement never compares an isolated node's operator with the boot plan's (P9.2 notes 4, 5) |
+| Explain (5.11) | The physical sections' lane members are additive and left out at their defaults: `layout`, `lanes`, `routing` (`one`, `fixed`, `keyed`, `affinity`, `spread`), `key_groups`, `output_points`; golden files of the physical sections only, at `LanePolicy { 2, 2, 2 }` (`default-program-stage9-physical.{json,txt}`) | the logical sections do not depend on lanes (`lanes_change_only_the_physical_sections_and_a_document_without_them_reads_as_one_lane`) (P9.2 notes 6, 7). The status route has no `lanes` section: the demo reads the explain document and the `plan_lane_*` series ([the stub protocol](programmable-metrics-stub-protocol.md#3-control-surface-adp-privileged-api-mtls-with-the-ipc-certificate); P9.6 A) |
+| Topology (5.4) | Edges record their routing; an unnamed edge into a component with lanes is refused (`GraphError::UnroutedLaneEdge`), as is a fixed lane out of range; an output routes to the lanes of one component only (`SharedLaneRoute`); heartbeats of a dispatcher-side point go to the fixed lane of a fixed edge and to every lane of a routed one | refusing cannot silently send keyed state to the wrong lane (P9.1a notes 1 to 4, 9) |
+| Topology (5.4) | Spread tries the lanes in rotation and, when all are full, waits for whichever gets room first; `Dispatcher::try_dispatch_named_to_lane` (the try-first send) returns the item on an output that feeds more than one component or has an admission point | a returned item could wait on any component of the output, so a tap's order broke (P9.1a note 5, R2: `a_caller_holding_returned_items_by_lane_keeps_the_order_of_every_component_the_output_feeds`). Every frame feeds a keyed exit into the state slot alone, so nothing loses the optimization |
+| Topology, bounds (5.12) | `TransformBuilder::input_buffer_events` is the **storage** every buffer sent to the transform has at most; a debug build checks it in the lane consumers (`EventsBuffer::allocated_capacity`). The firm bound counts one in-flight full buffer per transform lane, and a term per buffer size for smaller buffers; `replace_*` recalculates the bounds | a state lane's slot counts B events, sound only if no sender allocates more (P9.1a R1, R3, R4: `a_transform_whose_input_holds_smaller_buffers_fails_on_a_buffer_allocated_for_more_events`, `replacing_a_transform_recalculates_the_bounds_of_its_input_from_the_replacement`) |
+| Topology (5.8) | The global pool's size is `topology::worker_pool_threads(W)` (`max(8, W)`), set by ADP only on lanes; no per-lane consumer series | the pool lives in `topology/built.rs`, not `runtime/builder.rs` (P9.1a note 12, 13; P9.5 note 13) |
+| Region host (5.4) | `LaneSplit::lane`; each lane reads every exit's routing from the dispatcher (`EventsDispatcher::lane_edge`), so edges are the one source of truth, and a buffer that does not fit its exit's edge fails the lane and the component | the generic coordinator cannot read `KernelControl::lane`, and the host cannot see the frame (P9.1b note 1, F1) |
+| Region host (5.4, 5.11) | `LaneStats` per lane (batches, events, busy time, input depth, stamp wait), written by the lane's own task and published by ADP as `plan_lane_*`; `SourceClock::named` names M10's lock probes | 5.11 lists series only the host can measure (P9.1b F2) |
+| Region host (5.4) | A lane that finished is not dead: it reports its finish before dropping its queues, probes skip it, and control sent to it is answered as by a stopped region; the component is ready once every lane reads its control queue; `end_turn` follows every turn, its `input_idle` read when the turn ends; a keyed exit's sub-buffers are tried first, a held one holding the later ones of its lane | lanes finish at different times at shutdown (P9.1b F4, notes 6, 7, F3, F6) |
+| Admission (5.2) | `AdmissionPointStatus::last_admitted_at` and `passed_cut` use the point's own latest stamp **in the clock's current epoch**, read once (`None` otherwise); the owner's view of its stamp is two atomics, so `reset_pending` and `heartbeat_due` take no lock | a stale 7,203 against a reset clock at 3,603 would have put a cut's `T` an hour out (P9.1b note 4, F7; amendment 144; loom `a_points_status_reports_its_latest_stamp_with_the_epoch_that_stamp_is_in`) |
+| Keyed exits (5.3) | Progress is judged per (point, target lane); a call's writes are staged and routed after its program ran, and abandoned on a panic; an open buffer is also sent once its point's admission time moved `PROGRESS_PERIOD` past it, and **a new second reaches every lane with no open buffer at once** | inline routing would have lost earlier calls' events on a panic, and a lane receiving none of a new second's events stayed a second behind (P9.3a notes 1 to 3, R1; amendment 145: `a_lane_that_receives_none_of_a_new_seconds_events_learns_of_the_second_at_once`, `property_test_coalescing_is_exact` against the real tracker) |
+| Keyed exits (5.3, 5.12) | A register moves whole only when its storage is at most B (`allocated_capacity() <= B`), otherwise its events are copied into routed buffers of B, and an open buffer whose storage is full is sent rather than grown; one `limits::routed_buffer_events` serves the exits, their bounds, and ADP's lane inputs | a decoder's 1,024-event allocation would have made a state lane's input hold up to four times its bound (P9.1a R1, P9.3a R2, Z1 items 1, 2, P9.5 fix 9; amendment 146: `a_buffer_moves_whole_only_with_storage_for_at_most_a_routed_buffer_and_is_sent_rather_than_grown`) |
+| Keyed exits (5.3) | A `One` exit toward a state owner with several upstream points forwards a generation change at once | so that P = 1 with D > 1 crosses a cut without the throttle (P9.3a note 6) |
+| State lanes (5.6) | `ResetWindow` is a value the lane owns, `new(epoch)` and `step(&mut self, &WatermarkTracker, &BatchHeader)`; a window that closes several epochs ends one output epoch per closed epoch; a header several epochs newer holds every epoch in between open, each reset counted once | a closed window must still know the lane's epoch (P9.3b notes 1, 2, R3; P9.4 10.14; amendment 148) |
+| State lanes (5.6) | A lane opening its window drops an ordinal it is gated at before it marks the record; a reset's successor record starts at the old record's current deadline | otherwise the successor flushed at once, a flush stage 6 does not make, and its first tick depended on which lane closed first (P9.3b R1, R2; amendment 148) |
+| State lanes (5.6) | **A lane ticks no instance while its reset window is open**, and catches the held deadlines up once it closes, whichever instance continues the lineage | a lineage's two continuations disagreed on the flush count across lanes (Z1 item 5, P9.4 F6; amendment 147: `a_lane_holds_its_ticks_while_its_reset_window_is_open_and_catches_them_up_once_it_closes`, `a_window_open_across_ticks_counts_the_flushes_one_lane_counts`) |
+| State lanes (5.5) | A lineage record a lane leaves for a newer epoch is kept until every lane of the slot holds only newer epochs (`SlotLanes::{keep_until_passed, pass}`); **since the stage 9 review**, on every path that leaves a record (continuation, final retirement, a panic's, collection), for as long as another lane may still reach its epoch (one holding an older epoch open, or the epoch as the oldest of an open window: `SlotLanes::{keep_while_reachable, open, pass}`), and the state owner's flush log of the epoch with it (`LaneShare::leave` keeps an epoch's log past its last member; `LaneShare::forget`, from the record's drop, removes it) | a lane hearing of a reset late recreated the record and ticked the epoch on another timeline's seconds (Z1 item 6, P9.4 F8; amendment 149: `a_lane_that_reaches_an_epoch_after_the_others_left_it_ticks_on_the_epochs_record`); the review found the flush log still dropped with the last member, so the late lane's closing flush counted again and its zeros started from nothing, and the record dropped at a final retirement, so it renumbered the epoch's ordinals (`a_lane_that_reaches_an_epoch_after_the_others_left_it_counts_its_flushes_on_the_epochs_record`, `a_lane_that_reaches_an_epoch_after_another_retired_its_lineage_there_ticks_after_that_lanes_ordinals`); keeping a record only while a lane may reach its epoch bounds what is kept, where keeping every left record until every lane passed its epoch would keep each cut's retired lineages until the next reset |
+| State lanes (5.5, 5.6 rule 3) | A lineage's record of a newer epoch, created by a fresh instance or by a drained one continuing, starts at the current deadline of its record of the newest older epoch, found among the lane's instances and through `SlotLanes::existing`, and marked if the lane passed it unmarked (`predecessor_deadline`) | the stage 9 review: the bound instance's record, the oldest the lane held open, seeded a second reset's successor at the first window's resume instant, so a lane re-fired the instants of the epoch between and counted a burst of flushes (`a_second_reset_while_a_lane_holds_the_first_window_open_keeps_the_lineages_schedule`, `state_tests::lanes::a_lane_closing_a_window_over_two_epochs_first_starts_the_newest_epochs_ticks_after_the_epoch_between`, `a_lane_passing_an_epoch_it_holds_nothing_of_stops_the_epochs_ticks_in_the_lanes_that_hold_it`) |
+| Producer lanes (5.6) | With several producer lanes, each lane's point heartbeats `PROGRESS_PERIOD` into each second it stamped nothing in (`AdmissionPointConfig::with_heartbeat_each_second`) | the stage 9 review: an idle lane held every tick of the busy ones back by up to its heartbeat period (`differential_tests::an_idle_producer_lane_holds_a_flush_tick_of_the_busy_ones_back_by_at_most_the_progress_period`) |
+| State lanes (5.6, 5.7) | A cut-retiring instance whose reset drain flushed in the cut's publication epoch retires at the window's close; bindings stay on the lineage's bound instance, other epochs' instances beside it, and the newest epoch's takes its place at the close (`rebind`); a bound instance crosses only once no instance beside it holds an epoch the window keeps open | stage 6's output is identical; the last rule keeps an overflow during a cut from losing an open epoch's data (P9.3b notes 3, 4; P9.4 F7: `a_reset_overflow_during_a_cut_loses_nothing_of_the_epochs_it_leaves_open`; amendment 150) |
+| State lanes (5.5) | `begin_flush_with(now, last, params, FlushRecord)` takes the record (where zeros start, whether the flush counts); a rebuilt instance learns it is one through `aggregate::lanes::Restarted`; the tick record keeps `first_at` and `shutdown_at` under its one lock and no membership (the state owner's record keeps it, a joiner capped at the reset mark's cutoff) | the record says both; 5.5 gave no mechanism for a rebuilt instance (P9.3b notes 5 to 7, R8; I9 note 7) |
+| State lanes (5.11, 6.10) | `plan_lane_tick_divergence_total` counts the kernel's own fallbacks (`TakeLaneFallbacks`) and a drop at a window's opening only when gated with several points; the flush time agreement (`check_flush_agreed`) also excludes a flush the lane's own previous flush time held back; the crossing overlap gauge runs on lanes only, while both instances hold contexts, by one lookup per context of the new instance at publication (`ContextCount`, `CountHeld`) | the tick record's view did not stand in for the kernel's decision, and the generic driver cannot look into another instance's table on the data path (P9.3b R4, R6, R9; amendment 151) |
+| State lanes (5.5) | Records are used only with more than one lane; a state owner on lanes must be built for its lane (`KernelBuildContext::with_lanes`); `LaneShared` treats an ordinal further behind the newest than its log keeps as a straggler before inserting it | a kernel built without lanes would count every flush alone (P9.3b notes 12, 13); `ordinal_mut` subtracted past zero (Z1 item 7, P9.4 F2) |
+| State lanes (5.11) | The slot's `plan_state_watermark_lag_seconds` is the most lagging lane's (`SlotLanes::publish_watermark_lag`); each state lane publishes `plan_lane_contexts`, and times each tick's drain: `plan_lane_flush_seconds` from the ticks firing to the drain's end, `plan_lane_flush_blocked_seconds` the part outside the calls that ran its steps | every lane writing the slot's gauge would have published the last lane's lag (Z1 item 9, Z2 row 3; amendment 154: `a_slot_on_lanes_reports_its_most_lagging_lanes_watermark_lag_and_each_lane_its_contexts`, `each_state_lane_times_its_flushes_and_the_part_of_them_blocked_on_its_output`) |
+| Budgets (5.5, O1) | `BudgetReservation` in `saluki-core`: blocks of units per lane batch, each as large as the units already handed out, starting at the lane's previous batch's new contexts, at most 64 (`CONTEXT_RESERVATION_BLOCK`); **a state owner on one lane takes one unit per block**, which is P9.F's protocol exactly; unused units, fewer than 64, count as held until the batch ends and return then | M4 put the plain compare-and-swaps at a third to four fifths of a state lane's time per new context; reserved, within noise at P up to 4 (O1, O1-fixed items 1 to 3; the measurement on aggregation itself, an ignored test that only printed, is the `aggregate_churn` bench of `saluki-metric-kernels` since the stage 9 review; amendment 152: `property_test_a_reservation_alone_takes_exactly_what_unit_acquisitions_take`, `state_owners_on_one_lane_are_never_refused_for_units_another_ones_batch_has_not_used`) |
+| Budgets (5.5, 6.1) | A pass that ends while another lane's batch holds reserved units counts them and can decide a recovery one pass late, never early; a drop before that pass continues the episode | excluding in-flight reservations exactly needs the shared write per unit O1 removes (O1 note 4, O1-fixed item 4: `a_flush_during_another_lanes_batch_keeps_the_breach_until_a_pass_after_that_batch`) |
+| `loom` (6.5) | The budget's models stay in `saluki-core` and run `BudgetReservation` itself (`try_admit` is one call into it); the kernels crate's `loom` feature covers `LaneShared` only; `make test-loom` runs five crates: `stringtheory`, `saluki-core`, `saluki-components`, `saluki-metric-kernels`, `saluki-metric-plan` (46 models) | nothing is left to transcribe (P9.3b R5, A7; O1-fixed item 5) |
+| Semantics (6.3) | Candidate mode records admissions (per point, its last into the bucket, with kind, gauge, and instance); a kind conflict is compared per series and instance by what no order changes, with a presence check; a counter's or rate's zero counts as no point; `check_capacity` adds an order check over the recorded operations, a node limit (`CapacityTrace::limit`), and the loss balance (`check_balance`) | which buckets hold points under a kind replacement depends on order, and which ticks fire while a counter idles on when heartbeats arrive (P9.4 sections 3, 10.1, 10.12; amendment 153) |
+| Semantics (6.2, 6.4) | Exact properties generate input whose effect does not depend on the order of several points (`without_races`); ticks resolved apart are counted and compared, but for idle zeros, rather than excluded; the arrival replay places the ticks the lanes report (`LaneTimeEvent`, `test-util`), with the `LaneRecorder`'s model as a cross-check; seeded lane properties reproduce per process only (context keys hash with a per-process seed) | coalescing sends one open buffer per (point, lane), so a gauge's last value across points follows buffer order even in trace order (P9.4 sections 5, 6, 10.3, 11; amendment 153) |
+| Semantics (6.2) | The interpreter finalizes a cut once every point passed it, whatever a reset window holds, keeping the old generation's program while an instance still retires under it; it accepts a host clock that jumps back by more than the threshold; `LanedFrameHarness::new` refuses a frame that runs none of the state lanes asked for | as the installer does (P9.4 10.13, section 2; P9.2's harness note, Z1 item 3: `a_harness_refuses_a_frame_that_runs_none_of_the_state_lanes_it_was_asked_for`) |
+| ADP (5.13) | The keys are in `control.programmable_metrics.lanes` (`mode`, `state`, `post`); **`lanes.mode: auto` is the default** since increment 9.5; tests pin the layout without lanes in their base configuration (`test_support::LANES_OFF`) | only the binary reads layout (P9.5 note 2; Z2 row 5: `lanes_are_automatic_by_default_and_off_with_mode_off_..`) |
+| ADP (5.13) | Automatic counts: D the decoders up to 16, **and one below three workers** (`PRODUCER_LANES_MIN_WORKERS`); P one below four workers, else `clamp(W / 2, 2, 4)` (`AUTOMATIC_STATE_LANES_MAX`); M `min(D, 8)`; the caps live in ADP with decision-log notes; explicit counts with `mode: off` are ignored with a warning. **Since the stage 9 review**: automatic counts that all come to one, with neither `state` nor `post` set, are the layout without lanes (`LaneSettings::from_config`, and the `Strict` fit's lowest automatic counts); the boot logs the counts, mode, workers, decoders, and sampling; `mode` reads YAML 1.1's booleans; a grant the layout without lanes exceeds is verified against the smallest layout the fit reaches, with both bounds logged | the W = 2 data (two producer lanes on two workers cost a tenth more CPU per metric) and M4, M5, the P sweep (Z2 row 9; P9.5 note 4; amendment 157: `automatic_counts_follow_the_decoders_and_the_workers_with_the_measured_caps`) |
+| ADP (5.2) | One producer lane keeps the source's `metrics` output (its point is still owned by the lane) | I9 fixed `with_metric_lanes(1)` as today's output (P9.5 note 5; amendment 161) |
+| ADP (5.12) | The `Strict` fit builds candidate blueprints into scratch registries (`LaneSettings::fit`, `cli::run::fit_lanes_to_memory`), lowers M, then P, then D by bisection, and leaves room for one generation's overlap (`LaneBound { firm, overlap }`) when the layout without lanes has it | only a built blueprint gives the firm bound at a candidate (P9.5 note 3, fix 6; amendment 156: `a_strict_grant_too_small_for_the_automatic_lanes_boots_with_fewer_and_refuses_counts_set_explicitly`) |
+| ADP (5.4) | Kernel builds of a preparation are blocking work on the installer's own thread (`block_in_place`), every slot's built before any is sent; `PreparedKernel::build` measures its CPU time (`enter_measured`); the core admits `CreditKey::Instances` once per lane that builds them | `spawn_blocking` lost thread-local recorders' handles, and the credits were once per slot (P9.5 note 6, notes 9 and 10, fix 1: `kernel_instances_on_lanes_are_admitted_once_for_every_lane_that_builds_them`) |
+| ADP (5.11, 5.12) | Aggregation's state bounds are declared once, at the slot (`dsd_agg.aggregate_context_limit` resolves), and every lane declares the stateless rest; `/memory/status` then shows the state's bound at `dsd_agg` and its live bytes in `dsd_agg.lane_<i>` | 5.11 keeps both the bound path and the lane groups (P9.5 note 7, fix 2; amendment 155: `the_sizing_guides_cardinality_inputs_resolve_with_aggregation_on_state_lanes_as_on_the_legacy_topology`) |
+| ADP (5.11) | Host times are integer counters, `plan_lane_busy_nanos_total` and `plan_lane_stamp_wait_nanos_total`; the background-set cache and interner gauges **sum per identifier on several lanes** (`GaugeMode::Summed`: limits added at build, items and weights as changes once a second, each lane's share withdrawn when its kernel drops) and are set as natively at one lane | the recorder's counters are integers; at one lane the parity tests read the native values after stop (P9.5 notes 11, 12, I, K; Z2 row 1; amendment 154: `on_three_producer_lanes_the_background_cache_gauges_sum_over_the_lanes_caches_of_one_identifier`) |
+| `saluki-core` (5.4) | The telemetry task of a context resolver stops with the last clone of the resolver | it looped forever holding its interner, so every resolver a live change dropped leaked a task, D times on lanes (Z2 row 2) |
+| ADP (6.5, 6.8) | The stress run is `installer::lifecycle_tests::lane_stress_live_installs_and_width_cuts_..` (scripted batches on four producer lanes, ignored for its 30 s; `make test-stress` runs it, in `make test-all` and the `stress-tests` CI job); its canaries are aggregated and it checks `check_capacity` over every budget's recording; a stream connection on a failed lane stops with the shutdown of the topology, as natively; a state owner's panic under an artifact rebuilds the lane's instance and rolls the artifact back; the batch a state lane's panic loses is the routed buffer it was admitting | it reuses the artifact harness that installs width cuts (P9.5 notes 14, 16, 3.5, fixes 3, 5; Z1 items 8, 10; amendments 159, 160, 162) |
+| Taps (5.2) | `dsd_debug_log_out` is gated on `dogstatsd_metrics_stats_enable`, as `dsd_stats_out` is on a collection | its clone under the admission lock deepened the plan's datagram queue at N = 2 (the memory investigation, 2.4); M7 measured the clone at 6% of the process (Z1 item 12; amendment 158: `the_input_gate_is_open_exactly_while_metric_stats_are_enabled`) |
+| Upstream (O4) | The datagram queue is a `crossbeam_queue::SegQueue` bounded by a count, with a `Notify` per side: one pending wake-up of a decoder at a time, one more once a reader queued 8 KiB while the woken decoder has not run, and tokio's cooperative budget on send and receive; the firm bound counts it when full. **Provisional**: the gate host reruns M2 against per-decoder queues | a wake-up per datagram cost a third to a half more CPU per metric at one metric per datagram, and one pending wake-up alone left the woken decoder on the reader's thread (O4/O5 sections 1, 5.1, 5.2, 5.7; loom `sources::dogstatsd::datagram_queue::loom_tests`) |
+| Upstream (O5) | A front cache per datagram decoder (4,096 slots, 96 KiB): a slot answers only while its key's change stamp holds and in the coarse second the shared cache last confirmed it; its hits are added to the shared counters at each 100 ms maintenance; it steps aside while it holds fewer than one key in 16; change stamps exist only on resolvers built `with_front_caches()` | a copy of a shared cache's entries must not change what the shared cache's users observe (O4/O5 sections 2, 5.3 to 5.6; loom `cache::stamps::loom_tests`) |
+| Demo (8.8) | The check's second launch sets counter expiry 1 s; S13b revokes the width change at a cut; the canary is 16 contexts (one in the canary-only mix); the whole-run balance is summed over minute ranges; a loopback witness tells datagrams the host dropped from canaries ADP lost; S14c compares the forwarder's per-domain data points with team D's intake | an expiry of 0 keeps counters forever; no series counts a lane's sends per exit or a lease's encoded events; the canary loss P9.6 saw was another agent's UDP benchmark flooding loopback (P9.6 notes 3, 5, 6, 7, fixes 1, 2; the canary investigation) |
+| R1 (5.10, P9.7) | **Kept, and off whenever lanes are on**: not deleted. The cost model lays out only `lanes.mode: off` (`FrameOptions { pipelining: true }` at `LanePolicy::ONE`); the frame refuses pipelining on any slot with lanes (`FrameError::Lanes`), and with `auto`, the default, every frame is maximally fused between fences, one producer lane included | 5.10's deletion was to follow a Linux gate, which no host could run; the decision rule of [8.5](#p97-r1s-cost-model) decided it on the in-process curves instead: the defaults on lanes matched or beat `lanes.mode: off` at W = 1, 4, and 8, but at W = 2 the defaults profile ran behind it in both paired runs (0.986 and 1.023 of legacy on `{1, 1, 1}` against 1.081 and 1.050; CPU per metric 1.046 and 1.017 against 0.961 and 0.975). As reviewed, R1 cuts no slot in that profile, so the gap is the lane runtime at one lane per slot, which `auto` now avoids there (5.13); R1's own evidence, the mapper profile, is equal at W = 1 and 2 |
+| Review hygiene (the stage 9 review) | The source clock's stamp returns the latest time before it from its one critical section (`ClockStamp::previous`), so a stamp takes the lock once; the front cache test picks contexts in distinct slots (it failed in about one process in eleven, by the hash seed); the flush-timing test runs a kernel whose flush calls take a known 5 ms, so a drain that stops counting its calls' time fails it; `RecordingTelemetry`'s unused histogram store and `lane_samples` are gone; M4 on aggregation is the `aggregate_churn` bench (it was an ignored test that only printed); `make test-stress` runs the 6.5 stress run, in `make test-all` and the `stress-tests` CI job; generic crates no longer name the Agent; lines wrap at 120 | `execution::clock` tests (`previous` on every stamp, the reset's included); `context::front::tests::a_front_cache_steps_aside_..`; `state_tests::lanes::each_state_lane_times_its_flushes_..` (both call sites' mutations caught) |
+
+**Deferred from stage 9**, each with its reason (the status document's deferred work lists them too):
+
+- **The gate's items 1 to 4** wait for a Linux host with at least 20 homogeneous cores ([Q2](#12-open-questions)), and
+  with them the automatic caps above 4 state lanes and W = 16's counts (8.5).
+- O6 (builder shards for the main output) triggered by M8's rule; O7, O9, and O10 wait for the gate host's profiles,
+  O10 first if the per-buffer cost of lanes decides item 3 there (8.7).
+- The per-buffer cost of lanes (17 to 24 µs more per buffer, about 10 µs of it idle workers' wake and park churn around
+  one serial lane, measured at 0.6 to 0.7 of legacy's throughput): measured again at the automatic counts on the gate
+  host before item 3 reads it; the levers there are fewer wake-ups per buffer in the region host, coalescing the
+  passthrough exit, and O10 (8.6).
+- An M8 variant at light load and with one stream connection on several producer lanes that checks when flushes are
+  emitted against their deadlines (the stage 9 review): the per-second heartbeats bound that lag by the progress
+  throttle in the regression test, and the gate host measures it end to end.
+- `plan_lane_exit_events_total{component_id, lane, exit}` and a lease's encoded-event count, which would let S14 show
+  each lane's sends to `dd_metrics_encode` directly (P9.6 C).
+- `RegionBounds::without_state`, which would keep each state lane's bounds as a breakdown rather than fixed amounts
+  (P9.5 note 7).
+- Checking the shared budget bounds once per batch rather than per new context, if the gate host shows the budget above
+  5% at P = 8 (O1-fixed, M4 after the fixes).
+- O5's 16,384 front-cache slots (25 to 30% less per resolution in a paired timing), after the gate's M2 rerun measures
+  the hit share at lading's distributions; accumulating the decoders' per-metric `metrics_received` counter, if the
+  curves flatten in the decoders again (O4/O5 sections 2, 3).
+- The decoders' wake rule at one metric per datagram, if the gate host shows the CPU cost there (O4/O5 section 3).
 
 ### 8.5 Stage 9 integration increments and gate
 
@@ -2813,9 +3037,97 @@ Absolute throughput per core is reported beside the ratios. If M2 shows the data
 both curves below the gate's top W, items 1 and 2 would pass on two flat curves that say nothing about lanes: O4 and O5
 then land in phase C, and items 1 to 3 are decided in process, where legacy runs the same source code and gets the
 same fixes (the container legacy, the `main` image, cannot). Until a run at W = 32 passes, the automatic counts stay at
-what W = 16 measured (P and M at most 8, D at most 16, 5.13). The in-process curves on this Mac (6 performance and 12
+their caps (P at most 4, M at most 8, D at most 16, 5.13); nothing above W = 8 has been measured, so M = 8 and D = 16
+stay provisional until a gate host runs W = 16. The in-process curves on this Mac (6 performance and 12
 efficiency cores) are reported with that caveat and gate only the macOS-independent items (5 and the shape of the
 curves at W up to 4); items 1 to 4 are decided on Linux ([Q2](#12-open-questions)).
+
+#### The increments as enabled (I9-Z)
+
+Z1 merged every part at one lane. Each increment was then enabled as a configuration of the merged code, measured on
+it ([8.6, results of the increments](#results-of-the-increments-stage-9-merged)), and the last turned the defaults on.
+As built, lanes are configuration only: `lanes.mode` and the counts (5.13), the producer lanes following
+`dogstatsd_workers_count`. Two things differ from the table above:
+
+- **9.2 runs with R1 off.** The frame refuses R1's pipelining on any slot with lanes (`check_lane_policy`, P9.2), so
+  post-aggregation lanes come with 9.3's maximal fusion at one producer lane, `{1, 1, M}`. The measurements tell the
+  two apart: lanes off, `{1, 1, 1}`, and `{1, 1, M}`.
+- **The in-process harness sets producer lanes apart from the decoders** (`SALUKI_MEASURE_LANES=<producer>,<state>,
+  <post>`, each a count or `auto`), which no configuration key does: decoder `d` then feeds producer lane `d mod D`.
+
+| Increment | Enabled as | Measured on macOS | What it decided |
+|---|---|---|---|
+| 9.2 | `{1, 1, M}`: one producer lane fed by every decoder; spread and affinity edges into M post-aggregation lanes; the global pool `max(8, W)` | post-aggregation throughput on passthrough-heavy datagrams, and on OTLP and checks fed straight to the post-aggregation slot; flush-to-encoder latency at 1M contexts (M8) | neutral: in every configuration measured the serial point is elsewhere (the encode host's builder, or the feed), and the tick at 1M contexts takes 300 to 400 ms with or without post-aggregation lanes. R1 off at one producer lane already lifts W = 8 from 0.73 to 0.93 of legacy |
+| 9.3 | `{D, 1, min(D, 8)}`: a producer lane per decoder, each its own admission point on one `SourceClock`, owned heartbeats, the multi-point tracker into one state lane | pre-aggregation scaling (mapper and defaults); M10; M1 | pre-aggregation scales with the decoders (scaling 0.95 to 0.98 of legacy's at W = 4; at W = 2 two producer lanes reached only 0.86 to 0.96, which 9.5's producer-lane rule answers); the source clock never contends (M10: no per-lane clocks); **Q1 disappears on macOS** (M1: 0.98 to 1.07 of legacy at every W) |
+| 9.4 | `auto`: P = `clamp(W / 2, 2, 4)` from four workers; keyed exits with coalescing, partitioned `dsd_agg`, shared lineage records, O1's reservations | admit scaling (100,000 distinct contexts); worker time per metric over P (the sweep at W = 8); M4, M5, M6 (macOS and the Linux VM), M8 with P lanes ticking together, the routed fill, M11 | state lanes scale admission past legacy (2.84 against 2.56 times one worker's at W = 8); **P stays at most 4**; O2 does not trigger (routed buffers full); O6 triggers by M8's rule (each lane's flush 64% blocked on the one builder); per-lane memos at the configured size are kept (M11) |
+| 9.5 | `lanes.mode: auto` the default; CPU-time sampling 1 in 16 on Linux whenever lanes are on; one automatic producer lane below three workers (the 9.3 data at W = 2, below) | the scaling curves of the defaults, mapper, and gateways profiles; one and two workers over the producer lanes; the container smoke at N = 1 and 2, sampled and not | the defaults hold the macOS shape at W up to 4; the caps stay P at most 4, M at most 8, D at most 16 until a Linux gate host runs W = 16 |
+
+Each increment was neutral until enabled: the whole suite pins stage 6 at one lane (the test base configuration keeps
+`lanes.mode: off`, since the automatic counts follow the host's cores; tests of lanes set them), and the lane tests,
+differentials, transition traces, fault tests, stress run, and demo checks run each layout explicitly.
+
+**Of the gate above, macOS decides item 5 and the shape of the curves at W up to 4, and both hold.** Item 5: every test
+of section 6 passes with the increments enabled (Z2's gate run, the 6.5 stress run, `make test-loom`), and
+`plan_lane_misrouted_total` stayed 0 in every run that reads it (the stress run, the lane tests, both demo checks).
+Shape, at the defaults as built (the producer-lane cap included): the plan's scaling from one worker is 0.95 and 0.96
+of legacy's at W = 2 and 0.95 and 0.96 at W = 4 (the mapper and defaults profiles; 1.05 and 0.96 with the gateways,
+measured before the cap, which changes nothing at W = 4), against item 2's 0.93, and its throughput 1.00 to 1.06 of
+legacy's at W up to 4 (item 1's 0.93). Before the cap, two producer lanes on two workers had the mapper profile's
+scaling at 0.86 to 0.93 (`93-mapper`, `94-auto-mapper`, `w12-212`): the cap is what the shape needed. **Items 1 to
+4 wait for a Linux host with at least 20 homogeneous cores** ([Q2](#12-open-questions)): this Mac's 6 performance and
+12 efficiency cores, and the 6-vCPU VM over them, cannot decide them. For reading the gate host's results against: on
+this Mac saturated throughput was 0.91 to 1.16 of legacy's at every W measured (item 1); process CPU per metric on
+lanes 0.90 to 1.13 of legacy's saturated and 0.92 to 1.30 paced (item 3's tolerance is 1.07: the per-buffer cost of
+lanes, 8.6, is the risk to watch, most of all for the 500-connection configuration); one stream connection 0.98 to
+1.07 (item 4).
+
+#### P9.7: R1's cost model
+
+5.10 deletes R1's cost model once the gate passes with lanes on. No Linux gate host was available (Q2), so Z3 decided
+P9.7 by this rule instead: **delete the cost model if the in-process curves show the always-fused configuration on lanes
+(`lanes.mode: auto`, the defaults as built) at least matching the R1-pipelined one (`lanes.mode: off`) at every
+measured W, 1 to 8, in the defaults and the mapper profiles; otherwise keep its code, off whenever lanes are on, and
+record the evidence and what would decide it.** That comparison, not the gate, says whether R1 still buys anything.
+"At least matching" is judged on plan-over-legacy ratios, each from its own run (legacy's own throughput moves between
+runs), against the spread of one configuration's ratio over runs, 0.02 to 0.04 at one and two workers here. Z3 ran both
+configurations back to back for each profile under 8.6's conditions (macOS, release, UDP through the real source, three
+alternating rounds per W; each run started at a load of 3.8 to 4.6, one at 5.4), then five-round pairs where the first
+pairs disagreed or decided; Z2's runs of the same configurations are beside them:
+
+| Profile, W | R1 (`off`) | Lanes (`auto`) | Reads as |
+|---|---|---|---|
+| defaults, W = 1 | 1.047 | 1.048 (Z2: 1.043) | equal: `{1, 1, 1}` against R1's slots on one worker |
+| defaults, W = 2 | **1.081; five rounds 1.050** (CPU per metric 0.961, 0.975) | **0.986; five rounds 1.023** (CPU 1.046, 1.017; Z2: 1.003, CPU 1.031) | **`off` ahead** in both pairs, by 3 to 10% of throughput and 4 to 9% of CPU per metric; but R1 places no slot in this profile (as reviewed, the explain documents of `off` and of `auto` at two workers have the same slots and fusion, and differ only in the `layout` member), so the gap is the lane runtime at one lane per slot (the lane stamping its admission point, its statistics, the lane telemetry worker), not R1's pipelining |
+| defaults, W = 4 | 0.960 | 1.006 (Z2: 1.008) | lanes ahead |
+| defaults, W = 8 | 0.700 | 0.989 (Z2: 1.044) | lanes far ahead: R1 caps the plan near 4 M metrics/s |
+| mapper, W = 1 | 1.037; five rounds 1.056 (Z2: 1.035, 1.064) | 0.907 (the run that started at load 5.4); five rounds 1.074 (Z2: 1.059, 1.020, 1.029) | equal: the five-round pair has lanes ahead |
+| mapper, W = 2 | 1.003 (Z2: 1.016) | 0.994 (Z2: 1.007, 1.043) | equal within the spread |
+| mapper, W = 4 | 0.982 (Z2: 0.987) | 1.026 (Z2: 1.006) | lanes ahead |
+| mapper, W = 8 | 0.746 (Z2: 0.727) | 0.964 (Z2: 1.005) | lanes far ahead |
+
+**Decision: kept, and Z3's reading corrected by the stage 9 review.** Z3 kept R1 because the defaults profile ran
+behind `lanes.mode: off` on two workers, and read that gap as R1's pipelining. The review found that R1 cuts no slot in
+the defaults profile: the gap is the cost of the lane runtime at one lane per slot against the layout without lanes,
+which gains no parallelism there. R1 places a slot only with mapper profiles (`dsd_prefix_filter_region`), and there
+the two layouts were equal within the spread at W = 1 and 2, and lanes led from W = 4. So the evidence splits into two
+questions:
+
+1. **Whether `auto` at one lane per slot runs the layout without lanes.** As built after the review, it does: where
+   every automatic count comes to one, as below three workers, and neither `lanes.state` nor `lanes.post` is set,
+   `LaneSettings::from_config` gives `LaneCounts::OFF`, the dispatcher-side point and the stage 7 layout, so hosts of
+   two workers no longer pay the lane runtime for nothing (5.13). The owner can revert this to lanes at one lane, with a
+   release note that such hosts run the lane runtime.
+2. **Whether to delete R1.** The evidence that bears on it is the mapper and gateways profiles, where R1 places slots:
+   equal at W = 1 and 2, lanes ahead from W = 4 (where R1 caps the plan near 4 M metrics/s). R1 now runs only without
+   lanes, which since the review includes `auto` below three workers, so deleting it changes those hosts' layout to
+   maximal fusion at one lane without the lane runtime, which nothing has measured. **What would decide it**: the gate
+   host at W = 1 to 3 in the mapper and gateways profiles, `lanes.mode: off` with and without R1's pipelining
+   (`FrameOptions { pipelining }`); if pipelining does not lead there, delete as 5.10 lists. The per-buffer cost of
+   lanes (8.6) and pipelining behind an owned producer point (ADP ties `pipelining` to the dispatcher-side point,
+   `LaneCounts::lanes_on`) are the other levers, neither needed for this question.
+
+Nothing of 5.10's deletion list was removed, amendment 122 stays proposed, and the `_region` slots appear only without
+lanes.
 
 ### 8.6 Measurement harness and what is measured first
 
@@ -2892,17 +3204,91 @@ cores (8.5, [Q2](#12-open-questions)).
   and a ceiling common to legacy and plan there reads like M2's. And a thread CPU-time read costs 166 ns in this VM
   against the 850 ns F7 cites: D12's saving, and N, depend on the host.
 
+#### Results of the increments (stage 9 merged)
+
+Measured on the merged stage 9 tree (Z1's merge, the canary fix, and Z2's changes), each increment enabled as 8.5's
+table says. Release profile (thin LTO, debug assertions on), one test at a time. **macOS**: the same M5 Pro, the
+in-process harness through the real DogStatsD source over UDP (`SALUKI_MEASURE_TRANSPORT=udp`: the decoder pool, decoder
+`d` on producer lane `d mod D`), the mapper profile and the mixed workload unless a row says otherwise, W in {1, 2, 4,
+8} with `max(2, W - 2)` decoders, three alternating rounds of legacy and plan per W (five for M1), medians, 5 s windows;
+each run waited for the one-minute load to fall below 4 (at most two to five minutes) and started at 3.8 to 4.0; the
+load at each start and end is in `scratchpad/pm/z2/mac/loads.txt` (ends read 5 to 11: the run itself). Nothing else of
+the work ran, and no UDP benchmark ran beside a demo check. **Linux**: the dory VM as before (6 vCPUs over the same
+cores), the Mac otherwise idle. Ratios are plan over legacy within one run (legacy's own throughput at W = 8 moved from
+5.3 to 6.5 M metrics/s between runs: the efficiency cores). "Scaling" is `T(W) / T(1)` of the plan over legacy's. None
+of this is the gate.
+
+| Increment, measure | Result | Reads as |
+|---|---|---|
+| Baseline: lanes off (the stage 6 layout, R1 pipelining) | plan over legacy 1.035, 1.016, 0.987, 0.727 at W = 1, 2, 4, 8; CPU per metric 0.98 to 1.01 at W up to 4 | R1's slots cap the plan near 3.9 M metrics/s at W = 8, where legacy's transforms reach 5.3 M |
+| 9.2, post-aggregation lanes `{1, 1, 4}` | 1.044, 1.047, 0.997, 0.927 (CPU 0.97 to 1.02); passthrough-heavy datagrams (every metric timestamped) 1.06 to 1.13 against 0.90 to 1.07 without lanes, both flat at 1.7 to 2.7 M metrics/s from W = 1 (the encoder); OTLP and checks fed to the post-aggregation slot: 5.36 to 5.55 M metrics/s on every path at every W (0.97 to 1.01 of legacy; one lane, M = W, or no lanes alike); M8 at 1M contexts and 400,000 metrics/s, W = 8: each tick 300 to 400 ms with or without post-aggregation lanes, the sentinel p99 at a tick 143 to 176 ms (lanes) against 133 to 150 ms (none) and legacy's 133 to 229, no drop anywhere | post-aggregation is not the serial point of any configuration measured: the encode host's builder is for passthrough and OTLP (M3's 4.4 to 4.7 M series per second), so post-aggregation lanes neither gain nor cost here; R1 off at one producer lane already lifts W = 8 from 0.73 to 0.93 |
+| 9.3, producer lanes `{D, 1, min(D, 8)}` | mapper 1.094, 0.941, 1.034, 0.955 (CPU 0.94, 1.11, 1.08, 1.06; scaling over legacy's 0.86, 0.95, 0.87 at W = 2, 4, 8); defaults 1.065, 1.019, 1.037, 0.989 (CPU 0.95, 1.03, 1.08, 0.99; scaling 0.96, 0.98, 0.93) | pre-aggregation scales with the decoders; the plan's higher one-worker throughput depresses its scaling ratio at W = 2 in the mapper run |
+| 9.3, M10 (`SourceClock`), saturated datagrams, 50 per datagram | the clock's lock held 41 to 47 ns per stamp and waited for 19 to 47 ns, 0.000 of the window, at D = 2, 8, and 16 (W = 4, 10, 18); throughput 4.21, 6.29, 6.56 M (legacy 4.11, 6.47, 6.90) | no contention: per-lane clocks are not needed. With O4 and O5 both curves now grow past two decoders (M2 had them flat from D = 2). As reviewed, each stamp then took the lock twice (the reset warning's previous time read apart), and the probes saw only the stamp's: since the review the stamp returns that time from its one critical section (`ClockStamp::previous`), so a stamp takes the lock once, as 5.2 says, and the probes cover all of it; the margin held at twice the traffic |
+| 9.3, M1: one saturated stream connection, mapper profile, five rounds | with lanes 1.069, 0.984, 0.984, 1.000 at W = 1, 2, 4, 8 (legacy 2.96 to 4.80 M metrics/s); without lanes 1.055, 1.000, 0.989, 1.003 | **Q1 disappears on macOS**: with R1 off a producer lane keeps up with the connection's decoding task; gate item 4 is still the Linux host's |
+| 9.4, state lanes at the automatic counts (`{2, 1, 2}`, `{2, 2, 2}`, `{6, 4, 6}`) | mapper 1.064, 0.977, 1.007, 1.019 (CPU 0.96, 1.09, 1.11, 1.04; paced 1.08, 1.04, 1.15, 1.26); 100,000 distinct contexts (admission-heavy) 1.003, 1.086, 1.060, 1.111, scaling 1.33, 1.98, 2.84 against legacy's 1.23, 1.87, 2.56, CPU 0.99 to 1.05 | state lanes scale admission past legacy's |
+| 9.4, worker time per metric over P at W = 8 (`{6, P, 6}`) | mixed workload (256 context indexes): P = 1, 2, 4, 8: 0.923, 0.937, 0.966, 0.955 of legacy, CPU per metric 1.036, 1.071, 1.066, 1.070, paced 1.12 to 1.28; 100,000 distinct contexts: 1.162, 1.097, 1.107, 1.071, CPU 0.960, 0.993, 0.997, 1.003, paced 1.15 to 1.22 | on these cores the eighth state lane gains nothing over the fourth, and the second costs a few percent of CPU per metric where aggregation is light: **the automatic P stays at most 4** (and above 1 from W = 4), as 8.6's first results set it; the decision is the gate host's (M5's worker-time sweep) |
+| 9.4, M8 with P lanes ticking together (W = 8, `{6, 4, 6}`, 1M contexts, 400,000 metrics/s) | each tick 400 ms (legacy 300 to 400), the four lanes blocked on output 904 to 1,084 ms in all, about 64% of each lane's flush; sentinel p99 at a tick 171 to 196 ms (legacy 159 to 182); nothing dropped or lost | the lanes drain in parallel and wait on the one builder: **O6 triggers** by M8's rule (the tick's stall dominated by builder backpressure); O8 does not (no drops) |
+| 9.4, M4 (`state_budget`, quiet machine) | per context per lane, plain compare-and-swap: 4.5 ns alone, 127, 439, 843, 1,331 ns at P = 2, 4, 8, 16; O1's reservations at each P's routed size (1,024, 512, 256, 256): cold 3.2, 8.2, 27.6, 42.6 ns, warm 2.4, 3.8, 9.3, 14 ns | O1 holds at P up to 4; P = 8 is at the 5% threshold, as O1 found: P stays at most 4 |
+| 9.4, M5 (key skew, rerun) | contexts per lane max over mean 1.003 to 1.029 at 100,000, 1.000 to 1.006 at 1M, up to 1.099 at 3,000 and P = 16; power-law events 1.03 to 1.18 (P = 2), 1.25 to 1.34 (4), 1.49 to 1.68 (8), 1.95 to 2.61 (16) | unchanged from the first results: contexts balance; group movement stays stage 10's |
+| 9.4, routed fill (B, O2), W = 4, `{2, 2, 2}`, B = 1,024 | the keyed exits' buffers into `dsd_agg` hold 1,023.4 events saturated, 1,023.6 at 70% of saturation, 969 with 500 stream connections at 500,000 metrics/s | **O2 does not trigger**: routed buffers fill within the 5 ms hold even at 100 events per source buffer |
+| 9.4, M6 per-buffer cost (scripted feed, 4 workers, one producer lane, every CPU time read) | macOS: `c(B) = a + f / B` with lanes off f = 6.4 µs, a = 281 ns (legacy 5.1 to 7.0 µs, 245 to 261 ns); on lanes `{1, 1, 1}`, `{1, 2, 1}`, `{1, 4, 1}`: f = 29.9, 23.0, 24.2 µs, a = 211, 230, 229 ns, with 1.4 to 2.2 task polls and 1.8 to 2.1 worker parks per buffer (off: 0.47 and 0.24) | lanes fuse more (a is a fifth lower) and pay about 17 to 24 µs more per buffer: at 1,024 events per buffer the plan on lanes costs 240 to 253 ns per metric against legacy's 252 to 266, at 128 it costs 410 to 445 against 300. **As reviewed**, M6 now prints the throughput each cost is measured at, the workers' busy time, and the parks per millisecond (two more pairs of runs, `{1, 1, 1}` against `off`, at loads of 5 to 27): `{1, 1, 1}` runs at 7.9 to 8.3 M metrics/s at 1,024 and 6.3 to 6.8 at 128, 0.66 to 0.70 and 0.56 to 0.59 of legacy's, since one lane task runs the whole fused chain while the other workers idle; its f is 28.3 to 31.4 µs of CPU, of which 12.5 to 13.4 µs is outside the workers' busy time (parking, waking, searching), against 2.9 to 4.0 for `off` and 0.7 to 1.5 for legacy, with 3.9 parks per buffer at 1,024 and 1.9 to 2.1 at 128 (30 to 32 and 91 to 113 per ms; legacy 12 to 18 and 23 to 38), which do not follow `a + f / B`. So most of the extra cost per buffer is the idle workers' churn around one serial lane, measured at about two thirds of legacy's throughput, and the 128-event regime is partly starved of feed. **A risk for the 500-connection configuration** (100 events per source buffer, and 12.5 per buffer on the passthrough exit there), for the gate host's item 3, where f is to be measured at the automatic counts, or with the workers matched to the tasks that can run, before it is read against item 3 |
+| 9.4, M11 (memo hit rates per producer lane) | default sizes, 10,000 context indexes: the mapper's result cache hits 0.886 on one lane and 0.887 on lanes (W = 4 and 8), the tag filterlist's memo 0.499 and 0.497 to 0.499; 100,000 indexes with `dogstatsd_mapper_cache_size: 100000` and the tag filterlist memo at 300,000: 0.994 against 0.984 to 0.990, and 0.492 against 0.471 to 0.484; 100,000 at default sizes: 0.876 everywhere, 0.488 against 0.469 to 0.481 | every lane sees every context, and each memo at the configured size holds the working set: **per-lane memos at the configured size are kept**, not shared; their bound is D times one memo's (P9.5's correction of 5.12), which the `Strict` fit accounts for |
+| 9.5, defaults on (`lanes.mode: auto`), defaults profile, before the producer-lane cap | 1.040, 1.006, 0.991, 0.938 (CPU 0.97, 1.04, 1.13, 1.08; paced 0.94, 1.01, 1.17, 1.29; scaling 0.97, 0.95, 0.90) | the shape at W up to 4 holds |
+| 9.5, **the defaults as built** (with the producer-lane cap: `{1, 1, 1}` at W = 1 and 2, `{2, 2, 2}` at 4, `{6, 4, 6}` at 8) | mapper 1.059, 1.007, 1.006, 1.005 (CPU 0.96, 1.06, 1.11, 1.04; paced 1.05, 1.06, 1.13, 1.23; scaling 0.95, 0.95, 0.95); defaults 1.043, 1.003, 1.008, 1.044 (CPU 0.97, 1.03, 1.12, 0.99; paced 0.94, 1.01, 1.13, 1.30; scaling 0.96, 0.96, 1.00) | the shape at W up to 4 holds in both profiles, the scaling ratio 0.95 to 0.96; CPU per metric at W = 4 is 1.11 to 1.12 of legacy's (the per-buffer cost, below) |
+| 9.5, defaults on, gateways profile (two endpoint routing groups and Multi-Region Failover) | 1.088, 1.139, 1.045, 1.037 (CPU 0.90, 0.97, 1.06, 0.96; paced 1.05, 0.92, 1.07, 1.13; scaling 1.05, 0.96, 0.95) | the policy region's decisions run on the post-aggregation lanes: the plan's lead grows with the gateways |
+| 9.5, post-aggregation lanes over M at W = 8 (`{6, 4, M}`) | M = 1, 2, 3, 6: 0.992, 1.017, 0.913, 0.985 of legacy (legacy's own run-to-run spread is about 0.1), CPU 1.044 to 1.078, paced 1.20 to 1.23 | M does not drive the CPU overhead: the automatic M stays `min(D, 8)` |
+| 9.5, one and two workers over the producer lanes, five rounds (mapper) | `{1, 1, 1}`: 1.029 and 1.043 of legacy at W = 1 and 2, scaling 1.02, CPU 0.98 and 1.00; `{1, 1, 2}`: 1.032 and 1.089, scaling 1.05, CPU 0.97 and 0.96; `{2, 1, 2}` (the automatic counts before): 1.042 and 0.962, scaling 0.93, CPU 0.97 and 1.10; in the Linux VM `{2, 1, 2}` at W = 2 alike (0.927, CPU 1.09) | on two workers a second producer lane costs a tenth more CPU per metric and loses throughput, since each lane runs the whole chain beside the two decoders: **the automatic D is now one below three workers** (`PRODUCER_LANES_MIN_WORKERS`; from three workers on, unchanged) |
+| Live changes at W = 1, five rounds | the paced p99 with a filterlist change every 50 ms: 15.5 ms without lanes, 14.6 ms at `{1, 1, 1}`, 6.5 ms at `{2, 1, 2}`, legacy 7.3 to 8.0 ms; without changes the plan's p99 is 0.9 to 1.1 ms against legacy's 7.2 to 7.8 (legacy batches the passthrough) | the live-change p99 at one worker is bimodal round to round (three-round medians of 32 to 34 ms at `{2, 1, 2}` in three runs, 4.8 ms in a fourth): it is about twice legacy's without lanes as well; the gate host's item 3 decides it |
+| Linux VM, M6 (scripted feed, 4 workers, one producer lane) | lanes off: plan f = 17.0 µs, a = 305 ns (legacy 2.8 to 11.3 µs and 302 to 343 ns over the six runs: the noise of f is about ±4 µs); on lanes `{1, 1, 1}`, `{1, 2, 1}`, `{1, 4, 1}` with every CPU-time read: f = 31.2, 28.1, 28.2 µs, a = 264, 287, 293 ns; with sampling 1 in 16 at `{1, 2, 1}` and `{1, 4, 1}`: f = 25.8 and 26.5 µs, a = 280 and 290 ns | the macOS picture, a little dearer: at 1,024 events per buffer the plan on lanes costs 295 to 320 ns per metric against legacy's 313 to 345, at 128 it costs 481 to 513 against 364 to 391. Sampling saves about 2 µs per buffer and 5 ns per event on lanes here, where a CPU-time read costs 166 ns (8.6's first results): N = 16 stays (D12); the gate host's read cost decides whether more |
+| Linux VM, M8 with P lanes (W = 4, `{2, 2, 2}`, 250,000 contexts at 200,000 metrics/s over Unix datagrams sent without waiting) | ticks of 100 to 200 ms, no time blocked on output; datagrams dropped in 45 s: legacy 506 to 8,105, the plan 656 without lanes and 602 on lanes (2,800 to 2,850 refused by the socket); sentinel p99 at a tick 48 to 90 ms (legacy 45 to 86), 3.7 ms between ticks (legacy 23 to 28) | state lanes ticking together drop no more than legacy at a tick: O8 does not trigger on Linux either |
+| Linux VM, scaling in process at the automatic lanes (Unix datagrams, mapper) | 1.061, 0.927, 0.972 at W = 1, 2, 4; CPU per metric 0.96, 1.09, 1.13, paced 1.02, 1.16, 1.30; scaling 0.88 and 0.92 of legacy's at W = 2 and 4 | in a VM of 6 vCPUs running W workers, two generators, and the eight-thread global pool, the per-buffer cost above shows as CPU per metric; the gate host decides |
+| Containers (Linux VM, smoke only): the plan image of this tree (`:plan-z2`, the default automatic lanes, with the producer-lane cap: `{1, 1, 1}` at N = 1 and 2) against `legacy-b940bf1f8b`, defaults profile, Unix datagrams, three alternating rounds of 30 s, the harness's context limit raised to ten times the contexts (it bound before), nothing else running | with every CPU-time read: 1.095 and 1.009 of legacy at N = 1 and 2 (0.79 and 1.21 M metrics/s), CPU per metric 0.91 and 0.98, scaling 0.92; sampling 1 in 16 (the default on lanes): 1.130 and 1.023, CPU 0.89 and 0.95, scaling 0.91; peak memory 58 to 59 MiB against 61 to 62 at N = 1 and 109 to 122 against 132 to 149 at N = 2; spreads p25 to p75 0.4 to 1.2% | the image works end to end with lanes on by default; sampling saves 2 to 4% of CPU per metric; the scaling ratio sits under 0.93 only because the plan is 10 to 13% faster on one CPU. Two vCPUs over mixed cores decide nothing of the gate |
+
+**What these results decide** (8.5, 8.7):
+
+- **The automatic counts of increment 9.5**: D the decoder count up to 16, **and one below three workers** (new:
+  on two workers one producer lane fed by both decoders beats two, below), P one below four workers and
+  otherwise `clamp(W / 2, 2, 4)`, M `min(D, 8)`, as 8.6's first results set them. Nothing measured argues for more
+  state lanes (the sweep gains nothing past four, and M4 puts P = 8 at O1's threshold) or for fewer post-aggregation
+  lanes (M does not change the cost). None rises before a Linux gate host runs W = 16 ([Q2](#12-open-questions)), and
+  M = 8 and D = 16 are provisional, unmeasured above W = 8. Where every automatic count comes to one, `auto` runs the
+  layout without lanes (since the stage 9 review; P9.7 in 8.5).
+- **Q1 disappears on macOS**: one connection on a producer lane runs at 0.98 to 1.07 of legacy at every W. No fallback;
+  gate item 4 is still measured on the gate host.
+- **R1's cost model is kept**, off whenever lanes are on: deciding P9.7 on these curves, lanes matched or beat the
+  layout without lanes at every W but two workers in the defaults profile, where `off` led by 3 to 10%; R1 cuts no slot
+  in that profile, so that lead is the lane runtime's cost at one lane per slot, which `auto` now avoids there, and R1's
+  own evidence, the mapper profile, is equal at W = 1 and 2 ([P9.7 in 8.5](#p97-r1s-cost-model)).
+- **O2 does not trigger** (routed buffers fill within the hold); **O8 does not** (no drops at a tick, macOS UDP and
+  Linux Unix datagrams); **O6 triggers by M8's rule** (each state lane's flush at 1M contexts is about two thirds
+  blocked on the one builder of the main output), for phase D; **no per-lane clocks** (M10); **per-lane memos at the
+  configured size** (M11); CPU-time sampling stays 1 in 16 on Linux (M6: about 2 µs saved per buffer in the VM).
+- **New risk: the per-buffer cost of lanes.** Lanes cost 17 to 24 µs more per buffer than the layout without them
+  (macOS, Linux VM alike); as reviewed, about 10 µs of it is CPU outside the workers' busy time, the parking and waking
+  of idle workers around one serial lane at `{1, 1, 1}`, measured at 0.56 to 0.70 of legacy's throughput, so it depends
+  on how many workers idle beside the tasks that can run (M6 prints both now); with full buffers this is more than paid
+  back by the cheaper per-event path (maximal fusion), but process CPU per metric on lanes reads 1.04
+  to 1.13 of legacy's saturated and up to 1.30 paced, where buffers are smaller, against item 3's 1.07. The
+  configurations to watch on the gate host are the paced phases and about 500 stream connections (100 events per source
+  buffer, 12.5 per buffer on the passthrough exit there, against 1,024 per buffer from legacy's passthrough batcher).
+  The levers, each to measure there first: fewer wake-ups per buffer in the region host, coalescing the passthrough exit
+  as keyed exits are, O10 (decoder-inline lanes, one hop fewer).
+- **Harness corrections**: the source-fed harness's lanes are a configuration layer of their own (the gateways profile
+  could not run on lanes); the container harness's context limit is ten times the contexts (it bound at 3,400 for
+  3,000, dropping a sixth of the metrics at aggregation on both images); the paced p99 with live changes at one worker
+  is bimodal round to round, so it needs five rounds or more.
+
 ### 8.7 Conditional parts (measured options)
 
 Each lands only on the evidence named, as a small part with its own tests, and each keeps its interface unchanged.
 
 | # | Option | Evidence that triggers it | Notes |
 |---|---|---|---|
-| O1 | Per-batch budget reservations (one compare-and-swap per up to 64 new contexts, unused units returned at the end of the batch), or credit cells per lane with stealing at the limit | M4: budget operations above 5% of state-lane time under churn | the limit stays exact; refusals while units sit reserved are capacity behavior, bounded by P × 64 units for one batch's duration; the context gauges count held contexts, not `global.used()`, and idle cell credits stay out of the breach and `is_below` decisions |
+| O1 | Per-batch budget reservations (one compare-and-swap per up to 64 new contexts, unused units returned at the end of the batch), or credit cells per lane with stealing at the limit | M4: budget operations above 5% of state-lane time under churn | the limit stays exact; refusals while units sit reserved are capacity behavior, bounded by P × 64 units for one batch's duration; the context gauges count held contexts, not `global.used()`, and idle cell credits stay out of the breach and `is_below` decisions. **As built** (phase C): reservations, blocks growing from the lane's previous batch's new contexts up to 64 (`CONTEXT_RESERVATION_BLOCK`), one unit per block on one lane; the bound is fewer than 64 units per concurrent lane batch, of any state owner sharing the budget; no credit outlives its batch, so a recovery may be logged one pass late, never early; credit cells not built (the budget's share within noise at P up to 4, about 5% at P = 8: amendment 152) |
 | O2 | A longer coalescing hold: keep open buffers up to `PROGRESS_PERIOD` instead of `COALESCE_HOLD` | M6: routed buffers below B/2 at the state lanes after the 5 ms hold, and per-buffer cost above 5 ns per event there after sampling | widens amendment 114's bound to 100 ms |
 | O3 | (landed in P9.F as the tap gate, which keeps the tap's series native) | — | — |
-| O4 | Datagram receiver without the mutex: a lock-free queue (`crossbeam_queue::ArrayQueue` with a `Notify`), or per-decoder queues fed by the reader with `try_send` | M2: decoders wait on the receiver more than 10% of the time | benefits legacy equally |
-| O5 | Resolver front cache per decoder (4,096 direct-mapped entries keyed by `ContextKey`) | M2: resolver throughput flattens below the gate's rates | removes the shard lock, the expiry push, and the counters on hits; the `Arc` clone stays |
+| O4 | Datagram receiver without the mutex: a lock-free queue (`crossbeam_queue::ArrayQueue` with a `Notify`), or per-decoder queues fed by the reader with `try_send` | M2: decoders wait on the receiver more than 10% of the time | benefits legacy equally. **As built** (phase C): a `crossbeam_queue::SegQueue` bounded by a count, with a `Notify` per side: one pending wake-up of a decoder at a time, one more once a reader queued 8 KiB while the woken decoder has not run, and tokio's cooperative budget on send and receive (a wake-up per datagram cost a third to a half more CPU per metric at one metric per datagram, and one pending wake-up alone left the woken decoder on the reader's thread); provisional until the gate host reruns M2 against per-decoder queues |
+| O5 | Resolver front cache per decoder (4,096 direct-mapped entries keyed by `ContextKey`) | M2: resolver throughput flattens below the gate's rates | removes the shard lock, the expiry push, and the counters on hits; the `Arc` clone stays. **As built** (phase C): change stamps keep a slot exact (it answers only while its key's stamp holds, and in the coarse second the shared cache last confirmed it, so expiry is native); hits are added to the shared counters at each 100 ms maintenance; the cache steps aside while it holds fewer than one key in 16; stream connections get none |
 | O6 | Builder shards S > 1 for the main output | M3: one builder saturates at the gate's rates; or M8: the tick's stall is dominated by builder backpressure | up to S partial payloads per flush |
 | O7 | Region lanes send straight to a lease's shard channels through a shared lease table | the front task shows in profiles | removes one hop per buffer; the lease lifecycle is unchanged |
 | O8 | Flush stagger `LANE_FLUSH_STAGGER`, lane `j` ticking `j × stagger / P` later within the second | M8: socket drops at the tick | semantically neutral; widens amendment 86's exclusion by the stagger |
@@ -2912,6 +3298,11 @@ Each lands only on the evidence named, as a small part with its own tests, and e
 **After the first measurements** ([8.6's results](#first-results-stage-7-with-p9f-before-i9)): O1, O4, and O5
 triggered; O4 and O5 move into phase C, and O1 should join them; O3 landed in P9.F; the others wait for the evidence
 their rows name.
+
+**After the increments** ([8.6's results of the increments](#results-of-the-increments-stage-9-merged)): O1, O4,
+and O5 landed in phase C; O6 triggers by M8's rule (each state lane's flush at 1M contexts is about two thirds blocked
+on the main output's one builder); O2 and O8 do not trigger; O7, O9, and O10 wait for the gate host's profiles, O10
+first if the per-buffer cost of lanes decides item 3 there.
 
 ### 8.8 Demo extension
 
@@ -3041,8 +3432,8 @@ Each was chosen on the owner's behalf for the least operator and contributor sur
 | # | Assumption | Choice | Why it minimizes surprise | Revisit when |
 |---|---|---|---|---|
 | B1 | Lane counts | fixed at boot; a change needs a restart | registrations and interconnects are created at spawn; a restart re-lowers from scratch | partition movement (stage 10) |
-| B2 | Producer lanes | one per decoder up to 16 (D), decoder `d` feeding lane `d mod D`; stream connections to the lane with the fewest live connections; the source only hands buffers over | no plan code in the source; the native decoder default stays; a few heavy connections do not share a lane by accident | profiles show the decoder-to-lane hop (O10); a gate run at W = 32 lifts the cap |
-| B3 | State lanes | P = 1 below 4 workers, else `clamp(W / 2, 2, 8)` | multi-lane state code runs by default on typical hosts; capped at what the gate measures, with `P × B` at most 2,048; admission costs about 33 ns per event against about 250 ns for pre-aggregation, so more lanes mostly add split costs | the sweep (M5, by worker time per metric at equal throughput) and M8 give a better rule |
+| B2 | Producer lanes | one per decoder up to 16 (D), decoder `d` feeding lane `d mod D`; stream connections to the lane with the fewest live connections; the source only hands buffers over; as built, one producer lane below three workers | no plan code in the source; the native decoder default stays; a few heavy connections do not share a lane by accident | profiles show the decoder-to-lane hop (O10); a gate run at W = 32 lifts the cap |
+| B3 | State lanes | P = 1 below 4 workers, else `clamp(W / 2, 2, 8)`; as built `clamp(W / 2, 2, 4)`, which M4, M5, and the P sweep support | multi-lane state code runs by default on typical hosts; capped at what the gate measures, with `P × B` at most 2,048; admission costs about 33 ns per event against about 250 ns for pre-aggregation, so more lanes mostly add split costs | the sweep (M5, by worker time per metric at equal throughput) and M8 give a better rule |
 | B4 | Post-aggregation lanes | `M = min(D, 8)` | passthrough by affinity keeps buffer counts native; flush bursts spread; memos and memory stay bounded on large hosts | profiles show `metrics_enrich` lanes idle or saturated |
 | B5 | Keys | Saluki-only `experimental.programmable_metrics.lanes.*`; the Agent's `dogstatsd_pipeline_*` stay unsupported | the Agent's keys have another meaning and default (one pipeline; automatic adjustment changes the decoder count) | operators ask for Agent key parity |
 | B6 | Admission time | stamped when the lane receives a batch, one queue later than stage 6 | closer to native aggregation, which reads its clock when it processes a batch | a consumer needs the dispatch time |
@@ -3055,12 +3446,12 @@ Each was chosen on the owner's behalf for the least operator and contributor sur
 | B13 | CPU-time accounting | sampled 1 in 16 on Linux, unbiased | removes the cost splitting multiplies; series stay meaningful | exact per-call CPU attribution is required |
 | B14 | Key groups | 256, contiguous ranges, never moved | one table load; leaves stage 10's movement open | M5 shows skew that only movement fixes |
 | B15 | The `dsd_stats_out` tap | gated: cloned only while a collection runs, its received count kept (P9.F) | native series unchanged; no per-event clone while nobody collects | never expected |
-| B16 | Upstream of the lanes | the datagram receiver mutex and the shared resolver unchanged | native, and shared with legacy, so the gate compares like with like | M2 shows them capping both curves (O4, O5) |
+| B16 | Upstream of the lanes | the datagram receiver mutex and the shared resolver unchanged; as built, M2 triggered O4 and O5, which replace both, legacy included | native, and shared with legacy, so the gate compares like with like | M2 shows them capping both curves (O4, O5) |
 | B17 | Encode builders | S = 1 per lease | native payloads and compression ratio | M3 shows a builder saturating (O6) |
 | B18 | The global pool | `max(8, W)` threads | compression never capped below today's 8 | a host shows contention between the pool and the primary runtime |
 | B19 | The reset window's fresh instance | built in the lane from the lineage's spec and build context, an empty table, only for a lineage that receives newer-epoch data while the window is open; otherwise the drained instance continues into the successor record | bounded memory, no stash, no deadlock; at one point no build at all; resets are rare | resets turn out frequent |
 | B20 | Panics | a state lane loses only its instance; the panic budget is shared per artifact generation | less loss than native; an artifact's allowance does not grow with P | never expected |
-| B21 | R1 | off whenever `lanes.mode` is `auto`; deleted after the gate | no lanes built for pipelined slots; the escape hatch keeps stage 6 until deletion | never expected |
+| B21 | R1 | off whenever lanes are on; deleted after the gate; as built, kept until the mapper and gateways profiles decide it at W = 1 to 3, and in effect with `lanes.mode: off` and where `auto` gives one lane per slot (8.5) | no lanes built for pipelined slots; the escape hatch keeps stage 6 until deletion | never expected |
 | B22 | Accounting paths | per-lane resource groups and kernel groups; unchanged names with one lane | no contended counters for a lane's own allocations; bounded names. Frees of upstream allocations still write the allocating group (F6), and every decoder shares `dsd_in`'s group | M2 and M6 show allocator writes contending (per-decoder groups) |
 | B23 | Per-lane input capacity | `ceil(native / lanes)` buffers for stateless slots; events-equivalent for state lanes | burst slack and firm bounds keep their native totals | bursts into one lane show loss earlier than natively |
 | B24 | Health and identity | one component, one health registration per slot | `component_id:dsd_agg` and every `aggregator.*` remap unchanged | per-lane readiness is wanted |
@@ -3256,7 +3647,9 @@ index](programmable-metrics-status.md#spec-amendments-index): themes EXE, FRM, N
      not grow with the lane count, and a generation that exhausts it stops in every lane; a state kernel's panic loses
      only its lane's instance.
 122. **R1's cost model is removed** (FRM, D; withdraws amendment 47). Fusion is maximal between fences, and lanes give
-     parallelism; R4 keeps its memo floor and split estimate.
+     parallelism; R4 keeps its memo floor and split estimate. As built, stage 9 keeps R1 for the layout without lanes
+     (P9.7 in 8.5: the mapper and gateways profiles at W = 1 to 3 decide it), so this amendment and the withdrawal of 47
+     wait for the gate host; on lanes, fusion is maximal between fences.
 123. **Verification of partitioned execution** (VER, C). In trace-order delivery, and in a replay of each state lane's
      arrival order, outputs equal the reference interpreter's exactly at every lane count, except where a lane's timing
      decided an outcome (counted and excluded); under interleaved delivery, per-kind checks with maximal gauge
@@ -3293,6 +3686,122 @@ index](programmable-metrics-status.md#spec-amendments-index): themes EXE, FRM, N
      values; a collection observes what was dispatched while it ran, where natively it observed what the tap processed
      while it ran: buffers queued for the tap when a collection starts are no longer counted, and the window shifts by
      at most the tap's queueing delay.
+
+**Stage 9, from the parts and the integration (I9 to I9-Z):**
+
+141. **A source output's lanes are one group of points** (FRM, C; refines 108). The group's points have consecutive
+     IDs and are addressed by the first lane's ID in the frame's edges and slot inputs; the program of the slot it feeds
+     has one entry per lane ID, so each lane receives exactly what its own point stamped.
+142. **State lanes sit behind exits** (FRM, C; refines 111 and 112). An isolation slot runs the state lanes only when
+     its state owner has a partition key and only slots' exits feed it; a state owner fed straight by an admission point
+     with one lane keeps one lane, and one fed straight by a source's points on several lanes has no frame, since each
+     producer lane stamps its point in the lane of the slot it feeds, which must then be a stateless slot.
+143. **Affinity carries a producer lane's order** (FRM, C; refines 120). An exit from a stateless slot into a stateless
+     slot with lanes keeps the sender's lane (lane `d` to lane `d mod M`) when the sender runs several lanes or carries
+     a producer point's batches, at any producer lane count, one included, so per-connection order holds downstream;
+     it spreads only a state lane's time-driven output, a source with one admission point, or a slot with one lane fed
+     only by such outputs.
+144. **A point's status speaks of its clock's current epoch** (EXE, C; refines 110). With a shared clock, a point's
+     status reports its own latest stamp only when that stamp is in the clock's current epoch, read once: another
+     point's reset leaves an older stamp on another timeline, which says nothing about where the point's next stamp
+     falls, and a cut's instant is taken from the statuses.
+145. **Coalescing and progress, exactly** (STA, C; refines 113 and 114). A routed buffer waits at most `COALESCE_HOLD`
+     after it opens, checked whenever its region ends a turn, and is sent once its point's admission time moves
+     `PROGRESS_PERIOD` past its own; a state lane with no open buffer receives a point's header at once when its
+     second, generation, or epoch is newer than the last one sent to it, so once open buffers are flushed every state
+     lane holds each point's latest second, generation, and epoch, and its `floor(W)` is the interpreter's. A call's
+     writes to a keyed exit are routed only once its program completed, so a panicking call sends nothing.
+146. **Lanes and the firm bound** (EXE, C; corrects 112). Per-lane input capacity keeps the native totals of buffers
+     and events only because a buffer sent to a state lane has storage for at most the B events its slots count (a
+     register moves whole only then; otherwise its events are copied into routed buffers of B); the firm bound still
+     grows with lanes, by one in-flight buffer per lane task beyond the first of each slot and by every lane's kernels
+     and memos at their configured sizes (5.12).
+147. **No tick while a reset window is open** (STA, D; refines 115). While a state lane's reset window is open, the lane
+     ticks none of its instances, the newest epoch's included; once the window closes, a lineage's deadlines the window
+     held come due at once, whichever instance continues it (the one the window created or the one it drained). With
+     one admission point a window opens and closes on one header, so nothing changes.
+148. **The reset window's edges** (STA, C; refines 115). A lane opening its window drops an ordinal it is gated at
+     before it sets the reset mark, so the mark's cutoff covers it and the successor's first tick is one interval later,
+     as a stage 6 reset drops a gated tick; a successor record starts at the old record's current deadline; a header
+     several epochs newer than the lane's newest holds every epoch in between open, each reset counted once in
+     `plan_clock_resets_total`, and past `MAX_OPEN_EPOCHS` as many of the oldest close at once as exceed it.
+149. **A lineage record outlives the lanes that left its epoch** (STA, C; refines 116). A record a lane leaves to
+     continue a lineage in a newer epoch is kept until every lane of the slot holds only newer epochs, so a lane that
+     hears of a reset late ticks the older epoch on the shared record, never on a record of its own taken from another
+     timeline's clock.
+150. **Reset drains and cuts together** (STA, C; refines 115 and 128). A window that closes several epochs ends one
+     output epoch per closed epoch, oldest first; a cut-retiring instance whose reset drain flushed in the cut's
+     publication epoch retires at the window's close; a lineage's bound instance crosses only once no instance beside it
+     holds an epoch the window keeps open, so an overflow during a cut loses only later batches of the epoch it closes.
+151. **What lanes count as divergent** (TEL, C; refines 116 and 123). `plan_lane_tick_divergence_total` counts the
+     flushes the aggregation kernel actually started from its own last flush, and a tick dropped at a window's opening
+     only when it was gated and the lane has several points; the flush time agreement of one ordinal across lanes
+     excludes, beside expired graces and stragglers, a flush the lane's own previous flush time held back after the wall
+     clock stepped back within an epoch.
+152. **Budget reservations** (STA, D; refines 118). On several lanes, a batch's new contexts take budget units in blocks
+     through one reservation of the node's and the global budget, each block as large as the units already handed out,
+     starting at the lane's previous batch's new contexts, at most 64; unused units, fewer than 64, count as held until
+     the batch ends, and a refusal for them is capacity behavior, of any state owner sharing the budget; no unit
+     outlives its batch, so the breach decision reads the budgets' counts and may record a recovery one pass late, never
+     early. A state owner on one lane reserves nothing: it takes one unit per new context, as stage 6 does.
+153. **Verification of partitioned execution, as built** (VER, C; refines 123). Exactness at every lane count holds for
+     input whose effect does not depend on the order of several points (counters, sets, sketches; not gauges, first
+     metadata, or kinds across points, which coalescing delivers in buffer order); a tick resolved apart by lanes is
+     counted and compared but for idle-counter zeros, rather than excluded; a kind conflict is compared per series and
+     instance, by what no order changes, with the presence of some point's last admission; a counter's zero counts as
+     no point; seeded lane schedules reproduce within one process only, since context keys hash with a per-process seed.
+154. **Telemetry under lanes, as built** (TEL, C; refines 126). The slot's `plan_state_watermark_lag_seconds` is the
+     largest lag any of its lanes last published; the background-set cache and interner gauges sum over the lanes of
+     one identifier, each lane's share withdrawn when its kernel is dropped, and are set as natively at one lane; host
+     times are integer counters of nanoseconds (`plan_lane_busy_nanos_total`, `plan_lane_stamp_wait_nanos_total`);
+     `plan_lane_flush_blocked_seconds` is the part of a tick's drain spent outside the calls that ran its steps.
+155. **Memory status of partitioned state** (TEL, C). On state lanes the partitioned state's bound is declared once, at
+     the slot, where its sizing inputs resolve as on one lane, while its live bytes are in the lanes' resource groups;
+     readers of `/memory/status` sum the slot's subtree.
+156. **Lane counts in a strict grant** (EXE, C; refines B26). The automatic counts are fit to a `strict` grant by
+     measuring built candidates, lowering the post-aggregation lanes first, then the state lanes, then the producer
+     lanes, and leaving room for one generation's overlap whenever the layout without lanes leaves it; the grant is not
+     an input of the automatic counts themselves.
+157. **Lanes by default, at the measured counts** (EXE, D; refines 124). `lanes.mode: auto` is the default. The
+     automatic counts are D, the decoder count up to 16, and one producer lane below three primary workers; P, one state
+     lane below four workers and `clamp(W / 2, 2, 4)` from four; M, `min(D, 8)`; where every automatic count comes to
+     one, the layout without lanes (since the stage 9 review). None rises before a Linux gate host runs W = 16, and
+     M = 8 and D = 16 are unmeasured above W = 8. Owner: accept the defaults before the gate host has run.
+158. **The debug-log tap is gated** (TEL, C; refines 140). `dsd_debug_log_out` receives buffers only while
+     `dogstatsd_metrics_stats_enable` is on, and is counted as having received what it was offered otherwise, as the
+     statistics tap is outside a collection; it sees what was dispatched while the setting was on.
+159. **A state lane's panic under an artifact** (INS, C; refines 121). The lane's instance is rebuilt empty, every
+     generation binding it continues on it, the slot runs on, and the artifact's generation is rolled back, as a state
+     owner's panic under an artifact does at one lane since stage 6.
+160. **A stream connection on a failed lane** (INS, N). A connection whose lane failed stops through the shutdown of the
+     shutdown, which a lane's failure starts, as a connection does natively when its component fails; the source does
+     not stop a connection at a failed dispatch.
+161. **One producer lane keeps the output's name** (TEL, C). With one producer lane the source's output stays `metrics`,
+     its point owned by the lane; with several it is `metrics_0` to `metrics_<D−1>`.
+162. **What a state lane's panic loses** (INS, C; refines 121). The batch lost to a state lane's panic is the routed
+     buffer it was admitting, which may coalesce several producer batches of one second for that lane.
+
+**Stage 9, from its review:**
+
+163. **Records of an epoch a lane may still reach** (STA, C; refines 149). A lineage's shared record of an epoch, its
+     tick record and its state owner's flush log of the epoch, outlives its last lane for as long as another lane may
+     still bind an instance to it: one that holds an older epoch open, has not reached the epoch, or holds it open as
+     the oldest of a reset window; so a lane that hears of a reset late ticks, counts, and back-fills the epoch on what
+     the others recorded, and never renumbers its ordinals.
+164. **A successor starts after the newest older epoch** (STA, C; refines 5.6 rule 3). The ticks of a lineage's
+     instance of a newer epoch start at the current deadline of its record of the newest older epoch, which the first
+     lane to pass it marks, so that inside a window open over several epochs the lineage keeps one schedule across
+     every reset, as one core does.
+165. **Output stamps per lane** (VER, C; refines 119 and 123). A state lane's output latch takes the stamps of the
+     drains it emits; while one event's drains flush at times that never decrease, as with one state owner per slot,
+     every record's stamp equals one latch's, and with a retiring state owner beside another in one slot, stamps are per
+     lane.
+166. **Heartbeats in each second of several points** (EXE, C; refines 109 and 5.6). An idle point of a source with
+     several points heartbeats `PROGRESS_PERIOD` into each wall-clock second it stamped nothing in, beside its periodic
+     heartbeat, so that it holds the shared watermark's ticks back by at most the progress throttle.
+167. **One lane per slot is the layout without lanes** (EXE, D; refines 157). Where every automatic lane count comes to
+     one and none is set explicitly, the metrics path runs the layout without lanes: one lane per slot gains no
+     parallelism, and the lane runtime costs CPU there. Owner: accept, or keep lanes at one lane per slot.
 
 ## 11. Risks
 
@@ -3348,10 +3857,12 @@ index](programmable-metrics-status.md#spec-amendments-index): themes EXE, FRM, N
     may flatten both curves around 6 to 12 cores (est.). The gate is relative to legacy, so it can pass on two flat
     curves that say nothing about lanes. Mitigation: M2 first; absolute throughput per core reported; if a ceiling
     falls below the gate's top W, O4 and O5 land in phase C and items 1 to 3 are decided in process, where legacy gets
-    the same fixes (8.5).
+    the same fixes (8.5). As built, M2 showed both ceilings, and O4 and O5 landed; with them both curves grow past two
+    decoders (M10), and legacy's next ceiling on macOS is the single UDP socket's reader.
 17. **One saturated stream connection** runs its whole pre-aggregation chain on one lane once R1 goes, where legacy
     pipelined it over five tasks (0.68 to 0.72 of legacy before R1, with a scripted feed). Mitigation: M1; the gate's
-    one-connection case; Q1.
+    one-connection case; Q1. As built, M1 on macOS put one connection on a producer lane at 0.98 to 1.07 of legacy at
+    every W: it is bound by its own decoding task (Q1).
 18. **The reset window is new protocol**, and resets are rare in production, so bugs would hide. It depends on four
     mechanisms working together: per-epoch instances, the final old-epoch header sent before anything newer, the
     shared reset mark, and the successor record that every lane's instances join at the close.
@@ -3370,8 +3881,10 @@ index](programmable-metrics-status.md#spec-amendments-index): themes EXE, FRM, N
 22. **The encoder stays the fan-in**: at high cardinality or passthrough-heavy traffic, one builder per output bounds
     flush delivery for legacy and plan alike. Mitigation: M3; O6; the gate includes a passthrough-heavy configuration.
 23. **Memory times lanes** for kernels, memos, caches at their configured sizes, and open buffers (5.12: about 8 to 11
-    MiB at 8 vCPUs, 19 to 27 MiB at 32 or more with the defaults). Mitigation: bounds per lane at boot; automatic
-    counts capped and shrunk to fit a `Strict` grant; M9 on the SMP RSS gate and the firm bound at W up to 64.
+    MiB at 8 vCPUs, 19 to 27 MiB at 32 or more with the defaults; as built, measured, 70 MiB at W = 8, 186 MiB at W =
+    32, and 189 MiB at W = 64, most of it the tag filterlist's memo per producer lane). Mitigation: bounds per lane at
+    boot; automatic counts capped and shrunk to fit a `Strict` grant; M9 on the SMP RSS gate and the firm bound at W up
+    to 64.
 24. **Visible identity changes**: R1's slots disappear, resource groups and accounting paths gain lanes, CPU series are
     sampled on Linux, `t_a` is stamped at the lane. Mitigation: release notes; remaps unchanged and tested; with one
     lane names are unchanged.
@@ -3391,18 +3904,37 @@ index](programmable-metrics-status.md#spec-amendments-index): themes EXE, FRM, N
     Mitigation: `plan_lane_crossing_overlap_contexts`; the capacity oracle counts held units; the stress run cuts every
     10 s near the limit.
 30. **The gate host.** Items 1 to 4 need a Linux host with at least 20 homogeneous cores for W = 16, and an A/A series
-    before gating (Q2). Without one, the stage 9 gate cannot be called, though implementation proceeds.
+    before gating (Q2). Without one, the stage 9 gate cannot be called, though implementation proceeds. As built, it is
+    called only in part (8.5), and lanes are on by default (amendment 157).
+31. **The per-buffer cost of lanes** (found by M6 after 9.4). Lanes cost 17 to 24 µs more per buffer than the layout
+    without them, macOS and the Linux VM alike; as reviewed, mostly wake and park churn of idle workers around one
+    serial lane at `{1, 1, 1}`, measured at about 0.6 to 0.7 of legacy's throughput (12.5 to 13.4 µs of the lanes' f is
+    CPU outside the workers' busy time, against 3 to 4 without lanes), so the figure depends on the spare workers, and
+    f is to be measured at the automatic counts on the gate host before it is read against item 3; with full buffers
+    the cheaper per-event path (maximal fusion) pays it back, but process CPU per metric on lanes
+    read 1.04 to 1.13 of legacy's saturated and up to 1.30 paced, against item 3's 1.07. Mitigation: the gate host's
+    paced phases and about 500 stream connections first; fewer wake-ups per buffer in the region host, coalescing the
+    passthrough exit, and O10, each measured there.
+32. **The allocator under more threads.** The setting ADP compiles into `jemalloc` (`narenas:1,tcache:false`) makes
+    every allocation take one arena's lock (0.5 µs per allocation and free with two threads at once, 1.6 µs with four,
+    against 31 ns alone), and lanes add allocating threads; with the thread cache on, the shared group counters of the
+    tracking allocator contend next. A ceiling common to legacy and plan on the gate host may come from the allocator.
+    Mitigation: the gate host's curves report allocations per metric and run `MALLOC_CONF=tcache:true` beside the native
+    setting (an owner decision, the status document's).
 
 ## 12. Open questions
 
 **No question blocks the design or its implementation.** One (Q2, a gate host) needs the owner before the stage 9
-gate can be called; the others are confirmations of documented defaults, each of which can be revisited.
+gate can be called; the others are confirmations of documented defaults, each of which can be revisited. **As built**,
+the evidence settled Q1 (on macOS, with gate item 4 still the gate host's); Q2 stays open; Q3 to Q6 are confirmations
+the evidence cannot give; Q7 is new.
 
 | # | Question | Blocks | Default until answered |
 |---|---|---|---|
-| Q1 | If M1 shows one saturated stream connection below 0.93 of legacy once R1's pipelining is gone, does the owner accept the gap, or keep a narrow pipelining fallback for lanes fed by a single connection? Decoding may dominate, in which case the question disappears. | nothing now; it arrives with M1 and is gate item 4 | build without a fallback; measure |
+| Q1 | If M1 shows one saturated stream connection below 0.93 of legacy once R1's pipelining is gone, does the owner accept the gap, or keep a narrow pipelining fallback for lanes fed by a single connection? Decoding may dominate, in which case the question disappears. **Answered by M1's rerun at 9.3 (8.6): the question disappears on macOS.** With R1 off, one connection on a producer lane ran at 1.069, 0.984, 0.984, and 1.000 of legacy at W = 1, 2, 4, and 8 (five rounds), and without lanes at 1.055, 1.000, 0.989, and 1.003: the connection is bound by its own decoding task, which pipelines with the lane. | nothing; gate item 4 is still measured on the gate host | no fallback (as built) |
 | Q2 | **The gate needs a Linux host with at least 20 homogeneous cores** (W = 16 plus four for lading and the blackhole, on disjoint CPU sets), and 36 for W = 32. Can the owner provide or approve one? Docker on this Mac runs a VM whose vCPUs float over performance and efficiency cores, so it can check F7 and M6 but not homogeneous scaling, and on macOS the CPU-time reads that partitioning multiplies do not exist. | **calling the stage 9 gate** (not implementation) | P9.0 builds the container harness and its A/A series; in-process curves are reported with the caveat; the automatic lane counts stay at their caps until a gate run passes |
 | Q3 | Confirm amendment 91: when its authority removes or rebinds an output the artifact in effect uses, the artifact keeps running with its emits to that output dropped and counted (degraded), instead of the specification's "the current generation keeps running" (which keeps the removed destination receiving) or a fallback to the default program (which undoes the artifact's other routing and drops); and that a removed recipient stops receiving at the resource transaction that withdraws it, the last payloads its old leases address to it dropped and counted rather than delivered (A8). | nothing | as designed |
 | Q4 | Confirm amendments 108 and 109: across producers, a gauge's last value, first metadata, and kind conflicts follow arrival order at a lane (the race native has at its admission mutex); admission time is taken at the lane, one queue later than stage 6. | nothing | as designed |
 | Q5 | Confirm assumption A14: a live change to `additional_endpoints` also changes where logs, events, and traces go, through a resource transaction that waits for no metrics cut or prepare, as a restart would. | nothing | as designed |
-| Q6 | Accept decision-log entries for the new limits that change behavior: `COALESCE_HOLD` (5 ms), `KEY_GROUPS` (256), `MAX_LANES` (64), `PRODUCER_LANES_MAX` (16), `ROUTE_BUFFER_EVENTS` (2,048), `TICK_RECORD_DEPTH` (4), `MAX_OPEN_EPOCHS` (4), CPU-time sampling (16), `LEASE_QUEUE_BUFFERS` (8), `MAX_DRAINING_RECIPIENTS` (16), and `DRAIN_DEADLINE` (30 s) now applied to recipients (already open under amendment 20). | nothing | the values above, each with a note in `limits.rs` |
+| Q6 | Accept decision-log entries for the new limits that change behavior: `COALESCE_HOLD` (5 ms), `KEY_GROUPS` (256), `MAX_LANES` (64), `PRODUCER_LANES_MAX` (16), `ROUTE_BUFFER_EVENTS` (2,048), `TICK_RECORD_DEPTH` (4), `MAX_OPEN_EPOCHS` (4), CPU-time sampling (16), `LEASE_QUEUE_BUFFERS` (8), `MAX_DRAINING_RECIPIENTS` (16), and `DRAIN_DEADLINE` (30 s) now applied to recipients (already open under amendment 20). As built, also `CONTEXT_RESERVATION_BLOCK` (64, `limits.rs`), and in ADP's `lanes.rs` `AUTOMATIC_STATE_LANES_MAX` (4), `AUTOMATIC_POST_LANES_MAX` (8), and `PRODUCER_LANES_MIN_WORKERS` (3). | nothing | the values above, each with a decision-log note |
+| Q7 | Lanes are on by default (`lanes.mode: auto`, amendment 157) at counts chosen on macOS and a 6-vCPU VM, before a gate host ran items 1 to 4; process CPU per metric on lanes read up to 1.13 of legacy's saturated and 1.30 paced on those hosts (8.6). Does the owner accept the default now, or keep `off` until the gate passes? | nothing in the code: one default | `auto` (as built) |

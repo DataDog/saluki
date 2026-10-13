@@ -4,7 +4,10 @@ use std::{hash::BuildHasher as _, num::NonZeroU64, time::Duration};
 
 use ddsketch::DDSketch;
 use hashbrown::HashTable;
-use saluki_core::data_model::event::metric::{context::Context, *};
+use saluki_core::{
+    data_model::event::metric::{context::Context, *},
+    execution::BudgetReservation,
+};
 use smallvec::SmallVec;
 use stringtheory::MetaString;
 use tracing::{debug, trace};
@@ -59,28 +62,65 @@ pub(super) struct AggregationState {
     context_limit_breached: bool,
 }
 
-/// The limit a state admits new contexts by, and clears its breach flag by.
-#[derive(Clone, Copy, Debug)]
+/// The limit a state admits new contexts by, and clears its breach flag by, for one call: the admission of one batch,
+/// or the end of one flush.
+///
+/// A limit that shares budgets holds the call's reservation of their units, which the call's new contexts take. It
+/// takes each unit as its new context is admitted, unless the state is one lane's share of a state owner on several
+/// lanes, which takes them in blocks ([`in_blocks`][Self::in_blocks]); the reservation returns the units it took and
+/// no new context used when the limit is dropped, at the end of the call.
+#[derive(Debug)]
 pub(super) struct ContextLimit<'a> {
     /// The most contexts held: by the state itself, or, when it shares budgets, by every state of its node together.
     pub(super) limit: usize,
 
     /// The budgets the state shares with other states, or `None` if it admits by its own context count.
     pub(super) shared: Option<&'a ContextBudget>,
+
+    /// The units of the node's and the global budget the call reserved for its new contexts, if the state shares
+    /// budgets.
+    reservation: Option<BudgetReservation<'a>>,
 }
 
 impl<'a> ContextLimit<'a> {
     /// The limit of a state that admits by its own context count.
     pub(super) fn exclusive(limit: usize) -> Self {
-        Self { limit, shared: None }
+        Self {
+            limit,
+            shared: None,
+            reservation: None,
+        }
     }
 
     /// The limit of a state that shares `budget`, where `limit` caps the contexts of every state of its node.
+    ///
+    /// Its new contexts take one unit of each budget as each is admitted.
     pub(super) fn shared(limit: usize, budget: &'a ContextBudget) -> Self {
+        let reservation = BudgetReservation::new(&budget.node, limit_units(limit), &budget.global).with_max_block(1);
         Self {
             limit,
             shared: Some(budget),
+            reservation: Some(reservation),
         }
+    }
+
+    /// Makes the call's new contexts take their units in blocks, for a state that is one lane's share of a state owner
+    /// on several lanes: a first block of `first_block` units, as many as the lane's previous batch admitted, and later
+    /// ones as large as the units handed out, up to [`BudgetReservation::MAX_BLOCK`].
+    ///
+    /// A limit that does not share budgets is unchanged.
+    pub(super) fn in_blocks(mut self, first_block: u64) -> Self {
+        self.reservation = self.reservation.map(|reservation| {
+            reservation
+                .with_max_block(BudgetReservation::MAX_BLOCK)
+                .with_first_block(first_block)
+        });
+        self
+    }
+
+    /// Returns the new contexts the call admitted against shared budgets: the units its reservation handed out.
+    pub(super) fn admitted(&self) -> u64 {
+        self.reservation.as_ref().map_or(0, BudgetReservation::taken)
     }
 
     /// Takes room for a new context in a state holding `len` contexts, or returns `false` if there is none.
@@ -89,27 +129,35 @@ impl<'a> ContextLimit<'a> {
     /// node's budget counts fewer contexts than the limit and the global budget has a unit left; the new context then
     /// holds one unit of each.
     ///
-    /// The node's unit is taken first, in one bounded acquisition, as native aggregation checks its own count first:
-    /// states of one node that admit at once, from several tasks, then never hold more than the limit together, and a
-    /// node at its limit never holds a global unit, even for a moment, that another node's context could be refused
-    /// for. A global refusal gives the node's unit back.
-    fn try_admit(&self, len: usize) -> bool {
-        let Some(budget) = self.shared else {
-            return len < self.limit;
-        };
-        // This protocol is transcribed in `saluki-core`'s `loom` model of budgets (`execution::budget::loom_tests`),
-        // which must change with it.
-        if !budget.node.try_acquire_below(1, limit_units(self.limit)) {
-            return false;
+    /// The units come from the call's reservation; see [`BudgetReservation`]. Each acquisition takes the node's units
+    /// first, bounded by the limit, as native aggregation checks its own count first: states of one node that admit at
+    /// once, from several tasks, then never hold more than the limit together, and a node at its limit never holds a
+    /// global unit, even for a moment, that another node's context could be refused for. The node's units the global
+    /// budget has no room for go back at once.
+    ///
+    /// By default the reservation takes one unit of each budget per new context, so the state is refused only while
+    /// admitted contexts fill a budget, whatever other tasks do at once, as with no reservation at all. With
+    /// [`in_blocks`][Self::in_blocks], it takes them in blocks, one compare-and-swap on each budget per block, and
+    /// returns the ones it did not use when the call ends. Units that sit in the reservation of another lane's batch,
+    /// fewer than [`BudgetReservation::MAX_BLOCK`] for each, count as in use until that batch ends, which can refuse a
+    /// new context: capacity behavior, as is which contexts win at the limit.
+    fn try_admit(&mut self, len: usize) -> bool {
+        // `saluki-core`'s `loom` models of budgets (`execution::budget::loom_tests`) run this protocol, the reservation
+        // a batch takes its units through, in blocks and one unit at a time: a model here would only call it.
+        match &mut self.reservation {
+            None => len < self.limit,
+            Some(reservation) => reservation.take(),
         }
-        if !budget.global.try_acquire(1) {
-            budget.node.release(1);
-            return false;
-        }
-        true
     }
 
     /// Returns `true` if a state holding `len` contexts is below the limit, so that a flush clears its breach flag.
+    ///
+    /// A state that shares budgets reads their counts. No unit stays reserved between batches, and none sits in a
+    /// reservation that takes units one at a time, so a flush that ends while no lane's batch takes units in blocks
+    /// decides by held contexts alone. One that ends during another lane's batch counts the units that batch reserved
+    /// and does not use, fewer than [`BudgetReservation::MAX_BLOCK`], and can keep the flag for a later pass to clear:
+    /// a drop before that pass belongs to the episode it continues, which warned already. It never clears the flag
+    /// while the held contexts fill a budget.
     fn is_below(&self, len: usize) -> bool {
         match self.shared {
             None => len < self.limit,
@@ -246,6 +294,25 @@ impl AggregationState {
         &mut self.telemetry
     }
 
+    /// Returns the time of the last flush, in whole Unix seconds, or `0` if the state never flushed since it was
+    /// created or last forgot its flushes.
+    pub(super) fn last_flush(&self) -> u64 {
+        self.last_flush
+    }
+
+    /// Returns `true` if the state, holding what it holds now, is below `limit`, as the end of a flush judges it to
+    /// clear its breach flag.
+    pub(super) fn is_below_limit(&self, limit: &ContextLimit<'_>) -> bool {
+        limit.is_below(self.contexts.len())
+    }
+
+    /// Returns `true` if the state holds `context`, idle or not.
+    pub(super) fn contains(&self, context: &Context) -> bool {
+        self.contexts
+            .find(self.hasher.hash_one(context), |(held, _)| held == context)
+            .is_some()
+    }
+
     /// Forgets every flush, as a drain or a discard does when it ends: the next flush is as the first one.
     pub(super) fn forget_flushes(&mut self) {
         self.last_flush = 0;
@@ -275,7 +342,7 @@ impl AggregationState {
 
     /// Inserts `metric`, which arrived at `timestamp`, unless it is for a new context and `limit` leaves no room for
     /// it.
-    pub(super) fn insert(&mut self, timestamp: u64, metric: Metric, limit: ContextLimit<'_>) -> Insertion {
+    pub(super) fn insert(&mut self, timestamp: u64, metric: Metric, limit: &mut ContextLimit<'_>) -> Insertion {
         let hash = self.hasher.hash_one(metric.context());
 
         // If we haven't seen this context yet, and it would put us over the limit to insert it, then return early.
@@ -353,7 +420,7 @@ impl AggregationState {
     /// budgets is bounded by them instead, since a later call may pass a lower limit than the contexts it already
     /// holds, which keep their units: the global budget never counts more than its capacity, and the node's budget
     /// counts at least this state's contexts.
-    fn check_bounds(&self, limit: ContextLimit<'_>) {
+    fn check_bounds(&self, limit: &ContextLimit<'_>) {
         let len = self.contexts.len();
         match limit.shared {
             None => {
@@ -409,6 +476,18 @@ impl AggregationState {
     pub(super) fn start_flush(
         &self, current_time: u64, flush_open_buckets: bool, counter_expiry: Option<NonZeroU64>,
     ) -> FlushCursor {
+        self.start_flush_since(current_time, self.last_flush, flush_open_buckets, counter_expiry)
+    }
+
+    /// Starts a flush at `current_time` as [`start_flush`][Self::start_flush] does, with idle-counter zeros starting
+    /// from `last_flush`, the previous flush, in place of the state's own: `0` for none, so that the flush adds no
+    /// zeros, as a first flush does.
+    ///
+    /// The lanes of a lineage partitioned over several states pass the latest flush at which any of them held
+    /// contexts, which with one state is its own.
+    pub(super) fn start_flush_since(
+        &self, current_time: u64, last_flush: u64, flush_open_buckets: bool, counter_expiry: Option<NonZeroU64>,
+    ) -> FlushCursor {
         let bucket_width_secs = self.bucket_width_secs;
         let counter_expire_secs = counter_expiry.map(|d| d.get()).unwrap_or(0);
 
@@ -421,8 +500,8 @@ impl AggregationState {
         // We only need to do this if we've flushed before, since we won't have any knowledge of which counters are idle
         // or not until that happens.
         let mut zero_value_buckets = SmallVec::<[(u64, MetricValues); 4]>::new();
-        if self.last_flush != 0 {
-            let start = align_to_bucket_start(self.last_flush, bucket_width_secs);
+        if last_flush != 0 {
+            let start = align_to_bucket_start(last_flush, bucket_width_secs);
 
             // Clock-skew guards. Bucketing reads the wall clock while the flush cadence is monotonic, so a wall-clock
             // jump is not bounded by the flush interval. A backward jump empties the zero-value range (a silent counter
@@ -430,19 +509,19 @@ impl AggregationState {
             // work and allocation. Assert before the loop so a flood fails fast rather than after the damage is done.
             saluki_antithesis::always_ge!(
                 current_time,
-                self.last_flush,
+                last_flush,
                 "aggregate flush wall-clock did not move backward",
-                { "current_time": current_time, "last_flush": self.last_flush }
+                { "current_time": current_time, "last_flush": last_flush }
             );
             // The 10_000 bound is generous. A default 15s flush over a 10s bucket yields one or two buckets. The bound
             // trips only on a multi-hour wall-clock jump, never on a slow-but-sane flush.
             saluki_antithesis::always_le!(
-                current_time.saturating_sub(self.last_flush) / bucket_width_secs.get(),
+                current_time.saturating_sub(last_flush) / bucket_width_secs.get(),
                 10_000,
                 "aggregate zero-value bucket span bounded across a flush",
                 {
                     "current_time": current_time,
-                    "last_flush": self.last_flush,
+                    "last_flush": last_flush,
                     "bucket_width_secs": bucket_width_secs.get()
                 }
             );
@@ -664,7 +743,7 @@ impl AggregationState {
         }
         if limit.shared.is_some() {
             // A state that admits by its own count is bounded only when it admits: a later call may pass a lower limit.
-            self.check_bounds(limit);
+            self.check_bounds(&limit);
         }
 
         match cursor.plan.mode {

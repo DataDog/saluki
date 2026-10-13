@@ -6,18 +6,31 @@
 //! admission points upstream of it, its tick at the gate, and, while a cut replaces it, the generations it retires
 //! between. Programs bind instances by their index here: a `retain` transition binds the same instance in the new
 //! program, and a `cut` gives the new program a new instance while the old one retires.
+//!
+//! Inside a reset window ([`SlotTime`]) a lineage has one instance per open epoch of its source clock: the one its
+//! generations bind, holding the oldest epoch's data, and one created for each newer epoch's first data, which stands
+//! beside it until the window closes and the lineage continues in the newest epoch.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    num::NonZeroU64,
+    time::Duration,
+};
 
-use saluki_core::execution::{AdmissionPointId, AdmissionTime, GenerationRef, Kernel};
+use saluki_core::{
+    data_model::event::metric::Metric,
+    execution::{AdmissionPointId, AdmissionTime, GenerationRef, Kernel},
+};
 
 use crate::{
     compile::LineageKey,
-    runtime::state::rules::{RetiringRefs, WatermarkTracker},
+    equivalence::{Admission, BucketCandidates, ContextIdentity, MetadataIdentity, Point, PointKind, PointValue},
+    runtime::state::rules::{ResetWindow, RetiringRefs, WatermarkTracker},
 };
 
 /// The generations a lineage retires between, both held for as long as it retires: the one it served, whose program
 /// its last output flows through, and the one replacing it, whose cut boundary says when it retires.
+#[derive(Clone)]
 pub(super) struct Retiring {
     pub owner: GenerationRef,
     pub by: GenerationRef,
@@ -45,6 +58,23 @@ pub(super) struct Instance {
 
     /// Whether the instance made its final flush at a cut: it holds nothing, and never ticks or flushes again.
     pub retired: bool,
+
+    /// The epoch of the source clock whose data the instance holds.
+    pub epoch: u32,
+
+    /// For an instance a reset window created for a newer epoch's data: the instance its lineage's generations bind,
+    /// which it stands beside until the window closes.
+    pub primary: Option<usize>,
+
+    /// Whether a reset window holds the instance's epoch open: it no longer ticks, and it drains when that epoch
+    /// closes.
+    pub reset_retiring: bool,
+
+    /// The bucket width of the lineage, which buckets the candidates it records.
+    pub width: Option<Duration>,
+
+    /// What candidate mode recorded of what the instance admitted, by context, when the interpreter runs in it.
+    pub admitted: Option<BTreeMap<ContextIdentity, EntryCandidates>>,
 }
 
 impl Instance {
@@ -58,6 +88,32 @@ impl Instance {
             last_flush: None,
             retiring: None,
             retired: false,
+            epoch: 0,
+            primary: None,
+            reset_retiring: false,
+            width: None,
+            admitted: None,
+        }
+    }
+
+    /// Returns the index of the instance the lineage's generations bind: this one, or the one it stands beside.
+    pub fn root(&self, index: usize) -> usize {
+        self.primary.unwrap_or(index)
+    }
+
+    /// Returns `true` if the instance takes part in flush ticks: it holds a lineage's data of an epoch no reset window
+    /// holds open, and has not made its final flush.
+    pub fn ticks(&self) -> bool {
+        !self.retired && !self.reset_retiring && self.primary.is_none()
+    }
+
+    /// Returns the watermark the instance's flushes run by: of its own epoch when its upstream points share one clock,
+    /// so that inside a reset window an epoch's instance is closed only by that epoch's stamps.
+    pub fn watermark(&self, one_clock: bool) -> Option<AdmissionTime> {
+        if one_clock {
+            self.tracker.watermark_in(self.epoch)
+        } else {
+            self.tracker.watermark()
         }
     }
 
@@ -83,6 +139,89 @@ impl Instance {
     pub fn output_clock(&self) -> Vec<AdmissionPointId> {
         self.tracker.upstream().collect()
     }
+}
+
+/// What one entry of an instance was admitted with, for candidate mode: per bucket, each admission point's last
+/// admission into it, and the kinds and metadata of every admission while the entry lived.
+#[derive(Clone, Debug, Default)]
+pub(super) struct EntryCandidates {
+    buckets: BTreeMap<Option<NonZeroU64>, BTreeMap<AdmissionPointId, Admission>>,
+    kinds: BTreeSet<PointKind>,
+    metadata: BTreeSet<MetadataIdentity>,
+}
+
+impl EntryCandidates {
+    /// Records one metric admitted at `point` at `admitted_at` by the instance `instance`, the run's admission
+    /// `order`: its untimestamped values in the bucket of width `width` that holds the admission time, as aggregation
+    /// buckets them, and its timestamped values at their timestamps.
+    ///
+    /// The kind is recorded as the state owner emits it, which is how an output sees it: aggregation, an owner with a
+    /// bucket width, emits a counter as a rate over its width.
+    pub fn admit(
+        &mut self, point: AdmissionPointId, admitted_at: AdmissionTime, width: Option<Duration>, metric: &Metric,
+        instance: u64, order: u64,
+    ) {
+        let kind = match (PointKind::of(metric.values()), width) {
+            (PointKind::Counter, Some(width)) => PointKind::Rate {
+                interval: Duration::from_secs(width.as_secs().max(1)),
+            },
+            (kind, _) => kind,
+        };
+        self.kinds.insert(kind);
+        self.metadata.insert(MetadataIdentity::of(metric.metadata()));
+        let bucket = width
+            .map(|width| width.as_secs().max(1))
+            .map(|width| admitted_at.as_unix_secs() - admitted_at.as_unix_secs() % width);
+        let untimestamped = bucket.and_then(NonZeroU64::new);
+        for flat in Point::flatten(metric) {
+            let gauge = match (kind, &flat.value) {
+                (PointKind::Gauge, PointValue::Scalar(value)) => Some(*value),
+                _ => None,
+            };
+            let admission = Admission {
+                kind,
+                gauge,
+                instance,
+                order,
+            };
+            self.buckets
+                .entry(flat.timestamp.or(untimestamped))
+                .or_default()
+                .insert(point, admission);
+        }
+    }
+
+    /// Returns the candidates of every bucket the entry was admitted to, with the kinds and metadata of every
+    /// admission, which every emitted record of the entry carries.
+    pub fn tag(&self) -> Vec<(Option<NonZeroU64>, BucketCandidates)> {
+        self.buckets
+            .iter()
+            .map(|(timestamp, last)| {
+                (
+                    *timestamp,
+                    BucketCandidates {
+                        last: last.clone(),
+                        kinds: self.kinds.clone(),
+                        metadata: self.metadata.clone(),
+                    },
+                )
+            })
+            .collect()
+    }
+}
+
+/// The time of one isolation slot, as a region keeps it: the progress of the admission points upstream of the slot's
+/// state owners, and its reset window.
+pub(super) struct SlotTime {
+    /// The progress of the slot's upstream points, which every instance of the slot also keeps.
+    pub tracker: WatermarkTracker,
+
+    /// The slot's reset window.
+    pub window: ResetWindow,
+
+    /// Whether every upstream point stamps by one clock, the lanes of one source: only then does a reset run as a
+    /// window, since points of independent clocks never all switch to one epoch.
+    pub one_clock: bool,
 }
 
 /// The instances of every lineage of the run, by index.

@@ -1,4 +1,7 @@
-//! Fakes of the encode and delivery hosts, for tests of the installer's resource actions.
+//! Fakes of the encode and delivery hosts, for tests of the installer's resource actions, and of a region with lanes.
+//!
+//! [`FakeLanedRegion`] serves a slot's control mailbox as the coordinator of a region with lanes does, splitting each
+//! message per lane and acknowledging it once, for the installer's and the snapshot bridge's tests with lanes.
 //!
 //! Each fake serves a host's control mailbox as the real host does, without encoding or sending anything: it marks its
 //! mailbox running, records every message it handles, and acknowledges each one, rejecting the next one when a test
@@ -14,6 +17,7 @@
 //! ([`FakeHost::hold_drains`]): it then drains until the test retires it ([`FakeHost::retire`]).
 
 use std::{
+    any::Any,
     collections::BTreeMap,
     sync::{Arc, Mutex},
 };
@@ -27,9 +31,10 @@ use saluki_components::{
 };
 use saluki_core::execution::{
     control::{ControlMailbox, ControlReceiver},
-    EntryId,
+    EntryId, GenerationId, LaneSplit,
 };
 use saluki_error::generic_error;
+use saluki_metric_plan::runtime::RegionControl;
 use tokio::{sync::mpsc, task::JoinHandle};
 
 /// The body of the payloads the Datadog delivery hosts carry.
@@ -534,6 +539,268 @@ fn delivery_control(message: DeliveryControl<Body>, shared: &mut Shared) -> Hand
         }
         DeliveryControl::Abort { generation } => shared.abort(Creator::Generation(generation)),
         DeliveryControl::AbortResources { revision } => shared.abort(Creator::Transaction(revision)),
+    }
+}
+
+/// What one lane of a fake region with lanes did with its part of a control message.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum LaneEvent {
+    /// The lane accepted its share of a preparation of `generation`.
+    Prepared {
+        /// The lane.
+        lane: u16,
+
+        /// The generation.
+        generation: GenerationId,
+    },
+
+    /// The lane aborted `generation`.
+    Aborted {
+        /// The lane.
+        lane: u16,
+
+        /// The generation.
+        generation: GenerationId,
+    },
+
+    /// The lane released what retired.
+    Released {
+        /// The lane.
+        lane: u16,
+    },
+
+    /// A kernel control message reached the lane, and was answered.
+    Kernel {
+        /// The lane.
+        lane: u16,
+    },
+
+    /// The lane rejected its part of a message, or the coordinator rejected a message it could not split or route.
+    Rejected {
+        /// The lane, or `None` for the coordinator.
+        lane: Option<u16>,
+
+        /// Why.
+        reason: String,
+    },
+}
+
+/// What a fake region with lanes records, and the rejections its lanes answer their next part with.
+#[derive(Default)]
+struct LanedShared {
+    events: Vec<LaneEvent>,
+    reject_next: BTreeMap<u16, String>,
+}
+
+/// Answers a kernel control message for one lane, as the lane's kernels would: given the lane and the message, it
+/// returns the message the reply is called with.
+type LaneAnswer = dyn Fn(u16, Box<dyn Any + Send>) -> Box<dyn Any + Send> + Send;
+
+/// A fake slot with lanes, standing in for a region host's coordinator, for the installer's and the snapshot bridge's
+/// tests with lanes (P9.5).
+///
+/// It serves the slot's control mailbox as the coordinator does: it splits each message per lane ([`LaneSplit`]),
+/// hands each lane its part in lane order, records what each lane did, and acknowledges the message once, after every
+/// lane accepted its part, or with the first lane's rejection, as the coordinator does; it routes a kernel control
+/// message to the lane it names, answering it through `answer`, and rejects one that names no lane, or a lane the slot
+/// does not have, as it rejects a preparation whose shares are for another number of lanes.
+pub(super) struct FakeLanedRegion {
+    shared: Arc<Mutex<LanedShared>>,
+    task: JoinHandle<()>,
+}
+
+impl FakeLanedRegion {
+    /// Serves the mailbox of a slot with `lanes` lanes.
+    pub(super) fn serve<A>(mailbox: ControlMailbox<RegionControl>, lanes: u16, answer: A) -> Self
+    where
+        A: Fn(u16, Box<dyn Any + Send>) -> Box<dyn Any + Send> + Send + 'static,
+    {
+        let shared = Arc::new(Mutex::new(LanedShared::default()));
+        let answer: Box<LaneAnswer> = Box::new(answer);
+        let mut receiver = mailbox.into_receiver_for("region");
+        receiver.mark_running();
+        let task = tokio::spawn({
+            let shared = Arc::clone(&shared);
+            async move {
+                while let Some((message, reply)) = receiver.recv().await {
+                    let outcome = handle_laned(&mut shared.lock().unwrap(), lanes, message, answer.as_ref());
+                    match outcome {
+                        Ok(()) => reply.ack(),
+                        Err(reason) => reply.reject(generic_error!("{}", reason)),
+                    }
+                }
+            }
+        });
+        Self { shared, task }
+    }
+
+    /// Makes lane `lane` reject its part of the next message that reaches it with `reason`.
+    pub(super) fn reject_lane_next(&self, lane: u16, reason: impl Into<String>) {
+        self.shared.lock().unwrap().reject_next.insert(lane, reason.into());
+    }
+
+    /// Returns what the lanes and the coordinator did, in order.
+    pub(super) fn events(&self) -> Vec<LaneEvent> {
+        self.shared.lock().unwrap().events.clone()
+    }
+}
+
+impl Drop for FakeLanedRegion {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// Handles one control message for a fake region with `lanes` lanes, returning its acknowledgment.
+fn handle_laned(
+    shared: &mut LanedShared, lanes: u16, message: RegionControl, answer: &LaneAnswer,
+) -> Result<(), String> {
+    let reject = |shared: &mut LanedShared, lane: Option<u16>, reason: String| {
+        shared.events.push(LaneEvent::Rejected {
+            lane,
+            reason: reason.clone(),
+        });
+        Err(reason)
+    };
+    let parts = match message.split(lanes) {
+        Ok(parts) => parts,
+        Err(RegionControl::Kernel(control)) => {
+            let Some(lane) = control.lane.filter(|lane| *lane < lanes) else {
+                return reject(
+                    shared,
+                    None,
+                    format!(
+                        "a kernel control message for {:?} reached a slot with {} lanes",
+                        control.lane, lanes
+                    ),
+                );
+            };
+            if let Some(reason) = shared.reject_next.remove(&lane) {
+                return reject(shared, Some(lane), reason);
+            }
+            (control.reply)(answer(lane, control.message));
+            shared.events.push(LaneEvent::Kernel { lane });
+            return Ok(());
+        }
+        Err(_) => {
+            return reject(
+                shared,
+                None,
+                format!("a preparation's shares are not for {} lanes", lanes),
+            )
+        }
+    };
+    for (lane, part) in (0..lanes).zip(parts) {
+        if let Some(reason) = shared.reject_next.remove(&lane) {
+            return reject(shared, Some(lane), reason);
+        }
+        shared.events.push(match part {
+            RegionControl::Prepare(prepare) => LaneEvent::Prepared {
+                lane,
+                generation: prepare.generation().id(),
+            },
+            RegionControl::Abort { generation } => LaneEvent::Aborted { lane, generation },
+            RegionControl::Release => LaneEvent::Released { lane },
+            RegionControl::Kernel(_) => unreachable!("a kernel control message never splits"),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod laned_tests {
+    use std::sync::Arc;
+
+    use saluki_core::execution::{control_mailbox, GenerationToken};
+    use saluki_metric_plan::runtime::{
+        KernelControl, KernelTarget, LanePreparation, NoTelemetry, PanicBudget, PrepareRegion,
+    };
+    use tokio::sync::oneshot;
+
+    use super::*;
+    use crate::programmable_metrics::test_support::{configuration_system, programmable_metrics, ConfigCell};
+
+    /// A preparation of the boot program of the first slot for generation 2, with one empty share per lane.
+    async fn preparation(lanes: usize) -> PrepareRegion {
+        let config = configuration_system("").await.config();
+        let cell = ConfigCell::new(config.as_ref().clone());
+        let mut metrics = programmable_metrics(&config, cell.live(), &Default::default())
+            .expect("the base configuration has a metrics pipeline");
+        let program = Arc::clone(&metrics.boot_topology().programs[0]);
+        let generation = Arc::new(GenerationToken::new(GenerationId::new(2)));
+        PrepareRegion::new(generation, program, Vec::new(), PanicBudget::Zero, &NoTelemetry)
+            .with_lanes((0..lanes).map(|_| LanePreparation::default()).collect())
+    }
+
+    #[tokio::test]
+    async fn a_laned_region_acknowledges_once_every_lane_accepted_or_with_the_first_rejection() {
+        let (sender, mailbox) = control_mailbox();
+        let region = FakeLanedRegion::serve(mailbox, 2, |_, message| message);
+        assert!(sender
+            .send(RegionControl::Prepare(Box::new(preparation(2).await)))
+            .await
+            .is_ok());
+        region.reject_lane_next(1, "lane 1 cannot prepare");
+        let error = sender
+            .send(RegionControl::Abort {
+                generation: GenerationId::new(2),
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("lane 1 cannot prepare"), "{}", error);
+        assert!(sender.send(RegionControl::Release).await.is_ok());
+        let error = sender
+            .send(RegionControl::Prepare(Box::new(preparation(3).await)))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not for 2 lanes"), "{}", error);
+
+        let generation = GenerationId::new(2);
+        assert_eq!(
+            region.events(),
+            vec![
+                LaneEvent::Prepared { lane: 0, generation },
+                LaneEvent::Prepared { lane: 1, generation },
+                LaneEvent::Aborted { lane: 0, generation },
+                LaneEvent::Rejected {
+                    lane: Some(1),
+                    reason: "lane 1 cannot prepare".to_string()
+                },
+                LaneEvent::Released { lane: 0 },
+                LaneEvent::Released { lane: 1 },
+                LaneEvent::Rejected {
+                    lane: None,
+                    reason: "a preparation's shares are not for 2 lanes".to_string()
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_laned_region_routes_a_kernel_message_to_the_lane_it_names() {
+        let (sender, mailbox) = control_mailbox();
+        let region = FakeLanedRegion::serve(mailbox, 2, |lane, _| Box::new(lane));
+        let request = |lane| {
+            let (answered, answer) = oneshot::channel();
+            let control = KernelControl {
+                target: KernelTarget::Stateful,
+                lane,
+                message: Box::new(()),
+                reply: Box::new(move |message| {
+                    let _ = answered.send(*message.downcast::<u16>().unwrap());
+                }),
+            };
+            (RegionControl::Kernel(control), answer)
+        };
+        let (message, answer) = request(Some(1));
+        assert!(sender.send(message).await.is_ok());
+        assert_eq!(answer.await.unwrap(), 1);
+        let (message, answer) = request(None);
+        assert!(sender.send(message).await.is_err());
+        assert!(answer.await.is_err(), "a rejected request is never answered");
+        assert_eq!(region.events()[0], LaneEvent::Kernel { lane: 1 });
     }
 }
 

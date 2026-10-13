@@ -1015,6 +1015,7 @@ impl TraceParams {
             }
             events.push(TraceEvent::Admit {
                 source: source.parse().expect("valid node ID"),
+                lane: 0,
                 admitted_at: AdmissionTime::from_unix_secs(1_000 + position as u64),
                 batch,
             });
@@ -1407,6 +1408,7 @@ mod tests {
         let case = Case::of(keep(json!({"kind_in": ["gauge"]})), Vec::new()).unwrap();
         let events = vec![TraceEvent::Admit {
             source: "src".parse().unwrap(),
+            lane: 0,
             admitted_at: AdmissionTime::from_unix_secs(1_000),
             batch: vec![Metric::gauge("kept", 1.0), Metric::counter("dropped", [1.0, 2.0])],
         }];

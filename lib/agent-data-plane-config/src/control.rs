@@ -4,7 +4,12 @@
 //! components. It carries pipeline activation gates, topology-shaping decisions, listen addresses,
 //! logging (read before topology exists), bootstrap IPC parameters, and process-lifecycle knobs.
 
-use std::{collections::BTreeMap, num::NonZeroUsize, path::PathBuf, time::Duration};
+use std::{
+    collections::BTreeMap,
+    num::{NonZeroU16, NonZeroUsize},
+    path::PathBuf,
+    time::Duration,
+};
 
 use serde::Serialize;
 
@@ -131,6 +136,45 @@ pub struct ProgrammableMetrics {
 
     /// What resources artifacts may use.
     pub resources: ProgrammableMetricsResources,
+
+    /// How many lanes the slots of the metrics path run on, read once at startup.
+    pub lanes: ProgrammableMetricsLanes,
+}
+
+/// How many lanes the slots of the metrics path run on (`experimental.programmable_metrics.lanes.*`). (not in Datadog
+/// Agent config schema)
+///
+/// A lane is a task inside one of the metrics path's slots, which runs the slot's work on an input of its own: the
+/// DogStatsD source's metrics split into producer lanes, one per decoder (`dogstatsd_workers_count`) up to 16;
+/// DogStatsD aggregation runs on state lanes, each holding a disjoint share of the contexts; and post-aggregation
+/// processing runs on lanes of its own. Every setting is read at startup; changing one requires a restart.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ProgrammableMetricsLanes {
+    /// Whether the slots of the metrics path run on lanes.
+    ///
+    /// Defaults to [`LanesMode::Auto`]: lanes, with the automatic counts unless the counts below are set.
+    pub mode: LanesMode,
+
+    /// The state lanes of DogStatsD aggregation, or `None` for the automatic count, which follows the primary
+    /// runtime's workers. A configured `0` is the automatic count.
+    pub state: Option<NonZeroU16>,
+
+    /// The post-aggregation lanes, or `None` for the automatic count, which follows the producer lanes. A configured
+    /// `0` is the automatic count.
+    pub post: Option<NonZeroU16>,
+}
+
+/// Whether the slots of the metrics path run on lanes (`experimental.programmable_metrics.lanes.mode`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LanesMode {
+    /// The slots run on lanes: the producer lanes follow the DogStatsD decoders, and the state and post-aggregation
+    /// lanes are as configured, or automatic.
+    #[default]
+    Auto,
+
+    /// One lane per slot, laid out as before lanes existed; the lane counts are ignored.
+    Off,
 }
 
 /// What resources artifacts, which declare destinations apart from native configuration, may use

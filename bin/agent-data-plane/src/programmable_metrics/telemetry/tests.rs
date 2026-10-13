@@ -726,6 +726,63 @@ async fn each_fused_kernel_is_accounted_in_a_resource_group_of_its_own_under_its
 }
 
 #[tokio::test]
+async fn on_lanes_each_lanes_kernels_are_accounted_in_resource_groups_of_their_own_under_the_lanes_group() {
+    // Three producer lanes and two post-aggregation lanes: each lane's kernels hold what they hold in the lane's own
+    // groups, `<region>.lane_<i>.<node>`, against one lane's bounds there.
+    let registry = saluki_core::accounting::ComponentRegistry::default();
+    let lanes =
+        "dogstatsd_workers_count: 3\nexperimental: {programmable_metrics: {lanes: {mode: auto, state: 1, post: 2}}}";
+    let system = layered_configuration_system(&[CONFIG, lanes]).await;
+    let mut options = Options::new(MetricsPath::Plan, Aggregation::Clocked);
+    options.registry = registry.clone();
+    let mut topology = TestTopology::start(&system, options, |_| {}).await;
+    // Every producer lane, and so both post-aggregation lanes, a batch with a timestamped counter, which passes
+    // aggregation and arrives once the batch went through the lanes.
+    for lane in 0..3 {
+        topology.feed(
+            &format!("dsd_in.metrics_{}", lane),
+            vec![
+                Metric::distribution(Context::from_static_parts("checkout.latency", &["user_id:1"]), 2.0),
+                Metric::counter(Context::from_static_name("lanes.passed"), (1_700_000_000, 1.0)),
+            ],
+        );
+    }
+    topology
+        .wait_for("the passthrough of every lane", |deliveries| {
+            deliveries
+                .iter()
+                .filter(|delivery| delivery.output == "dd_metrics_encode")
+                .flat_map(|delivery| &delivery.metrics)
+                .filter(|metric| metric.context().name() == "lanes.passed")
+                .count()
+                == 3
+        })
+        .await;
+    let status = memory_status(&registry);
+    topology.stop().await;
+
+    let group =
+        |region: &str, lane: u16, node: &str| format!("topology.primary.transforms.{}.lane_{}.{}", region, lane, node);
+    for lane in 0..3 {
+        let (minimum, firm, live) = status
+            .get(&group("dsd_pre_aggregation", lane, "dsd_tag_filterlist"))
+            .copied()
+            .unwrap_or_else(|| panic!("no group for lane {}: {:?}", lane, status.keys().collect::<Vec<_>>()));
+        assert_eq!((minimum, firm), (0, 100_000 * 64), "lane {}", lane);
+        assert!(live > 0, "lane {}'s tag filterlist holds nothing in its group", lane);
+        let (_, _, mapper_live) = status[&group("dsd_pre_aggregation", lane, "dsd_enrich")];
+        assert!(mapper_live > 0, "lane {}'s mapper holds nothing in its group", lane);
+    }
+    for lane in 0..2 {
+        assert!(
+            status.contains_key(&group("metrics_enrich", lane, "metrics_enrich")),
+            "no group for enrichment on lane {}",
+            lane
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_kernel_of_an_isolation_slot_named_after_its_node_is_accounted_in_its_regions_own_group_and_draws_on_state() {
     // How much a kernel's build allocates, at least, in the group its context names.
     const HELD: usize = 8 << 20;
@@ -785,6 +842,37 @@ async fn a_kernel_of_an_isolation_slot_named_after_its_node_is_accounted_in_its_
         );
         drop(held);
     }
+}
+
+#[tokio::test]
+async fn a_kernel_build_measures_its_cpu_time_in_its_group_whatever_the_rate_of_sampling() {
+    use std::num::NonZeroU32;
+
+    use saluki_common::resource_tracking::testing::FakeCpuClock;
+    use saluki_metric_plan::runtime::build_kernels;
+
+    // Builds are long and rare, so a sampled entry would count them as nothing, or as a million times what they cost:
+    // the installer's and the boot's builds read the CPU clock on entering each kernel's group, and on leaving it.
+    let registry = saluki_core::accounting::ComponentRegistry::default();
+    let config = configuration(CONFIG).await;
+    let cell = ConfigCell::new(config.clone());
+    let mut path = programmable_metrics(&config, cell.live(), &registry).expect("a metrics pipeline is required");
+    let boot = path.boot_topology();
+    let clock = FakeCpuClock::install(NonZeroU32::new(1_000_000).unwrap(), 7);
+    let mut built = 0;
+    for program in &boot.programs {
+        let keys = program.kernels().iter().map(|kernel| &kernel.key);
+        built += build_kernels(program, keys, |node| boot.telemetry.kernel_context(program, node))
+            .expect("the boot program's kernels build")
+            .len();
+    }
+    assert!(built > 3, "the boot program has kernels");
+    assert!(
+        clock.reads() >= 2 * built as u64,
+        "{} reads of the CPU clock for {} builds",
+        clock.reads(),
+        built
+    );
 }
 
 #[test]
@@ -905,6 +993,163 @@ async fn aggregation_in_its_region_keeps_the_native_aggregation_components_serie
     assert_eq!(dsd_agg_outputs(&legacy), ["_default".to_string()].into_iter().collect());
     assert_eq!(dsd_agg_outputs(&plan).len(), 1);
     assert!(!dsd_agg_outputs(&plan).contains("_default"));
+}
+
+/// Runs the plan-driven path with the configuration `config`, on lanes as `lanes` says, over the batches, batch `i` fed
+/// to producer lane `i mod producer_lanes`, with `recorder` as the metrics recorder, and returns every series it
+/// registered, with its value.
+async fn telemetry_on_lanes(config: &str, lanes: &str, producer_lanes: usize) -> BTreeMap<Series, String> {
+    let recorder = TestRecorder::default();
+    {
+        let _recorder = metrics::set_default_local_recorder(&recorder);
+        let system = layered_configuration_system(&[config, lanes]).await;
+        let options = Options::new(MetricsPath::Plan, Aggregation::Clocked);
+        let topology = TestTopology::start(&system, options, |_| {}).await;
+        for (index, batch) in batches().into_iter().enumerate() {
+            topology.feed(&format!("dsd_in.metrics_{}", index % producer_lanes), batch);
+        }
+        topology.stop().await;
+    }
+    recorded(&recorder)
+}
+
+/// Compares the series aggregation reports, and what the Datadog Agent's `aggregator.*` metrics are remapped from,
+/// between the legacy topology and the plan-driven one on lanes.
+async fn assert_aggregation_telemetry_on_lanes_is_native(lanes: &str, producer_lanes: usize) {
+    let legacy = telemetry(MetricsPath::Legacy, CONFIG).await;
+    let plan = telemetry_on_lanes(CONFIG, lanes, producer_lanes).await;
+    for metric in TelemetryProfile::Aggregation.metrics() {
+        let mut labels = vec!["component_id:dsd_agg", "component_type:transform"];
+        labels.extend(metric.tags);
+        let series = series(metric.name, &labels);
+        assert!(legacy.contains_key(&series), "native aggregation reports {:?}", series);
+        assert_eq!(plan.get(&series), legacy.get(&series), "{}: {:?}", lanes, series);
+    }
+    let aggregator = |rendered: String| {
+        rendered
+            .lines()
+            .filter(|line| line.starts_with("aggregator__"))
+            .map(String::from)
+            .collect::<Vec<_>>()
+    };
+    let remapped = aggregator(render(get_datadog_agent_remappings(), &plan));
+    assert!(!remapped.is_empty());
+    assert_eq!(
+        remapped,
+        aggregator(render(get_datadog_agent_remappings(), &legacy)),
+        "{}",
+        lanes
+    );
+}
+
+#[tokio::test]
+async fn aggregation_on_producer_lanes_keeps_the_native_aggregation_series_and_what_they_remap_to() {
+    // Three producer lanes into one state lane: the source's metrics are counted in its lanes' outputs, and
+    // aggregation's series are the native component's.
+    let lanes =
+        "dogstatsd_workers_count: 3\nexperimental: {programmable_metrics: {lanes: {mode: auto, state: 1, post: 2}}}";
+    assert_aggregation_telemetry_on_lanes_is_native(lanes, 3).await;
+}
+
+#[tokio::test]
+async fn aggregation_on_four_state_lanes_keeps_the_native_aggregation_series_and_what_they_remap_to() {
+    // Each context is aggregated on one of four state lanes: gauges and counters sum over the lanes, the flush count
+    // is counted once per non-empty tick by the first lane to record it.
+    let lanes =
+        "dogstatsd_workers_count: 3\nexperimental: {programmable_metrics: {lanes: {mode: auto, state: 4, post: 2}}}";
+    assert_aggregation_telemetry_on_lanes_is_native(lanes, 3).await;
+}
+
+/// Runs the plan-driven path with the configuration `config` on lanes as `lanes` says, over the batches, each metric
+/// on the producer lane of `producer_lanes` its name gives it, so that the lanes' caches hold disjoint names; waits
+/// until the caches' background tasks set their gauges, and returns every series registered, with its value.
+async fn telemetry_on_lanes_by_name(config: &str, lanes: &str, producer_lanes: usize) -> BTreeMap<Series, String> {
+    let recorder = TestRecorder::default();
+    {
+        let _recorder = metrics::set_default_local_recorder(&recorder);
+        let system = layered_configuration_system(&[config, lanes]).await;
+        let options = Options::new(MetricsPath::Plan, Aggregation::Clocked);
+        let topology = TestTopology::start(&system, options, |_| {}).await;
+        for batch in batches() {
+            let mut shares = vec![Vec::new(); producer_lanes];
+            for metric in batch {
+                let lane = metric.context().name().bytes().map(usize::from).sum::<usize>() % producer_lanes;
+                shares[lane].push(metric);
+            }
+            for (lane, share) in shares.into_iter().enumerate().filter(|(_, share)| !share.is_empty()) {
+                let feed = if producer_lanes == 1 {
+                    "dsd_in.metrics".to_string()
+                } else {
+                    format!("dsd_in.metrics_{}", lane)
+                };
+                topology.feed(&feed, share);
+            }
+        }
+        // The caches' and interners' gauges are reported by a task of each, once a second, and read before the stop:
+        // on lanes, each lane's caches withdraw what they added once the kernels holding them are dropped.
+        tokio::time::sleep(std::time::Duration::from_millis(2_500)).await;
+        let telemetry = recorded(&recorder);
+        topology.stop().await;
+        telemetry
+    }
+}
+
+/// Returns the gauges of `telemetry` that a background task sets, of the caches and string tables every producer lane's
+/// kernels hold one of: the mapper's result cache and resolver, and the tag filterlist's memo.
+fn producer_lane_cache_gauges(telemetry: &BTreeMap<Series, String>) -> BTreeMap<Series, f64> {
+    const GAUGES: [&str; 6] = [
+        "cache_current_items",
+        "cache_current_weight",
+        "cache_weight_limit",
+        "context_resolver_interner_capacity_bytes",
+        "context_resolver_interner_len_bytes",
+        "context_resolver_interner_entries",
+    ];
+    telemetry
+        .iter()
+        .filter(|((name, _), _)| GAUGES.contains(&name.as_str()))
+        .filter(|((_, tags), _)| {
+            tags.iter()
+                .any(|tag| tag.contains("dsd_mapper") || tag.contains("tag_filterlist"))
+        })
+        .filter_map(|(series, value)| Some((series.clone(), value.strip_prefix("gauge ")?.parse().ok()?)))
+        .collect()
+}
+
+#[tokio::test]
+async fn on_three_producer_lanes_the_background_cache_gauges_sum_over_the_lanes_caches_of_one_identifier() {
+    // One lane each, against three producer lanes over the same names, each name on one lane: the lanes' caches of one
+    // identifier hold disjoint entries, so their items and weights sum to what one cache holds, and their limits and
+    // interner capacities to three times one cache's. Last writer wins would show one lane's.
+    let one =
+        "dogstatsd_workers_count: 1\nexperimental: {programmable_metrics: {lanes: {mode: auto, state: 1, post: 1}}}";
+    let three =
+        "dogstatsd_workers_count: 3\nexperimental: {programmable_metrics: {lanes: {mode: auto, state: 1, post: 1}}}";
+    let one = producer_lane_cache_gauges(&telemetry_on_lanes_by_name(CONFIG, one, 1).await);
+    let three = producer_lane_cache_gauges(&telemetry_on_lanes_by_name(CONFIG, three, 3).await);
+    assert!(!one.is_empty(), "the producer lanes' kernels hold caches");
+    assert_eq!(
+        three.keys().collect::<Vec<_>>(),
+        one.keys().collect::<Vec<_>>(),
+        "the series are the same at every lane count"
+    );
+    for (series, value) in &one {
+        let summed = three[series];
+        match series.0.as_str() {
+            "cache_weight_limit" | "context_resolver_interner_capacity_bytes" => {
+                assert_eq!(summed, 3.0 * value, "{:?}", series)
+            }
+            "cache_current_items" | "cache_current_weight" => assert_eq!(summed, *value, "{:?}", series),
+            // Interned strings, tags among them, repeat across lanes: at least what one interner holds.
+            _ => assert!(
+                summed >= *value,
+                "{:?}: {} on three lanes, {} on one",
+                series,
+                summed,
+                value
+            ),
+        }
+    }
 }
 
 /// Runs `path` on the connected configuration path with clocked aggregation: the DogStatsD source receives the gauge

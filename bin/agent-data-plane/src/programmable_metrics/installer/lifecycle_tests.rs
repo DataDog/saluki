@@ -37,7 +37,9 @@ use saluki_core::{
 };
 use saluki_metric_plan::{
     channel::{ApplyState, ArtifactConfig, ArtifactConfigId, ArtifactProduct, ConfigAcknowledgment},
+    equivalence::{check_capacity, CapacityVerdict},
     ir::{DecodedParams, ParamSpec, ParamType},
+    limits,
     model::{Field, FieldSet, PortType},
     operators::{EffectContract, KernelSpec, OperatorDef, PerKind, PortMapping, Ports},
 };
@@ -147,6 +149,134 @@ impl Kernel for PanicKernel {
     }
 }
 
+/// The name a metric must have for the kernel of a `test_panicking_aggregate` node to panic.
+const PANIC_STATE: &str = "panic.state";
+
+/// Returns the native aggregation operator.
+fn aggregation() -> &'static dyn OperatorDef {
+    OperatorRegistry::native()
+        .get(saluki_metric_plan::operators::names::AGGREGATE)
+        .expect("aggregation is a native operator")
+}
+
+/// Native aggregation, under its own name, whose kernel panics on a metric named [`PANIC_STATE`] before it consumes
+/// the batch, as a state owner with a bug would: everything else is native aggregation's, its parameters, ports,
+/// contract, state, bounds, cost, and partition key. It replaces native aggregation in [`panicking_state_operators`],
+/// so that the boot program's state owner runs it, since a state owner cannot change its operator across generations.
+struct TestPanickingAggregate;
+
+impl OperatorDef for TestPanickingAggregate {
+    fn name(&self) -> &'static str {
+        aggregation().name()
+    }
+
+    fn summary(&self) -> &'static str {
+        "Aggregates as native aggregation does, and panics on a metric with the name a test gives it."
+    }
+
+    fn cost(&self, params: &DecodedParams) -> u32 {
+        aggregation().cost(params)
+    }
+
+    fn params(&self) -> &'static [ParamSpec] {
+        aggregation().params()
+    }
+
+    fn check_params(&self, params: &DecodedParams) -> Vec<saluki_metric_plan::ir::ParamError> {
+        aggregation().check_params(params)
+    }
+
+    fn ports(&self, params: &DecodedParams) -> Ports {
+        aggregation().ports(params)
+    }
+
+    fn contract(&self, params: &DecodedParams) -> EffectContract {
+        aggregation().contract(params)
+    }
+
+    fn output_types(&self, params: &DecodedParams, ports: &Ports, inputs: &[PortType]) -> Vec<PortType> {
+        aggregation().output_types(params, ports, inputs)
+    }
+
+    fn transition(&self, old: &DecodedParams, new: &DecodedParams) -> saluki_metric_plan::extension::TransitionClass {
+        aggregation().transition(old, new)
+    }
+
+    fn specify_bounds(&self, params: &DecodedParams, builder: &mut saluki_core::accounting::MemoryBoundsBuilder) {
+        aggregation().specify_bounds(params, builder);
+    }
+
+    fn specify_state_bounds(&self, params: &DecodedParams, builder: &mut saluki_core::accounting::MemoryBoundsBuilder) {
+        aggregation().specify_state_bounds(params, builder);
+    }
+
+    fn kernel(&self, params: &DecodedParams) -> Option<KernelSpec> {
+        let inner = aggregation().kernel(params)?;
+        Some(KernelSpec::new(move |context| {
+            Ok(Box::new(PanickingState {
+                inner: inner.build(context)?,
+            }))
+        }))
+    }
+
+    fn lineage_params(&self, params: &DecodedParams) -> saluki_metric_plan::ir::Params {
+        aggregation().lineage_params(params)
+    }
+
+    fn step_params(
+        &self, params: &DecodedParams, filter: Option<Arc<dyn saluki_metric_kernels::aggregate::EmissionFilter>>,
+    ) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+        aggregation().step_params(params, filter)
+    }
+
+    fn flush_interval(&self, params: &DecodedParams) -> Option<Duration> {
+        aggregation().flush_interval(params)
+    }
+
+    fn partition_key(&self) -> Option<saluki_metric_plan::operators::PartitionKey> {
+        aggregation().partition_key()
+    }
+}
+
+/// A state owner's kernel that panics, before it consumes a batch, on a metric named [`PANIC_STATE`], and otherwise
+/// runs `inner`.
+struct PanickingState {
+    inner: Box<dyn Kernel>,
+}
+
+impl Kernel for PanickingState {
+    fn consume(&mut self, turn: &mut Turn<'_>, input: &mut EventsBuffer) -> Progress {
+        if input.into_iter().any(|event| {
+            event
+                .try_as_metric()
+                .is_some_and(|metric| metric.context().name() == PANIC_STATE)
+        }) {
+            panic!("the test's aggregation was told to panic on `{}`", PANIC_STATE);
+        }
+        self.inner.consume(turn, input)
+    }
+
+    fn advance_time(&mut self, turn: &mut Turn<'_>) -> Progress {
+        self.inner.advance_time(turn)
+    }
+
+    fn control(&mut self, turn: &mut Turn<'_>, control: &mut dyn std::any::Any) -> Progress {
+        self.inner.control(turn, control)
+    }
+
+    fn finish(&mut self, turn: &mut Turn<'_>, policy: saluki_core::execution::DrainPolicy) -> Progress {
+        self.inner.finish(turn, policy)
+    }
+
+    fn held(&self) -> saluki_core::execution::LossCount {
+        self.inner.held()
+    }
+
+    fn publish_telemetry(&mut self) {
+        self.inner.publish_telemetry();
+    }
+}
+
 /// Returns the native operators and `test_panic`.
 fn operators() -> OperatorRegistry {
     static OPERATORS: OnceLock<OperatorRegistry> = OnceLock::new();
@@ -154,6 +284,22 @@ fn operators() -> OperatorRegistry {
         let operators = OperatorRegistry::native()
             .iter()
             .chain([&TestPanic as &'static dyn OperatorDef])
+            .collect::<Vec<_>>();
+        OperatorRegistry::with_operators(Box::leak(operators.into_boxed_slice()))
+    })
+}
+
+/// Returns the native operators, with aggregation's replaced by [`TestPanickingAggregate`], and `test_panic`.
+fn panicking_state_operators() -> OperatorRegistry {
+    static OPERATORS: OnceLock<OperatorRegistry> = OnceLock::new();
+    *OPERATORS.get_or_init(|| {
+        let operators = OperatorRegistry::native()
+            .iter()
+            .filter(|operator| operator.name() != aggregation().name())
+            .chain([
+                &TestPanickingAggregate as &'static dyn OperatorDef,
+                &TestPanic as &'static dyn OperatorDef,
+            ])
             .collect::<Vec<_>>();
         OperatorRegistry::with_operators(Box::leak(operators.into_boxed_slice()))
     })
@@ -173,13 +319,20 @@ fn nodes(document: &mut Value) -> &mut Vec<Value> {
 
 /// Puts `node`, whose input port is `in` and whose port `out` continues, in front of the main output's `emit`.
 fn in_front_of_the_main_output(document: &mut Value, node: Value, out: &str) {
+    in_front_of(document, "metrics_policy_0.in", node, out);
+}
+
+/// Puts `node`, whose input port is `in` and whose port `out` continues, in front of the input port `port`
+/// (`<node>.<port>`), which one edge leads to.
+fn in_front_of(document: &mut Value, port: &str, node: Value, out: &str) {
     let id = node["id"].as_str().expect("nodes have IDs").to_string();
-    let main = edges(document)
+    let listed = edges(document).clone();
+    let into = edges(document)
         .iter_mut()
-        .find(|edge| edge["to"] == "metrics_policy_0.in")
-        .expect("the main output's emit has an input");
-    main["to"] = json!(format!("{}.in", id));
-    edges(document).push(json!({"from": format!("{}.{}", id, out), "to": "metrics_policy_0.in"}));
+        .find(|edge| edge["to"] == port)
+        .unwrap_or_else(|| panic!("no edge leads to `{}`: {:?}", port, listed));
+    into["to"] = json!(format!("{}.in", id));
+    edges(document).push(json!({"from": format!("{}.{}", id, out), "to": port}));
     nodes(document).push(node);
 }
 
@@ -423,6 +576,12 @@ struct Start {
     /// The options the test topology starts with.
     options: Options,
 
+    /// The local configuration: [`ROUTING`], unless a test runs another, such as one with lanes.
+    config: &'static str,
+
+    /// The DogStatsD feeds batches go to, in turn: the source's metrics output, unless the test runs producer lanes.
+    feeds: Vec<String>,
+
     /// What delivers snapshots.
     transport: Transport,
 
@@ -435,14 +594,16 @@ impl Start {
     fn new(options: Options) -> Self {
         Self {
             options,
+            config: ROUTING,
+            feeds: vec!["dsd_in.metrics".to_string()],
             transport: Transport::Publisher,
             paths: None,
         }
     }
 }
 
-/// A running plan-driven topology of the [`ROUTING`] configuration, connected to an artifact channel and to the
-/// core's own artifact paths.
+/// A running plan-driven topology of the [`ROUTING`] configuration, or of the one its start names, connected to an
+/// artifact channel and to the core's own artifact paths.
 struct Lifecycle {
     topology: TestTopology,
     status: Arc<ArcSwap<PlanStatus>>,
@@ -455,6 +616,9 @@ struct Lifecycle {
     default_program: (Plan, AdpCatalog),
     /// The names of every batch sent, by sequence number.
     sent: Vec<Vec<&'static str>>,
+
+    /// The DogStatsD feeds batches go to, in turn.
+    feeds: Vec<String>,
 }
 
 impl Lifecycle {
@@ -467,10 +631,12 @@ impl Lifecycle {
     async fn start_with(start: Start) -> Self {
         let Start {
             mut options,
+            config,
+            feeds,
             transport,
             paths,
         } = start;
-        let (system, updates, stream) = connected_configuration_system(ROUTING).await;
+        let (system, updates, stream) = connected_configuration_system(config).await;
         let config = SalukiConfiguration::clone(&system.config());
         let lowered = Lowering::new(Arc::new(config.clone()), facts(&config))
             .expect("the configuration lowers")
@@ -516,6 +682,7 @@ impl Lifecycle {
             export,
             default_program: (lowered.plan, lowered.catalog),
             sent: Vec::new(),
+            feeds,
         }
     }
 
@@ -527,10 +694,12 @@ impl Lifecycle {
             .publish(ArtifactSnapshot::new(ArtifactProduct::Policy, configs)));
     }
 
-    /// Sends the next batch of `names` without waiting for it, and returns its sequence number.
+    /// Sends the next batch of `names` without waiting for it, and returns its sequence number: batch `seq` goes to the
+    /// feed `seq mod feeds` of the harness's feeds.
     fn feed(&mut self, names: &[&'static str]) -> usize {
         let seq = self.sent.len();
-        self.topology.feed("dsd_in.metrics", batch(seq, names));
+        let feed = &self.feeds[seq % self.feeds.len()];
+        self.topology.feed(feed, batch(seq, names));
         self.sent.push(names.to_vec());
         seq
     }
@@ -1550,11 +1719,34 @@ const PANIC_B: &str = "panic.b";
 /// The name a metric must have for the native `test_panic` node of [`NativeFault`] to panic.
 const PANIC_NATIVE: &str = "panic.native";
 
-/// The core's own artifact paths, except that every default program lowered after boot has a native `test_panic` node
-/// in front of the main output, which panics on metrics named [`PANIC_NATIVE`]: a native kernel with a bug, which no
-/// native kernel has on demand.
+/// The core's own artifact paths, except that every default program lowered after boot is edited by `edit`, which
+/// gives it a native kernel with a bug, which no native kernel has on demand: by default
+/// ([`native_fault_in_front_of_the_main_output`]), a native `test_panic` node in front of the main output, which
+/// panics on metrics named [`PANIC_NATIVE`].
 struct NativeFault {
     catalog: AdpCatalog,
+    edit: fn(&mut Value),
+}
+
+impl NativeFault {
+    /// Returns the paths that give every default program lowered after boot a native `test_panic` node in front of the
+    /// main output.
+    fn in_front_of_the_main_output(catalog: AdpCatalog) -> Self {
+        Self {
+            catalog,
+            edit: native_fault_in_front_of_the_main_output,
+        }
+    }
+}
+
+/// Puts a native `test_panic` node, which panics on metrics named [`PANIC_NATIVE`], in front of the main output of the
+/// plan `plan`, where host enrichment's region runs it.
+fn native_fault_in_front_of_the_main_output(plan: &mut Value) {
+    let node = json!({
+        "id": "native_fault", "op": "test_panic", "params": {"on": PANIC_NATIVE},
+        "provenance": {"native": "metrics_enrich"}
+    });
+    in_front_of_the_main_output(plan, node, "out");
 }
 
 impl ArtifactPaths for NativeFault {
@@ -1568,11 +1760,7 @@ impl ArtifactPaths for NativeFault {
         &mut self, core: &mut InstallerCore, candidate: Candidate, composer: &dyn Composer,
     ) -> (CandidateId, Vec<Action>) {
         let mut plan = serde_json::to_value(&*candidate.plan).unwrap();
-        let node = json!({
-            "id": "native_fault", "op": "test_panic", "params": {"on": PANIC_NATIVE},
-            "provenance": {"native": "metrics_enrich"}
-        });
-        in_front_of_the_main_output(&mut plan, node, "out");
+        (self.edit)(&mut plan);
         let plan = Plan::from_value(plan).expect("the default program with a native fault is a plan");
         let report = Validator::new(&operators(), &self.catalog).validate(&plan);
         let candidate = Candidate {
@@ -1595,9 +1783,9 @@ async fn an_artifact_that_panics_falls_back_to_last_known_good_and_then_to_the_d
     let mut options = Options::new(MetricsPath::Plan, Aggregation::Native);
     options.operators = operators();
     let mut start = Start::new(options);
-    start.paths = Some(Box::new(NativeFault {
-        catalog: routing_catalog().await,
-    }));
+    start.paths = Some(Box::new(NativeFault::in_front_of_the_main_output(
+        routing_catalog().await,
+    )));
     let mut harness = Lifecycle::start_with(start).await;
     let first = faulty(&harness.export, "faulty", PANIC_A);
     let second = faulty(&harness.export, "faulty", PANIC_B);
@@ -2007,14 +2195,22 @@ fn aggregated_counts(deliveries: &[Delivery], output: &str, name: &str) -> Vec<(
 /// Starts the topology with clocked aggregation, as `options` says otherwise: the DogStatsD source's admission point
 /// reads a manual wall clock, which the test moves, the slot flushes only when its input ends, and the topology runs
 /// the whole cut protocol in between. Returns the topology and its clock.
-async fn start_clocked(mut options: Options) -> (Lifecycle, ManualWallClock) {
+async fn start_clocked(options: Options) -> (Lifecycle, ManualWallClock) {
+    start_clocked_on(options, ROUTING).await
+}
+
+/// Starts the topology with clocked aggregation, as [`start_clocked`] does, with the local configuration `config` in
+/// place of [`ROUTING`].
+async fn start_clocked_on(mut options: Options, config: &'static str) -> (Lifecycle, ManualWallClock) {
     assert_eq!(options.aggregation, Aggregation::Clocked);
     let clock = Arc::new(StdMutex::new(None));
     options.before_topology = Some(Box::new({
         let clock = Arc::clone(&clock);
         move |boot: &mut BootTopology| *clock.lock().unwrap() = boot.state_admission_clock.clone()
     }));
-    let lifecycle = Lifecycle::start_with(Start::new(options)).await;
+    let mut start = Start::new(options);
+    start.config = config;
+    let lifecycle = Lifecycle::start_with(start).await;
     let clock = clock
         .lock()
         .unwrap()
@@ -2063,14 +2259,77 @@ async fn armed_cut(lifecycle: &Lifecycle) -> saluki_metric_plan::install::CutSta
 /// Feeds `count` batches of one count of the counter `agg.c` each, and waits until the source has sent them: once it
 /// has, the admission point stamped each at the time its clock read.
 async fn feed_counts(lifecycle: &mut Lifecycle, count: usize, sent: &mut usize) {
-    for _ in 0..count {
+    feed_counts_on(lifecycle, |_| "dsd_in.metrics".to_string(), count, sent).await;
+}
+
+/// Feeds `count` batches of one count of the counter `agg.c` each, batch `i` on the feed `feed` gives for it, and
+/// waits until the source has sent them.
+async fn feed_counts_on(lifecycle: &mut Lifecycle, feed: fn(usize) -> String, count: usize, sent: &mut usize) {
+    for batch in 0..count {
         lifecycle.topology.feed(
-            "dsd_in.metrics",
+            &feed(*sent + batch),
             vec![Metric::counter(Context::from_static_name("agg.c"), 1.0)],
         );
     }
     *sent += count;
     wait_sent(&lifecycle.topology, *sent).await;
+}
+
+/// Three producer lanes, each its own admission point, all feeding aggregation on one state lane, and two
+/// post-aggregation lanes.
+const THREE_PRODUCER_LANES: &str = r#"
+dogstatsd_workers_count: 3
+experimental:
+  programmable_metrics:
+    lanes:
+      mode: auto
+      state: 1
+      post: 2
+"#;
+
+#[tokio::test]
+async fn on_producer_lanes_an_artifact_that_changes_aggregations_window_installs_at_a_cut_and_every_count_arrives_once()
+{
+    use crate::programmable_metrics::test_topology::ADMITTED_AT;
+
+    // The cut is armed over the three producer lanes' points, and aggregation crosses once every point's `new` stamp
+    // reached it.
+    let options = Options::new(MetricsPath::Plan, Aggregation::Clocked);
+    let (mut lifecycle, clock) = start_clocked_on(options, THREE_PRODUCER_LANES).await;
+    let at = |relative: u64| AdmissionTime::from_unix_secs(ADMITTED_AT + relative);
+    let artifact = pre_aggregation_over(&lifecycle.status.load(), "30s");
+    let lane = |batch: usize| format!("dsd_in.metrics_{}", batch % 3);
+    let mut sent = 0;
+
+    // Three counts at 5 seconds past `B`, one per lane, in the old lineage's bucket [0, 10); the cut takes effect at
+    // 30, the first multiple of lcm(10, 30) a second away from the points' latest stamp.
+    feed_counts_on(&mut lifecycle, lane, 3, &mut sent).await;
+    lifecycle.deliver(vec![config(1, &artifact)]);
+    let cut = armed_cut(&lifecycle).await;
+    assert_eq!(cut.generation, GenerationId::new(2));
+    assert_eq!(cut.at, Some(at(25)));
+
+    // Two counts at 15, before the cut, on two lanes; then four at 40, after it, on every lane, whose stamps make the
+    // cut irrevocable and pass every point.
+    clock.set(at(10));
+    feed_counts_on(&mut lifecycle, lane, 2, &mut sent).await;
+    clock.set(at(35));
+    feed_counts_on(&mut lifecycle, lane, 4, &mut sent).await;
+    lifecycle
+        .status_where(|status| active(status) == Some(2) && status.installer.cut.is_none())
+        .await;
+
+    // Every count arrives once, in the buckets of the lineage that admitted it.
+    let deliveries = lifecycle.topology.stop().await;
+    let bucket = |relative: i64| (ADMITTED_AT as i64 - 5 + relative) as u64;
+    assert_eq!(
+        aggregated_counts(&deliveries, MAIN, "agg.c"),
+        vec![
+            (1, 10, bucket(0), 3.0),
+            (1, 10, bucket(10), 2.0),
+            (2, 30, bucket(30), 4.0),
+        ]
+    );
 }
 
 #[tokio::test]
@@ -2318,4 +2577,747 @@ async fn twenty_cut_installs_leave_health_registrations_resource_groups_bounds_a
         (install + 1, width, cut_at(install), 1.0)
     }));
     assert_eq!(aggregated_counts(&deliveries, MAIN, "agg.c"), expected);
+}
+
+#[tokio::test]
+async fn on_producer_lanes_a_cut_arms_at_once_while_every_producer_lane_waits_for_a_full_downstream_channel() {
+    // The main output's encode host reads nothing until its gate opens: timestamped counters, which take the
+    // passthrough to it, fill the post-aggregation lanes' inputs, and then every producer lane waits to send. Each
+    // producer lane's point is locked only while the lane stamps, never while it sends, so the cut over the three
+    // points arms at its first attempt, where a lock held across a blocked fan-out would put it off.
+    let mut options = Options::new(MetricsPath::Plan, Aggregation::Clocked);
+    options.gated.insert(MAIN.to_string());
+    let (lifecycle, _clock) = start_clocked_on(options, THREE_PRODUCER_LANES).await;
+    let artifact = pre_aggregation_over(&lifecycle.status.load(), "30s");
+    let timestamped = |batch: u64| {
+        Metric::counter(
+            Context::from_parts(
+                "lanes.blocked",
+                TagSet::from_iter([Tag::from(format!("batch:{}", batch))]),
+            ),
+            (1_700_000_000 + batch, 1.0),
+        )
+    };
+    const FED: usize = 3_000;
+    for batch in 0..FED {
+        lifecycle.topology.feed(
+            &format!("dsd_in.metrics_{}", batch % 3),
+            vec![timestamped(batch as u64)],
+        );
+    }
+    // Once the sends stop completing, every producer lane is blocked.
+    let mut sent = lifecycle.topology.sent("dsd_in.metrics");
+    let blocked = tokio::time::timeout(PATIENCE, async {
+        loop {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let now = lifecycle.topology.sent("dsd_in.metrics");
+            if now == sent && now < FED {
+                return now;
+            }
+            sent = now;
+        }
+    })
+    .await
+    .expect("the producer lanes block on the full channels downstream");
+    assert!(blocked < FED, "{} of {} batches were sent", blocked, FED);
+
+    lifecycle.deliver(vec![config(1, &artifact)]);
+    let cut = armed_cut(&lifecycle).await;
+    assert_eq!(cut.generation, GenerationId::new(2));
+    assert_eq!(cut.deferred, None, "arming was never put off");
+    assert_eq!(
+        lifecycle.topology.sent("dsd_in.metrics"),
+        blocked,
+        "the lanes stayed blocked while the cut armed"
+    );
+
+    lifecycle.topology.open_gate(MAIN);
+    let deliveries = lifecycle.topology.stop().await;
+    let delivered = deliveries
+        .iter()
+        .filter(|delivery| delivery.output == MAIN)
+        .flat_map(|delivery| &delivery.metrics)
+        .filter(|metric| metric.context().name() == "lanes.blocked")
+        .count();
+    assert_eq!(delivered, FED, "every counter arrives once the gate opens");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn on_post_aggregation_lanes_an_artifacts_panics_count_against_one_budget_and_its_generation_stops_in_every_lane()
+{
+    // Two producer lanes, each feeding its own post-aggregation lane, where the policy region runs the artifact: batch
+    // `seq` goes to lane `seq mod 2` of both.
+    const POST_LANES: &str = r#"
+dd_url: https://primary.example.com
+additional_endpoints: {https://b.example.com: [key-b]}
+dogstatsd_workers_count: 2
+experimental:
+  metrics_endpoint_routing: {metric_allowlist: {https://b.example.com: [orders.total]}}
+  programmable_metrics: {lanes: {mode: auto, state: 1, post: 2}}
+"#;
+    let mut options = Options::new(MetricsPath::Plan, Aggregation::Native);
+    options.operators = operators();
+    let mut start = Start::new(options);
+    start.config = POST_LANES;
+    start.feeds = vec!["dsd_in.metrics_0".to_string(), "dsd_in.metrics_1".to_string()];
+    let mut harness = Lifecycle::start_with(start).await;
+    let faulty = faulty(&harness.export, "faulty", PANIC_A);
+    harness.deliver(vec![config(1, &faulty)]);
+    harness.status_where(|status| active(status) == Some(2)).await;
+
+    // Three panics, one in lane 0 and two in lane 1: within the artifact's budget of three a minute, which belongs to
+    // the generation, not to a lane.
+    harness.feed(&[KEPT, PANIC_A]);
+    harness.feed(&[KEPT, PANIC_A]);
+    assert_eq!(harness.send().await, Some(2));
+    harness.feed(&[KEPT, PANIC_A]);
+    assert_eq!(harness.send().await, Some(2));
+
+    // The fourth, in lane 1, exceeds it, though neither lane panicked four times: the generation fails in every lane,
+    // and the installer rolls back once, to the generation kept as last-known-good, the boot generation's default
+    // program.
+    harness.feed(&[KEPT, PANIC_A]);
+    let rolled_back = harness.status_where(|status| active(status) == Some(1)).await;
+    assert_eq!(
+        record(&rolled_back, 2).map(|(state, _)| state),
+        Some(GenerationState::Failed)
+    );
+    // Both lanes run the default program, which passes what the artifact panicked on, and nothing else installs.
+    assert_eq!(harness.send_names(&[KEPT, PANIC_A]).await, Some(1));
+    assert_eq!(harness.send_names(&[KEPT, PANIC_A]).await, Some(1));
+    let settled = harness.status_where(|status| live(status) == [1]).await;
+    assert_eq!(
+        settled.installer.generations.iter().map(|record| record.id.get()).max(),
+        Some(2),
+        "{}",
+        settled
+    );
+    drop(harness.finish().await);
+}
+
+// Faults on lanes: a producer lane's panic, and a state owner's, under the default program and under an artifact.
+
+/// Three producer lanes, one lane of each other kind, with the endpoint routing group of [`ROUTING`].
+const PRODUCER_LANES: &str = r#"
+dd_url: https://primary.example.com
+additional_endpoints: {https://b.example.com: [key-b]}
+dogstatsd_workers_count: 3
+experimental:
+  metrics_endpoint_routing: {metric_allowlist: {https://b.example.com: [orders.total]}}
+  programmable_metrics: {lanes: {mode: auto, state: 1, post: 1}}
+"#;
+
+/// Returns the catalog the configuration `config` lowers with.
+async fn catalog_of(config: &str) -> AdpCatalog {
+    let config = crate::programmable_metrics::test_support::configuration(config).await;
+    Lowering::new(Arc::new(config.clone()), facts(&config))
+        .expect("the configuration lowers")
+        .expect("a metrics pipeline is required")
+        .lower(&config)
+        .expect("the configuration lowers")
+        .catalog
+}
+
+/// Returns how a harness on the lanes of `config` starts, with the test operators, its batches fed to the three
+/// producer lanes in turn.
+fn on_producer_lanes(lanes: &'static str, aggregation: Aggregation) -> Start {
+    let mut options = Options::new(MetricsPath::Plan, aggregation);
+    options.operators = operators();
+    let mut start = Start::new(options);
+    start.config = lanes;
+    start.feeds = (0..3).map(|lane| format!("dsd_in.metrics_{}", lane)).collect();
+    start
+}
+
+/// Puts a native `test_panic` node, which panics on metrics named [`PANIC_NATIVE`], in front of the no-aggregation
+/// split of the plan `plan`, where pre-aggregation's producer lanes run it.
+fn native_fault_before_aggregation(plan: &mut Value) {
+    let node = json!({
+        "id": "native_fault", "op": "test_panic", "params": {"on": PANIC_NATIVE},
+        "provenance": {"native": "dsd_no_agg_split"}
+    });
+    in_front_of(plan, "dsd_no_agg_split.in", node, "out");
+}
+
+/// Returns the export of the pre-aggregation scope, as the status serves it.
+fn pre_aggregation_export(status: &PlanStatus) -> Value {
+    use crate::programmable_metrics::catalog::DSD_PRE_AGGREGATION_SCOPE;
+
+    let scope = ScopeName::new(DSD_PRE_AGGREGATION_SCOPE).unwrap();
+    let bundle = status.exports[&scope]
+        .clone()
+        .expect("the pre-aggregation scope exports");
+    serde_json::to_value(&bundle.artifact).unwrap()
+}
+
+/// Sends batches of every family until the next batch goes to producer lane `lane` of three.
+async fn send_until_lane(harness: &mut Lifecycle, lane: usize) {
+    while harness.sent.len() % 3 != lane {
+        assert!(harness.send().await.is_some(), "the batch is processed");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn on_producer_lanes_a_native_nodes_panic_in_one_lane_ends_it_and_fails_its_component_and_the_topology() {
+    let mut start = on_producer_lanes(PRODUCER_LANES, Aggregation::Native);
+    start.paths = Some(Box::new(NativeFault {
+        catalog: catalog_of(PRODUCER_LANES).await,
+        edit: native_fault_before_aggregation,
+    }));
+    let mut harness = Lifecycle::start_with(start).await;
+    // A configuration change lowers a default program with a native fault that pre-aggregation's producer lanes run.
+    harness
+        ._stream
+        .send(crate::programmable_metrics::test_support::update(
+            "metric_filterlist",
+            json!(["blocked.metric"]),
+        ))
+        .await
+        .expect("the configuration stream is open");
+    harness.status_where(|status| active(status) == Some(2)).await;
+    let first = harness.sent.len();
+    for _ in 0..3 {
+        assert_eq!(harness.send().await, Some(2));
+    }
+
+    // The default program's panic budget is zero: the panic in producer lane 1 ends that lane's task with the region's
+    // failure, which fails the region and the topology, as a native component's failure does, while the other lanes
+    // were running. The generation is neither failed nor rolled back.
+    send_until_lane(&mut harness, 1).await;
+    let status = Arc::clone(&harness.status);
+    let fatal = harness.feed(&[KEPT, PANIC_NATIVE]);
+    let (error, mut finished) = harness.failure().await;
+    assert!(
+        matches!(&error, SupervisorError::FailedToInitialize { child_name, .. } if child_name == "primary"),
+        "{:?}",
+        error
+    );
+    let failed = status.load_full();
+    assert_eq!(
+        (active(&failed), record(&failed, 2).map(|(state, _)| state)),
+        (Some(2), Some(GenerationState::Active)),
+        "{}",
+        failed
+    );
+    // The fatal batch reached nothing: the producer lanes run ahead of every output, the tap's included.
+    let reached = finished
+        .arrivals
+        .keys()
+        .filter(|(_, _, seq)| *seq == fatal)
+        .collect::<Vec<_>>();
+    assert!(reached.is_empty(), "the fatal batch reached {:?}", reached);
+    // Every batch before it arrived exactly once, as the default program delivers it, from every lane.
+    finished.sent.truncate(fatal);
+    finished.check(&BTreeSet::new(), |_| default_routing());
+    let generations = finished.generations();
+    assert!(generations[first..].iter().all(|generation| *generation == 2));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn on_producer_lanes_an_artifacts_node_that_panics_in_one_lane_costs_its_batch_and_every_lane_runs_on() {
+    let start = on_producer_lanes(PRODUCER_LANES, Aggregation::Native);
+    let mut harness = Lifecycle::start_with(start).await;
+    // An artifact of the pre-aggregation scope with a `test_panic` node in front of the no-aggregation split, which
+    // the producer lanes run, under the artifact's panic budget.
+    let mut artifact = pre_aggregation_export(&harness.status.load());
+    let node = json!({"id": "faulty", "op": "test_panic", "params": {"on": PANIC_A}});
+    in_front_of(&mut artifact, "dsd_no_agg_split.in", node, "out");
+    harness.deliver(vec![config(1, &artifact)]);
+    harness.status_where(|status| active(status) == Some(2)).await;
+    let first = harness.sent.len();
+
+    // Two panics, in producer lanes 1 and 2, within the artifact's budget of three a minute: each lane loses the batch
+    // that panicked, rebuilds its kernels, and runs on, as the other lanes do.
+    send_until_lane(&mut harness, 1).await;
+    let lost = BTreeSet::from([harness.feed(&[KEPT, PANIC_A]), harness.feed(&[KEPT, PANIC_A])]);
+    for _ in 0..6 {
+        assert_eq!(harness.send().await, Some(2));
+    }
+    let running = harness.status.load_full();
+    assert_eq!(
+        record(&running, 2).map(|(state, _)| state),
+        Some(GenerationState::Active),
+        "{}",
+        running
+    );
+
+    let finished = harness.finish().await;
+    for seq in &lost {
+        let reached = finished
+            .arrivals
+            .keys()
+            .filter(|(_, _, arrived)| arrived == seq)
+            .collect::<Vec<_>>();
+        assert!(reached.is_empty(), "batch {} panicked, but reached {:?}", seq, reached);
+    }
+    // Every other batch arrived exactly once, with the artifact's generation once it was installed.
+    let generations = finished.generations_but(&lost);
+    let after = generations.len() - (finished.sent.len() - first - lost.len());
+    assert!(
+        generations[after..].iter().all(|generation| *generation == 2),
+        "{:?}",
+        generations
+    );
+}
+
+/// Feeds one batch of untimestamped counters, which aggregation aggregates, of the contexts `name` tagged `c:<i>` for
+/// each `i` of `contexts`, or of `name` alone without contexts, to producer lane 0, and waits until it was sent.
+async fn feed_aggregated(harness: &mut Lifecycle, name: &'static str, contexts: std::ops::Range<usize>) {
+    let metrics = if contexts.is_empty() {
+        vec![Metric::counter(Context::from_static_name(name), 1.0)]
+    } else {
+        contexts
+            .map(|context| {
+                Metric::counter(
+                    Context::from_parts(name, TagSet::from_iter([Tag::from(format!("c:{}", context))])),
+                    1.0,
+                )
+            })
+            .collect()
+    };
+    let sent = harness.topology.sent("dsd_in.metrics_0") + 1;
+    harness.topology.feed("dsd_in.metrics_0", metrics);
+    tokio::time::timeout(PATIENCE, async {
+        while harness.topology.sent("dsd_in.metrics_0") < sent {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the source sends what it is fed");
+}
+
+/// Three producer lanes, one state lane, and one post-aggregation lane, with the endpoint routing group of
+/// [`ROUTING`].
+const ONE_STATE_LANE: &str = PRODUCER_LANES;
+
+/// Three producer lanes, two state lanes, and one post-aggregation lane, with the endpoint routing group of
+/// [`ROUTING`].
+const TWO_STATE_LANES: &str = r#"
+dd_url: https://primary.example.com
+additional_endpoints: {https://b.example.com: [key-b]}
+dogstatsd_workers_count: 3
+experimental:
+  metrics_endpoint_routing: {metric_allowlist: {https://b.example.com: [orders.total]}}
+  programmable_metrics: {lanes: {mode: auto, state: 2, post: 1}}
+"#;
+
+/// Returns how a harness on the lanes of `lanes` starts whose aggregation panics on demand, from boot on
+/// ([`panicking_state_operators`]).
+fn with_panicking_state(lanes: &'static str) -> Start {
+    let mut start = on_producer_lanes(lanes, Aggregation::Native);
+    start.options.operators = panicking_state_operators();
+    start
+}
+
+/// Checks that a state owner's panic under the default program fails its component and the topology, on the lanes
+/// of `lanes`.
+async fn a_state_owner_panic_under_the_default_program_fails_its_component(lanes: &'static str) {
+    let mut harness = Lifecycle::start_with(with_panicking_state(lanes)).await;
+    assert_eq!(harness.send().await, Some(1));
+
+    // The default program's panic budget is zero: the panic in the state lane that owns the context fails the region
+    // and the topology, and the generation is neither failed nor rolled back.
+    let status = Arc::clone(&harness.status);
+    feed_aggregated(&mut harness, PANIC_STATE, 0..0).await;
+    let (error, _) = harness.failure().await;
+    assert!(
+        matches!(&error, SupervisorError::FailedToInitialize { child_name, .. } if child_name == "primary"),
+        "{:?}",
+        error
+    );
+    let failed = status.load_full();
+    assert_eq!(
+        (active(&failed), record(&failed, 1).map(|(state, _)| state)),
+        (Some(1), Some(GenerationState::Active)),
+        "{}",
+        failed
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn on_one_state_lane_a_state_owner_panic_under_the_default_program_fails_its_component() {
+    a_state_owner_panic_under_the_default_program_fails_its_component(ONE_STATE_LANE).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn on_two_state_lanes_a_state_owner_panic_under_the_default_program_fails_its_component() {
+    a_state_owner_panic_under_the_default_program_fails_its_component(TWO_STATE_LANES).await;
+}
+
+/// Checks that a state owner's panic under an artifact, on the lanes of `lanes`, rebuilds only the instance of the
+/// state lane that panicked, which loses its contexts, while the slot runs on and the artifact's generation asks to be
+/// rolled back, and returns how many of `CONTEXTS` contexts held before the panic arrived.
+async fn a_state_owner_panic_under_an_artifact_loses_its_lanes_contexts_only(lanes: &'static str) -> usize {
+    const CONTEXTS: usize = 20;
+    let mut harness = Lifecycle::start_with(with_panicking_state(lanes)).await;
+    // An artifact of the pre-aggregation scope, whose aggregation, which panics on demand, runs over one-second
+    // buckets that it flushes only when its lineage retires or the topology stops: it installs at a cut.
+    let mut artifact = pre_aggregation_export(&harness.status.load());
+    for node in nodes(&mut artifact) {
+        match node["id"].as_str() {
+            Some("dsd_agg") => {
+                node["params"]["window"] = json!("1s");
+                node["params"]["flush_interval"] = json!("1h");
+            }
+            Some("dsd_no_agg_split") => node["params"]["window"] = json!("1s"),
+            _ => {}
+        }
+    }
+    harness.deliver(vec![config(1, &artifact)]);
+    harness
+        .feed_until(|status| active(status) == Some(2) && status.installer.cut.is_none())
+        .await;
+
+    // Contexts before the panic and after it, all through one producer lane, so in this order at every state lane:
+    // the lane that owns the panicking context loses what it held, and its instance is rebuilt empty, which every
+    // generation binding it continues on. A panic under an artifact never fails the component: the artifact's
+    // generation asks to be rolled back, which installs the default program again at a cut.
+    //
+    // The producer lane's keyed exit coalesces what one second's batches route to a state lane into one buffer, and
+    // the batch that panics is that buffer: the contexts after the panic follow once the exit sent it, after its hold.
+    feed_aggregated(&mut harness, "state.before", 0..CONTEXTS).await;
+    feed_aggregated(&mut harness, PANIC_STATE, 0..0).await;
+    tokio::time::sleep(limits::values::COALESCE_HOLD * 20).await;
+    feed_aggregated(&mut harness, "state.after", 0..CONTEXTS).await;
+    let rolled_back = harness
+        .status_where(|status| record(status, 2).is_some_and(|(state, _)| state == GenerationState::Failed))
+        .await;
+    let reason = record(&rolled_back, 2)
+        .and_then(|(_, reason)| reason)
+        .unwrap_or_default();
+    assert!(
+        reason.starts_with("a state owner's kernel, of node `dsd_agg`, panicked"),
+        "{}",
+        reason
+    );
+    // The buckets close; the lineage's closing flush, at its crossing or at the topology's stop, delivers them.
+    tokio::time::sleep(Duration::from_millis(2_500)).await;
+    let deliveries = harness.topology.stop().await;
+    let arrived = |name: &str| {
+        deliveries
+            .iter()
+            .filter(|delivery| delivery.output == MAIN)
+            .flat_map(|delivery| &delivery.metrics)
+            .filter(|metric| metric.context().name() == name)
+            .map(|metric| {
+                metric
+                    .context()
+                    .tags()
+                    .into_iter()
+                    .next()
+                    .map(|tag| tag.as_str().to_string())
+            })
+            .collect::<BTreeSet<_>>()
+            .len()
+    };
+    assert_eq!(
+        arrived("state.after"),
+        CONTEXTS,
+        "every context after the panic arrives"
+    );
+    assert_eq!(arrived(PANIC_STATE), 0, "the batch that panicked is lost");
+    arrived("state.before")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn on_one_state_lane_a_state_owner_panic_under_an_artifact_loses_its_contexts_and_the_slot_runs_on() {
+    let before = a_state_owner_panic_under_an_artifact_loses_its_lanes_contexts_only(ONE_STATE_LANE).await;
+    assert_eq!(before, 0, "the one state lane lost every context it held");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn on_two_state_lanes_a_state_owner_panic_under_an_artifact_loses_only_its_lanes_contexts() {
+    let before = a_state_owner_panic_under_an_artifact_loses_its_lanes_contexts_only(TWO_STATE_LANES).await;
+    assert!(
+        before > 0 && before < 20,
+        "the lane that did not panic keeps its contexts, the one that did loses its own: {} of 20 arrived",
+        before
+    );
+}
+
+/// Returns the export of the pre-aggregation scope with aggregation over `window`, and the timestamp split before it
+/// with the same window, flushing on its interval, for a run that keeps flushing.
+fn pre_aggregation_flushing_over(status: &PlanStatus, window: &str) -> Value {
+    use crate::programmable_metrics::catalog::DSD_PRE_AGGREGATION_SCOPE;
+
+    let scope = ScopeName::new(DSD_PRE_AGGREGATION_SCOPE).unwrap();
+    let bundle = status.exports[&scope]
+        .clone()
+        .expect("the pre-aggregation scope exports");
+    let mut artifact = serde_json::to_value(&bundle.artifact).unwrap();
+    for node in nodes(&mut artifact) {
+        if matches!(node["id"].as_str(), Some("dsd_agg" | "dsd_no_agg_split")) {
+            node["params"]["window"] = json!(window);
+        }
+    }
+    artifact
+}
+
+/// One run of the lane stress test: its configuration, how long it feeds, and how often it changes what runs.
+struct StressRun {
+    /// The local configuration, whose lanes the run exercises.
+    config: &'static str,
+    /// How long the run feeds traffic.
+    feed_for: Duration,
+    /// How often a configuration change installs a new generation.
+    install_every: Duration,
+    /// Every how many installs one is a width change, which installs at a cut.
+    cut_every: u64,
+}
+
+/// The name of the contexts a stress run keeps near the context limit.
+const STRESS_CONTEXTS: &str = "stress.contexts";
+
+/// The name of a stress run's canaries: one context per batch, which aggregation must deliver once.
+const STRESS_CANARY: &str = "stress.canary";
+
+/// Adds to `sums` the points of the counters named `name` in `deliveries` that the main output received: the sum of
+/// every point, by the context's tag (`seq:<n>` for canaries, `c:<n>` for the contexts).
+fn add_stress_sums(sums: &mut BTreeMap<String, f64>, deliveries: &[Delivery], name: &str) {
+    for metric in deliveries
+        .iter()
+        .filter(|delivery| delivery.output == MAIN)
+        .flat_map(|delivery| &delivery.metrics)
+        .filter(|metric| metric.context().name() == name)
+    {
+        let saluki_core::data_model::event::metric::MetricValues::Rate(points, _) = metric.values() else {
+            panic!("`{}` leaves aggregation as a rate: {:?}", name, metric.values());
+        };
+        let tag = metric
+            .context()
+            .tags()
+            .into_iter()
+            .next()
+            .map(|tag| tag.as_str().to_string())
+            .unwrap_or_default();
+        *sums.entry(tag).or_default() += points.into_iter().map(|(_, value)| value).sum::<f64>();
+    }
+}
+
+/// Returns the sum of the counters named `name` whose labels include every one of `labels`.
+fn counter_sum(recorder: &TestRecorder, name: &str, labels: &[(&str, &str)]) -> u64 {
+    recorder
+        .counters()
+        .into_iter()
+        .filter(|(key, _)| key.name() == name)
+        .filter(|(key, _)| {
+            labels
+                .iter()
+                .all(|(label, value)| key.labels().any(|own| own.key() == *label && own.value() == *value))
+        })
+        .map(|(_, count)| count)
+        .sum()
+}
+
+/// Returns the metrics aggregation refused at its context limit, as it counted them.
+fn stress_refused(recorder: &TestRecorder) -> u64 {
+    counter_sum(
+        recorder,
+        "component_events_dropped_total",
+        &[("component_id", "dsd_agg"), ("intentional", "true")],
+    )
+}
+
+/// Runs a stress run: batches of counters over contexts near the context limit, each with a canary of its own, on
+/// four producer lanes in turn, while configuration changes install new generations and width changes cut over; then
+/// waits until every bucket fed closed and flushed, stops, and checks the balance of every point fed.
+///
+/// Every canary is an untimestamped counter of one context of its own, so that it is aggregated, in whichever state
+/// lane owns it: its points, summed over every flush, are exactly one, or none when the context limit refused it,
+/// which aggregation counts as capacity loss. Over everything fed, what the main output received and what aggregation
+/// refused add up to what was fed: nothing is lost or doubled by the lanes, the crossings, the cuts, or the installs.
+async fn lane_stress(run: StressRun) {
+    const CONTEXTS: usize = 12_000;
+    const PER_BATCH: usize = 512;
+    // The series aggregation counts its refusals in are registered on the topology's threads, so the recorder is the
+    // process's: nextest runs each test in a process of its own.
+    let recorder: &'static TestRecorder = Box::leak(Box::default());
+    metrics::set_global_recorder(recorder).expect("no other recorder is installed: run the stress test with nextest");
+    // Every operation on the state budgets is recorded, for the capacity oracle.
+    super::record_state_budgets();
+    let mut start = Start::new(Options::new(MetricsPath::Plan, Aggregation::Native));
+    start.config = run.config;
+    start.feeds = (0..4).map(|lane| format!("dsd_in.metrics_{}", lane)).collect();
+    let mut harness = Lifecycle::start_with(start).await;
+    let windows = ["1s", "2s"];
+    let deadline = tokio::time::Instant::now() + run.feed_for;
+    let (mut batches, mut installs, mut cuts) = (0usize, 0u64, 0u64);
+    let mut next_install = tokio::time::Instant::now() + run.install_every;
+    while tokio::time::Instant::now() < deadline {
+        // A batch of contexts near the limit, on the next producer lane, with the canary of its sequence number.
+        let lane = batches % 4;
+        let mut metrics = (0..PER_BATCH)
+            .map(|index| {
+                let context = (batches * PER_BATCH + index) % CONTEXTS;
+                Metric::counter(
+                    Context::from_parts(
+                        STRESS_CONTEXTS,
+                        TagSet::from_iter([Tag::from(format!("c:{}", context))]),
+                    ),
+                    1.0,
+                )
+            })
+            .collect::<Vec<_>>();
+        metrics.push(Metric::counter(
+            Context::from_parts(
+                STRESS_CANARY,
+                TagSet::from_iter([Tag::from(format!("seq:{}", batches))]),
+            ),
+            1.0,
+        ));
+        harness.topology.feed(&format!("dsd_in.metrics_{}", lane), metrics);
+        batches += 1;
+
+        if tokio::time::Instant::now() >= next_install {
+            next_install += run.install_every;
+            installs += 1;
+            if installs % run.cut_every == 0 {
+                // A width change installs at a cut.
+                cuts += 1;
+                let artifact = pre_aggregation_flushing_over(&harness.status.load(), windows[(cuts % 2) as usize]);
+                harness.deliver(vec![config(cuts, &artifact)]);
+            } else {
+                harness
+                    ._stream
+                    .send(crate::programmable_metrics::test_support::update(
+                        "metric_filterlist",
+                        json!([format!("stress.blocked.{}", installs)]),
+                    ))
+                    .await
+                    .expect("the configuration stream is open");
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(cuts >= 1, "the run made a width cut");
+
+    // Every point fed reaches a bucket that closes within one width and is flushed at the next tick: wait until what
+    // arrived and what was refused account for everything fed, or for as long as a test waits, then stop. Stopping
+    // discards open buckets, as native aggregation's last flush does, and they hold nothing by then.
+    let fed = batches * (PER_BATCH + 1);
+    let seen = std::cell::Cell::new(0usize);
+    let arrived = std::cell::RefCell::new(BTreeMap::<String, f64>::new());
+    let balanced = |deliveries: &[Delivery]| {
+        let mut arrived = arrived.borrow_mut();
+        add_stress_sums(&mut arrived, &deliveries[seen.get()..], STRESS_CANARY);
+        add_stress_sums(&mut arrived, &deliveries[seen.get()..], STRESS_CONTEXTS);
+        seen.set(deliveries.len());
+        arrived.values().sum::<f64>() as u64 + stress_refused(recorder) >= fed as u64
+    };
+    let drained = tokio::time::Instant::now() + PATIENCE;
+    while tokio::time::Instant::now() < drained {
+        if harness
+            .topology
+            .received_within(Duration::from_millis(500), &balanced)
+            .await
+        {
+            break;
+        }
+    }
+    let deliveries = harness.topology.stop().await;
+    let refused = stress_refused(recorder);
+
+    // Every canary arrived exactly once, or not at all, refused at the context limit: none twice, none in part.
+    let mut canaries = BTreeMap::new();
+    add_stress_sums(&mut canaries, &deliveries, STRESS_CANARY);
+    for (canary, sum) in &canaries {
+        assert!(*sum == 0.0 || *sum == 1.0, "canary `{}` arrived as {}", canary, sum);
+    }
+    let arrived = canaries.values().filter(|sum| **sum == 1.0).count();
+    assert!(arrived > 0, "canaries arrive");
+    // What arrived and what was refused is what was fed, canaries and contexts alike.
+    let mut contexts = BTreeMap::new();
+    add_stress_sums(&mut contexts, &deliveries, STRESS_CONTEXTS);
+    let contexts = contexts.values().sum::<f64>();
+    assert_eq!(
+        contexts as u64 + arrived as u64 + refused,
+        fed as u64,
+        "{} contexts' points and {} canaries arrived, {} were refused, of {} fed in {} batches",
+        contexts,
+        arrived,
+        refused,
+        fed,
+        batches
+    );
+    assert!(
+        batches - arrived <= refused as usize,
+        "{} of {} canaries are missing, and only {} points were refused",
+        batches - arrived,
+        batches,
+        refused
+    );
+    println!(
+        "{} batches over {} installs and {} cuts: {} canaries arrived, {} points refused at the context limit",
+        batches, installs, cuts, arrived, refused
+    );
+    // No state lane admitted a context another lane owns.
+    assert_eq!(counter_sum(recorder, "plan_lane_misrouted_total", &[]), 0);
+    // The budgets were never exceeded and every refusal was justified, by what each operation observed itself, on
+    // every budget the lanes drew on: the global one, at the context limit, and each node's.
+    let recordings = super::state_budget_recordings();
+    assert_eq!(
+        recordings.len(),
+        1,
+        "one metrics path booted, whose budgets were recorded"
+    );
+    let mut operations = 0;
+    for (budget, trace) in recordings[0].traces() {
+        operations += trace.operations.len();
+        let verdict = check_capacity(&trace);
+        assert_eq!(verdict, CapacityVerdict::Holds, "the budget `{}`", budget);
+    }
+    assert!(operations > 0, "the budgets recorded their operations");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn on_one_state_lane_a_short_stress_run_of_live_installs_and_width_cuts_delivers_or_refuses_every_point_once() {
+    // Four producer lanes into one state lane: the balance a stress run checks, in a few seconds, at the lane counts
+    // every part runs today. Aggregation runs 2-second buckets, flushed every second, with counters expiring two
+    // seconds after they were last seen, so that the canaries keep the contexts near the limit, which refuses some.
+    const STRESS: &str = r#"
+dd_url: https://primary.example.com
+dogstatsd_workers_count: 4
+aggregate_window_duration_seconds: 2
+aggregate_flush_interval: 1s
+dogstatsd_expiry_seconds: 2
+aggregate_context_limit: 12300
+experimental: {programmable_metrics: {lanes: {mode: auto, state: 1, post: 2}}}
+"#;
+    lane_stress(StressRun {
+        config: STRESS,
+        feed_for: Duration::from_secs(4),
+        install_every: Duration::from_millis(500),
+        cut_every: 4,
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "about 30 seconds of traffic: `make test-stress` runs it"]
+async fn lane_stress_live_installs_and_width_cuts_near_the_context_limit_deliver_every_canary_once() {
+    // Four producer lanes, four state lanes, and two post-aggregation lanes on four workers, as the stress run of the
+    // stage 9 design says: `SALUKI_STRESS_SECS` (30 by default) of traffic over 12,000 contexts and a canary context
+    // per batch against a context limit of 12,300, a configuration change every second, and a width cut every ten
+    // seconds.
+    const STRESS: &str = r#"
+dd_url: https://primary.example.com
+dogstatsd_workers_count: 4
+aggregate_window_duration_seconds: 2
+aggregate_flush_interval: 1s
+dogstatsd_expiry_seconds: 2
+aggregate_context_limit: 12300
+experimental: {programmable_metrics: {lanes: {mode: auto, state: 4, post: 2}}}
+"#;
+    let seconds = std::env::var("SALUKI_STRESS_SECS")
+        .ok()
+        .and_then(|secs| secs.parse::<u64>().ok())
+        .unwrap_or(30)
+        .max(10);
+    lane_stress(StressRun {
+        config: STRESS,
+        feed_for: Duration::from_secs(seconds),
+        install_every: Duration::from_secs(1),
+        cut_every: 10,
+    })
+    .await;
 }

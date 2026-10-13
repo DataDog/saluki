@@ -37,7 +37,7 @@ use saluki_core::{
     topology::EventsBuffer,
 };
 use saluki_metric_plan::{
-    compile::{compile, CompiledPlan, EntryKey, Frame, FrameTarget, RegionProgram, SlotId, SlotKind, Step},
+    compile::{compile, CompiledPlan, EntryKey, Frame, FrameTarget, RegionProgram, SlotId, Step},
     ir::{NativeComponentId, NodeId, Plan},
     model::EventView,
     operators::{KernelBuildContext, OperatorRegistry},
@@ -487,7 +487,7 @@ fn bench_post_aggregation(c: &mut Criterion) {
     // Batches from aggregation carry its isolation slot's output point, which stamps its time-driven output, and the
     // entry of the post-aggregation filter's region that its exit sets.
     let aggregation = slot_named(&frame, "dsd_agg");
-    let SlotKind::Isolation { output_point, .. } = frame.slot(aggregation).unwrap().kind else {
+    let Some(output_point) = frame.slot(aggregation).unwrap().output_point(0) else {
         panic!("aggregation runs in an isolation slot");
     };
     let entry = compiled.programs[aggregation.get()]

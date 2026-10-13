@@ -76,6 +76,14 @@ pub(crate) fn fixture() -> (Plan, ExportBundle) {
     (plan, ExportBundle::from_value(document).unwrap())
 }
 
+/// The plan crate's default program, and the export of one of its scopes as the demo reads it.
+pub(crate) fn fixture_of_scope(scope: &str) -> (Plan, ExportBundle) {
+    let plan = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
+    let bundle = export(&plan, &scope.parse().unwrap(), &catalog_for(&plan), &BTreeMap::new()).unwrap();
+    let bundle = ExportBundle::from_value(serde_json::to_value(bundle).unwrap()).unwrap();
+    (plan, bundle)
+}
+
 /// Compiles `source` against the fixture, with the default program active (generation 3) and revision 7 next.
 fn compile_against(source: &str, plan: &Plan, export: &ExportBundle) -> CompileOutcome {
     let context = CompileContext {

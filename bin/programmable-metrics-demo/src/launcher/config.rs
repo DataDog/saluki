@@ -24,6 +24,11 @@
 //! - Saluki-only: `aggregate_flush_interval: 1s`, `aggregate_window_duration_seconds` (default 1), and
 //!   `flush_timeout_secs: 1`.
 //! - Datadog: `dogstatsd_expiry_seconds` (default 0).
+//! - Only with lane flags (`--decoders`, `--state-lanes`, `--post-lanes`): Saluki-only
+//!   `experimental.programmable_metrics.lanes.mode: auto`, with `lanes.state` and `lanes.post` for the counts given,
+//!   and Datadog `dogstatsd_workers_count` for the decoders, which are the producer lanes (up to 16). Without them the
+//!   file has none of these keys, and ADP lays its metrics path out as its defaults say. The lane keys are read from
+//!   stage 9 (earlier builds ignore them).
 //!
 //! Two keys are not in the design's list, and both serve the same purpose: making the intake columns follow what is
 //! sent within seconds. With the native 10-second aggregation window, each context reaches the intakes once every 10
@@ -37,7 +42,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use crate::settings::{DemoPorts, RunSettings, TEAM_D_CREDENTIAL, TEAM_D_CREDENTIAL_VALUE};
+use crate::settings::{DemoPorts, LaneFlags, RunSettings, TEAM_D_CREDENTIAL, TEAM_D_CREDENTIAL_VALUE};
 
 /// The comment written at the top of the generated file.
 const HEADER: &str = "\
@@ -53,7 +58,7 @@ pub fn adp_config(settings: &RunSettings) -> Value {
     let ports = &settings.ports;
     let recipients = ports.recipients();
     let [primary, team_b, team_c, mrf] = [&recipients[0], &recipients[1], &recipients[2], &recipients[3]];
-    json!({
+    let mut config = json!({
         "api_key": primary.api_key,
         "hostname": "adp-demo",
         "dd_url": primary.url(),
@@ -97,7 +102,28 @@ pub fn adp_config(settings: &RunSettings) -> Value {
         "aggregate_flush_interval": "1s",
         "aggregate_window_duration_seconds": settings.aggregate_window_secs,
         "flush_timeout_secs": 1,
-    })
+    });
+    add_lanes(&mut config, &settings.lanes);
+    config
+}
+
+/// Adds the keys of the lanes `lanes` asks for, if it asks for any: the lanes mode, the counts given, and the decoder
+/// count.
+fn add_lanes(config: &mut Value, lanes: &LaneFlags) {
+    if !lanes.any() {
+        return;
+    }
+    let mut keys = json!({ "mode": "auto" });
+    if let Some(state) = lanes.state {
+        keys["state"] = json!(state);
+    }
+    if let Some(post) = lanes.post {
+        keys["post"] = json!(post);
+    }
+    config["experimental"]["programmable_metrics"]["lanes"] = keys;
+    if let Some(decoders) = lanes.decoders {
+        config["dogstatsd_workers_count"] = json!(decoders);
+    }
 }
 
 /// Writes a duration as a configuration duration string: whole seconds as `<n>s`, anything else as `<n>ms`.
@@ -133,6 +159,8 @@ mod tests {
             counter_expiry_secs: 0,
             traffic_rate: 20.0,
             traffic_paused: false,
+            contexts: 0,
+            lanes: LaneFlags::default(),
         }
     }
 
@@ -232,5 +260,66 @@ multi_region_failover:
         assert_eq!(config["dogstatsd_port"], 27125);
         assert_eq!(config["aggregate_window_duration_seconds"], 10);
         assert_eq!(config["dogstatsd_expiry_seconds"], 300);
+    }
+
+    #[test]
+    fn lane_flags_turn_lanes_on_with_the_counts_given_and_without_them_no_lane_key_is_written() {
+        let lanes_of = |lanes: LaneFlags| {
+            let config = adp_config(&RunSettings { lanes, ..settings() });
+            (
+                config["experimental"]["programmable_metrics"]["lanes"].clone(),
+                config["dogstatsd_workers_count"].clone(),
+            )
+        };
+
+        // No flag: ADP's own defaults decide, so the file has neither key (the generated file test pins the rest).
+        assert_eq!(lanes_of(LaneFlags::default()), (Value::Null, Value::Null));
+
+        // Every count: the mode, both lane counts, and the decoders, which are the producer lanes.
+        let all = LaneFlags {
+            decoders: Some(2),
+            state: Some(2),
+            post: Some(3),
+        };
+        assert_eq!(
+            lanes_of(all),
+            (json!({"mode": "auto", "state": 2, "post": 3}), json!(2))
+        );
+
+        // One count alone turns lanes on, and ADP derives the others; 0 is written as ADP's automatic count.
+        let state_only = LaneFlags {
+            state: Some(0),
+            ..LaneFlags::default()
+        };
+        assert_eq!(lanes_of(state_only), (json!({"mode": "auto", "state": 0}), Value::Null));
+        let decoders_only = LaneFlags {
+            decoders: Some(4),
+            ..LaneFlags::default()
+        };
+        assert_eq!(lanes_of(decoders_only), (json!({"mode": "auto"}), json!(4)));
+
+        // The other experimental keys are kept beside the lanes.
+        let config = adp_config(&RunSettings {
+            lanes: all,
+            ..settings()
+        });
+        let programmable_metrics = &config["experimental"]["programmable_metrics"];
+        assert_eq!(programmable_metrics["artifact_channel"]["poll_interval"], "1s");
+        assert_eq!(
+            programmable_metrics["resources"]["credentials"]["team_d"],
+            "demo-team-d-key"
+        );
+        let yaml = render(&config).unwrap();
+        assert!(
+            yaml.contains("  programmable_metrics:\n    artifact_channel:"),
+            "{}",
+            yaml
+        );
+        assert!(
+            yaml.contains("    lanes:\n      mode: auto\n      post: 3\n      state: 2\n"),
+            "{}",
+            yaml
+        );
+        assert!(yaml.contains("\ndogstatsd_workers_count: 2\n"), "{}", yaml);
     }
 }

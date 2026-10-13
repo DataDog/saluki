@@ -327,7 +327,7 @@ fn the_default_programs_frame_has_the_designed_slots_and_fixed_components() {
     assert_eq!(
         frame.slots()[3].kind,
         SlotKind::Isolation {
-            output_point: point(9),
+            output_points: vec![point(9)],
             upstream: vec![point(0)],
         }
     );

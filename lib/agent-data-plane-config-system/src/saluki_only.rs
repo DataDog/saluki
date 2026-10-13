@@ -70,11 +70,11 @@ use std::{
     collections::HashMap,
     fmt,
     marker::PhantomData,
-    num::{NonZeroU64, NonZeroUsize},
+    num::{NonZeroU16, NonZeroU64, NonZeroUsize},
     time::Duration,
 };
 
-use agent_data_plane_config::control::MemoryMode;
+use agent_data_plane_config::control::{LanesMode, MemoryMode};
 use agent_data_plane_config::defaults::{
     DEFAULT_ARTIFACT_CHANNEL_POLL_INTERVAL, DEFAULT_ENABLE_GLOBAL_LIMITER, DEFAULT_MAX_RESOURCE_LEN,
     DEFAULT_MEMORY_SLOP_FACTOR, DEFAULT_METRICS_LEVEL, DEFAULT_STRING_INTERNER_SIZE_BYTES,
@@ -312,6 +312,111 @@ pub struct ProgrammableMetrics {
     pub artifact_channel: ArtifactChannel,
     /// What resources artifacts may use (`experimental.programmable_metrics.resources.*`).
     pub resources: ProgrammableMetricsResources,
+    /// How many lanes the metrics path's slots run on (`experimental.programmable_metrics.lanes.*`).
+    pub lanes: ProgrammableMetricsLanes,
+}
+
+/// How many lanes the programmable metrics path's slots run on (`experimental.programmable_metrics.lanes.*`).
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct ProgrammableMetricsLanes {
+    /// Whether the slots run on lanes (`experimental.programmable_metrics.lanes.mode`): `auto` or `off`. Defaults to
+    /// absent, which is the model's default.
+    pub mode: Option<LanesModeSource>,
+    /// The state lanes of DogStatsD aggregation (`experimental.programmable_metrics.lanes.state`); `0`, like absent,
+    /// is the automatic count.
+    pub state: Option<u16>,
+    /// The post-aggregation lanes (`experimental.programmable_metrics.lanes.post`); `0`, like absent, is the automatic
+    /// count.
+    pub post: Option<u16>,
+}
+
+/// Whether the metrics path's slots run on lanes, as written at `experimental.programmable_metrics.lanes.mode`.
+///
+/// The modes are `auto` and `off`. YAML 1.1 reads an unquoted `off` as the boolean `false`, and tools built on it, such
+/// as templating that renders a values map into `datadog.yaml`, write it so, so `false` is read as `off` and `true` as
+/// `auto`: as booleans, as the strings `false` and `true`, and as `0` and `1`, which the Agent's casting reads as
+/// booleans.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LanesModeSource {
+    /// The slots run on lanes.
+    Auto,
+    /// One lane per slot.
+    Off,
+}
+
+impl<'de> Deserialize<'de> for LanesModeSource {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct LanesModeVisitor;
+
+        impl Visitor<'_> for LanesModeVisitor {
+            type Value = LanesModeSource;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("`auto` or `off`")
+            }
+
+            fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+                Ok(if value {
+                    LanesModeSource::Auto
+                } else {
+                    LanesModeSource::Off
+                })
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                match value {
+                    0 => Ok(LanesModeSource::Off),
+                    1 => Ok(LanesModeSource::Auto),
+                    other => Err(E::custom(format!(
+                        "unknown lanes mode `{other}`; expected `auto` or `off`"
+                    ))),
+                }
+            }
+
+            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                match u64::try_from(value) {
+                    Ok(value) => self.visit_u64(value),
+                    Err(_) => Err(E::custom(format!(
+                        "unknown lanes mode `{value}`; expected `auto` or `off`"
+                    ))),
+                }
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                match value {
+                    "auto" | "true" => Ok(LanesModeSource::Auto),
+                    "off" | "false" => Ok(LanesModeSource::Off),
+                    other => Err(E::custom(format!(
+                        "unknown lanes mode `{other}`; expected `auto` or `off`"
+                    ))),
+                }
+            }
+        }
+
+        deserializer.deserialize_any(LanesModeVisitor)
+    }
+}
+
+impl From<LanesModeSource> for LanesMode {
+    fn from(mode: LanesModeSource) -> Self {
+        match mode {
+            LanesModeSource::Auto => LanesMode::Auto,
+            LanesModeSource::Off => LanesMode::Off,
+        }
+    }
 }
 
 /// What programmable metrics resources artifacts may use (`experimental.programmable_metrics.resources.*`).
@@ -754,6 +859,11 @@ impl SalukiOnly {
                 .map(|(name, value)| (name.clone(), value.clone()))
                 .collect();
         }
+        let lanes = &self.experimental.programmable_metrics.lanes;
+        let destination = &mut config.control.programmable_metrics.lanes;
+        destination.mode = lanes.mode.map(LanesMode::from).unwrap_or_default();
+        destination.state = lanes.state.and_then(NonZeroU16::new);
+        destination.post = lanes.post.and_then(NonZeroU16::new);
 
         // shared
         config.shared.metrics_level = self
@@ -1290,6 +1400,62 @@ mod tests {
                 serde_json::from_value::<SalukiOnly>(unreadable).is_err(),
                 "{credentials}"
             );
+        }
+    }
+
+    #[test]
+    fn lanes_are_automatic_by_default_and_a_count_of_zero_is_the_automatic_count() {
+        let saluki_only: SalukiOnly = serde_json::from_value(json!({})).expect("the source deserializes");
+        let mut config = SalukiConfiguration::default();
+        saluki_only.seed(&mut config);
+        let lanes = config.control.programmable_metrics.lanes;
+        assert_eq!(lanes.mode, LanesMode::Auto);
+        assert_eq!((lanes.state, lanes.post), (None, None));
+
+        for (source, mode, state, post) in [
+            (json!({ "mode": "auto" }), LanesMode::Auto, None, None),
+            (
+                json!({ "mode": "auto", "state": 3, "post": 0 }),
+                LanesMode::Auto,
+                NonZeroU16::new(3),
+                None,
+            ),
+            (
+                json!({ "mode": "off", "state": 0, "post": 5 }),
+                LanesMode::Off,
+                None,
+                NonZeroU16::new(5),
+            ),
+            (json!({ "state": 2 }), LanesMode::Auto, NonZeroU16::new(2), None),
+            // The booleans a YAML 1.1 tool writes for `off` and for `on`, in every form the Agent's casting reads.
+            (json!({ "mode": false }), LanesMode::Off, None, None),
+            (json!({ "mode": "false" }), LanesMode::Off, None, None),
+            (json!({ "mode": 0 }), LanesMode::Off, None, None),
+            (json!({ "mode": true }), LanesMode::Auto, None, None),
+            (json!({ "mode": "true" }), LanesMode::Auto, None, None),
+            (json!({ "mode": 1 }), LanesMode::Auto, None, None),
+        ] {
+            let saluki_only: SalukiOnly =
+                serde_json::from_value(json!({ "experimental": { "programmable_metrics": { "lanes": source } } }))
+                    .expect("the source deserializes");
+            let mut config = SalukiConfiguration::default();
+            saluki_only.seed(&mut config);
+            let lanes = config.control.programmable_metrics.lanes;
+            assert_eq!((lanes.mode, lanes.state, lanes.post), (mode, state, post), "{source}");
+        }
+
+        // An unknown mode, a negative count, or one that does not fit 16 bits fails the load.
+        for lanes in [
+            json!({ "mode": "on" }),
+            json!({ "mode": 2 }),
+            json!({ "mode": -1 }),
+            json!({ "mode": ["off"] }),
+            json!({ "state": -1 }),
+            json!({ "post": 65_536 }),
+            json!({ "state": "two" }),
+        ] {
+            let unreadable = json!({ "experimental": { "programmable_metrics": { "lanes": lanes } } });
+            assert!(serde_json::from_value::<SalukiOnly>(unreadable).is_err(), "{lanes}");
         }
     }
 

@@ -26,17 +26,23 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use saluki_core::{
-    data_model::event::metric::{context::Context, Metric, MetricMetadata, MetricValues},
-    execution::{AdmissionTime, LossClass},
+    data_model::{
+        event::metric::{context::Context, Metric, MetricMetadata, MetricValues},
+        tags::TagSet,
+    },
+    execution::{AdmissionPointId, AdmissionTime, GenerationId, LossClass},
 };
 use serde_json::{json, Value};
 use stringtheory::MetaString;
 
-use super::harness::{DeliveredRecord, FrameHarness, HarnessOptions};
+use super::harness::{
+    DeliveredRecord, DeliverySchedule, FrameHarness, HarnessOptions, LaneTimeEvent, LanedFrameHarness,
+};
 use crate::{
     canonical::PlanHash,
+    compile::{KeyGroups, LanePolicy},
     install::diff,
-    interpret::{InstallOutcome, Interpreter, RunOutput, Trace, TraceEvent},
+    interpret::{replay::LaneObservation, InstallOutcome, Interpreter, RunOutput, Trace, TraceEvent},
     ir::{NodeId, OutputId, Plan, RecipientId},
     limits,
     model::PortType,
@@ -192,7 +198,7 @@ fn gauge_at(name: &'static str, relative: u64, value: f64) -> Metric {
 /// one.
 type Delivered = (u64, u64, String);
 
-fn describe(metric: &Metric) -> String {
+pub(super) fn describe(metric: &Metric) -> String {
     let (kind, points) = match metric.values() {
         MetricValues::Rate(points, interval) => (format!("rate/{}s", interval.as_secs()), points),
         MetricValues::Gauge(points) => ("gauge".to_string(), points),
@@ -260,6 +266,43 @@ fn expected(records: &[(u64, u64, &str)]) -> Vec<Delivered> {
     expected
 }
 
+/// What a replay knows of one source's clock and each of its lanes' own stamps, as their admission points keep them:
+/// one latest time and epoch per source, and each lane's latest time and epoch, for heartbeats at ticks.
+#[derive(Default)]
+struct ClockModel {
+    latest: Option<AdmissionTime>,
+    epoch: u32,
+    lanes: BTreeMap<u16, (AdmissionTime, u32)>,
+}
+
+impl ClockModel {
+    /// Records a stamp of `lane` at `at`: a jump back beyond the reset threshold from the clock's latest time resets
+    /// the clock, for every lane.
+    fn stamped(&mut self, lane: u16, at: AdmissionTime) {
+        let threshold = limits::values::CLOCK_RESET_THRESHOLD.as_nanos() as u64;
+        match self.latest {
+            Some(latest) if at < latest && latest.as_unix_nanos() - at.as_unix_nanos() > threshold => {
+                self.epoch = self.epoch.wrapping_add(1);
+                self.latest = Some(at);
+            }
+            latest => self.latest = Some(latest.map_or(at, |latest| latest.max(at))),
+        }
+        let epoch = self.epoch;
+        let own = self.lanes.entry(lane).or_insert((at, epoch));
+        *own = match *own {
+            (latest, own_epoch) if own_epoch == epoch => (latest.max(at), epoch),
+            _ => (at, epoch),
+        };
+    }
+
+    /// Returns `true` if `lane` has stamped nothing at or after `clock` in its clock's epoch.
+    fn stale(&self, lane: u16, clock: AdmissionTime) -> bool {
+        self.lanes
+            .get(&lane)
+            .is_none_or(|(latest, epoch)| *latest < clock || *epoch != self.epoch)
+    }
+}
+
 /// A trace replayed through a frame of region drivers, following the installations its interpreter run decided.
 pub(super) struct Replay {
     pub(super) harness: FrameHarness,
@@ -268,8 +311,10 @@ pub(super) struct Replay {
     replaced: Option<Plan>,
     /// The installation waiting for the cut in flight, with its event's position: the latest wins.
     waiting: Option<(usize, Plan)>,
-    /// The latest admission time of each source, for heartbeats at ticks.
-    latest: BTreeMap<NodeId, AdmissionTime>,
+    /// Each source's clock, for heartbeats at ticks.
+    clocks: BTreeMap<NodeId, ClockModel>,
+    /// The lanes of each source the frame runs on lanes.
+    lanes: BTreeMap<NodeId, u16>,
     /// The clock of the latest `advance`, the wall clock the interpreter reads when it arms a cut.
     clock: AdmissionTime,
     heartbeats_at_ticks: bool,
@@ -288,9 +333,60 @@ impl Replay {
     pub(super) fn run_with(
         trace: &Trace, heartbeats_at_ticks: bool, start: AdmissionTime, options: HarnessOptions,
     ) -> (RunOutput, Self) {
+        if let Some(lanes) = LANES.with(std::cell::Cell::get) {
+            let trace = on_lanes(trace, lanes);
+            return Self::run_on_lanes(
+                &trace,
+                heartbeats_at_ticks,
+                start,
+                options,
+                lanes,
+                DeliverySchedule::TraceOrder,
+            );
+        }
+        let boot = boot_of(trace);
+        let harness = FrameHarness::starting_at(&boot, &report(&boot), OperatorRegistry::native(), options, start);
+        Self::run_on(trace, heartbeats_at_ticks, options, harness)
+    }
+
+    /// Runs `trace` as [`run_with`][Self::run_with] does, through a frame laid out on `lanes` without pipelining,
+    /// delivering between lanes as `schedule` says, and through the interpreter with the frame's lanes of each source.
+    pub(super) fn run_on_lanes(
+        trace: &Trace, heartbeats_at_ticks: bool, start: AdmissionTime, options: HarnessOptions, lanes: LanePolicy,
+        schedule: DeliverySchedule,
+    ) -> (RunOutput, Self) {
+        let boot = boot_of(trace);
+        let harness = LanedFrameHarness::new(
+            &boot,
+            &report(&boot),
+            OperatorRegistry::native(),
+            options,
+            start,
+            lanes,
+            schedule,
+        )
+        .unwrap_or_else(|error| panic!("{}", error))
+        .into_harness();
+        Self::run_on(trace, heartbeats_at_ticks, options, harness)
+    }
+
+    fn run_on(
+        trace: &Trace, heartbeats_at_ticks: bool, options: HarnessOptions, harness: FrameHarness,
+    ) -> (RunOutput, Self) {
         let registry = OperatorRegistry::native();
         let catalog = catalog();
-        let interpreter = Interpreter::new(&registry, &catalog);
+        let lanes = harness
+            .frame()
+            .admission_points()
+            .iter()
+            .filter(|point| point.lanes > 1)
+            .map(|point| (point.node.clone(), point.lanes))
+            .collect::<BTreeMap<_, _>>();
+        let interpreter = lanes
+            .iter()
+            .fold(Interpreter::new(&registry, &catalog), |interpreter, (source, lanes)| {
+                interpreter.with_source_lanes(source.clone(), *lanes)
+            });
         let interpreter = match options.state_capacity {
             Some(capacity) => interpreter.with_state_budget(capacity),
             None => interpreter,
@@ -301,14 +397,14 @@ impl Replay {
             interpreter
         };
         let run = interpreter.run(trace).unwrap();
-        let replay = Self::follow(trace, &run, heartbeats_at_ticks, start, options);
+        let replay = Self::follow(trace, &run, heartbeats_at_ticks, harness, lanes);
         (run, replay)
     }
 
     /// Replays `trace` through the frame harness, following the interpreter's `run`: each installation as the
     /// interpreter decided it (committed, armed at its cut, waiting, cancelled, or refused).
     fn follow(
-        trace: &Trace, run: &RunOutput, heartbeats_at_ticks: bool, start: AdmissionTime, options: HarnessOptions,
+        trace: &Trace, run: &RunOutput, heartbeats_at_ticks: bool, harness: FrameHarness, lanes: BTreeMap<NodeId, u16>,
     ) -> Self {
         let outcomes = run
             .installs()
@@ -316,45 +412,62 @@ impl Replay {
             .map(|record| (record.event, &record.outcome))
             .collect::<BTreeMap<_, _>>();
         let events = trace.events();
-        let TraceEvent::Install { plan: boot } = &events[0] else {
-            panic!("a trace starts with its boot plan's installation")
-        };
-        let boot = Plan::clone(boot);
-        let harness = FrameHarness::starting_at(&boot, &report(&boot), OperatorRegistry::native(), options, start);
+        let boot = boot_of(trace);
+        // The interpreter's clock before its first tick, which it arms a cut with.
+        let clock = AdmissionTime::UNIX_EPOCH;
         let mut replay = Self {
             harness,
             active: boot,
             replaced: None,
             waiting: None,
-            latest: BTreeMap::new(),
-            clock: start,
+            clocks: BTreeMap::new(),
+            lanes,
+            clock,
             heartbeats_at_ticks,
         };
         for (position, event) in events.iter().enumerate().skip(1) {
             match event {
                 TraceEvent::Admit {
                     source,
+                    lane,
                     admitted_at,
                     batch,
                 } => {
-                    replay.stamped(source, *admitted_at);
+                    replay
+                        .clocks
+                        .entry(source.clone())
+                        .or_default()
+                        .stamped(*lane, *admitted_at);
                     replay
                         .harness
-                        .admit(source.local().as_str(), *admitted_at, batch.clone());
+                        .admit_at_lane(source.local().as_str(), *lane, *admitted_at, batch.clone());
                     replay.finalize_if_passed(&outcomes);
                 }
-                TraceEvent::Heartbeat { source, admitted_at } => replay.heartbeat(source, *admitted_at, &outcomes),
+                TraceEvent::Heartbeat {
+                    source,
+                    lane,
+                    admitted_at,
+                } => replay.heartbeat(source, *lane, *admitted_at, &outcomes),
                 TraceEvent::Advance { clock } => {
-                    // As the interpreter does: idle sources heartbeat at the tick's clock first, which can finalize a
+                    // As the interpreter does: idle lanes heartbeat at the tick's clock first, which can finalize a
                     // cut, and start the installation waiting for it, before the tick.
                     if replay.heartbeats_at_ticks {
                         let stale = replay
                             .sources()
                             .into_iter()
-                            .filter(|source| replay.latest.get(source).is_none_or(|latest| latest < clock))
+                            .flat_map(|source| {
+                                let lanes = replay.lanes.get(&source).copied().unwrap_or(1);
+                                (0..lanes).map(move |lane| (source.clone(), lane))
+                            })
+                            .filter(|(source, lane)| {
+                                replay
+                                    .clocks
+                                    .get(source)
+                                    .is_none_or(|clock_model| clock_model.stale(*lane, *clock))
+                            })
                             .collect::<Vec<_>>();
-                        for source in stale {
-                            replay.heartbeat(&source, *clock, &outcomes);
+                        for (source, lane) in stale {
+                            replay.heartbeat(&source, lane, *clock, &outcomes);
                         }
                     }
                     replay.harness.advance(*clock);
@@ -404,19 +517,11 @@ impl Replay {
             .collect()
     }
 
-    /// Records a stamp of `source` at `at`, as its admission clock keeps its latest time: a jump back beyond the reset
-    /// threshold restarts it.
-    fn stamped(&mut self, source: &NodeId, at: AdmissionTime) {
-        let threshold = limits::values::CLOCK_RESET_THRESHOLD.as_nanos() as u64;
-        let latest = self.latest.entry(source.clone()).or_insert(at);
-        if at > *latest || latest.as_unix_nanos() - at.as_unix_nanos() > threshold {
-            *latest = at;
-        }
-    }
-
-    fn heartbeat(&mut self, source: &NodeId, at: AdmissionTime, outcomes: &BTreeMap<usize, &InstallOutcome>) {
-        self.stamped(source, at);
-        self.harness.heartbeat(source.local().as_str(), at);
+    fn heartbeat(
+        &mut self, source: &NodeId, lane: u16, at: AdmissionTime, outcomes: &BTreeMap<usize, &InstallOutcome>,
+    ) {
+        self.clocks.entry(source.clone()).or_default().stamped(lane, at);
+        self.harness.heartbeat_at_lane(source.local().as_str(), lane, at);
         self.finalize_if_passed(outcomes);
     }
 
@@ -465,6 +570,30 @@ impl Replay {
         if let Some((position, plan)) = self.waiting.take() {
             self.start(position, plan, outcomes);
         }
+    }
+}
+
+/// Runs `trace` through the interpreter and through a frame on `lanes`, as [`Replay::run_on_lanes`] does, with the
+/// default options, and returns the interpreter's run and the frame's harness.
+pub(super) fn replay_on_lanes(
+    trace: &Trace, heartbeats_at_ticks: bool, start: AdmissionTime, lanes: LanePolicy, schedule: DeliverySchedule,
+) -> (RunOutput, FrameHarness) {
+    let (run, replay) = Replay::run_on_lanes(
+        trace,
+        heartbeats_at_ticks,
+        start,
+        HarnessOptions::default(),
+        lanes,
+        schedule,
+    );
+    (run, replay.harness)
+}
+
+/// Returns the plan a trace installs first, which boots its frame.
+fn boot_of(trace: &Trace) -> Plan {
+    match trace.events().first() {
+        Some(TraceEvent::Install { plan }) => Plan::clone(plan),
+        _ => panic!("a trace starts with its boot plan's installation"),
     }
 }
 
@@ -1234,14 +1363,9 @@ fn a_reset_while_a_tick_is_gated_drops_the_tick_and_the_first_flush_after_it_add
     );
 }
 
-#[test]
-fn drains_that_flush_at_different_times_are_stamped_in_plan_order_of_their_state_owners() {
-    // `agg_b` joins `agg_a` in the boot frame's isolation slot at a cut at 7200; `agg_a`'s window then changes to 5
-    // seconds at a cut at 7210, which gives it a new lineage, created after `agg_b`'s; and a third plan removes `agg_b`
-    // at a cut at 7220, during which input ends. At shutdown `agg_a` closes at 7221 and the retiring `agg_b` at the
-    // cut's 7220, both under generation 3. The output clock latches each stamp to the latest before it, so the order of
-    // the two drains decides `b.y`'s: in plan order, `agg_a` drains first, and `b.y` is latched to 7221, whatever order
-    // the region holds the lineages in.
+/// Returns the trace of [`drains_that_flush_at_different_times_are_stamped_in_plan_order_of_their_state_owners`],
+/// whose `a.` counter is `a` and whose `b.` counter is `b`.
+fn drains_at_different_times(a: &Metric, b: &Metric) -> Trace {
     let by_name_over = |window_a: &str, with_b: bool| {
         let mut plan = by_name(with_b, "10s");
         let agg_a = plan
@@ -1252,16 +1376,27 @@ fn drains_that_flush_at_different_times_are_stamped_in_plan_order_of_their_state
         agg_a.params = serde_json::from_value(aggregation(window_a)).unwrap();
         plan
     };
-    let trace = Trace::new()
+    Trace::new()
         .install(by_name_over("10s", false))
-        .admit(src(), t(7_195), vec![counter("a.x", 1.0)])
+        .admit(src(), t(7_195), vec![a.clone()])
         .install(by_name_over("10s", true))
-        .admit(src(), t(7_201), vec![counter("a.x", 1.0), counter("b.y", 1.0)])
+        .admit(src(), t(7_201), vec![a.clone(), b.clone()])
         .install(by_name_over("5s", true))
-        .admit(src(), t(7_211), vec![counter("a.x", 1.0), counter("b.y", 1.0)])
+        .admit(src(), t(7_211), vec![a.clone(), b.clone()])
         .install(by_name_over("5s", false))
         .advance(t(7_221))
-        .close();
+        .close()
+}
+
+#[test]
+fn drains_that_flush_at_different_times_are_stamped_in_plan_order_of_their_state_owners() {
+    // `agg_b` joins `agg_a` in the boot frame's isolation slot at a cut at 7200; `agg_a`'s window then changes to 5
+    // seconds at a cut at 7210, which gives it a new lineage, created after `agg_b`'s; and a third plan removes `agg_b`
+    // at a cut at 7220, during which input ends. At shutdown `agg_a` closes at 7221 and the retiring `agg_b` at the
+    // cut's 7220, both under generation 3. The output clock latches each stamp to the latest before it, so the order of
+    // the two drains decides `b.y`'s: in plan order, `agg_a` drains first, and `b.y` is latched to 7221, whatever order
+    // the region holds the lineages in.
+    let trace = drains_at_different_times(&counter("a.x", 1.0), &counter("b.y", 1.0));
     let (run, replay) = Replay::run(&trace, false, t(7_190));
     let cuts = run
         .installs()
@@ -1282,4 +1417,836 @@ fn drains_that_flush_at_different_times_are_stamped_in_plan_order_of_their_state
             (3, 7_221_000, "b.y rate/10s [7200:1, 7210:1]"),
         ],
     );
+}
+
+#[test]
+fn on_lanes_a_lanes_latch_stamps_its_drains_of_one_event_and_never_another_lanes() {
+    // The trace above on the lanes the stage 6 traces run on: a state lane's latch takes the stamps of the drains that
+    // lane emits. With `a.` and `b.` on one state lane, it emits `agg_a`'s drain at 7221 first, in plan order, and
+    // latches `b.`'s to 7221, as the single latch does. On two, `b.`'s lane emits nothing of `agg_a`'s drain, so its
+    // latch stamps `b.`'s drain at its own flush time, the retiring owner's cut at 7220: within one event, the drains
+    // of two state owners of one slot flush at decreasing times, which per-lane latches stamp apart (6.7, as amended).
+    LANES.with(|lanes| lanes.set(Some(TRACE_LANES)));
+    let state = TRACE_LANES.state;
+    for (b_lane, b_stamp) in [(0, 7_221_000), (1, 7_220_000)] {
+        let a = counter_on_lane("a.x", 0, state, 1.0);
+        let b = counter_on_lane("b.y", b_lane, state, 1.0);
+        let (an, bn) = (name_of(&a), name_of(&b));
+        let (run, replay) = Replay::run(&drains_at_different_times(&a, &b), false, t(7_190));
+        let a_10s = format!("{} rate/10s [7190:1, 7200:1]", an);
+        let a_5s = format!("{} rate/5s [7210:1]", an);
+        let b_10s = format!("{} rate/10s [7200:1, 7210:1]", bn);
+        let single = [
+            (2, 7_210_000, a_10s.as_str()),
+            (3, 7_221_000, a_5s.as_str()),
+            (3, 7_221_000, b_10s.as_str()),
+        ];
+        assert_eq!(interpreted(&run, "a"), expected(&single), "the interpreter's `a`");
+        let on_lanes = [
+            (2, 7_210_000, a_10s.as_str()),
+            (3, 7_221_000, a_5s.as_str()),
+            (3, b_stamp, b_10s.as_str()),
+        ];
+        assert_eq!(
+            framed(&replay.harness, "a"),
+            expected(&on_lanes),
+            "the frame's `a`, `b.` on state lane {}",
+            b_lane
+        );
+    }
+    LANES.with(|lanes| lanes.set(None));
+}
+
+#[test]
+fn stage_6_tests_of_one_trace_each_deliver_their_expectations_on_lanes() {
+    // The stage 6 tests of one trace each beyond traces 1 to 15, on the lanes the traces run on, on four state lanes,
+    // and on two producer lanes into three state lanes: each holds its own expectations, as on one point. Two pin what
+    // lanes make capacity behavior: a cut at 70% of the budget, where one point's crossing releases the old lineage's
+    // contexts before the new one admits any, while on several points the two hold contexts at once between the first
+    // point's switch and the last's (amendment 128); and two state owners sharing a budget, whose last unit goes to
+    // whichever lane's context takes it first. The drains of two state owners of one slot that flush at decreasing
+    // times are stamped per lane (above).
+    for lanes in [
+        TRACE_LANES,
+        LanePolicy {
+            dogstatsd: 3,
+            state: 4,
+            post: 1,
+        },
+        LanePolicy {
+            dogstatsd: 2,
+            state: 3,
+            post: 2,
+        },
+    ] {
+        LANES.with(|cell| cell.set(Some(lanes)));
+        a_reset_while_a_tick_is_gated_drops_the_tick_and_the_first_flush_after_it_adds_no_zeros();
+        a_lineage_a_cut_starts_gates_its_first_tick_on_the_slots_watermark();
+        a_cut_that_adds_a_state_owner_of_another_width_lines_up_with_the_widths_of_the_owners_it_changes();
+        LANES.with(|cell| cell.set(None));
+    }
+}
+
+// The traces on lanes (6.7): stage 6's traces at D = 3 and P = 2 under 6.7's point mapping, and traces T-L1 to T-L7,
+// on frames whose state slot runs on lanes, through the real region drivers.
+
+/// The admission point of producer lane 1 of `src`: the frame numbers the source's lane points first.
+const PRODUCER_LANE_1: AdmissionPointId = AdmissionPointId::new(1);
+
+thread_local! {
+    /// The lanes [`Replay::run_with`] runs its frame on, while a test replays the stage 6 traces on lanes; `None` runs
+    /// them as written, on one lane per slot.
+    static LANES: std::cell::Cell<Option<LanePolicy>> = const { std::cell::Cell::new(None) };
+}
+
+/// The producer, state, and post-aggregation lanes the stage 6 traces run on (6.7).
+const TRACE_LANES: LanePolicy = LanePolicy {
+    dogstatsd: 3,
+    state: 2,
+    post: 1,
+};
+
+/// Returns `plan` with a filter that keeps everything between the source and what the source feeds, so that its
+/// aggregation runs behind a fused slot, whose keyed exit is the repartition edge: a point with lanes feeds no state
+/// slot on lanes directly.
+fn behind_a_fused_slot(plan: &Plan) -> Plan {
+    let mut value = serde_json::to_value(plan).expect("a plan serializes");
+    let mut fed = Vec::new();
+    for edge in value["edges"].as_array_mut().expect("a plan has edges") {
+        if edge["from"].as_str().is_some_and(|from| from.starts_with("src.")) {
+            fed.push(edge["to"].clone());
+            edge["to"] = json!("lanes_keep.in");
+        }
+    }
+    let edges = value["edges"].as_array_mut().expect("a plan has edges");
+    match fed.as_slice() {
+        [to] => edges.push(json!({"from": "lanes_keep.true", "to": to})),
+        _ => panic!("the stage 6 traces' plans feed one node from the source"),
+    }
+    edges.push(json!({"from": "lanes_keep.false", "to": "lanes_kept_none.in"}));
+    let nodes = value["nodes"].as_array_mut().expect("a plan has nodes");
+    nodes.push(node("lanes_keep", "split", json!({"predicate": {"const": true}})));
+    nodes.push(node("lanes_kept_none", "drop", json!({})));
+    let plan = Plan::from_value(value).expect("the plan with a filter in front is well-formed");
+    report(&plan);
+    plan
+}
+
+/// Returns a stage 6 trace as it runs on [`TRACE_LANES`]: every plan behind a fused slot, and its stamps spread over
+/// the producer lanes, each mirrored as heartbeats of the other lanes ([`Trace::over_lanes`]).
+fn on_lanes(trace: &Trace, lanes: LanePolicy) -> Trace {
+    let plans = trace
+        .events()
+        .iter()
+        .map(|event| match event {
+            TraceEvent::Install { plan } => TraceEvent::Install {
+                plan: std::sync::Arc::new(behind_a_fused_slot(plan)),
+            },
+            other => other.clone(),
+        })
+        .collect::<Trace>();
+    plans.over_lanes(&src(), lanes.dogstatsd)
+}
+
+#[test]
+fn stage_6_traces_deliver_their_expectations_on_three_producer_lanes_and_two_state_lanes() {
+    // Each trace runs with its own hand-written expectations, through the interpreter on three lanes of `src` and
+    // through a frame on `TRACE_LANES`: every state lane's watermark equals the single point's after each event, so
+    // ticks, gates, expired graces, `W_pre`, and crossings happen at stage 6's instants and seconds. Traces 5 and 10
+    // pin one-lane details (the admission clock's own stamp, the slot's lineage count), and the queued forms hold
+    // buffers by hand; trace L3 runs trace 11's queued form on lanes.
+    LANES.with(|lanes| lanes.set(Some(TRACE_LANES)));
+    trace_1_a_backlog_at_the_cut_lands_in_the_old_lineage();
+    trace_2_a_late_batch_without_a_cut_lands_in_its_open_bucket();
+    trace_3_a_changed_width_cuts_at_the_common_boundary();
+    trace_4_a_changed_destination_retains_and_flushes_through_the_new_plan();
+    trace_6_a_large_backward_jump_resets_and_closes_every_open_bucket();
+    trace_7_a_rollback_is_a_new_installation_with_its_own_cut();
+    trace_8_a_late_timestamped_point_belongs_to_the_new_generation();
+    trace_9_a_future_timestamped_point_is_flushed_at_the_old_lineages_retirement();
+    trace_11_a_reset_after_publication_switches_the_point_to_the_new_generation();
+    trace_12_an_added_state_owner_starts_its_lineage_at_the_cut();
+    trace_13_a_retain_after_the_cut_flushes_the_old_lineage_under_the_generation_it_served();
+    trace_14_a_revocation_cancels_an_armed_cut_and_the_default_program_retains_its_lineage();
+    trace_15_re_compositions_during_a_cut_wait_and_the_last_commits_as_retain();
+    LANES.with(|lanes| lanes.set(None));
+}
+
+#[test]
+fn stage_6_traces_deliver_their_expectations_on_three_producer_lanes_and_one_state_lane() {
+    // Increment 9.3's layout: one state lane fed by three producer points, through the producer slot's `One` exit,
+    // whose several upstream points send their final headers before a newer epoch's and their generation changes at
+    // once. The traces' expectations hold as on one point.
+    LANES.with(|lanes| {
+        lanes.set(Some(LanePolicy {
+            state: 1,
+            ..TRACE_LANES
+        }))
+    });
+    trace_1_a_backlog_at_the_cut_lands_in_the_old_lineage();
+    trace_2_a_late_batch_without_a_cut_lands_in_its_open_bucket();
+    trace_3_a_changed_width_cuts_at_the_common_boundary();
+    trace_4_a_changed_destination_retains_and_flushes_through_the_new_plan();
+    trace_6_a_large_backward_jump_resets_and_closes_every_open_bucket();
+    trace_7_a_rollback_is_a_new_installation_with_its_own_cut();
+    trace_8_a_late_timestamped_point_belongs_to_the_new_generation();
+    trace_9_a_future_timestamped_point_is_flushed_at_the_old_lineages_retirement();
+    trace_11_a_reset_after_publication_switches_the_point_to_the_new_generation();
+    trace_12_an_added_state_owner_starts_its_lineage_at_the_cut();
+    trace_13_a_retain_after_the_cut_flushes_the_old_lineage_under_the_generation_it_served();
+    trace_14_a_revocation_cancels_an_armed_cut_and_the_default_program_retains_its_lineage();
+    trace_15_re_compositions_during_a_cut_wait_and_the_last_commits_as_retain();
+    LANES.with(|lanes| lanes.set(None));
+}
+
+#[test]
+fn stage_6_traces_deliver_their_expectations_through_the_laned_harness_on_one_lane() {
+    // The machinery the traces on lanes run through, on one lane per slot: every plan behind a fused slot, laid out
+    // without pipelining, run by a laned harness; each trace's own expectations hold.
+    LANES.with(|lanes| lanes.set(Some(LanePolicy::ONE)));
+    trace_1_a_backlog_at_the_cut_lands_in_the_old_lineage();
+    trace_2_a_late_batch_without_a_cut_lands_in_its_open_bucket();
+    trace_3_a_changed_width_cuts_at_the_common_boundary();
+    trace_4_a_changed_destination_retains_and_flushes_through_the_new_plan();
+    trace_6_a_large_backward_jump_resets_and_closes_every_open_bucket();
+    trace_7_a_rollback_is_a_new_installation_with_its_own_cut();
+    trace_8_a_late_timestamped_point_belongs_to_the_new_generation();
+    trace_9_a_future_timestamped_point_is_flushed_at_the_old_lineages_retirement();
+    trace_11_a_reset_after_publication_switches_the_point_to_the_new_generation();
+    trace_12_an_added_state_owner_starts_its_lineage_at_the_cut();
+    trace_13_a_retain_after_the_cut_flushes_the_old_lineage_under_the_generation_it_served();
+    trace_14_a_revocation_cancels_an_armed_cut_and_the_default_program_retains_its_lineage();
+    trace_15_re_compositions_during_a_cut_wait_and_the_last_commits_as_retain();
+    LANES.with(|lanes| lanes.set(None));
+}
+
+/// Returns a counter of a context named `prefix` and a number, the first whose key the key groups of `lanes` state
+/// lanes give lane `lane`, with the number of that name.
+fn counter_on_lane(prefix: &str, lane: u16, lanes: u16, value: f64) -> Metric {
+    let groups = KeyGroups::new(lanes);
+    (0..)
+        .map(|index| Context::from_parts(format!("{}{}", prefix, index), TagSet::default()))
+        .find(|context| groups.lane_of(context.key().as_u64()) == lane)
+        .map(|context| Metric::counter(context, value))
+        .expect("some name lands on every lane")
+}
+
+/// Returns the name of a metric.
+fn name_of(metric: &Metric) -> String {
+    metric.context().name().to_string()
+}
+
+/// `src -> keep -> agg -> emit a`, aggregating over `window`, behind a fused slot.
+fn kept(window: &str) -> Plan {
+    behind_a_fused_slot(&aggregated(window, "a"))
+}
+
+#[test]
+fn trace_l1_a_cut_crosses_each_state_lane_on_its_own_and_values_equal_one_lane() {
+    // Two producer lanes, two state lanes, the cut to 5 seconds at T = 100. What state lane 1 receives from producer
+    // lane 1 is delayed by three progress periods. Producer lane 0's new-generation batch with `x` and `y` reaches
+    // each lane's new instance while its old one still holds them: at each lane a context seen on both sides of the
+    // cut holds two units of the node's budget, one per instance, until the lane crosses. Lane 0 crosses at producer
+    // lane 1's batch at 100.6; lane 1, which hears of it 300 ms later, only at producer lane 1's heartbeat at 101: the
+    // lanes cross separately. Values equal the interpreter's, and one lane's.
+    let (x, y) = (counter_on_lane("x", 0, 2, 1.0), counter_on_lane("y", 1, 2, 1.0));
+    let trace = Trace::new()
+        .install(kept("10s"))
+        .admit_at_lane(src(), 0, t(95), vec![x.clone(), y.clone()])
+        .heartbeat_at_lane(src(), 1, t(96))
+        .heartbeat_at_lane(src(), 0, ms(98_500))
+        .heartbeat_at_lane(src(), 1, ms(98_500))
+        .install(kept("5s"))
+        .admit_at_lane(src(), 0, ms(100_500), vec![x.clone(), y.clone()])
+        .admit_at_lane(src(), 1, ms(100_600), vec![x.clone()])
+        .heartbeat_at_lane(src(), 1, t(101))
+        .advance(t(106))
+        .close();
+    let lanes = LanePolicy {
+        dogstatsd: 2,
+        state: 2,
+        post: 1,
+    };
+    let delayed = DeliverySchedule::Delay {
+        point: PRODUCER_LANE_1,
+        lane: 1,
+        by: limits::values::PROGRESS_PERIOD * 3,
+    };
+    let (run, replay) = Replay::run_on_lanes(&trace, true, t(90), HarnessOptions::default(), lanes, delayed);
+    let (run_one, replay_one) = Replay::run(&on_one_lane(&trace), true, t(90));
+    let records = interpreted(&run, "a");
+    assert_eq!(framed(&replay.harness, "a"), records, "the frame on lanes");
+    assert_eq!(interpreted(&run_one, "a"), records, "the interpreter on one lane");
+    assert_eq!(framed(&replay_one.harness, "a"), records, "the frame on one lane");
+    let names = [name_of(&x), name_of(&y)];
+    assert!(
+        interpreted(&run, "a")
+            .iter()
+            .any(|(generation, _, record)| *generation == 1 && record.starts_with(&names[1])),
+        "the old lineage flushes `y` at its crossing"
+    );
+
+    // The crossings, step by step: the overlap each lane counts, the units the node's budget holds, and each lane's
+    // crossing. Each step lets the keyed exits' holds expire, so that what a producer lane routed reaches the lanes.
+    let boot = kept("10s");
+    let options = HarnessOptions {
+        record_budgets: true,
+        ..HarnessOptions::default()
+    };
+    let mut harness = LanedFrameHarness::new(
+        &boot,
+        &report(&boot),
+        OperatorRegistry::native(),
+        options,
+        t(90),
+        lanes,
+        delayed,
+    )
+    .unwrap();
+    let slot = harness
+        .frame()
+        .slots()
+        .iter()
+        .find(|slot| slot.is_isolation())
+        .map(|slot| slot.name.to_string())
+        .expect("the frame has a state slot");
+    let step = |harness: &mut LanedFrameHarness| {
+        harness.elapse(Duration::from_millis(10));
+        harness.publish();
+        let overlap = (0..2)
+            .map(|lane| {
+                harness
+                    .telemetry()
+                    .lane_gauge(&slot, "plan_lane_crossing_overlap_contexts", lane)
+            })
+            .collect::<Vec<_>>();
+        let held = harness
+            .budget_traces()
+            .into_iter()
+            .find(|(budget, _)| budget == "agg")
+            .map_or(0, |(_, trace)| trace.held());
+        let crossed = (0..2)
+            .map(|lane| {
+                harness
+                    .time_events(&slot, lane)
+                    .iter()
+                    .any(|event| matches!(event, LaneTimeEvent::Crossed { .. }))
+            })
+            .collect::<Vec<_>>();
+        (overlap, held, crossed)
+    };
+    harness.admit_at_lane("src", 0, t(95), vec![x.clone(), y.clone()]);
+    harness.heartbeat_at_lane("src", 1, t(96));
+    harness.heartbeat_at_lane("src", 0, ms(98_500));
+    harness.heartbeat_at_lane("src", 1, ms(98_500));
+    let five = kept("5s");
+    assert!(harness.prepare(&five, &report(&five)));
+    assert_eq!(
+        harness.arm_cut(&[Duration::from_secs(10), Duration::from_secs(5)]),
+        t(100)
+    );
+    harness.admit_at_lane("src", 0, ms(100_500), vec![x.clone(), y.clone()]);
+    assert_eq!(
+        step(&mut harness),
+        (vec![1.0, 1.0], 4, vec![false, false]),
+        "each lane holds its context in both lineages"
+    );
+    harness.admit_at_lane("src", 1, ms(100_600), vec![x.clone()]);
+    assert_eq!(
+        step(&mut harness),
+        (vec![0.0, 1.0], 3, vec![true, false]),
+        "lane 0 crossed, lane 1 still holds `y` twice"
+    );
+    harness.heartbeat_at_lane("src", 1, t(101));
+    assert_eq!(
+        step(&mut harness),
+        (vec![0.0, 0.0], 2, vec![true, true]),
+        "lane 1 crossed"
+    );
+}
+
+/// Returns `trace` with every stamp at lane 0: the one-lane run a run on lanes is compared with. The lanes' stamps are
+/// in stamp order, so one point stamps them as well.
+fn on_one_lane(trace: &Trace) -> Trace {
+    trace
+        .events()
+        .iter()
+        .map(|event| match event {
+            TraceEvent::Admit {
+                source,
+                admitted_at,
+                batch,
+                ..
+            } => TraceEvent::Admit {
+                source: source.clone(),
+                lane: 0,
+                admitted_at: *admitted_at,
+                batch: batch.clone(),
+            },
+            TraceEvent::Heartbeat {
+                source, admitted_at, ..
+            } => TraceEvent::Heartbeat {
+                source: source.clone(),
+                lane: 0,
+                admitted_at: *admitted_at,
+            },
+            other => other.clone(),
+        })
+        .collect()
+}
+
+/// The admission point of producer lane 0 of `src`.
+const PRODUCER_LANE_0: AdmissionPointId = AdmissionPointId::new(0);
+
+#[test]
+fn trace_l2_a_reset_drains_every_state_lane_at_the_exact_final_old_epoch_watermark() {
+    // `x` lives on state lane 0, `y` on state lane 1; both flushed at the tick at 7,190. Producer lane 0 then sends
+    // five old-epoch batches, the last, at 7,195, of `x` only, without a tick between, so that its keyed exit still
+    // holds them when its clock resets at 3,601; producer lane 1, idle after its heartbeat at 7,196, closes the windows
+    // with its heartbeat at 3,604. What producer lane 0 sends state lane 1 from its reset on waits until it stamped
+    // 1.5 seconds later, so state lane 0 opens its window first, and the tick at 3,602 is due between the two lanes'
+    // openings.
+    //
+    // State lane 1 learns producer lane 0's final old-epoch time, 7,195, from the header the exit forwards, though the
+    // batch went to state lane 0 only: both lanes drain the old epoch at the same watermark, the earlier final time,
+    // 7,195, `x` and `y` with their open [7190, 7200). The tick between the openings fires in neither lane: lane 0's
+    // window is open, and the reset mark keeps lane 1, whose window is not, from firing an old-epoch tick past its
+    // cutoff, whose zeros of `y` and flush time no single core has.
+    let (x, y) = (counter_on_lane("x", 0, 2, 1.0), counter_on_lane("y", 1, 2, 1.0));
+    let (xn, yn) = (name_of(&x), name_of(&y));
+    let mut trace = Trace::new().install(kept("10s"));
+    for second in 7_181..=7_190 {
+        trace = if second == 7_181 {
+            trace.admit_at_lane(src(), 0, t(second), vec![x.clone(), y.clone()])
+        } else {
+            trace.heartbeat_at_lane(src(), 0, t(second))
+        };
+        trace = trace.heartbeat_at_lane(src(), 1, t(second)).advance(t(second));
+    }
+    for second in 7_191..=7_195 {
+        let batch = if second == 7_195 {
+            vec![x.clone()]
+        } else {
+            vec![x.clone(), y.clone()]
+        };
+        trace = trace.admit_at_lane(src(), 0, t(second), batch);
+    }
+    let mut trace = trace
+        .heartbeat_at_lane(src(), 1, t(7_196))
+        .admit_at_lane(src(), 0, t(3_601), vec![x.clone()])
+        .advance(t(3_602))
+        .heartbeat_at_lane(src(), 0, t(3_603))
+        .advance(t(3_603))
+        .heartbeat_at_lane(src(), 1, t(3_604))
+        .advance(t(3_604));
+    for second in 3_605..=3_611 {
+        trace = trace
+            .heartbeat_at_lane(src(), 0, t(second))
+            .heartbeat_at_lane(src(), 1, t(second))
+            .advance(t(second));
+    }
+    let trace = trace.close();
+    let lanes = LanePolicy {
+        dogstatsd: 2,
+        state: 2,
+        post: 1,
+    };
+    let delayed = DeliverySchedule::DelayFrom {
+        point: PRODUCER_LANE_0,
+        lane: 1,
+        epoch: 1,
+        by: Duration::from_millis(1_500),
+    };
+    let options = HarnessOptions {
+        monotonic_across_jumps: Some(Duration::from_secs(1)),
+        ..HarnessOptions::default()
+    };
+    let (run, replay) = Replay::run_on_lanes(&trace, false, t(7_180), options, lanes, delayed);
+    let records = [
+        (1, 7_190_000, format!("{} rate/10s [7180:1]", xn)),
+        (1, 7_190_000, format!("{} rate/10s [7180:1]", yn)),
+        (1, 7_195_000, format!("{} rate/10s [7190:5]", xn)),
+        (1, 7_195_000, format!("{} rate/10s [7190:4]", yn)),
+        (1, 3_610_000, format!("{} rate/10s [3600:1]", xn)),
+    ];
+    let records = records
+        .iter()
+        .map(|(generation, at, record)| (*generation, *at, record.as_str()))
+        .collect::<Vec<_>>();
+    assert_delivered(&run, &replay, "a", &records);
+    // No lane fired an old-epoch tick the other did not. (Lane 0 counts a tick resolved apart: inside its window it
+    // skipped the tick at 3,602 holding `x` of the new epoch, which a lane whose window had closed would have fired.)
+    let slot = replay
+        .harness
+        .frame()
+        .slots()
+        .iter()
+        .find(|slot| slot.is_isolation())
+        .map(|slot| slot.name.to_string())
+        .expect("the frame has a state slot");
+    let old_ticks = |lane: u16| {
+        replay
+            .harness
+            .time_events(&slot, lane)
+            .into_iter()
+            .filter_map(|event| match event {
+                LaneTimeEvent::Ticked {
+                    epoch: 0,
+                    ordinal,
+                    flush,
+                    ..
+                } => Some((ordinal, flush)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(old_ticks(1), old_ticks(0), "the lanes' old-epoch ticks");
+}
+
+#[test]
+fn trace_l3_a_reset_after_a_cuts_publication_retires_the_old_lineage_at_its_windows_close_in_either_order() {
+    // The interpreter's T-L3 (interpret::lane_tests), whose expectation is hand-written there, on two producer lanes
+    // and two state lanes, with `c` on state lane 1, and a tick at 7,201 that sends what the keyed exits hold and
+    // gates, and that the reset drops. In trace order that lane receives producer lane 1's new-generation batch before
+    // producer lane 0's new-epoch header; with what producer lane 1 sends it delayed by a second, the header first.
+    // Whichever it receives first, the old lineage's reset drain is its final retirement, at 7,198.5.
+    let c = |value| counter_on_lane("c", 1, 2, value);
+    let name = name_of(&c(1.0));
+    let trace = Trace::new()
+        .install(kept("10s"))
+        .admit_at_lane(src(), 0, t(7_195), vec![c(1.0)])
+        .heartbeat_at_lane(src(), 1, t(7_196))
+        .heartbeat_at_lane(src(), 0, ms(7_198_500))
+        .install(kept("5s"))
+        .admit_at_lane(src(), 1, ms(7_200_500), vec![c(5.0)])
+        .advance(t(7_201))
+        .heartbeat_at_lane(src(), 0, t(3_601))
+        .admit_at_lane(src(), 0, t(3_602), vec![c(2.0)])
+        .heartbeat_at_lane(src(), 1, t(3_603))
+        .heartbeat_at_lane(src(), 0, t(3_606))
+        .heartbeat_at_lane(src(), 1, t(3_606))
+        .advance(t(3_606))
+        .close();
+    let records = [
+        (1, 7_198_500, format!("{} rate/10s [7190:1]", name)),
+        (2, 7_198_500, format!("{} rate/5s [7200:5]", name)),
+        (2, 3_606_000, format!("{} rate/5s [3600:2]", name)),
+    ];
+    let records = records
+        .iter()
+        .map(|(generation, at, record)| (*generation, *at, record.as_str()))
+        .collect::<Vec<_>>();
+    let lanes = LanePolicy {
+        dogstatsd: 2,
+        state: 2,
+        post: 1,
+    };
+    for (schedule, header_first) in [
+        (DeliverySchedule::TraceOrder, false),
+        (
+            DeliverySchedule::Delay {
+                point: PRODUCER_LANE_1,
+                lane: 1,
+                by: Duration::from_secs(1),
+            },
+            true,
+        ),
+    ] {
+        let (run, replay) = Replay::run_on_lanes(&trace, false, t(7_190), HarnessOptions::default(), lanes, schedule);
+        assert_delivered(&run, &replay, "a", &records);
+        // The order in which `c`'s lane received producer lane 0's new-epoch header and producer lane 1's batch.
+        let observations = replay.harness.replay();
+        let observations = observations.observations(1);
+        let position = |wanted: &dyn Fn(&LaneObservation) -> bool| {
+            observations.iter().position(wanted).expect("the lane observed it")
+        };
+        let header = position(&|observation| {
+            matches!(
+                observation,
+                LaneObservation::Progress { lane: 0, epoch: 1, .. }
+                    | LaneObservation::Admitted { lane: 0, epoch: 1, .. }
+            )
+        });
+        let batch = position(&|observation| {
+            matches!(
+                observation,
+                LaneObservation::Admitted { lane: 1, admitted_at, .. } if *admitted_at == ms(7_200_500)
+            )
+        });
+        assert_eq!(header < batch, header_first, "{:?}", schedule);
+    }
+}
+
+#[test]
+fn trace_l3_a_plan_waiting_for_a_cut_starts_once_every_lane_passed_it_though_a_window_holds_the_old_lineage() {
+    // The interpreter's form (interpret::lane_tests) on two producer lanes and two state lanes, with `c` on state lane
+    // 1: the cut to 5 seconds finalizes once both producer lanes passed it, at producer lane 0's reset at 3,601, though
+    // the windows still hold the old lineage, and the plan waiting for it starts then, its cut at T = 3,610, which the
+    // harness, finalizing from the points' own stamps as the installer does, arms at the same time.
+    let c = |value| counter_on_lane("c", 1, 2, value);
+    let name = name_of(&c(1.0));
+    let trace = Trace::new()
+        .install(kept("10s"))
+        .admit_at_lane(src(), 0, t(7_195), vec![c(1.0)])
+        .heartbeat_at_lane(src(), 1, t(7_196))
+        .heartbeat_at_lane(src(), 0, ms(7_198_500))
+        .install(kept("5s"))
+        .install(kept("10s"))
+        .admit_at_lane(src(), 1, ms(7_200_500), vec![c(5.0)])
+        .heartbeat_at_lane(src(), 0, t(3_601))
+        .admit_at_lane(src(), 0, t(3_602), vec![c(2.0)])
+        .heartbeat_at_lane(src(), 1, t(3_615))
+        .heartbeat_at_lane(src(), 0, t(3_621))
+        .heartbeat_at_lane(src(), 1, t(3_621))
+        .advance(t(3_621))
+        .close();
+    let lanes = LanePolicy {
+        dogstatsd: 2,
+        state: 2,
+        post: 1,
+    };
+    let (run, replay) = Replay::run_on_lanes(
+        &trace,
+        false,
+        t(7_190),
+        HarnessOptions::default(),
+        lanes,
+        DeliverySchedule::TraceOrder,
+    );
+    let waiting = run
+        .installs()
+        .iter()
+        .find(|record| record.event == 5)
+        .map(|record| &record.outcome);
+    assert!(
+        matches!(waiting, Some(InstallOutcome::Cut { at, .. }) if *at == t(3_610)),
+        "{:?}",
+        waiting
+    );
+    let records = [
+        (1, 7_198_500, format!("{} rate/10s [7190:1]", name)),
+        (2, 7_198_500, format!("{} rate/5s [7200:5]", name)),
+        (2, 3_610_000, format!("{} rate/5s [3600:2]", name)),
+    ];
+    let records = records
+        .iter()
+        .map(|(generation, at, record)| (*generation, *at, record.as_str()))
+        .collect::<Vec<_>>();
+    assert_delivered(&run, &replay, "a", &records);
+}
+
+#[test]
+fn trace_l4_a_preparation_one_of_sixteen_state_lanes_refuses_is_aborted_in_every_lane_and_never_stamped() {
+    // Sixteen state lanes; state lane 9 refuses the cut's preparation, its state owner's kernel built for another
+    // lane. As the coordinator does with the first refusal, the candidate is aborted in every lane of every slot: no
+    // lane holds its generation, nothing stamps it, and the boot generation keeps admitting and flushing. The next
+    // candidate, prepared on every lane, takes its identifier.
+    let boot = kept("10s");
+    let lanes = LanePolicy {
+        dogstatsd: 1,
+        state: 16,
+        post: 1,
+    };
+    let mut harness = LanedFrameHarness::new(
+        &boot,
+        &report(&boot),
+        OperatorRegistry::native(),
+        HarnessOptions::default(),
+        t(90),
+        lanes,
+        DeliverySchedule::TraceOrder,
+    )
+    .unwrap();
+    let slot = harness
+        .frame()
+        .slots()
+        .iter()
+        .find(|slot| slot.is_isolation())
+        .map(|slot| slot.id)
+        .expect("the frame has a state slot");
+    harness.admit("src", t(95), vec![counter("c", 1.0)]);
+    let five = kept("5s");
+    let refusal = harness
+        .prepare_refused_by(&five, &report(&five), slot, 9)
+        .expect_err("state lane 9 refuses the candidate");
+    assert!(refusal.contains("lane 9"), "{}", refusal);
+    for driver in harness.drivers() {
+        assert_eq!(
+            driver.generations(),
+            vec![GenerationId::new(1)],
+            "slot {:?} lane {:?} holds only the boot generation",
+            driver.slot(),
+            driver.lane()
+        );
+    }
+    assert_eq!(harness.active().id(), GenerationId::new(1));
+    harness.heartbeat("src", t(101));
+    harness.advance(t(101));
+    assert_eq!(framed(&harness, "a"), expected(&[(1, 101_000, "c rate/10s [90:1]")]));
+    assert!(harness.prepare(&five, &report(&five)));
+    for driver in harness.drivers() {
+        assert_eq!(
+            driver.generations(),
+            vec![GenerationId::new(1), GenerationId::new(2)],
+            "the next candidate takes the refused one's identifier"
+        );
+    }
+}
+
+#[test]
+fn trace_l3_queued_trace_11_on_lanes_the_fresh_old_lineage_instance_crosses_at_the_cut() {
+    // Stage 6's queued trace 11 at D = 3, P = 2: the producer lanes stamp 7,201 and then reset to 3,601, mirrored at
+    // every lane, while both batches wait before the state lanes; the cut is armed with the post-reset clock (T =
+    // 3,610). Released, the old-epoch batch drains at 7,201 unclamped, the epoch-1 batch reaches a fresh instance of
+    // the old lineage, which keeps the cut's mark and crosses at 3,610.5.
+    let (ten, five) = (filtered("10s", false), filtered("5s", false));
+    let mut harness = LanedFrameHarness::new(
+        &ten,
+        &report(&ten),
+        OperatorRegistry::native(),
+        HarnessOptions::default(),
+        t(3_590),
+        TRACE_LANES,
+        DeliverySchedule::TraceOrder,
+    )
+    .unwrap();
+    harness.hold_between_slots();
+    let mirrored = |harness: &mut LanedFrameHarness, lane: u16, at: AdmissionTime, batch: Vec<Metric>| {
+        harness.admit_at_lane("src", lane, at, batch);
+        for other in (0..TRACE_LANES.dogstatsd).filter(|other| *other != lane) {
+            harness.heartbeat_at_lane("src", other, at);
+        }
+    };
+    mirrored(&mut harness, 0, t(7_201), vec![counter("c", 1.0)]);
+    mirrored(&mut harness, 1, t(3_601), vec![counter("c", 1.0)]);
+    assert!(harness.prepare(&five, &report(&five)));
+    harness.set_wall(t(3_605));
+    assert_eq!(
+        harness.arm_cut(&[Duration::from_secs(10), Duration::from_secs(5)]),
+        t(3_610)
+    );
+    harness.stop_holding();
+    harness.release();
+    for lane in 0..TRACE_LANES.dogstatsd {
+        harness.heartbeat_at_lane("src", lane, ms(3_610_500));
+    }
+    assert!(harness.cut_passed());
+    harness.finalize_cut();
+    mirrored(&mut harness, 2, t(3_612), vec![counter("c", 1.0)]);
+    harness.close(t(3_620));
+    let records = expected(&[
+        (1, 7_201_000, "c rate/10s [7200:1]"),
+        (1, 3_610_000, "c rate/10s [3600:1]"),
+        (2, 3_620_000, "c rate/5s [3610:1]"),
+    ]);
+    assert_eq!(framed(&harness, "a"), records);
+    assert_eq!(framed(&harness, "b"), records);
+}
+
+#[test]
+fn trace_l6_lanes_finishing_apart_across_a_bucket_boundary_share_one_close_time() {
+    // The state lanes finish 200 ms apart, across the boundary at 7,210: the first to finish sets the lineage's close
+    // time, the later of its epoch's latest stamp, 7,209.5, and its wall clock, 7,209.9, and the other closes at it
+    // too. [7200, 7210) is open then, so both lanes discard their share of it, `x` and `y`, as shutdown loss: neither
+    // flushes what the other discards, which lane 1's own time, 7,210.1, would have.
+    let (x, y) = (counter_on_lane("x", 0, 2, 1.0), counter_on_lane("y", 1, 2, 2.0));
+    let boot = kept("10s");
+    let mut harness = LanedFrameHarness::new(
+        &boot,
+        &report(&boot),
+        OperatorRegistry::native(),
+        HarnessOptions::default(),
+        t(7_200),
+        LanePolicy {
+            dogstatsd: 1,
+            state: 2,
+            post: 1,
+        },
+        DeliverySchedule::TraceOrder,
+    )
+    .unwrap();
+    harness.admit("src", ms(7_209_500), vec![x, y]);
+    harness.close_staggered(ms(7_209_900), Duration::from_millis(200));
+    assert_eq!(framed(&harness, "a"), expected(&[]));
+    harness.publish();
+    assert_eq!(harness.telemetry().loss("agg", LossClass::Shutdown), 2);
+}
+
+#[test]
+fn trace_l6_shutdown_inside_a_window_drains_an_epoch_a_lane_never_stamped_in_at_its_latest_stamp() {
+    // Producer lane 1 never stamps; producer lane 0 admits `m` at 3,700.5 and resets at 100.5. The window stays open
+    // until shutdown, which closes it first: epoch 0's watermark is unknown, since producer lane 1 never reached it, so
+    // its instance drains everything it holds without a watermark flush, stamped at the epoch's latest admission time,
+    // 3,700.5, as one core over the two points stamps it; never at the Unix epoch.
+    let trace = Trace::new()
+        .install(kept("10s"))
+        .admit_at_lane(src(), 0, ms(3_700_500), vec![counter("m", 1.0)])
+        .heartbeat_at_lane(src(), 0, ms(100_500))
+        .close();
+    let lanes = LanePolicy {
+        dogstatsd: 2,
+        state: 1,
+        post: 1,
+    };
+    let (run, replay) = Replay::run_on_lanes(
+        &trace,
+        false,
+        t(3_700),
+        HarnessOptions::default(),
+        lanes,
+        DeliverySchedule::TraceOrder,
+    );
+    let stamps = replay
+        .harness
+        .delivered()
+        .iter()
+        .map(|record| record.admitted_at)
+        .collect::<Vec<_>>();
+    assert_eq!(stamps, vec![Some(ms(3_700_500))], "the drain's stamp");
+    assert_delivered(&run, &replay, "a", &[(1, 3_700_500, "m rate/10s [3700:1]")]);
+}
+
+#[test]
+fn trace_l7_a_revocation_while_armed_cancels_the_cut_over_every_producer_lane() {
+    // D = 4: the cut is armed over the four lane points; no lane has stamped its generation, so the cancel restores
+    // the old generation for every lane, and the default program is installed again, retaining its lineage. Once lane
+    // 3 stamps the new generation, the cancel is refused.
+    let lanes = LanePolicy {
+        dogstatsd: 4,
+        state: 2,
+        post: 1,
+    };
+    let armed = || {
+        let trace = Trace::new().install(kept("10s"));
+        let trace = (0..4).fold(trace, |trace, lane| {
+            trace.admit_at_lane(src(), lane, t(95 + u64::from(lane)), vec![counter("c", 1.0)])
+        });
+        trace.install(kept("30s"))
+    };
+    let (run, replay) = Replay::run_on_lanes(
+        &armed().cancel().install(kept("10s")).advance(t(101)),
+        true,
+        t(90),
+        HarnessOptions::default(),
+        lanes,
+        DeliverySchedule::TraceOrder,
+    );
+    assert_delivered(&run, &replay, "a", &[(3, 101_000, "c rate/10s [90:4]")]);
+
+    let (run, replay) = Replay::run_on_lanes(
+        &armed().heartbeat_at_lane(src(), 3, t(121)).cancel().advance(t(121)),
+        true,
+        t(90),
+        HarnessOptions::default(),
+        lanes,
+        DeliverySchedule::TraceOrder,
+    );
+    assert_eq!(
+        run.installs()
+            .iter()
+            .filter(|record| matches!(record.outcome, InstallOutcome::CancelRefused))
+            .count(),
+        1
+    );
+    assert_eq!(framed(&replay.harness, "a"), interpreted(&run, "a"));
 }

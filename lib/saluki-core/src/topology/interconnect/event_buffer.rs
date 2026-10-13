@@ -61,6 +61,15 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
         N
     }
 
+    /// Returns the number of events the event buffer has storage allocated for: at least its length.
+    ///
+    /// This is the buffer's memory, where [`capacity`][Self::capacity] is the most events it can hold. A buffer created
+    /// with [`with_capacity`][Self::with_capacity] allocates room for that many events, and grows as it fills beyond
+    /// them; a default buffer allocates room for its capacity.
+    pub fn allocated_capacity(&self) -> usize {
+        self.events.capacity()
+    }
+
     /// Returns the number of events in the event buffer.
     pub fn len(&self) -> usize {
         self.events.len()
@@ -241,6 +250,10 @@ impl<const N: usize> Dispatchable for FixedSizeEventBuffer<N> {
         self.len()
     }
 
+    fn allocated_items(&self) -> usize {
+        self.allocated_capacity()
+    }
+
     fn header_mut(&mut self) -> Option<&mut BatchHeader> {
         Some(&mut self.header)
     }
@@ -386,6 +399,17 @@ mod tests {
         // The requested allocation is clamped to the fixed capacity.
         let buffer = FixedSizeEventBuffer::<4>::with_capacity(1_000_000);
         assert!(buffer.events.capacity() < 1_000_000);
+
+        // The allocated capacity is what was allocated, where the capacity is the fixed limit.
+        for (buffer, allocated) in [
+            (FixedSizeEventBuffer::<4>::with_capacity(0), 0),
+            (FixedSizeEventBuffer::<4>::with_capacity(2), 2),
+            (FixedSizeEventBuffer::<4>::default(), 4),
+        ] {
+            assert_eq!(buffer.allocated_capacity(), allocated);
+            assert_eq!(buffer.allocated_items(), allocated);
+            assert_eq!(buffer.capacity(), 4);
+        }
     }
 
     #[test]

@@ -20,7 +20,7 @@ use std::{collections::hash_map::Entry, num::NonZeroUsize, sync::Arc, time::Dura
 
 use saluki_common::collections::{FastHashMap, FastHashSet};
 use saluki_core::{
-    cache::{Cache, CacheBuilder},
+    cache::{Cache, CacheBuilder, GaugeMode},
     data_model::{
         event::metric::{
             context::{Context, TagSetMutViewState},
@@ -361,14 +361,19 @@ impl ContextMemo {
 
     /// Creates a memo as [`new`][Self::new] does, for a [`TagProjection`] kernel whose host publishes its telemetry:
     /// the memo counts its hits, misses, and evictions in counters of its own, which the kernel publishes; see
-    /// [`CacheBuilder::with_accumulated_telemetry`].
+    /// [`CacheBuilder::with_accumulated_telemetry`]. Its gauges are reported as `gauges` says: summed when several
+    /// instances of the kernel run at once under one identifier, one per lane of its host
+    /// ([`CacheBuilder::with_gauges`]).
     ///
     /// # Panics
     ///
     /// Panics if `identifier` is empty.
-    pub fn for_kernel(identifier: &str, capacity: usize) -> Self {
+    pub fn for_kernel(identifier: &str, capacity: usize, gauges: GaugeMode) -> Self {
         Self {
-            cache: Self::builder(identifier, capacity).with_accumulated_telemetry().build(),
+            cache: Self::builder(identifier, capacity)
+                .with_accumulated_telemetry()
+                .with_gauges(gauges)
+                .build(),
         }
     }
 

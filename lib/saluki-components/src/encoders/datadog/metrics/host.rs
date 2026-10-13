@@ -344,6 +344,16 @@ async fn gate_opened(_: &mut InputGate) {
     std::future::pending().await
 }
 
+/// Returns the input gate of a host its configuration builds: the configuration's, which tests open.
+#[cfg(any(test, feature = "test-util"))]
+fn built_gate(gate: &InputGate) -> InputGate {
+    gate.clone()
+}
+
+/// Returns the input gate of a host its configuration builds: none in production builds.
+#[cfg(not(any(test, feature = "test-util")))]
+fn built_gate(_: &InputGate) -> InputGate {}
+
 /// Returns whether the host reads its input: once its gate, if it has one, opened.
 #[cfg(any(test, feature = "test-util"))]
 fn gate_open(gate: &InputGate) -> bool {
@@ -474,7 +484,7 @@ impl EncoderBuilder for MetricsEncodeHostConfiguration {
             control: self.take_control()?,
             #[cfg(any(test, feature = "test-util"))]
             observer: self.observer.clone(),
-            gate: self.gate.clone(),
+            gate: built_gate(&self.gate),
             boot,
         }))
     }

@@ -1,6 +1,6 @@
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
-use saluki_common::{collections::PrehashedHashSet, hash::NoopU64BuildHasher};
+use saluki_common::{collections::PrehashedHashSet, hash::NoopU64BuildHasher, time::get_coarse_unix_timestamp};
 use saluki_error::{generic_error, GenericError};
 use saluki_metrics::{static_metrics, Counter, Gauge};
 use stringtheory::{
@@ -8,14 +8,19 @@ use stringtheory::{
     CheapMetaString, MetaString,
 };
 use tokio::time::sleep;
+use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::debug;
 
 use super::{
+    front::{FrontCache, Lookup},
     hash::{hash_context_with_host_and_seen, ContextKey, TagSetKey},
     Context, ContextInner,
 };
 use crate::{
-    cache::{weight::ItemCountWeighter, AccumulatedCounters, Cache, CacheBuilder},
+    cache::{
+        weight::ItemCountWeighter, AccumulatedCounters, Cache, CacheBuilder, ChangeStamps, GaugeContribution,
+        GaugeMode, SummedGauge,
+    },
     data_model::{
         origin::{OriginTagsResolver, RawOrigin},
         tags::{SharedTagSet, TagSet},
@@ -30,7 +35,7 @@ const DEFAULT_CONTEXT_RESOLVER_INTERNER_CAPACITY_BYTES: NonZeroUsize = NonZeroUs
 
 const SEEN_HASHSET_INITIAL_CAPACITY: usize = 128;
 
-type ContextCache = Cache<ContextKey, Context, ItemCountWeighter, NoopU64BuildHasher>;
+pub(super) type ContextCache = Cache<ContextKey, Context, ItemCountWeighter, NoopU64BuildHasher>;
 type TagSetCache = Cache<TagSetKey, SharedTagSet, ItemCountWeighter, NoopU64BuildHasher>;
 
 #[static_metrics(prefix = context_resolver, labels(resolver_id))]
@@ -69,6 +74,8 @@ pub struct ContextResolverBuilder {
     origin_tags_resolver: Option<Arc<dyn OriginTagsResolver>>,
     telemetry_enabled: bool,
     accumulated_telemetry: bool,
+    gauges: GaugeMode,
+    front_caches: bool,
 }
 
 impl ContextResolverBuilder {
@@ -99,6 +106,8 @@ impl ContextResolverBuilder {
             origin_tags_resolver: None,
             telemetry_enabled: true,
             accumulated_telemetry: false,
+            gauges: GaugeMode::Set,
+            front_caches: false,
         })
     }
 
@@ -229,6 +238,35 @@ impl ContextResolverBuilder {
         self
     }
 
+    /// Sets how the resolver reports its interner's capacity, length, and entries, and its caches their items, weight,
+    /// and limits: set to its own values, or summed with the other resolvers of its name (see [`GaugeMode`]).
+    ///
+    /// A summed resolver adds its interner's capacity when it is built, and its length and entries once a second, as
+    /// their changes, and withdraws them once its last clone is dropped, as its caches do theirs
+    /// ([`CacheBuilder::with_gauges`]), so the series of resolvers used in parallel under one name, such as one per
+    /// task of a component, show what all of them hold. The tags resolver the resolver creates sums too; one set with
+    /// [`with_tags_resolver`][Self::with_tags_resolver] keeps its own setting.
+    ///
+    /// Defaults to [`GaugeMode::Set`].
+    pub fn with_gauges(mut self, gauges: GaugeMode) -> Self {
+        self.gauges = gauges;
+        self
+    }
+
+    /// Makes the context cache of the resolver support front caches: clones of the resolver can then be given one with
+    /// [`ContextResolver::with_front_cache`].
+    ///
+    /// A front cache needs to know whether the shared cache still holds what it copied, so the context cache then keeps
+    /// a change stamp per bucket of keys, which every insertion, removal, eviction, and expiry advances: it allocates
+    /// [`ContextResolver::change_stamps_bytes`] when it is built, and pays one atomic addition per change, none per
+    /// lookup. A resolver without caching has no cache to support, and ignores this.
+    ///
+    /// Defaults to no front caches.
+    pub fn with_front_caches(mut self) -> Self {
+        self.front_caches = true;
+        self
+    }
+
     /// Sets the interner to use for this resolver.
     ///
     /// If an interner isn't provided, an interner will be created in [`ContextResolverBuilder::build`]
@@ -277,9 +315,8 @@ impl ContextResolverBuilder {
         let allow_heap_allocations = self.allow_heap_allocations.unwrap_or(true);
 
         let telemetry = Telemetry::new(&self.name);
-        telemetry
-            .interner_capacity_bytes()
-            .set(interner.capacity_bytes() as f64);
+        let summed = self.telemetry_enabled && self.gauges == GaugeMode::Summed;
+        let interner_capacity = interner_capacity(&telemetry, &interner, summed);
 
         // NOTE: We should switch to using a size-based weighter so that we can do more firm bounding of what we cache.
         let context_cache = CacheBuilder::from_identifier(format!("{}/contexts", self.name))
@@ -287,7 +324,14 @@ impl ContextResolverBuilder {
             .with_capacity(cached_context_limit)
             .with_time_to_idle(self.idle_context_expiration)
             .with_hasher::<NoopU64BuildHasher>()
-            .with_telemetry(self.telemetry_enabled);
+            .with_telemetry(self.telemetry_enabled)
+            .with_gauges(self.gauges);
+        // Change stamps let a clone's front cache tell whether the shared cache still holds what it copied.
+        let context_cache = if self.front_caches && self.caching_enabled {
+            context_cache.with_change_stamps()
+        } else {
+            context_cache
+        };
         let context_cache = if self.accumulated_telemetry {
             context_cache.with_accumulated_telemetry().build()
         } else {
@@ -303,7 +347,8 @@ impl ContextResolverBuilder {
                     .with_cached_tagsets_limit(cached_context_limit.get())
                     .with_idle_tagsets_expiration(self.idle_context_expiration.unwrap_or_default())
                     .with_heap_allocations(allow_heap_allocations)
-                    .with_origin_tags_resolver(self.origin_tags_resolver.clone());
+                    .with_origin_tags_resolver(self.origin_tags_resolver.clone())
+                    .with_gauges(self.gauges);
                 if self.accumulated_telemetry {
                     builder.with_accumulated_telemetry().build()
                 } else {
@@ -312,15 +357,27 @@ impl ContextResolverBuilder {
             }
         };
 
-        if self.telemetry_enabled {
-            tokio::spawn(drive_telemetry(interner.clone(), telemetry.clone()));
-        }
+        // The telemetry task stops once the last clone of the resolver is dropped.
+        let task = self.telemetry_enabled.then(|| {
+            let shutdown = CancellationToken::new();
+            tokio::spawn(drive_telemetry(
+                interner.clone(),
+                telemetry.clone(),
+                summed,
+                shutdown.clone(),
+            ));
+            shutdown.drop_guard()
+        });
 
         let (counters, accumulated) = ResolverCounters::new(&telemetry, self.accumulated_telemetry);
         ContextResolver {
             telemetry,
             counters,
             accumulated,
+            background: Arc::new(Background {
+                _interner_capacity: interner_capacity,
+                _task: task,
+            }),
             interner,
             caching_enabled: self.caching_enabled,
             context_cache,
@@ -330,6 +387,7 @@ impl ContextResolverBuilder {
             ),
             allow_heap_allocations,
             tags_resolver,
+            front: None,
         }
     }
 }
@@ -400,15 +458,77 @@ pub struct ContextResolver {
     counters: ResolverCounters,
     /// What an accumulating resolver counted and has not published, shared by its clones.
     accumulated: Option<Arc<AccumulatedCounters>>,
+    /// The telemetry task of the resolver and its share of summed gauges, shared by its clones and let go of with the
+    /// last.
+    background: Arc<Background>,
     interner: GenericMapInterner,
     caching_enabled: bool,
     context_cache: ContextCache,
     hash_seen_buffer: PrehashedHashSet<u64>,
     allow_heap_allocations: bool,
     tags_resolver: TagsResolver,
+    /// This clone's own front cache, if it was given one.
+    front: Option<FrontCache>,
 }
 
 impl ContextResolver {
+    /// Gives this resolver a front cache of `entries` contexts, rounded up to a power of two, of its own.
+    ///
+    /// Clones of a resolver share one context cache, which is safe to use from many tasks at once: every lookup that
+    /// hits takes a shard lock, records the access for expiration, and counts the hit, in memory every clone writes, so
+    /// clones used in parallel contend on every resolution. A front cache is a direct-mapped cache owned by this clone,
+    /// in front of the shared one: a resolution it answers compares a key and a change stamp the shared cache keeps for
+    /// it, clones the context, and writes nothing else that is shared. It answers only with what the shared cache holds
+    /// for the key, and sends the first resolution of each context in every coarse second to the shared cache, so
+    /// contexts expire, and interned strings are freed, as they would without it.
+    ///
+    /// Its hits reach the hit counters of the resolver and of the context cache when the front cache is maintained (see
+    /// [`maintain_front_cache`][Self::maintain_front_cache]), at the latest at its first use in each coarse second, and
+    /// when the resolver is dropped. Its slots hold contexts the shared cache holds; a slot whose context the shared
+    /// cache let go of is dropped at its next use or maintenance.
+    ///
+    /// Each context has one slot, chosen by its key, so a front cache answers well for working sets up to about its
+    /// size; while the contexts resolved are far more than it can hold (fewer than one resolution in 16 finds its
+    /// context in a slot), it steps aside for a while and every resolution takes the shared path, as without it.
+    ///
+    /// A clone of a resolver with a front cache gets an empty one of the same size. A front cache needs a resolver
+    /// built with [`ContextResolverBuilder::with_front_caches`]: a resolver built without it, or without caching, has
+    /// nothing to put a front cache in front of, and ignores this. A front cache of 4,096 entries takes 96 KiB on
+    /// 64-bit targets (see [`front_cache_bytes`][Self::front_cache_bytes]).
+    pub fn with_front_cache(mut self, entries: NonZeroUsize) -> Self {
+        if self.caching_enabled {
+            self.front = FrontCache::new(
+                entries,
+                self.context_cache.clone(),
+                self.counters.resolved_existing_context.clone(),
+            );
+        }
+        self
+    }
+
+    /// Returns the bytes a front cache of `entries` entries allocates.
+    pub fn front_cache_bytes(entries: NonZeroUsize) -> usize {
+        FrontCache::slot_bytes(entries)
+    }
+
+    /// Returns the bytes the context cache of a resolver built with
+    /// [`ContextResolverBuilder::with_front_caches`] allocates for its change stamps, once, whatever its clones.
+    pub const fn change_stamps_bytes() -> usize {
+        ChangeStamps::<NoopU64BuildHasher>::BYTES
+    }
+
+    /// Adds the hits the front cache counted since it was last maintained to the counters of the resolver and of the
+    /// context cache hit counters, and drops its copies of contexts the shared cache may have let go of; without a
+    /// front cache, does nothing.
+    ///
+    /// Call it periodically, such as from a task's idle timer, so that the counters lag by at most that period and an
+    /// idle task holds no context the shared cache expired.
+    pub fn maintain_front_cache(&mut self) {
+        if let Some(front) = &mut self.front {
+            front.maintain();
+        }
+    }
+
     fn intern<S>(&self, s: S) -> Option<MetaString>
     where
         S: AsRef<str> + CheapMetaString,
@@ -615,9 +735,24 @@ impl ContextResolver {
             return Some(context);
         }
 
+        // A front cache answers for what the shared cache holds; whatever it does not answer, the shared cache does.
+        // The key's change stamp is read before the shared lookup, so a copy of what it returns is never newer than
+        // its stamp.
+        let mut front_fill = None;
+        if let Some(front) = &mut self.front {
+            let now = get_coarse_unix_timestamp() as u32;
+            match front.lookup(context_key, now) {
+                Lookup::Hit(context) => return Some(context),
+                Lookup::Miss(stamp) => front_fill = stamp.map(|stamp| (stamp, now)),
+            }
+        }
+
         match self.context_cache.get(&context_key) {
             Some(context) => {
                 self.counters.resolved_existing_context.increment(1);
+                if let (Some(front), Some((stamp, now))) = (&mut self.front, front_fill) {
+                    front.fill(context_key, &context, stamp, now);
+                }
                 Some(context)
             }
             None => {
@@ -660,12 +795,22 @@ impl ContextResolver {
     }
 }
 
+impl Drop for ContextResolver {
+    fn drop(&mut self) {
+        // The front cache publishes the hits it has not published yet when it drops, into the resolver's counters,
+        // and an accumulating resolver's counts publish what they hold when the last clone drops them: the front cache
+        // goes first, so that its last hits reach the telemetry too.
+        drop(self.front.take());
+    }
+}
+
 impl Clone for ContextResolver {
     fn clone(&self) -> Self {
         Self {
             telemetry: self.telemetry.clone(),
             counters: self.counters.clone(),
             accumulated: self.accumulated.clone(),
+            background: Arc::clone(&self.background),
             interner: self.interner.clone(),
             caching_enabled: self.caching_enabled,
             context_cache: self.context_cache.clone(),
@@ -675,19 +820,53 @@ impl Clone for ContextResolver {
             ),
             allow_heap_allocations: self.allow_heap_allocations,
             tags_resolver: self.tags_resolver.clone(),
+            front: self.front.as_ref().map(FrontCache::empty_like),
         }
     }
 }
 
-async fn drive_telemetry(interner: GenericMapInterner, telemetry: Telemetry) {
-    loop {
-        sleep(Duration::from_secs(1)).await;
+/// What a context resolver runs or holds for its telemetry, for as long as any clone of it lives: its telemetry task,
+/// which stops when this is dropped, and its share of its interner's summed capacity.
+struct Background {
+    _interner_capacity: Option<GaugeContribution>,
+    _task: Option<DropGuard>,
+}
 
-        telemetry.interner_entries().set(interner.len() as f64);
-        telemetry
-            .interner_capacity_bytes()
-            .set(interner.capacity_bytes() as f64);
-        telemetry.interner_len_bytes().set(interner.len_bytes() as f64);
+/// Reports the capacity of `interner` to its gauge in `telemetry`: adds it, returning the share to withdraw once the
+/// resolver is gone, when `summed`, and sets it otherwise.
+fn interner_capacity(telemetry: &Telemetry, interner: &GenericMapInterner, summed: bool) -> Option<GaugeContribution> {
+    let capacity = interner.capacity_bytes() as f64;
+    if summed {
+        Some(GaugeContribution::add(
+            telemetry.interner_capacity_bytes().clone(),
+            capacity,
+        ))
+    } else {
+        telemetry.interner_capacity_bytes().set(capacity);
+        None
+    }
+}
+
+/// Reports the interner's entries and length once a second until `shutdown`, and, unless `summed`, its capacity: sets
+/// them, or, when `summed`, adds their changes and withdraws what it added when it stops.
+async fn drive_telemetry(
+    interner: GenericMapInterner, telemetry: Telemetry, summed: bool, shutdown: CancellationToken,
+) {
+    let mut entries = SummedGauge::new(telemetry.interner_entries().clone(), summed);
+    let mut len_bytes = SummedGauge::new(telemetry.interner_len_bytes().clone(), summed);
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => break,
+            _ = sleep(Duration::from_secs(1)) => {}
+        }
+
+        entries.report(interner.len() as f64);
+        if !summed {
+            telemetry
+                .interner_capacity_bytes()
+                .set(interner.capacity_bytes() as f64);
+        }
+        len_bytes.report(interner.len_bytes() as f64);
     }
 }
 
@@ -702,6 +881,7 @@ pub struct TagsResolverBuilder {
     telemetry_enabled: bool,
     interner: GenericMapInterner,
     accumulated_telemetry: bool,
+    gauges: GaugeMode,
 }
 
 impl TagsResolverBuilder {
@@ -722,6 +902,7 @@ impl TagsResolverBuilder {
             telemetry_enabled: true,
             interner,
             accumulated_telemetry: false,
+            gauges: GaugeMode::Set,
         })
     }
 
@@ -845,6 +1026,16 @@ impl TagsResolverBuilder {
         self
     }
 
+    /// Sets how the resolver reports its interner's capacity and its cache its items, weight, and limit: set to its
+    /// own values, or summed with the other resolvers of its name, its share withdrawn once its last clone is dropped;
+    /// see [`ContextResolverBuilder::with_gauges`].
+    ///
+    /// Defaults to [`GaugeMode::Set`].
+    pub fn with_gauges(mut self, gauges: GaugeMode) -> Self {
+        self.gauges = gauges;
+        self
+    }
+
     /// Builds a [`TagsResolver`] from the current configuration.
     pub fn build(self) -> TagsResolver {
         let cached_tagsets_limit = self
@@ -854,16 +1045,16 @@ impl TagsResolverBuilder {
         let allow_heap_allocations = self.allow_heap_allocations.unwrap_or(true);
 
         let telemetry = Telemetry::new(self.name.clone());
-        telemetry
-            .interner_capacity_bytes()
-            .set(self.interner.capacity_bytes() as f64);
+        let summed = self.telemetry_enabled && self.gauges == GaugeMode::Summed;
+        let interner_capacity = interner_capacity(&telemetry, &self.interner, summed).map(Arc::new);
 
         let tagset_cache = CacheBuilder::from_identifier(format!("{}/tagsets", self.name))
             .expect("cache identifier cannot possibly be empty")
             .with_capacity(cached_tagsets_limit)
             .with_time_to_idle(self.idle_tagset_expiration)
             .with_hasher::<NoopU64BuildHasher>()
-            .with_telemetry(self.telemetry_enabled);
+            .with_telemetry(self.telemetry_enabled)
+            .with_gauges(self.gauges);
         let tagset_cache = if self.accumulated_telemetry {
             tagset_cache.with_accumulated_telemetry().build()
         } else {
@@ -875,6 +1066,7 @@ impl TagsResolverBuilder {
             telemetry,
             counters,
             accumulated,
+            _interner_capacity: interner_capacity,
             interner: self.interner,
             caching_enabled: self.caching_enabled,
             tagset_cache,
@@ -910,6 +1102,9 @@ pub struct TagsResolver {
     counters: ResolverCounters,
     /// What an accumulating resolver counted and has not published, shared by its clones.
     accumulated: Option<Arc<AccumulatedCounters>>,
+    /// The share of the interner's capacity that a summed resolver reports, shared by its clones and withdrawn with the
+    /// last.
+    _interner_capacity: Option<Arc<GaugeContribution>>,
     interner: GenericMapInterner,
     caching_enabled: bool,
     tagset_cache: TagSetCache,
@@ -997,6 +1192,7 @@ impl Clone for TagsResolver {
             telemetry: self.telemetry.clone(),
             counters: self.counters.clone(),
             accumulated: self.accumulated.clone(),
+            _interner_capacity: self._interner_capacity.clone(),
             interner: self.interner.clone(),
             caching_enabled: self.caching_enabled,
             tagset_cache: self.tagset_cache.clone(),
@@ -1357,5 +1553,330 @@ mod tests {
         assert_eq!(context_tags.len(), 2);
         assert!(context_tags.has_tag(&tags[0]));
         assert!(context_tags.has_tag(&tags[1]));
+    }
+
+    /// Returns every counter of `recorder` whose label value starts with `prefix`, with that prefix removed from it.
+    fn counters_of(recorder: &saluki_metrics::test::TestRecorder, prefix: &str) -> Vec<(String, String, u64)> {
+        let mut counters = recorder
+            .counters()
+            .into_iter()
+            .filter_map(|(key, value)| {
+                let label = key.labels().find(|label| label.value().starts_with(prefix))?;
+                let rest = label.value()[prefix.len()..].to_string();
+                Some((key.name().to_string(), rest, value))
+            })
+            .collect::<Vec<_>>();
+        counters.sort();
+        counters
+    }
+
+    /// Returns a builder of a caching resolver named `name` whose cache holds `limit` contexts and supports front
+    /// caches, without background tasks.
+    fn caching_resolver_builder(name: &str, limit: usize) -> ContextResolverBuilder {
+        ContextResolverBuilder::from_name(name)
+            .unwrap()
+            .with_cached_contexts_limit(limit)
+            .with_heap_allocations(true)
+            .with_tags_resolver(Some(TagsResolverBuilder::for_tests().build()))
+            .with_front_caches()
+            .without_telemetry()
+    }
+
+    /// Builds a caching resolver named `name` whose cache holds `limit` contexts and supports front caches, without
+    /// background tasks.
+    fn caching_resolver(name: &str, limit: usize) -> ContextResolver {
+        caching_resolver_builder(name, limit).build()
+    }
+
+    /// Returns the gauge `name` of the resolver `resolver_id` in `recorder`.
+    fn resolver_gauge(recorder: &saluki_metrics::test::TestRecorder, name: &str, resolver_id: &str) -> Option<f64> {
+        recorder.gauge(metrics::Key::from_parts(
+            format!("context_resolver_{}", name),
+            vec![metrics::Label::new("resolver_id", resolver_id.to_string())],
+        ))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_interner_gauges_of_summed_resolvers_of_one_name_sum_and_each_withdraws_its_share_with_its_last_clone()
+    {
+        let recorder = saluki_metrics::test::TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+        let build = |capacity: usize| {
+            ContextResolverBuilder::from_name("summed")
+                .unwrap()
+                .with_interner_capacity_bytes(NonZeroUsize::new(capacity).unwrap())
+                .with_gauges(GaugeMode::Summed)
+                .build()
+        };
+        let (mut first, mut second) = (build(4_096), build(8_192));
+        let capacity = |name| resolver_gauge(&recorder, "interner_capacity_bytes", name);
+        assert_eq!(capacity("summed"), Some(12_288.0), "the capacities sum at build");
+        assert_eq!(capacity("summed/tags"), Some(12_288.0), "and the tags resolvers' too");
+        first
+            .resolve("a.long.enough.name.to.be.interned", &["env:prod"][..], None)
+            .unwrap();
+        second
+            .resolve("another.long.enough.name.to.be.interned", &["env:prod"][..], None)
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        let entries = |recorder: &saluki_metrics::test::TestRecorder| {
+            resolver_gauge(recorder, "interner_entries", "summed").expect("the entries are reported")
+        };
+        let both = entries(&recorder);
+        assert_eq!(
+            both,
+            (first.interner.len() + second.interner.len()) as f64,
+            "the entries sum"
+        );
+        let first_entries = first.interner.len() as f64;
+        assert!(first_entries > 0.0);
+        let contexts = |recorder: &saluki_metrics::test::TestRecorder| {
+            recorder.gauge(metrics::Key::from_parts(
+                "cache_current_items",
+                vec![metrics::Label::new("cache_id", "summed/contexts")],
+            ))
+        };
+        assert_eq!(contexts(&recorder), Some(2.0), "the context caches' items sum");
+
+        // A clone keeps the resolver's share, and its telemetry task running; the last one dropped withdraws the
+        // share, and stops the task.
+        let clone = first.clone();
+        drop(first);
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(entries(&recorder), both);
+        drop(clone);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert_eq!(entries(&recorder), both - first_entries);
+        assert_eq!(capacity("summed"), Some(8_192.0));
+        assert_eq!(capacity("summed/tags"), Some(8_192.0));
+        assert_eq!(contexts(&recorder), Some(1.0));
+        drop(second);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert_eq!(entries(&recorder), 0.0);
+        assert_eq!(capacity("summed"), Some(0.0));
+        assert_eq!(capacity("summed/tags"), Some(0.0));
+        assert_eq!(contexts(&recorder), Some(0.0));
+
+        // A resolver whose gauges are set reports its own values, and its telemetry task stops with its last clone too,
+        // rather than holding the interner it reads for the life of the process.
+        let resolver = ContextResolverBuilder::from_name("set").unwrap().build();
+        let capacity_bytes = resolver.interner.capacity_bytes() as f64;
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        assert_eq!(capacity("set"), Some(capacity_bytes));
+        drop(resolver);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        metrics::gauge!("context_resolver_interner_capacity_bytes", "resolver_id" => "set").set(-1.0);
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert_eq!(
+            capacity("set"),
+            Some(-1.0),
+            "no task sets the gauge once the resolver is gone"
+        );
+    }
+
+    #[test]
+    fn a_front_cache_answers_with_the_shared_contexts_and_counts_what_the_shared_cache_would() {
+        let recorder = saluki_metrics::test::TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+        let mut plain = caching_resolver("plain", 1_000);
+        let mut front = caching_resolver("front", 1_000).with_front_cache(NonZeroUsize::new(64).unwrap());
+
+        for index in [0, 1, 0, 0, 2, 1, 0, 3, 3, 3, 0, 4, 1] {
+            let name = format!("metric.{}", index);
+            let expected = plain.resolve(&name, ["env:prod"], None).unwrap();
+            let context = front.resolve(&name, ["env:prod"], None).unwrap();
+            assert_eq!(context, expected);
+            let shared = front
+                .context_cache
+                .peek(&context.key())
+                .expect("the shared cache holds it");
+            assert!(
+                context.ptr_eq(&shared),
+                "a front cache answers with the shared cache's context"
+            );
+        }
+
+        // Every resolution counts once, as a hit or a new context, in the same series once the front cache publishes.
+        front.maintain_front_cache();
+        let counted = counters_of(&recorder, "front");
+        assert_eq!(counted, counters_of(&recorder, "plain"));
+        let hits = counted
+            .iter()
+            .find(|(name, rest, _)| name == "cache_hits_total" && rest == "/contexts")
+            .map(|(_, _, value)| *value);
+        assert_eq!(hits, Some(8), "13 resolutions of five contexts");
+
+        // A clone starts with an empty front cache of its own; what is left unpublished is published on drop.
+        let mut clone = front.clone();
+        assert_eq!(clone.front.as_ref().map(FrontCache::occupied), Some(0));
+        clone.resolve("metric.0", ["env:prod"], None).unwrap();
+        clone.resolve("metric.0", ["env:prod"], None).unwrap();
+        plain.resolve("metric.0", ["env:prod"], None).unwrap();
+        plain.resolve("metric.0", ["env:prod"], None).unwrap();
+        drop(clone);
+        assert_eq!(counters_of(&recorder, "front"), counters_of(&recorder, "plain"));
+    }
+
+    #[test]
+    fn an_accumulating_resolver_with_a_front_cache_counts_what_one_without_counts_once_the_last_clone_drops() {
+        let recorder = saluki_metrics::test::TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+        let mut plain = caching_resolver_builder("plain", 1_000)
+            .with_accumulated_telemetry()
+            .build();
+        let mut front = caching_resolver_builder("front", 1_000)
+            .with_accumulated_telemetry()
+            .build()
+            .with_front_cache(NonZeroUsize::new(64).unwrap());
+
+        // Five resolutions of one context, then a clone's two: one new context, then hits, most answered by a front
+        // cache and counted there.
+        for _ in 0..5 {
+            plain.resolve("metric.one", ["env:prod"], None).unwrap();
+            front.resolve("metric.one", ["env:prod"], None).unwrap();
+        }
+        let mut plain_clone = plain.clone();
+        let mut front_clone = front.clone();
+        for _ in 0..2 {
+            plain_clone.resolve("metric.one", ["env:prod"], None).unwrap();
+            front_clone.resolve("metric.one", ["env:prod"], None).unwrap();
+        }
+        drop((plain_clone, front_clone));
+
+        // Nothing is published until the last clone drops; then everything is, the front caches' hits included.
+        drop((plain, front));
+        let counted = counters_of(&recorder, "front");
+        assert_eq!(counted, counters_of(&recorder, "plain"));
+        let existing = counted
+            .iter()
+            .find(|(name, _, _)| name == "context_resolver_resolved_existing_context_total")
+            .map(|(_, _, value)| *value);
+        assert_eq!(existing, Some(6), "seven resolutions of one context");
+    }
+
+    #[test]
+    fn a_resolver_without_caching_or_built_without_front_caches_ignores_a_front_cache() {
+        let resolver = ContextResolverBuilder::for_tests()
+            .without_caching()
+            .with_front_caches()
+            .build()
+            .with_front_cache(NonZeroUsize::new(64).unwrap());
+        assert!(resolver.front.is_none());
+        assert!(resolver.context_cache.change_stamps().is_none(), "nothing to support");
+
+        // Without front caches, the context cache keeps no change stamps, and a front cache has nothing to rely on.
+        let resolver = ContextResolverBuilder::for_tests()
+            .build()
+            .with_front_cache(NonZeroUsize::new(64).unwrap());
+        assert!(resolver.front.is_none());
+        assert!(resolver.context_cache.change_stamps().is_none());
+        let resolver = ContextResolverBuilder::for_tests().with_front_caches().build();
+        assert!(resolver.context_cache.change_stamps().is_some());
+    }
+
+    #[test]
+    fn change_stamps_take_16_kib() {
+        assert_eq!(ContextResolver::change_stamps_bytes(), 16 * 1024);
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn a_front_cache_of_4096_entries_takes_96_kib() {
+        assert_eq!(
+            ContextResolver::front_cache_bytes(NonZeroUsize::new(4_096).unwrap()),
+            96 * 1024
+        );
+    }
+
+    #[test]
+    fn a_context_the_shared_cache_let_go_of_is_resolved_anew_and_dropped_from_the_front_cache() {
+        let mut front = caching_resolver("removing", 1_000).with_front_cache(NonZeroUsize::new(4_096).unwrap());
+        let first = front.resolve("metric.first", ["a:b"], None).unwrap();
+        let again = front.resolve("metric.first", ["a:b"], None).unwrap();
+        assert!(again.ptr_eq(&first));
+        // Another context, in another slot of the front cache (keys are hashed with a seed of the process's).
+        let slot = |key: ContextKey| key.as_u64() & 4_095;
+        let no_tags: [&str; 0] = [];
+        let kept_name = (0..)
+            .map(|index| format!("metric.kept.{}", index))
+            .find(|name| slot(super::super::hash::hash_context(name, ["a:b"], no_tags).0) != slot(first.key()))
+            .unwrap();
+        let kept = front.resolve(&kept_name, ["a:b"], None).unwrap();
+        front.resolve(&kept_name, ["a:b"], None).unwrap();
+        assert_eq!(front.front.as_ref().map(FrontCache::occupied), Some(2));
+
+        // The shared cache lets the context go (as an expiry or an eviction does, which advance the same stamps). The
+        // front cache keeps no copy past its next maintenance, and does not answer with it.
+        front.context_cache.remove(&first.key());
+        front.maintain_front_cache();
+        let copies = front.front.as_ref().map(FrontCache::copies).unwrap();
+        assert_eq!(copies.len(), 1);
+        assert!(copies[0].1.ptr_eq(&kept), "the copies of other contexts stay");
+        let anew = front.resolve("metric.first", ["a:b"], None).unwrap();
+        assert!(
+            !anew.ptr_eq(&first),
+            "a context the shared cache let go of is resolved anew, as without a front cache"
+        );
+    }
+
+    /// One step of a sequence of resolutions through a resolver with a front cache and a clone of it without one.
+    #[derive(Clone, Debug)]
+    enum Step {
+        /// The resolver with a front cache resolves context `n`.
+        Front(u8),
+        /// The clone without a front cache resolves context `n`, which can evict others from the shared cache.
+        Other(u8),
+        /// The resolver with a front cache maintains it.
+        Maintain,
+    }
+
+    fn arb_step() -> impl proptest::strategy::Strategy<Value = Step> {
+        use proptest::prelude::*;
+        prop_oneof![
+            6 => (0..24u8).prop_map(Step::Front),
+            3 => (0..24u8).prop_map(Step::Other),
+            1 => Just(Step::Maintain),
+        ]
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn property_test_a_front_cache_answers_only_with_what_the_shared_cache_holds(
+            limit in 2usize..12,
+            entries in 1usize..32,
+            steps in proptest::collection::vec(arb_step(), 1..200),
+        ) {
+            let mut front = caching_resolver("property", limit).with_front_cache(NonZeroUsize::new(entries).unwrap());
+            let mut other = front.clone();
+            other.front = None;
+            for step in steps {
+                match step {
+                    Step::Front(index) => {
+                        let answered_before = front.front.as_ref().map(FrontCache::unpublished_hits);
+                        let context = front.resolve(format!("metric.{}", index), ["a:b"], None).unwrap();
+                        let answered = front.front.as_ref().map(FrontCache::unpublished_hits) != answered_before;
+                        let shared = front.context_cache.peek(&context.key());
+                        if answered {
+                            proptest::prop_assert!(
+                                shared.is_some_and(|shared| shared.ptr_eq(&context)),
+                                "a front cache answered with a context the shared cache does not hold"
+                            );
+                        }
+                    }
+                    Step::Other(index) => {
+                        other.resolve(format!("metric.{}", index), ["a:b"], None).unwrap();
+                    }
+                    Step::Maintain => {
+                        front.maintain_front_cache();
+                        // After maintenance, every copy it keeps is what the shared cache holds.
+                        let front_cache = front.front.as_ref().unwrap();
+                        for (key, context) in front_cache.copies() {
+                            let shared = front.context_cache.peek(&key);
+                            proptest::prop_assert!(shared.is_some_and(|shared| shared.ptr_eq(&context)));
+                        }
+                    }
+                }
+            }
+        }
     }
 }

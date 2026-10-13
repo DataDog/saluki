@@ -34,7 +34,7 @@ use saluki_core::{accounting::ComponentRegistry, execution::GenerationId, suppor
 
 use super::{retry::Wait, Action, Creator, InstallerCore, PrepareOutcome};
 use crate::{
-    compile::{KernelKey, SlotId},
+    compile::{Frame, KernelKey, SlotId},
     install::{
         diff::SlotKernels,
         resources::{LeaseRef, PartAnswer, RecipientRef, Released, ResourceTable, ResourcesRevision, RetirementReport},
@@ -367,7 +367,8 @@ impl InstallerCore {
     }
 
     /// Records the resources of a generation's preparation, returning what each host prepares, and the credits it
-    /// lists: the leases and recipients the table plans for the candidate, and the kernel instances each slot builds.
+    /// lists: the leases and recipients the table plans for the candidate, and the kernel instances each slot builds,
+    /// on every lane of the slot.
     pub(super) fn plan_generation(
         &mut self, generation: GenerationId, plan: &Plan, active: Option<GenerationId>, reuse: &[SlotKernels],
     ) -> crate::install::ResourcePlan {
@@ -387,7 +388,7 @@ impl InstallerCore {
                     })
                     .collect::<Vec<_>>();
                 held.extend(slot.build.iter().map(|key| (key.clone(), generation)));
-                let bytes = instance_bytes(plan, &self.registry, &slot.build);
+                let bytes = slot_instance_bytes(plan, &self.registry, &self.frame, slot.slot, &slot.build);
                 (slot.slot, (held, bytes))
             })
             .collect::<BTreeMap<SlotId, (Vec<(KernelKey, GenerationId)>, u64)>>();
@@ -445,10 +446,20 @@ impl InstallerCore {
     }
 }
 
+/// Returns the bytes the kernel instances `built` of slot `slot` hold on every lane `frame` lays the slot out on: what
+/// [`instance_bytes`] returns for one lane, times the slot's lanes, since every lane builds instances of its own from
+/// the same specs.
+pub(super) fn slot_instance_bytes(
+    plan: &Plan, registry: &OperatorRegistry, frame: &Frame, slot: SlotId, built: &[KernelKey],
+) -> u64 {
+    let lanes = frame.slot(slot).map_or(1, |slot| u64::from(slot.lanes.max(1)));
+    instance_bytes(plan, registry, built).saturating_mul(lanes)
+}
+
 /// Returns the bytes the kernel instances `built` declare, as their operators specify their bounds: what the
-/// instances of a generation's new kernels in one slot hold. A kernel whose node or operator cannot be found declares
-/// nothing: compilation already checked them.
-pub(super) fn instance_bytes(plan: &Plan, registry: &OperatorRegistry, built: &[KernelKey]) -> u64 {
+/// instances of a generation's new kernels in one slot hold on one lane. A kernel whose node or operator cannot be
+/// found declares nothing: compilation already checked them.
+fn instance_bytes(plan: &Plan, registry: &OperatorRegistry, built: &[KernelKey]) -> u64 {
     built
         .iter()
         .filter_map(|key| plan.node(&key.node))

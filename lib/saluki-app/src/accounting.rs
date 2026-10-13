@@ -116,12 +116,7 @@ pub struct MemoryBounds {
 pub fn initialize_memory_bounds(
     configuration: MemoryBoundsConfiguration, component_registry: ComponentRegistryHandle,
 ) -> Result<MemoryBounds, GenericError> {
-    let memory_limit = configuration.memory_limit.or_else(detect_cgroup_memory_limit);
-
-    let configured_grant = memory_limit
-        .map(|limit| MemoryGrant::with_slop_factor(limit.as_u64() as usize, configuration.memory_slop_factor))
-        .transpose()
-        .error_context("Given memory limit and/or slop factor invalid.")?;
+    let configured_grant = memory_grant(&configuration)?;
 
     let (limiter_grant, verified) = match configuration.memory_mode {
         MemoryMode::Disabled => {
@@ -147,6 +142,22 @@ pub fn initialize_memory_bounds(
     };
 
     Ok(MemoryBounds { limiter, verified })
+}
+
+/// Returns the grant that memory bounds are verified against under `configuration`, whatever its mode: its memory
+/// limit, or, without one, the limit of the process cgroup when `DOCKER_DD_AGENT` is set to a non-empty value, less the
+/// slop factor; `None` when no limit resolves.
+///
+/// # Errors
+///
+/// If the limit or the slop factor is invalid, an error is returned.
+pub fn memory_grant(configuration: &MemoryBoundsConfiguration) -> Result<Option<MemoryGrant>, GenericError> {
+    configuration
+        .memory_limit
+        .or_else(detect_cgroup_memory_limit)
+        .map(|limit| MemoryGrant::with_slop_factor(limit.as_u64() as usize, configuration.memory_slop_factor))
+        .transpose()
+        .error_context("Given memory limit and/or slop factor invalid.")
 }
 
 fn verify_bounds_for_mode(

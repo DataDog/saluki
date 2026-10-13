@@ -806,6 +806,7 @@ mod physical {
             physical.slots[3].isolation,
             Some(crate::explain::IsolationEntry {
                 output_point: 9,
+                output_points: Vec::new(),
                 upstream: vec![0],
             })
         );
@@ -1392,5 +1393,279 @@ mod resources {
 
     fn strings(list: &[&str]) -> Vec<String> {
         list.iter().map(ToString::to_string).collect()
+    }
+}
+
+/// The physical sections of a frame laid out on lanes, as stage 9 lays out the frame of the default program with its
+/// outputs bound and its resources declared (`fixtures/default-program-resources.json`): with its encode hosts, without
+/// R1's pipelining.
+mod lanes {
+    use super::*;
+    use crate::{
+        compile::{compile, Frame, FrameOptions, LanePolicy},
+        ir::NativeComponentId,
+        testing::{default_program_hosts, default_program_resources_catalog, with_resources},
+    };
+
+    fn namer(nodes: &[NodeId]) -> Result<NativeComponentId, String> {
+        crate::testing::default_program_slot_name(nodes)
+    }
+
+    /// Two lanes of every kind: the smallest policy that exercises every routing.
+    const TWO: LanePolicy = LanePolicy {
+        dogstatsd: 2,
+        state: 2,
+        post: 2,
+    };
+
+    /// The explain document of the bound default program compiled into its own frame on `lanes`, without pipelining,
+    /// with its rewrites and physical sections.
+    fn on_lanes(lanes: LanePolicy) -> Explain {
+        let plan = Plan::from_value(with_resources(DEFAULT_PROGRAM_JSON)).unwrap();
+        let registry = OperatorRegistry::native();
+        let frame = Frame::compute_with(
+            &plan,
+            &registry,
+            &namer,
+            &default_program_hosts(),
+            &lanes,
+            FrameOptions { pipelining: false },
+        )
+        .unwrap();
+        let report = Validator::new(&registry, &default_program_resources_catalog()).validate(&plan);
+        assert!(report.is_valid(), "{}", report);
+        let compiled = compile(&plan, &report, &registry, &frame).unwrap();
+        Explain::of(&plan, &registry, &report)
+            .with_rewrites(&compiled.rewrites)
+            .with_physical(&compiled.plan, &frame, &compiled.placement)
+    }
+
+    fn physical_json(physical: &PhysicalPlan) -> String {
+        serde_json::to_string_pretty(physical).unwrap() + "\n"
+    }
+
+    #[test]
+    fn the_stage_9_default_programs_physical_sections_on_two_lanes_match_their_golden_files() {
+        let physical = on_lanes(TWO).physical.unwrap();
+        assert_golden("default-program-stage9-physical.json", &physical_json(&physical));
+        assert_golden("default-program-stage9-physical.txt", &physical.to_text());
+    }
+
+    #[test]
+    fn the_physical_sections_on_lanes_say_what_runs_on_each_lane_and_how_each_edge_reaches_it() {
+        let physical = on_lanes(TWO).physical.unwrap();
+        assert_eq!(
+            physical.layout,
+            Some(LayoutEntry {
+                dogstatsd_lanes: 2,
+                state_lanes: 2,
+                post_lanes: 2,
+                pipelining: false,
+            })
+        );
+
+        // DogStatsD's metrics are points 0 and 1, feeding the producer lanes lane by lane; every other source keeps
+        // one point, numbered after them, spread over the post-aggregation lanes.
+        let points = physical
+            .fixed
+            .iter()
+            .flat_map(|fixed| &fixed.admission_points)
+            .map(|point| (point.id, point.lanes, point.routing.as_str(), point.feeds_state))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            points,
+            vec![
+                (0, 2, "fixed", true),
+                (2, 1, "spread", false),
+                (3, 1, "spread", false),
+                (4, 1, "spread", false),
+                (5, 1, "spread", false),
+            ]
+        );
+
+        // Fusion is maximal between fences: three slots, each on two lanes.
+        let slots = physical
+            .slots
+            .iter()
+            .map(|slot| (slot.name.as_str(), slot.lanes))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            slots,
+            vec![("dsd_pre_aggregation", 2), ("dsd_agg", 2), ("metrics_enrich", 2)]
+        );
+        assert!(physical.fusion.iter().all(|decision| decision.decision != "pipelined"));
+
+        // Each producer lane has the entry of its own point.
+        let pre = &physical.slots[0];
+        let keys = pre.entries.iter().map(|entry| entry.key.as_str()).collect::<Vec<_>>();
+        assert_eq!(keys, vec!["admission point 0", "admission point 1"]);
+        assert!(pre
+            .entries
+            .iter()
+            .all(|entry| entry.input.to_string() == "dsd_enrich.in"));
+
+        // The exit into aggregation routes by key: groups 0 to 127 belong to lane 0, 128 to 255 to lane 1 (group `g`
+        // to lane `g * 2 / 256`); the passthrough keeps its producer lane; aggregation's output spreads; exits to
+        // outputs and encode hosts reach one input.
+        let routing = |slot: &SlotEntry| {
+            slot.exits
+                .iter()
+                .map(|exit| (exit.name.clone(), exit.routing.clone()))
+                .collect::<Vec<_>>()
+        };
+        let one = |name: &str| (name.to_string(), "one".to_string());
+        let named = |name: &str, routing: &str| (name.to_string(), routing.to_string());
+        assert_eq!(
+            routing(pre),
+            vec![
+                named("dsd_agg", "keyed"),
+                named("metrics_enrich", "affinity"),
+                one("dsd_client_telemetry"),
+                one("dd_metrics_encode"),
+                one("mrf_metrics_encode"),
+                one("af_metrics_encode"),
+            ]
+        );
+        assert_eq!(
+            pre.exits[0].key_groups,
+            vec![
+                KeyGroupsEntry {
+                    lane: 0,
+                    first: 0,
+                    last: 127
+                },
+                KeyGroupsEntry {
+                    lane: 1,
+                    first: 128,
+                    last: 255
+                },
+            ]
+        );
+        assert_eq!(pre.exits[0].progress_points, vec![0, 1]);
+        assert!(pre.exits[1..].iter().all(|exit| exit.key_groups.is_empty()));
+
+        // Each state lane stamps its time-driven output at a point of its own, after every source's point.
+        let agg = &physical.slots[1];
+        assert_eq!(
+            agg.isolation,
+            Some(IsolationEntry {
+                output_point: 6,
+                output_points: vec![6, 7],
+                upstream: vec![0, 1],
+            })
+        );
+        assert_eq!(routing(agg), vec![named("metrics_enrich", "spread")]);
+        assert!(routing(&physical.slots[2]).iter().all(|(_, routing)| routing == "one"));
+
+        // The physical edges say the same, and so do the segments of the lane points and the state lanes.
+        let edge = |from: &str| {
+            physical
+                .edges
+                .iter()
+                .find(|edge| edge.from == from)
+                .map(|edge| edge.routing.as_str())
+        };
+        assert_eq!(edge("dsd_in.metrics"), Some("fixed"));
+        assert_eq!(edge("otlp_in.metrics"), Some("spread"));
+        assert_eq!(edge("dsd_pre_aggregation.dsd_agg"), Some("keyed"));
+        assert_eq!(edge("dsd_pre_aggregation.metrics_enrich"), Some("affinity"));
+        assert_eq!(edge("dsd_agg.metrics_enrich"), Some("spread"));
+        assert_eq!(edge("metrics_enrich.dd_metrics_encode"), Some("one"));
+        let segments = physical
+            .segments
+            .iter()
+            .map(|segment| (segment.admission_point, segment.lanes))
+            .collect::<Vec<_>>();
+        assert_eq!(segments, vec![(0, 2), (2, 1), (3, 1), (4, 1), (5, 1), (6, 2)]);
+
+        // The text form says the same.
+        let text = physical.to_text();
+        for line in [
+            "  laid out on 2 DogStatsD producer lanes, 2 state lanes, and 2 post-aggregation lanes, without R1's \
+             pipelining",
+            "      admission points 0 to 1 metrics (admit, 2 lanes) -> dsd_pre_aggregation, lane by lane, feeds state",
+            "      admission point 2 metrics (admit) -> metrics_enrich, spread",
+            "      exit 0 dsd_agg -> dsd_agg, keyed (key groups 0 to 127 on lane 0, 128 to 255 on lane 1), progress \
+             of admission points 0, 1",
+            "      exit 1 metrics_enrich -> metrics_enrich, affinity",
+            "      isolation slot, output points 6, 7, watermark of admission points 0, 1",
+            "    dsd_pre_aggregation.dsd_agg -> dsd_agg (exit, keyed)",
+            "  output points 6 to 7 dsd_agg.out (time-driven)",
+        ] {
+            assert!(
+                text.lines().any(|candidate| candidate == line),
+                "no line {:?} in:\n{}",
+                line,
+                text
+            );
+        }
+    }
+
+    #[test]
+    fn lanes_change_only_the_physical_sections_and_a_document_without_them_reads_as_one_lane() {
+        // Lanes are runtime layout: the plan's hash and every section but the physical ones are as on one lane.
+        let one = on_lanes(LanePolicy::ONE);
+        let two = on_lanes(TWO);
+        let logical = |explain: &Explain| Explain {
+            physical: None,
+            ..explain.clone()
+        };
+        assert_eq!(logical(&one), logical(&two));
+
+        // On one lane, a frame without pipelining says only that; with pipelining, nothing at all, and its whole
+        // document says what it said before lanes.
+        let physical = one.physical.unwrap();
+        assert_eq!(
+            physical.layout,
+            Some(LayoutEntry {
+                dogstatsd_lanes: 1,
+                state_lanes: 1,
+                post_lanes: 1,
+                pipelining: false,
+            })
+        );
+        let value = serde_json::to_value(&physical).unwrap();
+        let text = serde_json::to_string(&value["slots"]).unwrap() + &serde_json::to_string(&value["fixed"]).unwrap();
+        for member in ["\"lanes\"", "\"routing\"", "\"key_groups\"", "\"output_points\""] {
+            assert!(!text.contains(member), "one lane writes no {}: {}", member, text);
+        }
+
+        // A document written without the lane members reads as one on one lane, laid out with pipelining.
+        let mut value = serde_json::to_value(two.physical.as_ref().unwrap()).unwrap();
+        strip(
+            &mut value,
+            &["layout", "lanes", "routing", "key_groups", "output_points"],
+        );
+        let read: PhysicalPlan = serde_json::from_value(value).unwrap();
+        assert_eq!(read.layout, None);
+        assert!(read.slots.iter().all(|slot| slot.lanes == 1));
+        assert!(read
+            .slots
+            .iter()
+            .flat_map(|slot| &slot.exits)
+            .all(|exit| exit.routing == "one" && exit.key_groups.is_empty()));
+        assert!(read
+            .fixed
+            .iter()
+            .flat_map(|fixed| &fixed.admission_points)
+            .all(|point| point.lanes == 1 && point.routing == "one"));
+        assert!(read.edges.iter().all(|edge| edge.routing == "one"));
+        assert!(read.segments.iter().all(|segment| segment.lanes == 1));
+        assert_eq!(
+            read.slots[1].isolation.as_ref().unwrap().output_points,
+            Vec::<u32>::new()
+        );
+    }
+
+    /// Removes every member named in `names` from every object in `value`.
+    fn strip(value: &mut serde_json::Value, names: &[&str]) {
+        match value {
+            serde_json::Value::Object(members) => {
+                members.retain(|name, _| !names.contains(&name.as_str()));
+                members.values_mut().for_each(|member| strip(member, names));
+            }
+            serde_json::Value::Array(values) => values.iter_mut().for_each(|member| strip(member, names)),
+            _ => {}
+        }
     }
 }

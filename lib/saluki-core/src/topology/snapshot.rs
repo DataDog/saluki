@@ -1,15 +1,18 @@
 //! Read-only descriptions of a topology blueprint's structure.
 
-use std::{num::NonZeroUsize, time::Duration};
+use std::{
+    num::{NonZeroU16, NonZeroUsize},
+    time::Duration,
+};
 
-use super::{graph::DataType, ComponentId, ComponentOutputId, OutputName};
+use super::{graph::DataType, ComponentId, ComponentOutputId, LaneEdge, OutputName};
 use crate::{
     components::ComponentType,
     execution::{AdmissionMode, AdmissionPointId},
 };
 
-/// A read-only description of a topology blueprint's structure: its components, their outputs and input capacities, the
-/// connections between them, and the outputs marked as admission points.
+/// A read-only description of a topology blueprint's structure: its components, their outputs, input capacities, and
+/// input lanes, the connections between them and how each picks a lane, and the outputs marked as admission points.
 ///
 /// Every list is sorted, so two blueprints with the same structure have equal snapshots regardless of the order in
 /// which they were assembled.
@@ -61,14 +64,15 @@ impl BlueprintSnapshot {
 pub struct ComponentSnapshot {
     id: ComponentId,
     component_type: ComponentType,
-    input: Option<(DataType, NonZeroUsize)>,
+    input: Option<(DataType, NonZeroUsize, NonZeroU16)>,
     outputs: Vec<OutputSnapshot>,
 }
 
 impl ComponentSnapshot {
-    /// Creates the description of a component, whose input, if it has one, is of the given data type and capacity.
+    /// Creates the description of a component, whose input, if it has one, is of the given data type, capacity per
+    /// lane, and number of lanes.
     pub(super) fn new(
-        id: ComponentId, component_type: ComponentType, input: Option<(DataType, NonZeroUsize)>,
+        id: ComponentId, component_type: ComponentType, input: Option<(DataType, NonZeroUsize, NonZeroU16)>,
         mut outputs: Vec<OutputSnapshot>,
     ) -> Self {
         outputs.sort_by(|a, b| a.id.cmp(&b.id));
@@ -92,7 +96,7 @@ impl ComponentSnapshot {
 
     /// Returns the data type the component accepts, or `None` for sources and relays, which have no input.
     pub fn input(&self) -> Option<DataType> {
-        self.input.map(|(data_type, _)| data_type)
+        self.input.map(|(data_type, _, _)| data_type)
     }
 
     /// Returns the capacity of the component's input interconnect, in buffers, or `None` for sources and relays, which
@@ -100,8 +104,18 @@ impl ComponentSnapshot {
     ///
     /// This is the blueprint's interconnect capacity, unless the component has a capacity of its own (see
     /// [`TopologyBlueprint::with_component_input_capacity`][super::TopologyBlueprint::with_component_input_capacity]).
+    /// A component with several input lanes has one interconnect of this capacity per lane.
     pub fn input_capacity(&self) -> Option<NonZeroUsize> {
-        self.input.map(|(_, capacity)| capacity)
+        self.input.map(|(_, capacity, _)| capacity)
+    }
+
+    /// Returns the number of the component's input lanes, or `None` for sources and relays, which have no input.
+    ///
+    /// Transforms have the lanes their builder declares
+    /// ([`TransformBuilder::input_lanes`][crate::components::transforms::TransformBuilder::input_lanes]); every other
+    /// component with an input has one.
+    pub fn input_lanes(&self) -> Option<NonZeroU16> {
+        self.input.map(|(_, _, lanes)| lanes)
     }
 
     /// Returns the outputs the component declares, sorted by output ID.
@@ -145,11 +159,12 @@ impl OutputSnapshot {
 pub struct EdgeSnapshot {
     from: ComponentOutputId,
     to: ComponentId,
+    routing: Option<LaneEdge>,
 }
 
 impl EdgeSnapshot {
-    pub(super) fn new(from: ComponentOutputId, to: ComponentId) -> Self {
-        Self { from, to }
+    pub(super) fn new(from: ComponentOutputId, to: ComponentId, routing: Option<LaneEdge>) -> Self {
+        Self { from, to, routing }
     }
 
     /// Returns the upstream component output.
@@ -160,6 +175,12 @@ impl EdgeSnapshot {
     /// Returns the downstream component.
     pub fn to(&self) -> &ComponentId {
         &self.to
+    }
+
+    /// Returns how the upstream output picks a lane of the downstream component, or `None` if that component has one
+    /// lane, which the connection leads to whatever routing it was connected with.
+    pub fn routing(&self) -> Option<LaneEdge> {
+        self.routing
     }
 }
 

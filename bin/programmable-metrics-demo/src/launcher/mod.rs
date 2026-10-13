@@ -505,6 +505,8 @@ mod tests {
             counter_expiry_secs: 0,
             traffic_rate: 20.0,
             traffic_paused: false,
+            contexts: 0,
+            lanes: Default::default(),
         }
     }
 

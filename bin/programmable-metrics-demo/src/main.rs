@@ -10,7 +10,8 @@
 //!    team D's endpoint, which the configuration does not name), starts ADP, and waits for it to report ready.
 //! 2. **Recording intakes**: one loopback HTTP listener per endpoint, team D's included, decoding and recording every
 //!    metric payload.
-//! 3. **Traffic generator**: DogStatsD over UDP at a steady rate, including a canary counter for conservation checks.
+//! 3. **Traffic generator**: DogStatsD over UDP at a steady rate, including a canary counter for conservation checks,
+//!    and control datagrams to the demo itself that show when the host drops loopback datagrams.
 //! 4. **Telemetry scraper**: reads ADP's `/metrics` every second and keeps rates of the series the UI shows.
 //! 5. **Artifact channel stub**: the server ADP polls for policy and resources artifacts, with a durable store in the
 //!    run directory.
@@ -25,7 +26,11 @@
 //!
 //! `programmable-metrics-demo check --adp-bin <path>` (or `make demo-programmable-metrics-check`) runs the same
 //! components headless on other ports, drives the demo's scenarios S0 to S6 and S8 to S11 through the demo server's
-//! API, checks what each endpoint receives, and stops everything: see [`scenario`].
+//! API, checks what each endpoint receives, and stops everything; then it launches ADP again with its metrics path on
+//! lanes and runs S12 to S14 the same way: see [`scenario`].
+//!
+//! With `--decoders`, `--state-lanes`, or `--post-lanes`, `run` asks ADP to run its metrics path on lanes, which the
+//! Lanes panel of the UI shows lane by lane; `--contexts` adds load contexts that spread over the state lanes.
 //!
 //! The demo is a development tool: it listens on loopback only, writes everything to the run directory, and is not
 //! part of any release. ADP implements its side of the artifact channel and control surface from stage 5 of the
@@ -58,6 +63,7 @@ mod control;
 mod export;
 mod intake;
 mod launcher;
+mod loopback;
 mod preview;
 mod recipients;
 mod resources;
@@ -74,7 +80,8 @@ use crate::{
     control::ControlSurface,
     intake::IntakeRecorder,
     launcher::{AdpProcess, Launch, Phase},
-    settings::{DemoPorts, RunSettings},
+    loopback::LoopbackWitness,
+    settings::{DemoPorts, LaneFlags, RunSettings},
     stub::{store::ArtifactStore, StubChannel},
     telemetry::TelemetryScraper,
     traffic::{TrafficChange, TrafficGenerator},
@@ -94,12 +101,14 @@ enum CliCommand {
     Check(CheckCommand),
 }
 
-/// Run the demo's scenarios S0 to S6 and S8 to S11 headless against ADP, and check what each endpoint receives.
+/// Run the demo's scenarios S0 to S6 and S8 to S14 headless against ADP, and check what each endpoint receives.
 ///
 /// Launches ADP and the demo on the default ports moved up by --port-offset, drives the scenarios through the demo
 /// server's API (compile, publish, revoke, for policies and resources), checks every step's acknowledgment, the
-/// families each intake receives, and canary conservation across every install, then stops everything. Exits 1 if any
-/// check fails; the report, with timings, is written to check-report.json in the run directory.
+/// families each intake receives, and canary conservation across every install, then stops everything. Lane counts are
+/// fixed when ADP boots, so S12 to S14 run in a second launch, on lanes (--decoders, --state-lanes, --post-lanes) with
+/// 10-second windows, in the run directory's lanes/ subdirectory. Exits 1 if any check fails; the report, with
+/// timings, is written to check-report.json in the run directory.
 #[derive(FromArgs)]
 #[argh(subcommand, name = "check")]
 struct CheckCommand {
@@ -120,7 +129,53 @@ struct CheckCommand {
     /// rate of DogStatsD datagrams, per second (default 20)
     #[argh(option, default = "traffic::DEFAULT_RATE")]
     traffic_rate: f64,
+
+    /// which launches to run: both (the default), first (S0 to S11), or second (S12 to S14, on lanes)
+    #[argh(option, default = "Launches::Both", from_str_fn(parse_launches))]
+    launches: Launches,
+
+    /// decoders of the second launch's DogStatsD source, which are its producer lanes (default 2)
+    #[argh(option, default = "2")]
+    decoders: u16,
+
+    /// state lanes of the second launch (default 2)
+    #[argh(option, default = "2")]
+    state_lanes: u16,
+
+    /// post-aggregation lanes of the second launch (default 3)
+    #[argh(option, default = "3")]
+    post_lanes: u16,
 }
+
+/// Which launches of ADP the check runs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Launches {
+    /// Both, the second only if the first passed.
+    Both,
+
+    /// The first: S0 to S6 and S8 to S11.
+    First,
+
+    /// The second: S12 to S14, on lanes.
+    Second,
+}
+
+fn parse_launches(value: &str) -> Result<Launches, String> {
+    match value {
+        "both" => Ok(Launches::Both),
+        "first" => Ok(Launches::First),
+        "second" => Ok(Launches::Second),
+        other => Err(format!("`{}` is not a launch: use both, first, or second", other)),
+    }
+}
+
+/// The aggregation window of the check's second launch, in seconds: long enough for a state lane to be empty for whole
+/// windows while another flushes every second, and for a width change to cut at a boundary of its own.
+const SECOND_LAUNCH_WINDOW_SECS: u64 = 10;
+
+/// How long the second launch's counters keep emitting zeros after their last update, in seconds: an aggregation
+/// keeps a counter without expiry (`0`) forever, so a state lane that ever held one would never be empty again.
+const SECOND_LAUNCH_COUNTER_EXPIRY_SECS: u64 = 1;
 
 /// Boot ADP on the default program and serve the editor and telemetry viewer.
 #[derive(FromArgs)]
@@ -192,13 +247,31 @@ struct RunCommand {
     #[argh(option, default = "0")]
     counter_expiry_secs: u64,
 
-    /// rate of DogStatsD datagrams, per second (default 20)
+    /// rate of DogStatsD datagrams, per second (default 20, at most 50000)
     #[argh(option, default = "traffic::DEFAULT_RATE")]
     traffic_rate: f64,
 
     /// start with the traffic generator paused
     #[argh(switch)]
     traffic_paused: bool,
+
+    /// load contexts the traffic cycles through, ten per datagram as demo.load tagged context:N, so that many contexts
+    /// spread over the state lanes (default 0: none)
+    #[argh(option, default = "0")]
+    contexts: u64,
+
+    /// decoders of ADP's DogStatsD source (`dogstatsd_workers_count`), which are the producer lanes up to 16; any lane
+    /// option runs the metrics path on lanes (lanes.mode auto), with ADP's automatic counts for the lanes not given
+    #[argh(option)]
+    decoders: Option<u16>,
+
+    /// state lanes of DogStatsD aggregation (experimental.programmable_metrics.lanes.state; 0 is automatic)
+    #[argh(option)]
+    state_lanes: Option<u16>,
+
+    /// post-aggregation lanes (experimental.programmable_metrics.lanes.post; 0 is automatic)
+    #[argh(option)]
+    post_lanes: Option<u16>,
 }
 
 #[tokio::main]
@@ -286,6 +359,12 @@ async fn run(command: RunCommand) -> Result<(), GenericError> {
         counter_expiry_secs: command.counter_expiry_secs,
         traffic_rate: command.traffic_rate,
         traffic_paused: command.traffic_paused,
+        contexts: command.contexts,
+        lanes: LaneFlags {
+            decoders: command.decoders,
+            state: command.state_lanes,
+            post: command.post_lanes,
+        },
     };
     let launch = if command.no_launch {
         None
@@ -337,7 +416,7 @@ async fn check(command: CheckCommand) -> Result<(), GenericError> {
         .run_dir
         .clone()
         .unwrap_or_else(|| launcher::default_run_dir("check"));
-    let settings = RunSettings {
+    let first = RunSettings {
         ports,
         run_dir: std::path::absolute(&run_dir).unwrap_or(run_dir),
         poll_interval: Duration::from_secs(1),
@@ -345,52 +424,27 @@ async fn check(command: CheckCommand) -> Result<(), GenericError> {
         counter_expiry_secs: 0,
         traffic_rate: command.traffic_rate,
         traffic_paused: false,
+        contexts: 0,
+        lanes: LaneFlags::default(),
     };
-    let report_path = settings.run_dir.join("check-report.json");
-    // The scenarios start from the default program with nothing declared: whatever an earlier run in this run
-    // directory left served (a policy and resources a failed or interrupted run published, or S10's policy, which a
-    // passing run ends with) is revoked before ADP starts.
-    let store_dir = settings.store_dir();
-    if ArtifactStore::open(&store_dir)?.revoke_all(clock::unix_millis())? {
-        info!(
-            store = %store_dir.display(),
-            "Revoked what an earlier run left served in the run directory's artifact store."
-        );
-    }
-    let Some(demo) = Demo::start(settings, &adp_bin, Some(&adp_bin), &mut signals).await? else {
-        return Err(generic_error!("Interrupted while waiting for ADP to report ready."));
+    // The second launch, on lanes, in a run directory of its own, so that each launch keeps its own logs and store.
+    let second = RunSettings {
+        run_dir: first.run_dir.join("lanes"),
+        aggregate_window_secs: SECOND_LAUNCH_WINDOW_SECS,
+        counter_expiry_secs: SECOND_LAUNCH_COUNTER_EXPIRY_SECS,
+        lanes: LaneFlags {
+            decoders: Some(command.decoders),
+            state: Some(command.state_lanes),
+            post: Some(command.post_lanes),
+        },
+        ..first.clone()
     };
+    let report_path = first.run_dir.join("check-report.json");
 
-    let outcome = match &demo.ready {
-        Err(error) => Err(generic_error!("{:#}", error)),
-        Ok(()) => {
-            let process = demo.adp.as_ref().expect("the check launches ADP");
-            let scenarios = scenario::run(&demo.settings);
-            tokio::select! {
-                report = scenarios => Ok(report),
-                signal = signals.next() => Err(generic_error!("Interrupted by {}.", signal)),
-                exit = process.exited() => Err(generic_error!(
-                    "ADP {} during the check; its output is in '{}'.",
-                    exit,
-                    demo.settings.adp_console_log_path().display()
-                )),
-            }
-        }
-    };
-    let run_dir = demo.settings.run_dir.clone();
-    demo.stop(&mut signals).await;
-
-    let report = match outcome {
-        Ok(report) => report,
-        Err(error) => {
-            return Err(generic_error!(
-                "The programmable metrics demo check failed: {:#}\nThe run directory, with ADP's logs and the \
-                 artifact store, is '{}'.",
-                error,
-                run_dir.display()
-            ))
-        }
-    };
+    let report = run_launches(command.launches, first, second, async |settings, launch| {
+        check_launch(settings, &adp_bin, &mut signals, launch).await
+    })
+    .await;
     match serde_json::to_vec_pretty(&report) {
         Ok(json) => {
             if let Err(error) = std::fs::write(&report_path, json) {
@@ -413,6 +467,103 @@ async fn check(command: CheckCommand) -> Result<(), GenericError> {
             Ok(())
         }
     }
+}
+
+/// Runs the launches of the check that `launches` names, each with `run_launch`: the first (`first`), the second
+/// (`second`), or both, the second only if the first passed. Returns the check's report, the second launch's under
+/// `second_launch`.
+///
+/// A launch that fails to run (the demo or ADP does not start, ADP exits, or a stop signal arrives) is in the report
+/// with its error, so that the report of the launch before it is kept, written, and printed with it.
+async fn run_launches(
+    launches: Launches, first: RunSettings, second: RunSettings,
+    mut run_launch: impl AsyncFnMut(RunSettings, CheckLaunch) -> Result<scenario::Report, GenericError>,
+) -> scenario::Report {
+    let (settings, launch) = match launches {
+        Launches::Both | Launches::First => (first, CheckLaunch::First),
+        Launches::Second => (second.clone(), CheckLaunch::Second),
+    };
+    let mut report = run_launch(settings.clone(), launch)
+        .await
+        .unwrap_or_else(|error| scenario::not_started(&settings, error));
+    if launches == Launches::Both {
+        if report.failure().is_none() {
+            let second_report = run_launch(second.clone(), CheckLaunch::Second)
+                .await
+                .unwrap_or_else(|error| scenario::not_started(&second, error));
+            report.second_launch = Some(Box::new(second_report));
+        } else {
+            warn!("The first launch failed, so the second launch, on lanes (S12 to S14), does not run.");
+        }
+    }
+    report
+}
+
+/// One launch of the check.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CheckLaunch {
+    /// S0 to S6 and S8 to S11.
+    First,
+
+    /// S12 to S14, on lanes.
+    Second,
+}
+
+/// Runs one launch of the check: prepares the run directory of `settings`, starts the demo and ADP, runs the launch's
+/// scenarios, and stops everything. Returns the launch's report.
+///
+/// # Errors
+///
+/// Returns an error if the demo cannot start, ADP does not become ready or exits during the scenarios, or a stop
+/// signal arrives: the launch stops there, without a report of its steps, and its error names its run directory.
+async fn check_launch(
+    settings: RunSettings, adp_bin: &std::path::Path, signals: &mut ShutdownSignals, launch: CheckLaunch,
+) -> Result<scenario::Report, GenericError> {
+    // The scenarios start from the default program with nothing declared: whatever an earlier run in this run
+    // directory left served (a policy and resources a failed or interrupted run published, or the last step's, which
+    // a passing run ends with) is revoked before ADP starts.
+    let store_dir = settings.store_dir();
+    if ArtifactStore::open(&store_dir)?.revoke_all(clock::unix_millis())? {
+        info!(
+            store = %store_dir.display(),
+            "Revoked what an earlier run left served in the run directory's artifact store."
+        );
+    }
+    let Some(demo) = Demo::start(settings, adp_bin, Some(adp_bin), signals).await? else {
+        return Err(generic_error!("Interrupted while waiting for ADP to report ready."));
+    };
+
+    let outcome = match &demo.ready {
+        Err(error) => Err(generic_error!("{:#}", error)),
+        Ok(()) => {
+            let process = demo.adp.as_ref().expect("the check launches ADP");
+            let scenarios = async {
+                match launch {
+                    CheckLaunch::First => scenario::run(&demo.settings).await,
+                    CheckLaunch::Second => scenario::run_lanes(&demo.settings).await,
+                }
+            };
+            tokio::select! {
+                report = scenarios => Ok(report),
+                signal = signals.next() => Err(generic_error!("Interrupted by {}.", signal)),
+                exit = process.exited() => Err(generic_error!(
+                    "ADP {} during the check; its output is in '{}'.",
+                    exit,
+                    demo.settings.adp_console_log_path().display()
+                )),
+            }
+        }
+    };
+    let run_dir = demo.settings.run_dir.clone();
+    demo.stop(signals).await;
+
+    outcome.map_err(|error| {
+        generic_error!(
+            "{:#}\nThe run directory, with ADP's logs and the artifact store, is '{}'.",
+            error,
+            run_dir.display()
+        )
+    })
 }
 
 fn missing_adp_bin(path: &std::path::Path) -> GenericError {
@@ -478,7 +629,13 @@ impl Demo {
 
         let dogstatsd: SocketAddr = DemoPorts::loopback(settings.ports.dogstatsd);
         let start_traffic_now = launch.is_none() && !settings.traffic_paused;
-        let traffic = TrafficGenerator::new(dogstatsd, settings.traffic_rate, start_traffic_now);
+        // The witness tells the canary check which datagrams the host dropped before ADP could read them.
+        let witness = LoopbackWitness::bind()
+            .await
+            .error_context("Failed to bind a UDP socket for the traffic generator's control datagrams.")?;
+        tasks.spawn(witness.clone().run());
+        let traffic = TrafficGenerator::new(dogstatsd, settings.traffic_rate, start_traffic_now, settings.contexts)
+            .with_witness(witness);
         tasks.spawn(traffic.clone().run());
 
         let phase = if launch.is_some() {
@@ -530,7 +687,7 @@ impl Demo {
             if !settings.traffic_paused {
                 traffic.apply(TrafficChange {
                     running: Some(true),
-                    rate: None,
+                    ..TrafficChange::default()
                 });
             }
         }
@@ -602,5 +759,117 @@ impl ShutdownSignals {
     async fn next(&mut self) -> &'static str {
         let _ = tokio::signal::ctrl_c().await;
         "Ctrl-C"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The settings of the check's launches, as `check` makes them.
+    fn launches() -> (RunSettings, RunSettings) {
+        let first = RunSettings {
+            ports: DemoPorts::default(),
+            run_dir: PathBuf::from("/tmp/check"),
+            poll_interval: Duration::from_secs(1),
+            aggregate_window_secs: 1,
+            counter_expiry_secs: 0,
+            traffic_rate: 20.0,
+            traffic_paused: false,
+            contexts: 0,
+            lanes: LaneFlags::default(),
+        };
+        let second = RunSettings {
+            run_dir: first.run_dir.join("lanes"),
+            aggregate_window_secs: SECOND_LAUNCH_WINDOW_SECS,
+            lanes: LaneFlags {
+                decoders: Some(2),
+                state: Some(2),
+                post: Some(3),
+            },
+            ..first.clone()
+        };
+        (first, second)
+    }
+
+    /// The report of a launch that passed: one step, and a balanced whole-run canary check.
+    fn passed(step: &'static str) -> scenario::Report {
+        let mut report = scenario::Report::default();
+        report.steps.push(scenario::StepReport {
+            id: step,
+            ..scenario::StepReport::default()
+        });
+        report.canary = Some(scenario::CanaryReport {
+            from_s: 100,
+            to_s: 160,
+            sent: 1_200,
+            received: 1_200.0,
+            host_dropped: 0.0,
+            state: "balanced".to_string(),
+        });
+        report
+    }
+
+    #[tokio::test]
+    async fn a_second_launch_that_fails_to_run_keeps_the_first_launchs_report() {
+        let (first, second) = launches();
+        let mut ran = Vec::new();
+        let report = run_launches(Launches::Both, first, second, async |settings: RunSettings, launch| {
+            ran.push((launch, settings.run_dir.clone()));
+            match launch {
+                CheckLaunch::First => Ok(passed("S11")),
+                CheckLaunch::Second => Err(generic_error!("ADP did not report ready.")),
+            }
+        })
+        .await;
+        assert_eq!(
+            ran,
+            [
+                (CheckLaunch::First, PathBuf::from("/tmp/check")),
+                (CheckLaunch::Second, PathBuf::from("/tmp/check/lanes"))
+            ]
+        );
+        // The first launch's steps and canary check are kept, and the check fails with the second launch's error.
+        assert_eq!(report.steps[0].id, "S11");
+        assert!(report.canary.is_some());
+        let second = report.second_launch.as_ref().unwrap();
+        assert!(second.launch.contains("state lanes 2"), "{}", second.launch);
+        assert_eq!(
+            report.failure().unwrap(),
+            format!("in the second launch ({}): ADP did not report ready.", second.launch)
+        );
+    }
+
+    #[tokio::test]
+    async fn the_second_launch_runs_only_after_the_first_passed_and_alone_when_asked() {
+        let (first, second) = launches();
+        let mut ran = Vec::new();
+        let report = run_launches(Launches::Both, first.clone(), second.clone(), async |_, launch| {
+            ran.push(launch);
+            Err(generic_error!("Interrupted by SIGTERM."))
+        })
+        .await;
+        assert_eq!(ran, [CheckLaunch::First]);
+        assert!(report.second_launch.is_none());
+        assert_eq!(report.failure().unwrap(), "Interrupted by SIGTERM.");
+        assert!(report.launch.contains("1-second aggregation windows"));
+
+        let mut ran = Vec::new();
+        let report = run_launches(Launches::Second, first.clone(), second.clone(), async |_, launch| {
+            ran.push(launch);
+            Ok(passed("S14c"))
+        })
+        .await;
+        assert_eq!(ran, [CheckLaunch::Second]);
+        assert_eq!((report.steps[0].id, report.failure()), ("S14c", None));
+
+        let mut ran = Vec::new();
+        let report = run_launches(Launches::First, first, second, async |_, launch| {
+            ran.push(launch);
+            Ok(passed("S11"))
+        })
+        .await;
+        assert_eq!(ran, [CheckLaunch::First]);
+        assert!(report.second_launch.is_none());
     }
 }

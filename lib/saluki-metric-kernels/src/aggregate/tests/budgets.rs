@@ -1,5 +1,7 @@
 //! Tests of budgets of contexts shared between cores, of kind conflicts, and of dropping a core.
 
+use std::sync::Arc;
+
 use saluki_core::execution::{BudgetOperation, StateBudget};
 
 use super::*;
@@ -567,5 +569,440 @@ proptest! {
             prop_assert!(outcome.is_ok(), "{}", outcome.unwrap_err());
         }
         prop_assert_eq!((global.used(), node.used(), other.used()), (0, 0, 0));
+    }
+}
+
+#[test]
+fn a_lanes_batch_takes_its_new_contexts_units_in_blocks_and_returns_the_ones_it_did_not_use() {
+    // A lane of a state owner on two lanes. A batch of three new contexts and one held context takes blocks of one,
+    // one, and two units of each budget, uses one unit of the last block, and returns the other when the batch ends.
+    // The next batch reserves afresh, starting with a block as large as the previous batch's three new contexts: with
+    // the node's limit lowered to five, two units fit, and its third new context finds the node full, and is dropped.
+    let (global, global_ops) = StateBudget::recorded(100);
+    let (node, node_ops) = StateBudget::recorded(u64::MAX);
+    let mut core = lane_core(100, &global, &node, &Arc::new(LaneShared::new(2)));
+    let outcome = core.admit(B + 1, gauges(&["a", "b", "a", "c"]));
+    assert_eq!((outcome.accepted, outcome.dropped), (4, 0));
+    assert_eq!((core.len(), global.used(), node.used()), (3, 3, 3));
+
+    let lowered = AdmitParams { context_limit: 5 };
+    let outcome = core.admit_with(B + 2, gauges(&["d", "a", "e", "f"]), &lowered);
+    assert_eq!((outcome.accepted, outcome.dropped), (3, 1));
+    assert!(outcome.limit_reached);
+    assert_eq!((core.len(), global.used(), node.used()), (5, 5, 5));
+
+    let acquire = |units, bound, observed, granted| BudgetOperation::Acquire {
+        units,
+        bound,
+        observed,
+        granted,
+    };
+    let returned = BudgetOperation::Release { units: 1, observed: 4 };
+    assert_eq!(
+        node_ops.operations(),
+        vec![
+            acquire(1, 100, 0, true),
+            acquire(1, 100, 1, true),
+            acquire(2, 100, 2, true),
+            returned,
+            acquire(2, 5, 3, true),
+            acquire(1, 5, 5, false),
+        ]
+    );
+    assert_eq!(
+        global_ops.operations(),
+        vec![
+            acquire(1, 100, 0, true),
+            acquire(1, 100, 1, true),
+            acquire(2, 100, 2, true),
+            returned,
+            acquire(2, 100, 3, true),
+        ]
+    );
+}
+
+#[test]
+fn a_batch_on_one_lane_takes_one_unit_of_each_budget_per_new_context() {
+    // The same batch on a core without lanes, or on a lineage's only lane: each new context takes its units as it is
+    // admitted, so no unit is ever reserved, and nothing is returned at the end of the batch.
+    for lanes in [None, Some(Arc::new(LaneShared::new(1)))] {
+        let (global, global_ops) = StateBudget::recorded(100);
+        let (node, node_ops) = StateBudget::recorded(u64::MAX);
+        let mut core = shared_core(100, &global, &node);
+        if let Some(lanes) = &lanes {
+            core = core.with_lanes(Arc::clone(lanes));
+        }
+        let outcome = core.admit(B + 1, gauges(&["a", "b", "a", "c"]));
+        assert_eq!((outcome.accepted, outcome.dropped), (4, 0));
+        let acquire = |bound, observed| BudgetOperation::Acquire {
+            units: 1,
+            bound,
+            observed,
+            granted: true,
+        };
+        let per_context = |bound| (0..3).map(|observed| acquire(bound, observed)).collect::<Vec<_>>();
+        assert_eq!(node_ops.operations(), per_context(100), "{:?}", lanes);
+        assert_eq!(global_ops.operations(), per_context(100), "{:?}", lanes);
+    }
+}
+
+/// Runs one lane of a node as [`run_lane`] does, except that each round's new gauges, `sizes[round]` of them, and two
+/// held ones arrive in one batch, so that the lane's admission reserves budget units in blocks if the lane is one of
+/// several, `lanes`. After every batch it checks that the node holds at most `limit` contexts, the global budget at
+/// most its capacity, and the node's budget at least the lane's contexts; it flushes every other round. Returns the
+/// lane's core, still holding what it admitted since its last flush.
+fn run_batched_lane(
+    lane: usize, global: &StateBudget, node: &StateBudget, limit: usize, sizes: &[usize],
+    lanes: Option<&Arc<LaneShared>>,
+) -> Result<AggregateCore, String> {
+    let mut core = match lanes {
+        Some(lanes) => lane_core(limit, global, node, lanes),
+        None => shared_core(limit, global, node),
+    };
+    let params = AdmitParams { context_limit: limit };
+    let gauge = |name: String| Metric::gauge(Context::from_parts(name, TagSet::default()), 1.0);
+    for (round, size) in sizes.iter().enumerate() {
+        let at = B + 100 * (round as u64 / 2);
+        let held = (0..2).map(|index| gauge(format!("lane{}.held.{}", lane, index)));
+        let new = (0..*size).map(|index| gauge(format!("lane{}.round{}.{}", lane, round, index)));
+        core.admit_with(at, held.chain(new).collect::<Vec<_>>(), &params);
+        let (held, used) = (node.used(), global.used());
+        if held > limit as u64 {
+            return Err(format!("the node holds {} contexts, over its limit of {}", held, limit));
+        }
+        if used > global.capacity() {
+            return Err(format!("the global budget counts {}, over its capacity", used));
+        }
+        if (core.len() as u64) > held {
+            return Err(format!(
+                "the lane holds {} contexts, but its node counts {}",
+                core.len(),
+                held
+            ));
+        }
+        if round % 2 == 1 {
+            // Flushing at the next bucket emits the gauges and removes them, releasing their units.
+            core.flush_into(at + 50, false, |_| {});
+        }
+    }
+    Ok(core)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(48))]
+
+    #[test]
+    fn property_test_batches_reserving_units_never_exceed_the_limit_and_return_every_unit(
+        lanes in 2usize..5,
+        limit in 1usize..400,
+        spare in 0u64..300,
+        sizes in vec(vec(0usize..150, 41), 5),
+    ) {
+        // Lanes on threads of their own admit batches of new contexts of one node at once, each batch through a
+        // reservation of budget units taken in blocks, under one context limit, while a state owner of another node,
+        // on one lane, shares the global budget, which leaves `spare` units beyond the limit. However their batches
+        // interleave, the node never holds more than its limit, nor the global budget more than its capacity. Once
+        // every batch ended, every unit counted is a context held, the units reserved and not used having gone back;
+        // and once every lane drops its core, nothing is held.
+        let global = StateBudget::new(limit as u64 + spare);
+        let node = StateBudget::unlimited();
+        let other = StateBudget::unlimited();
+        let shared = Arc::new(LaneShared::new(u16::try_from(lanes).unwrap()));
+        let start = std::sync::Barrier::new(lanes + 1);
+        let outcomes = std::thread::scope(|scope| {
+            let mut workers = (0..lanes)
+                .map(|lane| {
+                    let (global, node, start, sizes, shared) = (&global, &node, &start, &sizes[lane], &shared);
+                    scope.spawn(move || {
+                        start.wait();
+                        run_batched_lane(lane, global, node, limit, sizes, Some(shared))
+                    })
+                })
+                .collect::<Vec<_>>();
+            let (global, other, start, sizes) = (&global, &other, &start, &sizes[lanes]);
+            workers.push(scope.spawn(move || {
+                start.wait();
+                run_batched_lane(lanes, global, other, usize::MAX, sizes, None)
+            }));
+            workers.into_iter().map(|worker| worker.join().expect("a lane panicked")).collect::<Vec<_>>()
+        });
+        let mut cores = Vec::new();
+        for outcome in outcomes {
+            prop_assert!(outcome.is_ok(), "{}", outcome.as_ref().err().unwrap());
+            cores.push(outcome.unwrap());
+        }
+        let held_by_node = cores[..lanes].iter().map(|core| core.len() as u64).sum::<u64>();
+        let held_by_other = cores[lanes].len() as u64;
+        prop_assert_eq!(
+            (node.used(), other.used(), global.used()),
+            (held_by_node, held_by_other, held_by_node + held_by_other)
+        );
+        drop(cores);
+        prop_assert_eq!((global.used(), node.used(), other.used()), (0, 0, 0));
+    }
+}
+
+/// A batch that runs `between` once its core has admitted the first `before` of its metrics, before it takes the next
+/// one: as another task's work runs while this batch's admission is under way.
+struct Pausing<F> {
+    metrics: std::vec::IntoIter<Metric>,
+    before: usize,
+    between: Option<F>,
+}
+
+impl<F: FnOnce()> Iterator for Pausing<F> {
+    type Item = Metric;
+
+    fn next(&mut self) -> Option<Metric> {
+        if self.before == 0 {
+            if let Some(between) = self.between.take() {
+                between();
+            }
+        } else {
+            self.before -= 1;
+        }
+        self.metrics.next()
+    }
+}
+
+/// Returns `metrics` as a batch that runs `between` once its core has admitted the first `before` of them, or after the
+/// last one, before the batch ends, if there are no more.
+fn pausing<F: FnOnce()>(metrics: Vec<Metric>, before: usize, between: F) -> Pausing<F> {
+    Pausing {
+        metrics: metrics.into_iter(),
+        before,
+        between: Some(between),
+    }
+}
+
+/// Returns a core of a state owner on one of several lanes, which shares `global` and its node's `node` with the other
+/// lanes' cores, built against the lanes' shared record.
+fn lane_core(context_limit: usize, global: &StateBudget, node: &StateBudget, lanes: &Arc<LaneShared>) -> AggregateCore {
+    shared_core(context_limit, global, node).with_lanes(Arc::clone(lanes))
+}
+
+#[test]
+fn state_owners_on_one_lane_are_never_refused_for_units_another_ones_batch_has_not_used() {
+    // Two state owners of one host, each on one lane and so on a task of its own, share a global budget of four
+    // contexts. While the first one's batch of three new contexts is under way, the second admits a new context: each
+    // new context takes one unit of each budget as it is admitted, so the fourth unit is free, as it is in either
+    // order of the two batches, and as stage 6 admits.
+    let global = StateBudget::new(4);
+    let mut x = shared_core(10, &global, &StateBudget::unlimited());
+    let mut y = shared_core(10, &global, &StateBudget::unlimited());
+    let mut during = None;
+    let outcome = x.admit(
+        B + 1,
+        pausing(gauges(&["a", "b", "c"]), 3, || {
+            during = Some((y.admit(B + 1, gauges(&["y"])), global.used()));
+        }),
+    );
+    assert_eq!((outcome.accepted, outcome.dropped), (3, 0));
+    let (during, used) = during.expect("the batch pauses after its third context");
+    assert_eq!(
+        (during.accepted, during.dropped),
+        (1, 0),
+        "the global budget has a unit free"
+    );
+    assert_eq!((used, global.used()), (4, 4));
+}
+
+#[test]
+fn a_lane_can_be_refused_for_units_another_lanes_batch_reserved_until_that_batch_ends() {
+    // Two lanes of one state owner share its node's count and a global budget of four contexts. One lane's batch takes
+    // its new contexts' units in blocks of one, one, and two units: while its third context's block holds a unit no
+    // context uses, the other lane's new context finds the global budget full and is dropped, which is capacity
+    // behavior. The end of the batch returns the unit, and the other lane's next batch admits the context.
+    let lanes = Arc::new(LaneShared::new(2));
+    let (global, node) = (StateBudget::new(4), StateBudget::unlimited());
+    let mut x = lane_core(10, &global, &node, &lanes);
+    let mut y = lane_core(10, &global, &node, &lanes);
+    let mut during = None;
+    let outcome = x.admit(
+        B + 1,
+        pausing(gauges(&["a", "b", "c"]), 3, || {
+            during = Some((y.admit(B + 1, gauges(&["y"])), global.used()));
+        }),
+    );
+    assert_eq!((outcome.accepted, outcome.dropped), (3, 0));
+    let (during, used) = during.expect("the batch pauses after its third context");
+    assert_eq!(
+        (during.accepted, during.dropped),
+        (0, 1),
+        "the fourth unit sits in the first lane's batch"
+    );
+    assert!(during.limit_reached);
+    assert_eq!(used, 4, "three held contexts and one reserved unit");
+    assert_eq!(
+        (global.used(), node.used()),
+        (3, 3),
+        "the batch's end returned the unit"
+    );
+
+    let outcome = y.admit(B + 2, gauges(&["y"]));
+    assert_eq!((outcome.accepted, outcome.dropped), (1, 0));
+    assert_eq!(global.used(), 4);
+}
+
+#[test]
+fn a_flush_during_another_lanes_batch_keeps_the_breach_until_a_pass_after_that_batch() {
+    // Two lanes of one node under a context limit of five. Lane 0 is breached, and its flush ends while lane 1's batch
+    // holds a reserved unit that no context uses: the flush counts it, finds the node full, and keeps the breach,
+    // where one acquisition per new context would have found four of five contexts held and cleared it. A drop before
+    // lane 0's next pass is then part of the same episode, which warned once already. Passes never clear the flag
+    // while held contexts fill the node, and the first pass that ends with room, once lane 1's batch has ended,
+    // clears it.
+    let lanes = Arc::new(LaneShared::new(2));
+    let (global, node) = (StateBudget::unlimited(), StateBudget::unlimited());
+    let mut lane0 = lane_core(5, &global, &node, &lanes);
+    let mut lane1 = lane_core(5, &global, &node, &lanes);
+    assert_eq!(lane1.admit(B + 1, gauges(&["x1", "x2", "x3", "x4"])).accepted, 4);
+    assert_eq!(lane0.admit(B + 11, gauges(&["a"])).accepted, 1);
+    let outcome = lane0.admit(B + 11, gauges(&["b"]));
+    assert_eq!(outcome.dropped, 1);
+    assert!(outcome.limit_reached, "the episode starts, and warns");
+
+    // Lane 1's flush removes its four contexts, whose bucket closed: lane 0's `a` is the node's only context.
+    lane1.flush_into(B + 15, false, |_| {});
+    assert_eq!(node.used(), 1);
+
+    // Lane 1's batch of three new contexts holds one more unit than it uses when lane 0's flush ends.
+    let mut flushed = None;
+    let outcome = lane1.admit(
+        B + 16,
+        pausing(gauges(&["p", "q", "r"]), 3, || {
+            let outcome = lane0.flush_into(B + 16, false, |_| {}).expect("lane 0 holds `a`");
+            flushed = Some((outcome.recovered, node.used(), lane0.context_limit_breached()));
+        }),
+    );
+    assert_eq!(outcome.accepted, 3);
+    assert_eq!(
+        flushed,
+        Some((false, 5, true)),
+        "four contexts held and one unit reserved: the breach stays"
+    );
+    assert_eq!(node.used(), 4, "the batch's end returned the unit");
+
+    // The episode goes on: a drop does not start another one.
+    let outcome = lane0.admit(B + 17, gauges(&["c", "d"]));
+    assert_eq!((outcome.accepted, outcome.dropped), (1, 1));
+    assert!(
+        !outcome.limit_reached,
+        "the breach was never cleared, so no second warning"
+    );
+
+    // Five contexts held fill the node: a pass keeps the breach.
+    assert!(!lane0.flush_into(B + 17, false, |_| {}).unwrap().recovered);
+    // Once lane 1's flush removed its contexts, lane 0's next pass ends with room, and clears it.
+    lane1.flush_into(B + 20, false, |_| {});
+    assert_eq!(node.used(), 2);
+    assert!(lane0.flush_into(B + 19, false, |_| {}).unwrap().recovered);
+    assert!(!lane0.context_limit_breached());
+}
+
+/// One round of two cores that share budgets: core 0 admits `first`, and core 1 admits `second` once core 0 has
+/// admitted the first `pause` metrics of `first`, while core 0's batch is under way; both batches carry gauges for the
+/// contexts named, under their own context limits. Then, if `flush`, both cores flush everything they hold away.
+#[derive(Clone, Debug)]
+struct InterleavedRound {
+    first: Vec<u8>,
+    second: Vec<u8>,
+    pause: usize,
+    limits: [usize; 2],
+    flush: bool,
+}
+
+fn arb_interleaved_rounds() -> impl Strategy<Value = Vec<InterleavedRound>> {
+    let names = || vec(0u8..12, 0..10);
+    let round = (names(), names(), 0usize..10, [0usize..10, 0usize..10], any::<bool>()).prop_map(
+        |(first, second, pause, limits, flush)| InterleavedRound {
+            first,
+            second,
+            pause,
+            limits,
+            flush,
+        },
+    );
+    vec(round, 1..10)
+}
+
+/// Returns a batch of gauges for the contexts named.
+fn named_gauges(names: &[u8]) -> Vec<Metric> {
+    names
+        .iter()
+        .map(|name| Metric::gauge(Context::from_parts(format!("c{}", name), TagSet::default()), 1.0))
+        .collect()
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(512))]
+
+    #[test]
+    fn property_test_state_owners_on_one_lane_admit_by_the_budget_rule_however_their_batches_interleave(
+        capacity in 0u64..12,
+        one_node in any::<bool>(),
+        rounds in arb_interleaved_rounds(),
+    ) {
+        // Two cores, each on one lane, share a global budget, and either one node budget or one each; one core's batch
+        // runs in the middle of the other's. Every metric is admitted exactly as when the batches' metrics run one at
+        // a time in that order: while its context is held, or while its node counts fewer contexts than its batch's
+        // limit and the global budget has room. A unit sits in no batch, so no batch is refused for one.
+        let global = StateBudget::new(capacity);
+        let shared_node = StateBudget::unlimited();
+        let nodes = if one_node {
+            [shared_node.clone(), shared_node]
+        } else {
+            [StateBudget::unlimited(), StateBudget::unlimited()]
+        };
+        let [mut core0, mut core1] = [0, 1].map(|core| shared_core(0, &global, &nodes[core]));
+        let mut held: [BTreeSet<u8>; 2] = Default::default();
+
+        for (index, round) in rounds.iter().enumerate() {
+            let at = B + 100 * index as u64;
+            // The order the metrics run in: the first `pause` of core 0's, core 1's, then the rest of core 0's.
+            let pause = round.pause.min(round.first.len());
+            let order = round.first[..pause]
+                .iter()
+                .map(|name| (0, *name))
+                .chain(round.second.iter().map(|name| (1, *name)))
+                .chain(round.first[pause..].iter().map(|name| (0, *name)));
+            let mut expected = [(0, 0); 2];
+            for (core, name) in order {
+                let node_count = if one_node { held[0].len() + held[1].len() } else { held[core].len() };
+                let room = node_count < round.limits[core] && ((held[0].len() + held[1].len()) as u64) < capacity;
+                if held[core].contains(&name) || room {
+                    held[core].insert(name);
+                    expected[core].0 += 1;
+                } else {
+                    expected[core].1 += 1;
+                }
+            }
+
+            let mut second = None;
+            let first = core0.admit_with(
+                at,
+                pausing(named_gauges(&round.first), pause, || {
+                    let params = AdmitParams { context_limit: round.limits[1] };
+                    second = Some(core1.admit_with(at, named_gauges(&round.second), &params));
+                }),
+                &AdmitParams { context_limit: round.limits[0] },
+            );
+            let second = second.expect("core 1's batch ran during core 0's");
+            prop_assert_eq!(
+                [(first.accepted, first.dropped), (second.accepted, second.dropped)],
+                expected,
+                "{:?}",
+                round
+            );
+            prop_assert_eq!(global.used(), (held[0].len() + held[1].len()) as u64);
+
+            if round.flush {
+                // The gauges' bucket closes: the flush removes every context, and releases its units.
+                core0.flush_into(at + 50, false, |_| {});
+                core1.flush_into(at + 50, false, |_| {});
+                held = Default::default();
+                prop_assert_eq!(global.used(), 0);
+            }
+        }
     }
 }

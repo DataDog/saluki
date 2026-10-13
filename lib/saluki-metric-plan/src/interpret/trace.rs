@@ -17,6 +17,10 @@ pub enum TraceEvent {
         /// The `source` node the batch enters at.
         source: NodeId,
 
+        /// The lane of the source the batch enters at: each lane of a source with lanes is an admission point of its
+        /// own, and every lane shares the source's clock. Lane 0 for a source without lanes.
+        lane: u16,
+
         /// The batch's admission time, `t_a`.
         admitted_at: AdmissionTime,
 
@@ -30,6 +34,9 @@ pub enum TraceEvent {
     Heartbeat {
         /// The `source` node.
         source: NodeId,
+
+        /// The lane of the source whose admission point reports, as for `admit`.
+        lane: u16,
 
         /// The source's admission time.
         admitted_at: AdmissionTime,
@@ -163,9 +170,15 @@ impl Trace {
     }
 
     /// Returns this trace followed by an `admit` of `batch` at `source`, stamped `admitted_at`.
-    pub fn admit(mut self, source: NodeId, admitted_at: AdmissionTime, batch: Vec<Metric>) -> Self {
+    pub fn admit(self, source: NodeId, admitted_at: AdmissionTime, batch: Vec<Metric>) -> Self {
+        self.admit_at_lane(source, 0, admitted_at, batch)
+    }
+
+    /// Returns this trace followed by an `admit` of `batch` at lane `lane` of `source`, stamped `admitted_at`.
+    pub fn admit_at_lane(mut self, source: NodeId, lane: u16, admitted_at: AdmissionTime, batch: Vec<Metric>) -> Self {
         self.push(TraceEvent::Admit {
             source,
+            lane,
             admitted_at,
             batch,
         });
@@ -173,8 +186,17 @@ impl Trace {
     }
 
     /// Returns this trace followed by a `heartbeat` from `source` at `admitted_at`.
-    pub fn heartbeat(mut self, source: NodeId, admitted_at: AdmissionTime) -> Self {
-        self.push(TraceEvent::Heartbeat { source, admitted_at });
+    pub fn heartbeat(self, source: NodeId, admitted_at: AdmissionTime) -> Self {
+        self.heartbeat_at_lane(source, 0, admitted_at)
+    }
+
+    /// Returns this trace followed by a `heartbeat` from lane `lane` of `source` at `admitted_at`.
+    pub fn heartbeat_at_lane(mut self, source: NodeId, lane: u16, admitted_at: AdmissionTime) -> Self {
+        self.push(TraceEvent::Heartbeat {
+            source,
+            lane,
+            admitted_at,
+        });
         self
     }
 
@@ -206,6 +228,71 @@ impl Trace {
     pub fn cancel(mut self) -> Self {
         self.push(TraceEvent::Cancel);
         self
+    }
+
+    /// Returns this trace with the stamps of `source` spread over `lanes` of its lanes, as a trace that stamps one
+    /// point runs on a source with lanes: the trace's `i`-th stamp of `source` (an `admit` or a `heartbeat`) is stamped
+    /// at lane `i mod lanes`, and mirrored at once, at the same admission time, as a heartbeat of every other lane,
+    /// before the trace's next event.
+    ///
+    /// Every lane's latest time then equals the single point's after each event, so a state owner's watermark, its
+    /// ticks, gates, and expired graces, a cut's crossing, and a reset's window, which opens and closes within one
+    /// mirrored stamp, all happen at the instants and seconds they happen at one lane. Stamps of other sources keep
+    /// their lanes.
+    pub fn over_lanes(&self, source: &NodeId, lanes: u16) -> Self {
+        let lanes = lanes.max(1);
+        let mut spread = Self::new();
+        let mut stamps = 0usize;
+        for event in &self.events {
+            let (stamped, admitted_at) = match event {
+                TraceEvent::Admit {
+                    source: at,
+                    admitted_at,
+                    ..
+                }
+                | TraceEvent::Heartbeat {
+                    source: at,
+                    admitted_at,
+                    ..
+                } if at == source => (true, *admitted_at),
+                _ => (false, AdmissionTime::UNIX_EPOCH),
+            };
+            if !stamped {
+                spread.push(event.clone());
+                continue;
+            }
+            let lane = (stamps % usize::from(lanes)) as u16;
+            stamps += 1;
+            spread.push(match event.clone() {
+                TraceEvent::Admit {
+                    source,
+                    admitted_at,
+                    batch,
+                    ..
+                } => TraceEvent::Admit {
+                    source,
+                    lane,
+                    admitted_at,
+                    batch,
+                },
+                TraceEvent::Heartbeat {
+                    source, admitted_at, ..
+                } => TraceEvent::Heartbeat {
+                    source,
+                    lane,
+                    admitted_at,
+                },
+                other => other,
+            });
+            for other in (0..lanes).filter(|other| *other != lane) {
+                spread.push(TraceEvent::Heartbeat {
+                    source: source.clone(),
+                    lane: other,
+                    admitted_at,
+                });
+            }
+        }
+        spread
     }
 }
 

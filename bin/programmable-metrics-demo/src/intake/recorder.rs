@@ -95,6 +95,20 @@ pub struct RecordedSeries {
     /// The series' total: the sum of its counts (rates multiplied by their interval), the number of samples in its
     /// sketches, or, for a gauge, its last value.
     pub total: f64,
+
+    /// Each of its points, in the order the payload lists them: the timestamp (the start of the point's bucket, for
+    /// an aggregated point) and what the point counts, as [`total`](Self::total) counts it.
+    pub values: Vec<RecordedPoint>,
+}
+
+/// One point of a decoded series.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct RecordedPoint {
+    /// The point's timestamp, in seconds since the Unix epoch.
+    pub timestamp: u64,
+
+    /// Its count (a rate multiplied by its interval), its sketch's number of samples, or a gauge's value.
+    pub value: f64,
 }
 
 /// One request an intake received.
@@ -264,6 +278,22 @@ fn describe(metric: &Metric) -> (SeriesKind, usize, f64) {
     (kind, values.len(), total)
 }
 
+/// Returns the points of a decoded metric, each with what it counts.
+fn points_of(metric: &Metric) -> Vec<RecordedPoint> {
+    metric
+        .values()
+        .iter()
+        .map(|(timestamp, value)| RecordedPoint {
+            timestamp: *timestamp,
+            value: match value {
+                MetricValue::Gauge { value } => *value,
+                MetricValue::Sketch { sketch } => sketch.count() as f64,
+                MetricValue::Count { .. } | MetricValue::Rate { .. } => counted(value).unwrap_or_default(),
+            },
+        })
+        .collect()
+}
+
 /// Returns the count a point carries: its value for a count, its value times its interval for a rate.
 fn counted(value: &MetricValue) -> Option<f64> {
     match value {
@@ -364,6 +394,13 @@ impl CanaryCounts {
     fn between(&self, from_s: u64, to_s: u64) -> f64 {
         // Folded from 0.0: an empty `sum` of floats is -0.0, which would read as "-0".
         self.0.range(from_s..to_s).fold(0.0, |total, (_, count)| total + count)
+    }
+
+    fn by_timestamp(&self, from_s: u64, to_s: u64) -> Vec<(u64, f64)> {
+        self.0
+            .range(from_s..to_s)
+            .map(|(second, count)| (*second, *count))
+            .collect()
     }
 }
 
@@ -473,6 +510,7 @@ impl IntakeRecorder {
         let received_s = request.received_ms / 1000;
         for metric in metrics {
             let (kind, points, total) = describe(&metric);
+            let values = points_of(&metric);
             if metric.context().name() == CANARY_METRIC {
                 for (timestamp, value) in metric.values() {
                     if let Some(count) = counted(value) {
@@ -498,6 +536,7 @@ impl IntakeRecorder {
                 kind,
                 points,
                 total,
+                values,
             });
         }
 
@@ -551,6 +590,12 @@ impl IntakeRecorder {
     /// `to_s` (Unix seconds), within the last [`CANARY_HISTORY_SECS`].
     pub fn canaries_between(&self, from_s: u64, to_s: u64) -> f64 {
         self.lock().canaries.between(from_s, to_s)
+    }
+
+    /// Returns the canary counts received with point timestamps from second `from_s` up to, not including, second
+    /// `to_s`, by timestamp, as `(timestamp, count)`: one entry per bucket start that received any.
+    pub fn canaries_by_timestamp(&self, from_s: u64, to_s: u64) -> Vec<(u64, f64)> {
+        self.lock().canaries.by_timestamp(from_s, to_s)
     }
 
     /// Returns up to `limit` of the most recently received series, most recent first.

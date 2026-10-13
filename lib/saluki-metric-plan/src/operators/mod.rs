@@ -36,7 +36,11 @@ use std::{
 
 use saluki_common::resource_tracking::ResourceGroupToken;
 use saluki_core::{
-    accounting::MemoryBoundsBuilder, components::ComponentContext, execution::Kernel, support::SubsystemIdentifier,
+    accounting::MemoryBoundsBuilder,
+    cache::GaugeMode,
+    components::ComponentContext,
+    execution::{Kernel, LaneShare},
+    support::SubsystemIdentifier,
     topology::ComponentId,
 };
 use saluki_metric_kernels::aggregate::{ContextBudget, EmissionFilter};
@@ -233,6 +237,25 @@ pub trait OperatorDef: Send + Sync {
     fn flush_interval(&self, _params: &DecodedParams) -> Option<Duration> {
         None
     }
+
+    /// Returns the key a state owner's state is partitioned by when its isolation slot runs on several lanes, or `None`
+    /// if its state cannot be partitioned.
+    ///
+    /// A keyed exit into the state owner's slot routes each event by this key, through fixed key groups, to the lane
+    /// that owns it, so that everything one entry of the state would merge reaches one lane. A state owner without a
+    /// partition key runs its slot on one lane. The default is `None`.
+    fn partition_key(&self) -> Option<PartitionKey> {
+        None
+    }
+}
+
+/// What a state owner's state is partitioned by across the lanes of its isolation slot.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum PartitionKey {
+    /// The event's context key, as the event reaches the state owner: after every node that renames a context or
+    /// changes its tags, so that it is the key the state's table uses. Context equality is key equality, so contexts
+    /// whose keys collide reach one lane, as they merge into one entry.
+    Context,
 }
 
 impl fmt::Debug for dyn OperatorDef {
@@ -268,12 +291,17 @@ const DETACHED_TOPOLOGY: &str = "plan";
 /// A stateful kernel finds here the state budget it draws credits from
 /// ([`with_state_budget`][Self::with_state_budget]), shared by every lineage of its state owner and, through the
 /// global budget, by every state owner of the host.
+///
+/// A host that runs a slot on several lanes builds an instance of each kernel per lane, under one identity, and says so
+/// with [`with_cache_gauges`][Self::with_cache_gauges]: the instances' caches then sum their gauges.
 #[derive(Clone)]
 pub struct KernelBuildContext {
     node: NodeId,
     component: ComponentContext,
     resource_group: Option<ResourceGroupToken>,
     state_budget: Option<ContextBudget>,
+    lanes: Option<LaneBinding>,
+    cache_gauges: GaugeMode,
 }
 
 impl fmt::Debug for KernelBuildContext {
@@ -283,6 +311,8 @@ impl fmt::Debug for KernelBuildContext {
             .field("component", &self.component)
             .field("resource_group", &self.resource_group.is_some())
             .field("state_budget", &self.state_budget)
+            .field("lanes", &self.lanes)
+            .field("cache_gauges", &self.cache_gauges)
             .finish()
     }
 }
@@ -295,7 +325,37 @@ impl KernelBuildContext {
             component,
             resource_group: None,
             state_budget: None,
+            lanes: None,
+            cache_gauges: GaugeMode::Set,
         }
+    }
+
+    /// Builds the kernel as one lane's instance of a state owner's lineage that runs on several lanes: every lane's
+    /// instance of the lineage is built against the binding's one cell, through which they share a record of the rules
+    /// that couple their state ([`lane_share`][Self::lane_share]).
+    pub fn with_lanes(mut self, lanes: LaneBinding) -> Self {
+        self.lanes = Some(lanes);
+        self
+    }
+
+    /// Returns the lanes the kernel is built for, if it is one lane's instance of a lineage on several lanes.
+    pub fn lanes(&self) -> Option<&LaneBinding> {
+        self.lanes.as_ref()
+    }
+
+    /// Returns the record the instances of the kernel's lineage share across lanes, creating it with `make`, which is
+    /// given the number of lanes, if no instance has yet; or `None` if the kernel is not built for lanes.
+    ///
+    /// The first instance built against the binding's cell creates the record, and every later one, a rebuilt instance
+    /// after a panic or a fresh one at a clock reset included, gets the same. A cell holds the record of one kernel
+    /// type: asking it for another type's is a host's bug, which returns `None`.
+    pub fn lane_share<T, F>(&self, make: F) -> Option<Arc<T>>
+    where
+        T: LaneShare,
+        F: FnOnce(u16) -> T,
+    {
+        let lanes = self.lanes.as_ref()?;
+        lanes.cell.get_or_init(|| make(lanes.lanes))
     }
 
     /// Accounts the kernel's memory and CPU time to the resource group of `token`.
@@ -308,6 +368,22 @@ impl KernelBuildContext {
     pub fn with_state_budget(mut self, budget: ContextBudget) -> Self {
         self.state_budget = Some(budget);
         self
+    }
+
+    /// Sets how the kernel's caches and context resolvers report their gauges: [`GaugeMode::Summed`] when the host runs
+    /// an instance of the kernel on each of several lanes of its slot, under the one identity the kernel names its
+    /// caches by, so that the gauges show what every lane's caches hold, rather than the last lane's.
+    ///
+    /// Defaults to [`GaugeMode::Set`], as a native component's caches report them.
+    pub fn with_cache_gauges(mut self, gauges: GaugeMode) -> Self {
+        self.cache_gauges = gauges;
+        self
+    }
+
+    /// Returns how the kernel's caches and context resolvers report their gauges (see
+    /// [`with_cache_gauges`][Self::with_cache_gauges]).
+    pub fn cache_gauges(&self) -> GaugeMode {
+        self.cache_gauges
     }
 
     /// Returns the budgets the host gave a stateful kernel's state, if it gave any.
@@ -353,6 +429,95 @@ impl KernelBuildContext {
     pub fn accounted<R>(&self, f: impl FnOnce() -> R) -> R {
         let _entered = self.resource_group.as_ref().map(ResourceGroupToken::enter);
         f()
+    }
+
+    /// Runs `f` inside the kernel's resource group, as [`accounted`][Self::accounted] does, and always measures the
+    /// CPU time it takes, whatever the rate of CPU-time sampling: for long and rare work, such as building the kernel,
+    /// which sampling would report as nothing, or as many times what it cost.
+    pub fn accounted_measured<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _entered = self.resource_group.as_ref().map(ResourceGroupToken::enter_measured);
+        f()
+    }
+}
+
+/// Which lane's instance of a lineage on several lanes a kernel is built as, and the cell every lane's instance of the
+/// lineage is built against.
+#[derive(Clone, Debug)]
+pub struct LaneBinding {
+    /// The cell the lineage's instances share their record through.
+    pub cell: Arc<LaneCell>,
+
+    /// The lane the instance runs in.
+    pub lane: u16,
+
+    /// The number of lanes the lineage runs on.
+    pub lanes: u16,
+}
+
+/// The cell through which every lane's instance of one lineage shares one record of the rules that couple their state.
+///
+/// The installer creates one cell per new lineage, and builds every lane's instance of it against the cell, as later
+/// instances of the lineage are built too: a fresh instance at a clock reset, and an instance rebuilt after a panic.
+/// The record is the kernel's own type, created by the first instance built ([`KernelBuildContext::lane_share`]); the
+/// host reads it through [`share`][Self::share], as [`LaneShare`], to tell it which lanes hold instances and how they
+/// resolve their ticks.
+#[derive(Default)]
+pub struct LaneCell {
+    share: Mutex<Option<CellShare>>,
+}
+
+/// The record a cell holds, typed for the kernel that created it and for the host.
+#[derive(Clone)]
+struct CellShare {
+    record: Arc<dyn Any + Send + Sync>,
+    share: Arc<dyn LaneShare>,
+}
+
+impl LaneCell {
+    /// Creates an empty cell.
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    /// Returns the cell's record, if an instance created one.
+    pub fn share(&self) -> Option<Arc<dyn LaneShare>> {
+        self.lock().as_ref().map(|held| Arc::clone(&held.share))
+    }
+
+    /// Returns the cell's record as `T`, creating it with `make` if the cell holds none, or `None` if it holds the
+    /// record of another type.
+    fn get_or_init<T, F>(&self, make: F) -> Option<Arc<T>>
+    where
+        T: LaneShare,
+        F: FnOnce() -> T,
+    {
+        let mut held = self.lock();
+        let held = held.get_or_insert_with(|| {
+            let record = Arc::new(make());
+            CellShare {
+                record: Arc::clone(&record) as Arc<dyn Any + Send + Sync>,
+                share: record,
+            }
+        });
+        let record = Arc::clone(&held.record).downcast::<T>().ok();
+        debug_assert!(
+            record.is_some(),
+            "a lane cell holds the record of one kernel type, and is asked for another's"
+        );
+        record
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<CellShare>> {
+        // The cell is written once, whole, so a panic while it is held leaves nothing half-written.
+        self.share.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl fmt::Debug for LaneCell {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LaneCell")
+            .field("shared", &self.lock().is_some())
+            .finish()
     }
 }
 
@@ -559,6 +724,12 @@ impl ConfiguredOperator {
     /// [`OperatorDef::flush_interval`].
     pub fn flush_interval(&self) -> Option<Duration> {
         self.def.flush_interval(&self.params)
+    }
+
+    /// Returns the key the operator's state is partitioned by across lanes, if it can be; see
+    /// [`OperatorDef::partition_key`].
+    pub fn partition_key(&self) -> Option<PartitionKey> {
+        self.def.partition_key()
     }
 }
 

@@ -59,6 +59,7 @@
     resourcesConfirmWarnings: $("resources-confirm-warnings"), resourcesAcks: $("resources-acks"),
     resourcesAckSummary: $("resources-ack-summary"), recipients: $("recipients"), recipientsHint: $("recipients-hint"),
     outputs: $("outputs"), outputsCount: $("outputs-count"), outputsRows: $("outputs-rows"),
+    lanes: $("lanes"), lanesHint: $("lanes-hint"), canaryOnly: $("traffic-canary-only"),
   };
   const nodesTable = ui.nodes.closest("table");
   const RESOURCES_PRODUCT = "resources";
@@ -837,6 +838,16 @@
     await poll();
   }));
 
+  ui.canaryOnly.addEventListener("change", async () => {
+    const mix = ui.canaryOnly.checked ? "canary_only" : "full";
+    try {
+      await api("POST", "/api/traffic", { mix });
+    } catch (_) {
+      toast("The demo server is not answering.", true);
+    }
+    await poll();
+  });
+
   // ---- State rendering ------------------------------------------------------------------------------------------
 
   function setBadge(node, text, kind, title) {
@@ -1273,8 +1284,11 @@
     ui.trafficButton.className = t.running ? "" : "primary";
     if (document.activeElement !== ui.trafficRate) ui.trafficRate.value = String(t.rate);
     ui.trafficTarget.textContent = `DogStatsD → udp://${t.target}`;
+    ui.canaryOnly.checked = t.mix === "canary_only";
     const activity = t.running ? `Sending ${rate(t.rate)} datagrams/s` : "Paused";
-    const lines = [el("div", { text: `${activity} · ${count(t.datagrams_sent)} sent` })];
+    const carried = t.mix === "canary_only" ? " · the canary alone"
+      : (t.contexts ? ` · ${count(t.contexts)} load contexts` : "");
+    const lines = [el("div", { text: `${activity}${carried} · ${count(t.datagrams_sent)} sent` })];
     if (t.send_errors) {
       lines.push(el("div", { class: "errors", text: `${count(t.send_errors)} send errors: ${t.last_error || ""}` }));
     }
@@ -1297,7 +1311,10 @@
       const difference = c.received - c.sent;
       if (c.state === "balanced") parts.push(el("span", { class: "ok", text: "✓ none lost" }));
       else if (c.state === "missing") parts.push(el("span", { class: "err", text: `${count(-difference)} missing` }));
-      else parts.push(el("span", { class: "warn", text: `${count(difference)} more than sent` }));
+      else if (c.state === "host_dropped") {
+        const text = `${count(-difference)} dropped by the host before ADP read them`;
+        parts.push(el("span", { class: "warn", text }));
+      } else parts.push(el("span", { class: "warn", text: `${count(difference)} more than sent` }));
     }
     if (c.elsewhere.length) {
       parts.push(` · also at ${c.elsewhere.map((e) => `${e.intake} ${count(e.received)}`).join(", ")}`);
@@ -1305,7 +1322,7 @@
     ui.canary.replaceChildren(...parts);
     ui.canary.title = `Every datagram carries one demo.canary. Compares the canaries sent in ${range} with those the `
       + `primary endpoint received for those seconds, allowing ${count(c.allowance)} for canaries counted in a `
-      + "neighboring second.";
+      + "neighboring second." + (c.reason && c.state !== "waiting" ? ` ${c.reason}` : "");
   }
 
   function seriesLabel(entry, name) {
@@ -1399,6 +1416,133 @@
         el("td", { class: "num", text: shown(row.sent) }),
         el("td", { class: "num", text: row.dropped ? shown(row.dropped) : "" }),
         el("td", {}, row.history ? sparkline(smooth(row.history)) : "")));
+    }
+  }
+
+  // ---- Lanes --------------------------------------------------------------------------------------------------------
+
+  const ROLE_LABELS = { producer: "producer lanes", state: "state lanes", post: "post-aggregation lanes" };
+
+  // One mark per scrape (a second) where a lane flushed a tick, and one where it crossed a cut or a reset: lanes that
+  // flush together without a barrier show their marks in the same columns.
+  function laneMarks(ticks, crossings) {
+    const svgNs = "http://www.w3.org/2000/svg";
+    const cells = Math.max((ticks || []).length, (crossings || []).length, 1);
+    const width = 90, height = 14, step = width / cells;
+    const svg = document.createElementNS(svgNs, "svg");
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    svg.setAttribute("preserveAspectRatio", "none");
+    svg.setAttribute("aria-hidden", "true");
+    const base = document.createElementNS(svgNs, "line");
+    base.setAttribute("class", "lane-base");
+    base.setAttribute("x1", "0");
+    base.setAttribute("x2", String(width));
+    base.setAttribute("y1", String(height - 0.5));
+    base.setAttribute("y2", String(height - 0.5));
+    svg.append(base);
+    const mark = (values, cls, top) => (values || []).forEach((value, i) => {
+      if (!(value > 0)) return;
+      const rect = document.createElementNS(svgNs, "rect");
+      rect.setAttribute("class", cls);
+      rect.setAttribute("x", (i * step + step * 0.2).toFixed(2));
+      rect.setAttribute("width", Math.max(1, step * 0.6).toFixed(2));
+      rect.setAttribute("y", String(top));
+      rect.setAttribute("height", String(height - top - 1));
+      svg.append(rect);
+    });
+    mark(ticks, "lane-tick", 3);
+    mark(crossings, "lane-cross", 0);
+    return svg;
+  }
+
+  function laneCell(value, format, cls) {
+    return el("td", { class: cls || "num", text: value === null || value === undefined ? "—" : format(value) });
+  }
+
+  function exitText(exit) {
+    const groups = exit.key_groups.length
+      ? ` (${exit.key_groups.map((g) => `lane ${g.lane}: groups ${g.first}–${g.last}`).join(" · ")})` : "";
+    return `exit ${exit.name} → ${exit.to}: ${exit.routing}${groups}`;
+  }
+
+  // Each slot's lanes, with what each lane measures of its own work: the plan_lane_* series ADP publishes once a
+  // second, and the layout from its explain document.
+  function renderLanes(s) {
+    const view = s.lanes;
+    const stale = s.telemetry.state !== "ok";
+    ui.lanes.replaceChildren();
+    const policy = view.policy;
+    if (!view.on) {
+      ui.lanesHint.textContent = view.layout_known ? "lanes off: every slot runs one lane"
+        : "no lanes reported";
+      const text = view.layout_error ? `ADP's explain document could not be read: ${view.layout_error}`
+        : "ADP runs its metrics path without lanes. Start the demo with --decoders, --state-lanes, or --post-lanes "
+          + "to run it on lanes; their counts are fixed when ADP starts.";
+      ui.lanes.append(el("p", { class: "hint", text }));
+      return;
+    }
+    ui.lanesHint.textContent = policy
+      ? `${policy.dogstatsd_lanes} producer · ${policy.state_lanes} state · ${policy.post_lanes} post-aggregation `
+        + `lanes${policy.pipelining ? " · R1 pipelines slots" : ""} · per second, averaged over 5 s`
+      : "layout not known yet: lanes from their series";
+    for (const slot of view.slots) {
+      const role = slot.role ? ROLE_LABELS[slot.role] : "lanes";
+      const head = el("div", { class: "lane-slot-head" },
+        el("span", { class: "id", text: slot.component }),
+        el("span", { class: "muted", text: ` · ${plural(slot.lanes, "lane")}, ${role}` }));
+      if (slot.skew !== null && slot.skew !== undefined) {
+        const skew = el("span", { class: "skew", text: ` · skew ${slot.skew.toFixed(2)}` });
+        skew.title = "The most contexts one state lane holds, over the mean of the state lanes";
+        head.append(skew);
+      }
+      const section = el("div", { class: "lane-slot" }, head);
+      for (const exit of slot.exits) section.append(el("div", { class: "lane-exit", text: exitText(exit) }));
+
+      const rows = slot.rows;
+      const has = (key) => rows.some((row) => row[key] !== null && row[key] !== undefined);
+      const columns = [
+        ["Lane", null],
+        ["Events/s", "events_per_s"],
+        ["Last 30 s", "events_history"],
+        ["Busy", "busy"],
+        ["Depth", "input_depth"],
+      ];
+      if (has("routed_events_per_s")) columns.push(["Routed/s", "routed_events_per_s"]);
+      if (has("contexts")) columns.push(["Contexts", "contexts"]);
+      if (has("watermark_lag_s")) columns.push(["Lag", "watermark_lag_s"]);
+      if (has("ticks") || has("crossings")) columns.push(["Ticks · crossings", "ticks"]);
+      if (has("misrouted")) columns.push(["Misrouted", "misrouted"]);
+      const table = el("table", { class: `lanes-table${stale ? " stale" : ""}` },
+        el("thead", {}, el("tr", {}, ...columns.map(([title]) => el("th", { text: title })))));
+      const body = el("tbody");
+      for (const row of rows) {
+        const cells = columns.map(([, key]) => {
+          switch (key) {
+            case null: return el("td", { class: "mono", text: String(row.lane) });
+            case "events_history": return el("td", {}, sparkline(smooth(row.events_history)));
+            case "busy": return laneCell(row.busy, (v) => `${(v * 100).toFixed(v < 0.1 ? 1 : 0)}%`);
+            case "input_depth": case "contexts": return laneCell(row[key], count);
+            case "watermark_lag_s": return laneCell(row[key], (v) => `${rate(v)} s`);
+            case "ticks": {
+              const cell = el("td", {}, laneMarks(row.ticks, row.crossings));
+              const crossed = [row.cut_crossings ? `${count(row.cut_crossings)} cut` : null,
+                row.reset_crossings ? `${count(row.reset_crossings)} reset` : null].filter(Boolean);
+              cell.title = `Flushes (blue) and crossings (orange) per second, last 30 s`
+                + (crossed.length ? `; crossings in all: ${crossed.join(", ")}` : "");
+              return cell;
+            }
+            case "misrouted": return laneCell(row.misrouted, count, row.misrouted > 0 ? "num err" : "num");
+            default: return laneCell(stale ? null : row[key], rate);
+          }
+        });
+        body.append(el("tr", {}, ...cells));
+      }
+      table.append(body);
+      section.append(el("div", { class: "table-wrap" }, table));
+      ui.lanes.append(section);
+    }
+    if (!view.slots.length) {
+      ui.lanes.append(el("p", { class: "hint", text: "No lane series yet: ADP publishes them once a second." }));
     }
   }
 
@@ -1720,6 +1864,7 @@
     renderOutcome(s);
     renderAcks(s);
     renderTraffic(s);
+    renderLanes(s);
     renderRecipients(s);
     renderNodes(s);
     renderFoot(s);

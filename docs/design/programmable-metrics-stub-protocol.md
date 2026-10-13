@@ -299,6 +299,53 @@ The resources view, `GET /programmable-metrics/resources`:
   native and declared, credentials by reference only. `budget` is the resource budget: `granted` is `null` when nothing
   is counted (no verified memory limit).
 
+Lanes (stage 9). The status route has **no `lanes` member**, and a poll's status carries none: lane counts are fixed
+at boot and are runtime layout, never plan content. A client reads the layout from the explain document's physical
+sections (`GET /programmable-metrics/explain`, its `physical` member) and per-lane activity from ADP's telemetry. The
+physical sections' lane members are additive within `explain`'s versioning rule, each left out at its default, so a
+document of a frame on one lane reads as before:
+
+```json
+{
+  "layout": { "dogstatsd_lanes": 2, "state_lanes": 2, "post_lanes": 3, "pipelining": false },
+  "fixed": [
+    { "node": "dsd_in", "admission_points": [
+      { "id": 0, "lanes": 2, "port": "metrics", "to": "dsd_pre_aggregation", "routing": "fixed", "feeds_state": true }
+    ] }
+  ],
+  "slots": [
+    { "name": "dsd_pre_aggregation", "lanes": 2, "exits": [
+      { "name": "dsd_agg", "routing": "keyed", "progress_points": [0, 1],
+        "key_groups": [{ "lane": 0, "first": 0, "last": 127 }, { "lane": 1, "first": 128, "last": 255 }] },
+      { "name": "metrics_enrich", "routing": "affinity" }
+    ] },
+    { "name": "dsd_agg", "lanes": 2, "exits": [{ "name": "metrics_enrich", "routing": "spread" }],
+      "isolation": { "output_point": 6, "output_points": [6, 7], "upstream": [0, 1] } }
+  ],
+  "edges": [{ "...": "...", "routing": "keyed" }],
+  "segments": [{ "...": "...", "lanes": 2 }]
+}
+```
+
+- `layout` is present whenever the frame runs a slot on more than one lane or was laid out without R1's pipelining
+  (any `lanes.mode: auto`); `pipelining` is `false` whenever lanes are on.
+- `lanes` (default 1) is a point group's or a slot's lane count; a point with lanes has consecutive IDs from `id`.
+- `routing` (default `one`) is how an admission point, an exit, or an edge reaches the lanes of the slot it feeds:
+  `fixed` (lane `i` to lane `i`), `keyed` (by context key through 256 key groups; `key_groups` lists each target lane's
+  contiguous range), `affinity` (lane `i` to lane `i mod M`), or `spread` (each buffer to the first lane with room).
+- `output_points` lists the admission point IDs of each state lane's time-driven output, for an isolation slot on
+  several lanes (`output_point` stays lane 0's).
+
+Per-lane telemetry, each series tagged `component_id` (the slot) and `lane` (0 to 63): `plan_lane_events_total`,
+`plan_lane_batches_total`, `plan_lane_busy_nanos_total`, `plan_lane_stamp_wait_nanos_total`, and
+`plan_lane_input_depth` for every lane; `plan_lane_routed_buffers_total`, `plan_lane_routed_events_total`, and
+`plan_lane_progress_total` for the lanes of a slot with keyed exits; and for state lanes `plan_lane_contexts`,
+`plan_lane_watermark_lag_seconds`, the histograms `plan_lane_flush_seconds` and `plan_lane_flush_blocked_seconds`,
+`plan_lane_crossings_total{kind: cut | reset}` (per-lane crossing state), `plan_lane_crossing_overlap_contexts`,
+`plan_lane_tick_divergence_total`, `plan_lane_tick_straggler_total`, `plan_lane_reset_overflow_total`, and
+`plan_lane_misrouted_total`, which must stay 0. The demo's Lanes panel and its check steps S12 to S14 read exactly these
+(8.8 of the stages 7 and 9 plan).
+
 ## 4. Demo server side
 
 - Holds the durable artifact store (on disk in its run directory): current snapshot, revision counter, history.

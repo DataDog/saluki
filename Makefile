@@ -393,10 +393,10 @@ demo-programmable-metrics: ## Runs the programmable metrics demo: ADP on the def
 
 .PHONY: demo-programmable-metrics-check
 demo-programmable-metrics-check: build-adp
-demo-programmable-metrics-check: ## Runs the programmable metrics demo scenarios S0-S6 and S8-S11 headless against ADP and checks what each endpoint receives (extra flags: DEMO_CHECK_ARGS)
+demo-programmable-metrics-check: ## Runs the programmable metrics demo scenarios S0-S6 and S8-S14 headless against ADP (S12-S14 in a second launch, on lanes) and checks what each endpoint receives (extra flags: DEMO_CHECK_ARGS)
 	@echo "[*] Building the programmable metrics demo..."
 	@cargo build --profile devel --package programmable-metrics-demo
-	@echo "[*] Running the programmable metrics demo check (scenarios S0-S6 and S8-S11, headless, UI port 27080 unless --port-offset is in DEMO_CHECK_ARGS)..."
+	@echo "[*] Running the programmable metrics demo check (scenarios S0-S6 and S8-S11, then S12-S14 on lanes, headless, UI port 27080 unless --port-offset is in DEMO_CHECK_ARGS)..."
 	@target/devel/programmable-metrics-demo check --adp-bin target/devel/agent-data-plane $(DEMO_CHECK_ARGS)
 
 ##@ Kubernetes
@@ -620,7 +620,7 @@ test-miri: ## Runs all Miri-specific unit tests
 test-loom: check-rust-build-tools
 test-loom: ## Runs all Loom-specific unit tests
 	@echo "[*] Running Loom-specific unit tests..."
-	cargo nextest run --release --features loom -p stringtheory -p saluki-core loom_tests
+	cargo nextest run --release --features loom -p stringtheory -p saluki-core -p saluki-components -p saluki-metric-kernels -p saluki-metric-plan loom_tests
 
 .PHONY: test-measurement
 test-measurement: check-rust-build-tools cargo-install-cargo-nextest
@@ -638,9 +638,15 @@ test-integration-targets: ## Runs every crate's integration test targets (`tests
 	@echo "[*] Running the integration test targets of every crate..."
 	cargo nextest run --workspace --test '*' --no-fail-fast
 
+.PHONY: test-stress
+test-stress: check-rust-build-tools cargo-install-cargo-nextest
+test-stress: ## Runs the multi-threaded stress runs, which `make test` skips (`SALUKI_STRESS_SECS` of traffic, 30 by default)
+	@echo "[*] Running the stress runs..."
+	cargo nextest run -p agent-data-plane --no-fail-fast --run-ignored only -E 'test(/lane_stress/)'
+
 .PHONY: test-all
 test-all: ## Test everything
-test-all: test test-property test-docs test-miri test-loom test-measurement test-integration-targets
+test-all: test test-property test-docs test-miri test-loom test-measurement test-integration-targets test-stress
 
 .PHONY: test-correctness
 test-correctness: build-panoramic build-correctness-tools-image build-datadog-agent-image-release

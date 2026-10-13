@@ -25,6 +25,9 @@ rate=${SCALING_RATE:-"4 GiB"}
 generators=${SCALING_GENERATORS:-2}
 connections=${SCALING_CONNECTIONS:-1}
 contexts=${SCALING_CONTEXTS:-3000}
+# lading's contexts multiply by metric kind and tag sets, so a limit near `contexts` binds and both images drop at
+# aggregation alike (the first measurements: about a sixth of the metrics at 3,000 contexts): ten times as many.
+context_limit=${SCALING_CONTEXT_LIMIT:-$((contexts * 10 + 1000))}
 profile=${SCALING_PROFILE:-defaults}
 adp_config=${SCALING_ADP_CONFIG:-}
 transport=${SCALING_TRANSPORT:-unix_datagram}
@@ -225,7 +228,7 @@ measure() {
   export BLACKHOLE_CPUSET=$(cpu_range $((cpus + 2)) $((cpus + 3)))
   export WORKERS=$cpus
   export DECODERS=$decoders
-  export CONTEXT_LIMIT=$((contexts + contexts / 10 + 100))
+  export CONTEXT_LIMIT=$context_limit
   export LADING_CONFIG="$out/lading-$cpus.yaml"
   export ADP_TELEMETRY_PORT=${ADP_TELEMETRY_PORT:-15100}
   export LADING_TELEMETRY_PORT=${LADING_TELEMETRY_PORT:-19229}

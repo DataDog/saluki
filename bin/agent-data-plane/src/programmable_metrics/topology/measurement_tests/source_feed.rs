@@ -58,6 +58,7 @@ use std::{
 use saluki_common::resource_tracking::{ResourceGroupRegistry, ResourceStatsSnapshot};
 use saluki_config::dynamic::ConfigUpdate;
 use saluki_core::probes::{self, HistogramSnapshot};
+use saluki_metric_plan::compile::LanePolicy;
 use serde_json::json;
 use tokio::{runtime::Runtime, sync::mpsc};
 
@@ -65,7 +66,8 @@ use super::{allocations, busy, global_pool, process_cpu, thread_cpu, CONFIG, GAT
 use crate::{
     internal::ConfigUpdatesWorker,
     programmable_metrics::{
-        test_support::{connected_configuration_system, update},
+        lanes::LaneCounts,
+        test_support::{connected_layered_configuration_system, update},
         test_topology::{Aggregation, Encoders, MetricsPath, Options, TestTopology},
     },
 };
@@ -76,7 +78,8 @@ const PAYLOAD_BYTES: usize = 8_192;
 /// The metrics of a generator between two of its sentinels, in paced phases.
 const SENTINEL_EVERY: u64 = 4_096;
 
-/// The probe that counts the metrics the source dispatches.
+/// The probe that counts the metrics the source dispatches, or, with lanes, the prefix of the probes of every metrics
+/// lane's output (`dispatch_items/dsd_in.metrics_<d>`), which [`decoded_in`] sums.
 const DECODED: &str = "dispatch_items/dsd_in.metrics";
 
 /// How generators reach the source.
@@ -178,15 +181,20 @@ enum Workload {
     /// on the eighth (see [`distinct_line`]), so that aggregation holds every context the generators sent since its
     /// last flush.
     Distinct,
+
+    /// Timestamped counters only, over the contexts in turn (see [`passthrough_line`]): every metric takes the
+    /// passthrough around aggregation, so that the post-aggregation slot processes everything the source decodes.
+    Passthrough,
 }
 
 impl Workload {
-    /// Returns the workload named `name`: `mixed` or `distinct`.
+    /// Returns the workload named `name`: `mixed`, `distinct`, or `passthrough`.
     fn named(name: &str) -> Self {
         match name {
             "mixed" => Self::Mixed,
             "distinct" => Self::Distinct,
-            other => panic!("unknown workload `{}`: use mixed or distinct", other),
+            "passthrough" => Self::Passthrough,
+            other => panic!("unknown workload `{}`: use mixed, distinct, or passthrough", other),
         }
     }
 
@@ -195,6 +203,7 @@ impl Workload {
         match self {
             Self::Mixed => line(index, contexts),
             Self::Distinct => distinct_line(index, contexts),
+            Self::Passthrough => passthrough_line(index, contexts),
         }
     }
 
@@ -203,6 +212,7 @@ impl Workload {
         let per_rotation = match self {
             Self::Mixed => 8 * contexts,
             Self::Distinct => contexts.div_ceil(7) * 8,
+            Self::Passthrough => contexts,
         };
         per_rotation.max(8 * 1_024)
     }
@@ -224,7 +234,7 @@ struct Knobs {
     /// The configuration (`SALUKI_MEASURE_CONFIG`: `mapper`, `defaults`, or `gateways`).
     profile: Profile,
 
-    /// What the lines carry (`SALUKI_MEASURE_WORKLOAD`: `mixed` or `distinct`).
+    /// What the lines carry (`SALUKI_MEASURE_WORKLOAD`: `mixed`, `distinct`, or `passthrough`).
     workload: Workload,
 
     /// Rounds per path, alternating (`SALUKI_MEASURE_ROUNDS`).
@@ -251,6 +261,104 @@ struct Knobs {
 
     /// A paced rate in metrics per second (`SALUKI_MEASURE_RATE`), instead of a share of the saturated rate.
     rate: Option<f64>,
+
+    /// The lanes the plan-driven path runs on (`SALUKI_MEASURE_LANES`): `off`, the default, `auto` for the automatic
+    /// counts at each measured worker count, or `<state>,<post>` for those counts, with the automatic producer lanes
+    /// either way (one per decoder, and one below three workers); or `<producer>,<state>,<post>` for all three,
+    /// decoder `d` feeding producer lane `d mod producer`, each count a number or `auto`.
+    /// The legacy path has no lanes.
+    lanes: Lanes,
+}
+
+/// The lanes a measurement runs the plan-driven path on.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Lanes {
+    /// One lane per slot, laid out as without lanes.
+    Off,
+
+    /// Producer, state, and post-aggregation lanes: each a count, or `None` for the automatic count at the measured
+    /// worker and decoder counts. Producer lanes apart from the decoders, which no configuration key sets, take decoder
+    /// `d` on producer lane `d mod producer`: increment 9.2's post-aggregation lanes alone, for example, run on one
+    /// producer lane fed by every decoder.
+    On {
+        dogstatsd: Option<u16>,
+        state: Option<u16>,
+        post: Option<u16>,
+    },
+}
+
+impl Lanes {
+    /// Returns the lanes named `name`: `off`, `auto`, `<state>,<post>`, or `<producer>,<state>,<post>`, where each
+    /// count is a number or `auto`.
+    fn named(name: &str) -> Self {
+        let count = |count: &str| match count.trim() {
+            "auto" => Some(None),
+            count => count.parse::<u16>().ok().filter(|count| *count > 0).map(Some),
+        };
+        match name {
+            "off" => Self::Off,
+            "auto" => Self::On {
+                dogstatsd: None,
+                state: None,
+                post: None,
+            },
+            counts => match counts.split(',').map(count).collect::<Option<Vec<_>>>().as_deref() {
+                Some(&[state, post]) => Self::On {
+                    dogstatsd: None,
+                    state,
+                    post,
+                },
+                Some(&[dogstatsd, state, post]) => Self::On { dogstatsd, state, post },
+                _ => panic!(
+                    "unknown lanes `{}`: use off, auto, <state>,<post>, or <producer>,<state>,<post>, each count a \
+                     number or auto",
+                    counts
+                ),
+            },
+        }
+    }
+
+    /// Returns the lanes of each kind at `workers` workers and `decoders` decoders, or `None` without lanes: as ADP's
+    /// automatic counts, every count automatic and one each is the layout without lanes.
+    fn policy(self, workers: usize, decoders: usize) -> Option<LanePolicy> {
+        use crate::programmable_metrics::lanes::{
+            automatic_post_lanes, automatic_producer_lanes, automatic_state_lanes,
+        };
+        let Self::On { dogstatsd, state, post } = self else {
+            return None;
+        };
+        let automatic = dogstatsd.is_none() && state.is_none() && post.is_none();
+        let dogstatsd = dogstatsd.unwrap_or_else(|| automatic_producer_lanes(decoders, workers));
+        let lanes = LanePolicy {
+            dogstatsd,
+            state: state.unwrap_or_else(|| automatic_state_lanes(workers)),
+            post: post.unwrap_or_else(|| automatic_post_lanes(dogstatsd)),
+        };
+        (!automatic || !lanes.is_one()).then_some(lanes)
+    }
+
+    /// Returns the lanes the plan-driven path runs on in place of the ones its configuration asks for, at `workers`
+    /// workers and `decoders` decoders, if these lanes set the producer lanes apart from the decoders.
+    fn counts(self, workers: usize, decoders: usize) -> Option<LaneCounts> {
+        match self {
+            Self::On { dogstatsd: Some(_), .. } => self.policy(workers, decoders).map(LaneCounts::on),
+            Self::Off | Self::On { dogstatsd: None, .. } => None,
+        }
+    }
+
+    /// Returns the configuration keys of these lanes at `workers` workers and `decoders` decoders, which the
+    /// plan-driven path reads.
+    fn config(self, workers: usize, decoders: usize) -> String {
+        match self.policy(workers, decoders) {
+            // The layout without lanes: `off`, or automatic counts of one lane each.
+            None => "experimental:\n  programmable_metrics:\n    lanes:\n      mode: off\n".to_string(),
+            Some(lanes) => format!(
+                "experimental:\n  programmable_metrics:\n    lanes:\n      mode: auto\n      state: {}\n      \
+                 post: {}\n",
+                lanes.state, lanes.post
+            ),
+        }
+    }
 }
 
 impl Knobs {
@@ -297,6 +405,9 @@ impl Knobs {
             rate: read("SALUKI_MEASURE_RATE")
                 .map(|rate| rate.parse().expect("SALUKI_MEASURE_RATE is a number"))
                 .or(defaults.rate),
+            lanes: read("SALUKI_MEASURE_LANES")
+                .map(|name| Lanes::named(&name))
+                .unwrap_or(defaults.lanes),
         }
     }
 
@@ -316,6 +427,7 @@ impl Knobs {
             connections_per_generator: 1,
             decoders: None,
             rate: None,
+            lanes: Lanes::Off,
         }
     }
 
@@ -367,6 +479,13 @@ fn distinct_line(index: usize, contexts: usize) -> String {
         2 => format!("distinct.gauge{}:7|g|#team:core", context),
         _ => format!("distinct.latency{}:10|d|#team:core", context),
     }
+}
+
+/// Returns the DogStatsD line of metric `index` of the passthrough workload over `contexts` contexts: a timestamped
+/// counter of context `index mod contexts`, which the mapper profile leaves as it is, and which takes the passthrough
+/// around aggregation to the post-aggregation slot.
+fn passthrough_line(index: usize, contexts: usize) -> String {
+    format!("passthrough.jobs{}:2|c|#team:core|T1700000000", index % contexts)
 }
 
 /// Returns the sentinel line with identifier `id`: a timestamped counter, which takes the passthrough to the main
@@ -852,14 +971,23 @@ impl Fed {
         ));
         let baseline_live = allocations().2;
         let listener = Listener::new(knobs.transport);
-        let config = format!("{}{}", config, listener.config(knobs.decoders_at(workers)));
+        let decoders = knobs.decoders_at(workers);
+        let lanes = match path {
+            MetricsPath::Plan => knobs.lanes.config(workers, decoders),
+            MetricsPath::Legacy => String::new(),
+        };
+        // The lanes' keys are a layer of their own: the profile may have an `experimental` section already.
+        let config = format!("{}{}", config, listener.config(decoders));
         let (topology, stream) = runtime.block_on(async {
-            let (system, updates, stream) = connected_configuration_system(&config).await;
+            let (system, updates, stream) = connected_layered_configuration_system(&[&config, &lanes]).await;
             let mut options = Options::new(path, Aggregation::Native);
             options.keep = |metric| metric.context().name() == SENTINEL;
             options.encoders = Encoders::Real;
             options.worker_pool = Some(pool.handle().clone());
             options.real_sources.insert("dsd_in".to_string());
+            if path == MetricsPath::Plan {
+                options.lanes = knobs.lanes.counts(workers, decoders);
+            }
             let topology = TestTopology::start(&system, options, |supervisor| {
                 supervisor.add_worker(ConfigUpdatesWorker::new(updates))
             })
@@ -953,7 +1081,7 @@ impl Fed {
         let (allocated, _, live) = allocations();
         Snapshot {
             at: Instant::now(),
-            decoded: probes.get(DECODED).map_or(0, |probe| probe.sum),
+            decoded: decoded_in(&probes),
             encoded: self.forwarded(),
             sent: self.generators.sent.load(Ordering::Relaxed),
             refused: self.generators.refused.load(Ordering::Relaxed),
@@ -1124,7 +1252,16 @@ impl Fed {
 
 /// Returns the metrics the source has dispatched so far.
 fn decoded() -> u64 {
-    probes::snapshot().get(DECODED).map_or(0, |probe| probe.sum)
+    decoded_in(&probes::snapshot())
+}
+
+/// Returns the metrics the source dispatched as of `probes`, on its one metrics output or on every lane's.
+fn decoded_in(probes: &BTreeMap<String, HistogramSnapshot>) -> u64 {
+    probes
+        .iter()
+        .filter(|(name, _)| name.as_str() == DECODED || name.starts_with(&format!("{}_", DECODED)))
+        .map(|(_, probe)| probe.sum)
+        .sum()
 }
 
 /// Returns the CPU time every resource group has used so far, in nanoseconds: the groups of the tracking allocator read
@@ -1189,11 +1326,12 @@ fn scaling_curves_through_the_dogstatsd_source() {
             plan.push(scaling_round(MetricsPath::Plan, workers, &knobs, paced));
         }
         println!(
-            "\nW = {} workers, D = {} decoders, G = {} generators x {} connections:",
+            "\nW = {} workers, D = {} decoders, G = {} generators x {} connections, plan lanes {:?}:",
             workers,
             knobs.decoders_at(workers),
             knobs.generators_at(workers),
-            knobs.connections_per_generator
+            knobs.connections_per_generator,
+            knobs.lanes.policy(workers, knobs.decoders_at(workers))
         );
         println!("| Phase | Measure | Legacy | Plan | ratio |");
         println!("|---|---|---|---|---|");
@@ -1319,10 +1457,12 @@ fn one_saturated_stream_connection() {
 #[test]
 #[ignore = "a measurement: run it in release mode, as the module documentation says"]
 fn decoder_pool_waits() {
-    // M2: the datagram decoders' waits on the receiver mutex they share, and, on the plan's path, on the admission
-    // point of `dsd_in.metrics`, saturated, at D decoders with one and 50 metrics per datagram. The admission lock's
-    // hold share is the utilization of the serial point; the receiver's lock waits, summed over decoders, against D
-    // windows, decide O4 (above 10%).
+    // M2: the datagram decoders' waits for a datagram from the queue they share, and, on the plan's path, on the
+    // admission point of `dsd_in.metrics`, saturated, at D decoders with one and 50 metrics per datagram. The
+    // admission lock's hold share is the utilization of the serial point. The queue wait is summed over decoders: over
+    // D, it is a decoder's idle share (the receiver mutex the decoders once shared, whose lock wait decided O4, is
+    // gone). M10, with `SALUKI_MEASURE_LANES` on: the producer lanes stamp their own points from one source clock,
+    // whose lock wait and hold, summed over the lanes, show whether the lanes contend on it.
     let knobs = Knobs::from_env(Knobs {
         transport: Transport::datagram(),
         rounds: 1,
@@ -1366,10 +1506,11 @@ fn decoder_pool_waits() {
                     &label,
                     &measured,
                     &[
-                        "dogstatsd_receiver_lock_wait/dsd_in",
                         "dogstatsd_receiver_recv_wait/dsd_in",
                         "admission_lock_wait/dsd_in.metrics",
                         "admission_lock_hold/dsd_in.metrics",
+                        "source_clock_lock_wait/",
+                        "source_clock_lock_hold/",
                         "dispatch_send_wait/dsd_in.metrics",
                         DECODED,
                     ],
@@ -1385,7 +1526,8 @@ fn decoder_pool_waits() {
 fn source_buffer_fill() {
     // M6: how full the source's buffers are when it dispatches them, saturated, at 70% of saturation, and with many
     // stream connections at a modest rate each (500 by default: 50 generators of 10 connections); every buffer a
-    // decoder flushes on its 100 ms timer is partial. Stage 9's routed buffers inherit this fill.
+    // decoder flushes on its 100 ms timer is partial. Stage 9's routed buffers inherit this fill: with
+    // `SALUKI_MEASURE_LANES` on state lanes, the keyed exit's buffers into `dsd_agg` show it (B and O2).
     let knobs = Knobs::from_env(Knobs {
         workers: vec![4],
         rounds: 1,
@@ -1402,8 +1544,13 @@ fn source_buffer_fill() {
             knobs.window,
         );
         fed.stop();
-        print_probes(&format!("{:?}, saturated", path), &saturated, &[DECODED]);
-        print_probes(&format!("{:?}, 70% of saturation", path), &seventy, &[DECODED]);
+        // Every output's buffers: the source's, and, on state lanes, the keyed exit's routed buffers.
+        print_probes(&format!("{:?}, saturated", path), &saturated, &["dispatch_items/"]);
+        print_probes(
+            &format!("{:?}, 70% of saturation", path),
+            &seventy,
+            &["dispatch_items/"],
+        );
     }
     let many = Knobs::from_env(Knobs {
         workers: vec![workers],
@@ -1427,7 +1574,7 @@ fn source_buffer_fill() {
                 many.rate.unwrap_or(0.0)
             ),
             &measured,
-            &[DECODED],
+            &["dispatch_items/"],
         );
         println!(
             "| {:?} | p99 latency {:.0} µs over {} sentinels |",
@@ -1583,6 +1730,136 @@ fn flush_storm() {
     probes::set_timing(false);
 }
 
+/// A recorder of the whole process, which every thread's handles register with: M11 reads the caches' counters,
+/// which the kernels register on the installer's and the runtime's threads.
+struct ProcessRecorder(&'static saluki_metrics::test::TestRecorder);
+
+impl metrics::Recorder for ProcessRecorder {
+    fn describe_counter(&self, key: metrics::KeyName, unit: Option<metrics::Unit>, description: metrics::SharedString) {
+        self.0.describe_counter(key, unit, description)
+    }
+
+    fn describe_gauge(&self, key: metrics::KeyName, unit: Option<metrics::Unit>, description: metrics::SharedString) {
+        self.0.describe_gauge(key, unit, description)
+    }
+
+    fn describe_histogram(
+        &self, key: metrics::KeyName, unit: Option<metrics::Unit>, description: metrics::SharedString,
+    ) {
+        self.0.describe_histogram(key, unit, description)
+    }
+
+    fn register_counter(&self, key: &metrics::Key, metadata: &metrics::Metadata<'_>) -> metrics::Counter {
+        self.0.register_counter(key, metadata)
+    }
+
+    fn register_gauge(&self, key: &metrics::Key, metadata: &metrics::Metadata<'_>) -> metrics::Gauge {
+        self.0.register_gauge(key, metadata)
+    }
+
+    fn register_histogram(&self, key: &metrics::Key, metadata: &metrics::Metadata<'_>) -> metrics::Histogram {
+        self.0.register_histogram(key, metadata)
+    }
+}
+
+/// Returns the hits and misses every cache has counted so far, by cache identifier.
+fn cache_lookups(recorder: &saluki_metrics::test::TestRecorder) -> BTreeMap<String, (u64, u64)> {
+    let mut lookups = BTreeMap::<String, (u64, u64)>::new();
+    for (key, value) in recorder.counters() {
+        let Some(cache) = key.labels().find(|label| label.key() == "cache_id") else {
+            continue;
+        };
+        let entry = lookups.entry(cache.value().to_string()).or_default();
+        match key.name() {
+            "cache_hits_total" => entry.0 += value,
+            "cache_misses_total" => entry.1 += value,
+            _ => {}
+        }
+    }
+    lookups
+}
+
+#[test]
+#[ignore = "a measurement: run it in release mode, as the module documentation says"]
+fn memo_hits_on_producer_lanes() {
+    // M11: the hit rates of the producer lanes' memos, the mapper's result cache and the tag filterlist's context
+    // memo, which each producer lane holds one of at the configured size, against the one the slot holds without
+    // lanes. Datagrams reach the decoders in any order, so every producer lane sees every context: with D lanes each
+    // memo misses once per context it holds, and holds the whole working set if it fits. Saturated over the platform's
+    // datagrams, at each worker count, with the knobs' contexts (10,000 context indexes by default, about twice as many
+    // contexts); `SALUKI_MEASURE_MAPPER_CACHE_SIZE` sets `dogstatsd_mapper_cache_size`, and
+    // `SALUKI_MEASURE_TAG_FILTER_CACHE_CAPACITY` the tag filterlist memo's `aggregator_tag_filter_cache_capacity`, the
+    // defaults otherwise.
+    let recorder: &'static saluki_metrics::test::TestRecorder =
+        Box::leak(Box::new(saluki_metrics::test::TestRecorder::default()));
+    metrics::set_global_recorder(ProcessRecorder(recorder)).expect("no recorder is installed yet");
+    let knobs = Knobs::from_env(Knobs {
+        workers: vec![8],
+        transport: Transport::datagram(),
+        rounds: 1,
+        contexts: 10_000,
+        lanes: Lanes::named("auto"),
+        ..Knobs::curves()
+    });
+    let mapper_cache = std::env::var("SALUKI_MEASURE_MAPPER_CACHE_SIZE")
+        .ok()
+        .filter(|size| !size.is_empty())
+        .map(|size| format!("dogstatsd_mapper_cache_size: {}\n", size))
+        .unwrap_or_default();
+    let tag_filter_cache = std::env::var("SALUKI_MEASURE_TAG_FILTER_CACHE_CAPACITY")
+        .ok()
+        .filter(|capacity| !capacity.is_empty())
+        .map(|capacity| {
+            format!(
+                "data_plane:\n  dogstatsd:\n    aggregator_tag_filter_cache_capacity: {}\n",
+                capacity
+            )
+        })
+        .unwrap_or_default();
+    let config = format!("{}{}{}", knobs.profile.config(), mapper_cache, tag_filter_cache);
+    println!(
+        "M11, {:?}, {} context indexes, {}: | W | lanes | cache | hits | misses | hit rate |",
+        knobs.transport,
+        knobs.contexts,
+        if mapper_cache.is_empty() && tag_filter_cache.is_empty() {
+            "default cache sizes".to_string()
+        } else {
+            format!("{} {}", mapper_cache.trim(), tag_filter_cache.trim().replace('\n', " "))
+        }
+    );
+    for &workers in &knobs.workers {
+        for lanes in [Lanes::Off, knobs.lanes] {
+            let knobs = Knobs { lanes, ..knobs.clone() };
+            let before = cache_lookups(recorder);
+            let mut fed = Fed::start(MetricsPath::Plan, workers, &config, &knobs);
+            let measured = fed.phase(None, false, Duration::from_secs(2), knobs.window);
+            fed.stop();
+            let after = cache_lookups(recorder);
+            let policy = lanes.policy(workers, knobs.decoders_at(workers));
+            println!(
+                "| {} | {:?} | throughput | {:.0} metrics/s | | |",
+                workers, policy, measured.throughput
+            );
+            for (cache, (hits, misses)) in &after {
+                let (hits_before, misses_before) = before.get(cache).copied().unwrap_or_default();
+                let (hits, misses) = (hits - hits_before, misses - misses_before);
+                if hits + misses == 0 || !(cache.contains("dsd_mapper") || cache.contains("tag_filterlist")) {
+                    continue;
+                }
+                println!(
+                    "| {} | {:?} | {} | {} | {} | {:.4} |",
+                    workers,
+                    policy,
+                    cache,
+                    hits,
+                    misses,
+                    hits as f64 / (hits + misses) as f64
+                );
+            }
+        }
+    }
+}
+
 /// Runs `pacer` under the setting `pace` from `from` for `length` on a simulated clock, as a generator does, sending a
 /// payload of `payload` metrics whenever it says to, and returns the metrics sent.
 fn paced_for(
@@ -1680,6 +1957,11 @@ fn every_setting_of_the_pace_starts_a_new_epoch_even_at_the_same_rate() {
 /// for), the source dispatched what the generators sent, the topology holds memory, and the encoders' payloads reached
 /// the forwarders, which count what they carry.
 fn check_the_harness(path: MetricsPath, transport: Transport, profile: Profile) {
+    check_the_harness_on(path, transport, profile, Lanes::Off);
+}
+
+/// Checks the harness's wiring end to end as [`check_the_harness`] does, with the plan-driven path on `lanes`.
+fn check_the_harness_on(path: MetricsPath, transport: Transport, profile: Profile, lanes: Lanes) {
     let knobs = Knobs {
         workers: vec![1],
         transport,
@@ -1689,6 +1971,7 @@ fn check_the_harness(path: MetricsPath, transport: Transport, profile: Profile) 
         contexts: 64,
         generators: Some(1),
         rate: Some(10_000.0),
+        lanes,
         ..Knobs::curves()
     };
     let mut fed = Fed::start(path, 1, knobs.profile.config(), &knobs);
@@ -1722,6 +2005,74 @@ fn the_source_fed_harness_drives_the_plan_path_with_the_defaults_over_unix_socke
 }
 
 #[test]
+fn the_source_fed_harness_drives_the_plan_path_on_producer_and_post_aggregation_lanes_over_udp() {
+    // Two decoders at one worker: two producer lanes, each the decoder's, whose dispatched metrics the harness sums.
+    let lanes = Lanes::named("1,2");
+    check_the_harness_on(MetricsPath::Plan, Transport::Udp, Profile::Defaults, lanes);
+}
+
+#[test]
+fn the_lanes_of_a_measurement_are_its_configuration_for_the_plan_driven_path() {
+    assert!(Lanes::named("off").config(8, 6).contains("mode: off"));
+    assert_eq!(Lanes::named("off").counts(8, 6), None);
+    let automatic = Lanes::named("auto").config(8, 6);
+    assert!(
+        automatic.contains("mode: auto") && automatic.contains("state: 4") && automatic.contains("post: 6"),
+        "{}",
+        automatic
+    );
+    // At one lane each, the automatic counts are the layout without lanes, as ADP's are below three workers.
+    assert!(Lanes::named("auto").config(2, 2).contains("mode: off"));
+    assert!(Lanes::named("1,1,1").config(2, 2).contains("mode: auto"));
+    let counts = Lanes::named("2, 3").config(8, 6);
+    assert!(counts.contains("state: 2") && counts.contains("post: 3"), "{}", counts);
+    assert_eq!(
+        Lanes::named("2, 3").counts(8, 6),
+        None,
+        "the producer lanes follow the decoders"
+    );
+    let one_state_lane = Lanes::named("auto,1,auto");
+    assert_eq!(
+        one_state_lane.policy(8, 6),
+        Some(LanePolicy {
+            dogstatsd: 6,
+            state: 1,
+            post: 6
+        })
+    );
+    assert_eq!(one_state_lane.counts(8, 6), None);
+    let explicit = Lanes::named("1,1,3");
+    assert!(explicit.config(8, 6).contains("post: 3"));
+    assert_eq!(
+        explicit.counts(8, 6),
+        Some(LaneCounts::on(LanePolicy {
+            dogstatsd: 1,
+            state: 1,
+            post: 3
+        }))
+    );
+}
+
+#[test]
+fn the_source_fed_harness_drives_the_plan_path_with_gateways_on_lanes() {
+    // The gateways profile has an `experimental` section of its own, which the lanes' keys join.
+    check_the_harness_on(
+        MetricsPath::Plan,
+        Transport::Udp,
+        Profile::Gateways,
+        Lanes::named("1,2"),
+    );
+}
+
+#[test]
+fn the_source_fed_harness_drives_the_plan_path_on_post_aggregation_lanes_behind_one_producer_lane_of_two_decoders() {
+    // Increment 9.2's layout: two decoders feed one producer lane, which spreads its passthrough over three
+    // post-aggregation lanes.
+    let lanes = Lanes::named("1,1,3");
+    check_the_harness_on(MetricsPath::Plan, Transport::Udp, Profile::Defaults, lanes);
+}
+
+#[test]
 fn a_datagram_generator_that_drops_when_full_counts_what_a_full_socket_refuses() {
     // A source that never reads: its socket's queue fills, and a sender that does not wait for room has its datagrams
     // refused, as a DogStatsD client's are. A sender that waits would block here instead, and drops would never show.
@@ -1740,7 +2091,7 @@ fn a_datagram_generator_that_drops_when_full_counts_what_a_full_socket_refuses()
 }
 
 #[test]
-fn the_distinct_workload_gives_every_context_a_line_of_its_own() {
+fn the_distinct_and_passthrough_workloads_give_every_context_a_line_of_its_own() {
     // Each rotation of the distinct workload sends every context at least once, so a flush after a rotation holds them
     // all, beside the timestamped counters that keep the passthrough flowing; the mixed workload's rotation sends each
     // context index once per eight lines, with one context of its own per index.
@@ -1765,6 +2116,13 @@ fn the_distinct_workload_gives_every_context_a_line_of_its_own() {
     assert_eq!(
         distinct.iter().filter(|name| name.starts_with("distinct.jobs")).count(),
         32
+    );
+    let passthrough = names(Workload::Passthrough);
+    assert_eq!(passthrough.len(), contexts);
+    assert!(
+        (0..Workload::Passthrough.lines(contexts))
+            .all(|index| Workload::Passthrough.line(index, contexts).ends_with("|T1700000000")),
+        "every line of the passthrough workload is timestamped"
     );
     assert_eq!(Workload::Mixed.lines(contexts), 8 * contexts);
     let mixed = names(Workload::Mixed);

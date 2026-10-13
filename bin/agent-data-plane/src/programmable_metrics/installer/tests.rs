@@ -31,7 +31,10 @@ use saluki_core::{
     topology::{EventsBuffer, OutputDefinition, TopologyBlueprint},
 };
 use saluki_error::{generic_error, GenericError};
-use saluki_metric_plan::{compile::RewriteId, install::GenerationState};
+use saluki_metric_plan::{
+    compile::{LanePolicy, RewriteId, SlotId},
+    install::{CreditKey, GenerationState},
+};
 use saluki_metrics::test::TestRecorder;
 use tokio::sync::{mpsc, oneshot};
 
@@ -39,9 +42,10 @@ use super::*;
 use crate::{
     cli::run::PRIMARY_TOPOLOGY,
     programmable_metrics::{
+        lanes::LaneCounts,
         telemetry::{PLAN_ACTIVE_GENERATION, PLAN_INSTALLS_TOTAL, PLAN_LIVE_GENERATIONS, PLAN_REWRITES_APPLIED},
         test_hosts::FakeHost,
-        test_support::{configuration, programmable_metrics, ConfigCell},
+        test_support::{configuration, programmable_metrics, programmable_metrics_on, ConfigCell},
         topology::{add_hosts, add_regions, connect_frame, HostDoubles},
     },
 };
@@ -707,6 +711,105 @@ async fn a_restarted_installer_continues_the_preparation_it_left() {
     tokio::time::timeout(PATIENCE, second).await.unwrap().unwrap();
 }
 
+/// Returns the kernel-instance credits of the boot generation, by slot, of a process booted with `config` on `lanes`.
+fn boot_instance_credits(config: &SalukiConfiguration, lanes: LaneCounts) -> BTreeMap<SlotId, u64> {
+    let metrics = programmable_metrics_on(
+        config,
+        ConfigCell::new(config.clone()).live(),
+        &Default::default(),
+        lanes,
+    )
+    .expect("a metrics pipeline is required");
+    metrics
+        .installer
+        .boot_credits
+        .iter()
+        .filter_map(|(credit, bytes)| match credit {
+            CreditKey::Instances(_, slot) => Some((*slot, *bytes)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Returns the kernel-instance credits, by slot, that the budget holds for the preparation of a live change from the
+/// configuration `before` to `after`, on `lanes`, and the bytes the budget counts as used for them and everything
+/// else the preparation added.
+async fn live_change_credits(before: &str, after: &str, lanes: LaneCounts) -> (BTreeMap<SlotId, u64>, u64) {
+    let config = configuration(before).await;
+    let cell = ConfigCell::new(config.clone());
+    let mut metrics = programmable_metrics_on(&config, cell.live(), &ComponentRegistry::default(), lanes)
+        .expect("a metrics pipeline is required");
+    // A grant far above what anything holds, so that every credit is counted and none refused.
+    metrics.admit_against(Some(VerifiedMemory {
+        grant_bytes: 1 << 40,
+        firm_bytes: 0,
+        mode: saluki_app::accounting::MemoryMode::Strict,
+    }));
+    // The regions run and never answer, so the preparation holds its credits until the test stops.
+    let _mailboxes = running_unread_mailboxes(&mut metrics);
+    // What the boot generation's own credits take, which the budget holds from the start.
+    let booted = metrics.installer.budget.usage().used;
+    let installer = Arc::new(metrics.into_installer());
+    let status = installer.status();
+    let (coordinator, shutdown) = ShutdownHandle::paired();
+    let task = tokio::spawn(run_installer(&installer, shutdown));
+    cell.set(configuration(after).await);
+    let preparing = status_where(&status, |status| status.installer.preparing.is_some()).await;
+    coordinator.shutdown();
+    tokio::time::timeout(PATIENCE, task).await.unwrap().unwrap();
+    // The ledger lives outside the worker, so it holds what the preparation acquired once the worker stopped.
+    let held = installer.state.installer.lock().await.budget.held_bytes();
+    let instances = held
+        .into_iter()
+        .filter_map(|(credit, bytes)| match credit {
+            CreditKey::Instances(generation, slot) if generation.get() > 1 => Some((slot, bytes)),
+            _ => None,
+        })
+        .collect();
+    (instances, preparing.resources.budget.used - booted)
+}
+
+#[tokio::test]
+async fn kernel_instances_on_lanes_are_admitted_once_for_every_lane_that_builds_them() {
+    // Every slot on three lanes against every slot on one, both laid out without R1's pipelining, so that the slots
+    // are the same: each lane builds its own instances, from the same specs.
+    let one = LaneCounts::on(LanePolicy::ONE);
+    let three = LaneCounts::on(LanePolicy {
+        dogstatsd: 3,
+        state: 3,
+        post: 3,
+    });
+    let config = configuration("").await;
+    let (on_one, on_three) = (
+        boot_instance_credits(&config, one),
+        boot_instance_credits(&config, three),
+    );
+    // Pre-aggregation's kernels and aggregation's: post-aggregation's declare no bounds of their own.
+    assert_eq!(
+        on_one.keys().map(|slot| slot.get()).collect::<Vec<_>>(),
+        [0, 1],
+        "{:?}",
+        on_one
+    );
+    assert_eq!(on_three.keys().collect::<Vec<_>>(), on_one.keys().collect::<Vec<_>>());
+    for (slot, bytes) in &on_one {
+        assert_eq!(on_three.get(slot), Some(&(bytes * 3)), "slot {}", slot);
+    }
+
+    // A live change of the tag filterlist rebuilds what it changes, on every lane of its slot: three times what one
+    // lane builds, admitted before anything is sent; what else it adds does not depend on the lanes.
+    let after = "metric_tag_filterlist: [{metric_name: checkout.latency, action: exclude, tags: [user_id]}]";
+    let (on_one, used_on_one) = live_change_credits("", after, one).await;
+    let (on_three, used_on_three) = live_change_credits("", after, three).await;
+    assert!(!on_one.is_empty(), "the change builds kernels");
+    assert_eq!(on_three.keys().collect::<Vec<_>>(), on_one.keys().collect::<Vec<_>>());
+    for (slot, bytes) in &on_one {
+        assert_eq!(on_three.get(slot), Some(&(bytes * 3)), "slot {}", slot);
+    }
+    let instances = on_one.values().sum::<u64>();
+    assert_eq!(used_on_three - used_on_one, 2 * instances);
+}
+
 #[tokio::test]
 async fn a_configuration_whose_program_no_operator_accepts_fails_the_boot() {
     // An integer beyond what a plan holds: lowering writes it as configured, and the aggregation operator cannot be
@@ -721,6 +824,7 @@ async fn a_configuration_whose_program_no_operator_accepts_fails_the_boot() {
         ConfigCell::new(config.clone()).live(),
         &ComponentRegistry::default(),
         OperatorRegistry::native(),
+        crate::programmable_metrics::lanes::LaneCounts::OFF,
     ) {
         Ok(_) => panic!("the boot fails"),
         Err(error) => error.to_string(),

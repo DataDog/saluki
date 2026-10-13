@@ -264,6 +264,7 @@ impl OperatorDef for DogstatsdMapper {
                     profiles,
                     cache_size,
                     interner_bytes,
+                    context.cache_gauges(),
                 )))
             },
         ))
@@ -665,7 +666,11 @@ impl OperatorDef for TagProjection {
                 let capacity = capacity.ok_or_else(|| unresolved("cache_capacity"))?;
                 Ok(Box::new(TagProjectionKernel::with_shared_rules(
                     Arc::clone(rules),
-                    Some(ContextMemo::for_kernel(&tag_projection_memo_id(context), capacity)),
+                    Some(ContextMemo::for_kernel(
+                        &tag_projection_memo_id(context),
+                        capacity,
+                        context.cache_gauges(),
+                    )),
                     TagProjectionTelemetry::for_kernel(context.component()),
                 )))
             },

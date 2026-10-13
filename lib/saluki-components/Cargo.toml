@@ -11,7 +11,9 @@ workspace = true
 [features]
 default = []
 fips = ["saluki-io/fips"]
-# Compiles measurement probes and entry points: the DogStatsD datagram receiver's lock-wait histograms, the
+# Compiles the `loom` models of the DogStatsD datagram queue's protocols (`make test-loom` runs them).
+loom = ["dep:loom"]
+# Compiles measurement probes and entry points: the DogStatsD datagram decoders' queue-wait histogram, the
 # `sources::dogstatsd_measurement` decoder that the `dogstatsd_codec` bench drives, and saluki-core's probes. Not enabled
 # in normal builds, nor in the workspace's test builds (`make test-measurement` enables it).
 measurement = ["saluki-core/measurement"]
@@ -26,6 +28,7 @@ base64 = { workspace = true, features = ["std"] }
 bytes = { workspace = true }
 bytesize = { workspace = true }
 chrono = { workspace = true }
+crossbeam-queue = { workspace = true }
 datadog-agent-commons = { workspace = true }
 datadog-agent-metrics-v3 = { workspace = true }
 datadog-protos = { workspace = true }
@@ -41,6 +44,7 @@ http-serde-ext = { workspace = true }
 hyper = { workspace = true, features = ["client"] }
 hyper-http-proxy = { workspace = true }
 libdd-trace-obfuscation = { workspace = true }
+loom = { workspace = true, optional = true }
 lru-slab = { workspace = true }
 memchr = { workspace = true }
 metrics = { workspace = true }

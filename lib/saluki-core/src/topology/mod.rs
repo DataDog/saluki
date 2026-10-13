@@ -10,6 +10,7 @@ mod blueprint;
 pub use self::blueprint::{BlueprintError, TopologyBlueprint, TopologyReady};
 
 mod built;
+pub use self::built::{worker_pool_threads, DEFAULT_WORKER_POOL_THREADS};
 
 mod component_worker;
 
@@ -26,6 +27,9 @@ pub use self::ids::{
 
 pub mod interconnect;
 use self::interconnect::{Consumer, Dispatcher};
+
+mod lanes;
+pub use self::lanes::{LaneEdge, LaneRoute};
 
 mod snapshot;
 pub use self::snapshot::{AdmissionPointSnapshot, BlueprintSnapshot, ComponentSnapshot, EdgeSnapshot, OutputSnapshot};

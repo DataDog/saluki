@@ -5601,6 +5601,7 @@ dependencies = [
  "bytesize",
  "chrono",
  "criterion",
+ "crossbeam-queue",
  "datadog-agent-commons",
  "datadog-agent-metrics-v3",
  "datadog-protos",
@@ -5617,6 +5618,7 @@ dependencies = [
  "hyper-http-proxy",
  "libc",
  "libdd-trace-obfuscation",
+ "loom",
  "lru-slab",
  "memchr",
  "metrics",
@@ -5833,10 +5835,12 @@ dependencies = [
 name = "saluki-metric-kernels"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "ddsketch",
  "float-cmp",
  "foldhash 0.2.0",
  "hashbrown 0.17.1",
+ "loom",
  "metrics",
  "proptest",
  "regex",
@@ -5858,6 +5862,7 @@ name = "saluki-metric-plan"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "loom",
  "metrics",
  "proptest",
  "saluki-common",

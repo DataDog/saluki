@@ -6,7 +6,7 @@ use saluki_core::{accounting::MemoryBoundsBuilder, observability::ComponentMetri
 use saluki_metric_kernels::{
     aggregate::{
         snapshot_usage, state_usage, AggregateKernel, AggregateParams, AggregateStepParams, AggregateTelemetry,
-        ContextBudget, EmissionFilter, HistogramConfiguration,
+        ContextBudget, EmissionFilter, HistogramConfiguration, LaneShared,
     },
     params::{HistogramAggregate, HistogramParams, MAX_PERCENTILE},
 };
@@ -20,7 +20,7 @@ use super::{
     names,
     ports::{KindMap, PortMapping, Ports, TimestampMap},
     support::{check_bucket_width, check_whole_seconds, error, unresolved},
-    KernelSpec, OperatorDef,
+    KernelSpec, OperatorDef, PartitionKey,
 };
 use crate::{
     canonical::MAX_SAFE_INTEGER,
@@ -309,13 +309,19 @@ impl OperatorDef for Aggregate {
             // A region publishes its kernels' telemetry once a second: the kernel writes no shared handle per metric.
             let telemetry =
                 AggregateTelemetry::accumulating(&MetricsBuilder::from_component_context(context.component()));
-            Ok(Box::new(AggregateKernel::new(
-                params,
-                flush_interval,
-                budget,
-                telemetry,
-            )))
+            let kernel = AggregateKernel::new(params, flush_interval, budget, telemetry);
+            // Every lane's instance of one lineage shares the record of the rules that couple its contexts; a kernel
+            // built without lanes keeps them itself.
+            Ok(Box::new(match context.lane_share(LaneShared::new) {
+                Some(lanes) => kernel.with_lanes(lanes),
+                None => kernel,
+            }))
         }))
+    }
+
+    fn partition_key(&self) -> Option<PartitionKey> {
+        // Aggregation's table is keyed by context, after every node that renames a context or changes its tags.
+        Some(PartitionKey::Context)
     }
 
     fn lineage_params(&self, params: &DecodedParams) -> Params {

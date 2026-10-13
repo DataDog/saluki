@@ -33,6 +33,7 @@ use stringtheory::MetaString;
 use tokio::{sync::oneshot, task::JoinHandle};
 
 use super::*;
+use crate::programmable_metrics::test_hosts::{FakeLanedRegion, LaneEvent};
 
 /// The longest a test waits for the topology or an answer.
 const PATIENCE: Duration = Duration::from_secs(30);
@@ -184,7 +185,7 @@ impl Running {
 
         let (handle, receiver) = aggregate_context_snapshot_channel();
         let state = SnapshotBridgeState::new(receiver).unwrap();
-        let bridge = Arc::new(SnapshotBridge::new(state, region.clone()));
+        let bridge = Arc::new(SnapshotBridge::new(state, region.clone(), 1));
         let mut supervisor = Supervisor::new("snapshot-bridge-test").unwrap();
         supervisor.add_worker(blueprint);
         let (shutdown, shutdown_rx) = oneshot::channel::<()>();
@@ -271,7 +272,11 @@ async fn a_request_to_a_region_that_stopped_fails_as_one_to_an_owner_that_stoppe
     let (region, mailbox) = control_mailbox::<RegionControl>();
     drop(mailbox);
     let (handle, receiver) = aggregate_context_snapshot_channel();
-    let bridge = Arc::new(SnapshotBridge::new(SnapshotBridgeState::new(receiver).unwrap(), region));
+    let bridge = Arc::new(SnapshotBridge::new(
+        SnapshotBridgeState::new(receiver).unwrap(),
+        region,
+        1,
+    ));
     let run = {
         let bridge = Arc::clone(&bridge);
         tokio::spawn(async move {
@@ -302,7 +307,7 @@ async fn a_request_to_a_region_that_stopped_fails_as_one_to_an_owner_that_stoppe
 async fn a_bridge_stops_at_shutdown_while_waiting_for_requests() {
     let (region, _mailbox) = control_mailbox::<RegionControl>();
     let (_handle, receiver) = aggregate_context_snapshot_channel();
-    let bridge = SnapshotBridge::new(SnapshotBridgeState::new(receiver).unwrap(), region);
+    let bridge = SnapshotBridge::new(SnapshotBridgeState::new(receiver).unwrap(), region, 1);
     let (coordinator, shutdown) = ShutdownHandle::paired();
     let Ok(run) = bridge.initialize(shutdown).await else {
         panic!("the bridge initializes")
@@ -323,4 +328,75 @@ fn clones_of_the_bridge_state_share_its_requests() {
     // Clones share the requests: a restarted bridge answers the same ones.
     let clone = state.clone();
     assert!(Arc::ptr_eq(&state.requests, &clone.requests));
+}
+
+/// Starts a bridge for a region on `lanes` lanes, which a fake coordinator serves, each lane holding one context named
+/// after it; returns the snapshot handle, the region, and the bridge's task.
+fn laned_bridge(lanes: u16) -> (AggregateContextSnapshotHandle, FakeLanedRegion, JoinHandle<()>) {
+    const HELD: [&str; 4] = ["lane_0", "lane_1", "lane_2", "lane_3"];
+    let (region, mailbox) = control_mailbox::<RegionControl>();
+    let fake = FakeLanedRegion::serve(mailbox, lanes, |lane, mut message| {
+        if let Some(snapshot) = message.downcast_mut::<ContextSnapshot>() {
+            snapshot.entries.push(entry(HELD[usize::from(lane)]));
+        }
+        message
+    });
+    let (handle, receiver) = aggregate_context_snapshot_channel();
+    let bridge = SnapshotBridge::new(SnapshotBridgeState::new(receiver).unwrap(), region, lanes);
+    let run = tokio::spawn(async move {
+        let Ok(run) = bridge.initialize(ShutdownHandle::noop()).await else {
+            panic!("the bridge initializes")
+        };
+        run.await.expect("the bridge stops cleanly");
+    });
+    (handle, fake, run)
+}
+
+#[tokio::test]
+async fn on_state_lanes_a_snapshot_asks_every_lane_and_answers_with_the_contexts_of_all_of_them() {
+    let (handle, region, run) = laned_bridge(3);
+    let entries = tokio::time::timeout(PATIENCE, handle.snapshot())
+        .await
+        .expect("the request is answered")
+        .expect("every lane answers");
+    assert_eq!(names(&entries), ["lane_0", "lane_1", "lane_2"]);
+    // One request per lane, each to the lane it names, in lane order.
+    assert_eq!(
+        region.events(),
+        vec![
+            LaneEvent::Kernel { lane: 0 },
+            LaneEvent::Kernel { lane: 1 },
+            LaneEvent::Kernel { lane: 2 }
+        ]
+    );
+
+    // Each request is answered whole: a second one collects every lane's contexts again.
+    let entries = tokio::time::timeout(PATIENCE, handle.snapshot())
+        .await
+        .expect("the request is answered")
+        .expect("every lane answers");
+    assert_eq!(entries.len(), 3);
+    run.abort();
+}
+
+#[tokio::test]
+async fn on_state_lanes_a_snapshot_fails_as_one_to_an_owner_that_stopped_when_a_lane_does_not_answer() {
+    let (handle, region, run) = laned_bridge(2);
+    region.reject_lane_next(1, "lane 1 stopped");
+    let error = tokio::time::timeout(PATIENCE, handle.snapshot())
+        .await
+        .expect("the request is answered")
+        .expect_err("a lane did not answer");
+    assert_eq!(
+        error.to_string(),
+        "aggregate context snapshot owner stopped before responding"
+    );
+
+    // The next request reaches every lane again.
+    let entries = tokio::time::timeout(PATIENCE, handle.snapshot())
+        .await
+        .expect("the request is answered")
+        .expect("every lane answers");
+    assert_eq!(names(&entries), ["lane_0", "lane_1"]);
+    run.abort();
 }

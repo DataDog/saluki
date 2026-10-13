@@ -11,13 +11,13 @@ use super::{
     internal, lineage_key, local,
     program::{build_kernel, build_state_kernel},
     CutInFlight, Exec, InstallOutcome, InstallRejection, Instance, InterpretErrorKind, LocalWork, PrepareError,
-    Program, Queue, Queued, Retiring, Run, Transition,
+    Program, Queue, Queued, Retiring, Run, SlotTime, Transition,
 };
 use crate::{
     extension::TransitionClass,
     ir::Plan,
     limits,
-    runtime::state::rules::{cut_time, lcm_secs, WatermarkTracker},
+    runtime::state::rules::{cut_time, lcm_secs, ResetWindow, WatermarkTracker},
     validate::Validator,
 };
 
@@ -76,6 +76,7 @@ impl Run<'_, '_> {
             &report,
             self.interpreter.catalog,
             &mut self.points,
+            &self.interpreter.source_lanes,
             position,
             Arc::new(GenerationToken::new(generation)),
         );
@@ -287,10 +288,25 @@ impl Run<'_, '_> {
                 let key = lineage_key(&node.id, &node.op)?;
                 let upstream = &program.upstream[position];
                 let mut instance = Instance::new(key, kernel, upstream);
-                // An isolation slot keeps one watermark over its upstream points, which a new lineage starts from: the
-                // progress of any instance fed by the same points that still observes them.
-                if let Some(tracker) = self.slot_tracker(upstream) {
-                    instance.tracker = tracker.clone();
+                instance.width = node.bucket_width();
+                instance.admitted = self.interpreter.candidates.then(Default::default);
+                // An isolation slot keeps one watermark over its upstream points, which a new lineage starts from, and
+                // a lineage starts in the slot's newest epoch: inside a reset window, its target.
+                match self.slots.get(upstream.as_slice()) {
+                    Some(slot) => {
+                        instance.tracker = slot.tracker.clone();
+                        if slot.one_clock {
+                            instance.epoch = slot.window.target();
+                        }
+                    }
+                    None => {
+                        if let Some(tracker) = self.slot_tracker(upstream) {
+                            instance.tracker = tracker.clone();
+                        }
+                        if self.points.one_clock(upstream) {
+                            instance.epoch = upstream.first().map_or(0, |point| self.points.clock_epoch(*point));
+                        }
+                    }
                 }
                 Ok((position, instance))
             })
@@ -311,6 +327,18 @@ impl Run<'_, '_> {
 
     /// Binds the candidate's isolated state owners: retained lineages to their instances, new ones to new instances.
     pub(super) fn bind(&mut self, program: &mut Program, transition: &Transition, lineages: Vec<(usize, Instance)>) {
+        for (_, instance) in &lineages {
+            let key = instance.output_clock();
+            if !self.slots.contains_key(&key) {
+                let one_clock = self.points.one_clock(&key);
+                let slot = SlotTime {
+                    tracker: instance.tracker.clone(),
+                    window: ResetWindow::new(instance.epoch),
+                    one_clock,
+                };
+                self.slots.insert(key, slot);
+            }
+        }
         let bindings = transition
             .retained
             .iter()
@@ -427,9 +455,10 @@ impl Run<'_, '_> {
         for (_, instance) in &lineages {
             affected.extend(instance.tracker.upstream());
         }
+        // From the clock each point stamps by, which a reset at another lane of its source may have moved on.
         let now = affected
             .iter()
-            .filter_map(|&point| self.points.latest(point))
+            .filter_map(|&point| self.points.clock_latest(point))
             .fold(self.clock, AdmissionTime::max);
         let at = cut_time(now, lcm, limits::values::CUT_MARGIN);
         let boundary = CutBoundary {
@@ -437,7 +466,7 @@ impl Run<'_, '_> {
             replaces: old.id(),
             epochs: affected
                 .iter()
-                .map(|&point| (point, self.points.epoch(point)))
+                .map(|&point| (point, self.points.clock_epoch(point)))
                 .collect(),
         };
         let new = program.generation.clone();
@@ -447,8 +476,15 @@ impl Run<'_, '_> {
             });
         }
 
-        for &index in &transition.retiring {
-            if let Some(instance) = self.instances.get_mut(index) {
+        // A retiring lineage's instances of newer epochs, which a reset window created beside its bound one, retire
+        // with it: their drains run under the generation it served, never past its cut, as a state lane reads the bound
+        // instance's mark for them.
+        for index in self.instances.indices() {
+            if let Some(instance) = self
+                .instances
+                .get_mut(index)
+                .filter(|instance| transition.retiring.contains(&instance.root(index)))
+            {
                 instance.retiring = Some(Retiring {
                     owner: old.clone(),
                     by: new.clone(),
@@ -465,7 +501,7 @@ impl Run<'_, '_> {
             epochs_at_publish: self
                 .points
                 .ids()
-                .map(|point| (point, self.points.epoch(point)))
+                .map(|point| (point, self.points.clock_epoch(point)))
                 .collect(),
             admitted_to_new: BTreeSet::new(),
         });
@@ -523,9 +559,12 @@ impl Run<'_, '_> {
         Ok(())
     }
 
-    /// Finalizes the cut in flight once every affected admission point stamps only its new generation: the plan it
-    /// replaced retires, and the installation waiting for it starts.
+    /// Finalizes the cut in flight once every affected admission point stamps only its new generation, as the
+    /// installer does from the points' own stamps: the plan it replaced retires, and the installation waiting for it
+    /// starts. A lineage the cut retires that a reset window still holds crosses at the window's close, later: the
+    /// program it served stays live until then, as the retiring mark keeps its generation alive in the lanes.
     pub(super) fn check_finalization(&mut self, now: AdmissionTime) -> Result<(), InterpretErrorKind> {
+        self.release_replaced()?;
         let Some(cut) = &self.cut else {
             return Ok(());
         };
@@ -539,8 +578,9 @@ impl Run<'_, '_> {
         let Some(cut) = self.cut.take() else {
             return Ok(());
         };
-        // Every retiring lineage has crossed: every point upstream of it is among the affected ones, and each stamped
-        // the new generation, which the lineage saw. One that has not would lose its state, so it retires here.
+        // Every retiring lineage that ticks has crossed: every point upstream of it is among the affected ones, and
+        // each stamped the new generation, which the lineage saw. One that has not would lose its state, so it retires
+        // here. A lineage inside a reset window, whose instances do not tick, crosses at the window's close.
         let behind = self
             .instances
             .indices()
@@ -548,7 +588,7 @@ impl Run<'_, '_> {
             .filter(|&index| {
                 self.instances
                     .get(index)
-                    .is_some_and(|instance| !instance.retired && instance.retiring.is_some())
+                    .is_some_and(|instance| instance.ticks() && instance.retiring.is_some())
             })
             .collect::<Vec<_>>();
         debug_assert!(
@@ -559,17 +599,49 @@ impl Run<'_, '_> {
             self.retire(&behind, now)?;
         }
         self.schedule = Some(AdmissionSchedule::Steady(cut.new.clone()));
-        if let Some(mut old) = self.programs.remove(&cut.old.id()) {
-            self.finish_old(&mut old, &BTreeSet::new())?;
-        }
+        self.replaced.insert(cut.old.id());
+        self.release_replaced()?;
         self.free_unbound();
         self.start_queued()
+    }
+
+    /// Retires the programs of replaced generations that no lineage still retires under: each lineage a reset window
+    /// held when its cut finalized has made its final flush.
+    fn release_replaced(&mut self) -> Result<(), InterpretErrorKind> {
+        let released = self
+            .replaced
+            .iter()
+            .copied()
+            .filter(|&generation| {
+                !self.instances.indices().into_iter().any(|index| {
+                    self.instances.get(index).is_some_and(|instance| {
+                        !instance.retired
+                            && instance
+                                .retiring
+                                .as_ref()
+                                .is_some_and(|retiring| retiring.owner.id() == generation)
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+        for generation in &released {
+            self.replaced.remove(generation);
+            if let Some(mut old) = self.programs.remove(generation) {
+                self.finish_old(&mut old, &BTreeSet::new())?;
+            }
+        }
+        if !released.is_empty() {
+            self.free_unbound();
+        }
+        Ok(())
     }
 
     /// Drops every instance no live plan binds and no cut retires: its kernel, and with it its state budget.
     pub(super) fn free_unbound(&mut self) {
         for index in self.instances.indices() {
-            let bound = self.programs.values().any(|program| program.binding(index).is_some());
+            // An instance a reset window created is bound through the instance it stands beside.
+            let root = self.instances.get(index).map_or(index, |instance| instance.root(index));
+            let bound = self.programs.values().any(|program| program.binding(root).is_some());
             let retiring = self
                 .instances
                 .get(index)

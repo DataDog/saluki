@@ -1272,10 +1272,15 @@ async fn a_preparation_hands_each_region_how_its_state_owners_bind_to_instances_
         Vec::new(),
     ];
     for state in cases {
-        let message = metrics
-            .installer
-            .region_preparation(&new, preparation(state.clone()), PanicBudget::ARTIFACT, &artifact_nodes)
-            .expect("the preparation builds no kernel");
+        let message = region_preparation(
+            &metrics.installer.region_telemetry,
+            &new,
+            preparation(state.clone()),
+            PanicBudget::ARTIFACT,
+            &artifact_nodes,
+            1,
+        )
+        .expect("the preparation builds no kernel");
         assert_eq!(message.generation().id(), new.id());
         assert_eq!(message.state_bindings(), state.as_slice());
     }

@@ -7,7 +7,7 @@
 //! region or prepares a generation in it, through [`RegisterTelemetry`]: a region never registers telemetry itself.
 
 use saluki_core::execution::{LossClass, LossCount, TurnCounters};
-use saluki_metrics::{Counter, Gauge, MetricsBuilder};
+use saluki_metrics::{Counter, Gauge, Histogram, MetricsBuilder};
 
 use crate::{
     compile::{RegionProgram, Route, Step},
@@ -39,6 +39,48 @@ pub const PLAN_CLOCK_RESETS_TOTAL: &str = "plan_clock_resets_total";
 /// at the tick's wall-clock second, tagged `component_id` (the region).
 pub const PLAN_STATE_TICK_GRACE_EXPIRED_TOTAL: &str = "plan_state_tick_grace_expired_total";
 
+/// The name of the counter of flush ticks a state lane resolved differently from what its lineage's shared tick record
+/// would have it, tagged `component_id` (the region) and `lane`: a grace that expired, a tick dropped at a reset
+/// window's opening, a tick skipped while holding contexts, or a flush whose idle-counter zeros could not start where
+/// the lanes left them. These cases are excluded from the equivalence the lanes otherwise keep.
+pub const PLAN_LANE_TICK_DIVERGENCE_TOTAL: &str = "plan_lane_tick_divergence_total";
+
+/// The name of the counter of flush ticks a state lane resolved further behind than its lineage's shared tick record
+/// keeps, on a flush second of its own, tagged `component_id` and `lane`.
+pub const PLAN_LANE_TICK_STRAGGLER_TOTAL: &str = "plan_lane_tick_straggler_total";
+
+/// The name of the counter of clock epochs a state lane's reset window closed at once because it kept as many open as
+/// it may, tagged `component_id` and `lane`.
+pub const PLAN_LANE_RESET_OVERFLOW_TOTAL: &str = "plan_lane_reset_overflow_total";
+
+/// The name of the counter of events a state lane admitted that another lane owns by partition key, tagged
+/// `component_id` and `lane`: only a wiring fault produces one, so it stays 0.
+pub const PLAN_LANE_MISROUTED_TOTAL: &str = "plan_lane_misrouted_total";
+
+/// The name of the counter of a state lane's crossings, tagged `component_id`, `lane`, and `kind` (`cut`, a lineage's
+/// final retirement at a cut, or `reset`, a reset window's close).
+pub const PLAN_LANE_CROSSINGS_TOTAL: &str = "plan_lane_crossings_total";
+
+/// The name of the gauge of the contexts a state lane holds both in a lineage retiring at a cut and in the lineage
+/// replacing it, while both exist, tagged `component_id` and `lane`.
+pub const PLAN_LANE_CROSSING_OVERLAP_CONTEXTS: &str = "plan_lane_crossing_overlap_contexts";
+
+/// The name of the gauge of how far a state lane's watermark lags its wall clock, in seconds, tagged `component_id` and
+/// `lane`.
+pub const PLAN_LANE_WATERMARK_LAG_SECONDS: &str = "plan_lane_watermark_lag_seconds";
+
+/// The name of the gauge of the contexts a state lane's state owners hold, tagged `component_id` and `lane`.
+pub const PLAN_LANE_CONTEXTS: &str = "plan_lane_contexts";
+
+/// The name of the histogram of how long a state lane's flushes take, in seconds, tagged `component_id` and `lane`:
+/// from a tick firing to its drain's last step, one sample per drain of the ticks due together.
+pub const PLAN_LANE_FLUSH_SECONDS: &str = "plan_lane_flush_seconds";
+
+/// The name of the histogram of how much of each of a state lane's flushes was spent blocked on its output, in
+/// seconds, tagged `component_id` and `lane`: the flush's time outside the calls that ran its steps, while its host
+/// sent what they emitted and waited for room downstream.
+pub const PLAN_LANE_FLUSH_BLOCKED_SECONDS: &str = "plan_lane_flush_blocked_seconds";
+
 /// The handles an isolation slot publishes its own telemetry to: its watermark lag, its lineages, its clock resets, and
 /// its flush ticks whose grace ended.
 #[derive(Clone, Debug)]
@@ -64,6 +106,65 @@ impl StateTelemetry {
             lineages: Gauge::noop(),
             clock_resets: Counter::noop(),
             tick_grace_expired: Counter::noop(),
+        }
+    }
+}
+
+/// The handles one state lane of an isolation slot on several lanes publishes its own telemetry to.
+///
+/// The lane counts in plain integers and publishes deltas when its region publishes. A region without lanes publishes
+/// to handles that record nothing, unless its host gives it others.
+#[derive(Clone, Debug)]
+pub struct StateLaneTelemetry {
+    /// [`PLAN_LANE_TICK_DIVERGENCE_TOTAL`].
+    pub tick_divergence: Counter,
+
+    /// [`PLAN_LANE_TICK_STRAGGLER_TOTAL`].
+    pub tick_stragglers: Counter,
+
+    /// [`PLAN_LANE_RESET_OVERFLOW_TOTAL`].
+    pub reset_overflows: Counter,
+
+    /// [`PLAN_LANE_MISROUTED_TOTAL`].
+    pub misrouted: Counter,
+
+    /// [`PLAN_LANE_CROSSINGS_TOTAL`], tagged `kind:cut`.
+    pub cut_crossings: Counter,
+
+    /// [`PLAN_LANE_CROSSINGS_TOTAL`], tagged `kind:reset`.
+    pub reset_crossings: Counter,
+
+    /// [`PLAN_LANE_CROSSING_OVERLAP_CONTEXTS`].
+    pub crossing_overlap: Gauge,
+
+    /// [`PLAN_LANE_WATERMARK_LAG_SECONDS`].
+    pub watermark_lag: Gauge,
+
+    /// [`PLAN_LANE_CONTEXTS`].
+    pub contexts: Gauge,
+
+    /// [`PLAN_LANE_FLUSH_SECONDS`].
+    pub flush_seconds: Histogram,
+
+    /// [`PLAN_LANE_FLUSH_BLOCKED_SECONDS`].
+    pub flush_blocked_seconds: Histogram,
+}
+
+impl StateLaneTelemetry {
+    /// Returns handles that record nothing.
+    pub fn noop() -> Self {
+        Self {
+            tick_divergence: Counter::noop(),
+            tick_stragglers: Counter::noop(),
+            reset_overflows: Counter::noop(),
+            misrouted: Counter::noop(),
+            cut_crossings: Counter::noop(),
+            reset_crossings: Counter::noop(),
+            crossing_overlap: Gauge::noop(),
+            watermark_lag: Gauge::noop(),
+            contexts: Gauge::noop(),
+            flush_seconds: Histogram::noop(),
+            flush_blocked_seconds: Histogram::noop(),
         }
     }
 }
@@ -115,6 +216,47 @@ impl PlanTelemetry {
     /// Creates plan-level telemetry whose counters carry the builder's default tags.
     pub fn new(builder: MetricsBuilder) -> Self {
         Self { builder }
+    }
+
+    /// Registers the handles lane `lane` of the isolation slot `region` publishes its own telemetry to; see
+    /// [`StateLaneTelemetry`]. Its host gives them to the lane's region with
+    /// [`RegionConfig::with_state_lane_telemetry`][super::RegionConfig::with_state_lane_telemetry].
+    pub fn state_lane(&self, region: &str, lane: u16) -> StateLaneTelemetry {
+        let tags = || [("component_id", region.to_string()), ("lane", lane.to_string())];
+        let crossings = |kind: &str| {
+            let [component, lane] = tags();
+            self.builder
+                .register_counter_with_tags(PLAN_LANE_CROSSINGS_TOTAL, [component, lane, ("kind", kind.to_string())])
+        };
+        StateLaneTelemetry {
+            tick_divergence: self
+                .builder
+                .register_counter_with_tags(PLAN_LANE_TICK_DIVERGENCE_TOTAL, tags()),
+            tick_stragglers: self
+                .builder
+                .register_counter_with_tags(PLAN_LANE_TICK_STRAGGLER_TOTAL, tags()),
+            reset_overflows: self
+                .builder
+                .register_counter_with_tags(PLAN_LANE_RESET_OVERFLOW_TOTAL, tags()),
+            misrouted: self
+                .builder
+                .register_counter_with_tags(PLAN_LANE_MISROUTED_TOTAL, tags()),
+            cut_crossings: crossings("cut"),
+            reset_crossings: crossings("reset"),
+            crossing_overlap: self
+                .builder
+                .register_gauge_with_tags(PLAN_LANE_CROSSING_OVERLAP_CONTEXTS, tags()),
+            watermark_lag: self
+                .builder
+                .register_gauge_with_tags(PLAN_LANE_WATERMARK_LAG_SECONDS, tags()),
+            contexts: self.builder.register_gauge_with_tags(PLAN_LANE_CONTEXTS, tags()),
+            flush_seconds: self
+                .builder
+                .register_histogram_with_tags(PLAN_LANE_FLUSH_SECONDS, tags()),
+            flush_blocked_seconds: self
+                .builder
+                .register_histogram_with_tags(PLAN_LANE_FLUSH_BLOCKED_SECONDS, tags()),
+        }
     }
 }
 
@@ -238,6 +380,7 @@ impl Layout {
 }
 
 /// The counters one generation's program publishes to, registered off the data path.
+#[derive(Clone)]
 pub(super) struct ProgramTelemetry {
     kernel_ports: Vec<Vec<Counter>>,
     decision_ports: Vec<Vec<Counter>>,
@@ -251,6 +394,7 @@ pub(super) struct ProgramTelemetry {
 /// emission as the filter would have counted them: the records on the filter's port to its `drop`, and their points
 /// as the `drop`'s policy loss. Equal labels name the same series in every region, so the filter's series are what
 /// they would be without the rewrite.
+#[derive(Clone)]
 struct PushedTelemetry {
     records: Vec<Counter>,
     points: Counter,

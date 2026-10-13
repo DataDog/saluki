@@ -20,6 +20,14 @@ pub trait Dispatchable: Clone {
     /// generally be one. For container types, this will be the number of items contained within the container.
     fn item_count(&self) -> usize;
 
+    /// Returns the number of items this value has storage allocated for, which is at least its item count.
+    ///
+    /// A container that allocates room for more items than it holds returns the room it allocated. The default is the
+    /// item count, for values that allocate nothing beyond their items.
+    fn allocated_items(&self) -> usize {
+        self.item_count()
+    }
+
     /// Returns the batch header this value carries, if it carries one.
     ///
     /// A dispatcher stamps the header of every value it sends on an output that is an

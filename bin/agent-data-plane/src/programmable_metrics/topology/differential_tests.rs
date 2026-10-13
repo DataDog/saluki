@@ -289,15 +289,174 @@ async fn run(name: &str, yaml: &'static str, path: MetricsPath) -> (Vec<Delivery
 async fn run_layers(
     layers: &[&str], path: MetricsPath, batches: fn(&str) -> Vec<Vec<Metric>>,
 ) -> (Vec<Delivery>, BTreeSet<String>) {
+    run_layers_on(layers, path, batches, 1).await
+}
+
+/// Runs one path of the primary topology of the configuration `layers` as [`run_layers`] does, with the DogStatsD
+/// source's metrics on `producers` producer lanes: each batch is split over the lanes' feeds by context, each context's
+/// points on the lane [`producer_lane_of`] gives it, in order, as a stream connection's are.
+async fn run_layers_on(
+    layers: &[&str], path: MetricsPath, batches: fn(&str) -> Vec<Vec<Metric>>, producers: usize,
+) -> (Vec<Delivery>, BTreeSet<String>) {
     let system = layered_configuration_system(layers).await;
     let topology = TestTopology::start(&system, Options::new(path, Aggregation::Clocked), |_| {}).await;
     let outputs = topology.outputs();
     for feed in topology.feeds() {
+        // The producer lanes' own feeds are fed below, with the source's batches.
+        if feed.starts_with("dsd_in.metrics_") {
+            continue;
+        }
         for batch in batches(&feed) {
-            topology.feed(&feed, batch);
+            if feed != "dsd_in.metrics" || producers == 1 {
+                topology.feed(&feed, batch);
+                continue;
+            }
+            let mut shares = vec![Vec::new(); producers];
+            for metric in batch {
+                shares[producer_lane_of(&metric, producers)].push(metric);
+            }
+            for (lane, share) in shares.into_iter().enumerate().filter(|(_, share)| !share.is_empty()) {
+                topology.feed(&format!("dsd_in.metrics_{}", lane), share);
+            }
         }
     }
     (topology.stop().await, outputs)
+}
+
+/// Returns the producer lane, of `lanes`, that the points of a metric's name go to: one lane per name, so that every
+/// context of a name, which a tag rewrite may merge, keeps its points in order on one lane.
+fn producer_lane_of(metric: &Metric, lanes: usize) -> usize {
+    metric.context().name().bytes().map(usize::from).sum::<usize>() % lanes
+}
+
+// The matrices on lanes: the lowering matrix's DogStatsD rows and the gateways, on the lane counts every part runs
+// today, with one state lane, and on state lanes, which the plan crate's state lanes and keyed exits bring.
+
+/// Three producer lanes, one lane of each other kind.
+const THREE_ONE_ONE: &str =
+    "dogstatsd_workers_count: 3\nexperimental: {programmable_metrics: {lanes: {mode: auto, state: 1, post: 1}}}";
+
+/// Three producer lanes, one state lane, and two post-aggregation lanes.
+const THREE_ONE_TWO: &str =
+    "dogstatsd_workers_count: 3\nexperimental: {programmable_metrics: {lanes: {mode: auto, state: 1, post: 2}}}";
+
+/// One producer lane, one state lane, and three post-aggregation lanes.
+const ONE_ONE_THREE: &str =
+    "dogstatsd_workers_count: 1\nexperimental: {programmable_metrics: {lanes: {mode: auto, state: 1, post: 3}}}";
+
+/// Returns the configuration of four producer lanes, `state` state lanes, and `post` post-aggregation lanes.
+fn four_producer_lanes(state: u16, post: u16) -> String {
+    format!(
+        "dogstatsd_workers_count: 4\nexperimental: {{programmable_metrics: {{lanes: {{mode: auto, state: {}, post: \
+         {}}}}}}}",
+        state, post
+    )
+}
+
+/// Runs every configuration of [`DIFFERENTIAL_MATRIX`] through the legacy topology and through the plan-driven one on
+/// the lanes `lanes` asks for, with `producers` producer lanes, and checks that every output received the same points.
+async fn assert_matrix_on_lanes(lanes: &str, producers: usize) {
+    for (name, yaml) in DIFFERENTIAL_MATRIX {
+        let (legacy, legacy_outputs) = run(name, yaml, MetricsPath::Legacy).await;
+        let mut plan_layers = layers(name, yaml);
+        plan_layers.push(lanes);
+        let (plan, plan_outputs) =
+            run_layers_on(&plan_layers, MetricsPath::Plan, differential_batches, producers).await;
+        assert_eq!(plan_outputs, legacy_outputs, "{} on `{}`: the outputs", name, lanes);
+        if let Err(mismatch) = compare(&output_points(&legacy), &output_points(&plan)) {
+            panic!(
+                "{} on `{}`: the plan-driven topology on lanes differs from the legacy one:\n{}",
+                name, lanes, mismatch
+            );
+        }
+        let names = names_by_output(&plan);
+        for output in &plan_outputs {
+            assert!(
+                names.contains_key(output),
+                "{} on `{}`: `{}` received nothing",
+                name,
+                lanes,
+                output
+            );
+        }
+    }
+}
+
+/// Runs every configuration of [`GATEWAY_MATRIX`] through the legacy topology and through the plan-driven one on the
+/// lanes `lanes` asks for, with `producers` producer lanes, and checks that the gateways route the same points.
+async fn assert_gateways_on_lanes(lanes: &str, producers: usize) {
+    for (name, gateway_layers, silent) in GATEWAY_MATRIX {
+        let (legacy, legacy_outputs) = run_gateways(gateway_layers, MetricsPath::Legacy).await;
+        let plan_layers = [&[FLUSH_PASSTHROUGH_ON_STOP, GATEWAY_BASE][..], gateway_layers, &[lanes]].concat();
+        let (plan, plan_outputs) = run_layers_on(&plan_layers, MetricsPath::Plan, gateway_batches, producers).await;
+        assert_eq!(plan_outputs, legacy_outputs, "{} on `{}`: the outputs", name, lanes);
+        if let Err(mismatch) = compare(&output_points(&legacy), &output_points(&plan)) {
+            panic!(
+                "{} on `{}`: the plan-driven gateways on lanes differ from the legacy ones:\n{}",
+                name, lanes, mismatch
+            );
+        }
+        let names = names_by_output(&plan);
+        for output in &plan_outputs {
+            assert_eq!(
+                names.contains_key(output),
+                !silent.contains(&output.as_str()),
+                "{} on `{}`: what `{}` received",
+                name,
+                lanes,
+                output
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn on_three_producer_lanes_the_plan_driven_topology_delivers_what_the_legacy_one_does_to_every_output() {
+    assert_matrix_on_lanes(THREE_ONE_ONE, 3).await;
+}
+
+#[tokio::test]
+async fn on_three_producer_and_two_post_aggregation_lanes_the_plan_driven_topology_delivers_what_legacy_does() {
+    assert_matrix_on_lanes(THREE_ONE_TWO, 3).await;
+}
+
+#[tokio::test]
+async fn on_three_post_aggregation_lanes_the_plan_driven_topology_delivers_what_the_legacy_one_does_to_every_output() {
+    assert_matrix_on_lanes(ONE_ONE_THREE, 1).await;
+}
+
+#[tokio::test]
+async fn on_three_producer_lanes_the_gateways_route_what_the_legacy_gateways_route() {
+    assert_gateways_on_lanes(THREE_ONE_ONE, 3).await;
+}
+
+#[tokio::test]
+async fn on_three_producer_and_two_post_aggregation_lanes_the_gateways_route_what_the_legacy_gateways_route() {
+    assert_gateways_on_lanes(THREE_ONE_TWO, 3).await;
+}
+
+#[tokio::test]
+async fn on_three_post_aggregation_lanes_the_gateways_route_what_the_legacy_gateways_route() {
+    assert_gateways_on_lanes(ONE_ONE_THREE, 1).await;
+}
+
+#[tokio::test]
+async fn on_state_lanes_the_plan_driven_topology_delivers_what_the_legacy_one_does_to_every_output() {
+    // Four producer lanes, P in {2, 4} and M in {1, 4}, as the stage 9 design's differential asks.
+    for state in [2, 4] {
+        for post in [1, 4] {
+            assert_matrix_on_lanes(&four_producer_lanes(state, post), 4).await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn on_state_lanes_the_gateways_route_what_the_legacy_gateways_route() {
+    for state in [2, 4] {
+        for post in [1, 4] {
+            assert_gateways_on_lanes(&four_producer_lanes(state, post), 4).await;
+        }
+    }
 }
 
 /// Returns, for every output, how many points of each name it received.
@@ -776,6 +935,17 @@ const TICK_PARITY: &[(&str, &str)] = &[
     ),
 ];
 
+/// The tick parity configurations on several state lanes: [`TICK_PARITY`]'s, without a context limit that binds.
+///
+/// Which contexts win at a limit is first come in stamp order on one state lane, and the race of the lanes'
+/// admissions on several (capacity behavior, 6.1): the script's first batch spreads three contexts over the lanes, so
+/// which two a limit of two admits depends on which lane admits first, and only equivalence below capacity is exact.
+const TICK_PARITY_ON_STATE_LANES: &[(&str, &str)] = &[
+    TICK_PARITY[0],
+    TICK_PARITY[1],
+    ("no counter expiry", "dogstatsd_expiry_seconds: 0"),
+];
+
 /// One step of the tick parity's script: the wall clock moves to `B + at` seconds, then the source sends `batch`, or
 /// a flush interval of the paused clock passes, which runs one flush tick.
 enum TickStep {
@@ -813,12 +983,18 @@ fn tick_script() -> Vec<TickStep> {
 /// slot, and native aggregation all on one manual wall clock, on paused Tokio time, and returns what every output
 /// received.
 async fn run_ticks(yaml: &str, path: MetricsPath) -> (Vec<Delivery>, BTreeSet<String>) {
+    run_ticks_on(yaml, "", path, "dsd_in.metrics").await
+}
+
+/// Runs the tick script as [`run_ticks`] does, with the lanes the configuration `lanes` asks for, the source sending
+/// on `feed`.
+async fn run_ticks_on(yaml: &str, lanes: &str, path: MetricsPath, feed: &str) -> (Vec<Delivery>, BTreeSet<String>) {
     use std::{sync::Arc, time::Duration};
 
     use saluki_core::execution::{AdmissionTime, ManualWallClock};
 
     let clock = ManualWallClock::new(AdmissionTime::from_unix_secs(TICKS_AT));
-    let system = layered_configuration_system(&[FLUSH_PASSTHROUGH_ON_STOP, yaml]).await;
+    let system = layered_configuration_system(&[FLUSH_PASSTHROUGH_ON_STOP, yaml, lanes]).await;
     let mut options = Options::new(path, Aggregation::Native);
     options.aggregation_clock = Some(clock.clone());
     options.before_topology = Some(Box::new({
@@ -835,9 +1011,9 @@ async fn run_ticks(yaml: &str, path: MetricsPath) -> (Vec<Delivery>, BTreeSet<St
         match step {
             TickStep::Send(at, batch) => {
                 clock.set(AdmissionTime::from_unix_secs(TICKS_AT + at));
-                topology.feed("dsd_in.metrics", batch);
+                topology.feed(feed, batch);
                 sent += 1;
-                while topology.sent("dsd_in.metrics") < sent {
+                while topology.sent(feed) < sent {
                     tokio::time::sleep(Duration::from_millis(1)).await;
                 }
             }
@@ -855,9 +1031,113 @@ async fn run_ticks(yaml: &str, path: MetricsPath) -> (Vec<Delivery>, BTreeSet<St
 
 #[tokio::test(start_paused = true)]
 async fn the_isolation_slots_flush_ticks_deliver_what_native_aggregations_do_tick_by_tick() {
-    for (name, yaml) in TICK_PARITY {
+    assert_tick_parity(TICK_PARITY, "", "dsd_in.metrics").await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn on_producer_lanes_the_isolation_slots_ticks_deliver_what_native_aggregations_do_tick_by_tick() {
+    // One scripted producer on lane 1 of three: the idle lanes' heartbeats carry their points to the tick times, so
+    // the watermark over the three points reaches each tick's second at once.
+    let lanes =
+        "dogstatsd_workers_count: 3\nexperimental: {programmable_metrics: {lanes: {mode: auto, state: 1, post: 2}}}";
+    assert_tick_parity(TICK_PARITY, lanes, "dsd_in.metrics_1").await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn on_four_state_lanes_the_isolation_slots_ticks_deliver_what_native_aggregations_do_tick_by_tick() {
+    // One scripted producer, every context on one of four state lanes: each tick at the second the shared tick record
+    // holds, idle zeros from the lineage's latest non-empty flush in any lane, and expiry, exactly as native.
+    let lanes =
+        "dogstatsd_workers_count: 1\nexperimental: {programmable_metrics: {lanes: {mode: auto, state: 4, post: 2}}}";
+    assert_tick_parity(TICK_PARITY_ON_STATE_LANES, lanes, "dsd_in.metrics").await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_idle_producer_lane_holds_a_flush_tick_of_the_busy_ones_back_by_at_most_the_progress_period() {
+    // Three producer lanes into one state lane, on a wall clock 50 ms ahead of Tokio's from the start: lane 1 sends a
+    // counter every 50 ms, and lanes 0 and 2 send one each at 0.9 s on the wall clock and nothing after, so that each
+    // heartbeats 0.9 s into every second from then on, one period after its latest stamp. The state lane's watermark is
+    // the minimum over the three points, so the first flush tick, due 15 s after the start, at 15.05 s on the wall
+    // clock, waits for the idle lanes to stamp in second 15: at their heartbeat 100 ms into it, the progress period,
+    // 50 ms after the tick was due, rather than at their periodic one, 850 ms after it.
+    use std::{sync::Arc, time::Duration};
+
+    use saluki_core::execution::{AdmissionTime, ManualWallClock};
+    use saluki_metric_plan::limits::values::PROGRESS_PERIOD;
+
+    const AHEAD: Duration = Duration::from_millis(50);
+    let lanes =
+        "dogstatsd_workers_count: 3\nexperimental: {programmable_metrics: {lanes: {mode: auto, state: 1, post: 1}}}";
+    let start = AdmissionTime::from_unix_secs(TICKS_AT).saturating_add(AHEAD);
+    let clock = ManualWallClock::new(start);
+    let system = layered_configuration_system(&[FLUSH_PASSTHROUGH_ON_STOP, lanes]).await;
+    let mut options = Options::new(MetricsPath::Plan, Aggregation::Native);
+    options.before_topology = Some(Box::new({
+        let clock = clock.clone();
+        move |boot| {
+            boot.state_admission_clock = Some(clock.clone());
+            boot.wall_clock = Arc::new(clock.clone());
+        }
+    }));
+    // The wall clock follows Tokio's paused clock, a millisecond at a time.
+    let started = tokio::time::Instant::now();
+    let following = tokio::spawn({
+        let clock = clock.clone();
+        async move {
+            loop {
+                clock.set(start.saturating_add(started.elapsed()));
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        }
+    });
+    let topology = TestTopology::start(&system, options, |_| {}).await;
+    let counter = |name: &'static str| Metric::counter(Context::from_static_name(name), 1.0);
+    let mut idle_sent = false;
+    let mut at = Duration::from_millis(25);
+    while at < Duration::from_millis(16_000) {
+        tokio::time::sleep_until(started + at).await;
+        topology.feed("dsd_in.metrics_1", vec![counter("busy")]);
+        if !idle_sent && at + AHEAD >= Duration::from_millis(900) {
+            topology.feed("dsd_in.metrics_0", vec![counter("idle.zero")]);
+            topology.feed("dsd_in.metrics_2", vec![counter("idle.two")]);
+            idle_sent = true;
+        }
+        at += Duration::from_millis(50);
+    }
+    let deliveries = topology.stop().await;
+    following.abort();
+    let due = started + Duration::from_secs(15);
+    let flushed = deliveries
+        .iter()
+        .filter(|delivery| delivery.output == "dd_metrics_encode" && !delivery.metrics.is_empty())
+        .map(|delivery| delivery.at)
+        .min()
+        .expect("the tick due at 15 s flushed");
+    let delivered = |name: &str| {
+        deliveries
+            .iter()
+            .filter(|delivery| delivery.output == "dd_metrics_encode" && delivery.at == flushed)
+            .flat_map(|delivery| &delivery.metrics)
+            .any(|metric| metric.context().name() == name)
+    };
+    assert!(
+        ["busy", "idle.zero", "idle.two"].into_iter().all(delivered),
+        "the tick flushed every lane's bucket"
+    );
+    assert!(flushed >= due, "the tick flushed {:?} before it was due", due - flushed);
+    assert!(
+        flushed - due <= PROGRESS_PERIOD,
+        "the tick due at 15 s flushed {:?} late",
+        flushed - due
+    );
+}
+
+/// Runs the tick script through both paths of every tick parity configuration of `configurations`, the plan-driven
+/// one on the lanes `lanes` asks for and fed on `feed`, and checks that the outputs are equal.
+async fn assert_tick_parity(configurations: &[(&str, &str)], lanes: &str, feed: &str) {
+    for (name, yaml) in configurations {
         let (legacy, legacy_outputs) = run_ticks(yaml, MetricsPath::Legacy).await;
-        let (plan, plan_outputs) = run_ticks(yaml, MetricsPath::Plan).await;
+        let (plan, plan_outputs) = run_ticks_on(yaml, lanes, MetricsPath::Plan, feed).await;
         assert_eq!(plan_outputs, legacy_outputs, "{}: the outputs", name);
         let expected = output_points(&legacy);
         assert!(

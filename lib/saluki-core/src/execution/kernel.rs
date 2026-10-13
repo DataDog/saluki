@@ -571,6 +571,61 @@ impl TurnCounters {
     }
 }
 
+/// Which shared time-driven call of a lineage one call of a kernel's instance is, among the lanes that run instances of
+/// the lineage.
+///
+/// A state owner partitioned over lanes runs one instance per lane, each holding a disjoint share of its state. The
+/// lanes tick together, by ordinal, and a few rules that natively couple everything the state owner holds, such as
+/// where the next flush starts from, are kept in a record the instances share ([`LaneShare`]). The host sets the lane
+/// tick on every time-driven call of an instance with lanes ([`Turn::with_lane_tick`]), so that the kernel knows which
+/// shared flush the call takes part in.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct LaneTick {
+    /// The epoch of the upstream clock the instance holds data of.
+    pub epoch: u32,
+
+    /// The flush the call runs.
+    pub flush: LaneFlush,
+
+    /// The lane the call runs in.
+    pub lane: u16,
+}
+
+/// The flush one time-driven call of an instance with lanes runs.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum LaneFlush {
+    /// A flush tick, by its ordinal: the `k`-th tick of the lineage's instance, counted alike in every lane.
+    Ordinal(u64),
+
+    /// A closing flush: the instance's drain at a clock reset, its final retirement at a cut, or its flush at shutdown.
+    Closing,
+}
+
+/// The record that the instances of one lineage, one per lane, share.
+///
+/// A host keeps every lane that holds an instance of the lineage a **member** of the record, and tells it how each lane
+/// resolved each tick, so that the record knows when every member has resolved one: what the kernels themselves record,
+/// such as the flushes that held state, the host does not see. The kernel's own type implements this trait, and the
+/// kernel reads it in the calls whose turn carries a [`LaneTick`].
+pub trait LaneShare: Send + Sync + 'static {
+    /// Records that `lane` holds an instance in `epoch` from now on, having resolved every ordinal up to `through`.
+    fn join(&self, epoch: u32, lane: u16, through: u64);
+
+    /// Records that `lane` holds no instance in `epoch` any more: it counts as holding nothing at every later ordinal.
+    ///
+    /// What the record keeps of `epoch` stays when its last member leaves, since a lane may still reach the epoch
+    /// late, until the host [forgets][Self::forget] it.
+    fn leave(&self, epoch: u32, lane: u16);
+
+    /// Records that no lane will hold an instance in `epoch` again: the record may drop what it kept of the epoch,
+    /// unless a lane is a member of it.
+    fn forget(&self, epoch: u32);
+
+    /// Records that `lane` resolved `ordinal` in `epoch` without running a flush, because it skipped or dropped the
+    /// tick: it held nothing to flush at it.
+    fn skipped(&self, epoch: u32, ordinal: u64, lane: u16);
+}
+
 /// The context of one call into a [`Kernel`].
 ///
 /// A turn borrows the state its host keeps for the kernel: the output ports, the work budget, and the counters. It also
@@ -580,6 +635,7 @@ pub struct Turn<'a> {
     header: &'a BatchHeader,
     watermark: Option<AdmissionTime>,
     param: Option<&'a (dyn Any + Send + Sync)>,
+    lane_tick: Option<LaneTick>,
     now: Instant,
     budget: &'a mut Budget,
     outputs: &'a mut PortOutputs,
@@ -603,11 +659,27 @@ impl<'a> Turn<'a> {
             header,
             watermark: None,
             param: None,
+            lane_tick: None,
             now,
             budget,
             outputs,
             counters,
         }
+    }
+
+    /// Returns this turn with the lane tick of a time-driven call of an instance that runs on lanes.
+    ///
+    /// A host sets it, beside the watermark, on every time-driven call of an instance whose lineage runs on more than
+    /// one lane: flush ticks, and the closing flushes of a reset, a cut's retirement, and shutdown. See [`LaneTick`].
+    pub fn with_lane_tick(mut self, tick: LaneTick) -> Self {
+        self.lane_tick = Some(tick);
+        self
+    }
+
+    /// Returns the turn's lane tick, if the host set one: `None` for every call of an instance without lanes, and for
+    /// every call that is not time-driven.
+    pub fn lane_tick(&self) -> Option<LaneTick> {
+        self.lane_tick
     }
 
     /// Returns this turn with the given watermark.
@@ -1057,6 +1129,24 @@ mod tests {
             assert_eq!(kernel.consume(&mut turn, &mut input), Progress::Done);
             assert_eq!(input.len(), kept, "parameters {:?}", param.map(|param| param.type_id()));
         }
+    }
+
+    #[test]
+    fn a_turn_carries_a_lane_tick_only_when_its_host_sets_one() {
+        let header = BatchHeader::default();
+        let mut budget = Budget::unlimited();
+        let mut counters = TurnCounters::default();
+        let mut outputs = PortOutputs::new(1);
+        let turn = Turn::new(&header, Instant::now(), &mut budget, &mut outputs, &mut counters);
+        assert_eq!(turn.lane_tick(), None);
+
+        let tick = LaneTick {
+            epoch: 2,
+            flush: LaneFlush::Ordinal(7),
+            lane: 3,
+        };
+        let turn = turn.with_lane_tick(tick).with_watermark(None);
+        assert_eq!(turn.lane_tick(), Some(tick));
     }
 
     #[test]

@@ -3,12 +3,12 @@ upgrade:
     Agent Data Plane now processes metrics through a plan-driven metrics path. The DogStatsD mapper,
     namespace prefix, listener filterlist, no-aggregation split, and tag filterlist run together in one
     ``dsd_pre_aggregation`` component, and the post-aggregation filter runs with host enrichment in
-    ``metrics_enrich``. When their work per metric is large enough that running them one after another
-    is faster, for example with mapper profiles, a namespace prefix, or host tags, some of them run in
-    the further components ``dsd_prefix_filter_region``, ``dsd_no_agg_split_region``, and
-    ``dsd_post_agg_filter_region``. The metrics these components report about their work keep their
-    names and ``component_id`` tags, including those forwarded to the Datadog Agent, such as
-    ``dogstatsd_listener_filtered_points_total``, ``metric_filterlist_size``,
+    ``metrics_enrich``. Without lanes (see the note on lanes), when their work per metric is large enough
+    that running them one after another is faster, for example with mapper profiles, a namespace prefix,
+    or host tags, some of them run in the further components ``dsd_prefix_filter_region``,
+    ``dsd_no_agg_split_region``, and ``dsd_post_agg_filter_region``. The metrics these components
+    report about their work keep their names and ``component_id`` tags, including those forwarded to the
+    Datadog Agent, such as ``dogstatsd_listener_filtered_points_total``, ``metric_filterlist_size``,
     ``tag_filterlist_tags_filtered_total``, and ``aggregate_passthrough_metrics_total``.
   - |
     The metrics Agent Data Plane reports about ``dsd_enrich``, ``dsd_prefix_filter``,
@@ -39,7 +39,8 @@ upgrade:
     ``dsd_pre_aggregation`` and 257 for ``metrics_enrich``, instead of 128. As many metrics wait
     between the DogStatsD source and aggregation, and after aggregation, as before, so during a burst
     of metrics, or while a large aggregation flush is sent, DogStatsD stops reading its socket no sooner
-    than before.
+    than before; on lanes, a burst on one stream connection fills its lane's share of a queue, and backs
+    up to its socket sooner (see the note on lanes).
   - |
     Timestamped metrics that the no-aggregation pipeline sends past aggregation are now forwarded with
     the batch they arrive in, instead of being held until a buffer of them fills or

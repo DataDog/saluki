@@ -544,7 +544,8 @@ impl RegionProgram {
     }
 
     /// Returns the program of the entry a batch belongs to: by the entry its header carries, set by the slot that sent
-    /// it, or otherwise by the admission point that stamped it.
+    /// it, or otherwise by the admission point that stamped it, which for a point with lanes is its lane's own point,
+    /// with an entry of its own.
     ///
     /// Returns `None` for a batch the program has no entry for, which is a wiring fault.
     pub fn entry_for(&self, header: &BatchHeader) -> Option<&EntryProgram> {

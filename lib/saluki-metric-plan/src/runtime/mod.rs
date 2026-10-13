@@ -48,8 +48,8 @@ mod code;
 
 mod driver;
 pub use self::driver::{
-    GenerationFailureReporter, KernelControl, KernelReply, KernelTarget, MetricRegionDriver, PrepareRegion,
-    RegionConfig, RegionControl,
+    GenerationFailureReporter, KernelControl, KernelReply, KernelTarget, LanePreparation, MetricRegionDriver,
+    PrepareRegion, RegionConfig, RegionControl, RoutingTelemetry,
 };
 
 #[cfg(any(test, feature = "test-util"))]
@@ -66,8 +66,12 @@ pub use self::supervision::PanicBudget;
 
 mod telemetry;
 pub use self::telemetry::{
-    NoTelemetry, PlanTelemetry, RegisterTelemetry, StateTelemetry, PLAN_CLOCK_RESETS_TOTAL, PLAN_LOSS_TOTAL,
-    PLAN_NODE_EVENTS_TOTAL, PLAN_STATE_LINEAGES, PLAN_STATE_TICK_GRACE_EXPIRED_TOTAL, PLAN_STATE_WATERMARK_LAG_SECONDS,
+    NoTelemetry, PlanTelemetry, RegisterTelemetry, StateLaneTelemetry, StateTelemetry, PLAN_CLOCK_RESETS_TOTAL,
+    PLAN_LANE_CONTEXTS, PLAN_LANE_CROSSINGS_TOTAL, PLAN_LANE_CROSSING_OVERLAP_CONTEXTS,
+    PLAN_LANE_FLUSH_BLOCKED_SECONDS, PLAN_LANE_FLUSH_SECONDS, PLAN_LANE_MISROUTED_TOTAL,
+    PLAN_LANE_RESET_OVERFLOW_TOTAL, PLAN_LANE_TICK_DIVERGENCE_TOTAL, PLAN_LANE_TICK_STRAGGLER_TOTAL,
+    PLAN_LANE_WATERMARK_LAG_SECONDS, PLAN_LOSS_TOTAL, PLAN_NODE_EVENTS_TOTAL, PLAN_STATE_LINEAGES,
+    PLAN_STATE_TICK_GRACE_EXPIRED_TOTAL, PLAN_STATE_WATERMARK_LAG_SECONDS,
 };
 
 /// An error creating a region driver, building its kernels, or preparing a generation in it.
@@ -204,6 +208,16 @@ pub enum RegionError {
         message: String,
     },
 
+    /// A region cannot run as the lane of its slot it was given, or its preparation's lane shares do not fit it.
+    #[snafu(display("Region `{}` cannot run as configured: {}.", region, message))]
+    Lanes {
+        /// The region.
+        region: String,
+
+        /// What is wrong, and how to fix it.
+        message: String,
+    },
+
     /// A region of an isolation slot lacks what it needs to run its state owners.
     #[snafu(display("Cannot create region `{}`: {}.", region, message))]
     StateConfig {
@@ -217,6 +231,10 @@ pub enum RegionError {
 
 #[cfg(test)]
 mod frame_tests;
+#[cfg(test)]
+mod lane_tests;
+#[cfg(test)]
+mod partitioned_tests;
 #[cfg(test)]
 mod r5b_tests;
 #[cfg(test)]

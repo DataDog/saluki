@@ -55,8 +55,11 @@ impl TestState {
     }
 
     fn insert(&mut self, timestamp: u64, metric: Metric) -> bool {
-        let limit = ContextLimit::exclusive(self.context_limit);
-        matches!(self.state.insert(timestamp, metric, limit), Insertion::Inserted { .. })
+        let mut limit = ContextLimit::exclusive(self.context_limit);
+        matches!(
+            self.state.insert(timestamp, metric, &mut limit),
+            Insertion::Inserted { .. }
+        )
     }
 
     fn start_flush(&self, current_time: u64, flush_open_buckets: bool) -> FlushCursor {

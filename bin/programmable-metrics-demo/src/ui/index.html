@@ -183,15 +183,26 @@
           <div class="traffic-controls">
             <button type="button" id="btn-traffic">Pause</button>
             <label class="rate" title="Datagrams per second">
-              <input type="number" id="traffic-rate" min="0.1" max="1000" step="1" value="20"
+              <input type="number" id="traffic-rate" min="0.1" max="50000" step="1" value="20"
                      aria-label="Datagrams per second">
               <span>/s</span>
             </label>
             <button type="button" id="btn-rate" class="quiet">Set</button>
+            <label class="mix" title="Send the canary alone: one context, which one state lane holds">
+              <input type="checkbox" id="traffic-canary-only"> canary only
+            </label>
           </div>
           <div class="stats" id="traffic-stats"></div>
           <div class="canary" id="canary"></div>
         </div>
+      </div>
+
+      <div class="card" id="lanes-card">
+        <div class="card-head">
+          <h3>Lanes</h3>
+          <span class="hint" id="lanes-hint"></span>
+        </div>
+        <div class="lanes" id="lanes"></div>
       </div>
 
       <div class="card" id="recipients-card">

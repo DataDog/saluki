@@ -2,7 +2,7 @@
 use std::{
     collections::{HashMap, HashSet},
     fmt,
-    num::NonZeroUsize,
+    num::{NonZeroU16, NonZeroUsize},
 };
 
 use indexmap::IndexSet;
@@ -10,7 +10,7 @@ use snafu::Snafu;
 
 use super::{
     snapshot::{ComponentSnapshot, EdgeSnapshot, OutputSnapshot},
-    ComponentId, ComponentOutputId, OutputDefinition, OutputName, TypedComponentId, TypedComponentOutputId,
+    ComponentId, ComponentOutputId, LaneEdge, OutputDefinition, OutputName, TypedComponentId, TypedComponentOutputId,
 };
 use crate::{
     components::{
@@ -66,6 +66,43 @@ pub enum GraphError {
     Cycle { path: Vec<ComponentId> },
     #[snafu(display("disconnected components: {:?}", component_ids))]
     DisconnectedComponents { component_ids: Vec<ComponentId> },
+    #[snafu(display(
+        "cannot connect '{}' to lane {} of '{}', which has {} input lane(s): connect it to a lane the component has",
+        from,
+        lane,
+        to,
+        lanes
+    ))]
+    LaneOutOfRange {
+        from: ComponentOutputId,
+        to: ComponentId,
+        lane: u16,
+        lanes: NonZeroU16,
+    },
+    #[snafu(display(
+        "cannot connect '{}' to '{}' without naming how it picks one of the component's {} input lanes: connect it \
+         with its lane routing",
+        from,
+        to,
+        lanes
+    ))]
+    UnroutedLaneEdge {
+        from: ComponentOutputId,
+        to: ComponentId,
+        lanes: NonZeroU16,
+    },
+    #[snafu(display(
+        "cannot route '{}' to the lanes of '{}': it already routes to the lanes of '{}', and each send names one \
+         route; give each component with lanes an output of its own",
+        from,
+        to,
+        routed
+    ))]
+    SharedLaneRoute {
+        from: ComponentOutputId,
+        to: ComponentId,
+        routed: ComponentId,
+    },
 }
 
 /// Component data type.
@@ -130,6 +167,7 @@ enum Node {
     Transform {
         input_ty: EventType,
         outputs: Vec<TypedComponentOutputId>,
+        lanes: NonZeroU16,
     },
     Encoder {
         input_ty: EventType,
@@ -155,13 +193,28 @@ impl Node {
             Node::Destination { .. } => ComponentType::Destination,
         }
     }
+
+    /// Returns the number of input lanes of the component: those of a transform, and one for every other component.
+    fn input_lanes(&self) -> NonZeroU16 {
+        match self {
+            Node::Transform { lanes, .. } => *lanes,
+            _ => NonZeroU16::MIN,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 struct Edge {
     from: ComponentOutputId,
     to: ComponentId,
+
+    // How the sender picks a lane of `to`, which has more than one; `None` for a component with one lane, which every
+    // edge leads to whatever it names.
+    routing: Option<LaneEdge>,
 }
+
+/// A component an output feeds, and how the output picks one of its lanes, if it has more than one.
+pub type OutboundEdge = (TypedComponentId, Option<LaneEdge>);
 
 /// A directed graph of components.
 ///
@@ -266,6 +319,7 @@ impl Graph {
             Node::Transform {
                 input_ty: builder.input_event_type(),
                 outputs,
+                lanes: builder.input_lanes(),
             },
         );
 
@@ -360,7 +414,37 @@ impl Graph {
     /// If the `from` side refers to a terminal component -- a destination or forwarder, which has no outputs -- the
     /// edge is rejected with [`GraphError::NonexistentComponentOutputId`], since a terminal component cannot be the
     /// source of a connection.
+    ///
+    /// If the `to` side has more than one input lane, the edge is rejected with [`GraphError::UnroutedLaneEdge`]: an
+    /// edge into a component with lanes names how its sender picks a lane (see [`add_lane_edge`][Self::add_lane_edge]).
     pub fn add_edge<F, T>(&mut self, from: F, to: T) -> Result<(), GraphError>
+    where
+        F: AsRef<str>,
+        T: AsRef<str>,
+    {
+        self.add_edge_inner(from, to, None)
+    }
+
+    /// Adds an edge to the graph whose sender picks a lane of the `to` side by `routing`.
+    ///
+    /// An edge into a component with one lane leads to that lane, whatever `routing` names, as
+    /// [`add_edge`][Self::add_edge] adds it.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`add_edge`][Self::add_edge], except that the `to` side may have lanes, and: if `routing` is
+    /// fixed to a lane the `to` side does not have, [`GraphError::LaneOutOfRange`]; if `routing` is keyed, affinity,
+    /// or spread into a component with lanes, and the output already routes that way to the lanes of another
+    /// component, [`GraphError::SharedLaneRoute`].
+    pub fn add_lane_edge<F, T>(&mut self, from: F, to: T, routing: LaneEdge) -> Result<(), GraphError>
+    where
+        F: AsRef<str>,
+        T: AsRef<str>,
+    {
+        self.add_edge_inner(from, to, Some(routing))
+    }
+
+    fn add_edge_inner<F, T>(&mut self, from: F, to: T, routing: Option<LaneEdge>) -> Result<(), GraphError>
     where
         F: AsRef<str>,
         T: AsRef<str>,
@@ -417,11 +501,51 @@ impl Graph {
             });
         }
 
+        let routing = self.check_lane_routing(&component_output_id, &component_id, routing)?;
         self.edges.push(Edge {
             from: component_output_id,
             to: component_id,
+            routing,
         });
         Ok(())
+    }
+
+    /// Checks how an edge from `from` picks a lane of `to`, and returns what the edge records: `None` if `to` has one
+    /// lane, which the edge leads to whatever it names.
+    fn check_lane_routing(
+        &self, from: &ComponentOutputId, to: &ComponentId, routing: Option<LaneEdge>,
+    ) -> Result<Option<LaneEdge>, GraphError> {
+        let lanes = self.input_lanes(to);
+        match routing {
+            Some(LaneEdge::Fixed(lane)) if lane >= lanes.get() => Err(GraphError::LaneOutOfRange {
+                from: from.clone(),
+                to: to.clone(),
+                lane,
+                lanes,
+            }),
+            _ if lanes.get() == 1 => Ok(None),
+            None => Err(GraphError::UnroutedLaneEdge {
+                from: from.clone(),
+                to: to.clone(),
+                lanes,
+            }),
+            Some(LaneEdge::Fixed(lane)) => Ok(Some(LaneEdge::Fixed(lane))),
+            Some(routing) => {
+                // A send names one route, which the lanes of only one component can follow.
+                let routed = self
+                    .edges
+                    .iter()
+                    .find(|edge| &edge.from == from && edge.routing.is_some_and(|routing| routing.is_routed()));
+                match routed {
+                    Some(edge) => Err(GraphError::SharedLaneRoute {
+                        from: from.clone(),
+                        to: to.clone(),
+                        routed: edge.to.clone(),
+                    }),
+                    None => Ok(Some(routing)),
+                }
+            }
+        }
     }
 
     /// Returns the component type and data type of the given component output.
@@ -460,6 +584,12 @@ impl Graph {
         self.nodes.get(component_id).map(Node::component_type)
     }
 
+    /// Returns the number of input lanes of the given component: those of a transform, and one for every other
+    /// component, or for a component the graph does not have.
+    pub fn input_lanes(&self, component_id: &ComponentId) -> NonZeroU16 {
+        self.nodes.get(component_id).map_or(NonZeroU16::MIN, Node::input_lanes)
+    }
+
     /// Returns a description of every component, sorted by component ID, and every edge, sorted by output and then by
     /// downstream component.
     ///
@@ -473,7 +603,7 @@ impl Graph {
             .map(|(id, node)| {
                 let input = match node {
                     Node::Source { .. } | Node::Relay { .. } => None,
-                    _ => Some((self.get_input_type(id), input_capacity(id))),
+                    _ => Some((self.get_input_type(id), input_capacity(id), node.input_lanes())),
                 };
                 let outputs = match node {
                     Node::Source { outputs } | Node::Relay { outputs } | Node::Transform { outputs, .. } => outputs
@@ -498,7 +628,7 @@ impl Graph {
         let mut edges = self
             .edges
             .iter()
-            .map(|edge| EdgeSnapshot::new(edge.from.clone(), edge.to.clone()))
+            .map(|edge| EdgeSnapshot::new(edge.from.clone(), edge.to.clone(), edge.routing))
             .collect::<Vec<_>>();
         edges.sort();
 
@@ -674,9 +804,10 @@ impl Graph {
         self.nodes.get(id).map(Node::component_type)
     }
 
-    /// Returns a mapping of component IDs to their outputs and the component IDs that are connected to them.
-    pub fn get_outbound_directed_edges(&self) -> HashMap<TypedComponentId, HashMap<OutputName, Vec<TypedComponentId>>> {
-        let mut mappings: HashMap<TypedComponentId, HashMap<OutputName, Vec<TypedComponentId>>> = HashMap::new();
+    /// Returns a mapping of component IDs to their outputs and the components connected to them, each with how the
+    /// output picks one of its lanes, if it has more than one.
+    pub fn get_outbound_directed_edges(&self) -> HashMap<TypedComponentId, HashMap<OutputName, Vec<OutboundEdge>>> {
+        let mut mappings: HashMap<TypedComponentId, HashMap<OutputName, Vec<OutboundEdge>>> = HashMap::new();
 
         // Populate the map so that every component has its outputs represented.
         //
@@ -714,7 +845,7 @@ impl Graph {
             let to_type = self.get_component_type(&raw_to_id).expect("component ID not found");
             let to_id = TypedComponentId::new(raw_to_id, to_type);
 
-            per_output.push(to_id);
+            per_output.push((to_id, edge.routing));
         }
 
         mappings
@@ -920,6 +1051,23 @@ mod tests {
             for from in froms {
                 self.add_edge(*from, to).expect("should not fail to add graph edge");
             }
+            self
+        }
+
+        /// Adds a transform of metrics with `lanes` input lanes and a default output.
+        #[track_caller]
+        pub fn with_laned_transform(&mut self, id: &str, lanes: u16) -> &mut Self {
+            let builder = TestTransformBuilder::default_output(EventType::Metric, EventType::Metric).with_lanes(lanes);
+            let _ = self
+                .add_transform(id, &builder)
+                .expect("should not fail to add transform");
+            self
+        }
+
+        #[track_caller]
+        pub fn with_lane_edge(&mut self, from: &str, to: &str, routing: LaneEdge) -> &mut Self {
+            self.add_lane_edge(from, to, routing)
+                .expect("should not fail to add graph edge");
             self
         }
     }
@@ -1669,5 +1817,143 @@ mod tests {
             1,
             "decoder default output should have 1 connection"
         );
+    }
+
+    fn output_id(id: &str) -> ComponentOutputId {
+        ComponentOutputId::try_from(id).unwrap()
+    }
+
+    fn component_id(id: &str) -> ComponentId {
+        ComponentId::try_from(id).unwrap()
+    }
+
+    #[test]
+    fn an_edge_into_a_transform_with_lanes_names_its_routing_and_a_lane_the_transform_has() {
+        let lanes = NonZeroU16::new(3).unwrap();
+        let mut graph = Graph::default();
+        graph
+            .with_source("source", EventType::Metric)
+            .with_source("other", EventType::Metric)
+            .with_laned_transform("laned", 3)
+            .with_destination("out", EventType::Metric);
+        assert_eq!(graph.input_lanes(&component_id("laned")), lanes);
+        assert_eq!(graph.input_lanes(&component_id("out")), NonZeroU16::MIN);
+        assert_eq!(graph.input_lanes(&component_id("source")), NonZeroU16::MIN);
+
+        assert_eq!(
+            graph.add_edge("source", "laned"),
+            Err(GraphError::UnroutedLaneEdge {
+                from: output_id("source"),
+                to: component_id("laned"),
+                lanes,
+            })
+        );
+        assert_eq!(
+            graph.add_lane_edge("source", "laned", LaneEdge::Fixed(3)),
+            Err(GraphError::LaneOutOfRange {
+                from: output_id("source"),
+                to: component_id("laned"),
+                lane: 3,
+                lanes,
+            })
+        );
+        // Into a component with one lane, an edge leads to lane 0 whatever it names, but lane 1 does not exist.
+        assert_eq!(
+            graph.add_lane_edge("source", "out", LaneEdge::Fixed(1)),
+            Err(GraphError::LaneOutOfRange {
+                from: output_id("source"),
+                to: component_id("out"),
+                lane: 1,
+                lanes: NonZeroU16::MIN,
+            })
+        );
+        assert_eq!(
+            graph.add_edge("source", "laned").unwrap_err().to_string(),
+            "cannot connect 'source' to 'laned' without naming how it picks one of the component's 3 input lanes: \
+             connect it with its lane routing"
+        );
+
+        graph
+            .with_lane_edge("source", "laned", LaneEdge::Fixed(2))
+            .with_lane_edge("other", "laned", LaneEdge::Spread)
+            .with_lane_edge("source", "out", LaneEdge::Keyed)
+            .with_edge("laned", "out");
+        assert_eq!(Ok(()), graph.validate());
+
+        // Only edges into a component with lanes record their routing.
+        let (components, edges) = graph.snapshot(&|_| NonZeroUsize::new(4).unwrap());
+        let edges = edges
+            .iter()
+            .map(|edge| (edge.from().to_string(), edge.to().to_string(), edge.routing()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            edges,
+            vec![
+                ("laned".to_string(), "out".to_string(), None),
+                ("other".to_string(), "laned".to_string(), Some(LaneEdge::Spread)),
+                ("source".to_string(), "laned".to_string(), Some(LaneEdge::Fixed(2))),
+                ("source".to_string(), "out".to_string(), None),
+            ]
+        );
+        let lanes_of = components
+            .iter()
+            .map(|component| (component.id().to_string(), component.input_lanes().map(NonZeroU16::get)))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            lanes_of,
+            vec![
+                ("laned".to_string(), Some(3)),
+                ("other".to_string(), None),
+                ("out".to_string(), Some(1)),
+                ("source".to_string(), None),
+            ]
+        );
+
+        // The outbound edges carry the routing too.
+        let outbound = graph.get_outbound_directed_edges();
+        let source = TypedComponentId::new(component_id("source"), ComponentType::Source);
+        let mut targets = outbound[&source][&OutputName::Default]
+            .iter()
+            .map(|(to, routing)| (to.component_id().to_string(), *routing))
+            .collect::<Vec<_>>();
+        targets.sort();
+        assert_eq!(
+            targets,
+            vec![
+                ("laned".to_string(), Some(LaneEdge::Fixed(2))),
+                ("out".to_string(), None)
+            ]
+        );
+    }
+
+    #[test]
+    fn an_output_routes_to_the_lanes_of_one_component_only() {
+        let mut graph = Graph::default();
+        graph
+            .with_source("source", EventType::Metric)
+            .with_laned_transform("first", 2)
+            .with_laned_transform("second", 4)
+            .with_laned_transform("third", 2)
+            .with_destination("tap", EventType::Metric)
+            .with_lane_edge("source", "first", LaneEdge::Keyed);
+
+        // A send names one route, which the lanes of a second component could not follow.
+        for routing in [LaneEdge::Keyed, LaneEdge::Affinity, LaneEdge::Spread] {
+            assert_eq!(
+                graph.add_lane_edge("source", "second", routing),
+                Err(GraphError::SharedLaneRoute {
+                    from: output_id("source"),
+                    to: component_id("second"),
+                    routed: component_id("first"),
+                })
+            );
+        }
+        // A lane the output is fixed to, and a component with one lane, ignore the route.
+        graph
+            .with_lane_edge("source", "second", LaneEdge::Fixed(3))
+            .with_lane_edge("source", "tap", LaneEdge::Spread);
+        // Another output routes on its own.
+        graph.with_lane_edge("first", "third", LaneEdge::Affinity);
+        assert_eq!(Ok(()), graph.validate());
     }
 }

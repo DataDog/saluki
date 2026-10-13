@@ -74,8 +74,9 @@ pub use self::decision::{
     COUNTED_EXIT_SETS, EXIT_SET_CAPACITY, MEMO_COST_FLOOR,
 };
 pub use self::frame::{
-    AdmissionPointInfo, Exit, ExitIndex, FixedComponent, Frame, FrameEdge, FrameError, FrameHost, FrameHosts,
-    FrameSource, FrameTarget, FusionDecision, FusionVerdict, Site, Slot, SlotId, SlotKind, SlotNamer,
+    AdmissionPointInfo, Exit, ExitIndex, ExitRouting, FixedComponent, Frame, FrameEdge, FrameError, FrameHost,
+    FrameHosts, FrameOptions, FrameSource, FrameTarget, FusionDecision, FusionVerdict, KeyGroups, LanePolicy,
+    PointRouting, Site, Slot, SlotId, SlotKind, SlotNamer,
 };
 pub use self::placement::{
     place, place_unvalidated, EntryKey, MissingCapability, PlacedEntry, Placement, PlacementError, PlacementProblem,
@@ -385,5 +386,7 @@ mod execution_tests;
 mod host_tests;
 #[cfg(test)]
 mod isolation_tests;
+#[cfg(test)]
+mod lane_tests;
 #[cfg(test)]
 mod tests;

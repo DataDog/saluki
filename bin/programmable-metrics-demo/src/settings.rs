@@ -153,6 +153,31 @@ impl Recipient {
     }
 }
 
+/// The lanes the launcher asks ADP to run the metrics path on: the counts given on the command line, each `None` when
+/// not given.
+///
+/// With none given, the launcher writes no lane keys, and ADP lays its metrics path out as its own defaults say. With
+/// any given, it writes `experimental.programmable_metrics.lanes.mode: auto` and the counts given; ADP derives the
+/// others from the host, and `0` is ADP's automatic count, as its keys define it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct LaneFlags {
+    /// The DogStatsD decoders, `dogstatsd_workers_count`, which are the producer lanes up to 16.
+    pub decoders: Option<u16>,
+
+    /// The state lanes of DogStatsD aggregation, `experimental.programmable_metrics.lanes.state`.
+    pub state: Option<u16>,
+
+    /// The post-aggregation lanes, `experimental.programmable_metrics.lanes.post`.
+    pub post: Option<u16>,
+}
+
+impl LaneFlags {
+    /// Returns `true` if any count is given: the metrics path then runs on lanes.
+    pub fn any(&self) -> bool {
+        self.decoders.is_some() || self.state.is_some() || self.post.is_some()
+    }
+}
+
 /// Settings for one demo run.
 #[derive(Clone, Debug)]
 pub struct RunSettings {
@@ -176,6 +201,12 @@ pub struct RunSettings {
 
     /// Whether the traffic generator starts paused.
     pub traffic_paused: bool,
+
+    /// How many load contexts the traffic generator cycles through besides the demo's metric set (`0`: none).
+    pub contexts: u64,
+
+    /// The lanes ADP is asked to run its metrics path on.
+    pub lanes: LaneFlags,
 }
 
 impl RunSettings {

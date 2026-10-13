@@ -191,6 +191,12 @@ impl ResourceBudget {
     pub(super) fn held(&self) -> Vec<CreditKey> {
         self.held.keys().cloned().collect()
     }
+
+    /// Returns the credits held, in key order, each with the bytes it took from the budget.
+    #[cfg(test)]
+    pub(super) fn held_bytes(&self) -> Vec<(CreditKey, u64)> {
+        self.held.iter().map(|(key, bytes)| (key.clone(), *bytes)).collect()
+    }
 }
 
 #[cfg(test)]

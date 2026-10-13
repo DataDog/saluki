@@ -1,0 +1,90 @@
+upgrade:
+  - |
+    The metrics path now runs DogStatsD processing on lanes, tasks inside one component that each process their own
+    share of the metrics in parallel. ``dsd_pre_aggregation`` runs a producer lane per DogStatsD decoder
+    (``dogstatsd_workers_count``, up to 16, and one on fewer than three worker threads), each running the DogStatsD
+    processing before aggregation on what its decoders received; ``dsd_agg`` runs state lanes (one on fewer than four
+    worker threads, otherwise half the worker threads, from 2 to 4), each aggregating a disjoint share of the contexts,
+    so that every context is aggregated in exactly one lane; and ``metrics_enrich`` runs post-aggregation lanes (as many
+    as producer lanes, up to 8). Each keeps its component ID, its health, and the metrics the Datadog Agent's
+    ``aggregator.*`` metrics are remapped from, summed over its lanes. The counts are fixed at startup and set by the
+    experimental ``experimental.programmable_metrics.lanes.mode`` (``auto``, the default, or ``off``, one lane per
+    component; ``false``, as a YAML tool may write an unquoted ``off``, is read as ``off``),
+    ``experimental.programmable_metrics.lanes.state``, and ``experimental.programmable_metrics.lanes.post`` keys;
+    ``dogstatsd_pipeline_count`` and ``dogstatsd_pipeline_autoadjust`` remain unsupported. Where every count comes to
+    one, as on fewer than three worker threads, and neither ``lanes.state`` nor ``lanes.post`` is set, the metrics path
+    runs without lanes, as with ``lanes.mode: off``, and the notes on lanes below do not apply. Agent Data Plane logs
+    the lane counts it started on, with the mode, the worker threads, and the DogStatsD decoders.
+  - |
+    On lanes, the DogStatsD processing before aggregation always runs in ``dsd_pre_aggregation``, and the
+    post-aggregation filter in ``metrics_enrich``, whose ``component_events_received_total`` therefore always counts the
+    metrics the post-aggregation filter drops: the further components ``dsd_prefix_filter_region``,
+    ``dsd_no_agg_split_region``, and ``dsd_post_agg_filter_region``, which run part of that work when it is costly
+    enough, such as with mapper profiles, a namespace prefix, or host tags, run only without lanes, and report their
+    component, health, and task metrics only then.
+  - |
+    On lanes, a metric is aggregated into the bucket of the time its producer lane received it from the DogStatsD
+    decoder, still before the queue into aggregation, so waiting in the queue between the decoder and its lane no longer
+    holds a flush back. A counter's expiry counts from the latest receive time any of its metrics had, never from an
+    earlier one that reached its state lane later. Gauges sent over several connections at once keep the last value that
+    reached their state lane, as they keep the last value that wins the race between decoders without lanes. A producer
+    lane that receives nothing sends a heartbeat 100 milliseconds into each second, so it delays the flushes of the
+    lanes that do by at most that.
+  - |
+    The input of a component that runs on lanes is divided among its lanes, so the buffers and metrics it holds in all
+    are what one input held before, but a burst on one stream connection, which stays on one producer lane, fills its
+    lane's share and backs up to its socket sooner than before.
+  - |
+    Each producer lane keeps a DogStatsD mapper cache (``dogstatsd_mapper_cache_size``) and a tag filterlist cache of
+    the configured size, and each post-aggregation lane its routing caches, so the memory bounds grow with the lanes:
+    with the default configuration, by about 16 MiB on 4 cores, 70 MiB on 8, 161 MiB on 16, 186 MiB on 32, and 189
+    MiB on 64, which includes each extra datagram decoder's 96 KiB context cache. In ``strict`` memory mode,
+    automatic counts that would not fit ``memory_limit`` are lowered, post-aggregation lanes first, then state lanes,
+    then producer lanes, and Agent Data Plane logs what it chose, without lanes where every count comes to one;
+    counts set explicitly are never lowered, and if they do not fit, Agent Data Plane refuses to start, naming the keys.
+    When the metrics path does not fit even without lanes, the startup check refuses the limit against the smallest
+    layout the lanes can take, and logs its bound without lanes.
+    The memory bounds now also count the DogStatsD datagram queue when full (about 136 bytes per queued datagram, 4.3
+    MiB at the default ``dogstatsd_buffer_count_max``) and 96 KiB per datagram decoder for its context cache.
+  - |
+    Telemetry changes on lanes: with more than one producer lane, ``dsd_in`` reports its metrics output as
+    ``output:metrics_0`` to ``output:metrics_<n>``, one per producer lane, where ``n`` is one less than their number;
+    each lane allocates and reports its memory and CPU time under a resource group of its own,
+    ``<component>.lane_<i>``, and its kernels under ``<component>.lane_<i>.<node>``, while ``dsd_agg``'s memory bound
+    stays at ``dsd_agg``; on Linux, resource groups
+    read the CPU time of one entry in 16 at random and count it 16 times, an unbiased estimate (set
+    ``SALUKI_CPU_TIME_SAMPLING`` to change the rate); ``cache_current_items``, ``cache_current_weight``,
+    ``cache_weight_limit``, and the ``context_resolver_interner_*`` gauges sum over the lanes' caches of one cache and
+    drop to zero when Agent Data Plane stops; ``plan_state_watermark_lag_seconds`` reports the most lagging state
+    lane; and the dedicated thread pool that compresses payloads runs as many threads as the primary runtime has
+    workers, at least 8.
+  - |
+    ``aggregate_context_limit`` is never exceeded on state lanes, but which new contexts are admitted at the limit
+    depends on how the state lanes race, and while a state lane aggregates a batch it may hold up to 63 units of the
+    limit it has not used yet, so a new context of another lane can be refused for them while the limit is nearly
+    reached.
+  - |
+    ``dsd_debug_log_out`` now receives DogStatsD metrics only while ``dogstatsd_metrics_stats_enable`` is on, which the
+    debug log needs to write them; its received counts still count every metric it was offered.
+features:
+  - |
+    New metrics of the metrics path's lanes, each tagged with ``component_id`` and ``lane``: ``plan_lane_events_total``,
+    ``plan_lane_batches_total``, ``plan_lane_busy_nanos_total``, ``plan_lane_stamp_wait_nanos_total``, and
+    ``plan_lane_input_depth``; for the producer lanes, ``plan_lane_routed_buffers_total``,
+    ``plan_lane_routed_events_total``, and ``plan_lane_progress_total``; and for the state lanes
+    ``plan_lane_contexts``, ``plan_lane_watermark_lag_seconds``, the ``plan_lane_flush_seconds`` and
+    ``plan_lane_flush_blocked_seconds`` histograms, ``plan_lane_crossings_total``,
+    ``plan_lane_crossing_overlap_contexts``, ``plan_lane_tick_divergence_total``, ``plan_lane_tick_straggler_total``,
+    ``plan_lane_reset_overflow_total``, and ``plan_lane_misrouted_total``. The privileged
+    ``GET /programmable-metrics/explain`` route shows each component's lanes, how each of its outputs routes to the
+    next component's lanes, and the range of key groups, the hashes of contexts, each state lane owns.
+enhancements:
+  - |
+    DogStatsD datagram decoders no longer take datagrams from their queue one at a time behind a lock, and each keeps a
+    cache of the contexts it resolved recently in front of the shared context cache, so DogStatsD over UDP and Unix
+    datagram sockets decodes in parallel past two decoders.
+fixes:
+  - |
+    A context resolver dropped while Agent Data Plane runs, as a live configuration change of the DogStatsD mapper drops
+    one, no longer leaves its telemetry task running, which held the resolver's interned strings for the life of the
+    process.

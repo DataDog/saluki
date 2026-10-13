@@ -20,7 +20,7 @@ use std::{mem::size_of, num::NonZeroUsize, sync::LazyLock, time::Duration};
 use regex::Regex;
 use saluki_core::{
     accounting::UsageExpr,
-    cache::{Cache, CacheBuilder},
+    cache::{Cache, CacheBuilder, GaugeMode},
     data_model::{
         event::metric::context::{Context, ContextResolver, ContextResolverBuilder},
         tags::{SharedTagSet, TagSet},
@@ -293,7 +293,14 @@ impl MetricMapper {
         identity: &str, profiles: &[MapperProfile], cache_size: usize, interner_bytes: NonZeroUsize,
     ) -> Result<Self, MapperError> {
         let profiles = CompiledProfiles::compile(profiles)?;
-        Ok(Self::build(identity, &profiles, cache_size, interner_bytes, false))
+        Ok(Self::build(
+            identity,
+            &profiles,
+            cache_size,
+            interner_bytes,
+            false,
+            GaugeMode::Set,
+        ))
     }
 
     /// Builds a mapper from compiled profiles, which it shares with every mapper built from them, for a kernel whose
@@ -302,21 +309,24 @@ impl MetricMapper {
     /// The mapper is the one [`new`][Self::new] builds from the same profiles, with a context resolver and a result
     /// cache of its own, except that both count what they look up and resolve in counters of their own, which the
     /// kernel publishes; see [`CacheBuilder::with_accumulated_telemetry`] and
-    /// [`ContextResolverBuilder::with_accumulated_telemetry`]. It must be built inside a Tokio runtime.
+    /// [`ContextResolverBuilder::with_accumulated_telemetry`]. Their gauges are reported as `gauges` says: summed when
+    /// several instances of the kernel run at once under one identity, one per lane of its host, so that the series
+    /// show what all of them hold ([`CacheBuilder::with_gauges`]). It must be built inside a Tokio runtime.
     pub fn for_kernel(
-        identity: &str, profiles: &CompiledProfiles, cache_size: usize, interner_bytes: NonZeroUsize,
+        identity: &str, profiles: &CompiledProfiles, cache_size: usize, interner_bytes: NonZeroUsize, gauges: GaugeMode,
     ) -> Self {
-        Self::build(identity, profiles, cache_size, interner_bytes, true)
+        Self::build(identity, profiles, cache_size, interner_bytes, true, gauges)
     }
 
     fn build(
         identity: &str, profiles: &CompiledProfiles, cache_size: usize, interner_bytes: NonZeroUsize,
-        accumulated_telemetry: bool,
+        accumulated_telemetry: bool, gauges: GaugeMode,
     ) -> Self {
         let resolver = ContextResolverBuilder::from_name(format!("{}/dsd_mapper/primary", identity))
             .expect("resolver name is not empty")
             .with_interner_capacity_bytes(interner_bytes)
-            .with_idle_context_expiration(RESOLVER_IDLE_CONTEXT_EXPIRATION);
+            .with_idle_context_expiration(RESOLVER_IDLE_CONTEXT_EXPIRATION)
+            .with_gauges(gauges);
         let context_resolver = if accumulated_telemetry {
             resolver.with_accumulated_telemetry().build()
         } else {
@@ -326,7 +336,8 @@ impl MetricMapper {
         let cache = NonZeroUsize::new(cache_size).map(|capacity| {
             let builder = CacheBuilder::from_identifier(format!("{}/dsd_mapper/result_cache", identity))
                 .expect("cache identifier is not empty")
-                .with_capacity(capacity);
+                .with_capacity(capacity)
+                .with_gauges(gauges);
             if accumulated_telemetry {
                 builder.with_accumulated_telemetry().build()
             } else {

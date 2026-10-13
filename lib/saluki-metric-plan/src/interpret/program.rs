@@ -145,39 +145,88 @@ pub(super) struct Stamp {
 
     /// Whether the stamp reset the clock.
     pub reset: bool,
+
+    /// The point's latest admission time after the stamp, which the state owners downstream observe: the stamp's
+    /// own, unless the trace states a lane's stamps in arrival order and this one is earlier than the lane's latest.
+    pub latest: AdmissionTime,
 }
 
-/// The progress of one admission point's clock.
+/// The admission points of one node's output port: one per lane, with consecutive IDs from `first`, as the frame
+/// numbers the lane points of a source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct PointGroup {
+    pub first: AdmissionPointId,
+    pub lanes: u16,
+}
+
+impl PointGroup {
+    /// Returns the point of lane `lane`, if the port has that lane.
+    pub fn lane(&self, lane: u16) -> Option<AdmissionPointId> {
+        (lane < self.lanes).then(|| AdmissionPointId::new(self.first.get() + u32::from(lane)))
+    }
+
+    /// Returns every lane's point, in lane order.
+    pub fn ids(&self) -> impl Iterator<Item = AdmissionPointId> + '_ {
+        (0..self.lanes).filter_map(|lane| self.lane(lane))
+    }
+}
+
+/// The progress of one admission point: the latest admission time it stamped in its current epoch, and that epoch.
 #[derive(Clone, Copy, Debug, Default)]
 struct PointClock {
     latest: Option<AdmissionTime>,
     epoch: u32,
+    /// The clock the point stamps by, shared by every lane of its port.
+    source: usize,
 }
 
-/// The admission points the interpreter has seen, with each one's clock: its latest admission time and its epoch.
+/// The clock of one port: the latest admission time any of its lanes stamped in the current epoch, and the epoch,
+/// which one reset decision moves for every lane at once.
+#[derive(Clone, Copy, Debug, Default)]
+struct SourceClock {
+    latest: Option<AdmissionTime>,
+    epoch: u32,
+}
+
+/// The admission points the interpreter has seen, with each one's progress and the clock it stamps by.
 ///
 /// Admission points belong to the host, not to a generation: a source's output keeps its admission clock across
-/// installations, as long as a node with the same ID and port admits there.
+/// installations, as long as a node with the same ID and port admits there. The lanes of a source's port are one point
+/// each, and share one clock: one latest time and one epoch, so that a backward jump is one reset for every lane.
 pub(super) struct AdmissionPoints {
-    ids: BTreeMap<(NodeId, PortName), AdmissionPointId>,
-    names: Vec<(NodeId, PortName)>,
+    groups: BTreeMap<(NodeId, PortName), PointGroup>,
+    names: Vec<(NodeId, PortName, u16, u16)>,
     clocks: Vec<PointClock>,
+    sources: Vec<SourceClock>,
     reset_threshold: Duration,
 }
 
 impl AdmissionPoints {
-    /// Returns the ID of the admission point at a node's output port, assigning one when it is first seen.
-    pub fn id(&mut self, node: &NodeId, port: &PortName) -> AdmissionPointId {
+    /// Returns the admission points of a node's output port, assigning `lanes` consecutive IDs when it is first seen.
+    ///
+    /// A port keeps the lanes it was first seen with: a source's lanes are fixed for the run.
+    pub fn group(&mut self, node: &NodeId, port: &PortName, lanes: u16) -> PointGroup {
         let key = (node.clone(), port.clone());
-        if let Some(id) = self.ids.get(&key) {
-            return *id;
+        if let Some(group) = self.groups.get(&key) {
+            return *group;
         }
-        // Plans have at most a few thousand ports, so the count fits.
-        let id = AdmissionPointId::new(self.names.len() as u32);
-        self.ids.insert(key.clone(), id);
-        self.names.push(key);
-        self.clocks.push(PointClock::default());
-        id
+        // Plans have at most a few thousand ports, and a port at most `MAX_LANES` lanes, so the count fits.
+        let lanes = lanes.max(1);
+        let group = PointGroup {
+            first: AdmissionPointId::new(self.names.len() as u32),
+            lanes,
+        };
+        let source = self.sources.len();
+        self.sources.push(SourceClock::default());
+        for lane in 0..lanes {
+            self.names.push((node.clone(), port.clone(), lane, lanes));
+            self.clocks.push(PointClock {
+                source,
+                ..PointClock::default()
+            });
+        }
+        self.groups.insert(key, group);
+        group
     }
 
     /// Returns every admission point seen, in ID order.
@@ -185,14 +234,43 @@ impl AdmissionPoints {
         (0..self.clocks.len()).map(|index| AdmissionPointId::new(index as u32))
     }
 
-    /// Returns the latest admission time stamped at a point in its current epoch, if it has stamped any.
+    /// Returns the latest admission time a point stamped in its current epoch, if it has stamped any.
     pub fn latest(&self, id: AdmissionPointId) -> Option<AdmissionTime> {
         self.clocks.get(id.get() as usize).and_then(|clock| clock.latest)
     }
 
-    /// Returns the epoch of a point's clock: how many times it reset, wrapping.
+    /// Returns the epoch of a point's last stamp: how many times its clock had reset when it last stamped, wrapping.
     pub fn epoch(&self, id: AdmissionPointId) -> u32 {
         self.clocks.get(id.get() as usize).map_or(0, |clock| clock.epoch)
+    }
+
+    /// Returns the latest admission time of the clock a point stamps by: the latest any lane of its port stamped in the
+    /// clock's current epoch.
+    pub fn clock_latest(&self, id: AdmissionPointId) -> Option<AdmissionTime> {
+        self.clocks
+            .get(id.get() as usize)
+            .and_then(|clock| self.sources.get(clock.source))
+            .and_then(|source| source.latest)
+    }
+
+    /// Returns `true` if every point of `ids` stamps by one clock: they are lanes of one port.
+    pub fn one_clock(&self, ids: &[AdmissionPointId]) -> bool {
+        let mut sources = ids
+            .iter()
+            .map(|id| self.clocks.get(id.get() as usize).map(|clock| clock.source));
+        match sources.next() {
+            Some(first) => first.is_some() && sources.all(|source| source == first),
+            None => false,
+        }
+    }
+
+    /// Returns the epoch of the clock a point stamps by, which a reset at another lane of its port may have moved past
+    /// the point's last stamp: the epoch a cut's boundary records for the point.
+    pub fn clock_epoch(&self, id: AdmissionPointId) -> u32 {
+        self.clocks
+            .get(id.get() as usize)
+            .and_then(|clock| self.sources.get(clock.source))
+            .map_or(0, |source| source.epoch)
     }
 
     /// Returns the largest backward jump of an admission time that a point's clock absorbs: a stamp further back
@@ -201,46 +279,72 @@ impl AdmissionPoints {
         self.reset_threshold
     }
 
-    /// Returns the point's name, as `node.port`.
+    /// Returns the point's name, as `node.port`, with `#lane` for a lane of a port with several.
     pub fn name(&self, id: AdmissionPointId) -> String {
-        self.names
-            .get(id.get() as usize)
-            .map_or_else(|| "?".to_string(), |(node, port)| format!("{}.{}", node, port))
+        self.names.get(id.get() as usize).map_or_else(
+            || "?".to_string(),
+            |(node, port, lane, lanes)| match lanes {
+                1 => format!("{}.{}", node, port),
+                _ => format!("{}.{}#{}", node, port, lane),
+            },
+        )
     }
 
     /// Records a stamp the trace states, at a source.
     ///
     /// An admission clock stamps the later of its latest time and the wall clock, so it moves back only when the wall
-    /// clock jumps back by more than the reset threshold: a stamp that much earlier than the latest one resets the
-    /// clock, which then continues in a new epoch. Returns the latest time if the stamp is earlier by no more than
-    /// the threshold, which a clock never stamps: it would have stamped its latest time again.
-    pub fn admit(&mut self, id: AdmissionPointId, at: AdmissionTime) -> Result<Stamp, AdmissionTime> {
+    /// clock jumps back by more than the reset threshold: a stamp that much earlier than the latest time of the point's
+    /// clock resets the clock, which then continues in a new epoch, for every lane of the port at once. Returns the
+    /// point's latest time if the stamp is earlier than it by no more than the threshold, which a clock never stamps:
+    /// it would have stamped its latest time again.
+    ///
+    /// Lanes stamp by one clock but reach state owners on paths of their own, so a trace in arrival order, such as an
+    /// [arrival replay][super::replay], may state one lane's stamp after a later one of another lane: within the
+    /// threshold, that is no reset, and only each point's own times must not move back.
+    ///
+    /// With `arrival_order`, a lane's stamp may also be earlier than the lane's own latest within the threshold, as a
+    /// state lane receives the routed buffers of one lane's batches in stamp order but an arrival replay merges several
+    /// state lanes: the point's latest time stays its latest.
+    pub fn admit(
+        &mut self, id: AdmissionPointId, at: AdmissionTime, arrival_order: bool,
+    ) -> Result<Stamp, AdmissionTime> {
         let threshold = self.reset_threshold;
-        let Some(clock) = self.clocks.get_mut(id.get() as usize) else {
+        let Some(point) = self.clocks.get_mut(id.get() as usize) else {
             return Ok(Stamp {
                 admitted_at: at,
                 epoch: 0,
                 reset: false,
+                latest: at,
             });
         };
-        let reset = match clock.latest {
-            Some(previous) if at < previous => {
-                let jump = Duration::from_nanos(previous.as_unix_nanos() - at.as_unix_nanos());
-                if jump <= threshold {
-                    return Err(previous);
-                }
-                true
-            }
-            _ => false,
-        };
+        let source = &mut self.sources[point.source];
+        let reset = source.latest.is_some_and(|latest| {
+            at < latest && Duration::from_nanos(latest.as_unix_nanos() - at.as_unix_nanos()) > threshold
+        });
         if reset {
-            clock.epoch = clock.epoch.wrapping_add(1);
+            source.epoch = source.epoch.wrapping_add(1);
+            source.latest = Some(at);
+        } else {
+            if let Some(previous) = point
+                .latest
+                .filter(|previous| !arrival_order && point.epoch == source.epoch && at < *previous)
+            {
+                return Err(previous);
+            }
+            source.latest = Some(source.latest.map_or(at, |latest| latest.max(at)));
         }
-        clock.latest = Some(at);
+        let same_epoch = point.epoch == source.epoch;
+        point.epoch = source.epoch;
+        let latest = match point.latest {
+            Some(latest) if same_epoch => latest.max(at),
+            _ => at,
+        };
+        point.latest = Some(latest);
         Ok(Stamp {
             admitted_at: at,
-            epoch: clock.epoch,
+            epoch: point.epoch,
             reset,
+            latest,
         })
     }
 
@@ -250,6 +354,9 @@ impl AdmissionPoints {
             Some(clock) => {
                 let stamped = clock.latest.map_or(now, |previous| previous.max(now));
                 clock.latest = Some(stamped);
+                if let Some(source) = self.sources.get_mut(clock.source) {
+                    source.latest = Some(stamped);
+                }
                 stamped
             }
             None => now,
@@ -262,9 +369,10 @@ impl Default for AdmissionPoints {
     /// [`CLOCK_RESET_THRESHOLD`][crate::limits::values::CLOCK_RESET_THRESHOLD].
     fn default() -> Self {
         Self {
-            ids: BTreeMap::new(),
+            groups: BTreeMap::new(),
             names: Vec::new(),
             clocks: Vec::new(),
+            sources: Vec::new(),
             reset_threshold: crate::limits::values::CLOCK_RESET_THRESHOLD,
         }
     }
@@ -288,8 +396,8 @@ pub(super) struct Program {
     /// For each node and output port, the input port its edge enters.
     pub targets: Vec<Vec<Option<Endpoint>>>,
 
-    /// For each node and output port, the admission point it is, for sources and opaque hosts.
-    pub points: Vec<Vec<Option<AdmissionPointId>>>,
+    /// For each node and output port, the admission points it is, one per lane, for sources and opaque hosts.
+    pub points: Vec<Vec<Option<PointGroup>>>,
 
     /// For each node and output port, the port type validation computed for it.
     pub port_types: Vec<Vec<Option<PortType>>>,
@@ -321,7 +429,7 @@ impl Program {
     /// the active program or builds them.
     pub fn prepare<R>(
         plan: &Plan, registry: &OperatorRegistry, report: &ValidationReport, resolver: &R,
-        points: &mut AdmissionPoints, install: usize, generation: GenerationRef,
+        points: &mut AdmissionPoints, lanes: &BTreeMap<NodeId, u16>, install: usize, generation: GenerationRef,
     ) -> Result<Self, PrepareError>
     where
         R: BindingResolver + ?Sized,
@@ -394,11 +502,16 @@ impl Program {
             .iter()
             .map(|node| {
                 let admits = matches!(node.exec, Exec::Source | Exec::Host(_));
+                // Only a source's port runs on lanes; an opaque host's output is one point.
+                let lanes = match node.exec {
+                    Exec::Source => lanes.get(&node.id).copied().unwrap_or(1),
+                    _ => 1,
+                };
                 node.op
                     .ports()
                     .outputs
                     .iter()
-                    .map(|port| admits.then(|| points.id(&node.id, &port.name)))
+                    .map(|port| admits.then(|| points.group(&node.id, &port.name, lanes)))
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
@@ -589,17 +702,18 @@ fn topological_order(targets: &[Vec<Option<Endpoint>>]) -> Vec<usize> {
     order
 }
 
-/// Returns the admission points upstream of `owner`: every source or opaque host output from which a path reaches it
-/// without crossing another opaque host. An opaque host re-admits, so points beyond it belong to another segment.
+/// Returns the admission points upstream of `owner`: every lane of every source or opaque host output from which a path
+/// reaches it without crossing another opaque host. An opaque host re-admits, so points beyond it belong to another
+/// segment.
 fn upstream_points(
-    owner: usize, feeders: &[Vec<Option<Endpoint>>], points: &[Vec<Option<AdmissionPointId>>],
+    owner: usize, feeders: &[Vec<Option<Endpoint>>], points: &[Vec<Option<PointGroup>>],
 ) -> Vec<AdmissionPointId> {
     let mut found = BTreeSet::new();
     let mut visited = BTreeSet::new();
     let mut pending = feeders[owner].iter().flatten().copied().collect::<Vec<_>>();
     while let Some((node, port)) = pending.pop() {
-        if let Some(point) = points[node][port] {
-            found.insert(point);
+        if let Some(group) = points[node][port] {
+            found.extend(group.ids());
         } else if visited.insert(node) {
             pending.extend(feeders[node].iter().flatten().copied());
         }

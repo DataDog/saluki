@@ -1,0 +1,947 @@
+{
+  "layout": {
+    "dogstatsd_lanes": 2,
+    "state_lanes": 2,
+    "post_lanes": 2,
+    "pipelining": false
+  },
+  "fixed": [
+    {
+      "node": "dsd_in",
+      "op": "source",
+      "boundary": "io_host",
+      "input": null,
+      "idle": false,
+      "admission_points": [
+        {
+          "id": 0,
+          "lanes": 2,
+          "port": "metrics",
+          "mode": "admit",
+          "to": "dsd_pre_aggregation",
+          "routing": "fixed",
+          "feeds_state": true
+        }
+      ]
+    },
+    {
+      "node": "otlp_in",
+      "op": "source",
+      "boundary": "io_host",
+      "input": null,
+      "idle": false,
+      "admission_points": [
+        {
+          "id": 2,
+          "port": "metrics",
+          "mode": "admit",
+          "to": "metrics_enrich",
+          "routing": "spread"
+        }
+      ]
+    },
+    {
+      "node": "checks_ipc_in",
+      "op": "source",
+      "boundary": "io_host",
+      "input": null,
+      "idle": false,
+      "admission_points": [
+        {
+          "id": 3,
+          "port": "metrics",
+          "mode": "admit",
+          "to": "metrics_enrich",
+          "routing": "spread"
+        }
+      ]
+    },
+    {
+      "node": "liveness_in",
+      "op": "source",
+      "boundary": "io_host",
+      "input": null,
+      "idle": false,
+      "admission_points": [
+        {
+          "id": 4,
+          "port": "metrics",
+          "mode": "admit",
+          "to": "metrics_enrich",
+          "routing": "spread"
+        }
+      ]
+    },
+    {
+      "node": "trace_sampler",
+      "op": "source",
+      "boundary": "io_host",
+      "input": null,
+      "idle": false,
+      "admission_points": [
+        {
+          "id": 5,
+          "port": "metrics",
+          "mode": "admit",
+          "to": "metrics_enrich",
+          "routing": "spread"
+        }
+      ]
+    }
+  ],
+  "slots": [
+    {
+      "name": "dsd_pre_aggregation",
+      "cost": 200,
+      "lanes": 2,
+      "nodes": [
+        "dsd_enrich",
+        "dsd_prefix_filter",
+        "dsd_prefix_filter_blocklist",
+        "dsd_prefix_filter_blocklist_true",
+        "dsd_no_agg_split",
+        "dsd_tag_filterlist"
+      ],
+      "entries": [
+        {
+          "key": "admission point 0",
+          "from": "dsd_in.metrics",
+          "input": "dsd_enrich.in"
+        },
+        {
+          "key": "admission point 1",
+          "from": "dsd_in.metrics",
+          "input": "dsd_enrich.in"
+        }
+      ],
+      "exits": [
+        {
+          "index": 0,
+          "name": "dsd_agg",
+          "to": "dsd_agg",
+          "idle": false,
+          "progress_points": [
+            0,
+            1
+          ],
+          "routing": "keyed",
+          "key_groups": [
+            {
+              "lane": 0,
+              "first": 0,
+              "last": 127
+            },
+            {
+              "lane": 1,
+              "first": 128,
+              "last": 255
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "name": "metrics_enrich",
+          "to": "metrics_enrich",
+          "idle": false,
+          "routing": "affinity"
+        },
+        {
+          "index": 2,
+          "name": "dsd_client_telemetry",
+          "to": "output dsd_client_telemetry",
+          "idle": true
+        },
+        {
+          "index": 3,
+          "name": "dd_metrics_encode",
+          "to": "encode host dd_metrics_encode of dd_out",
+          "idle": true
+        },
+        {
+          "index": 4,
+          "name": "mrf_metrics_encode",
+          "to": "encode host mrf_metrics_encode of mrf_dd_out",
+          "idle": true
+        },
+        {
+          "index": 5,
+          "name": "af_metrics_encode",
+          "to": "encode host af_metrics_encode of cluster_agent_out",
+          "idle": true
+        }
+      ]
+    },
+    {
+      "name": "dsd_agg",
+      "cost": 0,
+      "lanes": 2,
+      "nodes": [
+        "dsd_agg"
+      ],
+      "entries": [
+        {
+          "key": "entry 0",
+          "from": "dsd_tag_filterlist.out",
+          "input": "dsd_agg.in"
+        }
+      ],
+      "exits": [
+        {
+          "index": 0,
+          "name": "metrics_enrich",
+          "to": "metrics_enrich",
+          "idle": false,
+          "routing": "spread"
+        }
+      ],
+      "isolation": {
+        "output_point": 6,
+        "output_points": [
+          6,
+          7
+        ],
+        "upstream": [
+          0,
+          1
+        ]
+      }
+    },
+    {
+      "name": "metrics_enrich",
+      "cost": 141,
+      "lanes": 2,
+      "nodes": [
+        "dsd_post_agg_filter_in",
+        "dsd_post_agg_filter",
+        "dsd_post_agg_filter_true",
+        "dsd_post_agg_filter_fanout",
+        "dsd_post_agg_filter_fanout_0",
+        "metrics_enrich_in",
+        "metrics_enrich",
+        "metrics_enrich_host_tags",
+        "metrics_policy",
+        "metrics_policy_0",
+        "metrics_routing_filter_0",
+        "metrics_routing_filter_0_true",
+        "metrics_routing_filter_0_false",
+        "metrics_routing_filter_1",
+        "metrics_routing_filter_1_true",
+        "metrics_routing_filter_1_false",
+        "mrf_metrics_gateway",
+        "mrf_metrics_gateway_true",
+        "mrf_metrics_gateway_false",
+        "af_metrics_gateway",
+        "af_metrics_gateway_true",
+        "af_metrics_gateway_false"
+      ],
+      "entries": [
+        {
+          "key": "admission point 2",
+          "from": "otlp_in.metrics",
+          "input": "metrics_enrich_in.1"
+        },
+        {
+          "key": "admission point 3",
+          "from": "checks_ipc_in.metrics",
+          "input": "metrics_enrich_in.2"
+        },
+        {
+          "key": "admission point 4",
+          "from": "liveness_in.metrics",
+          "input": "metrics_enrich_in.3"
+        },
+        {
+          "key": "admission point 5",
+          "from": "trace_sampler.metrics",
+          "input": "metrics_enrich_in.4"
+        },
+        {
+          "key": "entry 0",
+          "from": "dsd_agg.out",
+          "input": "dsd_post_agg_filter_in.0"
+        },
+        {
+          "key": "entry 1",
+          "from": "dsd_no_agg_split.passthrough",
+          "input": "dsd_post_agg_filter_in.1"
+        }
+      ],
+      "exits": [
+        {
+          "index": 0,
+          "name": "dsd_client_telemetry",
+          "to": "output dsd_client_telemetry",
+          "idle": false
+        },
+        {
+          "index": 1,
+          "name": "dd_metrics_encode",
+          "to": "encode host dd_metrics_encode of dd_out",
+          "idle": false
+        },
+        {
+          "index": 2,
+          "name": "mrf_metrics_encode",
+          "to": "encode host mrf_metrics_encode of mrf_dd_out",
+          "idle": false
+        },
+        {
+          "index": 3,
+          "name": "af_metrics_encode",
+          "to": "encode host af_metrics_encode of cluster_agent_out",
+          "idle": false
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "dsd_in.metrics",
+      "to": "dsd_pre_aggregation",
+      "kind": "admission",
+      "routing": "fixed"
+    },
+    {
+      "from": "otlp_in.metrics",
+      "to": "metrics_enrich",
+      "kind": "admission",
+      "routing": "spread"
+    },
+    {
+      "from": "checks_ipc_in.metrics",
+      "to": "metrics_enrich",
+      "kind": "admission",
+      "routing": "spread"
+    },
+    {
+      "from": "liveness_in.metrics",
+      "to": "metrics_enrich",
+      "kind": "admission",
+      "routing": "spread"
+    },
+    {
+      "from": "trace_sampler.metrics",
+      "to": "metrics_enrich",
+      "kind": "admission",
+      "routing": "spread"
+    },
+    {
+      "from": "dsd_pre_aggregation.dsd_agg",
+      "to": "dsd_agg",
+      "kind": "exit",
+      "routing": "keyed"
+    },
+    {
+      "from": "dsd_pre_aggregation.metrics_enrich",
+      "to": "metrics_enrich",
+      "kind": "exit",
+      "routing": "affinity"
+    },
+    {
+      "from": "dsd_pre_aggregation.dsd_client_telemetry",
+      "to": "output dsd_client_telemetry",
+      "kind": "exit"
+    },
+    {
+      "from": "dsd_pre_aggregation.dd_metrics_encode",
+      "to": "encode host dd_metrics_encode of dd_out",
+      "kind": "exit"
+    },
+    {
+      "from": "dsd_pre_aggregation.mrf_metrics_encode",
+      "to": "encode host mrf_metrics_encode of mrf_dd_out",
+      "kind": "exit"
+    },
+    {
+      "from": "dsd_pre_aggregation.af_metrics_encode",
+      "to": "encode host af_metrics_encode of cluster_agent_out",
+      "kind": "exit"
+    },
+    {
+      "from": "dsd_agg.metrics_enrich",
+      "to": "metrics_enrich",
+      "kind": "exit",
+      "routing": "spread"
+    },
+    {
+      "from": "metrics_enrich.dsd_client_telemetry",
+      "to": "output dsd_client_telemetry",
+      "kind": "exit"
+    },
+    {
+      "from": "metrics_enrich.dd_metrics_encode",
+      "to": "encode host dd_metrics_encode of dd_out",
+      "kind": "exit"
+    },
+    {
+      "from": "metrics_enrich.mrf_metrics_encode",
+      "to": "encode host mrf_metrics_encode of mrf_dd_out",
+      "kind": "exit"
+    },
+    {
+      "from": "metrics_enrich.af_metrics_encode",
+      "to": "encode host af_metrics_encode of cluster_agent_out",
+      "kind": "exit"
+    }
+  ],
+  "fusion": [
+    {
+      "from": "dsd_in.metrics",
+      "to": "dsd_enrich.in",
+      "decision": "fence",
+      "reason": "`dsd_in` is an io_host, a fence that fusion never crosses"
+    },
+    {
+      "from": "dsd_enrich.out",
+      "to": "dsd_prefix_filter.in",
+      "decision": "fused",
+      "reason": "both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`"
+    },
+    {
+      "from": "dsd_prefix_filter.out",
+      "to": "dsd_prefix_filter_blocklist.in",
+      "decision": "fused",
+      "reason": "both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`"
+    },
+    {
+      "from": "dsd_prefix_filter_blocklist.true",
+      "to": "dsd_prefix_filter_blocklist_true.in",
+      "decision": "fused",
+      "reason": "both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`"
+    },
+    {
+      "from": "dsd_prefix_filter_blocklist.false",
+      "to": "dsd_no_agg_split.in",
+      "decision": "fused",
+      "reason": "both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`"
+    },
+    {
+      "from": "dsd_no_agg_split.default",
+      "to": "dsd_tag_filterlist.in",
+      "decision": "fused",
+      "reason": "both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`"
+    },
+    {
+      "from": "dsd_tag_filterlist.out",
+      "to": "dsd_agg.in",
+      "decision": "isolation",
+      "reason": "the edge enters or leaves the isolation slot `dsd_agg`, which runs its state owner alone"
+    },
+    {
+      "from": "dsd_agg.out",
+      "to": "dsd_post_agg_filter_in.0",
+      "decision": "isolation",
+      "reason": "the edge enters or leaves the isolation slot `dsd_agg`, which runs its state owner alone"
+    },
+    {
+      "from": "dsd_no_agg_split.passthrough",
+      "to": "dsd_post_agg_filter_in.1",
+      "decision": "separated",
+      "reason": "fusing would form a cycle through `dsd_agg`: slots `dsd_pre_aggregation` and `metrics_enrich` stay apart"
+    },
+    {
+      "from": "dsd_post_agg_filter_in.out",
+      "to": "dsd_post_agg_filter.in",
+      "decision": "fused",
+      "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+    },
+    {
+      "from": "dsd_post_agg_filter.true",
+      "to": "dsd_post_agg_filter_true.in",
+      "decision": "fused",
+      "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+    },
+    {
+      "from": "dsd_post_agg_filter.false",
+      "to": "dsd_post_agg_filter_fanout.in",
+      "decision": "fused",
+      "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+    },
+    {
+      "from": "dsd_post_agg_filter_fanout.0",
+      "to": "dsd_post_agg_filter_fanout_0.in",
+      "decision": "fused",
+      "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+    },
+    {
+      "from": "dsd_post_agg_filter_fanout.1",
+      "to": "metrics_enrich_in.0",
+      "decision": "fused",
+      "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+    },
+    {
+      "from": "otlp_in.metrics",
+      "to": "metrics_enrich_in.1",
+      "decision": "fence",
+      "reason": "`otlp_in` is an io_host, a fence that fusion never crosses"
+    },
+    {
+      "from": "checks_ipc_in.metrics",
+      "to": "metrics_enrich_in.2",
+      "decision": "fence",
+      "reason": "`checks_ipc_in` is an io_host, a fence that fusion never crosses"
+    },
+    {
+      "from": "liveness_in.metrics",
+      "to": "metrics_enrich_in.3",
+      "decision": "fence",
+      "reason": "`liveness_in` is an io_host, a fence that fusion never crosses"
+    },
+    {
+      "from": "trace_sampler.metrics",
+      "to": "metrics_enrich_in.4",
+      "decision": "fence",
+      "reason": "`trace_sampler` is an io_host, a fence that fusion never crosses"
+    },
+    {
+      "from": "metrics_enrich_in.out",
+      "to": "metrics_enrich.in",
+      "decision": "fused",
+      "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+    },
+    {
+      "from": "metrics_enrich.out",
+      "to": "metrics_enrich_host_tags.in",
+      "decision": "fused",
+      "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+    },
+    {
+      "from": "metrics_enrich_host_tags.out",
+      "to": "metrics_policy.in",
+      "decision": "fused",
+      "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+    },
+    {
+      "from": "metrics_policy.0",
+      "to": "metrics_policy_0.in",
+      "decision": "fused",
+      "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+    },
+    {
+      "from": "metrics_policy.1",
+      "to": "metrics_routing_filter_0.in",
+      "decision": "fused",
+      "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+    },
+    {
+      "from": "metrics_routing_filter_0.true",
+      "to": "metrics_routing_filter_0_true.in",
+      "decision": "fused",
+      "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+    },
+    {
+      "from": "metrics_routing_filter_0.false",
+      "to": "metrics_routing_filter_0_false.in",
+      "decision": "fused",
+      "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+    },
+    {
+      "from": "metrics_policy.2",
+      "to": "metrics_routing_filter_1.in",
+      "decision": "fused",
+      "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+    },
+    {
+      "from": "metrics_routing_filter_1.true",
+      "to": "metrics_routing_filter_1_true.in",
+      "decision": "fused",
+      "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+    },
+    {
+      "from": "metrics_routing_filter_1.false",
+      "to": "metrics_routing_filter_1_false.in",
+      "decision": "fused",
+      "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+    },
+    {
+      "from": "metrics_policy.3",
+      "to": "mrf_metrics_gateway.in",
+      "decision": "fused",
+      "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+    },
+    {
+      "from": "mrf_metrics_gateway.true",
+      "to": "mrf_metrics_gateway_true.in",
+      "decision": "fused",
+      "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+    },
+    {
+      "from": "mrf_metrics_gateway.false",
+      "to": "mrf_metrics_gateway_false.in",
+      "decision": "fused",
+      "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+    },
+    {
+      "from": "metrics_policy.4",
+      "to": "af_metrics_gateway.in",
+      "decision": "fused",
+      "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+    },
+    {
+      "from": "af_metrics_gateway.true",
+      "to": "af_metrics_gateway_true.in",
+      "decision": "fused",
+      "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+    },
+    {
+      "from": "af_metrics_gateway.false",
+      "to": "af_metrics_gateway_false.in",
+      "decision": "fused",
+      "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
+    }
+  ],
+  "segments": [
+    {
+      "admission_point": 0,
+      "lanes": 2,
+      "from": "dsd_in.metrics",
+      "mode": "admit",
+      "nodes": [
+        "dsd_enrich",
+        "dsd_prefix_filter",
+        "dsd_prefix_filter_blocklist",
+        "dsd_prefix_filter_blocklist_true",
+        "dsd_no_agg_split",
+        "dsd_tag_filterlist",
+        "dsd_post_agg_filter_in",
+        "dsd_post_agg_filter",
+        "dsd_post_agg_filter_true",
+        "dsd_post_agg_filter_fanout",
+        "dsd_post_agg_filter_fanout_0",
+        "metrics_enrich_in",
+        "metrics_enrich",
+        "metrics_enrich_host_tags",
+        "metrics_policy",
+        "metrics_policy_0",
+        "metrics_routing_filter_0",
+        "metrics_routing_filter_0_true",
+        "metrics_routing_filter_0_false",
+        "metrics_routing_filter_1",
+        "metrics_routing_filter_1_true",
+        "metrics_routing_filter_1_false",
+        "mrf_metrics_gateway",
+        "mrf_metrics_gateway_true",
+        "mrf_metrics_gateway_false",
+        "af_metrics_gateway",
+        "af_metrics_gateway_true",
+        "af_metrics_gateway_false"
+      ],
+      "slots": [
+        "dsd_pre_aggregation",
+        "metrics_enrich"
+      ],
+      "ends": [
+        "dsd_agg",
+        "output af_metrics_encode",
+        "output dd_metrics_encode",
+        "output dsd_client_telemetry",
+        "output metrics_routing_encode_0",
+        "output metrics_routing_encode_1",
+        "output mrf_metrics_encode"
+      ]
+    },
+    {
+      "admission_point": 2,
+      "from": "otlp_in.metrics",
+      "mode": "admit",
+      "nodes": [
+        "metrics_enrich_in",
+        "metrics_enrich",
+        "metrics_enrich_host_tags",
+        "metrics_policy",
+        "metrics_policy_0",
+        "metrics_routing_filter_0",
+        "metrics_routing_filter_0_true",
+        "metrics_routing_filter_0_false",
+        "metrics_routing_filter_1",
+        "metrics_routing_filter_1_true",
+        "metrics_routing_filter_1_false",
+        "mrf_metrics_gateway",
+        "mrf_metrics_gateway_true",
+        "mrf_metrics_gateway_false",
+        "af_metrics_gateway",
+        "af_metrics_gateway_true",
+        "af_metrics_gateway_false"
+      ],
+      "slots": [
+        "metrics_enrich"
+      ],
+      "ends": [
+        "output af_metrics_encode",
+        "output dd_metrics_encode",
+        "output metrics_routing_encode_0",
+        "output metrics_routing_encode_1",
+        "output mrf_metrics_encode"
+      ]
+    },
+    {
+      "admission_point": 3,
+      "from": "checks_ipc_in.metrics",
+      "mode": "admit",
+      "nodes": [
+        "metrics_enrich_in",
+        "metrics_enrich",
+        "metrics_enrich_host_tags",
+        "metrics_policy",
+        "metrics_policy_0",
+        "metrics_routing_filter_0",
+        "metrics_routing_filter_0_true",
+        "metrics_routing_filter_0_false",
+        "metrics_routing_filter_1",
+        "metrics_routing_filter_1_true",
+        "metrics_routing_filter_1_false",
+        "mrf_metrics_gateway",
+        "mrf_metrics_gateway_true",
+        "mrf_metrics_gateway_false",
+        "af_metrics_gateway",
+        "af_metrics_gateway_true",
+        "af_metrics_gateway_false"
+      ],
+      "slots": [
+        "metrics_enrich"
+      ],
+      "ends": [
+        "output af_metrics_encode",
+        "output dd_metrics_encode",
+        "output metrics_routing_encode_0",
+        "output metrics_routing_encode_1",
+        "output mrf_metrics_encode"
+      ]
+    },
+    {
+      "admission_point": 4,
+      "from": "liveness_in.metrics",
+      "mode": "admit",
+      "nodes": [
+        "metrics_enrich_in",
+        "metrics_enrich",
+        "metrics_enrich_host_tags",
+        "metrics_policy",
+        "metrics_policy_0",
+        "metrics_routing_filter_0",
+        "metrics_routing_filter_0_true",
+        "metrics_routing_filter_0_false",
+        "metrics_routing_filter_1",
+        "metrics_routing_filter_1_true",
+        "metrics_routing_filter_1_false",
+        "mrf_metrics_gateway",
+        "mrf_metrics_gateway_true",
+        "mrf_metrics_gateway_false",
+        "af_metrics_gateway",
+        "af_metrics_gateway_true",
+        "af_metrics_gateway_false"
+      ],
+      "slots": [
+        "metrics_enrich"
+      ],
+      "ends": [
+        "output af_metrics_encode",
+        "output dd_metrics_encode",
+        "output metrics_routing_encode_0",
+        "output metrics_routing_encode_1",
+        "output mrf_metrics_encode"
+      ]
+    },
+    {
+      "admission_point": 5,
+      "from": "trace_sampler.metrics",
+      "mode": "admit",
+      "nodes": [
+        "metrics_enrich_in",
+        "metrics_enrich",
+        "metrics_enrich_host_tags",
+        "metrics_policy",
+        "metrics_policy_0",
+        "metrics_routing_filter_0",
+        "metrics_routing_filter_0_true",
+        "metrics_routing_filter_0_false",
+        "metrics_routing_filter_1",
+        "metrics_routing_filter_1_true",
+        "metrics_routing_filter_1_false",
+        "mrf_metrics_gateway",
+        "mrf_metrics_gateway_true",
+        "mrf_metrics_gateway_false",
+        "af_metrics_gateway",
+        "af_metrics_gateway_true",
+        "af_metrics_gateway_false"
+      ],
+      "slots": [
+        "metrics_enrich"
+      ],
+      "ends": [
+        "output af_metrics_encode",
+        "output dd_metrics_encode",
+        "output metrics_routing_encode_0",
+        "output metrics_routing_encode_1",
+        "output mrf_metrics_encode"
+      ]
+    },
+    {
+      "admission_point": 6,
+      "lanes": 2,
+      "from": "dsd_agg.out",
+      "mode": "time-driven",
+      "nodes": [
+        "dsd_post_agg_filter_in",
+        "dsd_post_agg_filter",
+        "dsd_post_agg_filter_true",
+        "dsd_post_agg_filter_fanout",
+        "dsd_post_agg_filter_fanout_0",
+        "metrics_enrich_in",
+        "metrics_enrich",
+        "metrics_enrich_host_tags",
+        "metrics_policy",
+        "metrics_policy_0",
+        "metrics_routing_filter_0",
+        "metrics_routing_filter_0_true",
+        "metrics_routing_filter_0_false",
+        "metrics_routing_filter_1",
+        "metrics_routing_filter_1_true",
+        "metrics_routing_filter_1_false",
+        "mrf_metrics_gateway",
+        "mrf_metrics_gateway_true",
+        "mrf_metrics_gateway_false",
+        "af_metrics_gateway",
+        "af_metrics_gateway_true",
+        "af_metrics_gateway_false"
+      ],
+      "slots": [
+        "metrics_enrich"
+      ],
+      "ends": [
+        "output af_metrics_encode",
+        "output dd_metrics_encode",
+        "output dsd_client_telemetry",
+        "output metrics_routing_encode_0",
+        "output metrics_routing_encode_1",
+        "output mrf_metrics_encode"
+      ]
+    }
+  ],
+  "output_bindings": [
+    {
+      "output": "dsd_client_telemetry",
+      "recipients": [],
+      "delivery": "native",
+      "overflow": "wait",
+      "closure": "native",
+      "fed_by": [
+        "metrics_enrich.dsd_client_telemetry"
+      ],
+      "idle": [
+        "dsd_pre_aggregation.dsd_client_telemetry"
+      ]
+    },
+    {
+      "output": "dd_metrics_encode",
+      "encode_host": "encode host dd_metrics_encode of dd_out",
+      "recipients": [
+        "dd_out/primary/0"
+      ],
+      "delivery": "native",
+      "overflow": "wait",
+      "closure": "native",
+      "fed_by": [
+        "metrics_enrich.dd_metrics_encode"
+      ],
+      "idle": [
+        "dsd_pre_aggregation.dd_metrics_encode"
+      ]
+    },
+    {
+      "output": "metrics_routing_encode_0",
+      "encode_host": "encode host dd_metrics_encode of dd_out",
+      "recipients": [
+        "dd_out/additional_0/0"
+      ],
+      "delivery": "native",
+      "overflow": "wait",
+      "closure": "native",
+      "fed_by": [
+        "metrics_enrich.dd_metrics_encode"
+      ],
+      "idle": [
+        "dsd_pre_aggregation.dd_metrics_encode"
+      ]
+    },
+    {
+      "output": "metrics_routing_encode_1",
+      "encode_host": "encode host dd_metrics_encode of dd_out",
+      "recipients": [
+        "dd_out/additional_1/0",
+        "dd_out/additional_1/1"
+      ],
+      "delivery": "native",
+      "overflow": "wait",
+      "closure": "native",
+      "fed_by": [
+        "metrics_enrich.dd_metrics_encode"
+      ],
+      "idle": [
+        "dsd_pre_aggregation.dd_metrics_encode"
+      ]
+    },
+    {
+      "output": "mrf_metrics_encode",
+      "encode_host": "encode host mrf_metrics_encode of mrf_dd_out",
+      "recipients": [
+        "mrf_dd_out/primary/0"
+      ],
+      "delivery": "native",
+      "overflow": "wait",
+      "closure": "native",
+      "fed_by": [
+        "metrics_enrich.mrf_metrics_encode"
+      ],
+      "idle": [
+        "dsd_pre_aggregation.mrf_metrics_encode"
+      ]
+    },
+    {
+      "output": "af_metrics_encode",
+      "encode_host": "encode host af_metrics_encode of cluster_agent_out",
+      "recipients": [
+        "cluster_agent_out/primary/0"
+      ],
+      "delivery": "native",
+      "overflow": "wait",
+      "closure": "native",
+      "fed_by": [
+        "metrics_enrich.af_metrics_encode"
+      ],
+      "idle": [
+        "dsd_pre_aggregation.af_metrics_encode"
+      ]
+    },
+    {
+      "output": "resources_team_d",
+      "encode_host": "encode host dd_metrics_encode of dd_out",
+      "recipients": [
+        "dd_out/declared/team_d/http://127.0.0.1:17105"
+      ],
+      "delivery": "native",
+      "overflow": "wait",
+      "closure": "native",
+      "fed_by": [],
+      "idle": [
+        "dsd_pre_aggregation.dd_metrics_encode",
+        "metrics_enrich.dd_metrics_encode"
+      ]
+    },
+    {
+      "output": "resources_team_e",
+      "encode_host": "encode host dd_metrics_encode of dd_out",
+      "recipients": [
+        "dd_out/declared/team_e/https://e.example.com"
+      ],
+      "delivery": "native",
+      "overflow": "wait",
+      "closure": "native",
+      "fed_by": [],
+      "idle": [
+        "dsd_pre_aggregation.dd_metrics_encode",
+        "metrics_enrich.dd_metrics_encode"
+      ]
+    }
+  ]
+}

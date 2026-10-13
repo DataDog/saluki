@@ -13,6 +13,10 @@ use stringtheory::interning::GenericMapInterner;
 
 use super::{DogStatsDConfiguration, DogStatsDOriginTagResolver, ProcessOrigin};
 
+/// The contexts a datagram decoder's front cache holds (see [`ContextResolvers::with_front_cache`]).
+// SAFETY: We know, unquestionably, that this value is not zero.
+pub(super) const DECODER_FRONT_CACHE_ENTRIES: NonZeroUsize = NonZeroUsize::new(4_096).unwrap();
+
 /// Context resolvers for the DogStatsD source.
 #[derive(Clone)]
 pub struct ContextResolvers {
@@ -64,6 +68,8 @@ impl ContextResolvers {
             .with_heap_allocations(allow_context_heap_allocations)
             .with_tags_resolver(Some(tags_resolver.clone()))
             .with_interner(interner.clone())
+            // Every datagram decoder puts a front cache of its own in front of it.
+            .with_front_caches()
             .build();
 
         let no_agg_resolver = ContextResolverBuilder::from_name(format!("{}/dsd/no_agg", context.component_id()))?
@@ -102,6 +108,22 @@ impl ContextResolvers {
             tags,
             origin_tags: Some(origin_tags),
         }
+    }
+
+    /// Gives the primary context resolver a front cache of [`DECODER_FRONT_CACHE_ENTRIES`] contexts of its own (see
+    /// `ContextResolver::with_front_cache`).
+    ///
+    /// The datagram decoders share the resolvers' caches, and a front cache per decoder answers most resolutions
+    /// without writing what the other decoders write. The no-aggregation resolver does not cache, so it gets none.
+    pub fn with_front_cache(mut self) -> Self {
+        self.primary = self.primary.with_front_cache(DECODER_FRONT_CACHE_ENTRIES);
+        self
+    }
+
+    /// Publishes what the front cache counted, and drops what it copied that the shared cache may have let go of;
+    /// without a front cache, does nothing.
+    pub fn maintain_front_cache(&mut self) {
+        self.primary.maintain_front_cache();
     }
 
     /// Returns a mutable reference to the primary context resolver.
@@ -189,5 +211,36 @@ mod tests {
             .expect("no-agg resolver should resolve a context");
         assert_eq!(no_agg.name(), "my.metric");
         assert!(no_agg.tags().has_tag("env:prod"));
+    }
+
+    #[tokio::test]
+    async fn the_primary_resolver_takes_a_front_cache_whose_hits_count_once_it_is_maintained() {
+        let recorder = saluki_metrics::test::TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let existing = || {
+            recorder.counter((
+                "context_resolver_resolved_existing_context_total",
+                &[("resolver_id", "dogstatsd_resolver_test/dsd/primary")],
+            ))
+        };
+        let mut resolvers = ContextResolvers::new(&DogStatsDConfiguration::for_test(), &test_context(), None)
+            .expect("the default configuration builds resolvers")
+            .with_front_cache();
+
+        // One context, 100 times: a new context, a hit in the shared cache that fills the front cache, and hits the
+        // front cache answers and counts on its own until it is maintained (it publishes, too, at its first use in a
+        // new coarse second, which leaves those of the rest unpublished).
+        for _ in 0..100 {
+            resolvers
+                .primary()
+                .resolve("front.metric", ["env:prod"], None)
+                .expect("the primary resolver resolves the context");
+        }
+        assert!(
+            existing().unwrap_or_default() < 99,
+            "the front cache answered and counted"
+        );
+        resolvers.maintain_front_cache();
+        assert_eq!(existing(), Some(99));
     }
 }

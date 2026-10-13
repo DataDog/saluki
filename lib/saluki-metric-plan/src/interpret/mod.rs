@@ -20,8 +20,8 @@
 //!
 //! | Event | Effect |
 //! |---|---|
-//! | `admit(source, t_a, batch)` | Stamps the batch at the source and delivers it; see [admission](#admission). |
-//! | `heartbeat(source, t_a)` | Stamps a header without events, which moves watermarks but delivers nothing. |
+//! | `admit(source, lane, t_a, batch)` | Stamps the batch at a lane of the source and delivers it ([lanes](#lanes)). |
+//! | `heartbeat(source, lane, t_a)` | Stamps a header without events, which moves watermarks but delivers nothing. |
 //! | `advance(clock)` | Runs a flush tick at host time `clock`; see [state owners](#isolated-state-owners). |
 //! | `install(plan)` | Makes a valid plan active, at once or at a cut; see [installations](#installations). |
 //! | `cancel` | Cancels the cut in flight, if it can be; see [installations](#installations). |
@@ -52,14 +52,56 @@
 //!
 //! The trace states two clocks. Each `admit` carries the admission time its source stamped, and each `advance` the
 //! host time of a flush tick, which is also the wall clock the tick reads. Ticks follow a monotonic timer, so `advance`
-//! clocks never decrease. A batch may be stamped earlier than the last tick, as a batch that waited in a queue would
-//! be: it **arrives** at the later of the last tick and its admission time.
+//! clocks never decrease, unless the wall clock they read jumps back by more than the clock-reset threshold, which
+//! starts a new timeline for the ticks as for the admission clocks. A batch may be stamped earlier than the last tick,
+//! as a batch that waited in a queue would be: it **arrives** at the later of the last tick and its admission time.
 //!
 //! A source's admission clock stamps the later of its latest time and the wall clock, so its admission times never
 //! decrease, except at a **clock reset**: a stamp more than the
-//! [clock-reset threshold][crate::limits::values::CLOCK_RESET_THRESHOLD] earlier than the point's latest one resets
-//! its clock, which continues in a new epoch. A stamp earlier by no more than the threshold is an error: the clock
-//! would have stamped its latest time again, so the trace states that time instead.
+//! [clock-reset threshold][crate::limits::values::CLOCK_RESET_THRESHOLD] earlier than the clock's latest one resets
+//! it, and it continues in a new epoch. A stamp earlier than its own point's latest one by no more than the threshold
+//! is an error: the clock would have stamped its latest time again, so the trace states that time instead.
+//!
+//! # Lanes
+//!
+//! A source given lanes ([`Interpreter::with_source_lanes`]) admits at each lane as an admission point of its own, as
+//! the producer lanes of a partitioned frame do, and every lane stamps by the source's **one clock**: one latest time,
+//! one epoch, and one reset decision, so a backward jump at any lane is one reset for every lane, and a lane that has
+//! not stamped since stamps its next batch in the new epoch. The trace is in arrival order, and lanes reach a state
+//! owner on paths of their own, so a lane may state a stamp earlier than another lane's latest one: within the
+//! threshold that is no reset, and only each lane's own stamps must not move back. A state owner's watermark is the
+//! earliest of its lanes' latest times; a lane that has stamped nothing holds it back.
+//!
+//! The interpreter has no lanes of its own beyond that: one instance per lineage holds every lane's contexts, and is
+//! the lane-less oracle that a frame's state lanes, which share their lineage's tick and flush rules, are checked
+//! against. A cut's boundary records each lane at its clock's epoch, and is armed from the clock's latest time.
+//!
+//! **Reset windows.** A state owner whose upstream points are the lanes of one source runs a reset as the shared [reset
+//! window][crate::runtime::state::rules::ResetWindow] says, as a state lane does: the first header of a newer epoch
+//! from any lane opens the window, and every instance holding older-epoch data stops ticking (a tick waiting at the
+//! gate is dropped). A lineage's first newer-epoch data gets a fresh, empty instance of that epoch, which inherits the
+//! lineage's cut, while the older-epoch instance waits. Once every lane has stamped in the newest epoch, the window
+//! closes: each older epoch, oldest first, drains at its own watermark (each lane's final latest time in it, a lane
+//! that skipped it left out), a cut-retiring instance at the cut's time at the latest and, in the cut's publication
+//! epoch, for good; the output clock starts a new epoch after each; and each lineage continues on its newest-epoch
+//! instance, or on its drained one, empty. A retiring lineage inside a window crosses at its close; its cut finalizes
+//! once every point passed it, as the installer does, and the program the lineage served stays live until its final
+//! flush. With one lane the window opens and closes on one header, which is a reset at one point. A state
+//! owner over points of several clocks keeps the one-point rule at each of them: a reset drains everything it holds.
+//!
+//! # Candidate mode
+//!
+//! [`Interpreter::with_candidates`] records, for every bucket of every series an isolated state owner emits, what an
+//! interleaving of its lanes could have made it hold instead ([`Candidates`]): each admission point's last admission
+//! into the bucket (untimestamped values in the bucket of their admission time, timestamped ones at their timestamps,
+//! as aggregation buckets them), with its kind as the state owner emits it (aggregation emits a counter as a rate over
+//! its bucket width), a gauge's value, the instance and epoch that admitted it, and its place among the run's
+//! admissions; and the kinds and metadata the series' entry was admitted with. Each emitted record carries the
+//! candidates of every bucket of its entry through everything downstream (a stateless kernel runs a tagged record
+//! alone, and whatever the record becomes carries them), and each output records them under its own view of the
+//! series, for [`compare_partitioned`][crate::equivalence::compare_partitioned]: buckets whose points a kind replaced
+//! before any flush included. The candidates of an entry's kinds and metadata cover everything admitted to the
+//! instance under its context in its epoch, which contains what the entry was admitted with while it lived.
 //!
 //! # Watermarks
 //!
@@ -93,8 +135,10 @@
 //!   [`Interpreter::with_heartbeats_at_ticks`] makes every source heartbeat at each `advance`'s clock first, so that
 //!   every tick fires at once: the no-queueing mode, in which a tick flushes exactly as native aggregation's would.
 //! - A clock reset at an upstream point runs a reset drain before the batch that caused it: the kernel flushes at the
-//!   pre-reset watermark, emits everything it holds, and continues empty, in the new timeline.
-//! - `close` finishes it at the later of the latest admission time it saw and the last tick's clock.
+//!   pre-reset watermark, emits everything it holds, and continues empty, in the new timeline. Over the lanes of one
+//!   source, the reset runs as a [reset window](#lanes), which the last lane to switch closes.
+//! - `close` finishes it at the later of the latest admission time it saw in its epoch and the last tick's clock,
+//!   closing an open reset window first.
 //! - Its time-driven output, from ticks, reset drains, final retirements, and `close`, is stamped as an admission
 //!   point of its own would stamp it: at the flush time, never earlier than its previous output in the same epoch,
 //!   which a reset drain ends. It belongs to the generation the shared rules choose when the flush starts
@@ -165,8 +209,8 @@
 //! - State owners outside an isolation fence, such as aggregation in its host component, keep their earlier rules:
 //!   they carry over only unchanged, a clock reset upstream of one is not supported, and no cut is armed while a plan
 //!   has one.
-//! - A clock reset at one of several admission points upstream of a state owner drains everything it holds, as a reset
-//!   at its only point does; how resets at several points combine arrives with the frame's repartition edges.
+//! - A clock reset at one of several admission points of different clocks upstream of a state owner drains everything
+//!   it holds, as a reset at its only point does: the frame runs no state owner over points of several clocks.
 //! - A gated tick does not fire before a batch an opaque host re-admits upstream of it: it fires at the next stamp of a
 //!   source, or the next `advance`.
 //!
@@ -178,8 +222,10 @@
 
 use std::{
     any::Any,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt,
+    num::NonZeroU64,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -195,11 +241,12 @@ use snafu::Snafu;
 
 use crate::{
     compile::LineageKey,
+    equivalence::{BucketCandidates, Candidates, ContextIdentity},
     extension::TransitionClass,
     ir::{NodeId, OutputId, PortName, SignalName},
     limits,
     model::{EventView, Kind, TimestampForm},
-    operators::{ConfiguredOperator, KernelBuildError, OperatorRegistry},
+    operators::{ConfiguredOperator, KernelBuildError, KernelSpec, OperatorRegistry},
     predicate::PredicateError,
     runtime::state::{
         rules::{CutError, OutputClock, TickGate},
@@ -220,8 +267,11 @@ pub use self::host::{AdapterError, HostBatch, HostFactory, HostFinish, HostOutpu
 mod program;
 use self::program::{AdmissionPoints, Exec, PrepareError, Program, Stamp};
 
+#[cfg(any(test, feature = "test-util"))]
+pub mod replay;
+
 mod state;
-use self::state::{CutInFlight, Instance, Instances, Retiring};
+use self::state::{CutInFlight, Instance, Instances, Retiring, SlotTime};
 
 mod trace;
 pub use self::trace::{SignalValue, Trace, TraceEvent};
@@ -396,6 +446,7 @@ pub struct RunOutput {
     loss: BTreeMap<NodeId, TurnCounters>,
     watermarks: BTreeMap<NodeId, Option<AdmissionTime>>,
     signals: BTreeMap<SignalName, SignalValue>,
+    candidates: Candidates,
 }
 
 impl RunOutput {
@@ -445,6 +496,11 @@ impl RunOutput {
     pub fn signal(&self, name: &SignalName) -> Option<SignalValue> {
         self.signals.get(name).copied()
     }
+
+    /// Returns what candidate mode recorded ([`Interpreter::with_candidates`]): empty for a run without it.
+    pub fn candidates(&self) -> &Candidates {
+        &self.candidates
+    }
 }
 
 /// What went wrong running a trace.
@@ -480,10 +536,28 @@ pub enum InterpretErrorKind {
         node: NodeId,
     },
 
-    /// An `advance` moves the host clock back.
+    /// An `admit` or `heartbeat` names a lane its source does not have.
+    #[snafu(display(
+        "Source `{}` has {} lane(s), so it has no lane {}; give it lanes with `Interpreter::with_source_lanes`",
+        node,
+        lanes,
+        lane
+    ))]
+    UnknownLane {
+        /// The source.
+        node: NodeId,
+
+        /// The lane the event names.
+        lane: u16,
+
+        /// The source's lanes.
+        lanes: u16,
+    },
+
+    /// An `advance` moves the host clock back by no more than the clock-reset threshold.
     #[snafu(display(
         "The host clock moves back from {} to {}; flush ticks follow a monotonic timer, so `advance` clocks never \
-         decrease",
+         decrease, unless the wall clock they read jumps back by more than the clock-reset threshold",
         previous,
         clock
     ))]
@@ -651,6 +725,9 @@ pub struct Interpreter<'a> {
     hosts: BTreeMap<NodeId, Box<HostFactory<'a>>>,
     heartbeats_at_ticks: bool,
     state_budget: Option<u64>,
+    candidates: bool,
+    source_lanes: BTreeMap<NodeId, u16>,
+    arrival_order: bool,
 }
 
 impl<'a> Interpreter<'a> {
@@ -662,7 +739,41 @@ impl<'a> Interpreter<'a> {
             hosts: BTreeMap::new(),
             heartbeats_at_ticks: false,
             state_budget: None,
+            candidates: false,
+            source_lanes: BTreeMap::new(),
+            arrival_order: false,
         }
+    }
+
+    /// Reads the trace's stamps in arrival order, as an arrival replay (`replay::ArrivalReplay`) states them: a lane's
+    /// stamp may be earlier than the lane's latest one by no more than the clock-reset threshold, where a trace in
+    /// stamp order would be ill-formed. The batch is bucketed by its own admission time, and the state owners
+    /// downstream see the lane's latest time unchanged, as each state lane saw its stamps in order.
+    pub fn in_arrival_order(mut self) -> Self {
+        self.arrival_order = true;
+        self
+    }
+
+    /// Makes the source `source` admit on `lanes` lanes: each lane is an admission point of its own, and every lane
+    /// stamps by the source's one clock, as the producer lanes of a partitioned frame do. A trace names the lane of
+    /// each `admit` and `heartbeat`; a source without lanes has lane 0 only.
+    ///
+    /// The interpreter itself has no lanes: every state owner downstream sees every lane's stamps, in trace order, and
+    /// its watermark is the earliest of the lanes' latest times. A lane that stamps nothing holds it back.
+    pub fn with_source_lanes(mut self, source: NodeId, lanes: u16) -> Self {
+        self.source_lanes.insert(source, lanes.max(1));
+        self
+    }
+
+    /// Records, for every emitted gauge point, the last value each admission point admitted to its bucket, and for
+    /// every entry the kinds and metadata admitted while it lived, carried with each emitted record to the outputs
+    /// ([`RunOutput::candidates`]): what [`compare_partitioned`][crate::equivalence::compare_partitioned] checks a
+    /// partitioned execution's gauges, kinds, and metadata against.
+    ///
+    /// See [candidate mode](#candidate-mode) for what is recorded, and how.
+    pub fn with_candidates(mut self) -> Self {
+        self.candidates = true;
+        self
     }
 
     /// Makes every source of the live plans send a heartbeat at each `advance`'s clock before the tick, unless it
@@ -719,10 +830,21 @@ impl<'a> Interpreter<'a> {
     }
 }
 
+/// What candidate mode carries with one record an isolated state owner emitted, through everything downstream of it:
+/// the candidates of every bucket of the record's entry, by timestamp.
+type RecordTag = Arc<Vec<(Option<NonZeroU64>, BucketCandidates)>>;
+
 /// A batch moving between nodes.
 struct Batch {
     header: BatchHeader,
     metrics: Vec<Metric>,
+    /// In candidate mode, the tag of each record, in order; empty when no record carries one.
+    tags: Vec<Option<RecordTag>>,
+}
+
+/// Returns the tag of the record at `index` of a batch.
+fn tag_at(tags: &[Option<RecordTag>], index: usize) -> Option<RecordTag> {
+    tags.get(index).cloned().flatten()
 }
 
 /// A batch on its way into one input port: `port` of `node`.
@@ -847,13 +969,20 @@ struct Run<'r, 'a> {
     /// The output clocks of the isolated state owners, by the admission points upstream of them, in ID order: every
     /// lineage of every state owner fed by the same points shares one, as the isolation slot running them does.
     output_clocks: BTreeMap<Vec<AdmissionPointId>, OutputClock>,
+    /// The time of each isolation slot, by the same key: its points' progress and its reset window.
+    slots: BTreeMap<Vec<AdmissionPointId>, SlotTime>,
     cut: Option<CutInFlight>,
+    /// The generations a finalized cut replaced whose programs stay live while a lineage they served still retires
+    /// inside a reset window: its final flush runs through the program it served.
+    replaced: BTreeSet<GenerationId>,
     queued: Option<Queued>,
     generations: u64,
     closed: bool,
     last_rejection: Option<String>,
     output: RunOutput,
     capacity: OutputCapacity,
+    /// The admissions to isolated state owners so far, which order candidate mode's records.
+    admissions: u64,
 }
 
 impl<'r, 'a> Run<'r, 'a> {
@@ -871,13 +1000,16 @@ impl<'r, 'a> Run<'r, 'a> {
                 .state_budget
                 .map_or_else(StateBudgets::unlimited, StateBudgets::new),
             output_clocks: BTreeMap::new(),
+            slots: BTreeMap::new(),
             cut: None,
+            replaced: BTreeSet::new(),
             queued: None,
             generations: 0,
             closed: false,
             last_rejection: None,
             output: RunOutput::default(),
             capacity: OutputCapacity::default(),
+            admissions: 0,
         }
     }
 
@@ -919,10 +1051,15 @@ impl<'r, 'a> Run<'r, 'a> {
         match event {
             TraceEvent::Admit {
                 source,
+                lane,
                 admitted_at,
                 batch,
-            } => self.admit(source, *admitted_at, batch),
-            TraceEvent::Heartbeat { source, admitted_at } => self.admit(source, *admitted_at, &[]),
+            } => self.admit(source, *lane, *admitted_at, batch),
+            TraceEvent::Heartbeat {
+                source,
+                lane,
+                admitted_at,
+            } => self.admit(source, *lane, *admitted_at, &[]),
             TraceEvent::Advance { clock } => self.advance(*clock),
             TraceEvent::Install { plan } => self.install(position, plan),
             TraceEvent::Capacity { output, limit } => {
@@ -959,9 +1096,9 @@ impl<'r, 'a> Run<'r, 'a> {
 
     // Admission.
 
-    /// Stamps a batch at a source and delivers it; an empty batch is a heartbeat.
+    /// Stamps a batch at lane `lane` of a source and delivers it; an empty batch is a heartbeat.
     fn admit(
-        &mut self, source: &NodeId, admitted_at: AdmissionTime, batch: &[Metric],
+        &mut self, source: &NodeId, lane: u16, admitted_at: AdmissionTime, batch: &[Metric],
     ) -> Result<(), InterpretErrorKind> {
         let active = self.active_id().ok_or_else(|| self.no_active_plan())?;
         let limit = batch_size();
@@ -971,8 +1108,8 @@ impl<'r, 'a> Run<'r, 'a> {
                 limit,
             });
         }
-        // The source's admission point is the host's, whichever live plan names it.
-        let point = std::iter::once(active)
+        // The source's admission points are the host's, whichever live plan names it.
+        let group = std::iter::once(active)
             .chain(self.programs.keys().copied().filter(|id| *id != active))
             .find_map(|id| {
                 let program = self.programs.get(&id)?;
@@ -984,16 +1121,21 @@ impl<'r, 'a> Run<'r, 'a> {
                 program.points[node].first().copied().flatten()
             })
             .ok_or_else(|| InterpretErrorKind::UnknownSource { node: source.clone() })?;
+        let point = group.lane(lane).ok_or_else(|| InterpretErrorKind::UnknownLane {
+            node: source.clone(),
+            lane,
+            lanes: group.lanes,
+        })?;
 
-        let stamp =
-            self.points
-                .admit(point, admitted_at)
-                .map_err(|previous| InterpretErrorKind::AdmissionTimeMovedBack {
-                    point: self.points.name(point),
-                    previous,
-                    admitted_at,
-                    threshold: self.points.reset_threshold(),
-                })?;
+        let stamp = self
+            .points
+            .admit(point, admitted_at, self.interpreter.arrival_order)
+            .map_err(|previous| InterpretErrorKind::AdmissionTimeMovedBack {
+                point: self.points.name(point),
+                previous,
+                admitted_at,
+                threshold: self.points.reset_threshold(),
+            })?;
         let generation = self.generation_for(point, &stamp)?;
         let header = BatchHeader {
             admitted_at: Some(stamp.admitted_at),
@@ -1050,7 +1192,7 @@ impl<'r, 'a> Run<'r, 'a> {
             .ok_or_else(|| InterpretErrorKind::UnknownSource { node: source.clone() })?;
         check_port_type(program, node, 0, batch)?;
         let mut queue = Queue::new();
-        forward(program, &mut queue, node, 0, header, batch.to_vec())?;
+        forward(program, &mut queue, node, 0, header, batch.to_vec(), Vec::new())?;
         self.pass(program, queue, arrival, |_, _, _| Ok(Queue::new()))
     }
 
@@ -1121,7 +1263,7 @@ impl<'r, 'a> Run<'r, 'a> {
     fn run_node(
         &mut self, program: &Program, node: usize, exec: &mut Exec, batch: Batch, now: AdmissionTime,
     ) -> Result<Queue, InterpretErrorKind> {
-        let Batch { header, metrics } = batch;
+        let Batch { header, metrics, tags } = batch;
         let ports = port_count(program, node);
         let id = &program.nodes[node].id;
         let mut queue = Queue::new();
@@ -1137,27 +1279,62 @@ impl<'r, 'a> Run<'r, 'a> {
                 false_port,
             } => {
                 let (mut matched, mut unmatched) = (Vec::new(), Vec::new());
-                for metric in metrics {
+                let (mut matched_tags, mut unmatched_tags) = (Vec::new(), Vec::new());
+                for (index, metric) in metrics.into_iter().enumerate() {
+                    let tag = tag_at(&tags, index);
                     if predicate.evaluate(&mut EventView::new(&metric)) {
                         matched.push(metric);
+                        matched_tags.push(tag);
                     } else {
                         unmatched.push(metric);
+                        unmatched_tags.push(tag);
                     }
                 }
-                forward(program, &mut queue, node, *true_port, header.clone(), matched)?;
-                forward(program, &mut queue, node, *false_port, header, unmatched)?;
+                if tags.is_empty() {
+                    matched_tags.clear();
+                    unmatched_tags.clear();
+                }
+                forward(
+                    program,
+                    &mut queue,
+                    node,
+                    *true_port,
+                    header.clone(),
+                    matched,
+                    matched_tags,
+                )?;
+                forward(
+                    program,
+                    &mut queue,
+                    node,
+                    *false_port,
+                    header,
+                    unmatched,
+                    unmatched_tags,
+                )?;
             }
             Exec::Tee => {
                 // Every port but the last receives a copy; the last receives the original.
                 if let Some(last) = ports.checked_sub(1) {
                     for port in 0..last {
-                        forward(program, &mut queue, node, port, header.clone(), metrics.clone())?;
+                        forward(
+                            program,
+                            &mut queue,
+                            node,
+                            port,
+                            header.clone(),
+                            metrics.clone(),
+                            tags.clone(),
+                        )?;
                     }
-                    forward(program, &mut queue, node, last, header, metrics)?;
+                    forward(program, &mut queue, node, last, header, metrics, tags)?;
                 }
             }
-            Exec::Merge => forward(program, &mut queue, node, 0, header, metrics)?,
+            Exec::Merge => forward(program, &mut queue, node, 0, header, metrics, tags)?,
             Exec::Emit(output) => {
+                if !tags.is_empty() {
+                    self.record_candidates(output, &metrics, &tags);
+                }
                 let generation = program.generation.id();
                 let record = |metric| EmittedRecord {
                     generation,
@@ -1190,30 +1367,72 @@ impl<'r, 'a> Run<'r, 'a> {
             }
             Exec::Kernel {
                 kernel: Some(kernel), ..
+            } if tags.iter().any(Option::is_some) => {
+                // A stateless kernel's output does not depend on how its input is cut into batches, so tagged records
+                // run one at a time, and whatever each one becomes carries its tag.
+                for (index, metric) in metrics.into_iter().enumerate() {
+                    let tag = tag_at(&tags, index);
+                    let mut input = to_buffer(vec![metric])?;
+                    let mut call = KernelCall::new(&header, self.instant(now), ports);
+                    call.repeat(id, |turn| kernel.consume(turn, &mut input))?;
+                    call.outputs.complete(input);
+                    queue.extend(self.kernel_output(program, node, call, &header, |_| tag.clone())?);
+                }
+            }
+            Exec::Kernel {
+                kernel: Some(kernel), ..
             } => {
                 let mut input = to_buffer(metrics)?;
                 let mut call = KernelCall::new(&header, self.instant(now), ports);
                 call.repeat(id, |turn| kernel.consume(turn, &mut input))?;
                 call.outputs.complete(input);
-                queue = self.kernel_output(program, node, call, &header)?;
+                queue = self.kernel_output(program, node, call, &header, |_| None)?;
             }
             Exec::State {
-                instance: Some(index),
+                instance: Some(bound),
                 step,
-                ..
+                spec,
             } => {
-                let mut input = to_buffer(metrics)?;
+                let Some(index) = self.state_instance(program, node, *bound, spec, &header)? else {
+                    // A batch of an epoch the slot already closed: its timeline's instances drained.
+                    let points = metrics.iter().map(|metric| metric.values().len() as u64).sum();
+                    self.output.loss.entry(id.clone()).or_default().record_loss(
+                        LossClass::Invalid,
+                        metrics.len() as u64,
+                        points,
+                    );
+                    return Ok(queue);
+                };
                 let step = step.clone();
                 let mut call = KernelCall::new(&header, self.instant(now), ports).with_param(step.as_deref());
-                let Some(instance) = self.instances.get_mut(*index) else {
+                let Some(instance) = self.instances.get_mut(index) else {
                     return Err(InterpretErrorKind::Internal {
                         message: format!("node `{}` binds instance {}, which is gone", id, index),
                     });
                 };
+                if let (Some(admitted), Some(point), Some(admitted_at)) =
+                    (&mut instance.admitted, header.admission_point, header.admitted_at)
+                {
+                    // One entry per instance and epoch: a lineage that continues in a newer epoch starts its entries
+                    // anew.
+                    let entry = (index as u64) << 32 | u64::from(instance.epoch);
+                    for metric in &metrics {
+                        self.admissions += 1;
+                        admitted.entry(ContextIdentity::of(metric)).or_default().admit(
+                            point,
+                            admitted_at,
+                            instance.width,
+                            metric,
+                            entry,
+                            self.admissions,
+                        );
+                    }
+                }
+                let mut input = to_buffer(metrics)?;
                 let kernel = &mut instance.kernel;
                 call.repeat(id, |turn| kernel.consume(turn, &mut input))?;
                 call.outputs.complete(input);
-                queue = self.kernel_output(program, node, call, &header)?;
+                queue = self.kernel_output(program, node, call, &header, |_| None)?;
             }
             Exec::Host(Some(adapter)) => {
                 let mut output = HostOutput::new(ports);
@@ -1236,6 +1455,61 @@ impl<'r, 'a> Run<'r, 'a> {
         Ok(queue)
     }
 
+    /// Returns the instance of the lineage bound at `bound` that admits a batch with `header`: the bound one, or,
+    /// inside a reset window, the lineage's instance of the batch's epoch, which the batch's first data of that epoch
+    /// creates, empty, from the lineage's kernel spec, with the lineage's cut. Returns `None` for a batch of an epoch
+    /// the slot already closed, which no instance holds.
+    fn state_instance(
+        &mut self, program: &Program, node: usize, bound: usize, spec: &KernelSpec, header: &BatchHeader,
+    ) -> Result<Option<usize>, InterpretErrorKind> {
+        let id = &program.nodes[node].id;
+        let Some(instance) = self.instances.get(bound) else {
+            return Err(InterpretErrorKind::Internal {
+                message: format!("node `{}` binds instance {}, which is gone", id, bound),
+            });
+        };
+        let Some(slot) = self.slots.get(&instance.output_clock()).filter(|slot| slot.one_clock) else {
+            return Ok(Some(bound));
+        };
+        if instance.epoch == header.epoch {
+            return Ok(Some(bound));
+        }
+        let existing = self.instances.indices().into_iter().find(|&index| {
+            self.instances
+                .get(index)
+                .is_some_and(|other| !other.retired && other.root(index) == bound && other.epoch == header.epoch)
+        });
+        if existing.is_some() {
+            return Ok(existing);
+        }
+        if !slot.window.holds(header.epoch) {
+            return Ok(None);
+        }
+        let reset_retiring = slot.window.is_open() && header.epoch != slot.window.target();
+        let kernel =
+            program::build_state_kernel(id, spec, self.budgets.context_budget(id)).map_err(|error| match error {
+                PrepareError::Fatal(kind) => kind,
+                PrepareError::Rejected(rejection) => InterpretErrorKind::Internal {
+                    message: format!("a reset window's instance of `{}` does not build: {}", id, rejection),
+                },
+            })?;
+        let fresh = Instance {
+            key: instance.key.clone(),
+            kernel,
+            tracker: instance.tracker.clone(),
+            gated: None,
+            last_flush: None,
+            retiring: instance.retiring.clone(),
+            retired: false,
+            epoch: header.epoch,
+            primary: Some(bound),
+            reset_retiring,
+            width: instance.width,
+            admitted: instance.admitted.as_ref().map(|_| BTreeMap::new()),
+        };
+        Ok(Some(self.instances.insert(fresh)))
+    }
+
     /// Adds loss a node reported to its tally in the run's output.
     fn tally_loss(&mut self, node: &NodeId, counters: &TurnCounters) {
         if counters.is_empty() {
@@ -1248,10 +1522,29 @@ impl<'r, 'a> Run<'r, 'a> {
         }
     }
 
-    /// Collects a kernel call's loss counts, and turns its output into deliveries carrying `header`.
-    fn kernel_output(
-        &mut self, program: &Program, node: usize, call: KernelCall, header: &BatchHeader,
-    ) -> Result<Queue, InterpretErrorKind> {
+    /// Records, in candidate mode, the candidates of every point of the tagged records `output` receives, under the
+    /// output's own view of each record's context.
+    fn record_candidates(&mut self, output: &OutputId, metrics: &[Metric], tags: &[Option<RecordTag>]) {
+        for (index, metric) in metrics.iter().enumerate() {
+            let Some(tag) = tag_at(tags, index) else { continue };
+            let context = ContextIdentity::of(metric);
+            // Every bucket of the record's entry, those whose points a kind replaced included.
+            for (timestamp, bucket) in tag.iter() {
+                self.output
+                    .candidates
+                    .add((output.clone(), context.clone(), *timestamp), bucket);
+            }
+        }
+    }
+
+    /// Collects a kernel call's loss counts, and turns its output into deliveries carrying `header`, each record with
+    /// the tag `tag_of` gives it.
+    fn kernel_output<T>(
+        &mut self, program: &Program, node: usize, call: KernelCall, header: &BatchHeader, tag_of: T,
+    ) -> Result<Queue, InterpretErrorKind>
+    where
+        T: Fn(&Metric) -> Option<RecordTag>,
+    {
         let KernelCall {
             mut outputs, counters, ..
         } = call;
@@ -1267,7 +1560,11 @@ impl<'r, 'a> Run<'r, 'a> {
                     .map(Event::try_into_metric)
                     .collect::<Option<Vec<_>>>()
                     .ok_or_else(|| InterpretErrorKind::NonMetricEvent { node: id.clone() })?;
-                forward(program, &mut queue, node, port, header.clone(), metrics)?;
+                let mut tags = metrics.iter().map(&tag_of).collect::<Vec<_>>();
+                if tags.iter().all(Option::is_none) {
+                    tags.clear();
+                }
+                forward(program, &mut queue, node, port, header.clone(), metrics, tags)?;
             }
         }
         Ok(queue)
@@ -1285,7 +1582,12 @@ impl<'r, 'a> Run<'r, 'a> {
         let mut queue = Queue::new();
         let limit = batch_size();
         for (port, metrics) in ports.into_iter().enumerate() {
-            let Some(point) = program.points[node].get(port).copied().flatten() else {
+            let Some(point) = program.points[node]
+                .get(port)
+                .copied()
+                .flatten()
+                .map(|group| group.first)
+            else {
                 return Err(InterpretErrorKind::Internal {
                     message: format!("opaque host `{}` has no admission point", program.nodes[node].id),
                 });
@@ -1314,7 +1616,7 @@ impl<'r, 'a> Run<'r, 'a> {
             let mut metrics = metrics.into_iter().peekable();
             while metrics.peek().is_some() {
                 let chunk = metrics.by_ref().take(limit).collect();
-                forward(program, &mut queue, node, port, header.clone(), chunk)?;
+                forward(program, &mut queue, node, port, header.clone(), chunk, Vec::new())?;
             }
         }
         Ok(queue)
@@ -1384,6 +1686,7 @@ where
 /// delivered.
 fn forward(
     program: &Program, queue: &mut Queue, node: usize, port: usize, header: BatchHeader, metrics: Vec<Metric>,
+    tags: Vec<Option<RecordTag>>,
 ) -> Result<(), InterpretErrorKind> {
     if metrics.is_empty() {
         return Ok(());
@@ -1396,7 +1699,7 @@ fn forward(
     queue.push(Delivery {
         node: target,
         port: input,
-        batch: Batch { header, metrics },
+        batch: Batch { header, metrics, tags },
     });
     Ok(())
 }
@@ -1548,6 +1851,8 @@ mod compatibility_tests;
 mod default_program_tests;
 #[cfg(test)]
 mod isolated_tests;
+#[cfg(test)]
+mod lane_tests;
 #[cfg(test)]
 pub(crate) mod test_operators;
 #[cfg(test)]

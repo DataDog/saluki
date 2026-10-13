@@ -1,6 +1,12 @@
 //! The physical sections of explain documents: the frame, its slots, fences, exits, and direct edges, rewrite R1's
 //! fusion decisions, segments, and output bindings. Isolation slots, the admission points that feed their state owners,
 //! and the exits that carry those points' progress are marked; documents without them read as they always did.
+//!
+//! A frame laid out on lanes ([`LanePolicy`][crate::compile::LanePolicy]) says so: its lane counts and whether R1
+//! pipelines its slots, the lanes of every admission point and slot, how every edge into a slot with lanes reaches its
+//! lanes (with the key groups each lane owns behind a keyed exit), and the output point of every lane of an isolation
+//! slot. A frame on one lane, laid out with R1's pipelining, has none of these members, so its document reads as it
+//! did before lanes, and a document without them reads as one on one lane.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -10,7 +16,10 @@ use serde_json::Value;
 
 use super::boundary_name;
 use crate::{
-    compile::{ExitIndex, Frame, FrameSource, FrameTarget, FusionVerdict, Placement, Site, SlotId, SlotKind},
+    compile::{
+        ExitIndex, ExitRouting, Frame, FrameSource, FrameTarget, FusionVerdict, Placement, PointRouting, Site, SlotId,
+        SlotKind,
+    },
     extension::DeliveryPolicy,
     ir::{NodeId, OperatorName, OutputId, Plan, PortName, PortRef, RecipientId},
     operators::names,
@@ -19,6 +28,11 @@ use crate::{
 /// How a plan runs: the frame built at boot, and where the plan's nodes run in it.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PhysicalPlan {
+    /// The lanes the frame was laid out on, and whether R1's cost model pipelines its slots; left out for a frame on
+    /// one lane laid out with pipelining, as every frame was before lanes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<LayoutEntry>,
+
     /// The fixed components: the fences of the boot plan, each run by a host component of its own.
     pub fixed: Vec<FixedEntry>,
 
@@ -36,6 +50,26 @@ pub struct PhysicalPlan {
 
     /// Every output's binding: its recipients, delivery policy, and what feeds its encoder.
     pub output_bindings: Vec<OutputBindingEntry>,
+}
+
+/// The lanes a frame was laid out on, and whether R1's cost model pipelines its slots.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct LayoutEntry {
+    /// The admission points of the DogStatsD source's metrics, and the lanes of the slot they feed: the producer
+    /// lanes.
+    pub dogstatsd_lanes: u16,
+
+    /// The lanes of each isolation slot whose state owner's state is partitioned, fed by other slots' exits only: the
+    /// state lanes.
+    pub state_lanes: u16,
+
+    /// The lanes of each fused slot with no state owner downstream that the DogStatsD points do not feed: the
+    /// post-aggregation lanes.
+    pub post_lanes: u16,
+
+    /// Whether R1's cost model cuts chains of synchronous nodes into pipelined slots; without it, fusion is maximal
+    /// between fences.
+    pub pipelining: bool,
 }
 
 /// One fixed component.
@@ -63,8 +97,13 @@ pub struct FixedEntry {
 /// One admission point.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct AdmissionPointEntry {
-    /// The point's ID.
+    /// The point's ID: with lanes, its first lane's.
     pub id: u32,
+
+    /// The number of lanes of the output, each an admission point of its own, with consecutive IDs from `id`: one,
+    /// which documents leave out, for an output without lanes.
+    #[serde(default = "one_lane", skip_serializing_if = "is_one_lane")]
+    pub lanes: u16,
 
     /// The output port.
     pub port: PortName,
@@ -75,6 +114,12 @@ pub struct AdmissionPointEntry {
     /// Where the port's physical edge leads, or `None` if the port has none.
     pub to: Option<String>,
 
+    /// How the edge reaches the lanes of the slot it leads to: `fixed` (lane by lane) or `spread` (each buffer to the
+    /// first lane with room); `one`, which documents leave out, when the slot runs one lane or the edge leads to no
+    /// slot.
+    #[serde(default = "one_routing", skip_serializing_if = "is_one_routing")]
+    pub routing: String,
+
     /// Whether the point feeds a state owner: it sends heartbeats toward it, and a cut is armed over it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub feeds_state: bool,
@@ -84,13 +129,35 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+fn one_lane() -> u16 {
+    1
+}
+
+fn is_one_lane(lanes: &u16) -> bool {
+    *lanes == 1
+}
+
+fn one_routing() -> String {
+    ExitRouting::One.name().to_string()
+}
+
+fn is_one_routing(routing: &str) -> bool {
+    routing == ExitRouting::One.name()
+}
+
 /// What an isolation slot is: the region of one state owner, which owns its state, watermark, and flush ticks.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct IsolationEntry {
-    /// The ID that stamps the slot's time-driven output.
+    /// The ID that stamps the slot's time-driven output: with lanes, its first lane's.
     pub output_point: u32,
 
-    /// The admission points whose latest admission times make up its watermark.
+    /// The IDs that stamp each lane's time-driven output, in lane order, for a slot on several lanes; left out for a
+    /// slot on one lane, whose ID is `output_point`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub output_points: Vec<u32>,
+
+    /// The admission points whose latest admission times make up its watermark: every lane's point of a point with
+    /// lanes.
     pub upstream: Vec<u32>,
 }
 
@@ -105,6 +172,11 @@ pub struct SlotEntry {
     /// is not priced: its cost is zero, whatever its state owner's work.
     #[serde(default)]
     pub cost: u32,
+
+    /// The number of lanes the slot runs on, each a task with an input of its own: one, which documents leave out, for
+    /// a slot without lanes.
+    #[serde(default = "one_lane", skip_serializing_if = "is_one_lane")]
+    pub lanes: u16,
 
     /// The explained plan's nodes in the slot, in plan order.
     pub nodes: Vec<NodeId>,
@@ -152,6 +224,29 @@ pub struct ExitEntry {
     /// without output on it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub progress_points: Vec<u32>,
+
+    /// How the exit reaches the lanes of the slot it leads to: `keyed` (each event by its partition key, through the
+    /// key groups), `affinity` (lane `i` to lane `i` modulo the target's lanes), or `spread` (each buffer to the first
+    /// lane with room); `one`, which documents leave out, when the target runs one lane or is no slot.
+    #[serde(default = "one_routing", skip_serializing_if = "is_one_routing")]
+    pub routing: String,
+
+    /// For a keyed exit, the key groups each lane of the target owns, in lane order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub key_groups: Vec<KeyGroupsEntry>,
+}
+
+/// The key groups one lane of a state owner's isolation slot owns, behind a keyed exit: a contiguous range.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct KeyGroupsEntry {
+    /// The lane.
+    pub lane: u16,
+
+    /// The first group the lane owns.
+    pub first: u16,
+
+    /// The last group the lane owns.
+    pub last: u16,
 }
 
 /// One physical edge.
@@ -166,6 +261,11 @@ pub struct PhysicalEdgeEntry {
     /// `exit` for a slot's exit, `admission` for an admission point's edge to a slot, and `direct` for an admission
     /// point's edge straight to a fixed component or an output.
     pub kind: String,
+
+    /// How the edge reaches the lanes of the slot it leads to, as its exit or admission point says; `one`, which
+    /// documents leave out, when the target runs one lane or is no slot.
+    #[serde(default = "one_routing", skip_serializing_if = "is_one_routing")]
+    pub routing: String,
 }
 
 /// One fusion decision.
@@ -187,8 +287,14 @@ pub struct FusionEntry {
 /// One segment: the part of the plan between one admission point and the next.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct SegmentEntry {
-    /// The admission point's ID.
+    /// The admission point's ID: with lanes, its first lane's.
     pub admission_point: u32,
+
+    /// The number of points the segment starts at, with consecutive IDs from `admission_point`: the lanes of a point
+    /// with lanes, or of an isolation slot on lanes, each lane of which stamps its time-driven output at a point of its
+    /// own. One, which documents leave out, without lanes.
+    #[serde(default = "one_lane", skip_serializing_if = "is_one_lane")]
+    pub lanes: u16,
 
     /// The admission point's port.
     pub from: PortRef,
@@ -259,6 +365,14 @@ impl PhysicalPlan {
         let slot_name = |slot: SlotId| frame.describe_target(&FrameTarget::Slot(slot));
         let present = plan.nodes.iter().map(|node| &node.id).collect::<BTreeSet<_>>();
 
+        let (lanes, options) = (frame.lane_policy(), frame.options());
+        let layout = (!lanes.is_one() || !options.pipelining).then_some(LayoutEntry {
+            dogstatsd_lanes: lanes.dogstatsd,
+            state_lanes: lanes.state,
+            post_lanes: lanes.post,
+            pipelining: options.pipelining,
+        });
+
         let fixed = frame
             .fixed()
             .iter()
@@ -274,9 +388,11 @@ impl PhysicalPlan {
                     .filter_map(|&id| frame.admission_point(id))
                     .map(|point| AdmissionPointEntry {
                         id: point.id.get(),
+                        lanes: point.lanes,
                         port: point.port.clone(),
                         mode: mode_name(point.mode).to_string(),
                         to: point.route.as_ref().map(|target| frame.describe_target(target)),
+                        routing: point.routing.name().to_string(),
                         feeds_state: point.feeds_state,
                     })
                     .collect(),
@@ -291,6 +407,7 @@ impl PhysicalPlan {
                 SlotEntry {
                     name: slot.name.to_string(),
                     cost: slot.cost,
+                    lanes: slot.lanes,
                     nodes: placed.map(|placed| placed.nodes.clone()).unwrap_or_default(),
                     entries: placed
                         .map(|placed| {
@@ -314,11 +431,22 @@ impl PhysicalPlan {
                             to: frame.describe_target(&exit.target),
                             idle: placement.is_idle(slot.id, exit.index),
                             progress_points: exit.progress_points.iter().map(|point| point.get()).collect(),
+                            routing: exit.routing.name().to_string(),
+                            key_groups: key_groups(&exit.routing),
                         })
                         .collect(),
                     isolation: match &slot.kind {
-                        SlotKind::Isolation { output_point, upstream } => Some(IsolationEntry {
-                            output_point: output_point.get(),
+                        SlotKind::Isolation {
+                            output_points,
+                            upstream,
+                        } => Some(IsolationEntry {
+                            // Lane 0's is the slot's output point without lanes.
+                            output_point: output_points.first().map_or(0, |point| point.get()),
+                            output_points: if output_points.len() > 1 {
+                                output_points.iter().map(|point| point.get()).collect()
+                            } else {
+                                Vec::new()
+                            },
                             upstream: upstream.iter().map(|point| point.get()).collect(),
                         }),
                         SlotKind::Fused => None,
@@ -337,6 +465,17 @@ impl PhysicalPlan {
                     (FrameSource::Exit { .. }, _) => "exit",
                     (FrameSource::Admission(_), FrameTarget::Slot(_)) => "admission",
                     (FrameSource::Admission(_), _) => "direct",
+                }
+                .to_string(),
+                routing: match edge.from {
+                    FrameSource::Admission(point) => frame
+                        .admission_point(point)
+                        .map_or(PointRouting::One, |point| point.routing)
+                        .name(),
+                    FrameSource::Exit { slot, exit } => frame
+                        .slot(slot)
+                        .and_then(|slot| slot.exits.get(exit.get()))
+                        .map_or(ExitRouting::One.name(), |exit| exit.routing.name()),
                 }
                 .to_string(),
             })
@@ -460,6 +599,7 @@ impl PhysicalPlan {
             .collect();
 
         Self {
+            layout,
             fixed,
             slots,
             edges,
@@ -468,6 +608,31 @@ impl PhysicalPlan {
             output_bindings,
         }
     }
+
+    /// Returns the physical sections alone as human-readable text, as [`Explain::to_text`][super::Explain::to_text]
+    /// renders them after the logical ones, with a trailing newline. The output is deterministic.
+    pub fn to_text(&self) -> String {
+        super::text::render_physical(self)
+    }
+}
+
+/// Returns the key groups each lane of a keyed exit's target owns, in lane order: nothing for an exit that is not
+/// keyed.
+fn key_groups(routing: &ExitRouting) -> Vec<KeyGroupsEntry> {
+    let ExitRouting::Keyed(groups) = routing else {
+        return Vec::new();
+    };
+    (0..groups.lanes())
+        .filter_map(|lane| {
+            let owned = groups.groups_of(lane);
+            // Groups are below 256, and a lane owns none only when there are more lanes than groups.
+            Some(KeyGroupsEntry {
+                lane,
+                first: owned.start as u16,
+                last: owned.end.checked_sub(1).filter(|_| !owned.is_empty())? as u16,
+            })
+        })
+        .collect()
 }
 
 /// Returns the exits, as `(slot, exit)`, by which the plan's edges into `emit`s to `output` leave their slots toward
@@ -499,7 +664,8 @@ fn emitting_exits(
 
 /// Returns the segment of every admission point of the frame whose fixed component the plan has, then the segment of
 /// every state owner the isolation slots run, which starts at its slot's output point: its time-driven output is
-/// stamped anew there.
+/// stamped anew there. The lanes of a point, or of an isolation slot, share one segment, which starts at all of their
+/// points.
 fn segments(plan: &Plan, frame: &Frame, placement: &Placement) -> Vec<SegmentEntry> {
     let index = plan
         .nodes
@@ -514,7 +680,7 @@ fn segments(plan: &Plan, frame: &Frame, placement: &Placement) -> Vec<SegmentEnt
         leaving.insert(edge.from.clone(), &edge.to.node);
     }
 
-    let segment = |admission_point: u32, from: PortRef, mode: &str| {
+    let segment = |admission_point: u32, lanes: u16, from: PortRef, mode: &str| {
         let mut reached = BTreeSet::new();
         let mut ends = Vec::new();
         let mut pending = leaving.get(&from).copied().into_iter().collect::<Vec<_>>();
@@ -561,6 +727,7 @@ fn segments(plan: &Plan, frame: &Frame, placement: &Placement) -> Vec<SegmentEnt
         ends.sort();
         SegmentEntry {
             admission_point,
+            lanes,
             from,
             mode: mode.to_string(),
             nodes,
@@ -575,11 +742,11 @@ fn segments(plan: &Plan, frame: &Frame, placement: &Placement) -> Vec<SegmentEnt
         .filter(|point| index.contains_key(&point.node))
         .map(|point| {
             let from = PortRef::new(point.node.clone(), point.port.clone());
-            segment(point.id.get(), from, mode_name(point.mode))
+            segment(point.id.get(), point.lanes, from, mode_name(point.mode))
         })
         .collect::<Vec<_>>();
     for (slot, placed) in frame.slots().iter().zip(placement.slots()) {
-        let SlotKind::Isolation { output_point, .. } = &slot.kind else {
+        let Some(output_point) = slot.output_point(0) else {
             continue;
         };
         for node in &placed.nodes {
@@ -591,7 +758,7 @@ fn segments(plan: &Plan, frame: &Frame, placement: &Placement) -> Vec<SegmentEnt
                 .map(|edge| edge.from.clone())
                 .collect::<BTreeSet<_>>();
             for from in ports {
-                segments.push(segment(output_point.get(), from, "time-driven"));
+                segments.push(segment(output_point.get(), slot.lanes, from, "time-driven"));
             }
         }
     }
@@ -628,6 +795,7 @@ mod tests {
             agg.isolation,
             Some(IsolationEntry {
                 output_point: 5,
+                output_points: Vec::new(),
                 upstream: vec![0],
             })
         );

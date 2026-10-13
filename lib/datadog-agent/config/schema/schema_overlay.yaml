@@ -1120,6 +1120,10 @@ inventory:
 
       If you previously set `dogstatsd_mapper_cache_size: 0` in the core agent to turn off the
       mapper, clear `dogstatsd_mapper_profiles` instead when running ADP.
+
+      With `experimental.programmable_metrics.lanes.mode: auto`, the default, the size is per
+      producer lane: each producer lane of the metrics path keeps a cache of its own of this size,
+      so the memory bounds count it once for every producer lane.
     issue: "#1687"
     test_support:
       used_by: [TypedConfigSystem]
@@ -1363,7 +1367,7 @@ inventory:
     planned: false
     pipelines: [dogstatsd]
     description: "Auto-adjust pipeline workers"
-    documentation: "ADP uses async tasks."
+    documentation: "ADP partitions aggregation by lanes (`experimental.programmable_metrics.lanes.*`)."
 
   dogstatsd_pipeline_count:
     support: none
@@ -1371,7 +1375,7 @@ inventory:
     planned: false
     pipelines: [dogstatsd]
     description: "Parallel processing pipelines"
-    documentation: "ADP uses async tasks."
+    documentation: "ADP partitions aggregation by lanes (`experimental.programmable_metrics.lanes.*`)."
 
   dogstatsd_port:
     support: full
@@ -1548,9 +1552,16 @@ inventory:
       and the DogStatsD pipeline configuration.
 
       ADP uses the same explicit override for one decoder worker pool shared by all connectionless
-      UDP and UDS datagram listeners. When this setting is `0`, ADP matches the core Agent's default
-      pipeline settings: one listener worker, one aggregation pipeline, and at least two decoder
-      workers. Connection-oriented listeners continue to use one decoder per connection.
+      UDP and UDS datagram listeners. When this setting is `0`, ADP derives the decoder count from
+      available vCPUs as the core Agent does for one listener worker and one aggregation pipeline:
+      `max(vCPUs - 2, 2)`, at least two decoder workers. Aggregation itself runs on the state lanes
+      of `experimental.programmable_metrics.lanes.*`. Connection-oriented listeners continue to use
+      one decoder per connection.
+
+      With `experimental.programmable_metrics.lanes.mode: auto`, the default, the decoder count also
+      sets the producer lanes of the metrics path, up to 16, and the default of its post-aggregation
+      lanes. Below three worker threads, where every lane count comes to one, the metrics path runs
+      without lanes, as with `mode: off`.
     issue: "#2079"
     test_support:
       used_by: [TypedConfigSystem]

@@ -201,10 +201,9 @@ fn every_tick_flushes_at_its_wall_clock_second_what_was_admitted_before_it() {
             (30_000, 1, &["c rate/10s [10:0, 20:0]"]),
         ])
     );
-    let output_point = match &harness.frame().slots()[0].kind {
-        crate::compile::SlotKind::Isolation { output_point, .. } => *output_point,
-        crate::compile::SlotKind::Fused => panic!("aggregation runs in an isolation slot"),
-    };
+    let output_point = harness.frame().slots()[0]
+        .output_point(0)
+        .expect("aggregation runs in an isolation slot");
     assert!(harness
         .delivered()
         .iter()
@@ -539,6 +538,10 @@ impl OperatorDef for PanickingAggregate {
 
     fn flush_interval(&self, params: &DecodedParams) -> Option<Duration> {
         Aggregate.flush_interval(params)
+    }
+
+    fn partition_key(&self) -> Option<crate::operators::PartitionKey> {
+        Aggregate.partition_key()
     }
 }
 
@@ -1121,6 +1124,7 @@ impl Direct {
                 &mut RegionTurn::new(self.start, &mut Budget::unlimited()),
                 RegionControl::Kernel(KernelControl {
                     target: KernelTarget::Stateful,
+                    lane: None,
                     message: Box::new(ContextSnapshot::default()),
                     reply,
                 }),
@@ -2109,3 +2113,5 @@ fn a_preparation_that_overtakes_queued_batches_creates_a_second_instance_of_a_li
         ])
     );
 }
+
+mod lanes;

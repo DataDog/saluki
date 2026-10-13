@@ -1,3 +1,5 @@
+use std::num::NonZeroU16;
+
 use async_trait::async_trait;
 use saluki_error::GenericError;
 
@@ -147,6 +149,7 @@ impl Transform for TestTransform {
 pub struct TestTransformBuilder {
     input_event_ty: EventType,
     outputs: Vec<OutputDefinition<EventType>>,
+    lanes: NonZeroU16,
 }
 
 impl TestTransformBuilder {
@@ -154,7 +157,14 @@ impl TestTransformBuilder {
         Self {
             input_event_ty,
             outputs: vec![OutputDefinition::default_output(output_event_ty)],
+            lanes: NonZeroU16::MIN,
         }
+    }
+
+    /// Declares `lanes` input lanes in place of one.
+    pub fn with_lanes(mut self, lanes: u16) -> Self {
+        self.lanes = NonZeroU16::new(lanes).expect("a transform has at least one lane");
+        self
     }
 
     pub fn multiple_outputs<'a>(
@@ -168,6 +178,7 @@ impl TestTransformBuilder {
                     None => OutputDefinition::default_output(*event_ty),
                 })
                 .collect(),
+            lanes: NonZeroU16::MIN,
         }
     }
 }
@@ -180,6 +191,10 @@ impl TransformBuilder for TestTransformBuilder {
 
     fn outputs(&self) -> &[OutputDefinition<EventType>] {
         &self.outputs
+    }
+
+    fn input_lanes(&self) -> NonZeroU16 {
+        self.lanes
     }
 
     async fn build(&self, _: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {

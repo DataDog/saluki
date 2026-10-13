@@ -1,26 +1,36 @@
-//! The region host: the topology transform that drives a [`RegionDriver`].
+//! The region host: the topology transform that drives a [`RegionDriver`], on one lane or on several.
 
 use std::{
     any::Any,
     collections::{HashSet, VecDeque},
-    num::NonZeroUsize,
+    future::Future,
+    num::{NonZeroU16, NonZeroUsize},
     panic::{catch_unwind, AssertUnwindSafe},
+    pin::Pin,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use async_trait::async_trait;
-use futures::FutureExt as _;
+use futures::{
+    future::{join_all, BoxFuture},
+    stream::FuturesUnordered,
+    FutureExt as _, StreamExt as _,
+};
 use saluki_error::{generic_error, GenericError};
 use saluki_metrics::{Counter, MetricsBuilder};
 use tokio::{
     pin, select,
+    sync::{oneshot, watch},
     task::coop::consume_budget,
     time::{sleep_until, Instant},
 };
 use tracing::{debug, error, warn};
 
-use super::driver::{ExitId, ExitSink, PanicOutcome, PanicSite, RegionDriver, RegionPanic, RegionTurn};
+use super::{
+    driver::{ExitId, ExitSink, PanicOutcome, PanicSite, RegionDriver, RegionPanic, RegionTurn},
+    lanes::{lane_link, LaneContext, LaneEnd, LaneLink, LaneProbes, LaneSplit, LaneStats},
+};
 use crate::{
     accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr},
     components::{
@@ -29,18 +39,49 @@ use crate::{
     },
     data_model::event::{Event, EventType},
     execution::{
-        control::{ControlMailbox, ControlReceiver, ControlReply},
-        Budget, DrainPolicy, Progress,
+        control::{ControlAck, ControlError, ControlMailbox, ControlReceiver, ControlReply},
+        AdmissionPointConfig, Budget, DrainPolicy, OwnedAdmission, Progress,
     },
-    health::Health,
+    health::{Health, Probe},
     observability::ComponentMetricsExt as _,
-    topology::{ComponentId, EventsBuffer, EventsDispatcher, OutputDefinition, DEFAULT_EVENTS_BUFFER_CAPACITY},
+    runtime,
+    support::SubsystemIdentifier,
+    topology::{
+        ComponentId, EventsBuffer, EventsConsumer, EventsDispatcher, LaneEdge, LaneRoute, OutputDefinition,
+        DEFAULT_EVENTS_BUFFER_CAPACITY,
+    },
 };
 
 /// The shortest interval between two periodic calls to [`RegionDriver::publish_telemetry`].
 const PUBLISH_INTERVAL: Duration = Duration::from_secs(1);
 
-type DriverFactory<D> = Box<dyn Fn(&BuildContext) -> Result<D, GenericError> + Send + Sync>;
+/// The name of every lane task, a category label for task telemetry; each lane's resource group tells lanes apart.
+const LANE_TASK_NAME: &str = "region_lane";
+
+type DriverFactory<D> = Box<dyn Fn(&BuildContext, LaneContext) -> Result<D, GenericError> + Send + Sync>;
+
+/// How a coordinator splits a control message per lane, and finds the lane of one that does not split.
+struct LaneSplitter<C> {
+    split: fn(C, u16) -> Result<Vec<C>, C>,
+    lane: fn(&C) -> Option<u16>,
+}
+
+impl<C> Clone for LaneSplitter<C> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<C> Copy for LaneSplitter<C> {}
+
+impl<C: LaneSplit> LaneSplitter<C> {
+    fn new() -> Self {
+        Self {
+            split: |message, lanes| message.split(lanes),
+            lane: |message| message.lane(),
+        }
+    }
+}
 
 /// Builds a region host: a transform that runs a [`RegionDriver`] in a topology.
 ///
@@ -53,9 +94,10 @@ type DriverFactory<D> = Box<dyn Fn(&BuildContext) -> Result<D, GenericError> + S
 ///
 /// Once it reports the region ready, the host calls [`RegionDriver::start`] once. It then waits for, and handles, in
 /// this order of priority: liveness probes, control messages, periodic telemetry publishing, resuming a yielded call,
-/// the driver's deadline, and input batches. It reads input only while no call is yielded and the driver [accepts
-/// input][RegionDriver::accepts_input], and processes up to `work_per_turn` batches back to back before it checks for
-/// control messages and timers again.
+/// the driver's deadline, the end of a hold of output ([`RegionDriver::end_turn`]), a heartbeat or a clock reset of
+/// the region's admission point (see below), and input batches. It reads input only while no call is yielded and the
+/// driver [accepts input][RegionDriver::accepts_input], and processes up to `work_per_turn` batches back to back
+/// before it ends the turn and checks for control messages and timers again.
 ///
 /// Control messages are handled while a call is yielded, between its turns. The driver's deadline is not armed while
 /// a call is yielded or the input has ended: a deadline that passed meanwhile is due as soon as the call completes,
@@ -66,14 +108,63 @@ type DriverFactory<D> = Box<dyn Fn(&BuildContext) -> Result<D, GenericError> + S
 /// assertion, so that tests catch the driver bug. See [`next_deadline`][RegionDriver::next_deadline] for the rule.
 ///
 /// After every call into the driver, the host sends what the call wrote, buffer by buffer, in the order it was
-/// written, awaiting each send: when a downstream component is slow, the region waits for it, as native components do,
-/// and the input waits upstream. While a send waits, the host still answers liveness probes and handles control
-/// messages, whose output it queues behind the buffers already waiting.
+/// written, awaiting each send (the buffers of a keyed exit are tried first, see [Routing](#routing)) before the next
+/// call: when a downstream component is slow, the region waits for it, as native components do, and the input waits
+/// upstream. While a send waits, the host still answers liveness probes and handles control messages, whose output it
+/// queues behind the buffers already waiting.
+///
+/// After each turn of input, once no call is yielded, the host calls [`RegionDriver::end_turn`], which writes the
+/// output the driver held across batches and whose hold expired. If the input has nothing more waiting, the host arms
+/// a timer for the instant `end_turn` returns, and calls it again then; while input keeps the host busy, it arms no
+/// timer, since the next turn ends soon anyway.
 ///
 /// When the input ends, the host completes any yielded call, calls [`RegionDriver::finish`] with
 /// [`DrainPolicy::Shutdown`], resumes it until it is done, sends its output, publishes telemetry a last time, and
 /// stops. If a panic ends the finish before it is done and the driver continues, the host calls `finish` again, until
 /// a call completes it, so that the driver completes the work the panic ended.
+///
+/// # Admission
+///
+/// A region given an [owned][crate::execution::Stamper::Owned] admission point
+/// ([`with_lane_admission`][Self::with_lane_admission]) stamps every unstamped batch it receives at that point before
+/// the driver processes it, and sends what the driver writes in order itself, so that every downstream channel
+/// receives the point's batches in stamp order. It drives the point's heartbeats: when the point has stamped nothing
+/// for its heartbeat period, the host stamps a header-only batch and processes it as input, which the driver forwards
+/// as progress. A point that shares its source's [clock][crate::execution::SourceClock] with other lanes' points also
+/// learns of a reset another lane detected: after every batch the host compares the clock's epoch with that of the
+/// point's latest stamp, and while its input is idle it waits for the clock's next reset, and either way stamps a
+/// header-only batch in the new epoch at once.
+///
+/// # Lanes
+///
+/// A region with lanes ([`with_lanes`][Self::with_lanes]) runs one task per lane, each a host as described here, with
+/// its own driver, input channel, admission point if it has one, and resource group (`<component>.lane_<i>`), while
+/// the component's own task coordinates them: it splits each control message into one per lane
+/// ([`LaneSplit`][crate::execution::LaneSplit]) and acknowledges it once every lane accepted its part, or with the
+/// first lane's rejection; it routes a message that does not split to the lane it names, and rejects one that names
+/// none; and it forwards every liveness probe to every lane, answering it once all answered, so that a stuck lane reads
+/// as a stuck component. A lane that fails, or stops before its input ends, fails the component; the other lanes
+/// then stop without finishing. A lane that finishes, once its input ended, counts as answering every later probe,
+/// and takes no part in later control messages: a message whose every lane finished is left unhandled, as by a region
+/// that stopped. The lanes share the component's dispatcher, and each lane sends its buffers in order.
+///
+/// # Routing
+///
+/// Where a buffer goes in an exit's target with lanes is the routing of the edge by which the exit's output leads to
+/// the target ([`LaneEdge`]), which every lane reads from the dispatcher when it starts: nothing else configures it.
+/// On a keyed edge, the driver writes each buffer to the lane it chose ([`ExitSink::emit_to_lane`]); on an affinity
+/// edge, every buffer of a lane goes to the target's lane with the sending lane's index (modulo the target's lanes);
+/// on a spread edge, to the target's first lane with room, from a rotation of the sending lane's own that starts at
+/// its index. A driver writes buffers for affinity and spread edges, and for targets with one lane, without naming a
+/// lane ([`ExitSink::emit`]); a lane named for a target with one lane, or on an edge fixed to one lane, is ignored. A
+/// buffer that does not fit its exit's edge, written without a lane to a keyed edge, to a lane the target does not
+/// have, or to a lane on an affinity or spread edge, is a mismatch between the driver and its topology: it fails the
+/// component rather than being dropped.
+///
+/// The buffers that one call writes to the lanes of a keyed edge's target are sent back to back without waiting, as
+/// far as each lane has room, and the ones for full lanes are then awaited in order, before anything the driver wrote
+/// after them: one full lane does not hold up what the call routes to the others, and every lane receives its buffers
+/// in order.
 ///
 /// # Supervision
 ///
@@ -82,7 +173,8 @@ type DriverFactory<D> = Box<dyn Fn(&BuildContext) -> Result<D, GenericError> + S
 /// `component_events_dropped_total`, tagged `intentional:false`, `drop_reason:region_failure`, and
 /// `loss_class:invalid`, and the panic in `component_errors_total`, tagged `error_type:panic`. It then calls
 /// [`RegionDriver::reset_after_panic`]: on [`PanicOutcome::Continue`] the region keeps running, and on
-/// [`PanicOutcome::Fail`] the transform returns the error, which fails the component.
+/// [`PanicOutcome::Fail`] the transform returns the error, which fails the component. In a region with lanes, each
+/// lane recovers from its own panics, and the failure of a lane fails the component.
 ///
 /// A caught panic still runs the process's panic hook, before it unwinds: the default hook prints the panic message,
 /// and a hook that a process installs to report panics, such as one that reports every panic to a test harness as a
@@ -91,8 +183,9 @@ type DriverFactory<D> = Box<dyn Fn(&BuildContext) -> Result<D, GenericError> + S
 /// # Memory bounds
 ///
 /// Besides the component itself and the bounds given with [`with_bounds`][Self::with_bounds], the host accounts for
-/// one full events buffer per exit, held while it waits for downstream. A driver that can write more than one full
-/// buffer's worth of events to one exit per call accounts for the rest in its own bounds.
+/// one full events buffer per exit and lane, held while it waits for downstream. A driver that can write more than one
+/// full buffer's worth of events to one exit per call accounts for the rest in its own bounds, and the bounds given
+/// with `with_bounds` cover every lane's driver.
 pub struct RegionHostBuilder<D>
 where
     D: RegionDriver,
@@ -102,6 +195,11 @@ where
     work_per_turn: NonZeroUsize,
     turn_budget: Budget,
     factory: DriverFactory<D>,
+    lanes: NonZeroU16,
+    lane_admission: Vec<AdmissionPointConfig>,
+    lane_stats: Vec<Arc<LaneStats>>,
+    input_buffer_events: usize,
+    splitter: Option<LaneSplitter<D::Control>>,
     mailbox: Mutex<Option<ControlMailbox<D::Control>>>,
     bounds: Option<Box<dyn MemoryBounds + Send + Sync>>,
 }
@@ -167,7 +265,12 @@ where
             exit_names: exit_names.into(),
             work_per_turn,
             turn_budget: Budget::unlimited(),
-            factory: Box::new(factory),
+            factory: Box::new(move |context, _| factory(context)),
+            lanes: NonZeroU16::MIN,
+            lane_admission: Vec::new(),
+            lane_stats: Vec::new(),
+            input_buffer_events: DEFAULT_EVENTS_BUFFER_CAPACITY,
+            splitter: None,
             mailbox: Mutex::new(Some(mailbox)),
             bounds: None,
         })
@@ -213,12 +316,65 @@ where
     }
 
     /// Sets the memory bounds of the driver, such as those of the kernels it runs, which the host adds to its own.
+    ///
+    /// In a region with lanes, these bounds cover every lane's driver.
     pub fn with_bounds<B>(mut self, bounds: B) -> Self
     where
         B: MemoryBounds + Send + Sync + 'static,
     {
         self.bounds = Some(Box::new(bounds));
         self
+    }
+
+    /// Runs the region on `lanes` lanes, building one driver per lane with `factory`, which is told the lane it builds
+    /// for, in place of the factory the builder was created with.
+    ///
+    /// A region with lanes is one component with one input channel per lane, a coordinator that splits its control
+    /// messages per lane ([`LaneSplit`]) and forwards its liveness probes, and one task per lane, accounted to a
+    /// resource group of its own (see the [module documentation][crate::execution::lanes]). With one lane, the host
+    /// runs as it does without lanes.
+    pub fn with_lanes<F>(mut self, lanes: NonZeroU16, factory: F) -> Self
+    where
+        F: Fn(&BuildContext, LaneContext) -> Result<D, GenericError> + Send + Sync + 'static,
+        D::Control: LaneSplit,
+    {
+        self.lanes = lanes;
+        self.factory = Box::new(factory);
+        self.splitter = Some(LaneSplitter::new());
+        self
+    }
+
+    /// Gives each lane an [owned][crate::execution::Stamper::Owned] admission point that it stamps every unstamped
+    /// batch it receives at, before processing it: lane `i` admits at `points[i]`.
+    ///
+    /// A region without lanes has one lane, and takes one point. Building a transform fails if the number of points
+    /// differs from the number of lanes, or if a point cannot be owned (see [`OwnedAdmission::new`]).
+    pub fn with_lane_admission(mut self, points: Vec<AdmissionPointConfig>) -> Self {
+        self.lane_admission = points;
+        self
+    }
+
+    /// Gives each lane statistics that its host updates as the lane works, for the lane's telemetry: lane `i` updates
+    /// `stats[i]` (see [`LaneStats`]).
+    ///
+    /// A region without lanes has one lane, and takes one. Building a transform fails if the number of statistics
+    /// differs from the number of lanes. Without them, the host measures nothing of its own.
+    pub fn with_lane_stats(mut self, stats: Vec<Arc<LaneStats>>) -> Self {
+        self.lane_stats = stats;
+        self
+    }
+
+    /// Declares that every buffer sent to the region holds storage for at most `events` events, as the senders of a
+    /// region fed by buffers routed per key keep to (see [`TransformBuilder::input_buffer_events`]); the capacity of
+    /// an events buffer, 1,024 events, by default.
+    pub fn with_input_buffer_events(mut self, events: usize) -> Self {
+        self.input_buffer_events = events;
+        self
+    }
+
+    /// Returns the number of lanes the region runs on.
+    pub fn lanes(&self) -> NonZeroU16 {
+        self.lanes
     }
 }
 
@@ -227,11 +383,19 @@ where
     D: RegionDriver,
 {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        let lanes = usize::from(self.lanes.get());
         builder
             .minimum()
             // Capture the size of the heap allocation when the component is built, which holds the driver.
             .with_single_value::<RegionHost<D>>("component struct");
-        builder.firm().with_expr(in_flight_exit_buffers(self.exit_names.len()));
+        if lanes > 1 {
+            builder.minimum().with_array::<Lane<D>>("lanes", lanes);
+        }
+        builder.firm().with_expr(UsageExpr::product(
+            "in-flight exit buffers of every lane",
+            UsageExpr::constant("lanes", lanes),
+            in_flight_exit_buffers(self.exit_names.len()),
+        ));
 
         if let Some(bounds) = &self.bounds {
             bounds.specify_bounds(builder);
@@ -246,7 +410,7 @@ fn in_flight_exit_buffers(exit_count: usize) -> UsageExpr {
         UsageExpr::constant("exits", exit_count),
         UsageExpr::sum(
             "exit buffer",
-            UsageExpr::struct_size::<(ExitId, EventsBuffer)>("queued exit buffer"),
+            UsageExpr::struct_size::<(ExitId, Option<u16>, EventsBuffer)>("queued exit buffer"),
             UsageExpr::product(
                 "events",
                 UsageExpr::struct_size::<Event>("event"),
@@ -269,13 +433,90 @@ where
         &self.outputs
     }
 
+    fn input_lanes(&self) -> NonZeroU16 {
+        self.lanes
+    }
+
+    fn input_buffer_events(&self) -> usize {
+        self.input_buffer_events
+    }
+
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
-        let driver = (self.factory)(&context).map_err(|e| {
-            e.context(format!(
-                "Failed to build the driver of region '{}'",
-                context.component_id()
-            ))
-        })?;
+        Ok(match self.build_host(&context)? {
+            BuiltHost::One(host) => host,
+            BuiltHost::Laned(host) => Box::new(host),
+        })
+    }
+}
+
+/// The transform a region host builder builds: a region with one lane, or one with lanes.
+pub(super) enum BuiltHost<D>
+where
+    D: RegionDriver,
+{
+    One(Box<RegionHost<D>>),
+    Laned(LanedRegionHost<D>),
+}
+
+impl<D> RegionHostBuilder<D>
+where
+    D: RegionDriver,
+{
+    /// Builds the region's transform: its drivers, one per lane, the lanes' admission points, and its mailbox.
+    pub(super) fn build_host(&self, context: &BuildContext) -> Result<BuiltHost<D>, GenericError> {
+        let count = self.lanes.get();
+        if !self.lane_admission.is_empty() && self.lane_admission.len() != usize::from(count) {
+            return Err(generic_error!(
+                "Region '{}' runs on {} lanes, but was given {} lane admission points. Give every lane one point.",
+                context.component_id(),
+                self.lanes,
+                self.lane_admission.len()
+            ));
+        }
+        if !self.lane_stats.is_empty() && self.lane_stats.len() != usize::from(count) {
+            return Err(generic_error!(
+                "Region '{}' runs on {} lanes, but was given {} lane statistics. Give every lane one.",
+                context.component_id(),
+                self.lanes,
+                self.lane_stats.len()
+            ));
+        }
+
+        let mut drivers = Vec::with_capacity(usize::from(count));
+        for index in 0..count {
+            let lane = LaneContext { index, count };
+            let driver = (self.factory)(context, lane).map_err(|e| {
+                if lane.is_only() {
+                    e.context(format!(
+                        "Failed to build the driver of region '{}'",
+                        context.component_id()
+                    ))
+                } else {
+                    e.context(format!(
+                        "Failed to build the driver of {} of region '{}'",
+                        lane,
+                        context.component_id()
+                    ))
+                }
+            })?;
+            drivers.push((lane, driver));
+        }
+
+        let mut admissions = Vec::with_capacity(self.lane_admission.len());
+        for (index, config) in self.lane_admission.iter().enumerate() {
+            let admission = OwnedAdmission::new(config.clone()).map_err(|e| {
+                e.context(format!(
+                    "Failed to set up the admission point of {} of region '{}'",
+                    LaneContext {
+                        index: index as u16,
+                        count
+                    },
+                    context.component_id()
+                ))
+            })?;
+            admissions.push(admission);
+        }
+
         let mailbox = self
             .mailbox
             .lock()
@@ -288,14 +529,47 @@ where
                     context.component_id()
                 )
             })?;
+        let control = mailbox.into_receiver_for("region");
 
-        Ok(Box::new(RegionHost {
-            driver,
-            exit_names: Arc::clone(&self.exit_names),
-            work_per_turn: self.work_per_turn,
-            turn_budget: self.turn_budget,
-            control: mailbox.into_receiver_for("region"),
-            telemetry: HostTelemetry::new(context.component_context()),
+        let mut admissions = admissions.into_iter();
+        let mut stats = self.lane_stats.iter().cloned();
+        let mut lanes = drivers
+            .into_iter()
+            .map(|(lane, driver)| {
+                let stats = stats.next();
+                Lane {
+                    context: lane,
+                    runner: Runner::new(
+                        driver,
+                        self.exit_names.len(),
+                        self.turn_budget,
+                        HostTelemetry::new(context.component_context()),
+                        stats.clone(),
+                    ),
+                    admission: admissions.next(),
+                    routes: ExitRoutes::new(Arc::clone(&self.exit_names), lane),
+                    stats,
+                    work_per_turn: self.work_per_turn,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        if count == 1 {
+            let lane = lanes.pop().expect("one lane was built");
+            return Ok(BuiltHost::One(Box::new(RegionHost { lane, control })));
+        }
+        let splitter = self.splitter.ok_or_else(|| {
+            generic_error!(
+                "Region '{}' runs on {} lanes but has no way to split its control messages. Set its lanes with \
+                 `RegionHostBuilder::with_lanes`.",
+                context.component_id(),
+                count
+            )
+        })?;
+        Ok(BuiltHost::Laned(LanedRegionHost {
+            lanes,
+            control,
+            splitter,
         }))
     }
 }
@@ -319,17 +593,13 @@ impl HostTelemetry {
     }
 }
 
-/// The region host transform.
+/// The region host transform of a region with one lane, which runs the lane on the component's own task.
 pub(super) struct RegionHost<D>
 where
     D: RegionDriver,
 {
-    driver: D,
-    exit_names: Arc<[String]>,
-    work_per_turn: NonZeroUsize,
-    turn_budget: Budget,
+    lane: Lane<D>,
     control: ControlReceiver<D::Control>,
-    telemetry: HostTelemetry,
 }
 
 #[async_trait]
@@ -338,19 +608,605 @@ where
     D: RegionDriver,
 {
     async fn run(self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
-        let RegionHost {
-            driver,
-            exit_names,
-            work_per_turn,
-            turn_budget,
-            control,
-            telemetry,
-        } = *self;
+        let RegionHost { lane, control } = *self;
         let mut health = context.take_health_handle();
-        let mut runner = Runner::new(driver, exit_names.len(), turn_budget, telemetry);
-        // The mailbox is read through an `Option`, which is `None` once every sender is gone.
-        let mut control = Some(control);
+        let input = only_input(&mut context)?;
+        health.mark_ready();
+        lane.run(
+            input,
+            context.dispatcher(),
+            &mut Liveness::Component(health),
+            &mut ControlSource::component(control),
+        )
+        .await
+    }
+}
 
+/// Takes the one input of a region with one lane.
+fn only_input(context: &mut TransformContext) -> Result<EventsConsumer, GenericError> {
+    let mut inputs = context.take_lane_inputs();
+    if inputs.len() != 1 {
+        return Err(generic_error!(
+            "Region '{}' runs on one lane, but its topology gave it {} input channels. Build the topology from the \
+             region's builder, which declares its lanes.",
+            context.component_context().component_id(),
+            inputs.len()
+        ));
+    }
+    Ok(inputs.pop().expect("one input"))
+}
+
+/// The region host transform of a region with lanes: the coordinator, on the component's own task, and a task per
+/// lane.
+pub(super) struct LanedRegionHost<D>
+where
+    D: RegionDriver,
+{
+    lanes: Vec<Lane<D>>,
+    control: ControlReceiver<D::Control>,
+    splitter: LaneSplitter<D::Control>,
+}
+
+/// What the lanes of a region with lanes share from their component.
+pub(super) struct LaneParts {
+    /// One input per lane, in lane order.
+    pub(super) inputs: Vec<EventsConsumer>,
+
+    /// The component's dispatcher, which every lane sends through.
+    pub(super) dispatcher: Arc<EventsDispatcher>,
+
+    /// The component's health registration, which the coordinator answers for every lane.
+    pub(super) health: Health,
+
+    /// The component's resource group, below which each lane's own is.
+    pub(super) group: SubsystemIdentifier,
+}
+
+#[async_trait]
+impl<D> Transform for LanedRegionHost<D>
+where
+    D: RegionDriver,
+{
+    async fn run(self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
+        let parts = LaneParts {
+            inputs: context.take_lane_inputs(),
+            dispatcher: context.shared_dispatcher(),
+            health: context.take_health_handle(),
+            group: context.component_context().identity(),
+        };
+        let region = context.component_context().component_id().to_string();
+        (*self).coordinate(parts, region).await
+    }
+}
+
+/// How one lane of a region with lanes ended, as its task reports it to the coordinator.
+type LaneOutcome = Result<(), GenericError>;
+
+impl<D> LanedRegionHost<D>
+where
+    D: RegionDriver,
+{
+    /// Spawns a task per lane and coordinates them until every lane finished, or one failed.
+    pub(super) async fn coordinate(self, parts: LaneParts, region: String) -> Result<(), GenericError> {
+        let LanedRegionHost {
+            lanes,
+            control,
+            splitter,
+        } = self;
+        let LaneParts {
+            inputs,
+            dispatcher,
+            mut health,
+            group,
+        } = parts;
+        let count = lanes.len();
+        if inputs.len() != count {
+            return Err(generic_error!(
+                "Region '{}' runs on {} lanes, but its topology gave it {} input channels. Build the topology from the \
+                 region's builder, which declares its lanes.",
+                region,
+                count,
+                inputs.len()
+            ));
+        }
+
+        let mut links = Vec::with_capacity(count);
+        let mut exits = FuturesUnordered::new();
+        for (lane, input) in lanes.into_iter().zip(inputs) {
+            let context = lane.context;
+            let (link, end) = lane_link(context);
+            let (outcome, exited) = oneshot::channel::<LaneOutcome>();
+            let dispatcher = Arc::clone(&dispatcher);
+            let task = async move {
+                let _ = outcome.send(lane.run_as_lane(end, input, &dispatcher).await);
+            };
+            runtime::worker(LANE_TASK_NAME, task)
+                .with_resource_group(lane_group(&group, context).to_string())
+                .spawn_child_or_detached();
+            exits.push(async move { (context, exited.await) });
+            links.push(link);
+        }
+        // The coordinator keeps no sender of its own: once every lane is gone, so is the component's output.
+        drop(dispatcher);
+        // Shared with the acknowledgments of control messages, which tell a lane that finished from one that failed.
+        let links = Arc::<[LaneLink<D::Control>]>::from(links);
+
+        // Controllers time their messages from when the region runs, so wait until every lane reads its control queue.
+        // A lane that already finished read it before it did.
+        let mut finished = 0;
+        let running = join_all(links.iter().map(LaneLink::running));
+        pin!(running);
+        let started = loop {
+            select! {
+                // A lane that ends reports how first, which says more than that it never started.
+                biased;
+
+                Some((lane, outcome)) = exits.next() => match outcome {
+                    Ok(Ok(())) => finished += 1,
+                    Ok(Err(e)) => return Err(lane_failed(&region, lane, Some(e))),
+                    Err(_) => return Err(lane_failed(&region, lane, None)),
+                },
+
+                started = &mut running => break started.into_iter().all(|running| running),
+            }
+        };
+        if !started {
+            return Err(generic_error!(
+                "A lane of region '{}' stopped before it started. See its logs for the reason.",
+                region
+            ));
+        }
+
+        health.mark_ready();
+        control.mark_running();
+        debug!(lanes = count, "Region coordinator started.");
+
+        let mut control = Some(control);
+        let mut acknowledgments = FuturesUnordered::<BoxFuture<'static, ()>>::new();
+        let mut forwarding: Option<Pin<Box<dyn Future<Output = ()> + Send + '_>>> = None;
+        while finished < count {
+            select! {
+                biased;
+
+                probe = health.next_probe(), if forwarding.is_none() => {
+                    forwarding = Some(Box::pin(forward_probe(probe, &links)));
+                },
+
+                _ = poll_forwarding(&mut forwarding) => forwarding = None,
+
+                Some((lane, outcome)) = exits.next() => match outcome {
+                    Ok(Ok(())) => finished += 1,
+                    Ok(Err(e)) => return Err(lane_failed(&region, lane, Some(e))),
+                    Err(_) => return Err(lane_failed(&region, lane, None)),
+                },
+
+                request = next_control(&mut control) => match request {
+                    Some((message, reply)) => acknowledgments.push(dispatch_control(message, reply, &links, splitter)),
+                    None => control = None,
+                },
+
+                Some(()) = acknowledgments.next(), if !acknowledgments.is_empty() => {},
+            }
+        }
+
+        debug!("Region coordinator stopped: every lane finished.");
+        Ok(())
+    }
+}
+
+/// Returns the resource group of one lane: the component's, with the lane's index.
+fn lane_group(component: &SubsystemIdentifier, lane: LaneContext) -> SubsystemIdentifier {
+    component.clone().child(format!("lane_{}", lane.index))
+}
+
+/// Returns the error with which a lane that failed, with `error`, or stopped without reporting how, fails its
+/// component.
+fn lane_failed(region: &str, lane: LaneContext, error: Option<GenericError>) -> GenericError {
+    match error {
+        Some(e) => e.context(format!("{} of region '{}' failed", capitalized(lane), region)),
+        None => generic_error!(
+            "{} of region '{}' stopped without finishing: its task panicked outside any supervised call, or was \
+             aborted. See its logs for the reason.",
+            capitalized(lane),
+            region
+        ),
+    }
+}
+
+/// Spells a lane for the start of a sentence, as "Lane 1 of 4" begins one.
+fn capitalized(lane: LaneContext) -> String {
+    format!("Lane {} of {}", lane.index, lane.count)
+}
+
+/// Waits for the probe being forwarded to the lanes, or forever if none is.
+async fn poll_forwarding(forwarding: &mut Option<Pin<Box<dyn Future<Output = ()> + Send + '_>>>) {
+    match forwarding {
+        Some(forwarding) => forwarding.as_mut().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Forwards one liveness probe to every lane, and responds to it once every lane answered.
+///
+/// A lane that finished, once its input ended, counts as answering: it is done, not stuck. A lane that stopped
+/// otherwise cannot answer, so the probe is then dropped unanswered, and the component reads as not live until the
+/// coordinator, which sees the lane's end, fails it.
+pub(super) async fn forward_probe<C>(probe: Probe, links: &[LaneLink<C>]) {
+    let answers = links
+        .iter()
+        .filter(|link| !link.has_finished())
+        .map(|link| async move { link.probe().await || link.has_finished() });
+    if join_all(answers).await.into_iter().all(|answered| answered) {
+        probe.respond().await;
+    }
+}
+
+/// Sends a control message to the lanes it is for, and returns the future that acknowledges it once: when every lane
+/// it went to accepted its part, or with the first rejection.
+///
+/// A lane that finished takes no part: it has nothing left to apply a message to. A message for no lane that still
+/// runs is left unhandled, which its controller sees as it sees a region that stopped.
+fn dispatch_control<C>(
+    message: C, reply: ControlReply, links: &Arc<[LaneLink<C>]>, splitter: LaneSplitter<C>,
+) -> BoxFuture<'static, ()>
+where
+    C: Send + 'static,
+{
+    let lanes = links.len() as u16;
+    let acks = match (splitter.split)(message, lanes) {
+        Ok(parts) if parts.len() == links.len() => links
+            .iter()
+            .enumerate()
+            .zip(parts)
+            .filter(|((_, link), _)| !link.has_finished())
+            .map(|((index, link), part)| (index, link.send(part)))
+            .collect::<Vec<_>>(),
+        Ok(parts) => {
+            reply.reject(generic_error!(
+                "A control message split into {} parts for a region with {} lanes. Split messages into one part per \
+                 lane.",
+                parts.len(),
+                lanes
+            ));
+            return std::future::ready(()).boxed();
+        }
+        Err(message) => match (splitter.lane)(&message) {
+            Some(lane) if lane < lanes => {
+                let index = usize::from(lane);
+                let link = &links[index];
+                if link.has_finished() {
+                    Vec::new()
+                } else {
+                    vec![(index, link.send(message))]
+                }
+            }
+            Some(lane) => {
+                reply.reject(generic_error!(
+                    "A control message is for lane {}, but the region has only {} lanes. Address one of its lanes.",
+                    lane,
+                    lanes
+                ));
+                return std::future::ready(()).boxed();
+            }
+            None => {
+                reply.reject(generic_error!(
+                    "A control message neither splits into one part per lane of the region's {} lanes nor names the \
+                     lane it is for. Send one part per lane, or one message per lane that names it.",
+                    lanes
+                ));
+                return std::future::ready(()).boxed();
+            }
+        },
+    };
+    if acks.is_empty() {
+        // Dropping the reply acknowledges the message as unhandled.
+        drop(reply);
+        return std::future::ready(()).boxed();
+    }
+    join_acknowledgments(acks, Arc::clone(links), reply).boxed()
+}
+
+/// Acknowledges a control message once every lane it went to, by index into `links`, accepted its part, or with the
+/// first rejection.
+///
+/// A lane that finished before it handled its part had nothing left to apply it to, and is passed over; if every lane
+/// it went to did, the message is left unhandled, as by a region that stopped. A lane that stopped otherwise, without
+/// finishing, rejects the message: it failed, which fails the component.
+pub(super) async fn join_acknowledgments<C>(
+    acks: Vec<(usize, ControlAck)>, links: Arc<[LaneLink<C>]>, reply: ControlReply,
+) {
+    let mut pending = acks
+        .into_iter()
+        .map(|(index, ack)| ack.map(move |outcome| (index, outcome)))
+        .collect::<FuturesUnordered<_>>();
+    let mut accepted = false;
+    while let Some((index, outcome)) = pending.next().await {
+        let link = &links[index];
+        match outcome {
+            Ok(()) => accepted = true,
+            Err(ControlError::Rejected { error, .. }) => {
+                reply.reject(error.context(format!("{} rejected it", capitalized(link.lane()))));
+                return;
+            }
+            Err(ControlError::Panicked { message, .. }) => {
+                reply.panicked(format!("{} panicked: {}", capitalized(link.lane()), message));
+                return;
+            }
+            // A lane reports that it finished before its control queue closes, so this sees the report.
+            Err(ControlError::Stopped { .. }) if link.has_finished() => {}
+            Err(ControlError::Stopped { .. }) => {
+                reply.reject(generic_error!(
+                    "{} stopped before it handled the control message.",
+                    capitalized(link.lane())
+                ));
+                return;
+            }
+        }
+    }
+    if accepted {
+        reply.ack();
+    } else {
+        // Every lane it went to finished first: dropping the reply acknowledges it as unhandled.
+        drop(reply);
+    }
+}
+
+/// Waits for the next control request, or forever once the mailbox is closed.
+async fn next_control<C>(control: &mut Option<ControlReceiver<C>>) -> Option<(C, ControlReply)> {
+    match control {
+        Some(receiver) => receiver.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Where the liveness probes a lane answers come from.
+enum Liveness {
+    /// The component's own health registration: a region with one lane answers it itself.
+    Component(Health),
+
+    /// The probes the coordinator of a region with lanes forwards to the lane.
+    Lane(LaneProbes),
+}
+
+impl Liveness {
+    /// Waits for the next liveness probe, and answers it.
+    async fn answer(&mut self) {
+        match self {
+            Self::Component(health) => health.live().await,
+            Self::Lane(probes) => probes.next().await.respond(),
+        }
+    }
+}
+
+/// Where a lane reads its control messages: the component's mailbox, or, in a region with lanes, the lane's own
+/// control queue, which the coordinator feeds.
+struct ControlSource<C> {
+    receiver: Option<ControlReceiver<C>>,
+
+    /// Whether this is a lane's queue, which closes only when its coordinator is gone: the component has failed, and
+    /// the lane stops.
+    lane: bool,
+
+    /// Whether the coordinator is gone.
+    abandoned: bool,
+}
+
+impl<C> ControlSource<C> {
+    fn component(receiver: ControlReceiver<C>) -> Self {
+        Self {
+            receiver: Some(receiver),
+            lane: false,
+            abandoned: false,
+        }
+    }
+
+    fn lane(receiver: ControlReceiver<C>) -> Self {
+        Self {
+            receiver: Some(receiver),
+            lane: true,
+            abandoned: false,
+        }
+    }
+
+    fn mark_running(&self) {
+        if let Some(receiver) = &self.receiver {
+            receiver.mark_running();
+        }
+    }
+
+    /// Waits for the next control request, or forever once the source is closed.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel-safe.
+    async fn next(&mut self) -> Option<(C, ControlReply)> {
+        let request = next_control(&mut self.receiver).await;
+        if request.is_none() {
+            self.receiver = None;
+            self.abandoned = self.lane;
+        }
+        request
+    }
+}
+
+/// How one lane sends the buffers its driver writes to one exit: by the routing of the edge by which the exit's output
+/// sends to the lanes of a component, if it sends to any.
+#[derive(Debug)]
+enum ExitRoute {
+    /// The output sends to no component's lanes: every buffer goes where the output's edges lead, each into a
+    /// component with one lane or into the lane its edge is fixed to, and a lane the driver names is ignored.
+    Whole,
+
+    /// By key: to the lane the driver names, one of the target's `lanes`.
+    Keyed { lanes: u16 },
+
+    /// By affinity: to the target's lane with the sending lane's index, which the dispatcher takes modulo its lanes.
+    Affinity,
+
+    /// By spreading: to the target's first lane with room, trying lanes in rotation from this counter of the sending
+    /// lane's own, which the dispatcher leaves at the lane after the one it sent to.
+    Spread { counter: u16 },
+}
+
+impl ExitRoute {
+    /// Returns the name of the routing, as "by spread routing" uses it in a sentence.
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Whole => "no",
+            Self::Keyed { .. } => "keyed",
+            Self::Affinity => "affinity",
+            Self::Spread { .. } => "spread",
+        }
+    }
+}
+
+/// The exits of one lane, and where each buffer the lane's driver writes goes.
+pub(super) struct ExitRoutes {
+    names: Arc<[String]>,
+    lane: LaneContext,
+    routes: Vec<ExitRoute>,
+}
+
+impl ExitRoutes {
+    /// Creates the routes of `lane`'s exits, each sending whole until [`resolve`][Self::resolve] reads its edge.
+    pub(super) fn new(names: Arc<[String]>, lane: LaneContext) -> Self {
+        let routes = names.iter().map(|_| ExitRoute::Whole).collect();
+        Self { names, lane, routes }
+    }
+
+    /// Reads the routing of every exit from the dispatcher the lane sends through: the edge, if any, by which the
+    /// exit's output sends to the lanes of a component.
+    pub(super) fn resolve(&mut self, dispatcher: &EventsDispatcher) {
+        for (name, route) in self.names.iter().zip(&mut self.routes) {
+            *route = match dispatcher.lane_edge(name) {
+                None | Some((LaneEdge::Fixed(_), _)) => ExitRoute::Whole,
+                Some((LaneEdge::Keyed, lanes)) => ExitRoute::Keyed { lanes: lanes.get() },
+                Some((LaneEdge::Affinity, _)) => ExitRoute::Affinity,
+                // A rotation starts at the lane's own index, so that the lanes of one region start on different lanes
+                // of the target.
+                Some((LaneEdge::Spread, _)) => ExitRoute::Spread {
+                    counter: self.lane.index,
+                },
+            };
+        }
+    }
+
+    /// Returns the name of `exit`.
+    pub(super) fn name(&self, exit: ExitId) -> &str {
+        &self.names[exit.get()]
+    }
+
+    /// Returns `true` if `exit` sends to the lanes of its target by key.
+    pub(super) fn is_keyed(&self, exit: ExitId) -> bool {
+        matches!(self.routes[exit.get()], ExitRoute::Keyed { .. })
+    }
+
+    /// Returns the name of `exit` and the route of a buffer the driver wrote to it, to `lane` of its target if it named
+    /// one: `None` sends the buffer as on any output.
+    ///
+    /// # Errors
+    ///
+    /// If the buffer does not fit the exit's routing, an error is returned: written without a lane to a keyed exit, to
+    /// a lane its target does not have, or to a lane of an exit that routes by affinity or by spreading, which picks
+    /// the lane itself. Each is a mismatch between the region's driver and the topology it runs in.
+    pub(super) fn route(
+        &mut self, exit: ExitId, lane: Option<u16>,
+    ) -> Result<(&str, Option<LaneRoute<'_>>), GenericError> {
+        let name = self.names[exit.get()].as_str();
+        let route = &mut self.routes[exit.get()];
+        let kind = route.kind();
+        let routed = match (route, lane) {
+            (ExitRoute::Whole, _) => None,
+            (ExitRoute::Keyed { lanes }, Some(lane)) if lane < *lanes => Some(LaneRoute::Target(lane)),
+            (ExitRoute::Keyed { lanes }, Some(lane)) => {
+                return Err(generic_error!(
+                    "The region wrote a buffer to lane {} of the target of exit '{}', which has {} lanes. Write each \
+                     buffer to a lane its target has.",
+                    lane,
+                    name,
+                    lanes
+                ))
+            }
+            (ExitRoute::Keyed { .. }, None) => {
+                return Err(generic_error!(
+                    "Exit '{}' routes to the lanes of its target by key, but the region wrote a buffer to it without \
+                     naming a lane. Write each buffer of the exit to the lane that owns its keys, or connect the exit \
+                     to its target with the routing its region's driver uses.",
+                    name
+                ))
+            }
+            (ExitRoute::Affinity, None) => Some(LaneRoute::From(self.lane.index)),
+            (ExitRoute::Spread { counter }, None) => Some(LaneRoute::Spread(counter)),
+            (ExitRoute::Affinity | ExitRoute::Spread { .. }, Some(lane)) => {
+                return Err(generic_error!(
+                    "The region wrote a buffer to lane {} of the target of exit '{}', but the exit routes to the lanes \
+                     of its target by {} routing, which picks the lane itself. Write the exit's buffers without a \
+                     lane, or connect the exit to its target by key.",
+                    lane,
+                    name,
+                    kind
+                ))
+            }
+        };
+        Ok((name, routed))
+    }
+}
+
+/// One lane of a region: its driver, and everything its host keeps for it.
+pub(super) struct Lane<D>
+where
+    D: RegionDriver,
+{
+    context: LaneContext,
+    runner: Runner<D>,
+    admission: Option<OwnedAdmission>,
+    routes: ExitRoutes,
+    stats: Option<Arc<LaneStats>>,
+    work_per_turn: NonZeroUsize,
+}
+
+/// What a lane waits on for its admission point's source clock to reset: the clock's epoch channel, which keeps the
+/// change for a lane that was busy when it happened. It resolves to the channel again, to wait for the next reset, or
+/// to `None` once the clock is gone.
+type ResetWait = Pin<Box<dyn Future<Output = Option<watch::Receiver<u32>>> + Send>>;
+
+fn wait_for_reset(mut resets: watch::Receiver<u32>) -> ResetWait {
+    Box::pin(async move { resets.changed().await.ok().map(|()| resets) })
+}
+
+/// Waits for the next reset, or forever if the lane does not wait for any.
+async fn next_reset(wait: &mut Option<ResetWait>) -> Option<watch::Receiver<u32>> {
+    match wait {
+        Some(wait) => wait.as_mut().await,
+        None => std::future::pending().await,
+    }
+}
+
+impl<D> Lane<D>
+where
+    D: RegionDriver,
+{
+    /// Runs the lane as one task of a region with lanes, until its input ends, or its coordinator is gone.
+    async fn run_as_lane(
+        self, end: LaneEnd<D::Control>, input: EventsConsumer, dispatcher: &EventsDispatcher,
+    ) -> LaneOutcome {
+        let (control, probes, finish) = end.into_parts();
+        let mut liveness = Liveness::Lane(probes);
+        let mut control = ControlSource::lane(control);
+        let outcome = self.run(input, dispatcher, &mut liveness, &mut control).await;
+        // Report a finish before the control queue and the probes close, which they do when this returns, so that the
+        // coordinator, once it sees them closed, takes the lane for one that finished rather than one that failed.
+        if outcome.is_ok() && !control.abandoned {
+            finish.report();
+        }
+        outcome
+    }
+
+    /// Runs the lane until its input ends and it has finished, or until its coordinator is gone.
+    async fn run(
+        mut self, mut input: EventsConsumer, dispatcher: &EventsDispatcher, liveness: &mut Liveness,
+        control: &mut ControlSource<D::Control>,
+    ) -> Result<(), GenericError> {
         // Timers are armed from the driver's state before every wait, and only reset when what they wait for changes.
         let deadline_timer = sleep_until(Instant::now());
         pin!(deadline_timer);
@@ -358,21 +1214,68 @@ where
         let publish_timer = sleep_until(Instant::now());
         pin!(publish_timer);
         let mut armed_publish = None;
+        // The hold timer is armed when a turn ends with the input idle, and the heartbeat timer when the point's next
+        // heartbeat is due; neither is reset per batch.
+        let hold_timer = sleep_until(Instant::now());
+        pin!(hold_timer);
+        let mut armed_hold = None;
+        let heartbeat_timer = sleep_until(Instant::now());
+        pin!(heartbeat_timer);
+        let mut armed_heartbeat = self.admission.as_ref().and_then(OwnedAdmission::heartbeat_due);
+        if let Some(due) = armed_heartbeat {
+            heartbeat_timer.as_mut().reset(due);
+        }
+        let mut reset_wait = self
+            .admission
+            .as_ref()
+            .and_then(OwnedAdmission::source_clock)
+            .map(|clock| wait_for_reset(clock.subscribe()));
 
         let mut input_open = true;
         let mut finishing = false;
+        // Whether a turn of input ended, by a batch, a heartbeat, or a hold that expired, and the driver has not been
+        // told yet: it is told once no call is yielded.
+        let mut turn_owed = false;
 
-        health.mark_ready();
-        runner.start();
-        // From here on the mailbox is read: whoever controls the region can start timing its messages.
-        if let Some(control) = &control {
-            control.mark_running();
-        }
-        debug!(exits = exit_names.len(), "Region host started.");
+        // Where each exit's buffers go is the edge its output leads to the lanes of its target by, if any.
+        self.routes.resolve(dispatcher);
+        self.runner.start();
+        // From here on the control messages are read: whoever controls the region can start timing them.
+        control.mark_running();
+        debug!(exits = self.routes.names.len(), lane = %self.context, "Region host started.");
 
         loop {
-            if !input_open && runner.pending.is_none() {
-                if runner.finished {
+            if control.abandoned {
+                debug!(lane = %self.context, "Region lane's coordinator is gone. Stopping the lane.");
+                return Ok(());
+            }
+
+            // A turn of input ends once no call is yielded, with whether more input waits as of now.
+            if turn_owed && self.runner.pending.is_none() {
+                turn_owed = false;
+                let waiting = input.queued();
+                let input_idle = waiting == 0;
+                if let Some(stats) = &self.stats {
+                    let stamp_wait = self
+                        .admission
+                        .as_ref()
+                        .map_or(Duration::ZERO, OwnedAdmission::lock_wait);
+                    stats.record_turn(waiting, stamp_wait);
+                }
+                let next = self.runner.end_turn(input_idle);
+                let wanted = next.filter(|_| input_idle).map(Instant::from_std);
+                if wanted != armed_hold {
+                    if let Some(at) = wanted {
+                        hold_timer.as_mut().reset(at);
+                    }
+                    armed_hold = wanted;
+                }
+                self.dispatch(dispatcher, liveness, control).await?;
+                continue;
+            }
+
+            if !input_open && self.runner.pending.is_none() {
+                if self.runner.finished {
                     break;
                 }
 
@@ -385,20 +1288,22 @@ where
                     debug!("Region host input ended. Finishing the region...");
                     finishing = true;
                 }
-                runner.finish()?;
-                dispatch(
-                    &mut runner,
-                    context.dispatcher(),
-                    &exit_names,
-                    &mut health,
-                    &mut control,
-                )
-                .await?;
+                self.runner.finish()?;
+                self.dispatch(dispatcher, liveness, control).await?;
                 continue;
             }
 
-            let wanted_deadline = if input_open && runner.pending.is_none() {
-                runner.wanted_deadline().map(Instant::from_std)
+            let can_process = input_open && self.runner.pending.is_none() && self.runner.driver.accepts_input();
+
+            // Another lane's point may have reset the source clock since this lane's point last stamped: the check is
+            // level-triggered, after every batch and before every wait, so no reset is missed however busy the lane.
+            if can_process && self.admission.as_ref().is_some_and(OwnedAdmission::reset_pending) {
+                turn_owed |= self.heartbeat(Heartbeat::Reset, dispatcher, liveness, control).await?;
+                continue;
+            }
+
+            let wanted_deadline = if input_open && self.runner.pending.is_none() {
+                self.runner.wanted_deadline().map(Instant::from_std)
             } else {
                 None
             };
@@ -409,7 +1314,7 @@ where
                 armed_deadline = wanted_deadline;
             }
 
-            let wanted_publish = runner.publish_deadline();
+            let wanted_publish = self.runner.publish_deadline();
             if wanted_publish != armed_publish {
                 if let Some(at) = wanted_publish {
                     publish_timer.as_mut().reset(at);
@@ -417,55 +1322,75 @@ where
                 armed_publish = wanted_publish;
             }
 
-            let poll_input = input_open && runner.pending.is_none() && runner.driver.accepts_input();
-
             select! {
                 biased;
 
-                _ = health.live() => {},
+                _ = liveness.answer() => {},
 
-                request = next_control(&mut control) => match request {
-                    Some(request) => {
-                        runner.control(request)?;
-                        dispatch(&mut runner, context.dispatcher(), &exit_names, &mut health, &mut control).await?;
-                    }
-                    None => control = None,
+                request = control.next() => if let Some(request) = request {
+                    self.runner.control(request)?;
+                    self.dispatch(dispatcher, liveness, control).await?;
                 },
 
                 _ = &mut publish_timer, if armed_publish.is_some() => {
                     armed_publish = None;
-                    runner.publish()?;
+                    self.runner.publish()?;
                 },
 
                 // Resuming is always possible, so consume the task's cooperative budget to let other tasks run
                 // between the turns of a long drain, even one that writes nothing.
-                _ = consume_budget(), if runner.pending.is_some() => {
-                    runner.resume()?;
-                    dispatch(&mut runner, context.dispatcher(), &exit_names, &mut health, &mut control).await?;
+                _ = consume_budget(), if self.runner.pending.is_some() => {
+                    self.runner.resume()?;
+                    self.dispatch(dispatcher, liveness, control).await?;
                 },
 
                 _ = &mut deadline_timer, if armed_deadline.is_some() => {
                     let fired = armed_deadline.take().expect("armed per select guard");
-                    runner.advance_time(fired.into_std())?;
-                    dispatch(&mut runner, context.dispatcher(), &exit_names, &mut health, &mut control).await?;
+                    self.runner.advance_time(fired.into_std())?;
+                    self.dispatch(dispatcher, liveness, control).await?;
                 },
 
-                maybe_batch = context.events().next(), if poll_input => match maybe_batch {
+                _ = &mut hold_timer, if armed_hold.is_some() && self.runner.pending.is_none() => {
+                    armed_hold = None;
+                    turn_owed = true;
+                },
+
+                _ = &mut heartbeat_timer, if armed_heartbeat.is_some() && can_process => {
+                    turn_owed |= self.heartbeat(Heartbeat::Idle, dispatcher, liveness, control).await?;
+                    // A stamp since the timer was armed moves the next heartbeat; either way it is one period after
+                    // the point's latest stamp.
+                    armed_heartbeat = self.admission.as_ref().and_then(OwnedAdmission::heartbeat_due);
+                    if let Some(due) = armed_heartbeat {
+                        heartbeat_timer.as_mut().reset(due);
+                    }
+                },
+
+                // Only waited on while the input is idle; the check before every wait sees a reset that happens
+                // while the lane is busy.
+                resets = next_reset(&mut reset_wait), if reset_wait.is_some() && can_process => {
+                    reset_wait = resets.map(wait_for_reset);
+                },
+
+                maybe_batch = input.next(), if can_process => match maybe_batch {
                     Some(batch) => {
-                        runner.process(batch)?;
-                        dispatch(&mut runner, context.dispatcher(), &exit_names, &mut health, &mut control).await?;
+                        self.process(batch).await?;
+                        self.dispatch(dispatcher, liveness, control).await?;
 
                         // Keep processing batches that are already waiting, up to the turn's limit, before checking
                         // for control messages and timers again.
-                        for _ in 1..work_per_turn.get() {
-                            if runner.pending.is_some() || !runner.driver.accepts_input() {
+                        for _ in 1..self.work_per_turn.get() {
+                            let busy = self.runner.pending.is_some() || !self.runner.driver.accepts_input();
+                            if busy || control.abandoned {
                                 break;
                             }
-                            match context.events().next().now_or_never() {
+                            if self.admission.as_ref().is_some_and(OwnedAdmission::reset_pending) {
+                                self.heartbeat(Heartbeat::Reset, dispatcher, liveness, control).await?;
+                                continue;
+                            }
+                            match input.next().now_or_never() {
                                 Some(Some(batch)) => {
-                                    runner.process(batch)?;
-                                    dispatch(&mut runner, context.dispatcher(), &exit_names, &mut health, &mut control)
-                                        .await?;
+                                    self.process(batch).await?;
+                                    self.dispatch(dispatcher, liveness, control).await?;
                                 }
                                 Some(None) => {
                                     input_open = false;
@@ -474,65 +1399,198 @@ where
                                 None => break,
                             }
                         }
+                        turn_owed = true;
                     }
                     None => input_open = false,
                 },
             }
         }
 
-        runner.publish()?;
-        debug!("Region host stopped.");
+        self.runner.publish()?;
+        debug!(lane = %self.context, "Region host stopped.");
 
         Ok(())
     }
-}
 
-/// Waits for the next control request, or forever once the mailbox is closed.
-async fn next_control<C>(control: &mut Option<ControlReceiver<C>>) -> Option<(C, ControlReply)> {
-    match control {
-        Some(receiver) => receiver.recv().await,
-        None => std::future::pending().await,
+    /// Stamps a batch the lane received at its admission point, if it has one, and processes it.
+    async fn process(&mut self, mut batch: EventsBuffer) -> Result<(), GenericError> {
+        if let Some(stats) = &self.stats {
+            stats.record_batch(batch.len() as u64);
+        }
+        if let Some(admission) = &self.admission {
+            admission.stamp(batch.header_mut()).await;
+        }
+        self.runner.process(batch)
+    }
+
+    /// Stamps a heartbeat at the lane's admission point, if one is due, and processes it as a header-only batch, which
+    /// the driver forwards as progress.
+    ///
+    /// Returns `true` if it processed a heartbeat, which counts as a turn of input.
+    async fn heartbeat(
+        &mut self, kind: Heartbeat, dispatcher: &EventsDispatcher, liveness: &mut Liveness,
+        control: &mut ControlSource<D::Control>,
+    ) -> Result<bool, GenericError> {
+        let Some(admission) = &self.admission else {
+            return Ok(false);
+        };
+        let header = match kind {
+            Heartbeat::Idle => admission.stamp_heartbeat().await,
+            Heartbeat::Reset => admission.stamp_reset().await,
+        };
+        let Some(header) = header else {
+            return Ok(false);
+        };
+        self.runner
+            .process(EventsBuffer::with_capacity(0).with_header(header))?;
+        self.dispatch(dispatcher, liveness, control).await?;
+        Ok(true)
+    }
+
+    async fn dispatch(
+        &mut self, dispatcher: &EventsDispatcher, liveness: &mut Liveness, control: &mut ControlSource<D::Control>,
+    ) -> Result<(), GenericError> {
+        dispatch(&mut self.runner, &mut self.routes, dispatcher, liveness, control).await
     }
 }
 
-/// Sends every buffer waiting in the runner's outbox, in order, awaiting each send.
+/// Why a lane stamps a heartbeat.
+#[derive(Clone, Copy, Debug)]
+enum Heartbeat {
+    /// The point stamped nothing for its heartbeat period.
+    Idle,
+
+    /// Another point reset the source clock since this point last stamped.
+    Reset,
+}
+
+/// Sends every buffer waiting in the runner's outbox, in order.
 ///
-/// While a send waits for downstream, this keeps answering liveness probes and handling control messages. The output
-/// of a control message is queued behind the buffers already waiting, and sent before this returns.
+/// Each buffer goes where its exit's routing sends it ([`ExitRoutes::route`]); one that does not fit its exit's
+/// routing fails the lane. Buffers written back to back to lanes of a keyed exit's target are tried first, without
+/// waiting (see [`send_keyed`]); every other send is awaited. While a send waits for downstream, this keeps answering
+/// liveness probes and handling control messages. The output of a control message is queued behind the buffers already
+/// waiting, and sent before this returns. A lane whose coordinator is gone stops sending.
 async fn dispatch<D>(
-    runner: &mut Runner<D>, dispatcher: &EventsDispatcher, exit_names: &[String], health: &mut Health,
-    control: &mut Option<ControlReceiver<D::Control>>,
+    runner: &mut Runner<D>, routes: &mut ExitRoutes, dispatcher: &EventsDispatcher, liveness: &mut Liveness,
+    control: &mut ControlSource<D::Control>,
 ) -> Result<(), GenericError>
 where
     D: RegionDriver,
 {
-    while let Some((exit, buffer)) = runner.outbox.pop_front() {
-        let exit_name = exit_names[exit.get()].as_str();
-        let send = dispatcher.dispatch_named(exit_name, buffer);
-        pin!(send);
-
-        loop {
-            select! {
-                biased;
-
-                _ = health.live() => {},
-
-                result = &mut send => {
-                    if let Err(e) = result {
-                        error!(exit = exit_name, error = %e, "Failed to dispatch events.");
-                    }
-                    break;
-                },
-
-                request = next_control(control) => match request {
-                    Some(request) => runner.control(request)?,
-                    None => *control = None,
-                },
+    while let Some((exit, lane, buffer)) = runner.outbox.pop_front() {
+        if control.abandoned {
+            return Ok(());
+        }
+        let sent = match lane {
+            Some(lane) if routes.is_keyed(exit) => {
+                send_keyed((exit, lane, buffer), runner, routes, dispatcher, liveness, control).await?
             }
+            _ => {
+                let (exit_name, route) = routes.route(exit, lane)?;
+                let send = async {
+                    match route {
+                        Some(route) => dispatcher.dispatch_named_to_lane(exit_name, route, buffer).await,
+                        None => dispatcher.dispatch_named(exit_name, buffer).await,
+                    }
+                };
+                await_send(send, exit_name, runner, liveness, control).await?
+            }
+        };
+        if !sent {
+            return Ok(());
         }
     }
 
     Ok(())
+}
+
+/// Sends the buffers the driver wrote back to back to lanes of the target of a keyed exit, from `first`, the exit,
+/// lane, and buffer of the first of them, without waiting where a lane has room, and then awaits the rest in order.
+///
+/// Each buffer is tried first ([`EventsDispatcher::try_dispatch_named_to_lane`]), unless an earlier buffer for its lane
+/// is held: a buffer the try returns, because its lane is full, is held, and so is every later one for that lane, so
+/// that each lane receives its buffers in the order they were written. The held buffers are then awaited in order,
+/// before anything written after the run: one full lane does not hold up what a call routes to the others.
+///
+/// Returns `false` if the lane's coordinator went away while a send waited.
+async fn send_keyed<D>(
+    first: (ExitId, u16, EventsBuffer), runner: &mut Runner<D>, routes: &mut ExitRoutes, dispatcher: &EventsDispatcher,
+    liveness: &mut Liveness, control: &mut ControlSource<D::Control>,
+) -> Result<bool, GenericError>
+where
+    D: RegionDriver,
+{
+    let (exit, lane, buffer) = first;
+    let mut held: Vec<(u16, EventsBuffer)> = Vec::new();
+    let mut next = Some((lane, buffer));
+    while let Some((lane, buffer)) = next.take() {
+        let (exit_name, route) = routes.route(exit, Some(lane))?;
+        if held.iter().any(|(held_lane, _)| *held_lane == lane) {
+            held.push((lane, buffer));
+        } else if let Some(route) = route {
+            match dispatcher.try_dispatch_named_to_lane(exit_name, route, buffer) {
+                Ok(None) => {}
+                Ok(Some(buffer)) => held.push((lane, buffer)),
+                Err(e) => error!(exit = exit_name, error = %e, "Failed to dispatch events."),
+            }
+        }
+        // The run goes on while the driver wrote to lanes of the same exit.
+        next = match runner.outbox.front() {
+            Some((next_exit, Some(next_lane), _)) if *next_exit == exit => {
+                let next_lane = *next_lane;
+                runner.outbox.pop_front().map(|(_, _, buffer)| (next_lane, buffer))
+            }
+            _ => None,
+        };
+    }
+
+    for (lane, buffer) in held {
+        if control.abandoned {
+            return Ok(false);
+        }
+        let exit_name = routes.name(exit);
+        let send = dispatcher.dispatch_named_to_lane(exit_name, LaneRoute::Target(lane), buffer);
+        if !await_send(send, exit_name, runner, liveness, control).await? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Awaits one send to the exit `exit_name`, answering liveness probes and handling control messages meanwhile, whose
+/// output is queued behind the buffers already waiting.
+///
+/// A send that fails, as one to a component that stopped does, is logged, and its buffer dropped. Returns `false` if
+/// the lane's coordinator went away while the send waited.
+async fn await_send<D, F>(
+    send: F, exit_name: &str, runner: &mut Runner<D>, liveness: &mut Liveness, control: &mut ControlSource<D::Control>,
+) -> Result<bool, GenericError>
+where
+    D: RegionDriver,
+    F: Future<Output = Result<(), GenericError>>,
+{
+    pin!(send);
+    loop {
+        select! {
+            biased;
+
+            _ = liveness.answer() => {},
+
+            result = &mut send => {
+                if let Err(e) = result {
+                    error!(exit = exit_name, error = %e, "Failed to dispatch events.");
+                }
+                return Ok(true);
+            },
+
+            request = control.next() => match request {
+                Some(request) => runner.control(request)?,
+                None if control.abandoned => return Ok(false),
+                None => {}
+            },
+        }
+    }
 }
 
 /// A call into the driver that has yielded and is waiting to be resumed.
@@ -561,7 +1619,7 @@ where
 {
     driver: D,
     sink: ExitSink,
-    outbox: VecDeque<(ExitId, EventsBuffer)>,
+    outbox: VecDeque<(ExitId, Option<u16>, EventsBuffer)>,
     turn_budget: Budget,
     pending: Option<Pending>,
     telemetry: HostTelemetry,
@@ -574,6 +1632,9 @@ where
     // Whether the last call that returned wrote anything to its exit sink or charged its budget.
     last_call_worked: bool,
     deadlines: DeadlineGuard,
+
+    // Where the time of every call into the driver is counted, if the lane has statistics.
+    stats: Option<Arc<LaneStats>>,
 }
 
 /// Keeps the host from spinning on a past deadline that the driver kept after time-driven work that did nothing.
@@ -615,7 +1676,9 @@ impl<D> Runner<D>
 where
     D: RegionDriver,
 {
-    fn new(driver: D, exit_count: usize, turn_budget: Budget, telemetry: HostTelemetry) -> Self {
+    fn new(
+        driver: D, exit_count: usize, turn_budget: Budget, telemetry: HostTelemetry, stats: Option<Arc<LaneStats>>,
+    ) -> Self {
         Self {
             driver,
             sink: ExitSink::new(exit_count),
@@ -628,6 +1691,14 @@ where
             finished: false,
             last_call_worked: false,
             deadlines: DeadlineGuard::default(),
+            stats,
+        }
+    }
+
+    /// Counts the time of a call into the driver whose turn started at `started`, if the lane has statistics.
+    fn count_busy(&self, started: Instant) {
+        if let Some(stats) = &self.stats {
+            stats.record_busy(started.elapsed());
         }
     }
 
@@ -643,15 +1714,17 @@ where
         let mut budget = self.turn_budget;
         let driver = &mut self.driver;
         let sink = &mut self.sink;
+        let started = Instant::now();
         let result = {
-            let mut turn = RegionTurn::new(Instant::now().into_std(), &mut budget);
+            let mut turn = RegionTurn::new(started.into_std(), &mut budget);
             catch_unwind(AssertUnwindSafe(|| call(driver, &mut turn, sink)))
         };
+        self.count_busy(started);
 
         match result {
             Ok(result) => {
                 self.last_call_worked = !self.sink.is_empty() || budget != self.turn_budget;
-                self.outbox.extend(self.sink.drain());
+                self.outbox.extend(self.sink.drain_routed());
                 Called::Returned(result)
             }
             Err(payload) => {
@@ -673,6 +1746,30 @@ where
         let mut budget = self.turn_budget;
         let mut turn = RegionTurn::new(Instant::now().into_std(), &mut budget);
         self.driver.start(&mut turn);
+    }
+
+    /// Ends a turn of input, queueing what the driver writes, and returns when it next wants to end one.
+    ///
+    /// Ending a turn runs no kernel code, so it is not supervised: a panic in it fails the component.
+    fn end_turn(&mut self, input_idle: bool) -> Option<std::time::Instant> {
+        let mut budget = self.turn_budget;
+        let started = Instant::now();
+        let now = started.into_std();
+        let next = {
+            let mut turn = RegionTurn::new(now, &mut budget);
+            self.driver.end_turn(&mut turn, input_idle, &mut self.sink)
+        };
+        self.count_busy(started);
+        self.outbox.extend(self.sink.drain_routed());
+
+        // Everything due by now was just written, so a deadline that is not later is a driver bug, which would have
+        // the host end turns again and again while nothing changes.
+        debug_assert!(
+            next.is_none_or(|next| next > now),
+            "the region driver's end of turn returned a deadline that is not later than the turn, which would make \
+             the host end turns again at once, forever; write what is due by the turn's instant, and return the next"
+        );
+        next.filter(|next| *next > now)
     }
 
     /// Recovers from a panic, returning the error that fails the component if the driver decides so.
