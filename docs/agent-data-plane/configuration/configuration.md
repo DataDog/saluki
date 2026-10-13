@@ -710,7 +710,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 
 | Config Key                                                      | Description                                                                 | Default        |
 | --------------------------------------------------------------- | --------------------------------------------------------------------------- | -------------- |
-| `aggregate_context_limit`                                       | Max contexts per aggregation window                                         |                |
+| `aggregate_context_limit`                                       | Max contexts across aggregation windows                                     |                |
 | `aggregate_flush_interval`                                      | Aggregator flush period                                                     |                |
 | `aggregate_passthrough_idle_flush_timeout`                      | Passthrough buffer flush delay                                              |                |
 | `aggregate_window_duration_seconds`                             | Aggregation window size                                                     |                |
@@ -745,6 +745,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `memory_limit`                                                  | Process memory limit                                                        |                |
 | `memory_mode`                                                   | Memory bounds validation mode                                               | disabled       |
 | `memory_slop_factor`                                            | Memory accounting slop fraction                                             | 0.25           |
+| `metric_aggregation_intervals`                                  | Per-prefix DogStatsD aggregation windows                                    | []             |
 | `metric_tag_value_allowlist`                                    | Per-metric tag value allow-list                                             | []             |
 | `otlp_allow_context_heap_allocs`                                | Allow heap allocations for OTLP contexts                                    |                |
 | `otlp_cached_contexts_limit`                                    | Max cached OTLP metric contexts                                             |                |
@@ -871,6 +872,31 @@ By default, ADP parses DogStatsD packets with the same leniency as the core agen
 ### `dogstatsd_string_interner_size_bytes`
 
 Accepts a bare integer number of bytes or a human-readable byte-size string such as `12MiB`. When unset, ADP derives the byte budget from `dogstatsd_string_interner_size`.
+
+### `metric_aggregation_intervals`
+
+Each entry selects an aggregation window for a non-empty, case-sensitive metric-name prefix. Allowed widths are the positive divisors of 60: `1`, `2`, `3`, `4`, `5`, `6`, `10`, `12`, `15`, `20`, `30`, or `60` seconds. Prefixes must not overlap. Whitespace is preserved and matched exactly. Rules apply after mapper rewrites and metric namespace prefixing.
+
+Rules are read at startup. Restart Agent Data Plane to apply changes; live updates and Remote Config delivery are not supported. An empty list preserves the default window. Unmatched metrics use `aggregate_window_duration_seconds` (10 seconds by default), whose existing accepted range is unchanged.
+
+The window controls point granularity, not delivery cadence: `aggregate_flush_interval` still controls when closed windows are forwarded. Shorter windows increase point volume and memory requirements. Timestamped metrics on the no-aggregation path bypass these rules.
+
+> [!WARNING]
+> Treat each metric's selected interval as stable. Changing the interval of an existing metric, including across a restart, can produce incorrect query results where the backend treats interval as static metadata.
+
+```yaml
+metric_aggregation_intervals:
+  - metric_prefix: high_resolution.
+    interval_seconds: 1
+  - metric_prefix: archival.
+    interval_seconds: 60
+```
+
+Set `DD_METRIC_AGGREGATION_INTERVALS` to the equivalent JSON array when configuring ADP through the environment:
+
+```shell
+DD_METRIC_AGGREGATION_INTERVALS='[{"metric_prefix":"high_resolution.","interval_seconds":1}]'
+```
 
 ### `dogstatsd_mapper_string_interner_size`
 
