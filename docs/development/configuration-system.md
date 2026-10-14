@@ -177,8 +177,8 @@ were.
 
 ### Add or change a witnessed key
 
-1. Confirm its `schema_overlay.yaml` classification. If support becomes `full` or `partial`, provide the required
-   metadata, and expect a new witness method after generation.
+1. Confirm its `schema_overlay.yaml` classification. If support becomes `full` or `partial`, set
+   `pipelines` and `description` (`partial` also needs `documentation`) and expect a new witness method.
 2. Add or refine its destination in `control`, `shared`, or `domains`, based on who consumes it.
 3. Run `make build-schema-overlay`.
 4. Implement the generated `consume_<key>` in `DatadogTranslator`, and find the right home for it in
