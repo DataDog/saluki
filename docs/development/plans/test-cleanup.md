@@ -142,7 +142,7 @@ otherwise keep hand-rolling the thing it replaces.
   - [medium/medium] Six `run_request_builder` integration tests in `datadog/metrics/mod.rs` share unextracted
     setup/teardown boilerplate, and are themselves oversized, multi-concern tests (KI-12).
   - [high/medium] Datadog encoder payload-building/enrichment logic, and the logs/traces encoders' documented
-    enrichment/formatting behavior, lack unit tests beyond config smoke tests.
+    enrichment/formatting behavior, lack unit tests.
   - [medium/medium] The `dsd_stats` destination has zero tests despite a non-trivial stateful collection protocol;
     the Prometheus destination's core metric-translation/merge/tag-collection logic is untested, including its
     documented distribution-as-DDSketch-summary limitation.
@@ -238,8 +238,7 @@ otherwise keep hand-rolling the thing it replaces.
   - [low/small] `DogStatsDPrefixFilter` tests hand-roll the full struct literal roughly 12 times instead of a
     parameterized builder helper; the fixture-builder-helper pattern proven in one component isn't reused by its
     sibling.
-  - [low/small] `TagFilterlistConfiguration`'s documented `context_cache_capacity` default/override is never tested,
-    alongside inconsistent config-smoke-test coverage across sibling components.
+  - [low/small] `TagFilterlistConfiguration`'s documented `context_cache_capacity` default/override is never tested.
   - [medium/trivial] The OTTL processors' documented default `error_mode` (`Propagate`) is never exercised by
     omitting the config key.
   - [low/small] OTTL's per-value-type "set" tests repeat near-identical bodies instead of being table-driven
