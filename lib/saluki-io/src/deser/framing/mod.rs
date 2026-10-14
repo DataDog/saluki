@@ -62,6 +62,8 @@ pub struct NestedFramer<Inner, Outer> {
     outer: Outer,
     current_outer_frame: Option<Bytes>,
     completed_outer_frames: usize,
+    retain_outer_frames: bool,
+    retained_outer_frames: Vec<Bytes>,
 }
 
 impl<Inner, Outer> NestedFramer<Inner, Outer> {
@@ -72,6 +74,8 @@ impl<Inner, Outer> NestedFramer<Inner, Outer> {
             outer,
             current_outer_frame: None,
             completed_outer_frames: 0,
+            retain_outer_frames: false,
+            retained_outer_frames: Vec::new(),
         }
     }
 
@@ -80,6 +84,28 @@ impl<Inner, Outer> NestedFramer<Inner, Outer> {
         let completed = self.completed_outer_frames;
         self.completed_outer_frames = 0;
         completed
+    }
+
+    /// Sets whether newly extracted outer frames are retained for later retrieval.
+    ///
+    /// When enabled, every outer frame extracted from the input buffer is retained, in order, until it is drained with
+    /// [`drain_outer_frames`][Self::drain_outer_frames]. Retained frames share their underlying storage with the frame
+    /// being split into inner frames, so retaining them does not copy the frame data.
+    ///
+    /// Callers that enable retention **MUST** drain retained frames after each call to `next_frame`, as they are
+    /// otherwise held indefinitely. Disabling retention discards any frames that have not yet been drained.
+    ///
+    /// Defaults to disabled.
+    pub fn set_retain_outer_frames(&mut self, retain: bool) {
+        self.retain_outer_frames = retain;
+        if !retain {
+            self.retained_outer_frames.clear();
+        }
+    }
+
+    /// Drains the outer frames retained since the last call, in the order they were extracted.
+    pub fn drain_outer_frames(&mut self) -> std::vec::Drain<'_, Bytes> {
+        self.retained_outer_frames.drain(..)
     }
 }
 
@@ -112,6 +138,10 @@ where
                                 ?frame,
                                 "Extracted outer frame."
                             );
+
+                            if self.retain_outer_frames {
+                                self.retained_outer_frames.push(frame.clone());
+                            }
 
                             self.current_outer_frame.get_or_insert(frame)
                         }
@@ -317,6 +347,39 @@ mod tests {
 
         assert!(buf.is_empty());
         assert_eq!(framer.take_completed_outer_frames(), 0);
+    }
+
+    #[test]
+    fn nested_framer_retains_outer_frames_only_when_enabled() {
+        let outer_payloads: &[&[u8]] = &[b"frame1\nframe2\n", b"frame3\n"];
+        let mut buf = VecDeque::new();
+        for payload in outer_payloads {
+            buf.extend(&(payload.len() as u32).to_le_bytes());
+            buf.extend(payload.iter());
+        }
+        let mut framer = NestedFramer::new(NewlineFramer::default(), LengthDelimitedFramer);
+
+        let first = framer.next_frame(&mut buf, false).unwrap().unwrap();
+        assert_eq!(&first[..], b"frame1");
+        assert_eq!(framer.drain_outer_frames().count(), 0);
+
+        framer.set_retain_outer_frames(true);
+        let second = framer.next_frame(&mut buf, false).unwrap().unwrap();
+        assert_eq!(&second[..], b"frame2");
+        assert_eq!(framer.drain_outer_frames().count(), 0);
+
+        let third = framer.next_frame(&mut buf, false).unwrap().unwrap();
+        assert_eq!(&third[..], b"frame3");
+        let retained = framer.drain_outer_frames().collect::<Vec<_>>();
+        assert_eq!(retained.len(), 1);
+        assert_eq!(&retained[0][..], outer_payloads[1]);
+        assert_eq!(framer.drain_outer_frames().count(), 0);
+
+        buf.extend(&(outer_payloads[0].len() as u32).to_le_bytes());
+        buf.extend(outer_payloads[0].iter());
+        let _ = framer.next_frame(&mut buf, false).unwrap().unwrap();
+        framer.set_retain_outer_frames(false);
+        assert_eq!(framer.drain_outer_frames().count(), 0);
     }
 
     #[test]
