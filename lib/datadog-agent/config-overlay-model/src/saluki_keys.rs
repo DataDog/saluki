@@ -1,5 +1,4 @@
-//! ADP-only configuration keys that are not in the Datadog Agent schema, for the ADP-Only
-//! documentation section.
+//! Descriptions and displayed defaults for documented Saluki-only configuration keys.
 
 pub struct SalukiKey {
     pub yaml_path: &'static str,
@@ -11,7 +10,6 @@ pub struct SalukiKey {
 }
 
 pub static SALUKI_KEYS: &[SalukiKey] = &[
-    // ── metrics_endpoint_routing.rs ───────────────────────────────────────
     SalukiKey {
         yaml_path: "experimental.metrics_endpoint_routing.metric_allowlist",
         description: "Per-endpoint metric allow lists",
@@ -101,7 +99,6 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
             "The example endpoint must also be configured as the primary or an additional endpoint.",
         )),
     },
-    // ── data_plane.rs ────────────────────────────────────────────────────────
     SalukiKey {
         yaml_path: "data_plane.experimental.apm.enabled",
         description: "Run the experimental APM proxy in front of the trace-agent",
@@ -154,7 +151,6 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
             "Temporary development key for setting ADP's OTLP listen endpoints independently from the Agent's.",
         ),
     },
-    // ── dogstatsd.rs ─────────────────────────────────────────────────────────
     SalukiKey {
         yaml_path: "dogstatsd_allow_context_heap_allocs",
         description: "Allow heap allocations for contexts",
@@ -268,7 +264,6 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         default: "0",
         documentation: None,
     },
-    // ── otlp.rs ──────────────────────────────────────────────────────────────
     SalukiKey {
         yaml_path: "otlp_config.traces.enable_otlp_compute_top_level_by_span_kind",
         description: "Enable OTLP top-level-by-span-kind",
@@ -317,7 +312,6 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         default: "",
         documentation: None,
     },
-    // ── aggregate.rs ─────────────────────────────────────────────────────────
     SalukiKey {
         yaml_path: "aggregate_window_duration_seconds",
         description: "Aggregation window size",
@@ -342,7 +336,6 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         default: "",
         documentation: None,
     },
-    // ── trace_obfuscation.rs ─────────────────────────────────────────────────
     SalukiKey {
         yaml_path: "apm_config.obfuscation.sql.dbms",
         description: "SQL obfuscation DBMS dialect",
@@ -373,7 +366,6 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         default: "",
         documentation: None,
     },
-    // ── encoders.rs ──────────────────────────────────────────────────────────
     SalukiKey {
         yaml_path: "flush_timeout_secs",
         description: "Encoder flush timeout (secs)",
@@ -386,7 +378,6 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         default: "",
         documentation: None,
     },
-    // ── dogstatsd_mapper.rs ──────────────────────────────────────────────────
     SalukiKey {
         yaml_path: "dogstatsd_mapper_string_interner_size",
         description: "Mapper string interner byte capacity",
@@ -397,7 +388,6 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
              byte-size string such as `64KiB`. Larger values increase memory usage.",
         ),
     },
-    // ── accounting.rs ────────────────────────────────────────────────────────
     SalukiKey {
         yaml_path: "memory_limit",
         description: "Process memory limit",
