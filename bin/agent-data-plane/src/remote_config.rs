@@ -8,12 +8,13 @@
 use std::time::Duration;
 
 use agent_data_plane_config::SalukiConfiguration;
+use datadog_agent_apm::semantics::SemanticRegistryProvider;
 use datadog_agent_commons::ipc::{
     client::{client_name, RemoteAgentClient},
     config::RemoteAgentClientConfiguration,
 };
 use datadog_agent_remote_config::{AgentIdentity, ClientKind, RcClientConfiguration, RemoteConfigurationClient};
-use saluki_components::remote_config::{SemanticRegistryProvider, TraceSamplingSubscription};
+use saluki_components::remote_config::TraceSamplingSubscription;
 use saluki_core::runtime::{
     nested_supervisor, ChildSpecification, RestartStrategy, Supervisable, Supervisor, SupervisorError, SupervisorSpec,
 };

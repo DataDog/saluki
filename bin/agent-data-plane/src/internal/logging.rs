@@ -124,6 +124,26 @@ mod tests {
     }
 
     #[test]
+    fn semantic_registry_logs_use_the_first_party_level() {
+        // Moving the decoder out of saluki-components must not hide its warnings or debug selection logs.
+        let logging = defaulted_logging();
+        let config = get_translated_logging_config(&logging).expect("translate default logging config");
+        let target = "datadog_agent_apm::semantics::remote_config";
+        let filter = config.log_level.as_targets();
+        assert!(filter.would_enable(target, &tracing::Level::WARN));
+        assert!(!filter.would_enable(target, &tracing::Level::DEBUG));
+
+        let logging = Logging {
+            level: "debug".to_string(),
+            ..logging
+        };
+        let config = get_translated_logging_config(&logging).expect("translate debug logging config");
+        let filter = config.log_level.as_targets();
+        assert!(filter.would_enable(target, &tracing::Level::WARN));
+        assert!(filter.would_enable(target, &tracing::Level::DEBUG));
+    }
+
+    #[test]
     fn defaulted_log_file_uses_the_platform_default_path() {
         let config = get_translated_logging_config(&defaulted_logging()).expect("translate logging config");
 
