@@ -481,7 +481,7 @@ impl TraceSampler {
             }
         }
 
-        if !self.compute_top_level_by_span_kind {
+        if !self.compute_top_level_by_span_kind && !trace.payload.client_computed_top_level {
             compute_top_level(trace.spans_mut());
         }
     }

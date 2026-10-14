@@ -149,6 +149,9 @@ struct ApmStats {
 
 impl ApmStats {
     fn process_trace(&mut self, trace: &Trace) {
+        if trace.payload.client_computed_stats {
+            return;
+        }
         let root_span = trace
             .spans()
             .iter()
