@@ -114,6 +114,11 @@ pub struct PayloadFields {
     pub app_version: MetaString,
     /// Per-chunk weight from `Datadog-Client-Dropped-P0-Traces` header. Zero if absent.
     pub client_dropped_p0s_weight: f64,
+    /// `true` if the client has already marked top-level spans, allowing the agent to skip its own top-level computation.
+    pub client_computed_stats: bool,
+    /// `true` if the client has already computed APM stats for these traces, allowing the agent to skip its own stats computation.
+    pub client_computed_top_level: bool,
+    // TODO: process tags, runtime_id, git_commit_sha, ...
 }
 
 /// A trace event.

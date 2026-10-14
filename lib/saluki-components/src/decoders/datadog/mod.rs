@@ -15,6 +15,7 @@
 
 use std::{sync::Arc, time::Duration};
 
+use http::HeaderMap;
 use saluki_common::collections::FastHashMap;
 use saluki_core::{
     accounting::MemoryBounds,
@@ -130,9 +131,9 @@ impl Decoder for ApmTraceV1Decoder {
                         }
                     };
                     let (_meta, request) = http_payload.into_parts();
-                    let payload_body = request.into_body();
-                    let payload_bytes = payload_body.into_bytes();
-                    let traces = match decode_v1_payload(&payload_bytes) {
+                    let (parts, body) = request.into_parts();
+                    let payload_bytes = body.into_bytes();
+                    let traces = match decode_v1_payload_with_headers(&parts.headers, &payload_bytes) {
                         Ok(traces) => traces,
                         Err(e) => {
                             // TODO: metrics ?
@@ -182,7 +183,7 @@ impl Decoder for ApmTraceV1Decoder {
 ///
 /// Returns a [`DecodeError`] if the input is not a well-formed v1.0 tracer payload (truncated,
 /// malformed MessagePack, oversized headers, out-of-range string references, and so on).
-pub fn decode_v1_payload(bytes: &[u8]) -> Result<Vec<Trace>, DecodeError> {
+pub fn decode_v1_payload_with_headers(headers: &HeaderMap, bytes: &[u8]) -> Result<Vec<Trace>, DecodeError> {
     let mut reader = bytes;
     let payload = decode_tracer_payload(&mut reader)?;
     if !reader.is_empty() {
@@ -199,6 +200,8 @@ pub fn decode_v1_payload(bytes: &[u8]) -> Result<Vec<Trace>, DecodeError> {
         hostname: payload.hostname,
         app_version: payload.app_version,
         client_dropped_p0s_weight: 0.0,
+        client_computed_stats: headers.contains_key("datadog-client-computed-stats"),
+        client_computed_top_level: headers.contains_key("datadog-client-computed-top-level"),
     };
 
     let mut traces = Vec::with_capacity(payload.chunks.len());
