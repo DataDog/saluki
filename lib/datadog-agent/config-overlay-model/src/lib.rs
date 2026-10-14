@@ -10,16 +10,13 @@
 
 pub mod saluki_keys;
 pub mod schema_gen;
-pub mod smoke_test_support;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexMap;
 use serde::Deserialize;
 use serde_json::{Map, Value};
-
-use crate::smoke_test_support::ConfigurationStruct;
 
 /// Top-level overlay structure.
 ///
@@ -60,8 +57,6 @@ pub struct FullSupport {
     /// GitHub issue tracking number.
     #[serde(default)]
     pub issue: Option<String>,
-    /// Fields to support the `config_registry` and configuration smoke tests.
-    pub test_support: TestSupport,
 }
 
 /// Metadata for a partially supported configuration key.
@@ -80,8 +75,6 @@ pub struct PartialSupport {
     /// GitHub issue tracking number.
     #[serde(default)]
     pub issue: Option<String>,
-    /// Fields to support the `config_registry` and configuration smoke tests.
-    pub test_support: TestSupport,
 }
 
 /// Metadata for an unsupported configuration key.
@@ -117,30 +110,6 @@ pub struct UnknownSupport {
     /// GitHub issue tracking the investigation.
     #[serde(default)]
     pub issue: Option<String>,
-}
-
-/// Metadata to support config smoke tests.
-///
-/// These fields support logic in the configuration smoke tests and are tightly bound to the
-/// behavior of the test logic. They may change if the test methodology changes.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct TestSupport {
-    /// Environment variable overrides for this key. Checked by configuration smoke tests.
-    #[serde(default)]
-    pub env_var_override: Option<Vec<String>>,
-    /// Override the type inferred from the schema.
-    #[serde(default)]
-    pub value_type_override: Option<ValueType>,
-    /// Configuration consumers that incorporate this key (non-empty).
-    pub used_by: IndexSet<ConfigurationStruct>,
-    /// Literal JSON value for smoke test injection.
-    #[serde(default)]
-    pub test_json: Option<String>,
-    /// TRANSITIONAL BANDAID. Carries metadata needed only to reproduce the hand-written
-    /// registry (filename partitioning, Saluki-only schema source/default). Delete with it.
-    #[serde(default)]
-    pub additional_attributes: IndexMap<String, String>,
 }
 
 /// Impact severity of an unsupported or unknown key.
@@ -220,17 +189,6 @@ impl<'de> serde::Deserialize<'de> for PipelineAffinity {
 
         Ok(PipelineAffinity::Pipelines(pipelines))
     }
-}
-
-/// Override type for when the schema under-specifies a key's value type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ValueType {
-    Boolean,
-    Integer,
-    Float,
-    String,
-    StringList,
 }
 
 /// File paths to the two YAML files required as input by this library.
@@ -402,18 +360,12 @@ impl SchemaOverlay {
         }
     }
 
-    /// Validate per-entry constraints: description length, `used_by` non-empty, and planned+issue
-    /// consistency for unsupported entries.
+    /// Validate per-entry constraints: description length and planned+issue consistency for
+    /// unsupported entries.
     fn validate_entries(&self) -> Result<(), Error> {
         for (key, entry) in &self.inventory {
             match entry {
                 KnownEntry::Full(f) => {
-                    if f.test_support.used_by.is_empty() {
-                        return Err(Error::Validation(format!(
-                            "full key '{}': used_by must be non-empty",
-                            key
-                        )));
-                    }
                     if f.description.len() > 50 {
                         return Err(Error::Validation(format!(
                             "full key '{}': description exceeds 50 chars ({} chars)",
@@ -423,12 +375,6 @@ impl SchemaOverlay {
                     }
                 }
                 KnownEntry::Partial(p) => {
-                    if p.test_support.used_by.is_empty() {
-                        return Err(Error::Validation(format!(
-                            "partial key '{}': used_by must be non-empty",
-                            key
-                        )));
-                    }
                     if p.description.len() > 50 {
                         return Err(Error::Validation(format!(
                             "partial key '{}': description exceeds 50 chars ({} chars)",
@@ -843,8 +789,8 @@ const VALIDATION_RULES: &str = "\n\
     - No key appears in more than one section.\n\
     - Sections appear in order: known, ignored.\n\
     - Keys within each section are sorted alphabetically.\n\
-    - full entries: pipelines non-empty, used_by non-empty, description <= 50 chars.\n\
-    - partial entries: pipelines non-empty, used_by non-empty, description <= 50 chars, documentation required.\n\
+    - full entries: pipelines non-empty, description <= 50 chars.\n\
+    - partial entries: pipelines non-empty, description <= 50 chars, documentation required.\n\
     - unsupported entries: pipelines non-empty, description <= 50 chars, planned+issue consistent.\n\
     - unknown entries: description <= 50 chars (when present).\n\
     Fix: edit lib/datadog-agent/config/schema/schema_overlay.yaml.";
@@ -973,8 +919,6 @@ inventory:
     support: full
     pipelines: [cross_cutting]
     description: \"Key A\"
-    test_support:
-      used_by: [TypedConfigSystem]
 excluded: {}
 ";
         let err = load_from_strs(schema, overlay).unwrap_err();
@@ -997,8 +941,6 @@ inventory:
     support: full
     pipelines: [cross_cutting]
     description: \"Key A\"
-    test_support:
-      used_by: [TypedConfigSystem]
 excluded:
   key_b: \"not in schema\"
 ";
@@ -1024,8 +966,6 @@ inventory:
     support: full
     pipelines: [cross_cutting]
     description: \"Key A\"
-    test_support:
-      used_by: [TypedConfigSystem]
 excluded:
   key_a: \"duplicate\"
   key_b: \"ok\"
@@ -1089,14 +1029,10 @@ inventory:
     support: full
     pipelines: [cross_cutting]
     description: \"Key B\"
-    test_support:
-      used_by: [TypedConfigSystem]
   key_a:
     support: full
     pipelines: [cross_cutting]
     description: \"Key A\"
-    test_support:
-      used_by: [TypedConfigSystem]
 excluded: {}
 ";
         let err = load_from_strs(schema, overlay).unwrap_err();
@@ -1125,15 +1061,11 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: \"Fully supported key\"
-    test_support:
-      used_by: [TypedConfigSystem]
   partial_key:
     support: partial
     pipelines: [traces]
     description: \"Partially supported key\"
     documentation: \"Behaves differently from the core agent.\"
-    test_support:
-      used_by: [TypedConfigSystem]
   unknown_key:
     support: unknown
     description: \"Not yet classified\"
@@ -1159,15 +1091,14 @@ excluded: {}
                 "full",
                 format!(
                     "inventory:\n  key_a:\n    support: full\n    pipelines: [dogstatsd]\n    \
-                     description: \"{long}\"\n    test_support:\n      used_by: [TypedConfigSystem]\nexcluded: {{}}\n"
+                     description: \"{long}\"\nexcluded: {{}}\n"
                 ),
             ),
             (
                 "partial",
                 format!(
                     "inventory:\n  key_a:\n    support: partial\n    pipelines: [dogstatsd]\n    \
-                     description: \"{long}\"\n    documentation: \"diverges\"\n    test_support:\n      \
-                     used_by: [TypedConfigSystem]\nexcluded: {{}}\n"
+                     description: \"{long}\"\n    documentation: \"diverges\"\nexcluded: {{}}\n"
                 ),
             ),
             (
@@ -1190,43 +1121,6 @@ excluded: {}
                 "{kind}: unexpected error: {err}"
             );
         }
-    }
-
-    #[test]
-    fn per_entry_validation_rejects_empty_used_by_for_full_and_partial_entries() {
-        let full = "\
-inventory:
-  key_a:
-    support: full
-    pipelines: [dogstatsd]
-    description: \"Key A\"
-    test_support:
-      used_by: []
-excluded: {}
-";
-        let err = validate_entries_of(full).expect_err("full entry with empty used_by should be rejected");
-        assert!(
-            err.to_string().contains("full key 'key_a': used_by must be non-empty"),
-            "unexpected error: {err}"
-        );
-
-        let partial = "\
-inventory:
-  key_a:
-    support: partial
-    pipelines: [dogstatsd]
-    description: \"Key A\"
-    documentation: \"diverges\"
-    test_support:
-      used_by: []
-excluded: {}
-";
-        let err = validate_entries_of(partial).expect_err("partial entry with empty used_by should be rejected");
-        assert!(
-            err.to_string()
-                .contains("partial key 'key_a': used_by must be non-empty"),
-            "unexpected error: {err}"
-        );
     }
 
     #[test]
