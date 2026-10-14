@@ -18,10 +18,14 @@ use foldspace_core::{
         BatchStatus, MetricDatumSequence, StatefulBatch, StatelessRequest, StatelessResponse,
     },
     LogicalMetricSeries, MetricOrigin as FoldspaceOrigin, MetricPoint, MetricResource, MetricSeriesType, MetricTagSet,
+    MetricTags,
 };
 use futures::Stream;
 use prost::Message as _;
-use saluki_context::{tags::TagSet, Context};
+use saluki_context::{
+    tags::{Tag, TagSet},
+    Context,
+};
 use saluki_core::{
     accounting::{ComponentRegistry, MemoryLimiter},
     components::{
@@ -1112,7 +1116,13 @@ fn sharding_preserves_hashes_for_borrowed_and_normalized_tags() {
             .with_no_index(true);
 
         // Preserve the original identity hash so this optimization cannot move persisted series between workers.
-        let mut tags: Vec<_> = series.tags().prefix.iter().chain(&series.tags().values).collect();
+        let mut tags: Vec<String> = series
+            .tags()
+            .prefix
+            .iter()
+            .chain(series.tags().values.iter())
+            .map(String::from)
+            .collect();
         tags.sort_unstable();
         tags.dedup();
         let mut resources: Vec<_> = series.resources().iter().map(|r| (&r.kind, &r.name)).collect();
@@ -1132,6 +1142,12 @@ fn sharding_preserves_hashes_for_borrowed_and_normalized_tags() {
         )
             .hash(&mut hasher);
         assert_eq!(sharding::series_hash(&series), hasher.finish());
+
+        let shared = series.clone().with_tags(MetricTagSet {
+            prefix: MetricTags::shared(series.tags().prefix.iter().map(Tag::from).collect()),
+            values: MetricTags::shared(series.tags().values.iter().map(Tag::from).collect()),
+        });
+        assert_eq!(sharding::series_hash(&shared), hasher.finish());
     }
 }
 
