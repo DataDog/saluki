@@ -18,10 +18,14 @@ use foldspace_core::{
         BatchStatus, MetricDatumSequence, StatefulBatch, StatelessRequest, StatelessResponse,
     },
     LogicalMetricSeries, MetricOrigin as FoldspaceOrigin, MetricPoint, MetricResource, MetricSeriesType, MetricTagSet,
+    MetricTags,
 };
 use futures::Stream;
 use prost::Message as _;
-use saluki_context::{tags::TagSet, Context};
+use saluki_context::{
+    tags::{Tag, TagSet},
+    Context,
+};
 use saluki_core::{
     accounting::{ComponentRegistry, MemoryLimiter},
     components::{
@@ -1112,7 +1116,13 @@ fn sharding_preserves_hashes_for_borrowed_and_normalized_tags() {
             .with_no_index(true);
 
         // Preserve the original identity hash so this optimization cannot move persisted series between workers.
-        let mut tags: Vec<_> = series.tags().prefix.iter().chain(&series.tags().values).collect();
+        let mut tags: Vec<String> = series
+            .tags()
+            .prefix
+            .iter()
+            .chain(series.tags().values.iter())
+            .map(String::from)
+            .collect();
         tags.sort_unstable();
         tags.dedup();
         let mut resources: Vec<_> = series.resources().iter().map(|r| (&r.kind, &r.name)).collect();
@@ -1132,6 +1142,12 @@ fn sharding_preserves_hashes_for_borrowed_and_normalized_tags() {
         )
             .hash(&mut hasher);
         assert_eq!(sharding::series_hash(&series), hasher.finish());
+
+        let shared = series.clone().with_tags(MetricTagSet {
+            prefix: MetricTags::shared(series.tags().prefix.iter().map(Tag::from).collect()),
+            values: MetricTags::shared(series.tags().values.iter().map(Tag::from).collect()),
+        });
+        assert_eq!(sharding::series_hash(&shared), hasher.finish());
     }
 }
 
@@ -1872,6 +1888,19 @@ fn core_config_applies_configured_dictionary_caps_to_each_worker_unchanged() {
     configuration.dictionary_max_bytes = NonZeroU64::MAX;
     let eviction = configuration.core_config().metrics_dictionary_eviction.unwrap();
     assert_eq!(eviction.max_memory_bytes, i64::MAX);
+}
+
+#[test]
+fn core_config_splits_batch_capacity_across_workers() {
+    let mut configuration = configuration(1, 10_000);
+    assert_eq!(configuration.core_config().batch_capacity, 10_000);
+
+    // Rounds up so the workers together still flush at no fewer than the configured series.
+    configuration.workers = NonZeroUsize::new(3).unwrap();
+    assert_eq!(configuration.core_config().batch_capacity, 3_334);
+
+    configuration.batch_capacity = 2;
+    assert_eq!(configuration.core_config().batch_capacity, 1);
 }
 
 #[tokio::test]

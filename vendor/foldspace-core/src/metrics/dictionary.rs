@@ -18,7 +18,7 @@ use crate::proto::stateful::{
 use super::{
     retention::{DefinitionKey, Retention},
     LogicalMetricSeries, MetricDictionaryEvictionConfig, MetricDictionaryStats, MetricOrigin,
-    MetricResource, MetricTagSet,
+    MetricResource, MetricTagSet, MetricTags,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -398,11 +398,11 @@ impl MetricDictionary {
     fn intern_tagset(
         &mut self,
         prefix_id: u64,
-        tags: &[String],
+        tags: &MetricTags,
         definitions: &mut Vec<MetricDatum>,
     ) -> u64 {
-        debug_assert!(tags.is_sorted());
-        let key = self.tagset_keys.key(tags.iter().map(String::as_str));
+        debug_assert!(tags.iter().is_sorted());
+        let key = self.tagset_keys.key(tags.iter());
         if let Some(id) = self
             .tagsets
             .get(&prefix_id)
@@ -411,7 +411,7 @@ impl MetricDictionary {
             // Release builds with debug assertions (Saluki's `release` profile) must not pay for this scan.
             #[cfg(test)]
             assert!(
-                self.tagset_strings(*id).eq(tags.iter().map(String::as_str)),
+                self.tagset_strings(*id).eq(tags.iter()),
                 "tagset {id} shares the lookup key of {tags:?}"
             );
             return *id;
@@ -993,7 +993,7 @@ mod tests {
         let mut intern = |prefix_id, tags: &[&str]| {
             let mut tags: Vec<_> = tags.iter().map(ToString::to_string).collect();
             tags.sort();
-            dictionary.intern_tagset(prefix_id, &tags, &mut Vec::new())
+            dictionary.intern_tagset(prefix_id, &tags.into(), &mut Vec::new())
         };
         let ids: Vec<_> = lists.iter().map(|tags| intern(0, tags)).collect();
         let prefixed: Vec<_> = ids.iter().map(|prefix| intern(*prefix, &["a"])).collect();
@@ -1058,7 +1058,9 @@ mod tests {
             }
         }
         let tags = series.tags();
-        let lookup = |prefix_id, tags: &[String]| shadow[&(prefix_id, tags.to_vec())];
+        let lookup = |prefix_id, tags: &MetricTags| {
+            shadow[&(prefix_id, tags.iter().map(String::from).collect())]
+        };
         let expected = match (tags.prefix.is_empty(), tags.values.is_empty()) {
             (true, true) => 0,
             (true, false) => lookup(0, &tags.values),
@@ -1164,8 +1166,8 @@ mod tests {
                         Vec::new(),
                     )
                     .with_tags(MetricTagSet {
-                        prefix: tag_list(&mut next),
-                        values: tag_list(&mut next),
+                        prefix: tag_list(&mut next).into(),
+                        values: tag_list(&mut next).into(),
                     });
                     found += usize::from(intern_shadowed(&mut dictionary, &mut shadow, &series));
                 }
@@ -1241,8 +1243,8 @@ mod tests {
                 for _ in 0..4 {
                     let series = LogicalMetricSeries::new("m", MetricSeriesType::Gauge, Vec::new())
                         .with_tags(MetricTagSet {
-                            prefix: tag_list(&mut next),
-                            values: tag_list(&mut next),
+                            prefix: tag_list(&mut next).into(),
+                            values: tag_list(&mut next).into(),
                         });
                     intern_shadowed(&mut replayed, &mut replayed_shadow, &series);
                 }
@@ -1268,6 +1270,26 @@ mod tests {
             2 * 1000,
             "only the tag string's definition and lookup grow"
         );
+    }
+
+    /// Shared tags are sorted on construction, so they reuse an owned tagset with the same
+    /// strings instead of defining a new one.
+    #[test]
+    fn shared_tags_reuse_the_owned_tagset_with_the_same_strings() {
+        let mut dictionary = MetricDictionary::default();
+        let owned = intern(
+            &mut dictionary,
+            &tagged("requests", &["env:prod"], &["service:api", "team:a"]),
+        );
+        let shared = tagged("requests", &[], &[]).with_tags(MetricTagSet {
+            prefix: MetricTags::shared(vec![std::sync::Arc::<str>::from("env:prod")]),
+            values: MetricTags::shared(vec!["team:a", "service:api"]),
+        });
+        let mut definitions = Vec::new();
+        dictionary.begin_batch(Instant::now());
+        dictionary.intern_series(&shared, &mut definitions);
+        assert!(definitions.is_empty());
+        assert_eq!(dictionary.references().collect::<Vec<_>>(), owned);
     }
 
     /// A stream that has seen part of a payload's closure gets only the rest, still in
@@ -1361,8 +1383,8 @@ mod tests {
             vec![MetricPoint::new(1, 2.0)],
         )
         .with_tags(MetricTagSet {
-            prefix: vec!["env:prod".to_string()],
-            values: vec!["service:api".to_string()],
+            prefix: vec!["env:prod".to_string()].into(),
+            values: vec!["service:api".to_string()].into(),
         })
         .with_resources(vec![MetricResource::new("host", "web-1")])
         .with_unit("request")
@@ -1427,12 +1449,12 @@ mod tests {
     #[test]
     fn dictionary_reuses_reordered_tagsets() {
         let first_series = series().with_tags(MetricTagSet {
-            prefix: vec!["region:us".to_string(), "env:prod".to_string()],
-            values: vec!["team:metrics".to_string(), "service:api".to_string()],
+            prefix: vec!["region:us".to_string(), "env:prod".to_string()].into(),
+            values: vec!["team:metrics".to_string(), "service:api".to_string()].into(),
         });
         let second_series = series().with_tags(MetricTagSet {
-            prefix: vec!["env:prod".to_string(), "region:us".to_string()],
-            values: vec!["service:api".to_string(), "team:metrics".to_string()],
+            prefix: vec!["env:prod".to_string(), "region:us".to_string()].into(),
+            values: vec!["service:api".to_string(), "team:metrics".to_string()].into(),
         });
         let mut dictionary = MetricDictionary::default();
         dictionary.begin_batch(Instant::now());

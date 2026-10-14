@@ -41,7 +41,7 @@ pub use self::metrics::{
     MetricDictionaryStats, MetricEffect, MetricEndpointId, MetricFailureAction, MetricOrigin,
     MetricPoint, MetricPushError, MetricResource, MetricSeriesEncoder, MetricSeriesType,
     MetricStatefulBatch, MetricStreamError, MetricStreamFailure, MetricStreamFailureKind,
-    MetricTagSet, StatefulMetricsClient, StatefulMetricsCore,
+    MetricTagSet, MetricTags, StatefulMetricsClient, StatefulMetricsCore,
 };
 pub use self::translator::{
     ExtractedPattern, LogRecord, NoopPatternExtractor, PatternExtractor, StatefulLogTranslator,

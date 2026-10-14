@@ -406,8 +406,8 @@ mod tests {
             vec![MetricPoint::new(100, 1.5), MetricPoint::new(110, 2.5)],
         )
         .with_tags(MetricTagSet {
-            prefix: vec!["env:prod".to_string()],
-            values: vec!["service:api".to_string()],
+            prefix: vec!["env:prod".to_string()].into(),
+            values: vec!["service:api".to_string()].into(),
         })
         .with_resources(vec![MetricResource::new("host", "web-1")])
         .with_interval(10)
@@ -503,7 +503,7 @@ mod tests {
                 (0..6)
                     .map(|i| {
                         complete_series().with_tags(MetricTagSet {
-                            prefix: vec![format!("env:{}", (round + i) % 3)],
+                            prefix: vec![format!("env:{}", (round + i) % 3)].into(),
                             values: (0..(round + i) % 4)
                                 .map(|tag| format!("pod:{}", (round * 7 + i + tag) % 11))
                                 .collect(),

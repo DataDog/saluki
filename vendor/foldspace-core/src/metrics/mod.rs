@@ -28,7 +28,7 @@ pub use self::machine::{
 };
 pub use self::model::{
     LogicalMetricBatch, LogicalMetricSeries, MetricOrigin, MetricPoint, MetricResource,
-    MetricSeriesType, MetricTagSet,
+    MetricSeriesType, MetricTagSet, MetricTags,
 };
 
 pub use self::eviction_policy::EvictionConfig as MetricDictionaryEvictionConfig;

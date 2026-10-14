@@ -1,3 +1,5 @@
+use std::{fmt, sync::Arc};
+
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// A version-independent logical batch of metric series.
@@ -310,25 +312,155 @@ where
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetricTagSet {
     /// Tags shared by a group of series.
-    pub prefix: Vec<String>,
+    pub prefix: MetricTags,
     /// Tags specific to this series.
-    pub values: Vec<String>,
+    pub values: MetricTags,
 }
 
 impl MetricTagSet {
     /// Creates a standalone tagset without a shared prefix.
-    pub fn standalone(values: Vec<String>) -> Self {
+    pub fn standalone(values: impl Into<MetricTags>) -> Self {
         let mut tags = Self {
-            prefix: Vec::new(),
-            values,
+            prefix: MetricTags::default(),
+            values: values.into(),
         };
         tags.normalize();
         tags
     }
 
     fn normalize(&mut self) {
-        self.prefix.sort_unstable();
-        self.values.sort_unstable();
+        self.prefix.normalize();
+        self.values.normalize();
+    }
+}
+
+/// An ordered list of tag strings, either owned or shared with the caller.
+///
+/// Shared lists let a caller hand over tags it already holds, such as reference-counted
+/// strings, instead of copying every tag into a new `String`. They stay alive as long as any
+/// buffered, inflight, or returned batch refers to them, and deserialize as owned lists.
+#[derive(Clone)]
+pub struct MetricTags(TagStorage);
+
+#[derive(Clone)]
+enum TagStorage {
+    Owned(Vec<String>),
+    /// Always sorted.
+    Shared(Arc<dyn TagList>),
+}
+
+trait TagList: Send + Sync {
+    fn len(&self) -> usize;
+    fn get(&self, index: usize) -> &str;
+}
+
+impl<T: AsRef<str> + Send + Sync> TagList for Vec<T> {
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    fn get(&self, index: usize) -> &str {
+        self[index].as_ref()
+    }
+}
+
+impl MetricTags {
+    /// Shares `tags` without copying their strings, sorting them by string value.
+    pub fn shared<T>(mut tags: Vec<T>) -> Self
+    where
+        T: AsRef<str> + Send + Sync + 'static,
+    {
+        tags.sort_unstable_by(|a, b| a.as_ref().cmp(b.as_ref()));
+        Self(TagStorage::Shared(Arc::new(tags)))
+    }
+
+    /// Returns the number of tags.
+    pub fn len(&self) -> usize {
+        match &self.0 {
+            TagStorage::Owned(tags) => tags.len(),
+            TagStorage::Shared(tags) => tags.len(),
+        }
+    }
+
+    /// Returns whether there are no tags.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Iterates over the tags in order.
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = &str> + Clone + '_ {
+        (0..self.len()).map(move |index| match &self.0 {
+            TagStorage::Owned(tags) => tags[index].as_str(),
+            TagStorage::Shared(tags) => tags.get(index),
+        })
+    }
+
+    fn normalize(&mut self) {
+        if let TagStorage::Owned(tags) = &mut self.0 {
+            tags.sort_unstable();
+        }
+    }
+}
+
+impl Default for MetricTags {
+    fn default() -> Self {
+        Self(TagStorage::Owned(Vec::new()))
+    }
+}
+
+impl From<Vec<String>> for MetricTags {
+    fn from(tags: Vec<String>) -> Self {
+        Self(TagStorage::Owned(tags))
+    }
+}
+
+impl FromIterator<String> for MetricTags {
+    fn from_iter<I: IntoIterator<Item = String>>(tags: I) -> Self {
+        Self(TagStorage::Owned(tags.into_iter().collect()))
+    }
+}
+
+impl fmt::Debug for MetricTags {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
+    }
+}
+
+impl PartialEq for MetricTags {
+    fn eq(&self, other: &Self) -> bool {
+        self.iter().eq(other.iter())
+    }
+}
+
+impl Eq for MetricTags {}
+
+impl<S: AsRef<str>> PartialEq<[S]> for MetricTags {
+    fn eq(&self, other: &[S]) -> bool {
+        self.iter().eq(other.iter().map(AsRef::as_ref))
+    }
+}
+
+impl<S: AsRef<str>, const N: usize> PartialEq<[S; N]> for MetricTags {
+    fn eq(&self, other: &[S; N]) -> bool {
+        *self == other[..]
+    }
+}
+
+impl<S: AsRef<str>> PartialEq<Vec<S>> for MetricTags {
+    fn eq(&self, other: &Vec<S>) -> bool {
+        *self == other[..]
+    }
+}
+
+impl Serialize for MetricTags {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.iter())
+    }
+}
+
+impl<'de> Deserialize<'de> for MetricTags {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Vec::<String>::deserialize(deserializer).map(Self::from)
     }
 }
 
@@ -525,8 +657,8 @@ mod tests {
             vec![MetricPoint::new(1, 25.0)],
         )
         .with_tags(MetricTagSet {
-            prefix: vec!["region:us".to_string(), "env:prod".to_string()],
-            values: vec!["team:metrics".to_string(), "service:api".to_string()],
+            prefix: vec!["region:us".to_string(), "env:prod".to_string()].into(),
+            values: vec!["team:metrics".to_string(), "service:api".to_string()].into(),
         });
 
         assert_eq!(
@@ -548,6 +680,29 @@ mod tests {
             tags.values,
             vec!["service:api".to_string(), "team:metrics".to_string()]
         );
+    }
+
+    #[test]
+    fn shared_tags_sort_and_deserialize_as_equal_owned_tags() {
+        let shared = MetricTags::shared(vec![
+            Arc::<str>::from("team:metrics"),
+            Arc::from("service:api"),
+        ]);
+
+        assert_eq!(shared, ["service:api", "team:metrics"]);
+        assert_eq!(
+            shared,
+            MetricTagSet::standalone(vec!["team:metrics".to_string(), "service:api".to_string()])
+                .values
+        );
+        let serialized = serde_json::to_value(&shared).unwrap();
+        assert_eq!(
+            serialized,
+            serde_json::json!(["service:api", "team:metrics"])
+        );
+        let deserialized: MetricTags = serde_json::from_value(serialized).unwrap();
+        assert!(matches!(deserialized.0, TagStorage::Owned(_)));
+        assert_eq!(deserialized, shared);
     }
 
     #[test]
@@ -582,8 +737,8 @@ mod tests {
     #[test]
     fn series_builders_expose_complete_configuration() {
         let tags = MetricTagSet {
-            prefix: vec!["env:prod".to_string()],
-            values: vec!["service:api".to_string()],
+            prefix: vec!["env:prod".to_string()].into(),
+            values: vec!["service:api".to_string()].into(),
         };
         let resources = vec![MetricResource::new("host", "web-1")];
         let origin = MetricOrigin::new(1, 2, 3);

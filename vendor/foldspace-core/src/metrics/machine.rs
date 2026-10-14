@@ -1001,8 +1001,8 @@ mod tests {
             vec![MetricPoint::new(1, value)],
         )
         .with_tags(MetricTagSet {
-            prefix: vec!["env:prod".to_string()],
-            values: vec!["service:api".to_string()],
+            prefix: vec!["env:prod".to_string()].into(),
+            values: vec!["service:api".to_string()].into(),
         })
         .with_resources(vec![MetricResource::new("host", "web-1")])
         .with_interval(10)

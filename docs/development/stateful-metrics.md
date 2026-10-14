@@ -105,9 +105,11 @@ from its existing configuration stream. The test-only standalone mode can also d
 
 ## Delivery and retry behavior
 
-ADP converts enriched series once to self-contained `LogicalMetricBatch` values. Rate normalization,
+ADP converts enriched series once to `LogicalMetricBatch` values. Rate normalization,
 resources, tags, origin, source type, and unit follow the V3 encoder's semantics. Non-finite points
-and empty series are excluded. The sender does not retain original ADP `Metric` objects.
+and empty series are excluded. The sender does not retain original ADP `Metric` objects, but each
+series shares the `Tag` handles of its context instead of copying the tag strings. Interned, shared,
+and inlined tags clone without copying.
 
 The destination reuses the HTTP forwarder's `PendingTransactions<T>` scheduling and `RetryQueue<T>`
 storage machinery with a distinct logical-batch entry type:
@@ -126,8 +128,10 @@ storage machinery with a distinct logical-batch entry type:
 Queue capacity, memory limits, disk location, disk limits, spill ratio, and file age use the existing
 forwarder settings, including `forwarder_high_prio_buffer_size`,
 `forwarder_retry_queue_payloads_max_size`, `forwarder_storage_path`, and
-`forwarder_storage_max_size_in_bytes`. Queue byte accounting estimates the owned logical data,
-including series, points, tags, and resource strings. This is not a total process memory bound.
+`forwarder_storage_max_size_in_bytes`. Queue byte accounting estimates the logical data as if owned,
+including series, points, tags, and resource strings. Conversion shares tags with the aggregator's
+contexts instead of copying them, but queued batches keep those tags alive, so they count in full.
+This is not a total process memory bound.
 
 Disk storage is enabled only when configured. Its directory is separate from HTTP transactions and
 includes the logical format version, destination hash, and worker index. If requested storage cannot
@@ -254,7 +258,8 @@ number of inflight payloads (8 per endpoint per worker). Adding endpoints splits
 budgets rather than multiplying them, but adds a transport and inflight window per endpoint. Each worker also adds a transport, compression state,
 dictionaries, a partial batch, and a two-batch input queue. Series distribution and dictionary
 reuse affect actual memory; these limits do not bound total process memory.
-The configured series threshold and flush timeout apply independently to each worker.
+The flush timeout applies independently to each worker. The series threshold is split evenly across
+workers, rounded up, so the workers together flush at about `max_metrics_per_payload` series.
 
 Each worker's dictionary uses Foldspace local eviction, capped by two startup-only settings that
 apply **per worker**, so the process-wide totals are each value times
@@ -323,7 +328,9 @@ finish their shutdown paths. Telemetry carries a `worker` label to distinguish w
 ADP owns the flush timer. The first logical batch accepted into a partial core buffer starts the
 `flush_timeout_secs` countdown (default 2 seconds; zero uses 10 milliseconds). Later arrivals do not
 postpone it. ADP calls `flush()` when the deadline expires or input closes. Foldspace also flushes
-automatically at `max_metrics_per_payload`, which counts series rather than bytes. Empty flushes
+automatically at each worker's share of `max_metrics_per_payload` (10,000 split across 3 workers is
+3,334), which counts series rather than bytes. An aggregator flush of one payload's worth of series
+therefore ships as it arrives instead of waiting for the deadline. Empty flushes
 emit nothing. Retries taken from the queue begin a new encoding attempt and get a new partial-batch deadline.
 Foldspace itself reads no clock and creates no runtime task.
 
