@@ -1,4 +1,9 @@
-use std::{mem::replace, pin::Pin, sync::Arc};
+use std::{
+    hash::{Hash, Hasher as _},
+    mem::replace,
+    pin::Pin,
+    sync::Arc,
+};
 
 use agent_data_plane_config::{
     defaults::{DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES, DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES},
@@ -16,7 +21,6 @@ use foldspace_core::{
 };
 use futures::Stream;
 use prost::Message as _;
-use saluki_common::hash::hash_single_stable;
 use saluki_context::{tags::TagSet, Context};
 use saluki_core::{
     accounting::{ComponentRegistry, MemoryLimiter},
@@ -48,6 +52,7 @@ use tokio::{
 };
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::{transport::Server, Request, Response, Status, Streaming};
+use twox_hash::XxHash64;
 
 use super::{retry::RetryBatch, *};
 
@@ -252,6 +257,52 @@ fn conversion_preserves_rate_metadata_and_v3_resources() {
     );
     assert_eq!(series.origin(), Some(FoldspaceOrigin::new(10, 10, 0)));
     assert_eq!(series.unit(), Some("request"));
+}
+
+#[test]
+fn conversion_deduplicates_tags_and_resource_tags() {
+    let tagset = |tags: &[&str]| tags.iter().copied().map(Into::into).collect::<TagSet>();
+    let context = Context::from_parts(
+        "requests",
+        tagset(&[
+            "env:prod",
+            "device:sdb",
+            "device:sda",
+            "env:prod",
+            "dd.internal.resource:container:abc",
+            "dd.internal.resource:kind:",
+            "device",
+            "a:b:c",
+            "pod:é",
+        ]),
+    )
+    .with_origin_tags(tagset(&["device:sda", "dd.internal.resource:container:abc", "pod:é"]))
+    .with_host(MetaString::from("host-a"));
+    let series = conversion::convert(&Metric::from_parts(
+        context,
+        MetricValues::gauge([(123, 1.0)]),
+        MetricMetadata::default(),
+    ))
+    .unwrap();
+    // Origin tags are read first and a repeated device tag is skipped, so the last distinct one wins.
+    assert_eq!(
+        series.resources(),
+        [
+            MetricResource::new("host", "host-a"),
+            MetricResource::new("device", "sdb"),
+            MetricResource::new("container", "abc"),
+        ]
+    );
+    assert_eq!(series.tags().values, ["a:b:c", "device", "env:prod", "pod:é"]);
+
+    let cleared = conversion::convert(&Metric::from_parts(
+        Context::from_parts("requests", tagset(&["device:sda", "device:"])),
+        MetricValues::gauge([(123, 1.0)]),
+        MetricMetadata::default(),
+    ))
+    .unwrap();
+    assert!(cleared.resources().is_empty());
+    assert!(cleared.tags().values.is_empty());
 }
 
 #[test]
@@ -1067,7 +1118,8 @@ fn sharding_preserves_hashes_for_borrowed_and_normalized_tags() {
         let mut resources: Vec<_> = series.resources().iter().map(|r| (&r.kind, &r.name)).collect();
         resources.sort_unstable();
         resources.dedup();
-        let original_hash = hash_single_stable((
+        let mut hasher = XxHash64::with_seed(0);
+        (
             series.name(),
             series.metric_type() as u8,
             tags,
@@ -1077,8 +1129,9 @@ fn sharding_preserves_hashes_for_borrowed_and_normalized_tags() {
             series.source_type_name(),
             series.origin(),
             series.no_index(),
-        ));
-        assert_eq!(sharding::series_hash(&series), original_hash);
+        )
+            .hash(&mut hasher);
+        assert_eq!(sharding::series_hash(&series), hasher.finish());
     }
 }
 

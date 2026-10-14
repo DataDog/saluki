@@ -64,6 +64,7 @@ dependencies = [
  "saluki-tls",
  "serde",
  "serde_json",
+ "smallvec",
  "stringtheory",
  "tempfile",
  "tikv-jemallocator",
@@ -73,6 +74,7 @@ dependencies = [
  "tonic",
  "tower",
  "tracing",
+ "twox-hash",
  "uuid",
  "zstd 0.14.0",
 ]
