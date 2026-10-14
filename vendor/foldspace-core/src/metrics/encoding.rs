@@ -127,11 +127,6 @@ impl MetricSeriesEncoder {
         self.dictionary.stats()
     }
 
-    /// Seeds this encoder with definitions in dependency order, using caller time.
-    pub fn apply_definitions(&mut self, definitions: &[MetricDatum], now: Instant) {
-        self.dictionary.apply_definitions(definitions, now);
-    }
-
     /// Encodes one logical batch and records dictionary usage at the caller's monotonic time.
     pub fn encode(&mut self, batch: &LogicalMetricBatch, now: Instant) -> EncodedMetricBatch {
         encode_logical_batch(&mut self.dictionary, batch, now)

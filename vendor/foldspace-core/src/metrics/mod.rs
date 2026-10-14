@@ -12,6 +12,7 @@ mod dictionary;
 mod encoding;
 mod eviction_policy;
 mod frequency;
+mod key_hash;
 mod machine;
 mod model;
 mod retention;

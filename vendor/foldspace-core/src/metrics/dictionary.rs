@@ -143,18 +143,13 @@ impl MetricDictionary {
         references
     }
 
-    pub(crate) fn apply_definitions(&mut self, definitions: &[MetricDatum], now: Instant) {
+    #[cfg(test)]
+    fn apply_definitions(&mut self, definitions: &[MetricDatum], now: Instant) {
         self.begin_batch(now);
         for definition in definitions {
             let Some(data) = definition.data.as_ref() else {
                 continue;
             };
-            // Retention keeps an ID's first definition, so the lookups must not take a later one.
-            if !matches!(data, datum::Data::MetricSeriesBatch(_))
-                && self.retention.contains(DefinitionKey::of(definition))
-            {
-                continue;
-            }
 
             match data {
                 datum::Data::MetricNameDefine(define) => {
@@ -413,7 +408,9 @@ impl MetricDictionary {
             .get(&prefix_id)
             .and_then(|tagsets| tagsets.get(&key))
         {
-            debug_assert!(
+            // Release builds with debug assertions (Saluki's `release` profile) must not pay for this scan.
+            #[cfg(test)]
+            assert!(
                 self.tagset_strings(*id).eq(tags.iter().map(String::as_str)),
                 "tagset {id} shares the lookup key of {tags:?}"
             );
@@ -511,6 +508,7 @@ impl MetricDictionary {
         }
     }
 
+    #[cfg(test)]
     fn tag_string(&self, id: u64) -> Option<&str> {
         match self
             .definition(DefinitionKey::TagString(id))?
@@ -522,6 +520,7 @@ impl MetricDictionary {
         }
     }
 
+    #[cfg(test)]
     fn tagset_strings(&self, id: u64) -> impl Iterator<Item = &str> + '_ {
         let Some(datum::Data::MetricTagsetDefine(define)) = self
             .definition(DefinitionKey::Tagset(id))
@@ -1113,8 +1112,8 @@ mod tests {
 
     /// Hashed tagset lookups find exactly what lookups keyed by the tag strings would,
     /// through interning, eviction with admission transients, returns under fresh IDs,
-    /// reseeds that are unsorted, duplicated, or conflict with retained IDs, and replay onto
-    /// a dictionary with other keys.
+    /// reseeds that are unsorted or repeat tag strings, and replay onto a dictionary with
+    /// other keys.
     #[test]
     fn hashed_tagset_lookups_agree_with_string_lookups_under_churn() {
         let long = "x".repeat(70);
@@ -1201,14 +1200,6 @@ mod tests {
                         value: alphabet[next(alphabet.len() as u64) as usize].to_string(),
                     },
                 ))];
-                if let Some(&id) = tag_ids.first() {
-                    foreign.push(data(datum::Data::MetricTagStringDefine(
-                        MetricTagStringDefine {
-                            id,
-                            value: "conflict".to_string(),
-                        },
-                    )));
-                }
                 let mut tag_string_ids: Vec<_> = tag_ids
                     .iter()
                     .copied()
@@ -1234,11 +1225,7 @@ mod tests {
                         tag_string_ids,
                     }))
                 };
-                foreign.push(tagset(fresh_tagset, prefix_id, tag_string_ids.clone()));
-                foreign.push(tagset(fresh_tagset, 0, vec![fresh_tag]));
-                if let Some(&id) = tagset_ids.last() {
-                    foreign.push(tagset(id, 0, tag_string_ids));
-                }
+                foreign.push(tagset(fresh_tagset, prefix_id, tag_string_ids));
                 apply_shadowed(&mut dictionary, &mut shadow, &foreign, now);
                 reseeds += 1;
 
@@ -1537,37 +1524,5 @@ mod tests {
                 .frequency_sketch_bytes
                 > 0
         );
-    }
-
-    /// Reseeding a retained ID with a different value keeps the first definition, so a series
-    /// carrying the new value gets its own ID instead of one whose wire form says otherwise.
-    #[test]
-    fn reseeding_a_retained_id_keeps_its_first_definition() {
-        let name = |value: &str| MetricDatum {
-            data: Some(datum::Data::MetricNameDefine(MetricNameDefine {
-                id: 1,
-                value: value.to_string(),
-            })),
-        };
-        let mut dictionary = MetricDictionary::default();
-        dictionary.apply_definitions(&[name("requests")], Instant::now());
-        dictionary.apply_definitions(&[name("conflict")], Instant::now());
-
-        assert_eq!(
-            dictionary.definition(DefinitionKey::Name(1)),
-            Some(&name("requests"))
-        );
-        let mut introduced = Vec::new();
-        let references = dictionary.intern_series(&tagged("conflict", &[], &[]), &mut introduced);
-        assert_ne!(references.name, 1);
-        assert_eq!(introduced.len(), 1);
-        let mut reused = Vec::new();
-        assert_eq!(
-            dictionary
-                .intern_series(&tagged("requests", &[], &[]), &mut reused)
-                .name,
-            1
-        );
-        assert!(reused.is_empty());
     }
 }

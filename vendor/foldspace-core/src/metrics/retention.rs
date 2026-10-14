@@ -2,7 +2,7 @@
 
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, BTreeSet, BinaryHeap},
+    collections::{BTreeSet, BinaryHeap, HashMap},
     hash::{DefaultHasher, Hash, Hasher},
     mem::size_of,
     time::{Duration, Instant},
@@ -13,6 +13,7 @@ use crate::proto::stateful::{metric_datum::Data, MetricDatum};
 use super::{
     eviction_policy::{score_with_grace, EvictionConfig, Strategy},
     frequency::FrequencySketch,
+    key_hash::KeyBuildHasher,
 };
 
 // Estimated tree/hash bucket and lookup storage per definition, excluding owned strings.
@@ -101,6 +102,8 @@ struct Entry {
     returning: bool,
     // Defined for its batch but not admitted: outside the budget, frontier and grace index.
     transient: bool,
+    // The last `touch` call that counted this entry, so one call counts it once.
+    touched: u64,
 }
 
 // What a value must beat to be retained, from the latest pass that relieved pressure.
@@ -115,7 +118,10 @@ struct Admission {
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct Retention {
-    entries: BTreeMap<DefinitionKey, Entry>,
+    // Nothing depends on iteration order: eviction ranks candidates by score, then key.
+    entries: HashMap<DefinitionKey, Entry, KeyBuildHasher>,
+    touches: u64,
+    pending: Vec<DefinitionKey>,
     // Retained entries only; transient ones are counted apart.
     bytes: usize,
     transient_bytes: usize,
@@ -250,6 +256,7 @@ impl Retention {
                 content_hash,
                 returning,
                 transient,
+                touched: 0,
             },
         );
         if transient {
@@ -322,16 +329,19 @@ impl Retention {
 
     /// Cached composites must count hits on their strings and prefixes as well.
     pub(super) fn touch(&mut self, roots: impl IntoIterator<Item = DefinitionKey>) {
-        let mut pending: Vec<_> = roots.into_iter().collect();
-        let mut seen = BTreeSet::new();
+        self.touches += 1;
+        let mut pending = std::mem::take(&mut self.pending);
+        pending.clear();
+        pending.extend(roots);
         while let Some(key) = pending.pop() {
-            if !seen.insert(key) {
-                continue;
-            }
             let entry = self
                 .entries
                 .get_mut(&key)
                 .expect("a reference has a defined value");
+            if entry.touched == self.touches {
+                continue;
+            }
+            entry.touched = self.touches;
             entry.definition.hits = entry.definition.hits.saturating_add(1);
             entry.definition.last_access_at = self.now.unwrap();
             pending.extend(&entry.definition.dependencies);
@@ -355,6 +365,7 @@ impl Retention {
                 sketch.increment(entry.content_hash);
             }
         }
+        self.pending = pending;
     }
 
     /// Definitions referenced since the last `begin_batch`, closed over dependencies, in
@@ -364,6 +375,7 @@ impl Retention {
         self.protected.iter().copied()
     }
 
+    #[cfg(test)]
     pub(super) fn contains(&self, key: DefinitionKey) -> bool {
         self.entries.contains_key(&key)
     }
@@ -375,7 +387,9 @@ impl Retention {
 
     #[cfg(test)]
     pub(super) fn keys(&self) -> impl Iterator<Item = DefinitionKey> + '_ {
-        self.entries.keys().copied()
+        let mut keys: Vec<_> = self.entries.keys().copied().collect();
+        keys.sort_unstable();
+        keys.into_iter()
     }
 
     /// The content hash and whether the entry returned seeded from the sketch.
@@ -757,6 +771,8 @@ mod tests {
         MetricNameDefine, MetricResourceDefine, MetricResourceStringDefine, MetricTagStringDefine,
         MetricTagsetDefine,
     };
+
+    use std::collections::BTreeMap;
 
     use super::{super::eviction_policy::calculate_score, *};
 
