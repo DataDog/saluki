@@ -73,7 +73,8 @@ tikv-jemallocator = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
-datadog-agent-config-testing = { workspace = true }
+# Not used from code: depending on it makes test builds regenerate `docs/agent-data-plane/configuration/configuration.md`.
+datadog-agent-config-docs = { workspace = true }
 derive-where = { workspace = true }
 rcgen = { workspace = true, features = ["crypto", "pem"] }
 saluki-components = { workspace = true, features = ["test-util"] }
