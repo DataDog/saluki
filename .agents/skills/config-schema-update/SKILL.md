@@ -76,8 +76,7 @@ markers. Run `make build-schema-overlay` and check the build and relevant tests 
 the next group. An optional diagnostic corpus recording can investigate a suspected behavior
 change mid-review; the recorded corpus is refreshed once, below, after the groups are applied.
 
-- Update `schema_overlay.yaml` and hand-maintained registry entries together.
-  Follow the workflows in `docs/development/configuration-system.md` for model and translation
+- Follow the workflows in `docs/development/configuration-system.md` for model and translation
   changes.
 - Reconcile changed schema types with deserialization, translation, and consumers. Do not weaken the
   schema to make old code compile.
@@ -127,7 +126,7 @@ are the steps and what to look for.
 
 ## Verify the update
 
-- Check that the generated model, classifier, registry, and documentation agree.
+- Check that the generated model, classifier, and documentation agree.
 - Account for every changed setting and local edit. Confirm removals were deliberate and no review
   markers or unapproved decisions remain.
 - Confirm the corpus pin matches `_version.txt`, the corpus checks and replay tests pass, and
