@@ -1,0 +1,41 @@
+[package]
+name = "datadog-agent-runtime"
+version = "0.1.0"
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[features]
+default = []
+# Collects a Tokio task dump into flares on targets where Tokio supports task dumps, and does nothing elsewhere. Those
+# targets also require `--cfg tokio_unstable`.
+#
+# Tokio fails to compile if `tokio/taskdump` is enabled on any other target, and Cargo has no target-specific features,
+# so this enables the target-specific `tokio` declaration below rather than enabling `tokio/taskdump` directly.
+taskdump = ["dep:tokio"]
+
+[dependencies]
+async-trait = { workspace = true }
+chrono = { workspace = true }
+datadog-agent-commons = { workspace = true }
+datadog-protos = { workspace = true }
+futures = { workspace = true }
+process-memory = { workspace = true }
+prost-types = { workspace = true }
+saluki-common = { workspace = true }
+saluki-config = { workspace = true }
+saluki-core = { workspace = true }
+saluki-error = { workspace = true }
+saluki-io = { workspace = true }
+saluki-metadata = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tonic = { workspace = true }
+tracing = { workspace = true }
+
+# The targets where Tokio supports task dumps. This must match the `cfg` guarding the task dump code.
+[target.'cfg(all(target_os = "linux", any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64", target_arch = "s390x")))'.dependencies]
+tokio = { workspace = true, features = ["taskdump"], optional = true }
+
+[lints]
+workspace = true

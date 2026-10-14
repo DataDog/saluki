@@ -34,6 +34,7 @@ dependencies = [
  "datadog-agent-commons",
  "datadog-agent-config",
  "datadog-agent-config-testing",
+ "datadog-agent-runtime",
  "datadog-protos",
  "derive-where",
  "futures",
@@ -42,9 +43,7 @@ dependencies = [
  "hyper",
  "metrics",
  "ottl",
- "process-memory",
  "prost",
- "prost-types",
  "rcgen",
  "saluki-antithesis",
  "saluki-api",
@@ -66,7 +65,6 @@ dependencies = [
  "tikv-jemallocator",
  "tokio",
  "tokio-util",
- "tonic",
  "tower",
  "tracing",
  "uuid",
@@ -1393,6 +1391,29 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "datadog-agent-runtime"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "datadog-agent-commons",
+ "datadog-protos",
+ "futures",
+ "process-memory",
+ "prost-types",
+ "saluki-common",
+ "saluki-config",
+ "saluki-core",
+ "saluki-error",
+ "saluki-io",
+ "saluki-metadata",
+ "serde_json",
+ "tokio",
+ "tonic",
+ "tracing",
 ]
 
 [[package]]
