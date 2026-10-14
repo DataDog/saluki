@@ -1390,6 +1390,12 @@ delegating the handshake to an opaque connect-and-handshake future, so it can ti
 also aborting an in-progress TCP connect.
 
 
+### Proxy environment variables
+
+When `DD_PROXY_HTTP` is unset, ADP reads `proxy.http` from `HTTP_PROXY`. When `DD_PROXY_HTTPS` is unset, ADP reads
+`proxy.https` from `HTTPS_PROXY`. The names match in any case, so `http_proxy` and `https_proxy` also work. ADP does not
+read `NO_PROXY`; use `DD_PROXY_NO_PROXY` instead.
+
 ### Configuration inspection
 
 For machine-readable configuration inspection, use these commands:
