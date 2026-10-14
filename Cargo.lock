@@ -1426,7 +1426,6 @@ dependencies = [
  "datadog-agent-commons",
  "datadog-protos",
  "futures",
- "process-memory",
  "prost-types",
  "saluki-api",
  "saluki-app",

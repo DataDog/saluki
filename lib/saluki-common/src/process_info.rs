@@ -4,6 +4,8 @@ use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use process_memory::Querier;
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::FILETIME;
 
 /// How long a reading serves before the next refresh.
 ///
@@ -133,7 +135,6 @@ fn read_process_cpu_time() -> Option<Duration> {
 /// per-process accounting.
 #[cfg(windows)]
 fn read_process_cpu_time() -> Option<Duration> {
-    use windows_sys::Win32::Foundation::FILETIME;
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
 
     let mut user_time: FILETIME = unsafe { std::mem::zeroed() };
