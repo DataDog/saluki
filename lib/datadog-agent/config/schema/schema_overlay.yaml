@@ -1277,17 +1277,15 @@ inventory:
     description: "HTTP version selection (auto/http1/http2)"
     issue: "#1361"
 
+  # ADP does not implement `forwarder_low_prio_buffer_size`. The core agent uses it to size a separate count-bounded
+  # low-priority worker channel; ADP routes low-priority pending transactions through the forwarder's retry queue
+  # instead, which is bounded by payload bytes via `forwarder_retry_queue_payloads_max_size` and optional disk
+  # persistence settings rather than by a transaction count. ADP still preserves the same broad priority behavior: new
+  # transactions are processed through the high-priority queue first, retries use the low-priority retry queue, and
+  # high-priority overflow is moved to the low-priority retry queue.
   forwarder_low_prio_buffer_size:
     support: unknown
-    pipelines: [cross_cutting]
     description: "Low-priority request queue size"
-    documentation: |
-      ADP does not implement `forwarder_low_prio_buffer_size`. The core agent uses it to size a separate count-bounded
-      low-priority worker channel; ADP routes low-priority pending transactions through the forwarder's retry queue
-      instead, which is bounded by payload bytes via `forwarder_retry_queue_payloads_max_size` and optional disk
-      persistence settings rather than by a transaction count. ADP still preserves the same broad priority behavior: new
-      transactions are processed through the high-priority queue first, retries use the low-priority retry queue, and
-      high-priority overflow is moved to the low-priority retry queue.
     severity: medium
     issue: "#1362"
 

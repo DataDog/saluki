@@ -22,6 +22,7 @@ use serde::Deserialize;
 /// `known` covers every key the team has reviewed and classified. `ignored` covers keys irrelevant
 /// to ADP's domain. Together they must account for every key in `core_schema.yaml`.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SchemaOverlay {
     pub inventory: IndexMap<String, KnownEntry>,
     pub excluded: IndexMap<String, String>,
@@ -44,7 +45,7 @@ pub enum KnownEntry {
 
 /// Metadata for a fully supported configuration key.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct FullSupport {
     /// Which pipelines depend on this key (non-empty).
     pub pipelines: PipelineAffinity,
@@ -60,7 +61,7 @@ pub struct FullSupport {
 
 /// Metadata for a partially supported configuration key.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct PartialSupport {
     /// Which pipelines depend on this key (non-empty).
     pub pipelines: PipelineAffinity,
@@ -78,7 +79,7 @@ pub struct PartialSupport {
 
 /// Metadata for an unsupported configuration key.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Unsupported {
     /// Pipelines affected by the lack of support.
     pub pipelines: PipelineAffinity,
@@ -98,7 +99,7 @@ pub struct Unsupported {
 
 /// Metadata for a key whose support level has not yet been determined.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct UnknownSupport {
     /// Short description for documentation tables (<= 50 chars), if known.
     #[serde(default)]
@@ -1067,6 +1068,41 @@ excluded: {}
         SchemaOverlay::from_yaml(overlay)
             .expect("overlay should deserialize")
             .validate_entries()
+    }
+
+    #[test]
+    fn deserialization_rejects_unknown_fields() {
+        let cases: &[(&str, &str)] = &[
+            (
+                "full",
+                "inventory:\n  key_a:\n    support: full\n    pipelines: [dogstatsd]\n    description: \"A\"\n    \
+                 misspelled_field: true\nexcluded: {}\n",
+            ),
+            (
+                "partial",
+                "inventory:\n  key_a:\n    support: partial\n    pipelines: [dogstatsd]\n    description: \"A\"\n    \
+                 documentation: \"diverges\"\n    misspelled_field: true\nexcluded: {}\n",
+            ),
+            (
+                "unsupported",
+                "inventory:\n  key_a:\n    support: none\n    pipelines: [dogstatsd]\n    description: \"A\"\n    \
+                 severity: low\n    planned: false\n    misspelled_field: true\nexcluded: {}\n",
+            ),
+            (
+                "unknown",
+                "inventory:\n  key_a:\n    support: unknown\n    misspelled_field: true\nexcluded: {}\n",
+            ),
+            ("top level", "inventory: {}\nexcluded: {}\nignored: {}\n"),
+        ];
+
+        for (kind, overlay) in cases {
+            let err =
+                SchemaOverlay::from_yaml(overlay).expect_err(&format!("{kind}: unknown field should be rejected"));
+            assert!(
+                err.to_string().contains("unknown field"),
+                "{kind}: unexpected error: {err}"
+            );
+        }
     }
 
     #[test]
