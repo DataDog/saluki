@@ -64,6 +64,9 @@ fn main() -> Result<(), GenericError> {
     #[cfg(feature = "antithesis")]
     initialize_antithesis();
 
+    #[cfg(feature = "antithesis")]
+    initialize_antithesis();
+
     // We build the primary runtime by hand, rather than with `#[tokio::main]`, so that we can enforce a minimum number
     // of worker threads.
     let worker_threads = get_async_runtime_parallelism()?;
@@ -77,10 +80,10 @@ fn main() -> Result<(), GenericError> {
 }
 
 async fn async_main(started: Instant) -> Result<(), GenericError> {
-    // Installed after any instrumentation hook, so panic reporting observes first and chains it:
-    // the hook below counts the panic, logs it with a bounded stack, and defers to whatever hook
-    // was already present.
-    components::panic_reporter::install_panic_reporter();
+    // Installed after any instrumentation hook, so panic logging observes first and chains it:
+    // the hook below logs the panic with a bounded stack and defers to whatever hook was already
+    // present.
+    components::panic_hook::install_panic_hook();
 
     let cli: Cli = argh::from_env();
 

@@ -9,7 +9,7 @@ pub mod metric_filter;
 mod metric_name;
 pub mod ottl_filter_processor;
 pub mod ottl_transform_processor;
-pub mod panic_reporter;
+pub mod panic_hook;
 pub(crate) mod static_tags;
 pub mod tag_filterlist;
 
