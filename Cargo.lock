@@ -33,7 +33,7 @@ dependencies = [
  "comfy-table",
  "datadog-agent-commons",
  "datadog-agent-config",
- "datadog-agent-config-testing",
+ "datadog-agent-config-docs",
  "datadog-agent-runtime",
  "datadog-protos",
  "derive-where",
@@ -1339,7 +1339,6 @@ name = "datadog-agent-config"
 version = "0.1.0"
 dependencies = [
  "datadog-agent-config-overlay-model",
- "figment",
  "go-duration",
  "indexmap",
  "prettyplease 0.3.0",
@@ -1361,6 +1360,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "datadog-agent-config-docs"
+version = "0.1.0"
+dependencies = [
+ "datadog-agent-config-overlay-model",
+ "tinytemplate",
+]
+
+[[package]]
 name = "datadog-agent-config-overlay-model"
 version = "0.1.0"
 dependencies = [
@@ -1368,21 +1375,6 @@ dependencies = [
  "serde",
  "serde_yaml",
  "tempfile",
-]
-
-[[package]]
-name = "datadog-agent-config-testing"
-version = "0.1.0"
-dependencies = [
- "datadog-agent-config",
- "datadog-agent-config-overlay-model",
- "indexmap",
- "saluki-config",
- "serde",
- "serde_json",
- "serde_yaml",
- "tinytemplate",
- "tokio",
 ]
 
 [[package]]
