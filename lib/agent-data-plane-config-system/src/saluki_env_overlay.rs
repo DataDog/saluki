@@ -1,11 +1,7 @@
 //! Reads Saluki-only configuration keys from the environment into the nested `SalukiOnly` shape.
 //!
-//! This is the Saluki-only counterpart to `datadog_agent_config::apply_datadog_env_vars`. The Datadog
-//! side drives a generated table of declared variable names; here there is no table and no alias. A
-//! Saluki-only key's environment name is its canonical path in upper case, with the segments joined
-//! by underscores and a `DD_` prefix, so the nested slot and its environment form stay in lockstep with
-//! the struct by construction. The set of canonical paths is read straight off `SalukiOnly` (see the
-//! discovery section below), so it cannot drift from the fields the deserializer actually reads.
+//! Unlike the Datadog reader's generated name table, this reader discovers paths from `SalukiOnly`.
+//! Environment names use `DD_` followed by the uppercase path with dots replaced by underscores.
 
 use std::sync::OnceLock;
 
@@ -23,9 +19,9 @@ use crate::saluki_only::{SalukiOnly, JSON_SEQUENCE_MARKER};
 // ─────────────────────────────────────────────────────────────────────────────
 // Path discovery: the canonical leaf paths, read off `SalukiOnly` itself.
 //
-// `discover_leaf_paths` drives `SalukiOnly::deserialize` with `PathRecorder`, a deserializer that
-// deserializes nothing. It records the field path serde asks for at each leaf, descending through
-// nested structs and through `Option<T>` as `Some(T)` so optional sub-structs stay visible.
+// `discover_leaf_specs` drives `SalukiOnly::deserialize` with `PathRecorder` to record each leaf's
+// path and decoder. It supplies placeholder values and visits `Option<T>` as `Some(T)` to discover
+// fields in optional structs.
 //
 // The one trap: some leaf types are scalar-like but their serde form is not a plain scalar
 // (`DurationString` and `ByteSize` deserialize through `deserialize_any`). The recorder must treat
@@ -75,7 +71,9 @@ fn leaf_specs() -> &'static [(Vec<String>, EnvDecode)] {
 
 /// Discovers `SalukiOnly`'s leaf paths by driving its derived `Deserialize` with the recorder.
 ///
-/// Discovery depends only on the struct, so any failure surfaces in tests, never in production.
+/// # Panics
+///
+/// Panics if a field cannot deserialize the recorder's placeholder value.
 fn discover_leaf_specs() -> Vec<(Vec<String>, EnvDecode)> {
     let mut ctx = DiscoverCtx { out: Vec::new() };
     let recorder = PathRecorder {
@@ -447,14 +445,7 @@ mod tests {
         assert_eq!(parsed.data_plane.checks.enabled, Some(true));
     }
 
-    /// Every nested Saluki-only key in the canonical inventory must exist as a `SalukiOnly` leaf.
-    ///
-    /// A flat key survives without one: Figment's prefix scan turns `DD_FOO_BAR` into the key
-    /// `foo_bar`, which is already the canonical spelling. A *nested* key has no such fallback. The
-    /// scan would produce the flat `foo_bar` and nothing places it at `foo.bar`, so discovery off
-    /// `SalukiOnly` is the only thing that makes `DD_FOO_BAR` reach it. An inventory key with no
-    /// field here is therefore unreachable from the environment, and silently so. That is exactly how
-    /// `data_plane.serializer_zstd_compressor_level` lost its documented override.
+    /// Documented nested keys need a `SalukiOnly` leaf so environment path discovery can reach them.
     #[test]
     fn every_nested_inventory_key_is_a_leaf() {
         let missing: Vec<&str> = datadog_agent_config_overlay_model::saluki_keys::SALUKI_KEYS

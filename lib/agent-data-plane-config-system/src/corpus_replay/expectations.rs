@@ -530,7 +530,6 @@ pub(crate) fn collect(corpus: &Corpus) -> Collected {
     out
 }
 
-/// Maps every supported leaf's key to its `'static` spelling in `LEAVES`.
 fn leaf_key_canons() -> BTreeMap<String, &'static str> {
     LEAVES.iter().map(|leaf| (leaf.key.to_string(), leaf.key)).collect()
 }
