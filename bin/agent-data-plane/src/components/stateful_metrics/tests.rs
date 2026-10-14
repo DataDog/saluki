@@ -260,6 +260,52 @@ fn conversion_preserves_rate_metadata_and_v3_resources() {
 }
 
 #[test]
+fn conversion_deduplicates_tags_and_resource_tags() {
+    let tagset = |tags: &[&str]| tags.iter().copied().map(Into::into).collect::<TagSet>();
+    let context = Context::from_parts(
+        "requests",
+        tagset(&[
+            "env:prod",
+            "device:sdb",
+            "device:sda",
+            "env:prod",
+            "dd.internal.resource:container:abc",
+            "dd.internal.resource:kind:",
+            "device",
+            "a:b:c",
+            "pod:é",
+        ]),
+    )
+    .with_origin_tags(tagset(&["device:sda", "dd.internal.resource:container:abc", "pod:é"]))
+    .with_host(MetaString::from("host-a"));
+    let series = conversion::convert(&Metric::from_parts(
+        context,
+        MetricValues::gauge([(123, 1.0)]),
+        MetricMetadata::default(),
+    ))
+    .unwrap();
+    // Origin tags are read first and a repeated device tag is skipped, so the last distinct one wins.
+    assert_eq!(
+        series.resources(),
+        [
+            MetricResource::new("host", "host-a"),
+            MetricResource::new("device", "sdb"),
+            MetricResource::new("container", "abc"),
+        ]
+    );
+    assert_eq!(series.tags().values, ["a:b:c", "device", "env:prod", "pod:é"]);
+
+    let cleared = conversion::convert(&Metric::from_parts(
+        Context::from_parts("requests", tagset(&["device:sda", "device:"])),
+        MetricValues::gauge([(123, 1.0)]),
+        MetricMetadata::default(),
+    ))
+    .unwrap();
+    assert!(cleared.resources().is_empty());
+    assert!(cleared.tags().values.is_empty());
+}
+
+#[test]
 fn zero_interval_and_source_type_survive_conversion() {
     let mut metric = Metric::rate("rate", (123, 20.0), Duration::ZERO);
     metric.metadata_mut().set_source_type(Arc::<str>::from("integration"));
