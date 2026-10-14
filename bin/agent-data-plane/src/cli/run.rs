@@ -490,6 +490,8 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
                     compression_level: shared.endpoints.compression.effective_zstd_level(),
                     flush_timeout: shared.metrics_encoding.flush_timeout,
                     batch_capacity: shared.metrics_encoding.max_metrics_per_payload,
+                    dictionary_max_entries: config.domains.stateful_metrics.dictionary_max_entries,
+                    dictionary_max_bytes: config.domains.stateful_metrics.dictionary_max_bytes,
                     queue: DeliveryQueueConfiguration::from_configuration(shared),
                     stop_timeout: dp.stop_timeout(),
                 },

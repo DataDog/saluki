@@ -173,10 +173,24 @@ Fresh input, overflow, rejected `push_batch` submissions, and unsent partial bat
 which feeds every endpoint through `push_batch`. With one endpoint there are no lanes, and returned
 batches use the shared low-priority queue as before.
 
-Each lane is a `RetryQueue<T>` with the same spill-to-disk and drop-oldest policy. The worker's retry
-memory and disk budgets are split evenly between the shared queue and the lanes, so with two
-endpoints each of the three queues gets a third. A long outage on one endpoint evicts only that
-endpoint's oldest retries. The high-priority capacity stays with the shared queue.
+Each lane is a `RetryQueue<T>` with the same spill-to-disk and drop-oldest policy. The shared
+low-priority queue and every lane draw from one retry memory budget: any of them can use all of it
+while the others are empty. When an entry does not fit, the worker evicts the oldest in-memory entry
+across all of those queues, spilling it to disk when persistence is enabled and dropping it
+otherwise, until the entry fits. A long outage on one endpoint can therefore push out older retries
+for the others. The high-priority capacity stays with the shared queue and is bounded by count, not
+by this budget.
+
+The disk budget is still split evenly between the shared queue and the lanes, so with two endpoints
+each of the three queues gets a third. Each persisted queue enforces its own disk limit and evicts
+only its own files, so pooling disk would need shared accounting across their directories.
+
+Before a batch enters the memory budget, the worker splits it into consecutive batches estimated at
+no more than a quarter of the budget, preserving series order. A 10,000-series batch estimates about
+7 MB, so with the default 15 MiB budget it becomes two entries. A single series larger than a quarter
+of the budget stays whole, and an entry larger than the whole budget is dropped and counted. Each
+split entry counts separately in `stateful_metrics_batches_retried_total` and
+`stateful_metrics_batches_abandoned_total`; points are counted once.
 
 Telemetry includes `stateful_metrics_batches_acked_total`, `stateful_metrics_batches_retried_total`,
 `stateful_metrics_stream_failures_total`, `stateful_metrics_batches_abandoned_total`, and
@@ -242,14 +256,60 @@ dictionaries, a partial batch, and a two-batch input queue. Series distribution 
 reuse affect actual memory; these limits do not bound total process memory.
 The configured series threshold and flush timeout apply independently to each worker.
 
-Each worker's dictionary uses Foldspace local eviction with ADP's defaults: 20,000 entries,
-16 MiB of Foldspace-estimated bytes, and removal of entries no payload has referenced for 30
-minutes. The entry and byte caps sit well above the live working set (about 7,000 entries per
-worker for a 110-pod node), so in normal operation eviction only removes definitions for series
-that stopped reporting, such as departed pods. Real heap is about 1.5 times the estimate, because
-the estimate excludes the rule store's copy of each definition and per-endpoint sent sets. The caps
-cannot shrink the dictionary below the live working set: recently created definitions are protected
-by Foldspace's 30-second grace period. The aggregator's context limit bounds the live set instead.
+Each worker's dictionary uses Foldspace local eviction, capped by two startup-only settings that
+apply **per worker**, so the process-wide totals are each value times
+`data_plane.stateful_metrics_workers`:
+
+| Setting | Environment variable | Default |
+| --- | --- | --- |
+| `data_plane.stateful_metrics_dictionary_max_entries` | `DD_DATA_PLANE_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES` | `60000` |
+| `data_plane.stateful_metrics_dictionary_max_bytes` | `DD_DATA_PLANE_STATEFUL_METRICS_DICTIONARY_MAX_BYTES` | `256MiB` (268435456) |
+
+Both must be positive; zero, negative, and non-numeric values fail startup. The byte cap accepts a
+bare byte count or a byte-size string such as `128MiB`, up to `i64::MAX`. Entries no payload has
+referenced for 30 minutes are removed regardless of the caps; that interval is not configurable.
+
+The caps are a ceiling, not a reservation: a worker's dictionary grows only with the series routed
+to it. The defaults cover the live working set of most nodes, so in normal operation eviction only
+removes definitions for series that stopped reporting, such as departed pods. Raising the caps
+costs memory only on nodes that actually have that many contexts; nodes whose working set exceeds
+the caps fall back to admission control, described below. The one fixed cost is the frequency
+sketch described below, which is sized from the caps: about 512 KiB per worker at the defaults.
+
+A cap below the live working set evicts definitions that are still in use and re-sends them on later
+flushes, which slows draining under load. In local load tests on traffic shaped like real tags, the
+earlier 16 MiB byte cap was reached at about 5,000 entries per worker, with heavy definition churn.
+Caps below the live working set churned nearly as much as that default did, while a cap about 10%
+above it behaved like no cap at all. In those tests, 60,000 entries per worker covered about
+350,000 active contexts per node. Lower the caps only on memory-constrained hosts, for example:
+
+```yaml
+data_plane:
+  stateful_metrics_dictionary_max_entries: 30000
+  stateful_metrics_dictionary_max_bytes: 128MiB
+```
+
+Actual heap use is higher than the estimate, which excludes allocator slack, per-endpoint sent sets,
+and eviction bookkeeping such as the frequency sketch and per-entry hashes. The caps cannot shrink
+the dictionary below the live working set: recently created definitions are protected by Foldspace's
+30-second grace period. The aggregator's context limit bounds the live set instead.
+
+Once an eviction pass has had to relieve pressure and the dictionary is at its cap, Foldspace admits
+a new or returning definition only if a fixed-size frequency sketch counts it more often than the
+entry it would displace. Otherwise the definition is **transient**: it is sent with the payload that
+needs it but is not counted against the caps, and it is removed once no payload in progress
+references it. A working set above the caps therefore costs one definition per payload that
+references each value outside the retained set, rather than churning the retained set itself.
+
+Each worker reports its dictionary through these gauges, tagged with `worker`:
+
+- `stateful_metrics_dictionary_entries` and `stateful_metrics_dictionary_estimated_bytes`: retained
+  definitions only, the figures the caps govern. Transient definitions are not included.
+- `stateful_metrics_dictionary_transient_entries` and `stateful_metrics_dictionary_transient_bytes`:
+  transient definitions, outside the caps. Sustained nonzero values mean the live working set
+  exceeds the caps.
+- `stateful_metrics_dictionary_frequency_sketch_bytes`: the fixed size of the frequency sketch,
+  sized from the caps when the worker starts and not part of the estimate.
 
 Closing destination input closes all worker input queues before waiting for completion. Workers drain
 accepted input, run their delivery budgets concurrently, recover remaining logical data, and flush

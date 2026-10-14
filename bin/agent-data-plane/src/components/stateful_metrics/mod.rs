@@ -16,7 +16,7 @@
 use std::{
     collections::VecDeque,
     future::{pending, poll_fn},
-    num::NonZeroUsize,
+    num::{NonZeroU64, NonZeroUsize},
     task::Poll,
     time::Duration,
 };
@@ -67,12 +67,12 @@ mod transport;
 
 pub use self::router::StatefulMetricsRouterConfiguration;
 use self::{
-    retry::{prepare_storage, LanedRetryQueue, RetryBatch},
+    retry::{prepare_storage, LanedRetryQueue},
     telemetry::Telemetry,
     transport::{next_transport_event, Transport, TransportEvent, TransportEventKind, TransportState},
 };
 
-const WORKER_INPUT_CAPACITY: usize = 2;
+const WORKER_INPUT_CAPACITY: usize = 32;
 const MIN_FLUSH_TIMEOUT: Duration = Duration::from_millis(10);
 const MAX_INFLIGHT_BATCHES: usize = 8;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -80,18 +80,14 @@ const ACK_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 const INITIAL_BACKOFF: Duration = Duration::from_millis(250);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
-// Per worker. Keep both limits well above the live working set: a cap near it re-sends a large
-// share of definitions every flush, and the grace period stops a cap below it from bounding memory.
-const DICTIONARY_MAX_ENTRIES: usize = 20_000;
-const DICTIONARY_MAX_ESTIMATED_BYTES: i64 = 16 * 1024 * 1024;
 const DICTIONARY_STALE_AFTER: Duration = Duration::from_secs(30 * 60);
 
 /// Opt-in destination for stateful series; delivery never switches automatically to HTTP.
 pub struct StatefulMetricsConfiguration {
     /// Explicit plaintext test intake origins, primary first. There is no default endpoint.
     ///
-    /// Every payload goes to every endpoint. Retry storage is namespaced by the primary endpoint
-    /// and split evenly between the shared queue and one lane per endpoint.
+    /// Every payload goes to every endpoint. Retry storage is namespaced by the primary endpoint. The
+    /// shared queue and one lane per endpoint share the retry memory budget and split the disk budget evenly.
     pub endpoints: Vec<MetaString>,
     /// Independent sender tasks. Defaults to three; changing this requires a restart.
     pub workers: NonZeroUsize,
@@ -103,10 +99,38 @@ pub struct StatefulMetricsConfiguration {
     pub flush_timeout: Duration,
     /// Series-count threshold for automatic flushing; an input buffer may exceed this threshold.
     pub batch_capacity: usize,
+    /// Dictionary entry cap for each worker; the process total is this times `workers`.
+    ///
+    /// Keep it and `dictionary_max_bytes` above each worker's live working set: a cap below it re-sends
+    /// a large share of definitions every flush, and the eviction grace period stops it from bounding
+    /// memory.
+    pub dictionary_max_entries: NonZeroUsize,
+    /// Estimated dictionary byte cap for each worker, at most `i64::MAX`; the process total is this times `workers`.
+    pub dictionary_max_bytes: NonZeroU64,
     /// Existing forwarder settings for high-priority capacity, retry memory, and disk storage.
     pub queue: DeliveryQueueConfiguration,
     /// Total component stop budget. At most half (capped at 30 seconds) is used waiting for delivery.
     pub stop_timeout: Duration,
+}
+
+impl StatefulMetricsConfiguration {
+    /// Builds the sans-I/O core configuration every worker uses.
+    fn core_config(&self) -> CoreConfig {
+        CoreConfig {
+            batch_capacity: self.batch_capacity,
+            sender: SenderConfig {
+                max_inflight_payloads: MAX_INFLIGHT_BATCHES,
+                ..SenderConfig::default()
+            },
+            metrics_dictionary_eviction: Some(MetricDictionaryEvictionConfig {
+                max_item_count: self.dictionary_max_entries.get(),
+                max_memory_bytes: i64::try_from(self.dictionary_max_bytes.get()).unwrap_or(i64::MAX),
+                stale_after: DICTIONARY_STALE_AFTER,
+                ..MetricDictionaryEvictionConfig::default()
+            }),
+            metrics_endpoints: self.endpoints.len(),
+        }
+    }
 }
 
 #[async_trait]
@@ -126,6 +150,7 @@ impl DestinationBuilder for StatefulMetricsConfiguration {
         let builder = MetricsBuilder::from_component_context(context.component_context());
         let api_key = parse_api_key(&self.api_key)?;
         prepare_storage(&self.queue, &self.endpoints, self.workers).await?;
+        let core_config = self.core_config();
         let mut workers = Vec::with_capacity(self.workers.get());
         for worker_id in 0..self.workers.get() {
             let builder = builder.clone().add_default_tag(("worker", worker_id.to_string()));
@@ -133,9 +158,9 @@ impl DestinationBuilder for StatefulMetricsConfiguration {
             workers.push(StatefulMetricsWorker::new(
                 endpoints.clone(),
                 api_key.clone(),
+                core_config.clone(),
                 self.compression_level,
                 self.flush_timeout,
-                self.batch_capacity,
                 queue,
                 builder,
             ));
@@ -264,23 +289,9 @@ impl EndpointState {
 
 impl StatefulMetricsWorker {
     fn new(
-        endpoints: Vec<Endpoint>, api_key: MetadataValue<Ascii>, compression_level: i32, flush_timeout: Duration,
-        batch_capacity: usize, queue: LanedRetryQueue, builder: MetricsBuilder,
+        endpoints: Vec<Endpoint>, api_key: MetadataValue<Ascii>, config: CoreConfig, compression_level: i32,
+        flush_timeout: Duration, queue: LanedRetryQueue, builder: MetricsBuilder,
     ) -> Self {
-        let config = CoreConfig {
-            batch_capacity,
-            sender: SenderConfig {
-                max_inflight_payloads: MAX_INFLIGHT_BATCHES,
-                ..SenderConfig::default()
-            },
-            metrics_dictionary_eviction: Some(MetricDictionaryEvictionConfig {
-                max_item_count: DICTIONARY_MAX_ENTRIES,
-                max_memory_bytes: DICTIONARY_MAX_ESTIMATED_BYTES,
-                stale_after: DICTIONARY_STALE_AFTER,
-                ..MetricDictionaryEvictionConfig::default()
-            }),
-            metrics_endpoints: endpoints.len(),
-        };
         let stream_lifetime = config.sender.stream_lifetime;
         Self {
             core: StatefulMetricsClient::new(config, ZstdBatchCompressor::new(compression_level)),
@@ -323,6 +334,7 @@ impl StatefulMetricsWorker {
         let mut shutdown_deadline = None;
         loop {
             self.pump().await?;
+            self.telemetry.record_dictionary(self.core.dictionary_stats());
             if input_closed {
                 if self.core.has_send_capacity() {
                     self.flush().await?;
@@ -362,9 +374,7 @@ impl StatefulMetricsWorker {
 
     async fn enqueue(&mut self, batch: LogicalMetricBatch) {
         if !batch.is_empty() {
-            let points = batch.point_count() as u64;
-            self.telemetry
-                .track_enqueue(self.queue.push_fresh(RetryBatch(batch)).await, points);
+            self.telemetry.track_drops(self.queue.push_fresh(batch).await);
         }
     }
 
@@ -566,9 +576,7 @@ impl StatefulMetricsWorker {
 
     /// Queues a returned batch for `endpoint` alone, or for every endpoint when `None`.
     async fn requeue(&mut self, endpoint: Option<MetricEndpointId>, batch: LogicalMetricBatch) {
-        let points = batch.point_count() as u64;
-        self.telemetry
-            .track_enqueue(self.queue.push_retry(endpoint, RetryBatch(batch)).await, points);
+        self.telemetry.track_drops(self.queue.push_retry(endpoint, batch).await);
     }
 
     async fn requeue_returned(

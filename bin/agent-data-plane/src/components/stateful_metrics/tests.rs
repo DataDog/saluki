@@ -1,6 +1,15 @@
-use std::{mem::replace, pin::Pin, sync::Arc};
+use std::{
+    hash::{Hash, Hasher as _},
+    mem::replace,
+    pin::Pin,
+    sync::Arc,
+};
 
-use agent_data_plane_config::{shared::SharedConfiguration, ConfigValue, SalukiConfiguration};
+use agent_data_plane_config::{
+    defaults::{DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES, DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES},
+    shared::SharedConfiguration,
+    ConfigValue, SalukiConfiguration,
+};
 use arc_swap::ArcSwap;
 use foldspace_core::{
     proto::stateful::{
@@ -12,7 +21,6 @@ use foldspace_core::{
 };
 use futures::Stream;
 use prost::Message as _;
-use saluki_common::hash::hash_single_stable;
 use saluki_context::{tags::TagSet, Context};
 use saluki_core::{
     accounting::{ComponentRegistry, MemoryLimiter},
@@ -33,6 +41,7 @@ use saluki_core::{
     },
 };
 use saluki_io::net::util::retry::{EventContainer, Retryable};
+use saluki_metrics::test::TestRecorder;
 use tempfile::TempDir;
 use tokio::{
     net::TcpListener,
@@ -43,8 +52,9 @@ use tokio::{
 };
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::{transport::Server, Request, Response, Status, Streaming};
+use twox_hash::XxHash64;
 
-use super::*;
+use super::{retry::RetryBatch, *};
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 const E0: MetricEndpointId = MetricEndpointId(0);
@@ -76,6 +86,25 @@ async fn queue_for(settings: &SharedConfiguration, endpoints: &[MetaString], wor
     .unwrap()
 }
 
+fn configuration(endpoints: usize, batch_capacity: usize) -> StatefulMetricsConfiguration {
+    StatefulMetricsConfiguration {
+        endpoints: test_endpoints(endpoints),
+        workers: NonZeroUsize::new(1).unwrap(),
+        api_key: Live::new_fixed("test-key".to_string()),
+        compression_level: 3,
+        flush_timeout: Duration::from_secs(2),
+        batch_capacity,
+        dictionary_max_entries: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES,
+        dictionary_max_bytes: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES,
+        queue: DeliveryQueueConfiguration::from_configuration(&shared()),
+        stop_timeout: TEST_TIMEOUT,
+    }
+}
+
+fn core_config(endpoints: usize, batch_capacity: usize) -> CoreConfig {
+    configuration(endpoints, batch_capacity).core_config()
+}
+
 async fn worker_with(endpoints: usize, batch_capacity: usize) -> StatefulMetricsWorker {
     let addresses = test_endpoints(endpoints);
     StatefulMetricsWorker::new(
@@ -84,9 +113,9 @@ async fn worker_with(endpoints: usize, batch_capacity: usize) -> StatefulMetrics
             .map(|endpoint| Endpoint::from_shared(endpoint.to_string()).unwrap())
             .collect(),
         parse_api_key("test-key").unwrap(),
+        core_config(endpoints, batch_capacity),
         3,
         Duration::from_secs(2),
-        batch_capacity,
         queue_for(&shared(), &addresses, 0).await,
         MetricsBuilder::default(),
     )
@@ -231,6 +260,52 @@ fn conversion_preserves_rate_metadata_and_v3_resources() {
 }
 
 #[test]
+fn conversion_deduplicates_tags_and_resource_tags() {
+    let tagset = |tags: &[&str]| tags.iter().copied().map(Into::into).collect::<TagSet>();
+    let context = Context::from_parts(
+        "requests",
+        tagset(&[
+            "env:prod",
+            "device:sdb",
+            "device:sda",
+            "env:prod",
+            "dd.internal.resource:container:abc",
+            "dd.internal.resource:kind:",
+            "device",
+            "a:b:c",
+            "pod:é",
+        ]),
+    )
+    .with_origin_tags(tagset(&["device:sda", "dd.internal.resource:container:abc", "pod:é"]))
+    .with_host(MetaString::from("host-a"));
+    let series = conversion::convert(&Metric::from_parts(
+        context,
+        MetricValues::gauge([(123, 1.0)]),
+        MetricMetadata::default(),
+    ))
+    .unwrap();
+    // Origin tags are read first and a repeated device tag is skipped, so the last distinct one wins.
+    assert_eq!(
+        series.resources(),
+        [
+            MetricResource::new("host", "host-a"),
+            MetricResource::new("device", "sdb"),
+            MetricResource::new("container", "abc"),
+        ]
+    );
+    assert_eq!(series.tags().values, ["a:b:c", "device", "env:prod", "pod:é"]);
+
+    let cleared = conversion::convert(&Metric::from_parts(
+        Context::from_parts("requests", tagset(&["device:sda", "device:"])),
+        MetricValues::gauge([(123, 1.0)]),
+        MetricMetadata::default(),
+    ))
+    .unwrap();
+    assert!(cleared.resources().is_empty());
+    assert!(cleared.tags().values.is_empty());
+}
+
+#[test]
 fn zero_interval_and_source_type_survive_conversion() {
     let mut metric = Metric::rate("rate", (123, 20.0), Duration::ZERO);
     metric.metadata_mut().set_source_type(Arc::<str>::from("integration"));
@@ -307,9 +382,9 @@ impl Harness {
         let mut worker = StatefulMetricsWorker::new(
             vec![endpoint],
             parse_api_key("test-key").unwrap(),
+            core_config(1, 512),
             3,
             Duration::from_secs(2),
-            512,
             queue_for(&shared(), &test_endpoints(1), 0).await,
             MetricsBuilder::default(),
         );
@@ -635,12 +710,18 @@ async fn persisted_queue(settings: &SharedConfiguration) -> LanedRetryQueue {
     queue_for(settings, &test_endpoints(1), 0).await
 }
 
-fn logical(name: &'static str) -> RetryBatch {
-    RetryBatch(LogicalMetricBatch::new(vec![conversion::convert(&Metric::gauge(
-        name,
-        (123, 2.0),
-    ))
-    .unwrap()]))
+fn logical(name: &'static str) -> LogicalMetricBatch {
+    LogicalMetricBatch::new(vec![gauge(name)])
+}
+
+fn gauge(name: &str) -> LogicalMetricSeries {
+    let context = Context::from_parts(name.to_owned(), TagSet::default());
+    conversion::convert(&Metric::gauge(context, (123, 2.0))).unwrap()
+}
+
+/// Returns the retry memory `batch` occupies as one entry.
+fn entry_bytes(batch: &LogicalMetricBatch) -> u64 {
+    RetryBatch(batch.clone(), 0).size_bytes()
 }
 
 #[tokio::test]
@@ -655,13 +736,13 @@ async fn disk_spill_restores_complete_logical_batches() {
             .with_unit("request"),
     );
     let expected = LogicalMetricBatch::new(vec![conversion::convert(&metric).unwrap()]);
-    let entry = RetryBatch(expected.clone());
+    let entry = RetryBatch(expected.clone(), 0);
     assert_eq!(entry.event_count(), 1);
     assert_eq!(entry.data_point_count(), 1);
-    let settings = persisted_settings(&dir, entry.size_bytes() + logical("new").size_bytes() - 1);
+    let settings = persisted_settings(&dir, entry.size_bytes() + entry_bytes(&logical("new")) - 1);
     let mut queue = persisted_queue(&settings).await;
-    assert!(!queue.push_retry(None, entry).await.unwrap().had_drops());
-    assert!(!queue.push_retry(None, logical("new")).await.unwrap().had_drops());
+    assert!(!queue.push_retry(None, expected.clone()).await.had_drops());
+    assert!(!queue.push_retry(None, logical("new")).await.had_drops());
     // Memory is read before disk. Remove the newer entry, then reopen storage.
     let Some(PendingTransaction::LowPriority(new)) = queue.pop_shared().await else {
         panic!("missing new")
@@ -710,16 +791,17 @@ async fn shutdown_persists_unacknowledged_partial_and_queued_work_for_reencoding
 #[tokio::test]
 async fn queue_prioritizes_new_input_and_counts_evicted_retries() {
     let dir = TempDir::new().unwrap();
-    let mut settings = persisted_settings(&dir, logical("old").size_bytes());
+    let mut settings = persisted_settings(&dir, entry_bytes(&logical("old")));
     settings.endpoints.forwarder.storage_max_size_in_bytes = 0;
     settings.endpoints.forwarder.high_prio_buffer_size = 1;
     let mut queue = persisted_queue(&settings).await;
-    assert!(!queue.push_retry(None, logical("old")).await.unwrap().had_drops());
-    assert!(!queue.push_fresh(logical("new")).await.unwrap().had_drops());
+    assert!(!queue.push_retry(None, logical("old")).await.had_drops());
+    assert!(!queue.push_fresh(logical("new")).await.had_drops());
     let evicted = queue.push_fresh(logical("overflow")).await;
-    // An oversized entry is reported explicitly by the queue.
-    assert!(evicted.is_err());
-    let evicted = queue.push_retry(None, logical("two")).await.unwrap();
+    // An oversized entry is counted as dropped without evicting the retry that does fit.
+    assert_eq!(evicted.items_dropped, 1);
+    assert_eq!(evicted.data_points_dropped, 1);
+    let evicted = queue.push_retry(None, logical("two")).await;
     assert_eq!(evicted.items_dropped, 1);
     assert_eq!(evicted.data_points_dropped, 1);
     let Some(PendingTransaction::HighPriority(first)) = queue.pop_shared().await else {
@@ -758,6 +840,8 @@ async fn start_destination(
         compression_level: 3,
         flush_timeout,
         batch_capacity: 512,
+        dictionary_max_entries: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES,
+        dictionary_max_bytes: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES,
         queue: DeliveryQueueConfiguration::from_configuration(settings),
         stop_timeout: TEST_TIMEOUT,
     };
@@ -923,7 +1007,7 @@ async fn threshold_flush_and_rejected_partial_remain_recoverable() {
 #[tokio::test]
 async fn oversized_retry_does_not_stop_remaining_recovery() {
     let dir = TempDir::new().unwrap();
-    let settings = persisted_settings(&dir, logical("tiny").size_bytes());
+    let settings = persisted_settings(&dir, entry_bytes(&logical("tiny")));
     let (mut worker, _wire, _) = open_worker().await;
     worker.queue = persisted_queue(&settings).await;
     submit(&mut worker, "too-large-to-retry").await;
@@ -1034,7 +1118,8 @@ fn sharding_preserves_hashes_for_borrowed_and_normalized_tags() {
         let mut resources: Vec<_> = series.resources().iter().map(|r| (&r.kind, &r.name)).collect();
         resources.sort_unstable();
         resources.dedup();
-        let original_hash = hash_single_stable((
+        let mut hasher = XxHash64::with_seed(0);
+        (
             series.name(),
             series.metric_type() as u8,
             tags,
@@ -1044,8 +1129,9 @@ fn sharding_preserves_hashes_for_borrowed_and_normalized_tags() {
             series.source_type_name(),
             series.origin(),
             series.no_index(),
-        ));
-        assert_eq!(sharding::series_hash(&series), original_hash);
+        )
+            .hash(&mut hasher);
+        assert_eq!(sharding::series_hash(&series), hasher.finish());
     }
 }
 
@@ -1089,7 +1175,7 @@ async fn sharding_storage_rejects_count_changes_without_consuming_retries() {
     assert_eq!(three.get(), 3);
     // A legacy queue has no count manifest and belongs to worker zero.
     let mut legacy = queue_for(&settings, endpoint, 0).await;
-    assert!(!legacy.push_retry(None, logical("legacy")).await.unwrap().had_drops());
+    assert!(!legacy.push_retry(None, logical("legacy")).await.had_drops());
     assert!(!legacy.flush().await.unwrap().had_drops());
     assert!(prepare_storage(&config, endpoint, three).await.is_err());
     prepare_storage(&config, endpoint, one).await.unwrap();
@@ -1240,6 +1326,8 @@ impl ShardedHarness {
             compression_level: 3,
             flush_timeout: Duration::from_millis(10),
             batch_capacity: 512,
+            dictionary_max_entries: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES,
+            dictionary_max_bytes: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES,
             queue: DeliveryQueueConfiguration::from_configuration(settings),
             stop_timeout: Duration::from_millis(200),
         })
@@ -1493,8 +1581,8 @@ async fn endpoint_lanes_persist_by_address_and_block_endpoint_removal() {
     let original = [primary.clone(), removed.clone()];
     prepare_storage(&config, &original, one).await.unwrap();
     let mut queue = queue_for(&settings, &original, 0).await;
-    assert!(!queue.push_retry(Some(E1), logical("lane")).await.unwrap().had_drops());
-    assert!(!queue.push_retry(None, logical("shared")).await.unwrap().had_drops());
+    assert!(!queue.push_retry(Some(E1), logical("lane")).await.had_drops());
+    assert!(!queue.push_retry(None, logical("shared")).await.had_drops());
     assert!(!queue.flush().await.unwrap().had_drops());
 
     for endpoints in [vec![primary.clone()], vec![primary.clone(), added.clone()]] {
@@ -1515,6 +1603,203 @@ async fn endpoint_lanes_persist_by_address_and_block_endpoint_removal() {
     prepare_storage(&config, &[primary], one).await.unwrap();
 }
 
+fn names(count: usize) -> Vec<String> {
+    (0..count).map(|index| format!("series-{index:03}")).collect()
+}
+
+fn batch_of(names: &[String]) -> LogicalMetricBatch {
+    LogicalMetricBatch::new(names.iter().map(|name| gauge(name)).collect())
+}
+
+fn settings_with_budget(memory_bytes: u64) -> SharedConfiguration {
+    let mut settings = shared();
+    settings.endpoints.forwarder.retry_queue_payloads_max_size = ConfigValue::explicit(memory_bytes);
+    settings
+}
+
+/// A series whose tags make it far larger than an untagged gauge.
+fn tagged(name: &'static str, tags: usize) -> LogicalMetricSeries {
+    let tags: TagSet = (0..tags).map(|index| format!("tag-{index:04}:value").into()).collect();
+    conversion::convert(&Metric::gauge(Context::from_parts(name, tags), (123, 2.0))).unwrap()
+}
+
+#[test]
+fn retry_entries_persist_as_plain_logical_batches() {
+    let batch = logical("persisted");
+    let stored = serde_json::to_vec(&RetryBatch(batch.clone(), 42)).unwrap();
+    assert_eq!(stored, serde_json::to_vec(&batch).unwrap());
+    let restored: RetryBatch = serde_json::from_slice(&stored).unwrap();
+    assert_eq!(restored.0, batch);
+}
+
+#[tokio::test]
+async fn returned_batch_larger_than_a_lane_share_is_queued_as_ordered_chunks() {
+    let names = names(40);
+    let bytes = entry_bytes(&batch_of(&names));
+    // The former even split gave each of the three queues a third of this budget, less than the batch.
+    let budget = 2 * bytes;
+    let mut worker = worker_with(2, 512).await;
+    worker.queue = queue_for(&settings_with_budget(budget), &test_endpoints(2), 0).await;
+    let mut opened = start_all(&mut worker).await;
+    let (_down_wire, _) = opened.pop().unwrap();
+    let (mut healthy_wire, _) = opened.pop().unwrap();
+    worker
+        .accept(names.iter().map(|name| {
+            Event::Metric(Metric::gauge(
+                Context::from_parts(name.clone(), TagSet::default()),
+                (123, 2.0),
+            ))
+        }))
+        .await;
+    worker.pump().await.unwrap();
+    worker.flush().await.unwrap();
+    assert_eq!(healthy_wire.try_recv().unwrap().batch_id, 1);
+    worker
+        .fail(E1, MetricStreamFailureKind::Unavailable, "disconnect")
+        .await
+        .unwrap();
+
+    let mut chunks = 0;
+    let mut queued = Vec::new();
+    while let Some(entry) = worker.queue.pop_lane(E1).await {
+        assert!(entry.size_bytes() <= budget / 4);
+        chunks += 1;
+        queued.extend(entry.0.series().iter().map(|series| series.name().to_owned()));
+    }
+    assert!(chunks > 1);
+    assert_eq!(queued, names);
+    assert!(worker.queue.is_empty());
+}
+
+#[tokio::test]
+async fn oversized_retry_splits_without_drops_and_preserves_series_order() {
+    let names = names(40);
+    let batch = batch_of(&names);
+    let budget = 2 * entry_bytes(&batch);
+    let mut queue = queue_for(&settings_with_budget(budget), &test_endpoints(2), 0).await;
+    let result = queue.push_retry(Some(E1), batch).await;
+    assert!(!result.had_drops());
+    let mut chunks = Vec::new();
+    while let Some(entry) = queue.pop_lane(E1).await {
+        assert!(entry.size_bytes() <= budget / 4);
+        chunks.push(entry.0);
+    }
+    assert!(chunks.len() > 1);
+    assert_eq!(
+        chunks.iter().map(LogicalMetricBatch::point_count).sum::<usize>(),
+        names.len()
+    );
+    let queued: Vec<_> = chunks
+        .iter()
+        .flat_map(|chunk| chunk.series().iter().map(|series| series.name().to_owned()))
+        .collect();
+    assert_eq!(queued, names);
+}
+
+#[tokio::test]
+async fn one_lane_can_use_the_whole_pooled_budget() {
+    let names = names(6);
+    let entry = entry_bytes(&logical("series-000"));
+    // The former even split capped this lane at two entries.
+    let mut queue = queue_for(&settings_with_budget(6 * entry), &test_endpoints(2), 0).await;
+    for name in &names {
+        assert!(!queue
+            .push_retry(Some(E0), batch_of(std::slice::from_ref(name)))
+            .await
+            .had_drops());
+    }
+    assert_eq!(lane_names(&mut queue, E0).await, names);
+    assert!(queue.is_empty());
+}
+
+#[tokio::test]
+async fn pooled_budget_evicts_the_globally_oldest_retry() {
+    let mut queue = queue_for(
+        &settings_with_budget(3 * entry_bytes(&logical("s1"))),
+        &test_endpoints(2),
+        0,
+    )
+    .await;
+    assert!(!queue.push_retry(None, logical("s1")).await.had_drops());
+    assert!(!queue.push_retry(Some(E0), logical("x1")).await.had_drops());
+    assert!(!queue.push_retry(Some(E1), logical("y1")).await.had_drops());
+    // A lane push evicts the oldest retry, which waits in the shared queue.
+    let evicted = queue.push_retry(Some(E1), logical("y2")).await;
+    assert_eq!(evicted.items_dropped, 1);
+    assert_eq!(evicted.events_dropped, 1);
+    assert_eq!(evicted.data_points_dropped, 1);
+    // A shared push evicts the oldest retry, which now waits in the other lane.
+    let evicted = queue.push_retry(None, logical("s2")).await;
+    assert_eq!(evicted.items_dropped, 1);
+    assert_eq!(evicted.data_points_dropped, 1);
+    assert_eq!(shared_names(&mut queue).await, ["s2"]);
+    assert!(lane_names(&mut queue, E0).await.is_empty());
+    assert_eq!(lane_names(&mut queue, E1).await, ["y1", "y2"]);
+}
+
+#[tokio::test]
+async fn pooled_budget_spills_the_globally_oldest_retry_to_disk() {
+    let dir = TempDir::new().unwrap();
+    let mut settings = persisted_settings(&dir, 3 * entry_bytes(&logical("s1")));
+    settings.endpoints.forwarder.flush_to_disk_mem_ratio = 0.0;
+    let mut queue = queue_for(&settings, &test_endpoints(2), 0).await;
+    assert!(!queue.push_retry(None, logical("s1")).await.had_drops());
+    assert!(!queue.push_retry(Some(E0), logical("x1")).await.had_drops());
+    assert!(!queue.push_retry(Some(E1), logical("y1")).await.had_drops());
+    assert!(!queue.push_retry(Some(E1), logical("y2")).await.had_drops());
+    // The shared retry moved to disk; memory now holds the lanes' retries.
+    assert!(!queue.push_retry(Some(E0), logical("x2")).await.had_drops());
+    assert_eq!(lane_names(&mut queue, E0).await, ["x2", "x1"]);
+    assert_eq!(lane_names(&mut queue, E1).await, ["y1", "y2"]);
+    assert_eq!(shared_names(&mut queue).await, ["s1"]);
+    assert!(queue.is_empty());
+}
+
+#[tokio::test]
+async fn single_endpoint_queue_keeps_the_whole_budget_without_lanes() {
+    let names = names(4);
+    let entry = entry_bytes(&logical("series-000"));
+    let mut queue = queue_for(&settings_with_budget(3 * entry), &test_endpoints(1), 0).await;
+    assert_eq!(queue.lane_count(), 0);
+    for name in &names[..3] {
+        assert!(!queue
+            .push_retry(Some(E0), batch_of(std::slice::from_ref(name)))
+            .await
+            .had_drops());
+    }
+    let evicted = queue.push_retry(Some(E0), batch_of(&names[3..])).await;
+    assert_eq!(evicted.items_dropped, 1);
+    assert_eq!(evicted.data_points_dropped, 1);
+    assert_eq!(shared_names(&mut queue).await, names[1..]);
+}
+
+#[tokio::test]
+async fn series_larger_than_the_chunk_limit_is_queued_alone() {
+    let large = tagged("large", 60);
+    let large_bytes = entry_bytes(&LogicalMetricBatch::new(vec![large.clone()]));
+    let budget = 2 * large_bytes;
+    let huge = tagged("huge", 600);
+    assert!(entry_bytes(&LogicalMetricBatch::new(vec![huge.clone()])) > budget);
+    assert!(entry_bytes(&LogicalMetricBatch::new(vec![gauge("a"), gauge("b")])) <= budget / 4);
+    let mut queue = queue_for(&settings_with_budget(budget), &test_endpoints(2), 0).await;
+
+    let batch = LogicalMetricBatch::new(vec![gauge("a"), gauge("b"), large, gauge("c"), gauge("d")]);
+    assert!(!queue.push_retry(Some(E0), batch).await.had_drops());
+    let mut chunks = Vec::new();
+    while let Some(entry) = queue.pop_lane(E0).await {
+        chunks.push(entry.0.series().iter().map(|s| s.name().to_owned()).collect::<Vec<_>>());
+    }
+    assert_eq!(chunks, [vec!["a", "b"], vec!["large"], vec!["c", "d"]]);
+
+    // A series larger than the whole budget is still rejected and counted, without blocking its neighbours.
+    let batch = LogicalMetricBatch::new(vec![gauge("a"), huge, gauge("b")]);
+    let result = queue.push_retry(Some(E0), batch).await;
+    assert_eq!(result.items_dropped, 1);
+    assert_eq!(result.events_dropped, 1);
+    assert_eq!(result.data_points_dropped, 1);
+    assert_eq!(lane_names(&mut queue, E0).await, ["a", "b"]);
+}
+
 #[tokio::test]
 async fn destination_sends_every_payload_to_every_endpoint_and_replays_only_to_the_failed_one() {
     let mut healthy = ShardedHarness::new().await;
@@ -1526,6 +1811,8 @@ async fn destination_sends_every_payload_to_every_endpoint_and_replays_only_to_t
         compression_level: 3,
         flush_timeout: Duration::from_millis(10),
         batch_capacity: 512,
+        dictionary_max_entries: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES,
+        dictionary_max_bytes: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES,
         queue: DeliveryQueueConfiguration::from_configuration(&shared()),
         stop_timeout: TEST_TIMEOUT,
     })
@@ -1551,4 +1838,66 @@ async fn destination_sends_every_payload_to_every_endpoint_and_replays_only_to_t
     drop(input);
     timeout(TEST_TIMEOUT, task).await.unwrap().unwrap().unwrap();
     assert!(healthy_session.received.try_recv().is_err());
+}
+
+#[test]
+fn core_config_uses_default_dictionary_caps() {
+    let config = core_config(2, 256);
+    assert_eq!(config.batch_capacity, 256);
+    assert_eq!(config.metrics_endpoints, 2);
+    assert_eq!(config.sender.max_inflight_payloads, MAX_INFLIGHT_BATCHES);
+    assert_eq!(
+        config.metrics_dictionary_eviction,
+        Some(MetricDictionaryEvictionConfig {
+            max_item_count: 60_000,
+            max_memory_bytes: 256 * 1024 * 1024,
+            stale_after: Duration::from_secs(30 * 60),
+            ..MetricDictionaryEvictionConfig::default()
+        })
+    );
+}
+
+#[test]
+fn core_config_applies_configured_dictionary_caps_to_each_worker_unchanged() {
+    let mut configuration = configuration(1, 512);
+    // The caps are per worker: raising the worker count does not divide them.
+    configuration.workers = NonZeroUsize::new(3).unwrap();
+    configuration.dictionary_max_entries = NonZeroUsize::new(100_000).unwrap();
+    configuration.dictionary_max_bytes = NonZeroU64::new(128 * 1024 * 1024).unwrap();
+    let eviction = configuration.core_config().metrics_dictionary_eviction.unwrap();
+    assert_eq!(eviction.max_item_count, 100_000);
+    assert_eq!(eviction.max_memory_bytes, 128 * 1024 * 1024);
+    assert_eq!(eviction.stale_after, DICTIONARY_STALE_AFTER);
+
+    configuration.dictionary_max_bytes = NonZeroU64::MAX;
+    let eviction = configuration.core_config().metrics_dictionary_eviction.unwrap();
+    assert_eq!(eviction.max_memory_bytes, i64::MAX);
+}
+
+#[tokio::test]
+async fn dictionary_gauges_report_core_dictionary_stats() {
+    let recorder = TestRecorder::default();
+    let _local = metrics::set_default_local_recorder(&recorder);
+    let (mut worker, _wire, _) = open_worker().await;
+    submit(&mut worker, "requests").await;
+    worker.telemetry.record_dictionary(worker.core.dictionary_stats());
+
+    let stats = worker.core.dictionary_stats();
+    assert!(stats.entries > 0);
+    assert!(stats.estimated_bytes > 0);
+    // Below the caps every definition is retained.
+    assert_eq!(stats.transient_entries, 0);
+    assert!(stats.frequency_sketch_bytes > 0);
+    for (name, value) in [
+        ("stateful_metrics_dictionary_entries", stats.entries),
+        ("stateful_metrics_dictionary_estimated_bytes", stats.estimated_bytes),
+        ("stateful_metrics_dictionary_transient_entries", stats.transient_entries),
+        ("stateful_metrics_dictionary_transient_bytes", stats.transient_bytes),
+        (
+            "stateful_metrics_dictionary_frequency_sketch_bytes",
+            stats.frequency_sketch_bytes,
+        ),
+    ] {
+        assert_eq!(recorder.gauge(name), Some(value as f64), "{name}");
+    }
 }
