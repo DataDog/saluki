@@ -1,15 +1,14 @@
 use std::sync::LazyLock;
 use std::time::Duration;
+use std::{io, thread};
 
 use async_trait::async_trait;
+use datadog_checks_protocol::{Consumer as ChecksConsumer, Message};
 use datadog_protos::checks::{
-    check_data::Data,
-    checks_server::{Checks, ChecksServer},
-    event::{AlertType as ProtoAlertType, Event as ProtoEvent, Priority as ProtoPriority},
-    log::{Log as ProtoLog, LogLevel},
-    metric::{Metric as ProtoMetric, MetricType},
-    service_check::{ServiceCheck as ProtoServiceCheck, Status as ServiceCheckStatus},
-    SendCheckPayloadRequest, SendCheckPayloadResponse,
+    event::{AlertType as ProtoAlertType, Priority as ProtoPriority},
+    log::LogLevel,
+    metric::MetricType,
+    service_check::Status as ServiceCheckStatus,
 };
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
@@ -24,33 +23,28 @@ use saluki_core::{
         },
         tags::{Tag, TagSet},
     },
-    runtime,
     topology::OutputDefinition,
 };
 use saluki_error::{generic_error, GenericError};
-use saluki_io::net::{
-    server::http::{Http2Config, HttpServer},
-    ListenAddress,
-};
+use saluki_fit::{CancellationToken, ConsumerConfig};
 use stringtheory::MetaString;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::{pin, select};
-use tonic::{Response, Status};
-use tracing::{debug, trace, warn};
+use tracing::{debug, warn};
 
 /// Checks IPC source.
 #[derive(Debug)]
 pub struct ChecksIPCConfiguration {
     default_hostname: MetaString,
-    grpc_endpoint: ListenAddress,
+    consumer_config: ConsumerConfig,
 }
 
 impl ChecksIPCConfiguration {
-    /// Creates a new `ChecksIPCConfiguration` from the resolved endpoint and default hostname.
-    pub fn new(grpc_endpoint: ListenAddress, default_hostname: impl Into<MetaString>) -> Self {
+    /// Creates a Checks FIT source from a validated consumer configuration and default hostname.
+    pub fn new(consumer_config: ConsumerConfig, default_hostname: impl Into<MetaString>) -> Self {
         Self {
             default_hostname: default_hostname.into(),
-            grpc_endpoint,
+            consumer_config,
         }
     }
 }
@@ -72,7 +66,7 @@ impl SourceBuilder for ChecksIPCConfiguration {
 
     async fn build(&self, _context: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
         Ok(Box::new(ChecksIPC {
-            grpc_endpoint: self.grpc_endpoint.clone(),
+            consumer_config: self.consumer_config.clone(),
             default_hostname: self.default_hostname.clone(),
         }))
     }
@@ -86,7 +80,7 @@ impl MemoryBounds for ChecksIPCConfiguration {
 }
 
 struct ChecksIPC {
-    grpc_endpoint: ListenAddress,
+    consumer_config: ConsumerConfig,
     default_hostname: MetaString,
 }
 
@@ -94,7 +88,7 @@ struct ChecksIPC {
 impl Source for ChecksIPC {
     async fn run(self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
         let ChecksIPC {
-            grpc_endpoint,
+            consumer_config,
             default_hostname,
         } = *self;
 
@@ -104,35 +98,58 @@ impl Source for ChecksIPC {
         let mut health = context.take_health_handle();
 
         let (events_tx, mut events_rx) = mpsc::channel(16);
+        let (ready_tx, mut ready_rx) = oneshot::channel();
+        let cancellation = CancellationToken::new();
+        let worker_cancellation = cancellation.clone();
+        // FIT's mapping is thread-local; create and use the consumer on one dedicated thread.
+        // The bounded channel applies backpressure to this worker when downstream dispatch lags.
+        let worker = thread::Builder::new()
+            .name("checks-fit-receiver".to_string())
+            .spawn(move || {
+                receive_checks(
+                    consumer_config,
+                    default_hostname,
+                    worker_cancellation,
+                    ready_tx,
+                    events_tx,
+                )
+            })
+            .map_err(|error| generic_error!("Failed to start Checks FIT receiver: {error}"))?;
 
-        let ListenAddress::Tcp(grpc_socket_addr) = grpc_endpoint else {
-            return Err(generic_error!("Checks IPC gRPC endpoint must be a TCP address."));
-        };
-
-        // This endpoint only ever speaks gRPC, so it is restricted to HTTP/2: an HTTP/1.1 caller here is a client bug,
-        // and rejecting it at the protocol level says so more clearly than routing it and answering with a 404.
-        let grpc_server = HttpServer::from_listen_address(ListenAddress::Tcp(grpc_socket_addr))
-            .add_grpc_service(ChecksServer::new(ChecksService {
-                events_tx,
-                default_hostname,
-            }))
-            .with_http2_only()
-            .with_http2_config(Http2Config::grpc_defaults())
-            .with_worker_pool(context.topology_context().global_thread_pool().clone());
-
-        runtime::nested_supervisor(grpc_server.into_supervisor()).spawn();
-
-        health.mark_ready();
-        debug!("Checks IPC source started.");
+        let mut ready = false;
+        let mut shutting_down = false;
+        let mut result = Ok(());
 
         loop {
             select! {
                 _ = &mut global_shutdown => {
                     debug!("Received shutdown signal.");
+                    shutting_down = true;
                     break;
                 },
                 _ = health.live() => continue,
-                Some(event) = events_rx.recv() => {
+                setup = &mut ready_rx, if !ready => {
+                    match setup {
+                        Ok(Ok(())) => {
+                            ready = true;
+                            health.mark_ready();
+                            debug!("Checks FIT session established.");
+                        }
+                        Ok(Err(error)) => {
+                            result = Err(generic_error!("Checks FIT setup failed: {error}"));
+                            break;
+                        }
+                        Err(_) => {
+                            result = Err(generic_error!("Checks FIT receiver stopped before setup completed."));
+                            break;
+                        }
+                    }
+                },
+                event = events_rx.recv(), if ready => {
+                    let Some(event) = event else {
+                        // Once the worker closes the channel, report its transport failure below.
+                        break;
+                    };
                     let output_name = match &event {
                         Event::Metric(_) => "metrics",
                         Event::Log(_) => "logs",
@@ -148,45 +165,63 @@ impl Source for ChecksIPC {
             }
         }
 
-        debug!("Checks IPC source stopped.");
-        Ok(())
-    }
-}
-
-struct ChecksService {
-    events_tx: mpsc::Sender<Event>,
-    default_hostname: MetaString,
-}
-
-#[async_trait]
-impl Checks for ChecksService {
-    async fn send_check_payload(
-        &self, request: tonic::Request<SendCheckPayloadRequest>,
-    ) -> Result<Response<SendCheckPayloadResponse>, Status> {
-        trace!("Received check payload.");
-
-        let payload = request.into_inner();
-        for check_data in payload.data.into_iter().filter_map(|data| data.data) {
-            let Some(event) = check_data_to_event(check_data, &self.default_hostname) else {
-                continue;
-            };
-
-            if let Err(e) = self.events_tx.send(event).await {
-                warn!("Failed to send check event: {:?}", e);
+        // Closing the receiver releases a worker blocked by channel backpressure. FIT cancellation
+        // interrupts a worker blocked in setup or on the shared-memory notification word.
+        drop(events_rx);
+        let cancellation_result = cancellation.cancel();
+        let worker_result = tokio::task::spawn_blocking(move || worker.join())
+            .await
+            .map_err(|error| generic_error!("Failed to join Checks FIT receiver: {error}"))?;
+        match worker_result {
+            Ok(Err(error)) if result.is_ok() && !(shutting_down && error.kind() == io::ErrorKind::Interrupted) => {
+                result = Err(generic_error!("Checks FIT receiver failed: {error}"));
+            }
+            Err(_) if result.is_ok() => result = Err(generic_error!("Checks FIT receiver panicked.")),
+            _ => {}
+        }
+        if let Err(error) = cancellation_result {
+            if result.is_ok() {
+                result = Err(generic_error!(
+                    "Failed to wake Checks FIT receiver during shutdown: {error}"
+                ));
             }
         }
-
-        Ok(Response::new(SendCheckPayloadResponse {}))
+        debug!("Checks IPC source stopped.");
+        result
     }
 }
 
-fn check_data_to_event(check_data: Data, default_hostname: &MetaString) -> Option<Event> {
-    // Each arm exhaustively destructures its proto message (no `..`) so adding a new field
+fn receive_checks(
+    config: ConsumerConfig, default_hostname: MetaString, cancellation: CancellationToken,
+    ready: oneshot::Sender<io::Result<()>>, events: mpsc::Sender<Event>,
+) -> io::Result<()> {
+    let mut consumer = match ChecksConsumer::open_with_cancel(config, &cancellation) {
+        Ok(consumer) => consumer,
+        Err(error) => {
+            let _ = ready.send(Err(io::Error::new(error.kind(), error.to_string())));
+            return Err(error);
+        }
+    };
+    let _ = ready.send(Ok(()));
+    loop {
+        let Some(message) = consumer.receive_with_cancel(&cancellation)? else {
+            return Ok(());
+        };
+        if let Some(event) = check_data_to_event(message, &default_hostname) {
+            if events.blocking_send(event).is_err() {
+                return Ok(());
+            }
+        }
+    }
+}
+
+fn check_data_to_event(check_data: Message, default_hostname: &MetaString) -> Option<Event> {
+    // Each arm exhaustively destructures its FIT model (no `..`) so adding a new field
     // upstream becomes a compile error here until it's mapped or explicitly ignored.
     match check_data {
-        Data::Metric(metric) => {
-            let ProtoMetric {
-                r#type,
+        Message::Metric(metric) => {
+            let datadog_checks_protocol::Metric {
+                metric_type,
                 name,
                 value,
                 timestamp,
@@ -195,7 +230,7 @@ fn check_data_to_event(check_data: Data, default_hostname: &MetaString) -> Optio
                 interval_secs,
             } = metric;
 
-            let metric_type = MetricType::try_from(r#type).ok()?;
+            let metric_type = MetricType::try_from(metric_type).ok()?;
 
             let tags = tags.into_iter().map(Tag::from).collect::<TagSet>();
             let mut context = Context::from_parts(name, tags.into_shared());
@@ -223,16 +258,16 @@ fn check_data_to_event(check_data: Data, default_hostname: &MetaString) -> Optio
             };
             Some(Event::Metric(metric))
         }
-        Data::Log(log) => {
-            let ProtoLog { message, level } = log;
+        Message::Log(log) => {
+            let datadog_checks_protocol::Log { message, level } = log;
 
             let level = LogLevel::try_from(level).ok()?;
             let status = log_level_to_log_status(level);
 
             Some(Event::Log(Log::new(message).with_status(status)))
         }
-        Data::Event(event) => {
-            let ProtoEvent {
+        Message::Event(event) => {
+            let datadog_checks_protocol::Event {
                 title,
                 text,
                 priority,
@@ -272,8 +307,8 @@ fn check_data_to_event(check_data: Data, default_hostname: &MetaString) -> Optio
             }
             Some(Event::EventD(eventd))
         }
-        Data::ServiceCheck(sc) => {
-            let ProtoServiceCheck {
+        Message::ServiceCheck(sc) => {
+            let datadog_checks_protocol::ServiceCheck {
                 status,
                 name,
                 message,
@@ -345,22 +380,23 @@ fn proto_alert_type_to_alert_type(alert_type: ProtoAlertType) -> Option<AlertTyp
 
 #[cfg(test)]
 mod tests {
+    use datadog_checks_protocol::{
+        Event as ProtoEvent, Log as ProtoLog, Metric as ProtoMetric, ServiceCheck as ProtoServiceCheck,
+    };
     use datadog_protos::checks::{
-        check_data::Data,
-        event::Event as ProtoEvent,
-        log::Log as ProtoLog,
-        metric::{Metric as ProtoMetric, MetricType as ProtoMetricType},
-        service_check::{ServiceCheck as ProtoServiceCheck, Status as ProtoServiceCheckStatus},
+        metric::MetricType as ProtoMetricType, service_check::Status as ProtoServiceCheckStatus,
     };
     use saluki_core::data_model::event::metric::MetricValues;
 
     use super::*;
+    use datadog_checks_protocol::Producer as ChecksProducer;
+    use saluki_fit::{ProducerConfig, SetupEndpoint};
 
     fn metric_data(
         r#type: i32, name: &str, value: f64, timestamp: u64, interval_secs: u64, tags: &[&str], hostname: &str,
-    ) -> Data {
-        Data::Metric(ProtoMetric {
-            r#type,
+    ) -> Message {
+        Message::Metric(ProtoMetric {
+            metric_type: r#type,
             name: name.to_string(),
             value,
             timestamp,
@@ -370,15 +406,15 @@ mod tests {
         })
     }
 
-    fn log_data(level: i32, message: &str) -> Data {
-        Data::Log(ProtoLog {
+    fn log_data(level: i32, message: &str) -> Message {
+        Message::Log(ProtoLog {
             message: message.to_string(),
             level,
         })
     }
 
-    fn event_data(title: &str, text: &str, timestamp: u64, tags: &[&str], hostname: &str) -> Data {
-        Data::Event(ProtoEvent {
+    fn event_data(title: &str, text: &str, timestamp: u64, tags: &[&str], hostname: &str) -> Message {
+        Message::Event(ProtoEvent {
             title: title.to_string(),
             text: text.to_string(),
             priority: 0,
@@ -391,8 +427,8 @@ mod tests {
         })
     }
 
-    fn service_check_data(status: i32, name: &str, message: &str, tags: &[&str], hostname: &str) -> Data {
-        Data::ServiceCheck(ProtoServiceCheck {
+    fn service_check_data(status: i32, name: &str, message: &str, tags: &[&str], hostname: &str) -> Message {
+        Message::ServiceCheck(ProtoServiceCheck {
             status,
             name: name.to_string(),
             message: message.to_string(),
@@ -401,7 +437,21 @@ mod tests {
         })
     }
 
-    fn check_data_to_event_for_tests(check_data: Data) -> Option<Event> {
+    fn default_event() -> ProtoEvent {
+        ProtoEvent {
+            title: String::new(),
+            text: String::new(),
+            priority: 0,
+            hostname: String::new(),
+            tags: Vec::new(),
+            alert_type: 0,
+            aggregation_key: String::new(),
+            source_type_name: String::new(),
+            timestamp: 0,
+        }
+    }
+
+    fn check_data_to_event_for_tests(check_data: Message) -> Option<Event> {
         check_data_to_event(check_data, &MetaString::from_static("default-host"))
     }
 
@@ -683,9 +733,9 @@ mod tests {
 
     #[test]
     fn eventd_priority_propagates() {
-        let event = check_data_to_event_for_tests(Data::Event(ProtoEvent {
+        let event = check_data_to_event_for_tests(Message::Event(ProtoEvent {
             priority: ProtoPriority::Low as i32,
-            ..Default::default()
+            ..default_event()
         }))
         .expect("event should convert");
         let Event::EventD(ev) = event else {
@@ -696,9 +746,9 @@ mod tests {
 
     #[test]
     fn eventd_alert_type_propagates() {
-        let event = check_data_to_event_for_tests(Data::Event(ProtoEvent {
+        let event = check_data_to_event_for_tests(Message::Event(ProtoEvent {
             alert_type: ProtoAlertType::Warning as i32,
-            ..Default::default()
+            ..default_event()
         }))
         .expect("event should convert");
         let Event::EventD(ev) = event else {
@@ -709,9 +759,9 @@ mod tests {
 
     #[test]
     fn eventd_aggregation_key_propagates() {
-        let event = check_data_to_event_for_tests(Data::Event(ProtoEvent {
+        let event = check_data_to_event_for_tests(Message::Event(ProtoEvent {
             aggregation_key: "agg-key-1".to_string(),
-            ..Default::default()
+            ..default_event()
         }))
         .expect("event should convert");
         let Event::EventD(ev) = event else {
@@ -722,9 +772,9 @@ mod tests {
 
     #[test]
     fn eventd_source_type_name_propagates() {
-        let event = check_data_to_event_for_tests(Data::Event(ProtoEvent {
+        let event = check_data_to_event_for_tests(Message::Event(ProtoEvent {
             source_type_name: "my-source".to_string(),
-            ..Default::default()
+            ..default_event()
         }))
         .expect("event should convert");
         let Event::EventD(ev) = event else {
@@ -739,7 +789,7 @@ mod tests {
         // and all strings empty. Our mapping treats Unspecified as "source did not set it", so
         // `EventD::new`'s defaults (priority=Normal, alert_type=Info) survive, while the empty
         // string fields stay unset.
-        let event = check_data_to_event_for_tests(Data::Event(ProtoEvent::default())).expect("event should convert");
+        let event = check_data_to_event_for_tests(Message::Event(default_event())).expect("event should convert");
         let Event::EventD(ev) = event else {
             panic!("expected EventD event");
         };
@@ -748,5 +798,72 @@ mod tests {
         assert_eq!(ev.aggregation_key(), None);
         assert_eq!(ev.source_type_name(), None);
         assert_eq!(ev.hostname(), None);
+    }
+
+    #[tokio::test]
+    async fn fit_receiver_establishes_session_and_delivers_event() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+
+        let (events_tx, mut events_rx) = mpsc::channel(16);
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let cancellation = CancellationToken::new();
+        let worker_token = cancellation.clone();
+        let consumer_config = ConsumerConfig::tcp(address);
+        let worker = thread::spawn(move || {
+            receive_checks(
+                consumer_config,
+                MetaString::from_static("default-host"),
+                worker_token,
+                ready_tx,
+                events_tx,
+            )
+        });
+        let producer = thread::spawn(move || {
+            let mut producer = ChecksProducer::connect(ProducerConfig::for_endpoint(SetupEndpoint::Tcp(address)))
+                .expect("producer connects");
+            producer
+                .send(&ProtoLog {
+                    message: "hello".into(),
+                    level: LogLevel::Info as i32,
+                })
+                .expect("log published");
+        });
+
+        ready_rx.await.expect("worker reports setup").expect("setup succeeds");
+        let received = tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
+            .await
+            .expect("event delivered")
+            .expect("worker channel open");
+        assert!(matches!(received, Event::Log(_)));
+        producer.join().unwrap();
+        cancellation.cancel().unwrap();
+        drop(events_rx);
+        assert!(worker.join().unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn fit_receiver_reports_setup_timeout_before_readiness() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+
+        let (events_tx, _events_rx) = mpsc::channel(16);
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let mut consumer_config = ConsumerConfig::tcp(address);
+        consumer_config.setup_timeout = Duration::from_millis(100);
+        let worker = thread::spawn(move || {
+            receive_checks(
+                consumer_config,
+                MetaString::from_static("default-host"),
+                CancellationToken::new(),
+                ready_tx,
+                events_tx,
+            )
+        });
+
+        assert_eq!(ready_rx.await.unwrap().unwrap_err().kind(), io::ErrorKind::TimedOut);
+        assert_eq!(worker.join().unwrap().unwrap_err().kind(), io::ErrorKind::TimedOut);
     }
 }

@@ -22,6 +22,37 @@ pub struct SalukiKey {
 }
 
 pub static SALUKI_KEYS: &[SalukiKey] = &[
+    // ── checks_ipc.rs ────────────────────────────────────────────────────────
+    SalukiKey {
+        yaml_path: "checks_ipc_endpoint",
+        description: "Checks FIT setup endpoint",
+        default: "tcp:127.0.0.1:5101",
+        documentation: Some("ACR and ADP use this local TCP address only to establish a FIT shared-memory session. Use `tcp:<loopback IP>:<port>` or `unix:<absolute path>`. The default is `tcp:127.0.0.1:5101`. The old gRPC endpoint syntax is not supported. Coordinate restarts of both processes after changing it."),
+        value_type: "ValueType::String",
+        schema_default: Some("tcp:127.0.0.1:5101"),
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: Some(r#""tcp:127.0.0.1:5101""#),
+        pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::Checks])",
+        filename: "checks_ipc.rs",
+    },
+    SalukiKey {
+        yaml_path: "checks_ipc_ring_capacity_bytes",
+        description: "Checks FIT ring capacity in bytes",
+        default: "1048576",
+        documentation: Some("ADP allocates this much shared memory for the Checks FIT message ring. The default is 1 MiB. Set a multiple of eight between 16 bytes and 1 GiB. A larger ring absorbs longer bursts at the cost of shared memory; when full, ACR drops new records."),
+        value_type: "ValueType::Integer",
+        schema_default: Some("1048576"),
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: Some("2097152"),
+        pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::Checks])",
+        filename: "checks_ipc.rs",
+    },
     // ── metrics_endpoint_routing.rs ───────────────────────────────────────
     SalukiKey {
         yaml_path: "experimental.metrics_endpoint_routing.metric_allowlist",

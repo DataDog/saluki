@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "bin/agent-data-plane",
+  "bin/benchmarks/checks-ipc",
   "bin/correctness/airlock",
   "bin/correctness/datadog-intake",
   "bin/correctness/millstone",
@@ -9,6 +10,7 @@ members = [
   "lib/agent-data-plane-config",
   "lib/agent-data-plane-config-system",
   "lib/datadog-agent/commons",
+  "lib/datadog-agent/checks-protocol",
   "lib/datadog-agent/config",
   "lib/datadog-agent/config-overlay-model",
   "lib/datadog-agent/config-testing",
@@ -31,6 +33,7 @@ members = [
   "lib/saluki-core",
   "lib/saluki-env",
   "lib/saluki-error",
+  "lib/saluki-fit",
   "lib/saluki-io",
   "lib/saluki-metadata",
   "lib/saluki-metrics",
@@ -54,6 +57,7 @@ repository = "https://github.com/DataDog/saluki"
 agent-data-plane-config = { path = "lib/agent-data-plane-config" }
 agent-data-plane-config-system = { path = "lib/agent-data-plane-config-system" }
 datadog-agent-commons = { path = "lib/datadog-agent/commons" }
+datadog-checks-protocol = { path = "lib/datadog-agent/checks-protocol" }
 datadog-agent-config = { path = "lib/datadog-agent/config" }
 datadog-agent-config-overlay-model = { path = "lib/datadog-agent/config-overlay-model" }
 datadog-agent-config-testing = { path = "lib/datadog-agent/config-testing" }
@@ -73,6 +77,7 @@ saluki-config = { path = "lib/saluki-config" }
 saluki-core = { path = "lib/saluki-core" }
 saluki-env = { path = "lib/saluki-env" }
 saluki-error = { path = "lib/saluki-error" }
+saluki-fit = { path = "lib/saluki-fit" }
 saluki-io = { path = "lib/saluki-io" }
 saluki-metadata = { path = "lib/saluki-metadata" }
 saluki-metrics = { path = "lib/saluki-metrics" }

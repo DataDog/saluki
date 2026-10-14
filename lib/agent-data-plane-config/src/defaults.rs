@@ -20,7 +20,10 @@ pub const DEFAULT_MEMORY_SLOP_FACTOR: f64 = 0.25;
 pub const DEFAULT_ENABLE_GLOBAL_LIMITER: bool = true;
 
 /// Default Checks IPC endpoint.
-pub const DEFAULT_CHECKS_IPC_ENDPOINT: &str = "tcp://0.0.0.0:5105";
+pub const DEFAULT_CHECKS_IPC_ENDPOINT: &str = "tcp:127.0.0.1:5101";
+
+/// Default Checks FIT ring capacity in bytes.
+pub const DEFAULT_CHECKS_IPC_RING_CAPACITY_BYTES: usize = 1 << 20;
 
 /// Default length of an aggregation window.
 pub const DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS: NonZeroU64 = NonZeroU64::new(10).unwrap();
