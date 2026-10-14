@@ -96,6 +96,11 @@ problem. The next chunk of work is to measure at the production limits, make the
 fuse maximally at small budgets, and improve efficiency per metric: see
 [deployment context and next steps](programmable-metrics-next.md).
 
+**N1 is done** ([results](programmable-metrics-next.md#n1-results)): from 0.3 to 1.2 cores the plan uses 2 to 5% less CPU
+per metric and less memory than `main`, and sustains 3.5 to 9% more at saturation; under a CPU crunch it keeps memory
+inside the SMP bounds where `main` does not; the flush stall shows in steady state on both; and at 0.05 cores with
+100,000 contexts or more, the plan freezes admission for long stretches, an open item.
+
 ## Main open questions
 
 - The open questions of the [next steps](programmable-metrics-next.md#open-questions): which workloads and bursts to

@@ -64,13 +64,89 @@ In order. Each item has its goal, the approach, and the evidence that ends it.
 ### N1: measure in the production regime
 
 - **Goal:** a baseline of plan against native at production limits, so every later item has a gate.
-- **Approach:** the container harness already takes `--cpus` ([test/scaling](../../test/scaling/README.md),
-  [runbook](programmable-metrics-measurement.md)). Run at 0.05, 0.3, 0.6, and 1.2 CPUs with lanes off, steady and
-  bursty traffic (a burst several times the steady rate, at low and high cardinality, timed across a flush). Measure
-  CPU per metric, throttled periods and time (`cpu.stat`), socket and pool drops, the datagram pool's depth, p99
-  latency, peak and anonymous memory, and admission stalls during a flush. Add an A/A series per limit, as the gate's
-  method requires. Linux is required; the dory VM is enough for these limits.
-- **Exit:** a results table in this document, and the gate thresholds for N2 to N4 stated at these limits.
+- **Approach, as run (2026-10-13):** `test/scaling/run-limits.sh` ([README](../../test/scaling/README.md#runs-at-production-cpu-limits))
+  runs ADP at 0.05, 0.3, 0.6, and 1.2 CPUs on four pinned cores, with production defaults (workers and decoders derived
+  from the quota: two of each at every limit, so lanes are off and R1's pipelining is on), against the steady loads of
+  the four SMP quality-gate tiers. Bursts are not modeled: a limit can absorb a burst up to the steady load it is shown
+  to sustain, which the saturate runs measure. Native is current `main` (`a52c25dd52`); the plan is `eb1c4ee134`. Three
+  rounds per cell, images alternating; an A/A series (main against main) at the low and heavy tiers sets the noise.
+  The host is a 16-core Graviton (aarch64) Linux machine, so absolute figures may differ on x86; the ratios are what
+  the gates use. p99 latency is not measured in containers; CI is not in scope yet.
+- **Exit:** a results table in this document, and the gate thresholds for N2 to N4 stated at these limits. **Met:** see
+  below.
+
+#### N1 results
+
+The tiers: low is 1 MiB/s over 3,000 contexts, medium 10 MiB/s over 10,000, heavy 50 MiB/s over 100,000, and
+ultraheavy 100 MiB/s over 250,000 (about 1,230, 11,900, 60,400, and 123,000 metrics a second). A Unix datagram socket
+blocks the sender rather than drop, so "keeps up" means lading reached at least 97% of the tier's rate.
+
+**Who keeps up, and plan against main.** Each cell: whether both keep up, then plan's CPU per metric over main's, and
+plan's anonymous memory over main's (medians of three rounds).
+
+| Tier | 0.05 | 0.3 | 0.6 | 1.2 |
+|---|---|---|---|---|
+| low | both; 1.00, 1.03 | both; 1.01, 1.03 | both; 1.00, 1.05 | both; 1.02, 1.02 |
+| medium | neither; **0.84, 0.48** (main 164 MiB against a bound of 100, plan 79) | both; 0.97, 0.91 | both; 0.97, 0.97 | both; 0.97, 0.95 |
+| heavy | neither; collapse (below) | neither (69%, 70% of the rate); 0.98, 0.91 | both; 0.96, 0.85 | both; 0.96, 0.94 |
+| ultraheavy | neither; collapse (below) | neither (28%); 0.98, 0.97 | neither (77%, 81%); 0.95, 0.97 | both; 0.96, 0.97 |
+
+**Capacity** (saturate mode: the MiB/s lading got through, then the metrics a second ADP decoded; at 0.05 main's MiB/s
+includes datagrams it buffered without decoding, so the decoded rate is the measure there):
+
+| Contexts | 0.05 | 0.3 | 0.6 | 1.2 |
+|---|---|---|---|---|
+| 3,000: main | 5.2 (6,600) | 45 (55,600) | 97 (120,000) | 198 (245,000) |
+| 3,000: plan | 5.5 (6,900) | 49 (60,600) | 104 (128,000) | 216 (267,000) |
+| 100,000: main | 1.6 (1,300) | 34 (40,800) | 82 (99,100) | 181 (219,000) |
+| 100,000: plan | 1.1 (1,240) | 35 (42,200) | 88 (106,000) | 193 (233,000) |
+
+At saturation the plan decodes 5 to 9% more at 3,000 contexts, and 3.5 to 7% more at 100,000 contexts from 0.3 (at
+0.05, 5% less, within that cell's noise), at 3 to 10% less CPU per metric, with 24 to 30% less anonymous memory at
+3,000 contexts (main exceeds the low tier's 60 MiB bound at
+0.05, with 105 MiB; the plan holds 39).
+
+**Noise** (A/A, spread from p25 to p75 over the median): CPU per metric within 1% at the low tier from 0.3 (2 to 4% at
+0.05), 0.3 to 2% at the heavy tier at 0.3 and 0.6, about 3% at heavy 1.2 (an A/A ratio of 1.04), and 19 to 25% in the collapse cells
+(heavy at 0.05), where only large effects count.
+
+**Findings.**
+
+1. **From 0.3 to 1.2 the plan is a little better everywhere:** 2 to 5% less CPU per metric above the low tier, 3 to 15%
+   less anonymous memory, fewer throttled periods, and slightly more metrics through where neither keeps up. At the low
+   tier the two are the same.
+2. **The fixed cost dominates at small loads.** The low tier costs about 34 millicores on both images at every limit,
+   about 27 µs per metric at 1,230 metrics a second: 58% of a 50-millicore quota, throttled in two thirds of its CFS
+   periods, before any real load. At 0.05, idle and per-tick costs matter as much as cost per metric.
+3. **The flush stall is visible in steady state, even with headroom.** Where both keep up at heavy and ultraheavy,
+   lading's fastest second is 1.25 to 1.44 times the rate on both images: it catches up after the socket blocks during a
+   flush, for less than a second at 1.2 and longer at 0.6, where the worst second falls to 0.6 to 0.7 of the rate. The
+   heavy tier needs about 0.4 cores on average but stalls at 0.6.
+4. **Under a crunch, the plan holds memory and main does not.** Where ADP cannot keep up, main keeps reading datagrams
+   into its buffer pool (thousands to about 20,000 buffers in use; anonymous memory 190 to 345 MiB at heavy 0.05, past
+   the 250 MiB bound), while the plan's backpressure keeps the pool at a few dozen buffers and memory at about half,
+   inside every SMP bound.
+5. **Open: the plan freezes admission at 0.05 with many contexts.** At heavy 0.05 the plan decodes about 20% less than
+   main (850 to 1,460 metrics a second over six runs, against 1,260 to 2,200 over fifteen for main). At ultraheavy
+   0.05 it is erratic: 420, 18, and 67 metrics a second against main's 215 to 350. In the run at 18, decoding stops
+   for about 25 seconds with the pool empty, so the source is backpressured, while ADP spends its whole quota
+   downstream, most likely in the aggregation drain of about 250,000 contexts at 5 ms of CPU per 100 ms period. Main
+   also stops decoding but keeps buffering. Not yet investigated; it bears on N2 and N3.
+
+**Gate thresholds for N2 to N4** (against these baselines, the same harness and host; "noise" is the A/A spread above):
+
+- **N2:** in the cells that keep up with stalls (heavy at 0.6 and 1.2, ultraheavy at 1.2), lading's fastest second at
+  most 1.1 of the rate and its worst at least 0.9; in the cells that cannot keep up (heavy at 0.3, ultraheavy at 0.3
+  and 0.6), a higher share of the rate than today's plan; at 0.05, no admission freeze longer than one flush interval
+  (10 s) and memory inside the SMP bounds; CPU per metric no worse than today's plan beyond the noise (1% at low and
+  medium, 2% at heavy and ultraheavy from 0.3, 4% at 1.2).
+- **N3:** with R1's cost model removed and lanes off, CPU per metric and capacity at least today's plan's within the
+  noise at every cell from 0.3, and finding 5 no worse.
+- **N4:** each item a reduction in CPU per metric beyond the noise in the cells it targets, with no cell worse; the
+  allocator setting decided on the low and heavy tiers at 0.3 and 1.2, where the A/A noise is 0.5 to 3%.
+
+The data is in `test/scaling/results/limits-{aa,paced,saturate}/` on the measuring host (ignored by git); rerun a cell
+with `SCALING_TIERS=<tier> SCALING_LIMITS=<limit> make limits-runs`.
 
 ### N2: make the aggregation flush non-blocking
 
@@ -115,7 +191,7 @@ Each is a small part, measured by N1 at the production limits:
   ([stage 7](programmable-metrics-stages-7-and-9.md#413-the-delivery-policy-slot)). With them, a policy could act on
   queue or pool depth: drop low-value metrics, widen aggregation, or sample. The programmable substrate is uniquely
   suited to this.
-- **Exit:** a design reviewed against N1's burst measurements.
+- **Exit:** a design reviewed against N1's measurements where ADP cannot keep up.
 
 ## Lower priority
 
@@ -127,7 +203,9 @@ Each is a small part, measured by N1 at the production limits:
 
 ## Open questions
 
-- Which workloads and burst shapes to model in N1: ideally traces from Nodeless and from the clusters at 1.2 cores.
+- Whether production traffic resembles the SMP tiers: traces from Nodeless and from the clusters at 1.2 cores would
+  check N1's workloads.
 - What counts as acceptable during a crunch: which drops, how much latency, how much memory.
-- Whether SMP experiments can run at 0.3 cores, so that N1's gates also run in CI.
+- Whether SMP experiments can run at 0.3 cores, so that N1's gates also run in CI (deferred: local runs for now).
+- Why the plan freezes admission at 0.05 with many contexts (N1 finding 5).
 - How much of N2's turn should go to draining against admission, and whether it should adapt to the CPU quota.

@@ -1,0 +1,13 @@
+# The overrides of a CPU-limit run (`run-limits.sh`), applied over `compose.yaml`: ADP runs with production defaults,
+# so it derives its worker threads and datagram decoders from the container's CPU quota as it does in production, and
+# keeps the default metrics level, aggregation context limit, and CPU-time sampling. Only the string interner follows
+# the tier, as the SMP quality-gate cases set it.
+services:
+  adp:
+    environment:
+      SALUKI_WORKER_THREADS: !reset null
+      DD_DOGSTATSD_WORKERS_COUNT: !reset null
+      DD_METRICS_LEVEL: !reset null
+      DD_AGGREGATE_CONTEXT_LIMIT: !reset null
+      SALUKI_CPU_TIME_SAMPLING: !reset null
+      DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES: "${INTERNER_SIZE_BYTES:-524288}"

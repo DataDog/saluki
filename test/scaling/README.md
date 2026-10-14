@@ -125,3 +125,72 @@ resolver caps them.
 `docker compose --file test/scaling/compose.yaml config --quiet` checks the compose file and that the environment files
 it names exist, and `SCALING_DRY_RUN=1 test/scaling/run-curves.sh` renders every lading configuration and prints the
 commands of a series. Neither needs a running Docker daemon.
+
+# Runs at production CPU limits
+
+`run-limits.sh` measures ADP where production runs it: under CPU limits of 0.3, 0.6, or 1.2 cores, and 50 millicores
+in Nodeless (N1 of `docs/design/programmable-metrics-next.md`). It compares the `main` image (built from
+`origin/main`) against the plan image (this tree) under the steady loads of the SMP quality-gate cases, and reuses
+`compose.yaml` with the overrides in `compose.limits.yaml`.
+
+## What one run is
+
+| Container | Cores | What it does |
+|---|---|---|
+| `adp` | `--cpus <limit> --cpuset-cpus 0-(C-1)`, `C = SCALING_ADP_CORES` (4) | The image under test with production defaults: no `SALUKI_WORKER_THREADS`, `DD_DOGSTATSD_WORKERS_COUNT`, `DD_METRICS_LEVEL`, aggregation context limit, or `SALUKI_CPU_TIME_SAMPLING`, so it derives workers and decoders from the CPU quota (two of each at every limit up to two cores) as it does in production. The string interner follows the tier. |
+| `lading` | `C` and `C+1` | The SMP case's DogStatsD generator over the Unix datagram socket, at the tier's rate. |
+| `blackhole` | `C+2` and `C+3` | lading's HTTP blackhole as the intake. |
+
+| Tier (`SCALING_TIERS`) | SMP case | Rate | Contexts | Interner | Memory bound |
+|---|---|---|---|---|---|
+| `low` | `quality_gates_rss_dsd_low` | 1 MiB/s | 3,000 | 512 KiB (default) | 60 MiB |
+| `medium` | `quality_gates_rss_dsd_medium` | 10 MiB/s | 10,000 | 512 KiB (default) | 100 MiB |
+| `heavy` | `quality_gates_rss_dsd_heavy` | 50 MiB/s | 99,000 to 101,000 | 32 MiB | 250 MiB |
+| `ultraheavy` | `quality_gates_rss_dsd_ultraheavy` | 100 MiB/s | 249,000 to 251,000 | 64 MiB | 420 MiB |
+
+After the warm-up, a run reads at both ends of the window ADP's decoded metrics, aggregation's drops, and failed
+context resolves (`:5100/metrics`), lading's `bytes_written`, and ADP's `cpu.stat` (CPU time, CFS periods, throttled
+periods and time); every second, lading's bytes and ADP's `cpu.stat` and anonymous memory (`memory.stat`); and every
+`SCALING_ADP_SAMPLE_SECONDS`, ADP's datagram buffers in use. The cgroup files are read from the host
+(`/sys/fs/cgroup/docker/<id>`, Docker's cgroupfs driver), not with `docker exec`, which would run inside ADP's cgroup
+and charge its quota.
+
+A Unix datagram socket blocks the sender rather than drop, so a run in which ADP falls behind shows as lading sending
+less than the tier's rate: `send` below 0.97 means ADP did not keep up, and a worst second far below the target is an
+admission stall, such as during an aggregation flush.
+
+## Running it
+
+```sh
+# Both images: main from origin/main (in a temporary work tree under target/), plan from this tree.
+make limits-images
+
+# Per host, an A/A series: main against main sets the noise at each limit.
+SCALING_AA=1 make limits-runs
+
+# Then main against plan, every tier at every limit.
+make limits-runs
+
+# The most each image sustains at each limit: lading sends as fast as it can.
+SCALING_MODE=saturate SCALING_TIERS="low heavy" make limits-runs
+```
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SCALING_LIMITS` | `0.05 0.3 0.6 1.2` | ADP's CPU limits (`--cpus`) |
+| `SCALING_TIERS` | `low medium heavy ultraheavy` | the SMP tiers above |
+| `SCALING_ROUNDS` | 3 | rounds per image, tier, and limit; the images alternate which goes first |
+| `SCALING_WARMUP_SECONDS`, `SCALING_WINDOW_SECONDS` | 30, 60 | the warm-up and the measured window of a run |
+| `SCALING_MODE` | `paced` | `paced` sends the tier's rate; `saturate` sends `SCALING_SATURATE_RATE` with the tier's contexts |
+| `SCALING_SATURATE_RATE` | `1 GiB` | lading's rate in saturate mode |
+| `SCALING_ADP_CORES` | 4 | the cores ADP's quota runs on |
+| `SCALING_ADP_SAMPLE_SECONDS` | 5 | how often a run reads ADP's telemetry for the buffers in use (each read costs ADP a little CPU) |
+| `SCALING_AA` | 0 | 1 compares the main image against itself |
+| `SCALING_MAIN_IMAGE`, `SCALING_PLAN_IMAGE` | the tags `make limits-images` creates | the images compared |
+| `SCALING_OUT` | `test/scaling/results/limits-<time>` | where `runs.csv`, each run's `series-*.csv` and ADP log, and `summary.md` go |
+| `SCALING_DRY_RUN` | 0 | 1 renders the lading configurations and prints the docker commands without running them |
+
+`summarize_limits.py` prints, per tier and limit, each image's medians (send ratio, decoded rate, cores used and their
+share of the limit, CPU ns per metric, the share of periods throttled, the worst and peak seconds and the seconds stalled, the
+buffers in use, peak and anonymous memory against the SMP bound, and drops), then plan's ratios to main with each
+image's spread from p25 to p75, which the A/A series sets the noise for.

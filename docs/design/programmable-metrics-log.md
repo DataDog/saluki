@@ -893,3 +893,59 @@ lanes matter little (and are off at those sizes), R1's cost model adds hops for 
 aggregation flush is the biggest practical problem. The consequences and the next chunk of work are in
 [deployment context and next steps](programmable-metrics-next.md).
 
+
+## N1: measuring at production CPU limits
+
+On 2026-10-13 and 14, N1 of [the next steps](programmable-metrics-next.md#n1-measure-in-the-production-regime)
+measured the plan against current `main` at 0.05, 0.3, 0.6, and 1.2 CPUs. The results, the findings, and the gates
+for N2 to N4 are in [N1 results](programmable-metrics-next.md#n1-results); the per-run tables are in
+`test/scaling/baselines/n1-2026-10-13/`.
+
+### What was built
+
+`test/scaling/run-limits.sh`, with `compose.limits.yaml` over the existing `compose.yaml` and `summarize_limits.py`
+([README](../../test/scaling/README.md#runs-at-production-cpu-limits)), and `make limits-images` and
+`make limits-runs`. Unlike `run-curves.sh`, which ties the CPU count, the pinned CPU set, and the worker count to one
+integer, it gives ADP a fractional quota on four fixed cores and removes every override (`SALUKI_WORKER_THREADS`,
+`DD_DOGSTATSD_WORKERS_COUNT`, `DD_METRICS_LEVEL`, the context limit, CPU-time sampling), so ADP derives its workers and
+decoders from the quota as production does: `available_parallelism` follows the cgroup's `cpu.max`, so every limit
+up to two cores gives two workers and two decoders, and the plan runs without lanes and with R1's pipelining.
+
+### Decisions
+
+- **Steady loads, not bursts.** The owner decided against modeling bursts: a limit can absorb a burst up to the steady
+  load it sustains, which saturate runs measure. The loads are the four SMP quality-gate tiers
+  (`quality_gates_rss_dsd_{low,medium,heavy,ultraheavy}`), with their rates, contexts, interner sizes, and memory
+  bounds.
+- **Current `main` as native**, not the branch's merge base: `main` was six commits ahead, none touching the measured
+  path.
+- **Production defaults**, including the `info` metrics level. The telemetry needed is all at `info`: the decoded
+  counter, aggregation's drops, failed context resolves, and the `dsd_packet_bufs` pool gauges.
+- **Local runs only**; CI is deferred. p99 latency is not measured in containers.
+
+### What went wrong, and what was learned
+
+- **Measurement inside the quota.** `run-curves.sh` reads `cpu.stat` with `docker exec`, which runs inside ADP's cgroup
+  and is charged to its quota: negligible at four cores, not at 50 millicores. `run-limits.sh` reads the cgroup files
+  from the host (`/sys/fs/cgroup/docker/<id>` under Docker's cgroupfs driver) every second, and ADP's own telemetry
+  only every five seconds.
+- **No drop counter.** A Unix datagram socket blocks the sender rather than drop, so falling behind shows as lading
+  sending less than its rate. "Keeps up" is lading at 97% of the rate or more.
+- **Stalls shorter than the sampling.** The first stall measure, lading's slowest second, missed flush stalls under a
+  second. Lading catches up after each, so its fastest second (1.25 to 1.44 times the rate where both keep up at the
+  heavy tiers) was added as the signal. At the low tier, lading's block size makes per-second rates too lumpy for
+  either measure to mean much.
+- **The first smoke run died silently**: ADP logs JSON here (`"git_hash":"..."`), the grep expected the text format,
+  and `pipefail` with `set -e` ended the script with its containers still running. The script now tolerates a missing
+  hash and tears down on exit.
+- **An overstated finding.** Midway, one series' medians suggested the plan decoded 1.7 times less than `main` at heavy
+  0.05. Across all 21 runs at that cell (A/A, paced, saturate) the gap is about 20% with overlapping ranges: the
+  collapse cells' noise is 19 to 25%, and conclusions there need every series. The ultraheavy freeze held up.
+- **Runs take about a minute longer than their 90 seconds** of warm-up and window (start, health check, lading's block
+  cache, teardown): the 192 runs took about nine hours.
+
+### Left open
+
+- Why the plan freezes admission at 0.05 with 100,000 contexts or more (N1 finding 5): next.
+- The fixed cost at small loads: about 34 millicores at 1,230 metrics a second on both images.
+- Absolute figures on x86.
