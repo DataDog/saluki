@@ -1,4 +1,9 @@
-use std::{mem::replace, pin::Pin, sync::Arc};
+use std::{
+    hash::{Hash, Hasher as _},
+    mem::replace,
+    pin::Pin,
+    sync::Arc,
+};
 
 use agent_data_plane_config::{
     defaults::{DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES, DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES},
@@ -16,7 +21,6 @@ use foldspace_core::{
 };
 use futures::Stream;
 use prost::Message as _;
-use saluki_common::hash::hash_single_stable;
 use saluki_context::{tags::TagSet, Context};
 use saluki_core::{
     accounting::{ComponentRegistry, MemoryLimiter},
@@ -48,6 +52,7 @@ use tokio::{
 };
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::{transport::Server, Request, Response, Status, Streaming};
+use twox_hash::XxHash64;
 
 use super::{retry::RetryBatch, *};
 
@@ -1067,7 +1072,8 @@ fn sharding_preserves_hashes_for_borrowed_and_normalized_tags() {
         let mut resources: Vec<_> = series.resources().iter().map(|r| (&r.kind, &r.name)).collect();
         resources.sort_unstable();
         resources.dedup();
-        let original_hash = hash_single_stable((
+        let mut hasher = XxHash64::with_seed(0);
+        (
             series.name(),
             series.metric_type() as u8,
             tags,
@@ -1077,8 +1083,9 @@ fn sharding_preserves_hashes_for_borrowed_and_normalized_tags() {
             series.source_type_name(),
             series.origin(),
             series.no_index(),
-        ));
-        assert_eq!(sharding::series_hash(&series), original_hash);
+        )
+            .hash(&mut hasher);
+        assert_eq!(sharding::series_hash(&series), hasher.finish());
     }
 }
 

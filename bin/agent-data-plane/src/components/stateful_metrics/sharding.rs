@@ -1,10 +1,14 @@
 //! Stable routing of logical series, independent of point values and timestamps.
 
-use std::hash::Hash;
+use std::{
+    cell::RefCell,
+    hash::{Hash, Hasher},
+};
 
 use foldspace_core::{LogicalMetricBatch, LogicalMetricSeries};
-use saluki_common::hash::hash_single_stable;
 use saluki_core::data_model::event::Event;
+use smallvec::SmallVec;
+use twox_hash::XxHash64;
 
 use super::conversion;
 
@@ -22,20 +26,43 @@ pub(super) fn series_hash(series: &LogicalMetricSeries) -> u64 {
 }
 
 fn hash_with_tags(series: &LogicalMetricSeries, tags: impl Hash) -> u64 {
-    let mut resources: Vec<_> = series.resources().iter().map(|r| (&r.kind, &r.name)).collect();
+    let mut resources: SmallVec<[_; 8]> = series.resources().iter().map(|r| (&r.kind, &r.name)).collect();
     resources.sort_unstable();
     resources.dedup();
-    hash_single_stable((
-        series.name(),
-        series.metric_type() as u8,
-        tags,
-        resources,
-        series.interval(),
-        series.unit(),
-        series.source_type_name(),
-        series.origin(),
-        series.no_index(),
-    ))
+    // Routing must not change across restarts or releases: the worker that persisted a retry replays it.
+    IDENTITY_BYTES.with_borrow_mut(|bytes| {
+        bytes.clear();
+        (
+            series.name(),
+            series.metric_type() as u8,
+            tags,
+            resources.as_slice(),
+            series.interval(),
+            series.unit(),
+            series.source_type_name(),
+            series.origin(),
+            series.no_index(),
+        )
+            .hash(&mut ByteSink(bytes));
+        XxHash64::oneshot(0, bytes)
+    })
+}
+
+thread_local! {
+    // Streaming XXH64 is slow for the identity's many small writes, so hash its bytes in one pass.
+    static IDENTITY_BYTES: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
+struct ByteSink<'a>(&'a mut Vec<u8>);
+
+impl Hasher for ByteSink<'_> {
+    fn write(&mut self, bytes: &[u8]) {
+        self.0.extend_from_slice(bytes);
+    }
+
+    fn finish(&self) -> u64 {
+        XxHash64::oneshot(0, self.0)
+    }
 }
 
 pub(super) fn partition(events: impl IntoIterator<Item = Event>, workers: usize) -> Vec<LogicalMetricBatch> {
