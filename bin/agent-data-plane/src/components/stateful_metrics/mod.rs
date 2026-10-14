@@ -72,7 +72,7 @@ use self::{
     transport::{next_transport_event, Transport, TransportEvent, TransportEventKind, TransportState},
 };
 
-const WORKER_INPUT_CAPACITY: usize = 2;
+const WORKER_INPUT_CAPACITY: usize = 32;
 const MIN_FLUSH_TIMEOUT: Duration = Duration::from_millis(10);
 const MAX_INFLIGHT_BATCHES: usize = 8;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
