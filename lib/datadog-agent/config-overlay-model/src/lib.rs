@@ -462,7 +462,6 @@ impl SchemaOverlay {
         }
         Ok(())
     }
-
 }
 
 /// Read a YAML file into a [`serde_yaml::Value`], mapping failures onto [`Error`].

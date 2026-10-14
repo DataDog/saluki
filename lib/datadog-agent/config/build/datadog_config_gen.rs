@@ -206,7 +206,6 @@ fn render(pruned_schema: Value, durations: &BTreeMap<String, u64>) -> String {
         strip_docs_in_item(item);
     }
 
-
     // Shorten typify's fully-qualified prelude paths (`::std::option::Option` -> `Option`, etc.) so
     // the data model reads cleanly. The serde derive paths and the boilerplate `error` module's
     // `::std::fmt`/`Cow` paths are left untouched (shortening `::std::fmt::Result` would collide

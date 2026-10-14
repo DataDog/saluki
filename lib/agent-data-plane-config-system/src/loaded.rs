@@ -354,6 +354,70 @@ mod tests {
             .block_on(future)
     }
 
+    /// A fixed sample of Saluki-only keys: flat and nested, set to values that differ from their defaults.
+    ///
+    /// Each entry is the key's YAML path, its environment variable, and its value in both forms.
+    const SALUKI_ONLY_SAMPLE: &[(&str, &str, &str)] = &[
+        ("dogstatsd_tcp_port", "DD_DOGSTATSD_TCP_PORT", "9125"),
+        (
+            "aggregate_window_duration_seconds",
+            "DD_AGGREGATE_WINDOW_DURATION_SECONDS",
+            "17",
+        ),
+        ("data_plane.standalone_mode", "DD_DATA_PLANE_STANDALONE_MODE", "true"),
+        (
+            "apm_config.obfuscation.sql.keep_sql_alias",
+            "DD_APM_CONFIG_OBFUSCATION_SQL_KEEP_SQL_ALIAS",
+            "true",
+        ),
+    ];
+
+    fn assert_saluki_only_sample_reached(config: &SalukiConfiguration) {
+        let dsd = &config.domains.dogstatsd;
+        assert_eq!(dsd.listeners.tcp_port, 9125);
+        assert_eq!(dsd.aggregation.window_duration_seconds.get(), 17);
+        assert!(config.control.standalone_mode);
+        assert!(config.domains.traces.obfuscation.sql.keep_sql_alias);
+    }
+
+    #[tokio::test]
+    async fn saluki_only_keys_from_the_file_reach_the_model() {
+        let mut yaml = String::new();
+        for (key, _, value) in SALUKI_ONLY_SAMPLE {
+            let segments: Vec<&str> = key.split('.').collect();
+            for (depth, segment) in segments.iter().enumerate() {
+                let indent = "  ".repeat(depth);
+                if depth + 1 == segments.len() {
+                    yaml.push_str(&format!("{indent}{segment}: {value}\n"));
+                } else {
+                    yaml.push_str(&format!("{indent}{segment}:\n"));
+                }
+            }
+        }
+
+        let loaded = load_from_file("saluki_only_sample", &yaml).await;
+
+        assert_saluki_only_sample_reached(loaded.local());
+    }
+
+    #[test]
+    fn saluki_only_keys_from_the_environment_reach_the_model() {
+        let _guard = test_env_lock();
+        let path = std::env::temp_dir().join(format!("adp_saluki_only_sample_env_{}.yaml", std::process::id()));
+        std::fs::write(&path, "{}\n").unwrap();
+        for (_, var, value) in SALUKI_ONLY_SAMPLE {
+            std::env::set_var(var, value);
+        }
+
+        let loaded = block_on(LoadedConfiguration::load(&path, EnvPrecedence::AfterFile));
+
+        for (_, var, _) in SALUKI_ONLY_SAMPLE {
+            std::env::remove_var(var);
+        }
+        std::fs::remove_file(&path).ok();
+        assert_saluki_only_sample_reached(loaded.expect("local sources load").local());
+    }
+
     #[test]
     fn a_saluki_only_environment_variable_reaches_the_model() {
         // End to end for a key the Datadog schema does not declare: `DD_DATA_PLANE_STANDALONE_MODE`

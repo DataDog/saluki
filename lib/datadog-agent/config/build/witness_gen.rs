@@ -104,7 +104,13 @@ fn collect_structs(file: &syn::File) -> StructMap {
             let ident = field.ident.as_ref().expect("named field has an identifier").to_string();
             let type_text = type_to_string(&field.ty);
             let section_struct = section_inner(&field.ty, &struct_names);
-            fields.insert(ident, FieldInfo { type_text, section_struct });
+            fields.insert(
+                ident,
+                FieldInfo {
+                    type_text,
+                    section_struct,
+                },
+            );
         }
         out.insert(name, fields);
     }
