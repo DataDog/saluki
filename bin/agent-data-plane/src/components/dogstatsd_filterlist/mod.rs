@@ -200,17 +200,19 @@ impl Blocklist {
             return false;
         }
 
-        let mut descendant_prefix = Vec::with_capacity(name.len() + 1);
-        descendant_prefix.extend_from_slice(name);
-        descendant_prefix.push(b'.');
+        let has_descendant = |exceptions: &[String]| {
+            let index = exceptions
+                .partition_point(|candidate| candidate.bytes().cmp(name.iter().copied().chain([b'.'])).is_lt());
 
-        self.except_exact
-            .iter()
-            .any(|candidate| candidate.as_bytes().starts_with(&descendant_prefix))
-            || self
-                .except_prefix
-                .iter()
-                .any(|candidate| candidate.as_bytes().starts_with(&descendant_prefix))
+            exceptions.get(index).is_some_and(|candidate| {
+                candidate
+                    .as_bytes()
+                    .strip_prefix(name)
+                    .is_some_and(|suffix| suffix.starts_with(b"."))
+            })
+        };
+
+        has_descendant(&self.except_exact) || has_descendant(&self.except_prefix)
     }
 
     /// Restricts exact entries and keeps all prefix behavior unchanged.
