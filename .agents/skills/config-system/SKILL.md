@@ -48,8 +48,8 @@ into `SalukiConfiguration`.
 | Datadog source model, witness, classifier, environment decoding | `lib/datadog-agent/config/`                                                |
 | Hand-edited ADP support inventory for Datadog schema keys.      | `lib/datadog-agent/config/schema/schema_overlay.yaml`                      |
 | Vendored Datadog JSON-schema (written in YAML)                  | `lib/datadog-agent/config/schema/core/`                                    |
-| Overlay types, validation, `SALUKI_KEYS`                         | `lib/datadog-agent/config-overlay-model/`                                  |
-| Configuration doc generation                                    | `lib/datadog-agent/config-docs/`                                           |
+| Overlay types, validation, `SALUKI_KEYS`                        | `lib/datadog-agent/config-overlay-model/`                                  |
+| Doc gen                                                         | `lib/datadog-agent/config-docs/`                                           |
 | Raw map and loader, general-purpose lib, unused by ADP          | `lib/saluki-config/`                                                       |
 | Hand-written Datadog witness implementation                     | `lib/agent-data-plane-config-system/src/translators/datadog_translator.rs` |
 | Saluki-only source model and `seed`                             | `lib/agent-data-plane-config-system/src/saluki_only.rs`                    |
@@ -111,8 +111,8 @@ make build-schema-overlay
 The Datadog Agent does not derive a variable's name from its key path: `DD_PROXY_HTTP` reaches
 `proxy.http` while `DD_DOGSTATSD_PORT` reaches the flat `dogstatsd_port`. No separator convention
 reproduces this. Datadog keys read the environment through the generated tables. Saluki-only keys
-are derived through a serde hack. The environment is read by `apply_datadog_env_vars` and the Saluki-only
-reader.
+are derived through a serde hack. The environment is read by `apply_datadog_env_vars` and the
+Saluki-only reader.
 
 **A modeled key arrives in the Agent's canonical shape.** A source model MUST read that shape. Do
 not add a `#[serde(rename)]` or `#[serde(alias)]`. Unmodeled environment variables are not read.
@@ -176,8 +176,8 @@ last-known-good model and leaves the sources as they were.
 
 ### Add or change a witnessed key
 
-1. Confirm its `schema_overlay.yaml` classification. If support becomes `full` or `partial`, set
-   `pipelines` and `description` (`partial` also needs `documentation`) and expect a new witness method.
+1. Confirm its `schema_overlay.yaml` classification. If support becomes `full` or `partial`, provide
+   the required metadata and expect a new witness method after generation.
 2. Add or refine its destination in `control`, `shared`, or `domains` based on who consumes it.
 3. Run `make build-schema-overlay`.
 4. Implement the generated `consume_<key>` in `DatadogTranslator`. Find the right home for it in
@@ -196,7 +196,7 @@ model.
    *requires* this: the Saluki-only environment reader discovers paths from `SalukiOnly`, so without
    a field the key is unreachable from the environment.
 5. Add one `seed` assignment to the destination.
-6. Keep `SALUKI_KEYS` consistent with the source key and default; the configuration docs read it.
+6. Keep `SALUKI_KEYS` consistent with the source key and default.
 
 ### Migrate a raw consumer
 
@@ -224,7 +224,7 @@ model.
 8. Update topology call sites and tests. Preserve behavior tests using typed inputs; remove tests
    only when they tested legacy deserialization and nothing else.
 9. Higher risk cutovers should be tested with correctness or integration tests that exercise the
-    affected configurations.
+   affected configurations.
 
 A cutover should be behaviorally transparent. If the old behavior conflicts with the source schema
 or typed-system invariants, surface the conflict rather than silently choosing one. After cutover
