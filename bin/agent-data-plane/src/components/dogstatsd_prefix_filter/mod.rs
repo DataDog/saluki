@@ -182,9 +182,7 @@ impl DogStatsDPrefixFilter {
 
     fn process_metric(&self, metric: &mut Metric) -> bool {
         let metric_name = metric.context().name().as_ref();
-        let new_metric_name = if self.metric_prefix.is_empty() {
-            metric.context().name().clone()
-        } else if self.has_excluded_prefix(metric_name) {
+        let new_metric_name = if self.metric_prefix.is_empty() || self.has_excluded_prefix(metric_name) {
             metric.context().name().clone()
         } else {
             let mut prefixed_metric_name = self.metric_prefix.clone();
