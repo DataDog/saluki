@@ -1,0 +1,5 @@
+upgrade:
+  - |
+    Agent Data Plane no longer reads ``statsd_metric_namespace_blocklist``. Set
+    ``statsd_metric_namespace_blacklist`` instead, which is the only spelling the Datadog Agent
+    reads.
