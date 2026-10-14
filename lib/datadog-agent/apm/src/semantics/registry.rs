@@ -1,12 +1,15 @@
-//! Parses mappings that find an attribute by meaning rather than by a fixed name.
+//! A `Registry` is the parsed, validated in-memory form of one complete semantic-mappings document for traces.
 //!
-//! A [`Concept`] such as HTTP status code can have several attribute names or value types across instrumentation
-//! versions. A [`Registry`] lists these alternatives, called fallbacks, in lookup order. Lookups use the first
-//! fallback whose conditions match and whose value can be read as the requested type.
+//! The document comes from either:
 //!
-//! The embedded `mappings.json` supplies the defaults; remote configurations can supply replacement registries.
-//! [`SemanticRegistryProvider`](super::SemanticRegistryProvider) hides that choice from consumers. Parsing follows
-//! upstream `pkg/trace/semantics/registry.go`.
+//! - the embedded `mappings.json`; or
+//! - one `APM_SEMANTIC_CORE_DD` Remote Configuration file.
+//!
+//! A `Registry` contains:
+//!
+//! - `version` and `metadata.content_hash` labels;
+//! - a local fingerprint of the original JSON bytes; and
+//! - a map from each supported `Concept` to its ordered fallback attributes.
 
 use std::{
     borrow::Cow,
