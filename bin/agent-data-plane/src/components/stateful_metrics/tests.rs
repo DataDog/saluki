@@ -1874,6 +1874,19 @@ fn core_config_applies_configured_dictionary_caps_to_each_worker_unchanged() {
     assert_eq!(eviction.max_memory_bytes, i64::MAX);
 }
 
+#[test]
+fn core_config_splits_batch_capacity_across_workers() {
+    let mut configuration = configuration(1, 10_000);
+    assert_eq!(configuration.core_config().batch_capacity, 10_000);
+
+    // Rounds up so the workers together still flush at no fewer than the configured series.
+    configuration.workers = NonZeroUsize::new(3).unwrap();
+    assert_eq!(configuration.core_config().batch_capacity, 3_334);
+
+    configuration.batch_capacity = 2;
+    assert_eq!(configuration.core_config().batch_capacity, 1);
+}
+
 #[tokio::test]
 async fn dictionary_gauges_report_core_dictionary_stats() {
     let recorder = TestRecorder::default();
