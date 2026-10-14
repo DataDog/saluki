@@ -11,7 +11,7 @@ fuzz:infra:
     - when: manual
       allow_failure: true
   variables:
-    RUST_NIGHTLY_VERSION: nightly-2026-01-18
+    RUST_NIGHTLY_VERSION: nightly-2026-04-11
   before_script:
     - cargo +${RUST_NIGHTLY_VERSION} install cargo-fuzz
     # Install Python dependencies for fuzz_infra.py
