@@ -188,6 +188,18 @@ fn source(v: &str, what: &str) -> R<Source> {
     listed(v, Source::parse, Source::ALL, what)
 }
 
+/// A key a case reads: non-empty and lowercase, as the Agent flattens keys (case.md §6).
+fn case_key(v: &Json, what: &str) -> R<String> {
+    let key = string(v, what)?;
+    if key.is_empty() {
+        return fail(Rule::Shape, format!("{what}: a key must not be empty"));
+    }
+    if key.chars().any(char::is_uppercase) {
+        return fail(Rule::Shape, format!("{what}: key {key:?} has an uppercase letter"));
+    }
+    Ok(key.to_string())
+}
+
 fn getter_name(v: &str, what: &str) -> R<Getter> {
     listed(v, Getter::parse, Getter::ALL, what)
 }
@@ -264,7 +276,7 @@ fn streamed(o: &mut Obj<'_>) -> R<Setting> {
 
 fn header(v: &Json) -> R<Header> {
     let mut o = Obj::new(v, "header")?;
-    o.req("type")?;
+    string(o.req("type")?, "type")?;
     match o.req("format")? {
         Json::Num(n) if n == "1" => {}
         other => {
@@ -494,7 +506,7 @@ fn inputs(v: &Json) -> R<(Inputs, Option<Vec<KeySpec>>)> {
             let mut entries: Vec<KeySpec> = Vec::new();
             for e in array(k, "inputs.keys")? {
                 let mut eo = Obj::new(e, "inputs.keys element")?;
-                let key = string(eo.req("key")?, "inputs.keys key")?.to_string();
+                let key = case_key(eo.req("key")?, "inputs.keys key")?;
                 let getters = match eo.opt("getters")? {
                     None => None,
                     Some(g) => {
@@ -544,7 +556,7 @@ fn inputs(v: &Json) -> R<(Inputs, Option<Vec<KeySpec>>)> {
 
 fn case_line(v: &Json, header: &Header) -> R<Pending> {
     let mut o = Obj::new(v, "case line")?;
-    o.req("type")?;
+    string(o.req("type")?, "type")?;
     let name = string(o.req("case")?, "case")?.to_string();
     let name_ok = name
         .bytes()
@@ -778,10 +790,10 @@ fn key_line(v: &Json, case: &mut Pending) -> R<()> {
         return fail(Rule::Consistency, "a case with a startup_error must have no key lines");
     };
     let mut o = Obj::new(v, "key line")?;
-    o.req("type")?;
+    string(o.req("type")?, "type")?;
     // The caller has matched `case` against the open case line.
-    o.req("case")?;
-    let key = string(o.req("key")?, "key")?.to_string();
+    string(o.req("case")?, "case")?;
+    let key = case_key(o.req("key")?, "key")?;
     let snapshot = match o.req_nullable("snapshot")? {
         Json::Null => None,
         s => {

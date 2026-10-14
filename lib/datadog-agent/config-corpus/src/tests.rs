@@ -69,6 +69,18 @@ fn canonical_form() {
     assert_eq!(first(rules(&format!("{}\n{good}", why("\\u0041")))), Rule::Canonical);
     let raw_value = good.replace(r#""value":2"#, "\"value\":\"\u{2028}\"");
     ok(&format!("{CASE}\n{raw_value}"));
+    // A record's `type`, and a key line's `case`, are matched after decoding, so their escaping is
+    // checked on its own.
+    let type_escaped = |line: &str, ty: &str| line.replace(&format!(r#""type":"{ty}""#), r#""type":"\u0068eader""#);
+    let header = type_escaped(HEADER, "header");
+    let violations = read(format!("{header}\n{BASELINE}\n").as_bytes()).expect_err("violations");
+    assert_eq!(violations[0].rule, Rule::Canonical);
+    let case_type = CASE.replace(r#""type":"case""#, r#""type":"\u0063ase""#);
+    assert_eq!(first(rules(&format!("{case_type}\n{good}"))), Rule::Canonical);
+    let key_type = good.replace(r#""type":"key""#, r#""type":"\u006bey""#);
+    assert_eq!(first(rules(&format!("{CASE}\n{key_type}"))), Rule::Canonical);
+    let key_case = good.replace(r#""case":"z""#, r#""case":"\u007a""#);
+    assert_eq!(first(rules(&format!("{CASE}\n{key_case}"))), Rule::Canonical);
 }
 
 #[test]
@@ -325,6 +337,25 @@ fn getters_override_rejects_a_repeated_getter() {
     );
     let line = r#"{"case":"z","key":"a","reads":{"snapshot":{"getters":[{"getter":"GetInt","result":2},{"getter":"GetString","result":"2"}],"go_type":"int"}},"snapshot":{"source":"file","value":2},"type":"key"}"#;
     ok(&format!("{ok_override}\n{line}"));
+}
+
+#[test]
+fn case_keys_are_non_empty_and_lowercase() {
+    let line = key(r#"{"getter":"GetInt","result":2}"#);
+    for bad in ["", "A"] {
+        let keys = CASE.replace(r#""yaml""#, &format!(r#""keys":[{{"key":"{bad}"}}],"yaml""#));
+        assert_eq!(
+            first(rules(&format!("{keys}\n{line}"))),
+            Rule::Shape,
+            "inputs.keys {bad:?}"
+        );
+        let key_line = line.replace(r#""key":"a""#, &format!(r#""key":"{bad}""#));
+        assert_eq!(
+            first(rules(&format!("{CASE}\n{key_line}"))),
+            Rule::Shape,
+            "key line {bad:?}"
+        );
+    }
 }
 
 /// A `Case` for origin and line tests, with only the members those tests vary.
