@@ -2,6 +2,7 @@ use std::collections::hash_map::IntoIter;
 use std::sync::Arc;
 
 use agent_data_plane_config::domains;
+use datadog_agent_apm::semantics::{Registry, SemanticRegistryProvider};
 use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common, any_value::Value as OtlpValue};
 use otlp_protos::opentelemetry::proto::resource::v1::Resource as OtlpResource;
 use otlp_protos::opentelemetry::proto::trace::v1::ResourceSpans;
@@ -13,7 +14,6 @@ use stringtheory::interning::GenericMapInterner;
 use stringtheory::MetaString;
 
 use crate::common::datadog::SAMPLING_PRIORITY_METRIC_KEY;
-use crate::common::otlp::semantics::{Registry, SemanticRegistryProvider};
 use crate::common::otlp::traces::transform::{
     bytes_to_hex_lowercase, get_otel_container_id, get_otel_env, get_otel_version, normalize_peer_service_tags,
     otel_span_to_dd_span, otlp_value_to_string,
@@ -382,7 +382,7 @@ fn trace_id_hex_meta(trace_id: &[u8]) -> Option<MetaString> {
 
 #[cfg(test)]
 mod tests {
-    use datadog_agent_remote_config::TestPublisher;
+    use datadog_agent_apm::semantics::test_util::{registry_json, TestRegistryPublisher};
     use otlp_protos::opentelemetry::proto::common::v1::any_value::Value;
     use otlp_protos::opentelemetry::proto::common::v1::{AnyValue, KeyValue};
     use otlp_protos::opentelemetry::proto::resource::v1::Resource;
@@ -391,8 +391,6 @@ mod tests {
     use saluki_metrics::test::TestRecorder;
 
     use super::*;
-    use crate::common::otlp::semantics::provider::SemanticCore;
-    use crate::common::otlp::semantics::registry::registry_json;
     use crate::common::otlp::{build_metrics, Metrics};
 
     fn string_kv(key: &str, value: &str) -> KeyValue {
@@ -483,14 +481,14 @@ mod tests {
 
     #[test]
     fn translate_spans_uses_registry_published_after_construction() {
-        let (publisher, subscription) = TestPublisher::new();
+        let (publisher, provider) = TestRegistryPublisher::new();
         let mut translator = OtlpTracesTranslator::new(
             domains::otlp::Traces {
                 string_interner_size: std::num::NonZeroUsize::new(64 * 1024).unwrap(),
                 ..Default::default()
             },
             agent_data_plane_config::defaults::DEFAULT_MAX_RESOURCE_LEN,
-            SemanticRegistryProvider::from_subscription(subscription),
+            provider,
         );
         let metrics = Metrics::for_tests();
         let mut http_status_code = || {
@@ -521,10 +519,10 @@ mod tests {
                 }
             }"#,
         );
-        publisher.accept(SemanticCore::remote(
+        publisher.accept_registry(
             Registry::from_json(&remapped).expect("remapped registry should parse"),
             "remapped",
-        ));
+        );
 
         assert_eq!(
             http_status_code(),
@@ -535,14 +533,14 @@ mod tests {
 
     #[test]
     fn translate_spans_resolves_peer_service_with_registry_published_after_construction() {
-        let (publisher, subscription) = TestPublisher::new();
+        let (publisher, provider) = TestRegistryPublisher::new();
         let mut translator = OtlpTracesTranslator::new(
             domains::otlp::Traces {
                 string_interner_size: std::num::NonZeroUsize::new(64 * 1024).unwrap(),
                 ..Default::default()
             },
             agent_data_plane_config::defaults::DEFAULT_MAX_RESOURCE_LEN,
-            SemanticRegistryProvider::from_subscription(subscription),
+            provider,
         );
         let metrics = Metrics::for_tests();
         let mut peer_service = || {
@@ -566,10 +564,10 @@ mod tests {
         let remapped = registry_json(
             r#"{"peer.service": {"fallbacks": [{"name": "custom.peer", "provider": "otel", "type": "string"}]}}"#,
         );
-        publisher.accept(SemanticCore::remote(
+        publisher.accept_registry(
             Registry::from_json(&remapped).expect("remapped registry should parse"),
             "remapped",
-        ));
+        );
 
         assert_eq!(
             peer_service().as_deref(),

@@ -25,7 +25,9 @@ use super::Concept;
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Provider {
+    /// Datadog attribute conventions.
     Datadog,
+    /// OpenTelemetry attribute conventions.
     Otel,
 }
 
@@ -37,8 +39,11 @@ pub enum Provider {
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ValueType {
+    /// String-valued attributes.
     String,
+    /// Signed integer attributes.
     Int64,
+    /// Floating-point attributes.
     Float64,
 }
 
@@ -68,9 +73,12 @@ pub struct TagInfo {
     /// Attribute name to read. An absent or `null` JSON field becomes an empty name.
     #[serde(default, deserialize_with = "null_as_default")]
     pub name: String,
+    /// The source of this attribute convention.
     pub provider: Provider,
+    /// The convention version, or an empty string when unspecified.
     #[serde(default, deserialize_with = "null_as_default")]
     pub version: String,
+    /// The stored attribute type.
     #[serde(rename = "type")]
     pub value_type: ValueType,
     /// Conditions that must all match before this attribute can supply the concept's value.
@@ -124,8 +132,8 @@ impl Registry {
 
     /// Parses registry JSON, rejecting unsupported entries.
     ///
-    /// Use this for embedded mappings, where unsupported entries indicate a build defect. Remote payloads use
-    /// [`Registry::from_slice_permissive`] to keep supported entries.
+    /// Use this for embedded mappings, where unsupported entries indicate a build defect. Remote Configuration
+    /// decoding skips unsupported entries instead.
     ///
     /// # Errors
     ///
@@ -173,7 +181,7 @@ impl Registry {
         let mut skipped = SkipReport::default();
         let mut mappings = FastHashMap::default();
         for (key, mapping) in concepts.into_iter().flatten() {
-            let Some(concept) = Concept::from_str(key) else {
+            let Some(concept) = Concept::from_name(key) else {
                 skipped.unknown_concepts.push(key.clone());
                 continue;
             };
@@ -369,8 +377,8 @@ pub static EMBEDDED_REGISTRY: LazyLock<Arc<Registry>> = LazyLock::new(|| {
 });
 
 /// Wraps `concepts` in a registry document with the required metadata.
-#[cfg(test)]
-pub(crate) fn registry_json(concepts: &str) -> String {
+#[cfg(any(test, feature = "test-util"))]
+pub fn registry_json(concepts: &str) -> String {
     format!(r#"{{"version":"test","metadata":{{"content_hash":"test"}},"concepts":{concepts}}}"#)
 }
 

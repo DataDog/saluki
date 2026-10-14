@@ -8,6 +8,7 @@ members = [
   "bin/correctness/stele",
   "lib/agent-data-plane-config",
   "lib/agent-data-plane-config-system",
+  "lib/datadog-agent/apm",
   "lib/datadog-agent/commons",
   "lib/datadog-agent/config",
   "lib/datadog-agent/config-overlay-model",
@@ -54,6 +55,7 @@ repository = "https://github.com/DataDog/saluki"
 [workspace.dependencies]
 agent-data-plane-config = { path = "lib/agent-data-plane-config" }
 agent-data-plane-config-system = { path = "lib/agent-data-plane-config-system" }
+datadog-agent-apm = { path = "lib/datadog-agent/apm" }
 datadog-agent-commons = { path = "lib/datadog-agent/commons" }
 datadog-agent-config = { path = "lib/datadog-agent/config" }
 datadog-agent-config-overlay-model = { path = "lib/datadog-agent/config-overlay-model" }

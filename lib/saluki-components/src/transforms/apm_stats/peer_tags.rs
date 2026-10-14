@@ -6,10 +6,9 @@
 
 use std::sync::Arc;
 
+use datadog_agent_apm::semantics::{Concept, Registry};
 use saluki_common::collections::FastHashSet;
 use stringtheory::MetaString;
-
-use crate::common::otlp::semantics::{Concept, Registry};
 
 /// The peer concepts whose precedence lists make up the base key set.
 const PEER_CONCEPTS: &[Concept] = &[
@@ -98,10 +97,10 @@ fn base_peer_tag_keys(registry: &Registry) -> Vec<MetaString> {
 
 #[cfg(test)]
 mod tests {
+    use datadog_agent_apm::semantics::{test_util::registry_json, EMBEDDED_REGISTRY};
     use proptest::prelude::*;
 
     use super::*;
-    use crate::common::otlp::semantics::{registry::registry_json, EMBEDDED_REGISTRY};
 
     /// The base key set derived from the embedded registry, pinned so that registry or derivation
     /// drift surfaces as a test failure instead of as split stats aggregates in mixed clusters.

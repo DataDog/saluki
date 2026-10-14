@@ -15,6 +15,8 @@ use datadog_agent_remote_config::{ApplyError, ConfigId, Subscription};
 use super::registry::{Registry, EMBEDDED_REGISTRY};
 
 /// Identifies whether a [`SemanticCore`] registry is embedded or supplied by a remote configuration.
+// TODO: remove this guard when the semantic-core decoder constructs remote snapshots.
+#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Origin {
     /// The registry embedded in the binary, used when no configuration is assigned.
@@ -39,7 +41,7 @@ impl fmt::Display for Origin {
 /// `APM_SEMANTIC_CORE_DD` is the Remote Configuration product that distributes semantic registries. An assignment is
 /// the set of configurations currently supplied for that product. This snapshot holds the selected registry and its
 /// origin, or the embedded registry when the assignment is empty.
-pub struct SemanticCore {
+pub(crate) struct SemanticCore {
     /// The complete registry to use, not a set of changes to the previous registry.
     pub(crate) registry: Arc<Registry>,
 
@@ -50,7 +52,7 @@ pub struct SemanticCore {
     pub(crate) assigned: usize,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-util"))]
 impl SemanticCore {
     /// Creates a snapshot holding `registry`, as if selected from configuration `id`.
     pub(crate) fn remote(registry: Registry, id: &str) -> Self {
@@ -77,8 +79,10 @@ impl fmt::Debug for SemanticCore {
 ///
 /// The Remote Configuration client reports this error to the server. Error text must not include payload contents.
 /// A rejected update leaves the provider's last accepted registry unchanged.
+// TODO: remove this guard when the semantic-core decoder constructs rejections.
+#[allow(dead_code)]
 #[derive(Debug)]
-pub enum SemanticCoreError {
+pub(crate) enum SemanticCoreError {
     /// A configuration's payload is not a valid registry.
     InvalidRegistry {
         /// Rejection reason safe to send to the server, without quoting payload contents.
@@ -157,7 +161,7 @@ mod tests {
     use datadog_agent_remote_config::TestPublisher;
 
     use super::*;
-    use crate::common::otlp::semantics::registry::registry_json;
+    use crate::semantics::registry::registry_json;
 
     fn remote(concepts: &str, id: &str) -> SemanticCore {
         let registry = Registry::from_json(&registry_json(concepts)).expect("registry should parse");

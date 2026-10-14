@@ -9,6 +9,7 @@ use std::{
 
 use agent_data_plane_config::domains;
 use async_trait::async_trait;
+use datadog_agent_apm::semantics::SemanticRegistryProvider;
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{transforms::*, BuildContext},
@@ -31,7 +32,6 @@ use stringtheory::MetaString;
 use tokio::{select, time::interval};
 use tracing::{debug, error};
 
-use crate::common::otlp::semantics::SemanticRegistryProvider;
 use crate::common::otlp::util::extract_container_tags_from_attributes_map;
 
 mod aggregation;
@@ -529,7 +529,8 @@ fn extract_process_tags(trace: &Trace) -> MetaString {
 
 #[cfg(test)]
 mod tests {
-    use datadog_agent_remote_config::TestPublisher;
+    use datadog_agent_apm::semantics::test_util::TestRegistryPublisher;
+    use datadog_agent_apm::semantics::{test_util::registry_json, Registry};
     use proptest::prelude::*;
     use saluki_common::collections::FastHashMap;
     use saluki_core::data_model::event::trace::{AttributeValue, Span};
@@ -539,8 +540,6 @@ mod tests {
     use super::aggregation::BUCKET_DURATION_NS;
     use super::span_concentrator::METRIC_PARTIAL_VERSION;
     use super::*;
-    use crate::common::otlp::semantics::provider::SemanticCore;
-    use crate::common::otlp::semantics::{registry::registry_json, Registry};
 
     /// Helper to align timestamp to bucket boundary
     fn align_ts(ts: u64, bsize: u64) -> u64 {
@@ -609,7 +608,7 @@ mod tests {
         use tokio::{runtime::Handle, sync::mpsc};
 
         let now = now_nanos();
-        let (publisher, subscription) = TestPublisher::new();
+        let (publisher, provider) = TestRegistryPublisher::new();
         let config = domains::traces::Domain {
             compute_stats_by_span_kind: true,
             peer_tags_aggregation: true,
@@ -617,7 +616,7 @@ mod tests {
         };
         let component_context = ComponentContext::test_transform("apm_stats");
         let transform = ApmStatsTransformConfiguration::from_configuration(&config)
-            .with_semantic_registry(SemanticRegistryProvider::from_subscription(subscription))
+            .with_semantic_registry(provider)
             .build(BuildContext::new(component_context.clone(), ResourceRegistry::new()))
             .await
             .expect("build should succeed");
@@ -627,10 +626,10 @@ mod tests {
             r#"{"peer.service": {"fallbacks": [
                 {"name": "custom.remote.service", "provider": "otel", "type": "string"}]}}"#,
         );
-        publisher.accept(SemanticCore::remote(
+        publisher.accept_registry(
             Registry::from_json(&remapped).expect("remapped registry should parse"),
             "remapped",
-        ));
+        );
 
         let mut meta = FastHashMap::default();
         meta.insert(MetaString::from("span.kind"), MetaString::from("client"));

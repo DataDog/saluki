@@ -3,6 +3,7 @@
 use std::convert::TryFrom;
 
 use base64::{engine::general_purpose, Engine as _};
+use datadog_agent_apm::semantics::{lookup_int64, lookup_string, Accessor, Concept, Registry};
 use opentelemetry_semantic_conventions::resource::{
     CONTAINER_ID, DEPLOYMENT_ENVIRONMENT_NAME, K8S_POD_UID, SERVICE_NAME, SERVICE_VERSION,
 };
@@ -24,9 +25,7 @@ use tracing::error;
 
 use crate::common::datadog::{OTEL_TRACE_ID_META_KEY, SAMPLING_PRIORITY_METRIC_KEY};
 use crate::common::otlp::attributes::{get_int_attribute, HTTP_MAPPINGS};
-use crate::common::otlp::semantics::{
-    lookup_int64, lookup_string, Accessor, Concept, DdSpanAccessor, OtelSpanAccessor, OtlpAttributesAccessor, Registry,
-};
+use crate::common::otlp::semantics::{DdSpanAccessor, OtelSpanAccessor, OtlpAttributesAccessor};
 use crate::common::otlp::traces::normalize::{
     is_normalized_tag_value, is_structured_meta_key, needs_name_normalization, normalize_name,
     normalize_peer_service_into, normalize_service_into, normalize_tag_value_append_unchecked,
@@ -1855,12 +1854,12 @@ pub(super) fn bytes_to_hex_lowercase(bytes: &[u8]) -> String {
 mod tests {
     use std::num::NonZeroUsize;
 
+    use datadog_agent_apm::semantics::{test_util::registry_json, EMBEDDED_REGISTRY};
     use otlp_protos::opentelemetry::proto::common::v1::{AnyValue, KeyValue};
     use otlp_protos::opentelemetry::proto::resource::v1::Resource;
     use otlp_protos::opentelemetry::proto::trace::v1::Span as OtlpSpan;
 
     use super::*;
-    use crate::common::otlp::semantics::{registry::registry_json, EMBEDDED_REGISTRY};
     use crate::common::otlp::traces::normalize::YEAR_2000_NANOSEC_TS;
 
     // Helper to create a KeyValue with a string value

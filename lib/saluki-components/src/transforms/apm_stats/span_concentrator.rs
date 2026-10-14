@@ -1,5 +1,6 @@
 //! Span concentrator for APM stats computation.
 
+use datadog_agent_apm::semantics::SemanticRegistryProvider;
 use saluki_common::collections::FastHashMap;
 use saluki_core::data_model::{
     event::{
@@ -18,7 +19,6 @@ use super::aggregation::{
 use super::peer_ip_quantize::quantize_peer_ip_addresses;
 use super::peer_tags::PeerTagKeys;
 use super::statsraw::RawBucket;
-use crate::common::otlp::semantics::SemanticRegistryProvider;
 
 const DEFAULT_BUFFER_LEN: u64 = 2;
 const METRIC_TOP_LEVEL: &str = "_top_level";
@@ -368,16 +368,14 @@ fn is_partial_snapshot(span: &Span) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use datadog_agent_remote_config::TestPublisher;
+    use datadog_agent_apm::semantics::test_util::TestRegistryPublisher;
+    use datadog_agent_apm::semantics::{test_util::registry_json, Registry};
 
     use super::*;
-    use crate::common::otlp::semantics::provider::SemanticCore;
-    use crate::common::otlp::semantics::{registry::registry_json, Registry};
 
     #[test]
     fn refresh_registry_rebuilds_peer_tag_keys_after_registry_change() {
-        let (publisher, subscription) = TestPublisher::new();
-        let provider = SemanticRegistryProvider::from_subscription(subscription);
+        let (publisher, provider) = TestRegistryPublisher::new();
         let mut concentrator = SpanConcentrator::new(true, true, &[], provider, 0);
         assert!(!concentrator
             .peer_tag_keys
@@ -393,10 +391,10 @@ mod tests {
                 }
             }"#,
         );
-        publisher.accept(SemanticCore::remote(
+        publisher.accept_registry(
             Registry::from_json(&modified).expect("modified registry should parse"),
             "modified",
-        ));
+        );
         concentrator.refresh_registry();
 
         let names: Vec<&str> = concentrator.peer_tag_keys.keys().iter().map(|k| k.as_ref()).collect();

@@ -46,11 +46,12 @@ use crate::common::otlp::{
 mod logs;
 mod metrics;
 mod resolver;
+use datadog_agent_apm::semantics::SemanticRegistryProvider;
+
 use self::logs::translator::OtlpLogsTranslator;
 use self::metrics::translator::OtlpMetricsTranslator;
 use self::resolver::build_context_resolver;
 use crate::common::otlp::origin::OtlpOriginTagResolver;
-use crate::common::otlp::semantics::SemanticRegistryProvider;
 use crate::common::otlp::traces::translator::OtlpTracesTranslator;
 
 /// Parses `otlp_config.metrics.tags` into a set of tags added to every emitted metric.

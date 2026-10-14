@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use agent_data_plane_config::domains;
 use async_trait::async_trait;
+use datadog_agent_apm::semantics::SemanticRegistryProvider;
 use otlp_protos::opentelemetry::proto::collector::trace::v1::ExportTraceServiceRequest;
 use prost::Message;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -20,7 +21,6 @@ use tokio::{
 };
 use tracing::{debug, error, warn};
 
-use crate::common::otlp::semantics::SemanticRegistryProvider;
 use crate::common::otlp::traces::translator::OtlpTracesTranslator;
 use crate::common::otlp::{
     build_metrics, Metrics, OTLP_LOGS_GRPC_SERVICE_PATH, OTLP_METRICS_GRPC_SERVICE_PATH, OTLP_TRACES_GRPC_SERVICE_PATH,
