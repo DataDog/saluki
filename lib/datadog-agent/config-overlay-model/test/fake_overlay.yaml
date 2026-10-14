@@ -43,7 +43,6 @@ inventory:
     description: "Idle context keep-alive duration"
     test_support:
       used_by: [AggregateConfiguration]
-      additional_yaml_paths: [dogstatsd_expiry_seconds]
       additional_attributes:
         config_registry_filename: aggregate.rs
 

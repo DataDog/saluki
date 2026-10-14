@@ -30,9 +30,6 @@ impl ConfigClassifier {
 
         for entry in CLASSIFIER_ENTRIES {
             lookup.insert(entry.yaml_path, entry);
-            for alias in entry.aliases {
-                lookup.insert(alias, entry);
-            }
         }
 
         Self { lookup }

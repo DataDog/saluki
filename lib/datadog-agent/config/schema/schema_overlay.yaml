@@ -3696,7 +3696,6 @@ inventory:
     description: "Prefixes exempt from namespace"
     test_support:
       used_by: [TypedConfigSystem]
-      additional_yaml_paths: [statsd_metric_namespace_blocklist]
       additional_attributes:
         config_registry_filename: dogstatsd_prefix_filter.rs
 

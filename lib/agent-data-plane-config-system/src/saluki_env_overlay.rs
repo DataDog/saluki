@@ -7,7 +7,6 @@
 //! the struct by construction. The set of canonical paths is read straight off `SalukiOnly` (see the
 //! discovery section below), so it cannot drift from the fields the deserializer actually reads.
 
-use std::collections::HashSet;
 use std::sync::OnceLock;
 
 use datadog_agent_config::env_reader::apply_env_at_path_vars;
@@ -76,50 +75,28 @@ fn leaf_specs() -> &'static [(Vec<String>, EnvDecode)] {
 
 /// Discovers `SalukiOnly`'s leaf paths by driving its derived `Deserialize` with the recorder.
 ///
-/// A `#[serde(alias)]` field lists both its name and the alias in the `fields` slice serde hands to
-/// `deserialize_struct`, and feeding both trips serde's duplicate-field check. The colliding name is
-/// the one yielded just before the error, so it is added to `skip` and discovery retried until it
-/// runs clean. Discovery depends only on the struct, so any real failure surfaces in tests, never in
-/// production.
+/// Discovery depends only on the struct, so any failure surfaces in tests, never in production.
 fn discover_leaf_specs() -> Vec<(Vec<String>, EnvDecode)> {
-    let mut skip = HashSet::new();
-    loop {
-        let mut ctx = DiscoverCtx {
-            out: Vec::new(),
-            skip: &skip,
-            last_yielded: None,
-        };
-        let recorder = PathRecorder {
-            path: Vec::new(),
-            ctx: &mut ctx,
-        };
-        match SalukiOnly::deserialize(recorder) {
-            Ok(_) => return ctx.out,
-            Err(error) if error.to_string().starts_with("duplicate field ") => {
-                let collided = ctx
-                    .last_yielded
-                    .expect("a duplicate-field error must follow a yielded field name");
-                if !skip.insert(collided.clone()) {
-                    panic!("SalukiOnly leaf-path discovery cannot make progress past field `{collided:?}`");
-                }
-            }
-            Err(error) => panic!("SalukiOnly leaf-path discovery failed: {error}"),
-        }
+    let mut ctx = DiscoverCtx { out: Vec::new() };
+    let recorder = PathRecorder {
+        path: Vec::new(),
+        ctx: &mut ctx,
+    };
+    if let Err(error) = SalukiOnly::deserialize(recorder) {
+        panic!("SalukiOnly leaf-path discovery failed: {error}");
     }
+    ctx.out
 }
 
-struct DiscoverCtx<'a> {
+struct DiscoverCtx {
     out: Vec<(Vec<String>, EnvDecode)>,
-    skip: &'a HashSet<Vec<String>>,
-    last_yielded: Option<Vec<String>>,
 }
-
-struct PathRecorder<'c, 's> {
+struct PathRecorder<'c> {
     path: Vec<String>,
-    ctx: &'c mut DiscoverCtx<'s>,
+    ctx: &'c mut DiscoverCtx,
 }
 
-impl PathRecorder<'_, '_> {
+impl PathRecorder<'_> {
     fn record_leaf(&mut self, decode: EnvDecode) {
         self.ctx.out.push((std::mem::take(&mut self.path), decode));
     }
@@ -147,7 +124,7 @@ macro_rules! record_scalar {
     };
 }
 
-impl<'de> Deserializer<'de> for PathRecorder<'_, '_> {
+impl<'de> Deserializer<'de> for PathRecorder<'_> {
     type Error = ValueError;
 
     record_scalar!(deserialize_bool, visit_bool, false, EnvDecode::Bool);
@@ -345,31 +322,21 @@ impl<'de> VariantAccess<'de> for UnitVariantAccess {
 }
 
 /// Feeds every field name to the derived struct visitor in turn, so serde requests each field's
-/// value and the recorder sees every leaf. Names in `skip` (see [`discover_leaf_paths`]) are passed
-/// over.
-struct StructWalker<'c, 's> {
+/// value and the recorder sees every leaf.
+struct StructWalker<'c> {
     fields: &'static [&'static str],
     index: usize,
     base: Vec<String>,
-    ctx: &'c mut DiscoverCtx<'s>,
+    ctx: &'c mut DiscoverCtx,
 }
 
-impl<'de> MapAccess<'de> for StructWalker<'_, '_> {
+impl<'de> MapAccess<'de> for StructWalker<'_> {
     type Error = ValueError;
 
     fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
     where
         K: DeserializeSeed<'de>,
     {
-        while self.index < self.fields.len() {
-            let mut path = self.base.clone();
-            path.push(self.fields[self.index].to_string());
-            if !self.ctx.skip.contains(&path) {
-                self.ctx.last_yielded = Some(path);
-                break;
-            }
-            self.index += 1;
-        }
         if self.index >= self.fields.len() {
             return Ok(None);
         }
