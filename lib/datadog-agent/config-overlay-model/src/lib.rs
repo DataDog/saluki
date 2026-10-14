@@ -467,7 +467,6 @@ impl SchemaOverlay {
         }
         Ok(())
     }
-
 }
 
 /// Read a YAML file into a [`Value`], mapping failures onto [`Error`].
