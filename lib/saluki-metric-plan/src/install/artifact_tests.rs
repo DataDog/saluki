@@ -52,10 +52,10 @@ pub(super) fn program(listener: &str, post_aggregation: &str) -> Plan {
 fn artifact_document(marker: &str) -> Value {
     json!({
         "ir_version": 1,
-        "scope": "post_enrich",
+        "scope": "metrics",
         "base": {"program_hash": format!("sha256:{}", "0".repeat(64))},
         "nodes": [{"id": "metrics_policy", "op": "split", "params": {"predicate": {"name": {"prefix": marker}}}}],
-        "edges": [{"from": "input.metrics", "to": "metrics_policy.in"}]
+        "edges": [{"from": "input.dogstatsd", "to": "metrics_policy.in"}]
     })
 }
 
@@ -1836,7 +1836,7 @@ fn a_snapshot_with_many_configs_is_rejected_with_a_message_that_names_a_few() {
     assert_eq!(states.len(), 30);
     let expected = "the policy snapshot holds 30 configs (`config-00`, `config-01`, `config-02`, `config-03`, \
                     `config-04`, `config-05`, `config-06`, `config-07`, `config-08`, `config-09`, and 20 more) for \
-                    scope `post_enrich`, but one artifact replaces a scope: every config for it is rejected until the \
+                    scope `metrics`, but one artifact replaces a scope: every config for it is rejected until the \
                     snapshot holds one";
     for ack in &states {
         assert_eq!(

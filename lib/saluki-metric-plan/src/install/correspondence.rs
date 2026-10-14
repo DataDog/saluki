@@ -150,14 +150,14 @@ mod tests {
         id.parse().unwrap()
     }
 
-    /// Exports the `post_enrich` scope of `plan`, edits the artifact document, composes it back, and diffs the
+    /// Exports the `metrics` scope of `plan`, the whole metrics path after the sources, edits the artifact document, composes it back, and diffs the
     /// composed plan against `plan`.
     fn compose_edit(plan: &Plan, edit: impl FnOnce(&mut Value)) -> (CorrespondingDiff, Correspondence) {
         let registry = OperatorRegistry::native();
         // The scope's nodes compose unmodified or bind no configuration in these edits, so the catalog needs no
         // values.
         let catalog = default_program_catalog();
-        let scope = "post_enrich".parse().unwrap();
+        let scope = "metrics".parse().unwrap();
         let mut document =
             serde_json::to_value(export(plan, &scope, &catalog, &BTreeMap::new()).unwrap().artifact).unwrap();
         edit(&mut document);
@@ -182,15 +182,13 @@ mod tests {
 
     #[test]
     fn installing_an_unmodified_export_diffs_as_no_change() {
-        // (plan, the number of nodes in its scope)
         let plans = [
-            (Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap(), 14),
-            (
-                Plan::from_value(with_opaque_gateways(DEFAULT_PROGRAM_JSON)).unwrap(),
-                10,
-            ),
+            Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap(),
+            Plan::from_value(with_opaque_gateways(DEFAULT_PROGRAM_JSON)).unwrap(),
         ];
-        for (plan, scope_nodes) in &plans {
+        for plan in &plans {
+            // Every node but the five sources is in the scope.
+            let scope_nodes = &(plan.nodes.len() - 5);
             let (diff, correspondence) = compose_edit(plan, |_| {});
             assert!(diff.diff.is_empty(), "{:?}", diff.diff);
             assert_eq!(diff.diff.changes().count(), 0);
@@ -204,7 +202,11 @@ mod tests {
                 diff.artifact_nodes.get(&node("metrics_policy")),
                 Some(&artifact_node("metrics_policy"))
             );
-            assert_eq!(diff.artifact_nodes.get(&node("dsd_agg")), None);
+            assert_eq!(
+                diff.artifact_nodes.get(&node("dsd_agg")),
+                Some(&artifact_node("dsd_agg"))
+            );
+            assert_eq!(diff.artifact_nodes.get(&node("dsd_in")), None);
         }
     }
 

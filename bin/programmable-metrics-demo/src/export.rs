@@ -1,9 +1,10 @@
-//! The export bundle: the default program's policy scope as an artifact, with the catalog it is checked against.
+//! The export bundle: the default program's one scope, the whole metrics path after its sources, as an artifact, with
+//! the catalog it is checked against.
 //!
-//! ADP serves the bundle at `GET /programmable-metrics/export?scope=post_enrich`, as a JSON object with these members:
+//! ADP serves the bundle at `GET /programmable-metrics/export?scope=metrics`, as a JSON object with these members:
 //!
 //! - `export_version`: `1`;
-//! - `scope`: the scope the export covers, `post_enrich`;
+//! - `scope`: the scope the export covers, `metrics`;
 //! - `artifact`: the default program's scope as a policy artifact, with its bindings unresolved and its base filled in;
 //! - `ir_versions`: `{"current": <version>, "accepted": [<lowest>, <highest>]}`;
 //! - `catalog`: the plan crate's `MemoryCatalog` document;
@@ -294,7 +295,8 @@ fn known_catalog_members(catalog: Value, labels: &mut BTreeMap<OutputId, String>
                     .collect();
                 kept.insert(member, Value::Object(bindings));
             }
-            ("scopes", value) => {
+            // Whether ADP runs at most one aggregation per program, which validation then checks.
+            ("scopes", value) | ("single_aggregation", value) => {
                 kept.insert(member, value);
             }
             _ => {}
@@ -321,9 +323,10 @@ pub(crate) mod tests {
 
     use super::*;
 
-    /// A hand-written export bundle for the demo's configuration: the primary endpoint, two additional endpoints
-    /// routed by prefix, and the multi-region failover gateway with mirroring off.
-    pub(crate) const DEMO_EXPORT: &str = include_str!("../fixtures/export-post-enrich.json");
+    /// A hand-written export bundle for the demo's configuration, trimmed to the policy region, fed straight from the
+    /// scope's `dogstatsd` input: the primary endpoint, two additional endpoints routed by prefix, and the multi-region
+    /// failover gateway with mirroring off.
+    pub(crate) const DEMO_EXPORT: &str = include_str!("../fixtures/export-metrics.json");
 
     pub(crate) fn demo_export() -> ExportBundle {
         ExportBundle::from_value(serde_json::from_str(DEMO_EXPORT).unwrap()).unwrap()
@@ -332,8 +335,9 @@ pub(crate) mod tests {
     #[test]
     fn the_demo_export_reads_with_its_catalog_and_labels() {
         let export = demo_export();
-        assert_eq!(export.scope, "post_enrich");
-        assert_eq!(export.artifact.artifact.scope.as_str(), "post_enrich");
+        assert_eq!(export.scope, "metrics");
+        assert_eq!(export.artifact.artifact.scope.as_str(), "metrics");
+        assert!(export.catalog.single_aggregation());
         assert_eq!(
             export.ir_versions,
             Some(IrVersions {

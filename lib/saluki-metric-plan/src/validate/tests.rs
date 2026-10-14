@@ -1627,6 +1627,134 @@ fn state_rules() {
 }
 
 #[test]
+fn a_host_that_runs_one_aggregation_per_program_rejects_every_other_one_at_its_node() {
+    use Rule::*;
+
+    let registry = crate::operators::OperatorRegistry::native();
+    // Three state owners fed by one source, each delivering to its own output; `artifact_first` gives `agg_1`
+    // artifact provenance.
+    let three_owners = |artifact_first: bool| {
+        let mut first = aggregate("agg_1");
+        if artifact_first {
+            first["provenance"] = json!({"artifact": {"revision": 1, "hash": ZERO_HASH}});
+        }
+        let mut value = plan(
+            vec![
+                otlp("src"),
+                tee("t", 3),
+                first,
+                aggregate("agg_2"),
+                aggregate("agg_3"),
+                emit("e1", "a"),
+                emit("e2", "b"),
+                emit("e3", "shared_1"),
+            ],
+            &[
+                "src.metrics -> t.in",
+                "t.0 -> agg_1.in",
+                "t.1 -> agg_2.in",
+                "t.2 -> agg_3.in",
+                "agg_1.out -> e1.in",
+                "agg_2.out -> e2.in",
+                "agg_3.out -> e3.in",
+            ],
+            &["a", "b", "shared_1"],
+        );
+        if artifact_first {
+            value["provenance"] = json!({"artifacts": [{"revision": 1, "hash": ZERO_HASH}]});
+        }
+        value
+    };
+    let validate_with = |value: &Value, catalog: &MemoryCatalog| {
+        Validator::new(&registry, catalog).validate(&Plan::from_value(value.clone()).unwrap())
+    };
+    let single = test_catalog().with_single_aggregation();
+
+    // Without the restriction, any number of state owners is valid, as placement decides where each runs.
+    let unrestricted = validate_with(&three_owners(false), &test_catalog());
+    assert!(
+        !unrestricted
+            .findings()
+            .iter()
+            .any(|finding| finding.rule == SingleAggregation),
+        "{}",
+        unrestricted
+    );
+
+    // With it, every state owner after the first is an error at its node, naming the first.
+    let report = validate_with(&three_owners(false), &single);
+    let found = report
+        .findings()
+        .iter()
+        .filter(|finding| finding.rule == SingleAggregation)
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        found,
+        [
+            "error[single_aggregation] node `agg_2`: a program has at most one aggregation; `agg_2` is a second one \
+             (`agg_1` is the first)",
+            "error[single_aggregation] node `agg_3`: a program has at most one aggregation; `agg_3` is a second one \
+             (`agg_1` is the first)",
+        ]
+    );
+    assert!(!report.is_valid());
+
+    // The first is a state owner without artifact provenance where there is one, so that the ones an artifact adds
+    // are reported, wherever they are listed.
+    let report = validate_with(&three_owners(true), &single);
+    let at = report
+        .findings()
+        .iter()
+        .filter(|finding| finding.rule == SingleAggregation)
+        .map(|finding| {
+            (
+                finding.location.to_string(),
+                finding.message.contains("(`agg_2` is the first)"),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        at,
+        [("node `agg_1`".to_string(), true), ("node `agg_3`".to_string(), true)],
+        "{}",
+        report
+    );
+
+    // One state owner, or none, is valid; a state owner whose parameters are invalid is not counted.
+    let one = plan(
+        vec![otlp("src"), aggregate("agg"), emit("e", "a")],
+        &["src.metrics -> agg.in", "agg.out -> e.in"],
+        &["a"],
+    );
+    assert_findings("one aggregation", &validate_with(&one, &single), &[]);
+    let mut unconfigured = three_owners(false);
+    for node in unconfigured["nodes"].as_array_mut().unwrap() {
+        if node["id"] == "agg_2" || node["id"] == "agg_3" {
+            node["params"] = json!({});
+        }
+    }
+    let report = validate_with(&unconfigured, &single);
+    assert!(
+        !report
+            .findings()
+            .iter()
+            .any(|finding| finding.rule == SingleAggregation),
+        "{}",
+        report
+    );
+
+    // The catalog's document says so, and reads back; a catalog that does not leaves the member out.
+    let document = serde_json::to_value(&single).unwrap();
+    assert_eq!(document["single_aggregation"], json!(true));
+    assert_eq!(serde_json::from_value::<MemoryCatalog>(document).unwrap(), single);
+    assert!(serde_json::to_value(test_catalog())
+        .unwrap()
+        .get("single_aggregation")
+        .is_none());
+}
+
+#[test]
 fn an_artifacts_context_limit_above_the_hosts_state_budget_is_a_warning() {
     use Rule::*;
 

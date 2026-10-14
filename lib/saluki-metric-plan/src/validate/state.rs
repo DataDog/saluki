@@ -1,5 +1,6 @@
-//! The rules on state owners: bucket widths that share a boundary often enough for a cut, a timestamp split that gives
-//! rates the interval of the aggregation it feeds, and context limits within the host's state budget.
+//! The rules on state owners: at most one of them in a plan where the host says so, bucket widths that share a boundary
+//! often enough for a cut, a timestamp split that gives rates the interval of the aggregation it feeds, and context
+//! limits within the host's state budget.
 //!
 //! Which widths a state owner may use at all is its operator's parameter check (an allowed bucket width); these rules
 //! relate the state owners of one plan to each other and to the host.
@@ -17,6 +18,9 @@ use crate::{
 const SHARED_WIDTH_LIMIT: Duration = Duration::from_secs(60);
 
 pub(super) fn check(graph: &Graph<'_>, catalog: Option<&dyn Catalog>, report: &mut ValidationReport) {
+    if catalog.is_some_and(|catalog| catalog.single_aggregation()) {
+        check_single_aggregation(graph, report);
+    }
     check_widths_above_sixty(graph, report);
     check_split_windows(graph, report);
     if let Some(capacity) = catalog.and_then(|catalog| catalog.state_budget()) {
@@ -36,6 +40,43 @@ fn keyed(op: &ConfiguredOperator) -> Option<&KeyedState> {
 fn bucket_width(op: &ConfiguredOperator) -> Option<Duration> {
     match keyed(op)?.time {
         StateTime::Buckets { width } => width,
+    }
+}
+
+/// `single_aggregation`: a plan for a host that runs at most one aggregation per program
+/// ([`Catalog::single_aggregation`]) has at most one state owner.
+///
+/// Placement alone would accept a second one wherever the frame's isolation slot can run it, such as on the other
+/// branch of a split ahead of the first, since an isolation slot runs several state owners by design; this rule
+/// restricts the host's programs to one aggregation, wherever it is. The first is, in plan order, the first state owner
+/// without artifact provenance, or else the first with a reserved ID (outside the artifact namespace, `policy/`), or
+/// else the first of all, so that the one an artifact adds beside the default program's is the one reported, even when
+/// the artifact also modifies the default program's (a width change gives it the artifact's provenance); each of the
+/// others is reported at its node, in plan order.
+/// A node whose operator is not configured, such as one with invalid parameters, is reported by its parameter check
+/// instead, and not counted.
+fn check_single_aggregation(graph: &Graph<'_>, report: &mut ValidationReport) {
+    let owners = (0..graph.nodes.len())
+        .filter(|&node| graph.op(node).and_then(keyed).is_some())
+        .collect::<Vec<_>>();
+    let artifact = |node: usize| matches!(graph.nodes[node].node.provenance, Some(Provenance::Artifact(_)));
+    let Some(first) = owners
+        .iter()
+        .copied()
+        .min_by_key(|&node| (artifact(node), !graph.id(node).is_reserved(), node))
+    else {
+        return;
+    };
+    for node in owners.into_iter().filter(|&node| node != first) {
+        report.push(Finding::new(
+            Rule::SingleAggregation,
+            graph.location(node),
+            format!(
+                "a program has at most one aggregation; `{}` is a second one (`{}` is the first)",
+                graph.id(node),
+                graph.id(first)
+            ),
+        ));
     }
 }
 

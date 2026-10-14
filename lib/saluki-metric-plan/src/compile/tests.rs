@@ -1490,6 +1490,10 @@ fn host_components_keep_their_boot_configuration() {
     let without_source = edited(|value| {
         remove_nodes(value, &["trace_sampler"]);
         node_mut(value, "metrics_enrich_in")["params"]["inputs"] = json!(4);
+        value["scopes"]["metrics"]["inputs"]
+            .as_object_mut()
+            .unwrap()
+            .remove("trace_sampler");
     });
     let (problems, capabilities) = unplaceable(&without_source, &catalog, &frame);
     assert_eq!(capabilities, vec![MissingCapability::Restart]);

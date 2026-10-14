@@ -11,8 +11,9 @@ use super::snapshot::{ArtifactConfigId, ArtifactProduct};
 use crate::{canonical::PlanHash, ir::ScopeName};
 
 /// The scope the top-level members of the [status summary](StatusSummary) describe, as version 1 of the stub protocol
-/// defines them: the policy scope of the default program, which artifacts replace to change routing after enrichment.
-pub const POLICY_SCOPE: &str = "post_enrich";
+/// defines them: the one scope of the default program, which artifacts replace to change the metrics path after its
+/// sources.
+pub const POLICY_SCOPE: &str = "metrics";
 
 /// The state an acknowledgment reports for a config.
 ///
@@ -158,7 +159,7 @@ pub struct StatusSummary {
     pub live_generations: u64,
 
     /// The status of each replaceable scope of the default program, by scope: an additive member. The top-level
-    /// `default_program_hash`, `active_artifact`, and `stale_base` keep describing the policy scope, `post_enrich`.
+    /// `default_program_hash`, `active_artifact`, and `stale_base` keep describing the policy scope, `metrics`.
     ///
     /// A host that reports every scope's base writes every scope; one that reports the policy scope's base alone
     /// writes the member only while an artifact is active in another scope. It is left out when empty, so the wire
@@ -278,11 +279,11 @@ mod tests {
         let summary = StatusSummary {
             scopes: BTreeMap::from([
                 (
-                    scope("dogstatsd_pre_aggregation"),
+                    scope("other"),
                     ScopeStatus {
                         default_program_hash: Some(hash),
                         active_artifact: Some(ActiveArtifact {
-                            id: ArtifactConfigId::new("demo-dogstatsd_pre_aggregation"),
+                            id: ArtifactConfigId::new("demo-other"),
                             revision: 6,
                             artifact_hash: hash,
                         }),
@@ -297,12 +298,12 @@ mod tests {
         assert_eq!(
             document["scopes"],
             json!({
-                "dogstatsd_pre_aggregation": {
+                "other": {
                     "default_program_hash": HASH,
-                    "active_artifact": {"id": "demo-dogstatsd_pre_aggregation", "revision": 6, "artifact_hash": HASH},
+                    "active_artifact": {"id": "demo-other", "revision": 6, "artifact_hash": HASH},
                     "stale_base": true
                 },
-                "post_enrich": {"default_program_hash": null, "active_artifact": null, "stale_base": false}
+                "metrics": {"default_program_hash": null, "active_artifact": null, "stale_base": false}
             })
         );
         assert_eq!(serde_json::from_value::<StatusSummary>(document).unwrap(), summary);

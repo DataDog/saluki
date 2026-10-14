@@ -80,13 +80,13 @@ fn a_launch_is_described_by_its_window_expiry_and_lanes() {
 }
 
 #[test]
-fn the_width_change_composes_into_the_pre_aggregation_scope_as_the_check_expects() {
+fn the_width_change_composes_into_the_default_program_as_the_check_expects() {
     use crate::{
         compile::{compile, default_program_source},
-        preview::{tests::fixture_of_scope, CompileContext},
+        preview::{tests::fixture, CompileContext},
     };
 
-    let (plan, export) = fixture_of_scope("dogstatsd_pre_aggregation");
+    let (plan, export) = fixture();
     let source = default_program_source(&export);
     let edited = edits::width_change(&source, "30s").unwrap();
     // Both windows, and nothing else, change.
@@ -128,7 +128,7 @@ fn the_width_change_composes_into_the_pre_aggregation_scope_as_the_check_expects
     let document = compiled.unwrap().document;
     assert_eq!(crate::canary::artifact_widths(&document), [30, 30]);
 
-    // The unmodified scope composes to the default program itself.
+    // The unmodified program composes to the default program itself.
     let (outcome, _) = compile(&source, Some(&context));
     assert!(
         outcome.diagnostics.is_empty() && outcome.preview.unchanged,
@@ -137,7 +137,7 @@ fn the_width_change_composes_into_the_pre_aggregation_scope_as_the_check_expects
     );
 
     // A source without one of the nodes says which.
-    let error = edits::width_change("policy dogstatsd_pre_aggregation {\n}\n", "30s").unwrap_err();
+    let error = edits::width_change("policy metrics {\n}\n", "30s").unwrap_err();
     assert!(error.to_string().contains("dsd_no_agg_split"), "{}", error);
 }
 
@@ -225,6 +225,7 @@ fn the_scenario_edits_compose_as_the_check_expects() {
             edits::aggregation_without_parameters(&source).unwrap(),
             "valid_parameters",
         ),
+        ("S5d", edits::second_aggregation(&source).unwrap(), "single_aggregation"),
     ];
     for (id, edited, fragment) in flagged {
         let (outcome, compiled) = compile(&edited, Some(&context));
@@ -241,12 +242,30 @@ fn the_scenario_edits_compose_as_the_check_expects() {
         );
     }
 
-    // S5d: an aggregation with every parameter in the policy scope is publishable. The editor does not place plans, so
-    // it flags nothing, and ADP's placement refuses it.
-    let edited = edits::aggregation_in_the_policy_scope(&source).unwrap();
+    // S5d's finding is at the second aggregation's line.
+    let edited = edits::second_aggregation(&source).unwrap();
+    let (outcome, _) = compile(&edited, Some(&context));
+    let line = edited[..edited.find("  node rollup = aggregate(").unwrap()]
+        .matches('\n')
+        .count()
+        + 1;
+    let at = outcome
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.rule == Some("single_aggregation"))
+        .expect("the second aggregation is flagged");
+    assert_eq!(at.range.line, line, "{:#?}", at);
+    assert_eq!(
+        at.message,
+        "a program has at most one aggregation; `policy/rollup` is a second one (`dsd_agg` is the first)"
+    );
+
+    // S5e: the one aggregation moved after enrichment is publishable. The editor does not place plans, so it flags
+    // nothing, and ADP's placement refuses it.
+    let edited = edits::aggregation_after_enrichment(&source).unwrap();
     let (outcome, compiled) = compile(&edited, Some(&context));
-    assert!(compiled.is_some(), "S5d: publishable");
-    assert!(outcome.diagnostics.is_empty(), "S5d: {:#?}", outcome.diagnostics);
+    assert!(compiled.is_some(), "S5e: publishable");
+    assert!(outcome.diagnostics.is_empty(), "S5e: {:#?}", outcome.diagnostics);
     assert!(
         outcome.preview.reason.contains("not placed"),
         "{}",

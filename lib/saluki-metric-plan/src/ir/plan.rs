@@ -318,8 +318,9 @@ pub type Scopes = BTreeMap<ScopeName, ScopeDecl>;
 /// A replaceable region of a plan.
 ///
 /// A scope is the region between its inputs and its exits: every node reachable from the ports its inputs name,
-/// without entering one of the ports its exits name. A policy artifact replaces that region. A scope without exits,
-/// such as `post_enrich`, extends to the `emit` and `drop` nodes that end its paths.
+/// without entering one of the ports its exits name. A policy artifact replaces that region. A scope without exits
+/// extends to the `emit` and `drop` nodes that end its paths, as one whose inputs are a plan's sources then covers the
+/// whole plan after them.
 ///
 /// Validation checks that a scope is closed, so that replacing it changes nothing outside it: nothing outside the
 /// region feeds a node inside it except through the scope's inputs, each exit is fed from inside the region and leads

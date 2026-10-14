@@ -9,8 +9,8 @@
 //! source through the correspondence of plan nodes to artifact nodes, and the diff publishing would install. ADP still
 //! decides: it composes the artifact again when it arrives, against the default program, catalog, and artifacts of that
 //! moment, and compiles the plan into its regions, which can refuse a plan that validates: a new output, or a state
-//! owner the frame cannot run where it is placed, such as an aggregation in `post_enrich`. The preview does not place
-//! the plan.
+//! owner the frame cannot run where it is placed, such as the aggregation moved after enrichment. The preview does
+//! not place the plan.
 
 use saluki_metric_plan::{
     canonical::{PlanHash, ResolvedValues},

@@ -31,7 +31,7 @@
 //!
 //! - **`base`** records the hash of the program the artifact was derived from and, under `outputs`, the fingerprint
 //!   of every output it refers to. It is required.
-//! - **Edges** leave a scope input, as `input.metrics -> <target>`, or an output port of a node: inside the node's
+//! - **Edges** leave a scope input, as `input.dogstatsd -> <target>`, or an output port of a node: inside the node's
 //!   block, as `<port> -> <target>`, or as a statement of its own, `<node>.<port> -> <target>`. A node with exactly one
 //!   output port may leave the port out: `-> <target>`.
 //! - **Targets** are a node, as `<node>` or `<node>.<port>` (the port may be left out when the node has exactly one
@@ -94,12 +94,15 @@
 //! Parsing writes nodes and edges in the same canonical order, whatever order the text gives them in, so the
 //! artifact, and its hash, change only when its graph does. The order is a depth-first traversal from the scope
 //! inputs, in which a node comes right after the edge that completes its inputs and a node's edges follow its
-//! operator's port order: the order lowering writes plans in. As a result:
+//! operator's port order: the order lowering writes a plan's nodes in. As a result:
 //!
-//! - `parse(print(a))` is `a` for every valid artifact in canonical order, such as every artifact parsed from text and
-//!   the exports of the default program's regions. For a valid artifact in another order, as a tool writing JSON
-//!   might give it, it is `a` with its nodes and edges reordered, which is a different document with a different hash,
-//!   so tools that write artifacts should write them in canonical order. Invalid artifacts print too, and parse back
+//! - `parse(print(a))` is `a` for every valid artifact in canonical order, such as every artifact parsed from text. For
+//!   a valid artifact in another order, as a tool writing JSON might give it, it is `a` with its nodes and edges
+//!   reordered, which is a different document with a different hash. An export of a scope with several inputs is in
+//!   another order: it lists its edges in the plan's order, and the canonical order writes the edges from the scope's
+//!   inputs first, in input-name order, and each node's edges with the node. Its printed form parses to a document that
+//!   differs in the order of its edges, but composes to the same plan, with the same hash, since composition puts an
+//!   artifact's edges in the default program's order. Invalid artifacts print too, and parse back
 //!   the same way unless they define a node twice, refer to a node or port they do not have, or have a bare boolean as
 //!   a whole predicate, which has no text of its own (where a predicate is expected, `true` is the constant leaf;
 //!   inside a junction, a bare boolean is written raw); parsing reports the first two.

@@ -19,11 +19,13 @@ fn structural(export: &ExportBundle) -> CompileContext<'_> {
 /// The demo export's artifact, as the editor prints it: hand-written, so it also pins the printed form the editor
 /// starts from. No line is longer than 80 characters, and the lines an author edits (routing predicates, binding
 /// names, emits) are at most 74.
-const DEFAULT_SOURCE: &str = r#"policy post_enrich {
+const DEFAULT_SOURCE: &str = r#"policy metrics {
   base "sha256:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
 
-  input.metrics -> metrics_policy
+  # Sources: where each one's metrics enter
+  input.dogstatsd -> metrics_policy
 
+  # Policy: one branch per output; route here
   node metrics_policy = tee {
     -> emit dd_metrics_encode
     -> metrics_routing_filter_0
@@ -167,8 +169,8 @@ fn edits_change_the_hash_and_reformatting_does_not() {
     assert_eq!(outcome.canonical_source.as_deref(), Some(DEFAULT_SOURCE));
 
     let edited = replaced(
-        "  input.metrics -> metrics_policy\n",
-        "  input.metrics -> drop_debug\n\n  node drop_debug = split(name starts_with \"demo.debug.\") {\n    true  -> \
+        "  input.dogstatsd -> metrics_policy\n",
+        "  input.dogstatsd -> drop_debug\n\n  node drop_debug = split(name starts_with \"demo.debug.\") {\n    true  -> \
          drop\n    false -> metrics_policy\n  }\n",
     );
     let (outcome, compiled) = compile(&edited, Some(&structural(&export)));
@@ -189,9 +191,9 @@ fn edits_change_the_hash_and_reformatting_does_not() {
 
     // An output emitted to twice is restored once.
     let twice = replaced(
-        "  input.metrics -> metrics_policy
+        "  input.dogstatsd -> metrics_policy
 ",
-        "  input.metrics -> copy_main
+        "  input.dogstatsd -> copy_main
 
   node copy_main = split(name starts_with \"demo.copy.\") {\n    true  -> \
          emit dd_metrics_encode\n    false -> metrics_policy\n  }\n",
@@ -227,7 +229,7 @@ fn the_examples_of_the_demo_scenarios_compile_without_findings() {
 
 #[test]
 fn syntax_errors_are_placed_by_line_and_column() {
-    // `=>` instead of `->` on line 7: `=` is a token, and the `>` after it, at column 6, is not.
+    // `=>` instead of `->` on line 9: `=` is a token, and the `>` after it, at column 6, is not.
     let source = replaced("    -> emit dd_metrics_encode", "    => emit dd_metrics_encode");
     let (outcome, compiled) = compile(&source, Some(&structural(&demo_export())));
     assert!(!outcome.ok);
@@ -236,8 +238,8 @@ fn syntax_errors_are_placed_by_line_and_column() {
     let diagnostic = &outcome.diagnostics[0];
     assert_eq!(diagnostic.origin, Origin::Syntax);
     assert_eq!(diagnostic.severity, Severity::Error);
-    assert_eq!((diagnostic.range.line, diagnostic.range.column), (7, 6));
-    assert_eq!((diagnostic.range.end_line, diagnostic.range.end_column), (7, 7));
+    assert_eq!((diagnostic.range.line, diagnostic.range.column), (9, 6));
+    assert_eq!((diagnostic.range.end_line, diagnostic.range.end_column), (9, 7));
     assert_eq!(&source[diagnostic.range.start..diagnostic.range.end], ">");
     assert!(diagnostic.message.contains("->"), "{}", diagnostic.message);
     assert_eq!(outcome.errors, 1);
@@ -246,7 +248,7 @@ fn syntax_errors_are_placed_by_line_and_column() {
 
 #[test]
 fn documents_the_plan_crate_cannot_read_are_reported_at_the_start() {
-    let source = replaced("policy post_enrich {\n", "policy post_enrich {\n  ir_version 99\n");
+    let source = replaced("policy metrics {\n", "policy metrics {\n  ir_version 99\n");
     let (outcome, compiled) = compile(&source, Some(&structural(&demo_export())));
     assert!(!outcome.ok);
     assert!(compiled.is_none());
@@ -276,7 +278,7 @@ fn structural_findings_are_placed_where_the_problem_is() {
             replaced("emit metrics_routing_encode_1", "emit metrics_routing_encode_9"),
             vec![(
                 Severity::Error,
-                37,
+                39,
                 "`metrics_routing_encode_9`, which ADP does not declare",
             )],
         ),
@@ -285,7 +287,7 @@ fn structural_findings_are_placed_where_the_problem_is() {
         (
             "an emit to an output the artifact does not list",
             replaced_in(&with_fingerprints(), &mrf_output_line, ""),
-            vec![(Severity::Error, 57, mrf_output_fix.as_str())],
+            vec![(Severity::Error, 59, mrf_output_fix.as_str())],
         ),
         (
             "an output whose fingerprint changed",
@@ -304,7 +306,7 @@ fn structural_findings_are_placed_where_the_problem_is() {
             ),
             vec![(
                 Severity::Error,
-                28,
+                30,
                 "`endpoint_routing.group.ffffffff.names`, which ADP does not declare",
             )],
         ),
@@ -319,19 +321,19 @@ fn structural_findings_are_placed_where_the_problem_is() {
                 "\n}\n",
                 "\n\n  node extra = tee(ports: 1, colour: \"red\") {\n    0 -> drop\n  }\n}\n",
             ),
-            vec![(Severity::Error, 56, "parameter `colour`")],
+            vec![(Severity::Error, 58, "parameter `colour`")],
         ),
         (
             "an operator that is not registered",
             replaced("\n}\n", "\n\n  node extra = frobnicate(x: 1)\n}\n"),
-            vec![(Severity::Error, 56, "`frobnicate` is not a registered operator")],
+            vec![(Severity::Error, 58, "`frobnicate` is not a registered operator")],
         ),
         (
             "another scope",
-            replaced("policy post_enrich {", "policy dogstatsd {"),
+            replaced("policy metrics {", "policy dogstatsd {"),
             vec![
-                (Severity::Error, 1, "ADP exports the scope `post_enrich`"),
-                (Severity::Error, 4, "has no input `metrics`"),
+                (Severity::Error, 1, "ADP exports the scope `metrics`"),
+                (Severity::Error, 5, "has no input `dogstatsd`"),
             ],
         ),
     ];
@@ -394,15 +396,15 @@ fn state_owners_are_checked_for_their_parameters_only() {
     // Aggregation with its parameters missing: each missing parameter is reported, at the node. That it keeps state is
     // no finding: ADP composes state owners, and placement decides where they run.
     let source = replaced(
-        "  input.metrics -> metrics_policy\n",
-        "  input.metrics -> rollup\n\n  node rollup = aggregate {\n    -> metrics_policy\n  }\n",
+        "  input.dogstatsd -> metrics_policy\n",
+        "  input.dogstatsd -> rollup\n\n  node rollup = aggregate {\n    -> metrics_policy\n  }\n",
     );
     let (outcome, compiled) = compile(&source, Some(&structural(&export)));
     assert!(outcome.ok && compiled.is_some(), "{:#?}", outcome.diagnostics);
     assert!(!outcome.diagnostics.is_empty());
     for diagnostic in &outcome.diagnostics {
         assert_eq!(diagnostic.severity, Severity::Error);
-        assert_eq!(diagnostic.range.line, 6);
+        assert_eq!(diagnostic.range.line, 7);
         assert!(
             diagnostic
                 .message

@@ -182,10 +182,14 @@
      "recipients": ["cluster_agent_out/primary/0"], "delivery": "native"}
   ],
   "scopes": {
-    "dogstatsd_pre_aggregation": {
-      "inputs": {"metrics": "dsd_in.metrics"},
-      "exits": {"aggregated": "dsd_post_agg_filter_in.0", "passthrough": "dsd_post_agg_filter_in.1"}
-    },
-    "post_enrich": {"inputs": {"metrics": "metrics_enrich_host_tags.out"}}
+    "metrics": {
+      "inputs": {
+        "checks": "checks_ipc_in.metrics",
+        "dogstatsd": "dsd_in.metrics",
+        "liveness": "liveness_in.metrics",
+        "otlp": "otlp_in.metrics",
+        "trace_sampler": "trace_sampler.metrics"
+      }
+    }
   }
 }

@@ -63,3 +63,6 @@ mod scope_tests;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod unified_scope_tests;

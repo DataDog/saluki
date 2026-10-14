@@ -1,4 +1,6 @@
-//! The default program, exported as artifacts, printed, and parsed back: its policy scope, and its DogStatsD chain.
+//! The default program, exported as artifacts, printed, and parsed back: its one scope, the whole metrics path after
+//! its sources; the two scopes it declared through stage 9, the policy region and DogStatsD's pre-aggregation chain,
+//! which end before the plan does; and its DogStatsD chain.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -8,7 +10,10 @@ use saluki_metric_plan::{
         ArtifactBase, ArtifactEdge, ArtifactNode, ArtifactNodeId, ArtifactPortRef, InputName, NodeId, OutputId, Plan,
         PolicyArtifact, PortRef, ReceivedArtifact,
     },
-    testing::{default_program_catalog, with_opaque_gateways, DEFAULT_PROGRAM_JSON, NO_AGGREGATION_PIPELINE_OFF_JSON},
+    testing::{
+        default_program_catalog, two_scope_catalog, with_opaque_gateways, with_two_scopes, DEFAULT_PROGRAM_JSON,
+        NO_AGGREGATION_PIPELINE_OFF_JSON,
+    },
 };
 
 use super::*;
@@ -17,15 +22,33 @@ fn default_program() -> Plan {
     Plan::from_json(DEFAULT_PROGRAM_JSON).expect("the default program fixture reads")
 }
 
-/// Exports the `post_enrich` scope of a plan as the host does, as an artifact.
+/// Returns `plan` with [the two scopes the default program declared through stage 9](with_two_scopes).
+fn two_scopes(plan: &Plan) -> Plan {
+    Plan::from_value(with_two_scopes(serde_json::to_value(plan).unwrap())).unwrap()
+}
+
+/// Exports the `post_enrich` scope, one of [the two scopes of stage 9](with_two_scopes), of a plan as the host
+/// exported it, as an artifact.
 fn host_export(plan: &Plan) -> PolicyArtifact {
     saluki_metric_plan::export::export(
-        plan,
+        &two_scopes(plan),
         &"post_enrich".parse().unwrap(),
-        &default_program_catalog(),
+        &two_scope_catalog(),
         &BTreeMap::new(),
     )
     .expect("the default program's policy scope exports")
+    .artifact
+}
+
+/// Exports the one scope of a plan, `metrics`, as the host does, as an artifact.
+fn metrics_export(plan: &Plan) -> PolicyArtifact {
+    saluki_metric_plan::export::export(
+        plan,
+        &"metrics".parse().unwrap(),
+        &default_program_catalog(),
+        &BTreeMap::new(),
+    )
+    .expect("the default program's scope exports")
     .artifact
 }
 
@@ -215,6 +238,16 @@ fn the_default_programs_policy_scope_prints_and_parses_back() {
     assert!(text(&expected, flag).starts_with("flag(config(\"multi_region_failover.enabled\"))\n    and"));
 }
 
+/// Returns `artifact` with its edges sorted by their ends, so that artifacts that differ only in the order of their
+/// edges compare equal.
+fn edges_sorted(artifact: &PolicyArtifact) -> PolicyArtifact {
+    let mut artifact = artifact.clone();
+    artifact
+        .edges
+        .sort_by_key(|edge| (edge.from.to_string(), edge.to.to_string()));
+    artifact
+}
+
 #[test]
 fn every_default_programs_export_prints_and_parses_back_to_the_same_document() {
     let plans = [
@@ -232,21 +265,69 @@ fn every_default_programs_export_prints_and_parses_back_to_the_same_document() {
             Plan::from_value(with_opaque_gateways(NO_AGGREGATION_PIPELINE_OFF_JSON)).unwrap(),
         ),
     ];
+    // The one scope, and the policy scope of stage 9. The one scope's export lists its edges in the plan's order, and
+    // parsing in the printed order, which writes the edges from the inputs first, in name order, and each node's edges
+    // in its block: it parses back to the same artifact with its edges reordered, which composes to the default
+    // program, with its hash, since composition puts an artifact's edges in the default program's order. The policy
+    // scope of stage 9 has one input and no edge out of order, so its export comes back exactly, with its hash.
     for (what, plan) in plans {
-        let export = host_export(&plan);
-        let printed = print_default(&export);
-        let parsed = parse_ok(&printed);
-        assert_eq!(parsed.artifact, export, "{}:\n{}", what, printed);
-
-        // So the parsed document is the exported one, and has its hash.
-        let hash = |artifact: &PolicyArtifact| {
-            ReceivedArtifact::from_value(serde_json::to_value(artifact).unwrap())
-                .unwrap()
-                .hash
-        };
-        assert_eq!(hash(&parsed.artifact), hash(&export), "{}", what);
-        assert_eq!(print_default(&parsed.artifact), printed, "{}", what);
+        for (export, exact) in [(metrics_export(&plan), false), (host_export(&plan), true)] {
+            let printed = print_default(&export);
+            let parsed = parse_ok(&printed);
+            assert_eq!(
+                edges_sorted(&parsed.artifact),
+                edges_sorted(&export),
+                "{}:\n{}",
+                what,
+                printed
+            );
+            if exact {
+                assert_eq!(parsed.artifact, export, "{}:\n{}", what, printed);
+                let hash = |artifact: &PolicyArtifact| {
+                    ReceivedArtifact::from_value(serde_json::to_value(artifact).unwrap())
+                        .unwrap()
+                        .hash
+                };
+                assert_eq!(hash(&parsed.artifact), hash(&export), "{}", what);
+            } else {
+                assert_eq!(
+                    composed_hash(&plan, &parsed.artifact),
+                    plan.hash(ResolvedValues::Include).unwrap(),
+                    "{}",
+                    what
+                );
+            }
+            assert_eq!(print_default(&parsed.artifact), printed, "{}", what);
+        }
     }
+}
+
+/// Returns the hash of the plan `artifact` composes to in `plan`, with the fixtures' catalog: an unmodified export's
+/// nodes keep the default program's resolved values, so the catalog needs none.
+fn composed_hash(plan: &Plan, artifact: &PolicyArtifact) -> saluki_metric_plan::canonical::PlanHash {
+    use saluki_metric_plan::{
+        compose::{compose, receive_artifact, Approval},
+        operators::OperatorRegistry,
+    };
+
+    let received = receive_artifact(serde_json::to_value(artifact).unwrap()).unwrap();
+    let approval = Approval {
+        revision: 1,
+        approved_against: None,
+        active_plan_hash: None,
+        in_effect: false,
+        upgraded: Default::default(),
+    };
+    let composed = compose(
+        plan,
+        &received,
+        &approval,
+        &default_program_catalog(),
+        &OperatorRegistry::native(),
+    )
+    .unwrap();
+    assert!(composed.report.findings().is_empty(), "{}", composed.report);
+    composed.plan.hash(ResolvedValues::Include).unwrap()
 }
 
 #[test]
@@ -326,13 +407,13 @@ fn the_default_programs_pre_aggregation_scope_prints_and_parses_back_through_its
     let cases = [
         (
             "default program",
-            default_program(),
+            two_scopes(&default_program()),
             (7, 9),
             &["    -> exit.aggregated\n  }\n", "    passthrough -> exit.passthrough\n"][..],
         ),
         (
             "no-aggregation pipeline off",
-            Plan::from_json(NO_AGGREGATION_PIPELINE_OFF_JSON).unwrap(),
+            two_scopes(&Plan::from_json(NO_AGGREGATION_PIPELINE_OFF_JSON).unwrap()),
             (6, 7),
             &["    -> exit.aggregated\n  }\n"][..],
         ),
@@ -361,6 +442,57 @@ fn the_default_programs_pre_aggregation_scope_prints_and_parses_back_through_its
         let parsed = parse_ok(&printed);
         assert_eq!(parsed.artifact, export, "{}:\n{}", what, printed);
         assert_eq!(print_default(&parsed.artifact), printed, "{}", what);
+    }
+}
+
+#[test]
+fn the_default_programs_one_scope_prints_from_its_sources_through_aggregation_and_enrichment_to_its_policy() {
+    for plan in [
+        default_program(),
+        Plan::from_json(NO_AGGREGATION_PIPELINE_OFF_JSON).unwrap(),
+    ] {
+        let export = metrics_export(&plan);
+        // Every node but the five sources, and every edge.
+        assert_eq!(export.nodes.len(), plan.nodes.len() - 5);
+        assert_eq!(export.edges.len(), plan.edges.len());
+        let printed = print_default(&export);
+        assert!(printed.starts_with("policy metrics {\n"), "{}", printed);
+        assert!(printed.lines().all(|line| line.chars().count() <= 120), "{}", printed);
+
+        // The canonical order follows the path: the edges from the inputs first, in name order, then DogStatsD's chain
+        // from its input through aggregation and the post-aggregation filter, then enrichment, which the other sources'
+        // inputs complete, and the policy region.
+        let at = |line: &str| {
+            printed
+                .find(line)
+                .unwrap_or_else(|| panic!("{:?} is not in\n{}", line, printed))
+        };
+        let order = [
+            "\n  input.checks -> metrics_enrich_in.2\n",
+            "\n  input.dogstatsd -> dsd_enrich\n",
+            "\n  input.liveness -> metrics_enrich_in.3\n",
+            "\n  input.otlp -> metrics_enrich_in.1\n",
+            "\n  input.trace_sampler -> metrics_enrich_in.4\n",
+            "\n  node dsd_enrich = ",
+            "\n  node dsd_agg = ",
+            "\n  node dsd_post_agg_filter = ",
+            "\n  node metrics_enrich_in = ",
+            "\n  node metrics_enrich = ",
+            "\n  node metrics_policy = ",
+            "\n  node af_metrics_gateway = ",
+        ];
+        let positions = order.iter().map(|line| at(line)).collect::<Vec<_>>();
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "{}", printed);
+
+        // It parses back to the export, with its edges in the printed order rather than in the plan's, and composes to
+        // the default program, with its hash.
+        let parsed = parse_ok(&printed).artifact;
+        assert_eq!(edges_sorted(&parsed), edges_sorted(&export));
+        assert_eq!(print_default(&parsed), printed);
+        assert_eq!(
+            composed_hash(&plan, &parsed),
+            plan.hash(ResolvedValues::Include).unwrap()
+        );
     }
 }
 

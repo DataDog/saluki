@@ -1,6 +1,7 @@
 # Programmable metric processing: status
 
-**Status:** the state of the work after stage 9 (October 13, 2026), on branch `luke/programmable-metrics`. This
+**Status:** the state of the work after stage 9 (October 13, 2026) and the one-scope change (October 14), on branch
+`luke/programmable-metrics`. This
 document records where the implementation of [the specification](programmable-metrics.md) stands, how to run it, what
 it changed outside its own crates, what is still open, and what the next stages inherit. It summarizes and links to
 [the implementation design](programmable-metrics-implementation.md) rather than repeating it, and it holds the open
@@ -34,9 +35,12 @@ ADP's artifact channel and given its headless check in stage 5, and extended in 
   prepare barrier and one schedule store, aggregation changes whose bucket width changes at a cut.
 - DogStatsD aggregation runs as a stateful kernel in the `dsd_agg` isolation slot, bucketing by admission time and
   closing buckets by watermark.
-- Policy artifacts arrive through a local development stub of the artifact channel, for two scopes: `post_enrich` (the
-  policy region) and `dogstatsd_pre_aggregation` (DogStatsD processing up to and including aggregation). The privileged
-  API serves the status, export, plan, explain, and default program.
+- Policy artifacts arrive through a local development stub of the artifact channel, for one scope, `metrics`: the whole
+  metrics path after its sources, from DogStatsD processing through aggregation and enrichment to the policy region,
+  fed by one input per metrics source and with no exits (since the one-scope change after stage 9, amendment 168,
+  which replaced the `post_enrich` and `dogstatsd_pre_aggregation` scopes). A program has at most one aggregation
+  (`single_aggregation`, amendment 169). The privileged API serves the status, export, plan, explain, and default
+  program.
 - Outputs and recipients are resources of hosts fixed at boot (stage 7): one encode host and one delivery host per
   fixed delivery host, `dd_out`'s, the failover pair (idle until failover is enabled), and the Cluster Agent pair when
   its endpoint resolves at boot. Each output runs as a lease of its encode host and each recipient as an I/O loop of
@@ -126,7 +130,7 @@ real artifact channel, and stage 10 are not started. The owner's direction for s
 | [programmable-metrics-implementation.md](programmable-metrics-implementation.md) | The implementation design, stages 1 to 6 as built: [code layout](programmable-metrics-implementation.md#code-layout), [execution contracts](programmable-metrics-implementation.md#execution-contracts-in-saluki-core), [frame and region programs](programmable-metrics-implementation.md#physical-frame-and-region-programs) (R1 to R7), [the plan crate](programmable-metrics-implementation.md#the-plan-crate), [installation](programmable-metrics-implementation.md#installation), [ADP integration](programmable-metrics-implementation.md#adp-integration), [demo](programmable-metrics-implementation.md#demo), [stage plan](programmable-metrics-implementation.md#stage-plan) with stage 3 to 5 exit evidence, [stage 6](programmable-metrics-implementation.md#stage-6-stateful-kernels) with its [exit evidence](programmable-metrics-implementation.md#exit-evidence), [87 proposed spec amendments](programmable-metrics-implementation.md#proposed-spec-amendments), and [risks](programmable-metrics-implementation.md#risks). |
 | [programmable-metrics-stub-protocol.md](programmable-metrics-stub-protocol.md) | The contract between ADP and the demo server: the poll, the envelope, the control surface routes (with stage 7's resources and stage 9's lanes, which the explain document and the `plan_lane_*` series carry), and the demo server's side. |
 | This document | Status, how to run, changes outside the new code, open decisions, the amendments index, deferred work, and environment notes. |
-| [programmable-metrics-stages-7-and-9.md](programmable-metrics-stages-7-and-9.md) | The design of stages 7 and 9, with what each built (Stage 7 as built, Stage 9 as built), the increments and measurements of stage 9 (8.5, 8.6), and amendments 88 to 162. |
+| [programmable-metrics-stages-7-and-9.md](programmable-metrics-stages-7-and-9.md) | The design of stages 7 and 9, with what each built (Stage 7 as built, Stage 9 as built), the increments and measurements of stage 9 (8.5, 8.6), and amendments 88 to 169. |
 
 Release notes, one per stage that changed what operators see:
 
@@ -134,10 +138,12 @@ Release notes, one per stage that changed what operators see:
   (its buffering item was rewritten in stage 5).
 - Stage 4: [`plan-driven-metrics-gateways-8f5f8bebdc56b2e3.yaml`](../../releasenotes/notes/plan-driven-metrics-gateways-8f5f8bebdc56b2e3.yaml).
 - Stage 5: [`programmable-metrics-artifact-channel-stub-f17b83af422ad285.yaml`](../../releasenotes/notes/programmable-metrics-artifact-channel-stub-f17b83af422ad285.yaml).
-  Its sentence "Artifacts with stateful operators, such as aggregation, are rejected" stopped being true for the
-  `dogstatsd_pre_aggregation` scope in stage 6; it still holds for `post_enrich`. Reword it if the notes ship in one
-  release.
+  Edited in place by the one-scope change after stage 9, since no programmable-metrics note has shipped: it names the
+  `metrics` scope and its export route, and says that a program has at most one aggregation, where it said that
+  artifacts with stateful operators are rejected and named `post_enrich`.
 - Stage 6: [`plan-driven-dogstatsd-aggregation-b30cf0ea8aa14b5e.yaml`](../../releasenotes/notes/plan-driven-dogstatsd-aggregation-b30cf0ea8aa14b5e.yaml).
+  Edited in place by the one-scope change: an artifact changes aggregation in the same program as routing, through the
+  `metrics` export, where it named the `dogstatsd_pre_aggregation` scope.
 - Stage 7: [`plan-driven-metrics-resources-5182c448cb5235f3.yaml`](../../releasenotes/notes/plan-driven-metrics-resources-5182c448cb5235f3.yaml).
 - Stage 9: [`plan-driven-metrics-lanes-2a006347827ef79a.yaml`](../../releasenotes/notes/plan-driven-metrics-lanes-2a006347827ef79a.yaml).
   It revises the stage 3 note's promise that DogStatsD "stops reading its socket no sooner than before": on lanes a
@@ -210,40 +216,45 @@ ADP, the launcher names any port that is taken, which is usually such a leftover
 **A visible change in about 30 seconds:**
 
 1. The editor loads the default program once ADP serves its export (**Load default program** reloads it). It is the
-   `post_enrich` scope: `input.metrics -> <policy node>`, then the policy `tee`, the routing `split`s, and the
-   Multi-Region Failover gateway's `split`.
-2. Replace the line `input.metrics -> <node>` with the following, keeping the original target in the `false` branch:
+   whole metrics path, the one scope `metrics` (header `policy metrics {`): the input edges, one per source
+   (`input.dogstatsd -> dsd_enrich` in the demo, which runs DogStatsD alone), DogStatsD's processing, aggregation
+   (`dsd_agg`), the post-aggregation filter, enrichment, and the policy region (the policy `tee`, the routing `split`s,
+   and the Multi-Region Failover gateway's `split`), in that order. A `#` comment marks where each section begins;
+   comments are not part of the artifact.
+2. Insert a split ahead of the policy `tee`: in the block of the node that feeds it (`metrics_enrich` in the demo,
+   `metrics_enrich_host_tags` with host tags), change `-> metrics_policy` to `-> drop_debug`, and add, above the
+   `# Policy` comment:
 
    ```text
-   input.metrics -> drop_debug
-
    node drop_debug = split(name starts_with "demo.debug.") {
      true  -> drop
-     false -> <node>
+     false -> metrics_policy
    }
    ```
 
 3. Press **Compile** (Ctrl+Enter). The status reads that the artifact was composed and validated with no findings, and
-   the plan diff lists the added nodes. Press **Publish** and approve.
+   the plan diff lists the added nodes, the changed edges of the feeding node and the `tee`, and the routing drops,
+   which now carry the artifact's provenance. Press **Publish** and approve.
 4. Within about 3 s, `demo.debug.*` fades out of the primary column, the outcome under Publish reads that ADP runs it
    (with the generation), the acknowledgment timeline shows `active`, the per-node rates show `drop_debug`, and the
    canary check stays balanced.
 
 Other edits: put `or tag("team") == "platform"` on its own line before the `) {` of the split that feeds team B (S2);
 replace the failover split's predicate with `true and name in ["demo.checkout.requests"]` (S4); add a second branch
-to the primary output in the `tee`, emit to `metrics_routing_encode_99`, or add an `aggregate` node to see ADP reject
-each one while the previous generation keeps running (S5); **Revoke** restores the default routing (S6). Each scenario
-edits the default program, so each one undoes the one before; to narrate one change at a time, revoke between steps or
-keep editing the same program.
+to the primary output in the `tee`, emit to `metrics_routing_encode_99`, add an `aggregate` node without parameters or
+a second, complete one, or move `dsd_agg` after enrichment to see ADP reject each one while the previous generation
+keeps running (S5); **Revoke** restores the default program (S6). Each scenario edits the default program, so each one
+undoes the one before; to narrate one change at a time, revoke between steps or keep editing the same program.
 
-**The pre-aggregation scope** has no picker in the UI. Fetch its source with
-`curl -s 'http://127.0.0.1:17080/api/default-program?scope=dogstatsd_pre_aggregation' | jq -r .source` and paste it
-into the editor; Compile picks the scope from the source. To change the window, set both `dsd_no_agg_split`'s and
-`dsd_agg`'s `window` to the same literal, such as `10s` (a `timestamp_split`'s window must equal its aggregation's,
-amendment 83). The change installs at a cut, the first shared boundary at least 1 s after arming; watch
-`plan_cuts_total{outcome}`. `POST /api/revoke` with `{"scope": "dogstatsd_pre_aggregation"}` revokes only that scope;
-the **Revoke** button sends no scope and empties the whole snapshot. The headless check covers this scope in S13, a
-width change and its revocation in the second launch; ADP's lifecycle and cut tests cover the rest.
+**Aggregation's window** is in the same program. To change it, set both `dsd_no_agg_split`'s and `dsd_agg`'s
+`window` to the same literal, such as `10s` (a `timestamp_split`'s window must equal its aggregation's, amendment 83).
+The change installs at a cut, the first shared boundary at least 1 s after arming; watch `plan_cuts_total{outcome}`.
+An artifact that also changes routing installs as one generation, at the cut: its routing takes effect at the cut's
+boundary too, for every source, not at publish. A width change also gives every lossy node fed by the timestamp split or
+aggregation the artifact's provenance (amendment 168), so the plan diff and `explain` list the post-aggregation
+filter's and the routing gateways' drops as changed. **Revoke** empties the snapshot, so it reverts the window and any routing
+together. The headless check covers a width change and its revocation in S13, in the second launch; ADP's lifecycle
+and cut tests cover the rest.
 
 **Headless check.** `make demo-programmable-metrics-check` builds the same binaries and runs
 `target/devel/programmable-metrics-demo check --adp-bin target/devel/agent-data-plane $(DEMO_CHECK_ARGS)`. Flags:
@@ -274,7 +285,7 @@ run one beside the check. An event on the wrong state lane (`plan_lane_misrouted
 | S2 | Team B's route widened with `or tag("team") == "platform"`. | Team B also receives the platform family. |
 | S3 | `split(tag("team") == "checkout")` ahead of the `tee`, `true` to team B only. | Exclusive routing: checkout families reach team B and not the primary intake. |
 | S4 | Failover predicate `true and name in ["demo.checkout.requests"]`. | Mirroring: the failover intake receives only that family. |
-| S5a to S5d | A duplicate branch to the primary output; an emit to an undeclared output; an `aggregate` without parameters; a full `aggregate` in the policy scope. | ADP rejects each one naming the problem (`duplicate_contribution`, the undeclared output, `valid_parameters`, and placement's "runs only in an isolation slot" for S5d, which the editor cannot flag because it does not place), and S4 keeps running. |
+| S5a to S5e | A duplicate branch to the primary output; an emit to an undeclared output; an `aggregate` without parameters; a second, full `aggregate` ahead of the policy; the one `aggregate` moved after enrichment. | ADP rejects each one naming the problem (`duplicate_contribution`, the undeclared output, `valid_parameters`, `single_aggregation` for S5d, which the editor flags at the second aggregation's line, and placement's "runs only in an isolation slot" for S5e, which the editor cannot flag because it does not place), and S4 keeps running. |
 | S6 | Revoke (an empty snapshot). | The boot plan hash is active again and the default routing is back. |
 | S8a | Publish team D's resources (one recipient, `resources_team_d`). | The resources config is `active`, and ADP declares the output. |
 | S8b | Route `team:platform` to `resources_team_d`. | Team D's intake receives the platform family with team D's credential. |
@@ -284,8 +295,8 @@ run one beside the check. An event on the wrong state lane (`plan_lane_misrouted
 | S11 | Pause team D's intake, then revoke. | The recipient drains until its 30 s deadline and drops what it holds, and `dd_out`'s drop telemetry counts as many. |
 | S12a | (second launch, `--decoders 2 --state-lanes 2 --post-lanes 3`) | The frame runs on the lanes asked for, without R1's pipelining: keyed, affinity, and spread exits, key groups covering 0 to 255, events on every state and post-aggregation lane. |
 | S12b | Canary-only traffic until a state lane is empty for two windows, then probe counters one at a time. | A counter first seen in a state lane that was empty at ticks arrives as one point at its bucket, with no zero before it (fixture X1 end to end); every probe once. |
-| S13a | `window: 30s` on `dsd_no_agg_split` and `dsd_agg` in the pre-aggregation scope. | Installs at a cut at a multiple of 30 s; every state lane crosses (`plan_lane_crossings_total{kind:cut}`); the last 10 s bucket and the first 30 s bucket each balance, whole. |
-| S13b | Revoke the pre-aggregation scope. | The cut back to 10 s, with the same checks. |
+| S13a | `window: 30s` on `dsd_no_agg_split` and `dsd_agg` in the default program. | Installs at a cut at a multiple of 30 s; every state lane crosses (`plan_lane_crossings_total{kind:cut}`); the last 10 s bucket and the first 30 s bucket each balance, whole. |
+| S13b | Revoke (an empty snapshot), before the routing steps, which a revoke would undo too. | The cut back to 10 s, with the same checks. |
 | S14a to S14c | S8's resources and route, on the post-aggregation lanes. | Team D receives through the post-aggregation lanes: every lane's input grows after the route installs, and the data points `dd_out` delivered to team D's domain equal what its intake received. |
 
 A run took about 70 to 75 s through stage 6; with S8 to S11 it takes about 150 s (147.9 to 149.9 s in the four stage 7
@@ -537,10 +548,12 @@ in [`limits.rs`](../../lib/saluki-metric-plan/src/limits.rs). In method syntax, 
 `header_mut` (returning `&mut BatchHeader`) shadows the trait method `Dispatchable::header_mut` (returning an `Option`).
 
 **Fixtures and tests.** The hand-written default programs are in `lib/saluki-metric-plan/fixtures/`, with the exports
-in `fixtures/export/` and the explain golden files in `fixtures/explain/` (`default-program-stage3*` keep the stage 3
+in `fixtures/export/` (`default-program-metrics.json` for the one scope; the `post_enrich` and
+`dogstatsd_pre_aggregation` exports for the two scopes of stage 9, which `testing::with_two_scopes` restores for the
+plan crate's tests of partial scopes, exits, and several scopes) and the explain golden files in `fixtures/explain/` (`default-program-stage3*` keep the stage 3
 form, whose gateways are opaque hosts); the checked-in JSON schemas are in `lib/saluki-metric-plan/schema/`. ADP's
 lowering matrix is `programmable_metrics/lowering/matrix.rs` (`MATRIX`), with `lowering/fixtures/every-branch.json`;
-the demo's export fixture is `bin/programmable-metrics-demo/fixtures/export-post-enrich.json`. The ADP test topology
+the demo's export fixture is `bin/programmable-metrics-demo/fixtures/export-metrics.json`, trimmed to the policy region. The ADP test topology
 (`test_topology.rs`) replaces I/O with test doubles in place through `TopologyBlueprint::replace_*` and runs the
 differential, live-change, fault, lifecycle, telemetry, burst, and measurement tests. The frame harness
 (`runtime::harness::FrameHarness`, `test-util`) runs whole frames of region drivers in process.
@@ -622,6 +635,23 @@ caches, counted in the bounds; the resolver task leak fixed. **Not release-noted
 `dsd_agg`'s state bound at `dsd_agg` and its live bytes under the lanes' groups (amendment 155); with one producer lane
 the source's output keeps the name `metrics`; the `dogstatsd_receiver_lock_wait` measurement probe is gone
 (`measurement` builds only).
+
+**One scope** (after stage 9, amendments 168 and 169; release-noted in the stage 5 and 6 notes unless marked): the
+default program has one scope, `metrics`, fed by one input per metrics source the configuration enables (`dogstatsd`,
+`otlp`, `checks`, `liveness`, `trace_sampler`, each declared with the kinds and timestamps its source produces), with
+no exits, in place of `post_enrich` and `dogstatsd_pre_aggregation`; the export route takes `?scope=metrics`; one
+artifact changes routing and aggregation together, and an artifact that changes both installs as one change at the
+width change's cut; a program has at most one aggregation (`single_aggregation`, at the second one's node).
+**Not release-noted:** an artifact of either former scope is rejected as of an unknown scope; a combined artifact's
+routing takes effect from the cut's boundary for every source; the status route's `scopes` has the one entry
+`metrics`; the export's catalog document carries `single_aggregation: true`; an artifact that changes aggregation's
+width now also gives the eight lossy nodes fed by the timestamp split or aggregation the artifact's provenance
+(`Modified` correspondence: `dsd_no_agg_split`, `dsd_tag_filterlist`, `dsd_agg`, `dsd_post_agg_filter_true`, the two
+routing groups' and the two failover gateways' `_false` drops, with the fixtures' branches), where the pre-aggregation
+scope's artifact stopped at its exits (three): loss there is attributed to the artifact, and `explain` and the plan diff
+list those nodes as changed; composition now puts an artifact's edges in the default program's order (amendment 168),
+so the printed form of an export, which lists the edges from the scope's inputs first in input-name order, composes to
+the default program with its hash, though its artifact document, and so its artifact hash, differs from the export's.
 
 **Telemetry** (all release-noted): the fused components' and gateways' component, health, and task series are gone;
 `metrics_enrich` and `dsd_agg` report sent counts per output instead of `_default`; accounting paths nest under the
@@ -747,6 +777,7 @@ the local `--test-threads 4` in the gate (see [Environment notes](#environment-n
 | **R1's cost model** (P9.7) | Kept, off whenever lanes are on (plan 8.5, P9.7). Two decisions, which Z3's reading conflated: (1) the defaults profile's lead of `lanes.mode: off` on two workers (1.081 and 1.050 of legacy in two paired runs against 0.986 and 1.023 on `{1, 1, 1}`; CPU per metric 0.961 and 0.975 against 1.046 and 1.017) is the lane runtime's cost at one lane per slot, since R1 cuts no slot in that profile: as built since the stage 9 review, `auto` runs the layout without lanes wherever every count comes to one; (2) R1's own evidence is the mapper profile, where it places `dsd_prefix_filter_region`: equal at one and two workers (1.003 against 0.994 at W = 2), lanes ahead from four. Amendment 122 and the withdrawal of 47 wait. | (1) Accept `auto`'s layout without lanes at one lane per slot, or revert it with a release note that such hosts run the lane runtime. (2) Run the mapper and gateways profiles at W = 1 to 3 on the gate host, `lanes.mode: off` with and without R1's pipelining; if pipelining does not lead, delete R1 as plan 5.10 lists. |
 | **O4's queue and O5's size** | O4's shared queue is provisional (per-decoder queues measured higher at one and two decoders on macOS); O5's front cache has 4,096 slots per decoder, where 16,384 cost 25 to 30% less per resolution in a paired timing. | Rerun M2 on the gate host before recording O4's choice; size O5 from the hit share at lading's distributions. |
 | **`make check-deny`** | Fails on `RUSTSEC-2024-0449` (`unsafe-libyaml` unmaintained, through `serde_yaml` in `agent-data-plane-config-system`, `datadog-agent-config-overlay-model`, and `antithesis-intake`): the advisory database has it now, and `main`'s `Cargo.lock` at the merge base already holds `unsafe-libyaml` 0.2.11. | An exception in `deny.toml`, or a move off `serde_yaml`. |
+| **One scope, one aggregation** (amendments 168 and 169) | The default program has one scope, `metrics`, over the whole metrics path, and a program at most one aggregation (`single_aggregation`, declared by ADP's catalog). After a width change, every lossy node fed by the timestamp split or aggregation (eight in the fixtures) carries the artifact's provenance, so its loss is attributed to the artifact. Composition puts an artifact's edges in the default program's order. | Accept both, or narrow the scope again; lift the one-aggregation rule once the demo and the operator surfaces handle several. |
 | **The specification's Vale errors** | The specification, which only its author edits, adds 12 errors to `make check-docs`, a CI job (see [Environment notes](#environment-notes)). | Before CI runs: add the 11 flagged words to the Vale vocabulary, and edit or exempt the hyphenated `Exactly-once`. |
 
 ## Spec amendments index
@@ -857,10 +888,11 @@ the shutdown row, the expiry row, and the timestamped row.
 
 Totals: kinds C 49, D 26, N 9, L 3; themes STA 20, ART 16, NAT 12, INS 9, IR 8, VER 8, FRM 7, TEL 4, EXE 3.
 
-Amendments 88 to 167 are in [the stages 7 and 9 plan's section
+Amendments 88 to 169 are in [the stages 7 and 9 plan's section
 10](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments): 88 to 107 from its stage 7 design, 108 to 128
 from its stage 9 design, 129 to 138 from stage 7's parts and integration, 139 and 140 from stage 9's foundations (P9.F),
-141 to 162 from stage 9's parts and integration, and 163 to 167 from stage 9's review; the next is 168. Stage 7's:
+141 to 162 from stage 9's parts and integration, 163 to 167 from stage 9's review, and 168 and 169 from the one-scope
+change after stage 9; the next is 170. Stage 7's:
 
 | # | Short title | Theme | Kind | Owner |
 |---|---|---|---|---|
@@ -949,6 +981,13 @@ Stage 9's:
 | 165 | Output stamps per lane | VER | C | no |
 | 166 | Heartbeats in each second of several points | EXE | C | no |
 | 167 | One lane per slot is the layout without lanes | EXE | D | yes: accept, or keep lanes at one lane per slot |
+
+After stage 9, the one-scope change:
+
+| # | Short title | Theme | Kind | Owner |
+|---|---|---|---|---|
+| 168 | One scope over the whole metrics path | ART | D | yes: accept one scope, and its loss attribution after a width change |
+| 169 | At most one aggregation per program | IR | D | yes: accept the restriction for now |
 
 Wording proposed for adoption: amendment 49 ("under the reference interpreter's delivery order"), 51 ("a maximal
 group of `split` and `tee` operators joined directly by edges within one region"), and 52 ("operator parameters,

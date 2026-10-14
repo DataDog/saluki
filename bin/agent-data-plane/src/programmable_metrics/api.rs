@@ -4,7 +4,7 @@
 //! |---|---|
 //! | `GET /programmable-metrics/status` | the status summary and `config_states`, as the stub protocol writes them |
 //! | `GET /programmable-metrics/resources` | the resources product's state, hosts, outputs, recipients, and budget |
-//! | `GET /programmable-metrics/export?scope=post_enrich` | the export bundle of the scope |
+//! | `GET /programmable-metrics/export?scope=metrics` | the export bundle of the scope |
 //! | `GET /programmable-metrics/plan` | the active composed logical plan, resolved values included |
 //! | `GET /programmable-metrics/default-program` | the default program last lowered, resolved values included |
 //! | `GET /programmable-metrics/explain` | the explain document of the active plan, as JSON; `?format=text` for text |

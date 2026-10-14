@@ -30,6 +30,7 @@ partitioned **lanes** across cores (stage 9).
 | Docs | The status document and the stages 7 and 9 design | `2729a33271`, `d7316c474f` |
 | 7 | Outputs, recipients, and delivery settings change live (resource generations) | `b7e63f147b` |
 | 9 | Stage 9 foundations and first measurements; then partitioned lanes | `b523d9002b`, `8b44c153aa` |
+| After 9 | One editable scope, `metrics`, over the whole metrics path; at most one aggregation per program (amendments 168, 169) | not committed |
 
 Stage 8 (the production Remote Config channel) was skipped on purpose, and stage 10 (measured extensions) is not
 started. Current state, in detail: [status: where things stand](programmable-metrics-status.md#where-things-stand).
@@ -77,8 +78,9 @@ started. Current state, in detail: [status: where things stand](programmable-met
   the reference interpreter, compatibility-matrix fixtures, and the spec's 15 transition traces, run serially and
   across lanes. Every intentional difference is listed under changes users can see and in the release notes.
 - **Live changes.** Configuration, policy artifacts, aggregation width cuts, and output and recipient changes install
-  without loss or duplication. Continuous-input, fault, and 1,000-cycle reclamation tests cover them, and the demo
-  check covers its scenarios S0 to S14.
+  without loss or duplication. One artifact edits the whole metrics path, routing and aggregation together.
+  Continuous-input, fault, and 1,000-cycle reclamation tests cover them, and the demo check covers its scenarios S0 to
+  S14.
 - **Performance** (ratios to native, measured on one macOS host, not the gate):
   - stage 7: throughput 1.11 to 1.21, CPU per metric at most 1.01, p99 0.27 to 0.65;
   - stage 9 through the real DogStatsD source: throughput 0.96 to 1.07 at 1 to 8 workers, where stage 6's pipelining

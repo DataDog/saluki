@@ -6,8 +6,8 @@ stages 1 to 6. Both stages are built: [Stage 7 as built](#stage-7-as-built) and 
 say what changed from this design, and 8.5 and 8.6 how stage 9's increments were enabled and what they measured. The
 stage 9 gate is decided only in part: its Linux items wait for a gate host ([Q2](#12-open-questions)). The
 specification stays authoritative for semantics; where this design departs from it, [proposed spec
-amendments](#10-proposed-spec-amendments) 88 to 167 record what and why (163 to 167 from the stage 9 review, whose
-fixes are rows of Stage 9 as built). [The implementation
+amendments](#10-proposed-spec-amendments) 88 to 169 record what and why (163 to 167 from the stage 9 review, whose
+fixes are rows of Stage 9 as built, and 168 and 169 from the one-scope change after it). [The implementation
 design](programmable-metrics-implementation.md) describes stages 1 to 6 as built, and [the status
 document](programmable-metrics-status.md) records the state of the branch. Code references are repository paths with
 line numbers at `b01049372e`. **(est.)** marks an estimate that a measurement in [the measurement
@@ -3803,6 +3803,38 @@ index](programmable-metrics-status.md#spec-amendments-index): themes EXE, FRM, N
 167. **One lane per slot is the layout without lanes** (EXE, D; refines 157). Where every automatic lane count comes to
      one and none is set explicitly, the metrics path runs the layout without lanes: one lane per slot gains no
      parallelism, and the lane runtime costs CPU there. Owner: accept, or keep lanes at one lane per slot.
+
+**After stage 9, the one-scope change:**
+
+168. **One scope over the whole metrics path** (ART, D; revises amendment 6's scopes and the stage 6
+     `dogstatsd_pre_aggregation` scope). The default program declares one replaceable scope, `metrics`, with one input
+     per metrics source the configuration enables, named after its source's binding (`dogstatsd`, `otlp`, `checks`,
+     `liveness`, `trace_sampler`) and declared by the host's catalog with the port type its source produces, and no
+     exits: it covers every node after the sources, DogStatsD processing, aggregation, enrichment, and the policy
+     region. It replaces `post_enrich` and `dogstatsd_pre_aggregation`; the status summary's top-level members describe
+     it. Consequences the specification should state: an artifact that changes routing and aggregation's width installs
+     as one generation, at the width change's cut, so its routing takes effect at the cut's boundary for every source;
+     and under the native-authority rule a width change gives every lossy node fed by the timestamp split or
+     aggregation the artifact's provenance (eight nodes in the default-program fixture: the timestamp split, the tag
+     filterlist, aggregation, the post-aggregation filter's drop, and the routing and gateway drops), where the
+     pre-aggregation scope's artifact stopped at its exits (three), so loss there is attributed to the artifact. With
+     several inputs, the surface syntax's canonical order (the edges from the inputs first, in input-name order) is not
+     the export's, and a plan's hash covers its edge order, so composition puts an artifact's edges in the default
+     program's order before splicing them in: an edge the scope's region has takes that edge's place, and a new edge
+     follows the region's edge the artifact lists before it. An unmodified export composes to the default program, with
+     its hash, in whatever order its edges are written; the artifact's own hash still covers the order it was written
+     in. The physical frame, placement, the cut protocol, and scope closure are unchanged: an unmodified export
+     composes to the default program and places onto the boot frame exactly as it does. Owner: accept one scope, its
+     loss attribution, and the edge normalization.
+169. **At most one aggregation per program** (IR, D). A host may declare that it runs at most one state owner per
+     program (the catalog's `single_aggregation`); validation then reports every state owner after the first
+     (`single_aggregation`, an error at the extra node: "a program has at most one aggregation; `<node>` is a second
+     one (`<first>` is the first)"), the first being, in plan order, the first without artifact provenance, else the
+     first with a reserved ID, else the first.
+     ADP declares it, for now. Placement alone accepts a second state owner wherever an isolation slot can run it, by
+     design, such as on the other branch of the timestamp split; the rule refuses it there too, and placement still
+     refuses a single aggregation the frame cannot run, such as one moved after enrichment. Owner: accept the
+     restriction for now.
 
 ## 11. Risks
 

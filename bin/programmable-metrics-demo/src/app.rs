@@ -9,8 +9,8 @@
 //!   export does not declare yet.
 //! - `POST /api/publish` `{artifact_hash}`: publishes the last compiled artifact as the next revision, if
 //!   `artifact_hash` is its hash. An approval is used once: publishing again needs another compile.
-//! - `POST /api/revoke` (optionally `{scope}`): empties the snapshot, so that ADP goes back to the default program, or
-//!   removes one scope's config, so that ADP runs the default program's region there.
+//! - `POST /api/revoke`: empties the policy snapshot, so that ADP goes back to the default program, aggregation and
+//!   routing both.
 //! - `GET /api/resources/template`: the team D resources template, and the resources document the stub serves, if
 //!   any, as the Resources tab's editor shows documents.
 //! - `POST /api/resources/check` `{document}`: checks a resources draft (its hash, validation as ADP does it, and the
@@ -18,8 +18,8 @@
 //! - `POST /api/resources/publish` `{artifact_hash}`: publishes the last checked resources draft as the next resources
 //!   revision, if `artifact_hash` is its hash: an approval of its own, used once.
 //! - `POST /api/resources/revoke`: empties the resources snapshot, revoking everything it declared.
-//! - `GET /api/default-program[?scope=<scope>]`: the export bundle's artifact printed as source, with its legend, or
-//!   why there is none: of the policy scope, or of the scope named.
+//! - `GET /api/default-program`: the export bundle's artifact, the default program's one scope, printed as source with
+//!   a comment where each section begins, with its legend, or why there is none.
 //! - `POST /api/traffic` `{running?, rate?, mix?}`: starts, pauses, or changes the rate of the traffic generator, or
 //!   the lines its datagrams carry (`mix`: `full`, or `canary_only`).
 //! - `POST /api/intakes/{name}/pause` `{paused}`: pauses an intake, which then answers `503 Service Unavailable`, or
@@ -38,7 +38,6 @@ use std::{
 };
 
 use axum::{
-    body::Bytes,
     extract::{Path, Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
@@ -109,12 +108,12 @@ pub struct App {
     api: AdpApi,
     compiled: Arc<Mutex<Option<Compiled>>>,
     resources_checked: Arc<Mutex<Option<CheckedResources>>>,
-    /// The bucket widths that the artifacts of the pre-aggregation scope the stub served set, by revision (see
+    /// The bucket widths that the artifacts the stub served set, by revision (see
     /// [`App::canary_widths`]).
     served_widths: Arc<Mutex<BTreeMap<u64, ServedWidths>>>,
 }
 
-/// The bucket widths one artifact of the pre-aggregation scope sets, and when the stub last served it.
+/// The bucket widths one artifact sets, and when the stub last served it.
 #[derive(Clone, Debug)]
 struct ServedWidths {
     widths: Vec<u64>,
@@ -199,14 +198,14 @@ impl App {
         self.intakes.iter().map(|intake| *intake.recipient()).collect()
     }
 
-    /// Notes, as served at `now_ms`, the bucket widths that the artifacts the stub serves for the pre-aggregation scope
-    /// set (see [`canary::artifact_widths`]).
+    /// Notes, as served at `now_ms`, the bucket widths that the artifacts the stub serves set (see
+    /// [`canary::artifact_widths`]).
     fn note_served_widths(&self, now_ms: u64) {
         let served = self
             .channel
             .envelopes()
             .into_iter()
-            .filter(|(scope, _)| scope == canary::WIDTH_SCOPE)
+            .filter(|(scope, _)| scope == POLICY_SCOPE)
             .map(|(_, envelope)| (envelope.revision, canary::artifact_widths(&envelope.artifact)))
             .filter(|(_, widths)| !widths.is_empty());
         let mut noted = self
@@ -238,12 +237,12 @@ impl App {
     }
 
     /// Returns the bucket widths, besides the configured aggregation window, that the canary check aligns its ranges
-    /// to at `now_ms`, in increasing order: those set by every artifact of the pre-aggregation scope that the stub
+    /// to at `now_ms`, in increasing order: those set by every artifact of the default program's scope that the stub
     /// served within the last [`CANARY_HISTORY_SECS`], unless ADP refused it.
     ///
     /// A width stays for that long after its artifact is revoked or replaced: its buckets stay in the history the
-    /// check reads, and the cut back to another width takes effect only at a common multiple of the two. Policy
-    /// artifacts never set a width, since ADP refuses an aggregation in the policy scope.
+    /// check reads, and the cut back to another width takes effect only at a common multiple of the two. An artifact of
+    /// another scope never sets a width, since ADP declares no other scope and refuses it.
     fn canary_widths(&self, now_ms: u64) -> Vec<u64> {
         self.note_served_widths(now_ms);
         let refused = self.refused_revisions();
@@ -482,12 +481,13 @@ async fn compile_source(State(app): State<App>, Json(request): Json<CompileReque
             .map(|plan| (hash, plan)),
         None => None,
     };
-    // The scope the source replaces, the policy scope's unless it names another: its export is the one to check
-    // against, and ADP composes it with the artifacts it runs for the other scopes.
+    // The source is checked against the export of the default program's one scope, which every artifact replaces; one
+    // that names another scope is refused by composition, which names the scope ADP declares. ADP composes it with the
+    // artifacts it runs for any other scope, which, with one scope declared, are none.
     let scope = saluki_metric_plan_syntax::parse(&request.source)
         .map(|parsed| parsed.artifact.scope.to_string())
         .unwrap_or_else(|_| POLICY_SCOPE.to_string());
-    let exported = app.control.export_of_scope(&scope);
+    let exported = app.control.export_with_default_program();
     let others = status
         .as_ref()
         .map(|status| other_scope_artifacts(status, &app.channel.envelopes(), &scope))
@@ -596,42 +596,17 @@ async fn publish(State(app): State<App>, Json(request): Json<PublishRequest>) ->
     }
 }
 
-/// A revocation: of one scope's config, or of the whole snapshot when the request names no scope or has no body.
-#[derive(Default, Deserialize)]
-struct RevokeRequest {
-    scope: Option<String>,
-}
-
-async fn revoke(State(app): State<App>, body: Bytes) -> Response {
-    let request = if body.is_empty() {
-        RevokeRequest::default()
-    } else {
-        match serde_json::from_slice::<RevokeRequest>(&body) {
-            Ok(request) => request,
-            Err(error) => {
-                return error_response(
-                    StatusCode::BAD_REQUEST,
-                    format!(
-                        "The revoke request is not a JSON object with an optional `scope`: {}. Send no body to revoke \
-                         every scope.",
-                        error
-                    ),
-                )
-            }
-        }
-    };
-    let scope = request.scope.as_deref();
+/// Revokes the policy artifact: the stub then serves an empty policy snapshot, and ADP runs the default program again.
+async fn revoke(State(app): State<App>) -> Response {
     // What the stub served until now was served until the revoke.
     app.note_served_widths(unix_millis());
-    match app.channel.revoke(scope, unix_millis()) {
-        Ok(true) => Json(json!({ "revoked": true, "scope": scope })).into_response(),
-        Ok(false) => {
-            let message = match scope {
-                Some(scope) => format!("The snapshot holds no config for scope `{}`: nothing to revoke.", scope),
-                None => "The snapshot is already empty: nothing to revoke.".to_string(),
-            };
-            Json(json!({ "revoked": false, "scope": scope, "message": message })).into_response()
-        }
+    match app.channel.revoke(None, unix_millis()) {
+        Ok(true) => Json(json!({ "revoked": true })).into_response(),
+        Ok(false) => Json(json!({
+            "revoked": false,
+            "message": "The snapshot is already empty: nothing to revoke.",
+        }))
+        .into_response(),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, format!("{:#}", error)),
     }
 }
@@ -736,15 +711,8 @@ async fn revoke_resources(State(app): State<App>) -> Response {
     }
 }
 
-/// Which scope of the default program to load: the policy scope unless named.
-#[derive(Deserialize)]
-struct DefaultProgramQuery {
-    scope: Option<String>,
-}
-
-async fn default_program(State(app): State<App>, Query(query): Query<DefaultProgramQuery>) -> Json<Value> {
-    let scope = query.scope.as_deref().unwrap_or(POLICY_SCOPE);
-    Json(match app.control.refresh_export_of(&app.api, scope).await {
+async fn default_program(State(app): State<App>) -> Json<Value> {
+    Json(match app.control.refresh_export(&app.api).await {
         Surface::Available(export) => json!({
             "available": true,
             "source": default_program_source(&export),

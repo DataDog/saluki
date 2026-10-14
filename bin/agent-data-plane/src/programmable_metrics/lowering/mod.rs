@@ -16,7 +16,7 @@
 //! sends timestamped points past the tag filterlist and aggregation to a merge in front of the post-aggregation filter
 //! (another `split` and `drop`), whose output a `tee` sends to the client telemetry output and to metrics enrichment.
 //! Metrics enrichment merges that with the OTLP, checks, liveness, and trace sampler sources, runs host enrichment and
-//! host tags, and feeds the `post_enrich` scope, the policy region: a `tee` with one branch per output. The main output
+//! host tags, and feeds the policy region: a `tee` with one branch per output. The main output
 //! is emitted directly; every other output sits behind its gateway, a `split` whose `true` port is emitted to the
 //! output and whose `false` port drops:
 //!
@@ -80,18 +80,16 @@ use saluki_metric_plan::{
     canonical::MAX_SAFE_INTEGER,
     ir::{
         derived_terminal_id, format_duration, BindingName, Edge, NativeComponentId, Node, NodeId, OperatorName,
-        ParamName, Params, Plan, PortName, PortRef, Provenance, ScopeDecl, ScopeName, IR_VERSION,
+        ParamName, Params, Plan, PortName, PortRef, Provenance, ScopeDecl, IR_VERSION,
     },
-    operators::{names, METRICS_PORT},
+    model::{PortType, TimestampForm},
+    operators::{names, SourceBinding, METRICS_PORT},
 };
 use serde_json::{json, Value};
 
 use super::{
     bindings::{self, Snapshots},
-    catalog::{
-        AdpCatalog, DSD_PRE_AGGREGATION_INPUT, DSD_PRE_AGGREGATION_SCOPE, EXIT_AGGREGATED, EXIT_PASSTHROUGH,
-        POST_ENRICH_INPUT, POST_ENRICH_SCOPE,
-    },
+    catalog::{scope_input_name, AdpCatalog, METRICS_SCOPE},
     host_facts::{host_tags_enabled, HostFacts},
     resources::{
         cluster_agent_forwarder, Declared, FixedHosts, NativeOutputs, NativeResources, OutputKind, RoutingGroup,
@@ -284,24 +282,36 @@ impl Lowering {
         let mut program = Program::new(snapshots);
         let mut notes = Vec::new();
 
-        // Everything feeding metrics enrichment, in a fixed order.
+        // Everything feeding metrics enrichment, in a fixed order, and the scope's inputs: one per source, each the
+        // source's metrics, with the port type it carries.
         let mut enrichment_inputs = Vec::new();
-        let mut dogstatsd_scope = None;
+        let mut scope_inputs = Vec::new();
         if dp.dogstatsd_enabled() {
-            let (enrichment_input, scope) = program.dogstatsd(startup, &mut notes)?;
+            let (enrichment_input, source, timestamps) = program.dogstatsd(startup, &mut notes)?;
             enrichment_inputs.push(enrichment_input);
-            dogstatsd_scope = Some(scope);
+            scope_inputs.push((SourceBinding::Dogstatsd, source, timestamps));
         }
         let sources = [
-            (ids::OTLP_IN, "otlp", dp.otlp_enabled() && !dp.otlp_proxy_enabled()),
-            (ids::CHECKS_IPC_IN, "checks", dp.checks_enabled()),
-            (ids::LIVENESS_IN, "liveness", !dp.standalone_mode()),
-            (ids::TRACE_SAMPLER, "trace_sampler", dp.traces_pipeline_required()),
+            (
+                ids::OTLP_IN,
+                SourceBinding::Otlp,
+                dp.otlp_enabled() && !dp.otlp_proxy_enabled(),
+            ),
+            (ids::CHECKS_IPC_IN, SourceBinding::Checks, dp.checks_enabled()),
+            (ids::LIVENESS_IN, SourceBinding::Liveness, !dp.standalone_mode()),
+            (
+                ids::TRACE_SAMPLER,
+                SourceBinding::TraceSampler,
+                dp.traces_pipeline_required(),
+            ),
         ];
         for (id, binding, present) in sources {
             if present {
-                let source = program.node(id, names::SOURCE, json!({"binding": binding}), id);
-                enrichment_inputs.push(PortRef::new(source, port(METRICS_PORT)));
+                let source = program.node(id, names::SOURCE, json!({"binding": binding.as_str()}), id);
+                let metrics = PortRef::new(source, port(METRICS_PORT));
+                enrichment_inputs.push(metrics.clone());
+                // Every other source's timestamp form is fixed by its binding.
+                scope_inputs.push((binding, metrics, TimestampForm::Mixed));
             }
         }
         if enrichment_inputs.is_empty() {
@@ -311,8 +321,9 @@ impl Lowering {
         }
 
         let enriched = program.enrichment(startup, &self.facts, enrichment_inputs)?;
-        program.policy(enriched.clone(), &resolved.outputs)?;
+        program.policy(enriched, &resolved.outputs)?;
 
+        // The one scope: the whole metrics path after its sources, fed by each of them and with no exits.
         let mut plan = Plan {
             ir_version: IR_VERSION,
             provenance: None,
@@ -322,33 +333,22 @@ impl Lowering {
             scopes: Default::default(),
             resources: resolved.resources.clone(),
         };
-        if let Some(scope) = dogstatsd_scope {
-            plan.scopes.insert(
-                DSD_PRE_AGGREGATION_SCOPE.parse().expect("scope names are identifiers"),
-                scope,
-            );
-        }
         plan.scopes.insert(
-            POST_ENRICH_SCOPE.parse().expect("scope names are identifiers"),
+            METRICS_SCOPE.parse().expect("scope names are identifiers"),
             ScopeDecl {
-                inputs: [(
-                    POST_ENRICH_INPUT.parse().expect("input names are identifiers"),
-                    enriched,
-                )]
-                .into(),
+                inputs: scope_inputs
+                    .iter()
+                    .map(|(binding, port, _)| (scope_input_name(*binding), port.clone()))
+                    .collect(),
                 exits: Default::default(),
             },
         );
+        let declared = scope_inputs
+            .into_iter()
+            .map(|(binding, _, timestamps)| (scope_input_name(binding), binding.port_type(timestamps)))
+            .collect::<Vec<(_, PortType)>>();
 
-        // The pre-aggregation scope's exits are what lowering wrote: `passthrough` exists only with the no-aggregation
-        // pipeline.
-        let pre_aggregation: ScopeName = DSD_PRE_AGGREGATION_SCOPE.parse().expect("scope names are identifiers");
-        let exits = plan
-            .scopes
-            .get(&pre_aggregation)
-            .map(|scope| scope.exits.keys().cloned().collect())
-            .unwrap_or_default();
-        let catalog = AdpCatalog::new(&resolved.outputs, snapshots, self.hosts).with_pre_aggregation_exits(exits);
+        let catalog = AdpCatalog::new(&resolved.outputs, snapshots, self.hosts).with_scope_inputs(declared);
         Ok(Lowered {
             plan,
             catalog,
@@ -499,13 +499,12 @@ impl<'a> Program<'a> {
         Ok(json!({"config": name, "resolved": resolved}))
     }
 
-    /// Lowers the DogStatsD pre-aggregation path, aggregation, and the post-aggregation filter, and returns the port
-    /// that feeds metrics enrichment and the `dogstatsd_pre_aggregation` scope: from the source's metrics to the
-    /// post-aggregation filter's input, or, with the no-aggregation pipeline, to the two inputs of the merge in front
-    /// of it.
+    /// Lowers the DogStatsD source, its pre-aggregation path, aggregation, and the post-aggregation filter, and returns
+    /// the port that feeds metrics enrichment, the source's metrics port, and the timestamp form of the source's
+    /// metrics: mixed with the no-aggregation pipeline, which parses client timestamps, and untimestamped without it.
     fn dogstatsd(
         &mut self, startup: &SalukiConfiguration, notes: &mut Vec<LoweringNote>,
-    ) -> Result<(PortRef, ScopeDecl), GenericError> {
+    ) -> Result<(PortRef, PortRef, TimestampForm), GenericError> {
         // `Lowering::new` checked what native construction rejects.
         let dogstatsd = &startup.domains.dogstatsd;
         let no_aggregation_pipeline = dogstatsd.aggregation.no_aggregation_pipeline;
@@ -520,15 +519,12 @@ impl<'a> Program<'a> {
             json!({"binding": "dogstatsd", "timestamps": timestamps}),
             ids::DSD_IN,
         );
-        let mut scope = ScopeDecl {
-            inputs: [(
-                DSD_PRE_AGGREGATION_INPUT.parse().expect("input names are identifiers"),
-                PortRef::new(dsd_in.clone(), port(METRICS_PORT)),
-            )]
-            .into(),
-            exits: Default::default(),
+        let source = PortRef::new(dsd_in.clone(), port(METRICS_PORT));
+        let source_timestamps = if no_aggregation_pipeline {
+            TimestampForm::Mixed
+        } else {
+            TimestampForm::Untimestamped
         };
-        let exit = |name: &str| name.parse().expect("exit names are identifiers");
 
         let params = json!({
             "profiles": self.bound("dogstatsd.mapper.profiles")?,
@@ -638,12 +634,6 @@ impl<'a> Program<'a> {
                 );
                 self.edge(aggregated, &merge, "0");
                 self.edge(passthrough, &merge, "1");
-                scope
-                    .exits
-                    .insert(exit(EXIT_AGGREGATED), PortRef::new(merge.clone(), port("0")));
-                scope
-                    .exits
-                    .insert(exit(EXIT_PASSTHROUGH), PortRef::new(merge.clone(), port("1")));
                 PortRef::new(merge, port("out"))
             }
             None => aggregated,
@@ -663,12 +653,6 @@ impl<'a> Program<'a> {
             ids::DSD_POST_AGG_FILTER,
         );
         self.edge(to_post_aggregation, &post_aggregation, "in");
-        if scope.exits.is_empty() {
-            scope.exits.insert(
-                exit(EXIT_AGGREGATED),
-                PortRef::new(post_aggregation.clone(), port("in")),
-            );
-        }
         self.terminal(
             &post_aggregation,
             "true",
@@ -691,7 +675,7 @@ impl<'a> Program<'a> {
             json!({"output": DSD_CLIENT_TELEMETRY}),
             DSD_CLIENT_TELEMETRY_OUT,
         );
-        Ok((PortRef::new(fanout, port("1")), scope))
+        Ok((PortRef::new(fanout, port("1")), source, source_timestamps))
     }
 
     /// Lowers metrics enrichment fed by `inputs`, and returns the port of the enriched metrics.

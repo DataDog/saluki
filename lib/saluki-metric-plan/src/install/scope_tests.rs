@@ -2,9 +2,11 @@
 //! revision high-water mark across scopes, and per-scope status, with the states expected after each step written by
 //! hand.
 //!
-//! The test composer composes an artifact by its scope and marker: a `post_enrich` artifact's marker becomes the
-//! listener filterlist, and a `dogstatsd_pre_aggregation` artifact's the metric name of the tag filterlist's rule, so
-//! that a plan shows which artifacts it composes.
+//! The test composer composes an artifact by its scope and marker: an artifact of the policy scope's
+//! ([`POLICY_SCOPE`]) marker becomes the listener filterlist, and a `dogstatsd_pre_aggregation` artifact's the metric
+//! name of the tag filterlist's rule, so that a plan shows which artifacts it composes. The host declares one scope
+//! today; the second is one of the [two scopes it declared through stage 9](crate::testing::TWO_SCOPES), which the
+//! installer core still supports, as it supports any number.
 
 use std::{cell::Cell, collections::BTreeMap};
 

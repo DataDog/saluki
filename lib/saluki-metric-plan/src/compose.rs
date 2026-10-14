@@ -539,8 +539,11 @@ pub fn compose(
 /// - State owners, such as `aggregate`, compose like any node: placement decides whether the frame can run them where
 ///   the artifact puts them, and validation rejects host components in artifacts.
 /// - The composed plan's provenance lists every artifact's revision, in scope order, and its nodes and edges are in the
-///   default program's order, each artifact's taking the places of its region's in order (any left over follow the last
-///   of them), so that composing an unmodified export gives the default program again, with the same hash.
+///   default program's order, each artifact's taking the places of its region's in order (any left over follow the
+///   last of them). An artifact's edges are first put in the default program's order: an edge the region has takes
+///   that edge's place, and a new edge follows the region's edge the artifact lists before it. So composing an
+///   unmodified export gives the default program again, with the same hash, whatever order its edges are written in,
+///   as a printed and parsed export writes them.
 /// - The composed plan is validated with `registry` and `catalog`; the report is returned, not judged, so the caller
 ///   rejects an artifact with errors as it does any candidate.
 ///
@@ -577,12 +580,10 @@ pub fn compose_all(
     for (scope, (artifact, approval)) in by_scope {
         let part = compose_scope(default_plan, artifact, approval, catalog, registry)?;
         let members = &part.members;
+        let in_region = |edge: &Edge| members.contains(&edge.to.node) || members.contains(&edge.from.node);
         nodes = splice(&nodes, |node| members.contains(&node.id), part.nodes);
-        edges = splice(
-            &edges,
-            |edge| members.contains(&edge.to.node) || members.contains(&edge.from.node),
-            part.edges,
-        );
+        let ordered = in_default_order(edges.iter().filter(|edge| in_region(edge)), part.edges);
+        edges = splice(&edges, in_region, ordered);
         revisions.push(part.revision);
         scopes.insert(scope.clone(), part.composition);
     }
@@ -1281,6 +1282,37 @@ fn check_output(
 /// The replacement's items take the places of the region's items in order, and any left over follow the last of them;
 /// with no region item, they follow everything. Replacing a region with its own items, in its own order, gives the
 /// default back.
+/// Returns an artifact's edges, with plan ports, in the default program's order: each edge that the default program's
+/// region has (`region`, in plan order) takes that edge's position, and each other edge follows the edge of the region
+/// that the artifact lists before it (or comes first, if the artifact lists none before it), in artifact order.
+///
+/// The order of a plan's edges means nothing to how it runs, but the plan's hash covers it. A tool may write an
+/// artifact's edges in another order than the export, as the surface syntax's printed form does with the edges from
+/// several scope inputs; ordered so, an artifact that is the export but for the order of its edges composes to the
+/// default program, with its hash. Edges the artifact lists in the export's order keep the order they have.
+fn in_default_order<'a>(region: impl Iterator<Item = &'a Edge>, edges: Vec<Edge>) -> Vec<Edge> {
+    let positions = region
+        .enumerate()
+        .map(|(position, edge)| ((&edge.from, &edge.to), position))
+        .collect::<BTreeMap<_, _>>();
+    // (the position of the region's edge it is or follows, whether it is new, its position in the artifact)
+    let mut anchor = None;
+    let keys = edges
+        .iter()
+        .enumerate()
+        .map(|(index, edge)| match positions.get(&(&edge.from, &edge.to)) {
+            Some(&position) => {
+                anchor = Some(position);
+                (Some(position), false, index)
+            }
+            None => (anchor, true, index),
+        })
+        .collect::<Vec<_>>();
+    let mut keyed = keys.into_iter().zip(edges).collect::<Vec<_>>();
+    keyed.sort_by_key(|(key, _)| *key);
+    keyed.into_iter().map(|(_, edge)| edge).collect()
+}
+
 fn splice<T: Clone>(default: &[T], in_region: impl Fn(&T) -> bool, replacement: Vec<T>) -> Vec<T> {
     let places = default.iter().filter(|item| in_region(item)).count();
     let mut replacement = replacement.into_iter();
@@ -1471,4 +1503,4 @@ fn declared_outputs(outputs: &[OutputId]) -> String {
 #[cfg(test)]
 mod change_tests;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

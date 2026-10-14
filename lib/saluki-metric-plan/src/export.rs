@@ -1,4 +1,4 @@
-//! The export bundle: the default program's policy scope as an artifact, with the catalog it is checked against.
+//! The export bundle: a scope of the default program as an artifact, with the catalog it is checked against.
 //!
 //! Authors edit the default program rather than start from nothing: the host exports the scope an artifact may
 //! replace as a [`PolicyArtifact`], which an author edits and the channel delivers back. The bundle carries what is
@@ -8,8 +8,12 @@
 //! - `scope`: the scope exported;
 //! - `artifact`: the scope as a policy artifact, with its configuration bindings unresolved (an export never carries
 //!   resolved values) and its [base](ArtifactBase) filled in: the base program hash and the fingerprint of every output
-//!   the scope emits to. Its nodes and edges are in the order the plan lists them, which lowering writes in the surface
-//!   syntax's canonical order, so printing an export and parsing the text gives back the same document and hash;
+//!   the scope emits to. Its nodes and edges are in the order the plan lists them. Lowering writes nodes in the
+//!   surface syntax's canonical order, but not every edge: the canonical order writes the edges from the scope's
+//!   inputs first, in input-name order, and each node's edges with the node. So printing the export of a scope with
+//!   several inputs and parsing the text gives back a document whose edges are in another order, with another hash,
+//!   which composes to the same plan, with the same hash, since composition puts an artifact's edges in the default
+//!   program's order;
 //! - `ir_versions`: the IR version written, and the range of IR versions accepted;
 //! - `catalog`: the host's [`MemoryCatalog`] document: scope inputs with their port types, outputs with what they
 //!   accept, their fingerprints, their recipients, and, for a native output that had one, its version 1 fingerprint,
@@ -117,7 +121,7 @@ struct BundleDocument {
 }
 
 /// The members of a catalog document that [`MemoryCatalog`] reads.
-const CATALOG_MEMBERS: &[&str] = &["outputs", "bindings", "scopes", "state_budget"];
+const CATALOG_MEMBERS: &[&str] = &["outputs", "bindings", "scopes", "state_budget", "single_aggregation"];
 
 /// The members of a catalog output that [`MemoryCatalog`] reads.
 const CATALOG_OUTPUT_MEMBERS: &[&str] = &["accepts", "fingerprint", "recipients", "legacy_fingerprint"];

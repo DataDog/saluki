@@ -22,9 +22,10 @@
 //!   that share a recipient as one (see [the analysis](#duplicate-analysis)).
 //! - **Scopes:** every scope's inputs are declared by the catalog, and every scope is closed, so that an artifact
 //!   replacing it changes nothing outside it.
-//! - **State:** a plan's state owners use at most one bucket width above 60 seconds, a `timestamp_split` gives
-//!   timestamped counters the rate interval of the aggregation its untimestamped points go to, and an artifact's
-//!   context limits fit within the host's state budget (a warning).
+//! - **State:** a plan has at most one state owner (one aggregation) where the host says so, its state owners use at
+//!   most one bucket width above 60 seconds, a `timestamp_split` gives timestamped counters the rate interval of the
+//!   aggregation its untimestamped points go to, and an artifact's context limits fit within the host's state budget
+//!   (a warning).
 //! - **Bounds:** the [limits][crate::limits] on artifacts apply to nodes with artifact provenance only, so that large
 //!   native configurations stay valid.
 //! - **Authority:** every lossy node has provenance, only native configuration places host-owned operators, nodes in
@@ -186,6 +187,8 @@ rules! {
     DuplicateContribution => "duplicate_contribution", Error;
     /// The duplicate analysis completes within its work limit.
     DuplicateAnalysisLimit => "duplicate_analysis_limit", Error;
+    /// A plan has at most one state owner, one aggregation, if the host runs at most one per program.
+    SingleAggregation => "single_aggregation", Error;
     /// A plan's state owners use at most one bucket width above 60 seconds, so that its widths line up at least every
     /// max(60 s, largest width).
     WidthsAboveSixty => "widths_above_sixty", Error;

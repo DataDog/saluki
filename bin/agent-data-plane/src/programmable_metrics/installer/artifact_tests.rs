@@ -53,7 +53,7 @@ use super::*;
 use crate::{
     internal::ConfigUpdatesWorker,
     programmable_metrics::{
-        catalog::POST_ENRICH_SCOPE,
+        catalog::METRICS_SCOPE,
         telemetry::PLAN_ACTIVE_REVISION,
         test_support::{
             configuration, connected_configuration_system, facts, programmable_metrics, update, ConfigCell,
@@ -255,11 +255,11 @@ impl ArtifactPaths for ScriptedArtifacts {
     fn apply_states(
         &self, core: &InstallerCore, bases: &BTreeMap<ScopeName, PlanHash>, degraded: Option<String>,
     ) -> ApplyStates {
-        // The script installs `post_enrich` artifacts only, so it reports the first version's form, with that scope's
+        // The script installs `metrics` artifacts only, so it reports the first version's form, with that scope's
         // base alone.
         let default_program_hash = bases
             .iter()
-            .find(|(scope, _)| scope.as_str() == POST_ENRICH_SCOPE)
+            .find(|(scope, _)| scope.as_str() == METRICS_SCOPE)
             .map(|(_, hash)| *hash);
         let script = self.script.lock().unwrap();
         let in_effect = script.in_effect(core);
@@ -375,7 +375,7 @@ fn dropping(default: &Plan, name: &str, revision: u64, hash: PlanHash) -> Plan {
 fn artifact_config(revision: u64, hash: PlanHash) -> ArtifactConfig {
     let payload = json!({
         "revision": revision, "artifact_hash": hash,
-        "artifact": {"scope": "post_enrich", "scripted": hash}
+        "artifact": {"scope": "metrics", "scripted": hash}
     })
     .to_string();
     ArtifactConfig {
@@ -1382,9 +1382,9 @@ async fn an_exported_artifact_installs_follows_configuration_and_rolls_back_thro
     let names = [KEPT[0], KEPT[1], "dropped", "blocked"];
     assert_eq!(harness.send(&names).await, Some(1));
 
-    // The export of `post_enrich`, as the control surface serves it.
+    // The export of `metrics`, as the control surface serves it.
     let boot = harness.status.load_full();
-    let scope = ScopeName::new(POST_ENRICH_SCOPE).unwrap();
+    let scope = ScopeName::new(METRICS_SCOPE).unwrap();
     let bundle = boot.exports[&scope].clone().expect("the scope exports");
     let exported = serde_json::to_value(&bundle.artifact).unwrap();
     assert_eq!(

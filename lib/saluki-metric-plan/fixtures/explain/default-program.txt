@@ -2,8 +2,8 @@ explain_version 1
 
 plan
   ir_version 1
-  hash sha256:7059ee443aa854a2bd73abf3fde57f3356f2143b885f1ac8aab9dde00edf8d92
-  structural_hash sha256:44613794d8a96eab70bf387629d4fd044f94f0fa8c6ed72c5dc0d96a9d6db462
+  hash sha256:5e8e6bfdd985ddf6cdc6b9b91234eed2f42fa966a18bff6cae87e1b251f52e8e
+  structural_hash sha256:37d607f2a96281a87df3c4ebe5e9e522c7446265b2fe969477305c49fd91cfd0
   valid: 0 errors, 0 warnings
 
 nodes (34)
@@ -265,9 +265,8 @@ outputs (6)
     delivery native
     emitted by af_metrics_gateway_true
 
-scopes (2)
-  dogstatsd_pre_aggregation: metrics = dsd_in.metrics; exits aggregated = dsd_post_agg_filter_in.0, passthrough = dsd_post_agg_filter_in.1
-  post_enrich: metrics = metrics_enrich_host_tags.out
+scopes (1)
+  metrics: checks = checks_ipc_in.metrics, dogstatsd = dsd_in.metrics, liveness = liveness_in.metrics, otlp = otlp_in.metrics, trace_sampler = trace_sampler.metrics
 
 bounds (4)
   plan artifact_nodes: 34 of 256 (within the limit, not enforced)

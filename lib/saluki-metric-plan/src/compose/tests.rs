@@ -1,7 +1,9 @@
 //! Tests of receipt and composition.
 //!
 //! Artifacts are edits of the default program's export, written by hand as changes to its JSON document. Expected
-//! correspondences, errors, and diffs are written by hand from the default-program fixtures.
+//! correspondences, errors, and diffs are written by hand from the default-program fixtures, with [the two scopes they
+//! declared through stage 9](with_two_scopes), which cover part of the plan and end at exits; the one scope ADP declares
+//! now is tested in `install::unified_scope_tests`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -15,8 +17,8 @@ use crate::{
     install::diff::{diff, NodeChange},
     ir::{ArtifactEdge, ExitName, Plan, PlanProvenance},
     testing::{
-        arb_predicate, default_program_catalog, predicate_json, with_opaque_gateways, DEFAULT_PROGRAM_JSON,
-        NO_AGGREGATION_PIPELINE_OFF_JSON,
+        arb_predicate, default_program_catalog, predicate_json, two_scope_catalog, with_opaque_gateways,
+        with_two_scopes, DEFAULT_PROGRAM_JSON, NO_AGGREGATION_PIPELINE_OFF_JSON, TWO_SCOPES,
     },
     validate::{CatalogBinding, Location, MemoryCatalog, Rule},
 };
@@ -26,14 +28,21 @@ const ZERO_HASH: &str = "sha256:000000000000000000000000000000000000000000000000
 /// A change made to an artifact document, for table-driven tests.
 type Mutation = fn(&mut Value);
 
-/// The default-program fixtures: both configurations, each with its gateways as routing operators and as opaque hosts.
+/// Returns a default-program fixture with [the two scopes it declared through stage 9](with_two_scopes), which these
+/// tests of composition use: a scope that covers part of the plan, with exits, and artifacts of two scopes.
+fn two_scopes(plan_json: &str) -> Plan {
+    Plan::from_value(with_two_scopes(serde_json::from_str(plan_json).unwrap())).unwrap()
+}
+
+/// The default-program fixtures, with two scopes: both configurations, each with its gateways as routing operators and
+/// as opaque hosts.
 fn default_programs() -> Vec<(&'static str, Plan)> {
-    let read = |value: Value| Plan::from_value(value).unwrap();
+    let read = |value: Value| Plan::from_value(with_two_scopes(value)).unwrap();
     vec![
-        ("default program", Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap()),
+        ("default program", two_scopes(DEFAULT_PROGRAM_JSON)),
         (
             "no-aggregation pipeline off",
-            Plan::from_json(NO_AGGREGATION_PIPELINE_OFF_JSON).unwrap(),
+            two_scopes(NO_AGGREGATION_PIPELINE_OFF_JSON),
         ),
         (
             "default program, opaque gateways",
@@ -46,9 +55,10 @@ fn default_programs() -> Vec<(&'static str, Plan)> {
     ]
 }
 
-/// Returns the host's catalog of a default program: the fixtures' catalog, with every binding the program resolves
-/// carrying the value it resolves to, as a host's catalog carries the values lowering writes.
-fn catalog_for(plan: &Plan) -> MemoryCatalog {
+/// Returns the host's catalog of a default program: the fixtures' catalog for its scopes ([`two_scope_catalog`] for a
+/// plan with [two scopes](with_two_scopes)), with every binding the program resolves carrying the value it resolves
+/// to, as a host's catalog carries the values lowering writes.
+pub(crate) fn catalog_for(plan: &Plan) -> MemoryCatalog {
     fn collect(value: &Value, found: &mut BTreeMap<BindingName, Value>) {
         match value {
             Value::Object(members) => {
@@ -68,7 +78,14 @@ fn catalog_for(plan: &Plan) -> MemoryCatalog {
     for node in &plan.nodes {
         node.params.iter().for_each(|(_, value)| collect(value, &mut found));
     }
-    let mut catalog = default_program_catalog();
+    let two = TWO_SCOPES
+        .iter()
+        .all(|scope| plan.scopes.contains_key(&scope.parse::<ScopeName>().unwrap()));
+    let mut catalog = if two {
+        two_scope_catalog()
+    } else {
+        default_program_catalog()
+    };
     for (name, value) in found {
         let declared = catalog
             .binding(&name)
@@ -100,7 +117,7 @@ impl Fixture {
     }
 
     fn default_program() -> Self {
-        Self::new(Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap())
+        Self::new(two_scopes(DEFAULT_PROGRAM_JSON))
     }
 
     /// Returns `true` if `id` is a reserved node of the default program's scope.
@@ -140,7 +157,7 @@ enum Refused {
     Compose(ComposeError),
 }
 
-fn approval(revision: u64) -> Approval {
+pub(crate) fn approval(revision: u64) -> Approval {
     Approval {
         revision,
         approved_against: None,
@@ -675,7 +692,7 @@ fn kept_host_components_keep_native_authority_only_while_fed_as_in_the_default_p
         "mrf_metrics_gateway",
         "af_metrics_gateway",
     ];
-    let fixture = Fixture::new(Plan::from_value(with_opaque_gateways(DEFAULT_PROGRAM_JSON)).unwrap());
+    let fixture = Fixture::new(Plan::from_value(with_two_scopes(with_opaque_gateways(DEFAULT_PROGRAM_JSON))).unwrap());
     let kind = |composed: &Composed, id: &str| composed.correspondence.get(&id.parse().unwrap()).unwrap().kind;
     let trusted_host_errors = |composed: &Composed| {
         composed
@@ -951,7 +968,7 @@ fn a_state_owner_composes_with_the_artifacts_provenance_whatever_its_parameters(
     // decide, and installing a change to one is a cut. So aggregation in the policy scope composes, with or without
     // parameters its operator accepts, for validation and placement to judge.
     let fixture = Fixture::default_program();
-    let plan = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
+    let plan = two_scopes(DEFAULT_PROGRAM_JSON);
     let params = unresolved(&plan.node(&"dsd_agg".parse().unwrap()).unwrap().params);
     for params in [json!(params), json!({})] {
         let mut document = fixture.artifact();
@@ -1974,7 +1991,7 @@ fn unmodified_exports_of_every_scope_compose_back_to_the_default_program_alone_a
 fn an_artifacts_edges_into_its_scopes_exits_replace_those_of_the_default_program() {
     // The pre-aggregation scope without its tag filterlist: what the timestamp split keeps for aggregation reaches it
     // directly.
-    let plan = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
+    let plan = two_scopes(DEFAULT_PROGRAM_JSON);
     let mut artifact = exported(&plan, &pre_aggregation()).artifact;
     let filterlist = "dsd_tag_filterlist".parse::<ArtifactNodeId>().unwrap();
     artifact.nodes.retain(|node| node.id != filterlist);
@@ -2018,7 +2035,7 @@ fn an_artifacts_edges_into_its_scopes_exits_replace_those_of_the_default_program
 
 #[test]
 fn edges_reach_a_scopes_exits_only_as_their_targets_and_only_declared_ones() {
-    let plan = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
+    let plan = two_scopes(DEFAULT_PROGRAM_JSON);
     let catalog = catalog_for(&plan);
     let base = exported(&plan, &pre_aggregation()).artifact;
     let last = base.edges.len();

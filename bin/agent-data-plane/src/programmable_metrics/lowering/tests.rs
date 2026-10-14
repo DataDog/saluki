@@ -1203,36 +1203,65 @@ fn scope_ports(plan: &Plan, scope: &str) -> Option<(Vec<String>, Vec<String>)> {
 }
 
 #[tokio::test]
-async fn the_dogstatsd_pre_aggregation_scope_runs_from_the_source_to_the_post_aggregation_filter() {
-    // (configuration, the scope's exits); the scope's input is always the DogStatsD source's metrics, and without
-    // DogStatsD there is no such scope.
+async fn the_metrics_scope_has_one_input_per_source_the_program_has_and_no_exits() {
+    // (configuration, the scope's inputs, the timestamp form the catalog declares for DogStatsD's input)
     let cases = [
-        (
-            "",
-            Some(vec![
-                "aggregated: dsd_post_agg_filter_in.0",
-                "passthrough: dsd_post_agg_filter_in.1",
-            ]),
-        ),
-        // Without the no-aggregation pipeline, nothing passes by aggregation.
+        // In standalone mode, which these tests run in, there is no liveness source.
+        ("", vec!["dogstatsd: dsd_in.metrics"], Some(TimestampForm::Mixed)),
         (
             "dogstatsd_no_aggregation_pipeline: false",
-            Some(vec!["aggregated: dsd_post_agg_filter.in"]),
+            vec!["dogstatsd: dsd_in.metrics"],
+            Some(TimestampForm::Untimestamped),
         ),
-        ("data_plane: {dogstatsd: {enabled: false}, otlp: {enabled: true}}", None),
+        (
+            "data_plane: {dogstatsd: {enabled: false}, otlp: {enabled: true}}",
+            // OTLP's traces need the trace sampler.
+            vec!["otlp: otlp_in.metrics", "trace_sampler: trace_sampler.metrics"],
+            None,
+        ),
+        (
+            EVERY_BRANCH,
+            vec![
+                "checks: checks_ipc_in.metrics",
+                "dogstatsd: dsd_in.metrics",
+                "liveness: liveness_in.metrics",
+                "otlp: otlp_in.metrics",
+                "trace_sampler: trace_sampler.metrics",
+            ],
+            Some(TimestampForm::Mixed),
+        ),
     ];
-    for (yaml, exits) in cases {
+    for (yaml, inputs, dogstatsd) in cases {
         let lowered = lowered(yaml).await;
-        let scope = scope_ports(&lowered.plan, DSD_PRE_AGGREGATION_SCOPE);
-        let expected = exits.map(|exits| {
-            (
-                vec!["metrics: dsd_in.metrics".to_string()],
-                exits.into_iter().map(String::from).collect::<Vec<_>>(),
-            )
-        });
-        assert_eq!(scope, expected, "{:?}", yaml);
-        // The policy region after enrichment is a scope of every default program.
-        assert!(scope_ports(&lowered.plan, POST_ENRICH_SCOPE).is_some(), "{:?}", yaml);
+        let expected = Some((inputs.into_iter().map(String::from).collect::<Vec<_>>(), Vec::new()));
+        assert_eq!(scope_ports(&lowered.plan, METRICS_SCOPE), expected, "{:?}", yaml);
+        assert_eq!(lowered.plan.scopes.len(), 1, "{:?}", yaml);
+
+        // The catalog declares every input with what its source carries, and nothing else.
+        let scope = METRICS_SCOPE.parse().unwrap();
+        for (input, port) in &lowered.plan.scopes[&scope].inputs {
+            let declared = lowered.catalog.scope_input(&scope, input).unwrap();
+            let source = lowered.plan.node(&port.node).unwrap();
+            let binding = SourceBinding::from_name(source.params.get("binding").unwrap().as_str().unwrap()).unwrap();
+            assert_eq!(declared.kinds, binding.kinds(), "{:?}: {}", yaml, input);
+            if let Some(timestamps) = binding.timestamps() {
+                assert_eq!(declared.timestamps, timestamps, "{:?}: {}", yaml, input);
+            }
+        }
+        let dogstatsd_input = lowered
+            .catalog
+            .scope_input(&scope, &"dogstatsd".parse().unwrap())
+            .map(|declared| declared.timestamps);
+        assert_eq!(dogstatsd_input, dogstatsd, "{:?}", yaml);
+        // The scopes of stage 9 are gone.
+        assert_eq!(
+            lowered
+                .catalog
+                .scope_input(&"post_enrich".parse().unwrap(), &"metrics".parse().unwrap()),
+            None
+        );
+        assert!(lowered.catalog.single_aggregation());
+        assert!(lowered.catalog.to_document().single_aggregation());
     }
 }
 

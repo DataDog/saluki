@@ -14,13 +14,14 @@
 //!   and flushed a second ago; with lanes, an empty lane's own last flush is windows old, so each probe must still
 //!   arrive as one point of 1 at its bucket and no zero before it, whichever lane holds it (the lanes share the
 //!   lineage's flush log). Every probe arriving exactly once is the conservation check of the probes over both lanes.
-//! - **S13a**: a width change, 10 s to 30 s, in the pre-aggregation scope (`dogstatsd_pre_aggregation`, the scope the
-//!   first launch does not cover): the artifact edits `window` of DogStatsD aggregation and of the timestamp split
-//!   ahead of it, and installs at a cut, at a multiple of 30 s (`plan_cuts_total{outcome="completed"}`). Every state
+//! - **S13a**: a width change, 10 s to 30 s, in the default program's one scope, the program the first launch edits
+//!   too: the artifact edits `window` of DogStatsD aggregation and of the timestamp split ahead of it, and installs at
+//!   a cut, at a multiple of 30 s (`plan_cuts_total{outcome="completed"}`). Every state
 //!   lane crosses on its own (`plan_lane_crossings_total{kind="cut"}`, with more than one state lane), and every count
 //!   is once in its bucket: the canaries of the last 10-second bucket before the cut and of the first 30-second bucket
 //!   after it balance, each bucket whole at its start.
-//! - **S13b**: revoking the scope's artifact brings 10-second buckets back at the next cut, with the same checks.
+//! - **S13b**: revoking the artifact brings 10-second buckets back at the next cut, with the same checks. A revoke
+//!   undoes everything the artifact changed, routing included, so the routing steps come after it.
 //! - **S14a** and **S14b**: S8's endpoint scenario (team D's resources, then the route to team D) on the
 //!   post-aggregation lanes.
 //! - **S14c**: team D's delivered points equal its intake's: the data points ADP delivered to team D's endpoint
@@ -52,7 +53,7 @@ use super::{
     Compiled, Installed, Runner, StepReport, Target, BASELINE_TIMEOUT, POLL,
 };
 use crate::{
-    canary::{lcm, LAG_SECS, WIDTH_SCOPE},
+    canary::{lcm, LAG_SECS},
     clock::unix_millis,
     resources::TEAM_D_OUTPUT,
     settings::{DemoPorts, LaneFlags, RunSettings},
@@ -67,9 +68,6 @@ const STATE_SLOT: &str = "dsd_agg";
 
 /// The slot of the post-aggregation lanes.
 const POST_SLOT: &str = "metrics_enrich";
-
-/// The scope the width change replaces.
-const PRE_AGGREGATION: &str = WIDTH_SCOPE;
 
 /// The width S13 changes aggregation to, in seconds.
 const NEW_WIDTH_S: u64 = 30;
@@ -270,20 +268,7 @@ impl Runner {
         };
         self.finish(step, result)?;
 
-        let program = self
-            .client
-            .get_json(&format!("/api/default-program?scope={}", PRE_AGGREGATION))
-            .await?;
-        let pre_aggregation = program["source"]
-            .as_str()
-            .ok_or_else(|| {
-                generic_error!(
-                    "The pre-aggregation scope's default program is not available: {}",
-                    program
-                )
-            })?
-            .to_string();
-        self.width_change_step(&pre_aggregation, state_lanes).await?;
+        self.width_change_step(&source, state_lanes).await?;
         let mut step = StepReport::new("S13b", "revoke the width change: 10-second buckets again at a cut");
         let result = self.revoke_width_step(&mut step, state_lanes).await;
         self.finish(step, result)?;
@@ -765,8 +750,8 @@ impl Runner {
         Duration::from_secs(lcm(from_s, to_s) + from_s.max(to_s) + 20)
     }
 
-    /// S13a: changes aggregation's width from the configured window to [`NEW_WIDTH_S`] in the pre-aggregation scope,
-    /// and checks the cut it installs at.
+    /// S13a: changes aggregation's width from the configured window to [`NEW_WIDTH_S`] in the default program, and
+    /// checks the cut it installs at.
     async fn width_change_step(&mut self, source: &str, state_lanes: u64) -> Result<(), GenericError> {
         let (from_s, to_s) = (self.window_s, NEW_WIDTH_S);
         let width = lcm(from_s, to_s);
@@ -777,10 +762,9 @@ impl Runner {
         let published_s = unix_millis() / 1000;
         let published = Instant::now();
         let target = Target {
-            scope: PRE_AGGREGATION,
             ack_timeout: Self::cut_timeout(from_s, to_s),
         };
-        let title = "width change, 10 s to 30 s, in the pre-aggregation scope";
+        let title = "width change, 10 s to 30 s, in the default program";
         self.step_in(
             target,
             "S13a",
@@ -826,7 +810,7 @@ impl Runner {
         }
     }
 
-    /// S13b: revokes the pre-aggregation scope's artifact, and checks the cut back to the configured window.
+    /// S13b: revokes the width change, and checks the cut back to the configured window.
     async fn revoke_width_step(&mut self, step: &mut StepReport, state_lanes: u64) -> Result<(), GenericError> {
         let (from_s, to_s) = (NEW_WIDTH_S, self.window_s);
         let width = lcm(from_s, to_s);
@@ -836,31 +820,25 @@ impl Runner {
         let crossings = lane_values(&state, "plan_lane_crossings_total", STATE_SLOT, Some("cut"));
         let revoked = Instant::now();
         let revoked_s = unix_millis() / 1000;
-        let (status, answer) = self
-            .client
-            .post_json("/api/revoke", &json!({ "scope": PRE_AGGREGATION }))
-            .await?;
+        let (status, answer) = self.client.post_json("/api/revoke", &json!({})).await?;
         if !status.is_success() || answer["revoked"] != true {
-            return Err(generic_error!(
-                "Revoking the pre-aggregation scope was refused: {}",
-                answer
-            ));
+            return Err(generic_error!("Revoking the width change was refused: {}", answer));
         }
         self.last_change_s = revoked_s;
         let timeout = Self::cut_timeout(from_s, to_s);
         let deadline = revoked + timeout;
         let after = loop {
             let status = self.status().await?;
-            if status.artifact_revision_in(PRE_AGGREGATION).is_none() && status.generation > before.generation {
+            if status.artifact_revision.is_none() && status.generation > before.generation {
                 break status;
             }
             if Instant::now() >= deadline {
                 return Err(generic_error!(
-                    "{} s after the revoke, ADP runs generation {:?} with pre-aggregation artifact {:?}, not a new \
-                     generation without it.",
+                    "{} s after the revoke, ADP runs generation {:?} with artifact {:?}, not a new generation without \
+                     it.",
                     timeout.as_secs(),
                     status.generation,
-                    status.artifact_revision_in(PRE_AGGREGATION)
+                    status.artifact_revision
                 ));
             }
             tokio::time::sleep(POLL).await;

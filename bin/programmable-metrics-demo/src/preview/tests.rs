@@ -62,7 +62,7 @@ pub(crate) fn fixture_documents() -> (Plan, Value) {
     let plan = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
     let bundle = export(
         &plan,
-        &"post_enrich".parse().unwrap(),
+        &crate::stub::protocol::POLICY_SCOPE.parse().unwrap(),
         &catalog_for(&plan),
         &BTreeMap::new(),
     )
@@ -76,10 +76,16 @@ pub(crate) fn fixture() -> (Plan, ExportBundle) {
     (plan, ExportBundle::from_value(document).unwrap())
 }
 
-/// The plan crate's default program, and the export of one of its scopes as the demo reads it.
-pub(crate) fn fixture_of_scope(scope: &str) -> (Plan, ExportBundle) {
-    let plan = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
-    let bundle = export(&plan, &scope.parse().unwrap(), &catalog_for(&plan), &BTreeMap::new()).unwrap();
+/// The plan crate's default program with the two scopes it declared through stage 9, and the export of its policy
+/// scope, `post_enrich`, as the demo reads it: for the tests of artifacts of several scopes, which the preview composes
+/// as ADP's installer does, though ADP declares one scope today.
+pub(crate) fn two_scope_fixture() -> (Plan, ExportBundle) {
+    let plan = Plan::from_value(saluki_metric_plan::testing::with_two_scopes(
+        serde_json::from_str(DEFAULT_PROGRAM_JSON).unwrap(),
+    ))
+    .unwrap();
+    let catalog = saluki_metric_plan::testing::two_scopes_of(catalog_for(&plan));
+    let bundle = export(&plan, &"post_enrich".parse().unwrap(), &catalog, &BTreeMap::new()).unwrap();
     let bundle = ExportBundle::from_value(serde_json::to_value(bundle).unwrap()).unwrap();
     (plan, bundle)
 }
@@ -109,11 +115,14 @@ fn line_of(source: &str, text: &str) -> usize {
     source[..at].matches('\n').count() + 1
 }
 
-/// Puts a node between the scope input and the node it fed, as the S1 scenario does.
-fn with_node_after_input(source: &str, node: &str) -> String {
-    let edge = "  input.metrics -> metrics_policy\n";
+/// Puts the node `id`, defined by `node`, between enrichment and the policy `tee`, as the S1 scenario does: the node
+/// that fed the `tee` feeds `id`, and the definition goes above the policy section.
+fn with_node_before_policy(source: &str, id: &str, node: &str) -> String {
+    let edge = "\n    -> metrics_policy\n";
     assert!(source.contains(edge), "{}", source);
-    source.replacen(edge, &format!("  input.metrics -> {}", node), 1)
+    let source = source.replacen(edge, &format!("\n    -> {}\n", id), 1);
+    let policy = source.find("  # Policy:").expect("the policy section is marked");
+    format!("{}{}\n{}", &source[..policy], node, &source[policy..])
 }
 
 #[test]
@@ -164,10 +173,11 @@ fn an_unmodified_export_composes_to_the_active_default_program_with_an_empty_dif
 fn a_change_diffs_node_by_node_in_the_artifacts_terms() {
     let (plan, export) = fixture();
     // S1: drop the debug metrics in front of the policy `tee`.
-    let source = with_node_after_input(
+    let source = with_node_before_policy(
         &default_program_source(&export),
-        "drop_debug\n\n  node drop_debug = split(name starts_with \"demo.debug.\") {\n    true  -> drop\n    false -> \
-         metrics_policy\n  }\n",
+        "drop_debug",
+        "  node drop_debug = split(name starts_with \"demo.debug.\") {\n    true  -> drop\n    false -> metrics_policy\n  \
+         }\n",
     );
     let outcome = compile_against(&source, &plan, &export);
     assert!(outcome.diagnostics.is_empty(), "{:#?}", outcome.diagnostics);
@@ -192,9 +202,8 @@ fn a_change_diffs_node_by_node_in_the_artifacts_terms() {
             )
         })
         .collect::<Vec<_>>();
-    // The new split and its inline drop are the artifact's (`policy/` IDs, revision 7). The node outside the scope
-    // that fed the `tee` now feeds the split, and the `tee` is fed by it: both keep their native provenance, with other
-    // edges. The four routing drops are fed other records than the default program feeds them (what the split lets
+    // The new split and its inline drop are the artifact's (`policy/` IDs, revision 7). The host tags node, which fed
+    // the `tee`, now feeds the split, and the `tee` is fed by it: both keep their native provenance, with other edges. The four routing drops are fed other records than the default program feeds them (what the split lets
     // through), so native configuration no longer authorizes their loss: the artifact does.
     let changed_drop = |id| {
         (
@@ -209,7 +218,7 @@ fn a_change_diffs_node_by_node_in_the_artifacts_terms() {
     let expected = vec![
         (
             "metrics_enrich_host_tags",
-            None,
+            Some("metrics_enrich_host_tags"),
             "host_tags",
             ChangeKind::Changed,
             vec!["edges"],
@@ -263,9 +272,12 @@ fn a_change_diffs_node_by_node_in_the_artifacts_terms() {
     let split = &preview.nodes[1];
     assert_eq!(split.range.unwrap().line, line_of(&source, "  node drop_debug"));
     let drop = &preview.nodes[2];
-    assert_eq!(drop.range.unwrap().line, line_of(&source, "    true  -> drop"));
-    // A node outside the scope has no place in the source.
-    assert_eq!(preview.nodes[0].range, None);
+    assert_eq!(drop.range.unwrap().line, line_of(&source, "  node drop_debug") + 1);
+    // So is a node of the default program that the artifact keeps: the host tags node, at its definition.
+    assert_eq!(
+        preview.nodes[0].range.unwrap().line,
+        line_of(&source, "  node metrics_enrich_host_tags")
+    );
 }
 
 #[test]
@@ -295,10 +307,11 @@ fn validation_findings_are_placed_at_the_artifact_nodes_they_are_about() {
     assert_eq!(outcome.errors, 1);
 
     // A parameter the operator does not have is placed at the parameter.
-    let unknown_parameter = with_node_after_input(
+    let unknown_parameter = with_node_before_policy(
         &source,
-        "drop_debug\n\n  node drop_debug = split(predicate: name starts_with \"demo.debug.\", colour: \"red\") {\n    \
-         true  -> drop\n    false -> metrics_policy\n  }\n",
+        "drop_debug",
+        "  node drop_debug = split(predicate: name starts_with \"demo.debug.\", colour: \"red\") {\n    true  -> \
+         drop\n    false -> metrics_policy\n  }\n",
     );
     let outcome = compile_against(&unknown_parameter, &plan, &export);
     let parameter = outcome
@@ -318,9 +331,10 @@ fn an_aggregation_composes_and_validation_places_its_findings_at_its_node() {
     // A state owner is no composition error: ADP composes it, and validation, then placement, judge it.
     let (plan, export) = fixture();
     let source = default_program_source(&export);
-    let source = with_node_after_input(
+    let source = with_node_before_policy(
         &source,
-        "rollup\n\n  node rollup = aggregate(window: 10s) {\n    -> metrics_policy\n  }\n",
+        "rollup",
+        "  node rollup = aggregate(window: 10s) {\n    -> metrics_policy\n  }\n",
     );
     let outcome = compile_against(&source, &plan, &export);
     assert!(outcome.ok);
@@ -358,7 +372,7 @@ const PRE_AGGREGATION: &str = "dogstatsd_pre_aggregation";
 
 #[test]
 fn an_artifact_composes_with_the_artifacts_adp_runs_for_the_other_scopes() {
-    let (plan, export) = fixture();
+    let (plan, export) = two_scope_fixture();
     let registry = OperatorRegistry::native();
     // ADP runs a pre-aggregation artifact, revision 5: its active plan composes it.
     let other = ScopeArtifact {
@@ -417,9 +431,12 @@ fn an_artifact_composes_with_the_artifacts_adp_runs_for_the_other_scopes() {
 
 #[test]
 fn the_artifacts_adp_runs_for_the_other_scopes_are_read_from_the_configs_the_stub_serves() {
-    let (plan, export) = fixture();
+    // The policy scope's artifact, and one of another scope, as of the two scopes of stage 9.
+    let (plan, _) = two_scope_fixture();
+    let (_, export) = fixture();
     let pre = pre_aggregation_document(&plan);
     let post = serde_json::to_value(&export.artifact.artifact).unwrap();
+    let policy = crate::stub::protocol::POLICY_SCOPE;
     let hash = |document: &Value| ReceivedArtifact::from_value(document.clone()).unwrap().hash.to_string();
     let envelope = |revision, document: &Value| Envelope {
         revision,
@@ -434,7 +451,7 @@ fn the_artifacts_adp_runs_for_the_other_scopes_are_read_from_the_configs_the_stu
     };
     let served = vec![
         (PRE_AGGREGATION.to_string(), envelope(5, &pre)),
-        ("post_enrich".to_string(), envelope(6, &post)),
+        (policy.to_string(), envelope(6, &post)),
     ];
     let found = |status: &ChannelStatus, scope: &str| {
         other_scope_artifacts(status, &served, scope)
@@ -455,9 +472,9 @@ fn the_artifacts_adp_runs_for_the_other_scopes_are_read_from_the_configs_the_stu
             ..ScopeState::default()
         },
     );
-    assert_eq!(found(&status, "post_enrich"), [(PRE_AGGREGATION.to_string(), 5)]);
+    assert_eq!(found(&status, policy), [(PRE_AGGREGATION.to_string(), 5)]);
     // The policy scope's artifact comes from the top-level member when `scopes` does not describe it.
-    assert_eq!(found(&status, PRE_AGGREGATION), [("post_enrich".to_string(), 6)]);
+    assert_eq!(found(&status, PRE_AGGREGATION), [(policy.to_string(), 6)]);
 
     // An artifact ADP runs that the stub no longer serves is left out, as ADP no longer composes it.
     status.active_artifact = Some(ActiveArtifact {

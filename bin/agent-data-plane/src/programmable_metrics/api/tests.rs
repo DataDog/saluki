@@ -46,19 +46,19 @@ async fn booted_status() -> PlanStatus {
     PlanStatus::clone(&metrics.status().load())
 }
 
-/// An export bundle of the `post_enrich` scope, written by hand.
+/// An export bundle of the `metrics` scope, written by hand.
 fn bundle() -> ExportBundle {
     let artifact: PolicyArtifact = serde_json::from_value(json!({
         "ir_version": 1,
-        "scope": "post_enrich",
+        "scope": "metrics",
         "base": {"program_hash": format!("sha256:{}", "ab".repeat(32))},
         "nodes": [{"id": "metrics_policy_0", "op": "emit", "params": {"output": "dd_metrics_encode"}}],
-        "edges": [{"from": "input.metrics", "to": "metrics_policy_0.in"}]
+        "edges": [{"from": "input.dogstatsd", "to": "metrics_policy_0.in"}]
     }))
     .expect("the artifact is a policy artifact");
     ExportBundle {
         export_version: EXPORT_VERSION,
-        scope: "post_enrich".parse().unwrap(),
+        scope: "metrics".parse().unwrap(),
         artifact,
         ir_versions: IrVersions::supported(),
         catalog: MemoryCatalog::new(),
@@ -230,35 +230,21 @@ async fn the_resources_route_serves_the_hosts_outputs_and_recipients_with_creden
 #[tokio::test]
 async fn the_export_route_serves_the_export_of_the_scope_named_by_the_query() {
     let mut status = booted_status().await;
-    let post_enrich: ScopeName = "post_enrich".parse().unwrap();
-    let pre_aggregation: ScopeName = "dogstatsd_pre_aggregation".parse().unwrap();
-    // The installer exports every scope of the default program it lowered: `dogstatsd_pre_aggregation`, up to its
-    // exits, and `post_enrich`.
-    assert_eq!(
-        status.exports.keys().collect::<Vec<_>>(),
-        [&pre_aggregation, &post_enrich]
-    );
-    let pre_aggregation_export = status.exports[&pre_aggregation]
-        .as_ref()
-        .expect("the scope exports up to its exits");
-    let exits = pre_aggregation_export
+    let metrics: ScopeName = "metrics".parse().unwrap();
+    // The installer exports every scope of the default program it lowered: its one scope, `metrics`, which covers the
+    // whole metrics path after the sources, aggregation included, and has no exits.
+    assert_eq!(status.exports.keys().collect::<Vec<_>>(), [&metrics]);
+    let export = status.exports[&metrics].as_ref().expect("the scope exports");
+    assert!(export.artifact.nodes.iter().any(|node| node.id.as_str() == "dsd_agg"));
+    assert!(!export
         .artifact
         .edges
         .iter()
-        .filter(|edge| edge.to.to_string().starts_with("exit."))
-        .map(|edge| format!("{} -> {}", edge.from, edge.to))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        exits,
-        [
-            "dsd_agg.out -> exit.aggregated",
-            "dsd_no_agg_split.passthrough -> exit.passthrough"
-        ]
-    );
+        .any(|edge| edge.to.to_string().starts_with("exit.")));
 
     // The route serves the published export, whose artifact records the default program's base program hash.
-    let exported = Arc::clone(status.exports[&post_enrich].as_ref().expect("the scope exports"));
-    let (code, content_type, body) = get(status.clone(), "/programmable-metrics/export?scope=post_enrich").await;
+    let exported = Arc::clone(status.exports[&metrics].as_ref().expect("the scope exports"));
+    let (code, content_type, body) = get(status.clone(), "/programmable-metrics/export?scope=metrics").await;
     assert_eq!((code, content_type), (StatusCode::OK, json_type()));
     let body: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(body, serde_json::to_value(&*exported).unwrap());
@@ -266,13 +252,13 @@ async fn the_export_route_serves_the_export_of_the_scope_named_by_the_query() {
         status.apply_states.status.default_program_hash,
         Some(exported.artifact.base.program_hash)
     );
-    assert_eq!(body["artifact"]["scope"], "post_enrich");
+    assert_eq!(body["artifact"]["scope"], "metrics");
     assert_eq!(body["labels"]["dd_metrics_encode"], "Main metrics output");
 
     // Whatever the status publishes, as it publishes it.
-    status.exports.insert(post_enrich.clone(), Ok(Arc::new(bundle())));
+    status.exports.insert(metrics.clone(), Ok(Arc::new(bundle())));
 
-    let (code, content_type, body) = get(status.clone(), "/programmable-metrics/export?scope=post_enrich").await;
+    let (code, content_type, body) = get(status.clone(), "/programmable-metrics/export?scope=metrics").await;
     assert_eq!((code, content_type), (StatusCode::OK, json_type()));
     let body: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(body, serde_json::to_value(bundle()).unwrap());
@@ -284,19 +270,19 @@ async fn the_export_route_serves_the_export_of_the_scope_named_by_the_query() {
             "/programmable-metrics/export",
             StatusCode::BAD_REQUEST,
             "The `scope` query parameter is required: name the scope of the default program to export \
-             (`dogstatsd_pre_aggregation`, `post_enrich`).",
+             (`metrics`).",
         ),
         (
             "/programmable-metrics/export?scope=pre_aggregation",
             StatusCode::NOT_FOUND,
             "The default program declares no scope `pre_aggregation`. The scopes it declares are \
-             `dogstatsd_pre_aggregation`, `post_enrich`.",
+             `metrics`.",
         ),
         (
             "/programmable-metrics/export?scope=Not%20A%20Scope",
             StatusCode::NOT_FOUND,
             "The default program declares no scope `Not A Scope`. The scopes it declares are \
-             `dogstatsd_pre_aggregation`, `post_enrich`.",
+             `metrics`.",
         ),
     ];
     for (uri, expected_code, expected_body) in refused {
@@ -312,14 +298,14 @@ async fn the_export_route_serves_the_export_of_the_scope_named_by_the_query() {
     // A scope the installer could not export says why.
     status
         .exports
-        .insert(post_enrich, Err("the plan has no canonical form".to_string()));
-    let (code, content_type, body) = get(status, "/programmable-metrics/export?scope=post_enrich").await;
+        .insert(metrics, Err("the plan has no canonical form".to_string()));
+    let (code, content_type, body) = get(status, "/programmable-metrics/export?scope=metrics").await;
     assert_eq!(
         (code, content_type, body.as_str()),
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             text_type(),
-            "Scope `post_enrich` of the default program cannot be exported: the plan has no canonical form"
+            "Scope `metrics` of the default program cannot be exported: the plan has no canonical form"
         )
     );
 }
@@ -364,10 +350,10 @@ async fn the_default_program_route_serves_the_plan_artifacts_are_composed_into()
     assert_eq!(served, *status.default_program);
     // It is the program the export was taken from: its base is the default program hash the status reports, so a
     // client can tell that an export and a default program it fetched separately belong together.
-    let post_enrich: ScopeName = "post_enrich".parse().unwrap();
+    let metrics: ScopeName = "metrics".parse().unwrap();
     assert_eq!(
         Some(
-            saluki_metric_plan::export::base(&served, &post_enrich)
+            saluki_metric_plan::export::base(&served, &metrics)
                 .unwrap()
                 .program_hash
         ),

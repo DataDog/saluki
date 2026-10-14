@@ -2,8 +2,8 @@
   "explain_version": 1,
   "plan": {
     "ir_version": 1,
-    "hash": "sha256:88423e3e5d7aa48e4cd81f2fabb07c9e92b57851c0c3a613fe852e8eea50b469",
-    "structural_hash": "sha256:c7f880711839b0ce7de981b732fbf7685b788187cf224b93a90192e40d380ab0",
+    "hash": "sha256:02adbf3bb4656524043985bcce802e058caaf6fe23e875519d35968dcd2d4de1",
+    "structural_hash": "sha256:645a402cd180762311dc8b7c96a8000584c9df1cf80734237deff76d4d7a13ab",
     "valid": true
   },
   "graph": {
@@ -1944,19 +1944,13 @@
     ],
     "scopes": [
       {
-        "name": "dogstatsd_pre_aggregation",
+        "name": "metrics",
         "inputs": {
-          "metrics": "dsd_in.metrics"
-        },
-        "exits": {
-          "aggregated": "dsd_post_agg_filter_in.0",
-          "passthrough": "dsd_post_agg_filter_in.1"
-        }
-      },
-      {
-        "name": "post_enrich",
-        "inputs": {
-          "metrics": "metrics_enrich_host_tags.out"
+          "checks": "checks_ipc_in.metrics",
+          "dogstatsd": "dsd_in.metrics",
+          "liveness": "liveness_in.metrics",
+          "otlp": "otlp_in.metrics",
+          "trace_sampler": "trace_sampler.metrics"
         }
       }
     ]

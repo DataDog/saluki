@@ -228,7 +228,7 @@ async fn the_compile_api_returns_placed_diagnostics_and_checks_against_the_expor
     let diagnostic = &body["diagnostics"][0];
     assert_eq!(diagnostic["severity"], "error");
     assert_eq!(diagnostic["origin"], "check");
-    assert_eq!(diagnostic["range"]["line"], 37);
+    assert_eq!(diagnostic["range"]["line"], 39);
     assert!(diagnostic["message"]
         .as_str()
         .unwrap()
@@ -238,7 +238,7 @@ async fn the_compile_api_returns_placed_diagnostics_and_checks_against_the_expor
         app,
         "POST",
         "/api/compile",
-        Some(json!({ "source": "policy post_enrich {\n  nod" })),
+        Some(json!({ "source": "policy metrics {\n  nod" })),
     )
     .await;
     assert_eq!(body["ok"], false);
@@ -278,10 +278,11 @@ async fn the_compile_api_composes_into_the_default_program_adp_serves_as_the_rev
         .export()
         .map(|export| default_program_source(&export))
         .unwrap()
+        .replacen("\n    -> metrics_policy\n", "\n    -> drop_debug\n", 1)
         .replacen(
-            "  input.metrics -> metrics_policy\n",
-            "  input.metrics -> drop_debug\n\n  node drop_debug = split(name starts_with \"demo.debug.\") {\n    true  \
-             -> drop\n    false -> metrics_policy\n  }\n",
+            "  # Policy:",
+            "  node drop_debug = split(name starts_with \"demo.debug.\") {\n    true  -> drop\n    false -> \
+             metrics_policy\n  }\n\n  # Policy:",
             1,
         );
     let (status, body) = call(app, "POST", "/api/compile", Some(json!({ "source": source }))).await;
@@ -531,21 +532,21 @@ async fn publishing_resources_approves_exactly_the_last_checked_draft_once_and_c
     assert_eq!(state["channel"]["resources"]["current"], Value::Null);
 }
 
-/// Returns the source of the pre-aggregation scope's default program with both of its windows set to `window`.
-fn pre_aggregation_source(window: &str) -> String {
-    let (_, export) = crate::preview::tests::fixture_of_scope("dogstatsd_pre_aggregation");
+/// Returns the source of the default program with both of its windows set to `window`.
+fn width_source(window: &str) -> String {
+    let (_, export) = crate::preview::tests::fixture();
     default_program_source(&export).replace(
         "window: config(\"dogstatsd.aggregation.window_duration_seconds\")",
         &format!("window: {}", window),
     )
 }
 
-/// Returns the pre-aggregation scope's default program with both of its windows set to `window`, compiled.
-fn pre_aggregation_artifact(window: &str) -> Value {
+/// Returns the default program with both of its windows set to `window`, compiled.
+fn width_artifact(window: &str) -> Value {
     use crate::{compile::compile, preview::CompileContext};
 
-    let (plan, export) = crate::preview::tests::fixture_of_scope("dogstatsd_pre_aggregation");
-    let source = pre_aggregation_source(window);
+    let (plan, export) = crate::preview::tests::fixture();
+    let source = width_source(window);
     let context = CompileContext {
         export: &export,
         default_program: Some(&plan),
@@ -558,16 +559,16 @@ fn pre_aggregation_artifact(window: &str) -> Value {
 }
 
 #[tokio::test]
-async fn the_canary_check_aligns_to_the_widths_a_pre_aggregation_artifact_serves_and_reports_its_range_by_bucket() {
+async fn the_canary_check_aligns_to_the_widths_an_artifact_serves_and_reports_its_range_by_bucket() {
     let harness = harness().await;
     let app = &harness.app;
     let (_, state) = call(app, "GET", "/api/state", None).await;
     assert_eq!(state["canary_width_secs"], 1);
     assert_eq!(state["lanes"]["on"], false);
 
-    // A pre-aggregation artifact with 30-second windows, served by the stub.
+    // An artifact with 30-second windows, served by the stub.
     app.channel
-        .publish(pre_aggregation_artifact("30s"), None, None, unix_millis())
+        .publish(width_artifact("30s"), None, None, unix_millis())
         .unwrap();
     let (_, state) = call(app, "GET", "/api/state", None).await;
     assert_eq!(state["canary_width_secs"], 30);
@@ -579,13 +580,7 @@ async fn the_canary_check_aligns_to_the_widths_a_pre_aggregation_artifact_serves
 
     // Revoked through the API, its buckets stay in the history the check reads: the alignment stays, at every later
     // look, until the history no longer holds them.
-    let (status, body) = call(
-        app,
-        "POST",
-        "/api/revoke",
-        Some(json!({"scope": "dogstatsd_pre_aggregation"})),
-    )
-    .await;
+    let (status, body) = call(app, "POST", "/api/revoke", None).await;
     assert_eq!((status, &body["revoked"]), (StatusCode::OK, &json!(true)));
     let revoked_ms = unix_millis();
     for _ in 0..2 {
@@ -595,15 +590,9 @@ async fn the_canary_check_aligns_to_the_widths_a_pre_aggregation_artifact_serves
 
     // Served and revoked with no look at the state in between, an artifact's width still counts from its revoke on.
     app.channel
-        .publish(pre_aggregation_artifact("20s"), None, None, unix_millis())
+        .publish(width_artifact("20s"), None, None, unix_millis())
         .unwrap();
-    let (status, _) = call(
-        app,
-        "POST",
-        "/api/revoke",
-        Some(json!({"scope": "dogstatsd_pre_aggregation"})),
-    )
-    .await;
+    let (status, _) = call(app, "POST", "/api/revoke", None).await;
     assert_eq!(status, StatusCode::OK);
     let (_, state) = call(app, "GET", "/api/state", None).await;
     assert_eq!(state["canary_width_secs"], 60);
@@ -634,26 +623,26 @@ async fn artifacts_that_cannot_set_the_canarys_width_leave_its_alignment_alone()
     let harness = harness().await;
     let app = &harness.app;
 
-    // A policy artifact with literal windows, as the check's guardrail steps publish: ADP refuses an aggregation in
-    // the policy scope, so its windows never take effect.
-    let mut policy = pre_aggregation_artifact("10s");
-    policy["scope"] = json!(POLICY_SCOPE);
-    let served = app.channel.publish(policy, None, None, unix_millis()).unwrap();
-    assert_eq!(app.channel.configs()[0].scope, POLICY_SCOPE);
+    // An artifact of a scope ADP does not declare, with literal windows: ADP refuses it, so its windows never take
+    // effect.
+    let mut other = width_artifact("10s");
+    other["scope"] = json!("other_scope");
+    let served = app.channel.publish(other, None, None, unix_millis()).unwrap();
+    assert_eq!(app.channel.configs()[0].scope, "other_scope");
     let (_, state) = call(app, "GET", "/api/state", None).await;
     assert_eq!(state["canary_width_secs"], 1);
     assert!(app.channel.revoke(None, unix_millis()).unwrap());
 
-    // A pre-aggregation artifact ADP rejected: its width counts only until the rejection is known.
+    // An artifact ADP rejected: its width counts only until the rejection is known.
     let rejected = app
         .channel
-        .publish(pre_aggregation_artifact("30s"), None, None, unix_millis())
+        .publish(width_artifact("30s"), None, None, unix_millis())
         .unwrap();
     assert!(rejected.revision > served.revision);
     let (_, state) = call(app, "GET", "/api/state", None).await;
     assert_eq!(state["canary_width_secs"], 30);
     let status = json!({"config_states": [
-        {"product": "policy", "id": "demo-dogstatsd_pre_aggregation", "revision": rejected.revision,
+        {"product": "policy", "id": "demo", "revision": rejected.revision,
          "state": "rejected", "error": "the artifact does not validate"}
     ]});
     app.control.record_status(Surface::Available(status), unix_millis());
@@ -665,7 +654,7 @@ async fn artifacts_that_cannot_set_the_canarys_width_leave_its_alignment_alone()
     // says why, until the older width leaves. Published through the API, one replacing the other with no look at the
     // state in between, each width counts.
     for window in ["7s", "60s"] {
-        let source = pre_aggregation_source(window);
+        let source = width_source(window);
         let (status, compiled) = call(app, "POST", "/api/compile", Some(json!({ "source": source }))).await;
         assert_eq!(
             (status, &compiled["ok"]),

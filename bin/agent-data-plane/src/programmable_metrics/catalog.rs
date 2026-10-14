@@ -4,8 +4,9 @@ use std::collections::BTreeMap;
 
 use saluki_components::forwarders::delivery::RecipientProtocol;
 use saluki_metric_plan::{
-    ir::{BindingName, ExitName, HostId, InputName, OutputDecl, OutputId, RecipientDecl, ScopeName, ValueType},
+    ir::{BindingName, HostId, InputName, OutputDecl, OutputId, RecipientDecl, ScopeName, ValueType},
     model::{Kind, PortType},
+    operators::SourceBinding,
     validate::{Catalog, CatalogBinding, CatalogOutput, HostSchema, Liveness, MemoryCatalog},
 };
 
@@ -18,46 +19,35 @@ use super::{
 };
 use crate::config::DataPlaneConfiguration;
 
-/// The name of the scope artifacts replace: the policy region after metrics enrichment.
-pub const POST_ENRICH_SCOPE: &str = "post_enrich";
+/// The name of the one scope of the default program, which artifacts replace: the whole metrics path after its
+/// sources, from DogStatsD's processing through aggregation, enrichment, and the policy region to the outputs.
+pub const METRICS_SCOPE: &str = "metrics";
 
-/// The input of the `post_enrich` scope: the enriched metrics.
-pub const POST_ENRICH_INPUT: &str = "metrics";
-
-/// The name of the scope of DogStatsD's processing up to and including aggregation: from the DogStatsD source to the
-/// post-aggregation filter.
-pub const DSD_PRE_AGGREGATION_SCOPE: &str = "dogstatsd_pre_aggregation";
-
-/// The input of the `dogstatsd_pre_aggregation` scope: the metrics the DogStatsD source admits.
-pub const DSD_PRE_AGGREGATION_INPUT: &str = "metrics";
-
-/// The exit of the `dogstatsd_pre_aggregation` scope that carries aggregated metrics.
-pub const EXIT_AGGREGATED: &str = "aggregated";
-
-/// The exit of the `dogstatsd_pre_aggregation` scope that carries the timestamped metrics the no-aggregation pipeline
-/// passes by aggregation.
-pub const EXIT_PASSTHROUGH: &str = "passthrough";
+/// Returns the name of the input of the [`METRICS_SCOPE`] that a source of `binding` feeds: the binding's own name,
+/// such as `dogstatsd` for the DogStatsD source's metrics.
+pub fn scope_input_name(binding: SourceBinding) -> InputName {
+    InputName::new(binding.as_str()).expect("source binding names are identifiers")
+}
 
 /// ADP's catalog: the outputs, native and declared, every configuration binding of the registry with its current value,
-/// the `dogstatsd_pre_aggregation` and `post_enrich` scopes, the budget of state every state owner shares, and the
-/// delivery hosts with the schemas of their parameters.
+/// the inputs of the `metrics` scope, the budget of state every state owner shares, that a program runs at most one
+/// aggregation, and the delivery hosts with the schemas of their parameters.
 ///
 /// Bindings are resolved when the catalog is built, `Startup` bindings from the startup configuration and `Live` ones
 /// from the current configuration, so the catalog carries the same values lowering writes into plans. A binding the
 /// configuration has no valid value for is declared without one. Keyed bindings are declared for every key the
 /// configuration they resolve from has.
 ///
-/// It also declares the exits of the `dogstatsd_pre_aggregation` scope that lowering wrote, every one carrying any
-/// port type (informational: a composed plan is validated whole), and the budget of state every state owner draws on.
-/// It declares a host only if the process has it: `cluster_agent_out` only when a Cluster Agent endpoint resolved at
-/// boot.
+/// It declares one input of the `metrics` scope for each source the lowered program has
+/// ([`with_scope_inputs`](Self::with_scope_inputs)), carrying what the source produces: so an artifact is checked
+/// against the kinds and timestamps each input can carry. It declares a host only if the process has it:
+/// `cluster_agent_out` only when a Cluster Agent endpoint resolved at boot.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AdpCatalog {
     outputs: BTreeMap<OutputId, CatalogOutput>,
     bindings: BTreeMap<BindingName, CatalogBinding>,
-    scope_input: PortType,
+    scope_inputs: BTreeMap<InputName, PortType>,
     state_budget: Option<u64>,
-    pre_aggregation_exits: Vec<ExitName>,
     hosts: FixedHosts,
 }
 
@@ -109,16 +99,16 @@ impl AdpCatalog {
         Self {
             outputs,
             bindings,
-            scope_input: PortType::ANY,
+            scope_inputs: BTreeMap::new(),
             state_budget,
-            pre_aggregation_exits: Vec::new(),
             hosts,
         }
     }
 
-    /// Declares the exits of the `dogstatsd_pre_aggregation` scope: those lowering wrote into the default program.
-    pub fn with_pre_aggregation_exits(mut self, exits: Vec<ExitName>) -> Self {
-        self.pre_aggregation_exits = exits;
+    /// Declares the inputs of the `metrics` scope, each with the port type of what it carries: those lowering wrote
+    /// into the default program, one per source it has.
+    pub fn with_scope_inputs(mut self, inputs: impl IntoIterator<Item = (InputName, PortType)>) -> Self {
+        self.scope_inputs = inputs.into_iter().collect();
         self
     }
 
@@ -137,20 +127,12 @@ impl AdpCatalog {
         for (name, binding) in &self.bindings {
             catalog = catalog.with_catalog_binding(name.clone(), binding.clone());
         }
-        let pre_aggregation = ScopeName::new(DSD_PRE_AGGREGATION_SCOPE).expect("scope names are identifiers");
-        catalog = catalog
-            .with_scope_input(
-                pre_aggregation.clone(),
-                InputName::new(DSD_PRE_AGGREGATION_INPUT).expect("input names are identifiers"),
-                self.scope_input,
-            )
-            .with_scope_input(
-                ScopeName::new(POST_ENRICH_SCOPE).expect("scope names are identifiers"),
-                InputName::new(POST_ENRICH_INPUT).expect("input names are identifiers"),
-                self.scope_input,
-            );
-        for exit in &self.pre_aggregation_exits {
-            catalog = catalog.with_scope_exit(pre_aggregation.clone(), exit.clone(), self.scope_input);
+        let scope = ScopeName::new(METRICS_SCOPE).expect("scope names are identifiers");
+        for (input, port_type) in &self.scope_inputs {
+            catalog = catalog.with_scope_input(scope.clone(), input.clone(), *port_type);
+        }
+        if Catalog::single_aggregation(self) {
+            catalog = catalog.with_single_aggregation();
         }
         match self.state_budget {
             Some(capacity) => catalog.with_state_budget(capacity),
@@ -169,20 +151,20 @@ impl Catalog for AdpCatalog {
     }
 
     fn scope_input(&self, scope: &ScopeName, input: &InputName) -> Option<PortType> {
-        let declared = matches!(
-            (scope.as_str(), input.as_str()),
-            (POST_ENRICH_SCOPE, POST_ENRICH_INPUT) | (DSD_PRE_AGGREGATION_SCOPE, DSD_PRE_AGGREGATION_INPUT)
-        );
-        declared.then_some(self.scope_input)
-    }
-
-    fn scope_exit(&self, scope: &ScopeName, exit: &ExitName) -> Option<PortType> {
-        let declared = scope.as_str() == DSD_PRE_AGGREGATION_SCOPE && self.pre_aggregation_exits.contains(exit);
-        declared.then_some(self.scope_input)
+        if scope.as_str() != METRICS_SCOPE {
+            return None;
+        }
+        self.scope_inputs.get(input).copied()
     }
 
     fn state_budget(&self) -> Option<u64> {
         self.state_budget
+    }
+
+    fn single_aggregation(&self) -> bool {
+        // One aggregation per program, for now: the frame has one isolation slot, which placement lets run a state
+        // owner of each branch of a split ahead of it, and the demo and the operator surfaces assume one.
+        true
     }
 
     fn host(&self, host: &HostId) -> Option<HostSchema> {

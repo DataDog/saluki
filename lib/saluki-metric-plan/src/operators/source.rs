@@ -87,6 +87,18 @@ impl SourceBinding {
             Self::TraceSampler => Some(TimestampForm::Untimestamped),
         }
     }
+
+    /// Returns the port type of the source's `metrics` port: the kinds it can produce, in the timestamp form it
+    /// produces them in, or in `configured` where that depends on how the source is configured.
+    pub const fn port_type(self, configured: TimestampForm) -> PortType {
+        PortType {
+            kinds: self.kinds(),
+            timestamps: match self.timestamps() {
+                Some(timestamps) => timestamps,
+                None => configured,
+            },
+        }
+    }
 }
 
 const TIMESTAMP_FORMS: &[&str] = &["timestamped", "untimestamped", "mixed"];
@@ -119,14 +131,11 @@ impl Source {
         let Some(binding) = params.str("binding").and_then(SourceBinding::from_name) else {
             return PortType::ANY;
         };
-        let timestamps = binding
-            .timestamps()
-            .or_else(|| params.str("timestamps").and_then(timestamp_form))
+        let configured = params
+            .str("timestamps")
+            .and_then(timestamp_form)
             .unwrap_or(TimestampForm::Mixed);
-        PortType {
-            kinds: binding.kinds(),
-            timestamps,
-        }
+        binding.port_type(configured)
     }
 }
 

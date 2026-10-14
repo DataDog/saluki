@@ -8,8 +8,8 @@
 //! flush has had time to deliver, so it follows the present: a loss shows while its seconds are in the range and leaves
 //! with them, and canaries sent before ADP was listening never count against it.
 //!
-//! The range is aligned to the canary's buckets: to the configured aggregation window, and, while an artifact of the
-//! pre-aggregation scope sets another window for the aggregation (a width change) and for the five minutes of history
+//! The range is aligned to the canary's buckets: to the configured aggregation window, and, while an artifact sets
+//! another window for the aggregation (a width change) and for the five minutes of history
 //! after it stops being served, to the least common multiple of the widths in use ([`artifact_widths`],
 //! [`common_width`]). A range aligned to it holds whole buckets of every width, before a width change's cut, after it,
 //! and after the artifact is revoked again, since a cut takes effect at a multiple of the least common multiple of the
@@ -34,12 +34,9 @@ use crate::{loopback::ControlTally, traffic::CANARY_HISTORY_SECS};
 /// The operators whose `window` parameter sets the width of the buckets a canary is counted in.
 const WINDOWED_OPERATORS: [&str; 2] = ["aggregate", "timestamp_split"];
 
-/// The scope whose artifacts can set the width of the canary's buckets: the pre-aggregation scope, which holds
-/// DogStatsD aggregation. ADP refuses an aggregation in any other scope, so another scope's windows never take effect.
-pub const WIDTH_SCOPE: &str = "dogstatsd_pre_aggregation";
-
 /// Returns the widths, in whole seconds, that an artifact's aggregations (and the timestamp splits ahead of them) set
-/// with a literal window: the bucket widths the artifact gives the canary, if it is of [`WIDTH_SCOPE`]. A window that
+/// with a literal window: the bucket widths the artifact gives the canary. The default program's one scope holds
+/// DogStatsD aggregation, and ADP runs at most one aggregation, so an artifact's window is the canary's. A window that
 /// refers to the configuration, which is the configured window, and one that is not a whole number of seconds are left
 /// out.
 pub fn artifact_widths(artifact: &Value) -> Vec<u64> {

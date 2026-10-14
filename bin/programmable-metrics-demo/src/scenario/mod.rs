@@ -3,7 +3,8 @@
 //! live), driven through the demo server's API against the ADP the demo launched, with what each endpoint receives
 //! checked after every step.
 //!
-//! Every scenario edits the default program as ADP exports it (see [`edits`]), compiles it (`POST /api/compile`, which
+//! Every scenario edits the default program as ADP exports it, its one scope, the whole metrics path after the sources
+//! (see [`edits`]), compiles it (`POST /api/compile`, which
 //! composes it into ADP's default program, validates it, and diffs it against the active plan), publishes it (`POST
 //! /api/publish`), waits for ADP's acknowledgment (`GET /api/adp/status`, and the stub's record of ADP's polls), and
 //! then waits for the families each intake receives to be what the scenario says, and to stay so for [`STABLE`]:
@@ -16,10 +17,10 @@
 //! - **S3**: exclusive tag routing: the metrics tagged `team:checkout` reach team B only, not the primary endpoint.
 //! - **S4**: mirroring with `true` and a literal allowlist: the failover endpoint receives the allowlisted family only.
 //! - **S5**: guardrails, each published anyway: a duplicate `tee` branch to the primary output, an emit to an output
-//!   ADP does not declare, and an aggregation without its parameters, each flagged by the editor, and a fully
-//!   parameterized aggregation in the policy scope, which the frame cannot run there (the editor does not place plans,
-//!   so it may not flag it), are each rejected by ADP with an error that says so, and S4's generation keeps running,
-//!   endpoints unchanged.
+//!   ADP does not declare, an aggregation without its parameters, and a second, fully parameterized aggregation (a
+//!   program has at most one), each flagged by the editor, and the one aggregation moved after enrichment, which the
+//!   frame cannot run there (the editor does not place plans, so it may not flag it), are each rejected by ADP with an
+//!   error that says so, and S4's generation keeps running, endpoints unchanged.
 //! - **S6**: revoking (an empty snapshot) brings the default program back: the active plan is the boot plan again, and
 //!   the endpoints receive what they did in S0.
 //!
@@ -63,7 +64,7 @@
 //!
 //! Lane counts are fixed when ADP boots, so S12 to S14 of stage 9 run in a second launch of ADP, its metrics path on
 //! lanes, with 10-second windows ([`run_lanes`]; see [`lanes`]): the frame on the lanes asked for, a counter whose
-//! state lane is empty at a tick, a width change in the pre-aggregation scope with per-lane crossings, and S8's
+//! state lane is empty at a tick, a width change of aggregation with per-lane crossings, and S8's
 //! endpoint scenario on the post-aggregation lanes. With longer windows, a family counts as arriving for a window
 //! longer ([`present_ms`]), and the endpoints must hold what a step says for one window ([`Runner::stable`]).
 //!
@@ -90,7 +91,7 @@ use crate::{
     clock::unix_millis,
     resources::{document_text, team_d_template},
     settings::RunSettings,
-    stub::protocol::{POLICY_PRODUCT, POLICY_SCOPE},
+    stub::protocol::POLICY_PRODUCT,
 };
 
 pub mod client;
@@ -644,15 +645,6 @@ impl Status {
     fn degraded(&self) -> Option<&str> {
         self.document["degraded"].as_str()
     }
-
-    /// Returns the revision of the artifact active for `scope`: the policy scope's from the top-level member, another
-    /// scope's from `scopes`.
-    fn artifact_revision_in(&self, scope: &str) -> Option<u64> {
-        if scope == POLICY_SCOPE {
-            return self.artifact_revision;
-        }
-        self.document["scopes"][scope]["active_artifact"]["revision"].as_u64()
-    }
 }
 
 /// Returns `true` if an acknowledgment is final for the step that waits for it: `active`, `rejected`, or `failed`.
@@ -693,23 +685,22 @@ enum Compiled {
     Pending { output: &'static str },
 }
 
-/// The fragment of ADP's refusal of an aggregation in the policy scope: placement refuses it with the capability it
-/// lacks, since a state owner runs only in an isolation slot, and none is behind the policy scope.
+/// The fragment of ADP's refusal of a second aggregation: the validation rule that a program has at most one.
+const SECOND_AGGREGATION: &[&str] = &["single_aggregation"];
+
+/// The fragment of ADP's refusal of the aggregation moved after enrichment: placement refuses it with the capability it
+/// lacks, since a state owner runs only in an isolation slot, and none is behind enrichment.
 const AGGREGATION_OUTSIDE_ITS_SLOT: &[&str] = &["runs only in an isolation slot"];
 
-/// The scope a step's artifact replaces, and how long ADP may take to acknowledge it.
+/// How long ADP may take to acknowledge a step's artifact.
 #[derive(Clone, Copy, Debug)]
 struct Target {
-    /// The scope.
-    scope: &'static str,
-
     /// How long ADP may take to acknowledge the artifact.
     ack_timeout: Duration,
 }
 
-/// The policy scope, whose artifacts install without a cut.
+/// An artifact that installs without a cut.
 const POLICY_TARGET: Target = Target {
-    scope: POLICY_SCOPE,
     ack_timeout: ACK_TIMEOUT,
 };
 
@@ -942,8 +933,20 @@ impl Runner {
         }
         self.step(
             "S5d",
-            "guardrail: an aggregation in the policy scope",
-            edits::aggregation_in_the_policy_scope(&source)?,
+            "guardrail: a second aggregation",
+            edits::second_aggregation(&source)?,
+            Compiled::Flagged {
+                fragment: SECOND_AGGREGATION[0],
+            },
+            Installed::Rejected {
+                fragments: SECOND_AGGREGATION,
+            },
+        )
+        .await?;
+        self.step(
+            "S5e",
+            "guardrail: the aggregation moved after enrichment",
+            edits::aggregation_after_enrichment(&source)?,
             Compiled::Unplaced,
             Installed::Rejected {
                 fragments: AGGREGATION_OUTSIDE_ITS_SLOT,
@@ -958,7 +961,8 @@ impl Runner {
         self.whole_run_canary().await
     }
 
-    /// Runs one scenario step of the policy scope: compile, publish, acknowledgment, and what the endpoints receive.
+    /// Runs one scenario step that installs without a cut: compile, publish, acknowledgment, and what the endpoints
+    /// receive.
     async fn step(
         &mut self, id: &'static str, title: &'static str, source: String, compiled: Compiled, installed: Installed,
     ) -> Result<(), GenericError> {
@@ -967,7 +971,8 @@ impl Runner {
             .map(|_| ())
     }
 
-    /// Runs one scenario step whose artifact replaces the scope of `target`, and returns ADP's status once it settled.
+    /// Runs one scenario step, waiting as long as `target` says for its acknowledgment, and returns ADP's status once it
+    /// settled.
     async fn step_in(
         &mut self, target: Target, id: &'static str, title: &'static str, source: String, compiled: Compiled,
         installed: Installed,
@@ -1107,7 +1112,7 @@ impl Runner {
             .wait_ack_within(POLICY_PRODUCT, revision, published, target.ack_timeout, expected)
             .await?;
         step.ack_ms = Some(published.elapsed().as_millis() as u64);
-        let artifact_revision = |status: &Status| status.artifact_revision_in(target.scope);
+        let artifact_revision = |status: &Status| status.artifact_revision;
         let state = acknowledgment["state"].as_str().unwrap_or_default().to_string();
         let error = acknowledgment["error"].as_str().unwrap_or_default().to_string();
         step.generation = after.generation;
@@ -1126,9 +1131,8 @@ impl Runner {
                 }
                 if artifact_revision(&after) != Some(revision) {
                     return Err(generic_error!(
-                        "ADP reports artifact revision {:?} active for scope `{}`, not {}.",
+                        "ADP reports artifact revision {:?} active, not {}.",
                         artifact_revision(&after),
-                        target.scope,
                         revision
                     ));
                 }

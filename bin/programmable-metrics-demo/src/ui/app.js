@@ -19,10 +19,10 @@
   const NO_EXPORT = "no-export";
   const SAMPLE = [
     "# ADP does not serve its export yet, so this is a sample program to try the editor with.",
-    "policy post_enrich {",
+    "policy metrics {",
     '  base "sha256:0000000000000000000000000000000000000000000000000000000000000000"',
     "",
-    "  input.metrics -> drop_debug",
+    "  input.dogstatsd -> drop_debug",
     "",
     '  node drop_debug = split(name starts_with "demo.debug.") {',
     "    true  -> drop",
@@ -738,7 +738,7 @@
 
   ui.revoke.addEventListener("click", () => busy(ui.revoke, "Revoking…", async () => {
     const question = "Revoke the published artifact? The stub serves an empty snapshot and ADP installs the default "
-      + "program.";
+      + "program: routing and aggregation both return to what the configuration says.";
     if (!window.confirm(question)) return;
     const { ok, data } = await api("POST", "/api/revoke");
     if (ok && data && data.revoked) toast("Revoked: the snapshot is empty, and ADP returns to the default program.");
@@ -775,7 +775,9 @@
           return;
         }
         setSource(data.source, "default", base);
-        setStatus("", `Loaded the default program (${shortHash(base)}). Edit it, then compile.`);
+        setStatus("", `Loaded the default program (${shortHash(base)}): the whole metrics path, from the sources `
+          + "through aggregation and enrichment to the policy, with a # comment where each section begins. Edit it, "
+          + "then compile.");
         return;
       }
       const message = (data && data.message) || "The demo server did not answer.";

@@ -13,6 +13,14 @@
 //! back from the export when it is compiled, as the syntax crate's documentation asks of tools that elide them; an
 //! output a resources artifact declares that the export does not list yet gets its fingerprint from the Resources tab's
 //! draft instead, so that a policy can wait for it (see [`compile_with_resources`]).
+//!
+//! The default program is the whole metrics path, so the editor prints it with a comment where each of its sections
+//! begins ([`with_sections`]): the sources' inputs, DogStatsD's processing, aggregation, what follows aggregation,
+//! enrichment, and the policy. Comments are not part of the artifact. The printed form writes edges in the syntax's
+//! canonical order, the edges from the scope's inputs first, in input-name order, while the export lists them in the
+//! default program's order: the compiled document then differs from the export in the order of its edges, and its
+//! artifact hash with it, but composition puts edges in the default program's order, so an unmodified program composes
+//! to the default program, with its hash.
 
 use saluki_metric_plan::{
     canonical::PlanHash,
@@ -226,6 +234,57 @@ struct Restored {
 
     /// Declared outputs (`resources_<name>`) the artifact emits to that neither gave.
     missing_declared: Vec<String>,
+}
+
+/// The sections of the default program, each with the nodes that may begin it (the first one the source defines
+/// does) and the comment that marks where it begins.
+const SECTIONS: [(&[&str], &str); 5] = [
+    (&["dsd_enrich"], "# DogStatsD processing, before aggregation"),
+    (&["dsd_agg"], "# Aggregation: a program has at most one"),
+    (
+        &["dsd_post_agg_filter_in", "dsd_post_agg_filter"],
+        "# After aggregation: filter, client telemetry tap",
+    ),
+    (
+        &["metrics_enrich_in"],
+        "# Enrichment: every source, then host enrichment",
+    ),
+    (&["metrics_policy"], "# Policy: one branch per output; route here"),
+];
+
+/// The comment that marks the scope's inputs, where each source's metrics enter the program.
+const INPUTS_SECTION: &str = "# Sources: where each one's metrics enter";
+
+/// Returns a printed program with a comment line where each section of the default program begins: before the first
+/// edge from a scope input, and before the definition of the first node of each of [`SECTIONS`] the source has. A
+/// program without those nodes, such as one that renames them, gets fewer comments; the comments change nothing in the
+/// artifact.
+pub fn with_sections(printed: &str) -> String {
+    let mut marks = Vec::new();
+    if let Some(at) = printed.find("\n  input.") {
+        marks.push((at + 1, INPUTS_SECTION));
+    }
+    for (nodes, comment) in SECTIONS {
+        let first = nodes
+            .iter()
+            .filter_map(|node| printed.find(&format!("\n  node {} = ", node)))
+            .min();
+        if let Some(at) = first {
+            marks.push((at + 1, comment));
+        }
+    }
+    marks.sort();
+    let mut annotated = String::with_capacity(printed.len() + 64 * marks.len());
+    let mut copied = 0;
+    for (at, comment) in marks {
+        annotated.push_str(&printed[copied..at]);
+        annotated.push_str("  ");
+        annotated.push_str(comment);
+        annotated.push('\n');
+        copied = at;
+    }
+    annotated.push_str(&printed[copied..]);
+    annotated
 }
 
 /// Gives an artifact that lists no output fingerprints the fingerprint of every output it emits to, and returns those
@@ -479,14 +538,15 @@ pub fn compile_with_resources(
     } else {
         DISPLAY
     };
-    outcome.canonical_source = Some(print(&parsed.artifact, &options));
+    outcome.canonical_source = Some(with_sections(&print(&parsed.artifact, &options)));
     outcome.artifact = Some(document.clone());
     (outcome, Some(CompiledArtifact { document, hash }))
 }
 
-/// Prints an export bundle's artifact as source, for the editor's starting point, as [`DISPLAY`] prints.
+/// Prints an export bundle's artifact as source, for the editor's starting point, as [`DISPLAY`] prints, with a comment
+/// where each section begins ([`with_sections`]).
 pub fn default_program_source(export: &ExportBundle) -> String {
-    print(&export.artifact.artifact, &DISPLAY)
+    with_sections(&print(&export.artifact.artifact, &DISPLAY))
 }
 
 #[cfg(test)]

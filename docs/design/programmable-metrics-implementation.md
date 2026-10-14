@@ -2173,7 +2173,11 @@ that a change to a `Startup` input changes nothing.
   display labels are in the top-level `labels` member, left out when empty (the demo reads both forms). The payload
   envelope's `artifact_hash` is checked against `ReceivedArtifact::hash` of its `artifact` document. The `artifact`
   lists its nodes and edges in the surface syntax's canonical order (see Demo), the order lowering writes plans in, so
-  printing an export and parsing the text gives back the same document and hash. `lowering/export_tests.rs` tests
+  printing an export and parsing the text gives back the same document and hash. (Since the one-scope change after
+  stage 9, amendment 168, an export has several inputs, and the canonical order writes the edges from the inputs
+  first, in input-name order: the parsed document differs in the order of its edges, and so in its hash, but it
+  composes to the same plan, with the same hash, since composition puts an artifact's edges in the default program's
+  order. The tests below check that instead of document equality.) `lowering/export_tests.rs` tests
   `parse(print(export)) == export`, that the base program hash is the digest of the exported document without it and
   records the catalog's fingerprint of every output the export emits to, and that composing the export back gives the
   default program, for every configuration of the lowering test matrix (the syntax crate is an ADP dev-dependency,
@@ -3538,6 +3542,14 @@ plus the rejection of 7 s. The kernel counts kind and rate-interval conflicts as
 in the two conflict fixtures. Opaque-host injection stays covered by `interpret::tests` (`with_opaque_host`).
 
 ### Scopes, IR, composition, channel
+
+> [!NOTE]
+> Superseded after stage 9 by the one-scope change ([amendments 168 and
+> 169](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments)): the default program declares one scope,
+> `metrics`, over the whole metrics path after its sources, with one input per source and no exits, in place of
+> `dogstatsd_pre_aggregation` and `post_enrich`, and a program has at most one aggregation (`single_aggregation`). The
+> IR, catalog, and composition support for exits and several scopes below stays, and the plan crate's tests keep the
+> two scopes through `testing::with_two_scopes`. See [the status document](programmable-metrics-status.md#the-demo).
 
 **The `dogstatsd_pre_aggregation` scope** (amendment 78). ADP lowering adds, when DogStatsD is enabled:
 

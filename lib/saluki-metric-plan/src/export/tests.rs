@@ -5,20 +5,35 @@ use crate::validate::Catalog;
 use crate::{
     canonical::ResolvedValues,
     ir::ExitName,
-    testing::{default_program_catalog, with_opaque_gateways, DEFAULT_PROGRAM_JSON, NO_AGGREGATION_PIPELINE_OFF_JSON},
+    testing::{
+        default_program_catalog, two_scope_catalog, two_scopes_of, with_opaque_gateways, with_two_scopes,
+        DEFAULT_PROGRAM_JSON, NO_AGGREGATION_PIPELINE_OFF_JSON,
+    },
 };
 
-/// The export of the default program's `post_enrich` scope, written by hand from `fixtures/default-program.json`, with
+/// The export of the default program's `post_enrich` scope, as it declared it through stage 9 ([`with_two_scopes`]),
+/// written by hand from `fixtures/default-program.json`, with
 /// its program hash computed independently of this crate, with Python: the SHA-256 digest of `json.dumps(document,
 /// sort_keys=True, separators=(",", ":"), ensure_ascii=False)` of the document without `base.program_hash`.
 const DEFAULT_PROGRAM_EXPORT_JSON: &str = include_str!("../../fixtures/export/default-program-post-enrich.json");
+
+/// The export of the default program's one scope, `metrics`, derived from `fixtures/default-program.json` with Python
+/// (every node but the sources, with its bound parameters unresolved and without provenance, and every edge, with each
+/// source's port written as the scope's input), with its program hash computed as [`DEFAULT_PROGRAM_EXPORT_JSON`]'s is.
+const METRICS_EXPORT_JSON: &str = include_str!("../../fixtures/export/default-program-metrics.json");
 
 fn post_enrich() -> ScopeName {
     "post_enrich".parse().unwrap()
 }
 
+/// The default program with the two scopes it declared through stage 9, which most of these tests export: one ends at
+/// exits, and each covers part of the plan.
 fn default_program() -> Plan {
-    Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap()
+    two_scopes(DEFAULT_PROGRAM_JSON)
+}
+
+fn two_scopes(plan_json: &str) -> Plan {
+    Plan::from_value(with_two_scopes(serde_json::from_str(plan_json).unwrap())).unwrap()
 }
 
 fn expected_export() -> PolicyArtifact {
@@ -37,7 +52,7 @@ fn ir_versions_are_written_as_the_export_bundle_states_them() {
 
 #[test]
 fn the_default_programs_policy_scope_exports_as_the_hand_written_artifact() {
-    let catalog = default_program_catalog();
+    let catalog = two_scope_catalog();
     let labels = BTreeMap::from([("dd_metrics_encode".parse().unwrap(), "Primary".to_string())]);
     let bundle = export(&default_program(), &post_enrich(), &catalog, &labels).unwrap();
 
@@ -69,6 +84,52 @@ fn the_default_programs_policy_scope_exports_as_the_hand_written_artifact() {
     // Labels are left out when there are none.
     let unlabeled = export(&default_program(), &post_enrich(), &catalog, &BTreeMap::new()).unwrap();
     assert!(serde_json::to_value(&unlabeled).unwrap().get("labels").is_none());
+}
+
+#[test]
+fn the_default_programs_one_scope_exports_the_whole_metrics_path_as_the_derived_artifact() {
+    let plan = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
+    let catalog = default_program_catalog();
+    let scope = "metrics".parse::<ScopeName>().unwrap();
+    let bundle = export(&plan, &scope, &catalog, &BTreeMap::new()).unwrap();
+    assert_eq!(bundle.artifact, PolicyArtifact::from_json(METRICS_EXPORT_JSON).unwrap());
+    assert_eq!(base(&plan, &scope).unwrap(), bundle.artifact.base);
+
+    // The scope covers every node but the sources, aggregation included, and every edge; the sources' edges leave its
+    // inputs, written in the order the plan lists them.
+    assert_eq!(bundle.artifact.nodes.len(), plan.nodes.len() - 5);
+    assert!(bundle.artifact.nodes.iter().any(|node| node.id.as_str() == "dsd_agg"));
+    assert_eq!(bundle.artifact.edges.len(), plan.edges.len());
+    let inputs = edges(&bundle.artifact)
+        .into_iter()
+        .filter(|edge| edge.starts_with("input."))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        inputs,
+        [
+            "input.dogstatsd -> dsd_enrich.in",
+            "input.otlp -> metrics_enrich_in.1",
+            "input.checks -> metrics_enrich_in.2",
+            "input.liveness -> metrics_enrich_in.3",
+            "input.trace_sampler -> metrics_enrich_in.4",
+        ]
+    );
+
+    // The catalog declares each input with what its source carries, and that the host runs one aggregation.
+    let declared = |input: &str| catalog.scope_input(&scope, &input.parse().unwrap()).unwrap();
+    assert_eq!(
+        declared("liveness").timestamps,
+        crate::model::TimestampForm::Timestamped
+    );
+    assert_eq!(
+        declared("trace_sampler").timestamps,
+        crate::model::TimestampForm::Untimestamped
+    );
+    assert!(catalog.single_aggregation());
+    assert_eq!(
+        serde_json::to_value(&bundle.catalog).unwrap()["single_aggregation"],
+        json!(true)
+    );
 }
 
 #[test]
@@ -131,14 +192,14 @@ fn bundles_are_read_ignoring_the_members_the_reader_does_not_know() {
 
 #[test]
 fn a_bound_default_programs_export_records_version_2_fingerprints_and_lists_declared_outputs_but_not_host_settings() {
-    let plan = Plan::from_value(crate::testing::with_resources(DEFAULT_PROGRAM_JSON)).unwrap();
+    let plan = Plan::from_value(with_two_scopes(crate::testing::with_resources(DEFAULT_PROGRAM_JSON))).unwrap();
     let main = "dd_metrics_encode".parse::<OutputId>().unwrap();
     let team_d = "resources_team_d".parse::<OutputId>().unwrap();
     // The host's catalog: the main output's version 1 fingerprint too, as the host computes it from its configuration.
     let legacy = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
         .parse::<PlanHash>()
         .unwrap();
-    let catalog = crate::testing::default_program_resources_catalog();
+    let catalog = two_scopes_of(crate::testing::default_program_resources_catalog());
     let mut declared = Catalog::output(&catalog, &main).unwrap().clone();
     declared.legacy_fingerprint = Some(legacy);
     let catalog = catalog.with_output(main.clone(), declared);
@@ -200,7 +261,7 @@ fn a_bound_default_programs_export_records_version_2_fingerprints_and_lists_decl
 #[test]
 fn a_dual_ship_endpoint_under_the_main_role_changes_no_base_and_renumbered_routing_groups_do() {
     fn bound(edit: impl FnOnce(&mut Value)) -> Plan {
-        let mut value = crate::testing::with_resources(DEFAULT_PROGRAM_JSON);
+        let mut value = with_two_scopes(crate::testing::with_resources(DEFAULT_PROGRAM_JSON));
         edit(&mut value);
         Plan::from_value(value).unwrap()
     }
@@ -276,7 +337,7 @@ fn a_dual_ship_endpoint_under_the_main_role_changes_no_base_and_renumbered_routi
 
 /// Returns the fixtures' catalog with a value for every binding it declares, as a host's exported catalog has.
 fn catalog_with_values() -> MemoryCatalog {
-    let mut document = serde_json::to_value(default_program_catalog()).unwrap();
+    let mut document = serde_json::to_value(two_scope_catalog()).unwrap();
     for binding in document["bindings"].as_object_mut().unwrap().values_mut() {
         binding["value"] = json!(false);
     }
@@ -286,7 +347,7 @@ fn catalog_with_values() -> MemoryCatalog {
 #[test]
 fn a_change_outside_the_scope_changes_neither_the_export_nor_its_base() {
     // The fixture without the no-aggregation pipeline differs from the default program only before aggregation.
-    let other = Plan::from_json(NO_AGGREGATION_PIPELINE_OFF_JSON).unwrap();
+    let other = two_scopes(NO_AGGREGATION_PIPELINE_OFF_JSON);
     assert_ne!(
         other.hash(ResolvedValues::Exclude).unwrap(),
         default_program().hash(ResolvedValues::Exclude).unwrap()
@@ -373,8 +434,8 @@ fn the_base_program_hash_is_the_hash_of_the_export_without_it() {
     // unmodified export by its document alone.
     let plans = [
         default_program(),
-        Plan::from_json(NO_AGGREGATION_PIPELINE_OFF_JSON).unwrap(),
-        Plan::from_value(with_opaque_gateways(DEFAULT_PROGRAM_JSON)).unwrap(),
+        two_scopes(NO_AGGREGATION_PIPELINE_OFF_JSON),
+        Plan::from_value(with_two_scopes(with_opaque_gateways(DEFAULT_PROGRAM_JSON))).unwrap(),
     ];
     for plan in plans {
         let artifact = export(&plan, &post_enrich(), &MemoryCatalog::new(), &BTreeMap::new())
@@ -390,7 +451,7 @@ fn the_base_program_hash_is_the_hash_of_the_export_without_it() {
 fn the_default_program_with_opaque_gateways_exports_them_as_opaque_hosts() {
     // Until the gateways lower to routing operators, the scope holds them as opaque hosts, each with the `emit` its
     // output feeds.
-    let plan = Plan::from_value(with_opaque_gateways(DEFAULT_PROGRAM_JSON)).unwrap();
+    let plan = Plan::from_value(with_two_scopes(with_opaque_gateways(DEFAULT_PROGRAM_JSON))).unwrap();
     let artifact = export(&plan, &post_enrich(), &MemoryCatalog::new(), &BTreeMap::new())
         .unwrap()
         .artifact;
@@ -562,7 +623,7 @@ fn the_pre_aggregation_scope_exports_up_to_its_exits_as_the_hand_written_artifac
     let bundle = export(
         &default_program(),
         &pre_aggregation(),
-        &default_program_catalog(),
+        &two_scope_catalog(),
         &BTreeMap::new(),
     )
     .unwrap();
@@ -585,7 +646,7 @@ fn the_pre_aggregation_scope_exports_up_to_its_exits_as_the_hand_written_artifac
 
 #[test]
 fn without_the_no_aggregation_pipeline_the_pre_aggregation_scope_ends_at_one_exit() {
-    let plan = Plan::from_json(NO_AGGREGATION_PIPELINE_OFF_JSON).unwrap();
+    let plan = two_scopes(NO_AGGREGATION_PIPELINE_OFF_JSON);
     let artifact = export(&plan, &pre_aggregation(), &MemoryCatalog::new(), &BTreeMap::new())
         .unwrap()
         .artifact;

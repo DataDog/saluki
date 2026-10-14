@@ -755,37 +755,34 @@ mod tests {
         let (status, notes) = AdpStatus::read(&json!({
             "active_artifact": {"id": "demo", "revision": 3, "artifact_hash": "sha256:03"},
             "scopes": {
-                "dogstatsd_pre_aggregation": {"default_program_hash": "sha256:11", "stale_base": true,
-                    "active_artifact": {"id": "demo-dogstatsd_pre_aggregation", "revision": 4,
+                "other_scope": {"default_program_hash": "sha256:11", "stale_base": true,
+                    "active_artifact": {"id": "demo-other_scope", "revision": 4,
                                         "artifact_hash": "sha256:04"}},
-                "post_enrich": {"default_program_hash": "sha256:22", "active_artifact": null, "stale_base": "no",
+                "metrics": {"default_program_hash": "sha256:22", "active_artifact": null, "stale_base": "no",
                                 "future_field": 1},
                 "broken": 7
             }
         }));
         let scopes = &status.status.scopes;
-        assert_eq!(
-            scopes.keys().collect::<Vec<_>>(),
-            ["dogstatsd_pre_aggregation", "post_enrich"]
-        );
-        let pre = &scopes["dogstatsd_pre_aggregation"];
+        assert_eq!(scopes.keys().collect::<Vec<_>>(), ["metrics", "other_scope"]);
+        let pre = &scopes["other_scope"];
         assert_eq!(pre.default_program_hash.as_deref(), Some("sha256:11"));
         assert_eq!(pre.stale_base, Some(true));
         assert_eq!(pre.active_artifact.as_ref().unwrap().revision, Some(4));
-        let post = &scopes["post_enrich"];
+        let post = &scopes["metrics"];
         assert_eq!((post.active_artifact.as_ref(), post.stale_base), (None, None));
         assert_eq!(
             notes,
             [
                 "scopes.broken: expected an object (got 7)",
-                "scopes.post_enrich.stale_base: invalid type: string \"no\", expected a boolean (got \"no\")",
+                "scopes.metrics.stale_base: invalid type: string \"no\", expected a boolean (got \"no\")",
             ]
         );
         // A status without scopes, as the first version of the protocol writes it, has none.
         let (status, notes) = AdpStatus::read(&json!({"revision_high_water": 1}));
         assert!(status.status.scopes.is_empty() && notes.is_empty());
         assert_eq!(config_id(POLICY_SCOPE), DEMO_CONFIG_ID);
-        assert_eq!(config_id("dogstatsd_pre_aggregation"), "demo-dogstatsd_pre_aggregation");
+        assert_eq!(config_id("other_scope"), "demo-other_scope");
     }
 
     #[test]

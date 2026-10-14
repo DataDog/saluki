@@ -893,3 +893,63 @@ lanes matter little (and are off at those sizes), R1's cost model adds hops for 
 aggregation flush is the biggest practical problem. The consequences and the next chunk of work are in
 [deployment context and next steps](programmable-metrics-next.md).
 
+## After stage 9: one scope over the whole metrics path
+
+On 2026-10-14 the owner asked for one editable program covering the whole metrics path, with at most one aggregation
+for now. The default program's two scopes, `dogstatsd_pre_aggregation` (DogStatsD up to aggregation, ending at exits)
+and `post_enrich` (the policy region after host tags), became one, `metrics`: one input per metrics source the
+configuration enables, named after the source's binding and declared with the port type the source produces, and no
+exits. Amendments 168 and 169 in [the stages 7 and 9 plan](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments)
+record it.
+
+- **A spike came first.** Tests of the default-program fixture re-scoped to one scope (now
+  `install::unified_scope_tests`) showed that the unmodified export composes back to the same plan and places as the
+  boot plan does; that a routing edit causes no cut and a width edit does; and that an artifact that changes both
+  installs as one generation whose routing takes effect at the cut's boundary, for every source. No model change was
+  needed: the frame, placement, the cut protocol, and scope closure are as they were.
+- **Placement does not enforce one aggregation.** A second `aggregate` on the timestamp split's passthrough branch
+  places into the one isolation slot, which runs a state owner of each branch by design. So the validator has a new
+  rule, `single_aggregation`, which a host turns on through its catalog (`Catalog::single_aggregation`, the
+  document's `single_aggregation: true`), as ADP's and the fixtures' catalogs do. It is an error at each extra state
+  owner's node, the first being the default program's (the first without artifact provenance). It is the catalog's
+  choice rather than a rule for every plan because the plan crate's tests of several state owners (transition traces
+  12 and 13, budgets shared by owners, output stamps per lane) keep exercising what the runtime supports.
+- **The native-authority rule reaches further.** A width edit in the one scope gives every lossy node fed by the
+  timestamp split or aggregation the artifact's provenance, eight nodes in the fixture down to the routing gateways'
+  drops; the pre-aggregation scope's artifact stopped at its exits, at three. Accepted and recorded as a behavior change
+  (loss attribution, `explain`, the plan diff).
+- **Printed exports reorder edges.** The syntax prints the edges from a scope's inputs first, in input-name order, and
+  each node's edges in its block, while an export lists them in the plan's order, and the plan's hash covers edge
+  order. With one input this never showed; with five, a printed and parsed export composed to a plan equal to the
+  default program but for edge order, so the installer would have made a new generation for the demo's unmodified
+  program (S0). A first fix put the export's order back in the demo's editor; the review moved it into composition:
+  `compose_all` puts an artifact's edges in the default program's order before splicing them in (an edge the region
+  has takes that edge's place, a new edge follows the region's edge listed before it), so any tool's printed export
+  composes to the default program with its hash. No fixture hash changed. The artifact document's own hash still
+  covers the order it was written in. ADP's export test and the syntax crate's fixture tests compose the printed
+  export and compare plan hashes, and a plan-crate test composes shuffled artifacts.
+- **The first aggregation.** The rule takes as the first state owner the first without artifact provenance, then the
+  first with a reserved ID, so an aggregation an artifact adds ahead of a widened `dsd_agg` (which a width change
+  gives the artifact's provenance) is the one reported.
+- **Tests that are about partial scopes keep them.** The plan crate's composition, export, and installer tests of a
+  scope that ends at exits and of artifacts of several scopes run on the fixture with its two former scopes
+  (`testing::with_two_scopes`, `two_scope_catalog`), since the plan crate still supports both. The new export golden
+  is `fixtures/export/default-program-metrics.json`, derived from the fixture with a script, its hash computed with
+  Python as the others are.
+- **The demo edits the whole program.** It loads the `metrics` export, prints it with a `#` comment where each section
+  begins (sources, DogStatsD processing, aggregation, after aggregation, enrichment, policy; the canonical order was
+  already source to policy), and drops the pre-aggregation scope's special cases (its export fetch, the `?scope=`
+  query, the scope revoke). Policy edits go in at the edge into the policy `tee`. S5d is now a second aggregation,
+  refused by `single_aggregation`, which the editor flags at the line; S5e, the aggregation moved after enrichment,
+  keeps a placement refusal. S13's width change and revoke use the one scope, before the routing steps.
+- **Release notes.** None of the programmable-metrics notes has shipped, so the stage 5 and stage 6 notes were edited
+  in place (the `metrics` scope and route, at most one aggregation) rather than adding a note.
+- **Results.** `make demo-programmable-metrics-check` passed on its first run
+  (`target/programmable-metrics-demo/check-1792000608`): the first launch in 151.1 s, the second in 313.1 s, every
+  canary balanced (2,550 and 5,395 sent and received). S13a's cut took 28.8 s to acknowledge and 65.7 s to show. After
+  the review's fixes (edge order in composition, the export reader's `single_aggregation`, the first aggregation's tie
+  break), it passed again (`check-1792004710`): 150.2 s and 291.5 s, every canary balanced (2,507 and 4,997), S0 with no
+  new generation without the editor's reordering.
+  `delivery_tests::a_recipient_whose_intake_stays_down_retires_at_its_deadline_and_persists_what_it_holds` failed on
+  this machine with the disk at 88%, above `forwarder_storage_max_disk_ratio` (0.8), as it did before (see above); it
+  is unrelated to the change.

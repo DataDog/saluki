@@ -187,7 +187,23 @@ fn the_default_programs_explain_describes_its_graph() {
         .iter()
         .map(|scope| scope.name.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(scopes, ["dogstatsd_pre_aggregation", "post_enrich"]);
+    assert_eq!(scopes, ["metrics"]);
+    let inputs = explain.graph.scopes[0]
+        .inputs
+        .iter()
+        .map(|(input, port)| format!("{} = {}", input, port))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        inputs,
+        [
+            "checks = checks_ipc_in.metrics",
+            "dogstatsd = dsd_in.metrics",
+            "liveness = liveness_in.metrics",
+            "otlp = otlp_in.metrics",
+            "trace_sampler = trace_sampler.metrics"
+        ]
+    );
+    assert!(explain.graph.scopes[0].exits.is_empty());
 }
 
 #[test]

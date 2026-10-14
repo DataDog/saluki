@@ -51,7 +51,7 @@ use super::*;
 use crate::{
     internal::ConfigUpdatesWorker,
     programmable_metrics::{
-        catalog::POST_ENRICH_SCOPE,
+        catalog::METRICS_SCOPE,
         channel_stub::{ClientInfo, StubChannelConfig, StubChannelWorker, POLL_PATH},
         test_support::{connected_configuration_system, facts},
         test_topology::{Aggregation, Delivery, MetricsPath, Options, TestTopology, PATIENCE},
@@ -610,7 +610,7 @@ struct Lifecycle {
     transport: Option<TransportEnd>,
     /// The configuration stream, kept open: the worker that applies configuration updates fails once it closes.
     _stream: mpsc::Sender<ConfigUpdate>,
-    /// The artifact of the `post_enrich` export, as the status served it at boot.
+    /// The artifact of the `metrics` export, as the status served it at boot.
     export: Value,
     /// The default program of the configuration at boot, and its catalog.
     default_program: (Plan, AdpCatalog),
@@ -670,7 +670,7 @@ impl Lifecycle {
         })
         .await;
         let status = topology.status().expect("the plan-driven path has an installer");
-        let scope = ScopeName::new(POST_ENRICH_SCOPE).unwrap();
+        let scope = ScopeName::new(METRICS_SCOPE).unwrap();
         let bundle = status.load().exports[&scope].clone().expect("the scope exports");
         let export = serde_json::to_value(&bundle.artifact).unwrap();
         let transport = connected.lock().unwrap().take();
@@ -1320,9 +1320,9 @@ fn refused() -> Vec<Refused> {
             authentic: true,
         },
         Refused {
-            // A state owner with every parameter, where the frame cannot run it: the policy scope runs ahead of no
-            // isolation slot, so placement refuses it with the capability it lacks.
-            what: "a state owner in the policy scope",
+            // A second state owner with every parameter: ADP runs one aggregation per program, so validation refuses
+            // it at its node, wherever it is.
+            what: "a second aggregation",
             configs: |export, revision| {
                 let mut artifact = export.clone();
                 let node = json!({"id": "agg", "op": "aggregate", "params": {
@@ -1340,7 +1340,43 @@ fn refused() -> Vec<Refused> {
                 vec![config(revision, &artifact)]
             },
             error: |_, _| {
-                "The candidate plan cannot run in the physical structure built at boot: node `policy/agg`: it is a \
+                "the plan is not valid: error[single_aggregation] node `policy/agg`: a program has at most one \
+                 aggregation; `policy/agg` is a second one (`dsd_agg` is the first)"
+                    .to_string()
+            },
+            read: true,
+            authentic: true,
+        },
+        Refused {
+            // The one aggregation moved where the frame cannot run it: the policy region runs ahead of no isolation
+            // slot, so placement refuses it with the capability it lacks.
+            what: "the aggregation moved after enrichment",
+            configs: |export, revision| {
+                let mut artifact = export.clone();
+                let mut aggregation = nodes(&mut artifact)
+                    .iter()
+                    .find(|node| node["id"] == "dsd_agg")
+                    .expect("the export has aggregation")
+                    .clone();
+                // Aggregation's input goes straight on to what it fed, and aggregation runs in front of the main output.
+                let edges = edges(&mut artifact);
+                let fed = edges
+                    .iter()
+                    .find(|edge| edge["from"] == "dsd_agg.out")
+                    .expect("aggregation feeds a node")["to"]
+                    .clone();
+                edges.retain(|edge| edge["from"] != "dsd_agg.out");
+                edges
+                    .iter_mut()
+                    .find(|edge| edge["to"] == "dsd_agg.in")
+                    .expect("a node feeds aggregation")["to"] = fed;
+                nodes(&mut artifact).retain(|node| node["id"] != "dsd_agg");
+                aggregation["params"]["flush_interval"] = json!("10s");
+                in_front_of_the_main_output(&mut artifact, aggregation, "out");
+                vec![config(revision, &artifact)]
+            },
+            error: |_, _| {
+                "The candidate plan cannot run in the physical structure built at boot: node `dsd_agg`: it is a \
                  state owner, which runs only in an isolation slot that the region its input comes from has an exit \
                  to, and the topology built at boot has no such isolation slot for `metrics_enrich`: a new exit from \
                  a region to an isolation slot requires stage 10 frame changes: the physical structure is built from \
@@ -1402,7 +1438,7 @@ fn refused() -> Vec<Refused> {
                 ]
             },
             error: |_, _| {
-                "the policy snapshot holds 2 configs (`demo`, `other`) for scope `post_enrich`, but one artifact \
+                "the policy snapshot holds 2 configs (`demo`, `other`) for scope `metrics`, but one artifact \
                  replaces a scope: every config for it is rejected until the snapshot holds one"
                     .to_string()
             },
@@ -2219,15 +2255,11 @@ async fn start_clocked_on(mut options: Options, config: &'static str) -> (Lifecy
     (lifecycle, clock)
 }
 
-/// Returns the export of the pre-aggregation scope with aggregation over `window`, and the timestamp split before it
-/// with the same window, as validation requires; it flushes only at the end of input, as clocked aggregation does.
-fn pre_aggregation_over(status: &PlanStatus, window: &str) -> Value {
-    use crate::programmable_metrics::catalog::DSD_PRE_AGGREGATION_SCOPE;
-
-    let scope = ScopeName::new(DSD_PRE_AGGREGATION_SCOPE).unwrap();
-    let bundle = status.exports[&scope]
-        .clone()
-        .expect("the pre-aggregation scope exports");
+/// Returns the export of the `metrics` scope with aggregation over `window`, and the timestamp split before it with the
+/// same window, as validation requires; it flushes only at the end of input, as clocked aggregation does.
+fn aggregation_over(status: &PlanStatus, window: &str) -> Value {
+    let scope = ScopeName::new(METRICS_SCOPE).unwrap();
+    let bundle = status.exports[&scope].clone().expect("the scope exports");
     let mut artifact = serde_json::to_value(&bundle.artifact).unwrap();
     for node in nodes(&mut artifact) {
         match node["id"].as_str() {
@@ -2297,7 +2329,7 @@ async fn on_producer_lanes_an_artifact_that_changes_aggregations_window_installs
     let options = Options::new(MetricsPath::Plan, Aggregation::Clocked);
     let (mut lifecycle, clock) = start_clocked_on(options, THREE_PRODUCER_LANES).await;
     let at = |relative: u64| AdmissionTime::from_unix_secs(ADMITTED_AT + relative);
-    let artifact = pre_aggregation_over(&lifecycle.status.load(), "30s");
+    let artifact = aggregation_over(&lifecycle.status.load(), "30s");
     let lane = |batch: usize| format!("dsd_in.metrics_{}", batch % 3);
     let mut sent = 0;
 
@@ -2334,11 +2366,11 @@ async fn on_producer_lanes_an_artifact_that_changes_aggregations_window_installs
 
 #[tokio::test]
 async fn an_artifact_that_changes_aggregations_window_installs_at_a_cut_and_every_count_arrives_once() {
-    use crate::programmable_metrics::{catalog::DSD_PRE_AGGREGATION_SCOPE, test_topology::ADMITTED_AT};
+    use crate::programmable_metrics::test_topology::ADMITTED_AT;
 
     let (mut lifecycle, clock) = start_clocked(Options::new(MetricsPath::Plan, Aggregation::Clocked)).await;
     let at = |relative: u64| AdmissionTime::from_unix_secs(ADMITTED_AT + relative);
-    let artifact = pre_aggregation_over(&lifecycle.status.load(), "30s");
+    let artifact = aggregation_over(&lifecycle.status.load(), "30s");
     let mut sent = 0;
 
     // Three counts at 5 seconds past `B`, in the old lineage's bucket [0, 10).
@@ -2366,8 +2398,8 @@ async fn an_artifact_that_changes_aggregations_window_installs_at_a_cut_and_ever
         .status_where(|status| active(status) == Some(2) && status.installer.cut.is_none())
         .await;
 
-    // The status names each scope's base program hash, that of its export, and the artifact active in the
-    // pre-aggregation scope; the policy scope runs the default program's region.
+    // The status names the scope's base program hash, that of its export, and the artifact active in it, which the
+    // top-level members describe too.
     let scopes = &installed.apply_states.status.scopes;
     for (scope, bundle) in &installed.exports {
         let bundle = bundle.as_ref().expect("every scope exports");
@@ -2385,11 +2417,20 @@ async fn an_artifact_that_changes_aggregations_window_installs_at_a_cut_and_ever
             .as_ref()
             .map(|artifact| artifact.revision)
     };
-    assert_eq!(active_in(DSD_PRE_AGGREGATION_SCOPE), Some(1));
-    assert_eq!(active_in(POST_ENRICH_SCOPE), None);
+    assert_eq!(active_in(METRICS_SCOPE), Some(1));
+    assert_eq!(scopes.len(), 1);
     assert_eq!(
         installed.apply_states.status.default_program_hash,
-        scopes[&ScopeName::new(POST_ENRICH_SCOPE).unwrap()].default_program_hash
+        scopes[&ScopeName::new(METRICS_SCOPE).unwrap()].default_program_hash
+    );
+    assert_eq!(
+        installed
+            .apply_states
+            .status
+            .active_artifact
+            .as_ref()
+            .map(|artifact| artifact.revision),
+        Some(1)
     );
 
     // Every count arrives once: the old lineage's buckets through [20, 30), under generation 1, at its final flush at
@@ -2414,7 +2455,7 @@ async fn revoking_an_artifact_while_its_cut_is_armed_cancels_the_cut_and_the_old
     let _recorder = metrics::set_default_local_recorder(&recorder);
     let (mut lifecycle, clock) = start_clocked(Options::new(MetricsPath::Plan, Aggregation::Clocked)).await;
     let at = |relative: u64| AdmissionTime::from_unix_secs(ADMITTED_AT + relative);
-    let artifact = pre_aggregation_over(&lifecycle.status.load(), "30s");
+    let artifact = aggregation_over(&lifecycle.status.load(), "30s");
     let mut sent = 0;
 
     // Three counts at 5, and the cut armed at 30, as in the width change above.
@@ -2489,8 +2530,8 @@ async fn twenty_cut_installs_leave_health_registrations_resource_groups_bounds_a
     // Installs alternate between aggregation over 30 seconds and over 10 (flushing only at the end of input, so unlike
     // the default program's): each changes the window, so each installs at a cut.
     let artifacts = [
-        pre_aggregation_over(&lifecycle.status.load(), "30s"),
-        pre_aggregation_over(&lifecycle.status.load(), "10s"),
+        aggregation_over(&lifecycle.status.load(), "30s"),
+        aggregation_over(&lifecycle.status.load(), "10s"),
     ];
     let registrations = |health: &HealthRegistry| {
         health_components(health)
@@ -2588,7 +2629,7 @@ async fn on_producer_lanes_a_cut_arms_at_once_while_every_producer_lane_waits_fo
     let mut options = Options::new(MetricsPath::Plan, Aggregation::Clocked);
     options.gated.insert(MAIN.to_string());
     let (lifecycle, _clock) = start_clocked_on(options, THREE_PRODUCER_LANES).await;
-    let artifact = pre_aggregation_over(&lifecycle.status.load(), "30s");
+    let artifact = aggregation_over(&lifecycle.status.load(), "30s");
     let timestamped = |batch: u64| {
         Metric::counter(
             Context::from_parts(
@@ -2739,14 +2780,10 @@ fn native_fault_before_aggregation(plan: &mut Value) {
     in_front_of(plan, "dsd_no_agg_split.in", node, "out");
 }
 
-/// Returns the export of the pre-aggregation scope, as the status serves it.
-fn pre_aggregation_export(status: &PlanStatus) -> Value {
-    use crate::programmable_metrics::catalog::DSD_PRE_AGGREGATION_SCOPE;
-
-    let scope = ScopeName::new(DSD_PRE_AGGREGATION_SCOPE).unwrap();
-    let bundle = status.exports[&scope]
-        .clone()
-        .expect("the pre-aggregation scope exports");
+/// Returns the export of the `metrics` scope, as the status serves it.
+fn metrics_export(status: &PlanStatus) -> Value {
+    let scope = ScopeName::new(METRICS_SCOPE).unwrap();
+    let bundle = status.exports[&scope].clone().expect("the scope exports");
     serde_json::to_value(&bundle.artifact).unwrap()
 }
 
@@ -2817,9 +2854,9 @@ async fn on_producer_lanes_a_native_nodes_panic_in_one_lane_ends_it_and_fails_it
 async fn on_producer_lanes_an_artifacts_node_that_panics_in_one_lane_costs_its_batch_and_every_lane_runs_on() {
     let start = on_producer_lanes(PRODUCER_LANES, Aggregation::Native);
     let mut harness = Lifecycle::start_with(start).await;
-    // An artifact of the pre-aggregation scope with a `test_panic` node in front of the no-aggregation split, which
-    // the producer lanes run, under the artifact's panic budget.
-    let mut artifact = pre_aggregation_export(&harness.status.load());
+    // An artifact with a `test_panic` node in front of the no-aggregation split, which the producer lanes run, under
+    // the artifact's panic budget.
+    let mut artifact = metrics_export(&harness.status.load());
     let node = json!({"id": "faulty", "op": "test_panic", "params": {"on": PANIC_A}});
     in_front_of(&mut artifact, "dsd_no_agg_split.in", node, "out");
     harness.deliver(vec![config(1, &artifact)]);
@@ -2950,9 +2987,9 @@ async fn on_two_state_lanes_a_state_owner_panic_under_the_default_program_fails_
 async fn a_state_owner_panic_under_an_artifact_loses_its_lanes_contexts_only(lanes: &'static str) -> usize {
     const CONTEXTS: usize = 20;
     let mut harness = Lifecycle::start_with(with_panicking_state(lanes)).await;
-    // An artifact of the pre-aggregation scope, whose aggregation, which panics on demand, runs over one-second
-    // buckets that it flushes only when its lineage retires or the topology stops: it installs at a cut.
-    let mut artifact = pre_aggregation_export(&harness.status.load());
+    // An artifact whose aggregation, which panics on demand, runs over one-second buckets that it flushes only when its
+    // lineage retires or the topology stops: it installs at a cut.
+    let mut artifact = metrics_export(&harness.status.load());
     for node in nodes(&mut artifact) {
         match node["id"].as_str() {
             Some("dsd_agg") => {
@@ -3035,15 +3072,11 @@ async fn on_two_state_lanes_a_state_owner_panic_under_an_artifact_loses_only_its
     );
 }
 
-/// Returns the export of the pre-aggregation scope with aggregation over `window`, and the timestamp split before it
-/// with the same window, flushing on its interval, for a run that keeps flushing.
-fn pre_aggregation_flushing_over(status: &PlanStatus, window: &str) -> Value {
-    use crate::programmable_metrics::catalog::DSD_PRE_AGGREGATION_SCOPE;
-
-    let scope = ScopeName::new(DSD_PRE_AGGREGATION_SCOPE).unwrap();
-    let bundle = status.exports[&scope]
-        .clone()
-        .expect("the pre-aggregation scope exports");
+/// Returns the export of the `metrics` scope with aggregation over `window`, and the timestamp split before it with the
+/// same window, flushing on its interval, for a run that keeps flushing.
+fn aggregation_flushing_over(status: &PlanStatus, window: &str) -> Value {
+    let scope = ScopeName::new(METRICS_SCOPE).unwrap();
+    let bundle = status.exports[&scope].clone().expect("the scope exports");
     let mut artifact = serde_json::to_value(&bundle.artifact).unwrap();
     for node in nodes(&mut artifact) {
         if matches!(node["id"].as_str(), Some("dsd_agg" | "dsd_no_agg_split")) {
@@ -3174,7 +3207,7 @@ async fn lane_stress(run: StressRun) {
             if installs % run.cut_every == 0 {
                 // A width change installs at a cut.
                 cuts += 1;
-                let artifact = pre_aggregation_flushing_over(&harness.status.load(), windows[(cuts % 2) as usize]);
+                let artifact = aggregation_flushing_over(&harness.status.load(), windows[(cuts % 2) as usize]);
                 harness.deliver(vec![config(cuts, &artifact)]);
             } else {
                 harness

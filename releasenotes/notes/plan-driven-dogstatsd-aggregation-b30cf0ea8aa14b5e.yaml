@@ -41,9 +41,9 @@ upgrade:
     now emitted once per histogram, rather than once per time it is configured.
 features:
   - |
-    A policy artifact can now replace DogStatsD processing up to and including aggregation, the
-    ``dogstatsd_pre_aggregation`` scope (``GET /programmable-metrics/export?scope=dogstatsd_pre_aggregation``),
-    and change aggregation while Agent Data Plane runs, its window included. A change of the window takes effect
+    A policy artifact can now change DogStatsD aggregation while Agent Data Plane runs, its window included, in
+    the same program as routing (``GET /programmable-metrics/export?scope=metrics``). An artifact that changes
+    both installs as one change, which takes effect at the window change's cut. A change of the window takes effect
     at a cut: the first boundary both windows share (a multiple of both) at least a second after the cut is
     armed, so at most the interval at which they share a boundary, plus a second, after arming (301 seconds for a
     300-second window). Arming is put off, and the cut comes later, while DogStatsD waits for room to pass its

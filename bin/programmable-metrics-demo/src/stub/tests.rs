@@ -538,7 +538,7 @@ async fn the_acknowledgment_timeline_folds_polls_that_report_the_same_state() {
 fn pre_aggregation_artifact(prefix: &str) -> Value {
     json!({
         "ir_version": 1,
-        "scope": "dogstatsd_pre_aggregation",
+        "scope": "other_scope",
         "base": {"program_hash": format!("sha256:{}", "0".repeat(64))},
         "nodes": [{"id": "keep", "op": "split", "params": {"predicate": {"name": {"prefix": prefix}}}}],
         "edges": [{"from": "input.metrics", "to": "keep.in"}]
@@ -573,24 +573,18 @@ async fn each_scope_has_one_config_under_one_revision_counter() {
         .unwrap();
     assert_eq!(
         (pre.id.as_str(), pre.scope.as_str(), pre.revision),
-        ("demo-dogstatsd_pre_aggregation", "dogstatsd_pre_aggregation", 2)
+        ("demo-other_scope", "other_scope", 2)
     );
     // The snapshot holds one config per scope, in scope order.
     assert_eq!(
         served(&channel).await,
-        [
-            ("demo-dogstatsd_pre_aggregation".to_string(), 2),
-            ("demo".to_string(), 1)
-        ]
+        [("demo".to_string(), 1), ("demo-other_scope".to_string(), 2)]
     );
     // A publish replaces its own scope's config, under the next revision of the one counter.
     channel.publish(other_artifact(), None, None, 3_000).unwrap();
     assert_eq!(
         served(&channel).await,
-        [
-            ("demo-dogstatsd_pre_aggregation".to_string(), 2),
-            ("demo".to_string(), 3)
-        ]
+        [("demo".to_string(), 3), ("demo-other_scope".to_string(), 2)]
     );
     let view = channel.view(10, None, None);
     assert_eq!(view.current.as_ref().map(|current| current.revision), Some(3));
@@ -599,11 +593,11 @@ async fn each_scope_has_one_config_under_one_revision_counter() {
         .iter()
         .map(|config| (config.scope.as_str(), config.revision))
         .collect::<Vec<_>>();
-    assert_eq!(configs, [("dogstatsd_pre_aggregation", 2), ("post_enrich", 3)]);
+    assert_eq!(configs, [("metrics", 3), ("other_scope", 2)]);
 
     // Revoking one scope removes its config alone; revoking it again changes nothing.
-    assert!(channel.revoke(Some("dogstatsd_pre_aggregation"), 4_000).unwrap());
-    assert!(!channel.revoke(Some("dogstatsd_pre_aggregation"), 5_000).unwrap());
+    assert!(channel.revoke(Some("other_scope"), 4_000).unwrap());
+    assert!(!channel.revoke(Some("other_scope"), 5_000).unwrap());
     assert_eq!(served(&channel).await, [("demo".to_string(), 3)]);
     // Revoking every scope empties the snapshot.
     assert!(channel.revoke(None, 6_000).unwrap());
@@ -619,14 +613,10 @@ async fn each_scope_has_one_config_under_one_revision_counter() {
         history,
         [
             (store::HistoryAction::Revoke, None, None),
-            (store::HistoryAction::Revoke, scope("dogstatsd_pre_aggregation"), None),
-            (store::HistoryAction::Publish, scope("post_enrich"), Some(3)),
-            (
-                store::HistoryAction::Publish,
-                scope("dogstatsd_pre_aggregation"),
-                Some(2)
-            ),
-            (store::HistoryAction::Publish, scope("post_enrich"), Some(1)),
+            (store::HistoryAction::Revoke, scope("other_scope"), None),
+            (store::HistoryAction::Publish, scope("metrics"), Some(3)),
+            (store::HistoryAction::Publish, scope("other_scope"), Some(2)),
+            (store::HistoryAction::Publish, scope("metrics"), Some(1)),
         ]
     );
 
@@ -635,10 +625,7 @@ async fn each_scope_has_one_config_under_one_revision_counter() {
         .publish(pre_aggregation_artifact("b."), None, None, 7_000)
         .unwrap();
     let reopened = channel_in(dir.path());
-    assert_eq!(
-        served(&reopened).await,
-        [("demo-dogstatsd_pre_aggregation".to_string(), 4)]
-    );
+    assert_eq!(served(&reopened).await, [("demo-other_scope".to_string(), 4)]);
 }
 
 #[test]
@@ -890,7 +877,7 @@ fn a_store_written_before_the_resources_product_reads_with_no_resources() {
         let mut store = ArtifactStore::open(dir.path()).unwrap();
         store.publish(artifact(), None, None, 1_000).unwrap()
     };
-    let file = json!({"format": 2, "revision_counter": 3, "configs": {"post_enrich": config}});
+    let file = json!({"format": 2, "revision_counter": 3, "configs": {"metrics": config}});
     std::fs::write(dir.path().join("store.json"), file.to_string()).unwrap();
     let store = ArtifactStore::open(dir.path()).unwrap();
     assert_eq!(store.current(), Some(&config));

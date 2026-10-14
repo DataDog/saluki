@@ -1,5 +1,6 @@
-//! Exports of lowered default programs: every configuration of the matrix exports its policy scope, the export prints
-//! and parses back as the same document, and composing it back gives the default program again.
+//! Exports of lowered default programs: every configuration of the matrix exports its one scope, the export prints
+//! and parses back as the same document but for the order of its edges, and composing either back gives the default
+//! program again, with its hash.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -11,7 +12,7 @@ use saluki_metric_plan::{
     compose::{compose, receive_artifact, Approval},
     export::export,
     install::diff_with_correspondence,
-    ir::{OutputId, ReceivedArtifact, ScopeName},
+    ir::{OutputId, ScopeName},
     operators::{names, OperatorRegistry},
     validate::Catalog as _,
 };
@@ -20,14 +21,14 @@ use serde_json::Value;
 
 use super::{matrix::MATRIX, Lowering};
 use crate::programmable_metrics::{
-    catalog::POST_ENRICH_SCOPE,
+    catalog::METRICS_SCOPE,
     test_support::{configuration, facts},
 };
 
 #[tokio::test]
 async fn every_lowered_default_program_exports_and_composes_back_unchanged() {
     let registry = OperatorRegistry::native();
-    let scope = ScopeName::new(POST_ENRICH_SCOPE).unwrap();
+    let scope = ScopeName::new(METRICS_SCOPE).unwrap();
     for (name, yaml) in MATRIX {
         let config = configuration(yaml).await;
         let lowered = Lowering::new(Arc::new(config.clone()), facts(&config))
@@ -80,23 +81,29 @@ async fn every_lowered_default_program_exports_and_composes_back_unchanged() {
             );
         }
 
-        // Lowering writes plans in the syntax's canonical order, so the export prints and parses back as itself.
+        // Lowering writes nodes in the syntax's canonical order, so the export prints and parses back as itself, but
+        // for the order of its edges: the printed form writes the edges from the scope's inputs first, in input-name
+        // order, and each node's edges in its block, and the export lists them in the plan's order.
         let printed = print(&bundle.artifact, &PrintOptions::default());
         let parsed = parse(&printed).unwrap_or_else(|diagnostics| panic!("{}:\n{}\n{}", name, diagnostics, printed));
-        assert_eq!(parsed.artifact, bundle.artifact, "{}:\n{}", name, printed);
-
-        // Composing the export back, with ADP's catalog, gives the default program, with the same hash, and its diff
-        // against the default program is empty.
-        let document = serde_json::to_value(&parsed.artifact).unwrap();
-        let received = receive_artifact(document).unwrap_or_else(|e| panic!("{}: {}", name, e));
+        let sorted = |edges: &[saluki_metric_plan::ir::ArtifactEdge]| {
+            let mut edges = edges
+                .iter()
+                .map(|edge| format!("{} -> {}", edge.from, edge.to))
+                .collect::<Vec<_>>();
+            edges.sort();
+            edges
+        };
+        assert_eq!(parsed.artifact.nodes, bundle.artifact.nodes, "{}:\n{}", name, printed);
         assert_eq!(
-            received.hash,
-            ReceivedArtifact::from_value(serde_json::to_value(&bundle.artifact).unwrap())
-                .unwrap()
-                .hash,
-            "{}",
-            name
+            sorted(&parsed.artifact.edges),
+            sorted(&bundle.artifact.edges),
+            "{}:\n{}",
+            name,
+            printed
         );
+        assert_eq!(print(&parsed.artifact, &PrintOptions::default()), printed, "{}", name);
+
         let approval = Approval {
             revision: 1,
             approved_against: None,
@@ -104,8 +111,16 @@ async fn every_lowered_default_program_exports_and_composes_back_unchanged() {
             in_effect: false,
             upgraded: Default::default(),
         };
-        let composed = compose(plan, &received, &approval, &lowered.catalog, &registry)
-            .unwrap_or_else(|e| panic!("{}: {}", name, e));
+        let compose_document = |artifact: &saluki_metric_plan::ir::PolicyArtifact| {
+            let received =
+                receive_artifact(serde_json::to_value(artifact).unwrap()).unwrap_or_else(|e| panic!("{}: {}", name, e));
+            compose(plan, &received, &approval, &lowered.catalog, &registry)
+                .unwrap_or_else(|e| panic!("{}: {}", name, e))
+        };
+
+        // Composing the export back, with ADP's catalog, gives the default program, with the same hash, and its diff
+        // against the default program is empty.
+        let composed = compose_document(&bundle.artifact);
         assert!(composed.report.findings().is_empty(), "{}:\n{}", name, composed.report);
         assert!(!composed.stale_base && !composed.stale_review, "{}", name);
         assert_eq!(composed.plan.nodes, plan.nodes, "{}", name);
@@ -119,5 +134,20 @@ async fn every_lowered_default_program_exports_and_composes_back_unchanged() {
         let diff = diff_with_correspondence(plan, &composed.plan, &composed.correspondence, &registry);
         assert!(diff.diff.is_empty(), "{}: {:?}", name, diff.diff);
         assert_eq!(diff.artifact_nodes.len(), bundle.artifact.nodes.len(), "{}", name);
+
+        // Composing the printed export, whose edges are in another order, gives the default program too, with the same
+        // hash: composition puts an artifact's edges in the default program's order.
+        let composed = compose_document(&parsed.artifact);
+        assert!(composed.report.findings().is_empty(), "{}:\n{}", name, composed.report);
+        assert_eq!(composed.plan.nodes, plan.nodes, "{}", name);
+        assert_eq!(composed.plan.edges, plan.edges, "{}", name);
+        assert_eq!(
+            composed.plan.hash(ResolvedValues::Include).unwrap(),
+            plan.hash(ResolvedValues::Include).unwrap(),
+            "{}",
+            name
+        );
+        let diff = diff_with_correspondence(plan, &composed.plan, &composed.correspondence, &registry);
+        assert!(diff.diff.is_empty(), "{}: {:?}", name, diff.diff);
     }
 }

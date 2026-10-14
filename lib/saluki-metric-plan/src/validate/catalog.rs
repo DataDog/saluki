@@ -1,5 +1,5 @@
-//! The catalog of what the host declares: outputs, configuration bindings, scope inputs and exits, and its state
-//! budget.
+//! The catalog of what the host declares: outputs, configuration bindings, scope inputs and exits, its state budget,
+//! and whether it runs at most one aggregation per program.
 
 use std::collections::BTreeMap;
 
@@ -128,6 +128,15 @@ pub trait Catalog {
         None
     }
 
+    /// Returns `true` if the host runs at most one state owner, one aggregation, per program.
+    ///
+    /// Validation then reports every state owner after the first (`single_aggregation`), wherever it is: placement
+    /// alone accepts a second one wherever an isolation slot can run it, since an isolation slot runs several state
+    /// owners by design. The default allows any number.
+    fn single_aggregation(&self) -> bool {
+        false
+    }
+
     /// Returns the schema of the given delivery host's parameters, if the host declares it.
     ///
     /// Output bindings, host settings, and recipients name a delivery host; validation checks that their parameters
@@ -181,7 +190,8 @@ impl BindingResolver for dyn Catalog + '_ {
 /// the output's `accepts`, `fingerprint`, `recipients`, and optional `legacy_fingerprint`; `bindings`, from binding
 /// name to the binding's `type` (a [`ValueType`]), `liveness` (`live` or `startup`), and optional `value`; `scopes`,
 /// from scope name to the scope's `inputs` and `exits`, each a map from name to port type; and `state_budget`, the
-/// host's state budget. A scope without exits is written as the map of its inputs alone, as documents written before
+/// host's state budget; and `single_aggregation`, `true` when the host runs at most one aggregation per program. A scope
+/// without exits is written as the map of its inputs alone, as documents written before
 /// scopes had exits are, and either form is read. A host exports its catalog in this form, so that plans can be
 /// validated and previewed away from it. It declares no delivery host: an export leaves host settings out.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -202,6 +212,9 @@ pub struct MemoryCatalog {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     state_budget: Option<u64>,
+
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    single_aggregation: bool,
 }
 
 /// What a catalog declares about one scope: the port types of its inputs and of its exits.
@@ -327,6 +340,12 @@ impl MemoryCatalog {
         self.state_budget = Some(capacity);
         self
     }
+
+    /// Declares that the host runs at most one aggregation per program.
+    pub fn with_single_aggregation(mut self) -> Self {
+        self.single_aggregation = true;
+        self
+    }
 }
 
 impl Catalog for MemoryCatalog {
@@ -348,6 +367,10 @@ impl Catalog for MemoryCatalog {
 
     fn state_budget(&self) -> Option<u64> {
         self.state_budget
+    }
+
+    fn single_aggregation(&self) -> bool {
+        self.single_aggregation
     }
 }
 

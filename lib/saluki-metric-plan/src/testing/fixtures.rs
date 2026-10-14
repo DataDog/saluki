@@ -10,6 +10,7 @@ use crate::{
         RecipientId,
     },
     model::{Kind, KindSet, PortType, TimestampForm},
+    operators::SourceBinding,
     validate::{CatalogOutput, Liveness, MemoryCatalog},
 };
 
@@ -192,8 +193,23 @@ fn hash(digit: char) -> PlanHash {
         .expect("64 hexadecimal digits form a hash")
 }
 
+/// The one scope of the default-program fixtures, which an artifact replaces: the whole metrics path after the sources.
+pub const DEFAULT_PROGRAM_SCOPE: &str = "metrics";
+
+/// The inputs of the default-program fixtures' scope ([`DEFAULT_PROGRAM_SCOPE`]): for each, its name, the port it names
+/// (the `metrics` port of one source), and the source's binding.
+pub const DEFAULT_PROGRAM_SCOPE_INPUTS: [(&str, &str, SourceBinding); 5] = [
+    ("dogstatsd", "dsd_in.metrics", SourceBinding::Dogstatsd),
+    ("otlp", "otlp_in.metrics", SourceBinding::Otlp),
+    ("checks", "checks_ipc_in.metrics", SourceBinding::Checks),
+    ("liveness", "liveness_in.metrics", SourceBinding::Liveness),
+    ("trace_sampler", "trace_sampler.metrics", SourceBinding::TraceSampler),
+];
+
 /// Returns the catalog the host would declare for the default program: its outputs, the configuration bindings that
-/// lowering uses with their types and liveness, and the `dogstatsd_pre_aggregation` and `post_enrich` scopes.
+/// lowering uses with their types and liveness, the inputs of the `metrics` scope, each carrying what its source
+/// produces (DogStatsD with client timestamps, as the no-aggregation pipeline parses them), and that the host runs at
+/// most one aggregation per program.
 ///
 /// Binding names, types, and liveness are those of the host's binding registry, whose tests check that they agree.
 /// Endpoint routing group keys are placeholders.
@@ -201,6 +217,84 @@ fn hash(digit: char) -> PlanHash {
 /// Output fingerprints are placeholder hashes whose digits are all the same: `1` for `dsd_client_telemetry` through
 /// `6` for `af_metrics_encode`, in the order the fixtures declare the outputs.
 pub fn default_program_catalog() -> MemoryCatalog {
+    DEFAULT_PROGRAM_SCOPE_INPUTS
+        .iter()
+        .fold(catalog_without_scopes(), |catalog, (input, _, binding)| {
+            catalog.with_scope_input(
+                DEFAULT_PROGRAM_SCOPE.parse().unwrap(),
+                InputName::new(*input).unwrap(),
+                binding.port_type(TimestampForm::Mixed),
+            )
+        })
+        .with_single_aggregation()
+}
+
+/// The two scopes the default program declared through stage 9, before its one `metrics` scope: `post_enrich`, the
+/// policy region after host tags, and `dogstatsd_pre_aggregation`, DogStatsD's processing up to and including
+/// aggregation, which ends at exits.
+///
+/// The host no longer declares them. Tests of what the plan crate supports in general, but the default program no
+/// longer uses, keep them: a scope that covers part of a plan, a scope's exits, and artifacts of several scopes composed
+/// together.
+pub const TWO_SCOPES: [&str; 2] = ["dogstatsd_pre_aggregation", "post_enrich"];
+
+/// Returns a default-program fixture with its scope replaced by the [two scopes it declared through stage
+/// 9](TWO_SCOPES): it validates with no findings against [`two_scope_catalog`].
+///
+/// `dogstatsd_pre_aggregation`'s exits are the inputs of the post-aggregation filter: of the merge in front of it with
+/// the no-aggregation pipeline (`aggregated` and `passthrough`), of the filter itself without (`aggregated`).
+pub fn with_two_scopes(mut value: Value) -> Value {
+    let has_passthrough = value["nodes"]
+        .as_array()
+        .expect("plans have nodes")
+        .iter()
+        .any(|node| node["id"] == "dsd_post_agg_filter_in");
+    let exits = if has_passthrough {
+        json!({"aggregated": "dsd_post_agg_filter_in.0", "passthrough": "dsd_post_agg_filter_in.1"})
+    } else {
+        json!({"aggregated": "dsd_post_agg_filter.in"})
+    };
+    value["scopes"] = json!({
+        "dogstatsd_pre_aggregation": {"inputs": {"metrics": "dsd_in.metrics"}, "exits": exits},
+        "post_enrich": {"inputs": {"metrics": "metrics_enrich_host_tags.out"}}
+    });
+    value
+}
+
+/// Returns the catalog of a default-program fixture with [two scopes](with_two_scopes): [`default_program_catalog`]
+/// as [`two_scopes_of`] declares it.
+pub fn two_scope_catalog() -> MemoryCatalog {
+    two_scopes_of(default_program_catalog())
+}
+
+/// Returns `catalog` with the input `metrics` of each of the [two scopes](TWO_SCOPES), carrying anything, instead of
+/// the scopes it declares, and without the restriction to one aggregation, as the host declared it through stage 9.
+pub fn two_scopes_of(catalog: MemoryCatalog) -> MemoryCatalog {
+    let mut document = serde_json::to_value(without_single_aggregation(catalog)).expect("catalogs are written");
+    let members = document.as_object_mut().expect("a catalog document is an object");
+    let inputs = json!({"metrics": {"kinds": "all", "timestamps": "mixed"}});
+    members.insert(
+        "scopes".to_string(),
+        TWO_SCOPES
+            .iter()
+            .map(|scope| (scope.to_string(), inputs.clone()))
+            .collect(),
+    );
+    serde_json::from_value(document).expect("the catalog document reads back")
+}
+
+/// Returns `catalog` without the restriction to one aggregation per program, for tests of what placement and the
+/// runtime do with several state owners, which the plan crate supports.
+pub fn without_single_aggregation(catalog: MemoryCatalog) -> MemoryCatalog {
+    let mut document = serde_json::to_value(catalog).expect("catalogs are written as documents");
+    if let Some(members) = document.as_object_mut() {
+        members.remove("single_aggregation");
+    }
+    serde_json::from_value(document).expect("the catalog document reads back")
+}
+
+/// The outputs and bindings of [`default_program_catalog`], without scopes.
+fn catalog_without_scopes() -> MemoryCatalog {
     let all = PortType::ANY;
     let counters = PortType {
         kinds: KindSet::of(&[Kind::Counter, Kind::Rate, Kind::Gauge, Kind::Set]),
@@ -364,14 +458,4 @@ pub fn default_program_catalog() -> MemoryCatalog {
         catalog = catalog.with_binding(BindingName::new(name).unwrap(), ty, liveness);
     }
     catalog
-        .with_scope_input(
-            "dogstatsd_pre_aggregation".parse().unwrap(),
-            InputName::new("metrics").unwrap(),
-            PortType::ANY,
-        )
-        .with_scope_input(
-            "post_enrich".parse().unwrap(),
-            InputName::new("metrics").unwrap(),
-            PortType::ANY,
-        )
 }

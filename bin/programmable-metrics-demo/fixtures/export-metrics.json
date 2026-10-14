@@ -1,9 +1,9 @@
 {
   "export_version": 1,
-  "scope": "post_enrich",
+  "scope": "metrics",
   "artifact": {
     "ir_version": 1,
-    "scope": "post_enrich",
+    "scope": "metrics",
     "base": {
       "program_hash": "sha256:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
       "outputs": {
@@ -66,7 +66,7 @@
       { "id": "mrf_metrics_gateway_false", "op": "drop" }
     ],
     "edges": [
-      { "from": "input.metrics", "to": "metrics_policy.in" },
+      { "from": "input.dogstatsd", "to": "metrics_policy.in" },
       { "from": "metrics_policy.0", "to": "metrics_policy_0.in" },
       { "from": "metrics_policy.1", "to": "metrics_routing_filter_0.in" },
       { "from": "metrics_routing_filter_0.true", "to": "metrics_routing_filter_0_true.in" },
@@ -142,10 +142,11 @@
       }
     },
     "scopes": {
-      "post_enrich": {
-        "metrics": { "kinds": "all", "timestamps": "mixed" }
+      "metrics": {
+        "dogstatsd": { "kinds": ["counter", "gauge", "set", "histogram", "distribution"], "timestamps": "mixed" }
       }
     },
+    "single_aggregation": true,
     "future_member": "ignored"
   },
   "labels": {

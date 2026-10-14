@@ -760,7 +760,7 @@
       "pattern": "^[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}$"
     },
     "ScopeDecl": {
-      "description": "A replaceable region of a plan.\n\nA scope is the region between its inputs and its exits: every node reachable from the ports its inputs name, without entering one of the ports its exits name. A policy artifact replaces that region. A scope without exits, such as `post_enrich`, extends to the `emit` and `drop` nodes that end its paths.\n\nValidation checks that a scope is closed, so that replacing it changes nothing outside it: nothing outside the region feeds a node inside it except through the scope's inputs, each exit is fed from inside the region and leads out of it, and no two scopes share a node.",
+      "description": "A replaceable region of a plan.\n\nA scope is the region between its inputs and its exits: every node reachable from the ports its inputs name, without entering one of the ports its exits name. A policy artifact replaces that region. A scope without exits extends to the `emit` and `drop` nodes that end its paths, as one whose inputs are a plan's sources then covers the whole plan after them.\n\nValidation checks that a scope is closed, so that replacing it changes nothing outside it: nothing outside the region feeds a node inside it except through the scope's inputs, each exit is fed from inside the region and leads out of it, and no two scopes share a node.",
       "type": "object",
       "required": [
         "inputs"

@@ -380,7 +380,10 @@ fn structure_only_an_artifact_asks_for_is_unsupported_until_stage_10() {
             .unwrap()
             .push(json!({"from": "metrics_enrich_host_tags.out", "to": "policy/agg.in"}));
     });
-    let (problems, capabilities) = unplaceable(&plan, &default_program_resources_catalog());
+    // A host that runs one aggregation per program rejects it at validation; placement's own refusal is the one
+    // without that restriction.
+    let catalog = crate::testing::without_single_aggregation(default_program_resources_catalog());
+    let (problems, capabilities) = unplaceable(&plan, &catalog);
     assert_eq!(capabilities, vec![MissingCapability::FrameChanges]);
     assert_eq!(
         problems,

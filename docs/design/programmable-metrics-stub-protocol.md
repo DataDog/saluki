@@ -41,12 +41,7 @@ Request body:
     "degraded": null,
     "live_generations": 2,
     "scopes": {
-      "dogstatsd_pre_aggregation": {
-        "default_program_hash": "sha256:<hex>",
-        "active_artifact": { "id": "demo-dogstatsd_pre_aggregation", "revision": 6, "artifact_hash": "sha256:<hex>" },
-        "stale_base": false
-      },
-      "post_enrich": {
+      "metrics": {
         "default_program_hash": "sha256:<hex>",
         "active_artifact": { "id": "demo", "revision": 7, "artifact_hash": "sha256:<hex>" },
         "stale_base": false
@@ -86,16 +81,19 @@ Request body:
   active plan hash when it was delivered. It was added after the first version of this contract, as an
   additive member: readers that do not know it ignore it.
 - `status.default_program_hash` equals `artifact.base.program_hash` of the current export bundle (section 3) for the
-  `post_enrich` scope, so a client refetches the export when its artifact changes: its nodes, edges, or the
+  `metrics` scope, so a client refetches the export when its artifact changes: its nodes, edges, or the
   fingerprints of the outputs it emits to. Catalog values (binding values, recipients, labels) can change without it,
   so a client that shows them also refetches periodically.
-- The top-level `default_program_hash`, `active_artifact`, and `stale_base` describe the policy scope, `post_enrich`,
-  as in the first version of this contract; `stale_review` is `true` when any active artifact's review is stale.
-  `scopes` (additive) describes each replaceable scope of the default program by name: the base program hash of its
-  export, the artifact active for it (`null` while the default program's region runs there), and whether that
-  artifact's base is stale. ADP reports every scope's base, so it always writes `scopes`; a host that reports only the
-  policy scope's base writes it while an artifact is active in another scope, and otherwise leaves it out, the first
-  version's form.
+- The top-level `default_program_hash`, `active_artifact`, and `stale_base` describe the policy scope, `metrics`, the
+  default program's one scope: the whole metrics path after its sources (until the one-scope change, the policy scope
+  was `post_enrich`, the region after host tags, beside `dogstatsd_pre_aggregation`; see the [status
+  document](programmable-metrics-status.md#the-demo)). `stale_review` is `true` when any active artifact's review is
+  stale. `scopes` (additive) describes each replaceable scope of the default program by name: the base program hash of
+  its export, the artifact active for it (`null` while the default program's region runs there), and whether that
+  artifact's base is stale. ADP reports every scope's base, so it always writes `scopes`, today with the one entry
+  `metrics`; a host that reports only the policy scope's base writes it while an artifact is active in another scope,
+  and otherwise leaves it out, the first version's form. The protocol keeps several scopes, which the plan crate
+  supports, though ADP declares one.
 - `config_states` is bounded: ADP keeps the acknowledgment of every config of the latest snapshot, of every config
   whose artifact is still being installed, active, or kept to roll back to, and of the 16 configs most recently
   finished (`rejected`, `failed`, or `retired`) beyond those; older ones are forgotten.
@@ -183,7 +181,7 @@ Response body (`200`):
 |---|---|
 | `GET /programmable-metrics/status` | the `status` object above plus `config_states`, and `recipients` (below) |
 | `GET /programmable-metrics/resources` | the resources view (below) |
-| `GET /programmable-metrics/export?scope=<scope>` | export bundle (below) of `post_enrich` or `dogstatsd_pre_aggregation` |
+| `GET /programmable-metrics/export?scope=<scope>` | export bundle (below) of a scope of the default program: `metrics`, its one scope |
 | `GET /programmable-metrics/plan` | the active composed logical plan, resolved values included |
 | `GET /programmable-metrics/default-program` | the default program ADP last lowered, resolved values included: the plan artifacts are composed into |
 | `GET /programmable-metrics/explain` | the explain document (JSON) for the active plan; `?format=text` for text |
@@ -193,7 +191,7 @@ Export bundle:
 ```json
 {
   "export_version": 1,
-  "scope": "post_enrich",
+  "scope": "metrics",
   "artifact": { "...": "PolicyArtifact of the default program's scope, bindings unresolved, base filled in" },
   "ir_versions": { "current": 1, "accepted": [1, 1] },
   "catalog": { "...": "the serialized plan-crate Catalog: scope inputs with port types, outputs with accepts, fingerprint, recipients; bindings with type, liveness, current value" },
@@ -204,14 +202,18 @@ Export bundle:
 - `catalog` is exactly the plan crate's `MemoryCatalog` document, so the plan crate reads it back. `labels` (optional,
   left out when there are none): display labels by output ID. Readers also accept a `label` member on a catalog
   output, for an output `labels` does not label; ADP does not write it.
-- A scope with exits, such as `dogstatsd_pre_aggregation` (input `metrics`, exits `aggregated` and `passthrough`), is
-  exported up to its exits: the artifact's edges into an exit's port are written as entering `exit.<name>`, and its
-  base records no output when its records leave through exits rather than `emit`s. An artifact reaches the exits the
-  same way; an exit is only ever an edge's target.
+- The `metrics` scope has one input per metrics source the configuration enables, each named after its source's binding
+  and carrying what the source produces (`dogstatsd`, `otlp`, `checks`, `liveness`, `trace_sampler`), and no exits: its
+  artifact covers every node after the sources, aggregation included. The catalog document's `single_aggregation:
+  true` says that a program has at most one aggregation, which validation then checks (`single_aggregation`). A scope
+  with exits, which the plan crate supports and ADP no longer declares (`dogstatsd_pre_aggregation` had input
+  `metrics` and exits `aggregated` and `passthrough`), is exported up to its exits: the artifact's edges into an exit's
+  port are written as entering `exit.<name>`, and its base records no output when its records leave through exits
+  rather than `emit`s. An artifact reaches the exits the same way; an exit is only ever an edge's target.
 - The default program is served so that a client can compose an artifact the way ADP will (the plan crate's
   `compose::compose_all` takes the default program, which neither the export, a region, nor `/plan`, possibly composed,
   carries) and diff it against `/plan`. ADP composes an artifact with the artifacts in effect for the other scopes, so
-  a client composes it with those `status.scopes` (or, for `post_enrich`, the top-level `active_artifact`) names
+  a client composes it with those `status.scopes` (or, for the policy scope, the top-level `active_artifact`) names
   active, under their revisions. Its base (the plan crate's `export::base` of a scope) is that scope's export's
   `artifact.base.program_hash` when both come from the same lowering; a client that fetches them separately checks
   that, and fetches both again when they differ (the configuration changed between the requests). It answers whether
@@ -349,8 +351,9 @@ Per-lane telemetry, each series tagged `component_id` (the slot) and `lane` (0 t
 ## 4. Demo server side
 
 - Holds the durable artifact store (on disk in its run directory): current snapshot, revision counter, history.
-- Serves one config per scope: `demo` for `post_enrich`, `demo-<scope>` for any other scope. A publish replaces the
-  config of its artifact's scope; a revoke removes one scope's config, or empties the snapshot.
+- Serves one config per scope: `demo` for the policy scope, `metrics`, and `demo-<scope>` for any other scope, which
+  ADP refuses. A publish replaces the config of its artifact's scope; a revoke, from the UI or the demo's API, empties
+  the policy snapshot.
 - Next revision = `max(local counter, status.revision_high_water) + 1`, one counter for every scope.
 - Serves the `resources` product's one config as `demo-resources`, with a revision counter of its own, next revision
   `max(local counter, status.resources.revision_high_water) + 1`.
