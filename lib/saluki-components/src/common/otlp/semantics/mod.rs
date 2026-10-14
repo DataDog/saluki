@@ -2,4 +2,4 @@
 
 pub mod accessor;
 
-pub use accessor::{DdSpanAccessor, OtelSpanAccessor, OtlpAttributesAccessor};
+pub(crate) use accessor::{DdSpanAccessor, OtelSpanAccessor, OtlpAttributesAccessor};
