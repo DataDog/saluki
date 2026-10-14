@@ -543,9 +543,8 @@ fn platform_defaults_module(platform_defaults: &BTreeMap<String, PlatformDefault
 /// free-form (`serde_json::Value`) or are typed (`Vec<HashMap<String, String>>`, for example
 /// `apm_config.replace_tags`).
 ///
-/// We push an extra `#[serde(deserialize_with = ...)]` attribute rather than replacing the field's
-/// existing serde attributes: serde merges multiple `#[serde(...)]`, so the field keeps its
-/// `default`/`skip_serializing_if` and only gains the tolerant reader.
+/// Serde merges multiple attributes, so adding `deserialize_with` preserves the field's defaults
+/// and serialization rules.
 ///
 /// Fields are matched by their Rust type, not by name. Runs after `PathShortener`, so prelude types
 /// use their short names.

@@ -354,9 +354,9 @@ mod tests {
             .block_on(future)
     }
 
-    /// A fixed sample of Saluki-only keys: flat and nested, set to values that differ from their defaults.
+    /// Flat and nested Saluki-only keys with non-default values to detect missed assignments.
     ///
-    /// Each entry is the key's YAML path, its environment variable, and its value in both forms.
+    /// Each entry contains a YAML path, an environment variable name, and value text valid for both.
     const SALUKI_ONLY_SAMPLE: &[(&str, &str, &str)] = &[
         ("dogstatsd_tcp_port", "DD_DOGSTATSD_TCP_PORT", "9125"),
         (

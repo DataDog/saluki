@@ -117,8 +117,7 @@ fn insert(root: &mut Map<String, Value>, path: &str, leaf_value: Value) {
     }
 }
 
-/// Returns an object holding only what `tree` holds at `leaf`'s key. A leaf the tree does not hold
-/// is isolated as an empty object and reads its default.
+/// Isolates a leaf's value in its nested object shape; an absent leaf yields an empty object for defaulting.
 fn isolated_object(leaf: &Leaf, tree: &Value) -> Value {
     let mut object = Map::new();
     if let Some(value) = lookup(tree, leaf.key) {
@@ -142,7 +141,7 @@ type Isolated = Rc<Result<DatadogConfiguration, Fault>>;
 /// Deserializes leaves in isolation, remembering each distinct isolated object per leaf: across the
 /// corpus most leaves hold the same streamed default, so most isolated objects repeat.
 pub(crate) struct Isolator {
-    /// Every leaf's dotted key, to the leaf's index in `LEAVES`.
+    /// Maps dotted keys to indices in `LEAVES`.
     by_key: HashMap<String, usize>,
     /// Each leaf's kind, by index in `LEAVES`; `None` for a leaf whose type has no kind.
     kinds: Vec<Option<LeafKind>>,
@@ -167,7 +166,7 @@ impl Isolator {
         }
     }
 
-    /// The index into `LEAVES` of the leaf read from `key`.
+    /// Returns the key's index in `LEAVES`, or `None` if it is not modeled.
     pub(crate) fn leaf_index(&self, key: &str) -> Option<usize> {
         self.by_key.get(key).copied()
     }
@@ -222,8 +221,7 @@ pub(crate) struct Row {
     pub(crate) case: String,
     pub(crate) checkpoint: Checkpoint,
     pub(crate) key: String,
-    /// The supported leaf the key line resolves to; `None` for a key that is
-    /// not modeled.
+    /// The supported leaf's key, or `None` if it is not modeled.
     pub(crate) leaf: Option<&'static str>,
     /// The recorded getter; `None` for a key that is not modeled, which gets one row in all.
     pub(crate) getter: Option<Getter>,

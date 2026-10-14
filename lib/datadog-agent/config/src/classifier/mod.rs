@@ -34,7 +34,7 @@ pub enum Pipeline {
 pub enum PipelineAffinity {
     /// The list of pipelines affected by the key.
     ///
-    /// This list must be non-empty, enforced by test.
+    /// Overlay validation rejects empty pipeline lists.
     Pipelines(&'static [Pipeline]),
     /// The key affects all pipelines or ADP behavior as a whole.
     CrossCutting,
