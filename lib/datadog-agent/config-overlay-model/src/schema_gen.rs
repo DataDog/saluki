@@ -1,10 +1,7 @@
-//! Schema loading for the Datadog agent config schema.
+//! Loads Datadog Agent configuration schemas for build-time code generation.
 //!
-//! Parses `core_schema.yaml` (with any overlay applied upstream) into a flat map of
-//! `yaml_path → FieldInfo`. Used exclusively at build time.
-//!
-//! The schema may contain `$ref: <filename>` entries that reference subsystem schema files in
-//! the same directory. These are resolved and inlined during loading.
+//! Resolves schema file references and incorporates the OTel receiver schema, producing a map
+//! from dotted YAML paths to [`FieldInfo`].
 use std::path::Path;
 
 use indexmap::IndexMap;
@@ -12,7 +9,7 @@ use serde_yaml::Value;
 
 /// Value type of a config field, as declared in the schema YAML.
 ///
-/// `Unknown` is assigned when the YAML `type` is absent or unrecognised.
+/// `Unknown` covers missing or unsupported types, including arrays of non-string items.
 pub enum FieldType {
     String,
     Bool,

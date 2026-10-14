@@ -4,9 +4,8 @@
 //! configuration. It is designed to be used during build processes by `build.rs` and, for
 //! simplicity, should not depend on any other crates from our workspace.
 //!
-//! The overlay is validated in two passes. First, standard serde deserialization enforces its
-//! type integrity, then custom validation logic runs. This file is the source of truth on what
-//! can and can-not be present in the overlay.
+//! Loading checks section and key ordering, deserializes with unknown fields rejected, then
+//! validates schema coverage and entry constraints.
 
 pub mod saluki_keys;
 pub mod schema_gen;
@@ -19,8 +18,8 @@ use serde::Deserialize;
 
 /// Top-level overlay structure.
 ///
-/// `known` covers every key the team has reviewed and classified. `ignored` covers keys irrelevant
-/// to ADP's domain. Together they must account for every key in `core_schema.yaml`.
+/// `inventory` classifies keys by support level; `excluded` gives reasons for ignoring other keys.
+/// Together they must cover every key in the composed Datadog and OTel schema exactly once.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SchemaOverlay {
@@ -28,7 +27,7 @@ pub struct SchemaOverlay {
     pub excluded: IndexMap<String, String>,
 }
 
-/// Classification of a known (non-ignored) config key.
+/// Support classification for a key in the overlay's `inventory`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "support", rename_all = "snake_case")]
 pub enum KnownEntry {
@@ -49,7 +48,7 @@ pub enum KnownEntry {
 pub struct FullSupport {
     /// Which pipelines depend on this key (non-empty).
     pub pipelines: PipelineAffinity,
-    /// Short description for documentation tables (<= 50 chars).
+    /// Short description for documentation tables, limited by UTF-8 byte length.
     pub description: String,
     /// Extended documentation (appears in generated docs).
     #[serde(default)]
@@ -65,11 +64,11 @@ pub struct FullSupport {
 pub struct PartialSupport {
     /// Which pipelines depend on this key (non-empty).
     pub pipelines: PipelineAffinity,
-    /// Short description for documentation tables (<= 50 chars).
+    /// Short description for documentation tables, limited by UTF-8 byte length.
     pub description: String,
     /// Extended documentation explaining the behavioral divergence. Required for partial keys.
     pub documentation: String,
-    /// When true, the runtime classifier emits a warning for non-default values of this key.
+    /// Whether non-default values can trigger compatibility warnings. Defaults to false.
     #[serde(default)]
     pub warn: bool,
     /// GitHub issue tracking number.
@@ -83,7 +82,7 @@ pub struct PartialSupport {
 pub struct Unsupported {
     /// Pipelines affected by the lack of support.
     pub pipelines: PipelineAffinity,
-    /// Short description for documentation tables (<= 50 chars).
+    /// Short description for documentation tables, limited by UTF-8 byte length.
     pub description: String,
     /// Longer explanation of why it is unsupported and future plans.
     #[serde(default)]
@@ -101,7 +100,7 @@ pub struct Unsupported {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct UnknownSupport {
-    /// Short description for documentation tables (<= 50 chars), if known.
+    /// Optional description for documentation tables, limited by UTF-8 byte length.
     #[serde(default)]
     pub description: Option<String>,
     /// Severity estimate, if there is intuition about the impact.
@@ -191,9 +190,9 @@ impl<'de> serde::Deserialize<'de> for PipelineAffinity {
     }
 }
 
-/// File paths to the two YAML files required as input by this library.
+/// Paths to the core schema, OTel schema directory, and overlay.
 ///
-/// Defaults to the canonical location of the required schema files in this library.
+/// Defaults to their locations in the sibling `config` crate.
 pub struct Files {
     /// The Datadog Agent core schema file (`schema/core/core_schema.yaml`).
     pub datadog_schema: PathBuf,
@@ -356,8 +355,7 @@ impl SchemaOverlay {
         }
     }
 
-    /// Validate per-entry constraints: description length and planned+issue consistency for
-    /// unsupported entries.
+    /// Checks description lengths and requires an issue for planned support.
     fn validate_entries(&self) -> Result<(), Error> {
         for (key, entry) in &self.inventory {
             match entry {
@@ -1107,8 +1105,6 @@ excluded: {}
 
     #[test]
     fn per_entry_validation_accepts_a_well_formed_entry_of_every_kind() {
-        // Keys are alphabetically ordered (full < partial < unknown < unsupported) so the YAML lint
-        // pass is satisfied and only per-entry validation is under test.
         let overlay = "\
 inventory:
   full_key:
@@ -1137,8 +1133,6 @@ excluded: {}
 
     #[test]
     fn per_entry_validation_rejects_over_long_description_for_every_entry_kind() {
-        // A 60-character description exceeds the documented 50-char cap. Each entry kind that carries a
-        // description enforces the same limit, so this walks all four.
         let long = "x".repeat(60);
         let cases: &[(&str, String)] = &[
             (

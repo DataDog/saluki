@@ -14,29 +14,16 @@
 # - none:    ADP does not support this key
 # - unknown: ADP's compatibility with this key has not yet been determined
 #
-# Rust code and Markdown documentation are generated from the contents of this file. Your edits here
-# have consequences downstream as follows (see the generator code to be certain):
+# Code generation includes full and partial keys in the typed configuration model.
+# The runtime classifier includes partial keys with warn: true, all none keys, and unknown keys
+# with severity. Unknown keys with severity affect all pipelines; full and excluded keys have no entry.
 #
-# support: full              -> runtime classifier: Full; docs: "Transparent Settings" table
-#
-# support: partial           -> runtime classifier: Partial; docs: "Behavioral Differences"
-#                               table; multi-line documentation renders as a detail block
-#                               below the table
-#
-# support: none + planned    -> runtime classifier: Incompatible(severity); docs: "Being
-#                               Worked On" table; issue required
-#
-# support: none + !planned   -> runtime classifier: Incompatible(severity); docs: "Not
-#                               Planned" table; single-line documentation fills the "Reason"
-#                               column; multi-line renders as a detail block below the table
-#
-# support: unknown + severity -> runtime classifier: Incompatible(severity, cross_cutting);
-#                                docs: "Compatibility Unknown" table
-#
-# support: unknown (no sev)  -> no classifier entry (docs-only); "Compatibility Unknown"
-#                               table
-#
-# excluded                   -> no classifier entry; no docs table entry
+# Documentation groups keys by support:
+# - full: "Fully Supported Settings"
+# - partial: "Behavioral Differences"
+# - none: "Being Worked On" if planned, otherwise "Not Planned"
+# - unknown: "Compatibility Unknown"
+# Excluded keys have no documentation entry.
 #
 # Validation rules are somewhat complex. For complete rules, see the code in `config-overlay-model`,
 # but here are some of the basics:
@@ -1277,12 +1264,8 @@ inventory:
     description: "HTTP version selection (auto/http1/http2)"
     issue: "#1361"
 
-  # ADP does not implement `forwarder_low_prio_buffer_size`. The core agent uses it to size a separate count-bounded
-  # low-priority worker channel; ADP routes low-priority pending transactions through the forwarder's retry queue
-  # instead, which is bounded by payload bytes via `forwarder_retry_queue_payloads_max_size` and optional disk
-  # persistence settings rather than by a transaction count. ADP still preserves the same broad priority behavior: new
-  # transactions are processed through the high-priority queue first, retries use the low-priority retry queue, and
-  # high-priority overflow is moved to the low-priority retry queue.
+  # ADP uses a byte-bounded retry queue for low-priority transactions, not a separate count-bounded channel.
+  # This key does not size that queue; use `forwarder_retry_queue_payloads_max_size` and disk persistence settings.
   forwarder_low_prio_buffer_size:
     support: unknown
     description: "Low-priority request queue size"
