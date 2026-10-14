@@ -94,8 +94,6 @@ pub enum DefaultValue {
 pub struct ClassifierEntry {
     /// Canonical dot-separated YAML path.
     pub yaml_path: &'static str,
-    /// Additional YAML paths (aliases) that resolve to this key.
-    pub aliases: &'static [&'static str],
     /// How well saluki supports this key.
     pub support_level: SupportLevel,
     /// Which pipelines this key affects.

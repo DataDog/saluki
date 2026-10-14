@@ -410,13 +410,4 @@ mod leaves_tests {
             other => panic!("unexpected leaf value: {other:?}"),
         }
     }
-
-    #[test]
-    fn aliased_leaf_lists_its_alias() {
-        let leaf = LEAVES
-            .iter()
-            .find(|l| l.key == "statsd_metric_namespace_blacklist")
-            .expect("aliased leaf is present");
-        assert_eq!(leaf.aliases, ["statsd_metric_namespace_blocklist"]);
-    }
 }

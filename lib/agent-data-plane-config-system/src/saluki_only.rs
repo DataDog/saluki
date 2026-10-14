@@ -35,7 +35,7 @@
 //!
 //! This struct mirrors the source key hierarchy exactly. Each field is populated by plain
 //! serde from the merged map, so its path here must equal the real config-key path, with no
-//! `rename` and (aside from a documented multi-key `alias`) nothing papering over a mismatch:
+//! `rename`, `alias`, or anything else papering over a mismatch:
 //!
 //! - a top-level key (`dogstatsd_tcp_port`, `aggregate_window_duration_seconds`) is a top-level
 //!   field of the same name;
