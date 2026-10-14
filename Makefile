@@ -155,7 +155,7 @@ build-adp-release-system-alloc: ## Builds the ADP binary in release mode with th
 build-schema-overlay: check-rust-build-tools
 build-schema-overlay: ## Builds the config schema overlay packages
 	@echo "[*] Building config schema overlay packages..."
-	@cargo build --profile devel --package datadog-agent-config --package datadog-agent-config-testing
+	@cargo build --profile devel --package datadog-agent-config --package datadog-agent-config-docs
 
 .PHONY: build-agent-config-corpus
 build-agent-config-corpus: ## Regenerates the Agent config corpus (needs Docker)
