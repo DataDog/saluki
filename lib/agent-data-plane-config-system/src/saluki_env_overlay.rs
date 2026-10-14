@@ -1,6 +1,6 @@
 //! Reads Saluki-only configuration keys from the environment into the nested `SalukiOnly` shape.
 //!
-//! This is the Saluki-only counterpart to `datadog_agent_config::apply_datadog_env`. The Datadog
+//! This is the Saluki-only counterpart to `datadog_agent_config::apply_datadog_env_vars`. The Datadog
 //! side drives a generated table of declared variable names; here there is no table and no alias. A
 //! Saluki-only key's environment name is its canonical path in upper case, with the segments joined
 //! by underscores and a `DD_` prefix, so the nested slot and its environment form stay in lockstep with

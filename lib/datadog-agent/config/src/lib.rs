@@ -9,9 +9,6 @@ mod duration_de;
 pub mod env_decode;
 mod list_de;
 
-/// A Figment provider that reads the schema's environment variables into their canonical shape.
-pub mod env_provider;
-
 /// Builds the typed configuration base by reading environment variables directly and decoding them
 /// into the nested configuration shape.
 pub mod env_reader;
@@ -34,8 +31,7 @@ mod translate_error;
 pub use cast_de::cast_to_f64;
 pub use cast_de::cast_to_string;
 pub use env_decode::EnvDecode;
-pub use env_provider::DatadogEnvProvider;
-pub use env_reader::{apply_datadog_env, apply_datadog_env_vars, apply_env_at_path, datadog_leaf_paths, EnvKey};
+pub use env_reader::{apply_datadog_env_vars, apply_env_at_path, datadog_leaf_paths, EnvKey};
 pub use generated::{drive, DatadogConfigWitness, DatadogConfiguration, Leaf, LeafValue, LEAVES};
 pub use platform_default::is_containerized;
 pub use size_in_bytes::parse_size_in_bytes;

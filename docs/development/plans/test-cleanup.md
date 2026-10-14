@@ -355,7 +355,7 @@ otherwise keep hand-rolling the thing it replaces.
   - [low/trivial] KI-9: an assertion-free, print-only struct-size test exists in `data_model::event`.
   - [low/small] `EventType`/`PayloadType` bitmask `Display` formatting has zero test coverage.
 
-- [ ] **G20 — config-overlay-model, commons, config-testing, metrics-v3, saluki-error/protos, correctness tooling test cleanup**
+- [ ] **G20 — config-overlay-model, commons, metrics-v3, saluki-error/protos, correctness tooling test cleanup**
   (`tobz/test-cleanup-overlay-commons-correctness-tests`, `test(datadog-agent)`)
   - [high/medium] `SchemaOverlay`'s per-entry validation rules are precisely documented but almost entirely
     untested.
@@ -363,8 +363,6 @@ otherwise keep hand-rolling the thing it replaces.
   - [low/trivial] Duplicate test config-building helpers exist in `commons`' `ipc/config.rs`.
   - [low/small] Real dispatch/conversion logic in otherwise-thin utility crates has zero tests; `saluki-error`'s
     documented anyhow-forwarding contract (`ErrorContext`, `generic_error!`) is unverified by any test.
-  - [low/small] `config-testing`'s `run_config_smoke_tests` documents three guarantees with no meta-test verifying
-    any of them; its own crate-role rationale is a plain `//` comment, so it won't render as crate documentation.
   - [medium/medium] `stele`'s V3 metric wire-format decoder is untested for RATE/GAUGE types and FLOAT32/FLOAT64
     encodings — `try_from_v3`'s doc describes general columnar decoding, but tests cover only 2 of 16
     type-combination branches.

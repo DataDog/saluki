@@ -1,60 +1,19 @@
 //! Configuration key classifier.
 //!
-//! A programmatic registry of all recognized configuration keys. Each entry describes the key
-//! purely from the configuration system's perspective: its canonical YAML path, the environment
-//! variables that map to it, the shape of its value, and which internal config structs consume it.
+//! Looks up the Datadog keys whose value can warrant a compatibility warning at runtime: `partial`
+//! keys marked `warn`, `none` keys, and `unknown` keys with a `severity`. Each entry carries the
+//! key's canonical YAML path, support level, affected pipelines and schema default, so a caller can
+//! tell whether a configured value differs from the default. Fully supported and excluded keys have
+//! no entry.
 //!
-//! This registry is intentionally free of Rust field names and struct internals—it models the
-//! configuration surface as an operator would see it, and can be used at runtime to detect
-//! unknown or unsupported keys in a loaded configuration file.
-//!
-//! ## User Guide
-//!
-//! The registry is generated at build time from `schema_overlay.yaml`, which partitions every
-//! key in `core_schema.yaml` into exactly one of: supported, unsupported, or ignored. Data
-//! integrity (uniqueness, full coverage, sorted sections) is enforced by `SchemaOverlay::load()`
-//! during the build.
-//!
-//! ### Adding a Configuration Key
-//!
-//! Add a `supported` entry in `lib/datadog-agent/config/schema/schema_overlay.yaml` with
-//! `support_level`, `pipelines`, `used_by`, `description`, and `config_registry_filename`.
-//! The build generates the annotation constants automatically.
-//!
-//! ### Updating the Vendored Schema
-//!
-//! After updating `core_schema.yaml`, the build will fail if any new keys are not covered
-//! by the overlay. For each new key, add it to the appropriate section of
-//! `schema_overlay.yaml`.
+//! The entries are generated at build time from the `inventory` section of
+//! `lib/datadog-agent/config/schema/schema_overlay.yaml`. `SchemaOverlay::load()` fails the build
+//! if a key in the vendored schema is missing from the overlay.
 
 #[allow(clippy::module_inception)]
 mod classifier;
 
 pub use classifier::{Classification, ConfigClassifier};
-
-/// Identifiers for known configuration consumers.
-///
-/// Used as values in annotation `used_by` fields to declare which consumers incorporate a key.
-pub mod structs {
-    /// Identifier for `AggregateConfiguration`.
-    pub const AGGREGATE_CONFIGURATION: &str = "AggregateConfiguration";
-    /// Identifier for `DogStatsDMapperConfiguration`.
-    pub const DOGSTATSD_MAPPER_CONFIGURATION: &str = "DogStatsDMapperConfiguration";
-    /// Identifier for `DogStatsDDebugLogConfiguration`.
-    pub const DOGSTATSD_DEBUG_LOG_CONFIGURATION: &str = "DogStatsDDebugLogConfiguration";
-    /// Identifier for `DogStatsDPrefixFilterConfiguration`.
-    pub const DOGSTATSD_PREFIX_FILTER_CONFIGURATION: &str = "DogStatsDPrefixFilterConfiguration";
-    /// Identifier for `DatadogLogsConfiguration`.
-    pub const DATADOG_LOGS_CONFIGURATION: &str = "DatadogLogsConfiguration";
-    /// Identifier for `DatadogEventsConfiguration`.
-    pub const DATADOG_EVENTS_CONFIGURATION: &str = "DatadogEventsConfiguration";
-    /// Identifier for `DatadogServiceChecksConfiguration`.
-    pub const DATADOG_SERVICE_CHECKS_CONFIGURATION: &str = "DatadogServiceChecksConfiguration";
-    /// Keys consumed through the typed configuration translation system.
-    pub const TYPED_CONFIG_SYSTEM: &str = "TypedConfigSystem";
-    /// Keys read via `get_typed` / `try_get_typed` rather than struct deserialization.
-    pub const GET_TYPED: &str = "get_typed";
-}
 
 /// The ADP pipeline a config key affects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
