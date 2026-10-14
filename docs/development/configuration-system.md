@@ -41,7 +41,7 @@ A generated witness trait creates a compile-time obligation to translate every s
 | Hand-edited ADP support inventory for Datadog schema keys | `lib/datadog-agent/config/schema/schema_overlay.yaml` |
 | Vendored Datadog JSON schema, written in YAML | `lib/datadog-agent/config/schema/core/` |
 | Overlay types, validation, `SALUKI_KEYS` | `lib/datadog-agent/config-overlay-model/` |
-| Configuration documentation generation | `lib/datadog-agent/config-docs/` |
+| Documentation generation | `lib/datadog-agent/config-docs/` |
 | Raw map and loader: a general-purpose library, unused by ADP | `lib/saluki-config/` |
 | Hand-written Datadog witness implementation | `lib/agent-data-plane-config-system/src/translators/datadog_translator.rs` |
 | Saluki-only source model and `seed` | `lib/agent-data-plane-config-system/src/saluki_only.rs` |
@@ -177,8 +177,8 @@ were.
 
 ### Add or change a witnessed key
 
-1. Confirm its `schema_overlay.yaml` classification. If support becomes `full` or `partial`, set
-   `pipelines` and `description` (`partial` also needs `documentation`) and expect a new witness method.
+1. Confirm its `schema_overlay.yaml` classification. If support becomes `full` or `partial`, provide the required
+   metadata, and expect a new witness method after generation.
 2. Add or refine its destination in `control`, `shared`, or `domains`, based on who consumes it.
 3. Run `make build-schema-overlay`.
 4. Implement the generated `consume_<key>` in `DatadogTranslator`, and find the right home for it in
@@ -203,7 +203,7 @@ An inventory key marked `none` or `unknown`, or a key under `excluded`, is absen
    Saluki-only environment reader discovers paths from `SalukiOnly`, so without a field, the key is unreachable from
    the environment.
 5. Add one `seed` assignment to the destination.
-6. Keep `SALUKI_KEYS` consistent with the source key and default; the configuration docs read it.
+6. Keep `SALUKI_KEYS` consistent with the source key and default.
 
 ### Migrate a raw consumer
 

@@ -76,7 +76,8 @@ markers. Run `make build-schema-overlay` and check the build and relevant tests 
 the next group. An optional diagnostic corpus recording can investigate a suspected behavior
 change mid-review; the recorded corpus is refreshed once, below, after the groups are applied.
 
-- Follow the workflows in `docs/development/configuration-system.md` for model and translation
+- Update `schema_overlay.yaml`.
+  Follow the workflows in `docs/development/configuration-system.md` for model and translation
   changes.
 - Reconcile changed schema types with deserialization, translation, and consumers. Do not weaken the
   schema to make old code compile.
