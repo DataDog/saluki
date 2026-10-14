@@ -1,11 +1,8 @@
-//! Access to embedded or remotely updated semantic mappings through one provider.
-//!
-//! A semantic registry maps concepts such as HTTP status code to attribute names and types. Trace translation and
-//! APM stats use [`SemanticRegistryProvider`] without choosing between embedded and remotely supplied mappings.
+//! Provides access to either the embedded or remotely updated semantic registry mappings.
 //!
 //! With Remote Configuration disabled, the default provider always uses the embedded registry. A subscribed provider
-//! also starts with the embedded registry, then returns the latest accepted `APM_SEMANTIC_CORE_DD` update. Reading one
-//! snapshot per batch keeps its mappings consistent even if an update arrives during processing.
+//! also starts with the embedded registry, then returns the latest accepted `APM_SEMANTIC_CORE_DD` update when
+//! available.
 
 use std::fmt;
 use std::sync::Arc;
