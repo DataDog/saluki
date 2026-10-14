@@ -129,9 +129,6 @@ pub struct TestSupport {
     /// Environment variable overrides for this key. Checked by configuration smoke tests.
     #[serde(default)]
     pub env_var_override: Option<Vec<String>>,
-    /// Alias YAML paths that map to the same config key. Checked by configuration smoke tests.
-    #[serde(default)]
-    pub additional_yaml_paths: Vec<String>,
     /// Override the type inferred from the schema.
     #[serde(default)]
     pub value_type_override: Option<ValueType>,
@@ -405,11 +402,9 @@ impl SchemaOverlay {
         }
     }
 
-    /// Validate per-entry constraints: description length, `used_by` non-empty, no duplicate
-    /// `additional_yaml_paths`, and planned+issue consistency for unsupported entries.
+    /// Validate per-entry constraints: description length, `used_by` non-empty, and planned+issue
+    /// consistency for unsupported entries.
     fn validate_entries(&self) -> Result<(), Error> {
-        let canonical_keys: HashSet<&str> = self.inventory.keys().map(String::as_str).collect();
-
         for (key, entry) in &self.inventory {
             match entry {
                 KnownEntry::Full(f) => {
@@ -426,7 +421,6 @@ impl SchemaOverlay {
                             f.description.len()
                         )));
                     }
-                    Self::validate_additional_yaml_paths(key, &f.test_support.additional_yaml_paths, &canonical_keys)?;
                 }
                 KnownEntry::Partial(p) => {
                     if p.test_support.used_by.is_empty() {
@@ -442,7 +436,6 @@ impl SchemaOverlay {
                             p.description.len()
                         )));
                     }
-                    Self::validate_additional_yaml_paths(key, &p.test_support.additional_yaml_paths, &canonical_keys)?;
                 }
                 KnownEntry::Unsupported(u) => {
                     if u.description.len() > 50 {
@@ -475,37 +468,6 @@ impl SchemaOverlay {
         Ok(())
     }
 
-    fn validate_additional_yaml_paths(
-        key: &str, paths: &[String], canonical_keys: &HashSet<&str>,
-    ) -> Result<(), Error> {
-        let mut seen: HashSet<&str> = HashSet::new();
-        for path in paths {
-            if !seen.insert(path.as_str()) {
-                return Err(Error::Validation(format!(
-                    "key '{}': duplicate additional_yaml_path '{}'",
-                    key, path
-                )));
-            }
-            if path.contains('.') {
-                return Err(Error::Validation(format!(
-                    "key '{}': additional_yaml_path '{}' contains a dot. \
-                     Dotted aliases land at a different nesting depth in the YAML tree, \
-                     which cannot be represented as a serde field alias on the generated \
-                     struct. Supporting dotted aliases requires a post-deserialization \
-                     merge step or custom Deserialize impl.",
-                    key, path
-                )));
-            }
-            if canonical_keys.contains(path.as_str()) {
-                return Err(Error::Validation(format!(
-                    "key '{}': additional_yaml_path '{}' collides with a canonical \
-                     overlay key. Two fields would deserialize from the same YAML key.",
-                    key, path
-                )));
-            }
-        }
-        Ok(())
-    }
 }
 
 /// Read a YAML file into a [`Value`], mapping failures onto [`Error`].
@@ -886,7 +848,6 @@ const VALIDATION_RULES: &str = "\n\
     - partial entries: pipelines non-empty, used_by non-empty, description <= 50 chars, documentation required.\n\
     - unsupported entries: pipelines non-empty, description <= 50 chars, planned+issue consistent.\n\
     - unknown entries: description <= 50 chars (when present).\n\
-    - additional_yaml_paths: no duplicates within a single entry, no dots, no collisions with canonical keys.\n\
     Fix: edit lib/datadog-agent/config/schema/schema_overlay.yaml.";
 
 /// Errors that can occur when loading a schema overlay.
@@ -1167,7 +1128,6 @@ inventory:
     description: \"Fully supported key\"
     test_support:
       used_by: [TypedConfigSystem]
-      additional_yaml_paths: [full_alias]
   partial_key:
     support: partial
     pipelines: [traces]
@@ -1286,79 +1246,6 @@ excluded: {}
         assert!(
             err.to_string()
                 .contains("unsupported key 'key_a': planned requires an issue"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn per_entry_validation_rejects_duplicate_additional_yaml_path() {
-        let overlay = "\
-inventory:
-  key_a:
-    support: full
-    pipelines: [dogstatsd]
-    description: \"Key A\"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_yaml_paths: [dup_alias, dup_alias]
-excluded: {}
-";
-        let err = validate_entries_of(overlay).expect_err("duplicate additional_yaml_path should be rejected");
-        assert!(
-            err.to_string()
-                .contains("key 'key_a': duplicate additional_yaml_path 'dup_alias'"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn per_entry_validation_rejects_dotted_additional_yaml_path() {
-        // Dotted aliases can't be represented as a serde field alias on the generated struct, so they're
-        // rejected outright.
-        let overlay = "\
-inventory:
-  key_a:
-    support: full
-    pipelines: [dogstatsd]
-    description: \"Key A\"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_yaml_paths: [\"nested.alias\"]
-excluded: {}
-";
-        let err = validate_entries_of(overlay).expect_err("dotted additional_yaml_path should be rejected");
-        assert!(
-            err.to_string()
-                .contains("additional_yaml_path 'nested.alias' contains a dot"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn per_entry_validation_rejects_additional_yaml_path_colliding_with_canonical_key() {
-        // `alpha`'s alias `beta` collides with the canonical key `beta`; two fields would deserialize
-        // from the same YAML key. Keys are alphabetically ordered so the YAML lint pass is satisfied.
-        let overlay = "\
-inventory:
-  alpha:
-    support: full
-    pipelines: [dogstatsd]
-    description: \"Alpha\"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_yaml_paths: [beta]
-  beta:
-    support: full
-    pipelines: [dogstatsd]
-    description: \"Beta\"
-    test_support:
-      used_by: [TypedConfigSystem]
-excluded: {}
-";
-        let err = validate_entries_of(overlay).expect_err("aliasing a canonical key should be rejected");
-        assert!(
-            err.to_string()
-                .contains("additional_yaml_path 'beta' collides with a canonical"),
             "unexpected error: {err}"
         );
     }
