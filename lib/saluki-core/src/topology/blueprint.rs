@@ -24,7 +24,7 @@ use crate::{
     health::HealthRegistry,
     runtime::{
         state::{DataspaceRegistry, ResourceRegistry},
-        InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture,
+        InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture, UnadoptedScope,
     },
     support::SubsystemIdentifier,
     topology::{ids::AsComponentIds, topology_identifier, EventsBuffer, DEFAULT_EVENTS_BUFFER_CAPACITY},
@@ -677,18 +677,26 @@ impl TopologyBuildState {
     async fn build(self, name: String, resource_registry: &ResourceRegistry) -> Result<BuiltTopology, GenericError> {
         self.graph.validate().error_context("Failed to build topology graph.")?;
 
+        let mut component_scopes = HashMap::new();
+
         let mut sources = HashMap::new();
         for (id, builder) in self.sources {
             let component_context = ComponentContext::source(&self.topology_id, id.clone());
             let allocation_token = self
                 .component_registry
                 .get_resource_group_token(&component_context.identity());
-            let source = builder
-                .build(BuildContext::new(component_context.clone(), resource_registry.clone()))
+            // While the component is built, it can spawn tasks into the current scope, for example the background tasks
+            // of a cache. This scope holds these tasks until the component runs. Then the tasks belong to the
+            // component.
+            let scope = UnadoptedScope::new(component_context.identity().to_string());
+            let source = scope
+                .scope()
+                .enter(builder.build(BuildContext::new(component_context.clone(), resource_registry.clone())))
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build source '{}'.", id))?;
 
+            component_scopes.insert(component_context.clone(), scope);
             sources.insert(component_context, (source, self.component_registry.clone()));
         }
 
@@ -698,12 +706,18 @@ impl TopologyBuildState {
             let allocation_token = self
                 .component_registry
                 .get_resource_group_token(&component_context.identity());
-            let relay = builder
-                .build(BuildContext::new(component_context.clone(), resource_registry.clone()))
+            // While the component is built, it can spawn tasks into the current scope, for example the background tasks
+            // of a cache. This scope holds these tasks until the component runs. Then the tasks belong to the
+            // component.
+            let scope = UnadoptedScope::new(component_context.identity().to_string());
+            let relay = scope
+                .scope()
+                .enter(builder.build(BuildContext::new(component_context.clone(), resource_registry.clone())))
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build relay '{}'.", id))?;
 
+            component_scopes.insert(component_context.clone(), scope);
             relays.insert(component_context, (relay, self.component_registry.clone()));
         }
 
@@ -713,12 +727,18 @@ impl TopologyBuildState {
             let allocation_token = self
                 .component_registry
                 .get_resource_group_token(&component_context.identity());
-            let decoder = builder
-                .build(BuildContext::new(component_context.clone(), resource_registry.clone()))
+            // While the component is built, it can spawn tasks into the current scope, for example the background tasks
+            // of a cache. This scope holds these tasks until the component runs. Then the tasks belong to the
+            // component.
+            let scope = UnadoptedScope::new(component_context.identity().to_string());
+            let decoder = scope
+                .scope()
+                .enter(builder.build(BuildContext::new(component_context.clone(), resource_registry.clone())))
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build decoder '{}'.", id))?;
 
+            component_scopes.insert(component_context.clone(), scope);
             decoders.insert(component_context, (decoder, self.component_registry.clone()));
         }
 
@@ -728,12 +748,18 @@ impl TopologyBuildState {
             let allocation_token = self
                 .component_registry
                 .get_resource_group_token(&component_context.identity());
-            let transform = builder
-                .build(BuildContext::new(component_context.clone(), resource_registry.clone()))
+            // While the component is built, it can spawn tasks into the current scope, for example the background tasks
+            // of a cache. This scope holds these tasks until the component runs. Then the tasks belong to the
+            // component.
+            let scope = UnadoptedScope::new(component_context.identity().to_string());
+            let transform = scope
+                .scope()
+                .enter(builder.build(BuildContext::new(component_context.clone(), resource_registry.clone())))
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build transform '{}'.", id))?;
 
+            component_scopes.insert(component_context.clone(), scope);
             transforms.insert(component_context, (transform, self.component_registry.clone()));
         }
 
@@ -743,12 +769,18 @@ impl TopologyBuildState {
             let allocation_token = self
                 .component_registry
                 .get_resource_group_token(&component_context.identity());
-            let destination = builder
-                .build(BuildContext::new(component_context.clone(), resource_registry.clone()))
+            // While the component is built, it can spawn tasks into the current scope, for example the background tasks
+            // of a cache. This scope holds these tasks until the component runs. Then the tasks belong to the
+            // component.
+            let scope = UnadoptedScope::new(component_context.identity().to_string());
+            let destination = scope
+                .scope()
+                .enter(builder.build(BuildContext::new(component_context.clone(), resource_registry.clone())))
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build destination '{}'.", id))?;
 
+            component_scopes.insert(component_context.clone(), scope);
             destinations.insert(component_context, (destination, self.component_registry.clone()));
         }
 
@@ -758,12 +790,18 @@ impl TopologyBuildState {
             let allocation_token = self
                 .component_registry
                 .get_resource_group_token(&component_context.identity());
-            let encoder = builder
-                .build(BuildContext::new(component_context.clone(), resource_registry.clone()))
+            // While the component is built, it can spawn tasks into the current scope, for example the background tasks
+            // of a cache. This scope holds these tasks until the component runs. Then the tasks belong to the
+            // component.
+            let scope = UnadoptedScope::new(component_context.identity().to_string());
+            let encoder = scope
+                .scope()
+                .enter(builder.build(BuildContext::new(component_context.clone(), resource_registry.clone())))
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build encoder '{}'.", id))?;
 
+            component_scopes.insert(component_context.clone(), scope);
             encoders.insert(component_context, (encoder, self.component_registry.clone()));
         }
 
@@ -773,12 +811,18 @@ impl TopologyBuildState {
             let allocation_token = self
                 .component_registry
                 .get_resource_group_token(&component_context.identity());
-            let forwarder = builder
-                .build(BuildContext::new(component_context.clone(), resource_registry.clone()))
+            // While the component is built, it can spawn tasks into the current scope, for example the background tasks
+            // of a cache. This scope holds these tasks until the component runs. Then the tasks belong to the
+            // component.
+            let scope = UnadoptedScope::new(component_context.identity().to_string());
+            let forwarder = scope
+                .scope()
+                .enter(builder.build(BuildContext::new(component_context.clone(), resource_registry.clone())))
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build forwarder '{}'.", id))?;
 
+            component_scopes.insert(component_context.clone(), scope);
             forwarders.insert(component_context, (forwarder, self.component_registry.clone()));
         }
 
@@ -795,6 +839,7 @@ impl TopologyBuildState {
             destinations,
             encoders,
             forwarders,
+            component_scopes,
             topology_token,
             self.interconnect_capacity,
             self.worker_pool_config,
@@ -1020,6 +1065,42 @@ mod tests {
     }
 
     impl MemoryBounds for ControlSourceBuilder {
+        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    }
+
+    /// A source whose builder spawns a child into the current scope while it builds the source.
+    ///
+    /// The child records when it starts and when it stops. It runs until something tells it to stop.
+    struct BuildSpawningSourceBuilder {
+        outputs: Vec<OutputDefinition<EventType>>,
+        source_started: Arc<AtomicUsize>,
+        child_started: Arc<AtomicUsize>,
+        child_stopped: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl SourceBuilder for BuildSpawningSourceBuilder {
+        fn outputs(&self) -> &[OutputDefinition<EventType>] {
+            &self.outputs
+        }
+
+        async fn build(&self, _: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
+            let (started, stopped) = (Arc::clone(&self.child_started), Arc::clone(&self.child_stopped));
+            runtime::worker_with_shutdown("built_child", move |shutdown| async move {
+                started.fetch_add(1, Ordering::SeqCst);
+                shutdown.await;
+                stopped.fetch_add(1, Ordering::SeqCst);
+            })
+            .spawn_child_or_detached();
+
+            Ok(Box::new(ControlSource {
+                started: Arc::clone(&self.source_started),
+                spawned_child: None,
+            }))
+        }
+    }
+
+    impl MemoryBounds for BuildSpawningSourceBuilder {
         fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
     }
 
@@ -1555,6 +1636,76 @@ mod tests {
         tx.send(()).expect("should send shutdown signal");
         let result = join_topology(handle).await;
         assert!(result.is_ok(), "topology should shut down cleanly, got: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn work_spawned_while_a_component_is_built_belongs_to_the_component() {
+        // The builder of a component runs inside the blueprint, before the process of the component exists. At that
+        // time, the builder can spawn tasks into the current scope, for example the background tasks of a cache. The
+        // scope holds these tasks until the component runs. Then the tasks belong to the component: they run beneath
+        // the component, and stop with it.
+        let source_started = Arc::new(AtomicUsize::new(0));
+        let child_started = Arc::new(AtomicUsize::new(0));
+        let child_stopped = Arc::new(AtomicUsize::new(0));
+
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+        blueprint
+            .add_source(
+                "spawner",
+                BuildSpawningSourceBuilder {
+                    outputs: vec![OutputDefinition::default_output(EventType::EventD)],
+                    source_started: Arc::clone(&source_started),
+                    child_started: Arc::clone(&child_started),
+                    child_stopped: Arc::clone(&child_stopped),
+                },
+            )
+            .expect("should not fail to add source")
+            .add_destination(
+                "destination",
+                DrainingDestinationBuilder {
+                    input_event_ty: EventType::EventD,
+                },
+            )
+            .expect("should not fail to add destination");
+        blueprint
+            .connect_components_in_order(["spawner", "destination"])
+            .expect("should not fail to connect components");
+        blueprint
+            .with_health_registry(HealthRegistry::new())
+            .with_memory_limiter(MemoryLimiter::noop())
+            .with_resource_registry(ResourceRegistry::new());
+
+        let mut supervisor = Supervisor::new("test-topology").expect("should not fail to create supervisor");
+        let tree = supervisor.tree_handle();
+        supervisor.add_worker(blueprint);
+        let (tx, rx) = oneshot::channel::<()>();
+        let handle = tokio::spawn(async move { supervisor.run_with_shutdown(rx).await });
+
+        fn find<'a>(node: &'a runtime::NodeSnapshot, name: &str) -> Option<&'a runtime::NodeSnapshot> {
+            if node.name == name {
+                return Some(node);
+            }
+            node.children.iter().find_map(|child| find(child, name))
+        }
+
+        // The source worker gets its name from its component type.
+        wait_until("the child spawned while building runs beneath its component", || {
+            let root = tree.snapshot().root;
+            find(&root, "source").is_some_and(|source| find(source, "built_child").is_some())
+        })
+        .await;
+        assert_eq!(source_started.load(Ordering::SeqCst), 1);
+        assert_eq!(child_started.load(Ordering::SeqCst), 1);
+
+        tx.send(()).expect("should send shutdown signal");
+        let result = join_topology(handle).await;
+        assert!(result.is_ok(), "topology should shut down cleanly, got: {:?}", result);
+        assert_eq!(
+            child_stopped.load(Ordering::SeqCst),
+            1,
+            "the child should have been stopped with its component"
+        );
     }
 
     #[tokio::test]
