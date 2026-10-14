@@ -9,6 +9,9 @@ the next chunk of work should look like. Read the [index](programmable-metrics-i
 - [What it means for what we built](#what-it-means-for-what-we-built)
 - [Lessons](#lessons)
 - [The next chunk of work](#the-next-chunk-of-work)
+- [How we iterate](#how-we-iterate)
+- [Hypotheses](#hypotheses)
+- [What the first iterations showed](#what-the-first-iterations-showed)
 - [Lower priority](#lower-priority)
 - [Open questions](#open-questions)
 
@@ -77,76 +80,73 @@ In order. Each item has its goal, the approach, and the evidence that ends it.
 
 #### N1 results
 
+These are from the second run of the matrix (2026-10-14). The first (2026-10-13) charged every run about 20
+millicores of the harness's own health check, which ran a process inside ADP's container every second; that took 40%
+of the quota at 0.05 and distorted every absolute figure there (see the [log](programmable-metrics-log.md#n1-measuring-at-production-cpu-limits)).
+The ratios from 0.3 up barely moved, since both images paid it alike.
+
 The tiers: low is 1 MiB/s over 3,000 contexts, medium 10 MiB/s over 10,000, heavy 50 MiB/s over 100,000, and
 ultraheavy 100 MiB/s over 250,000 (about 1,230, 11,900, 60,400, and 123,000 metrics a second). A Unix datagram socket
 blocks the sender rather than drop, so "keeps up" means lading reached at least 97% of the tier's rate.
 
-**Who keeps up, and plan against main.** Each cell: whether both keep up, then plan's CPU per metric over main's, and
-plan's anonymous memory over main's (medians of three rounds).
+**Who keeps up, and plan against main.** Each cell: whether both keep up (or the share of the rate each reaches), then
+plan's CPU per metric over main's, and plan's peak memory over main's (medians of three rounds).
 
 | Tier | 0.05 | 0.3 | 0.6 | 1.2 |
 |---|---|---|---|---|
-| low | both; 1.00, 1.03 | both; 1.01, 1.03 | both; 1.00, 1.05 | both; 1.02, 1.02 |
-| medium | neither; **0.84, 0.48** (main 164 MiB against a bound of 100, plan 79) | both; 0.97, 0.91 | both; 0.97, 0.97 | both; 0.97, 0.95 |
-| heavy | neither; collapse (below) | neither (69%, 70% of the rate); 0.98, 0.91 | both; 0.96, 0.85 | both; 0.96, 0.94 |
-| ultraheavy | neither; collapse (below) | neither (28%); 0.98, 0.97 | neither (77%, 81%); 0.95, 0.97 | both; 0.96, 0.97 |
+| low | both; 0.99, 1.03 | both; 1.03, 1.00 | both; 1.03, 1.00 | both; 1.02, 1.03 |
+| medium | neither (52%, 49%); 0.98, **0.65** | both; 0.96, 0.97 | both; 0.96, 0.91 | both; 0.95, 0.96 |
+| heavy | neither (4%, 3%); collapse | neither (73%, 77%); 0.95, 0.89 | both; 0.94, 0.95 | both; 0.95, 0.93 |
+| ultraheavy | neither; collapse | neither (30%, 32%); 0.95, 0.98 | neither (80%, 84%); 0.94, 0.97 | both; 0.95, 0.98 |
 
-**Capacity** (saturate mode: the MiB/s lading got through, then the metrics a second ADP decoded; at 0.05 main's MiB/s
-includes datagrams it buffered without decoding, so the decoded rate is the measure there):
+**Capacity** (saturate mode: the MiB/s lading got through, then the metrics a second ADP decoded):
 
 | Contexts | 0.05 | 0.3 | 0.6 | 1.2 |
 |---|---|---|---|---|
-| 3,000: main | 5.2 (6,600) | 45 (55,600) | 97 (120,000) | 198 (245,000) |
-| 3,000: plan | 5.5 (6,900) | 49 (60,600) | 104 (128,000) | 216 (267,000) |
-| 100,000: main | 1.6 (1,300) | 34 (40,800) | 82 (99,100) | 181 (219,000) |
-| 100,000: plan | 1.1 (1,240) | 35 (42,200) | 88 (106,000) | 193 (233,000) |
+| 3,000: main | 5.9 (7,030) | 48.8 (60,300) | 99.0 (122,000) | 197 (243,000) |
+| 3,000: plan | 6.5 (8,000) | 52.3 (64,500) | 107.5 (133,000) | 214 (265,000) |
+| 100,000: main | 1.6 (1,830) | 36.4 (43,900) | 87.4 (106,000) | 189 (227,000) |
+| 100,000: plan | 1.9 (2,280) | 38.4 (46,300) | 92.0 (111,000) | 199 (240,000) |
 
-At saturation the plan decodes 5 to 9% more at 3,000 contexts, and 3.5 to 7% more at 100,000 contexts from 0.3 (at
-0.05, 5% less, within that cell's noise), at 3 to 10% less CPU per metric, with 24 to 30% less anonymous memory at
-3,000 contexts (main exceeds the low tier's 60 MiB bound at
-0.05, with 105 MiB; the plan holds 39).
+At saturation the plan decodes 5 to 9% more from 0.3 up, 14% more at 3,000 contexts and 24% more at 100,000 at 0.05,
+with 5 to 8% less CPU per metric from 0.3 up (15 to 20% at 0.05), and 12 to 62% less memory (at 0.05 and 3,000 contexts, main holds 88 MiB against
+the low tier's 60 MiB bound; the plan 33).
 
-**Noise** (A/A, spread from p25 to p75 over the median): CPU per metric within 1% at the low tier from 0.3 (2 to 4% at
-0.05), 0.3 to 2% at the heavy tier at 0.3 and 0.6, about 3% at heavy 1.2 (an A/A ratio of 1.04), and 19 to 25% in the collapse cells
-(heavy at 0.05), where only large effects count.
+**Noise** (A/A, main against main, spread from p25 to p75 over the median): CPU per metric within 0.7 to 1.7% at the
+low tier and 1 to 3% at the heavy tier from 0.3 (A/A ratios 0.98 to 1.02), and 9 to 17% at heavy 0.05, a collapse
+cell where only large effects count.
 
 **Findings.**
 
-1. **From 0.3 to 1.2 the plan is a little better everywhere:** 2 to 5% less CPU per metric above the low tier, 3 to 15%
-   less anonymous memory, fewer throttled periods, and slightly more metrics through where neither keeps up. At the low
-   tier the two are the same.
-2. **The fixed cost dominates at small loads.** The low tier costs about 34 millicores on both images at every limit,
-   about 27 µs per metric at 1,230 metrics a second: 58% of a 50-millicore quota, throttled in two thirds of its CFS
-   periods, before any real load. At 0.05, idle and per-tick costs matter as much as cost per metric.
+1. **From medium load up, the plan is better everywhere:** 4 to 6% less CPU per metric from 0.3 up, beyond the A/A
+   noise, 2 to 11% less peak memory, and 5 to 9% more capacity. At the low tier the plan is 1 to 3% above main in CPU
+   per metric, about the size of the noise there.
+2. **Idle and fixed costs are small.** An idle ADP costs 2.3 to 2.8 millicores on either image; the low tier costs
+   about 15. (The first run's "fixed cost dominates" finding was the health check.)
 3. **The flush stall is visible in steady state, even with headroom.** Where both keep up at heavy and ultraheavy,
-   lading's fastest second is 1.25 to 1.44 times the rate on both images: it catches up after the socket blocks during a
-   flush, for less than a second at 1.2 and longer at 0.6, where the worst second falls to 0.6 to 0.7 of the rate. The
-   heavy tier needs about 0.4 cores on average but stalls at 0.6.
+   lading's fastest second is 1.2 to 1.37 times the rate on both images, catching up after the socket blocks during a
+   flush, and its slowest second falls to 0.56 to 0.83 of the rate. At the low and medium tiers lading's own pacing is
+   too lumpy for these measures to mean anything.
 4. **Under a crunch, the plan holds memory and main does not.** Where ADP cannot keep up, main keeps reading datagrams
-   into its buffer pool (thousands to about 20,000 buffers in use; anonymous memory 190 to 345 MiB at heavy 0.05, past
-   the 250 MiB bound), while the plan's backpressure keeps the pool at a few dozen buffers and memory at about half,
-   inside every SMP bound.
-5. **Open: the plan freezes admission at 0.05 with many contexts.** At heavy 0.05 the plan decodes about 20% less than
-   main (850 to 1,460 metrics a second over six runs, against 1,260 to 2,200 over fifteen for main). At ultraheavy
-   0.05 it is erratic: 420, 18, and 67 metrics a second against main's 215 to 350. In the run at 18, decoding stops
-   for about 25 seconds with the pool empty, so the source is backpressured, while ADP spends its whole quota
-   downstream, most likely in the aggregation drain of about 250,000 contexts at 5 ms of CPU per 100 ms period. Main
-   also stops decoding but keeps buffering. Not yet investigated; it bears on N2 and N3.
+   into its buffer pool (hundreds to 20,000 buffers in use, peak memory up to 243 to 259 MiB at 0.05), while the plan's
+   backpressure keeps the pool at a few dozen buffers and memory 32 to 45% lower, inside every SMP bound (main exceeds
+   the medium tier's at 0.05).
+5. **At 0.05 with 100,000 contexts or more, both images collapse, erratically.** Decoded rates vary several-fold from
+   run to run on both (at ultraheavy 0.05, 54 to 700 metrics a second for main and 195 to 737 for the plan), sometimes
+   with long stretches where nothing is decoded. An earlier reading of a plan-specific "freeze" was this, made worse by
+   the health check: with the full quota the two images are the same within the noise there.
 
 **Gate thresholds for N2 to N4** (against these baselines, the same harness and host; "noise" is the A/A spread above):
 
 - **N2:** in the cells that keep up with stalls (heavy at 0.6 and 1.2, ultraheavy at 1.2), lading's fastest second at
   most 1.1 of the rate and its worst at least 0.9; in the cells that cannot keep up (heavy at 0.3, ultraheavy at 0.3
-  and 0.6), a higher share of the rate than today's plan; at 0.05, no admission freeze longer than one flush interval
-  (10 s) and memory inside the SMP bounds; CPU per metric no worse than today's plan beyond the noise (1% at low and
-  medium, 2% at heavy and ultraheavy from 0.3, 4% at 1.2).
-- **N3:** with R1's cost model removed and lanes off, CPU per metric and capacity at least today's plan's within the
-  noise at every cell from 0.3, and finding 5 no worse.
-- **N4:** each item a reduction in CPU per metric beyond the noise in the cells it targets, with no cell worse; the
-  allocator setting decided on the low and heavy tiers at 0.3 and 1.2, where the A/A noise is 0.5 to 3%.
+  and 0.6), a higher share of the rate than today's plan; at 0.05, memory inside the SMP bounds; CPU per metric no
+  worse than today's plan beyond the noise (2% from 0.3, 3% at heavy 1.2). Stalls are judged in sequential runs.
+- **N3 and N4:** instructions per metric in the quick loop (noise 0.3 to 0.6%), confirmed in sequential runs for CPU
+  time and memory.
 
-The data is in `test/scaling/results/limits-{aa,paced,saturate}/` on the measuring host (ignored by git); rerun a cell
-with `SCALING_TIERS=<tier> SCALING_LIMITS=<limit> make limits-runs`.
+The data is in `test/scaling/baselines/n1-2026-10-14/` (per-run tables and summaries); the per-second series and logs
+stayed on the measuring host. Rerun a cell with `SCALING_TIERS=<tier> SCALING_LIMITS=<limit> make limits-runs`.
 
 ### N2: make the aggregation flush non-blocking
 
@@ -170,6 +170,9 @@ with `SCALING_TIERS=<tier> SCALING_LIMITS=<limit> make limits-runs`.
   [P9.7](programmable-metrics-stages-7-and-9.md#p97-r1s-cost-model) lists what it touches); make lanes opt-in
   (`lanes.mode: off` by default, amendment 157 reversed) while keeping the code.
 - **Exit:** N1's measurements at the four limits show the fused layout at least as good as today's.
+- **Status (2026-10-14):** maximal fusion without lanes saves no instructions at any of eight cells and costs about 1%
+  where ADP cannot keep up (H2, [results](#what-the-first-iterations-showed)); N3 is a simplification, to be weighed
+  after sequential runs measure its effect on stalls and CPU time.
 
 ### N4: efficiency per metric
 
@@ -183,6 +186,10 @@ Each is a small part, measured by N1 at the production limits:
   memory ([decisions](programmable-metrics-status.md#decisions-awaiting-the-owner)); decide it at 0.3 and 1.2 CPUs.
 - **The datagram pool's worst case** when CPU-starved: its ceiling and growth under a burst.
 
+**Status (2026-10-14):** these are ADP-wide, not plan work, and moved with the other independent findings to
+[ADP efficiency findings](adp-efficiency-findings.md); the thread cache measured 3 to 7.5% fewer instructions per
+metric (G2 there).
+
 ### N5: shedding during a CPU crunch
 
 - **Goal:** degrade deliberately rather than by dropping at the socket.
@@ -192,6 +199,130 @@ Each is a small part, measured by N1 at the production limits:
   queue or pool depth: drop low-value metrics, widen aggregation, or sample. The programmable substrate is uniquely
   suited to this.
 - **Exit:** a design reviewed against N1's measurements where ADP cannot keep up.
+
+## How we iterate
+
+Each hypothesis is a change with a predicted effect, tested in a loop short enough to run several an hour, and checked
+against trusted measurements before it is kept. Three tiers:
+
+| Tier | What | Time | Used for |
+|---|---|---|---|
+| Quick loop | a variant against the current plan on the focus cells: medium at 0.3, heavy at 0.6 and 1.2, ultraheavy at 1.2, and capacity at 0.3; 30-second windows; cells in parallel; instructions and memory counters per metric (`perf stat`) | 15 to 20 minutes with the build | every hypothesis |
+| Milestone | the focus cells against `main`, one cell at a time, three rounds | 1 to 2 hours | a change worth keeping |
+| Full matrix | N1's 16 cells, A/A, and capacity | about 9 hours, overnight | before results are recorded |
+
+The quick loop's shortcuts are kept only if, run against the N1 baseline as an A/A and as `main` against the plan, it
+reproduces the full matrix's ratios within the A/A noise. On the first N1 data, 30-second windows reproduced the
+55-second ratios within 1 to 2% at every cell from 0.3; 10-second windows, one flush, are too noisy. Instruction counts
+are close to deterministic and unaffected by throttling or neighbors, so they decide hypotheses about CPU per metric in
+one round; stalls, capacity, and memory still need the wall-clock measures.
+
+## Hypotheses
+
+Results so far are in [What the first iterations showed](#what-the-first-iterations-showed): H1 dropped, H2 neutral,
+H8 and H9 moved to the [ADP findings](adp-efficiency-findings.md).
+
+Fundamentals before cleverness: memory layout and fixed costs first, new machinery later. Every hypothesis changes how
+an installed generation runs, never what the program means: the IR, generations, artifacts, the reference interpreter,
+and the equivalence oracle stay as they are, and each change must pass them.
+
+**First, measure where the instructions go.** For the focus cells: instructions, cycles, L1D and L2 refills, last-level
+misses, TLB walks, and backend stalls per decoded metric, for `main` and the plan, and an instruction profile of each.
+`main` runs the work the two share (decoding, context resolution, encoding), so what the plan spends beyond it is the
+cost of programmability. Low IPC with many misses in the plan's operators and the aggregation kernel points to layout
+(H3 to H6); high IPC with too many instructions points to fixed costs and hops (H1, H2). Also a `size_of` audit of
+`Event`, `Metric`, `ContextInner`, and `TagSet`.
+
+**The layout today.** A batch is a `Vec<Event>`, each slot the size of the largest `Event` variant. A `Metric` holds a
+`Context` (an `Arc<ContextInner>`), its points inline, and metadata. `ContextInner` holds the name (a `MetaString`),
+the host, and two `TagSet`s, each a small vector of `Arc<FrozenTagSet>` whose tags are `MetaString`s. A predicate on a
+name walks event, `Arc`, string; one on tags walks event, `Arc`, tag set, `Arc`, and each tag's bytes; and each
+operator walks again for each metric. With 100,000 contexts, most of those are cache misses.
+
+**The query view.** The program is a query plan, a batch a vector, an operator a query operator. Databases made
+interpreted plans fast by processing compact vectors instead of rows (MonetDB/X100, DuckDB, Velox), with physical
+techniques that leave the logical plan alone. In order:
+
+| # | Hypothesis | Prediction | Cost |
+|---|---|---|---|
+| H1 | **CPU-time sampling.** Without lanes, the default at every production limit, the plan reads the thread's CPU time twice per task poll and kernel call, a system call on Linux; `SALUKI_CPU_TIME_SAMPLING=16` samples one in 16. | fewer instructions per metric, most at small batches | an environment variable |
+| H2 | **Fuse maximally (N3).** Delete R1's cost model: one region between fences, no extra hops, queues, or wakeups (today the post-aggregation filter gets its own region at 66 ns against a 64 ns budget). | fewer instructions and wakeups per metric | planned code change |
+| H3 | **Dense context IDs (dictionary encoding).** The resolver gives each context a dense slot index, tagged with a generation so a reused slot is never mistaken for an old one; the resolver owns them, so they survive generations and cuts. | the foundation for H4 and H5 | moderate |
+| H4 | **Predicate and decision tables.** A predicate's or decision's result for a context is fixed within a generation: compute it once, store it in an array indexed by the dense ID, owned by the generation and built lazily, so a new generation starts a new table. A predicate becomes one indexed load. | fewer misses and instructions in filters, mappers, and routing | moderate |
+| H5 | **Aggregation state indexed by dense ID.** Arrays instead of a hash map keyed by context: admission is a bounds check and a load, and a flush a linear scan the prefetcher follows. | lower admission cost, and a flush well under today's 213 ns per context | larger |
+| H6 | **Selection vectors and late materialization.** A filter yields the positions that pass and routing a list per exit; events stay in place until an exit needs a buffer, so fan-out stops copying and cloning. Then a few columns extracted once per batch at region entry (dense ID, kind, value, timestamp), with `Vec<Event>` kept as the row store at the boundaries. | fewer copies, clones, and misses | moderate |
+| H7 | **Fixed cost per batch.** Generation and entry lookups cached per admission point, the header and progress loops skipped when no exit needs them, and telemetry counted per batch. | fewer instructions per metric, most at small batches | small |
+| H8 | **Compact elements** in the metrics path: a buffer whose element is not sized by the largest `Event` variant. | more metrics per cache line | moderate |
+| H9 | **ADP-wide costs**, for `main` too: the tracking allocator's wrapper, jemalloc's thread cache (N4), encoding and compression, internal telemetry. | varies | varies |
+
+Later, if the profiles call for it: columnar decoding in the source, fused native kernels for sequences the default
+program always contains, generated code. The risks to design for: a stale dense ID must never reach a reused slot (the
+interpreter and the transition traces check it); extracting columns costs something per batch and must pay at the
+batch sizes seen, small timer-flushed batches included; and aggregation state carried across cuts holds dense IDs, so
+their stability across generations is part of H3's contract.
+
+## What the first iterations showed
+
+On 2026-10-14, after the N1 baseline, the quick loop was validated against it, instruction profiles were taken, and
+H1, H2, and H9 were tested. The findings that do not depend on the plan, and could land in ADP on their own, are
+collected in [ADP efficiency findings](adp-efficiency-findings.md); this section keeps what bears on the plan.
+
+**The quick loop measures instructions, not CPU time.** Run as an A/A at the focus cells, instructions per metric
+agreed within 0.3% with a spread of at most 0.6%, about four times tighter than CPU time. But run as `main` against the
+plan, its CPU per metric missed the sequential baseline by up to 4% at two cells, twice the A/A noise, and its memory
+by up to 9% even in the A/A; the parallel slots or the two-core CPU sets are the likely cause, not yet separated. So
+the quick loop decides hypotheses about instruction count, and CPU time, stalls, and memory are judged in sequential
+runs.
+
+**Where the instructions go** (instruction-sampled profiles at medium 0.3, heavy 1.2, and ultraheavy 1.2; shares of
+ADP's instructions, similar on both images):
+
+| Component | Share | Whose |
+|---|---|---|
+| Hashing, mostly context keys in the DogStatsD source | 22 to 29% | shared |
+| DogStatsD decoding and newline framing | 25 to 30% | shared |
+| Kernel: socket receives, epoll | 17 to 31% | shared |
+| Allocator | 3 to 6% | shared |
+| Tokio runtime | 8 to 9% on `main`, about 1% on the plan | the plan's fusion saves it |
+| The plan's runtime: regions, kernels, decisions | 5 to 6% | plan |
+| Aggregation | 2 to 3% | both |
+
+So more than 85% of the instructions are in code the two share, and the plan's own runtime costs less than the Tokio
+overhead its fusion removes: by instruction count, programmability is already free on this workload. These profiles
+run the default configuration, which has almost no policy operators; a policy-heavy profile is needed before the
+plan's operators can be judged (below).
+
+**Hypothesis results** (instructions per metric against the unmodified plan; noise 0.3 to 0.6%):
+
+| | medium 0.3 | heavy 0.6 | heavy 1.2 | ultraheavy 1.2 | low 0.3 | medium 1.2 | heavy 0.3 | ultraheavy 0.6 |
+|---|---|---|---|---|---|---|---|---|
+| H1: CPU-time sampling one in 16 | -0.5% | +0.4% | -0.2% | -0.3% | | | | |
+| H2: maximal fusion without lanes (`SALUKI_EXPERIMENT_FUSE_ALL=1`) | 0.0% | +1.2% | -0.2% | -0.4% | +0.3% | 0.0% | +1.2% | +1.2% |
+| H9: jemalloc's thread cache (`MALLOC_CONF=tcache:true`) | **-7.5%** | **-3.9%** | **-4.2%** | **-3.1%** | | | | |
+| H1, H2, and H9 together | -7.7% | -3.8% | -4.4% | -4.2% | | | | |
+
+- **H1 is dropped:** sampling CPU time saves nothing measurable.
+- **H2 saves no instructions**, and costs about 1% where ADP cannot keep up. Deleting R1's cost model (N3) is a
+  simplification, not a speed-up; its effect on stalls and CPU time is still to be measured sequentially. The
+  existing one-lane-per-slot layout, which also fuses maximally, was 4 to 9% worse at two workers because of the lane
+  runtime, not fusion.
+- **H9 is a real win but ADP-wide**, not plan work: see the ADP findings, G2.
+
+**The plan-specific landscape**, by estimated impact, confidence, and complexity:
+
+| Item | Impact | Confidence | Complexity |
+|---|---|---|---|
+| **N2, non-blocking flush** | **high for behavior**: stalls with catch-up at 1.2 to 1.37 times the rate even at 1.2 cores, the team's stated top problem; little effect on instructions | high that the problem is real | high (design) |
+| H7, fixed cost per batch | small; may explain the plan's 1 to 3% at the low tier | medium | low |
+| H3 and H4, dense context IDs and predicate tables | unmeasurable on the default profile, which runs almost no policy | low until a policy-heavy profile is measured | medium |
+| H5, aggregation state by dense ID | low for instructions (aggregation is 2 to 3%); medium for flush cost, which feeds N2 | medium | high |
+| N3, delete R1's cost model | none for instructions; a simplification | high | medium |
+| H8, compact metric buffers | superseded by boxing `Event`'s large variants, ADP-wide (G5) | | |
+
+**Direction.** Efficiency per metric is now mostly an ADP-wide matter, and those items go to the separate document.
+The plan work focuses on what the plan can improve structurally and native ADP cannot: **behavior under load, starting
+with flush stalls (N2)**, built on the generations, cuts, and yielding kernels already in place. Before H3 and H4, the
+`mapper` and `gateways` profiles should be profiled, to see what programmability actually costs when policy runs.
 
 ## Lower priority
 
@@ -207,5 +338,7 @@ Each is a small part, measured by N1 at the production limits:
   check N1's workloads.
 - What counts as acceptable during a crunch: which drops, how much latency, how much memory.
 - Whether SMP experiments can run at 0.3 cores, so that N1's gates also run in CI (deferred: local runs for now).
-- Why the plan freezes admission at 0.05 with many contexts (N1 finding 5).
+- Whether the parallel quick loop's CPU-time skew comes from running slots side by side or from two-core CPU sets.
+- Which policy production configurations use (mappers, filters, routing), to choose the policy-heavy workload that H3
+  and H4 need.
 - How much of N2's turn should go to draining against admission, and whether it should adapt to the CPU quota.

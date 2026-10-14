@@ -14,6 +14,13 @@
 #
 # SCALING_MODE=saturate sends as fast as lading can instead of the tier's rate, to find the most each image sustains at
 # each limit. SCALING_DRY_RUN=1 renders every run's lading configuration and prints the docker commands.
+#
+# For the quick loop of docs/design/programmable-metrics-next.md ("How we iterate"): SCALING_CELLS names the cells to
+# run (`tier:limit` pairs) instead of every tier at every limit; SCALING_VARIANTS names the images to compare, each with
+# its own environment (`label=image;KEY=VALUE;...`), instead of main and plan; SCALING_PARALLEL runs that many cells at
+# once on disjoint cores; SCALING_PERF=1 counts instructions, cycles, and memory events in ADP's cgroup over each
+# window with `perf stat`; and SCALING_RECORD=1 samples where ADP's instructions go, with call stacks, for the first
+# SCALING_RECORD_SECONDS of each window (`perf record`, into perf-<run>.data). Both need `sudo -n`.
 
 set -euo pipefail
 
@@ -30,12 +37,46 @@ saturate_rate=${SCALING_SATURATE_RATE:-"1 GiB"}
 warmup=${SCALING_WARMUP_SECONDS:-30}
 window=${SCALING_WINDOW_SECONDS:-60}
 adp_sample=${SCALING_ADP_SAMPLE_SECONDS:-5}
-adp_cores=${SCALING_ADP_CORES:-4}
+keep_scrapes=${SCALING_KEEP_SCRAPES:-0}
+cells=${SCALING_CELLS:-}
+variants=${SCALING_VARIANTS:-}
+parallel=${SCALING_PARALLEL:-1}
+perf=${SCALING_PERF:-0}
+record=${SCALING_RECORD:-0}
+record_seconds=${SCALING_RECORD_SECONDS:-10}
+# One cell at a time keeps N1's layout: ADP on four cores, lading on two, the blackhole on two. Cells in parallel each
+# take two cores for ADP (enough for two workers at every limit up to 1.2), two for lading, and one for the blackhole.
+if ((parallel > 1)); then
+  adp_cores=${SCALING_ADP_CORES:-2}
+  blackhole_cores=1
+else
+  adp_cores=${SCALING_ADP_CORES:-4}
+  blackhole_cores=2
+fi
+slot_width=$((adp_cores + 2 + blackhole_cores))
 dry_run=${SCALING_DRY_RUN:-0}
 out=${SCALING_OUT:-"$here/results/limits-$(date +%Y%m%dT%H%M%S)"}
 
-project="saluki-limits-$$"
-compose=(docker compose --file "$here/compose.yaml" --file "$here/compose.limits.yaml" --project-name "$project")
+# Pinned, instructions and cycles are counted all the time; the memory events share the remaining counter and are
+# scaled estimates.
+perf_events=inst_retired:D,cpu_cycles:D,l1d_cache_refill,l2d_cache_refill,stall_backend,dtlb_walk
+
+# Sets `compose` and the ports and cores of slot $1: each slot has its own project, ports, and cores.
+use_slot() {
+  local slot=$1 base=$(($1 * slot_width))
+  compose=(docker compose --file "$here/compose.yaml" --file "$here/compose.limits.yaml"
+    --project-name "saluki-limits-$$-$slot")
+  export ADP_CPUSET="$base-$((base + adp_cores - 1))"
+  export LADING_CPUSET="$((base + adp_cores))-$((base + adp_cores + 1))"
+  if ((blackhole_cores == 1)); then
+    export BLACKHOLE_CPUSET="$((base + adp_cores + 2))"
+  else
+    export BLACKHOLE_CPUSET="$((base + adp_cores + 2))-$((base + adp_cores + blackhole_cores + 1))"
+  fi
+  export ADP_TELEMETRY_PORT=$((15100 + slot * 10))
+  export LADING_TELEMETRY_PORT=$((19229 + slot * 10))
+  export BLACKHOLE_TELEMETRY_PORT=$((19230 + slot * 10))
+}
 
 log() {
   echo "[limits] $*" >&2
@@ -182,13 +223,18 @@ adp_cgroup() {
 }
 
 # Samples lading and ADP's cgroup every second, and ADP's telemetry every $adp_sample seconds, into $1, until killed.
+# With SCALING_KEEP_SCRAPES=1, each of ADP's scrapes is also kept whole in the directory $2.
 sample() {
-  local file=$1 tick=0 adp="- - - - -"
+  local file=$1 scrapes=$2 tick=0 adp="- - - - -" scrape
   echo "t,lading_bytes,cpu_usec,periods,throttled,throttled_usec,anon_bytes,decoded,agg_dropped,unresolved,pool_in_use,pool_capacity" \
     >"$file"
   while true; do
     if ((tick % adp_sample == 0)); then
-      adp=$(adp_scrape 2>/dev/null | adp_values || echo "- - - - -")
+      scrape=$(adp_scrape 2>/dev/null || true)
+      if [[ "$keep_scrapes" == 1 && -n "$scrape" ]]; then
+        echo "$scrape" >"$scrapes/$(now).prom"
+      fi
+      adp=$(echo "$scrape" | adp_values || echo "- - - - -")
     else
       adp="- - - - -"
     fi
@@ -198,22 +244,28 @@ sample() {
   done
 }
 
-# Runs one measured run of image $3, labeled $2, at CPU limit $1, for round $4, appending a row to runs.csv.
+# Prints the counts `perf stat` wrote to $1 (CSV), in the order of $perf_events, with `-` for an event not counted.
+perf_values() {
+  local event values=()
+  for event in ${perf_events//,/ }; do
+    values+=("$(awk -F, -v e="$event" '$3 == e && $1 ~ /^[0-9]+$/ { print $1; found = 1 } END { if (!found) print "-" }' "$1")")
+  done
+  echo "${values[*]}"
+}
+
+# Runs one measured run of tier $1 at CPU limit $2, round $3, of image $5 labeled $4 with the environment file $6, in
+# slot $7, appending a row to runs.csv.
 measure() {
-  local limit=$1 label=$2 image=$3 round=$4
+  local tier=$1 limit=$2 round=$3 label=$4 image=$5 env_file=$6 slot=$7
   local name="$tier-$limit-$round-$label"
+  set_tier "$tier"
+  use_slot "$slot"
   export ADP_IMAGE=$image
   export ADP_CPUS=$limit
-  export ADP_CPUSET="0-$((adp_cores - 1))"
-  export LADING_CPUSET="$adp_cores-$((adp_cores + 1))"
-  export BLACKHOLE_CPUSET="$((adp_cores + 2))-$((adp_cores + 3))"
+  export ADP_VARIANT_ENV=$env_file
   export INTERNER_SIZE_BYTES=$tier_interner
   export LADING_CONFIG="$out/lading-$tier.yaml"
-  export ADP_TELEMETRY_PORT=${ADP_TELEMETRY_PORT:-15100}
-  export LADING_TELEMETRY_PORT=${LADING_TELEMETRY_PORT:-19229}
-  export BLACKHOLE_TELEMETRY_PORT=${BLACKHOLE_TELEMETRY_PORT:-19230}
-  render_lading_config "$LADING_CONFIG"
-  log "$name ($image): ADP at $limit CPUs on cores $ADP_CPUSET, $mode at $tier_rate/s, $tier_contexts contexts"
+  log "$name ($image): slot $slot, ADP at $limit CPUs on cores $ADP_CPUSET, $mode at $tier_rate/s, $tier_contexts contexts"
 
   run "${compose[@]}" up --detach --wait adp blackhole
   run "${compose[@]}" up --detach lading
@@ -221,7 +273,9 @@ measure() {
     echo "+ sleep $warmup; sample for $window seconds; ${compose[*]} down --volumes"
     return
   fi
-  adp_cgroup_dir="/sys/fs/cgroup/docker/$(docker inspect --format '{{.Id}}' "$("${compose[@]}" ps --quiet adp)")"
+  local adp_id
+  adp_id=$(docker inspect --format '{{.Id}}' "$("${compose[@]}" ps --quiet adp)")
+  adp_cgroup_dir="/sys/fs/cgroup/docker/$adp_id"
   [[ -r "$adp_cgroup_dir/cpu.stat" ]] || fail "cannot read ADP's cgroup at $adp_cgroup_dir"
   local git_hash
   # ADP logs JSON here (`"git_hash":"..."`); the text format writes `git_hash:"..."`.
@@ -229,9 +283,23 @@ measure() {
     sed -E 's/.*:"([0-9a-f]+)"/\1/' || true)
   sleep "$warmup"
 
-  sample "$out/series-$name.csv" &
-  local sampler=$!
-  local t0 adp0 sent0 cgroup0 t1 adp1 sent1 cgroup1 peak
+  if [[ "$keep_scrapes" == 1 ]]; then
+    mkdir -p "$out/scrapes-$name"
+  fi
+  sample "$out/series-$name.csv" "$out/scrapes-$name" &
+  local sampler=$! counter=""
+  if [[ "$perf" == 1 ]]; then
+    sudo -n perf stat -x, -o "$out/perf-$name.csv" -a -C "$ADP_CPUSET" --for-each-cgroup "docker/$adp_id" \
+      -e "$perf_events" -- sleep "$window" &
+    counter=$!
+  fi
+  local recorder=""
+  if [[ "$record" == 1 ]]; then
+    sudo -n perf record -q -o "$out/perf-$name.data" -a -C "$ADP_CPUSET" -e inst_retired -c 100000 \
+      --cgroup "docker/$adp_id" --call-graph dwarf,8192 -- sleep "$record_seconds" 2>/dev/null &
+    recorder=$!
+  fi
+  local t0 adp0 sent0 cgroup0 t1 adp1 sent1 cgroup1 peak counts="- - - - - -"
   t0=$(now)
   adp0=$(adp_scrape | adp_values)
   sent0=$(lading_bytes)
@@ -243,6 +311,13 @@ measure() {
   cgroup1=$(adp_cgroup)
   kill "$sampler" 2>/dev/null || true
   wait "$sampler" 2>/dev/null || true
+  if [[ -n "$recorder" ]]; then
+    wait "$recorder" || log "$name: perf record failed"
+  fi
+  if [[ -n "$counter" ]]; then
+    wait "$counter" || log "$name: perf stat failed"
+    counts=$(perf_values "$out/perf-$name.csv")
+  fi
   peak=$(cat "$adp_cgroup_dir/memory.peak" 2>/dev/null || cat "$adp_cgroup_dir/memory.current")
   "${compose[@]}" logs --no-color adp >"$out/adp-$name.log" 2>&1 || true
   "${compose[@]}" down --volumes --timeout 30 >/dev/null
@@ -251,8 +326,16 @@ measure() {
   read -r decoded1 dropped1 unresolved1 _ _ <<<"$adp1"
   read -r usage0 periods0 throttled0 throttled_usec0 _ <<<"$cgroup0"
   read -r usage1 periods1 throttled1 throttled_usec1 _ <<<"$cgroup1"
-  echo "$tier,$limit,$round,$label,$image,$git_hash,$mode,$(size_bytes "$tier_rate"),$tier_contexts,$tier_memory_bound_mib,$(python3 -I -c "print(f'{$t1 - $t0:.3f}')"),$((decoded1 - decoded0)),$((sent1 - sent0)),$((usage1 - usage0)),$((periods1 - periods0)),$((throttled1 - throttled0)),$((throttled_usec1 - throttled_usec0)),$((dropped1 - dropped0)),$((unresolved1 - unresolved0)),$peak,series-$name.csv" \
+  echo "$tier,$limit,$round,$label,$image,$git_hash,$mode,$(size_bytes "$tier_rate"),$tier_contexts,$tier_memory_bound_mib,$(python3 -I -c "print(f'{$t1 - $t0:.3f}')"),$((decoded1 - decoded0)),$((sent1 - sent0)),$((usage1 - usage0)),$((periods1 - periods0)),$((throttled1 - throttled0)),$((throttled_usec1 - throttled_usec0)),$((dropped1 - dropped0)),$((unresolved1 - unresolved0)),$peak,series-$name.csv,$slot,$reference,${counts// /,}" \
     >>"$out/runs.csv"
+}
+
+# Runs the jobs of slot $1, one after another: each job is `tier limit round label`, from $jobs_dir/slot-$1.
+run_slot() {
+  local slot=$1 tier limit round label
+  while read -r tier limit round label; do
+    measure "$tier" "$limit" "$round" "$label" "${variant_image[$label]}" "$out/env-$label.env" "$slot"
+  done <"$jobs_dir/slot-$slot"
 }
 
 main() {
@@ -266,45 +349,98 @@ main() {
 
   local host_cpus
   host_cpus=$(getconf _NPROCESSORS_ONLN)
-  if ((host_cpus < adp_cores + 4)); then
-    fail "this host has $host_cpus CPUs; ADP's $adp_cores cores, lading's 2, and the blackhole's 2 need $((adp_cores + 4))"
+  if ((host_cpus < parallel * slot_width)); then
+    fail "this host has $host_cpus CPUs; $parallel slot(s) of $slot_width cores need $((parallel * slot_width))"
+  fi
+  if [[ ("$perf" == 1 || "$record" == 1) && "$dry_run" != 1 ]]; then
+    sudo -n perf --version >/dev/null 2>&1 || fail "SCALING_PERF=1 and SCALING_RECORD=1 need perf and passwordless sudo"
   fi
 
-  local first_label=main first_image=$main_image second_label=plan second_image=$plan_image
-  if [[ "$aa" == 1 ]]; then
-    first_label=main-a
-    second_label=main-b
-    second_image=$main_image
-  fi
-  if [[ "$dry_run" != 1 ]]; then
-    for image in "$first_image" "$second_image"; do
-      docker image inspect "$image" >/dev/null 2>&1 || fail "image $image is missing; README.md says how to build both"
-    done
-  fi
-
-  if [[ "$dry_run" != 1 ]]; then
-    # Tear down whatever run was in progress if the script stops early.
-    trap '"${compose[@]}" down --volumes --timeout 10 >/dev/null 2>&1 || true' EXIT
-  fi
-  mkdir -p "$out"
-  echo "tier,limit,round,label,image,git_hash,mode,target_bytes_per_second,contexts,memory_bound_mib,seconds,decoded,lading_bytes,cpu_usec,periods,throttled,throttled_usec,agg_dropped,unresolved,memory_peak_bytes,series" \
-    >"$out/runs.csv"
-  log "writing to $out: tiers $tiers at limits $limits, $mode, $rounds round(s)"
-  local limit round
-  for tier in $tiers; do
-    set_tier "$tier"
-    for limit in $limits; do
-      for ((round = 1; round <= rounds; round++)); do
-        if ((round % 2 == 1)); then
-          measure "$limit" "$first_label" "$first_image" "$round"
-          measure "$limit" "$second_label" "$second_image" "$round"
-        else
-          measure "$limit" "$second_label" "$second_image" "$round"
-          measure "$limit" "$first_label" "$first_image" "$round"
-        fi
+  # The cells: `tier:limit` pairs, from SCALING_CELLS or every tier at every limit.
+  local cell_list=() tier limit
+  if [[ -n "$cells" ]]; then
+    read -r -a cell_list <<<"$cells"
+  else
+    for tier in $tiers; do
+      for limit in $limits; do
+        cell_list+=("$tier:$limit")
       done
     done
+  fi
+
+  # The variants: label, image, and environment, from SCALING_VARIANTS or main and plan (main against main for A/A).
+  declare -gA variant_image=()
+  local variant_list=() spec label rest image
+  if [[ -n "$variants" ]]; then
+    read -r -a variant_list <<<"$variants"
+  elif [[ "$aa" == 1 ]]; then
+    variant_list=("main-a=$main_image" "main-b=$main_image")
+  else
+    variant_list=("main=$main_image" "plan=$plan_image")
+  fi
+  ((${#variant_list[@]} >= 2)) || fail "SCALING_VARIANTS names at least two variants"
+  mkdir -p "$out"
+  local labels=()
+  for spec in "${variant_list[@]}"; do
+    label=${spec%%=*}
+    rest=${spec#*=}
+    image=${rest%%;*}
+    [[ "$label" =~ ^[a-z0-9][a-z0-9_.-]*$ ]] || fail "variant label '$label' is not lowercase letters, digits, _, ., -"
+    [[ -z "${variant_image[$label]:-}" ]] || fail "variant label '$label' is named twice"
+    variant_image[$label]=$image
+    labels+=("$label")
+    : >"$out/env-$label.env"
+    if [[ "$rest" == *";"* ]]; then
+      tr ';' '\n' <<<"${rest#*;}" | sed '/^$/d' >"$out/env-$label.env"
+    fi
+    if [[ "$dry_run" != 1 ]]; then
+      docker image inspect "$image" >/dev/null 2>&1 || fail "image $image is missing; README.md says how to build both"
+    fi
   done
+  reference=${labels[0]}
+
+  # One lading configuration per tier, rendered before any slot starts.
+  local cell
+  for cell in "${cell_list[@]}"; do
+    tier=${cell%%:*}
+    set_tier "$tier"
+    [[ -f "$out/lading-$tier.yaml" ]] || render_lading_config "$out/lading-$tier.yaml"
+  done
+
+  # The jobs: per cell and round, every variant, rotating which goes first; a cell's round stays in one slot, so its
+  # variants run back to back on the same cores.
+  jobs_dir=$(mktemp -d)
+  local group=0 round index count=${#labels[@]}
+  for cell in "${cell_list[@]}"; do
+    tier=${cell%%:*}
+    limit=${cell#*:}
+    for ((round = 1; round <= rounds; round++)); do
+      for ((index = 0; index < count; index++)); do
+        echo "$tier $limit $round ${labels[$(((index + round - 1) % count))]}" >>"$jobs_dir/slot-$((group % parallel))"
+      done
+      group=$((group + 1))
+    done
+  done
+
+  if [[ "$dry_run" != 1 ]]; then
+    # Tear down whatever runs were in progress if the script stops early.
+    trap 'for slot in $(seq 0 $((parallel - 1))); do use_slot "$slot"; "${compose[@]}" down --volumes --timeout 10 \
+      >/dev/null 2>&1 || true; done; rm -rf "$jobs_dir"' EXIT
+  fi
+  echo "tier,limit,round,label,image,git_hash,mode,target_bytes_per_second,contexts,memory_bound_mib,seconds,decoded,lading_bytes,cpu_usec,periods,throttled,throttled_usec,agg_dropped,unresolved,memory_peak_bytes,series,slot,reference,instructions,cycles,l1d_refills,l2d_refills,stall_backend,dtlb_walks" \
+    >"$out/runs.csv"
+  log "writing to $out: ${#cell_list[@]} cell(s), variants ${labels[*]}, $mode, $rounds round(s), $parallel slot(s)"
+  local slot pids=()
+  for ((slot = 0; slot < parallel; slot++)); do
+    [[ -f "$jobs_dir/slot-$slot" ]] || continue
+    run_slot "$slot" &
+    pids+=($!)
+  done
+  local status=0 pid
+  for pid in "${pids[@]}"; do
+    wait "$pid" || status=1
+  done
+  ((status == 0)) || fail "a slot failed; see the log above"
   if [[ "$dry_run" != 1 ]]; then
     python3 -I "$here/summarize_limits.py" "$out/runs.csv" | tee "$out/summary.md"
   fi

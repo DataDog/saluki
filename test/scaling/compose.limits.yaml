@@ -1,9 +1,12 @@
 # The overrides of a CPU-limit run (`run-limits.sh`), applied over `compose.yaml`: ADP runs with production defaults,
 # so it derives its worker threads and datagram decoders from the container's CPU quota as it does in production, and
 # keeps the default metrics level, aggregation context limit, and CPU-time sampling. Only the string interner follows
-# the tier, as the SMP quality-gate cases set it.
+# the tier, as the SMP quality-gate cases set it. A quick-loop variant adds its own environment (`ADP_VARIANT_ENV`,
+# written by `run-limits.sh` from SCALING_VARIANTS); it is empty for main and plan.
 services:
   adp:
+    env_file:
+      - ${ADP_VARIANT_ENV:-/dev/null}
     environment:
       SALUKI_WORKER_THREADS: !reset null
       DD_DOGSTATSD_WORKERS_COUNT: !reset null

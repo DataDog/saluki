@@ -16,10 +16,14 @@ for each CPU limit and label, the median over rounds of:
 - pool: the most datagram buffers in use at a sample;
 - memory: peak (`memory.peak`, which counts page cache) and the most anonymous memory at a sample, in MiB, against the
   SMP case's bound;
-- drops: metrics aggregation dropped and contexts the source failed to resolve, summed over rounds.
+- drops: metrics aggregation dropped and contexts the source failed to resolve, summed over rounds;
+- with `perf stat` counts (SCALING_PERF=1): instructions per decoded metric, instructions per cycle, L1D and L2
+  refills per metric, and the share of cycles stalled in the back end (the refills and stalls are scaled estimates).
 
-Then the ratios of plan to main (decoded, CPU per metric, anonymous memory), and the spread from p25 to p75 over the
-median of decoded and CPU per metric, for each label: for an A/A series (labels `main-a` and `main-b`), the noise.
+Then the ratios of each label to the reference (decoded, CPU per metric, anonymous memory, and instructions per metric
+when counted), and the spread from p25 to p75 over the median of decoded, CPU per metric, and instructions per metric,
+for each label. The reference is the `reference` column `run-limits.sh` writes (the first of SCALING_VARIANTS), or
+main for main and plan, or main-a for an A/A series, whose spreads are the noise.
 
 Standard library only: run it with `python3 -I summarize_limits.py runs.csv`.
 """
@@ -31,6 +35,7 @@ import sys
 from collections import defaultdict
 
 TIER_ORDER = ["low", "medium", "heavy", "ultraheavy"]
+PERF_HEADER = " instructions/metric | IPC | L1D / L2D refills per metric | back-end stalled share |"
 
 
 def quantile(values, at):
@@ -86,6 +91,12 @@ def main(path):
     runs = defaultdict(list)
     images = {}
     mode = "paced"
+    reference = None
+
+    def count(row, key):
+        value = row.get(key)
+        return float(value) if value not in (None, "", "-") else None
+
     with open(path, newline="") as file:
         for row in csv.DictReader(file):
             decoded = int(row["decoded"])
@@ -96,6 +107,9 @@ def main(path):
             target = int(row["target_bytes_per_second"])
             worst, peak, stalled, pool, anon = series_measures(read_series(os.path.join(directory, row["series"])), target)
             periods = int(row["periods"])
+            reference = row.get("reference") or reference
+            instructions, cycles = count(row, "instructions"), count(row, "cycles")
+            l1d, l2d, stalls = count(row, "l1d_refills"), count(row, "l2d_refills"), count(row, "stall_backend")
             runs[(row["tier"], float(row["limit"]), row["label"])].append(
                 {
                     "send": int(row["lading_bytes"]) / seconds / target,
@@ -113,6 +127,11 @@ def main(path):
                     "bound_mib": int(row["memory_bound_mib"]),
                     "agg_dropped": int(row["agg_dropped"]),
                     "unresolved": int(row["unresolved"]),
+                    "instructions_per_metric": instructions / decoded if instructions and decoded else None,
+                    "ipc": instructions / cycles if instructions and cycles else None,
+                    "l1d_per_metric": l1d / decoded if l1d is not None and decoded else None,
+                    "l2d_per_metric": l2d / decoded if l2d is not None and decoded else None,
+                    "stalled_share": stalls / cycles if stalls is not None and cycles else None,
                 }
             )
             images[row["label"]] = f"{row['image']} ({row['git_hash'] or '?'})"
@@ -128,16 +147,18 @@ def main(path):
 
     tiers = sorted({tier for tier, _, _ in runs}, key=lambda t: TIER_ORDER.index(t) if t in TIER_ORDER else 99)
     labels = sorted({label for _, _, label in runs})
+    counted = any(v["instructions_per_metric"] is not None for values in runs.values() for v in values)
     for tier in tiers:
         print(f"\n### {tier}\n")
         if mode == "saturate":
             print("| CPUs | label | sent MiB/s | decoded/s | cores (share) | CPU ns/metric | throttled | pool | "
-                  "peak / anon MiB (bound) | drops: agg, unresolved | rounds |")
-            print("|---|---|---|---|---|---|---|---|---|---|---|")
+                  "peak / anon MiB (bound) | drops: agg, unresolved | rounds |" + PERF_HEADER * counted)
+            print("|---|---|---|---|---|---|---|---|---|---|---|" + "---|" * (4 * counted))
         else:
             print("| CPUs | label | send | decoded/s | cores (share) | CPU ns/metric | throttled | worst / peak "
-                  "second (stalled s) | pool | peak / anon MiB (bound) | drops: agg, unresolved | rounds |")
-            print("|---|---|---|---|---|---|---|---|---|---|---|---|")
+                  "second (stalled s) | pool | peak / anon MiB (bound) | drops: agg, unresolved | rounds |"
+                  + PERF_HEADER * counted)
+            print("|---|---|---|---|---|---|---|---|---|---|---|---|" + "---|" * (4 * counted))
         for limit in sorted({limit for t, limit, _ in runs if t == tier}):
             for label in labels:
                 values = runs.get((tier, limit, label))
@@ -166,15 +187,23 @@ def main(path):
                     f"{sum(v['agg_dropped'] for v in values):,}, {sum(v['unresolved'] for v in values):,}",
                     str(len(values)),
                 ]
+                if counted:
+                    cells += [
+                        fmt(median(values, "instructions_per_metric"), ",.0f"),
+                        fmt(median(values, "ipc"), ".2f"),
+                        f"{fmt(median(values, 'l1d_per_metric'), '.1f')} / {fmt(median(values, 'l2d_per_metric'), '.1f')}",
+                        fmt(median(values, "stalled_share"), ".2f"),
+                    ]
                 print("| " + " | ".join(cells) + " |")
 
-    for base, other in [("main", "plan"), ("main-a", "main-b")]:
-        if base not in labels or other not in labels:
-            continue
+    if reference not in labels:
+        reference = "main" if "main" in labels else "main-a" if "main-a" in labels else labels[0]
+    for base, other in [(reference, label) for label in labels if label != reference]:
         print(f"\n### {other} against {base}\n")
         print("| tier | CPUs | decoded ratio | CPU/metric ratio | anon memory ratio | decoded spread "
-              f"({base}, {other}) | CPU/metric spread ({base}, {other}) |")
-        print("|---|---|---|---|---|---|---|")
+              f"({base}, {other}) | CPU/metric spread ({base}, {other}) |"
+              + f" instructions/metric ratio | instructions/metric spread ({base}, {other}) |" * counted)
+        print("|---|---|---|---|---|---|---|" + "---|---|" * counted)
         for tier in tiers:
             for limit in sorted({limit for t, limit, _ in runs if t == tier}):
                 a, b = runs.get((tier, limit, base)), runs.get((tier, limit, other))
@@ -191,6 +220,13 @@ def main(path):
                     f"{spread([v['cpu_ns_per_metric'] for v in a]):.3f}, "
                     f"{spread([v['cpu_ns_per_metric'] for v in b]):.3f}",
                 ]
+                ia, ib = median(a, "instructions_per_metric"), median(b, "instructions_per_metric")
+                if counted:
+                    present = lambda runs_: [v["instructions_per_metric"] for v in runs_ if v["instructions_per_metric"]]
+                    cells += [
+                        f"{ib / ia:.3f}" if ia and ib else "-",
+                        f"{spread(present(a)):.3f}, {spread(present(b)):.3f}" if present(a) and present(b) else "-",
+                    ]
                 print("| " + " | ".join(cells) + " |")
 
 

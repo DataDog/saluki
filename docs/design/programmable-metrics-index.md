@@ -69,7 +69,8 @@ started. Current state, in detail: [status: where things stand](programmable-met
 | What should we work on next? | [Next steps](programmable-metrics-next.md#the-next-chunk-of-work) |
 | What is left to build? | [Status: deferred work by stage](programmable-metrics-status.md#deferred-work-by-stage) |
 | What alternatives were rejected? | [Stage 7](programmable-metrics-stages-7-and-9.md#418-alternatives-considered), [stage 9](programmable-metrics-stages-7-and-9.md#516-alternatives-considered), and the [log](programmable-metrics-log.md) |
-| What are the performance numbers? | [Implementation risks](programmable-metrics-implementation.md#risks) (stages 3 to 6); [stage 9 measurements](programmable-metrics-stages-7-and-9.md#86-measurement-harness-and-what-is-measured-first); the [log](programmable-metrics-log.md) |
+| What are the performance numbers? | At production limits: [N1 results](programmable-metrics-next.md#n1-results) and [the first iterations](programmable-metrics-next.md#what-the-first-iterations-showed); earlier: [implementation risks](programmable-metrics-implementation.md#risks) (stages 3 to 6), [stage 9 measurements](programmable-metrics-stages-7-and-9.md#86-measurement-harness-and-what-is-measured-first), the [log](programmable-metrics-log.md) |
+| What could improve ADP independently of the plan? | [ADP efficiency findings](adp-efficiency-findings.md) |
 
 ## Key results
 
@@ -96,15 +97,19 @@ problem. The next chunk of work is to measure at the production limits, make the
 fuse maximally at small budgets, and improve efficiency per metric: see
 [deployment context and next steps](programmable-metrics-next.md).
 
-**N1 is done** ([results](programmable-metrics-next.md#n1-results)): from 0.3 to 1.2 cores the plan uses 2 to 5% less CPU
-per metric and less memory than `main`, and sustains 3.5 to 9% more at saturation; under a CPU crunch it keeps memory
-inside the SMP bounds where `main` does not; the flush stall shows in steady state on both; and at 0.05 cores with
-100,000 contexts or more, the plan freezes admission for long stretches, an open item.
+**N1 is done** ([results](programmable-metrics-next.md#n1-results)): from medium load up and from 0.3 to 1.2 cores,
+the plan uses 4 to 6% less CPU per metric and less memory than `main`, and sustains 5 to 9% more at saturation (14 to
+24% more at 0.05); under a CPU crunch it keeps memory inside the SMP bounds where `main` does not; and the flush stall
+shows in steady state on both. **The first iterations** ([results](programmable-metrics-next.md#what-the-first-iterations-showed))
+found that more than 85% of ADP's instructions are in code the plan shares with `main`, that maximal fusion saves no
+instructions, and that the plan's own runtime costs less than the Tokio overhead its fusion removes; so the plan work
+now focuses on behavior under load, starting with flush stalls (N2). Findings that could land in ADP on their own are
+in [ADP efficiency findings](adp-efficiency-findings.md).
 
 ## Main open questions
 
-- The open questions of the [next steps](programmable-metrics-next.md#open-questions): which workloads and bursts to
-  model, and what is acceptable during a CPU crunch.
+- The open questions of the [next steps](programmable-metrics-next.md#open-questions): what is acceptable during a CPU
+  crunch, which policy production configurations use, and why the parallel quick loop skews CPU time.
 - A **Linux gate host** with at least 20 homogeneous cores is needed to decide the stage 9 gate, now a lower priority
   ([Q2](programmable-metrics-stages-7-and-9.md#12-open-questions)). Lanes are on by default before that gate
   ([Q7](programmable-metrics-stages-7-and-9.md#12-open-questions)).

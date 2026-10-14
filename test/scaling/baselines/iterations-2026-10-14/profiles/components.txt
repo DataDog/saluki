@@ -1,0 +1,17 @@
+component                                           main      plan      main      plan      main      plan
+allocator (jemalloc, tracking)                      6.5%      5.7%      3.0%      3.1%      2.9%      2.8%
+hashing                                            22.0%     24.3%     28.1%     26.7%     27.2%     29.1%
+compression                                         0.0%      1.0%      0.0%      0.0%      0.3%      0.0%
+memcpy/memmove/memcmp                               0.7%      0.7%      0.4%      0.6%      0.6%      0.3%
+kernel                                             31.3%     22.4%     22.2%     22.2%     23.5%     17.0%
+context resolution / interning                      3.4%      7.3%      5.8%      6.7%      6.3%      7.4%
+DogStatsD decode                                   20.9%     20.3%     25.7%     23.5%     23.9%     24.2%
+aggregation                                         0.8%      1.8%      1.8%      2.1%      2.1%      3.0%
+plan runtime (regions, kernels, decisions)          0.0%      5.3%      0.0%      4.4%      0.0%      5.4%
+encoder                                             0.0%      0.9%      0.0%      0.0%      0.3%      0.0%
+forwarder / HTTP                                    0.0%      0.0%      0.0%      0.0%      0.0%      0.0%
+interconnect / dispatch                             2.0%      0.7%      1.6%      0.1%      2.0%      0.3%
+internal telemetry                                  0.2%      0.1%      0.1%      0.1%      0.1%      0.1%
+tokio runtime                                       8.4%      1.3%      9.0%      1.1%      8.5%      0.9%
+other                                               3.5%      8.1%      2.1%      9.3%      2.3%      9.4%
+samples                                             1222      1352      5338      5517     10045     10680

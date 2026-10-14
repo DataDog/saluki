@@ -899,7 +899,7 @@ aggregation flush is the biggest practical problem. The consequences and the nex
 On 2026-10-13 and 14, N1 of [the next steps](programmable-metrics-next.md#n1-measure-in-the-production-regime)
 measured the plan against current `main` at 0.05, 0.3, 0.6, and 1.2 CPUs. The results, the findings, and the gates
 for N2 to N4 are in [N1 results](programmable-metrics-next.md#n1-results); the per-run tables are in
-`test/scaling/baselines/n1-2026-10-13/`.
+`test/scaling/baselines/n1-2026-10-14/`.
 
 ### What was built
 
@@ -944,8 +944,79 @@ up to two cores gives two workers and two decoders, and the plan runs without la
 - **Runs take about a minute longer than their 90 seconds** of warm-up and window (start, health check, lading's block
   cache, teardown): the 192 runs took about nine hours.
 
+### The health check, and the matrix again
+
+Investigating the "freeze" showed two things. First, it was not plan-specific: rerunning the cell, `main` decoded 50
+and 191 metrics a second and the plan 315 and 156, and in one run it was `main` whose decoding stopped and whose
+aggregation never flushed; only about 18,000 contexts are active at that rate, so the aggregation drain the hypothesis
+blamed costs about 4 ms. Second, an idle ADP measured 17 to 22 millicores, but its threads used 3: the rest was
+`compose.yaml`'s health check, `test -S` run inside ADP's container every second, each check a process charged to
+ADP's quota. Every N1 run had carried about 20 millicores of it, 40% of the quota at 0.05. With checks every second only
+while starting (`start_interval`) and hourly after, idle ADP costs 2.3 to 2.8 millicores, and ADP still becomes
+healthy in two to three seconds.
+
+The fix is in `compose.yaml`, which `run-curves.sh` shares, so the stage 9 curves had carried the same overhead, a
+smaller share at their larger CPU counts. The whole matrix ran again (2026-10-14), and its results replaced the first
+run's in [N1 results](programmable-metrics-next.md#n1-results) and in `test/scaling/baselines/n1-2026-10-14/`.
+Ratios from 0.3 up barely moved; the 0.05 figures and the "fixed cost dominates at small loads" finding (34 millicores
+at the low tier, really about 15) did. With the full quota, the plan and `main` are the same within the noise at the
+0.05 collapse cells, both erratic.
+
+**Lessons.** Check what the measurement itself costs before trusting a small-quota figure: anything run inside the
+container, a health check or `docker exec`, is charged to the quota being measured. And a striking result in the noisiest
+cells needs every series behind it before it becomes a finding.
+
 ### Left open
 
-- Why the plan freezes admission at 0.05 with 100,000 contexts or more (N1 finding 5): next.
-- The fixed cost at small loads: about 34 millicores at 1,230 metrics a second on both images.
 - Absolute figures on x86.
+
+## First iterations after N1
+
+On 2026-10-14 the quick loop of [how we iterate](programmable-metrics-next.md#how-we-iterate) was built, validated
+against the N1 baseline, and used for the first hypotheses; results are in
+[what the first iterations showed](programmable-metrics-next.md#what-the-first-iterations-showed), the findings
+independent of the plan in [ADP efficiency findings](adp-efficiency-findings.md), and the tables in
+`test/scaling/baselines/iterations-2026-10-14/`.
+
+### What was built
+
+`run-limits.sh` gained named cells (`SCALING_CELLS`), variants of an image with their own environment
+(`SCALING_VARIANTS`, through an `env_file` in `compose.limits.yaml`), cells in parallel on disjoint cores
+(`SCALING_PARALLEL`), `perf stat` counts in ADP's cgroup (`SCALING_PERF`), and instruction-sampled profiles with call
+stacks (`SCALING_RECORD`); `summarize_limits.py` reports instructions, IPC, refills, and back-end stalls per metric and
+ratios against a reference variant. The agent-data-plane binary gained an experimental switch,
+`SALUKI_EXPERIMENT_FUSE_ALL=1`, which lays the frame out without R1's pipelining while lanes stay off, so that fusion
+can be measured apart from the lane runtime (`lanes.rs`; documented as an experiment, not a setting); the boot log
+now reports the pipelining the frame actually uses.
+
+### Decisions
+
+- **Instruction counts as the quick loop's measure.** This VM exposes three hardware counters: instructions and cycles
+  are pinned (exact), and L1D and L2 refills, back-end stalls, and TLB walks share the third (scaled estimates).
+- **Every arm of a hypothesis runs the same binary**, differing only in environment, so that no difference comes from
+  a rebuild's code layout.
+- **The owner's direction after the results:** record every impactful finding, but separate those that could land in
+  ADP on their own (the new document) from the plan work, and focus the plan work on behavior the plan can improve
+  structurally, starting with flush stalls (N2).
+
+### What went wrong, and what was learned
+
+- **Editing a script while it runs.** The quick-loop changes were first about to go into `run-limits.sh`,
+  `compose.limits.yaml`, and `summarize_limits.py` while the overnight baseline was executing them: bash reads a
+  script as it runs, and each of the baseline's three series started the script afresh. They were staged as `*.next`
+  files and swapped in by the chain that ran after the baseline.
+- **`pkill -f` matched its own shell.** A pattern given to `pkill -f` also appears in the command line of the shell
+  running it; a bracket (`'[b]ash target/...'`) keeps it from matching itself.
+- **The quick loop is not valid for CPU time.** Its A/A agreed within 0.3% in instructions, but against the sequential
+  baseline its CPU per metric missed by up to 4% at two cells, and its memory by up to 9% even as an A/A.
+  The cause, parallel slots or two-core CPU sets, is not yet separated.
+- **The plan's unclassified profile samples were shared code:** newline framing (`memchr`), buffer copies, and
+  `recvmsg`, not plan overhead. The plan's own runtime is 5 to 6% of instructions.
+
+### Left open
+
+- Separating the quick loop's CPU-time skew (one slot with two cores, against parallel slots).
+- A policy-heavy workload (the `mapper` and `gateways` profiles, checked against what production configurations use),
+  before H3 and H4.
+- N3's effect on stalls and CPU time, in sequential runs.
+- The independent findings G1 to G8, for whoever takes them up.

@@ -40,9 +40,13 @@ services:
     ports:
       - "127.0.0.1:${ADP_TELEMETRY_PORT:-15100}:5100"
     healthcheck:
-      # The generator connects once the socket exists.
+      # The generator connects once the socket exists. Each check runs a process inside ADP's container, charged to
+      # its CPU quota (about 20 millicores at one check a second), so checks run every second only while starting and
+      # hourly after: a check every second costs 40% of a 50-millicore quota.
       test: ["CMD", "test", "-S", "/var/run/dsd/dsd.sock"]
-      interval: 1s
+      interval: 1h
+      start_period: 120s
+      start_interval: 1s
       timeout: 1s
       retries: 60
     depends_on:

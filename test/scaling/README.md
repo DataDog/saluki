@@ -173,7 +173,17 @@ make limits-runs
 
 # The most each image sustains at each limit: lading sends as fast as it can.
 SCALING_MODE=saturate SCALING_TIERS="low heavy" make limits-runs
+
+# The quick loop: a variant against the plan on the focus cells, three cells at a time, 30-second windows, with
+# instruction and memory counts.
+SCALING_CELLS="medium:0.3 heavy:0.6 heavy:1.2 ultraheavy:1.2" SCALING_PARALLEL=3 SCALING_PERF=1 \
+  SCALING_WINDOW_SECONDS=30 SCALING_ROUNDS=2 \
+  SCALING_VARIANTS="plan=saluki-images/agent-data-plane:plan plan-cts16=saluki-images/agent-data-plane:plan;SALUKI_CPU_TIME_SAMPLING=16" \
+  make limits-runs
 ```
+
+The quick loop's shortcuts (parallel cells, shorter windows, two cores for ADP) are checked against the one-at-a-time
+runs before they are trusted: see "How we iterate" in `docs/design/programmable-metrics-next.md`.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -185,7 +195,13 @@ SCALING_MODE=saturate SCALING_TIERS="low heavy" make limits-runs
 | `SCALING_SATURATE_RATE` | `1 GiB` | lading's rate in saturate mode |
 | `SCALING_ADP_CORES` | 4 | the cores ADP's quota runs on |
 | `SCALING_ADP_SAMPLE_SECONDS` | 5 | how often a run reads ADP's telemetry for the buffers in use (each read costs ADP a little CPU) |
+| `SCALING_KEEP_SCRAPES` | 0 | 1 also keeps each of those reads whole, in `scrapes-<run>/`, for investigating a run |
 | `SCALING_AA` | 0 | 1 compares the main image against itself |
+| `SCALING_CELLS` | every tier at every limit | the cells to run, as `tier:limit` pairs, such as `"medium:0.3 heavy:1.2"` |
+| `SCALING_VARIANTS` | main and plan | the images to compare, each `label=image` with an optional environment, `label=image;KEY=VALUE;...`; the first is the reference the summary's ratios are against |
+| `SCALING_PARALLEL` | 1 | cells run at once; each slot takes `SCALING_ADP_CORES` (2 when parallel) cores for ADP, two for lading, and one for the blackhole |
+| `SCALING_PERF` | 0 | 1 counts instructions and cycles (pinned, exact) and L1D and L2 refills, back-end stalls, and TLB walks (sharing one counter, scaled estimates) in ADP's cgroup over each window; needs `perf` and `sudo -n` |
+| `SCALING_RECORD`, `SCALING_RECORD_SECONDS` | 0, 10 | 1 samples ADP's instructions with call stacks for the first seconds of each window, into `perf-<run>.data` |
 | `SCALING_MAIN_IMAGE`, `SCALING_PLAN_IMAGE` | the tags `make limits-images` creates | the images compared |
 | `SCALING_OUT` | `test/scaling/results/limits-<time>` | where `runs.csv`, each run's `series-*.csv` and ADP log, and `summary.md` go |
 | `SCALING_DRY_RUN` | 0 | 1 renders the lading configurations and prints the docker commands without running them |
