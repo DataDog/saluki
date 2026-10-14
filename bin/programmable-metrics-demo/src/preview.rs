@@ -266,7 +266,6 @@ pub fn compose_preview(
         active_plan_hash: context.active.map(|active| active.hash),
         // The previewed artifact is new: an output it records that changed refuses it.
         in_effect: false,
-        upgraded: Default::default(),
     };
     let scope = &received.artifact.scope;
     let others = context
@@ -280,7 +279,6 @@ pub fn compose_preview(
                 approved_against: None,
                 active_plan_hash: None,
                 in_effect: true,
-                upgraded: Default::default(),
             };
             (&other.artifact, approval)
         })

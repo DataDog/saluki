@@ -758,6 +758,16 @@ opaque_reference!(
     "credential reference"
 );
 
+opaque_reference!(
+    /// The name a program addresses one or more recipients by, which the host's recipient directory resolves.
+    ///
+    /// A name is an identifier the host or a declaration gives, such as `primary` or `team_d`, or an endpoint's URL,
+    /// such as `https://intake.example.com`, which names every recipient of that endpoint. Recipient identities stay
+    /// internal: names resolve to them when a program is composed.
+    RecipientName,
+    "recipient name"
+);
+
 const NATIVE_COMPONENT_ID_PATTERN: &str = "^[A-Za-z0-9](?:[A-Za-z0-9_]*[A-Za-z0-9])?$";
 
 /// The identifier of a native component, as used in node provenance.

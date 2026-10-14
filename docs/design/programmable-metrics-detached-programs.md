@@ -2,8 +2,9 @@
 
 The design that follows the owner's decision that programs replace native policy
 ([direction](programmable-metrics-next.md#direction-programs-replace-native-policy)). Its goal: simplify as much as we
-can, so that the demo and the default program read well, with less magic. Nothing here is built yet. Amendments 170 to
-182 are in [the stages 7 and 9 plan](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments).
+can, so that the demo and the default program read well, with less magic. Phase 1 (parts A, C, F, G1, and H) is built,
+not committed: see [phase 1 as built](#105-phase-1-as-built); the rest is not built yet. Amendments 170 to 182 are in
+[the stages 7 and 9 plan](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments).
 
 ## Contents
 
@@ -16,7 +17,7 @@ can, so that the demo and the default program read well, with less magic. Nothin
 - [7. Step 4: one aggregation is the aggregation](#7-step-4-one-aggregation-is-the-aggregation)
 - [8. The editor and the demo](#8-the-editor-and-the-demo)
 - [9. What this lets us remove](#9-what-this-lets-us-remove)
-- [10. Implementation plan](#10-implementation-plan)
+- [10. Implementation plan](#10-implementation-plan), and [phase 1 as built](#105-phase-1-as-built)
 - [11. Assumptions](#11-assumptions)
 - [12. Open questions for the owner](#12-open-questions-for-the-owner)
 
@@ -182,6 +183,12 @@ so the composed plan holds output IDs only, and runtime pays nothing for names.
 | The Cluster Agent (`cluster_agent_out`) | `cluster_agent` |
 | An additional endpoint's API key | derived from its URL: see below |
 | A declared recipient, in configuration ([4.2](#42-recipients-declared-in-configuration)) or a resources artifact | the name its declaration gives |
+
+> [!NOTE]
+> As built, on the owner's decision (2026-10-14): an additional endpoint is named by its URL as the forwarder resolves
+> it, with its scheme, which names every API key's recipient of that endpoint under every spelling of it, and there is
+> no derived name and no collision rule. The rest of this section's naming rule for additional endpoints is
+> superseded; see [C as built](#105-phase-1-as-built).
 
 **Additional endpoints** are named from the host of the URL: `ep_`, then the host lowercased with every character
 outside `[a-z0-9]` written as `_` (repeats collapsed), then `_<port>` for an explicit port other than the scheme's
@@ -522,7 +529,7 @@ The launcher's configuration loses `additional_endpoints` and `experimental.metr
 
 | Simplification | When | Risk |
 |---|---|---|
-| Version 1 fingerprints and legacy recipient IDs: `legacy_fingerprint`, `legacy_recipient_id`, `Approval::upgraded`, `ScopeComposition::legacy_outputs`, the version 1 path of `check_output` | Now: nothing is released, and only old demo run directories hold such artifacts | Low: an old run directory's artifact is refused with a message asking to republish. |
+| Version 1 fingerprints and legacy recipient IDs: `legacy_fingerprint`, `legacy_recipient_id`, `Approval::upgraded`, `ScopeComposition::legacy_outputs`, the version 1 path of `check_output` | Now: nothing is released, and only old demo run directories hold such artifacts | Low: an old run directory's artifact is refused as rebound ("Rebase the artifact on the current export"), or runs degraded in effect, until republished. |
 | Declared outputs in resources artifacts (`outputs`, `resources_<name>`) | After step 2 and the demo moves | Low: a resources format bump; recipient emits cover every use. |
 | `multi_region_failover.enabled` in the failover gateway | Any time | Low: one fixture hash per configuration with failover. |
 | Output fingerprints in artifacts, `ReboundOutput`, renumbering detection (`renumbered_routing_groups`, amendment 129) | Once authored emits are all addressed to recipients (after step 3) | Low: only output-addressed emits need them, and only the default program and the client telemetry tap have those. |
@@ -580,6 +587,30 @@ pub struct Demand { pub host: HostId, pub recipients: Vec<RecipientId> }   // so
 `RecipientName` is an identifier type in `ir/id.rs`. The status `program` member and the export's `form`,
 `annotations`, and `recipients` are additive in the stub protocol.
 
+As built in phase 1, `CatalogRecipient` holds `recipients: Vec<RecipientId>` rather than one `id`, since a URL names
+every key's recipient of an endpoint, and `RecipientName` is an opaque reference (printable ASCII) rather than an
+identifier, since a URL is a name. `Catalog::reserves_recipient_name` was added for the reserved names.
+`output_for`, `detached_programs`, `ExportForm`, `Demand`, and `demanded_outputs` are left to the parts that use them.
+
+**Composition pass order** (agreed for B and D). `compose_scope` (`compose.rs`) runs, per artifact:
+
+1. Inline blobs, once, into every node's parameters (phase 1 moved this ahead of ID assignment).
+2. **E (facts and signals only):** refuse a node, kept or not, that binds a `policy` binding (`policy_binding`). It
+   judges what the author wrote, so it runs before anything is resolved.
+3. Assign plan IDs (`node_ids`), with F's rule for the one aggregation.
+4. **D (resolve names):** each `emit` with `to` resolves through the directory to its recipient IDs, the set must lie on
+   one delivery host, and `Catalog::output_for` gives the output with exactly that set; the node's parameters become
+   `{"output": <id>}`, marked as addressed by name so that step 8 checks no fingerprint for it. An unknown name holds a
+   new artifact pending, and drops the emit of the artifact in effect.
+5. **B (compare values):** `same_operation` compares the default node, its bindings resolved to their values, with the
+   artifact node, and folds `flag` and `is_empty` over literals in both.
+6. Provenance: kept, modified, or added, with the feed and authority checks as today.
+7. Resolve the bindings of artifact-provenance nodes from the catalog (facts and signals only, after E).
+8. `check_output` on output-addressed emits: fingerprints, pending, rebound, and drops, as today.
+
+Then the plan is spliced and validated once. D's step 4 comes before B's step 5 so that `emit to [primary]` compares
+equal to `emit dd_metrics_encode`; both come after step 3 because comparison is keyed by plan ID.
+
 ### 10.3 Tests and exit evidence
 
 | Part | Tests | Exit |
@@ -591,7 +622,7 @@ pub struct Demand { pub host: HostId, pub recipients: Vec<RecipientId> }   // so
 | E | A bound policy setting refused, kept nodes included; facts and signals accepted; the fixtures' catalog unaffected | S5f |
 | F | A renamed aggregation retains (no cut) with equal lineage parameters and cuts with a new width; correspondence maps back; two state owners still refused | S15 |
 | G | The editor's printed program pinned as a golden, every line at most 80 characters; base restored from the export; annotations present | `make demo-programmable-metrics-check` passes both launches |
-| H | An artifact recording a version 1 fingerprint is refused with the republish message | Plan crate and ADP tests pass |
+| H | An artifact recording a version 1 fingerprint is refused as rebound, and runs degraded in effect | Plan crate and ADP tests pass |
 
 ### 10.4 Hashes and fixtures that change
 
@@ -603,6 +634,67 @@ pub struct Demand { pub host: HostId, pub recipients: Vec<RecipientId> }   // so
 - **C, D, E:** the catalog document (`recipients`, `detached_programs`) and the `emit` schema; the syntax crate's
   grammar tests; no default program changes, since lowering keeps output-addressed emits.
 - **F:** none. **G:** the demo's export fixture and the editor's golden source. **H:** tests only.
+
+### 10.5 Phase 1 as built
+
+Phase 1 built parts A, C (without C2), F, G1, and H, in the main checkout, not committed.
+
+- **A (binding classes and facts).** `BindingClass` (`validate/catalog.rs`) on `CatalogBinding.class`, written always
+  and read as `policy` when absent; `MemoryCatalog::with_classified_binding`. Every `BINDINGS` entry
+  (`bindings.rs`) has `class` and `about` (one sentence naming the native setting), listed by the test
+  `every_binding_is_a_fact_a_signal_or_a_policy_setting`. `host.tags` and `host.tags_deadline` resolve through a new
+  `Resolve::Fact` from `HostFacts`, which `Snapshots` now carries; `host_tags`'s parameters are bindable and lowering
+  binds them. `autoscaling_failover.enabled` (signal, live) sits in `af_metrics_gateway`'s predicate **after** the kind
+  test, not first, since R7's static order ranks a kind test (cost 2) before a flag (3); writing it first would make R7
+  rewrite the default program. The `cluster_agent` recipient's availability apart from the branch is a directory entry
+  only: the plan declares the recipient only while an output names it, as before, because a declared native recipient
+  runs a loop whether or not an output names it. D adds the output, and with it the recipient.
+- **C (the directory).** `NativeResources::directory` (`resources.rs`), carried by `AdpCatalog` and its document
+  (`MemoryCatalog`'s `recipients`), so the export bundle has it. Names: `primary` (the main output's primary endpoint,
+  or the metrics override), `mrf`, `cluster_agent`, each additional endpoint by its URL as the forwarder resolves and
+  sends to it (`additional_endpoint_name`, one function, over `saluki-components`'s new `resolved_endpoint`): with its
+  scheme, `https` for an endpoint configured without one, and without a root path, so the spellings of one endpoint
+  share one name and its recipients; a URL that is not plain printable ASCII, has `@`, or is too long is named
+  `sha256:` and 16 hexadecimal digits, as status spells it. A native name for an additional endpoint therefore always
+  has a scheme, never equals `primary`, `mrf`, `cluster_agent`, or a declared name (an identifier), and never spans two
+  hosts: lowering fails, as a bug, rather than merge two hosts or two sources under one name. Resources validation
+  refuses a name the catalog reserves (`primary`, `mrf`, `cluster_agent`; ADP's catalog and the demo's Resources
+  check both reserve them) or one the directory gives a recipient declared other than by a resources artifact, which
+  is the hook C2 needs whichever way the owner decides it. Readers of the export keep only the members of a directory
+  entry they know and leave out an entry from a source they do not know; the demo leaves out any entry that does not
+  read, so a newer directory costs it only comments.
+- **F (one aggregation).** `the_aggregation` and `node_ids` (`compose.rs`), as designed. Tested in
+  `install::unified_scope_tests`: renamed and unmodified composes to the default program's hash with no cut; renamed
+  and widened is a cut; without `single_aggregation`, `policy/agg`; with two, neither is mapped.
+- **G1 (annotations and the base).** The export bundle's `annotations` (`export.rs`, `Annotations { nodes, bindings }`);
+  lowering writes node notes (`lowering/mod.rs` `ANNOTATIONS`, routing filters with their endpoints), and the installer
+  adds them and each binding's class and meaning to every export. Recipient notes are not annotations: the editor
+  prints the directory itself, so nothing is said twice. The syntax crate gained `PrintOptions::elide_base` and
+  `parse_with(source, &ParseOptions { base })`. The demo's editor prints without the base, prints each node's note
+  above it and the directory above the policy `tee` (`compile.rs` `annotate`, which replaced the hard-coded section
+  comments), and parses with the export's program hash. `Parsed::base_given` says whether the base came from the
+  caller: formatting hides only such a base, and keeps one the source states. The hidden base is the program hash of
+  the export current when the source is compiled, so a source the editor printed never warns about a stale base; a
+  stale base shows only when the author writes one.
+- **Installer core fixes**, found by the reviewed property test
+  `property_test_the_high_water_mark_never_decreases_and_only_accepted_plans_run` (both before phase 1): a config held
+  unchanged beside a damaged twin of its ID in the previous snapshot is read anew, since configs are tracked by ID,
+  so the twin's refusal no longer hides it from the rule of one config per scope; and a kept (last-known-good)
+  generation that supervision fails takes its documents out of effect under every revision, as the active one's
+  failure does, so a newer revision of the same document in flight is dropped rather than installed. Each has a
+  regression test in `install/artifact_tests.rs` and a seed in the test's regressions file.
+- **H (removals).** `CatalogOutput::legacy_fingerprint`, `NativeOutput::legacy_fingerprint`, `legacy_recipient_id`,
+  `Approval::upgraded`, `ScopeComposition::legacy_outputs`, `OutputCheck::Legacy`, and the installer's `upgraded`
+  memory. Simpler than designed: there is no dedicated refusal message. An artifact recording a version 1 fingerprint
+  is an artifact whose output delivers elsewhere: a new one is refused with `ReboundOutput` ("Rebase the artifact on
+  the current export"), and one in effect runs degraded until republished.
+
+Notes for phase 2:
+
+- **D:** implied output IDs `to_<a>__<b>` are not identifiers (no double underscores), and URL names cannot be part
+  of an ID at all: derive implied output IDs from the set's digest, or from a short label. The syntax needs a quoted
+  form for URL names, as in `emit to ["http://127.0.0.1:17102"]`.
+
 
 ## 11. Assumptions
 

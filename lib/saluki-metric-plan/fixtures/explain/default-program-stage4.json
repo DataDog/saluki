@@ -2,8 +2,8 @@
   "explain_version": 1,
   "plan": {
     "ir_version": 1,
-    "hash": "sha256:5e8e6bfdd985ddf6cdc6b9b91234eed2f42fa966a18bff6cae87e1b251f52e8e",
-    "structural_hash": "sha256:37d607f2a96281a87df3c4ebe5e9e522c7446265b2fe969477305c49fd91cfd0",
+    "hash": "sha256:e2e3eaa458f596a03b74b7e1ba6428c2f93dcfb0fed38aa667f92c0e907da0fe",
+    "structural_hash": "sha256:3b9fc7b345ccdeb364ccac7cbc070c6a42f123349af1a32290b8cd45d55bb6e0",
     "valid": true
   },
   "graph": {
@@ -1089,13 +1089,33 @@
           "native": "metrics_enrich"
         },
         "params": {
-          "deadline": "1700000300s",
-          "tags": [
-            "cloud_provider:example",
-            "zone:a"
-          ]
+          "deadline": {
+            "config": "host.tags_deadline",
+            "resolved": "1700000300s"
+          },
+          "tags": {
+            "config": "host.tags",
+            "resolved": [
+              "cloud_provider:example",
+              "zone:a"
+            ]
+          }
         },
-        "bindings": [],
+        "bindings": [
+          {
+            "param": "tags",
+            "binding": "host.tags",
+            "resolved": [
+              "cloud_provider:example",
+              "zone:a"
+            ]
+          },
+          {
+            "param": "deadline",
+            "binding": "host.tags_deadline",
+            "resolved": "1700000300s"
+          }
+        ],
         "inputs": [
           {
             "name": "in",
@@ -1646,6 +1666,12 @@
                 ]
               },
               {
+                "flag": {
+                  "config": "autoscaling_failover.enabled",
+                  "resolved": true
+                }
+              },
+              {
                 "name": {
                   "matches": {
                     "prefix": false,
@@ -1663,7 +1689,12 @@
         },
         "bindings": [
           {
-            "param": "predicate.all[1].name.values",
+            "param": "predicate.all[1].flag",
+            "binding": "autoscaling_failover.enabled",
+            "resolved": true
+          },
+          {
+            "param": "predicate.all[2].name.values",
             "binding": "autoscaling_failover.metrics",
             "resolved": [
               "requests.count"
@@ -2251,7 +2282,7 @@
     {
       "limit": "predicate_leaves",
       "scope": "plan",
-      "value": 13,
+      "value": 14,
       "maximum": 1024,
       "enforced": false,
       "within": true
@@ -2322,7 +2353,7 @@
         "mrf_metrics_gateway",
         "af_metrics_gateway"
       ],
-      "justification": "The decision's predicates read only `name` and `kind`, which are context fields or the kind, and evaluating them is estimated to cost 61 ns per event, at least the 25 ns from which a lookup that hits saves several times what one that misses adds. Regions memoize the decision's exit set per context identity plus kind, in a direct-mapped memo of 4096 entries that belongs to one generation's program and evicts without allocating. Keying by the 64-bit context identity treats colliding contexts as one, as native aggregation does.",
+      "justification": "The decision's predicates read only `name` and `kind`, which are context fields or the kind, and evaluating them is estimated to cost 62 ns per event, at least the 25 ns from which a lookup that hits saves several times what one that misses adds. Regions memoize the decision's exit set per context identity plus kind, in a direct-mapped memo of 4096 entries that belongs to one generation's program and evicts without allocating. Keying by the 64-bit context identity treats colliding contexts as one, as native aggregation does.",
       "capacity_rule": false,
       "telemetry": []
     }

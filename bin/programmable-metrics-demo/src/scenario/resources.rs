@@ -774,8 +774,7 @@ mod tests {
         // A note that drops nothing, a reason about another output, and an artifact not active are not degraded by it.
         let rebase = json!({
             "state": "active",
-            "error": "the base records `dd_metrics_encode` with version 1 fingerprints, which still match; rebase to \
-                      fingerprint version 2"
+            "error": "a note about `dd_metrics_encode` that drops nothing"
         });
         assert!(!s9a(&rebase, &quiet_status));
         assert!(s9b(&rebase, &quiet_status));

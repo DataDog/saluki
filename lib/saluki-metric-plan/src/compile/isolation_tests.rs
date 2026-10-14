@@ -192,7 +192,6 @@ fn catalog() -> MemoryCatalog {
             accepts: PortType::ANY,
             fingerprint: PlanHash::of_bytes(b"out"),
             recipients: vec![RecipientId::new("out/out").unwrap()],
-            legacy_fingerprint: None,
         },
     )
 }

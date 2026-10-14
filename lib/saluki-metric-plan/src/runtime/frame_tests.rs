@@ -618,7 +618,6 @@ fn random_plan_catalog() -> MemoryCatalog {
                 accepts: PortType::ANY,
                 fingerprint: fingerprint(&output),
                 recipients: vec![RecipientId::new(format!("out/{}", output)).unwrap()],
-                legacy_fingerprint: None,
             },
         )
     })

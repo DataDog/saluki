@@ -58,7 +58,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::{Arc, Mutex, PoisonError},
+    sync::Arc,
 };
 
 use saluki_core::execution::GenerationId;
@@ -73,7 +73,7 @@ use crate::{
         ActiveArtifact, ApplyState, ApplyStates, ArtifactConfig, ArtifactConfigId, ArtifactProduct, ArtifactSnapshot,
         ConfigAcknowledgment, Envelope, ScopeStatus, StatusSummary, POLICY_SCOPE,
     },
-    compose::{receive_artifact, Approval, ComposeError, Composed, Composer, ScopeComposition},
+    compose::{receive_artifact, Approval, ComposeError, Composed, Composer},
     install::lifecycle::{GenerationState, LifecycleEvent},
     ir::{OutputId, ReceivedArtifact, ScopeName},
 };
@@ -141,12 +141,6 @@ struct Accepted {
 
     /// The number of revocations before it was accepted: the next one of its scope revokes it.
     epoch: u64,
-
-    /// The outputs its base records with a version 1 fingerprint that one of its compositions accepted, each with the
-    /// version 2 fingerprint the output had then ([`ScopeComposition::legacy_outputs`]): from then on the recorded
-    /// fingerprint stands for that one, so that a version 1 base follows version 2 once it composed. An entry never
-    /// changes once set, and the memory goes with the artifact.
-    upgraded: Mutex<BTreeMap<OutputId, PlanHash>>,
 }
 
 impl Accepted {
@@ -158,17 +152,6 @@ impl Accepted {
             approved_against: self.approved_against,
             active_plan_hash: self.composed_against,
             in_effect,
-            upgraded: self.upgraded.lock().unwrap_or_else(PoisonError::into_inner).clone(),
-        }
-    }
-
-    /// Keeps the version 1 outputs a composition of it accepted, for its later compositions.
-    fn upgrade(&self, composition: &ScopeComposition) {
-        if !composition.legacy_outputs.is_empty() {
-            let mut upgraded = self.upgraded.lock().unwrap_or_else(PoisonError::into_inner);
-            for (output, fingerprint) in &composition.legacy_outputs {
-                upgraded.entry(output.clone()).or_insert(*fingerprint);
-            }
         }
     }
 
@@ -745,10 +728,19 @@ impl InstallerCore {
             .filter(|(_, tracked)| tracked.reread)
             .map(|(id, _)| id.clone())
             .collect::<BTreeSet<_>>();
+        // Configs are tracked by ID, so when the previous snapshot held several configs under one ID, what is tracked
+        // for it is the last of them read, which may not be the config held unchanged: such a config is read anew, so
+        // that its scope counts, and a damaged twin cannot hide it from the rule of one config per scope.
+        let mut seen = BTreeSet::new();
+        let shared_ids = previous
+            .iter()
+            .filter(|config| !seen.insert(&config.id))
+            .map(|config| config.id.clone())
+            .collect::<BTreeSet<_>>();
         for config in configs {
             // A config held unchanged keeps its acknowledgment, unless it was rejected for what the other configs of
-            // its snapshot held: then it is handled anew.
-            if previous.contains(config) && !reread.contains(&config.id) {
+            // its snapshot held, or shared its ID with another: then it is handled anew.
+            if previous.contains(config) && !reread.contains(&config.id) && !shared_ids.contains(&config.id) {
                 match self
                     .artifacts
                     .configs
@@ -1233,7 +1225,6 @@ impl InstallerCore {
             approved_against,
             composed_against,
             epoch: self.artifacts.revocations,
-            upgraded: Mutex::default(),
         });
         Some(Acceptance {
             config: config.into(),
@@ -1271,8 +1262,6 @@ impl InstallerCore {
             approved_against,
             composed_against,
             epoch: self.artifacts.revocations,
-            // The same document: what its compositions accepted holds for it.
-            upgraded: Mutex::new(policy.upgraded.lock().unwrap_or_else(PoisonError::into_inner).clone()),
         });
         let stale_review = approved_against.is_some_and(|approved| composed_against != Some(approved));
         for source in self.artifacts.sources.values_mut() {
@@ -1558,10 +1547,11 @@ impl InstallerCore {
         self.drop_waiting(Some(&BTreeSet::from([scope.clone()])), &message);
     }
 
-    /// Takes the artifacts of a failing active generation out of effect, before the failure is handled: their
+    /// Takes the artifacts of a failing active or kept generation out of effect, before the failure is handled: their
     /// compositions in flight, under any revision that approved the same documents, are dropped rather than prepared
     /// again against the generation rolled back to, and no other generation serves them any more. A delivery after the
-    /// failure is accepted anew.
+    /// failure is accepted anew. The failure is the documents' whichever generation runs or keeps them: a kept
+    /// generation that fails takes them out of effect as the active one does, though nothing rolls back.
     ///
     /// A cut in flight that serves one of them is dropped as a preparation is: aborted if it is not armed yet, and, if
     /// it is armed, rejected rather than prepared again once the cancellation the failure asks for succeeds. One that
@@ -1569,17 +1559,17 @@ impl InstallerCore {
     ///
     /// A generation composing several artifacts fails as a whole: each of its artifacts is taken out of effect.
     pub(super) fn withdraw_failing(&mut self, generation: GenerationId, reason: &str, actions: &mut Vec<Action>) {
-        let Some(active) = self
-            .active
-            .as_ref()
-            .filter(|active| active.generation.id() == generation && active.origin.can_roll_back())
+        let Some(installed) = [self.active.as_ref(), self.last_known_good.as_ref()]
+            .into_iter()
+            .flatten()
+            .find(|installed| installed.generation.id() == generation && installed.origin.can_roll_back())
         else {
             return;
         };
         if self.has_failed(generation) {
             return;
         }
-        let failing = active.candidate;
+        let failing = installed.candidate;
         let Some(artifacts) = self
             .artifacts
             .sources
@@ -2252,8 +2242,6 @@ fn with_accepted(base: &Policy, acceptances: &[Acceptance]) -> Policy {
 
 /// Composes a policy through the host's composer, every artifact with its own approval: an artifact of the policy in
 /// effect, `in_effect`, composes as the one in effect for its scope, any other as a new one.
-///
-/// Every artifact a successful composition accepted version 1 fingerprints for keeps them for its later compositions.
 fn compose_policy(composer: &dyn Composer, policy: &Policy, in_effect: &Policy) -> Result<Composed, ComposeError> {
     let approvals = policy
         .iter()
@@ -2269,13 +2257,7 @@ fn compose_policy(composer: &dyn Composer, policy: &Policy, in_effect: &Policy) 
         .zip(&approvals)
         .map(|(artifact, approval)| (&artifact.artifact, approval))
         .collect::<Vec<_>>();
-    let composed = composer.compose_all(&artifacts)?;
-    for (scope, artifact) in policy {
-        if let Some(composition) = composed.scopes.get(scope) {
-            artifact.upgrade(composition);
-        }
-    }
-    Ok(composed)
+    composer.compose_all(&artifacts)
 }
 
 /// Returns the bases of a host that reports only the policy scope's.

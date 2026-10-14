@@ -150,7 +150,7 @@ use saluki_metric_plan::{
     compile::{compile, compile_unvalidated, place_unvalidated, Frame, LeaseTable, RegionProgram, SlotId},
     compose::{compose_all, Approval, ComposeError, Composed, Composer},
     explain::Explain,
-    export::{base, export, ExportBundle},
+    export::{base, export, Annotations, ExportBundle},
     install::{
         Action, ArmCut, Candidate, CandidateId, CreditKey, CutDeferReason, CutPhase, GenerationState, InstallerConfig,
         InstallerCore, InstallerStatus, LeaseRef, Origin, Outcome, PendingReason, Prepare, PrepareOutcome, PrepareSite,
@@ -185,6 +185,7 @@ use self::{
     status::{RecipientEntry, ResourcesView, RetiredRecipients},
 };
 use super::{
+    bindings,
     catalog::AdpCatalog,
     credentials::{missing_credentials, AdpCredentialSource},
     host_facts::HostFacts,
@@ -463,7 +464,7 @@ impl ProgrammableMetrics {
         telemetry.rewrites(core.active_rewrites());
 
         let labels = output_labels(&lowered.resources.outputs);
-        let default_program = DefaultProgramView::of(&plan, lowered.catalog, &labels);
+        let default_program = DefaultProgramView::of(&plan, lowered.catalog, &labels, &lowered.annotations);
         let outputs = lowering.outputs().clone();
         let credentials = Arc::new(AdpCredentialSource::new(config.clone()));
         let hosts_at_boot = *lowering.hosts();
@@ -1063,15 +1064,21 @@ struct DefaultProgramView {
 }
 
 impl DefaultProgramView {
-    /// Derives the view of a default program lowered with `catalog`, with output display labels `labels`.
-    fn of(plan: &Plan, catalog: AdpCatalog, labels: &BTreeMap<OutputId, String>) -> Self {
+    /// Derives the view of a default program lowered with `catalog`, with output display labels `labels` and the notes
+    /// lowering wrote for its nodes, `annotations`.
+    fn of(
+        plan: &Plan, catalog: AdpCatalog, labels: &BTreeMap<OutputId, String>, annotations: &BTreeMap<NodeId, String>,
+    ) -> Self {
         let document = catalog.to_document();
         let exports = plan
             .scopes
             .keys()
             .map(|scope| {
                 let bundle = export(plan, scope, &document, labels)
-                    .map(Arc::new)
+                    .map(|mut bundle| {
+                        bundle.annotations = export_annotations(&bundle, annotations);
+                        Arc::new(bundle)
+                    })
                     .map_err(|error| error.to_string());
                 (scope.clone(), bundle)
             })
@@ -1097,6 +1104,26 @@ impl DefaultProgramView {
             bases,
         }
     }
+}
+
+/// Returns the notes an export bundle carries: lowering's note of each exported node, by its local ID, and what each
+/// binding of the catalog is, with its class.
+pub(super) fn export_annotations(bundle: &ExportBundle, nodes: &BTreeMap<NodeId, String>) -> Annotations {
+    let nodes = bundle
+        .artifact
+        .nodes
+        .iter()
+        .filter_map(|node| {
+            let note = nodes.get(&NodeId::reserved(node.id.to_local_id()))?;
+            Some((node.id.clone(), note.clone()))
+        })
+        .collect();
+    let bindings = bundle
+        .catalog
+        .bindings()
+        .filter_map(|(name, _)| Some((name.clone(), bindings::annotation(name)?)))
+        .collect();
+    Annotations { nodes, bindings }
 }
 
 /// Returns the display label of every output, by output ID, as exports carry them.
@@ -1641,7 +1668,7 @@ impl Installer {
         let labels = output_labels(&lowered.resources.outputs);
         if *plan != *self.last_lowered || lowered.catalog != self.default_program.catalog || labels != self.labels {
             self.labels = labels;
-            self.default_program = DefaultProgramView::of(&plan, lowered.catalog, &self.labels);
+            self.default_program = DefaultProgramView::of(&plan, lowered.catalog, &self.labels, &lowered.annotations);
         }
         self.last_lowered = Arc::clone(&plan);
         for (output, was, is) in lowered

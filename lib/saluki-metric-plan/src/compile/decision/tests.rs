@@ -565,7 +565,6 @@ fn compiled(plan: &Plan) -> Result<crate::compile::CompiledPlan, CompileError> {
             accepts: PortType::ANY,
             fingerprint: format!("sha256:{}", "7".repeat(64)).parse().unwrap(),
             recipients: Vec::new(),
-            legacy_fingerprint: None,
         },
     );
     let report = Validator::new(&registry, &catalog).validate(plan);

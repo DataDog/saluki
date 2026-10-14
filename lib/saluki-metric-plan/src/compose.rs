@@ -27,12 +27,6 @@
 //! again after the default program changed ([`Approval::in_effect`]):
 //!
 //! - **Declared with the recorded fingerprint:** it composes.
-//! - **The recorded fingerprint is the output's version 1 fingerprint** ([`CatalogOutput::legacy_fingerprint`]): it
-//!   composes as before fingerprints changed version, noted as needing a rebase. Composition reports the output's
-//!   version 2 fingerprint then ([`ScopeComposition::legacy_outputs`]); given back for the artifact's later
-//!   compositions ([`Approval::upgraded`]), it is what the recorded fingerprint stands for from then on, so that a
-//!   version 1 base follows version 2: a dual-ship endpoint added under the main output's role, which changes the
-//!   output's version 1 fingerprint but not its version 2 one, leaves the artifact composing.
 //! - **Declared with another fingerprint**, or, for a routing group, whose output IDs are positional, another routing
 //!   group's output carries the recorded one (the groups were renumbered): a new artifact is refused
 //!   ([`ComposeError::ReboundOutput`]); the artifact in effect composes with every `emit` to the output a counted drop
@@ -50,7 +44,9 @@
 //! ID and becomes a `drop` with the artifact's provenance, so its loss is the artifact's policy loss at that node. When
 //! the output returns with the recorded fingerprint, the next composition restores the `emit`.
 //!
-//! [`CatalogOutput::legacy_fingerprint`]: crate::validate::CatalogOutput::legacy_fingerprint
+//! An artifact that records an output's fingerprint as an earlier fingerprint version computed it, such as one kept in
+//! an old run directory, is an artifact whose output now delivers elsewhere: a new one is refused, asking for a rebase,
+//! and one in effect runs degraded until it is republished.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -70,7 +66,7 @@ use crate::{
         PortRef, Provenance, ReceivedArtifact, ScopeDecl, ScopeName, Selector, BLOB_MEMBER,
     },
     limits::values::{ARTIFACT_NODES, ARTIFACT_SIZE, BLOB_SIZE, PREDICATE_LEAVES},
-    operators::{names, OperatorRegistry},
+    operators::{names, OperatorRegistry, StateContract},
     validate::{predicate_leaves, Catalog, ValidationReport, Validator},
 };
 
@@ -336,16 +332,6 @@ pub struct Approval {
     /// replaced by a counted drop, and runs degraded; a new artifact is refused instead, pending while its output is
     /// not declared (see [Outputs that change under an artifact](self#outputs-that-change-under-an-artifact)).
     pub in_effect: bool,
-
-    /// The version 2 fingerprint of each output whose version 1 fingerprint, as the artifact's base records it, an
-    /// earlier composition of the artifact composed ([`ScopeComposition::legacy_outputs`]): what the installer keeps
-    /// for the artifact, from every composition of it. Empty for an artifact not composed before.
-    ///
-    /// From then on, the recorded version 1 fingerprint stands for the kept version 2 one: the output composes, still
-    /// noted for a rebase, while it carries that fingerprint, and changed when it does not, whatever its version 1
-    /// fingerprint is now. A version 1 fingerprint covers an output's resolved recipients, so without this, a dual-ship
-    /// endpoint added under the main output's role would read as the output now delivering elsewhere.
-    pub upgraded: BTreeMap<OutputId, PlanHash>,
 }
 
 /// Artifacts composed into the default program, one per scope.
@@ -389,36 +375,18 @@ pub struct ScopeComposition {
 
     /// Whether the artifact's `emit`s were composed as written, or, for the artifact in effect, some were dropped.
     pub outcome: ComposeOutcome,
-
-    /// The outputs the artifact's base records with their version 1 fingerprint, which still matches, each with its
-    /// version 2 fingerprint at this composition: the artifact composes as it did before fingerprints changed version,
-    /// and should be rebased on the current export.
-    ///
-    /// The installer keeps these for the artifact and gives them back to its later compositions as
-    /// [`Approval::upgraded`], so that the recorded fingerprints follow version 2 from then on.
-    pub legacy_outputs: BTreeMap<OutputId, PlanHash>,
 }
 
 impl ScopeComposition {
     /// Returns what the artifact's acknowledgment says about its composition beside its state, in plain text: why it
-    /// runs degraded, and which outputs it should be rebased for, or `None` if there is nothing to say.
+    /// runs degraded, or `None` if there is nothing to say.
     pub fn notes(&self) -> Option<String> {
-        let mut notes = Vec::new();
-        if let ComposeOutcome::Degraded(dropped) = &self.outcome {
-            notes.extend(dropped.iter().map(ToString::to_string));
+        match &self.outcome {
+            ComposeOutcome::Degraded(dropped) => {
+                Some(dropped.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "))
+            }
+            ComposeOutcome::Composed => None,
         }
-        if !self.legacy_outputs.is_empty() {
-            let outputs = self
-                .legacy_outputs
-                .keys()
-                .map(|output| format!("`{}`", output))
-                .collect::<Vec<_>>();
-            notes.push(format!(
-                "the base records {} with version 1 fingerprints, which still match; rebase to fingerprint version 2",
-                outputs.join(", ")
-            ));
-        }
-        (!notes.is_empty()).then(|| notes.join("; "))
     }
 }
 
@@ -527,15 +495,17 @@ pub fn compose(
 ///   authorizes the loss it expresses on the records it expresses it on. Otherwise the node's provenance is the
 ///   artifact's revision. Every other artifact node is placed as `policy/<local>` with the artifact's provenance. A
 ///   local ID equal to a reserved ID outside the scope is rejected.
+/// - Where the catalog runs at most one aggregation per program ([`Catalog::single_aggregation`]), an artifact's one
+///   state owner takes the reserved ID of the region's one state owner, whatever the artifact calls it, unless another
+///   artifact node has that ID: one aggregation is the aggregation. It is then composed as any node with that ID is.
 /// - Blob references are replaced with their content, and the configuration bindings of artifact-provenance nodes
 ///   resolve from `catalog`. A binding the catalog does not declare is left unresolved, for validation to report; one
 ///   it declares without a value is rejected.
 /// - Every output an `emit` of an artifact delivers to must be recorded in the artifact's base, and declared by the
-///   catalog with the fingerprint the base records, or with the version 1 fingerprint the base records (or, once the
-///   artifact composed so, with the version 2 fingerprint it had then, [`Approval::upgraded`]). One that is
-///   not declared, or declared with another fingerprint, refuses a new artifact (pending, or rebound), and turns the
-///   `emit`s of the artifact in effect into counted drops ([`ComposeOutcome::Degraded`]); see [Outputs that change
-///   under an artifact](self#outputs-that-change-under-an-artifact).
+///   catalog with the fingerprint the base records. One that is not declared, or declared with another fingerprint,
+///   refuses a new artifact (pending, or rebound), and turns the `emit`s of the artifact in effect into counted drops
+///   ([`ComposeOutcome::Degraded`]); see [Outputs that change under an
+///   artifact](self#outputs-that-change-under-an-artifact).
 /// - State owners, such as `aggregate`, compose like any node: placement decides whether the frame can run them where
 ///   the artifact puts them, and validation rejects host components in artifacts.
 /// - The composed plan's provenance lists every artifact's revision, in scope order, and its nodes and edges are in the
@@ -663,7 +633,21 @@ fn compose_scope(
         hash: received.hash,
     };
 
-    let ids = node_ids(default_plan, artifact, &region)?;
+    // Every artifact node's parameters with blobs inlined, in artifact order.
+    let inlined = artifact
+        .nodes
+        .iter()
+        .map(|node| {
+            inline_blobs(&node.params, &artifact.blobs).map_err(|error| ComposeError::Malformed {
+                message: format!("node `{}`: {}", node.id, error),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let aggregation = catalog
+        .single_aggregation()
+        .then(|| the_aggregation(default_plan, artifact, &inlined, &region, catalog, registry))
+        .flatten();
+    let ids = node_ids(default_plan, artifact, &region, aggregation)?;
     let edges = artifact
         .edges
         .iter()
@@ -686,11 +670,8 @@ fn compose_scope(
     // Each artifact node with its plan ID, its parameters with blobs inlined, and the default program's node it does
     // the operation of, if any.
     let mut placed = Vec::with_capacity(artifact.nodes.len());
-    for node in &artifact.nodes {
+    for (node, params) in artifact.nodes.iter().zip(inlined) {
         let id = &ids[&node.id];
-        let params = inline_blobs(&node.params, &artifact.blobs).map_err(|error| ComposeError::Malformed {
-            message: format!("node `{}`: {}", node.id, error),
-        })?;
         let same = region_nodes
             .get(id)
             .copied()
@@ -744,20 +725,9 @@ fn compose_scope(
             }
         };
         let (composed, kind) = if composed.op.as_str() == names::EMIT {
-            let checked = check_output(
-                &node.id,
-                &composed.params,
-                &artifact.base,
-                &approval.upgraded,
-                default_plan,
-                catalog,
-            );
+            let checked = check_output(&node.id, &composed.params, &artifact.base, default_plan, catalog);
             match checked {
                 OutputCheck::Fine => (composed, kind),
-                OutputCheck::Legacy { output, fingerprint } => {
-                    outputs.legacy.insert(output, fingerprint);
-                    (composed, kind)
-                }
                 OutputCheck::Changed { output, reason } if approval.in_effect => {
                     // The artifact in effect keeps running, but nothing it emits reaches an output that was removed
                     // or now delivers elsewhere: the `emit` becomes a counted drop of the artifact's, under its ID.
@@ -831,7 +801,6 @@ fn compose_scope(
             stale_base,
             stale_review,
             outcome,
-            legacy_outputs: outputs.legacy,
         },
     })
 }
@@ -839,9 +808,6 @@ fn compose_scope(
 /// What composing one artifact's `emit`s found about the outputs they deliver to.
 #[derive(Default)]
 struct EmittedOutputs {
-    /// The outputs whose recorded fingerprint is their version 1 one, each with its version 2 fingerprint now.
-    legacy: BTreeMap<OutputId, PlanHash>,
-
     /// The outputs whose `emit`s were dropped, with why and the nodes, for the artifact in effect.
     dropped: BTreeMap<OutputId, (DropReason, Vec<NodeId>)>,
 
@@ -849,19 +815,65 @@ struct EmittedOutputs {
     pending: Option<OutputId>,
 }
 
+/// Returns the artifact's one state owner and the reserved ID it takes, for a host that runs at most one aggregation
+/// per program: when the artifact has exactly one state owner, the scope's region has exactly one, and no artifact node
+/// has that one's local ID, the artifact's state owner is the region's, whatever it is called.
+///
+/// So a program's one aggregation keeps the default program's ID (`dsd_agg`, say), and with it its lineage, its
+/// isolation slot's series, and its telemetry, when an author renames it or writes the program from scratch. Whether
+/// its state is kept is then decided as for any node with that ID: by its operation and its lineage parameters.
+///
+/// A node whose operator does not configure, with its bindings resolved from the catalog, is not counted: validation
+/// reports it.
+fn the_aggregation<'a>(
+    default_plan: &Plan, artifact: &'a PolicyArtifact, inlined: &[Params], region: &ScopeRegion, catalog: &dyn Catalog,
+    registry: &OperatorRegistry,
+) -> Option<(&'a ArtifactNodeId, NodeId)> {
+    let owns_state = |op: &OperatorName, params: &Params| {
+        registry
+            .configure(op.as_str(), params)
+            .is_ok_and(|configured| matches!(configured.contract().state, StateContract::Keyed(_)))
+    };
+    let region_owners = default_plan
+        .nodes
+        .iter()
+        .filter(|node| region.members.contains(&node.id) && owns_state(&node.op, &node.params))
+        .collect::<Vec<_>>();
+    let artifact_owners = artifact
+        .nodes
+        .iter()
+        .zip(inlined)
+        .filter(|(node, params)| {
+            resolve_bindings((*params).clone(), catalog, &node.id).is_ok_and(|params| owns_state(&node.op, &params))
+        })
+        .collect::<Vec<_>>();
+    let ([region_owner], [(artifact_owner, _)]) = (&region_owners[..], &artifact_owners[..]) else {
+        return None;
+    };
+    let taken = artifact
+        .nodes
+        .iter()
+        .any(|node| node.id.as_str() == region_owner.id.local().as_str());
+    (!taken).then(|| (&artifact_owner.id, region_owner.id.clone()))
+}
+
 /// Assigns every artifact node its plan ID: the reserved ID of a region node with the same local ID, or its local ID
-/// in the policy namespace.
+/// in the policy namespace. `aggregation`, if given, is the artifact's one state owner and the reserved ID it takes
+/// instead ([`the_aggregation`]).
 ///
 /// # Errors
 ///
 /// Returns an error if two artifact nodes have the same ID, or one has the ID of a reserved node outside the region.
 fn node_ids<'a>(
     default_plan: &Plan, artifact: &'a PolicyArtifact, region: &ScopeRegion,
+    aggregation: Option<(&'a ArtifactNodeId, NodeId)>,
 ) -> Result<BTreeMap<&'a ArtifactNodeId, NodeId>, ComposeError> {
     let mut ids = BTreeMap::new();
     for node in &artifact.nodes {
         let reserved = NodeId::reserved(node.id.to_local_id());
-        let id = if region.members.contains(&reserved) {
+        let id = if let Some((_, id)) = aggregation.as_ref().filter(|(owner, _)| **owner == node.id) {
+            id.clone()
+        } else if region.members.contains(&reserved) {
             reserved
         } else if default_plan.node(&reserved).is_some() {
             return Err(ComposeError::ReservedOutsideScope {
@@ -1171,16 +1183,6 @@ enum OutputCheck {
     /// validation reports.
     Fine,
 
-    /// The base records the output's version 1 fingerprint, which matches: the output's version 1 fingerprint now, or
-    /// the version 2 one an earlier composition kept.
-    Legacy {
-        /// The output.
-        output: OutputId,
-
-        /// Its version 2 fingerprint now.
-        fingerprint: PlanHash,
-    },
-
     /// The output the base records was removed, or now delivers elsewhere.
     Changed {
         /// The output.
@@ -1199,14 +1201,10 @@ enum OutputCheck {
 /// An output the base does not record is refused: as unrecorded if the catalog declares it or it is named as a
 /// resources artifact names its outputs, and as undeclared otherwise, listing the outputs the default program declares,
 /// which the artifact can emit to. A recorded output is fine when the catalog declares it with the recorded
-/// fingerprint. It composes as before the upgrade when the recorded one is its version 1 fingerprint, or, once an
-/// earlier composition kept its version 2 fingerprint (`upgraded`), when it carries that one, whatever its version 1
-/// fingerprint is now. Otherwise it changed: rebound when the catalog declares it with another fingerprint, or when
-/// another routing group's output carries the fingerprint the base stands for (it is named then), and removed
-/// otherwise.
+/// fingerprint. Otherwise it changed: rebound when the catalog declares it with another fingerprint, or when another
+/// routing group's output carries the recorded fingerprint (it is named then), and removed otherwise.
 fn check_output(
-    node: &ArtifactNodeId, params: &Params, base: &ArtifactBase, upgraded: &BTreeMap<OutputId, PlanHash>,
-    default_plan: &Plan, catalog: &dyn Catalog,
+    node: &ArtifactNodeId, params: &Params, base: &ArtifactBase, default_plan: &Plan, catalog: &dyn Catalog,
 ) -> OutputCheck {
     let Some(output) = emitted_output(params) else {
         return OutputCheck::Fine;
@@ -1230,26 +1228,11 @@ fn check_output(
             output,
         });
     };
-    // A recorded version 1 fingerprint that an earlier composition matched stands for the version 2 fingerprint the
-    // output had then: the base follows version 2 from then on.
-    let kept = upgraded.get(&output);
     let declared = catalog.output(&output);
-    if let Some(declared) = declared {
-        if declared.fingerprint == *recorded {
-            return OutputCheck::Fine;
-        }
-        let legacy = match kept {
-            Some(kept) => declared.fingerprint == *kept,
-            None => declared.legacy_fingerprint == Some(*recorded),
-        };
-        if legacy {
-            return OutputCheck::Legacy {
-                output,
-                fingerprint: declared.fingerprint,
-            };
-        }
+    if declared.is_some_and(|declared| declared.fingerprint == *recorded) {
+        return OutputCheck::Fine;
     }
-    // After routing groups are renumbered, another group's output carries the fingerprint the base stands for: the
+    // After routing groups are renumbered, another group's output carries the fingerprint the base records: the
     // recorded output now delivers elsewhere, or is gone, and the artifact is to be rebased rather than wait for it.
     // Only routing groups have positional IDs: a declared output's fingerprint covers its recipients, not its name, so
     // two declared outputs with the same recipients carry one fingerprint, and neither was renumbered.
@@ -1264,10 +1247,9 @@ fn check_output(
                 .is_some_and(|binding| matches!(binding.selector, Selector::Group(_)))
         })
         .find(|other| {
-            catalog.output(&other.id).is_some_and(|declared| match kept {
-                Some(kept) => declared.fingerprint == *kept,
-                None => declared.fingerprint == *recorded || declared.legacy_fingerprint == Some(*recorded),
-            })
+            catalog
+                .output(&other.id)
+                .is_some_and(|declared| declared.fingerprint == *recorded)
         })
         .map(|other| other.id.clone());
     let reason = match (declared, renumbered) {

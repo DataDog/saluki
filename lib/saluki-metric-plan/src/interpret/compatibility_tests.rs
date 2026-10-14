@@ -188,7 +188,6 @@ fn catalog() -> MemoryCatalog {
             accepts: PortType::ANY,
             fingerprint: fingerprint(),
             recipients: vec![recipient()],
-            legacy_fingerprint: None,
         },
     )
 }

@@ -10,7 +10,7 @@ use crate::{
     canonical::PlanHash,
     ir::{
         BindingName, ExitName, HostId, InputName, OutputDecl, OutputId, ParamSpec, ParamType, RecipientDecl,
-        RecipientId, ScopeName, ValueType,
+        RecipientId, RecipientName, ScopeName, ValueType,
     },
     model::PortType,
     predicate::BindingResolver,
@@ -30,15 +30,41 @@ pub struct CatalogOutput {
     /// The output's physical recipients.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recipients: Vec<RecipientId>,
+}
 
-    /// The output's fingerprint as version 1 computed it from the current configuration, for a native output that
-    /// existed before fingerprint version 2.
-    ///
-    /// An artifact whose base records this digest composes as it did before the upgrade, noted as needing a rebase, so
-    /// that a working policy does not stop applying when fingerprints change version. `None` for an output that never
-    /// had a version 1 fingerprint, such as a declared one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub legacy_fingerprint: Option<PlanHash>,
+/// Where an entry of the host's recipient directory comes from.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecipientSource {
+    /// The host's native configuration: its endpoints, named by the host.
+    Native,
+
+    /// Recipients the operator declares in the host's configuration, apart from its native endpoints.
+    Config,
+
+    /// A resources artifact.
+    Resources,
+}
+
+/// An entry of the host's recipient directory: what a recipient name a program addresses resolves to.
+///
+/// The directory is how programs name destinations: by a name the host or a declaration gives, never by a recipient's
+/// identity, which stays internal to the host (its queues, slots, and leases keep it). It never holds a credential.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogRecipient {
+    /// The identities of the recipients the name stands for, sorted: one for most names, and every API key's recipient
+    /// for a name that is an endpoint's URL.
+    pub recipients: Vec<RecipientId>,
+
+    /// The delivery host the recipients belong to.
+    pub host: HostId,
+
+    /// The endpoint, as the host's status spells it: never with credentials.
+    pub endpoint: String,
+
+    /// Where the entry comes from.
+    pub source: RecipientSource,
 }
 
 /// Whether a configuration binding's value can change while the process runs.
@@ -52,6 +78,36 @@ pub enum Liveness {
     Startup,
 }
 
+/// What a binding's value is to a program: something true of the host, a state the program reacts to, or a choice of
+/// what to do with metrics.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BindingClass {
+    /// Something true of the host or its resources that a program does not choose, such as the host's tags.
+    Fact,
+
+    /// A live operational state a program reacts to, such as whether a failover is in progress.
+    Signal,
+
+    /// What to do with metrics, such as a filter list or an aggregation's window: a program that replaces the host's
+    /// default program owns it, and writes it as a literal.
+    ///
+    /// The default, for a catalog document that does not say.
+    #[default]
+    Policy,
+}
+
+impl BindingClass {
+    /// Returns the class's name, as catalog documents write it.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fact => "fact",
+            Self::Signal => "signal",
+            Self::Policy => "policy",
+        }
+    }
+}
+
 /// A configuration binding the host declares.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -62,6 +118,11 @@ pub struct CatalogBinding {
 
     /// Whether the value can change while the process runs.
     pub liveness: Liveness,
+
+    /// What the value is to a program: a fact, a signal, or a policy setting. A document that leaves it out declares a
+    /// policy setting.
+    #[serde(default)]
+    pub class: BindingClass,
 
     /// The binding's current value, written as a parameter of its type is, if the catalog carries it.
     ///
@@ -137,6 +198,23 @@ pub trait Catalog {
         false
     }
 
+    /// Returns the recipient directory's entry for `name`, if the host's directory has it.
+    ///
+    /// The default has no directory.
+    fn recipient(&self, name: &RecipientName) -> Option<&CatalogRecipient> {
+        let _ = name;
+        None
+    }
+
+    /// Returns `true` if the host reserves the recipient name `name` for the recipients it names itself, whether or not
+    /// its directory has it now, so that no declaration may use it.
+    ///
+    /// The default reserves none.
+    fn reserves_recipient_name(&self, name: &RecipientName) -> bool {
+        let _ = name;
+        false
+    }
+
     /// Returns the schema of the given delivery host's parameters, if the host declares it.
     ///
     /// Output bindings, host settings, and recipients name a delivery host; validation checks that their parameters
@@ -186,14 +264,16 @@ impl BindingResolver for dyn Catalog + '_ {
 
 /// A catalog held in memory, which is also the catalog's document form.
 ///
-/// Serialized as an object with four members, each of which may be left out when empty: `outputs`, from output ID to
-/// the output's `accepts`, `fingerprint`, `recipients`, and optional `legacy_fingerprint`; `bindings`, from binding
-/// name to the binding's `type` (a [`ValueType`]), `liveness` (`live` or `startup`), and optional `value`; `scopes`,
-/// from scope name to the scope's `inputs` and `exits`, each a map from name to port type; and `state_budget`, the
-/// host's state budget; and `single_aggregation`, `true` when the host runs at most one aggregation per program. A scope
-/// without exits is written as the map of its inputs alone, as documents written before
-/// scopes had exits are, and either form is read. A host exports its catalog in this form, so that plans can be
-/// validated and previewed away from it. It declares no delivery host: an export leaves host settings out.
+/// Serialized as an object with these members, each of which may be left out when empty: `outputs`, from output ID to
+/// the output's `accepts`, `fingerprint`, and `recipients`; `bindings`, from binding name to the binding's `type` (a
+/// [`ValueType`]), `liveness` (`live` or `startup`), `class` (`fact`, `signal`, or `policy`, which is what a binding
+/// without one is), and optional `value`; `scopes`, from scope name to the scope's `inputs` and `exits`, each a map
+/// from name to port type; `recipients`, the host's recipient directory, from recipient name to the entry's
+/// `recipients`, `host`, `endpoint`, and `source`; `state_budget`, the host's state budget; and `single_aggregation`,
+/// `true` when the host runs at most one aggregation per program. A scope without exits is written as the map of its
+/// inputs alone, as documents written before scopes had exits are, and either form is read. A host exports its catalog
+/// in this form, so that plans can be validated and previewed away from it. It declares no delivery host: an export
+/// leaves host settings out.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MemoryCatalog {
@@ -215,6 +295,9 @@ pub struct MemoryCatalog {
 
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     single_aggregation: bool,
+
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    recipients: BTreeMap<RecipientName, CatalogRecipient>,
 }
 
 /// What a catalog declares about one scope: the port types of its inputs and of its exits.
@@ -305,13 +388,21 @@ impl MemoryCatalog {
         self
     }
 
-    /// Declares a configuration binding, without its value.
+    /// Declares a policy setting's configuration binding, without its value.
     pub fn with_binding(self, name: BindingName, ty: ParamType, liveness: Liveness) -> Self {
+        self.with_classified_binding(name, ty, liveness, BindingClass::Policy)
+    }
+
+    /// Declares a configuration binding of the given class, without its value.
+    pub fn with_classified_binding(
+        self, name: BindingName, ty: ParamType, liveness: Liveness, class: BindingClass,
+    ) -> Self {
         self.with_catalog_binding(
             name,
             CatalogBinding {
                 ty: ValueType::from(&ty),
                 liveness,
+                class,
                 value: None,
             },
         )
@@ -346,6 +437,22 @@ impl MemoryCatalog {
         self.single_aggregation = true;
         self
     }
+
+    /// Returns every configuration binding the catalog declares, by name, in name order.
+    pub fn bindings(&self) -> impl Iterator<Item = (&BindingName, &CatalogBinding)> {
+        self.bindings.iter()
+    }
+
+    /// Returns every entry of the recipient directory, by name, in name order.
+    pub fn recipients(&self) -> impl Iterator<Item = (&RecipientName, &CatalogRecipient)> {
+        self.recipients.iter()
+    }
+
+    /// Declares an entry of the recipient directory.
+    pub fn with_recipient(mut self, name: RecipientName, recipient: CatalogRecipient) -> Self {
+        self.recipients.insert(name, recipient);
+        self
+    }
 }
 
 impl Catalog for MemoryCatalog {
@@ -372,6 +479,10 @@ impl Catalog for MemoryCatalog {
     fn single_aggregation(&self) -> bool {
         self.single_aggregation
     }
+
+    fn recipient(&self, name: &RecipientName) -> Option<&CatalogRecipient> {
+        self.recipients.get(name)
+    }
 }
 
 #[cfg(test)]
@@ -387,9 +498,16 @@ mod tests {
                                      "fingerprint": format!("sha256:{}", "0".repeat(64))}},
             "bindings": {
                 "test.names": {"type": {"type": "list", "element": {"type": "string"}}, "liveness": "live",
-                               "value": ["a.b", "c.d"]},
-                "test.flag": {"type": {"type": "bool"}, "liveness": "startup", "value": true},
-                "test.unknown": {"type": {"type": "bool"}, "liveness": "live"}
+                               "class": "policy", "value": ["a.b", "c.d"]},
+                "test.flag": {"type": {"type": "bool"}, "liveness": "startup", "class": "signal", "value": true},
+                "test.unknown": {"type": {"type": "bool"}, "liveness": "live", "class": "fact"}
+            },
+            "recipients": {
+                "primary": {"recipients": ["out/primary/0/https://a.example.com"], "host": "out",
+                            "endpoint": "https://a.example.com", "source": "native"},
+                "https://b.example.com": {"recipients": ["out/additional/0/https://b.example.com",
+                                                         "out/additional/1/https://b.example.com"],
+                                          "host": "out", "endpoint": "https://b.example.com", "source": "native"}
             },
             "scopes": {"post_enrich": {"metrics": {"kinds": ["gauge"], "timestamps": "untimestamped"}}}
         })
@@ -415,6 +533,27 @@ mod tests {
             .unwrap()
             .recipients
             .is_empty());
+        assert_eq!(names.class, BindingClass::Policy);
+        assert_eq!(
+            catalog.binding(&"test.flag".parse().unwrap()).unwrap().class,
+            BindingClass::Signal
+        );
+        // The directory names one recipient, and every key of an endpoint by its URL.
+        let endpoint = catalog.recipient(&"https://b.example.com".parse().unwrap()).unwrap();
+        assert_eq!(
+            (endpoint.recipients.len(), endpoint.source),
+            (2, RecipientSource::Native)
+        );
+        assert!(catalog.recipient(&"mrf".parse().unwrap()).is_none());
+
+        // A binding without a class is a policy setting's, as documents written before classes say.
+        let mut older = document();
+        older["bindings"]["test.flag"].as_object_mut().unwrap().remove("class");
+        let read: MemoryCatalog = serde_json::from_value(older).unwrap();
+        assert_eq!(
+            read.binding(&"test.flag".parse().unwrap()).unwrap().class,
+            BindingClass::Policy
+        );
 
         // Every member is checked.
         let mut unknown = document();

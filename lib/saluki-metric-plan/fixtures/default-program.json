@@ -71,7 +71,8 @@
     {"id": "metrics_enrich_in", "op": "merge", "params": {"inputs": 5}, "provenance": {"native": "metrics_enrich"}},
     {"id": "metrics_enrich", "op": "host_enrichment", "provenance": {"native": "metrics_enrich"}},
     {"id": "metrics_enrich_host_tags", "op": "host_tags", "params": {
-       "tags": ["cloud_provider:example", "zone:a"], "deadline": "1700000300s"},
+       "tags": {"config": "host.tags", "resolved": ["cloud_provider:example", "zone:a"]},
+       "deadline": {"config": "host.tags_deadline", "resolved": "1700000300s"}},
      "provenance": {"native": "metrics_enrich"}},
     {"id": "metrics_policy", "op": "tee", "params": {"ports": 5}, "provenance": {"native": "metrics_enrich"}},
     {"id": "metrics_policy_0", "op": "emit", "params": {"output": "dd_metrics_encode"},
@@ -116,6 +117,7 @@
     {"id": "mrf_metrics_gateway_false", "op": "drop", "provenance": {"native": "mrf_metrics_gateway"}},
     {"id": "af_metrics_gateway", "op": "split", "params": {"predicate": {"all": [
        {"kind_in": ["counter", "rate", "gauge", "set"]},
+       {"flag": {"config": "autoscaling_failover.enabled", "resolved": true}},
        {"name": {"matches": {
          "values": {"config": "autoscaling_failover.metrics", "resolved": ["requests.count"]},
          "prefix": false}}}

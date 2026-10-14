@@ -51,7 +51,6 @@ fn test_catalog() -> MemoryCatalog {
                 accepts: serde_json::from_value(accepts).unwrap(),
                 fingerprint: fingerprint(id),
                 recipients: recipients.into_iter().map(|r| RecipientId::new(r).unwrap()).collect(),
-                legacy_fingerprint: None,
             },
         );
     }

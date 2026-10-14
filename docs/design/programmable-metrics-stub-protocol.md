@@ -61,7 +61,7 @@ Request body:
   waits for (an output its base records that the host does not declare yet, or a credential that is not configured);
   on an `active` state, it is what composition said beside the state, or `null`: the reasons the artifact runs
   degraded, each naming an output and saying that its emits are dropped (the output was removed, or now delivers
-  elsewhere), and notes such as the advice to rebase an artifact whose base records version 1 fingerprints.
+  elsewhere). Readers treat any other text there as a note that drops nothing.
 - `prepared` also means a cut installation waiting for its cut: an artifact that changes a state owner's time
   contract (such as an aggregation's window), or adds or removes one, installs at a bucket boundary rather than at once.
   While the cut is armed, `cut_at` is the admission time it takes effect at, in whole milliseconds since the Unix epoch;
@@ -194,14 +194,26 @@ Export bundle:
   "scope": "metrics",
   "artifact": { "...": "PolicyArtifact of the default program's scope, bindings unresolved, base filled in" },
   "ir_versions": { "current": 1, "accepted": [1, 1] },
-  "catalog": { "...": "the serialized plan-crate Catalog: scope inputs with port types, outputs with accepts, fingerprint, recipients; bindings with type, liveness, current value" },
-  "labels": { "<output id>": "<display label>" }
+  "catalog": { "...": "the serialized plan-crate Catalog: scope inputs with port types, outputs with accepts, fingerprint, recipients; bindings with type, liveness, class, current value; the recipient directory" },
+  "labels": { "<output id>": "<display label>" },
+  "annotations": { "nodes": { "<node id>": "<note>" }, "bindings": { "<binding>": "<class>: <what it is>" } }
 }
 ```
 
 - `catalog` is exactly the plan crate's `MemoryCatalog` document, so the plan crate reads it back. `labels` (optional,
   left out when there are none): display labels by output ID. Readers also accept a `label` member on a catalog
   output, for an output `labels` does not label; ADP does not write it.
+- Each catalog binding has a `class`: `fact` (of the host, such as `host.tags`), `signal` (a state a program reacts to,
+  such as `multi_region_failover.metric_mirroring.enabled`), or `policy` (a native policy setting); a document without
+  one declares `policy`. The catalog's `recipients` member is the recipient directory: each name a program may address
+  (`primary`, `mrf`, `cluster_agent`, each additional endpoint's URL as the forwarder resolves it, with its scheme, or
+  `sha256:` and 16 hexadecimal digits of its digest for a URL status does not spell out, and a resources artifact's
+  names),
+  with the recipient identities it stands for, its delivery host, its endpoint as status spells it, and its `source`
+  (`native`, `config`, or `resources`). It never holds a credential. Readers ignore members of an entry they do not
+  know, and leave out an entry from a source they do not know.
+- `annotations` (optional, additive): ADP's notes for tools, one line per exported node and per binding, which an
+  editor prints as comments. They are not part of the artifact. Readers ignore members they do not know.
 - The `metrics` scope has one input per metrics source the configuration enables, each named after its source's binding
   and carrying what the source produces (`dogstatsd`, `otlp`, `checks`, `liveness`, `trace_sampler`), and no exits: its
   artifact covers every node after the sources, aggregation included. The catalog document's `single_aggregation:
@@ -274,7 +286,7 @@ The resources view, `GET /programmable-metrics/resources`:
   "outputs": [
     {
       "id": "resources_team_d", "label": "Team D", "host": "dd_out",
-      "fingerprint": "sha256:<hex>", "legacy_fingerprint": null,
+      "fingerprint": "sha256:<hex>",
       "recipients": ["dd_out/declared/team_d/http://127.0.0.1:17105"],
       "provenance": { "declared": { "revision": 2, "hash": "sha256:<hex>" } }
     }

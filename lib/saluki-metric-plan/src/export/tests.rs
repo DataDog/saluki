@@ -195,14 +195,7 @@ fn a_bound_default_programs_export_records_version_2_fingerprints_and_lists_decl
     let plan = Plan::from_value(with_two_scopes(crate::testing::with_resources(DEFAULT_PROGRAM_JSON))).unwrap();
     let main = "dd_metrics_encode".parse::<OutputId>().unwrap();
     let team_d = "resources_team_d".parse::<OutputId>().unwrap();
-    // The host's catalog: the main output's version 1 fingerprint too, as the host computes it from its configuration.
-    let legacy = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
-        .parse::<PlanHash>()
-        .unwrap();
     let catalog = two_scopes_of(crate::testing::default_program_resources_catalog());
-    let mut declared = Catalog::output(&catalog, &main).unwrap().clone();
-    declared.legacy_fingerprint = Some(legacy);
-    let catalog = catalog.with_output(main.clone(), declared);
     let labels = BTreeMap::from([(team_d.clone(), "Team D".to_string())]);
     let bundle = export(&plan, &post_enrich(), &catalog, &labels).unwrap();
 
@@ -233,10 +226,6 @@ fn a_bound_default_programs_export_records_version_2_fingerprints_and_lists_decl
         })
     );
     assert_eq!(written["labels"]["resources_team_d"], json!("Team D"));
-    assert_eq!(
-        written["catalog"]["outputs"]["dd_metrics_encode"]["legacy_fingerprint"],
-        json!(legacy)
-    );
     // Host settings and recipients' declarations, credential references included, stay on the host: the catalog names
     // recipients by identity only.
     let text = written.to_string();
@@ -249,13 +238,60 @@ fn a_bound_default_programs_export_records_version_2_fingerprints_and_lists_decl
         assert!(!text.contains(private), "the export carries `{}`", private);
     }
 
-    // A reader keeps what the writer writes, the version 1 fingerprint included.
+    // A reader keeps what the writer writes.
     let read = serde_json::from_value::<ExportBundle>(written).unwrap();
     assert_eq!(read, bundle);
-    assert_eq!(
-        Catalog::output(&read.catalog, &main).unwrap().legacy_fingerprint,
-        Some(legacy)
+}
+
+#[test]
+fn annotations_and_the_recipient_directory_travel_with_the_bundle_and_change_nothing_in_the_artifact() {
+    let plan = default_program();
+    let recipient = crate::validate::CatalogRecipient {
+        recipients: vec!["dd_out/primary/0/https://primary.example.com".parse().unwrap()],
+        host: "dd_out".parse().unwrap(),
+        endpoint: "https://primary.example.com".to_string(),
+        source: crate::validate::RecipientSource::Native,
+    };
+    let catalog = two_scope_catalog().with_recipient("primary".parse().unwrap(), recipient.clone());
+    let plain = export(&plan, &post_enrich(), &catalog, &BTreeMap::new()).unwrap();
+    assert!(plain.annotations.is_empty());
+    assert!(serde_json::to_value(&plain).unwrap().get("annotations").is_none());
+
+    let mut bundle = plain.clone();
+    bundle.annotations.nodes.insert(
+        "metrics_policy".parse().unwrap(),
+        "Policy: one branch per destination".to_string(),
     );
+    bundle
+        .annotations
+        .bindings
+        .insert("host.tags".parse().unwrap(), "The host's tags".to_string());
+    let written = serde_json::to_value(&bundle).unwrap();
+    assert_eq!(
+        written["annotations"],
+        json!({"nodes": {"metrics_policy": "Policy: one branch per destination"},
+               "bindings": {"host.tags": "The host's tags"}})
+    );
+    assert_eq!(
+        written["catalog"]["recipients"]["primary"],
+        json!({"recipients": ["dd_out/primary/0/https://primary.example.com"], "host": "dd_out",
+               "endpoint": "https://primary.example.com", "source": "native"})
+    );
+    // Readers keep both, and ignore what they do not know in annotations and in directory entries; an entry from a
+    // source they do not know is left out.
+    let mut extended = written.clone();
+    extended["annotations"]["outputs"] = json!({"dd_metrics_encode": "the main output"});
+    extended["catalog"]["recipients"]["primary"]["label"] = json!("Primary");
+    extended["catalog"]["recipients"]["https://later.example.com"] = json!({"recipients": ["dd_out/x"],
+        "host": "dd_out", "endpoint": "https://later.example.com", "source": "fleet"});
+    let read = serde_json::from_value::<ExportBundle>(extended).unwrap();
+    assert_eq!(read, bundle);
+    assert_eq!(
+        Catalog::recipient(&read.catalog, &"primary".parse().unwrap()),
+        Some(&recipient)
+    );
+    // The artifact, and so its base, is the same with or without notes.
+    assert_eq!(read.artifact, plain.artifact);
 }
 
 #[test]
@@ -364,7 +400,7 @@ fn the_base_program_hash_covers_the_scopes_structure_and_outputs_but_not_its_val
     assert_eq!(base(&plan, &scope).unwrap(), expected);
     assert_eq!(
         expected.program_hash.to_string(),
-        "sha256:d5cc6b1329e0e0e43503b783a1d4889aa489e04e0867a612fdbc95d0001004c6"
+        "sha256:8b26675fd175dfa56ac0386830efa732d3a030ac745d7d909f95f74e09553327"
     );
 
     let index = |plan: &Plan, id: &str| plan.nodes.iter().position(|node| node.id.to_string() == id).unwrap();
@@ -379,6 +415,7 @@ fn the_base_program_hash_covers_the_scopes_structure_and_outputs_but_not_its_val
     // A new resolved value of a binding inside the scope: the same base.
     let resolved = with(|plan, inside, _| {
         let predicate = json!({"all": [{"kind_in": ["counter", "rate", "gauge", "set"]},
+            {"flag": {"config": "autoscaling_failover.enabled", "resolved": false}},
             {"name": {"matches": {"values": {"config": "autoscaling_failover.metrics", "resolved": ["other"]},
                                   "prefix": false}}}]});
         plan.nodes[inside]

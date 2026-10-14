@@ -66,6 +66,7 @@ fn bundle() -> ExportBundle {
             "dd_metrics_encode".parse::<OutputId>().unwrap(),
             "Main metrics output".to_string(),
         )]),
+        annotations: Default::default(),
     }
 }
 

@@ -16,11 +16,13 @@
 //!   program's order;
 //! - `ir_versions`: the IR version written, and the range of IR versions accepted;
 //! - `catalog`: the host's [`MemoryCatalog`] document: scope inputs with their port types, outputs with what they
-//!   accept, their fingerprints, their recipients, and, for a native output that had one, its version 1 fingerprint,
-//!   and bindings with their types, liveness, and current values. Outputs a resources artifact declares are listed
-//!   like native ones; delivery hosts and their settings are not;
+//!   accept, their fingerprints, and their recipients, and bindings with their types, liveness, and current values.
+//!   Outputs a resources artifact declares are listed like native ones; delivery hosts and their settings are not;
 //! - `labels`: display labels of outputs, by output ID, such as those a resources artifact gives its outputs, left
-//!   out when there are none.
+//!   out when there are none;
+//! - `annotations`: notes for tools, left out when there are none: one line per node of the exported artifact and per
+//!   binding, saying what it is and where it comes from, which a tool shows beside the program
+//!   ([`Annotations`]). They are not part of the artifact.
 //!
 //! Readers ignore members they do not know.
 //!
@@ -49,8 +51,9 @@ use snafu::Snafu;
 use crate::{
     canonical::{strip_resolved_values, CanonicalError, PlanHash},
     ir::{
-        ArtifactBase, ArtifactEdge, ArtifactNode, ArtifactNodeId, ArtifactPortRef, Blobs, ExitName, InputName, NodeId,
-        OutputId, Params, Plan, PolicyArtifact, PortRef, ScopeName, ACCEPTED_IR_VERSIONS, IR_VERSION,
+        ArtifactBase, ArtifactEdge, ArtifactNode, ArtifactNodeId, ArtifactPortRef, BindingName, Blobs, ExitName,
+        InputName, NodeId, OutputId, Params, Plan, PolicyArtifact, PortRef, ScopeName, ACCEPTED_IR_VERSIONS,
+        IR_VERSION,
     },
     operators::names,
     validate::MemoryCatalog,
@@ -106,6 +109,34 @@ pub struct ExportBundle {
     /// Display labels of outputs, by output ID.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub labels: BTreeMap<OutputId, String>,
+
+    /// Notes for tools about the exported program's nodes and the catalog's bindings.
+    #[serde(default, skip_serializing_if = "Annotations::is_empty")]
+    pub annotations: Annotations,
+}
+
+/// Notes for tools about an exported program: what each of its nodes and each binding is, and where it comes from, in
+/// one line each, such as "Metric filterlist, from `metric_filterlist`".
+///
+/// The host writes them, since it knows what its default program stands for; an editor prints a node's note as a
+/// comment above the node. They are not part of the artifact, so they change neither its hash nor its base. Readers
+/// ignore members they do not know.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Annotations {
+    /// A note for each of the exported artifact's nodes that has one, by its local ID.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub nodes: BTreeMap<ArtifactNodeId, String>,
+
+    /// A note for each of the catalog's bindings that has one, by name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bindings: BTreeMap<BindingName, String>,
+}
+
+impl Annotations {
+    /// Returns `true` if there are no notes.
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty() && self.bindings.is_empty()
+    }
 }
 
 /// An export bundle as read, before its catalog's unknown members are left out.
@@ -118,16 +149,31 @@ struct BundleDocument {
     catalog: Value,
     #[serde(default)]
     labels: BTreeMap<OutputId, String>,
+    #[serde(default)]
+    annotations: Annotations,
 }
 
 /// The members of a catalog document that [`MemoryCatalog`] reads.
-const CATALOG_MEMBERS: &[&str] = &["outputs", "bindings", "scopes", "state_budget", "single_aggregation"];
+const CATALOG_MEMBERS: &[&str] = &[
+    "outputs",
+    "bindings",
+    "scopes",
+    "state_budget",
+    "single_aggregation",
+    "recipients",
+];
 
 /// The members of a catalog output that [`MemoryCatalog`] reads.
-const CATALOG_OUTPUT_MEMBERS: &[&str] = &["accepts", "fingerprint", "recipients", "legacy_fingerprint"];
+const CATALOG_OUTPUT_MEMBERS: &[&str] = &["accepts", "fingerprint", "recipients"];
+
+/// The members of an entry of a catalog's recipient directory that [`MemoryCatalog`] reads.
+const CATALOG_RECIPIENT_MEMBERS: &[&str] = &["recipients", "host", "endpoint", "source"];
+
+/// The sources of directory entries this version knows: an entry from another source is left out.
+const RECIPIENT_SOURCES: &[&str] = &["native", "config", "resources"];
 
 /// The members of a catalog binding that [`MemoryCatalog`] reads.
-const CATALOG_BINDING_MEMBERS: &[&str] = &["type", "liveness", "value"];
+const CATALOG_BINDING_MEMBERS: &[&str] = &["type", "liveness", "class", "value"];
 
 /// The member of a catalog output that carries its display label, in bundles that place labels there.
 const LABEL_MEMBER: &str = "label";
@@ -143,6 +189,7 @@ impl TryFrom<BundleDocument> for ExportBundle {
             ir_versions,
             catalog,
             mut labels,
+            annotations,
         } = document;
         let artifact = PolicyArtifact::from_value(artifact).map_err(|error| error.to_string())?;
         let catalog = known_catalog_members(catalog, &mut labels);
@@ -154,12 +201,14 @@ impl TryFrom<BundleDocument> for ExportBundle {
             ir_versions,
             catalog,
             labels,
+            annotations,
         })
     }
 }
 
 /// Returns a catalog document with only the members [`MemoryCatalog`] reads, adding the label of every output that
-/// carries one to `labels`, unless `labels` already has one for it.
+/// carries one to `labels`, unless `labels` already has one for it. A directory entry from a source this version does
+/// not know is left out.
 ///
 /// A member of a known kind that is not an object is kept as it is, for the catalog's reader to refuse.
 fn known_catalog_members(catalog: Value, labels: &mut BTreeMap<OutputId, String>) -> Value {
@@ -192,6 +241,17 @@ fn known_catalog_members(catalog: Value, labels: &mut BTreeMap<OutputId, String>
             *binding = keep(binding.take(), CATALOG_BINDING_MEMBERS);
         }
     }
+    if let Some(Value::Object(recipients)) = catalog.get_mut("recipients") {
+        recipients.retain(|_, entry| {
+            entry
+                .get("source")
+                .and_then(Value::as_str)
+                .is_some_and(|source| RECIPIENT_SOURCES.contains(&source))
+        });
+        for entry in recipients.values_mut() {
+            *entry = keep(entry.take(), CATALOG_RECIPIENT_MEMBERS);
+        }
+    }
     Value::Object(catalog)
 }
 
@@ -199,7 +259,8 @@ fn known_catalog_members(catalog: Value, labels: &mut BTreeMap<OutputId, String>
 ///
 /// `plan` is the default program as lowered, with its bindings resolved; the export strips the resolved values and the
 /// nodes' provenance, and writes reserved node IDs as the artifact's local IDs, so that composing the unmodified
-/// export back reproduces the default program. The catalog and labels are carried as given.
+/// export back reproduces the default program. The catalog and labels are carried as given; the bundle has no
+/// annotations, which the host adds if it has any ([`ExportBundle::annotations`]).
 ///
 /// # Errors
 ///
@@ -225,6 +286,7 @@ pub fn export(
         ir_versions: IrVersions::supported(),
         catalog: catalog.clone(),
         labels: labels.clone(),
+        annotations: Annotations::default(),
     })
 }
 

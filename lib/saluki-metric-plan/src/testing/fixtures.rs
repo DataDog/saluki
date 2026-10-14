@@ -11,7 +11,7 @@ use crate::{
     },
     model::{Kind, KindSet, PortType, TimestampForm},
     operators::SourceBinding,
-    validate::{CatalogOutput, Liveness, MemoryCatalog},
+    validate::{BindingClass, CatalogOutput, Liveness, MemoryCatalog},
 };
 
 /// The default program with every optional branch wired (host tags, two endpoint routing groups, multi-region
@@ -82,7 +82,6 @@ pub fn default_program_resources_catalog() -> MemoryCatalog {
                 accepts: output.accepts,
                 fingerprint: output.fingerprint,
                 recipients: output.recipients,
-                legacy_fingerprint: None,
             },
         )
     })
@@ -440,6 +439,9 @@ fn catalog_without_scopes() -> MemoryCatalog {
             Liveness::Live,
         ),
         ("autoscaling_failover.metrics", STRINGS, Liveness::Live),
+        ("autoscaling_failover.enabled", ParamType::Bool, Liveness::Live),
+        ("host.tags", STRINGS, Liveness::Startup),
+        ("host.tags_deadline", ParamType::Duration, Liveness::Startup),
     ];
 
     let mut catalog = MemoryCatalog::new();
@@ -450,12 +452,18 @@ fn catalog_without_scopes() -> MemoryCatalog {
                 accepts,
                 fingerprint: hash(digit),
                 recipients: recipients.iter().map(|r| RecipientId::new(*r).unwrap()).collect(),
-                legacy_fingerprint: None,
             },
         );
     }
     for (name, ty, liveness) in bindings {
-        catalog = catalog.with_binding(BindingName::new(name).unwrap(), ty, liveness);
+        // As the host classifies them: the host's tags and whether failover is configured are facts, and the two
+        // failover switches signals; everything else is policy.
+        let class = match name {
+            "host.tags" | "host.tags_deadline" | "multi_region_failover.enabled" => BindingClass::Fact,
+            "multi_region_failover.metric_mirroring.enabled" | "autoscaling_failover.enabled" => BindingClass::Signal,
+            _ => BindingClass::Policy,
+        };
+        catalog = catalog.with_classified_binding(BindingName::new(name).unwrap(), ty, liveness, class);
     }
     catalog
 }

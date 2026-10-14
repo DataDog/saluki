@@ -251,7 +251,6 @@ fn candidate(plan: Plan, origin: Origin) -> Candidate {
                 accepts: output.accepts,
                 fingerprint: output.fingerprint,
                 recipients: output.recipients.clone(),
-                legacy_fingerprint: None,
             },
         );
     }

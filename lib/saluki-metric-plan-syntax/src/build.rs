@@ -50,11 +50,16 @@ enum PendingTarget {
 ///
 /// # Errors
 ///
-/// Returns every problem found: a missing `base`, a node defined twice, an edge from or to a node that is not
-/// defined, a port the node's operator does not have, an edge line without a port on a node that has several, and an
-/// inline terminal whose derived ID is already taken. If there are none, returns an error if the artifact's JSON is
+/// A policy without a `base` statement records `default_base`, if given.
+///
+/// Returns every problem found: a missing `base` without a default, a node defined twice, an edge from or to a node
+/// that is not defined, a port the node's operator does not have, an edge line without a port on a node that has
+/// several, and an inline terminal whose derived ID is already taken. If there are none, returns an error if the
+/// artifact's JSON is
 /// longer than the artifact size limit.
-pub(crate) fn build(source: &str, policy: Policy) -> Result<(PolicyArtifact, SpanMap), Vec<Error>> {
+pub(crate) fn build(
+    source: &str, policy: Policy, default_base: Option<&ArtifactBase>,
+) -> Result<(PolicyArtifact, SpanMap), Vec<Error>> {
     let mut builder = Builder {
         lines: LineIndex::new(source),
         source,
@@ -63,12 +68,19 @@ pub(crate) fn build(source: &str, policy: Policy) -> Result<(PolicyArtifact, Spa
         errors: Vec::new(),
     };
 
-    let Some(base) = policy.base else {
-        return Err(vec![Error::new(
-            policy.close,
-            "Expected `base \"<program hash>\"` in the policy: an artifact records the hash of the program it was \
-             written against.",
-        )]);
+    let base = match (policy.base, default_base) {
+        (Some(base), _) => ArtifactBase {
+            program_hash: base.program_hash,
+            outputs: base.outputs,
+        },
+        (None, Some(base)) => base.clone(),
+        (None, None) => {
+            return Err(vec![Error::new(
+                policy.close,
+                "Expected `base \"<program hash>\"` in the policy: an artifact records the hash of the program it was \
+                 written against.",
+            )])
+        }
     };
 
     // Every defined node is known before any inline terminal is named, so a terminal whose derived ID a node defined
@@ -207,10 +219,7 @@ pub(crate) fn build(source: &str, policy: Policy) -> Result<(PolicyArtifact, Spa
     let artifact = PolicyArtifact {
         ir_version: policy.ir_version.unwrap_or(IR_VERSION),
         scope: policy.scope,
-        base: ArtifactBase {
-            program_hash: base.program_hash,
-            outputs: base.outputs,
-        },
+        base,
         nodes: order.nodes.iter().map(|&index| nodes[index].clone()).collect(),
         edges: order.edges.iter().map(|&index| artifact_edges[index].clone()).collect(),
         blobs,

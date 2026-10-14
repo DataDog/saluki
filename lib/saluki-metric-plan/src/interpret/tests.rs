@@ -65,7 +65,6 @@ fn test_catalog() -> MemoryCatalog {
                 accepts: PortType::ANY,
                 fingerprint: fingerprint(output),
                 recipients: vec![RecipientId::new(format!("out/{}", output)).unwrap()],
-                legacy_fingerprint: None,
             },
         );
     }
@@ -741,6 +740,7 @@ fn split_predicates_use_the_plans_resolved_values() {
         crate::validate::CatalogBinding {
             ty: crate::ir::ValueType::from(crate::ir::ParamType::List(&crate::ir::ParamType::String)),
             liveness: crate::validate::Liveness::Live,
+            class: crate::validate::BindingClass::Policy,
             value: Some(json!(["y"])),
         },
     );

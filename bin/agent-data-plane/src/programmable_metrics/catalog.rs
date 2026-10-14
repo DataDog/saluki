@@ -4,17 +4,17 @@ use std::collections::BTreeMap;
 
 use saluki_components::forwarders::delivery::RecipientProtocol;
 use saluki_metric_plan::{
-    ir::{BindingName, HostId, InputName, OutputDecl, OutputId, RecipientDecl, ScopeName, ValueType},
+    ir::{BindingName, HostId, InputName, OutputDecl, OutputId, RecipientDecl, RecipientName, ScopeName, ValueType},
     model::{Kind, PortType},
     operators::SourceBinding,
-    validate::{Catalog, CatalogBinding, CatalogOutput, HostSchema, Liveness, MemoryCatalog},
+    validate::{Catalog, CatalogBinding, CatalogOutput, CatalogRecipient, HostSchema, Liveness, MemoryCatalog},
 };
 
 use super::{
     bindings::{Snapshots, BINDINGS},
     resources::{
         params::{decode_encoder, decode_protocol, host_schema},
-        FixedHosts, NativeOutputs,
+        Directory, FixedHosts, NativeResources, RESERVED_RECIPIENT_NAMES,
     },
 };
 use crate::config::DataPlaneConfiguration;
@@ -29,9 +29,9 @@ pub fn scope_input_name(binding: SourceBinding) -> InputName {
     InputName::new(binding.as_str()).expect("source binding names are identifiers")
 }
 
-/// ADP's catalog: the outputs, native and declared, every configuration binding of the registry with its current value,
-/// the inputs of the `metrics` scope, the budget of state every state owner shares, that a program runs at most one
-/// aggregation, and the delivery hosts with the schemas of their parameters.
+/// ADP's catalog: the outputs, native and declared, every configuration binding of the registry with its class and
+/// current value, the recipient directory, the inputs of the `metrics` scope, the budget of state every state owner
+/// shares, that a program runs at most one aggregation, and the delivery hosts with the schemas of their parameters.
 ///
 /// Bindings are resolved when the catalog is built, `Startup` bindings from the startup configuration and `Live` ones
 /// from the current configuration, so the catalog carries the same values lowering writes into plans. A binding the
@@ -46,15 +46,18 @@ pub fn scope_input_name(binding: SourceBinding) -> InputName {
 pub struct AdpCatalog {
     outputs: BTreeMap<OutputId, CatalogOutput>,
     bindings: BTreeMap<BindingName, CatalogBinding>,
+    directory: Directory,
     scope_inputs: BTreeMap<InputName, PortType>,
     state_budget: Option<u64>,
     hosts: FixedHosts,
 }
 
 impl AdpCatalog {
-    /// Builds the catalog of the given outputs, configuration snapshots, and delivery hosts.
-    pub fn new(outputs: &NativeOutputs, snapshots: Snapshots<'_>, hosts: FixedHosts) -> Self {
-        let outputs = outputs
+    /// Builds the catalog of the given resources (outputs and the recipient directory), configuration snapshots, and
+    /// delivery hosts.
+    pub fn new(resources: &NativeResources, snapshots: Snapshots<'_>, hosts: FixedHosts) -> Self {
+        let outputs = resources
+            .outputs
             .iter()
             .map(|output| {
                 (
@@ -63,7 +66,6 @@ impl AdpCatalog {
                         accepts: output.decl.accepts,
                         fingerprint: output.decl.fingerprint,
                         recipients: output.decl.recipients.clone(),
-                        legacy_fingerprint: output.legacy_fingerprint,
                     },
                 )
             })
@@ -83,6 +85,7 @@ impl AdpCatalog {
                     CatalogBinding {
                         ty: ValueType::from(&spec.ty),
                         liveness: spec.liveness,
+                        class: spec.class,
                         value: spec.resolve(snapshots, &key),
                     },
                 );
@@ -99,6 +102,7 @@ impl AdpCatalog {
         Self {
             outputs,
             bindings,
+            directory: resources.directory.clone(),
             scope_inputs: BTreeMap::new(),
             state_budget,
             hosts,
@@ -126,6 +130,9 @@ impl AdpCatalog {
         }
         for (name, binding) in &self.bindings {
             catalog = catalog.with_catalog_binding(name.clone(), binding.clone());
+        }
+        for (name, recipient) in &self.directory {
+            catalog = catalog.with_recipient(name.clone(), recipient.clone());
         }
         let scope = ScopeName::new(METRICS_SCOPE).expect("scope names are identifiers");
         for (input, port_type) in &self.scope_inputs {
@@ -165,6 +172,14 @@ impl Catalog for AdpCatalog {
         // One aggregation per program, for now: the frame has one isolation slot, which placement lets run a state
         // owner of each branch of a split ahead of it, and the demo and the operator surfaces assume one.
         true
+    }
+
+    fn recipient(&self, name: &RecipientName) -> Option<&CatalogRecipient> {
+        self.directory.get(name)
+    }
+
+    fn reserves_recipient_name(&self, name: &RecipientName) -> bool {
+        RESERVED_RECIPIENT_NAMES.contains(&name.as_str())
     }
 
     fn host(&self, host: &HostId) -> Option<HostSchema> {

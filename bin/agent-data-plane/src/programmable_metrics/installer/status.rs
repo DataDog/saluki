@@ -159,10 +159,6 @@ pub struct OutputView {
     /// Its fingerprint, version 2, which an artifact's base records.
     pub fingerprint: PlanHash,
 
-    /// Its fingerprint as stage 5 computed it, for a native output: a base that recorded it keeps composing while it
-    /// matches.
-    pub legacy_fingerprint: Option<PlanHash>,
-
     /// The identities of its recipients, sorted.
     pub recipients: Vec<String>,
 
@@ -475,7 +471,6 @@ pub(super) fn resources_view(parts: Parts<'_>) -> ResourcesView {
                 }),
                 host: decl.binding.as_ref().map(|binding| binding.host.to_string()),
                 fingerprint: decl.fingerprint,
-                legacy_fingerprint: output.legacy_fingerprint,
                 recipients: decl.recipients.iter().map(ToString::to_string).collect(),
                 provenance,
             }

@@ -52,17 +52,18 @@ impl OperatorDef for HostEnrichment {
 }
 
 const HOST_TAGS_PARAMS: &[ParamSpec] = &[
-    ParamSpec::required("tags", ParamType::List(&ParamType::String)),
-    ParamSpec::required("deadline", ParamType::Duration),
+    ParamSpec::required("tags", ParamType::Bindable(&ParamType::List(&ParamType::String))),
+    ParamSpec::required("deadline", ParamType::Bindable(&ParamType::Duration)),
 ];
 
 /// The `host_tags` operator: adds the host's tags to every metric admitted before a deadline.
 ///
 /// Parameters: `tags` (the host tags) and `deadline` (an instant, written as the time since the Unix epoch, such as
-/// `"1700000300s"`). Both are host facts fixed for the life of the process: the deadline is the process start time
-/// plus the configured duration for which host tags are expected. A batch whose admission time is before the deadline
-/// gains the tags; later batches pass unchanged. The tags are appended to the instrumented tags as they are, without
-/// removing values the metric already has.
+/// `"1700000300s"`). Both are host facts fixed for the life of the process, so a program usually binds them to the
+/// host's facts rather than writing them: the deadline is the process start time plus the configured duration for which
+/// host tags are expected, which means nothing in a program kept across restarts or sent to many hosts. A batch whose
+/// admission time is before the deadline gains the tags; later batches pass unchanged. The tags are appended to the
+/// instrumented tags as they are, without removing values the metric already has.
 ///
 /// Its kernel is [`HostTagsKernel`], which decides per batch by the batch's admission time.
 #[derive(Clone, Copy, Debug, Default)]

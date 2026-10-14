@@ -175,7 +175,6 @@ fn an_idle_host_gets_its_exits_so_an_output_bound_to_it_later_places_without_a_r
             accepts: af.accepts,
             fingerprint: af.fingerprint,
             recipients: af.recipients.clone(),
-            legacy_fingerprint: None,
         },
     );
     let report = validated(&moved, &catalog);
@@ -279,7 +278,6 @@ fn a_new_or_rebound_output_on_a_frame_host_places_as_a_lease_with_no_new_structu
             accepts: crate::model::PortType::ANY,
             fingerprint: rebound.outputs[1].fingerprint,
             recipients: rebound.outputs[1].recipients.clone(),
-            legacy_fingerprint: None,
         },
     );
     let report = validated(&rebound, &catalog_rebound);
@@ -343,7 +341,6 @@ fn an_output_bound_to_a_delivery_host_the_frame_lacks_needs_a_restart() {
             accepts: main.accepts,
             fingerprint: main.fingerprint,
             recipients: main.recipients.clone(),
-            legacy_fingerprint: None,
         },
     );
     let (problems, capabilities) = unplaceable(&plan, &catalog);

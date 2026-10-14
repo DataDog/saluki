@@ -6,7 +6,7 @@
 use saluki_metric_plan::ir::PolicyArtifact;
 use serde_json::Value;
 
-use crate::{parse, print, Diagnostic, Parsed, PrintOptions};
+use crate::{parse, parse_with, print, Diagnostic, ParseOptions, Parsed, PrintOptions};
 
 mod errors;
 mod fixture;

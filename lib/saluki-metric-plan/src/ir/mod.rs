@@ -26,7 +26,7 @@ mod id;
 pub use self::id::{
     derived_terminal_id, is_identifier, ArtifactNodeId, ArtifactPortRef, BindingName, CredentialRef, ExitName, HostId,
     IdError, InputName, LocalId, Namespace, NativeComponentId, NodeId, OperatorName, OutputId, ParamName, PortName,
-    PortRef, RecipientId, RoleName, ScopeName, SignalName, DECLARED_OUTPUT_PREFIX, IDENTIFIER_PATTERN,
+    PortRef, RecipientId, RecipientName, RoleName, ScopeName, SignalName, DECLARED_OUTPUT_PREFIX, IDENTIFIER_PATTERN,
     MAX_DECLARED_OUTPUT_NAME_LEN, MAX_IDENTIFIER_LEN, SCOPE_EXIT_NODE, SCOPE_INPUT_NODE,
 };
 

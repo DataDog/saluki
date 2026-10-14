@@ -2,7 +2,7 @@
   "ir_version": 1,
   "scope": "post_enrich",
   "base": {
-    "program_hash": "sha256:d5cc6b1329e0e0e43503b783a1d4889aa489e04e0867a612fdbc95d0001004c6",
+    "program_hash": "sha256:8b26675fd175dfa56ac0386830efa732d3a030ac745d7d909f95f74e09553327",
     "outputs": {
       "af_metrics_encode": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
       "dd_metrics_encode": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
@@ -39,6 +39,7 @@
     {"id": "mrf_metrics_gateway_false", "op": "drop"},
     {"id": "af_metrics_gateway", "op": "split", "params": {"predicate": {"all": [
        {"kind_in": ["counter", "rate", "gauge", "set"]},
+       {"flag": {"config": "autoscaling_failover.enabled"}},
        {"name": {"matches": {"values": {"config": "autoscaling_failover.metrics"}, "prefix": false}}}]}}},
     {"id": "af_metrics_gateway_true", "op": "emit", "params": {"output": "af_metrics_encode"}},
     {"id": "af_metrics_gateway_false", "op": "drop"}

@@ -302,7 +302,7 @@ pub fn aggregation_after_enrichment(source: &str) -> Result<String, GenericError
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compile::with_sections;
+    use crate::{compile::annotate, export::tests::demo_export};
 
     /// The default program of the demo's configuration, trimmed, as the editor prints it before its section comments.
     const PRINTED: &str = r#"policy metrics {
@@ -370,9 +370,10 @@ mod tests {
 }
 "#;
 
-    /// The trimmed default program as the editor shows it, with its section comments.
+    /// The trimmed default program as the editor shows it, with the notes of the demo's export as comments.
     fn source() -> String {
-        with_sections(PRINTED)
+        let artifact = saluki_metric_plan_syntax::parse(PRINTED).unwrap().artifact;
+        annotate(PRINTED, &artifact, Some(&demo_export()))
     }
 
     fn outputs() -> Outputs {
@@ -394,7 +395,7 @@ mod tests {
     }
 
     #[test]
-    fn the_editor_marks_where_each_section_of_the_program_begins() {
+    fn the_editor_prints_adps_notes_and_the_recipient_directory_as_comments() {
         let source = source();
         let comments = source
             .lines()
@@ -404,14 +405,22 @@ mod tests {
             comments,
             [
                 "  # Sources: where each one's metrics enter",
-                "  # DogStatsD processing, before aggregation",
-                "  # Aggregation: a program has at most one",
-                "  # After aggregation: filter, client telemetry tap",
-                "  # Enrichment: every source, then host enrichment",
+                "  # DogStatsD mapper: renames and tags by `dogstatsd_mapper_profiles`",
+                "  # Aggregation; edits keep its state unless they change its window or lineage",
+                "  # Host enrichment: leaves metrics unchanged",
+                "  # Recipients:",
+                "  #   http://127.0.0.1:17102",
+                "  #   http://127.0.0.1:17103  (not addressed)",
+                "  #   mrf  http://127.0.0.1:17104",
+                "  #   primary  http://127.0.0.1:17101",
                 "  # Policy: one branch per output; route here",
+                "  # Endpoint routing to http://127.0.0.1:17102",
+                "  # Multi-Region Failover: mirrors listed, or all, metrics while failing over",
             ]
         );
-        assert!(source.contains("\n  # Aggregation: a program has at most one\n  node dsd_agg = aggregate(\n"));
+        assert!(source.contains(
+            "\n  # Aggregation; edits keep its state unless they change its window or lineage\n  node dsd_agg = "
+        ));
         // The comments change nothing in the artifact.
         let parsed = |text: &str| saluki_metric_plan_syntax::parse(text).unwrap().artifact;
         assert_eq!(parsed(&source), parsed(PRINTED));

@@ -163,7 +163,6 @@ pub(crate) fn approval(revision: u64) -> Approval {
         approved_against: None,
         active_plan_hash: None,
         in_effect: false,
-        upgraded: Default::default(),
     }
 }
 
@@ -1190,7 +1189,6 @@ fn stale_reviews_are_flagged_when_approval_was_against_another_active_plan() {
             approved_against,
             active_plan_hash,
             in_effect: false,
-            upgraded: Default::default(),
         };
         let composed = fixture.compose(fixture.artifact(), &approval).unwrap();
         assert_eq!(composed.stale_review, stale, "{:?}", approval);
@@ -1228,12 +1226,12 @@ fn artifacts_beyond_the_limits_or_carrying_resolved_values_are_refused_on_receip
         matches!(error, ReceiptError::TooManyNodes { nodes: 257, limit: 256 })
     }));
 
-    // The export's predicates have ten leaves: two per routing filter, four in the multi-region gateway, two in the
+    // The export's predicates have eleven leaves: two per routing filter, four in the multi-region gateway, three in the
     // autoscaling one.
     let mut leaves = fixture.artifact();
     push_node(
         &mut leaves,
-        json!({"id": "wide", "op": "split", "params": {"predicate": consts(1015)}}),
+        json!({"id": "wide", "op": "split", "params": {"predicate": consts(1014)}}),
     );
     cases.push(("too many predicate leaves", leaves, |error| {
         matches!(
@@ -1247,7 +1245,7 @@ fn artifacts_beyond_the_limits_or_carrying_resolved_values_are_refused_on_receip
 
     // Leaves count with blob references replaced by their content.
     let mut blob_leaves = fixture.artifact();
-    let predicate = consts(1015);
+    let predicate = consts(1014);
     let predicate_hash = PlanHash::of_value(&predicate).unwrap();
     push_node(
         &mut blob_leaves,
@@ -1289,7 +1287,7 @@ fn artifacts_beyond_the_limits_or_carrying_resolved_values_are_refused_on_receip
     let mut resolved_blob = fixture.artifact();
     let smuggled = json!({"config": "autoscaling_failover.metrics", "resolved": ["smuggled"]});
     let smuggled_hash = PlanHash::of_value(&smuggled).unwrap();
-    node(&mut resolved_blob, "af_metrics_gateway")["params"]["predicate"]["all"][1]["name"]["matches"]["values"] =
+    node(&mut resolved_blob, "af_metrics_gateway")["params"]["predicate"]["all"][2]["name"]["matches"]["values"] =
         json!({"blob": smuggled_hash.to_string()});
     resolved_blob["blobs"] = json!({smuggled_hash.to_string(): smuggled});
     cases.push(("resolved values inside a blob", resolved_blob, |error| {
@@ -1361,7 +1359,7 @@ fn artifacts_beyond_the_limits_or_carrying_resolved_values_are_refused_on_receip
     }
     push_node(
         &mut at_limits,
-        json!({"id": "wide", "op": "split", "params": {"predicate": consts(1014)}}),
+        json!({"id": "wide", "op": "split", "params": {"predicate": consts(1013)}}),
     );
     let received = receive_artifact(at_limits).unwrap();
     assert_eq!(received.artifact.nodes.len(), 255);
@@ -2089,7 +2087,6 @@ fn artifacts_of_two_scopes_compose_each_against_the_default_program_with_their_o
         approved_against: Some(hash('9')),
         active_plan_hash: Some(hash('8')),
         in_effect: false,
-        upgraded: Default::default(),
     };
     let composed = compose_all(
         &fixture.plan,

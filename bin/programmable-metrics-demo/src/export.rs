@@ -7,8 +7,9 @@
 //! - `scope`: the scope the export covers, `metrics`;
 //! - `artifact`: the default program's scope as a policy artifact, with its bindings unresolved and its base filled in;
 //! - `ir_versions`: `{"current": <version>, "accepted": [<lowest>, <highest>]}`;
-//! - `catalog`: the plan crate's `MemoryCatalog` document;
-//! - `labels` (optional): display labels, by output ID.
+//! - `catalog`: the plan crate's `MemoryCatalog` document, with the recipient directory under `recipients`;
+//! - `labels` (optional): display labels, by output ID;
+//! - `annotations` (optional): notes for tools, by node and by binding, which the editor prints as comments.
 //!
 //! Readers ignore unknown fields, so the reader here keeps only the catalog members the plan crate knows (the plan
 //! crate's catalog document rejects unknown members) and collects display labels from either `labels` or a `label`
@@ -18,8 +19,9 @@ use std::collections::BTreeMap;
 
 use saluki_metric_plan::{
     canonical::PlanHash,
-    ir::{BindingName, OutputId, ReceivedArtifact},
-    validate::{Catalog as _, Liveness, MemoryCatalog},
+    export::Annotations,
+    ir::{BindingName, OutputId, ReceivedArtifact, RecipientName},
+    validate::{Catalog as _, CatalogRecipient, Liveness, MemoryCatalog},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -56,6 +58,9 @@ pub struct ExportBundle {
 
     /// Display labels of outputs.
     pub labels: BTreeMap<OutputId, String>,
+
+    /// What ADP says each node of its default program and each binding is, which the editor prints as comments.
+    pub annotations: Annotations,
 
     /// The output IDs the catalog declares, sorted.
     pub output_ids: Vec<String>,
@@ -116,6 +121,11 @@ impl ExportBundle {
                 }
             }
         }
+        // Notes that do not read are left out: they are only comments.
+        let annotations = object
+            .remove("annotations")
+            .and_then(|annotations| serde_json::from_value(annotations).ok())
+            .unwrap_or_default();
         let catalog = object
             .remove("catalog")
             .ok_or_else(|| "The export bundle has no `catalog`.".to_string())?;
@@ -137,6 +147,7 @@ impl ExportBundle {
             ir_versions,
             catalog,
             labels,
+            annotations,
             output_ids,
             binding_names,
         })
@@ -291,9 +302,20 @@ fn known_catalog_members(catalog: Value, labels: &mut BTreeMap<OutputId, String>
             ("bindings", Value::Object(bindings)) => {
                 let bindings = bindings
                     .into_iter()
-                    .map(|(name, binding)| (name, keep_members(binding, &["type", "liveness", "value"])))
+                    .map(|(name, binding)| (name, keep_members(binding, &["type", "liveness", "class", "value"])))
                     .collect();
                 kept.insert(member, Value::Object(bindings));
+            }
+            // The recipient directory, which the editor only lists: an entry that does not read is left out, so a
+            // directory from a newer ADP loses only comments.
+            ("recipients", Value::Object(entries)) => {
+                let entries = entries
+                    .into_iter()
+                    .filter(|(name, _)| name.parse::<RecipientName>().is_ok())
+                    .map(|(name, entry)| (name, keep_members(entry, &["recipients", "host", "endpoint", "source"])))
+                    .filter(|(_, entry)| serde_json::from_value::<CatalogRecipient>(entry.clone()).is_ok())
+                    .collect();
+                kept.insert(member, Value::Object(entries));
             }
             // Whether ADP runs at most one aggregation per program, which validation then checks.
             ("scopes", value) | ("single_aggregation", value) => {
@@ -352,7 +374,7 @@ pub(crate) mod tests {
                 .output(&output("metrics_routing_encode_0"))
                 .unwrap()
                 .recipients,
-            vec!["dd_out/additional_0/0".parse().unwrap()]
+            vec!["dd_out/additional/0/http://127.0.0.1:17102".parse().unwrap()]
         );
         // The fixture writes one label in `labels` and one as a catalog output's `label` member.
         assert_eq!(
@@ -397,7 +419,10 @@ pub(crate) mod tests {
                 ("mrf_metrics_encode", Some("Multi-region failover"), Some("mrf")),
             ]
         );
-        assert_eq!(legend.outputs[1].recipients, ["dd_out/additional_0/0"]);
+        assert_eq!(
+            legend.outputs[1].recipients,
+            ["dd_out/additional/0/http://127.0.0.1:17102"]
+        );
         let prefixes = legend
             .bindings
             .iter()
@@ -450,6 +475,27 @@ pub(crate) mod tests {
             legend.outputs[4].fingerprint,
             "sha256:361f843bc9a6b25663cc6da865dd3af0daf04bb8890e3717ae98d7d30bb1c838"
         );
+    }
+
+    #[test]
+    fn a_directory_or_notes_the_demo_cannot_read_lose_only_their_comments() {
+        let mut bundle = serde_json::from_str::<Value>(DEMO_EXPORT).unwrap();
+        let directory = &mut bundle["catalog"]["recipients"];
+        // A member the demo does not know is left out; an entry from an unknown source, or one that does not read, is
+        // left out alone.
+        directory["primary"]["label"] = "Primary".into();
+        directory["mrf"]["source"] = "fleet".into();
+        directory["http://127.0.0.1:17103"]["recipients"] = "not a list".into();
+        bundle["annotations"] = serde_json::json!({"nodes": "not a map"});
+        let export = ExportBundle::from_value(bundle).unwrap();
+        let names = export
+            .catalog
+            .recipients()
+            .map(|(name, _)| name.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["http://127.0.0.1:17102", "primary"]);
+        assert!(export.annotations.is_empty());
+        assert_eq!(export.output_ids.len(), 4);
     }
 
     #[test]

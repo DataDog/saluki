@@ -77,8 +77,8 @@ fn declaration(id: &str, digit: char) -> (Value, Option<Value>) {
 }
 
 /// A default program delivering every record to each of `outputs`, each `(output, fingerprint digit)`, and the host's
-/// catalog of it, whose outputs have the version 1 fingerprints `legacy` gives.
-fn program(outputs: &[(&str, char)], legacy: &[(&str, char)]) -> (Plan, MemoryCatalog) {
+/// catalog of it.
+fn program(outputs: &[(&str, char)]) -> (Plan, MemoryCatalog) {
     let mut nodes = vec![json!({"id": "src", "op": "source", "params": {"binding": "otlp"},
                                 "provenance": {"native": "src"}})];
     let mut edges = Vec::new();
@@ -109,17 +109,12 @@ fn program(outputs: &[(&str, char)], legacy: &[(&str, char)]) -> (Plan, MemoryCa
     let mut catalog =
         MemoryCatalog::new().with_scope_input(SCOPE.parse().unwrap(), "metrics".parse().unwrap(), PortType::ANY);
     for output in &plan.outputs {
-        let legacy = legacy
-            .iter()
-            .find(|(id, _)| *id == output.id.as_str())
-            .map(|(_, digit)| hash(*digit));
         catalog = catalog.with_output(
             output.id.clone(),
             CatalogOutput {
                 accepts: output.accepts,
                 fingerprint: output.fingerprint,
                 recipients: output.recipients.clone(),
-                legacy_fingerprint: legacy,
             },
         );
     }
@@ -133,23 +128,13 @@ fn artifact_of(plan: &Plan, catalog: &MemoryCatalog) -> ReceivedArtifact {
 }
 
 fn compose_into(
-    artifact: &ReceivedArtifact, host: &(Plan, MemoryCatalog), in_effect: bool,
-) -> Result<Composed, ComposeError> {
-    compose_upgraded(artifact, host, in_effect, &BTreeMap::new())
-}
-
-/// Composes as [`compose_into`] does, with the version 2 fingerprints earlier compositions kept for the artifact's
-/// version 1 base.
-fn compose_upgraded(
     artifact: &ReceivedArtifact, (plan, catalog): &(Plan, MemoryCatalog), in_effect: bool,
-    upgraded: &BTreeMap<OutputId, PlanHash>,
 ) -> Result<Composed, ComposeError> {
     let approval = Approval {
         revision: 7,
         approved_against: None,
         active_plan_hash: None,
         in_effect,
-        upgraded: upgraded.clone(),
     };
     compose(plan, artifact, &approval, catalog, &OperatorRegistry::native())
 }
@@ -168,7 +153,7 @@ fn node_id(id: &str) -> NodeId {
 
 /// The artifact written against outputs `a` and `b`, which it keeps as the default program has them.
 fn written() -> ReceivedArtifact {
-    let (plan, catalog) = program(&[("a", '1'), ("b", '2')], &[]);
+    let (plan, catalog) = program(&[("a", '1'), ("b", '2')]);
     artifact_of(&plan, &catalog)
 }
 
@@ -176,7 +161,7 @@ fn written() -> ReceivedArtifact {
 fn a_recorded_output_declared_with_the_recorded_fingerprint_composes_whatever_the_artifacts_state() {
     let artifact = written();
     for in_effect in [false, true] {
-        let composed = compose_into(&artifact, &program(&[("a", '1'), ("b", '2')], &[]), in_effect).unwrap();
+        let composed = compose_into(&artifact, &program(&[("a", '1'), ("b", '2')]), in_effect).unwrap();
         assert!(composed.report.is_valid(), "{}", composed.report);
         assert_eq!(scope(&composed).outcome, ComposeOutcome::Composed);
         assert_eq!(scope(&composed).notes(), None);
@@ -184,97 +169,38 @@ fn a_recorded_output_declared_with_the_recorded_fingerprint_composes_whatever_th
 }
 
 #[test]
-fn a_recorded_version_1_fingerprint_that_still_matches_composes_noted_for_a_rebase() {
+fn a_fingerprint_an_earlier_fingerprint_version_computed_is_an_output_that_delivers_elsewhere() {
+    // An artifact kept from before fingerprint version 2 records output `a` under its version 1 digest, `1`; the host
+    // now declares `a` with its version 2 fingerprint, `7`, and computes no version 1 digest. A new artifact is refused
+    // with the advice to rebase, and the artifact in effect drops its emits to `a` until it is republished.
     let artifact = written();
-    // Output `a` now has the version 2 fingerprint `7`, and its version 1 fingerprint is the one recorded.
-    for in_effect in [false, true] {
-        let host = program(&[("a", '7'), ("b", '2')], &[("a", '1')]);
-        let composed = compose_into(&artifact, &host, in_effect).unwrap();
-        assert!(composed.report.is_valid(), "{}", composed.report);
-        let scope = scope(&composed);
-        assert_eq!(scope.outcome, ComposeOutcome::Composed);
-        // Reported with the version 2 fingerprint the output has now, for the installer to keep.
-        assert_eq!(scope.legacy_outputs, BTreeMap::from([(output("a"), hash('7'))]));
-        assert_eq!(
-            scope.notes().as_deref(),
-            Some(
-                "the base records `a` with version 1 fingerprints, which still match; rebase to fingerprint version 2"
-            )
-        );
-    }
-    // A version 1 fingerprint that no longer matches has the version 1 meaning: the output delivers elsewhere.
-    let host = program(&[("a", '7'), ("b", '2')], &[("a", '8')]);
+    let host = program(&[("a", '7'), ("b", '2')]);
+    let error = compose_into(&artifact, &host, false).unwrap_err();
     assert_eq!(
-        compose_into(&artifact, &host, false).unwrap_err(),
+        error,
         ComposeError::ReboundOutput {
             output: output("a"),
             renumbered: None
         }
     );
-}
-
-#[test]
-fn a_version_1_base_that_composed_follows_version_2_so_a_dual_ship_endpoint_added_under_a_role_drops_nothing() {
-    let artifact = written();
-    // At the upgrade, output `a` (the main output, say) has the version 2 fingerprint `7`, and the recorded version
-    // 1 fingerprint `1` still matches: the artifact composes, and the installer keeps `a`'s version 2 fingerprint.
-    let upgrade = program(&[("a", '7'), ("b", '2')], &[("a", '1')]);
-    let composed = compose_into(&artifact, &upgrade, false).unwrap();
-    let kept = scope(&composed).legacy_outputs.clone();
-    assert_eq!(kept, BTreeMap::from([(output("a"), hash('7'))]));
-
-    // A dual-ship endpoint is added under `a`'s role: its version 1 fingerprint, which covers its resolved recipients,
-    // changes to `8`, and its version 2 fingerprint does not. Without what the installer kept, the artifact in effect
-    // would drop every emit to `a`; with it, the artifact composes as written, still noted for a rebase, new or in
-    // effect.
-    let dual_ship = program(&[("a", '7'), ("b", '2')], &[("a", '8')]);
-    assert!(compose_into(&artifact, &dual_ship, true)
-        .unwrap()
-        .scopes
-        .values()
-        .all(|scope| scope.outcome.is_degraded()));
-    for in_effect in [false, true] {
-        let composed = compose_upgraded(&artifact, &dual_ship, in_effect, &kept).unwrap();
-        assert!(composed.report.is_valid(), "{}", composed.report);
-        let scope = scope(&composed);
-        assert_eq!(scope.outcome, ComposeOutcome::Composed);
-        assert_eq!(scope.legacy_outputs, kept);
-        assert_eq!(
-            scope.notes().as_deref(),
-            Some(
-                "the base records `a` with version 1 fingerprints, which still match; rebase to fingerprint version 2"
-            )
-        );
-        assert_eq!(
-            composed.plan.node(&node_id("emit_a")).map(|node| node.op.as_str()),
-            Some(names::EMIT)
-        );
-    }
-
-    // From then on the version 2 meaning holds: `a` declared with another version 2 fingerprint now delivers elsewhere,
-    // even with the recorded version 1 fingerprint matching again.
-    let rebound = program(&[("a", '6'), ("b", '2')], &[("a", '1')]);
-    assert_eq!(
-        compose_upgraded(&artifact, &rebound, false, &kept).unwrap_err(),
-        ComposeError::ReboundOutput {
-            output: output("a"),
-            renumbered: None
-        }
+    assert!(
+        error
+            .to_string()
+            .ends_with("Rebase the artifact on the current export."),
+        "{}",
+        error
     );
+    let composed = compose_into(&artifact, &host, true).unwrap();
     assert_eq!(
-        scope(&compose_upgraded(&artifact, &rebound, true, &kept).unwrap()).outcome,
-        ComposeOutcome::Degraded(vec![DroppedEmits {
-            output: output("a"),
-            reason: DropReason::Rebound { renumbered: None },
-            nodes: vec![node_id("emit_a")],
-        }])
+        scope(&composed).notes().as_deref(),
+        Some("output `a` now delivers elsewhere; its emits are dropped; rebase")
     );
 }
 
 #[test]
 fn a_rebound_output_rejects_a_new_artifact_and_drops_the_emits_of_the_one_in_effect() {
     let artifact = written();
-    let host = program(&[("a", '1'), ("b", '9')], &[]);
+    let host = program(&[("a", '1'), ("b", '9')]);
     let error = compose_into(&artifact, &host, false).unwrap_err();
     assert_eq!(
         error,
@@ -324,7 +250,7 @@ fn a_rebound_output_rejects_a_new_artifact_and_drops_the_emits_of_the_one_in_eff
 #[test]
 fn a_removed_output_holds_a_new_artifact_pending_and_drops_the_emits_of_the_one_in_effect_until_it_returns() {
     let artifact = written();
-    let without_b = program(&[("a", '1')], &[]);
+    let without_b = program(&[("a", '1')]);
     let error = compose_into(&artifact, &without_b, false).unwrap_err();
     assert_eq!(error, ComposeError::PendingOutput { output: output("b") });
     assert!(error.to_string().starts_with("Waiting for output `b`:"), "{}", error);
@@ -350,7 +276,7 @@ fn a_removed_output_holds_a_new_artifact_pending_and_drops_the_emits_of_the_one_
     );
 
     // The output returns with the recorded fingerprint: the next composition restores the emit, as written.
-    let restored = compose_into(&artifact, &program(&[("a", '1'), ("b", '2')], &[]), true).unwrap();
+    let restored = compose_into(&artifact, &program(&[("a", '1'), ("b", '2')]), true).unwrap();
     assert_eq!(scope(&restored).outcome, ComposeOutcome::Composed);
     let emit = restored.plan.node(&node_id("emit_b")).unwrap();
     assert_eq!(emit.op.as_str(), names::EMIT);
@@ -360,12 +286,9 @@ fn a_removed_output_holds_a_new_artifact_pending_and_drops_the_emits_of_the_one_
 #[test]
 fn a_renumbered_routing_output_names_the_output_that_now_carries_the_recorded_fingerprint() {
     // Two groups, keys `3` and `4`. Group 0 goes, and group 1 becomes index 0.
-    let (plan, catalog) = program(
-        &[("metrics_routing_encode_0", '3'), ("metrics_routing_encode_1", '4')],
-        &[],
-    );
+    let (plan, catalog) = program(&[("metrics_routing_encode_0", '3'), ("metrics_routing_encode_1", '4')]);
     let artifact = artifact_of(&plan, &catalog);
-    let host = program(&[("metrics_routing_encode_0", '4')], &[]);
+    let host = program(&[("metrics_routing_encode_0", '4')]);
 
     // A new artifact is rejected, the first output it emits to now delivering elsewhere.
     assert_eq!(
@@ -418,11 +341,11 @@ fn a_renumbered_routing_output_names_the_output_that_now_carries_the_recorded_fi
 fn a_policy_routed_to_a_declared_output_waits_for_it_in_either_product_order() {
     // The author records the declared output's fingerprint, as the editor computes it.
     let declared = ("resources_team_d", '5');
-    let (plan, catalog) = program(&[("a", '1'), declared], &[]);
+    let (plan, catalog) = program(&[("a", '1'), declared]);
     let artifact = artifact_of(&plan, &catalog);
 
     // Policy first: the resources artifact that declares the output has not arrived, so the policy waits.
-    let before = program(&[("a", '1')], &[]);
+    let before = program(&[("a", '1')]);
     assert_eq!(
         compose_into(&artifact, &before, false).unwrap_err(),
         ComposeError::PendingOutput {
@@ -430,7 +353,7 @@ fn a_policy_routed_to_a_declared_output_waits_for_it_in_either_product_order() {
         }
     );
     // The resources arrive, and the next composition installs it; resources first composes at once the same way.
-    let after = program(&[("a", '1'), declared], &[]);
+    let after = program(&[("a", '1'), declared]);
     let composed = compose_into(&artifact, &after, false).unwrap();
     assert!(composed.report.is_valid(), "{}", composed.report);
     assert_eq!(scope(&composed).outcome, ComposeOutcome::Composed);
@@ -453,7 +376,7 @@ fn a_policy_routed_to_a_declared_output_waits_for_it_in_either_product_order() {
 fn a_policy_waiting_for_a_declared_output_is_pending_while_another_declared_output_has_the_same_recipients() {
     // Resources revision 2 is to declare team E's output with the recipient team D's has (digit `5`), so the editor
     // recorded the fingerprint team D's output carries: a declared output's covers its recipients, not its name.
-    let (plan, catalog) = program(&[("a", '1'), ("resources_team_e", '5')], &[]);
+    let (plan, catalog) = program(&[("a", '1'), ("resources_team_e", '5')]);
     let artifact = artifact_of(&plan, &catalog);
     assert_eq!(
         fingerprint_of("resources_team_e", '5'),
@@ -461,7 +384,7 @@ fn a_policy_waiting_for_a_declared_output_is_pending_while_another_declared_outp
     );
 
     // Revision 1 declares only team D's: team E's is not renumbered, only not declared yet, and the policy waits.
-    let revision_1 = program(&[("a", '1'), ("resources_team_d", '5')], &[]);
+    let revision_1 = program(&[("a", '1'), ("resources_team_d", '5')]);
     assert_eq!(
         compose_into(&artifact, &revision_1, false).unwrap_err(),
         ComposeError::PendingOutput {
@@ -475,7 +398,7 @@ fn a_policy_waiting_for_a_declared_output_is_pending_while_another_declared_outp
     );
 
     // Revision 2 cures it.
-    let revision_2 = program(&[("a", '1'), ("resources_team_d", '5'), ("resources_team_e", '5')], &[]);
+    let revision_2 = program(&[("a", '1'), ("resources_team_d", '5'), ("resources_team_e", '5')]);
     let composed = compose_into(&artifact, &revision_2, false).unwrap();
     assert!(composed.report.is_valid(), "{}", composed.report);
     assert_eq!(scope(&composed).outcome, ComposeOutcome::Composed);
@@ -484,11 +407,11 @@ fn a_policy_waiting_for_a_declared_output_is_pending_while_another_declared_outp
 #[test]
 fn a_new_artifact_waits_for_an_output_only_when_nothing_else_refuses_it() {
     // The artifact emits to `b` first, then to `a`.
-    let (plan, catalog) = program(&[("b", '2'), ("a", '1')], &[]);
+    let (plan, catalog) = program(&[("b", '2'), ("a", '1')]);
     let artifact = artifact_of(&plan, &catalog);
     // Output `b` removed and `a` rebound: the rebinding, which a declaration cannot cure, is what is reported, though
     // the removed output's emit comes first.
-    let host = program(&[("a", '9')], &[]);
+    let host = program(&[("a", '9')]);
     assert_eq!(
         compose_into(&artifact, &host, false).unwrap_err(),
         ComposeError::ReboundOutput {

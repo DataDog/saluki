@@ -116,12 +116,21 @@ fn line_of(source: &str, text: &str) -> usize {
 }
 
 /// Puts the node `id`, defined by `node`, between enrichment and the policy `tee`, as the S1 scenario does: the node
-/// that fed the `tee` feeds `id`, and the definition goes above the policy section.
+/// that fed the `tee` feeds `id`, and the definition goes above the policy `tee` and the comments right above it.
 fn with_node_before_policy(source: &str, id: &str, node: &str) -> String {
     let edge = "\n    -> metrics_policy\n";
     assert!(source.contains(edge), "{}", source);
     let source = source.replacen(edge, &format!("\n    -> {}\n", id), 1);
-    let policy = source.find("  # Policy:").expect("the policy section is marked");
+    let mut policy = source
+        .find("\n  node metrics_policy = ")
+        .expect("the policy `tee` is defined")
+        + 1;
+    while let Some(previous) = source[..policy - 1].rfind('\n').map(|at| at + 1) {
+        if !source[previous..policy].starts_with("  #") {
+            break;
+        }
+        policy = previous;
+    }
     format!("{}{}\n{}", &source[..policy], node, &source[policy..])
 }
 
@@ -384,7 +393,6 @@ fn an_artifact_composes_with_the_artifacts_adp_runs_for_the_other_scopes() {
         approved_against: None,
         active_plan_hash: None,
         in_effect: true,
-        upgraded: Default::default(),
     };
     let active = compose_all(&plan, &[(&other.artifact, &approval)], &export.catalog, &registry)
         .unwrap()
@@ -522,9 +530,10 @@ fn composition_errors_are_one_finding_at_the_node_or_output_and_no_diff() {
 fn a_stale_base_is_a_warning_and_the_artifact_still_composes() {
     let (plan, export) = fixture();
     let source = default_program_source(&export);
-    let current = export.program_hash().to_string();
-    let stale = format!("sha256:{}", "e".repeat(64));
-    let outcome = compile_against(&source.replacen(&current, &stale, 1), &plan, &export);
+    // The editor leaves the base out; a source that states one records it.
+    let stale = format!("policy metrics {{\n  base \"sha256:{}\"\n\n", "e".repeat(64));
+    let stated = source.replacen("policy metrics {\n", &stale, 1);
+    let outcome = compile_against(&stated, &plan, &export);
     assert_eq!(outcome.diagnostics.len(), 1, "{:#?}", outcome.diagnostics);
     let diagnostic = &outcome.diagnostics[0];
     assert_eq!(
@@ -535,4 +544,9 @@ fn a_stale_base_is_a_warning_and_the_artifact_still_composes() {
     assert_eq!(diagnostic.range.line, 2);
     // Unmodified otherwise: the same plan, reported stale.
     assert!(outcome.preview.stale_base && outcome.preview.valid && outcome.preview.unchanged);
+    // Formatting keeps the base the source states, without an `outputs` block, whose fingerprints the export gave.
+    let canonical = outcome.canonical_source.unwrap();
+    assert!(canonical.starts_with(&stale), "{}", canonical);
+    assert!(!canonical.contains("outputs {"), "{}", canonical);
+    assert_eq!(compile_against(&canonical, &plan, &export).diagnostics.len(), 1);
 }

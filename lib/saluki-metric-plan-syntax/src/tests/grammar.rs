@@ -585,6 +585,45 @@ fn elided_fingerprints_print_without_outputs() {
 }
 
 #[test]
+fn an_elided_base_prints_no_base_statement_and_parses_with_the_base_the_caller_gives() {
+    let artifact = routing_artifact();
+    let printed = print(
+        &artifact,
+        &PrintOptions {
+            elide_base: true,
+            ..PrintOptions::default()
+        },
+    );
+    assert!(!printed.contains("base") && !printed.contains("outputs"), "{}", printed);
+    assert!(
+        printed.starts_with("policy post_enrich {\n  input.metrics -> "),
+        "{}",
+        printed
+    );
+
+    // Given the base, the text parses to the artifact; without it, the base is missing, as for any text.
+    let options = ParseOptions {
+        base: Some(artifact.base.clone()),
+    };
+    let parsed = parse_with(&printed, &options).unwrap();
+    assert_eq!(parsed.artifact, artifact);
+    assert!(parsed.base_given);
+    let error = parse(&printed).unwrap_err().to_string();
+    assert!(error.contains("Expected `base"), "{}", error);
+    // The node lines are where they are in the text, so diagnostics placed by the span map point at them.
+    let span = parsed.spans.node("metrics_policy").unwrap();
+    assert!(printed[span.start..].starts_with("node metrics_policy"), "{:?}", span);
+
+    // A source with its own base records that one, whatever the caller gives.
+    let mut other = artifact.base.clone();
+    other.outputs.clear();
+    let own = parse_with(&routing_source(), &ParseOptions { base: Some(other) }).unwrap();
+    assert_eq!(own.artifact, artifact);
+    assert!(!own.base_given);
+    assert!(!parse_ok(&routing_source()).base_given);
+}
+
+#[test]
 fn other_ir_versions_are_written_out() {
     let mut old = routing_artifact();
     old.ir_version = 0;

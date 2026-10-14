@@ -658,7 +658,8 @@
   ui.format.addEventListener("click", () => {
     const fresh = freshCompile();
     if (!fresh) return;
-    // The canonical form parses to the same artifact, so the compile stays valid, and the text is the user's.
+    // The canonical form parses to the same artifact against the same export (it keeps a base the source states, and
+    // leaves out one the export gave), so the compile stays valid, and the text is the user's.
     fresh.source = fresh.outcome.canonical_source;
     setSource(fresh.outcome.canonical_source, "user", editor.base);
     saveDraft();
@@ -1144,7 +1145,7 @@
       tone = "pending";
       text = `active in generation ${ack.generation ?? "?"}, degraded: ${ack.error}`;
     } else if (ack && ack.state === "active") {
-      // An error that drops nothing is a note, such as advice to rebase version 1 fingerprints that still match.
+      // An error that drops nothing is a note: the artifact runs as written.
       tone = "ok";
       text = `active in generation ${ack.generation ?? "?"}${ack.error ? ` (note: ${ack.error})` : ""}`;
     } else if (ack && ack.state === "pending" && ack.error) {

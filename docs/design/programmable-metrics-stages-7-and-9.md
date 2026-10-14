@@ -3862,11 +3862,16 @@ built):
      runs, whether native policy settings are applied, not applied, or partly applied (an artifact that binds policy,
      before amendment 181), and which policy bindings' native values differ from what the published program does. A
      native policy change while a program runs is logged as not applied to it.
-176. **Recipient names** (NAT, D; refines amendment 94). Lowering names every recipient a program may address:
-     `primary` (the primary endpoint or the metrics override replacing it), `mrf`, `cluster_agent`, `ep_<host>` with
-     `_<port>` and `_key<i>` suffixes for an additional endpoint's keys, and a declaration's own name. The catalog
-     carries the directory (name, recipient ID, host, endpoint as status spells it, source). Recipient IDs stay as they
-     are and internal; names resolve at composition. The names lowering gives are reserved.
+176. **Recipient names** (NAT, D; refines amendment 94; revised by the owner on 2026-10-14). Lowering names every
+     recipient a program may address: `primary` (the primary endpoint or the metrics override replacing it), `mrf`,
+     `cluster_agent`, each additional endpoint by its URL as the forwarder resolves it, with its scheme (`https` when
+     configured without one) and without a root path, which names every API key's recipient of that endpoint under
+     every spelling of it (a URL that is not plain printable ASCII, has `@`, or is too long is named `sha256:` and 16
+     hexadecimal digits of its digest, as status spells it), and a declaration's own name. The catalog carries the
+     directory (name, the recipient IDs it stands for, host, endpoint as status spells it, source). Recipient IDs stay
+     as they are and internal; names resolve at composition. `primary`, `mrf`, and `cluster_agent` are reserved; a
+     declared name is an identifier and a native endpoint's name has a scheme or the `sha256:` form, so the two never
+     meet, and no name spans two hosts.
 177. **Recipients declared in configuration** (ART, D; refines amendment 93).
      `experimental.programmable_metrics.resources.recipients` declares recipients with a resources artifact's schema,
      validation, and identity rule, live; configuration wins a name both declare. Owner: accept the key.

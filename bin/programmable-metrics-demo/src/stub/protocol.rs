@@ -199,8 +199,7 @@ const EMITS_DROPPED: &str = "its emits are dropped";
 ///
 /// ADP joins what composition says about an artifact in effect with `; `, and each reason for a degraded artifact
 /// starts with the output and says its emits are dropped (``output `resources_team_d` is no longer declared; its emits
-/// are dropped until it returns``). Other notes, such as the advice to rebase an artifact whose version 1 fingerprints
-/// still match, name no dropped output: such an artifact runs as written.
+/// are dropped until it returns``). Any other note names no dropped output: such an artifact runs as written.
 pub fn dropped_outputs(error: &str) -> Vec<&str> {
     // Where each note about an output starts: the start of the text, or after the separator.
     let starts = error
@@ -792,8 +791,7 @@ mod tests {
         let rebound = "output `b` now delivers elsewhere; its emits are dropped; rebase";
         let renumbered = "output `metrics_routing_encode_0` renumbered: the recorded output is now \
                           `metrics_routing_encode_1`; its emits are dropped; rebase";
-        let rebase = "the base records `dd_metrics_encode`, `metrics_routing_encode_0` with version 1 fingerprints, \
-                      which still match; rebase to fingerprint version 2";
+        let rebase = "a note about `dd_metrics_encode` and `metrics_routing_encode_0` that drops nothing";
         assert_eq!(dropped_outputs(removed), ["resources_team_d"]);
         assert_eq!(dropped_outputs(rebase), Vec::<&str>::new());
         assert_eq!(

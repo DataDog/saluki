@@ -198,7 +198,9 @@ fn expected_text(program_hash: &str) -> String {
   }}
 
   node af_metrics_gateway = split(
-    kind in [counter, rate, gauge, set] and name matches(values: config("autoscaling_failover.metrics"), prefix: false)
+    kind in [counter, rate, gauge, set]
+    and flag(config("autoscaling_failover.enabled"))
+    and name matches(values: config("autoscaling_failover.metrics"), prefix: false)
   ) {{
     true  -> emit af_metrics_encode
     false -> drop
@@ -316,7 +318,6 @@ fn composed_hash(plan: &Plan, artifact: &PolicyArtifact) -> saluki_metric_plan::
         approved_against: None,
         active_plan_hash: None,
         in_effect: false,
-        upgraded: Default::default(),
     };
     let composed = compose(
         plan,

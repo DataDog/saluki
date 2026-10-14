@@ -90,9 +90,12 @@ async fn call(app: &App, method: &str, path: &str, body: Option<Value>) -> (Stat
     (status, value)
 }
 
+/// The demo export's program as the editor prints it, with its base stated, so that it compiles where the export is
+/// not at hand to give the base back.
 fn export_source() -> String {
     let export = ExportBundle::from_value(serde_json::from_str(DEMO_EXPORT).unwrap()).unwrap();
-    default_program_source(&export)
+    let base = format!("policy metrics {{\n  base \"{}\"\n\n", export.program_hash());
+    default_program_source(&export).replacen("policy metrics {\n", &base, 1)
 }
 
 /// Records a poll from ADP whose status carries the given active plan hash and revision high-water mark.
@@ -228,7 +231,7 @@ async fn the_compile_api_returns_placed_diagnostics_and_checks_against_the_expor
     let diagnostic = &body["diagnostics"][0];
     assert_eq!(diagnostic["severity"], "error");
     assert_eq!(diagnostic["origin"], "check");
-    assert_eq!(diagnostic["range"]["line"], 39);
+    assert_eq!(diagnostic["range"]["line"], 46);
     assert!(diagnostic["message"]
         .as_str()
         .unwrap()
@@ -280,9 +283,9 @@ async fn the_compile_api_composes_into_the_default_program_adp_serves_as_the_rev
         .unwrap()
         .replacen("\n    -> metrics_policy\n", "\n    -> drop_debug\n", 1)
         .replacen(
-            "  # Policy:",
-            "  node drop_debug = split(name starts_with \"demo.debug.\") {\n    true  -> drop\n    false -> \
-             metrics_policy\n  }\n\n  # Policy:",
+            "\n  node metrics_policy = ",
+            "\n  node drop_debug = split(name starts_with \"demo.debug.\") {\n    true  -> drop\n    false -> \
+             metrics_policy\n  }\n\n  node metrics_policy = ",
             1,
         );
     let (status, body) = call(app, "POST", "/api/compile", Some(json!({ "source": source }))).await;
@@ -532,13 +535,17 @@ async fn publishing_resources_approves_exactly_the_last_checked_draft_once_and_c
     assert_eq!(state["channel"]["resources"]["current"], Value::Null);
 }
 
-/// Returns the source of the default program with both of its windows set to `window`.
+/// Returns the source of the default program with both of its windows set to `window`, with its base stated, since
+/// the app these tests compile through has no export to give it back.
 fn width_source(window: &str) -> String {
     let (_, export) = crate::preview::tests::fixture();
-    default_program_source(&export).replace(
-        "window: config(\"dogstatsd.aggregation.window_duration_seconds\")",
-        &format!("window: {}", window),
-    )
+    let base = format!("policy metrics {{\n  base \"{}\"\n\n", export.program_hash());
+    default_program_source(&export)
+        .replacen("policy metrics {\n", &base, 1)
+        .replace(
+            "window: config(\"dogstatsd.aggregation.window_duration_seconds\")",
+            &format!("window: {}", window),
+        )
 }
 
 /// Returns the default program with both of its windows set to `window`, compiled.

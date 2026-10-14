@@ -473,6 +473,145 @@ fn a_width_only_edit_gives_every_lossy_node_downstream_of_aggregation_the_artifa
     );
 }
 
+/// Renames node `from` of an artifact document `to`, and the edges at its ports.
+fn rename_node(document: &mut Value, from: &str, to: &str) {
+    node_mut(document, from)["id"] = json!(to);
+    for edge in document["edges"].as_array_mut().unwrap() {
+        for end in ["from", "to"] {
+            let port = edge[end].as_str().unwrap().to_string();
+            if let Some(rest) = port.strip_prefix(&format!("{}.", from)) {
+                edge[end] = json!(format!("{}.{}", to, rest));
+            }
+        }
+    }
+}
+
+#[test]
+fn the_one_aggregation_keeps_the_default_programs_id_and_lineage_whatever_the_artifact_calls_it() {
+    let plan = unified_plan();
+    let correspondence = |composed: &Composed, node: &str| {
+        let found = composed.correspondence.get(&node.parse().unwrap()).unwrap();
+        (found.node.to_string(), found.kind)
+    };
+    let aggregation = |composed: &Composed| {
+        let changes = diff_with_correspondence(&plan, &composed.plan, &composed.correspondence, &registry());
+        let owner = changes
+            .diff
+            .state_owners
+            .iter()
+            .find(|owner| owner.node == id("dsd_agg"))
+            .cloned();
+        (
+            owner.map(|owner| (owner.class, owner.change)),
+            changes.diff.cut().is_some(),
+        )
+    };
+
+    // Renamed and otherwise unmodified, the aggregation is the default program's own: the composed plan is the default
+    // program, and the diff keeps aggregation's lineage with no cut. The correspondence speaks of `agg`.
+    let renamed = composed(edited(|document| rename_node(document, "dsd_agg", "agg"))).unwrap();
+    assert!(renamed.report.findings().is_empty(), "{}", renamed.report);
+    assert_eq!(
+        correspondence(&renamed, "agg"),
+        ("dsd_agg".to_string(), CorrespondenceKind::Unmodified)
+    );
+    assert_eq!(
+        renamed.plan.hash(ResolvedValues::Include).unwrap(),
+        plan.hash(ResolvedValues::Include).unwrap()
+    );
+    assert_eq!(
+        aggregation(&renamed),
+        (Some((TransitionClass::Retain, StateOwnerChange::Kept)), false)
+    );
+
+    // Renamed and widened: still `dsd_agg`, now the artifact's, and a new width is a cut, as without the rename.
+    let widened = composed(edited(|document| {
+        widen(document);
+        rename_node(document, "dsd_agg", "agg");
+    }))
+    .unwrap();
+    assert!(widened.report.findings().is_empty(), "{}", widened.report);
+    assert_eq!(
+        correspondence(&widened, "agg"),
+        ("dsd_agg".to_string(), CorrespondenceKind::Modified)
+    );
+    let plain = composed(edited(widen)).unwrap();
+    assert_eq!(aggregation(&widened), aggregation(&plain));
+    assert!(aggregation(&widened).1, "a new width is a cut");
+
+    // Renamed and fed otherwise, through a new split ahead of it: still `dsd_agg`, now the artifact's, since what can
+    // lose records keeps native authority only fed as natively; its lineage parameters are unchanged, so it keeps its
+    // state, with no cut.
+    let refed = composed(edited(|document| {
+        rename_node(document, "dsd_agg", "agg");
+        add_nodes(
+            document,
+            &[
+                json!({"id": "drop_debug", "op": "split",
+                       "params": {"predicate": {"name": {"prefix": "debug."}}}}),
+                json!({"id": "drop_debug_true", "op": "drop"}),
+            ],
+        );
+        replace_edge(
+            document,
+            "dsd_tag_filterlist.out",
+            "agg.in",
+            &[
+                ("dsd_tag_filterlist.out", "drop_debug.in"),
+                ("drop_debug.true", "drop_debug_true.in"),
+                ("drop_debug.false", "agg.in"),
+            ],
+        );
+    }))
+    .unwrap();
+    assert!(refed.report.findings().is_empty(), "{}", refed.report);
+    assert_eq!(
+        correspondence(&refed, "agg"),
+        ("dsd_agg".to_string(), CorrespondenceKind::Modified)
+    );
+    assert_eq!(
+        aggregation(&refed),
+        (Some((TransitionClass::Retain, StateOwnerChange::Kept)), false)
+    );
+
+    // A host that does not restrict programs to one aggregation places the renamed node in the artifact's namespace,
+    // as a new state owner.
+    let mut document = serde_json::to_value(unified_catalog(&plan)).unwrap();
+    document.as_object_mut().unwrap().remove("single_aggregation");
+    let catalog = serde_json::from_value::<MemoryCatalog>(document).unwrap();
+    let artifact = received(edited(|document| rename_node(document, "dsd_agg", "agg")));
+    let unrestricted = compose_all(&plan, &[(&artifact, &approval(1))], &catalog, &registry()).unwrap();
+    assert_eq!(
+        correspondence(&unrestricted, "agg"),
+        ("policy/agg".to_string(), CorrespondenceKind::Added)
+    );
+
+    // With two aggregations, neither takes the reserved ID in place of its own, and validation refuses the second.
+    let two = composed(edited(|document| {
+        rename_node(document, "dsd_agg", "agg");
+        let mut second = node_mut(document, "agg").clone();
+        second["id"] = json!("late_agg");
+        document["nodes"].as_array_mut().unwrap().push(second);
+        replace_edge(
+            document,
+            "metrics_enrich_host_tags.out",
+            "metrics_policy.in",
+            &[
+                ("metrics_enrich_host_tags.out", "late_agg.in"),
+                ("late_agg.out", "metrics_policy.in"),
+            ],
+        );
+    }))
+    .unwrap();
+    assert_eq!(correspondence(&two, "agg").0, "policy/agg");
+    assert_eq!(correspondence(&two, "late_agg").0, "policy/late_agg");
+    assert!(
+        two.report.errors().any(|error| error.rule == Rule::SingleAggregation),
+        "{}",
+        two.report
+    );
+}
+
 // 5 and 6. Installation through the installer core.
 
 /// The host's composer: [`compose_all`] over the re-scoped boot plan and its catalog.

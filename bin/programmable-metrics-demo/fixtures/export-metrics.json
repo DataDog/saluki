@@ -85,22 +85,22 @@
       "dd_metrics_encode": {
         "accepts": { "kinds": "all", "timestamps": "mixed" },
         "fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-        "recipients": ["dd_out/primary/0"]
+        "recipients": ["dd_out/primary/0/http://127.0.0.1:17101"]
       },
       "metrics_routing_encode_0": {
         "accepts": { "kinds": "all", "timestamps": "mixed" },
         "fingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
-        "recipients": ["dd_out/additional_0/0"]
+        "recipients": ["dd_out/additional/0/http://127.0.0.1:17102"]
       },
       "metrics_routing_encode_1": {
         "accepts": { "kinds": "all", "timestamps": "mixed" },
         "fingerprint": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
-        "recipients": ["dd_out/additional_1/0"]
+        "recipients": ["dd_out/additional/0/http://127.0.0.1:17103"]
       },
       "mrf_metrics_encode": {
         "accepts": { "kinds": "all", "timestamps": "mixed" },
         "fingerprint": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
-        "recipients": ["mrf_dd_out/primary/0"],
+        "recipients": ["mrf_dd_out/primary/0/http://127.0.0.1:17104"],
         "label": "Multi-region failover"
       }
     },
@@ -128,11 +128,13 @@
       "multi_region_failover.enabled": {
         "type": { "type": "bool" },
         "liveness": "startup",
+        "class": "fact",
         "value": true
       },
       "multi_region_failover.metric_mirroring.enabled": {
         "type": { "type": "bool" },
         "liveness": "live",
+        "class": "signal",
         "value": false
       },
       "multi_region_failover.metric_mirroring.allowlist": {
@@ -147,11 +149,42 @@
       }
     },
     "single_aggregation": true,
+    "recipients": {
+      "primary": {
+        "recipients": ["dd_out/primary/0/http://127.0.0.1:17101"], "host": "dd_out", "endpoint": "http://127.0.0.1:17101",
+        "source": "native"
+      },
+      "http://127.0.0.1:17102": {
+        "recipients": ["dd_out/additional/0/http://127.0.0.1:17102"], "host": "dd_out", "endpoint": "http://127.0.0.1:17102", "source": "native"
+      },
+      "http://127.0.0.1:17103": {
+        "recipients": ["dd_out/additional/0/http://127.0.0.1:17103"], "host": "dd_out", "endpoint": "http://127.0.0.1:17103", "source": "native"
+      },
+      "mrf": {
+        "recipients": ["mrf_dd_out/primary/0/http://127.0.0.1:17104"], "host": "mrf_dd_out", "endpoint": "http://127.0.0.1:17104",
+        "source": "native"
+      }
+    },
     "future_member": "ignored"
   },
   "labels": {
     "dd_metrics_encode": "Primary",
     "metrics_routing_encode_0": "Team B",
     "metrics_routing_encode_1": "Team C"
+  },
+  "annotations": {
+    "nodes": {
+      "dsd_enrich": "DogStatsD mapper: renames and tags by `dogstatsd_mapper_profiles`",
+      "dsd_agg": "Aggregation; edits keep its state unless they change its window or lineage",
+      "metrics_enrich": "Host enrichment: leaves metrics unchanged",
+      "metrics_policy": "Policy: one branch per output; route here",
+      "metrics_routing_filter_0": "Endpoint routing to http://127.0.0.1:17102",
+      "metrics_routing_filter_1": "Endpoint routing to http://127.0.0.1:17103",
+      "mrf_metrics_gateway": "Multi-Region Failover: mirrors listed, or all, metrics while failing over"
+    },
+    "bindings": {
+      "multi_region_failover.metric_mirroring.enabled": "signal: Whether a regional failover mirrors metrics now."
+    },
+    "future_member": "ignored"
   }
 }

@@ -57,19 +57,24 @@ fn layout(artifact: &PolicyArtifact, options: &PrintOptions, width: usize) -> St
 
     let mut sections = Vec::new();
 
-    let mut base = String::new();
+    let mut base = Vec::new();
     if artifact.ir_version != IR_VERSION {
-        base.push_str(&format!("{}ir_version {}\n", pad(INDENT), artifact.ir_version));
+        base.push(format!("{}ir_version {}", pad(INDENT), artifact.ir_version));
     }
-    base.push_str(&format!("{}base \"{}\"", pad(INDENT), artifact.base.program_hash));
-    if !options.elide_fingerprints && !artifact.base.outputs.is_empty() {
-        base.push_str(&format!("\n{}outputs {{\n", pad(INDENT)));
-        for (output, fingerprint) in &artifact.base.outputs {
-            base.push_str(&format!("{}{} = \"{}\",\n", pad(2 * INDENT), output, fingerprint));
+    if !options.elide_base {
+        let mut statement = format!("{}base \"{}\"", pad(INDENT), artifact.base.program_hash);
+        if !options.elide_fingerprints && !artifact.base.outputs.is_empty() {
+            statement.push_str(&format!("\n{}outputs {{\n", pad(INDENT)));
+            for (output, fingerprint) in &artifact.base.outputs {
+                statement.push_str(&format!("{}{} = \"{}\",\n", pad(2 * INDENT), output, fingerprint));
+            }
+            statement.push_str(&format!("{}}}", pad(INDENT)));
         }
-        base.push_str(&format!("{}}}", pad(INDENT)));
+        base.push(statement);
     }
-    sections.push(base);
+    if !base.is_empty() {
+        sections.push(base.join("\n"));
+    }
 
     let mut inputs = Vec::new();
     let mut dangling = Vec::new();

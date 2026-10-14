@@ -496,6 +496,14 @@ pub fn queue_endpoint(route: MetricsRecipientRoute, configured: &str) -> String 
     if route == MetricsRecipientRoute::Additional {
         return configured.to_string();
     }
+    resolved_endpoint(configured)
+}
+
+/// Returns an endpoint configured as `configured` as the forwarder resolves it, spelled for people: with its scheme
+/// (`https` when the configuration leaves it out), without its root path, and with the data plane's version label,
+/// which the forwarder puts in place of a Datadog intake's leading `app` label, written as that `app` label. An
+/// endpoint the forwarder cannot resolve is spelled as configured.
+pub fn resolved_endpoint(configured: &str) -> String {
     let Ok(mut resolved) = parse_and_normalize_endpoint(configured) else {
         return configured.to_string();
     };

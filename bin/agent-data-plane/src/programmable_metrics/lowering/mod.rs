@@ -24,8 +24,8 @@
 //!   the group's names or starts with one of its prefixes (both lists bound to the group, by its key);
 //! - the multi-region failover gateway selects every metric while failover is enabled and metric mirroring is on (both
 //!   live flags), and only the metrics its live allowlist names when that allowlist is not empty;
-//! - the autoscaling failover gateway selects the scalar series (counters, rates, gauges, and sets) whose name is one
-//!   of the configured list of metrics.
+//! - the autoscaling failover gateway selects, while autoscaling failover is enabled (a live flag), the scalar series
+//!   (counters, rates, gauges, and sets) whose name is one of the configured list of metrics.
 //!
 //! Each predicate matches as the gateway's native component does: routing groups compare the intake name (normalized
 //! as the intake stores it), the failover gateways the raw name, and nothing but a metric is selected.
@@ -45,9 +45,10 @@
 //! Every configuration-derived parameter is bound to a [binding](super::bindings) and carries its resolved value:
 //! `Startup` bindings from the startup configuration, `Live` ones from the current configuration. So re-lowering with
 //! a changed live input changes only the parameters bound to it and the structure that follows it, and re-lowering
-//! with a changed startup-only input changes nothing, as natively. Host facts (the host tags and their deadline) and
-//! structural parameters (port counts, source bindings, the kinds a gateway selects, and whether a list holds names or
-//! prefixes) are literals. A flag or an emptiness test over a bound value stays in the program as written; only
+//! with a changed startup-only input changes nothing, as natively. Host facts (the host tags and their deadline) are
+//! bound to fact bindings (`host.tags`, `host.tags_deadline`), which resolve from the host facts. Structural parameters
+//! (port counts, source bindings, the kinds a gateway selects, and whether a list holds names or prefixes) are
+//! literals. A flag or an emptiness test over a bound value stays in the program as written; only
 //! compiled programs fold it.
 //!
 //! # Errors
@@ -70,7 +71,7 @@
 //! [`LoweringNote`]: today, only histogram statistics listed more than once, which the plan computes once while native
 //! aggregation emits them once per listing.
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use agent_data_plane_config::SalukiConfiguration;
 use saluki_components::transforms::HistogramConfiguration;
@@ -92,8 +93,8 @@ use super::{
     catalog::{scope_input_name, AdpCatalog, METRICS_SCOPE},
     host_facts::{host_tags_enabled, HostFacts},
     resources::{
-        cluster_agent_forwarder, Declared, FixedHosts, NativeOutputs, NativeResources, OutputKind, RoutingGroup,
-        DSD_CLIENT_TELEMETRY, DSD_CLIENT_TELEMETRY_OUT,
+        cluster_agent_forwarder, spelled_endpoint, Declared, FixedHosts, NativeOutputs, NativeResources, OutputKind,
+        RoutingGroup, DSD_CLIENT_TELEMETRY, DSD_CLIENT_TELEMETRY_OUT,
     },
 };
 use crate::{
@@ -159,6 +160,62 @@ pub struct LoweringNote {
     pub message: String,
 }
 
+/// What each node of the default program stands for, as a note tools print above it: lowering, the compatibility
+/// layer, knows which native component and setting each node comes from.
+///
+/// Endpoint routing groups' filters are noted with their endpoints when lowered ([`Program::policy`]); a node not
+/// listed has no note.
+const ANNOTATIONS: &[(&str, &str)] = &[
+    (
+        ids::DSD_ENRICH,
+        "DogStatsD mapper: renames and tags by `dogstatsd_mapper_profiles`",
+    ),
+    (
+        ids::DSD_PREFIX_FILTER,
+        "Namespace prefix, from `statsd_metric_namespace`, except blocklisted names",
+    ),
+    (
+        ids::DSD_PREFIX_FILTER_BLOCKLIST,
+        "Metric filterlist, from `metric_filterlist`: matches drop",
+    ),
+    (
+        ids::DSD_NO_AGG_SPLIT,
+        "Timestamped points skip aggregation (no-aggregation pipeline)",
+    ),
+    (
+        ids::DSD_TAG_FILTERLIST,
+        "Tag filterlist and value rules: `metric_tag_filterlist`, `metric_tag_value_allowlist`",
+    ),
+    (
+        ids::DSD_AGG,
+        "Aggregation; edits keep its state unless they change its window or lineage",
+    ),
+    (ids::DSD_POST_AGG_FILTER_IN, "Aggregated and timestamped points rejoin"),
+    (
+        ids::DSD_POST_AGG_FILTER,
+        "Drops filterlisted histogram statistics, after aggregation",
+    ),
+    (
+        ids::DSD_POST_AGG_FILTER_FANOUT,
+        "Copies every metric to the client telemetry tap and to enrichment",
+    ),
+    (ids::METRICS_ENRICH_IN, "Every source's metrics, to enrichment"),
+    (ids::METRICS_ENRICH, "Host enrichment: leaves metrics unchanged"),
+    (
+        ids::METRICS_ENRICH_HOST_TAGS,
+        "Adds the host's tags (a fact) until `expected_tags_duration` passes",
+    ),
+    (ids::METRICS_POLICY, "Policy: one branch per output; route here"),
+    (
+        ids::MRF_METRICS_GATEWAY,
+        "Multi-Region Failover: mirrors listed, or all, metrics while failing over",
+    ),
+    (
+        ids::AF_METRICS_GATEWAY,
+        "Autoscaling failover: listed scalar series to the Cluster Agent",
+    ),
+];
+
 /// The default program, and what the host declares for it.
 #[derive(Clone, Debug)]
 pub struct Lowered {
@@ -170,6 +227,10 @@ pub struct Lowered {
 
     /// Where lowering departs from the configuration as written.
     pub notes: Vec<LoweringNote>,
+
+    /// What each node stands for, in one line, as tools print it above the node: the native component and setting
+    /// it comes from. Not part of the program.
+    pub annotations: BTreeMap<NodeId, String>,
 
     /// The outputs, recipients, and host settings the program delivers through, as resolved for it.
     pub resources: NativeResources,
@@ -278,7 +339,11 @@ impl Lowering {
             &previous.resources,
         )?;
         let dp = DataPlaneConfiguration::from_configuration(startup);
-        let snapshots = Snapshots { startup, current };
+        let snapshots = Snapshots {
+            startup,
+            current,
+            facts: &self.facts,
+        };
         let mut program = Program::new(snapshots);
         let mut notes = Vec::new();
 
@@ -327,8 +392,8 @@ impl Lowering {
         let mut plan = Plan {
             ir_version: IR_VERSION,
             provenance: None,
-            nodes: program.nodes,
-            edges: program.edges,
+            nodes: std::mem::take(&mut program.nodes),
+            edges: std::mem::take(&mut program.edges),
             outputs: resolved.outputs.decls(),
             scopes: Default::default(),
             resources: resolved.resources.clone(),
@@ -348,11 +413,19 @@ impl Lowering {
             .map(|(binding, _, timestamps)| (scope_input_name(binding), binding.port_type(timestamps)))
             .collect::<Vec<(_, PortType)>>();
 
-        let catalog = AdpCatalog::new(&resolved.outputs, snapshots, self.hosts).with_scope_inputs(declared);
+        let catalog = AdpCatalog::new(&resolved, snapshots, self.hosts).with_scope_inputs(declared);
+        let mut annotations = program.annotations;
+        for (id, note) in ANNOTATIONS {
+            let id = node_id(id);
+            if plan.node(&id).is_some() {
+                annotations.insert(id, note.to_string());
+            }
+        }
         Ok(Lowered {
             plan,
             catalog,
             notes,
+            annotations,
             resources: resolved,
         })
     }
@@ -444,6 +517,8 @@ struct Program<'a> {
     snapshots: Snapshots<'a>,
     nodes: Vec<Node>,
     edges: Vec<Edge>,
+    /// Notes of nodes whose note depends on the configuration, beside [`ANNOTATIONS`].
+    annotations: BTreeMap<NodeId, String>,
 }
 
 impl<'a> Program<'a> {
@@ -452,6 +527,7 @@ impl<'a> Program<'a> {
             snapshots,
             nodes: Vec::new(),
             edges: Vec::new(),
+            annotations: BTreeMap::new(),
         }
     }
 
@@ -701,19 +777,21 @@ impl<'a> Program<'a> {
         let mut enriched = PortRef::new(enrichment, port("out"));
 
         if host_tags_enabled(startup) {
-            let tags = facts.host_tags.as_ref().ok_or_else(|| {
-                generic_error!("Host tags enrichment is enabled, but the host facts carry no host tags.")
-            })?;
-            let tags = tags.into_iter().map(|tag| tag.as_str().to_string()).collect::<Vec<_>>();
-            // A whole number of seconds within the plan's integers, which a plan duration always represents.
-            let deadline = facts.host_tags_deadline(startup.shared.tags.expected_tags_duration);
-            let deadline = format_duration(deadline).ok_or_else(|| {
-                generic_error!("The host tags deadline cannot be written as a duration; this is a lowering bug.")
-            })?;
+            if facts.host_tags.is_none() {
+                return Err(generic_error!(
+                    "Host tags enrichment is enabled, but the host facts carry no host tags."
+                ));
+            }
+            // Both are facts of the host. The deadline is a whole number of seconds within the plan's integers, which a
+            // plan duration always represents.
+            let params = json!({
+                "tags": self.bound("host.tags")?,
+                "deadline": self.bound("host.tags_deadline")?,
+            });
             let host_tags = self.node(
                 ids::METRICS_ENRICH_HOST_TAGS,
                 names::HOST_TAGS,
-                json!({"tags": tags, "deadline": deadline}),
+                params,
                 ids::METRICS_ENRICH,
             );
             self.edge(enriched, &host_tags, "in");
@@ -749,7 +827,18 @@ impl<'a> Program<'a> {
                     self.terminal(&policy, &branch, names::EMIT, emit, &output.component);
                     continue;
                 }
-                OutputKind::RoutingGroup(group) => (ids::routing_filter(group.index), self.routing_group(group)?),
+                OutputKind::RoutingGroup(group) => {
+                    let filter = ids::routing_filter(group.index);
+                    // As status spells endpoints: never with what userinfo may hold.
+                    let endpoints = group
+                        .endpoints
+                        .iter()
+                        .map(|endpoint| spelled_endpoint(endpoint))
+                        .collect::<Vec<_>>();
+                    let note = format!("Endpoint routing to {}", endpoints.join(", "));
+                    self.annotations.insert(node_id(&filter), note);
+                    (filter, self.routing_group(group)?)
+                }
                 OutputKind::MultiRegionFailover => {
                     (ids::MRF_METRICS_GATEWAY.to_string(), self.multi_region_failover()?)
                 }
@@ -788,11 +877,13 @@ impl<'a> Program<'a> {
         ]}))
     }
 
-    /// Returns the predicate of the autoscaling failover gateway: a scalar series (a counter, rate, gauge, or set)
-    /// whose raw name is one of the configured metrics.
+    /// Returns the predicate of the autoscaling failover gateway: a scalar series (a counter, rate, gauge, or set),
+    /// while autoscaling failover is enabled (a live signal, always true in the default program, whose branch exists
+    /// only then), whose raw name is one of the configured metrics.
     fn autoscaling_failover(&self) -> Result<Value, GenericError> {
         Ok(json!({"all": [
             {"kind_in": ["counter", "rate", "gauge", "set"]},
+            {"flag": self.bound("autoscaling_failover.enabled")?},
             {"name": {"matches": {"values": self.bound("autoscaling_failover.metrics")?, "prefix": false}}},
         ]}))
     }

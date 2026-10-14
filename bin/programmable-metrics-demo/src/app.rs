@@ -484,7 +484,14 @@ async fn compile_source(State(app): State<App>, Json(request): Json<CompileReque
     // The source is checked against the export of the default program's one scope, which every artifact replaces; one
     // that names another scope is refused by composition, which names the scope ADP declares. ADP composes it with the
     // artifacts it runs for any other scope, which, with one scope declared, are none.
-    let scope = saluki_metric_plan_syntax::parse(&request.source)
+    // The editor prints programs without their base, which only the scope's name is read past here.
+    let any_base = saluki_metric_plan_syntax::ParseOptions {
+        base: Some(saluki_metric_plan::ir::ArtifactBase {
+            program_hash: PlanHash::from_digest([0; 32]),
+            outputs: Default::default(),
+        }),
+    };
+    let scope = saluki_metric_plan_syntax::parse_with(&request.source, &any_base)
         .map(|parsed| parsed.artifact.scope.to_string())
         .unwrap_or_else(|_| POLICY_SCOPE.to_string());
     let exported = app.control.export_with_default_program();

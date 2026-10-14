@@ -111,61 +111,9 @@ fn changed_parameters(old: &Plan, new: &Plan) -> BTreeSet<String> {
 async fn every_branch_lowers_to_the_designed_default_program() {
     let lowered = lowered(EVERY_BRANCH).await;
 
-    // Fingerprints are digests of the documented binding documents, written here by hand.
-    let documents = [
-        (
-            "dsd_client_telemetry",
-            json!({"encoder": {"destination": "dsd_client_telemetry_out"}, "forwarder": null, "recipients": []}),
-        ),
-        (
-            "dd_metrics_encode",
-            json!({
-                "encoder": {"type": "datadog_metrics",
-                            "endpoint_routing": {"all_except": ["https://b.example.com", "https://c.example.com"]}},
-                "forwarder": "dd_out",
-                "recipients": ["dd_out/primary/0/https://primary.example.com"],
-            }),
-        ),
-        (
-            "metrics_routing_encode_0",
-            json!({
-                "encoder": {"type": "datadog_metrics", "endpoint_routing": {"only": ["https://c.example.com"]}},
-                "forwarder": "dd_out",
-                "recipients": ["dd_out/additional/0/https://c.example.com"],
-            }),
-        ),
-        (
-            "metrics_routing_encode_1",
-            json!({
-                "encoder": {"type": "datadog_metrics", "endpoint_routing": {"only": ["https://b.example.com"]}},
-                "forwarder": "dd_out",
-                "recipients": [
-                    "dd_out/additional/0/https://b.example.com",
-                    "dd_out/additional/1/https://b.example.com",
-                ],
-            }),
-        ),
-        (
-            "mrf_metrics_encode",
-            json!({
-                "encoder": {"type": "datadog_metrics", "metrics_endpoint_override": "https://mrf.example.com"},
-                "forwarder": "mrf_dd_out",
-                "recipients": ["mrf_dd_out/primary/0/https://mrf.example.com"],
-            }),
-        ),
-        (
-            "af_metrics_encode",
-            json!({
-                "encoder": {"type": "datadog_metrics", "v2_series_only": true},
-                "forwarder": "cluster_agent_out",
-                "recipients": ["cluster_agent_out/primary/0/https://cluster-agent.example.com:5005"],
-            }),
-        ),
-    ];
     let mut plan = lowered.plan.clone();
-    assert_eq!(plan.outputs.len(), documents.len());
-    // Those are the version 1 fingerprints, which each native output keeps. Version 2 covers each output's host, the
-    // records it accepts, and its selector: these are the SHA-256 digests, computed with `shasum -a 256`, of
+    // A bound output's fingerprint, version 2, covers its host, the records it accepts, and its selector: these are the
+    // SHA-256 digests, computed with `shasum -a 256`, of
     // `{"accepts":<port type>,"host":<host>,"selector":<selector>,"v":2}` written out by hand, a routing group's
     // selector being the digest of its endpoints' list, `["https://c.example.com"]` for group 0 and
     // `["https://b.example.com"]` for group 1.
@@ -203,15 +151,9 @@ async fn every_branch_lowers_to_the_designed_default_program() {
             Some("sha256:608361af9ff1be71390572e16f40425d91adeab874b3f89d17435918832514ff"),
         ),
     ];
-    for ((output, (id, document)), (_, bound, fingerprint)) in plan.outputs.iter_mut().zip(documents).zip(version_2) {
+    assert_eq!(plan.outputs.len(), version_2.len());
+    for (output, (id, bound, fingerprint)) in plan.outputs.iter_mut().zip(version_2) {
         assert_eq!(output.id.as_str(), id);
-        let native = lowered.resources.outputs.get(id).unwrap();
-        assert_eq!(
-            native.legacy_fingerprint,
-            Some(PlanHash::of_value(&document).unwrap()),
-            "{}",
-            id
-        );
         match (output.binding.take(), bound, fingerprint) {
             (Some(binding), Some((host, selector)), Some(fingerprint)) => {
                 assert_eq!(binding.host.as_str(), host, "{}", id);
@@ -219,8 +161,10 @@ async fn every_branch_lowers_to_the_designed_default_program() {
                 assert_eq!(binding.telemetry.as_str(), id);
                 assert_eq!(output.fingerprint.to_string(), fingerprint, "{}", id);
             }
-            // A fixed destination keeps its fingerprint.
+            // A fixed destination keeps its fingerprint: the digest of its destination's document.
             (None, None, None) => {
+                let document = json!({"encoder": {"destination": "dsd_client_telemetry_out"}, "forwarder": null,
+                                      "recipients": []});
                 assert_eq!(output.fingerprint, PlanHash::of_value(&document).unwrap(), "{}", id);
             }
             (binding, ..) => panic!("output `{}` has binding {:?}", id, binding),
@@ -1121,7 +1065,10 @@ async fn host_tags_deadlines_are_whole_seconds_whatever_the_process_start() {
         .lower(&config)
         .unwrap();
     let host_tags = lowered.plan.node(&"metrics_enrich_host_tags".parse().unwrap()).unwrap();
-    assert_eq!(host_tags.params.get("deadline"), Some(&json!("1700000301s")));
+    assert_eq!(
+        host_tags.params.get("deadline"),
+        Some(&json!({"config": "host.tags_deadline", "resolved": "1700000301s"}))
+    );
     assert!(validate(&lowered.plan, &lowered.catalog).findings().is_empty());
 }
 

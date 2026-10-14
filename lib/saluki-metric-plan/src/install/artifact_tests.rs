@@ -79,10 +79,9 @@ fn marker_of(artifact: &ReceivedArtifact) -> String {
 /// that does not validate; `uncomposable` cannot be composed; and `fragile` cannot be composed once the configuration
 /// changed, as an artifact whose output was removed.
 ///
-/// Two markers stand for the outcomes of stage 7: `degradable` (or any marker it starts) records `af_metrics_encode`,
+/// One marker stands for the outcomes of stage 7: `degradable` (or any marker it starts) records `af_metrics_encode`,
 /// which a changed configuration no longer declares, so that a new artifact waits for it and the artifact in effect
-/// composes with its emits dropped; and `legacy` records the main output with a version 1 fingerprint that still
-/// matches.
+/// composes with its emits dropped.
 pub(super) struct TestComposer {
     /// The post-aggregation filter of the default program the host last lowered.
     pub(super) configuration: Cell<&'static str>,
@@ -104,11 +103,6 @@ impl TestComposer {
     }
 }
 
-/// The version 2 fingerprint the `legacy` artifact's composition reports for the main output.
-fn legacy_fingerprint() -> PlanHash {
-    PlanHash::of_bytes(b"the main output's version 2 fingerprint")
-}
-
 impl Composer for TestComposer {
     fn compose_all(&self, artifacts: &[(&ReceivedArtifact, &Approval)]) -> Result<Composed, ComposeError> {
         let [(artifact, approval)] = artifacts else {
@@ -121,7 +115,6 @@ impl Composer for TestComposer {
         self.approvals.borrow_mut().push((marker.clone(), (*approval).clone()));
         let removed = OutputId::new("af_metrics_encode").unwrap();
         let mut outcome = ComposeOutcome::Composed;
-        let mut legacy_outputs = BTreeMap::new();
         let degradable = marker.starts_with("degradable");
         match marker.as_str() {
             _ if degradable && configuration != BOOT_POST_AGGREGATION && approval.in_effect => {
@@ -133,10 +126,6 @@ impl Composer for TestComposer {
             }
             _ if degradable && configuration != BOOT_POST_AGGREGATION => {
                 return Err(ComposeError::PendingOutput { output: removed });
-            }
-            "legacy" => {
-                let output = OutputId::new("dd_metrics_encode").unwrap();
-                legacy_outputs.insert(output, legacy_fingerprint());
             }
             _ => {}
         }
@@ -165,7 +154,6 @@ impl Composer for TestComposer {
             stale_base,
             stale_review,
             outcome,
-            legacy_outputs,
         };
         Ok(Composed {
             plan,
@@ -1719,38 +1707,65 @@ fn the_artifact_in_effect_composes_with_its_emits_to_a_removed_output_dropped_an
 }
 
 #[test]
-fn a_version_1_base_that_composed_gives_its_kept_fingerprints_to_every_later_composition() {
-    // Plan 4.5 (P7.3 design note R2): the installer keeps the version 2 fingerprints a composition accepted for a
-    // version 1 base, and gives them back as `Approval::upgraded`, so that the base follows version 2 from then on.
+fn a_config_held_unchanged_beside_a_damaged_twin_of_its_id_still_counts_for_its_scope() {
+    // Found by `property_test_the_high_water_mark_never_decreases_and_only_accepted_plans_run`: the core tracks configs
+    // by ID, so the damaged twin's refusal replaced what was tracked for `other`, and the next snapshot's unchanged
+    // `other` was not counted for the scope, which let `demo` install beside it.
+    let other = policy(1, "b").id("other");
     let mut host = Host::new();
-    host.step(&Deliver(vec![policy(3, "legacy")]));
-    host.step(&Acknowledge);
-    let ack = &host.core().config_states()[0];
-    assert_eq!(ack.state, ApplyState::Active);
+    host.step(&Deliver(vec![other.clone()]));
+    host.step(&Deliver(vec![
+        other.clone(),
+        policy(1, "a").id("other").damaged(Damage::TransportHash),
+    ]));
+    host.step(&Deliver(vec![policy(2, "a"), other]));
+
+    // Two configs for one scope: both are rejected, and the high-water mark stays at the revision accepted.
+    assert_eq!(host.core().status().revision_high_water, Some(1));
+    let demo = host
+        .core()
+        .config_states()
+        .into_iter()
+        .find(|ack| ack.id.as_str() == "demo")
+        .unwrap();
+    assert_eq!(demo.state, ApplyState::Rejected);
     assert!(
-        ack.error
-            .as_deref()
-            .unwrap()
-            .contains("rebase to fingerprint version 2"),
-        "the rebase note is the acknowledgment's: {:?}",
-        ack.error
+        demo.error.as_deref().unwrap().contains("one artifact replaces a scope"),
+        "{:?}",
+        demo.error
     );
-    host.step(&Configure("other"));
-    let approvals = host.composer.approvals.borrow();
-    let upgraded = approvals
-        .iter()
-        .map(|(_, approval)| approval.upgraded.clone())
-        .collect::<Vec<_>>();
-    let main = OutputId::new("dd_metrics_encode").unwrap();
-    assert_eq!(
-        upgraded.first(),
-        Some(&BTreeMap::new()),
-        "the first composition has nothing kept"
-    );
-    assert_eq!(
-        upgraded.last(),
-        Some(&BTreeMap::from([(main, legacy_fingerprint())])),
-        "the re-composition gets what the first one accepted"
+}
+
+#[test]
+fn a_kept_generation_that_fails_takes_its_document_out_of_effect_under_every_revision() {
+    // Found by `property_test_the_high_water_mark_never_decreases_and_only_accepted_plans_run`: `a` runs, `b` replaces
+    // it and `a`'s generation is kept, and `a` is delivered again under a newer revision. Supervision then fails the
+    // kept generation: the failure is the document's, so the candidate of `a`'s newer revision is dropped, as when the
+    // active generation fails, rather than installed.
+    let mut host = Host::new();
+    host.step(&Configure("x"));
+    host.step(&Deliver(vec![policy(1, "a")]));
+    host.step(&Acknowledge);
+    host.step(&Deliver(vec![policy(2, "b")]));
+    host.step(&Acknowledge);
+    let kept = host
+        .core()
+        .status()
+        .last_known_good
+        .expect("`a`'s generation is kept")
+        .id;
+    host.step(&Deliver(vec![policy(3, "a").version(3)]));
+    assert!(host.core().status().preparing.is_some(), "{}", host.summary());
+    host.step(&PanicIn(kept.get()));
+    assert!(host.core().status().preparing.is_none(), "{}", host.summary());
+    let summary = host.summary();
+    assert!(summary.contains("demo@2"), "`b` keeps running: {}", summary);
+    let ack = &host.core().config_states()[0];
+    assert_eq!(ack.state, ApplyState::Rejected, "{}", summary);
+    assert!(
+        ack.error.as_deref().unwrap().contains("failed under supervision"),
+        "{:?}",
+        ack.error
     );
 }
 

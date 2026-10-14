@@ -223,7 +223,6 @@ fn catalog() -> MemoryCatalog {
                     accepts: PortType::ANY,
                     fingerprint: fingerprint(output),
                     recipients: vec![RecipientId::new(format!("out/{}", output)).unwrap()],
-                    legacy_fingerprint: None,
                 },
             )
         })
@@ -535,7 +534,6 @@ fn bound_detour_plan() -> (Plan, MemoryCatalog, FrameHosts) {
             accepts: PortType::ANY,
             fingerprint,
             recipients: vec![RecipientId::new("out/out").unwrap()],
-            legacy_fingerprint: None,
         },
     );
     let hosts = FrameHosts::new().with_host(host, NativeComponentId::new("out_encode").unwrap());

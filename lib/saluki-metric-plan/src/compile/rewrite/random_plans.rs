@@ -385,7 +385,6 @@ pub(super) fn catalog() -> MemoryCatalog {
                 accepts: PortType::ANY,
                 fingerprint: fingerprint(&output),
                 recipients: vec![RecipientId::new(format!("out/{}", output)).expect("valid recipient ID")],
-                legacy_fingerprint: None,
             },
         )
     })

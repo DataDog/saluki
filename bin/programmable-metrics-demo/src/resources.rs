@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 
 use saluki_metric_plan::{
     canonical::PlanHash,
-    ir::{BindingName, HostId, InputName, OutputId, ScopeName, Selector},
+    ir::{BindingName, HostId, InputName, OutputId, RecipientName, ScopeName, Selector},
     model::PortType,
     resources::{
         credential_name, declared_recipient_id, fingerprint, validate, ResourcesArtifact, CREDENTIALS_NAMESPACE,
@@ -60,8 +60,12 @@ pub fn document_text(document: &Value) -> String {
     text
 }
 
+/// The recipient names ADP gives recipients of its own, which a resources artifact may not use.
+const RESERVED_RECIPIENT_NAMES: [&str; 3] = ["primary", "mrf", "cluster_agent"];
+
 /// What ADP declares about its delivery hosts, as far as resources artifacts need it: `dd_out` accepts declared
-/// recipients. It declares no output, binding, or scope, which a resources artifact never refers to.
+/// recipients, and the names ADP gives its own recipients are reserved. It declares no output, binding, or scope,
+/// which a resources artifact never refers to.
 pub struct DeclaredHosts;
 
 impl Catalog for DeclaredHosts {
@@ -75,6 +79,10 @@ impl Catalog for DeclaredHosts {
 
     fn scope_input(&self, _scope: &ScopeName, _input: &InputName) -> Option<PortType> {
         None
+    }
+
+    fn reserves_recipient_name(&self, name: &RecipientName) -> bool {
+        RESERVED_RECIPIENT_NAMES.contains(&name.as_str())
     }
 
     fn host(&self, host: &HostId) -> Option<HostSchema> {
@@ -406,6 +414,23 @@ mod tests {
         let fingerprints = DraftFingerprints::of_draft(&wrong_version.to_string());
         assert!(fingerprints.fingerprints.is_empty() && fingerprints.error.is_some());
         assert!(DraftFingerprints::of_draft("[").error.unwrap().contains("not JSON"));
+    }
+
+    #[test]
+    fn a_draft_may_not_name_a_recipient_as_adp_names_its_own() {
+        for name in RESERVED_RECIPIENT_NAMES {
+            let mut draft = team_d_template(&team_d());
+            draft["recipients"][0]["name"] = name.into();
+            draft["outputs"][0]["recipients"] = json!([name]);
+            let (checked, _) = check(&draft.to_string());
+            assert!(!checked.valid, "{}", name);
+            let error = checked.validation_error.unwrap();
+            assert!(
+                error.contains("is a name the host gives a recipient of its own"),
+                "{}",
+                error
+            );
+        }
     }
 
     #[test]

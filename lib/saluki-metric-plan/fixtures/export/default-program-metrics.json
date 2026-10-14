@@ -2,7 +2,7 @@
   "ir_version": 1,
   "scope": "metrics",
   "base": {
-    "program_hash": "sha256:713a08260cac7f1ba35d8859c12f5fd5a546d3c7a400a58bf385c857647ca907",
+    "program_hash": "sha256:4029566ae9cc3d0f84757f0e918039d5de70dd133f897ffbb0ed1457b75b77a3",
     "outputs": {
       "af_metrics_encode": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
       "dd_metrics_encode": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
@@ -27,7 +27,7 @@
     {"id": "dsd_post_agg_filter_fanout_0", "op": "emit", "params": {"output": "dsd_client_telemetry"}},
     {"id": "metrics_enrich_in", "op": "merge", "params": {"inputs": 5}},
     {"id": "metrics_enrich", "op": "host_enrichment"},
-    {"id": "metrics_enrich_host_tags", "op": "host_tags", "params": {"tags": ["cloud_provider:example", "zone:a"], "deadline": "1700000300s"}},
+    {"id": "metrics_enrich_host_tags", "op": "host_tags", "params": {"tags": {"config": "host.tags"}, "deadline": {"config": "host.tags_deadline"}}},
     {"id": "metrics_policy", "op": "tee", "params": {"ports": 5}},
     {"id": "metrics_policy_0", "op": "emit", "params": {"output": "dd_metrics_encode"}},
     {"id": "metrics_routing_filter_0", "op": "split", "params": {"predicate": {"any": [{"intake_name": {"matches": {"values": {"config": "metrics_endpoint_routing.group.0123456789abcdef.names"}, "prefix": false}}}, {"intake_name": {"matches": {"values": {"config": "metrics_endpoint_routing.group.0123456789abcdef.prefixes"}, "prefix": true}}}]}}},
@@ -39,7 +39,7 @@
     {"id": "mrf_metrics_gateway", "op": "split", "params": {"predicate": {"all": [{"flag": {"config": "multi_region_failover.enabled"}}, {"flag": {"config": "multi_region_failover.metric_mirroring.enabled"}}, {"any": [{"is_empty": {"config": "multi_region_failover.metric_mirroring.allowlist"}}, {"name": {"matches": {"values": {"config": "multi_region_failover.metric_mirroring.allowlist"}, "prefix": false}}}]}]}}},
     {"id": "mrf_metrics_gateway_true", "op": "emit", "params": {"output": "mrf_metrics_encode"}},
     {"id": "mrf_metrics_gateway_false", "op": "drop"},
-    {"id": "af_metrics_gateway", "op": "split", "params": {"predicate": {"all": [{"kind_in": ["counter", "rate", "gauge", "set"]}, {"name": {"matches": {"values": {"config": "autoscaling_failover.metrics"}, "prefix": false}}}]}}},
+    {"id": "af_metrics_gateway", "op": "split", "params": {"predicate": {"all": [{"kind_in": ["counter", "rate", "gauge", "set"]}, {"flag": {"config": "autoscaling_failover.enabled"}}, {"name": {"matches": {"values": {"config": "autoscaling_failover.metrics"}, "prefix": false}}}]}}},
     {"id": "af_metrics_gateway_true", "op": "emit", "params": {"output": "af_metrics_encode"}},
     {"id": "af_metrics_gateway_false", "op": "drop"}
   ],

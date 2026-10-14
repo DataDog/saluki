@@ -9,27 +9,28 @@
 //! diagnostic with a line, a column, and the span of the source it is about, so the editor can mark it.
 //!
 //! The editor shows programs printed with [`DISPLAY`]: narrow enough for the editor at 1280 pixels, and without the
-//! output fingerprints, which are long digests a reader does not edit. A source that lists no fingerprints gets them
-//! back from the export when it is compiled, as the syntax crate's documentation asks of tools that elide them; an
-//! output a resources artifact declares that the export does not list yet gets its fingerprint from the Resources tab's
-//! draft instead, so that a policy can wait for it (see [`compile_with_resources`]).
+//! `base` statement, whose program hash and output fingerprints are digests a reader does not edit. A source without
+//! a base gets the export's program hash when it is compiled, and the fingerprints of the outputs it emits to, as the
+//! syntax crate's documentation asks of tools that elide them; an output a resources artifact declares that the export
+//! does not list yet gets its fingerprint from the Resources tab's draft instead, so that a policy can wait for it
+//! (see [`compile_with_resources`]).
 //!
-//! The default program is the whole metrics path, so the editor prints it with a comment where each of its sections
-//! begins ([`with_sections`]): the sources' inputs, DogStatsD's processing, aggregation, what follows aggregation,
-//! enrichment, and the policy. Comments are not part of the artifact. The printed form writes edges in the syntax's
-//! canonical order, the edges from the scope's inputs first, in input-name order, while the export lists them in the
-//! default program's order: the compiled document then differs from the export in the order of its edges, and its
-//! artifact hash with it, but composition puts edges in the default program's order, so an unmodified program composes
-//! to the default program, with its hash.
+//! The default program is the whole metrics path, so the editor prints it with ADP's notes as comments ([`annotate`]):
+//! the note of each node, from lowering, which says what the node stands for, a line where the sources' inputs begin,
+//! and the recipient directory above the policy. Comments are not part of the artifact. The printed form writes edges
+//! in the syntax's canonical order, the edges from the scope's inputs first, in input-name order, while the export
+//! lists them in the default program's order: the compiled document then differs from the export in the order of its
+//! edges, and its artifact hash with it, but composition puts edges in the default program's order, so an unmodified
+//! program composes to the default program, with its hash.
 
 use saluki_metric_plan::{
     canonical::PlanHash,
     compose::receive_artifact,
-    ir::{OutputId, PolicyArtifact, ReceivedArtifact},
+    ir::{ArtifactBase, OutputId, PolicyArtifact, ReceivedArtifact},
     operators::names,
-    validate::Catalog as _,
+    validate::{Catalog as _, RecipientSource},
 };
-use saluki_metric_plan_syntax::{parse, print, PrintOptions, Span};
+use saluki_metric_plan_syntax::{parse_with, print, ParseOptions, PrintOptions, Span};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -41,15 +42,24 @@ use crate::{
 };
 
 /// How the editor prints programs: lines of up to about 64 characters where the syntax can break them, which the
-/// editor shows whole at 1280 pixels, and no output fingerprints.
+/// editor shows whole at 1280 pixels, and no `base` statement, which the export gives back.
 pub const DISPLAY: PrintOptions = PrintOptions {
     elide_fingerprints: true,
+    elide_base: true,
     width: 64,
 };
 
-/// How the editor prints a program that lists its output fingerprints, which are kept.
+/// How the editor prints a program that lists its output fingerprints, which are kept with its base.
 const DISPLAY_WITH_FINGERPRINTS: PrintOptions = PrintOptions {
     elide_fingerprints: false,
+    elide_base: false,
+    width: 64,
+};
+
+/// How the editor prints a program whose source states its base, which is kept.
+const DISPLAY_WITH_BASE: PrintOptions = PrintOptions {
+    elide_fingerprints: true,
+    elide_base: false,
     width: 64,
 };
 
@@ -236,55 +246,89 @@ struct Restored {
     missing_declared: Vec<String>,
 }
 
-/// The sections of the default program, each with the nodes that may begin it (the first one the source defines
-/// does) and the comment that marks where it begins.
-const SECTIONS: [(&[&str], &str); 5] = [
-    (&["dsd_enrich"], "# DogStatsD processing, before aggregation"),
-    (&["dsd_agg"], "# Aggregation: a program has at most one"),
-    (
-        &["dsd_post_agg_filter_in", "dsd_post_agg_filter"],
-        "# After aggregation: filter, client telemetry tap",
-    ),
-    (
-        &["metrics_enrich_in"],
-        "# Enrichment: every source, then host enrichment",
-    ),
-    (&["metrics_policy"], "# Policy: one branch per output; route here"),
-];
-
 /// The comment that marks the scope's inputs, where each source's metrics enter the program.
 const INPUTS_SECTION: &str = "# Sources: where each one's metrics enter";
 
-/// Returns a printed program with a comment line where each section of the default program begins: before the first
-/// edge from a scope input, and before the definition of the first node of each of [`SECTIONS`] the source has. A
-/// program without those nodes, such as one that renames them, gets fewer comments; the comments change nothing in the
-/// artifact.
-pub fn with_sections(printed: &str) -> String {
+/// The node above which the recipient directory is listed: the policy `tee`, where a program routes.
+const POLICY_NODE: &str = "metrics_policy";
+
+/// Returns a printed program with ADP's notes as comment lines: a line before the first edge from a scope input, each
+/// node's note from the export ([`ExportBundle::annotations`]) above its definition, and the recipient directory above
+/// the policy `tee`, each recipient with its endpoint, said to be not addressed when no `emit` of `artifact` reaches
+/// it.
+///
+/// A program whose nodes ADP did not write, such as one that renames them, gets fewer comments; without an export, only
+/// the inputs line. The comments change nothing in the artifact.
+pub fn annotate(printed: &str, artifact: &PolicyArtifact, export: Option<&ExportBundle>) -> String {
     let mut marks = Vec::new();
     if let Some(at) = printed.find("\n  input.") {
-        marks.push((at + 1, INPUTS_SECTION));
+        marks.push((at + 1, 0, vec![INPUTS_SECTION.to_string()]));
     }
-    for (nodes, comment) in SECTIONS {
-        let first = nodes
-            .iter()
-            .filter_map(|node| printed.find(&format!("\n  node {} = ", node)))
-            .min();
-        if let Some(at) = first {
-            marks.push((at + 1, comment));
+    let definition = |node: &str| printed.find(&format!("\n  node {} = ", node)).map(|at| at + 1);
+    if let Some(export) = export {
+        for (node, note) in &export.annotations.nodes {
+            if let Some(at) = definition(node.as_str()) {
+                marks.push((at, 1, vec![format!("# {}", note)]));
+            }
+        }
+        if let Some(at) = definition(POLICY_NODE) {
+            let lines = recipient_lines(artifact, export);
+            if !lines.is_empty() {
+                marks.push((at, 0, lines));
+            }
         }
     }
     marks.sort();
     let mut annotated = String::with_capacity(printed.len() + 64 * marks.len());
     let mut copied = 0;
-    for (at, comment) in marks {
+    for (at, _, lines) in marks {
         annotated.push_str(&printed[copied..at]);
-        annotated.push_str("  ");
-        annotated.push_str(comment);
-        annotated.push('\n');
+        for line in lines {
+            annotated.push_str("  ");
+            annotated.push_str(&line);
+            annotated.push('\n');
+        }
         copied = at;
     }
     annotated.push_str(&printed[copied..]);
     annotated
+}
+
+/// Returns the comment lines that list the export's recipient directory: a heading, then each recipient's name and
+/// endpoint, marked when no `emit` of `artifact` reaches it, or when a resources artifact declares it.
+fn recipient_lines(artifact: &PolicyArtifact, export: &ExportBundle) -> Vec<String> {
+    let reached = artifact
+        .nodes
+        .iter()
+        .filter(|node| node.op.as_str() == names::EMIT)
+        .filter_map(|node| node.params.get("output")?.as_str()?.parse::<OutputId>().ok())
+        .filter_map(|output| export.catalog.output(&output))
+        .flat_map(|output| output.recipients.iter())
+        .collect::<std::collections::BTreeSet<_>>();
+    let entries = export.catalog.recipients().collect::<Vec<_>>();
+    if entries.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec!["# Recipients:".to_string()];
+    for (name, entry) in entries {
+        let mut notes = Vec::new();
+        if entry.source == RecipientSource::Resources {
+            notes.push("resources");
+        }
+        if !entry.recipients.iter().any(|recipient| reached.contains(recipient)) {
+            notes.push("not addressed");
+        }
+        let mut line = if name.as_str() == entry.endpoint {
+            format!("#   {}", name)
+        } else {
+            format!("#   {}  {}", name, entry.endpoint)
+        };
+        if !notes.is_empty() {
+            line.push_str(&format!("  ({})", notes.join("; ")));
+        }
+        lines.push(line);
+    }
+    lines
 }
 
 /// Gives an artifact that lists no output fingerprints the fingerprint of every output it emits to, and returns those
@@ -403,7 +447,15 @@ pub fn compile_with_resources(
         preview,
     };
 
-    let mut parsed = match parse(source) {
+    // A source printed without its base, as the editor prints programs, records the export's program hash; the
+    // fingerprints are restored below.
+    let options = ParseOptions {
+        base: export.map(|export| ArtifactBase {
+            program_hash: *export.program_hash(),
+            outputs: Default::default(),
+        }),
+    };
+    let mut parsed = match parse_with(source, &options) {
         Ok(parsed) => parsed,
         Err(diagnostics) => {
             outcome.diagnostics = diagnostics
@@ -530,23 +582,26 @@ pub fn compile_with_resources(
     outcome.warnings = outcome.diagnostics.len() - outcome.errors;
     outcome.ok = true;
     outcome.artifact_hash = Some(hash.to_string());
-    // Printed as it was written: without fingerprints if the export or the draft supplied them (they come back on
-    // compiling), with them if the source listed them.
+    // Printed as it was written: without its base if the export gave it (it comes back on compiling), and with the base
+    // the source states otherwise, its fingerprints too if it lists them.
     let supplied = !outcome.restored_fingerprints.is_empty() || !outcome.draft_fingerprints.is_empty();
-    let options = if !supplied && !parsed.artifact.base.outputs.is_empty() {
+    let options = if parsed.base_given {
+        DISPLAY
+    } else if !supplied && !parsed.artifact.base.outputs.is_empty() {
         DISPLAY_WITH_FINGERPRINTS
     } else {
-        DISPLAY
+        DISPLAY_WITH_BASE
     };
-    outcome.canonical_source = Some(with_sections(&print(&parsed.artifact, &options)));
+    outcome.canonical_source = Some(annotate(&print(&parsed.artifact, &options), &parsed.artifact, export));
     outcome.artifact = Some(document.clone());
     (outcome, Some(CompiledArtifact { document, hash }))
 }
 
-/// Prints an export bundle's artifact as source, for the editor's starting point, as [`DISPLAY`] prints, with a comment
-/// where each section begins ([`with_sections`]).
+/// Prints an export bundle's artifact as source, for the editor's starting point, as [`DISPLAY`] prints, with ADP's
+/// notes as comments ([`annotate`]).
 pub fn default_program_source(export: &ExportBundle) -> String {
-    with_sections(&print(&export.artifact.artifact, &DISPLAY))
+    let artifact = &export.artifact.artifact;
+    annotate(&print(artifact, &DISPLAY), artifact, Some(export))
 }
 
 #[cfg(test)]

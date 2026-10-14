@@ -660,7 +660,6 @@ fn synthetic_catalog() -> MemoryCatalog {
             accepts: PortType::ANY,
             fingerprint: format!("sha256:{}", "7".repeat(64)).parse().unwrap(),
             recipients: Vec::new(),
-            legacy_fingerprint: None,
         },
     )
 }
@@ -1368,7 +1367,6 @@ fn adding_a_fixed_destination_needs_a_restart() {
             accepts: PortType::ANY,
             fingerprint: fingerprint.parse().unwrap(),
             recipients: vec!["new_out/primary/0".parse().unwrap()],
-            legacy_fingerprint: None,
         },
     );
     // An output without a binding is a fixed destination, a component of its own: native configuration asks for it,

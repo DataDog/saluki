@@ -57,9 +57,7 @@
 //! An output's fingerprint, version 2, covers what its declaration says it delivers to: its host, the records it
 //! accepts, and its selector, a role for the main and failover outputs, a routing group's endpoint set, or a declared
 //! output's recipients ([`resources::fingerprint`][declared_resources::fingerprint]). Recipients added to or removed
-//! from a role change nothing. Each native output also keeps its version 1 digest, the stage 5 formula, which
-//! artifacts written before the upgrade recorded: the digest of `{"encoder": .., "forwarder": .., "recipients": [..]}`,
-//! the encoder variant and its endpoint routing, the forwarder, and the recipient identities, sorted.
+//! from a role change nothing.
 
 pub mod params;
 pub mod specs;
@@ -73,8 +71,8 @@ use saluki_components::{
     encoders::{DatadogMetricsConfiguration, MetricsEndpointRouting},
     forwarders::{
         delivery::{EncoderSettings, PayloadClasses as NativeClasses, RecipientProtocol, SeriesVariant, V3Acceptance},
-        queue_endpoint, ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration, MetricsRecipient,
-        MetricsRecipientRoute,
+        queue_endpoint, resolved_endpoint, ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration,
+        MetricsRecipient, MetricsRecipientRoute,
     },
 };
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -84,10 +82,11 @@ use saluki_metric_plan::{
     extension::DeliveryPolicy,
     ir::{
         ArtifactRevision, CredentialRef, HostBinding, HostId, NativeComponentId, OutputBinding, OutputDecl, OutputId,
-        PayloadClasses, RecipientDecl, RecipientId, ResourceProvenance, Resources, RoleName, Selector,
+        PayloadClasses, RecipientDecl, RecipientId, RecipientName, ResourceProvenance, Resources, RoleName, Selector,
     },
     model::{Kind, KindSet, PortType, TimestampForm},
     resources::{self as declared_resources, declared_recipient_id, ResourcesArtifact, CREDENTIALS_NAMESPACE},
+    validate::{CatalogRecipient, RecipientSource},
 };
 use serde_json::{json, Value};
 
@@ -328,10 +327,6 @@ pub struct NativeOutput {
     /// The output's recipients, as its native forwarder resolves them, in the order the forwarder sends to them; empty
     /// for a declared output.
     pub recipients: Vec<MetricsRecipient>,
-
-    /// The output's fingerprint as stage 5 computed it, for a native output: artifacts recorded it before fingerprints
-    /// version 2, and keep composing while it still matches.
-    pub legacy_fingerprint: Option<PlanHash>,
 }
 
 /// The outputs of one configuration.
@@ -410,6 +405,90 @@ pub struct NativeResources {
     /// Every delivery host's settings, and every recipient the outputs name or a host's native set holds, by
     /// identity.
     pub resources: Resources,
+
+    /// The recipient directory: every recipient a program may address, by name (see [`Directory`]).
+    pub directory: Directory,
+}
+
+/// The name of the main output's primary endpoint, or of the alternate metrics intake that replaces it for metrics.
+pub const PRIMARY_RECIPIENT: &str = "primary";
+
+/// The name of the Multi-Region Failover endpoint.
+pub const MRF_RECIPIENT: &str = "mrf";
+
+/// The name of the Cluster Agent.
+pub const CLUSTER_AGENT_RECIPIENT: &str = "cluster_agent";
+
+/// The names lowering gives recipients of its own, which no declaration may use: an additional endpoint's name is its
+/// resolved URL, which always has a scheme and so is never an identifier, so these are all.
+pub const RESERVED_RECIPIENT_NAMES: [&str; 3] = [PRIMARY_RECIPIENT, MRF_RECIPIENT, CLUSTER_AGENT_RECIPIENT];
+
+/// The recipient directory: what each name a program may address resolves to.
+///
+/// Lowering, the compatibility layer, names the native recipients: `primary` for the main output's primary endpoint
+/// (or the alternate metrics intake that replaces it for metrics), `mrf` for the Multi-Region Failover endpoint,
+/// `cluster_agent` for the Cluster Agent, and each additional endpoint by its URL as the forwarder resolves it
+/// ([`additional_endpoint_name`]), which stands for every API key's recipient of that endpoint, under every spelling
+/// of it. A resources artifact's recipients keep the names it gives them, which are identifiers. So no two kinds of
+/// name meet: an entry never spans two delivery hosts, and lowering fails, as a bug, rather than merge two.
+/// Recipient identities stay positional and internal: names resolve to them when a program is composed.
+///
+/// The directory lists what is available, which is more than what the default program sends to: the Cluster Agent is
+/// listed whenever forwarding to it is configured, whether or not autoscaling failover requests its branch. A listed
+/// recipient that no output names runs nothing.
+pub type Directory = BTreeMap<RecipientName, CatalogRecipient>;
+
+/// Returns the name an additional endpoint's recipients have in the directory: its URL as the forwarder resolves and
+/// sends to it, with its scheme (`https` for an endpoint configured without one), as status spells endpoints
+/// ([`spelled_endpoint`]), so `b.example.com`, `https://b.example.com`, and `https://b.example.com/` are all
+/// `https://b.example.com`. A URL that is not plain printable ASCII, contains `@`, or is too long is named by
+/// `sha256:` and the first 16 hexadecimal digits of its digest, as status spells it, and so is an endpoint the
+/// forwarder cannot resolve, which fails lowering anyway. A name is never an identifier.
+pub fn additional_endpoint_name(configured_endpoint: &str) -> RecipientName {
+    let resolved = resolved_endpoint(configured_endpoint);
+    let spelled = if resolved.contains("://") {
+        spelled_endpoint(&resolved)
+    } else {
+        format!(
+            "sha256:{}",
+            short_digest(&PlanHash::of_bytes(configured_endpoint.as_bytes()))
+        )
+    };
+    RecipientName::new(spelled).expect("spelled endpoints are printable ASCII of bounded length")
+}
+
+/// Adds the recipient `id` of `host`, which spells its endpoint `endpoint`, to the directory under `name`.
+///
+/// # Errors
+///
+/// Returns an error if the name already stands for recipients of another host, or for a recipient a resources
+/// artifact declares: lowering never gives two such recipients one name, so this is a bug.
+fn name_recipient(
+    directory: &mut Directory, name: RecipientName, host: &FixedHost, id: RecipientId, endpoint: &str,
+) -> Result<(), GenericError> {
+    let entry = directory.entry(name.clone()).or_insert_with(|| CatalogRecipient {
+        recipients: Vec::new(),
+        host: host.id(),
+        endpoint: spelled_endpoint(endpoint),
+        source: RecipientSource::Native,
+    });
+    if entry.host != host.id() || entry.source != RecipientSource::Native {
+        return Err(generic_error!(
+            "The recipient name `{}` would stand for recipients of `{}` and `{}`; this is a lowering bug.",
+            name,
+            entry.host,
+            host.delivery
+        ));
+    }
+    if !entry.recipients.contains(&id) {
+        entry.recipients.push(id);
+        entry.recipients.sort();
+    }
+    Ok(())
+}
+
+fn recipient_name(name: &str) -> RecipientName {
+    RecipientName::new(name).expect("recipient names are printable ASCII")
 }
 
 impl NativeResources {
@@ -484,8 +563,6 @@ impl NativeResources {
                 component: DSD_CLIENT_TELEMETRY_OUT.to_string(),
                 forwarder: None,
                 recipients: Vec::new(),
-                legacy_fingerprint: Some(digest(&json!({"encoder": {"destination": DSD_CLIENT_TELEMETRY_OUT},
-                    "forwarder": null, "recipients": []}))),
             });
         }
 
@@ -495,6 +572,20 @@ impl NativeResources {
         let dd_out = datadog_forwarder(&shared);
         for recipient in dd_out_native_set(&shared)? {
             insert(&mut recipients, native_recipient(&DD_HOST, &recipient));
+        }
+        // The directory names what metrics go to: the alternate metrics intake in place of the primary endpoint, when
+        // one is configured, and every additional endpoint.
+        let mut directory = Directory::new();
+        for recipient in metrics_recipients(&dd_out, None)? {
+            let name = match recipient.route {
+                MetricsRecipientRoute::Primary | MetricsRecipientRoute::MetricsOverride => {
+                    recipient_name(PRIMARY_RECIPIENT)
+                }
+                MetricsRecipientRoute::Additional => additional_endpoint_name(&recipient.configured_endpoint),
+            };
+            let id = recipient_id(DD_OUT, &recipient);
+            let endpoint = resolved_endpoint(&recipient.configured_endpoint);
+            name_recipient(&mut directory, name, &DD_HOST, id, &endpoint)?;
         }
         let main_routing = (!routing.selected_endpoints().is_empty())
             .then(|| MetricsEndpointRouting::AllExcept(routing.selected_endpoints().iter().cloned().collect()));
@@ -506,7 +597,6 @@ impl NativeResources {
                 host: &DD_HOST,
                 selector: role(ROLE_MAIN),
                 accepts: PortType::ANY,
-                legacy_encoder: datadog_metrics_encoder(main_routing.as_ref()),
                 encoder: &main_encoder,
             },
             metrics_recipients(&dd_out, main_routing.as_ref())?,
@@ -526,7 +616,6 @@ impl NativeResources {
                     host: &DD_HOST,
                     selector: Selector::Group(routing_group_digest(&group.endpoints)),
                     accepts: PortType::ANY,
-                    legacy_encoder: datadog_metrics_encoder(Some(&group_routing)),
                     encoder: &encoder,
                 },
                 metrics_recipients(&dd_out, Some(&group_routing))?,
@@ -546,6 +635,9 @@ impl NativeResources {
             let mrf_recipients = metrics_recipients(&mrf_dd_out, None)?;
             for recipient in &mrf_recipients {
                 insert(&mut recipients, native_recipient(&MRF_HOST, recipient));
+                let id = recipient_id(MRF_DD_OUT, recipient);
+                let name = recipient_name(MRF_RECIPIENT);
+                name_recipient(&mut directory, name, &MRF_HOST, id, &recipient.configured_endpoint)?;
             }
             let encoder = DatadogMetricsConfiguration::from_configuration(&shared)
                 .with_metrics_endpoint_override(mrf_dd_url.clone());
@@ -556,13 +648,17 @@ impl NativeResources {
                     host: &MRF_HOST,
                     selector: role(ROLE_MULTI_REGION_FAILOVER),
                     accepts: PortType::ANY,
-                    legacy_encoder: json!({"type": "datadog_metrics", "metrics_endpoint_override": mrf_dd_url}),
                     encoder: &encoder,
                 },
                 mrf_recipients,
             )?);
         }
 
+        if let Some(endpoint) = cluster_agent_available(&shared, facts, previous) {
+            let id = position_id(CLUSTER_AGENT_OUT, MetricsRecipientRoute::Primary, None, endpoint);
+            let name = recipient_name(CLUSTER_AGENT_RECIPIENT);
+            name_recipient(&mut directory, name, &CLUSTER_AGENT_HOST, id, endpoint)?;
+        }
         if let Some(cluster_agent_out) = cluster_agent_by_position(&shared, facts, previous)? {
             let ca_recipients = cluster_agent_out.metrics_recipients()?;
             for recipient in &ca_recipients {
@@ -580,7 +676,6 @@ impl NativeResources {
                         kinds: KindSet::of(&[Kind::Counter, Kind::Rate, Kind::Gauge, Kind::Set]),
                         timestamps: TimestampForm::Mixed,
                     },
-                    legacy_encoder: json!({"type": "datadog_metrics", "v2_series_only": true}),
                     encoder: &encoder,
                 },
                 ca_recipients,
@@ -592,7 +687,14 @@ impl NativeResources {
                 .encoder_settings()
                 .error_context("Failed to resolve the encoder settings of declared outputs.")?;
             let allow_arbitrary_tags = shared.endpoints.allow_arbitrary_tags;
-            declare(declared, &base, allow_arbitrary_tags, &mut outputs, &mut recipients)?;
+            declare(
+                declared,
+                &base,
+                allow_arbitrary_tags,
+                &mut outputs,
+                &mut recipients,
+                &mut directory,
+            )?;
         }
 
         // Every fixed host has settings, idle or not, so that a branch enabled later finds them published.
@@ -611,6 +713,7 @@ impl NativeResources {
                 hosts,
                 recipients: recipients.into_values().collect(),
             },
+            directory,
         })
     }
 }
@@ -739,6 +842,27 @@ fn cluster_agent_by_position(
     Ok((kept || cluster_agent_forwarder(shared, facts).is_ok()).then_some(forwarder))
 }
 
+/// Returns the Cluster Agent endpoint, if forwarding to the Cluster Agent is configured: its endpoint resolved at boot,
+/// forwarding is enabled, and a token is set, which can be sent or, following a resolution whose resources were
+/// `previous` and declared the recipient, was rotated (see [`NativeResources::resolve_after`]). Whether autoscaling
+/// failover requests its branch does not matter: the Cluster Agent is then available to programs, as a recipient no
+/// output names.
+fn cluster_agent_available<'a>(
+    shared: &SharedConfiguration, facts: &'a HostFacts, previous: &Resources,
+) -> Option<&'a str> {
+    let endpoint = facts.cluster_agent_endpoint.as_deref()?;
+    let token = shared.cluster_agent.auth_token.as_deref()?;
+    let kept = previous
+        .recipient(&position_id(
+            CLUSTER_AGENT_OUT,
+            MetricsRecipientRoute::Primary,
+            None,
+            endpoint,
+        ))
+        .is_some();
+    (shared.cluster_agent.enabled && (kept || can_be_sent(token))).then_some(endpoint)
+}
+
 /// Returns the Datadog forwarder of `dd_out` for the shared configuration `shared`, with the keys `shared` holds.
 fn datadog_forwarder(shared: &SharedConfiguration) -> DatadogForwarderConfiguration {
     DatadogForwarderConfiguration::from_configuration(
@@ -798,20 +922,6 @@ pub(super) fn cluster_agent_forwarder(
         .map(Some)
 }
 
-/// Returns the encoder part of a version 1 fingerprint, for a Datadog metrics encoder marking its payloads with
-/// `routing`.
-fn datadog_metrics_encoder(routing: Option<&MetricsEndpointRouting>) -> Value {
-    match routing {
-        None => json!({"type": "datadog_metrics"}),
-        Some(MetricsEndpointRouting::AllExcept(endpoints)) => {
-            json!({"type": "datadog_metrics", "endpoint_routing": {"all_except": endpoints}})
-        }
-        Some(MetricsEndpointRouting::Only(endpoints)) => {
-            json!({"type": "datadog_metrics", "endpoint_routing": {"only": endpoints}})
-        }
-    }
-}
-
 fn metrics_recipients(
     forwarder: &DatadogForwarderConfiguration, routing: Option<&MetricsEndpointRouting>,
 ) -> Result<Vec<MetricsRecipient>, GenericError> {
@@ -827,8 +937,6 @@ struct BoundOutput<'a> {
     host: &'a FixedHost,
     selector: Selector,
     accepts: PortType,
-    /// The encoder part of the output's version 1 fingerprint.
-    legacy_encoder: Value,
     /// The encoder configuration native wiring builds for the output.
     encoder: &'a DatadogMetricsConfiguration,
 }
@@ -841,7 +949,6 @@ fn bound_output(output: BoundOutput<'_>, recipients: Vec<MetricsRecipient>) -> R
         host,
         selector,
         accepts,
-        legacy_encoder,
         encoder,
     } = output;
     let mut ids = recipients
@@ -850,18 +957,6 @@ fn bound_output(output: BoundOutput<'_>, recipients: Vec<MetricsRecipient>) -> R
         .collect::<Vec<_>>();
     ids.sort();
     ids.dedup();
-    // Version 1 names the recipients as stage 5 did, by their endpoints as configured.
-    let mut legacy_ids = recipients
-        .iter()
-        .map(|recipient| legacy_recipient_id(host.delivery, recipient))
-        .collect::<Vec<_>>();
-    legacy_ids.sort();
-    legacy_ids.dedup();
-    let legacy = digest(&json!({
-        "encoder": legacy_encoder,
-        "forwarder": host.delivery,
-        "recipients": legacy_ids,
-    }));
     let settings = encoder
         .encoder_settings()
         .error_context(format!("Failed to resolve the encoder settings of output `{}`.", id))?;
@@ -888,7 +983,6 @@ fn bound_output(output: BoundOutput<'_>, recipients: Vec<MetricsRecipient>) -> R
         component: id.to_string(),
         forwarder: Some(host.delivery),
         recipients,
-        legacy_fingerprint: Some(legacy),
     })
 }
 
@@ -899,7 +993,7 @@ fn bound_output(output: BoundOutput<'_>, recipients: Vec<MetricsRecipient>) -> R
 /// encoder settings are the main output's, with the protocol variants its recipients accept.
 fn declare(
     declared: Declared<'_>, base: &EncoderSettings, allow_arbitrary_tags: bool, outputs: &mut Vec<NativeOutput>,
-    recipients: &mut BTreeMap<RecipientId, RecipientDecl>,
+    recipients: &mut BTreeMap<RecipientId, RecipientDecl>, directory: &mut Directory,
 ) -> Result<(), GenericError> {
     let Declared { artifact, provenance } = declared;
     let provenance = ResourceProvenance::Declared(provenance.clone());
@@ -941,6 +1035,22 @@ fn declare(
             },
             provenance: provenance.clone(),
         };
+        // Validation refused a name lowering gives a recipient of its own, and a native name is never an identifier,
+        // as a declared one is: the name is free.
+        let name =
+            RecipientName::new(recipient.name.clone()).map_err(|_| invalid("its name is not a recipient name"))?;
+        if directory.contains_key(&name) {
+            return Err(invalid("its name is already a native recipient's"));
+        }
+        directory.insert(
+            name,
+            CatalogRecipient {
+                recipients: vec![decl.id.clone()],
+                host: decl.host.clone(),
+                endpoint: spelled_endpoint(&decl.endpoint),
+                source: RecipientSource::Resources,
+            },
+        );
         by_name.insert(recipient.name.as_str(), (decl.clone(), v3));
         insert(recipients, decl);
     }
@@ -1008,7 +1118,6 @@ fn declare(
             component: id.to_string(),
             forwarder: Some(DD_OUT),
             recipients: Vec::new(),
-            legacy_fingerprint: None,
         });
     }
     Ok(())
@@ -1077,17 +1186,6 @@ pub fn recipient_id(host: &str, recipient: &MetricsRecipient) -> RecipientId {
 /// ([`queue_endpoint`]), so that two identities never share a directory.
 fn position_id(host: &str, route: MetricsRecipientRoute, key_index: Option<usize>, endpoint: &str) -> RecipientId {
     spelled_id(host, route, key_index, &queue_endpoint(route, endpoint))
-}
-
-/// Returns the identity stage 5 gave a recipient, by its endpoint as configured, which version 1 fingerprints name.
-fn legacy_recipient_id(host: &str, recipient: &MetricsRecipient) -> String {
-    spelled_id(
-        host,
-        recipient.route,
-        recipient.api_key_index,
-        &recipient.configured_endpoint,
-    )
-    .to_string()
 }
 
 /// Returns `<host>/<route>/<key index>/<endpoint>`, with the endpoint spelled out when it can be

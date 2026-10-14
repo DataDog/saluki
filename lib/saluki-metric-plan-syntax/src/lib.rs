@@ -30,7 +30,8 @@
 //! ```
 //!
 //! - **`base`** records the hash of the program the artifact was derived from and, under `outputs`, the fingerprint
-//!   of every output it refers to. It is required.
+//!   of every output it refers to. It is required, unless the tool that parses the text gives the base instead
+//!   ([`ParseOptions::base`]).
 //! - **Edges** leave a scope input, as `input.dogstatsd -> <target>`, or an output port of a node: inside the node's
 //!   block, as `<port> -> <target>`, or as a statement of its own, `<node>.<port> -> <target>`. A node with exactly one
 //!   output port may leave the port out: `-> <target>`.
@@ -109,7 +110,9 @@
 //! - `print(parse(s))` is a fixed point: printing what it parses to gives it back.
 //!
 //! With [`PrintOptions::elide_fingerprints`], the `outputs` of `base` are left out, for display; the text then parses
-//! to the artifact without them.
+//! to the artifact without them. With [`PrintOptions::elide_base`], the whole `base` statement is left out, as a tool
+//! that keeps the base apart from the text does; the text then parses with the base the tool gives
+//! ([`parse_with`]).
 //!
 //! # Limits
 //!
@@ -126,7 +129,10 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
-use saluki_metric_plan::{ir::PolicyArtifact, limits::values::ARTIFACT_SIZE};
+use saluki_metric_plan::{
+    ir::{ArtifactBase, PolicyArtifact},
+    limits::values::ARTIFACT_SIZE,
+};
 
 mod build;
 mod diagnostic;
@@ -164,6 +170,13 @@ pub struct Parsed {
 
     /// Where each node, parameter value, and edge of the artifact is in the source.
     pub spans: SpanMap,
+
+    /// Whether the artifact's base came from the caller ([`ParseOptions::base`]), the source having no `base`
+    /// statement, rather than from the source.
+    ///
+    /// A tool that hides the base when printing the source back ([`PrintOptions::elide_base`]) hides it only then, so
+    /// that a base the author wrote stays in the text.
+    pub base_given: bool,
 }
 
 /// How [`print`](fn@print) writes an artifact.
@@ -177,6 +190,15 @@ pub struct PrintOptions {
     ///
     /// Defaults to `false`: fingerprints are printed.
     pub elide_fingerprints: bool,
+
+    /// Whether to leave out the `base` statement, fingerprints included.
+    ///
+    /// A detached program's base only tells its host whether the program it was written against has changed since:
+    /// a tool that keeps it apart from the text, as an editor does with the export it loaded, hides it from a reader,
+    /// and gives it back when it parses the text ([`ParseOptions::base`]).
+    ///
+    /// Defaults to `false`: the base is printed.
+    pub elide_base: bool,
 
     /// The line width, in characters, beyond which node headers, predicates, and values are broken across lines.
     ///
@@ -192,9 +214,20 @@ impl Default for PrintOptions {
     fn default() -> Self {
         Self {
             elide_fingerprints: false,
+            elide_base: false,
             width: 120,
         }
     }
+}
+
+/// How [`parse_with`] reads a source.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ParseOptions {
+    /// The base an artifact whose text has no `base` statement records, as a tool that printed the text without it
+    /// ([`PrintOptions::elide_base`]) gives it back.
+    ///
+    /// A source with a `base` statement records that one. Defaults to `None`: a source must have a `base` statement.
+    pub base: Option<ArtifactBase>,
 }
 
 /// Parses a policy artifact from its surface syntax.
@@ -217,6 +250,16 @@ impl Default for PrintOptions {
 /// after a note naming the operator when it is in the arguments of an operator that is not registered, which are read
 /// without a schema; reference problems are all reported together.
 pub fn parse(source: &str) -> Result<Parsed, Diagnostics> {
+    parse_with(source, &ParseOptions::default())
+}
+
+/// Parses a policy artifact from its surface syntax, as [`parse`] does, with `options`: a source without a `base`
+/// statement records the base `options` gives, if it gives one.
+///
+/// # Errors
+///
+/// As for [`parse`].
+pub fn parse_with(source: &str, options: &ParseOptions) -> Result<Parsed, Diagnostics> {
     if source.len() > MAX_SOURCE_SIZE {
         let mut start = MAX_SOURCE_SIZE;
         while !source.is_char_boundary(start) {
@@ -234,16 +277,22 @@ pub fn parse(source: &str) -> Result<Parsed, Diagnostics> {
     }
     let tokens = lexer::lex(source).map_err(|error| diagnostic::diagnostics(source, vec![error]))?;
     let policy = parser::parse_policy(source, &tokens).map_err(|errors| diagnostic::diagnostics(source, errors))?;
-    let (artifact, spans) = build::build(source, policy).map_err(|errors| diagnostic::diagnostics(source, errors))?;
-    Ok(Parsed { artifact, spans })
+    let base_given = policy.base.is_none() && options.base.is_some();
+    let (artifact, spans) = build::build(source, policy, options.base.as_ref())
+        .map_err(|errors| diagnostic::diagnostics(source, errors))?;
+    Ok(Parsed {
+        artifact,
+        spans,
+        base_given,
+    })
 }
 
 /// Prints a policy artifact in its surface syntax.
 ///
 /// The output parses back to the same artifact, with its nodes and edges in canonical order (see
-/// [Printing](crate#printing)), unless `options` elides fingerprints. Printing never fails: an invalid artifact, such
-/// as one with an edge to a node it does not have, prints as well as it can, and parsing the text reports the
-/// problem.
+/// [Printing](crate#printing)), unless `options` elides fingerprints or the base. Printing never fails: an invalid
+/// artifact, such as one with an edge to a node it does not have, prints as well as it can, and parsing the text
+/// reports the problem.
 pub fn print(artifact: &PolicyArtifact, options: &PrintOptions) -> String {
     printer::print(artifact, options)
 }

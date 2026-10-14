@@ -17,14 +17,17 @@ fn structural(export: &ExportBundle) -> CompileContext<'_> {
 }
 
 /// The demo export's artifact, as the editor prints it: hand-written, so it also pins the printed form the editor
-/// starts from. No line is longer than 80 characters, and the lines an author edits (routing predicates, binding
-/// names, emits) are at most 74.
+/// starts from, without its base, and with the export's notes and recipient directory as comments. No line is longer
+/// than 80 characters, and the lines an author edits (routing predicates, binding names, emits) are at most 74.
 const DEFAULT_SOURCE: &str = r#"policy metrics {
-  base "sha256:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
-
   # Sources: where each one's metrics enter
   input.dogstatsd -> metrics_policy
 
+  # Recipients:
+  #   http://127.0.0.1:17102
+  #   http://127.0.0.1:17103
+  #   mrf  http://127.0.0.1:17104
+  #   primary  http://127.0.0.1:17101
   # Policy: one branch per output; route here
   node metrics_policy = tee {
     -> emit dd_metrics_encode
@@ -33,6 +36,7 @@ const DEFAULT_SOURCE: &str = r#"policy metrics {
     -> mrf_metrics_gateway
   }
 
+  # Endpoint routing to http://127.0.0.1:17102
   node metrics_routing_filter_0 = split(
     intake_name matches(
       values: config("endpoint_routing.group.b0b0b0b0.names"),
@@ -47,6 +51,7 @@ const DEFAULT_SOURCE: &str = r#"policy metrics {
     false -> drop
   }
 
+  # Endpoint routing to http://127.0.0.1:17103
   node metrics_routing_filter_1 = split(
     intake_name matches(
       values: config("endpoint_routing.group.c0c0c0c0.names"),
@@ -61,6 +66,7 @@ const DEFAULT_SOURCE: &str = r#"policy metrics {
     false -> drop
   }
 
+  # Multi-Region Failover: mirrors listed, or all, metrics while failing over
   node mrf_metrics_gateway = split(
     flag(config("multi_region_failover.enabled"))
     and flag(config("multi_region_failover.metric_mirroring.enabled"))
@@ -78,8 +84,9 @@ const DEFAULT_SOURCE: &str = r#"policy metrics {
 }
 "#;
 
-/// The `outputs` block of the demo export's base, which the editor leaves out.
-const OUTPUTS: &str = r#"  outputs {
+/// The demo export's base, with its `outputs` block, which the editor leaves out.
+const BASE: &str = r#"  base "sha256:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+  outputs {
     dd_metrics_encode = "sha256:2222222222222222222222222222222222222222222222222222222222222222",
     metrics_routing_encode_0 = "sha256:3333333333333333333333333333333333333333333333333333333333333333",
     metrics_routing_encode_1 = "sha256:4444444444444444444444444444444444444444444444444444444444444444",
@@ -87,15 +94,10 @@ const OUTPUTS: &str = r#"  outputs {
   }
 "#;
 
-/// The default source with its output fingerprints written out, after `base`.
+/// The default source with its base and output fingerprints written out.
 fn with_fingerprints() -> String {
-    let base_end = DEFAULT_SOURCE.find("\"\n").unwrap() + 2;
-    format!(
-        "{}{}{}",
-        &DEFAULT_SOURCE[..base_end],
-        OUTPUTS,
-        &DEFAULT_SOURCE[base_end..]
-    )
+    let head = "policy metrics {\n";
+    format!("{}{}\n{}", head, BASE, &DEFAULT_SOURCE[head.len()..])
 }
 
 fn replaced(from: &str, to: &str) -> String {
@@ -229,7 +231,7 @@ fn the_examples_of_the_demo_scenarios_compile_without_findings() {
 
 #[test]
 fn syntax_errors_are_placed_by_line_and_column() {
-    // `=>` instead of `->` on line 9: `=` is a token, and the `>` after it, at column 6, is not.
+    // `=>` instead of `->` on line 12: `=` is a token, and the `>` after it, at column 6, is not.
     let source = replaced("    -> emit dd_metrics_encode", "    => emit dd_metrics_encode");
     let (outcome, compiled) = compile(&source, Some(&structural(&demo_export())));
     assert!(!outcome.ok);
@@ -238,8 +240,8 @@ fn syntax_errors_are_placed_by_line_and_column() {
     let diagnostic = &outcome.diagnostics[0];
     assert_eq!(diagnostic.origin, Origin::Syntax);
     assert_eq!(diagnostic.severity, Severity::Error);
-    assert_eq!((diagnostic.range.line, diagnostic.range.column), (9, 6));
-    assert_eq!((diagnostic.range.end_line, diagnostic.range.end_column), (9, 7));
+    assert_eq!((diagnostic.range.line, diagnostic.range.column), (12, 6));
+    assert_eq!((diagnostic.range.end_line, diagnostic.range.end_column), (12, 7));
     assert_eq!(&source[diagnostic.range.start..diagnostic.range.end], ">");
     assert!(diagnostic.message.contains("->"), "{}", diagnostic.message);
     assert_eq!(outcome.errors, 1);
@@ -278,7 +280,7 @@ fn structural_findings_are_placed_where_the_problem_is() {
             replaced("emit metrics_routing_encode_1", "emit metrics_routing_encode_9"),
             vec![(
                 Severity::Error,
-                39,
+                44,
                 "`metrics_routing_encode_9`, which ADP does not declare",
             )],
         ),
@@ -287,7 +289,7 @@ fn structural_findings_are_placed_where_the_problem_is() {
         (
             "an emit to an output the artifact does not list",
             replaced_in(&with_fingerprints(), &mrf_output_line, ""),
-            vec![(Severity::Error, 59, mrf_output_fix.as_str())],
+            vec![(Severity::Error, 67, mrf_output_fix.as_str())],
         ),
         (
             "an output whose fingerprint changed",
@@ -306,13 +308,13 @@ fn structural_findings_are_placed_where_the_problem_is() {
             ),
             vec![(
                 Severity::Error,
-                30,
+                35,
                 "`endpoint_routing.group.ffffffff.names`, which ADP does not declare",
             )],
         ),
         (
             "a base that is not the current default program",
-            replaced("base \"sha256:0f0f", "base \"sha256:0e0f"),
+            replaced_in(&with_fingerprints(), "base \"sha256:0f0f", "base \"sha256:0e0f"),
             vec![(Severity::Warning, 2, "is not the current default program")],
         ),
         (
@@ -321,19 +323,19 @@ fn structural_findings_are_placed_where_the_problem_is() {
                 "\n}\n",
                 "\n\n  node extra = tee(ports: 1, colour: \"red\") {\n    0 -> drop\n  }\n}\n",
             ),
-            vec![(Severity::Error, 58, "parameter `colour`")],
+            vec![(Severity::Error, 64, "parameter `colour`")],
         ),
         (
             "an operator that is not registered",
             replaced("\n}\n", "\n\n  node extra = frobnicate(x: 1)\n}\n"),
-            vec![(Severity::Error, 58, "`frobnicate` is not a registered operator")],
+            vec![(Severity::Error, 64, "`frobnicate` is not a registered operator")],
         ),
         (
             "another scope",
             replaced("policy metrics {", "policy dogstatsd {"),
             vec![
                 (Severity::Error, 1, "ADP exports the scope `metrics`"),
-                (Severity::Error, 5, "has no input `dogstatsd`"),
+                (Severity::Error, 3, "has no input `dogstatsd`"),
             ],
         ),
     ];
@@ -378,7 +380,23 @@ fn structural_findings_are_placed_where_the_problem_is() {
 
 #[test]
 fn without_an_export_sources_are_parsed_but_not_checked() {
-    let source = replaced("emit metrics_routing_encode_1", "emit metrics_routing_encode_9");
+    // Without an export to give the base back, a source states its own.
+    let with_base = replaced(
+        "policy metrics {\n",
+        "policy metrics {\n  base \"sha256:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\"\n\n",
+    );
+    let (outcome, _) = compile(DEFAULT_SOURCE, None);
+    assert!(!outcome.ok);
+    assert!(
+        outcome.diagnostics[0].message.contains("Expected `base"),
+        "{:#?}",
+        outcome.diagnostics
+    );
+    let source = replaced_in(
+        &with_base,
+        "emit metrics_routing_encode_1",
+        "emit metrics_routing_encode_9",
+    );
     let (outcome, compiled) = compile(&source, None);
     assert!(outcome.ok);
     assert!(compiled.is_some());
@@ -404,7 +422,7 @@ fn state_owners_are_checked_for_their_parameters_only() {
     assert!(!outcome.diagnostics.is_empty());
     for diagnostic in &outcome.diagnostics {
         assert_eq!(diagnostic.severity, Severity::Error);
-        assert_eq!(diagnostic.range.line, 7);
+        assert_eq!(diagnostic.range.line, 5);
         assert!(
             diagnostic
                 .message

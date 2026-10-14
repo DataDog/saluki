@@ -308,7 +308,8 @@ fn the_default_programs_bounds_are_measured_against_their_limits() {
     // Counted by hand from the fixture:
     // - 34 nodes;
     // - predicate leaves: 1 (prefix blocklist) + 2 (post-aggregation filter) + 2 + 2 (routing filters) + 4 (MRF
-    //   gateway: two flags, an emptiness check, and a name match) + 2 (autoscaling gateway) = 13;
+    //   gateway: two flags, an emptiness check, and a name match) + 3 (autoscaling gateway: a kind, a flag, and a name
+    //   match) = 14;
     // - the widest copying node is `metrics_policy`, with 5 ports;
     // - work per input, from `dsd_in`, counting the source: the policy tee costs 1 + (1 + 4 * 2) = 10 visits, so
     //   `metrics_enrich_in` costs 13, the post-aggregation tee 1 + 1 + 13 = 15, its filter 16, its merge 17,
@@ -319,7 +320,7 @@ fn the_default_programs_bounds_are_measured_against_their_limits() {
         bounds,
         vec![
             ("artifact_nodes", Some(34), 256, false, true),
-            ("predicate_leaves", Some(13), 1024, false, true),
+            ("predicate_leaves", Some(14), 1024, false, true),
             ("tee_fan_out", Some(5), 32, false, true),
             ("work_per_input", Some(179), 4096, false, true),
         ]
@@ -1129,7 +1130,6 @@ mod resources {
                         accepts: output.accepts,
                         fingerprint: output.fingerprint,
                         recipients: output.recipients.clone(),
-                        legacy_fingerprint: None,
                     },
                 )
             })

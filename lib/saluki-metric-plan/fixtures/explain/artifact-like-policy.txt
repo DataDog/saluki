@@ -2,8 +2,8 @@ explain_version 1
 
 plan
   ir_version 1
-  hash sha256:a96934811c7b835be43b0256d1fc724b297fcde50633d45b543e10d995219a37
-  structural_hash sha256:8deea15dbc2f321bdba33204558b23fd7032556f0946f5a2db250b57a0101bc6
+  hash sha256:49dd5b194b4c9e69871970c6a251c616301bcd567a114aa0f141db6a778442f3
+  structural_hash sha256:b3fc62cc359e6d33dec5d422fbf93c269cbd6eacc77bb50414e41474e04b8f59
   artifact revision 1 sha256:00000000000000000000000000000000000000000000000000000000000000a1
   valid: 0 errors, 0 warnings
 
@@ -123,8 +123,10 @@ nodes (49)
     in in <- metrics_enrich_in.out, accepts every kind (mixed timestamps)
     out out -> metrics_enrich_host_tags.in, carries every kind (mixed timestamps)
   metrics_enrich_host_tags: host_tags [synchronous, state none] native metrics_enrich
-    param deadline = "1700000300s"
-    param tags = ["cloud_provider:example","zone:a"]
+    param deadline = {"config":"host.tags_deadline","resolved":"1700000300s"}
+    param tags = {"config":"host.tags","resolved":["cloud_provider:example","zone:a"]}
+    binding tags <- host.tags = ["cloud_provider:example","zone:a"]
+    binding deadline <- host.tags_deadline = "1700000300s"
     in in <- metrics_enrich.out, accepts every kind (mixed timestamps)
     out out -> metrics_policy.in, carries every kind (mixed timestamps)
   metrics_policy: tee [synchronous, state none] native metrics_enrich
@@ -180,8 +182,9 @@ nodes (49)
     loss policy
     in in <- mrf_metrics_gateway.false, accepts every kind (mixed timestamps)
   af_metrics_gateway: split [synchronous, state none] native af_metrics_gateway
-    param predicate = {"all":[{"kind_in":["counter","rate","gauge","set"]},{"name":{"matches":{"prefix":false,"values":{"config":"autoscaling_failover.metrics","resolved":["requests.count"]}}}}]}
-    binding predicate.all[1].name.values <- autoscaling_failover.metrics = ["requests.count"]
+    param predicate = {"all":[{"kind_in":["counter","rate","gauge","set"]},{"flag":{"config":"autoscaling_failover.enabled","resolved":true}},{"name":{"matches":{"prefix":false,"values":{"config":"autoscaling_failover.metrics","resolved":["requests.count"]}}}}]}
+    binding predicate.all[1].flag <- autoscaling_failover.enabled = true
+    binding predicate.all[2].name.values <- autoscaling_failover.metrics = ["requests.count"]
     in in <- policy/no_debug_4.false, accepts every kind (mixed timestamps)
     out true -> af_metrics_gateway_true.in, carries counter, rate, gauge, set (mixed timestamps)
     out false -> af_metrics_gateway_false.in, carries every kind (mixed timestamps)
@@ -349,7 +352,7 @@ scopes (1)
 
 bounds (8)
   plan artifact_nodes: 49 of 256 (within the limit, not enforced)
-  plan predicate_leaves: 21 of 1024 (within the limit, not enforced)
+  plan predicate_leaves: 22 of 1024 (within the limit, not enforced)
   plan tee_fan_out: 5 of 32 (within the limit, not enforced)
   plan work_per_input: 259 of 4096 (within the limit, not enforced)
   artifact revision 1 artifact_nodes: 15 of 256 (within the limit)
@@ -392,7 +395,7 @@ rewrites (7)
   R3 applied: mrf_metrics_gateway
     justification The predicate is constant given the resolved values of `multi_region_failover.metric_mirroring.allowlist`, `multi_region_failover.enabled`, and `multi_region_failover.metric_mirroring.enabled`: it is true for every event, so the compiled decision sends every metric to the `true` port without evaluating it. The plan keeps the node, and its `false` port's exit stays, idle; a new value of a binding changes only the next generation's program.
   R4 applied: policy/no_debug_0_r6h0, metrics_policy, metrics_routing_filter_0, metrics_routing_filter_1, mrf_metrics_gateway, af_metrics_gateway, policy/only_known
-    justification The decision's predicates read only `name`, `tags`, and `kind`, which are context fields or the kind, and evaluating them is estimated to cost 91 ns per event, at least the 25 ns from which a lookup that hits saves several times what one that misses adds. Regions memoize the decision's exit set per context identity plus kind, in a direct-mapped memo of 4096 entries that belongs to one generation's program and evicts without allocating. Keying by the 64-bit context identity treats colliding contexts as one, as native aggregation does.
+    justification The decision's predicates read only `name`, `tags`, and `kind`, which are context fields or the kind, and evaluating them is estimated to cost 92 ns per event, at least the 25 ns from which a lookup that hits saves several times what one that misses adds. Regions memoize the decision's exit set per context identity plus kind, in a direct-mapped memo of 4096 entries that belongs to one generation's program and evicts without allocating. Keying by the 64-bit context identity treats colliding contexts as one, as native aggregation does.
 
 frame
   fixed (5)

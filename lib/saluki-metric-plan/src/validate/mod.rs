@@ -60,7 +60,10 @@ use crate::{
 mod bounds;
 pub(crate) use self::bounds::predicate_leaves;
 mod catalog;
-pub use self::catalog::{Catalog, CatalogBinding, CatalogOutput, HostSchema, Liveness, MemoryCatalog};
+pub use self::catalog::{
+    BindingClass, Catalog, CatalogBinding, CatalogOutput, CatalogRecipient, HostSchema, Liveness, MemoryCatalog,
+    RecipientSource,
+};
 
 mod duplicates;
 pub(crate) mod graph;

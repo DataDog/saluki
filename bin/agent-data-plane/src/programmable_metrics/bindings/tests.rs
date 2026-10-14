@@ -6,7 +6,7 @@ use saluki_metric_plan::{
 };
 
 use super::*;
-use crate::programmable_metrics::test_support::{configuration, layered_configuration};
+use crate::programmable_metrics::test_support::{configuration, facts, layered_configuration};
 
 fn name(name: &str) -> BindingName {
     name.parse().unwrap()
@@ -44,7 +44,7 @@ fn bindings_read_from_configuration_are_named_by_their_typed_model_path() {
     for spec in BINDINGS {
         match spec.resolve {
             Resolve::Value(_) => assert!(path_exists(spec.name), "`{}` is a typed-model path", spec.name),
-            Resolve::Derived(_) | Resolve::Keyed(_) => {
+            Resolve::Derived(_) | Resolve::Keyed(_) | Resolve::Fact(_) => {
                 assert!(!path_exists(spec.name), "`{}` is not a typed-model path", spec.name)
             }
         }
@@ -62,6 +62,7 @@ fn live_bindings_are_exactly_the_natively_live_inputs_and_those_of_the_output_br
         live,
         [
             // The output branches follow the current configuration, and their gateways' inputs with them.
+            "autoscaling_failover.enabled",
             "autoscaling_failover.metrics",
             "dogstatsd.metric_filter.match_prefix",
             "dogstatsd.metric_filter.values",
@@ -76,6 +77,62 @@ fn live_bindings_are_exactly_the_natively_live_inputs_and_those_of_the_output_br
         ]
         .into_iter()
         .collect()
+    );
+}
+
+/// Every binding chooses a class, listed here, so that a new binding is classified on purpose: facts of the host and
+/// signals are what a published program may bind; everything else is native policy, which the default program alone
+/// binds.
+#[test]
+fn every_binding_is_a_fact_a_signal_or_a_policy_setting() {
+    let classes = BINDINGS
+        .iter()
+        .map(|spec| (spec.name, spec.class))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let (fact, signal, policy) = (BindingClass::Fact, BindingClass::Signal, BindingClass::Policy);
+    let expected = [
+        ("autoscaling_failover.enabled", signal),
+        ("autoscaling_failover.metrics", policy),
+        ("dogstatsd.aggregation.aggregator_tag_filter_cache_capacity", policy),
+        ("dogstatsd.aggregation.context_limit", policy),
+        ("dogstatsd.aggregation.counter_expiry_seconds", policy),
+        ("dogstatsd.aggregation.flush_interval", policy),
+        ("dogstatsd.aggregation.flush_open_windows", policy),
+        ("dogstatsd.aggregation.window_duration_seconds", policy),
+        ("dogstatsd.mapper.cache_size", policy),
+        ("dogstatsd.mapper.profiles", policy),
+        ("dogstatsd.mapper.string_interner_size_bytes", policy),
+        ("dogstatsd.metric_filter.match_prefix", policy),
+        ("dogstatsd.metric_filter.values", policy),
+        ("dogstatsd.post_aggregate_filter.values", policy),
+        ("dogstatsd.prefix_filter.metric_namespace", policy),
+        ("dogstatsd.prefix_filter.metric_namespace_blocklist", policy),
+        ("dogstatsd.tag_filterlist", policy),
+        ("dogstatsd.tag_value_allowlist", policy),
+        ("host.tags", fact),
+        ("host.tags_deadline", fact),
+        ("metrics_encoding.histogram.aggregates", policy),
+        ("metrics_encoding.histogram.copy_to_distribution", policy),
+        ("metrics_encoding.histogram.copy_to_distribution_prefix", policy),
+        ("metrics_encoding.histogram.percentiles", policy),
+        ("metrics_endpoint_routing.group.{key}.names", policy),
+        ("metrics_endpoint_routing.group.{key}.prefixes", policy),
+        ("multi_region_failover.enabled", fact),
+        ("multi_region_failover.metric_mirroring.allowlist", policy),
+        ("multi_region_failover.metric_mirroring.enabled", signal),
+    ];
+    assert_eq!(classes, expected.into_iter().collect());
+
+    // Facts of the host are fixed for the life of the process, and every binding says what it is.
+    for spec in BINDINGS {
+        if spec.class == BindingClass::Fact && matches!(spec.resolve, Resolve::Fact(_)) {
+            assert_eq!(spec.liveness, Liveness::Startup, "`{}`", spec.name);
+        }
+        assert!(!spec.about.is_empty() && spec.about.ends_with('.'), "`{}`", spec.name);
+    }
+    assert_eq!(
+        annotation(&name("host.tags")).as_deref(),
+        Some("fact: The host's tags, fetched from the Core Agent at boot.")
     );
 }
 
@@ -127,7 +184,8 @@ metric_filterlist: [blocked, h.max, h.95percentile, h.99percentile]
 metric_filterlist_match_prefix: true
 metric_tag_filterlist: [{metric_name: m, action: include, tags: [env]}]
 metric_tag_value_allowlist: [{metric_prefix: m., tag_name: env, values: [prod], on_miss: replace, replacement: o}]
-data_plane: {dogstatsd: {aggregator_tag_filter_cache_capacity: 9}}
+data_plane: {standalone_mode: false, dogstatsd: {aggregator_tag_filter_cache_capacity: 9}}
+expected_tags_duration: 10m
 aggregate_window_duration_seconds: 300
 aggregate_flush_interval: 1500ms
 aggregate_context_limit: 42
@@ -138,13 +196,15 @@ histogram_percentiles: ['0.955', '0.95', '0.951']
 histogram_copy_to_distribution: true
 histogram_copy_to_distribution_prefix: d.
 multi_region_failover: {enabled: true, failover_metrics: true, metric_allowlist: [m1, m2]}
-autoscaling: {failover: {metrics: [cpu]}}
+autoscaling: {failover: {enabled: true, metrics: [cpu]}}
 "#,
     )
     .await;
+    let host_facts = facts(&config);
     let snapshots = Snapshots {
         startup: &config,
         current: &config,
+        facts: &host_facts,
     };
     let b_key = super::super::resources::routing_group_key(&["https://b.example.com".to_string()]);
     let c_key = super::super::resources::routing_group_key(&["https://c.example.com".to_string()]);
@@ -230,6 +290,10 @@ autoscaling: {failover: {metrics: [cpu]}}
             json!(["m1", "m2"]),
         ),
         ("autoscaling_failover.metrics".to_string(), json!(["cpu"])),
+        ("autoscaling_failover.enabled".to_string(), json!(true)),
+        // Facts of the host: the tags fetched at boot, and the process start plus `expected_tags_duration`.
+        ("host.tags".to_string(), json!(["cloud_provider:example", "zone:a"])),
+        ("host.tags_deadline".to_string(), json!("1700000600s")),
     ];
     let resolved = cases
         .iter()
@@ -266,9 +330,11 @@ async fn an_unset_or_zero_counter_expiry_never_expires() {
         ("", "5m"),
     ] {
         let config = configuration(yaml).await;
+        let host_facts = facts(&config);
         let snapshots = Snapshots {
             startup: &config,
             current: &config,
+            facts: &host_facts,
         };
         assert_eq!(
             resolve(&name("dogstatsd.aggregation.counter_expiry_seconds"), snapshots),
@@ -280,9 +346,11 @@ async fn an_unset_or_zero_counter_expiry_never_expires() {
     // The typed model's unset expiry, which translation never leaves, also never expires.
     let mut config = configuration("").await;
     config.domains.dogstatsd.aggregation.counter_expiry_seconds = None;
+    let host_facts = facts(&config);
     let snapshots = Snapshots {
         startup: &config,
         current: &config,
+        facts: &host_facts,
     };
     assert_eq!(
         resolve(&name("dogstatsd.aggregation.counter_expiry_seconds"), snapshots),
@@ -298,9 +366,11 @@ async fn bindings_resolve_from_the_snapshot_their_liveness_names() {
         "metric_filterlist: [h.min, h.max]\nstatsd_metric_namespace: new\nhistogram_aggregates: [min]",
     ])
     .await;
+    let host_facts = facts(&startup);
     let snapshots = Snapshots {
         startup: &startup,
         current: &current,
+        facts: &host_facts,
     };
     // A live binding follows the current configuration.
     assert_eq!(
@@ -323,9 +393,11 @@ async fn bindings_resolve_from_the_snapshot_their_liveness_names() {
 #[tokio::test]
 async fn bindings_have_no_value_for_settings_aggregation_cannot_compute() {
     let config = configuration("histogram_aggregates: [p99]").await;
+    let host_facts = facts(&config);
     let snapshots = Snapshots {
         startup: &config,
         current: &config,
+        facts: &host_facts,
     };
     for binding in [
         "metrics_encoding.histogram.aggregates",
@@ -362,9 +434,11 @@ secret_backend_command: secret-backend-command
 "#,
     )
     .await;
+    let host_facts = facts(&config);
     let snapshots = Snapshots {
         startup: &config,
         current: &config,
+        facts: &host_facts,
     };
     for spec in BINDINGS {
         let keys = spec

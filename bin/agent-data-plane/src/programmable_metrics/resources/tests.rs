@@ -576,32 +576,6 @@ experimental:
 }
 
 #[tokio::test]
-async fn version_1_fingerprints_change_with_where_an_output_delivers() {
-    let base = "dd_url: https://primary.example.com\nadditional_endpoints: {https://b.example.com: [key-b]}";
-    let fingerprint = |outputs: &NativeOutputs| outputs.get(DD_METRICS_ENCODE).unwrap().legacy_fingerprint;
-    let before = fingerprint(&outputs(base).await);
-    assert!(before.is_some());
-
-    // Encoder tuning does not change where the output delivers.
-    let tuned = outputs(&format!("{}\nserializer_max_payload_size: 1000", base)).await;
-    assert_eq!(fingerprint(&tuned), before);
-
-    // A new recipient, a recipient removed by routing, and another endpoint do.
-    for changed in [
-        "dd_url: https://primary.example.com\nadditional_endpoints: {https://b.example.com: [key-b, key-b2]}",
-        "dd_url: https://primary.example.com\nadditional_endpoints: {https://b.example.com: [key-b]}\nexperimental: \
-         {metrics_endpoint_routing: {metric_allowlist: {https://b.example.com: [a]}}}",
-        "dd_url: https://other.example.com\nadditional_endpoints: {https://b.example.com: [key-b]}",
-    ] {
-        assert_ne!(fingerprint(&outputs(changed).await), before, "{}", changed);
-    }
-
-    // Rotating an API key changes nothing: keys are not part of recipient identity.
-    let rotated = outputs(&format!("{}\napi_key: rotated-key", base)).await;
-    assert_eq!(fingerprint(&rotated), before);
-}
-
-#[tokio::test]
 async fn bindings_carry_each_outputs_encoder_its_hosts_settings_and_never_a_credentials_value() {
     let resolved = resolved(
         r#"
@@ -774,7 +748,6 @@ async fn declared_outputs_and_recipients_enter_the_resources_with_their_provenan
         output.decl.fingerprint.to_string(),
         "sha256:361f843bc9a6b25663cc6da865dd3af0daf04bb8890e3717ae98d7d30bb1c838"
     );
-    assert_eq!(output.legacy_fingerprint, None);
     let binding = binding(&resolved.outputs, "resources_team_d");
     assert_eq!(binding.telemetry.as_str(), "resources_team_d");
     assert_eq!(binding.provenance, ResourceProvenance::Declared(provenance.clone()));
@@ -1012,4 +985,213 @@ cluster_agent: {enabled: true, url: https://ca.example.com}
     );
     assert!(after.outputs.get(MRF_METRICS_ENCODE).is_none());
     assert!(after.outputs.get(AF_METRICS_ENCODE).is_none());
+}
+
+/// Returns the recipient directory of `resolved` as `(name, host, recipients, endpoint, source)`, in name order.
+fn directory(resolved: &NativeResources) -> Vec<(String, String, Vec<String>, String, RecipientSource)> {
+    resolved
+        .directory
+        .iter()
+        .map(|(name, entry)| {
+            (
+                name.to_string(),
+                entry.host.to_string(),
+                entry.recipients.iter().map(ToString::to_string).collect(),
+                entry.endpoint.clone(),
+                entry.source,
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn the_directory_names_the_primary_endpoint_failover_and_each_additional_endpoint_by_its_url() {
+    let named = resolved(
+        r#"
+dd_url: https://primary.example.com
+additional_endpoints: {"https://b.example.com": [key-b, key-b2], "https://b.example.com/": [key-b3], "http://127.0.0.1:17102": [key-c]}
+experimental: {metrics_endpoint_routing: {metric_allowlist: {"https://b.example.com": [b]}}}
+multi_region_failover: {enabled: true, api_key: k, dd_url: https://mrf.example.com}
+"#,
+    )
+    .await;
+    let native = RecipientSource::Native;
+    let entry = |name: &str, host: &str, ids: &[&str], endpoint: &str| {
+        (
+            name.to_string(),
+            host.to_string(),
+            ids.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
+            endpoint.to_string(),
+            native,
+        )
+    };
+    assert_eq!(
+        directory(&named),
+        [
+            // An additional endpoint's resolved URL names every API key's recipient of it, whether or not endpoint
+            // routing sends it anything, under every spelling of it: two spellings are two endpoints natively, each
+            // with its own recipients, and one name.
+            entry(
+                "http://127.0.0.1:17102",
+                "dd_out",
+                &["dd_out/additional/0/http://127.0.0.1:17102"],
+                "http://127.0.0.1:17102"
+            ),
+            entry(
+                "https://b.example.com",
+                "dd_out",
+                &[
+                    "dd_out/additional/0/https://b.example.com",
+                    "dd_out/additional/0/https://b.example.com/",
+                    "dd_out/additional/1/https://b.example.com"
+                ],
+                "https://b.example.com"
+            ),
+            entry(
+                "mrf",
+                "mrf_dd_out",
+                &["mrf_dd_out/primary/0/https://mrf.example.com"],
+                "https://mrf.example.com"
+            ),
+            entry(
+                "primary",
+                "dd_out",
+                &["dd_out/primary/0/https://primary.example.com"],
+                "https://primary.example.com"
+            ),
+        ]
+    );
+    // The directory never holds a credential.
+    let written = format!("{:?}", named.directory);
+    for key in ["key-b", "key-c", "\"k\""] {
+        assert!(!written.contains(key), "the directory carries `{}`", key);
+    }
+
+    // Endpoints configured without a scheme are sent to over `https`, and named so: an endpoint named like a recipient
+    // lowering names (`mrf`, `primary`) or a declared one (`team_d`) never takes its name, nor merges with it.
+    let scheme_less = resolved(
+        r#"
+additional_endpoints: {mrf: [k1], primary: [k2], team_d: [k3]}
+multi_region_failover: {enabled: true, api_key: k, dd_url: https://mrf.example.com}
+"#,
+    )
+    .await;
+    let names = directory(&scheme_less)
+        .into_iter()
+        .map(|(name, host, ids, ..)| (name, host, ids.len()))
+        .collect::<Vec<_>>();
+    let name = |name: &str, host: &str| (name.to_string(), host.to_string(), 1);
+    assert_eq!(
+        names,
+        [
+            name("https://mrf", "dd_out"),
+            name("https://primary", "dd_out"),
+            name("https://team_d", "dd_out"),
+            name("mrf", "mrf_dd_out"),
+            name("primary", "dd_out"),
+        ]
+    );
+
+    // With an alternate metrics intake, `primary` is where metrics go.
+    let overridden =
+        resolved("observability_pipelines_worker: {metrics: {enabled: true, url: http://opw.example.com}}").await;
+    assert_eq!(
+        directory(&overridden),
+        [entry(
+            "primary",
+            "dd_out",
+            &["dd_out/metrics_override/0/http://opw.example.com"],
+            "http://opw.example.com"
+        )]
+    );
+}
+
+#[tokio::test]
+async fn the_cluster_agent_is_available_once_forwarding_is_configured_and_idle_until_an_output_names_it() {
+    let cluster_agent = |resolved: &NativeResources| {
+        resolved
+            .directory
+            .get(&RecipientName::new("cluster_agent").unwrap())
+            .map(|entry| entry.recipients.iter().map(ToString::to_string).collect::<Vec<_>>())
+    };
+    let id = "cluster_agent_out/primary/0/https://ca.example.com".to_string();
+    // Requested: the branch's output names it, so the plan declares it.
+    let requested = resolved(
+        "autoscaling: {failover: {enabled: true, metrics: [m]}}\ncluster_agent: {enabled: true, url: \
+         https://ca.example.com, auth_token: t}",
+    )
+    .await;
+    assert_eq!(cluster_agent(&requested), Some(vec![id.clone()]));
+    assert!(requested
+        .resources
+        .recipient(&RecipientId::new(id.as_str()).unwrap())
+        .is_some());
+
+    // Not requested: available by name, with no output and no recipient declared, so no recipient runs.
+    let available = resolved("cluster_agent: {enabled: true, url: https://ca.example.com, auth_token: t}").await;
+    assert_eq!(cluster_agent(&available), Some(vec![id.clone()]));
+    assert!(available.outputs.get(AF_METRICS_ENCODE).is_none());
+    assert!(available
+        .resources
+        .recipient(&RecipientId::new(id.as_str()).unwrap())
+        .is_none());
+
+    // Not configured: forwarding off, or no token.
+    for yaml in [
+        "cluster_agent: {url: https://ca.example.com, auth_token: t}",
+        "cluster_agent: {enabled: true, url: https://ca.example.com}",
+    ] {
+        assert_eq!(cluster_agent(&resolved(yaml).await), None, "{}", yaml);
+    }
+}
+
+#[tokio::test]
+async fn a_resources_artifacts_recipients_keep_the_names_it_gives_them() {
+    // An additional endpoint configured as `team_d` is `https://team_d`, apart from the declared `team_d`.
+    let config = configuration("additional_endpoints: {team_d: [k]}").await;
+    let facts = facts(&config);
+    let provenance = ArtifactRevision {
+        revision: 4,
+        hash: PlanHash::of_bytes(b"team d"),
+    };
+    let artifact = team_d(false);
+    let declared = Declared {
+        artifact: &artifact,
+        provenance: &provenance,
+    };
+    let resolved =
+        NativeResources::resolve(&config, &config, &facts, &FixedHosts::at_boot(&facts), Some(declared)).unwrap();
+    let team_d = directory(&resolved)
+        .into_iter()
+        .find(|(name, ..)| name == "team_d")
+        .unwrap();
+    assert_eq!(
+        team_d,
+        (
+            "team_d".to_string(),
+            "dd_out".to_string(),
+            vec!["dd_out/declared/team_d/http://127.0.0.1:17105".to_string()],
+            "http://127.0.0.1:17105".to_string(),
+            RecipientSource::Resources
+        )
+    );
+    let native = &resolved.directory[&RecipientName::new("https://team_d").unwrap()];
+    assert_eq!(
+        (native.host.as_str(), native.source),
+        ("dd_out", RecipientSource::Native)
+    );
+}
+
+#[test]
+fn a_name_never_stands_for_recipients_of_two_hosts_or_of_two_sources() {
+    let name = || RecipientName::new("mrf").unwrap();
+    let id = |id: &str| RecipientId::new(id).unwrap();
+    let mut directory = Directory::new();
+    name_recipient(&mut directory, name(), &MRF_HOST, id("mrf_dd_out/a"), "https://a").unwrap();
+    // The same host merges, deterministically; another host is refused as the bug it would be.
+    name_recipient(&mut directory, name(), &MRF_HOST, id("mrf_dd_out/b"), "https://a").unwrap();
+    assert_eq!(directory[&name()].recipients.len(), 2);
+    let error = name_recipient(&mut directory, name(), &DD_HOST, id("dd_out/c"), "https://c").unwrap_err();
+    assert!(error.to_string().contains("this is a lowering bug"), "{}", error);
+    assert_eq!(directory[&name()].recipients.len(), 2);
 }

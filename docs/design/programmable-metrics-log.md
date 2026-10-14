@@ -974,3 +974,48 @@ status says when native policy settings are not applied. Machinery for native co
   170 to 182 in [the stages 7 and 9 plan](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments). Its main
   recommendation for the demo is to declare teams B and C as recipients in configuration, so that the demo shows a
   program routing, while the equivalence of native routing stays proven by tests and fixtures.
+
+## Detached programs, phase 1
+
+On 2026-10-14 the first wave of [detached programs](programmable-metrics-detached-programs.md) was built in the main
+checkout, not committed: parts A (binding classes, the facts `host.tags` and `host.tags_deadline`, and the signal
+`autoscaling_failover.enabled`), C (the recipient directory, without configuration-declared recipients), F (one
+aggregation keeps `dsd_agg`'s identity), G1 (the export's annotations, and the editor's hidden base), and H (version 1
+fingerprints removed). [Phase 1 as built](programmable-metrics-detached-programs.md#105-phase-1-as-built) has the
+details; the design's section 10.2 now records the composition pass order that B and D share.
+
+- **Owner decisions during the phase.** Additional endpoints are named by their URL, standing for every API key's
+  recipient of the endpoint, in place of the designed `ep_<host>[_<port>][_key<i>]` names and their collision
+  rule (amendment 176 revised). Configuration-declared recipients (C2) wait on the owner's choice between a new key and
+  seeding a resources artifact at the demo's launch; resources validation already refuses a name the directory gives
+  a recipient that configuration declares, so either feeds the directory.
+- **Simpler than designed.** H has no dedicated refusal: a version 1 fingerprint is an output that delivers elsewhere
+  (`ReboundOutput`, or degraded in effect). Recipient notes are not annotations: the editor prints the directory. The
+  `cluster_agent` recipient's availability apart from the branch is a directory entry only, since a declared native
+  recipient runs a loop whether or not an output names it.
+- **Found on the way.** R7's static order puts a kind test before a flag, so the autoscaling failover gateway's new
+  flag goes second, or R7 would rewrite the default program. The designed implied output IDs (`to_a__b`) are not
+  identifiers, and URL names cannot form IDs: D derives them otherwise.
+- **Hashes.** The default-program fixtures, their exports (`default-program-metrics.json` regenerated with the Python
+  script used before, `default-program-post-enrich.json` edited and rehashed: `sha256:8b26675f...`), the explain golden
+  files, ADP's `every-branch.json`, and the demo's export fixture (annotations and the directory added) changed; the
+  pre-aggregation export did not.
+- **Review fixes.** A review found no blockers, and these were fixed before commit: names of additional endpoints
+  configured without a scheme (`mrf`, `primary`, `team_d`) took, or merged with, `mrf`, `primary`, and declared names,
+  so an endpoint is now named by its URL as the forwarder resolves it, with its scheme, and lowering fails rather than
+  merge two hosts or sources; the export readers left a whole export unreadable for an unknown member or source of a
+  directory entry; formatting dropped a base the source stated; a routing filter's note could carry an endpoint's user
+  information; some notes overstated what their nodes do; the demo's export fixture used recipient IDs ADP never
+  writes; and only ADP reserved `primary`, `mrf`, and `cluster_agent`. New tests pin each.
+- **Two installer core bugs**, older than this phase, were found by
+  `property_test_the_high_water_mark_never_decreases_and_only_accepted_plans_run` at more cases: a damaged twin of a
+  config's ID in the previous snapshot hid the unchanged config from the rule of one config per scope, so another
+  config of the scope installed beside it; and a kept generation that supervision failed did not take its document out
+  of effect, so a newer revision of it in flight installed. Both are fixed, each with a regression test and a seed;
+  100,000 cases then passed.
+- **Results**, after the review fixes. The plan, syntax, and demo crates' tests pass with and without
+  `saluki-metric-plan/test-util` (1,166 each), and ADP's 576 of 577, the one failure being
+  `delivery_tests::a_recipient_whose_intake_stays_down_retires_at_its_deadline_and_persists_what_it_holds` with the disk
+  at 82%, above `forwarder_storage_max_disk_ratio`, as before. `make demo-programmable-metrics-check` passed
+  (`target/programmable-metrics-demo/check-1792017162`): the first launch in 150.5 s, the second in 290.3 s, every
+  canary balanced (2,848 and 4,997 sent and received), S0 active with no new generation.

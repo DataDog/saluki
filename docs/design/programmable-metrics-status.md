@@ -653,6 +653,25 @@ list those nodes as changed; composition now puts an artifact's edges in the def
 so the printed form of an export, which lists the edges from the scope's inputs first in input-name order, composes to
 the default program with its hash, though its artifact document, and so its artifact hash, differs from the export's.
 
+**Detached programs, phase 1** (not committed; **not release-noted** yet; see
+[phase 1 as built](programmable-metrics-detached-programs.md#105-phase-1-as-built)):
+
+- The default program binds the host's tags and their deadline to the facts `host.tags` and `host.tags_deadline`, and
+  the autoscaling failover gateway also tests the signal `autoscaling_failover.enabled`, which is always true while its
+  branch exists. Behavior is unchanged; the default program's plan hash and its export's base change.
+- The export bundle's catalog gives every binding a `class` (`fact`, `signal`, or `policy`) and carries the recipient
+  directory (`recipients`: `primary`, `mrf`, `cluster_agent`, each additional endpoint's resolved URL, and declared
+  names); the bundle carries `annotations`, ADP's notes on each node and binding. A resources artifact may not name
+  a recipient `primary`, `mrf`, or `cluster_agent`.
+- Version 1 output fingerprints are gone: status no longer reports `legacy_fingerprint`, and an artifact that records
+  one, as only old demo run directories hold, is refused as rebound ("Rebase the artifact on the current export"), or
+  runs degraded if it is in effect, until it is republished.
+- An artifact's one aggregation keeps the ID `dsd_agg`, and its `component_id:dsd_agg` series, whatever the artifact
+  calls it; its state carries over as for an edit of `dsd_agg`, while its window and other lineage parameters are
+  unchanged.
+- The demo's editor hides the `base` line and prints ADP's notes as comments, with the recipient directory above the
+  policy `tee`, in place of its fixed section comments.
+
 **Telemetry** (all release-noted): the fused components' and gateways' component, health, and task series are gone;
 `metrics_enrich` and `dsd_agg` report sent counts per output instead of `_default`; accounting paths nest under the
 slot; `dsd_agg` no longer counts sent metrics twice, no longer emits what R5b suppresses, and counts one extra flush

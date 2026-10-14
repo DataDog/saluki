@@ -2,8 +2,8 @@ explain_version 1
 
 plan
   ir_version 1
-  hash sha256:02adbf3bb4656524043985bcce802e058caaf6fe23e875519d35968dcd2d4de1
-  structural_hash sha256:645a402cd180762311dc8b7c96a8000584c9df1cf80734237deff76d4d7a13ab
+  hash sha256:dc3c9406ae14525e885614c89b9de03e1434e94b16431d5cc3dd8196441f8e9b
+  structural_hash sha256:c44a2c89603910524085c2b11ad295579fac3affaea14113e35a29d4f3c99b16
   valid: 0 errors, 0 warnings
 
 nodes (30)
@@ -122,8 +122,10 @@ nodes (30)
     in in <- metrics_enrich_in.out, accepts every kind (mixed timestamps)
     out out -> metrics_enrich_host_tags.in, carries every kind (mixed timestamps)
   metrics_enrich_host_tags: host_tags [synchronous, state none] native metrics_enrich
-    param deadline = "1700000300s"
-    param tags = ["cloud_provider:example","zone:a"]
+    param deadline = {"config":"host.tags_deadline","resolved":"1700000300s"}
+    param tags = {"config":"host.tags","resolved":["cloud_provider:example","zone:a"]}
+    binding tags <- host.tags = ["cloud_provider:example","zone:a"]
+    binding deadline <- host.tags_deadline = "1700000300s"
     in in <- metrics_enrich.out, accepts every kind (mixed timestamps)
     out out -> metrics_policy.in, carries every kind (mixed timestamps)
   metrics_policy: tee [synchronous, state none] native metrics_enrich

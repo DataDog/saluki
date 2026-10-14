@@ -139,7 +139,6 @@ fn policy_plan(policies: usize) -> (Plan, MemoryCatalog) {
                 accepts: PortType::ANY,
                 fingerprint: fingerprint(output).parse().unwrap(),
                 recipients: Vec::new(),
-                legacy_fingerprint: None,
             },
         )
     });
@@ -557,7 +556,6 @@ fn default_program_with(policies: usize) -> (Plan, MemoryCatalog) {
                 accepts: PortType::ANY,
                 fingerprint: fingerprint(&output).parse().unwrap(),
                 recipients: vec![RecipientId::new(recipient).unwrap()],
-                legacy_fingerprint: None,
             },
         );
         for list in ["names", "prefixes"] {

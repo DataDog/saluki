@@ -25,12 +25,12 @@ use crate::{
     canonical::{to_canonical_string, PlanHash},
     extension::BoundedDelivery,
     ir::{
-        is_identifier, CredentialRef, HostId, OutputId, RecipientId, Selector, DECLARED_OUTPUT_PREFIX,
+        is_identifier, CredentialRef, HostId, OutputId, RecipientId, RecipientName, Selector, DECLARED_OUTPUT_PREFIX,
         MAX_DECLARED_OUTPUT_NAME_LEN,
     },
     limits::values::{MAX_DECLARED_OUTPUTS, MAX_DECLARED_RECIPIENTS, RESOURCES_ARTIFACT_SIZE},
     model::PortType,
-    validate::Catalog,
+    validate::{Catalog, RecipientSource},
 };
 
 /// The version of the resources artifact's format.
@@ -234,8 +234,11 @@ fn invalid(message: String) -> ResourcesError {
 ///    ([`receive_artifact`][crate::compose::receive_artifact]), is at most `RESOURCES_ARTIFACT_SIZE` bytes;
 /// 2. it reads as a [`ResourcesArtifact`], strictly (unknown members are refused), in version [`RESOURCES_VERSION`];
 /// 3. it declares at most `MAX_DECLARED_RECIPIENTS` recipients and `MAX_DECLARED_OUTPUTS` outputs;
-/// 4. each recipient has a name that is an identifier no other recipient has; names a delivery host that the catalog
-///    declares as accepting declared recipients ([`HostSchema::declared_recipients`][crate::validate::HostSchema]);
+/// 4. each recipient has a name that is an identifier no other recipient has, that the catalog does not reserve for
+///    recipients the host names itself ([`Catalog::reserves_recipient_name`]), and that the catalog's recipient
+///    directory does not give a recipient declared other than by a resources artifact; names a delivery host that the
+///    catalog declares as accepting declared recipients
+///    ([`HostSchema::declared_recipients`][crate::validate::HostSchema]);
 ///    has an endpoint that is an `http` or `https` URL without user information, query, or fragment, which is put in
 ///    [canonical form](canonical_endpoint); uses a credential `credentials/<name>` whose name is an identifier; bounds
 ///    its queue, if it does, to at least one byte; and has an identity ([`DeclaredRecipient::id`]) no other recipient
@@ -305,6 +308,25 @@ pub fn validate(document: Value, catalog: &dyn Catalog) -> Result<ResourcesArtif
             return Err(at(
                 "another recipient has this name; give each recipient its own".to_string()
             ));
+        }
+        // An identifier is a recipient name.
+        if let Ok(directory_name) = RecipientName::new(recipient.name.clone()) {
+            if catalog.reserves_recipient_name(&directory_name) {
+                return Err(at(format!(
+                    "`{}` is a name the host gives a recipient of its own; give the recipient another name",
+                    recipient.name
+                )));
+            }
+            if catalog
+                .recipient(&directory_name)
+                .is_some_and(|entry| entry.source != RecipientSource::Resources)
+            {
+                return Err(at(format!(
+                    "the host's configuration already declares a recipient named `{}`, which takes precedence; give \
+                     the recipient another name",
+                    recipient.name
+                )));
+            }
         }
         match catalog.host(&recipient.host) {
             None => {
@@ -601,6 +623,90 @@ mod tests {
 
     fn recipient(name: &str, endpoint: &str, credential: &str) -> Value {
         json!({"name": name, "host": "dd_out", "endpoint": endpoint, "credential": credential})
+    }
+
+    /// [`Hosts`], with a recipient directory: the host names `primary` itself and reserves it, its configuration
+    /// declares `team_b`, and an earlier resources artifact declared `team_d`.
+    struct Named {
+        directory: BTreeMap<RecipientName, crate::validate::CatalogRecipient>,
+    }
+
+    impl Named {
+        fn new() -> Self {
+            let entry = |source| crate::validate::CatalogRecipient {
+                recipients: vec![RecipientId::new("dd_out/x").unwrap()],
+                host: HostId::new("dd_out").unwrap(),
+                endpoint: "https://x.example.com".to_string(),
+                source,
+            };
+            let directory = [
+                ("primary", RecipientSource::Native),
+                ("team_b", RecipientSource::Config),
+                ("team_d", RecipientSource::Resources),
+            ]
+            .into_iter()
+            .map(|(name, source)| (RecipientName::new(name).unwrap(), entry(source)))
+            .collect();
+            Self { directory }
+        }
+    }
+
+    impl Catalog for Named {
+        fn output(&self, id: &OutputId) -> Option<&CatalogOutput> {
+            Hosts.output(id)
+        }
+
+        fn binding(&self, name: &BindingName) -> Option<&CatalogBinding> {
+            Hosts.binding(name)
+        }
+
+        fn scope_input(&self, scope: &ScopeName, input: &InputName) -> Option<PortType> {
+            Hosts.scope_input(scope, input)
+        }
+
+        fn host(&self, host: &HostId) -> Option<HostSchema> {
+            Hosts.host(host)
+        }
+
+        fn recipient(&self, name: &RecipientName) -> Option<&crate::validate::CatalogRecipient> {
+            self.directory.get(name)
+        }
+
+        fn reserves_recipient_name(&self, name: &RecipientName) -> bool {
+            ["primary", "mrf", "cluster_agent"].contains(&name.as_str())
+        }
+    }
+
+    #[test]
+    fn a_declared_recipient_may_not_take_a_name_the_host_reserves_or_its_configuration_declares() {
+        let named = Named::new();
+        let declare = |name: &str| {
+            document(
+                vec![recipient(name, "http://127.0.0.1:17105", "credentials/team_d")],
+                Vec::new(),
+            )
+        };
+        // Reserved whether or not the directory has the name now.
+        for name in ["primary", "mrf"] {
+            let error = validate(declare(name), &named).unwrap_err().to_string();
+            assert!(
+                error.contains(&format!(
+                    "recipient `{}`: `{}` is a name the host gives a recipient of its own",
+                    name, name
+                )),
+                "{}",
+                error
+            );
+        }
+        let error = validate(declare("team_b"), &named).unwrap_err().to_string();
+        assert!(
+            error.contains("the host's configuration already declares a recipient named `team_b`"),
+            "{}",
+            error
+        );
+        // A name an earlier resources artifact gave is this artifact's to give again.
+        validate(declare("team_d"), &named).unwrap();
+        validate(declare("team_e"), &named).unwrap();
     }
 
     fn document(recipients: Vec<Value>, outputs: Vec<Value>) -> Value {

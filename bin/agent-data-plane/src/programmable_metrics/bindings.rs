@@ -3,18 +3,23 @@
 //! A plan parameter bound to configuration names a binding, `{"config": "<binding>"}`, never a configuration key. This
 //! module is the only place that maps binding names to the typed configuration model:
 //!
+//! - **Every binding has a class** ([`BindingClass`]): a **fact** of the host that a program does not choose (its tags,
+//!   whether a failover endpoint is configured), a **signal** it reacts to (a failover in progress), or a **policy**
+//!   setting, what to do with metrics, which only the default program binds: a published program owns its policy, and
+//!   writes it as literals.
 //! - **Names are typed-model paths**, below the model's top-level section (`domains.dogstatsd.metric_filter.values` is
 //!   `dogstatsd.metric_filter.values`), never Datadog keys: a Datadog key can have several sources with a precedence
 //!   that translation has already resolved, such as `metric_filterlist` and the legacy `statsd_metric_blocklist`.
 //!   Derived bindings, whose values combine several settings, have names of their own, such as
-//!   `dogstatsd.post_aggregate_filter.values`.
+//!   `dogstatsd.post_aggregate_filter.values`. Facts of the host that configuration does not hold live under
+//!   `host.`, such as `host.tags`, and resolve from the [host facts](HostFacts).
 //! - **Keyed bindings** have one instance per key, such as the lists of each endpoint routing group, keyed by the
 //!   group's fingerprint.
 //! - **Liveness follows native behavior, and the structure that follows live configuration.** `Live` bindings are the
 //!   inputs a native component reads through a live view (`dogstatsd.metric_filter.*`, `dogstatsd.tag_filterlist`,
 //!   and `multi_region_failover.metric_mirroring.*`), and the inputs of the output branches, which follow the current
 //!   configuration since outputs became live (`metrics_endpoint_routing.group.*`, `multi_region_failover.enabled`,
-//!   and `autoscaling_failover.metrics`); a derived binding is live when one of its inputs is. Every other binding is
+//!   and `autoscaling_failover.*`); a derived binding is live when one of its inputs is. Every other binding is
 //!   `Startup`: it resolves from the configuration the process started with, so a change to it takes effect only at
 //!   restart, as natively.
 //! - **Credentials are never bindable.** No binding reads an API key, a token, or a secret.
@@ -34,11 +39,11 @@ use saluki_metric_plan::{
         encode_mapper_profiles, encode_tag_filter_rules, encode_tag_value_rules, HISTOGRAM_AGGREGATES, MAPPER_PROFILES,
         TAG_FILTER_RULES, TAG_VALUE_RULES,
     },
-    validate::Liveness,
+    validate::{BindingClass, Liveness},
 };
 use serde_json::{json, Value};
 
-use super::resources::routing_group_key;
+use super::{host_facts::HostFacts, resources::routing_group_key};
 use crate::{
     cli::run::dogstatsd_mapper_configuration,
     components::tag_filterlist::{tag_filter_rules, tag_value_rules},
@@ -56,7 +61,7 @@ const POSITIVE_COUNT: ParamType = ParamType::Integer {
 const HISTOGRAM_AGGREGATE_NAMES: ParamType = ParamType::List(&ParamType::Enum(HISTOGRAM_AGGREGATES));
 const HISTOGRAM_PERCENTILES: ParamType = ParamType::List(&ParamType::Integer { min: 0, max: 100 });
 
-/// The configuration snapshots bindings resolve from.
+/// The configuration snapshots, and the host facts, bindings resolve from.
 #[derive(Clone, Copy, Debug)]
 pub struct Snapshots<'a> {
     /// The configuration the process started with, which `Startup` bindings, and the startup inputs of derived
@@ -65,6 +70,9 @@ pub struct Snapshots<'a> {
 
     /// The current configuration, which the live inputs of `Live` bindings resolve from.
     pub current: &'a SalukiConfiguration,
+
+    /// The host facts, captured at boot, which facts of the host resolve from.
+    pub facts: &'a HostFacts,
 }
 
 /// How a binding's value is resolved from configuration.
@@ -86,6 +94,12 @@ pub enum Resolve {
     ///
     /// Returns `None` if the configuration has no instance with that key.
     Keyed(fn(&SalukiConfiguration, &str) -> Option<Value>),
+
+    /// The value is a fact of the host, read from the host facts and the startup configuration: a `Startup` binding,
+    /// fixed for the life of the process.
+    ///
+    /// Returns `None` if the host has no such fact, such as host tags when host tags enrichment is off.
+    Fact(fn(&HostFacts, &SalukiConfiguration) -> Option<Value>),
 }
 
 /// The keys a keyed binding has instances for.
@@ -144,6 +158,13 @@ pub struct BindingSpec {
     /// Whether the value can change while the process runs.
     pub liveness: Liveness,
 
+    /// What the value is to a program: a fact of the host, a signal it reacts to, or a native policy setting, which a
+    /// published program owns.
+    pub class: BindingClass,
+
+    /// What the binding is, in one sentence, naming the native setting it comes from: tools show it beside a program.
+    pub about: &'static str,
+
     /// How the value is resolved.
     pub resolve: Resolve,
 }
@@ -185,6 +206,7 @@ impl BindingSpec {
             Resolve::Value(read) => read(live)?,
             Resolve::Derived(derive) => derive(live, snapshots.startup)?,
             Resolve::Keyed(read) => read(live, key)?,
+            Resolve::Fact(read) => read(snapshots.facts, snapshots.startup)?,
         };
         Some(match ParamValue::decode(&self.ty, &value, self.name) {
             Ok(decoded) => decoded.encode(),
@@ -201,6 +223,8 @@ pub static BINDINGS: &[BindingSpec] = &[
         key: None,
         ty: MAPPER_PROFILES,
         liveness: Liveness::Startup,
+        class: BindingClass::Policy,
+        about: "The DogStatsD mapper's profiles, from `dogstatsd_mapper_profiles`: rules that rename and tag.",
         resolve: Resolve::Value(mapper_profiles),
     },
     BindingSpec {
@@ -208,6 +232,8 @@ pub static BINDINGS: &[BindingSpec] = &[
         key: None,
         ty: COUNT,
         liveness: Liveness::Startup,
+        class: BindingClass::Policy,
+        about: "The DogStatsD mapper's cache size, from `dogstatsd_mapper_cache_size`.",
         resolve: Resolve::Value(|config| Some(json!(config.domains.dogstatsd.mapper.cache_size))),
     },
     BindingSpec {
@@ -215,6 +241,8 @@ pub static BINDINGS: &[BindingSpec] = &[
         key: None,
         ty: POSITIVE_COUNT,
         liveness: Liveness::Startup,
+        class: BindingClass::Policy,
+        about: "The DogStatsD mapper's string interner size, in bytes.",
         resolve: Resolve::Value(|config| Some(json!(config.domains.dogstatsd.mapper.string_interner_size_bytes.get()))),
     },
     // The namespace prefix.
@@ -223,6 +251,8 @@ pub static BINDINGS: &[BindingSpec] = &[
         key: None,
         ty: ParamType::String,
         liveness: Liveness::Startup,
+        class: BindingClass::Policy,
+        about: "The namespace prefixed to DogStatsD metric names, from `statsd_metric_namespace`.",
         resolve: Resolve::Value(|config| Some(json!(config.domains.dogstatsd.prefix_filter.metric_namespace))),
     },
     BindingSpec {
@@ -230,6 +260,8 @@ pub static BINDINGS: &[BindingSpec] = &[
         key: None,
         ty: STRINGS,
         liveness: Liveness::Startup,
+        class: BindingClass::Policy,
+        about: "The name prefixes the namespace is not added to, from `statsd_metric_namespace_blocklist`.",
         resolve: Resolve::Value(|config| {
             Some(json!(config.domains.dogstatsd.prefix_filter.metric_namespace_blocklist))
         }),
@@ -240,6 +272,8 @@ pub static BINDINGS: &[BindingSpec] = &[
         key: None,
         ty: STRINGS,
         liveness: Liveness::Live,
+        class: BindingClass::Policy,
+        about: "The metric filterlist, from `metric_filterlist`: the names DogStatsD drops.",
         resolve: Resolve::Value(|config| Some(json!(config.domains.dogstatsd.metric_filter.values))),
     },
     BindingSpec {
@@ -247,6 +281,8 @@ pub static BINDINGS: &[BindingSpec] = &[
         key: None,
         ty: ParamType::Bool,
         liveness: Liveness::Live,
+        class: BindingClass::Policy,
+        about: "Whether the metric filterlist matches name prefixes, from `metric_filterlist_match_prefix`.",
         resolve: Resolve::Value(|config| Some(json!(config.domains.dogstatsd.metric_filter.match_prefix))),
     },
     // The filterlist entries the post-aggregation filter matches: those naming a histogram statistic's series. Live
@@ -256,6 +292,8 @@ pub static BINDINGS: &[BindingSpec] = &[
         key: None,
         ty: STRINGS,
         liveness: Liveness::Live,
+        class: BindingClass::Policy,
+        about: "The metric filterlist's entries that name a histogram statistic, dropped after aggregation.",
         resolve: Resolve::Derived(post_aggregate_filter_values),
     },
     // Tag projection.
@@ -264,6 +302,8 @@ pub static BINDINGS: &[BindingSpec] = &[
         key: None,
         ty: TAG_FILTER_RULES,
         liveness: Liveness::Live,
+        class: BindingClass::Policy,
+        about: "The tag filterlist, from `metric_tag_filterlist`: tags removed before aggregation.",
         resolve: Resolve::Value(|config| {
             Some(encode_tag_filter_rules(&tag_filter_rules(
                 &config.domains.dogstatsd.tag_filterlist,
@@ -275,6 +315,8 @@ pub static BINDINGS: &[BindingSpec] = &[
         key: None,
         ty: TAG_VALUE_RULES,
         liveness: Liveness::Startup,
+        class: BindingClass::Policy,
+        about: "The tag value rules, from `metric_tag_value_allowlist`.",
         resolve: Resolve::Value(|config| {
             Some(encode_tag_value_rules(&tag_value_rules(
                 &config.domains.dogstatsd.tag_value_allowlist,
@@ -286,6 +328,8 @@ pub static BINDINGS: &[BindingSpec] = &[
         key: None,
         ty: COUNT,
         liveness: Liveness::Startup,
+        class: BindingClass::Policy,
+        about: "The capacity of the tag filterlist's cache.",
         resolve: Resolve::Value(|config| {
             Some(json!(
                 config
@@ -302,6 +346,8 @@ pub static BINDINGS: &[BindingSpec] = &[
         key: None,
         ty: ParamType::Duration,
         liveness: Liveness::Startup,
+        class: BindingClass::Policy,
+        about: "The aggregation's bucket width, from `aggregate_window_duration_seconds`.",
         resolve: Resolve::Value(|config| seconds(config.domains.dogstatsd.aggregation.window_duration_seconds.get())),
     },
     BindingSpec {
@@ -309,6 +355,8 @@ pub static BINDINGS: &[BindingSpec] = &[
         key: None,
         ty: ParamType::Duration,
         liveness: Liveness::Startup,
+        class: BindingClass::Policy,
+        about: "How often aggregation flushes closed buckets, from `aggregate_flush_interval`.",
         resolve: Resolve::Value(|config| {
             format_duration(config.domains.dogstatsd.aggregation.flush_interval).map(Value::String)
         }),
@@ -318,6 +366,8 @@ pub static BINDINGS: &[BindingSpec] = &[
         key: None,
         ty: COUNT,
         liveness: Liveness::Startup,
+        class: BindingClass::Policy,
+        about: "The most contexts aggregation holds, from `aggregate_context_limit`.",
         resolve: Resolve::Value(|config| Some(json!(config.domains.dogstatsd.aggregation.context_limit))),
     },
     // An unset or zero expiry never expires counters, which the parameter writes as `0s`.
@@ -326,6 +376,8 @@ pub static BINDINGS: &[BindingSpec] = &[
         key: None,
         ty: ParamType::Duration,
         liveness: Liveness::Startup,
+        class: BindingClass::Policy,
+        about: "How long an idle counter reports zeros, from `dogstatsd_expiry_seconds`; `0s` is forever.",
         resolve: Resolve::Value(|config| {
             seconds(
                 config
@@ -342,6 +394,8 @@ pub static BINDINGS: &[BindingSpec] = &[
         key: None,
         ty: ParamType::Bool,
         liveness: Liveness::Startup,
+        class: BindingClass::Policy,
+        about: "Whether aggregation flushes open buckets too.",
         resolve: Resolve::Value(|config| Some(json!(config.domains.dogstatsd.aggregation.flush_open_windows))),
     },
     // Histogram statistics, each listed once, in their configured order (see `histogram_params`).
@@ -350,6 +404,8 @@ pub static BINDINGS: &[BindingSpec] = &[
         key: None,
         ty: HISTOGRAM_AGGREGATE_NAMES,
         liveness: Liveness::Startup,
+        class: BindingClass::Policy,
+        about: "The histogram statistics aggregation computes, from `histogram_aggregates`.",
         resolve: Resolve::Value(|config| {
             let (histogram, _) = histogram_params(config).ok()?;
             Some(json!(histogram
@@ -364,6 +420,8 @@ pub static BINDINGS: &[BindingSpec] = &[
         key: None,
         ty: HISTOGRAM_PERCENTILES,
         liveness: Liveness::Startup,
+        class: BindingClass::Policy,
+        about: "The histogram percentiles aggregation computes, from `histogram_percentiles`.",
         resolve: Resolve::Value(|config| Some(json!(histogram_params(config).ok()?.0.percentiles))),
     },
     BindingSpec {
@@ -371,6 +429,8 @@ pub static BINDINGS: &[BindingSpec] = &[
         key: None,
         ty: ParamType::Bool,
         liveness: Liveness::Startup,
+        class: BindingClass::Policy,
+        about: "Whether histograms are also sent as distributions, from `histogram_copy_to_distribution`.",
         resolve: Resolve::Value(|config| Some(json!(config.shared.metrics_encoding.histogram.copy_to_distribution))),
     },
     BindingSpec {
@@ -378,6 +438,8 @@ pub static BINDINGS: &[BindingSpec] = &[
         key: None,
         ty: ParamType::String,
         liveness: Liveness::Startup,
+        class: BindingClass::Policy,
+        about: "The name prefix of histograms copied to distributions.",
         resolve: Resolve::Value(|config| {
             Some(json!(
                 config.shared.metrics_encoding.histogram.copy_to_distribution_prefix
@@ -391,6 +453,8 @@ pub static BINDINGS: &[BindingSpec] = &[
         key: Some(BindingKey::RoutingGroup),
         ty: STRINGS,
         liveness: Liveness::Live,
+        class: BindingClass::Policy,
+        about: "The metric names an endpoint routing group sends to its endpoints.",
         resolve: Resolve::Keyed(|config, key| routing_group(config, key).map(|group| json!(group.metric_allowlist))),
     },
     BindingSpec {
@@ -398,6 +462,8 @@ pub static BINDINGS: &[BindingSpec] = &[
         key: Some(BindingKey::RoutingGroup),
         ty: STRINGS,
         liveness: Liveness::Live,
+        class: BindingClass::Policy,
+        about: "The metric name prefixes an endpoint routing group sends to its endpoints.",
         resolve: Resolve::Keyed(|config, key| {
             routing_group(config, key).map(|group| json!(group.metric_prefix_allowlist))
         }),
@@ -409,6 +475,8 @@ pub static BINDINGS: &[BindingSpec] = &[
         key: None,
         ty: ParamType::Bool,
         liveness: Liveness::Live,
+        class: BindingClass::Fact,
+        about: "Whether the Multi-Region Failover endpoint is configured, from `multi_region_failover.enabled`.",
         resolve: Resolve::Value(|config| Some(json!(config.domains.multi_region_failover.enabled))),
     },
     BindingSpec {
@@ -416,6 +484,8 @@ pub static BINDINGS: &[BindingSpec] = &[
         key: None,
         ty: ParamType::Bool,
         liveness: Liveness::Live,
+        class: BindingClass::Signal,
+        about: "Whether a regional failover mirrors metrics now, from `multi_region_failover.failover_metrics`.",
         resolve: Resolve::Value(|config| Some(json!(config.domains.multi_region_failover.metric_mirroring.enabled))),
     },
     BindingSpec {
@@ -423,15 +493,53 @@ pub static BINDINGS: &[BindingSpec] = &[
         key: None,
         ty: STRINGS,
         liveness: Liveness::Live,
+        class: BindingClass::Policy,
+        about: "The metrics failover mirrors, from `multi_region_failover.metric_allowlist`; empty is all.",
         resolve: Resolve::Value(|config| Some(json!(config.domains.multi_region_failover.metric_mirroring.allowlist))),
     },
-    // Autoscaling failover: live, as the branch, which exists only while its list is not empty.
+    // Autoscaling failover: live, as the branch, which exists only while it is enabled and its list is not empty.
+    BindingSpec {
+        name: "autoscaling_failover.enabled",
+        key: None,
+        ty: ParamType::Bool,
+        liveness: Liveness::Live,
+        class: BindingClass::Signal,
+        about: "Whether autoscaling failover sends metrics to the Cluster Agent, from `autoscaling.failover.enabled`.",
+        resolve: Resolve::Value(|config| Some(json!(config.shared.autoscaling_failover.enabled))),
+    },
     BindingSpec {
         name: "autoscaling_failover.metrics",
         key: None,
         ty: STRINGS,
         liveness: Liveness::Live,
+        class: BindingClass::Policy,
+        about: "The metrics the Cluster Agent receives for autoscaling failover, from `autoscaling.failover.metrics`.",
         resolve: Resolve::Value(|config| Some(json!(config.shared.autoscaling_failover.metrics))),
+    },
+    // Facts of the host: its tags, fetched from the Core Agent at boot, and the instant until which they are added.
+    BindingSpec {
+        name: "host.tags",
+        key: None,
+        ty: STRINGS,
+        liveness: Liveness::Startup,
+        class: BindingClass::Fact,
+        about: "The host's tags, fetched from the Core Agent at boot.",
+        resolve: Resolve::Fact(|facts, _| {
+            let tags = facts.host_tags.as_ref()?;
+            Some(json!(tags.into_iter().map(|tag| tag.as_str()).collect::<Vec<_>>()))
+        }),
+    },
+    BindingSpec {
+        name: "host.tags_deadline",
+        key: None,
+        ty: ParamType::Duration,
+        liveness: Liveness::Startup,
+        class: BindingClass::Fact,
+        about: "When host tags stop being added: the process start plus `expected_tags_duration`.",
+        resolve: Resolve::Fact(|facts, startup| {
+            let deadline = facts.host_tags_deadline(startup.shared.tags.expected_tags_duration);
+            format_duration(deadline).map(Value::String)
+        }),
     },
 ];
 
@@ -442,6 +550,13 @@ pub fn lookup(name: &BindingName) -> Option<(&'static BindingSpec, String)> {
     BINDINGS
         .iter()
         .find_map(|spec| spec.match_name(&name).map(|key| (spec, key.to_string())))
+}
+
+/// Returns what the binding `name` is, as tools show it beside a program: its class and what it is, such as "fact: The
+/// host's tags, fetched from the Core Agent at boot.", if the registry has it.
+pub fn annotation(name: &BindingName) -> Option<String> {
+    let (spec, _) = lookup(name)?;
+    Some(format!("{}: {}", spec.class.as_str(), spec.about))
 }
 
 /// Resolves the value of the binding `name`.
