@@ -43,7 +43,9 @@ started. Current state, in detail: [status: where things stand](programmable-met
 3. [Status](programmable-metrics-status.md): the current state, how to run everything, a code map, changes users can
    see, **decisions awaiting the owner**, the amendments index, known limitations, and deferred work by stage.
 4. [Deployment context and next steps](programmable-metrics-next.md): **what production looks like (limits of 0.3 to
-   1.2 cores, 50 millicores in the worst case), what that means for the work, and the next chunk of work.**
+   1.2 cores, 50 millicores in the worst case), what that means for the work, and the next chunk of work**, and the
+   owner's direction that programs replace native policy. Its design, not yet built, is
+   [detached programs](programmable-metrics-detached-programs.md).
 5. [Implementation log](programmable-metrics-log.md): the history. What was tried, what failed, what reviews and
    integration found, measured results, and the decisions made along the way.
 6. The designs as built, for depth:
@@ -65,9 +67,10 @@ started. Current state, in detail: [status: where things stand](programmable-met
 | What changed for users against native ADP? | [Status: changes users can see](programmable-metrics-status.md#changes-users-can-see) |
 | What did we change outside the new code, and is it permanent? | [Status: changes outside the new code](programmable-metrics-status.md#changes-outside-the-new-code) |
 | What is waiting on a decision? | [Status: decisions awaiting the owner](programmable-metrics-status.md#decisions-awaiting-the-owner); [stages 7 and 9 open questions](programmable-metrics-stages-7-and-9.md#12-open-questions) |
-| Which spec amendments are proposed? | [Status: amendments index](programmable-metrics-status.md#spec-amendments-index) (1 to 87); [stages 7 and 9 amendments](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments) (88 on) |
+| Which spec amendments are proposed? | [Status: amendments index](programmable-metrics-status.md#spec-amendments-index) (1 to 87); [stages 7 and 9 amendments](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments) (88 to 182) |
 | What are the risks and limitations? | [Status](programmable-metrics-status.md#known-limitations-and-risks); [implementation risks](programmable-metrics-implementation.md#risks); [stages 7 and 9 risks](programmable-metrics-stages-7-and-9.md#11-risks) |
 | What should we work on next? | [Next steps](programmable-metrics-next.md#the-next-chunk-of-work) |
+| Do programs replace native policy, and how? | [Direction](programmable-metrics-next.md#direction-programs-replace-native-policy); [detached programs](programmable-metrics-detached-programs.md) |
 | What is left to build? | [Status: deferred work by stage](programmable-metrics-status.md#deferred-work-by-stage) |
 | What alternatives were rejected? | [Stage 7](programmable-metrics-stages-7-and-9.md#418-alternatives-considered), [stage 9](programmable-metrics-stages-7-and-9.md#516-alternatives-considered), and the [log](programmable-metrics-log.md) |
 | What are the performance numbers? | [Implementation risks](programmable-metrics-implementation.md#risks) (stages 3 to 6); [stage 9 measurements](programmable-metrics-stages-7-and-9.md#86-measurement-harness-and-what-is-measured-first); the [log](programmable-metrics-log.md) |
@@ -97,6 +100,14 @@ sizes; R1's cost model adds hops for nothing; and the serial, blocking aggregati
 problem. The next chunk of work is to measure at the production limits, make the flush non-blocking without sharding,
 fuse maximally at small budgets, and improve efficiency per metric: see
 [deployment context and next steps](programmable-metrics-next.md).
+
+## What we decided about native policy
+
+On 2026-10-14 the owner decided that **programs replace native policy**: a published program owns its policy settings
+as literals and binds only facts and signals; native policy configuration only feeds the default program, which runs
+when no artifact is published; status says when native policy settings are not applied. The
+[direction](programmable-metrics-next.md#direction-programs-replace-native-policy) records it, and
+[detached programs](programmable-metrics-detached-programs.md) designs the simplification that follows.
 
 ## Main open questions
 

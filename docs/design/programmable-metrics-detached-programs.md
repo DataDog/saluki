@@ -1,0 +1,630 @@
+# Programmable metric processing: detached programs
+
+The design that follows the owner's decision that programs replace native policy
+([direction](programmable-metrics-next.md#direction-programs-replace-native-policy)). Its goal: simplify as much as we
+can, so that the demo and the default program read well, with less magic. Nothing here is built yet. Amendments 170 to
+182 are in [the stages 7 and 9 plan](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments).
+
+## Contents
+
+- [1. In one minute](#1-in-one-minute)
+- [2. What a program binds](#2-what-a-program-binds)
+- [3. Step 1: the detached export](#3-step-1-the-detached-export)
+- [4. Step 2: recipient names](#4-step-2-recipient-names)
+- [5. Step 2: emits addressed to recipients](#5-step-2-emits-addressed-to-recipients)
+- [6. Step 3: facts and signals only](#6-step-3-facts-and-signals-only)
+- [7. Step 4: one aggregation is the aggregation](#7-step-4-one-aggregation-is-the-aggregation)
+- [8. The editor and the demo](#8-the-editor-and-the-demo)
+- [9. What this lets us remove](#9-what-this-lets-us-remove)
+- [10. Implementation plan](#10-implementation-plan)
+- [11. Assumptions](#11-assumptions)
+- [12. Open questions for the owner](#12-open-questions-for-the-owner)
+
+## 1. In one minute
+
+- **Every binding gets a class**: fact, signal, or policy. Policy bindings stay only in the default program, which
+  lowering writes from native configuration as today. Host tags and their deadline become fact bindings; autoscaling
+  failover gains a signal.
+- **The export is detached.** `GET /programmable-metrics/export` writes every policy binding as its current literal
+  value and keeps facts and signals bound. Composition treats a literal equal to a binding's value as the same
+  operation, so publishing an unmodified export still changes nothing. Status says which program runs and whether native
+  policy settings apply.
+- **Recipients have names** (`primary`, `mrf`, `cluster_agent`, a name derived from each additional endpoint's host,
+  and the name a declaration gives), and **programs emit to recipients**: `emit to [team_b]`. ADP matches each distinct
+  recipient set to an output, reusing a native one when the set is equal, and otherwise adds one through stage 7's
+  resource transaction. One encoder runs per distinct set, as native routing groups do.
+- **The demo declares teams B and C as recipients in configuration**, not as native additional endpoints with endpoint
+  routing, so the demo shows a program routing. The equivalence of native routing stays proven by tests and fixtures.
+- **Published programs bind only facts and signals** (`policy_binding`, gated by the catalog like
+  `single_aggregation`).
+- **A program's one aggregation corresponds to `dsd_agg`** whatever its node is called, so its state carries over, and
+  its telemetry keeps `component_id:dsd_agg`.
+
+## 2. What a program binds
+
+### 2.1 Every binding, classified
+
+The registry is `bin/agent-data-plane/src/programmable_metrics/bindings.rs`, `BINDINGS`; each entry gains a class,
+which the catalog carries (amendment 171). **Fact**: something true of the host or its resources that the program does
+not choose. **Signal**: a live operational state the program reacts to. **Policy**: what to do with metrics, which a
+published program owns.
+
+| Binding | Liveness | Class | Why |
+|---|---|---|---|
+| `dogstatsd.mapper.profiles` | startup | policy | Rules that rename metrics and add tags: a program in itself. |
+| `dogstatsd.mapper.cache_size`, `dogstatsd.mapper.string_interner_size_bytes` | startup | policy | Tuning of one node. Memory is bounded for artifact nodes anyway (`ARTIFACT_MEMORY`, 64 MiB). |
+| `dogstatsd.prefix_filter.metric_namespace`, `.metric_namespace_blocklist` | startup | policy | Name rewriting and its exclusions. |
+| `dogstatsd.metric_filter.values`, `.match_prefix` | live | policy | The metric filterlist. |
+| `dogstatsd.post_aggregate_filter.values` | live, derived | policy | Derived from the filterlist and the histogram statistics; becomes one literal list (see [3.1](#31-where-detaching-happens)). |
+| `dogstatsd.tag_filterlist`, `dogstatsd.tag_value_allowlist` | live, startup | policy | The tag filterlist and value rules. |
+| `dogstatsd.aggregation.aggregator_tag_filter_cache_capacity` | startup | policy | Tuning of one node. |
+| `dogstatsd.aggregation.window_duration_seconds`, `.flush_interval`, `.counter_expiry_seconds`, `.flush_open_windows` | startup | policy | Aggregation parameters, named by the owner as policy. |
+| `dogstatsd.aggregation.context_limit` | startup | policy | The node's own limit. The host's **state budget**, also derived from `dogstatsd_context_limit` (`AdpCatalog::state_budget`), stays a host bound that no program raises; validation warns beyond it (`state_budget`). |
+| `metrics_encoding.histogram.aggregates`, `.percentiles`, `.copy_to_distribution`, `.copy_to_distribution_prefix` | startup | policy | The statistics aggregation computes. The `metrics_encoding` prefix is the native key's; only aggregation and the derived filter read them. |
+| `metrics_endpoint_routing.group.{key}.names`, `.prefixes` | live | policy | Routing allowlists, keyed by `routing_group_key`. Lowering-only: the detached export writes the lists, and step 2 writes the emit as recipients. |
+| `multi_region_failover.enabled` | live | fact | Whether the failover recipient is configured: resource availability, not a choice. Redundant once an emit names `mrf`; kept so the export stays faithful ([9](#9-what-this-lets-us-remove)). |
+| `multi_region_failover.metric_mirroring.enabled` | live | signal | The Datadog key `multi_region_failover.failover_metrics`: turned on during a regional failover, read live. This is the failover signal the owner named. |
+| `multi_region_failover.metric_mirroring.allowlist` | live | policy | The mirroring list. |
+| `autoscaling_failover.metrics` | live | policy | Which metrics the Cluster Agent receives: a filter list like the mirroring list. It is a deployment's choice, not a state the program observes. |
+| `autoscaling_failover.enabled` (new) | live | signal | Whether autoscaling failover is on, the other signal the owner named. See [2.2](#22-new-bindings). |
+| `host.tags` (new) | boot | fact | The host's tags, fetched from the Core Agent at boot. Today a literal in `metrics_enrich_host_tags`. |
+| `host.tags_deadline` (new) | boot | fact | The process start plus `expected_tags_duration`: an absolute instant, meaningless as a literal in a program kept across restarts or sent to many hosts. `expected_tags_duration` describes when the Agent's intake adds host tags itself, a fact of the deployment. |
+
+The hostname is not a binding: `host_enrichment` takes no parameters, since native host enrichment changes only events
+and service checks. A program that needs it would bind a `host.name` fact; none does yet.
+
+### 2.2 New bindings
+
+- **`host.tags` and `host.tags_deadline`** (amendment 172). `host_tags`'s `tags` and `deadline` become bindable
+  (`ParamType::Bindable`). Lowering binds them, resolved from `HostFacts`; their liveness is `Startup`. Fact names
+  live under `host.`, outside the rule that binding names are typed-model paths.
+- **`autoscaling_failover.enabled`** (amendment 180), live. Lowering adds `flag(config("autoscaling_failover.enabled"))`
+  to `af_metrics_gateway`'s predicate. The branch exists only while autoscaling failover is requested, so the flag is
+  always true in the default program; the detached export carries it, so a published program stops sending to the
+  Cluster Agent when autoscaling failover turns off. For that to work without degrading the program, the
+  `cluster_agent` recipient becomes available whenever forwarding to the Cluster Agent is configured (endpoint at boot,
+  `cluster_agent.enabled`, a token), whether or not the branch is requested (today `cluster_agent_forwarder` also
+  requires `is_branch_requested`). An available recipient that no output names runs no loop, so this costs nothing.
+
+### 2.3 Where the native compatibility machinery goes
+
+| Machinery | Where it goes |
+|---|---|
+| Policy bindings and their liveness (`Startup` or `Live`) | Lowering only: the default program keeps them; artifacts cannot bind them (step 3). |
+| Hash-keyed routing-group bindings (`metrics_endpoint_routing.group.<16 hex>.*`, `BindingKey::RoutingGroup`) | Lowering only, never shown: the export writes the lists, and the emits as recipients. |
+| Outputs shaped by native routing (`metrics_routing_encode_<n>`, `Selector::Group`, the main output sending to every endpoint without a routing policy) | Lowering only: artifacts emit to recipients; composition maps a recipient set to such an output only when the sets are equal. |
+| Native authority bookkeeping (`compose.rs` `guards_authority`, `Feeds`) | Kept for now: [open question 2](#12-open-questions-for-the-owner). |
+| Version 1 fingerprints and legacy recipient IDs | Removed ([9](#9-what-this-lets-us-remove)). |
+| Base staleness (`stale_base`) | Replaced in status by which program runs and which native settings differ ([3.3](#33-status)); removed later. |
+
+## 3. Step 1: the detached export
+
+### 3.1 Where detaching happens
+
+In the plan crate's export (`lib/saluki-metric-plan/src/export.rs`), as a form of the bundle (amendment 173):
+
+- `export(plan, scope, catalog, labels, ExportForm::Detached)` writes every parameter bound to a binding whose catalog
+  class is `policy` as the binding's resolved value, which the default program carries, and keeps fact and signal
+  bindings bound and unresolved, as today. `ExportForm::Bound` is today's export, kept for tools and tests that study
+  lowering.
+- **Literal folding.** After writing literals, the detached export folds `is_empty(<literal>)` and `flag(<literal>)` to
+  constants and simplifies the junctions they sit in (`x and true` is `x`, `x or true` is `true`, and so on). Nothing
+  else is folded: `intake_name in []` stays, so an author can add names to an empty filterlist where it is. Without
+  folding, the failover gateway would read `is_empty([]) or name in []`, with the mirroring list written twice, and an
+  edit to one copy would silently disagree with the other.
+- The bundle gains `form` (`detached` or `bound`). ADP's route serves `detached` by default and `bound` for
+  `?form=bound`. `status.default_program_hash` is the detached export's base hash, so a client refetches when a native
+  policy value changes, which is what an editor wants.
+- The derived `dogstatsd.post_aggregate_filter.values` becomes one literal list: the filterlist entries that name a
+  histogram statistic's series. Editing `dsd_agg`'s statistics does not update it; the editor's note on the node says
+  so.
+
+**Composition compares values, not their sources** (amendment 174). `same_operation` (`compose.rs`) compares a default
+node and an artifact node after resolving the default node's bindings to their values and folding literals in both, as
+the export does. So an unmodified detached export composes to the default program, with its hash (S0 holds), and its
+nodes keep native provenance. When a native setting later changes, the default program is lowered again and the
+artifact in effect composed again; the node's literal now differs, so it takes the artifact's provenance and keeps the
+artifact's value: the program owns it. The rule is general (an operation is what it does with the values it has), so
+it is not machinery for native compatibility.
+
+### 3.2 How ADP knows an active program is detached
+
+After step 3 every published program is detached, since none may bind a policy setting. Until then, ADP classifies the
+artifact in effect: **detached** when no node binds a policy binding, else **bound**, naming the policy bindings it
+binds. A bound artifact keeps following native values as today; the status says so.
+
+### 3.3 Status
+
+The poll's status and the status route gain `program` (additive, amendment 175):
+
+```json
+"program": {
+  "runs": "published",
+  "native_policy": "not_applied",
+  "differs": ["dogstatsd.metric_filter.values"],
+  "bound": []
+}
+```
+
+- `runs` is `default` (no artifact: native policy settings apply, `native_policy` is `applied`) or `published`.
+- `native_policy` is `applied`, `not_applied` (a detached program), or `partly_applied` (a bound one, listing its
+  bindings in `bound`).
+- `differs` lists the policy bindings whose current native value differs from what the published program does: for
+  each default-program node bound to one, the node is absent from the artifact or its value differs. It is what an
+  operator needs after changing a native setting while a program runs.
+
+### 3.4 Native configuration changes while a program runs
+
+They still reach the default program: the installer lowers it on every configuration change, the export follows it,
+and **Load default program** shows the new values. They reach the published program only through facts, signals,
+resources (recipients, credentials, delivery settings), and implied outputs, which composition resolves again. They do
+not change its policy. An operator sees it three ways: `program.differs` in status, an `info` log line per change
+("`metric_filterlist` changed; the published program (revision 7) owns its policy, so the change applies to the default
+program only; revoke the program, or publish one with the new value, to apply it"), and in the demo a banner over the
+editor. Standalone mode, which the demo runs, never applies configuration updates, so ADP's live-change tests cover
+this, not the demo.
+
+## 4. Step 2: recipient names
+
+### 4.1 The directory
+
+Lowering, the compatibility layer, names every recipient a program may address, and the catalog carries the
+**directory** (amendment 176): name, recipient ID, delivery host, the endpoint as status spells it (`spelled_endpoint`,
+never a credential), and its source (`native`, `config`, or `resources`). The export bundle carries it, and the editor
+shows it. Recipient IDs stay positional and internal (`<host>/<route>/<key index>/<endpoint>`,
+`resources.rs` `recipient_id`): retry queues, slots, and leases keep them. Names resolve at composition, as bindings do,
+so the composed plan holds output IDs only, and runtime pays nothing for names.
+
+| Recipient | Name |
+|---|---|
+| The main output's primary endpoint, or the metrics override that replaces it (Observability Pipelines Worker, Vector) | `primary` |
+| The Multi-Region Failover endpoint (`mrf_dd_out`) | `mrf` |
+| The Cluster Agent (`cluster_agent_out`) | `cluster_agent` |
+| An additional endpoint's API key | derived from its URL: see below |
+| A declared recipient, in configuration ([4.2](#42-recipients-declared-in-configuration)) or a resources artifact | the name its declaration gives |
+
+**Additional endpoints** are named from the host of the URL: `ep_`, then the host lowercased with every character
+outside `[a-z0-9]` written as `_` (repeats collapsed), then `_<port>` for an explicit port other than the scheme's
+default, then `_key<i>` for every API key after the first (`i` counting from 1). So `https://app.datadoghq.eu` with two
+keys is `ep_app_datadoghq_eu` and `ep_app_datadoghq_eu_key1`. A name depends only on its own endpoint and key position,
+so adding or removing another endpoint never renames it. Two spellings of one host and port, which native configuration
+treats as two recipients, collide; each then gets `_` and the first 8 hexadecimal digits of the SHA-256 of its URL. A
+name longer than an identifier allows (63 bytes) keeps its first 54 bytes and that digest. As with recipient IDs,
+removing an earlier key renumbers the later ones.
+
+**Reserved names.** `primary`, `mrf`, `cluster_agent`, and names starting `ep_` belong to lowering. A declaration that
+uses one is refused, naming the reserved name. Two declarations of one name (configuration and a resources artifact)
+refuse the resources artifact's revision, since configuration is the operator's own.
+
+An optional label key for native endpoints (operator-chosen names for `additional_endpoints`) is left out: derived
+names are stable, and the demo stops using additional endpoints. It can be added to the directory later without
+changing programs.
+
+### 4.2 Recipients declared in configuration
+
+`experimental.programmable_metrics.resources.recipients` (Saluki-only, amendment 177) declares recipients as a resources
+artifact does, with the same schema and validation (`resources::validate`) and credentials from
+`experimental.programmable_metrics.resources.credentials`. It is live, as the endpoint keys are since stage 7. Lowering
+merges it with the accepted resources artifact; identities follow the declared rule
+(`<host>/declared/<credential name>/<canonical endpoint>`), and the source is `config`. This is the owner's "declared in
+config": the operator's path to destinations that only programs route to, with stage 8 skipped.
+
+### 4.3 The demo's teams: recommendation
+
+**Declare teams B and C in configuration, and drop `additional_endpoints` and `experimental.metrics_endpoint_routing`
+from the demo.** Reasons:
+
+- **Honesty.** Today the demo's default program routes to B and C through native routing groups, so the most visible
+  routing in the demo is native routing. With declared recipients, B and C receive only what a program emits to them,
+  and the demo shows programs routing.
+- **Readability.** The demo's default program loses two hash-keyed routing gateways and two positional outputs:
+  its policy is one emit to `primary` and the failover gateway.
+- **Native additional endpoints cannot stand in.** An additional endpoint without a routing policy receives everything
+  (natively it is dual-shipping), so B and C would need endpoint routing again.
+- **Equivalence loses nothing.** The equivalence of native routing is proven by the lowering matrix
+  (`lowering/matrix.rs`), the differential tests against frozen native code (`lowering/legacy_tests.rs`), the plan
+  crate's fixtures with `metrics_routing_filter_<n>`, and the live-change tests of the test topology, none of which use
+  the demo.
+
+The alternative, seeding the resources product with B and C at launch, needs no ADP change but ties B and C to team D's
+lifecycle scenarios (S8 to S11 publish and revoke the whole resources set) and leaves them undeclared until the first
+poll. Team D stays in the resources product, as the destination that arrives later.
+
+## 5. Step 2: emits addressed to recipients
+
+### 5.1 Syntax and IR
+
+```text
+node to_team_b = split(name starts_with "demo.checkout.") {
+  true  -> emit to [team_b]
+  false -> drop
+}
+```
+
+- **IR** (amendment 178): `emit` takes exactly one of `output` (an output ID, as today) or `to` (a non-empty list of
+  recipient names, identifiers). The syntax prints `emit to [a, b]` for `to`, and `emit <output>` for `output`.
+- **One host per emit.** Every recipient of one `emit` must be on one delivery host, since an output is one encoder
+  stream on one host. Otherwise composition refuses: "`emit to [primary, mrf]` names recipients of two delivery hosts
+  (`primary` on `dd_out`, `mrf` on `mrf_dd_out`); emit to each from its own branch."
+- **Output-addressed emits stay** for outputs without recipients, today only `dsd_client_telemetry`, the tap that the
+  Agent's DogStatsD client telemetry needs, and for the default program, which lowering keeps writing as today.
+
+### 5.2 From recipient sets to outputs
+
+Composition resolves `to` before comparing nodes, as it resolves bindings:
+
+1. Each name resolves through the directory to a recipient ID. A name the directory does not have makes a new artifact
+   **wait** (`pending`, "waiting for recipient `team_z`"), as an undeclared output does today, so a route can be
+   published before its resources (S10). For the artifact in effect, the `emit` becomes a counted drop with the
+   artifact's provenance (degraded), as for a removed output.
+2. The sorted set of IDs on its host is matched to an output with exactly that set: a native output first (the main
+   output, a routing group's, the failover outputs), then an **implied output**. Matching uses the set alone, never
+   the order or spelling of the names.
+3. The node's `to` becomes `output: <id>`, and `same_operation` runs as usual. So the detached export's
+   `emit to [primary]` composes to the default program's `emit dd_metrics_encode` when the main output's set is
+   `{primary}`, and S0 still changes nothing.
+
+**Implied outputs** (amendment 179). The installer core computes an artifact's **demand**, the recipient sets its emits
+need (`compose::demanded_outputs(artifact, catalog)`, pure), for the artifact installing, the one in effect, and those
+kept to roll back to. When demand names a set no output serves, the core returns `Action::InstallDefaultProgram`, and
+ADP lowers with the demand, as it lowers with the accepted resources (`Lowering::lower_after(current, declared, demand,
+previous)`). Lowering adds one output per set no output serves yet, which the resource transaction prepares (a lease on
+the host's encode host, and the recipients), before the artifact composes. An implied output retires, its lease
+draining, once no artifact in demand needs it, through the existing lease release.
+
+- **ID and telemetry.** `to_` and the sorted names joined by `__` (`to_team_b`, `to_team_b__team_c`); when that exceeds
+  63 bytes, `to_<first name>_and_<n>_<8 hex of the set's digest>`. Encoder telemetry reports under the ID, as for
+  declared outputs.
+- **Encoder settings from the host's template.** On `dd_out`, the main output's settings with the protocol variants its
+  recipients accept, as declared outputs get today (`resources.rs` `declare`), generalized from declared recipients to
+  any recipient on the host; on `mrf_dd_out`, the failover endpoint override; on `cluster_agent_out`, V2 series only,
+  accepting counters, rates, gauges, and sets. Validation's port-type check then refuses distributions sent to
+  `cluster_agent`, as it does for `af_metrics_encode`.
+- **Fingerprint.** The declared rule, over host, accepts, and the recipient set (`Selector::Declared`). Artifacts record
+  no fingerprint for a `to` emit: the names are the reference, and a renamed or re-declared recipient is followed by
+  name, which is what declaring resources apart from programs is for.
+- **Budget.** Implied and declared outputs share `MAX_DECLARED_OUTPUTS` (16). Demand beyond it refuses the artifact,
+  naming the limit.
+
+**Encoders are shared.** One output, so one encode, per distinct recipient set, however many branches emit to it, as
+native routing groups share an encoder per endpoint set. A record two branches send to one set is a duplicate
+contribution, refused as today. Nothing changes per metric: at 0.3 cores the cost that matters is encode and
+compression, which this neither adds nor splits.
+
+### 5.3 The default program's outputs, equivalence, and telemetry
+
+Lowering is unchanged: the default program emits to `dd_metrics_encode`, `metrics_routing_encode_<n>`,
+`mrf_metrics_encode`, and `af_metrics_encode`, with their native selectors, encoders, and telemetry, so the equivalence
+oracle, the fixtures, and the native series hold. Only the detached export changes how emits print, as the recipient
+sets those outputs have now. When native configuration later changes a native output's set (an endpoint added to the
+main output), a published program that emits to the old set gets an implied output for it: its encoder telemetry moves
+from `dd_metrics_encode` to `to_primary`, and the added endpoint receives nothing from that program. That is the
+decision working as intended, and status shows it: the directory lists the endpoint, and no output of the published
+program names it.
+
+## 6. Step 3: facts and signals only
+
+**Rule** (amendment 181): when the catalog declares `detached_programs` (a `MemoryCatalog` member and a `Catalog`
+method, as `single_aggregation` is), composition refuses an artifact any node of which binds a binding whose class is
+`policy`, kept nodes included (the rule is about what the author wrote, not about provenance). ADP's catalog declares
+it; the plan crate's fixtures do not, so its tests of bound artifacts keep running.
+
+- **Allowed:** fact and signal bindings; literals; recipient names; output IDs of outputs without recipients.
+- **Message** (`ComposeError::PolicyBinding`, at the node): "`dsd_prefix_filter_blocklist` binds
+  `dogstatsd.metric_filter.values`, a native policy setting. A published program owns its policy: write the value
+  itself (now `[]`; **Load default program** writes current values). Only facts and signals can be bound: `host.tags`,
+  `host.tags_deadline`, `multi_region_failover.enabled`, `multi_region_failover.metric_mirroring.enabled`,
+  `autoscaling_failover.enabled`." The editor places it at the binding's span.
+- **Order.** It lands after step 1, so that the export the editor loads already passes.
+
+## 7. Step 4: one aggregation is the aggregation
+
+**Today.** Composition's `node_ids` (`compose.rs`) gives an artifact node its plan ID: the reserved ID when its local ID
+is a member of the scope's region, else `policy/<local>`. The installer's diff (`install/diff.rs`) keys a state
+owner's lineage by `LineageKey { node, contract }` (`compile/program.rs`), and `bind_lineages` retains state only for an
+equal key. So a from-scratch program's `node agg = aggregate(...)` becomes `policy/agg`, a new lineage: a cut that
+starts aggregation over, and series that report under another `component_id` than `dsd_agg`, which the Core Agent's
+`aggregator.*` remaps expect.
+
+**Change** (amendment 182), in `node_ids` only: when the catalog declares `single_aggregation`, the artifact has exactly
+one state owner, and the region has exactly one, whose reserved ID no artifact node takes, the artifact's state owner
+gets that reserved ID (`dsd_agg`). Everything after is unchanged: `same_operation` and the feed check decide its
+provenance, the lineage key decides retain or cut from the lineage parameters (a new width is a cut, as today), and the
+correspondence maps `dsd_agg` back to `agg`, so the diff and the editor speak of `agg`. With two state owners,
+`single_aggregation` already refuses. The isolation slot, its series, and the `aggregator.*` remaps keep `dsd_agg`.
+
+The other telemetry contract a from-scratch program can break is the DogStatsD client telemetry the Agent reads: a
+program without `emit dsd_client_telemetry` stops it. The editor's note on that emit says so; nothing in the substrate
+enforces it.
+
+## 8. The editor and the demo
+
+### 8.1 Less magic in what a user reads
+
+- **Annotations instead of opaque names.** The export bundle gains `annotations`, for tools only: one line per
+  default-program node from lowering ("Metric filterlist, from `metric_filterlist`"), per binding (its class and
+  meaning), and per recipient (endpoint, host, source). The editor prints a node's note as a `#` line
+  before it, and the directory as a `# Recipients:` block before the policy, listing recipients no branch addresses too.
+  Comments are not part of the artifact.
+- **`base` hidden**, as fingerprints are: `PrintOptions::elide_base` leaves out the `base` line, and parsing takes a
+  base from the caller when the text has none (`ParseOptions::base`), so diagnostics keep their lines. The editor
+  passes the current export's base. A detached program's base only reports staleness.
+- **Readable values**: literals instead of `config("...")`, recipient names instead of `metrics_routing_encode_<n>`, and
+  folded constants ([3.1](#31-where-detaching-happens)). The header names what runs (**the default program**, or
+  **published revision 3**), whether native policy settings apply, and how many differ.
+
+### 8.2 The demo's initial program
+
+ADP boots with no artifact, so the editor loads the default program, detached. Abbreviated (`…`):
+
+```text
+policy metrics {
+  # Sources: where each source's metrics enter
+  input.dogstatsd -> dsd_enrich
+
+  # DogStatsD processing
+  # DogStatsD mapper: no profiles configured
+  node dsd_enrich = dogstatsd_mapper(
+    profiles: [],
+    cache_size: 1000,
+    string_interner_bytes: …,
+  ) {
+    -> dsd_prefix_filter
+  }
+
+  # Namespace prefix, from statsd_metric_namespace and its blocklist
+  node dsd_prefix_filter = namespace_prefix(
+    namespace: "",
+    exclusions: ["datadog.agent", "datadog.dogstatsd", …],
+  ) {
+    -> dsd_prefix_filter_blocklist
+  }
+
+  # Metric filterlist, from metric_filterlist: empty, so it drops nothing
+  node dsd_prefix_filter_blocklist = split(intake_name in []) {
+    true  -> drop
+    false -> dsd_no_agg_split
+  }
+
+  # Timestamped points skip aggregation; the window must equal dsd_agg's
+  node dsd_no_agg_split = timestamp_split(window: 1s) {
+    default     -> dsd_tag_filterlist
+    passthrough -> dsd_post_agg_filter_in.1
+  }
+
+  # Tag filterlist, from metric_tag_filterlist: empty
+  node dsd_tag_filterlist = tag_projection(
+    rules: [],
+    value_rules: [],
+    cache_capacity: …,
+  ) {
+    -> dsd_agg
+  }
+
+  # Aggregation: 1 s buckets, counters never expire
+  node dsd_agg = aggregate(
+    window: 1s,
+    flush_interval: 1s,
+    context_limit: …,
+    counter_expiry: 0s,
+    flush_open_windows: false,
+    histogram_aggregates: ["max", "median", "avg", "count"],
+    histogram_percentiles: [95],
+    copy_to_distribution: false,
+    copy_to_distribution_prefix: "",
+  ) {
+    -> dsd_post_agg_filter_in.0
+  }
+
+  # After aggregation
+  node dsd_post_agg_filter_in = merge(inputs: 2) {
+    -> dsd_post_agg_filter
+  }
+
+  # Filterlist entries naming histogram statistics: empty
+  node dsd_post_agg_filter = split(
+    kind in [counter, rate, gauge, set] and intake_name in []
+  ) {
+    true  -> drop
+    false -> dsd_post_agg_filter_fanout
+  }
+
+  # DogStatsD client telemetry for the Agent; everything on to enrichment
+  node dsd_post_agg_filter_fanout = tee {
+    -> emit dsd_client_telemetry
+    -> metrics_enrich_in.0
+  }
+
+  # Enrichment
+  node metrics_enrich_in = merge(inputs: 1) {
+    -> metrics_enrich
+  }
+
+  # Host enrichment: leaves metrics unchanged
+  node metrics_enrich = host_enrichment {
+    -> metrics_policy
+  }
+
+  # Recipients:
+  #   primary  http://127.0.0.1:17101  (dd_url)
+  #   mrf      http://127.0.0.1:17104  (multi_region_failover.dd_url)
+  #   team_b   http://127.0.0.1:17102  (configuration; not addressed)
+  #   team_c   http://127.0.0.1:17103  (configuration; not addressed)
+  # Policy: one branch per destination; route here
+  node metrics_policy = tee {
+    -> emit to [primary]
+    -> mrf_metrics_gateway
+  }
+
+  # Multi-Region Failover: mirrors every metric while failover is on (a signal)
+  node mrf_metrics_gateway = split(
+    flag(config("multi_region_failover.enabled"))
+    and flag(config("multi_region_failover.metric_mirroring.enabled"))
+  ) {
+    true  -> emit to [mrf]
+    false -> drop
+  }
+}
+```
+
+The policy, today four branches with two hash-keyed gateways, is two lines and a gateway. What is still there for
+native reasons is labelled: the one-input merge and the client telemetry tap (IDs and telemetry that native components
+fix), and `host_enrichment`.
+
+### 8.3 A visible change in about 30 seconds
+
+1. The editor shows the preceding program; the header reads "Running: the default program"; the team B and team C
+   columns are empty, labelled `declared, not addressed`.
+2. Add a branch to the policy `tee` and its gateway:
+
+   ```text
+   node metrics_policy = tee {
+     -> emit to [primary]
+     -> to_team_b
+     -> mrf_metrics_gateway
+   }
+
+   node to_team_b = split(name starts_with "demo.checkout.") {
+     true  -> emit to [team_b]
+     false -> drop
+   }
+   ```
+
+3. **Compile.** The diff lists the added nodes, the `tee`'s new port, and one new output, `to_team_b` (`team_b`,
+   `http://127.0.0.1:17102`). **Publish** and approve.
+4. Within a few seconds `demo.checkout.*` appears in team B's column, still in primary's; the header reads "Running:
+   published revision 1 (native policy settings not applied)".
+
+Other edits: drop `demo.debug.*` with a split ahead of the `tee` (today's recipe); make team B's route exclusive by
+moving its split ahead of the `tee`; mirror only checkout with `and name in ["demo.checkout.requests"]` on the failover
+gateway; rename `dsd_agg` to `agg`, or write the program from scratch, and see the state kept (no cut).
+
+### 8.4 Scenarios and the headless check
+
+| Step | Change |
+|---|---|
+| S0 | Unchanged in what it proves, on the detached export: `active`, no new generation, an empty diff; `/export?form=detached` and `/default-program` hash as expected. |
+| S1 | Unchanged (`drop_debug`). |
+| S2 | New: route `demo.checkout.*` to `team_b` (the recipe): an implied output `to_team_b` appears, its lease in the encode host `dd_metrics_encode`. |
+| S3 | Today's S2 and S3 on the new route: widen it with `or tag("team") == "platform"`, then make it exclusive. |
+| S4 | The failover gateway gains `and name in ["demo.checkout.requests"]` (was a replaced predicate over a binding). |
+| S5 | S5a, S5c to S5e unchanged; S5b becomes `emit to [primary, mrf]` (two hosts); new S5f binds `config("dogstatsd.metric_filter.values")` (`policy_binding`, placed at the binding). |
+| S6 | Unchanged: revoke, and team B's column empties. |
+| S8 to S11 | Team D's resources declare only a recipient (no `outputs` member); S8b emits `to [team_d]`; S10 waits for recipient `team_d`. |
+| S12 to S14 | Unchanged; S14 routes `to [team_d]`. |
+| S15 | New, second launch: publish the default program with `dsd_agg` renamed `agg`; no cut (`plan_cuts_total` unchanged), canaries balanced, `component_id:dsd_agg` series continue. |
+
+The launcher's configuration loses `additional_endpoints` and `experimental.metrics_endpoint_routing`, and declares
+`team_b` and `team_c` under `experimental.programmable_metrics.resources.recipients` with credentials `team_b` and
+`team_c`. The demo's export fixture (`fixtures/export-metrics.json`) is regenerated from the new configuration.
+
+## 9. What this lets us remove
+
+| Simplification | When | Risk |
+|---|---|---|
+| Version 1 fingerprints and legacy recipient IDs: `legacy_fingerprint`, `legacy_recipient_id`, `Approval::upgraded`, `ScopeComposition::legacy_outputs`, the version 1 path of `check_output` | Now: nothing is released, and only old demo run directories hold such artifacts | Low: an old run directory's artifact is refused with a message asking to republish. |
+| Declared outputs in resources artifacts (`outputs`, `resources_<name>`) | After step 2 and the demo moves | Low: a resources format bump; recipient emits cover every use. |
+| `multi_region_failover.enabled` in the failover gateway | Any time | Low: one fixture hash per configuration with failover. |
+| Output fingerprints in artifacts, `ReboundOutput`, renumbering detection (`renumbered_routing_groups`, amendment 129) | Once authored emits are all addressed to recipients (after step 3) | Low: only output-addressed emits need them, and only the default program and the client telemetry tap have those. |
+| `stale_base` in status and `base.program_hash` | After step 1's `program` member has a release behind it | Low to moderate: a status member removed from the stub protocol. |
+| **Policy bindings in the default program**: lowering writes policy values as literals, labelled with their native setting; bindings remain only for facts and signals. Removes the detached export's conversion and 3.1's comparison of values, keyed bindings (`BindingKey`, `Resolve::Keyed`), and most of the catalog's bindings | After step 3; the next simplification to take | Moderate: every default-program fixture, export, and explain golden changes; the lowering matrix's binding checks are rewritten; R3 may then fold a split whose literal is constant, so a live change may change which nodes a compiled program keeps (harmless in a fixed frame, but the "structure never depends on configuration values" rule is restated). |
+| Native authority bookkeeping (`guards_authority`, `Feeds`): every node of a published program has the program's provenance | Waits on [open question 2](#12-open-questions-for-the-owner) | Moderate: loss attribution, panic containment, and the artifact limits then cover the whole program; S0 would make a generation. |
+| Role and group selectors for native outputs (`Selector::Role`, `Selector::Group`) | Waits: they keep a native output's lease when an endpoint joins its role | Moderate: an endpoint added live would replace the main output's lease. |
+| Native lowering itself | Waits on N1 and on replacing native | High: the compatibility front end is what proves equivalence. |
+
+## 10. Implementation plan
+
+### 10.1 Parts
+
+| Part | What | Main files | Depends on |
+|---|---|---|---|
+| **A** Binding classes and facts | `BindingClass` in the plan crate (`CatalogBinding.class`, the catalog document's `class`, `policy` when absent); classes in `BINDINGS`; `host.tags`, `host.tags_deadline` (bindable `host_tags` parameters); `autoscaling_failover.enabled` and its flag; `cluster_agent` availability apart from the branch request | `validate/catalog.rs`, `operators/enrich.rs`, `bindings.rs`, `lowering/mod.rs`, `resources.rs`, `catalog.rs` | none |
+| **B** Detached export and status | `ExportForm`, literal folding, `same_operation` on values, the route's `form`, `status.program`, the log line | `export.rs`, `predicate/canonical.rs`, `compose.rs`, `api.rs`, `installer.rs`, the stub protocol | A's interface |
+| **C** Recipient directory | Names, reserved names, the catalog's and the export's directory; configuration-declared recipients (C2) | `resources.rs`, `catalog.rs`, `validate/catalog.rs`, `resources/mod.rs`, configuration schema and overlay | none (C2 needs the config-system skill) |
+| **D** Recipient emits | `emit`'s `to`; syntax `emit to [...]`; composition's resolution; demand, implied outputs, retirement; the detached export prints recipient sets | `operators/routing.rs`, syntax `parser.rs`, `printer.rs`, `compose.rs`, `install/core.rs`, `install/resources.rs`, `lowering/mod.rs`, `resources.rs` | C's interface |
+| **E** Facts and signals only | `detached_programs` in the catalog, `ComposeError::PolicyBinding` | `compose.rs`, `validate/catalog.rs`, `catalog.rs` | A; lands after B |
+| **F** One aggregation | `node_ids` under `single_aggregation` | `compose.rs` | none |
+| **G** Editor and demo | G1 annotations and `elide_base` (from the start); G2 the demo's configuration, scenarios, and check (after B to F) | demo `compile.rs`, `export.rs`, `ui/`, `launcher/config.rs`, `scenario/`; syntax `lib.rs`; the annotations in lowering | G1: none; G2: all |
+| **H** Removals | Version 1 fingerprints | `resources.rs`, `compose.rs`, `install/core/artifacts.rs` | none |
+
+**Order.** First wave, in parallel, each in its own Git work tree: A, C, F, G1, H. Second: B (on A), D (on C). Third: E
+(on A, after B). Last: G2 on everything. B and D both touch `compose.rs` (B the comparison, D the resolution step before
+it), so D rebases on B, or they agree the order of the two passes first: resolve names, resolve or compare values, then
+`same_operation`.
+
+### 10.2 Interfaces to agree first
+
+```rust
+// saluki-metric-plan::validate
+pub enum BindingClass { Fact, Signal, Policy }
+pub struct CatalogBinding { /* today's members */ pub class: BindingClass }
+pub struct CatalogRecipient { pub id: RecipientId, pub host: HostId, pub endpoint: String, pub source: RecipientSource }
+pub trait Catalog {
+    // ...
+    fn recipient(&self, name: &RecipientName) -> Option<&CatalogRecipient>;
+    fn output_for(&self, host: &HostId, recipients: &[RecipientId]) -> Option<OutputId>;
+    fn detached_programs(&self) -> bool { false }
+}
+
+// saluki-metric-plan::export
+pub enum ExportForm { Bound, Detached }
+
+// saluki-metric-plan::compose
+pub fn demanded_outputs(artifact: &PolicyArtifact, catalog: &dyn Catalog) -> Result<Vec<Demand>, ComposeError>;
+pub struct Demand { pub host: HostId, pub recipients: Vec<RecipientId> }   // sorted, deduplicated
+
+// agent-data-plane lowering: `lower_after` gains the demand.
+// fn lower_after(&self, current, declared, demand: &[Demand], previous) -> Result<Lowered, GenericError>
+```
+
+`RecipientName` is an identifier type in `ir/id.rs`. The status `program` member and the export's `form`,
+`annotations`, and `recipients` are additive in the stub protocol.
+
+### 10.3 Tests and exit evidence
+
+| Part | Tests | Exit |
+|---|---|---|
+| A | Every `BINDINGS` entry has a class (a test lists them, so a new binding must choose); `host.tags` resolves from `HostFacts`; the AF gateway's flag; `cluster_agent` available without the branch, with no recipient loop until an output names it | Equivalence, the lowering matrix, and the legacy differential tests pass with the new hashes |
+| B | Detached export of every fixture: no policy binding left, facts and signals bound; folding preserves the interpreter's result (a property test over random predicates and literals); the unmodified detached export composes to the default program's hash; a native change after publishing makes the node take the artifact's value; `program.differs` | S0 on the detached export |
+| C | Name derivation (ports, keys, collisions, length); reserved names refused; configuration and resources declarations merged and colliding; the directory never holds a credential | The demo's configuration lowers with `team_b` and `team_c` |
+| D | Parse and print `emit to`; two hosts refused; set matching ignores order; an implied output prepared, reused by a second branch, and retired with its lease drained; pending on an unknown name; the 16-output budget; a continuous-input test across adding an implied output, with no loss or duplication | The recipe's edit end to end in the test topology |
+| E | A bound policy setting refused, kept nodes included; facts and signals accepted; the fixtures' catalog unaffected | S5f |
+| F | A renamed aggregation retains (no cut) with equal lineage parameters and cuts with a new width; correspondence maps back; two state owners still refused | S15 |
+| G | The editor's printed program pinned as a golden, every line at most 80 characters; base restored from the export; annotations present | `make demo-programmable-metrics-check` passes both launches |
+| H | An artifact recording a version 1 fingerprint is refused with the republish message | Plan crate and ADP tests pass |
+
+### 10.4 Hashes and fixtures that change
+
+- **A:** `default-program.json` and `default-program-no-aggregation-pipeline-off.json` (host tags and the AF flag),
+  their exports in `fixtures/export/`, the explain golden files in `fixtures/explain/`, ADP's lowering fixture
+  `lowering/fixtures/every-branch.json`, and the checked-in JSON schemas (`host_tags`'s bindable parameters, the
+  catalog's `class`). Hashes are computed with Python, as before.
+- **B:** a new golden, `fixtures/export/default-program-metrics-detached.json`; no default program changes.
+- **C, D, E:** the catalog document (`recipients`, `detached_programs`) and the `emit` schema; the syntax crate's
+  grammar tests; no default program changes, since lowering keeps output-addressed emits.
+- **F:** none. **G:** the demo's export fixture and the editor's golden source. **H:** tests only.
+
+## 11. Assumptions
+
+Each minimizes surprise for operators and contributors, and can be revisited.
+
+- The agreed staged path is followed: step 1 converts at export rather than lowering literals at once; lowering
+  literals is the next simplification ([9](#9-what-this-lets-us-remove)).
+- An unknown recipient name waits (`pending`), as an undeclared output does, rather than being refused, so routes and
+  resources can be published in either order.
+- An emit to a recipient that becomes unavailable while its program runs (failover turned off, a declaration revoked)
+  degrades the program, with counted drops at that node, as stage 7 does for a removed output.
+- While a program runs, an endpoint added to native configuration receives nothing from it; status lists it as not
+  addressed. This follows from the decision.
+- Recipient names are not fingerprinted: a program follows a name to whatever the resource owner declares under it.
+- Folding in the detached export covers only `flag` and `is_empty` over literals and the junctions they make constant.
+
+## 12. Open questions for the owner
+
+1. **Recipients declared in configuration** (`experimental.programmable_metrics.resources.recipients`), recommended for
+   the demo's teams B and C and as the operator's path to destinations only programs route to. Accept the new
+   Saluki-only key, or seed the resources product at the demo's launch instead?
+2. **Provenance under a published program.** Today an unmodified lossy node of a published program keeps native
+   provenance, so its loss is attributed to native configuration and its panics fail the component. Under "programs
+   own policy", should every node of a published program be the program's (simpler, and removes `guards_authority`),
+   at the cost of S0 making a stateless generation? Assumed: keep today's rule for now.

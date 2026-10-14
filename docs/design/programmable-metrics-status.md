@@ -778,6 +778,7 @@ the local `--test-threads 4` in the gate (see [Environment notes](#environment-n
 | **O4's queue and O5's size** | O4's shared queue is provisional (per-decoder queues measured higher at one and two decoders on macOS); O5's front cache has 4,096 slots per decoder, where 16,384 cost 25 to 30% less per resolution in a paired timing. | Rerun M2 on the gate host before recording O4's choice; size O5 from the hit share at lading's distributions. |
 | **`make check-deny`** | Fails on `RUSTSEC-2024-0449` (`unsafe-libyaml` unmaintained, through `serde_yaml` in `agent-data-plane-config-system`, `datadog-agent-config-overlay-model`, and `antithesis-intake`): the advisory database has it now, and `main`'s `Cargo.lock` at the merge base already holds `unsafe-libyaml` 0.2.11. | An exception in `deny.toml`, or a move off `serde_yaml`. |
 | **One scope, one aggregation** (amendments 168 and 169) | The default program has one scope, `metrics`, over the whole metrics path, and a program at most one aggregation (`single_aggregation`, declared by ADP's catalog). After a width change, every lossy node fed by the timestamp split or aggregation (eight in the fixtures) carries the artifact's provenance, so its loss is attributed to the artifact. Composition puts an artifact's edges in the default program's order. | Accept both, or narrow the scope again; lift the one-aggregation rule once the demo and the operator surfaces handle several. |
+| **Programs replace native policy** (decided by the owner on 2026-10-14; amendment 170) | Decided: a published program owns its policy settings as literals and binds only facts and signals; native policy configuration only feeds the default program, which runs when no artifact is published; status says when native policy settings are not applied; machinery for native compatibility stays in lowering. See the [direction](programmable-metrics-next.md#direction-programs-replace-native-policy) and the [design](programmable-metrics-detached-programs.md), not yet built. | Nothing for the decision; the design's [open questions](programmable-metrics-detached-programs.md#12-open-questions-for-the-owner). |
 | **The specification's Vale errors** | The specification, which only its author edits, adds 12 errors to `make check-docs`, a CI job (see [Environment notes](#environment-notes)). | Before CI runs: add the 11 flagged words to the Vale vocabulary, and edit or exempt the hyphenated `Exactly-once`. |
 
 ## Spec amendments index
@@ -888,11 +889,11 @@ the shutdown row, the expiry row, and the timestamped row.
 
 Totals: kinds C 49, D 26, N 9, L 3; themes STA 20, ART 16, NAT 12, INS 9, IR 8, VER 8, FRM 7, TEL 4, EXE 3.
 
-Amendments 88 to 169 are in [the stages 7 and 9 plan's section
+Amendments 88 to 182 are in [the stages 7 and 9 plan's section
 10](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments): 88 to 107 from its stage 7 design, 108 to 128
 from its stage 9 design, 129 to 138 from stage 7's parts and integration, 139 and 140 from stage 9's foundations (P9.F),
-141 to 162 from stage 9's parts and integration, 163 to 167 from stage 9's review, and 168 and 169 from the one-scope
-change after stage 9; the next is 170. Stage 7's:
+141 to 162 from stage 9's parts and integration, 163 to 167 from stage 9's review, 168 and 169 from the one-scope
+change after stage 9, and 170 to 182 from the detached-programs design; the next is 183. Stage 7's:
 
 | # | Short title | Theme | Kind | Owner |
 |---|---|---|---|---|
@@ -988,6 +989,24 @@ After stage 9, the one-scope change:
 |---|---|---|---|---|
 | 168 | One scope over the whole metrics path | ART | D | yes: accept one scope, and its loss attribution after a width change |
 | 169 | At most one aggregation per program | IR | D | yes: accept the restriction for now |
+
+After stage 9, detached programs ([design](programmable-metrics-detached-programs.md), not built):
+
+| # | Short title | Theme | Kind | Owner |
+|---|---|---|---|---|
+| 170 | Programs replace native policy | ART | D | decided by the owner (2026-10-14) |
+| 171 | Binding classes | IR | D | no |
+| 172 | Host facts are bindings | IR | D | no |
+| 173 | The detached export | ART | D | no |
+| 174 | Composition compares values | ART | D | no |
+| 175 | Which program runs, in status | TEL | D | no |
+| 176 | Recipient names | NAT | D | no |
+| 177 | Recipients declared in configuration | ART | D | yes: accept the key |
+| 178 | Emits addressed to recipients | IR | D | no |
+| 179 | Outputs for recipient sets | EXE | D | no |
+| 180 | Recipients are available apart from failover requests | NAT | D | no |
+| 181 | Published programs bind only facts and signals | IR | D | no |
+| 182 | One aggregation is the aggregation | STA | D | no |
 
 Wording proposed for adoption: amendment 49 ("under the reference interpreter's delivery order"), 51 ("a maximal
 group of `split` and `tee` operators joined directly by edges within one region"), and 52 ("operator parameters,

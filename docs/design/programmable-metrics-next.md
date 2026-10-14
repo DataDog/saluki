@@ -6,6 +6,7 @@ the next chunk of work should look like. Read the [index](programmable-metrics-i
 ## Contents
 
 - [Deployment context](#deployment-context)
+- [Direction: programs replace native policy](#direction-programs-replace-native-policy)
 - [What it means for what we built](#what-it-means-for-what-we-built)
 - [Lessons](#lessons)
 - [The next chunk of work](#the-next-chunk-of-work)
@@ -27,6 +28,40 @@ From a discussion with the ADP team on 2026-10-13, after stage 9 was committed:
   by its CPU limit.
 - **The biggest practical problem is aggregation, which is serial and blocking.** A fix must not be a static sharding
   scheme, or anything else that pays a fixed overhead even at low load.
+
+## Direction: programs replace native policy
+
+Decided by the owner on 2026-10-14, after the one-scope change (amendments 168 and 169).
+
+**The vision.** The programmable substrate **replaces** ADP's native metrics implementation and its hard-coded policy
+configuration. The default program exists to prove that a program can express native semantics; programs must not
+become a more complex control surface over native features.
+
+**A program's external inputs** are of three kinds:
+
+| Kind | Examples | How a program uses them |
+|---|---|---|
+| **Resources** (privileged) | endpoints and recipients, credentials, sources | declared in configuration or a resources artifact; referenced by name |
+| **Facts and signals** | hostname, host tags, whether Multi-Region Failover is failing over metrics, whether autoscaling failover is on | referenced as bindings, resolved by the host |
+| **Policy settings** | routing allowlists, the metric and tag filterlists, the failover mirroring list, aggregation's window and other parameters | owned by the published program, as literals |
+
+**Detached programs.** A published program detaches from native policy settings: nothing is merged. Native policy
+configuration is only an input to lowering the default program, a compatibility front end, as a legacy language compiles
+to the same IR. With no artifact, ADP runs the default program, which binds native settings exactly as today, so
+equivalence and live configuration changes, Remote Config included, are preserved. Status says plainly when native
+policy settings are not applied.
+
+**Where native compatibility lives.** Machinery that exists to work with native features belongs in lowering, the
+compatibility layer, never in the core model. Nothing new in the substrate exists only to work with a native feature.
+
+**Constraints that remain:** the telemetry contracts with the Core Agent (such as the `component_id:dsd_agg` series and
+the `aggregator.*` remaps); live configuration keeps reaching the default program during the transition; and efficiency
+at production CPU limits ([N1](#n1-measure-in-the-production-regime)) gates replacing native.
+
+**The next work** is to simplify, making the demo and the default program easier to read with less magic, in four steps:
+a detached export for editing; readable recipient names and emits addressed to recipients; authored programs that bind
+only facts and signals; and one aggregation that keeps its state whatever its node is called. The design is
+[detached programs](programmable-metrics-detached-programs.md), with amendments 170 to 182.
 
 ## What it means for what we built
 

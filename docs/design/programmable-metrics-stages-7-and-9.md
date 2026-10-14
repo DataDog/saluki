@@ -3836,6 +3836,61 @@ index](programmable-metrics-status.md#spec-amendments-index): themes EXE, FRM, N
      refuses a single aggregation the frame cannot run, such as one moved after enrichment. Owner: accept the
      restriction for now.
 
+**After stage 9, detached programs** (designed in [detached programs](programmable-metrics-detached-programs.md), not
+built):
+
+170. **Programs replace native policy** (ART, D; decided by the owner on 2026-10-14). A program's external inputs are
+     resources (privileged, declared in configuration or a resources artifact, referenced by name), facts and signals
+     (bindings the host resolves), and policy settings, which a published program owns as literals. A published program
+     detaches from native policy settings, with no merging; native policy configuration is an input only to lowering
+     the default program, which runs when no artifact is published. Status says when native policy settings are not
+     applied. Machinery that exists only to work with native features belongs in lowering, not the core model.
+171. **Binding classes** (IR, D; refines amendment 6's bindings). Every binding a host declares has a class, `fact`,
+     `signal`, or `policy`, which its catalog carries (`policy` when a document leaves it out). The default program may
+     bind any class.
+172. **Host facts are bindings** (IR, D). `host_tags`'s `tags` and `deadline` are bindable, and lowering binds them to
+     the facts `host.tags` and `host.tags_deadline`, so a program never carries one host's tags or one process's start
+     as literals. Fact names are not typed-model paths.
+173. **The detached export** (ART, D; refines the export bundle). An export of form `detached`, the host's default,
+     writes every policy binding as its resolved literal, keeps fact and signal bindings, and folds `flag` and
+     `is_empty` over literals, with the junctions they make constant. Form `bound` is the export as before.
+174. **Composition compares values** (ART, D; refines the correspondence rule). A node keeps a reserved ID unmodified
+     when its operation equals the default node's after the default node's bindings are resolved and literals are
+     folded in both, whether its values are literals or bindings. So an unmodified detached export composes to the
+     default program, and a later native change gives the node the artifact's provenance and value.
+175. **Which program runs, in status** (TEL, D). Status reports `program`: whether the default or a published program
+     runs, whether native policy settings are applied, not applied, or partly applied (an artifact that binds policy,
+     before amendment 181), and which policy bindings' native values differ from what the published program does. A
+     native policy change while a program runs is logged as not applied to it.
+176. **Recipient names** (NAT, D; refines amendment 94). Lowering names every recipient a program may address:
+     `primary` (the primary endpoint or the metrics override replacing it), `mrf`, `cluster_agent`, `ep_<host>` with
+     `_<port>` and `_key<i>` suffixes for an additional endpoint's keys, and a declaration's own name. The catalog
+     carries the directory (name, recipient ID, host, endpoint as status spells it, source). Recipient IDs stay as they
+     are and internal; names resolve at composition. The names lowering gives are reserved.
+177. **Recipients declared in configuration** (ART, D; refines amendment 93).
+     `experimental.programmable_metrics.resources.recipients` declares recipients with a resources artifact's schema,
+     validation, and identity rule, live; configuration wins a name both declare. Owner: accept the key.
+178. **Emits addressed to recipients** (IR, D). `emit` takes `to`, a non-empty list of recipient names on one delivery
+     host, or `output`, as before. An unknown name makes a new artifact wait and degrades the one in effect. Artifacts
+     record no fingerprint for `to`.
+179. **Outputs for recipient sets** (EXE, D; refines amendments 99 and 104). Composition maps the recipient set of an
+     emit to the output with exactly that set, a native output first. A set no output has becomes an implied output,
+     `to_<names>`, which lowering adds from the demand of the artifacts installing, in effect, or kept, and the resource
+     transaction prepares; it retires when no such artifact needs it. Its encoder settings come from its host's
+     template and its recipients' protocols, its fingerprint is the declared rule's, and it counts against
+     `MAX_DECLARED_OUTPUTS`. One encoder runs per distinct set.
+180. **Recipients are available apart from failover requests** (NAT, D; refines amendment 88). The `cluster_agent`
+     recipient is available whenever forwarding to the Cluster Agent is configured, whether or not autoscaling failover
+     is requested, and runs only while an output names it. Autoscaling failover's gateway gains the signal
+     `autoscaling_failover.enabled`.
+181. **Published programs bind only facts and signals** (IR, D). When the catalog declares `detached_programs`,
+     composition refuses an artifact any node of which binds a policy binding (`policy_binding`, at the node, naming the
+     binding and its current value). ADP declares it.
+182. **One aggregation is the aggregation** (STA, D; refines amendment 169). Under `single_aggregation`, an artifact's
+     only state owner takes the reserved ID of the region's only state owner when no artifact node takes it, so its
+     state is retained or cut by its lineage parameters, as for an edit of `dsd_agg`, and its telemetry keeps the native
+     component ID.
+
 ## 11. Risks
 
 **Stage 7:**

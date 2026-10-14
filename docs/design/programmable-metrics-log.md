@@ -953,3 +953,24 @@ record it.
   `delivery_tests::a_recipient_whose_intake_stays_down_retires_at_its_deadline_and_persists_what_it_holds` failed on
   this machine with the disk at 88%, above `forwarder_storage_max_disk_ratio` (0.8), as it did before (see above); it
   is unrelated to the change.
+
+## After stage 9: programs replace native policy
+
+On 2026-10-14, after the one-scope change, the owner set the long-term direction: the programmable substrate replaces
+ADP's native metrics implementation and its policy configuration, rather than becoming a control surface over native
+features. A program's inputs are resources (privileged, referenced by name), facts and signals (bindings), and policy
+settings, which a published program owns as literals. A published program detaches from native policy settings, with
+no merging; native policy configuration only feeds the default program, which runs when no artifact is published, and
+status says when native policy settings are not applied. Machinery for native compatibility belongs in lowering. The
+[direction](programmable-metrics-next.md#direction-programs-replace-native-policy) records the decision.
+
+- **What it explained.** Much of what a user reads in the demo exists only for native compatibility: the hash-keyed
+  routing group bindings (`metrics_endpoint_routing.group.<16 hex>.names`), outputs shaped by native routing
+  (`metrics_routing_encode_<n>`, whose main output sends to every endpoint without a routing policy), native authority
+  bookkeeping in composition, version 1 fingerprints, and base staleness.
+- **The agreed path** is four steps: a detached export for editing; readable recipient names and emits addressed to
+  recipients; authored programs that bind only facts and signals; and one aggregation that keeps its state whatever its
+  node is called. A design round wrote [detached programs](programmable-metrics-detached-programs.md), with amendments
+  170 to 182 in [the stages 7 and 9 plan](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments). Its main
+  recommendation for the demo is to declare teams B and C as recipients in configuration, so that the demo shows a
+  program routing, while the equivalence of native routing stays proven by tests and fixtures.
