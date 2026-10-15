@@ -84,7 +84,8 @@ jobs:
               '- [ ] Remove the `aws-lc-fips-sys@>=0.14` ban from `deny.toml`',
               '- [ ] Add `4` to `CERTIFIED_FIPS_MODULE_VERSIONS` in `ci/tooling/check-fips-module.sh`',
               '- [ ] Remove the `aws-lc-rs` `allowedVersions` rule from `renovate.json5`',
-              '- [ ] Revisit the `RUSTSEC-2026-0285` ignore in `deny.toml`',
+              '- [ ] Upgrade `rustls` and remove the `RUSTSEC-2026-0285`, `RUSTSEC-2026-0346`, ' +
+                '`RUSTSEC-2026-0348`, and `RUSTSEC-2026-0349` ignores from `deny.toml` once all four advisories are fixed',
               '- [ ] Delete `.github/workflows/check-aws-lc-fips-certification.yml`',
               '',
               '_This issue was automatically opened by the ' +
