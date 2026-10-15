@@ -155,10 +155,11 @@ pub enum SupervisorError {
     #[snafu(display("Supervisor has exceeded restart limits and was forced to shutdown."))]
     Shutdown,
 
-    /// The supervisor shut down because a significant child terminated.
+    /// The supervisor shut down because a child that it cannot work without terminated.
     ///
-    /// See [`AutoShutdown`] and [`ChildBuilder::with_significant`][crate::runtime::ChildBuilder::with_significant]. The supervisor stopped, and drained its remaining
-    /// children, because a child marked significant terminated without being restarted.
+    /// The supervisor stopped and drained its other children, because a [needed][crate::runtime::ChildBuilder::needed]
+    /// child terminated without a restart. A child marked significant can also cause this stop, if the supervisor is
+    /// configured with [`AutoShutdown`].
     #[snafu(display("Supervisor shut down after a significant child terminated."))]
     SignificantChildExited,
 
@@ -217,9 +218,9 @@ pub struct SupervisorSpec {
 
 // The configuration surface below is deliberately crate-internal: `ChildBuilder` is the public front end for all of
 // it, and is what decides which settings are offered for which kind of child. Keeping these methods off the public API
-// means a combination the builder refuses to express -- a permanent child marked significant, say -- can't be reached
-// by going around it. In-crate callers use them directly where the builder would be a layering inversion: this
-// module's own tests, which exercise the lowering these methods feed.
+// means a setting the builder refuses to express -- an explicit permanent restart policy, say -- can't be reached by
+// going around it. In-crate callers use them directly where the builder would be a layering inversion: this module's
+// own tests, which exercise the lowering these methods feed.
 impl ChildSpecification<WorkerSpec> {
     /// Creates a specification for the given worker.
     pub(crate) fn worker<T: Supervisable + 'static>(worker: T) -> Self {
@@ -231,19 +232,21 @@ impl ChildSpecification<WorkerSpec> {
         }
     }
 
-    /// Creates a specification for a worker that can only run once.
-    ///
-    /// This function is shorthand for calling [`worker`][Self::worker] followed by
-    /// [`with_restart_type`][Self::with_restart_type] set to [`RestartType::Temporary`][RestartType::Temporary].
-    pub(crate) fn one_shot_worker<T: Supervisable + 'static>(worker: T) -> Self {
-        Self::worker(worker).with_restart_type(RestartType::Temporary)
+    /// Gives this worker its own resource group, so that the worker does not count against the resource group of its
+    /// owner.
+    #[must_use]
+    pub(crate) fn with_own_resource_group(mut self) -> Self {
+        self.spec_inner.options.own_resource_group = true;
+        self
     }
 
-    /// Sets the restart policy for this worker.
+    /// Sets an explicit restart policy for this worker, instead of a derived policy.
     ///
-    /// When left unset, the policy depends on how the child is registered: a child added up front with
-    /// [`Supervisor::add_worker`] defaults to [`RestartType::Permanent`], while one spawned dynamically with
-    /// [`SupervisorHandle::spawn`] defaults to [`RestartType::Temporary`].
+    /// If you do not set a policy, the policy comes from two facts: whether the worker can be started again, and
+    /// whether it is needed. See [`ChildBuilder`][crate::runtime::ChildBuilder].
+    ///
+    /// A worker that [cannot be started again][Supervisable::can_restart] is never restarted, so this policy has no
+    /// effect on it.
     #[must_use]
     pub(crate) fn with_restart_type(mut self, restart_type: RestartType) -> Self {
         self.spec_inner.options.restart = Some(restart_type);
@@ -303,25 +306,32 @@ impl ChildSpecification<WorkerSpec> {
         self
     }
 
-    /// Sets how the termination of this worker affects the [`Scope`][super::Scope] that owns it.
-    ///
-    /// Only a scope uses this option. A supervisor uses significance instead. See [`Edge`].
+    /// Sets whether this worker's owner can work without it. See [`Edge`].
     #[must_use]
     pub(crate) fn with_edge(mut self, edge: Edge) -> Self {
-        self.spec_inner.options.edge = edge;
+        self.spec_inner.options.edge = Some(edge);
         self
     }
 
-    /// Makes a failure of this worker fail the owner of the [`Scope`][super::Scope] that it is spawned into, whatever
-    /// its edge is.
+    /// Makes a failure of this worker fail its owner, whatever its edge is.
+    ///
+    /// The owner is the process whose [`Scope`][super::Scope] contains the worker, or the supervisor of the worker.
     ///
     /// Use this for a worker that only holds children of its own, such as the host of a nested scope. This worker fails
     /// only when one of its children fails, so its failure is the failure of its children. That failure must get to the
     /// owner of the worker in the same way as a failure of those children. If the worker finishes cleanly, it is only
-    /// reaped. Only a scope uses this option.
+    /// reaped.
     #[must_use]
     pub(crate) fn forwarding_failures(mut self) -> Self {
         self.spec_inner.options.forwards_failures = true;
+        self
+    }
+
+    /// Makes `observer` receive how this worker ended, after its scope closed. See [`ExitObserver`].
+    #[cfg(any(test, feature = "test-util"))]
+    #[must_use]
+    pub(crate) fn observing_exit(mut self, observer: ExitObserver) -> Self {
+        self.spec_inner.options.exit_observer = Some(observer);
         self
     }
 
@@ -346,11 +356,14 @@ impl ChildSpecification<WorkerSpec> {
 // truncate a drain the subtree is already responsible for, so there isn't one. Placement is likewise absent: a nested
 // supervisor runs wherever its parent does, and its children carry their own placement.
 impl ChildSpecification<SupervisorSpec> {
-    /// Sets the restart policy for this nested supervisor.
-    ///
-    /// When left unset, the policy depends on how the child is registered: a child added up front with
-    /// [`Supervisor::add_worker`] defaults to [`RestartType::Permanent`], while one spawned dynamically with
-    /// [`SupervisorHandle::spawn`] defaults to [`RestartType::Temporary`].
+    /// Sets whether this nested supervisor's owner can work without it. See [`Edge`].
+    #[must_use]
+    pub(crate) fn with_edge(mut self, edge: Edge) -> Self {
+        self.spec_inner.options.edge = Some(edge);
+        self
+    }
+
+    /// Sets an explicit restart policy for this nested supervisor, instead of a derived policy.
     #[must_use]
     pub(crate) fn with_restart_type(mut self, restart_type: RestartType) -> Self {
         self.spec_inner.options.restart = Some(restart_type);
@@ -404,10 +417,21 @@ impl sealed::Sealed for SupervisorSpec {}
 pub trait ChildState: sealed::Sealed + Sized {
     /// Lowers a specification into the supervisor's internal representation of a child.
     ///
-    /// `default_restart` supplies the restart policy for a specification that didn't set one, which differs by
-    /// registration path: children added up front are permanent, dynamically spawned children are temporary.
+    /// `registration` tells how the child is registered. If the specification does not say whether the child is needed
+    /// or hosted, `registration` decides it.
     #[doc(hidden)]
-    fn into_child_parts(spec: ChildSpecification<Self>, default_restart: RestartType) -> LoweredChild;
+    fn into_child_parts(spec: ChildSpecification<Self>, registration: Registration) -> LoweredChild;
+}
+
+/// How a child is registered with its owner.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Registration {
+    /// Declared with [`Supervisor::add_worker`] before its owner runs.
+    Declared,
+
+    /// Spawned while its owner runs.
+    Spawned,
 }
 
 /// A child specification lowered into the supervisor's internal representation.
@@ -427,21 +451,23 @@ impl LoweredChild {
 }
 
 impl ChildState for WorkerSpec {
-    fn into_child_parts(spec: ChildSpecification<Self>, default_restart: RestartType) -> LoweredChild {
+    fn into_child_parts(spec: ChildSpecification<Self>, registration: Registration) -> LoweredChild {
         let WorkerSpec { worker, options } = spec.spec_inner;
+        let restartable = worker.can_restart();
         LoweredChild {
             spec: SupervisedChild::Worker(worker),
-            config: options.resolve(default_restart),
+            config: options.resolve(registration, restartable),
         }
     }
 }
 
 impl ChildState for SupervisorSpec {
-    fn into_child_parts(spec: ChildSpecification<Self>, default_restart: RestartType) -> LoweredChild {
+    fn into_child_parts(spec: ChildSpecification<Self>, registration: Registration) -> LoweredChild {
         let SupervisorSpec { supervisor, options } = spec.spec_inner;
         LoweredChild {
             spec: SupervisedChild::Supervisor(supervisor),
-            config: options.resolve(default_restart),
+            // A supervisor builds its children again each time it starts, so it can always be started again.
+            config: options.resolve(registration, true),
         }
     }
 }
@@ -509,9 +535,10 @@ impl SupervisedChild {
     /// as a process name. Rather than refuse to start the child -- which for a dynamically spawned child would mean
     /// silently losing work that the caller was told had been accepted -- the child runs under
     /// [`UNNAMED_CHILD`] instead, and the substitution is logged.
-    pub(super) fn create_process(&self, parent_process: &Process) -> Process {
+    pub(super) fn create_process(&self, parent_process: &Process, own_resource_group: bool) -> Process {
         let name = self.name();
         let process = match self {
+            Self::Worker(_) if own_resource_group => Process::worker_with_own_resource_group(name, parent_process),
             Self::Worker(_) => Process::worker(name, parent_process),
             Self::Supervisor(_) => Process::supervisor(name, Some(parent_process)),
         };
@@ -611,11 +638,13 @@ pub(super) enum ChildShutdown {
 /// Per-child settings as configured on a [`ChildSpecification`], before they are resolved for a specific registration
 /// path.
 ///
-/// Separate from [`ChildConfig`] because the restart policy has no single default: a child registered up front with
-/// [`Supervisor::add_worker`] is permanent, while one spawned dynamically with [`SupervisorHandle::spawn`] is
-/// temporary. Leaving the policy unset here is what lets both paths share one specification type.
+/// This type is separate from [`ChildConfig`] because there is no single default for whether a child is needed. A child
+/// that can be started again and that is declared with [`Supervisor::add_worker`] before its owner runs is needed.
+/// Every other child is hosted. This type leaves the edge unset, so that both registration paths can use one
+/// specification type.
 #[derive(Clone, Debug, Default)]
 pub(super) struct ChildOptions {
+    /// An explicit restart policy, which replaces the derived policy.
     restart: Option<RestartType>,
     significant: bool,
 
@@ -624,27 +653,70 @@ pub(super) struct ChildOptions {
 
     shutdown: ChildShutdown,
 
-    /// How the child's termination affects the scope that owns it, if the child is spawned into a scope.
-    edge: Edge,
+    /// Whether the child's owner can work without it, if the specification sets it.
+    edge: Option<Edge>,
 
-    /// Whether a failure of the child fails the scope that owns it, whatever its edge is.
+    /// Whether a failure of the child fails its owner, whatever its edge is.
     forwards_failures: bool,
 
     /// A pre-created scope for the child to adopt as its own.
     adopt: Option<Adoption>,
+
+    /// Whether the child owns a resource group of its own.
+    own_resource_group: bool,
+
+    /// Receives how the worker ended, for the component test harness.
+    #[cfg(any(test, feature = "test-util"))]
+    exit_observer: Option<ExitObserver>,
 }
 
 impl ChildOptions {
-    /// Resolves these options into a concrete configuration, applying `default_restart` if no policy was set.
-    fn resolve(self, default_restart: RestartType) -> ChildConfig {
+    /// Resolves these options into a concrete configuration for a child registered through `registration`.
+    ///
+    /// `restartable` tells whether the child can be started again. For a worker, this comes from
+    /// [`Supervisable::can_restart`].
+    ///
+    /// A child that does not say whether it is needed is needed if it can be started again and is declared before its
+    /// owner runs. Such a child is part of the purpose of its owner. Every other child that does not say is hosted.
+    ///
+    /// The deprecated builder methods can set an explicit restart policy, and explicit restart policies are older than
+    /// edges. Thus, a child with an explicit restart policy is hosted unless it says otherwise, as it was before edges.
+    ///
+    /// Then the restart policy comes from the edge and from whether the child can be started again, unless the child
+    /// has an explicit restart policy. See [`ChildBuilder`][builder].
+    ///
+    /// A child that can only be started once is never restarted, even if it has an explicit restart policy. The
+    /// restart would fail anyway, because the child cannot start again.
+    ///
+    /// [builder]: crate::runtime::ChildBuilder
+    fn resolve(self, registration: Registration, restartable: bool) -> ChildConfig {
+        let edge = self.edge.unwrap_or(
+            if registration == Registration::Declared && restartable && self.restart.is_none() {
+                Edge::Needed
+            } else {
+                Edge::Hosted
+            },
+        );
+        let restart = if restartable {
+            self.restart.unwrap_or(match edge {
+                Edge::Needed => RestartType::Permanent,
+                Edge::Hosted => RestartType::Transient,
+            })
+        } else {
+            RestartType::Temporary
+        };
+
         ChildConfig {
-            restart: self.restart.unwrap_or(default_restart),
+            restart,
             significant: self.significant,
             runtime: self.runtime,
             shutdown: self.shutdown,
-            edge: self.edge,
+            edge,
             forwards_failures: self.forwards_failures,
             adopt: self.adopt,
+            own_resource_group: self.own_resource_group,
+            #[cfg(any(test, feature = "test-util"))]
+            exit_observer: self.exit_observer,
         }
     }
 }
@@ -668,6 +740,9 @@ pub(super) struct ChildConfig {
     edge: Edge,
     forwards_failures: bool,
     adopt: Option<Adoption>,
+    own_resource_group: bool,
+    #[cfg(any(test, feature = "test-util"))]
+    exit_observer: Option<ExitObserver>,
 }
 
 impl ChildConfig {
@@ -686,7 +761,7 @@ impl ChildConfig {
         self.edge
     }
 
-    /// Returns whether a failure of the child fails a scope that owns it, whatever its edge is.
+    /// Returns whether a failure of the child fails its owner, whatever its edge is.
     pub(super) fn forwards_failures(&self) -> bool {
         self.forwards_failures
     }
@@ -694,6 +769,20 @@ impl ChildConfig {
     /// Returns the pre-created scope the child adopts as its own, if any.
     pub(super) fn adopt(&self) -> Option<&Adoption> {
         self.adopt.as_ref()
+    }
+
+    /// Returns whether the child owns a resource group of its own.
+    pub(super) fn own_resource_group(&self) -> bool {
+        self.own_resource_group
+    }
+
+    /// Returns whether the child's termination can stop its owner.
+    ///
+    /// A snapshot reports this value as significance. It is true for a needed child that can terminate without a
+    /// restart, and for a child marked significant. A permanent child is always restarted. Thus, whatever its marks,
+    /// the termination of a permanent child never stops its owner.
+    pub(super) fn stops_owner(&self) -> bool {
+        self.restart != RestartType::Permanent && (self.significant || self.edge == Edge::Needed)
     }
 
     /// Returns the runtime the child should be spawned on, if it isn't the supervisor's own.
@@ -704,6 +793,62 @@ impl ChildConfig {
     /// Returns how the child's shutdown strategy should be determined.
     pub(super) fn shutdown(&self) -> ChildShutdown {
         self.shutdown
+    }
+
+    /// Returns the observer that receives how the worker ended, if the test harness set one.
+    #[cfg(any(test, feature = "test-util"))]
+    pub(super) fn exit_observer(&self) -> Option<&ExitObserver> {
+        self.exit_observer.as_ref()
+    }
+}
+
+/// Receives how a worker ended, after its scope closed and its children stopped.
+///
+/// Only the component test harness uses this. When a needed child terminates, its supervisor reports only that, and not
+/// the error of the child. But the `run` of a component can return cleanly while a child that it needs fails as its
+/// scope closes, and then the error of that child is the result of the worker. The harness needs that error to return
+/// it.
+///
+/// The observer receives the result of the first start of the worker only. It receives nothing if the worker is aborted
+/// or panics.
+#[cfg(any(test, feature = "test-util"))]
+#[derive(Clone)]
+pub(crate) struct ExitObserver(Arc<Mutex<Option<ExitSender>>>);
+
+/// Receives how a worker ended, with a description of the error if it failed.
+#[cfg(any(test, feature = "test-util"))]
+type ExitSender = tokio::sync::oneshot::Sender<Result<(), String>>;
+
+#[cfg(any(test, feature = "test-util"))]
+impl ExitObserver {
+    /// Creates an observer that sends how the worker ended to `tx`, with a description of the error if it failed.
+    pub(crate) fn new(tx: ExitSender) -> Self {
+        Self(Arc::new(Mutex::new(Some(tx))))
+    }
+
+    /// Wraps the future of a worker, so that the observer receives its result.
+    pub(super) fn observe(&self, worker: WorkerFuture) -> WorkerFuture {
+        let tx = self.0.lock().unwrap().take();
+        Box::pin(async move {
+            let result = worker.await;
+            if let Some(tx) = tx {
+                let _ = tx.send(result.as_ref().map(|_| ()).map_err(|error| match error {
+                    WorkerError::Runtime(e) => format!("{e:#}"),
+                    WorkerError::Initialization { source, .. } => source.to_string(),
+                    WorkerError::ShutdownTimedOut { aborted } => {
+                        format!("stopped uncleanly after forcefully aborting {aborted} worker(s)")
+                    }
+                }));
+            }
+            result
+        })
+    }
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl std::fmt::Debug for ExitObserver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExitObserver").finish_non_exhaustive()
     }
 }
 
@@ -786,11 +931,14 @@ impl SupervisorHandle {
     /// Accepts anything [`Supervisor::add_worker`] accepts: a bare [`Supervisable`], a [`Supervisor`] to run as a
     /// nested supervision subtree, or a [`ChildSpecification`] configured in detail.
     ///
-    /// Unless [`ChildBuilder`][crate::runtime::ChildBuilder] says otherwise, dynamic children are
-    /// [`temporary`][RestartType::Temporary]: they
-    /// aren't restarted when they die, and they aren't restored when the supervisor itself restarts. That suits
-    /// short-lived, non-critical work that still wants structured concurrency -- the child is stopped when the
-    /// supervisor is restarted or terminated.
+    /// Unless [`ChildBuilder`][crate::runtime::ChildBuilder] says otherwise, a dynamic child is hosted. A hosted child
+    /// that can be started again, such as most [`Supervisable`]s and every [`Supervisor`], is restarted only if it
+    /// fails. A child that [cannot be started again][Supervisable::can_restart], such as an
+    /// [`FnWorker`][crate::runtime::FnWorker], is never restarted. See the
+    /// [runtime documentation][crate::runtime#restart-policy].
+    ///
+    /// A dynamic child is not restored when the supervisor itself restarts. The supervisor stops the child when the
+    /// supervisor restarts or terminates.
     ///
     /// The returned [`ChildId`] identifies the child for the lifetime of the supervisor run. The child is queued
     /// rather than started synchronously, so it may not have begun running by the time this returns; if the supervisor
@@ -800,7 +948,7 @@ impl SupervisorHandle {
         S: ChildState,
         T: Into<ChildSpecification<S>>,
     {
-        let LoweredChild { spec, config } = S::into_child_parts(child.into(), RestartType::Temporary);
+        let LoweredChild { spec, config } = S::into_child_parts(child.into(), Registration::Spawned);
 
         // Take the id before we try to enqueue: the caller gets a stable identifier either way, and ids are only
         // meaningful within a run.
@@ -933,8 +1081,12 @@ impl Supervisor {
 
     /// Sets the supervisor's automatic-shutdown policy.
     ///
-    /// Controls whether the termination of _significant_ children (see [`ChildBuilder::with_significant`][crate::runtime::ChildBuilder::with_significant]) drives the
-    /// supervisor to shut down. Defaults to [`AutoShutdown::Never`].
+    /// Controls whether the termination of _significant_ children causes the supervisor to shut down. The default is
+    /// [`AutoShutdown::Never`].
+    ///
+    /// A supervisor always stops when a [needed][crate::runtime::ChildBuilder::needed] child terminates without a
+    /// restart. In the past, that was the purpose of this policy.
+    #[deprecated(note = "mark children the supervisor can't work without `needed` instead")]
     pub fn with_auto_shutdown(self, auto_shutdown: AutoShutdown) -> Self {
         self.node.update_config(|config| config.auto_shutdown = auto_shutdown);
         self
@@ -1026,7 +1178,7 @@ impl Supervisor {
         S: ChildState,
         T: Into<ChildSpecification<S>>,
     {
-        let LoweredChild { spec, config } = S::into_child_parts(child.into(), RestartType::Permanent);
+        let LoweredChild { spec, config } = S::into_child_parts(child.into(), Registration::Declared);
         self.push_child(ChildEntry {
             spec,
             config,
@@ -1048,16 +1200,6 @@ impl Supervisor {
     ///
     /// Warn-only: the child still starts, since an inert flag is useless rather than unsafe.
     fn warn_if_significance_is_inert(&self, config: &ChildConfig, child_name: &str, auto_shutdown: AutoShutdown) {
-        // Also warn about a child marked needed. That mark is about the scope that owns the child, and a supervisor
-        // uses significance instead.
-        if config.edge == Edge::Needed {
-            warn!(
-                supervisor_id = %self.supervisor_id,
-                child_name,
-                "Child is marked needed, but it belongs to a supervisor rather than a scope, so the flag has no effect."
-            );
-        }
-
         if !config.significant {
             return;
         }
@@ -1090,17 +1232,9 @@ impl Supervisor {
             entry.config,
         );
 
-        // The policy half of the inert-significance check has to wait until the supervisor runs (see
-        // `warn_if_significance_is_inert`), but this half doesn't depend on anything but the child itself, and here we
-        // are still in the caller's frame. `ChildBuilder` makes the combination unreachable from outside the crate, so
-        // this guards in-crate construction.
-        debug_assert!(
-            !(entry.config.significant && entry.config.restart == RestartType::Permanent),
-            "child '{}' was marked significant but is permanent, so it is always restarted and its termination can \
-             never drive auto-shutdown",
-            entry.spec.name()
-        );
-
+        // A child can be marked significant and still be permanent. The deprecated `with_significant` is available on
+        // every builder, and a child that can start again and is declared here is permanent by default. Such a flag has
+        // no effect, and `warn_if_significance_is_inert` reports it when the supervisor starts the child.
         self.child_specs.push(entry);
     }
 
@@ -1112,7 +1246,7 @@ impl Supervisor {
             name: entry.spec.name().into(),
             node: entry.spec.node(),
             restart: entry.config.restart,
-            significant: entry.config.significant,
+            significant: entry.config.stops_owner(),
         }
     }
 
@@ -1325,6 +1459,22 @@ impl Supervisor {
                             self.active.fetch_sub(1, Ordering::Relaxed);
                         }
 
+                        // If a needed child terminates without a restart, the supervisor also stops. The supervisor
+                        // cannot do its work without the child. It stops, and its own supervisor decides what to do
+                        // next.
+                        if config.edge == Edge::Needed {
+                            warn!(supervisor_id = %self.supervisor_id, worker_name = %child_name, ?worker_result, "Needed child terminated; shutting down supervisor.");
+                            break Err(SupervisorError::SignificantChildExited);
+                        }
+
+                        // The supervisor also stops if a child that only holds children of its own fails. An example is
+                        // the host of a pre-created scope. That child fails only when one of its children fails, and
+                        // their failures must go up the tree. They must not stop at the host.
+                        if abnormal && config.forwards_failures {
+                            warn!(supervisor_id = %self.supervisor_id, worker_name = %child_name, ?worker_result, "Child failed on behalf of its own children; shutting down supervisor.");
+                            break Err(SupervisorError::SignificantChildExited);
+                        }
+
                         // A significant child terminating without restart can drive the supervisor to shut down, per its
                         // `AutoShutdown` policy -- cascading an unexpected (or intentional) child exit into the
                         // supervisor stopping and propagating up the tree.
@@ -1370,6 +1520,8 @@ impl Supervisor {
                                         roster.values().filter(|entry| entry.config.significant).count();
                                 }
                             },
+                            // The edge of the child has no effect here. A child that continues to fail makes this
+                            // supervisor stop, so that its own supervisor can try again.
                             RestartAction::Shutdown => {
                                 error!(supervisor_id = %self.supervisor_id, worker_name = %child_name, ?worker_result, "Supervisor shutting down due to restart limits.");
                                 break Err(SupervisorError::Shutdown);
@@ -1529,6 +1681,9 @@ impl Supervisor {
 }
 
 #[cfg(test)]
+// Significance and explicit restart types are deprecated, but supervisors still use them. These tests make sure that
+// they continue to work correctly until they are removed.
+#[allow(deprecated)]
 mod tests {
     use std::{
         future::pending,
@@ -1592,6 +1747,7 @@ mod tests {
         finish_count: Arc<AtomicUsize>,
         brutal_shutdown: bool,
         graceful_timeout: Duration,
+        restartable: bool,
     }
 
     impl MockWorker {
@@ -1605,6 +1761,7 @@ mod tests {
                 finish_count: Arc::new(AtomicUsize::new(0)),
                 brutal_shutdown: false,
                 graceful_timeout: Duration::from_millis(500),
+                restartable: true,
             }
         }
 
@@ -1618,6 +1775,7 @@ mod tests {
                 finish_count: Arc::new(AtomicUsize::new(0)),
                 brutal_shutdown: false,
                 graceful_timeout: Duration::from_millis(500),
+                restartable: true,
             }
         }
 
@@ -1631,6 +1789,7 @@ mod tests {
                 finish_count: Arc::new(AtomicUsize::new(0)),
                 brutal_shutdown: false,
                 graceful_timeout: Duration::from_millis(500),
+                restartable: true,
             }
         }
 
@@ -1644,6 +1803,7 @@ mod tests {
                 finish_count: Arc::new(AtomicUsize::new(0)),
                 brutal_shutdown: false,
                 graceful_timeout: Duration::from_millis(500),
+                restartable: true,
             }
         }
 
@@ -1657,6 +1817,7 @@ mod tests {
                 finish_count: Arc::new(AtomicUsize::new(0)),
                 brutal_shutdown: false,
                 graceful_timeout: Duration::from_millis(500),
+                restartable: true,
             }
         }
 
@@ -1670,6 +1831,7 @@ mod tests {
                 finish_count: Arc::new(AtomicUsize::new(0)),
                 brutal_shutdown: false,
                 graceful_timeout: Duration::from_millis(500),
+                restartable: true,
             }
         }
 
@@ -1683,6 +1845,7 @@ mod tests {
                 finish_count: Arc::new(AtomicUsize::new(0)),
                 brutal_shutdown: false,
                 graceful_timeout: Duration::from_millis(500),
+                restartable: true,
             }
         }
 
@@ -1696,6 +1859,7 @@ mod tests {
                 finish_count: Arc::new(AtomicUsize::new(0)),
                 brutal_shutdown: false,
                 graceful_timeout: Duration::from_millis(500),
+                restartable: true,
             }
         }
 
@@ -1730,6 +1894,12 @@ mod tests {
             self.graceful_timeout = timeout;
             self
         }
+
+        /// Makes this worker report that it cannot be started again, as a worker that consumes its state does.
+        fn one_shot(mut self) -> Self {
+            self.restartable = false;
+            self
+        }
     }
 
     #[async_trait]
@@ -1744,6 +1914,10 @@ mod tests {
             } else {
                 ShutdownStrategy::Graceful(self.graceful_timeout)
             }
+        }
+
+        fn can_restart(&self) -> bool {
+            self.restartable
         }
 
         async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
@@ -2628,9 +2802,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failing_bare_fn_worker_is_not_restarted() {
+        // A bare `FnWorker` reaches the supervisor without a builder, through the conversion that every `Supervisable`
+        // uses. It still reports that it cannot start again, so the supervisor reaps it when it fails. A restart would
+        // fail to initialize the consumed body, and that would stop the supervisor and the siblings of the worker.
+        let sup = Supervisor::new("dyn-sup").unwrap();
+        let handle = sup.handle();
+        let (tx, run) = run_supervisor_with_trigger(sup).await;
+        wait_until("supervisor is running", || handle.is_running()).await;
+
+        handle.spawn(MockWorker::long_running("sibling"));
+        let (ran_tx, ran_rx) = oneshot::channel();
+        handle.spawn(FnWorker::new("bare", async move {
+            let _ = ran_tx.send(());
+            Err::<(), _>(GenericError::msg("boom"))
+        }));
+        ran_rx.await.expect("the bare worker should run");
+        wait_until("only the sibling is still running", || handle.active_children() == 1).await;
+
+        sleep(Duration::from_millis(50)).await;
+        assert!(handle.is_running(), "supervisor stays up after the bare worker fails");
+
+        tx.send(()).unwrap();
+        let result = join_supervisor(run).await;
+        assert!(result.is_ok(), "supervisor should stop cleanly: {result:?}");
+    }
+
+    #[tokio::test]
     async fn temporary_dynamic_child_failure_is_isolated() {
-        // A dynamic child added with the default config (temporary, not significant) is fault-isolated: its failure is
-        // reaped and removed without restarting it or disturbing the supervisor or its siblings.
+        // A dynamic child that can only start once (temporary, hosted) is fault-isolated. When it fails, the supervisor
+        // reaps and removes it, and does not restart it. The failure has no effect on the supervisor or on the siblings
+        // of the child.
         let sup = Supervisor::new("dyn-sup").unwrap();
         let handle = sup.handle();
         let (tx, run) = run_supervisor_with_trigger(sup).await;
@@ -2638,7 +2840,7 @@ mod tests {
 
         let failing = MockWorker::failing("boom", Duration::from_millis(20));
         let failing_count = failing.start_count();
-        handle.spawn(failing);
+        handle.spawn(ChildSpecification::worker(failing.one_shot()));
         wait_until("the failing dynamic child has run once", || {
             failing_count.load(Ordering::SeqCst) == 1
         })
@@ -2673,7 +2875,9 @@ mod tests {
         let (tx, run) = run_supervisor_with_trigger(sup).await;
         wait_until("supervisor is running", || handle.is_running()).await;
 
-        handle.spawn(MockWorker::panicking("boom", Duration::from_millis(20)));
+        handle.spawn(ChildSpecification::worker(
+            MockWorker::panicking("boom", Duration::from_millis(20)).one_shot(),
+        ));
         wait_until("all dynamic children have drained", || handle.active_children() == 0).await;
 
         sleep(Duration::from_millis(50)).await;
@@ -2696,7 +2900,48 @@ mod tests {
         wait_until("supervisor is running", || handle.is_running()).await;
 
         handle.spawn(
-            ChildSpecification::worker(MockWorker::failing("boom", Duration::from_millis(20))).with_significant(true),
+            ChildSpecification::worker(MockWorker::failing("boom", Duration::from_millis(20)))
+                .with_restart_type(RestartType::Temporary)
+                .with_significant(true),
+        );
+
+        let result = join_supervisor(run).await;
+        assert!(matches!(result, Err(SupervisorError::SignificantChildExited)));
+    }
+
+    #[tokio::test]
+    async fn hosted_dynamic_child_exceeding_the_limit_shuts_down_supervisor() {
+        // A dynamic child that can be started again is hosted by default, and the supervisor restarts it when it fails.
+        // But hosted does not mean that its failures are ignored. If the child goes above the restart limit, the
+        // supervisor stops, so that its own supervisor can try again.
+        let sup = Supervisor::new("dyn-sup").unwrap();
+        let handle = sup.handle();
+        let (_tx, run) = run_supervisor_with_trigger(sup).await;
+
+        let failing = MockWorker::failing("boom", Duration::from_millis(20));
+        let failing_count = failing.start_count();
+        handle.spawn(failing);
+
+        // The default intensity permits one restart in the period. The second failure goes above that limit.
+        let result = join_supervisor(run).await;
+        assert!(
+            matches!(result, Err(SupervisorError::Shutdown)),
+            "a hosted child exceeding the limit should take the supervisor down, got {result:?}"
+        );
+        assert_eq!(failing_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn needed_dynamic_child_terminating_shuts_down_supervisor() {
+        // When a child marked needed terminates without a restart, its supervisor also stops. Here, the child can only
+        // start once, and it exits cleanly.
+        let sup = Supervisor::new("dyn-sup").unwrap();
+        let handle = sup.handle();
+        let (_tx, run) = run_supervisor_with_trigger(sup).await;
+
+        handle.spawn(
+            ChildSpecification::worker(MockWorker::completing("brief", Duration::from_millis(20)).one_shot())
+                .with_edge(Edge::Needed),
         );
 
         let result = join_supervisor(run).await;
@@ -2884,29 +3129,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dynamic_nested_supervisor_defaults_to_temporary() {
-        // Spawning a bare `Supervisor` takes the dynamic default, so a subtree that gives up stays gone. For a
-        // listener that means it silently disappears while whatever owns it keeps reporting healthy -- which is the
-        // reason `nested_supervisor` exists.
-        let (nested, started) = failing_subtree("nested-temp");
+    async fn dynamic_nested_supervisor_defaults_to_hosted() {
+        // A bare `Supervisor` that is spawned gets the dynamic default, which is hosted. A supervisor can always be
+        // started again. Thus, if a subtree fails, its parent restarts it. If the subtree continues to fail, its parent
+        // stops at the restart limit.
+        let (nested, started) = failing_subtree("nested-hosted");
 
-        let sup = Supervisor::new("dyn-temp-sup").unwrap();
+        let sup = Supervisor::new("dyn-hosted-sup").unwrap();
         let handle = sup.handle();
-        let (tx, run) = run_supervisor_with_trigger(sup).await;
+        let (_tx, run) = run_supervisor_with_trigger(sup).await;
 
         handle.spawn(nested);
-        wait_until("the subtree has started once", || started.load(Ordering::SeqCst) == 1).await;
 
-        // Give the subtree time to fail and be reaped. Nothing brings it back.
-        sleep(Duration::from_millis(200)).await;
-        assert_eq!(
-            started.load(Ordering::SeqCst),
-            1,
-            "a temporary subtree must not be restarted"
+        let result = join_supervisor(run).await;
+        assert!(
+            matches!(result, Err(SupervisorError::Shutdown)),
+            "a subtree exceeding the limit should take its parent down, got {result:?}"
         );
-
-        tx.send(()).unwrap();
-        assert!(join_supervisor(run).await.is_ok());
+        assert_eq!(started.load(Ordering::SeqCst), 2, "the subtree is restarted once");
     }
 
     #[tokio::test]
@@ -2970,8 +3210,10 @@ mod tests {
         // the drain would hang.
         let mut sup = Supervisor::new("test-sup").unwrap().with_shutdown_budget(Duration::MAX);
         sup.add_worker(
-            ChildSpecification::one_shot_worker(
-                MockWorker::ignore_shutdown("stuck").with_graceful_timeout(Duration::from_millis(100)),
+            ChildSpecification::worker(
+                MockWorker::ignore_shutdown("stuck")
+                    .with_graceful_timeout(Duration::from_millis(100))
+                    .one_shot(),
             )
             .with_budget_bounded_shutdown(),
         );
@@ -3000,8 +3242,10 @@ mod tests {
         // worker reports -- here a short one, which is what lets this test finish rather than hang.
         let mut sup = Supervisor::new("test-sup").unwrap();
         sup.add_worker(
-            ChildSpecification::one_shot_worker(
-                MockWorker::ignore_shutdown("stuck").with_graceful_timeout(Duration::from_millis(100)),
+            ChildSpecification::worker(
+                MockWorker::ignore_shutdown("stuck")
+                    .with_graceful_timeout(Duration::from_millis(100))
+                    .one_shot(),
             )
             .with_budget_bounded_shutdown(),
         );
@@ -3590,7 +3834,7 @@ mod tests {
             .unwrap()
             .with_shutdown_budget(Duration::from_secs(30));
         sup.add_worker(
-            ChildSpecification::one_shot_worker(MockWorker::long_running("prompt"))
+            ChildSpecification::worker(MockWorker::long_running("prompt").one_shot())
                 .with_shutdown_strategy(ShutdownStrategy::Graceful(Duration::MAX)),
         );
 
@@ -3639,7 +3883,7 @@ mod tests {
 
         // The recorder has to be installed before the worker spawns: its metric handles are resolved once, at spawn.
         let mut sup = Supervisor::new("metrics_sup").unwrap();
-        sup.add_worker(ChildSpecification::one_shot_worker(MockWorker::long_running("timed")));
+        sup.add_worker(ChildSpecification::worker(MockWorker::long_running("timed").one_shot()));
 
         let (tx, handle) = run_supervisor_with_trigger(sup).await;
         tx.send(()).unwrap();
@@ -3663,7 +3907,7 @@ mod tests {
 
         for name in ["stuck_one", "stuck_two", "stuck_three"] {
             sup.add_worker(
-                ChildSpecification::one_shot_worker(FnWorker::new(name, pending::<()>()))
+                ChildSpecification::worker(FnWorker::new(name, pending::<()>()))
                     .with_shutdown_strategy(ShutdownStrategy::Graceful(Duration::from_secs(10))),
             );
         }
@@ -3683,7 +3927,9 @@ mod tests {
         // `Duration::MAX` is the natural spelling of "no ceiling" and used to panic the supervisor task on an instant
         // overflow.
         let mut sup = Supervisor::new("test-sup").unwrap().with_shutdown_budget(Duration::MAX);
-        sup.add_worker(ChildSpecification::one_shot_worker(MockWorker::long_running("prompt")));
+        sup.add_worker(ChildSpecification::worker(
+            MockWorker::long_running("prompt").one_shot(),
+        ));
 
         let (tx, handle) = run_supervisor_with_trigger(sup).await;
         tx.send(()).unwrap();
@@ -3696,7 +3942,7 @@ mod tests {
         // added with `checked_add`. See `resolve_abort_deadline`.
         let mut sup = Supervisor::new("test-sup").unwrap();
         sup.add_worker(
-            ChildSpecification::one_shot_worker(MockWorker::long_running("prompt"))
+            ChildSpecification::worker(MockWorker::long_running("prompt").one_shot())
                 .with_shutdown_strategy(ShutdownStrategy::Graceful(Duration::MAX - Duration::from_nanos(1))),
         );
 
@@ -3715,7 +3961,7 @@ mod tests {
 
         let mut nested = Supervisor::new("nested").unwrap();
         nested.add_worker(
-            ChildSpecification::one_shot_worker(slow)
+            ChildSpecification::worker(slow.one_shot())
                 .with_shutdown_strategy(ShutdownStrategy::Graceful(Duration::from_secs(10))),
         );
 

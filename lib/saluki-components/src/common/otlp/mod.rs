@@ -454,7 +454,9 @@ impl OtlpServerConfiguration {
             grpc_server = grpc_server.with_tls_config(tls_config);
         }
 
-        runtime::nested_supervisor(grpc_server.into_supervisor()).spawn();
+        runtime::nested_supervisor(grpc_server.into_supervisor())
+            .needed()
+            .spawn();
 
         // Create and spawn the HTTP server.
         //
@@ -490,7 +492,9 @@ impl OtlpServerConfiguration {
             http_server = http_server.with_tls_config(tls_config);
         }
 
-        runtime::nested_supervisor(http_server.into_supervisor()).spawn();
+        runtime::nested_supervisor(http_server.into_supervisor())
+            .needed()
+            .spawn();
 
         Ok(())
     }

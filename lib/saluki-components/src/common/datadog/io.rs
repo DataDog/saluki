@@ -2,17 +2,21 @@
 //!
 //! # Supervision
 //!
-//! Every task here is a supervised child of the forwarder component's supervisor, spawned on the ambient supervisor
-//! that the component's own run-future executes under. They are siblings rather than a subtree: the main I/O loop, one
-//! I/O loop per endpoint, and the background refreshers all sit side by side under the one supervisor, which is also
-//! what bounds them -- a single [shutdown budget][saluki_core::runtime::Supervisor::with_shutdown_budget] covering the
-//! component and everything it spawned.
+//! Every task here is a supervised child of the process that spawns the forwarder. In practice, that process is the
+//! forwarder component. The tasks make a subtree below the component. The main I/O loop and the background refreshers
+//! are children of the component. Each endpoint has one I/O loop, which is a child of the main I/O loop.
+//!
+//! A scope does not pass the deadline of its owner to its children, and a closure-based child has a default timeout of
+//! five seconds. A drain can take longer than that: each endpoint loop waits for its in-flight requests, which the
+//! request timeout bounds, and then flushes its retry queue. Thus, the main I/O loop and the endpoint loops have no
+//! timeout of their own. The shutdown budget of the component bounds them, and they stop with the component if that
+//! budget elapses.
 //!
 //! Shutdown needs no explicit handshake between them, because the tasks are connected by channels and each stops at
 //! its own terminal condition. Dropping [`Handle`] closes the transaction channel, so the main I/O loop finishes and
 //! drops its per-endpoint senders, so each endpoint loop completes its in-flight requests and flushes its retry queue.
-//! The supervisor waits for all of them, which is what makes the drain ordered without any task having to know the
-//! order. The refreshers have no terminal condition at all and are therefore
+//! Each owner waits for its children. Thus, the drain occurs in order, but no task needs to know the order. The
+//! refreshers have no terminal condition at all and are therefore
 //! [`Brutal`][saluki_core::runtime::ShutdownStrategy::Brutal].
 //!
 //! In-flight requests remain an ordinary [`JoinSet`] owned by their endpoint loop rather than supervised children,
@@ -238,8 +242,9 @@ where
     ///
     /// Dropping the transaction channel is what starts the drain: the main I/O loop finishes, its per-endpoint senders
     /// drop, and each endpoint loop completes its in-flight requests and flushes its retry queue. This doesn't wait for
-    /// any of that. The forwarder's tasks are children of the component's supervisor, so waiting for them -- bounded by
-    /// that supervisor's shutdown budget -- is its job rather than the caller's.
+    /// any of that. The tasks of the forwarder are children of the process that spawned them. That process does not
+    /// finish until the tasks finish. Thus, that process waits for the tasks, and the caller does not. The deadline of
+    /// that process bounds this wait.
     pub fn shutdown(self) {
         drop(self.transactions_tx);
     }
@@ -486,6 +491,8 @@ where
                 emitter,
             ),
         )
+        // The main I/O loop finishes only after its endpoint loops drain. See the module documentation.
+        .with_shutdown_timeout(Duration::MAX)
         .spawn();
 
         Handle { transactions_tx }
@@ -557,6 +564,8 @@ async fn run_io_loop<B>(
                 emitter.clone(),
             ),
         )
+        // The drain of an endpoint can take longer than the default timeout. See the module documentation.
+        .with_shutdown_timeout(Duration::MAX)
         .spawn();
 
         endpoint_txs.push(EndpointSender {
@@ -596,8 +605,8 @@ async fn run_io_loop<B>(
     debug!("Requests channel for main I/O task complete. Stopping endpoint I/O tasks.");
 
     // Drop our endpoint I/O task channels, which will cause them to shut down once they've processed all outstanding
-    // requests in their respective channel. We don't wait for that here: the endpoint tasks are our siblings under the
-    // component's supervisor, and it waits for every child, so the drain stays ordered without this task tracking it.
+    // requests in their respective channel. We do not wait for that here. The endpoint tasks are our own children, and
+    // we do not finish until they finish. Thus, the drain stays in order, but this task does not track it.
     drop(endpoint_txs);
 }
 
@@ -2142,6 +2151,14 @@ mod tests {
     async fn start_recording_http_server_with_requests(
         statuses: Vec<StatusCode>,
     ) -> (String, Arc<AtomicUsize>, mpsc::Receiver<String>) {
+        start_recording_http_server_with_delay(statuses, Duration::ZERO).await
+    }
+
+    /// Starts the same server as [`start_recording_http_server_with_requests`], which waits for `delay` after it hands
+    /// back a request and before it answers that request.
+    async fn start_recording_http_server_with_delay(
+        statuses: Vec<StatusCode>, delay: Duration,
+    ) -> (String, Arc<AtomicUsize>, mpsc::Receiver<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let counter = Arc::new(AtomicUsize::new(0));
@@ -2195,6 +2212,9 @@ mod tests {
 
                     // A test that does not read the requests drops the receiver, so never block here.
                     let _ = request_tx.try_send(request_str);
+                    if !delay.is_zero() {
+                        tokio::time::sleep(delay).await;
+                    }
 
                     let nth = counter.fetch_add(1, Ordering::SeqCst);
                     let idx = nth.min(statuses.len() - 1);
@@ -2241,14 +2261,23 @@ mod tests {
     async fn build_test_forwarder_following(
         forwarder_url: &str, live: LiveForwarderConfiguration,
     ) -> (DataspaceRegistry, TransactionForwarder<FrozenChunkedBytesBuffer>) {
+        // A tight timeout keeps the test under a couple seconds even with retries.
+        build_test_forwarder_with_request_timeout(forwarder_url, live, 1).await
+    }
+
+    /// Builds a forwarder pointed at `forwarder_url` that follows `live`, and whose requests time out after
+    /// `request_timeout_secs`.
+    async fn build_test_forwarder_with_request_timeout(
+        forwarder_url: &str, live: LiveForwarderConfiguration, request_timeout_secs: u64,
+    ) -> (DataspaceRegistry, TransactionForwarder<FrozenChunkedBytesBuffer>) {
         // The HTTP client builder requires the process-wide TLS crypto provider to be initialized, even when the
         // forwarder is pointed at a plain HTTP endpoint.
         init_tls_crypto_provider();
 
-        // Tight timeouts and small backoffs keep the test under a couple seconds even with retries.
+        // Small backoffs keep the test short even with retries.
         let mut shared = shared_configuration();
         shared.endpoints.dd_url = ConfigValue::explicit(forwarder_url.to_string());
-        shared.endpoints.forwarder.timeout = 1;
+        shared.endpoints.forwarder.timeout = request_timeout_secs;
         shared.endpoints.forwarder.max_concurrent_requests = 1;
         shared.endpoints.forwarder.high_prio_buffer_size = 4;
         shared.endpoints.forwarder.backoff_base = 0.001;
@@ -2404,20 +2433,62 @@ mod tests {
         let supervisor = TestComponentSupervisor::start("test_forwarder").await;
         let handle = spawn_test_forwarder(&supervisor, forwarder).await;
 
-        // One main I/O loop, one endpoint I/O loop for the single configured endpoint, and the secrets gate refresher.
-        // No API key refresher: this forwarder follows no keys configuration.
-        supervisor.wait_for_children(3).await;
+        // The running descendants are one main I/O loop, one endpoint I/O loop for the single configured endpoint, and
+        // the secrets gate refresher. The endpoint I/O loop is a child of the main loop, which spawns it. There is no
+        // API key refresher, because this forwarder follows no keys configuration.
+        supervisor.wait_for_running_descendants(3).await;
 
         // Closing the transaction channel is the whole shutdown protocol. The main I/O loop finishes and drops its
-        // endpoint sender, so the endpoint loop drains and flushes, and both are gone -- without either of them having
-        // waited on the other, and without this test having waited on either.
+        // endpoint sender. Then the endpoint loop drains and flushes, and both loops stop. This test does not wait for
+        // either loop.
         handle.shutdown();
-        supervisor.wait_for_children(1).await;
+        supervisor.wait_for_running_descendants(1).await;
 
         // The refresher is what remains, deliberately: it has no terminal condition of its own, so it is brutally
         // stopped when the supervisor drops it rather than being waited on.
         let result = supervisor.shutdown().await;
         assert!(result.is_ok(), "every child should have stopped on its own: {result:?}");
+    }
+
+    #[tokio::test]
+    async fn forwarder_drain_inside_a_component_outlasts_the_default_child_timeout() {
+        // In a topology, the forwarder runs inside a component, and its tasks run in scopes below the component. A
+        // scope does not pass the deadline of its owner to its children, and a closure-based child has a timeout of
+        // five seconds by default. Here the endpoint answers six seconds after it receives the request, and the
+        // component has a budget of thirty seconds. The drain must wait for the answer, and must not be aborted.
+        const RESPONSE_DELAY: Duration = Duration::from_secs(6);
+
+        let (server_url, _counter, mut requests) =
+            start_recording_http_server_with_delay(vec![StatusCode::OK], RESPONSE_DELAY).await;
+        let live = LiveForwarderConfiguration {
+            secrets: Live::new_fixed(Secrets::default()),
+            ..Default::default()
+        };
+        let (_, forwarder) = build_test_forwarder_with_request_timeout(&server_url, live, 30).await;
+
+        let supervisor = TestComponentSupervisor::start_with_budget("test_forwarder", Duration::from_secs(30)).await;
+        supervisor.spawn_component("forwarder", move |shutdown| async move {
+            let handle = forwarder.spawn();
+            handle
+                .send_transaction(build_test_transaction())
+                .await
+                .expect("send should succeed");
+
+            // A forwarder component starts the drain when it stops, and then returns.
+            shutdown.await;
+            handle.shutdown();
+        });
+        requests.recv().await.expect("the endpoint should receive the request");
+
+        // The request is in flight, and nothing remains to do but wait for timers. From here, time moves only when
+        // every task waits, and it moves to the next timer. Thus, a five-second abort deadline would expire before the
+        // answer arrives, without this test waiting six seconds.
+        tokio::time::pause();
+        let result = supervisor.shutdown().await;
+        assert!(
+            result.is_ok(),
+            "the drain should have waited for the in-flight request: {result:?}"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

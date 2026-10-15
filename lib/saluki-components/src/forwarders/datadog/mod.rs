@@ -166,8 +166,8 @@ impl Forwarder for Datadog {
 
         let mut health = context.take_health_handle();
 
-        // Both of these spawn supervised children of this component's supervisor, which is what stops them and
-        // bounds their drain once this run-future returns.
+        // Both of these calls spawn supervised children of this component. When this run-future returns, the children
+        // stop, and their drain has a time limit.
         let mut validation = forwarder.api_key_validator().spawn();
         let forwarder = forwarder.spawn();
 
@@ -193,8 +193,9 @@ impl Forwarder for Datadog {
             }
         }
 
-        // Start the forwarder's drain. Dropping `validation` stops API key validation the same way. Neither is waited
-        // for here; the component's supervisor owns that, bounded by its shutdown budget.
+        // Start the forwarder's drain. Dropping `validation` stops API key validation the same way. This component does
+        // not wait for either of them here. But this component does not finish until its children finish. The deadline
+        // of the component bounds this wait.
         forwarder.shutdown();
         drop(validation);
 

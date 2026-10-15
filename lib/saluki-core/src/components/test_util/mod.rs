@@ -5,8 +5,8 @@
 //! - [`TestComponentDriver`] builds one component from its builder, connects its input and outputs, and runs it the way
 //!   the topology would. It returns a [`ComponentControl`] to feed and stop the component, and an [`Outputs`] (or a
 //!   single [`Output`]) to observe what it dispatches.
-//! - [`TestComponentSupervisor`] is the per-component supervisor on its own, for code that spawns supervised children
-//!   but isn't a whole component. The driver runs every component under one. Prefer it over
+//! - [`TestComponentSupervisor`] is the topology supervisor on its own, for code that spawns supervised children but
+//!   isn't a whole component. The driver runs every component under one. Prefer it over
 //!   `Supervisor::new(..).handle()`, which looks equivalent but never runs, so every child spawned on it is dropped.
 //!
 //! # Driving a component

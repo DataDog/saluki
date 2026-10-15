@@ -5,62 +5,53 @@
 //! [`Supervisable`], into a child with sensible defaults, and uses the typestate pattern to expose only the settings
 //! that make sense for the kind of worker being described.
 //!
-//! It comes in matching ambient and explicit forms, mirroring the two ways to spawn: the free functions here
-//! ([`worker`], [`supervisable`]) target the ambient supervisor, and the identically named methods on
-//! [`SupervisorHandle`] target that handle's supervisor. Either way, [`ChildBuilder::spawn`] starts the child on a
-//! running supervisor, while [`ChildBuilder::build`] hands it to [`Supervisor::add_worker`][add_worker] to be started
-//! when that supervisor runs.
+//! The builder has an ambient form and an explicit form, one for each of the two ways to spawn. The free functions in
+//! this module ([`worker`], [`supervisable`]) spawn into the current process. The methods with the same names on
+//! [`SupervisorHandle`] spawn onto the supervisor of that handle. In both forms, [`ChildBuilder::spawn`] starts the
+//! child. [`ChildBuilder::build`] gives the child to [`Supervisor::add_worker`][add_worker], and the supervisor starts
+//! the child when it runs.
 //!
 //! [add_worker]: super::Supervisor::add_worker
 //!
-//! # Child lifecycle, and one-shot vs supervisable
+//! # Restart policy
 //!
-//! We classify tasks as either _one-shot_ or _supervisable_: one-shot tasks are those based on a provided closure,
-//! which cannot be reinitialized and so cannot be restarted, and supervisable tasks are those based on an
-//! implementation of [`Supervisable`], which allows for (potentially) initializing the underlying task future multiple
-//! times.
+//! You do not choose the restart policy of a child directly. The policy follows from two facts: whether the child can
+//! be started again, and whether its owner can work without it. See the [runtime documentation][restart] for how the
+//! policy is derived, and for the defaults.
 //!
-//! One-shot tasks are always [`temporary`][RestartType::Temporary], since they cannot be reinitialized. Supervisable
-//! tasks are [`permanent`][RestartType::Permanent] by default, since their structure exposes a way to initialize the
-//! worker again; [`ChildBuilder::transient`] and [`ChildBuilder::temporary`] narrow that.
-//!
-//! All child tasks default to being marked as non-significant, so their termination -- clean or otherwise -- leaves
-//! the supervisor running. This is usually the correct behavior, but a supervisor that cannot function without a
-//! particular child may wish to mark it significant. See [`ChildBuilder::with_significant`], which is available only
-//! for a child whose restart policy lets it terminate for good; a permanent child is always brought back, so there is
-//! no termination for the supervisor to act on.
+//! [restart]: super#restart-policy
 //!
 //! # Shutdown
 //!
 //! A subtree shutdown is a _trigger_, not an enforcement. A one-shot child built with [`worker`] never receives the
-//! shutdown signal. It runs until it reaches its own terminal condition, and the supervisor waits for it. Examples of a
+//! shutdown signal. It runs until it reaches its own terminal condition, and its owner waits for it. Examples of a
 //! terminal condition are an input channel that closes, a loop that finishes, and a request that completes.
 //!
 //! This behavior lets a set of tasks that are connected by channels drain in dependency order. The tasks do not have to
 //! know that order. Because of this behavior, it is not a problem that a one-shot child cannot see the shutdown signal.
 //!
-//! What bounds the wait is the supervisor's [shutdown budget][super::Supervisor::with_shutdown_budget], which covers
-//! the whole set of children rather than each guessing at how long it ought to take. A supervisor without a budget has
-//! nothing to bound such a child with, so it falls back to the worker's own strategy.
+//! For a supervisor, its [shutdown budget][super::Supervisor::with_shutdown_budget] limits the wait. The budget applies
+//! to all the children together, so no child has to guess how much time it needs. If no budget limits such a child, the
+//! child uses its own shutdown strategy instead. A scope has no budget, so each child of a process uses its own
+//! shutdown strategy. If the process overruns its own deadline and is aborted, its children are aborted with it.
 //!
 //! Two cases need something other than the default:
 //!
-//! - Work with no terminal condition -- an endless background loop -- would hold the drain until the budget elapsed.
-//!   Give it [`ShutdownStrategy::Brutal`] via [`ChildBuilder::with_shutdown_strategy`] so it is aborted at once.
+//! - Work with no terminal condition holds the drain until the deadline. An endless background loop is an example. Give
+//!   it [`ShutdownStrategy::Brutal`] with [`ChildBuilder::with_shutdown_strategy`] so that it is aborted at once.
 //! - If work must observe shutdown to know that it must stop, or must run cleanup, build it with
 //!   [`worker_with_shutdown`]. The body of that worker receives the shutdown signal. You can also implement
 //!   [`Supervisable`] directly.
 //!
-//! [`ChildBuilder::with_shutdown_timeout`] imposes a deadline shorter than the budget when a particular child should
-//! be abandoned sooner than its siblings.
+//! [`ChildBuilder::with_shutdown_timeout`] sets a deadline that is shorter than the deadline of the owner. Use it if a
+//! particular child must be abandoned sooner than its siblings.
 //!
 //! # Children of the current process
 //!
-//! [`ChildBuilder::spawn`] makes a child a sibling of the current process, under the same supervisor.
-//! [`ChildBuilder::spawn_child`] makes the child a child of the current process instead, and the [scope][super::scope]
-//! of that process holds it. The process does not finish until its children finish. When the body of the process
-//! returns, the scope stops the children, each according to its own shutdown strategy. A supervisor's budget does not
-//! apply in a scope. [`ChildBuilder::needed`] marks a child that the process cannot work without.
+//! [`ChildBuilder::spawn`] makes a child a child of the current process, and the [scope][super::scope] of that process
+//! holds it. The process does not finish until its children finish. When the body of the process returns, the scope
+//! stops the children, each according to its own shutdown strategy. A supervisor's budget does not apply in a scope.
+//! [`ChildBuilder::spawn_sibling`] gives the child to the nearest supervisor above the current process instead.
 //!
 //! # Task naming
 //!
@@ -74,35 +65,37 @@ use std::{future::Future, marker::PhantomData, time::Duration};
 use saluki_common::sync::shutdown::ShutdownHandle;
 use tokio::runtime::Handle;
 
+#[cfg(any(test, feature = "test-util"))]
+use super::ExitObserver;
 use super::{
     scope::{self, Edge, Scope, UnadoptedScope},
     ChildId, ChildSpecification, FnWorker, IntoWorkerResult, RestartType, ShutdownStrategy, Supervisable, Supervisor,
     SupervisorHandle, SupervisorSpec, WorkerSpec,
 };
 
-/// Creates a builder for a child task on the ambient supervisor.
+/// Creates a builder for a child task of the current process.
 ///
 /// The ambient counterpart to [`SupervisorHandle::worker`].
 ///
 /// # Panics
 ///
-/// [`ChildBuilder::spawn`] panics if there is no ambient supervisor. See [`spawn`][super::spawn].
+/// [`ChildBuilder::spawn`] panics if it is called outside supervision. See [`spawn`][super::spawn].
 pub fn worker<N, Fut>(name: N, fut: Fut) -> ChildBuilder<'static>
 where
     N: Into<String>,
     Fut: Future + Send + 'static,
     Fut::Output: IntoWorkerResult,
 {
-    ChildBuilder::one_shot(BuilderTarget::Ambient, FnWorker::new(name, fut))
+    ChildBuilder::new_one_shot(BuilderTarget::Ambient, FnWorker::new(name, fut))
 }
 
-/// Creates a builder for a child task on the ambient supervisor, with a body that receives the shutdown signal.
+/// Creates a builder for a child task of the current process, with a body that receives the shutdown signal.
 ///
 /// The ambient counterpart to [`SupervisorHandle::worker_with_shutdown`].
 ///
 /// # Panics
 ///
-/// [`ChildBuilder::spawn`] panics if there is no ambient supervisor. See [`spawn`][super::spawn].
+/// [`ChildBuilder::spawn`] panics if it is called outside supervision. See [`spawn`][super::spawn].
 pub fn worker_with_shutdown<N, F, Fut>(name: N, f: F) -> ChildBuilder<'static>
 where
     N: Into<String>,
@@ -110,21 +103,21 @@ where
     Fut: Future + Send + 'static,
     Fut::Output: IntoWorkerResult,
 {
-    ChildBuilder::one_shot(BuilderTarget::Ambient, FnWorker::with_shutdown(name, f))
+    ChildBuilder::new_one_shot(BuilderTarget::Ambient, FnWorker::with_shutdown(name, f))
 }
 
-/// Creates a builder for a supervisable child task on the ambient supervisor.
+/// Creates a builder for a supervisable child task of the current process.
 ///
 /// The ambient counterpart to [`SupervisorHandle::supervisable`], which documents what a supervisable task is.
 ///
 /// # Panics
 ///
-/// [`ChildBuilder::spawn`] panics if there is no ambient supervisor. See [`spawn`][super::spawn].
+/// [`ChildBuilder::spawn`] panics if it is called outside supervision. See [`spawn`][super::spawn].
 pub fn supervisable<T>(worker: T) -> ChildBuilder<'static, Restartable>
 where
     T: Supervisable + 'static,
 {
-    ChildBuilder::restartable(BuilderTarget::Ambient, worker)
+    ChildBuilder::new_restartable(BuilderTarget::Ambient, worker)
 }
 
 impl SupervisorHandle {
@@ -151,7 +144,7 @@ impl SupervisorHandle {
         Fut: Future + Send + 'static,
         Fut::Output: IntoWorkerResult,
     {
-        ChildBuilder::one_shot(BuilderTarget::Handle(self), FnWorker::new(name, fut))
+        ChildBuilder::new_one_shot(BuilderTarget::Handle(self), FnWorker::new(name, fut))
     }
 
     /// Creates a builder for a child task with a body that receives the shutdown signal.
@@ -166,7 +159,7 @@ impl SupervisorHandle {
         Fut: Future + Send + 'static,
         Fut::Output: IntoWorkerResult,
     {
-        ChildBuilder::one_shot(BuilderTarget::Handle(self), FnWorker::with_shutdown(name, f))
+        ChildBuilder::new_one_shot(BuilderTarget::Handle(self), FnWorker::with_shutdown(name, f))
     }
 
     /// Creates a builder for a supervisable child task.
@@ -175,7 +168,9 @@ impl SupervisorHandle {
     /// as a consistent control surface for spawning both arbitrary asynchronous functions and more full-fledged
     /// workers.
     ///
-    /// Supervisable tasks are set to permanently restart by default.
+    /// A supervisable task can usually be started again, so its owner restarts it when it fails. A task that reports
+    /// through [`can_restart`][Supervisable::can_restart] that it cannot be started again is never restarted. See the
+    /// [runtime documentation][super#restart-policy] for how its restart policy is decided.
     ///
     /// Use this method when advanced configuration of the underlying task is required. Otherwise, prefer
     /// [`spawn_supervisable`][Self::spawn_supervisable].
@@ -183,7 +178,7 @@ impl SupervisorHandle {
     where
         T: Supervisable + 'static,
     {
-        ChildBuilder::restartable(BuilderTarget::Handle(self), worker)
+        ChildBuilder::new_restartable(BuilderTarget::Handle(self), worker)
     }
 
     /// Spawns a child task built from a plain future.
@@ -217,28 +212,25 @@ impl SupervisorHandle {
 
     /// Creates a builder for a nested supervisor.
     ///
-    /// A [`Supervisor`] can be handed to [`spawn`][Self::spawn] or [`Supervisor::add_worker`] directly, which is all
-    /// most callers need. This builder exists for the settings that aren't reachable that way: the restart policy and
-    /// significance. It matters most for a dynamically spawned subtree, which would otherwise be
-    /// [`temporary`][RestartType::Temporary] and so quietly stay dead once it terminated.
+    /// You can give a [`Supervisor`] directly to [`spawn`][Self::spawn] or [`Supervisor::add_worker`]. Most callers
+    /// need only that. This builder is for the one setting that is not available in that way: whether the subtree is
+    /// needed or hosted.
     ///
     /// Unlike [`supervisable`][Self::supervisable], there is no placement or shutdown setting. A nested supervisor
     /// runs wherever its parent does and its children carry their own placement, and it bounds its own drain through
     /// those children rather than through a deadline imposed from above.
-    ///
-    /// Nested supervisors are set to permanently restart by default.
     pub fn nested_supervisor(&self, supervisor: Supervisor) -> NestedSupervisorBuilder<'_> {
         NestedSupervisorBuilder::new(BuilderTarget::Handle(self), supervisor)
     }
 }
 
-/// Creates a builder for a nested supervisor on the ambient supervisor.
+/// Creates a builder for a nested supervisor spawned into the current process.
 ///
 /// The ambient counterpart to [`SupervisorHandle::nested_supervisor`], which documents what the builder is for.
 ///
 /// # Panics
 ///
-/// [`NestedSupervisorBuilder::spawn`] panics if there is no ambient supervisor. See [`spawn`][super::spawn].
+/// [`NestedSupervisorBuilder::spawn`] panics if it is called outside supervision. See [`spawn`][super::spawn].
 pub fn nested_supervisor(supervisor: Supervisor) -> NestedSupervisorBuilder<'static> {
     NestedSupervisorBuilder::new(BuilderTarget::Ambient, supervisor)
 }
@@ -249,57 +241,33 @@ mod sealed {
 
 /// The kind of worker a [`ChildBuilder`] is describing.
 ///
-/// This trait is sealed, and exists only to mark which configuration a builder makes available: a worker that can be
-/// initialized more than once accepts a restart policy, and one that can't doesn't. Implemented by [`OneShot`],
-/// [`Restartable`] and [`Terminable`].
+/// This trait is sealed. It exists only to mark which configuration a builder makes available. [`OneShot`] and
+/// [`Restartable`] implement it.
 pub trait BuilderState: sealed::Sealed {}
 
-/// Marks a builder whose child can terminate without being restarted.
-///
-/// This trait is sealed, and exists only to gate [`ChildBuilder::with_significant`]: significance asks what the
-/// supervisor should do when a child terminates and isn't brought back, so it means nothing for a child that always
-/// is. Implemented by [`OneShot`] and [`Terminable`].
-pub trait CanTerminate: BuilderState {}
-
-/// Marks a builder whose worker can only be initialized once.
+/// Marks a builder whose worker can only be started once.
 ///
 /// Closure-based children ([`SupervisorHandle::worker`]) consume their body when they start, so they can never be
-/// restarted: they are always [`RestartType::Temporary`], and no restart policy is offered.
+/// restarted.
 pub struct OneShot;
 
-/// Marks a builder whose worker can be initialized more than once.
+/// Marks a builder whose worker can usually be started more than once.
 ///
 /// A [`Supervisable`] builds its work in [`initialize`][Supervisable::initialize] each time it starts, so it can be
-/// restarted, and it is [`RestartType::Permanent`] unless narrowed with [`ChildBuilder::transient`] or
-/// [`ChildBuilder::temporary`].
+/// restarted. A [`Supervisable`] that consumes something when it starts says so through
+/// [`can_restart`][Supervisable::can_restart], and its owner never restarts it.
 pub struct Restartable;
-
-/// Marks a builder whose worker can be initialized more than once but has been narrowed to a restart policy that lets
-/// it terminate for good.
-///
-/// Reached from [`Restartable`] via [`ChildBuilder::transient`] or [`ChildBuilder::temporary`]. Narrowing is one-way:
-/// there is no route back to [`Restartable`], which is what keeps a child from being marked significant and then
-/// widened to [`RestartType::Permanent`] behind the flag's back.
-pub struct Terminable;
 
 impl sealed::Sealed for OneShot {}
 impl BuilderState for OneShot {}
-impl CanTerminate for OneShot {}
 impl sealed::Sealed for Restartable {}
 impl BuilderState for Restartable {}
-impl sealed::Sealed for Terminable {}
-impl BuilderState for Terminable {}
-impl CanTerminate for Terminable {}
 
 /// Builder for a yet-to-be-started child task.
 ///
 /// This is the only way to configure a child: [`ChildSpecification`], which this produces, carries no settings of its
-/// own. The builder uses the typestate pattern to expose only the properties that make sense for the child being
-/// described, so an invalid combination doesn't need rejecting at runtime because it can't be written down. Two axes
-/// govern that: whether the worker can be initialized more than once (which decides whether a restart policy is
-/// offered), and whether its policy lets it terminate for good (which decides whether it can be marked significant).
-///
-/// See [`BuilderState`] and [`CanTerminate`] for the states themselves.
+/// own. The builder uses the typestate pattern to expose only the properties that apply to the child that it describes.
+/// See [`BuilderState`] for the states.
 #[must_use = "a child is only described until `spawn` or `build` is called"]
 pub struct ChildBuilder<'a, S = OneShot> {
     target: BuilderTarget<'a>,
@@ -307,10 +275,10 @@ pub struct ChildBuilder<'a, S = OneShot> {
     _state: PhantomData<S>,
 }
 
-/// Which supervisor a [`ChildBuilder`] spawns onto.
+/// The place where a [`ChildBuilder`] spawns its child.
 #[derive(Clone, Copy)]
 enum BuilderTarget<'a> {
-    /// Whichever supervisor is ambient when the child is spawned.
+    /// The scope of the current process, or the ambient supervisor if there is no current scope.
     Ambient,
 
     /// This specific supervisor.
@@ -330,35 +298,26 @@ impl<'a, S: BuilderState> ChildBuilder<'a, S> {
     where
         F: FnOnce(ChildSpecification<WorkerSpec>) -> ChildSpecification<WorkerSpec>,
     {
-        self.map_spec_into(f)
-    }
-
-    /// As [`map_spec`][Self::map_spec], but for a transition that also moves the builder to a different state.
-    fn map_spec_into<F, S2>(self, f: F) -> ChildBuilder<'a, S2>
-    where
-        F: FnOnce(ChildSpecification<WorkerSpec>) -> ChildSpecification<WorkerSpec>,
-        S2: BuilderState,
-    {
         let Self { target, spec, .. } = self;
 
-        ChildBuilder::new(target, f(spec))
+        Self::new(target, f(spec))
     }
 
     /// Runs this child task on a specific runtime.
     ///
-    /// Use this for compute-heavy work -- encoding, serialization, protocol servers -- that shouldn't contend with the
-    /// runtime driving the supervisor and its I/O. Only where the task runs changes: the child is still supervised
-    /// here, and is still shut down and restarted by this supervisor.
+    /// Use this method for compute-heavy work that must not compete with the runtime that drives its owner and its I/O.
+    /// Examples are encoding, serialization, and protocol servers. This method changes only where the task runs. The
+    /// owner of the child still supervises, shuts down, and restarts the child.
     pub fn on_runtime(self, handle: Handle) -> Self {
         self.map_spec(|spec| spec.with_runtime(handle))
     }
 
     /// Sets an explicit shutdown timeout for this child task.
     ///
-    /// By default a closure-based child has no deadline of its own and is bounded only by the supervisor's shutdown
-    /// budget. Set this when the supervisor wants a particular child abandoned sooner than that -- a deadline it is
-    /// deliberately imposing, rather than a guess at how long the child ought to take. A value longer than the budget
-    /// has no effect, since the two are resolved to whichever elapses first.
+    /// By default, a closure-based child has no deadline of its own, and only the deadline of its owner limits it. Set
+    /// this timeout if a particular child must be abandoned sooner than that. Use it as a deliberate deadline, not as a
+    /// guess about how much time the child needs. A value that is longer than the deadline of the owner has no effect,
+    /// because the runtime uses the deadline that expires first.
     ///
     /// A [scope] has no budget. A child spawned into a scope is held only to its own strategy, which for
     /// a closure-based child is graceful with a timeout of five seconds unless this method sets another one.
@@ -373,26 +332,87 @@ impl<'a, S: BuilderState> ChildBuilder<'a, S> {
         self.map_spec(|spec| spec.with_shutdown_strategy(strategy))
     }
 
-    /// Gives this child no shutdown deadline of its own, leaving it bounded solely by the supervisor's shutdown
-    /// budget.
+    /// Gives this child no shutdown deadline of its own, so that only the deadline of its owner limits it.
     ///
-    /// This is already the default for a closure-based child. A [`Supervisable`] child reports its own strategy, so
-    /// this is how one opts into being bounded as part of the group instead -- without which it silently keeps
-    /// whatever [`Supervisable::shutdown_strategy`] returns, which may be far shorter than the budget.
+    /// This is already the default for a closure-based child. A [`Supervisable`] child reports its own strategy. This
+    /// method lets such a child be limited as part of the group instead. Without this method, the child silently keeps
+    /// the strategy that [`Supervisable::shutdown_strategy`] returns. That strategy can be much shorter than the
+    /// deadline of the owner.
     ///
-    /// See [`Supervisor::with_shutdown_budget`][budget] for what the budget itself is. A [scope] has no budget, so a
-    /// child spawned into a scope keeps the strategy that it reports for itself.
+    /// See [`Supervisor::with_shutdown_budget`][budget] for a description of the deadline of a supervisor. A [scope]
+    /// has no budget, so a child spawned into a scope keeps the strategy that it reports for itself.
     ///
     /// [budget]: super::Supervisor::with_shutdown_budget
     pub fn with_budget_bounded_shutdown(self) -> Self {
         self.map_spec(|spec| spec.with_budget_bounded_shutdown())
     }
 
+    /// Marks this child as one that its owner cannot work without.
+    ///
+    /// If the child stops without a request to stop and can only be started once, its owner also stops and fails. This
+    /// occurs even when the child exits cleanly. Thus, use this method for a child that its owner cannot work without.
+    /// Do not use it for a child that you expect to finish by itself. If the child can be started again, its owner
+    /// restarts it after any such stop, not only after a failure.
+    ///
+    /// For example, one failed connection is usually not a reason to stop a component that handles client connections.
+    /// But a component that forwards work to a child task can become inoperable if that task stops unexpectedly. This
+    /// occurs if the task cannot be attached again to the necessary channels or state unless the component is created
+    /// again.
+    ///
+    /// See the [runtime documentation][super#restart-policy] for the default.
+    pub fn needed(self) -> Self {
+        self.map_spec(|spec| spec.with_edge(Edge::Needed))
+    }
+
+    /// Marks this child as one that its owner runs but does not need.
+    ///
+    /// If the child stops without a request to stop, and its owner does not restart it, the owner reaps the child and
+    /// continues. The owner does not restart a child that can only be started once, or a child that exited cleanly. If
+    /// the child can be started again, its owner restarts it only if it failed, and accepts a clean exit as final. But
+    /// if the child fails more often than the restart limit of its owner allows, the owner also fails, as for a needed
+    /// child.
+    ///
+    /// See the [runtime documentation][super#restart-policy] for the default.
+    pub fn hosted(self) -> Self {
+        self.map_spec(|spec| spec.with_edge(Edge::Hosted))
+    }
+
+    /// Sets whether the supervisor stops when this child task terminates.
+    ///
+    /// This setting has an effect only under a supervisor that uses the deprecated
+    /// [`with_auto_shutdown`][super::Supervisor::with_auto_shutdown]. It also has no effect on a child that its
+    /// supervisor always restarts, such as a child that can start again and that you declare with
+    /// [`Supervisor::add_worker`] without marking it [hosted][Self::hosted]. The supervisor logs a warning for each
+    /// child where the setting has no effect.
+    #[deprecated(note = "mark the child `needed` instead, which stops its owner when it terminates for good")]
+    pub fn with_significant(self, significant: bool) -> Self {
+        self.map_spec(|spec| spec.with_significant(significant))
+    }
+
+    /// Makes this child adopt `scope` as its own and start what was spawned into it before the child started.
+    pub(crate) fn adopting(self, scope: UnadoptedScope) -> Self {
+        self.map_spec(|spec| spec.adopting(scope))
+    }
+
+    /// Gives this child a resource group of its own, with the same name as the child.
+    ///
+    /// The child then does not count against the resource group of its owner. Use this for a worker that represents
+    /// something with its own resource accounting, such as a topology component.
+    pub(crate) fn with_own_resource_group(self) -> Self {
+        self.map_spec(|spec| spec.with_own_resource_group())
+    }
+
+    /// Makes `observer` receive how this child ended, after its scope closed. See [`ExitObserver`].
+    #[cfg(any(test, feature = "test-util"))]
+    pub(crate) fn observing_exit(self, observer: ExitObserver) -> Self {
+        self.map_spec(|spec| spec.observing_exit(observer))
+    }
+
     /// Finishes describing the child without starting it, for [`Supervisor::add_worker`].
     ///
-    /// Use this to register a configured child on a supervisor that hasn't started yet; a child described this way is
-    /// started when the supervisor runs, and restarted with it. [`spawn`][Self::spawn] is the counterpart for a
-    /// supervisor that is already running.
+    /// Use this method to register a configured child on a supervisor that has not started yet. The supervisor starts
+    /// this child when it runs. When the supervisor restarts, the child restarts with it. To start a child now, use
+    /// [`spawn`][Self::spawn].
     ///
     /// Whichever supervisor this builder was created against is irrelevant here -- the child belongs to whichever one
     /// it is handed to.
@@ -404,13 +424,18 @@ impl<'a, S: BuilderState> ChildBuilder<'a, S> {
 
     /// Spawns the child.
     ///
-    /// Returns the child's [`ChildId`]. The child is queued for the supervisor rather than started synchronously, so
-    /// it may not be running yet by the time this returns; if the supervisor isn't running, or shuts down before
-    /// reaching the child, it never runs at all.
+    /// A builder that was created from a [`SupervisorHandle`] spawns the child onto that supervisor. Other builders
+    /// make the child a child of the current process, and the [scope][super::scope] of that process holds it. See
+    /// [`spawn`][super::spawn].
+    ///
+    /// Returns the [`ChildId`] of the child. This method queues the child and does not start it synchronously. Thus,
+    /// when this method returns, the child can still be in the queue. If its owner does not run, or stops before it
+    /// processes the child, the child never runs.
     ///
     /// # Panics
     ///
-    /// If this builder targets the ambient supervisor and there isn't one, this panics. See [`spawn`][super::spawn].
+    /// Panics if this builder does not target a specific supervisor and code outside supervision calls this method. See
+    /// [`spawn`][super::spawn].
     pub fn spawn(self) -> ChildId {
         let Self { target, spec, .. } = self;
 
@@ -420,45 +445,24 @@ impl<'a, S: BuilderState> ChildBuilder<'a, S> {
         }
     }
 
-    /// Marks this child as one that its owner cannot work without.
+    /// Spawns the child onto the ambient supervisor, the nearest supervisor above the current process.
     ///
-    /// This setting applies when the child is spawned into a [scope][super::scope]. If the child terminates without a
-    /// request to stop, and its restart policy does not restart it, the process that owns the scope fails. The process
-    /// does not continue without the child. A supervisor ignores this setting and uses
-    /// [significance][ChildBuilder::with_significant] instead.
+    /// The child is a sibling of the current process only if a supervisor runs that process directly. For a process
+    /// that runs in a scope, the child goes to the nearest supervisor above it instead. See
+    /// [`spawn_sibling`][super::spawn_sibling].
     ///
-    /// The default is hosted. If a hosted child terminates and is not restarted, its owner reaps the child and
-    /// continues. In both cases, if a child stops more often than the restart limit of its scope allows, the owner
-    /// fails.
-    pub fn needed(self) -> Self {
-        self.map_spec(|spec| spec.with_edge(Edge::Needed))
-    }
-
-    /// Makes this child adopt `scope` as its own and start what was spawned into it before the child started.
-    pub(crate) fn adopting(self, scope: UnadoptedScope) -> Self {
-        self.map_spec(|spec| spec.adopting(scope))
-    }
-
-    /// Spawns the child into the scope of the current process, so that the child belongs to that process.
-    ///
-    /// [`spawn`][Self::spawn] makes the child a sibling of the current process, under the same supervisor. This method
-    /// is different: it makes the child a child of the current process itself. The process does not finish until the
-    /// child finishes. When the body of the process returns, the scope tells the child to stop. See
-    /// [`scope`][super::scope] for the details. The supervisor that this builder was created from has no effect here.
+    /// A builder that was created from a [`SupervisorHandle`] spawns the child onto that supervisor, exactly as
+    /// [`spawn`][Self::spawn] does.
     ///
     /// # Panics
     ///
-    /// Panics if there is no current scope. This means that the caller does not run in a supervised process. For code
-    /// that can run outside supervision, use [`spawn_child_or_detached`][Self::spawn_child_or_detached].
-    pub fn spawn_child(self) -> ChildId {
-        let Self { spec, .. } = self;
+    /// Panics if this builder does not target a specific supervisor and there is no ambient supervisor.
+    pub fn spawn_sibling(self) -> ChildId {
+        let Self { target, spec, .. } = self;
 
-        match scope::current() {
-            Some(scope) => scope.spawn(spec),
-            None => panic!(
-                "`spawn_child` called outside of a supervised process: there is no current scope to spawn into. Use \
-                 `spawn_child_or_detached` for code that may run outside supervision."
-            ),
+        match target {
+            BuilderTarget::Ambient => super::spawn_sibling(spec),
+            BuilderTarget::Handle(supervisor) => supervisor.spawn(spec),
         }
     }
 
@@ -469,14 +473,13 @@ impl<'a, S: BuilderState> ChildBuilder<'a, S> {
         scope.spawn(spec)
     }
 
-    /// Spawns the child into the scope of the current process, as [`spawn_child`][Self::spawn_child] does, or as a
-    /// detached task outside supervision.
+    /// Spawns the child into the scope of the current process, or as a detached task outside supervision.
     ///
     /// Returns the [`ChildId`] of the child, or `None` if there was no current scope and the child started as a
     /// detached task instead. A detached child never receives a shutdown signal, and nothing restarts it or waits for
-    /// it. This is how the same work runs without scopes at all. Thus, this method is the correct choice for code that
-    /// can be called from any location, such as a primitive that a test can construct.
-    pub fn spawn_child_or_detached(self) -> Option<ChildId> {
+    /// it. This is how the same work runs without supervision at all. Thus, this method is the correct choice for code
+    /// that can be called from any location, such as a primitive that a test can construct.
+    pub fn spawn_or_detached(self) -> Option<ChildId> {
         let Self { spec, .. } = self;
 
         match scope::current() {
@@ -489,119 +492,103 @@ impl<'a, S: BuilderState> ChildBuilder<'a, S> {
     }
 }
 
-impl<'a, S: CanTerminate> ChildBuilder<'a, S> {
-    /// Sets whether this child task's termination should stop the supervisor.
-    ///
-    /// Under [`AutoShutdown::AnySignificant`][auto_shutdown] -- which is what a topology component's supervisor uses
-    /// -- a significant child terminating **shuts the supervisor down**: the child is not individually restarted. That
-    /// happens even when the child exits cleanly, so this suits a child the supervisor cannot function without, and
-    /// not one that is expected to finish on its own.
-    ///
-    /// For example, a component handling client connections generally shouldn't stop just because one connection
-    /// failed, but a component forwarding work to a child task may become inoperable if that task dies and cannot be
-    /// reattached to the necessary channels or state without recreating the component.
-    ///
-    /// Offered only for a child that can actually terminate for good -- a one-shot child, or a supervisable one
-    /// narrowed with [`transient`][ChildBuilder::transient] or [`temporary`][ChildBuilder::temporary]. A permanent
-    /// child is always restarted and so never reaches this path, which makes marking one significant a contradiction
-    /// rather than a setting.
-    ///
-    /// Defaults to `false`.
-    ///
-    /// [auto_shutdown]: super::AutoShutdown::AnySignificant
-    pub fn with_significant(self, significant: bool) -> Self {
-        self.map_spec(|spec| spec.with_significant(significant))
-    }
-}
-
 impl<'a> ChildBuilder<'a, OneShot> {
-    fn one_shot<T>(target: BuilderTarget<'a>, worker: T) -> Self
+    fn new_one_shot<T>(target: BuilderTarget<'a>, worker: T) -> Self
     where
         T: Supervisable + 'static,
     {
-        let spec = ChildSpecification::one_shot_worker(worker).with_budget_bounded_shutdown();
+        let spec = ChildSpecification::worker(worker).with_budget_bounded_shutdown();
 
         Self::new(target, spec)
     }
 }
 
 impl<'a> ChildBuilder<'a, Restartable> {
-    fn restartable<T>(target: BuilderTarget<'a>, worker: T) -> Self
+    fn new_restartable<T>(target: BuilderTarget<'a>, worker: T) -> Self
     where
         T: Supervisable + 'static,
     {
-        Self::new(
-            target,
-            ChildSpecification::worker(worker).with_restart_type(RestartType::Permanent),
-        )
+        Self::new(target, ChildSpecification::worker(worker))
     }
 
     /// Restarts this child task only when it terminates abnormally.
-    ///
-    /// A clean exit is taken at face value and the child stays stopped; a failure is restarted. Use this for work that
-    /// has a natural end but whose failure means it never got there.
-    ///
-    /// Narrows the restart policy to [`RestartType::Transient`], which makes
-    /// [`with_significant`][ChildBuilder::with_significant] available: a child that can stop for good is one whose
-    /// termination the supervisor may want to act on.
-    pub fn transient(self) -> ChildBuilder<'a, Terminable> {
-        self.map_spec_into(|spec| spec.with_restart_type(RestartType::Transient))
+    #[deprecated(note = "mark the child `hosted` instead, which restarts it only if it fails")]
+    pub fn transient(self) -> Self {
+        self.map_spec(|spec| spec.with_restart_type(RestartType::Transient))
     }
 
     /// Never restarts this child task.
-    ///
-    /// However it terminates -- cleanly or by failing -- the child stays stopped. Use this for work that is meant to
-    /// run once, where a retry would be wrong rather than merely redundant.
-    ///
-    /// Narrows the restart policy to [`RestartType::Temporary`], which makes
-    /// [`with_significant`][ChildBuilder::with_significant] available: a child that can stop for good is one whose
-    /// termination the supervisor may want to act on.
-    pub fn temporary(self) -> ChildBuilder<'a, Terminable> {
-        self.map_spec_into(|spec| spec.with_restart_type(RestartType::Temporary))
+    #[deprecated(note = "implement `Supervisable::can_restart` instead, if the child can only be started once")]
+    pub fn temporary(self) -> Self {
+        self.map_spec(|spec| spec.with_restart_type(RestartType::Temporary))
     }
 }
 
 /// Builder for a yet-to-be-started nested supervisor.
 ///
 /// The counterpart to [`ChildBuilder`] for a child that is itself a [`Supervisor`], and deliberately a much smaller
-/// surface. A nested supervisor has no placement of its own (it runs wherever its parent does, and its children carry
-/// their own placement) and no shutdown deadline of its own (it bounds its own drain through its children), so what
-/// is left to configure is the restart policy and significance.
-///
-/// Uses the same typestate as [`ChildBuilder`]: significance is offered only once the restart policy has been
-/// narrowed to one that lets the child terminate for good, since a permanent child is always brought back and so
-/// never has a termination for the parent to act on.
+/// surface. A nested supervisor has no placement of its own, because it runs where its parent runs and its children
+/// carry their own placement. It also has no shutdown deadline of its own, because it limits its own drain through its
+/// children. Thus, the only setting that remains is whether it is needed or hosted.
 #[must_use = "a child is only described until `spawn` or `build` is called"]
-pub struct NestedSupervisorBuilder<'a, S = Restartable> {
+pub struct NestedSupervisorBuilder<'a> {
     target: BuilderTarget<'a>,
     spec: ChildSpecification<SupervisorSpec>,
-    _state: PhantomData<S>,
 }
 
-impl<'a, S: BuilderState> NestedSupervisorBuilder<'a, S> {
-    fn from_parts(target: BuilderTarget<'a>, spec: ChildSpecification<SupervisorSpec>) -> Self {
+impl<'a> NestedSupervisorBuilder<'a> {
+    fn new(target: BuilderTarget<'a>, supervisor: Supervisor) -> Self {
         Self {
             target,
-            spec,
-            _state: PhantomData,
+            spec: ChildSpecification::from(supervisor),
         }
     }
 
-    /// As [`map_spec`][ChildBuilder::map_spec], but for a transition that also moves the builder to a different state.
-    fn map_spec_into<F, S2>(self, f: F) -> NestedSupervisorBuilder<'a, S2>
+    fn map_spec<F>(self, f: F) -> Self
     where
         F: FnOnce(ChildSpecification<SupervisorSpec>) -> ChildSpecification<SupervisorSpec>,
-        S2: BuilderState,
     {
-        let Self { target, spec, .. } = self;
+        let Self { target, spec } = self;
 
-        NestedSupervisorBuilder::from_parts(target, f(spec))
+        Self { target, spec: f(spec) }
+    }
+
+    /// Marks this subtree as one that its owner cannot work without.
+    ///
+    /// See [`ChildBuilder::needed`], which this method mirrors.
+    pub fn needed(self) -> Self {
+        self.map_spec(|spec| spec.with_edge(Edge::Needed))
+    }
+
+    /// Marks this subtree as one that its owner runs but does not need.
+    ///
+    /// See [`ChildBuilder::hosted`], which this method mirrors.
+    pub fn hosted(self) -> Self {
+        self.map_spec(|spec| spec.with_edge(Edge::Hosted))
+    }
+
+    /// Restarts this subtree only when it terminates abnormally.
+    #[deprecated(note = "mark the subtree `hosted` instead, which restarts it only if it fails")]
+    pub fn transient(self) -> Self {
+        self.map_spec(|spec| spec.with_restart_type(RestartType::Transient))
+    }
+
+    /// Never restarts this subtree.
+    #[deprecated(note = "a supervisor can always be started again; mark it `hosted` or `needed` instead")]
+    pub fn temporary(self) -> Self {
+        self.map_spec(|spec| spec.with_restart_type(RestartType::Temporary))
+    }
+
+    /// Sets whether the parent supervisor stops when this subtree terminates.
+    #[deprecated(note = "mark the subtree `needed` instead, which stops its owner when it terminates for good")]
+    pub fn with_significant(self, significant: bool) -> Self {
+        self.map_spec(|spec| spec.with_significant(significant))
     }
 
     /// Finishes describing the child without starting it, for [`Supervisor::add_worker`].
     ///
-    /// Use this to register a configured subtree on a supervisor that hasn't started yet; [`spawn`][Self::spawn] is
-    /// the counterpart for a supervisor that is already running.
+    /// Use this method to register a configured subtree on a supervisor that has not started yet. To start the subtree
+    /// now, use [`spawn`][Self::spawn].
     ///
     /// Whichever supervisor this builder was created against is irrelevant here -- the child belongs to whichever one
     /// it is handed to.
@@ -611,53 +598,36 @@ impl<'a, S: BuilderState> NestedSupervisorBuilder<'a, S> {
 
     /// Spawns the nested supervisor.
     ///
-    /// Returns the child's [`ChildId`]. As with [`ChildBuilder::spawn`], the child is queued rather than started
-    /// synchronously.
+    /// This method works as [`ChildBuilder::spawn`] does. It spawns onto the target supervisor if the builder has one.
+    /// If not, it spawns the nested supervisor as a child of the current process.
     ///
     /// # Panics
     ///
-    /// If this builder targets the ambient supervisor and there isn't one, this panics. See [`spawn`][super::spawn].
+    /// Panics if this builder does not target a specific supervisor and code outside supervision calls this method. See
+    /// [`spawn`][super::spawn].
     pub fn spawn(self) -> ChildId {
-        let Self { target, spec, .. } = self;
+        let Self { target, spec } = self;
 
         match target {
             BuilderTarget::Ambient => super::spawn(spec),
             BuilderTarget::Handle(supervisor) => supervisor.spawn(spec),
         }
     }
-}
 
-impl<'a> NestedSupervisorBuilder<'a, Restartable> {
-    fn new(target: BuilderTarget<'a>, supervisor: Supervisor) -> Self {
-        Self::from_parts(
-            target,
-            ChildSpecification::from(supervisor).with_restart_type(RestartType::Permanent),
-        )
-    }
-
-    /// Restarts this subtree only when it terminates abnormally.
+    /// Spawns the nested supervisor onto the ambient supervisor, the nearest supervisor above the current process.
     ///
-    /// Narrows the restart policy to [`RestartType::Transient`], which makes
-    /// [`with_significant`][NestedSupervisorBuilder::with_significant] available.
-    pub fn transient(self) -> NestedSupervisorBuilder<'a, Terminable> {
-        self.map_spec_into(|spec| spec.with_restart_type(RestartType::Transient))
-    }
-
-    /// Never restarts this subtree.
+    /// This method works as [`ChildBuilder::spawn_sibling`] does.
     ///
-    /// Narrows the restart policy to [`RestartType::Temporary`], which makes
-    /// [`with_significant`][NestedSupervisorBuilder::with_significant] available.
-    pub fn temporary(self) -> NestedSupervisorBuilder<'a, Terminable> {
-        self.map_spec_into(|spec| spec.with_restart_type(RestartType::Temporary))
-    }
-}
-
-impl<S: CanTerminate> NestedSupervisorBuilder<'_, S> {
-    /// Sets whether this subtree's termination should stop the parent supervisor.
+    /// # Panics
     ///
-    /// See [`ChildBuilder::with_significant`], which this mirrors.
-    pub fn with_significant(self, significant: bool) -> Self {
-        self.map_spec_into(|spec| spec.with_significant(significant))
+    /// Panics if this builder does not target a specific supervisor and there is no ambient supervisor.
+    pub fn spawn_sibling(self) -> ChildId {
+        let Self { target, spec } = self;
+
+        match target {
+            BuilderTarget::Ambient => super::spawn_sibling(spec),
+            BuilderTarget::Handle(supervisor) => supervisor.spawn(spec),
+        }
     }
 }
 
@@ -734,6 +704,7 @@ mod tests {
     /// A [`Supervisable`] that fails its first run and waits for shutdown on every run after.
     struct FailingOnceWorker {
         initializations: Arc<AtomicUsize>,
+        restartable: bool,
     }
 
     impl FailingOnceWorker {
@@ -742,9 +713,16 @@ mod tests {
             (
                 Self {
                     initializations: Arc::clone(&initializations),
+                    restartable: true,
                 },
                 initializations,
             )
+        }
+
+        /// Makes this worker report that it cannot be started again, as a worker that consumes its state does.
+        fn one_shot(mut self) -> Self {
+            self.restartable = false;
+            self
         }
     }
 
@@ -756,6 +734,10 @@ mod tests {
 
         fn shutdown_strategy(&self) -> ShutdownStrategy {
             ShutdownStrategy::Graceful(Duration::MAX)
+        }
+
+        fn can_restart(&self) -> bool {
+            self.restartable
         }
 
         async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
@@ -895,8 +877,8 @@ mod tests {
 
     #[tokio::test]
     async fn child_exiting_does_not_shut_the_supervisor_down() {
-        // Children are non-significant, so one finishing -- the normal case during a drain -- must not trip the
-        // supervisor's `AutoShutdown::AnySignificant` policy and tear the component down with it.
+        // Spawned children are hosted. Thus, a child that finishes must not stop the supervisor, because that also
+        // stops the component. During a drain, a child that finishes is the normal case.
         let supervisor = TestComponentSupervisor::start("test_component").await;
         let handle = supervisor.handle();
 
@@ -921,14 +903,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_significant_child_exiting_stops_the_supervisor() {
-        // The counterpart: a component supervisor uses `AutoShutdown::AnySignificant`, so a child marked significant
-        // takes the component with it when it terminates -- here on a perfectly clean exit, which is the part that
-        // surprises.
+    async fn a_needed_child_exiting_stops_the_supervisor() {
+        // The counterpart: when a child that is marked needed terminates permanently, its supervisor also stops. Here
+        // the child exits cleanly. It is not obvious that a clean exit also stops the supervisor.
         let supervisor = TestComponentSupervisor::start("test_component").await;
         let handle = supervisor.handle();
 
-        handle.worker("brief", async {}).with_significant(true).spawn();
+        handle.worker("brief", async {}).needed().spawn();
 
         // Spawning only queues the child, so wait for the supervisor to actually stop itself rather than racing our
         // own shutdown against the child ever starting.
@@ -937,7 +918,7 @@ mod tests {
         let result = supervisor.shutdown().await;
         assert!(
             matches!(result, Err(SupervisorError::SignificantChildExited)),
-            "a significant child's exit should have stopped the supervisor, got {result:?}"
+            "a needed child's exit should have stopped the supervisor, got {result:?}"
         );
     }
 
@@ -1039,6 +1020,55 @@ mod tests {
         })
         .await;
         assert!(supervisor.shutdown().await.is_ok());
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn a_worker_that_cannot_restart_overrides_an_explicit_restart_policy() {
+        // A worker that reports that it cannot start again is never restarted by its owner. This is also true if the
+        // deprecated `transient` gave it an explicit policy that restarts it after a failure.
+        let supervisor = TestComponentSupervisor::start("test_component").await;
+
+        let (worker, initializations) = FailingOnceWorker::new();
+        supervisor.handle().supervisable(worker.one_shot()).transient().spawn();
+
+        // The child starts and fails. If the supervisor restarted it, the child would stay registered, because each
+        // later run waits for shutdown.
+        wait_until("the worker has initialized once", || {
+            initializations.load(Ordering::SeqCst) == 1
+        })
+        .await;
+        supervisor.wait_for_children(0).await;
+        assert_eq!(initializations.load(Ordering::SeqCst), 1);
+
+        assert!(supervisor.shutdown().await.is_ok());
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn a_significant_child_that_is_always_restarted_is_accepted() {
+        // The deprecated `with_significant` is available on the builder of a child that can start again. Declared in
+        // advance, such a child is needed and permanent, so the flag has no effect. The supervisor warns about that,
+        // but must accept the child and run it.
+        let (worker, initializations, _) = CountingWorker::new("counting");
+        let mut sup = Supervisor::new("test_sup").expect("supervisor name should be valid");
+        sup.add_worker(supervisable(worker).with_significant(true).build());
+
+        let (tx, rx) = oneshot::channel::<()>();
+        let run = tokio::spawn(async move {
+            sup.run_with_shutdown(async move {
+                let _ = rx.await;
+            })
+            .await
+        });
+        wait_until("the worker has initialized once", || {
+            initializations.load(Ordering::SeqCst) == 1
+        })
+        .await;
+
+        tx.send(()).expect("supervisor should still be running");
+        let result = run.await.expect("supervisor task should not panic");
+        assert!(result.is_ok(), "supervisor should stop cleanly: {result:?}");
     }
 
     #[tokio::test]

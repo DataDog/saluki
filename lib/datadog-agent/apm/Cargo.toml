@@ -1,0 +1,26 @@
+[package]
+name = "datadog-agent-apm"
+version = "0.1.0"
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[features]
+test-util = ["datadog-agent-remote-config/test-util"]
+
+[dependencies]
+datadog-agent-remote-config = { workspace = true }
+saluki-common = { workspace = true }
+saluki-error = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+datadog-agent-apm = { path = ".", features = ["test-util"] }
+
+tokio = { workspace = true, features = ["macros", "rt"] }
+tracing-subscriber = { workspace = true, features = ["registry"] }
+
+[lints]
+workspace = true

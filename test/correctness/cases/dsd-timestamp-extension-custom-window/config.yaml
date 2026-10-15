@@ -1,0 +1,22 @@
+type: correctness
+runtime: docker
+analysis_mode: metrics
+baseline:
+  image: saluki-images/datadog-agent:testing-release
+  files:
+    - datadog.yaml:/etc/datadog-agent/datadog.yaml
+  env:
+    DD_API_KEY: correctness-test
+comparison:
+  image: saluki-images/datadog-agent:testing-release
+  files:
+    - datadog.yaml:/etc/datadog-agent/datadog.yaml
+  env:
+    DD_API_KEY: correctness-test
+    DD_DATA_PLANE_ENABLED: "true"
+    DD_DATA_PLANE_STANDALONE_MODE: "true"
+    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+    DD_AGGREGATE_CONTEXT_LIMIT: "500000"
+    # Agent Data Plane-only setting. With every metric timestamped, nothing here is aggregated, so the window must not
+    # change the output: timestamped counters keep the Agent's fixed 10-second rate interval.
+    DD_AGGREGATE_WINDOW_DURATION_SECONDS: "60"
