@@ -382,6 +382,7 @@ impl Source for Otlp {
             ),
         )
         .on_runtime(context.topology_context().global_thread_pool().clone())
+        .needed()
         .spawn();
 
         health.mark_ready();

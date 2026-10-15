@@ -64,8 +64,9 @@ pub(super) struct WorkerState {
     process: Process,
     /// Handle to the supervisor these workers belong to.
     ///
-    /// Installed as the ambient supervisor for every worker task, so anything a worker spawns through
-    /// [`spawn`][crate::runtime::spawn] becomes a sibling of that worker rather than needing a handle threaded to it.
+    /// This handle is installed as the ambient supervisor for every worker task. Thus, anything that a worker spawns
+    /// through [`spawn_sibling`][crate::runtime::spawn_sibling] goes to this supervisor. It is not necessary to pass a
+    /// handle to the worker for this. For a scope, this is the supervisor above the owner of the scope.
     handle: SupervisorHandle,
     /// Ceiling on the whole shutdown, if the supervisor configured one.
     ///
@@ -124,7 +125,7 @@ impl WorkerState {
     pub(super) fn add_worker(
         &mut self, worker_id: u64, child_spec: &SupervisedChild, config: &ChildConfig,
     ) -> Result<StartedChild, SupervisorError> {
-        let process = child_spec.create_process(&self.process);
+        let process = child_spec.create_process(&self.process, config.own_resource_group());
         let worker_name: Arc<str> = process.name().into();
 
         let started = StartedChild::new(&process, Arc::clone(&worker_name));
@@ -171,6 +172,13 @@ impl WorkerState {
                     adopt: config.adopt().cloned(),
                 },
             );
+        }
+
+        // The observer must see the result after the scope closed, because the scope can replace a clean result of the
+        // body with the failure of a child.
+        #[cfg(any(test, feature = "test-util"))]
+        if let Some(observer) = config.exit_observer() {
+            worker_future = observer.observe(worker_future);
         }
 
         // Every worker's task is timed, keyed on its fully qualified process name -- the same name
@@ -285,9 +293,22 @@ impl WorkerState {
     /// [`WorkerError::ShutdownTimedOut`]), so the value reflects the entire supervision tree rooted at this
     /// supervisor.
     pub(super) async fn shutdown_workers(&mut self) -> usize {
+        self.shutdown_workers_reporting(|_, _| {}).await
+    }
+
+    /// Shuts down all workers, as [`shutdown_workers`][Self::shutdown_workers] does, and reports how each worker
+    /// exited.
+    ///
+    /// `on_exit` receives the `worker_id` and the result of each worker when it exits. A scope uses these results, so
+    /// that it does not lose the error of a child that exits while the scope closes. This function does not report a
+    /// worker that it aborted, because the returned count already includes that worker.
+    pub(super) async fn shutdown_workers_reporting<F>(&mut self, on_exit: F) -> usize
+    where
+        F: FnMut(u64, Result<(), WorkerError>),
+    {
         debug!("Shutting down all processes.");
 
-        let aborted = self.shutdown_workers_inner().await;
+        let aborted = self.shutdown_workers_inner(on_exit).await;
 
         debug_assert!(self.worker_map.is_empty(), "worker map should be empty after shutdown");
         debug_assert!(self.draining.is_empty(), "draining map should be empty after shutdown");
@@ -299,12 +320,16 @@ impl WorkerState {
         aborted
     }
 
-    async fn shutdown_workers_inner(&mut self) -> usize {
+    async fn shutdown_workers_inner<F>(&mut self, mut on_exit: F) -> usize
+    where
+        F: FnMut(u64, Result<(), WorkerError>),
+    {
         // Take ownership of all worker bookkeeping so we can consume each worker's shutdown coordinator. Signal every
         // graceful worker and immediately abort brutal ones, recording a per-worker abort deadline so each is held to
         // its own timeout rather than a single shared one.
         let now = tokio::time::Instant::now();
         let budget_deadline = resolve_budget_deadline(now, self.shutdown_budget);
+        let mut worker_ids = FastIndexMap::default();
         for (task_id, process_state) in std::mem::take(&mut self.worker_map) {
             let ProcessState {
                 worker_id,
@@ -314,6 +339,7 @@ impl WorkerState {
                 shutdown_coordinator,
                 abort_handle,
             } = process_state;
+            worker_ids.insert(task_id, worker_id);
 
             match shutdown_strategy {
                 ShutdownStrategy::Graceful(timeout) => {
@@ -342,9 +368,9 @@ impl WorkerState {
         // fires we abort exactly those workers whose own deadline has passed (their tasks are then reaped by a later
         // `join_next`). Brutal workers were aborted above and aren't tracked here.
         //
-        // If only workers with no finite deadline remain (e.g. nested supervisors), we wait for them to exit on their
-        // own. This is the path the topology takes -- each per-component supervisor is graceful-with-`MAX`, so its own
-        // forced-abort tally is reported here and merged into ours.
+        // If only workers with no finite deadline remain, for example nested supervisors, we wait for them to exit on
+        // their own. A nested supervisor reports its own count of forced aborts here, and we add that count to our
+        // count. A worker whose scope reports the aborts of its children does the same.
         let mut aborted_total = 0;
         while !self.worker_tasks.is_empty() {
             let next_abort = self.draining.values().filter_map(|worker| worker.deadline).min();
@@ -361,9 +387,22 @@ impl WorkerState {
                         Some(Ok((task_id, output))) => {
                             // A nested child supervisor that timed out reports its abort tally here; merge it.
                             aborted_total += reported_abort_count(&output);
+                            if let Some(worker_id) = worker_ids.swap_remove(&task_id) {
+                                on_exit(worker_id, output);
+                            }
                             Some(task_id)
                         }
-                        Some(Err(e)) => Some(e.id()),
+                        // A cancellation is our own abort, which the count already includes. A panic is a failure of
+                        // the worker, so we report it.
+                        Some(Err(e)) => {
+                            let task_id = e.id();
+                            if e.is_panic() {
+                                if let Some(worker_id) = worker_ids.swap_remove(&task_id) {
+                                    on_exit(worker_id, Err(WorkerError::Runtime(ProcessError::Panicked.into())));
+                                }
+                            }
+                            Some(task_id)
+                        }
                         None => None,
                     };
                     if let Some(task_id) = task_id {

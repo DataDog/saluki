@@ -980,7 +980,7 @@ impl Source for DogStatsD {
         // every shutdown open until the component's budget elapsed.
         runtime::worker("io_buffer_pool_shrinker", self.io_buffer_pool_shrinker)
             .with_shutdown_strategy(ShutdownStrategy::Brutal)
-            .spawn_child();
+            .spawn();
 
         let (datagram_sender, datagram_receiver) = mpsc::channel(self.io_buffer_queue_capacity);
         let datagram_receiver = Arc::new(Mutex::new(datagram_receiver));
@@ -1015,7 +1015,7 @@ impl Source for DogStatsD {
                 process_datagram_decoder(datagram_receiver, decoder_source_context, decoder_context),
             )
             .with_shutdown_timeout(Duration::MAX)
-            .spawn_child();
+            .spawn();
         }
         drop(datagram_receiver);
 
@@ -1048,9 +1048,8 @@ impl Source for DogStatsD {
                 listener_source_context,
                 listener_context,
             ))
-            .temporary()
             .needed()
-            .spawn_child();
+            .spawn();
         }
         drop(datagram_sender);
 
@@ -1129,9 +1128,14 @@ impl Supervisable for ListenerWorker {
     }
 
     fn shutdown_strategy(&self) -> ShutdownStrategy {
-        // No deadline of its own: the component's supervisor holds a single budget covering the source and everything
-        // it spawned.
+        // The listener has no shutdown timeout of its own. The topology shutdown timeout applies to the source and to
+        // everything that the source spawned.
         ShutdownStrategy::Graceful(Duration::MAX)
+    }
+
+    fn can_restart(&self) -> bool {
+        // The first start takes the listener, so there is nothing left to listen on a second time.
+        false
     }
 
     async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
@@ -1221,7 +1225,7 @@ async fn process_listener(
                     runtime::worker_with_shutdown(task_name, move |shutdown| {
                         process_stream(stream, handler_source_context, handler_context, shutdown)
                     })
-                    .spawn_child();
+                    .spawn();
                 }
                 Err(e) => {
                     error!(%listen_addr, error = %e, "Failed to accept connection. Stopping listener.");
@@ -4211,9 +4215,9 @@ mod tests {
 
 /// Tests covering the source's background work running as supervised children.
 ///
-/// The `tests` module above exercises the decode path in isolation. What matters here is the wiring: that `run` puts
-/// the pool shrinker, datagram decoders, listeners, and per-connection handlers under the component's supervisor, and
-/// that the whole subtree comes down cleanly and without dropping queued work.
+/// The `tests` module above exercises the decode path in isolation. Here, the wiring is the important part. These tests
+/// check that `run` puts the pool shrinker, datagram decoders, listeners, and per-connection handlers below the source
+/// as its own children. They also check that the whole subtree stops cleanly and does not drop queued work.
 #[cfg(test)]
 mod supervision {
     use std::net::SocketAddr;
@@ -4618,14 +4622,15 @@ mod supervision {
             .expect("client should connect");
 
         // Each connection adds two processes. One is the handler, below the listener. The other is the stream reader
-        // that the handler starts. The handler spawns the stream reader on the supervisor as a sibling, not as its own
-        // child.
+        // that the handler starts below itself.
         supervisor.wait_for_running_descendants(baseline + 2).await;
         let root = supervisor.tree_handle().snapshot().root;
         let listener_node = find_node(&root, "listener_tcp").expect("the listener is running");
+        let handler_node = find_node(listener_node, "conn_tcp")
+            .expect("the handler should hang beneath the listener that accepted its connection");
         assert!(
-            find_node(listener_node, "conn_tcp").is_some(),
-            "the handler should hang beneath the listener that accepted its connection"
+            find_node(handler_node, "stream_reader").is_some(),
+            "the stream reader should hang beneath the handler that started it"
         );
 
         let result = timeout(RUN_TIMEOUT, supervisor.shutdown())
