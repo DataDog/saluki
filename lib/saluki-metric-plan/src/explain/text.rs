@@ -7,7 +7,7 @@ use serde_json::Value;
 use super::{BoundEntry, BoundScopeEntry, Explain, PhysicalPlan, ResourcesEntry, RewriteEntry};
 use crate::{
     canonical::{to_canonical_string, PlanHash},
-    ir::{ParamName, PayloadClasses, ResourceProvenance, Selector},
+    ir::{ParamName, PayloadClasses, Selector},
     model::PortType,
     validate::describe_port_type,
 };
@@ -175,17 +175,11 @@ fn write_document(explain: &Explain, out: &mut String) -> std::fmt::Result {
     Ok(())
 }
 
-/// Says who declared a resource, and, once compared with the active plan, whether it is reused or new.
-fn resource_origin(provenance: &ResourceProvenance, change: &Option<String>) -> String {
-    let declared = match provenance {
-        ResourceProvenance::Native => "native".to_string(),
-        ResourceProvenance::Declared(revision) => {
-            format!("resources revision {} {}", revision.revision, revision.hash)
-        }
-    };
+/// Writes a resource's identifier, and, once compared with the active plan, whether it is reused or new.
+fn resource_line(out: &mut String, id: &dyn std::fmt::Display, change: &Option<String>) -> std::fmt::Result {
     match change {
-        Some(change) => format!("{}, {}", change, declared),
-        None => declared,
+        Some(change) => writeln!(out, "    {} ({})", id, change),
+        None => writeln!(out, "    {}", id),
     }
 }
 
@@ -206,20 +200,11 @@ fn write_resources(resources: &ResourcesEntry, out: &mut String) -> std::fmt::Re
     writeln!(out, "resources")?;
     writeln!(out, "  bound outputs ({})", resources.outputs.len())?;
     for output in &resources.outputs {
-        writeln!(
-            out,
-            "    {} ({})",
-            output.id,
-            resource_origin(&output.provenance, &output.change)
-        )?;
+        resource_line(out, &output.id, &output.change)?;
         writeln!(out, "      host {}", output.host)?;
         let selector = match &output.selector {
             Selector::Role(role) => format!("role {}", role),
             Selector::Group(key) => format!("group {}", key),
-            Selector::Declared(recipients) => {
-                let recipients = recipients.iter().map(ToString::to_string).collect::<Vec<_>>();
-                format!("declared {}", list(&recipients))
-            }
             Selector::Recipients(recipients) => {
                 let recipients = recipients.iter().map(ToString::to_string).collect::<Vec<_>>();
                 format!("recipients {}", list(&recipients))
@@ -239,12 +224,7 @@ fn write_resources(resources: &ResourcesEntry, out: &mut String) -> std::fmt::Re
     }
     writeln!(out, "  recipients ({})", resources.recipients.len())?;
     for recipient in &resources.recipients {
-        writeln!(
-            out,
-            "    {} ({})",
-            recipient.id,
-            resource_origin(&recipient.provenance, &recipient.change)
-        )?;
+        resource_line(out, &recipient.id, &recipient.change)?;
         writeln!(out, "      host {}, endpoint {}", recipient.host, recipient.endpoint)?;
         let classes = match recipient.classes {
             PayloadClasses::All => "all",

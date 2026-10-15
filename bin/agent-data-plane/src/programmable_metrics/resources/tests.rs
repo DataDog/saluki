@@ -2,11 +2,7 @@ use saluki_components::forwarders::{
     delivery::{PayloadClasses as NativeClasses, RecipientProtocol},
     MetricsRecipientRoute,
 };
-use saluki_metric_plan::{
-    extension::{BoundedDelivery, Closure, Spill},
-    ir::decode_params,
-    resources::{DeclaredAccepts, DeclaredOutput, DeclaredProtocol, DeclaredRecipient, RESOURCES_VERSION},
-};
+use saluki_metric_plan::ir::decode_params;
 
 use super::{
     params::{decode_encoder, decode_protocol, ENCODER},
@@ -18,7 +14,7 @@ use crate::programmable_metrics::test_support::{configuration, facts};
 async fn resolved(yaml: &str) -> NativeResources {
     let config = configuration(yaml).await;
     let facts = facts(&config);
-    NativeResources::resolve(&config, &config, &facts, &FixedHosts::at_boot(&facts), None).unwrap()
+    NativeResources::resolve(&config, &config, &facts, &FixedHosts::at_boot(&facts)).unwrap()
 }
 
 async fn outputs(yaml: &str) -> NativeOutputs {
@@ -297,7 +293,7 @@ async fn the_delivery_hosts_are_fixed_by_the_host_facts() {
     let with = configuration("cluster_agent: {url: https://ca.example.com}").await;
     let hosts = FixedHosts::at_boot(&facts(&with));
     assert_eq!(delivery(&hosts), ["cluster_agent_out", "dd_out", "mrf_dd_out"]);
-    let resolved = NativeResources::resolve(&with, &with, &facts(&with), &hosts, None).unwrap();
+    let resolved = NativeResources::resolve(&with, &with, &facts(&with), &hosts).unwrap();
     // Every host has settings, idle or not; only `dd_out` has recipients.
     let host_ids = resolved
         .resources
@@ -396,7 +392,6 @@ experimental:
     assert_eq!(b1.credential.as_str(), additional_api_key("https://b.example.com", 1));
     assert_eq!(b1.classes, PayloadClasses::All);
     assert_eq!(b1.endpoint, "https://b.example.com");
-    assert_eq!(b1.provenance, ResourceProvenance::Native);
     assert_eq!(
         recipient(&resolved, "dd_out/primary/0/https://primary.example.com")
             .credential
@@ -590,7 +585,6 @@ proxy: {https: "http://user:secret-password@proxy.example.com:3129"}
     let main = binding(&resolved.outputs, DD_METRICS_ENCODE);
     assert_eq!(main.host.as_str(), "dd_out");
     assert_eq!(main.telemetry.as_str(), "dd_metrics_encode");
-    assert_eq!(main.provenance, ResourceProvenance::Native);
     assert!(decode_params(ENCODER, &main.encoder).is_ok());
     let encoder = decode_encoder(&main.encoder).unwrap();
     assert_eq!(encoder.max_series_points_per_payload, 1234);
@@ -633,7 +627,7 @@ serializer_max_series_payload_size: 1000
     .await;
     let facts = facts(&startup);
     let hosts = FixedHosts::at_boot(&facts);
-    let resolved = NativeResources::resolve(&startup, &current, &facts, &hosts, None).unwrap();
+    let resolved = NativeResources::resolve(&startup, &current, &facts, &hosts).unwrap();
     // A routing group and the failover branch appear without a restart.
     assert_eq!(
         ids(&resolved.outputs),
@@ -689,126 +683,6 @@ fn effective_shared_settings_keep_disk_persistence_and_storage_as_at_startup() {
     assert_eq!(effective.endpoints.forwarder.storage_max_size_in_bytes, 4096);
 }
 
-fn team_d(v3_series: bool) -> ResourcesArtifact {
-    ResourcesArtifact {
-        resources_version: RESOURCES_VERSION,
-        recipients: vec![DeclaredRecipient {
-            name: "team_d".to_string(),
-            host: HostId::new("dd_out").unwrap(),
-            endpoint: "http://127.0.0.1:17105".to_string(),
-            credential: CredentialRef::new("credentials/team_d").unwrap(),
-            protocol: DeclaredProtocol {
-                v3_series,
-                v3_sketches: false,
-            },
-            delivery: Some(BoundedDelivery {
-                queue_bytes: Some(4_194_304),
-                spill: Spill::Never,
-                on_retire: Closure::Attempt,
-            }),
-        }],
-        outputs: vec![DeclaredOutput {
-            name: "team_d".to_string(),
-            recipients: vec!["team_d".to_string()],
-            accepts: DeclaredAccepts::Any,
-            label: Some("Team D".to_string()),
-        }],
-    }
-}
-
-#[tokio::test]
-async fn declared_outputs_and_recipients_enter_the_resources_with_their_provenance() {
-    let config = configuration("").await;
-    let facts = facts(&config);
-    let hosts = FixedHosts::at_boot(&facts);
-    let provenance = ArtifactRevision {
-        revision: 4,
-        hash: PlanHash::of_bytes(b"team d"),
-    };
-    let artifact = team_d(true);
-    let declared = Declared {
-        artifact: &artifact,
-        provenance: &provenance,
-    };
-    let resolved = NativeResources::resolve(&config, &config, &facts, &hosts, Some(declared)).unwrap();
-
-    let output = resolved.outputs.get("resources_team_d").expect("the declared output");
-    assert_eq!(
-        output.kind,
-        OutputKind::Declared {
-            name: "team_d".to_string(),
-            label: Some("Team D".to_string()),
-        }
-    );
-    let id = "dd_out/declared/team_d/http://127.0.0.1:17105";
-    assert_eq!(recipients(&resolved.outputs, "resources_team_d"), [id]);
-    // {"accepts":{"kinds":"all","timestamps":"mixed"},"host":"dd_out",
-    //  "selector":{"declared":["dd_out/declared/team_d/http://127.0.0.1:17105"]},"v":2}
-    assert_eq!(
-        output.decl.fingerprint.to_string(),
-        "sha256:361f843bc9a6b25663cc6da865dd3af0daf04bb8890e3717ae98d7d30bb1c838"
-    );
-    let binding = binding(&resolved.outputs, "resources_team_d");
-    assert_eq!(binding.telemetry.as_str(), "resources_team_d");
-    assert_eq!(binding.provenance, ResourceProvenance::Declared(provenance.clone()));
-    // Its one recipient takes V3 series, so the output encodes no V2 series.
-    let encoder = decode_encoder(&binding.encoder).unwrap();
-    assert!(!encoder.variants.v2_series && encoder.variants.v3_series && encoder.variants.v2_sketches);
-
-    let decl = recipient(&resolved, id);
-    assert_eq!(decl.classes, PayloadClasses::MetricsOnly);
-    assert_eq!(decl.credential.as_str(), "credentials/team_d");
-    assert_eq!(decl.provenance, ResourceProvenance::Declared(provenance.clone()));
-    assert_eq!(
-        decl.delivery,
-        DeliveryPolicy::Bounded(BoundedDelivery {
-            queue_bytes: Some(4_194_304),
-            spill: Spill::Never,
-            on_retire: Closure::Attempt,
-        })
-    );
-
-    // Lowering, which builds no branch for a declared output, still declares it.
-    let lowering = crate::programmable_metrics::lowering::Lowering::new(std::sync::Arc::new(config.clone()), facts)
-        .unwrap()
-        .unwrap();
-    let lowered = lowering.lower_with(&config, Some(declared)).unwrap();
-    assert!(lowered
-        .plan
-        .output(&OutputId::new("resources_team_d").unwrap())
-        .is_some());
-    assert!(!lowered.plan.nodes.iter().any(|node| node
-        .params
-        .get("output")
-        .is_some_and(|output| output == "resources_team_d")));
-}
-
-#[tokio::test]
-async fn a_declared_recipient_that_asks_for_v3_series_gets_v2_when_the_compressor_rules_v3_out() {
-    let config = configuration("serializer_compressor_kind: zlib").await;
-    let facts = facts(&config);
-    let provenance = ArtifactRevision {
-        revision: 1,
-        hash: PlanHash::of_bytes(b"x"),
-    };
-    let artifact = team_d(true);
-    let resolved = NativeResources::resolve(
-        &config,
-        &config,
-        &facts,
-        &FixedHosts::at_boot(&facts),
-        Some(Declared {
-            artifact: &artifact,
-            provenance: &provenance,
-        }),
-    )
-    .unwrap();
-    let decl = recipient(&resolved, "dd_out/declared/team_d/http://127.0.0.1:17105");
-    assert!(!decode_protocol(&decl.protocol).unwrap().v3().series);
-    let encoder = decode_encoder(&binding(&resolved.outputs, "resources_team_d").encoder).unwrap();
-    assert!(encoder.variants.v2_series && !encoder.variants.v3_series);
-}
-
 /// The configuration the membership tests boot with: two keys for one additional endpoint, multi-region failover, and
 /// autoscaling failover through the Cluster Agent.
 const KEYED: &str = r#"
@@ -837,7 +711,6 @@ async fn resolved_after_config(
         current,
         &facts,
         &FixedHosts::at_boot(&facts),
-        None,
         Demanded::default(),
         &previous.resources,
     )
@@ -988,8 +861,8 @@ cluster_agent: {enabled: true, url: https://ca.example.com}
     assert!(after.outputs.get(AF_METRICS_ENCODE).is_none());
 }
 
-/// Returns the recipient directory of `resolved` as `(name, host, recipients, endpoint, source)`, in name order.
-fn directory(resolved: &NativeResources) -> Vec<(String, String, Vec<String>, String, RecipientSource)> {
+/// Returns the recipient directory of `resolved` as `(name, host, recipients, endpoint)`, in name order.
+fn directory(resolved: &NativeResources) -> Vec<(String, String, Vec<String>, String)> {
     resolved
         .directory
         .iter()
@@ -999,7 +872,6 @@ fn directory(resolved: &NativeResources) -> Vec<(String, String, Vec<String>, St
                 entry.host.to_string(),
                 entry.recipients.iter().map(ToString::to_string).collect(),
                 entry.endpoint.clone(),
-                entry.source,
             )
         })
         .collect()
@@ -1016,14 +888,12 @@ multi_region_failover: {enabled: true, api_key: k, dd_url: https://mrf.example.c
 "#,
     )
     .await;
-    let native = RecipientSource::Native;
     let entry = |name: &str, host: &str, ids: &[&str], endpoint: &str| {
         (
             name.to_string(),
             host.to_string(),
             ids.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
             endpoint.to_string(),
-            native,
         )
     };
     assert_eq!(
@@ -1069,7 +939,7 @@ multi_region_failover: {enabled: true, api_key: k, dd_url: https://mrf.example.c
     }
 
     // Endpoints configured without a scheme are sent to over `https`, and named so: an endpoint named like a recipient
-    // lowering names (`mrf`, `primary`) or a declared one (`team_d`) never takes its name, nor merges with it.
+    // lowering names (`mrf`, `primary`) never takes its name, nor merges with it.
     let scheme_less = resolved(
         r#"
 additional_endpoints: {mrf: [k1], primary: [k2], team_d: [k3]}
@@ -1146,45 +1016,8 @@ async fn the_cluster_agent_is_available_once_forwarding_is_configured_and_idle_u
     }
 }
 
-#[tokio::test]
-async fn a_resources_artifacts_recipients_keep_the_names_it_gives_them() {
-    // An additional endpoint configured as `team_d` is `https://team_d`, apart from the declared `team_d`.
-    let config = configuration("additional_endpoints: {team_d: [k]}").await;
-    let facts = facts(&config);
-    let provenance = ArtifactRevision {
-        revision: 4,
-        hash: PlanHash::of_bytes(b"team d"),
-    };
-    let artifact = team_d(false);
-    let declared = Declared {
-        artifact: &artifact,
-        provenance: &provenance,
-    };
-    let resolved =
-        NativeResources::resolve(&config, &config, &facts, &FixedHosts::at_boot(&facts), Some(declared)).unwrap();
-    let team_d = directory(&resolved)
-        .into_iter()
-        .find(|(name, ..)| name == "team_d")
-        .unwrap();
-    assert_eq!(
-        team_d,
-        (
-            "team_d".to_string(),
-            "dd_out".to_string(),
-            vec!["dd_out/declared/team_d/http://127.0.0.1:17105".to_string()],
-            "http://127.0.0.1:17105".to_string(),
-            RecipientSource::Resources
-        )
-    );
-    let native = &resolved.directory[&RecipientName::new("https://team_d").unwrap()];
-    assert_eq!(
-        (native.host.as_str(), native.source),
-        ("dd_out", RecipientSource::Native)
-    );
-}
-
 #[test]
-fn a_name_never_stands_for_recipients_of_two_hosts_or_of_two_sources() {
+fn a_name_never_stands_for_recipients_of_two_hosts() {
     let name = || RecipientName::new("mrf").unwrap();
     let id = |id: &str| RecipientId::new(id).unwrap();
     let mut directory = Directory::new();
@@ -1206,7 +1039,6 @@ async fn resolved_with_demand(yaml: &str, demand: &[Demand], previous: &NativeRe
         &startup,
         &facts,
         &FixedHosts::at_boot(&facts),
-        None,
         Demanded {
             demand,
             previous: &previous.outputs,
@@ -1361,8 +1193,7 @@ async fn implied_outputs_are_refused_beyond_the_limit_and_off_the_main_outputs_h
         .outputs
         .iter()
         .any(|output| output.decl.recipients == wanted.recipients)));
-    // Sixteen fit: the limit is shared with the outputs resources artifacts declare, of which there are none. The
-    // seventeenth, last in recipient order, is refused, with why.
+    // Sixteen fit. The seventeenth, last in recipient order, is refused, with why.
     let beyond = resolved_with_demand(SIX_ENDPOINTS, &demand, &NativeResources::default()).await;
     assert_eq!(implied(&beyond).len(), 16);
     assert_eq!(beyond.refused_demand.len(), 1, "{:?}", beyond.refused_demand);

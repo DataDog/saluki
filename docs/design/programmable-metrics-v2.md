@@ -30,8 +30,8 @@ alone.
 
 ## Two modes, not coexistence
 
-The program-driven path will run beside ADP's existing native implementation for some time. That is two **modes**, chosen
-at boot, not two systems sharing authority inside one process:
+The program-driven path will run beside ADP's existing native implementation for some time. That is two **modes**,
+chosen at boot, not two systems sharing authority inside one process:
 
 - **Compatibility still matters.** In program mode, the default program reproduces native behavior: the same metrics
   delivered, the same telemetry the Core Agent reads, the same configuration accepted. Every intentional difference is
@@ -87,10 +87,15 @@ Targeted, so that each step is quick to check:
 
 ## Progress
 
+**Left by V2, for later:** the delivery host in `saluki-components` still has a declared recipient origin
+(`RecipientOrigin::Declared`), bounded delivery policies, and conflict detection between recipients of a declared
+origin, all general capabilities with their own tests that ADP no longer uses. Remove them, or reuse the bounded policy
+for N5's shedding.
+
 | Step | State | Commit |
 |---|---|---|
-| V1 | not started | |
-| V2 | not started | |
+| V1 | not started (V2 went first: opaque hosts carry about 50 tests of the frame and the interpreter's re-admission, which V7 and V8 rework anyway) | |
+| V2 | done: amendment 192 | (this commit) |
 | V3 | not started | |
 | V4 | not started | |
 | V5 | not started | |

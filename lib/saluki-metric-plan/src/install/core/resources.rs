@@ -37,6 +37,7 @@ use crate::{
     compile::{Frame, KernelKey, SlotId},
     install::{
         diff::SlotKernels,
+        lifecycle::{GenerationState, LifecycleEvent},
         resources::{LeaseRef, PartAnswer, RecipientRef, Released, ResourceTable, ResourcesRevision, RetirementReport},
     },
     ir::{HostId, Plan, RecipientId},
@@ -470,4 +471,54 @@ fn instance_bytes(plan: &Plan, registry: &OperatorRegistry, built: &[KernelKey])
             u64::try_from(bounds.as_bounds().total_firm_limit_bytes()).unwrap_or(u64::MAX)
         })
         .fold(0, u64::saturating_add)
+}
+
+/// Returns `true` if a plan the core keeps, to roll back to or to install again after a failed cut, may stay kept
+/// under the latest lowering: every output it declares is declared there with an equal fingerprint, and every recipient
+/// it declares is declared there with the same protocol.
+pub(in crate::install) fn keeps(latest: &Plan, kept: &Plan) -> bool {
+    let outputs = kept.outputs.iter().all(|output| {
+        latest
+            .outputs
+            .iter()
+            .any(|declared| declared.id == output.id && declared.fingerprint == output.fingerprint)
+    });
+    let recipients = kept.resources.recipients.iter().all(|recipient| {
+        latest
+            .resources
+            .recipient(&recipient.id)
+            .is_some_and(|declared| declared.protocol == recipient.protocol)
+    });
+    outputs && recipients
+}
+
+impl InstallerCore {
+    /// Releases the generation kept to roll back to, and drops the plan a cut replaced, if the latest lowering no
+    /// longer declares an output either declares with its fingerprint, or a recipient either declares with its
+    /// protocol.
+    pub(super) fn enforce_keep_rule(&mut self, actions: &mut Vec<Action>) {
+        let Some(latest) = self.default_program.clone() else {
+            return;
+        };
+        if self
+            .last_known_good
+            .as_ref()
+            .is_some_and(|kept| !keeps(&latest, &kept.plan))
+        {
+            if let Some(kept) = self.last_known_good.take() {
+                let id = kept.generation.id();
+                if self.state_of(id) == Some(GenerationState::Prepared) {
+                    self.transition(id, LifecycleEvent::Released, None);
+                    self.report_generation(id, actions);
+                }
+            }
+        }
+        if self
+            .rollback
+            .as_ref()
+            .is_some_and(|rollback| !keeps(&latest, &rollback.candidate.plan))
+        {
+            self.rollback = None;
+        }
+    }
 }

@@ -1,7 +1,7 @@
 //! Lowering: native configuration into the default program.
 //!
-//! [`Lowering::lower_with`] is a pure function of the startup configuration, the current configuration, the [host
-//! facts](HostFacts), and the accepted resources artifact. It produces the default program: the logical plan of the
+//! [`Lowering::lower`] is a pure function of the startup configuration, the current configuration, and the [host
+//! facts](HostFacts). It produces the default program: the logical plan of the
 //! native metrics path that `run.rs` builds for the same configuration, node for node, with every output's binding
 //! and every resource its outputs deliver through ([`resources`](super::resources)). [`Lowering::new`] prepares it once
 //! per process, from the startup configuration and the host facts: it checks what the native topology build checks,
@@ -94,8 +94,8 @@ use super::{
     catalog::{scope_input_name, AdpCatalog, METRICS_SCOPE},
     host_facts::{host_tags_enabled, HostFacts},
     resources::{
-        cluster_agent_forwarder, spelled_endpoint, Declared, Demanded, FixedHosts, NativeOutputs, NativeResources,
-        OutputKind, RoutingGroup, DSD_CLIENT_TELEMETRY, DSD_CLIENT_TELEMETRY_OUT,
+        cluster_agent_forwarder, spelled_endpoint, Demanded, FixedHosts, NativeOutputs, NativeResources, OutputKind,
+        RoutingGroup, DSD_CLIENT_TELEMETRY, DSD_CLIENT_TELEMETRY_OUT,
     },
 };
 use crate::{
@@ -308,7 +308,7 @@ impl Lowering {
             check_plan_durations(&startup)?;
         }
         let hosts = FixedHosts::at_boot(&facts);
-        let outputs = NativeResources::resolve(&startup, &startup, &facts, &hosts, None)?.outputs;
+        let outputs = NativeResources::resolve(&startup, &startup, &facts, &hosts)?.outputs;
         Ok(Some(Self {
             startup,
             facts,
@@ -327,47 +327,32 @@ impl Lowering {
         &self.hosts
     }
 
-    /// Lowers native configuration into the default program, with no declared resources.
+    /// Lowers native configuration into the default program.
+    ///
+    /// The DogStatsD pipeline, the sources, and `Startup` bindings come from the startup configuration; the outputs,
+    /// their bindings, the recipients, the host settings, and `Live` bindings from `current`, the configuration now.
     ///
     /// # Errors
     ///
     /// Returns an error for the configurations that run natively but cannot be lowered; see the [module
     /// documentation](self#errors).
     pub fn lower(&self, current: &SalukiConfiguration) -> Result<Lowered, GenericError> {
-        self.lower_with(current, None)
+        self.lower_after(current, &[], &NativeResources::default())
     }
 
-    /// Lowers native configuration, and the resources `declared` declares, into the default program.
+    /// Lowers native configuration, and an implied output for each set of recipients of `demand` that no output
+    /// delivers to, into the default program that follows the one lowered before it, whose resources were `previous`
+    /// (see [`Demanded`]).
     ///
-    /// The DogStatsD pipeline, the sources, and `Startup` bindings come from the startup configuration; the outputs,
-    /// their bindings, the recipients, the host settings, and `Live` bindings from `current`, the configuration now.
-    /// Declared outputs and recipients enter the program's declarations; no node of the default program emits to a
-    /// declared output.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for the configurations that run natively but cannot be lowered; see the [module
-    /// documentation](self#errors).
-    pub fn lower_with(
-        &self, current: &SalukiConfiguration, declared: Option<Declared<'_>>,
-    ) -> Result<Lowered, GenericError> {
-        self.lower_after(current, declared, &[], &NativeResources::default())
-    }
-
-    /// Lowers native configuration, the resources `declared` declares, and an implied output for each set of recipients
-    /// of `demand` that no output delivers to, into the default program that follows the one lowered before it, whose
-    /// resources were `previous` (see [`Demanded`]).
-    ///
-    /// The program is the one [`lower_with`][Self::lower_with] lowers, except that a native recipient `previous`
+    /// The program is the one [`lower`][Self::lower] lowers, except that a native recipient `previous`
     /// declares stays while its endpoint and key position stay configured, whatever its key now holds: a key is a
     /// credential, which its recipient follows (see [`NativeResources::resolve_after`]).
     ///
     /// # Errors
     ///
-    /// As for [`lower_with`][Self::lower_with].
+    /// As for [`lower`][Self::lower].
     pub fn lower_after(
-        &self, current: &SalukiConfiguration, declared: Option<Declared<'_>>, demand: &[Demand],
-        previous: &NativeResources,
+        &self, current: &SalukiConfiguration, demand: &[Demand], previous: &NativeResources,
     ) -> Result<Lowered, GenericError> {
         let startup = &*self.startup;
         let resolved = NativeResources::resolve_after(
@@ -375,7 +360,6 @@ impl Lowering {
             current,
             &self.facts,
             &self.hosts,
-            declared,
             Demanded {
                 demand,
                 previous: &previous.outputs,
@@ -855,16 +839,11 @@ impl<'a> Program<'a> {
 
     /// Lowers the policy region fed by `enriched`: one branch per output other than the client telemetry tap.
     ///
-    /// Outputs a resources artifact declares, and those programs imply, get no branch: only artifacts emit to them.
+    /// Outputs programs imply get no branch: only programs emit to them.
     fn policy(&mut self, enriched: PortRef, outputs: &NativeOutputs) -> Result<(), GenericError> {
         let branches = outputs
             .iter()
-            .filter(|output| {
-                !matches!(
-                    output.kind,
-                    OutputKind::ClientTelemetry | OutputKind::Declared { .. } | OutputKind::Implied { .. }
-                )
-            })
+            .filter(|output| !matches!(output.kind, OutputKind::ClientTelemetry | OutputKind::Implied { .. }))
             .collect::<Vec<_>>();
         let policy = self.node(
             ids::METRICS_POLICY,
@@ -880,7 +859,7 @@ impl<'a> Program<'a> {
             // The gateway that selects what reaches the output, as a `split` whose `true` port leads to the output and
             // whose `false` port drops, and the predicate its native component applies.
             let (gateway, predicate) = match &output.kind {
-                OutputKind::ClientTelemetry | OutputKind::Declared { .. } | OutputKind::Implied { .. } => continue,
+                OutputKind::ClientTelemetry | OutputKind::Implied { .. } => continue,
                 OutputKind::Main => {
                     self.terminal(&policy, &branch, names::EMIT, emit, &output.component);
                     continue;

@@ -808,14 +808,6 @@ fn edits_that_cannot_be_composed_are_refused_with_the_reason() {
             },
         ),
         (
-            "an unrecorded output named as a resources artifact names its outputs",
-            |document| node(document, "metrics_policy_0")["params"]["output"] = json!("resources_team_d"),
-            ComposeError::UnrecordedOutput {
-                node: id("metrics_policy_0"),
-                output: output("resources_team_d"),
-            },
-        ),
-        (
             "an output the base does not record",
             |document| node(document, "metrics_policy_0")["params"]["output"] = json!("dsd_client_telemetry"),
             ComposeError::UnrecordedOutput {
@@ -1583,7 +1575,7 @@ fn explains(error: &ComposeError, artifact: &PolicyArtifact, fixture: &Fixture) 
             .filter(|node| node.op.as_str() == names::EMIT && emitted_output(&node.params).as_ref() == Some(output))
             .filter(|_| {
                 !artifact.base.outputs.contains_key(output)
-                    && (fixture.catalog.output(output).is_some() || output.is_declared())
+                    && fixture.catalog.output(output).is_some()
             })
             .map(|_| "an emit delivers to an output the base does not record"),
         ComposeError::UndeclaredOutput {
@@ -1603,7 +1595,6 @@ fn explains(error: &ComposeError, artifact: &PolicyArtifact, fixture: &Fixture) 
                 .filter(|_| {
                     !artifact.base.outputs.contains_key(output)
                         && fixture.catalog.output(output).is_none()
-                        && !output.is_declared()
                         && *declared == all_declared
                 })
                 .map(|_| "an emit delivers to an output the host does not declare")
@@ -2265,7 +2256,6 @@ fn with_directory(catalog: MemoryCatalog) -> MemoryCatalog {
         recipients: recipients.iter().map(|id| id.parse().unwrap()).collect(),
         host: host.parse().unwrap(),
         endpoint: endpoint.to_string(),
-        source: crate::validate::RecipientSource::Native,
     };
     [
         (

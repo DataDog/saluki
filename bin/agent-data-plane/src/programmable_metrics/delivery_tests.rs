@@ -519,17 +519,13 @@ async fn an_endpoint_added_and_removed_live_receives_the_metrics_events_logs_and
     let traces = contiguous_once("the added endpoint's traces", &traces);
     assert!(traces.end < sent, "{:?} of {}", traces, sent);
 
-    // Its recipient retired after draining what it held, which the status route lists as native.
+    // Its recipient retired after draining what it held, which the status route lists.
     let retired = final_status
         .recipients
         .iter()
         .filter(|entry| entry.host == "dd_out" && entry.last_drain.is_some())
         .collect::<Vec<_>>();
     assert_eq!(retired.len(), 1, "{:?}", final_status.recipients);
-    assert_eq!(
-        serde_json::to_value(retired[0].provenance.as_ref().unwrap()).unwrap(),
-        json!("native")
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1199,58 +1195,34 @@ fn held(
     }
 }
 
-/// A snapshot of the resources product that declares, as revision `revision`, the recipient `team_d_intake` sending to
-/// `endpoint` with the credential `credentials/team_d`, and the output `team_d` delivering to it.
-fn team_d_resources(revision: u64, endpoint: &str) -> saluki_metric_plan::channel::ArtifactSnapshot {
-    use saluki_metric_plan::{
-        canonical::PlanHash,
-        channel::{ArtifactConfig, ArtifactConfigId, ArtifactProduct, ArtifactSnapshot},
-    };
-
-    let document = json!({
-        "resources_version": 1,
-        "recipients": [{
-            "name": "team_d_intake",
-            "host": "dd_out",
-            "endpoint": endpoint,
-            "credential": "credentials/team_d",
-        }],
-        "outputs": [{"name": "team_d", "recipients": ["team_d_intake"]}],
-    });
-    let hash = PlanHash::of_value(&document).unwrap();
-    let payload = json!({"revision": revision, "artifact_hash": hash, "artifact": document}).to_string();
-    ArtifactSnapshot::new(
-        ArtifactProduct::Resources,
-        vec![ArtifactConfig {
-            id: ArtifactConfigId::new("resources"),
-            version: revision,
-            sha256: ArtifactConfig::transport_hash(&payload),
-            payload,
-        }],
-    )
-}
-
-/// Runs one cycle of the reclamation test: an endpoint of an intake of its own, so of a domain of its own, is added and
-/// receives something (metrics, which its host keeps per-domain series for, in every fifth cycle, whose wait for the
-/// encoder's flush is longer), while a resources artifact declares a recipient sending to the same intake and an output
-/// delivering to it, whose recipient is prepared; then both are removed, and the process settles, with one generation
-/// live, one lease, and the primary endpoint's recipient alone, the removed ones retired, and the intake is stopped.
-/// Returns the next batch's index.
+/// Runs one cycle of the reclamation test: two endpoints of an intake of its own, so of a domain of its own, are added,
+/// the second with an endpoint routing group of its own, whose output's lease is prepared; the first receives something
+/// (metrics, which its host keeps per-domain series for, in every fifth cycle, whose wait for the encoder's flush is
+/// longer), and the second's recipient runs; then both are removed, and the process settles, with one generation live,
+/// one lease, and the primary endpoint's recipient alone, the removed ones retired, and the intake is stopped. Returns
+/// the next batch's index.
 async fn cycle(
     round: usize, topology: &TestTopology, stream: &tokio::sync::mpsc::Sender<saluki_config::dynamic::ConfigUpdate>,
-    resources: &saluki_metric_plan::channel::ArtifactPublisher, mut next: usize,
+    mut next: usize,
 ) -> usize {
     let status = topology.status().expect("the plan-driven path has an installer");
     let intake = &Intake::start().await;
     let endpoint = format!("{}/native-{}", intake.url(), round);
+    let routed = format!("{}/routed-{}", intake.url(), round);
     stream
-        .send(update("additional_endpoints", json!({ endpoint: ["key-added"] })))
+        .send(update(
+            "experimental.metrics_endpoint_routing.metric_prefix_allowlist",
+            json!({ routed.clone(): ["kept."] }),
+        ))
         .await
         .unwrap();
-    assert!(resources.publish(team_d_resources(
-        round as u64 + 1,
-        &format!("{}/declared-{}", intake.url(), round)
-    )));
+    stream
+        .send(update(
+            "additional_endpoints",
+            json!({ endpoint: ["key-added"], routed.clone(): ["key-routed"] }),
+        ))
+        .await
+        .unwrap();
     let before = intake.requests().len();
     let received = || {
         if round.is_multiple_of(5) {
@@ -1259,16 +1231,17 @@ async fn cycle(
             intake.requests().len() > before
         }
     };
-    let declared_live = |status: &PlanStatus| {
+    let routed_id = format!("dd_out/additional/0/{}", routed);
+    let routed_live = |status: &PlanStatus| {
         status.recipients.iter().any(|entry| {
-            entry.id.starts_with("dd_out/declared/")
+            entry.id == routed_id
                 && entry.last_drain.is_none()
                 && entry.draining_since_ms.is_none()
                 && entry.state == super::installer::status::RecipientEntryState::Live
         })
     };
     let waited = tokio::time::timeout(PATIENCE, async {
-        while !received() || !declared_live(&status.load()) {
+        while !received() || !routed_live(&status.load()) {
             next = feed(topology, next, &["kept.a"]);
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
@@ -1276,16 +1249,19 @@ async fn cycle(
     .await;
     assert!(
         waited.is_ok(),
-        "cycle {}: the endpoint received nothing, or the declared recipient never ran: {}\n{:#?}",
+        "cycle {}: the endpoint received nothing, or the routed recipient never ran: {}\n{:#?}",
         round,
         status.load(),
         status.load().recipients
     );
     stream.send(update("additional_endpoints", json!({}))).await.unwrap();
-    assert!(resources.publish(saluki_metric_plan::channel::ArtifactSnapshot::new(
-        saluki_metric_plan::channel::ArtifactProduct::Resources,
-        Vec::new()
-    )));
+    stream
+        .send(update(
+            "experimental.metrics_endpoint_routing.metric_prefix_allowlist",
+            json!({}),
+        ))
+        .await
+        .unwrap();
     let settled = |status: &PlanStatus| {
         status.installer.live.len() == 1
             && status
@@ -1319,19 +1295,15 @@ async fn cycle(
     next
 }
 
-/// Adds and removes an endpoint, and declares and revokes a recipient and an output, `cycles` times, each of a domain
-/// of its own, after [`WARM_UP_CYCLES`], and checks that the process then holds what it held after the warm-up (see
+/// Adds and removes two endpoints, one with an endpoint routing group of its own, `cycles` times, each of a domain of
+/// its own, after [`WARM_UP_CYCLES`], and checks that the process then holds what it held after the warm-up (see
 /// [`Held::excess_over`]), with the resource budget counted against a memory limit.
 async fn reclamation(cycles: usize) {
     use saluki_app::accounting::{MemoryMode, VerifiedMemory};
 
     let handles = LiveHandles::install().expect("the test runs in a process of its own");
     let primary = Intake::start().await;
-    let config = format!(
-        "dd_url: \"{}\"\nexperimental: {{programmable_metrics: {{resources: {{credentials: {{team_d: {}}}}}}}}}",
-        primary.url(),
-        "key-team-d"
-    );
+    let config = format!("dd_url: \"{}\"", primary.url());
     let (system, updates, stream) = connected_configuration_system(&[FLUSH, ZSTD, &config].join("\n")).await;
     let registry = saluki_core::accounting::ComponentRegistry::default();
     let health = saluki_core::health::HealthRegistry::new();
@@ -1341,11 +1313,8 @@ async fn reclamation(cycles: usize) {
     options.registry = registry.clone();
     options.health = health.clone();
     options.keep = |_| false;
-    let transport = std::sync::Arc::new(std::sync::Mutex::new(None));
     options.before_install = Some(Box::new({
-        let transport = std::sync::Arc::clone(&transport);
         move |metrics: &mut super::installer::ProgrammableMetrics| {
-            *transport.lock().unwrap() = Some(metrics.connect_artifact_channel());
             // What a preparation adds is counted, against a limit no cycle reaches.
             metrics.admit_against(Some(VerifiedMemory {
                 grant_bytes: 1 << 33,
@@ -1359,17 +1328,12 @@ async fn reclamation(cycles: usize) {
     })
     .await;
     let status = topology.status().unwrap();
-    let transport = transport
-        .lock()
-        .unwrap()
-        .take()
-        .expect("the artifact channel is connected");
 
     // The warm-up cycles register what every later one reuses (the hosts' per-domain series, the leases' resource
     // groups) and grow the buffers they reuse; the baseline is taken after them, once the process settled.
     let mut next = 0;
     for round in 0..WARM_UP_CYCLES {
-        next = cycle(round, &topology, &stream, &transport.publisher, next).await;
+        next = cycle(round, &topology, &stream, next).await;
     }
     tokio::time::sleep(Duration::from_millis(500)).await;
     let baseline = held(&status.load(), &registry, &health, handles);
@@ -1380,7 +1344,7 @@ async fn reclamation(cycles: usize) {
     );
     let started = std::time::Instant::now();
     for round in WARM_UP_CYCLES..WARM_UP_CYCLES + cycles {
-        next = cycle(round, &topology, &stream, &transport.publisher, next).await;
+        next = cycle(round, &topology, &stream, next).await;
     }
     let elapsed = started.elapsed();
 
@@ -1406,13 +1370,13 @@ async fn reclamation(cycles: usize) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn cycles_of_adding_and_removing_endpoints_and_declared_resources_leave_the_process_holding_what_it_held() {
+async fn cycles_of_adding_and_removing_endpoints_and_routing_groups_leave_the_process_holding_what_it_held() {
     reclamation(50).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "runs 1,000 cycles, about twelve minutes; the stage 7 gate runs it with `--run-ignored only`"]
-async fn a_thousand_cycles_of_adding_and_removing_endpoints_and_declared_resources_reclaim_what_they_held() {
+async fn a_thousand_cycles_of_adding_and_removing_endpoints_and_routing_groups_reclaim_what_they_held() {
     reclamation(1_000).await;
 }
 

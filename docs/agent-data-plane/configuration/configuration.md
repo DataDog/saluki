@@ -745,7 +745,6 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `experimental.programmable_metrics.lanes.mode`                     | Whether the slots of the metrics path run on lanes                          | auto           |
 | `experimental.programmable_metrics.lanes.post`                     | Post-aggregation lanes of the metrics path (0 is automatic)                 | 0              |
 | `experimental.programmable_metrics.lanes.state`                    | State lanes of DogStatsD aggregation (0 is automatic)                       | 0              |
-| `experimental.programmable_metrics.resources.credentials`          | Credentials resources artifacts may send with, by name                      | {}             |
 | `experimental.standalone_config_reload.enabled`                    | Re-read the configuration file in standalone mode (demo only)               | false          |
 | `experimental.standalone_config_reload.interval`                   | Standalone configuration file re-read interval (demo only)                  | 1 second       |
 | `flush_timeout_secs`                                               | Encoder flush timeout (secs)                                                |                |
@@ -851,26 +850,6 @@ experimental:
 ```
 
 The protocol is described in `docs/design/programmable-metrics-stub-protocol.md`.
-
-### `experimental.programmable_metrics.resources.credentials`
-
-A resources artifact, delivered through the `resources` product of the artifact channel, can declare recipients: endpoints that outputs it also declares deliver metrics to. A declared recipient sends with a credential `credentials/<name>`, which is the value of entry `<name>` of this map. The native API keys (`api_key`, the keys of `additional_endpoints`, and the failover keys) are never available to resources artifacts: only the credentials listed here are.
-
-> [!WARNING]
-> Settings under `experimental` are unstable and may change, move, or be removed. Do not rely on backward compatibility.
-
-An entry that is absent is not configured: a resources artifact that uses it waits, reported as `pending` with the credential's name, and installs once the entry is configured. Removing an entry withdraws the recipients that send with it. A value that still reads `ENC[...]` when ADP reads it, because no secret backend resolved it, counts as not configured. A present but blank value keeps the last usable key of the recipients already sending with it, as an API key rotation does.
-
-In `datadog.yaml` the key is a map; in the environment, `DD_EXPERIMENTAL_PROGRAMMABLE_METRICS_RESOURCES_CREDENTIALS` is a JSON object, such as `{"team_d": "<key>"}`. The environment form is read at startup only, so changing it requires a restart. In connected mode, a change in `datadog.yaml` applies without a restart only if the Core Agent streams the key to ADP.
-
-```yaml
-# Experimental keys may change, move, or be removed without backward compatibility.
-experimental:
-  programmable_metrics:
-    resources:
-      credentials:
-        team_d: <team-d-api-key>
-```
 
 ### `experimental.programmable_metrics.lanes.*`
 

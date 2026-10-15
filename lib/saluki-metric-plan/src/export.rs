@@ -240,10 +240,7 @@ const CATALOG_MEMBERS: &[&str] = &[
 const CATALOG_OUTPUT_MEMBERS: &[&str] = &["accepts", "fingerprint", "recipients"];
 
 /// The members of an entry of a catalog's recipient directory that [`MemoryCatalog`] reads.
-const CATALOG_RECIPIENT_MEMBERS: &[&str] = &["recipients", "host", "endpoint", "source"];
-
-/// The sources of directory entries this version knows: an entry from another source is left out.
-const RECIPIENT_SOURCES: &[&str] = &["native", "config", "resources"];
+const CATALOG_RECIPIENT_MEMBERS: &[&str] = &["recipients", "host", "endpoint"];
 
 /// The members of a catalog binding that [`MemoryCatalog`] reads.
 const CATALOG_BINDING_MEMBERS: &[&str] = &["type", "liveness", "class", "value"];
@@ -319,12 +316,6 @@ fn known_catalog_members(catalog: Value, labels: &mut BTreeMap<OutputId, String>
         }
     }
     if let Some(Value::Object(recipients)) = catalog.get_mut("recipients") {
-        recipients.retain(|_, entry| {
-            entry
-                .get("source")
-                .and_then(Value::as_str)
-                .is_some_and(|source| RECIPIENT_SOURCES.contains(&source))
-        });
         for entry in recipients.values_mut() {
             *entry = keep(entry.take(), CATALOG_RECIPIENT_MEMBERS);
         }

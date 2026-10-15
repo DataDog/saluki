@@ -11,25 +11,14 @@
 //! | `native:multi_region_failover.api_key` | `multi_region_failover.api_key` |
 //! | `native:cluster_agent.auth_token` | `cluster_agent.auth_token` |
 //! | `native:proxy.http`, `native:proxy.https` | the `<user>:<password>` of the `proxy.http` or `proxy.https` URL |
-//! | `credentials/<name>` | entry `<name>` of `experimental.programmable_metrics.resources.credentials` |
 //!
 //! A reference resolves to `None` when the configuration has no value for it: an endpoint or key no longer configured,
-//! a proxy URL without user information, or a declared credential whose entry is absent or still reads `ENC[...]`
-//! because no secret backend resolved it. A native key is passed as configured, blank included, so that a delivery
+//! or a proxy URL without user information. A native key is passed as configured, blank included, so that a delivery
 //! host applies the native rules of storing a key (a blank or invalid update keeps the last usable key).
-//!
-//! [`missing_credentials`] is what the installer core is told before each lowering: the declared credentials the
-//! resources artifacts it holds reference that are not configured, which hold those artifacts pending.
-
-use std::collections::BTreeSet;
 
 use agent_data_plane_config::{Live, SalukiConfiguration};
 use saluki_components::forwarders::delivery::{CredentialSource, ProxySettings};
-use saluki_metric_plan::{
-    canonical::PlanHash,
-    ir::CredentialRef,
-    resources::{ResourcesArtifact, CREDENTIALS_NAMESPACE},
-};
+use saluki_metric_plan::canonical::PlanHash;
 use stringtheory::MetaString;
 use url::Url;
 
@@ -52,9 +41,6 @@ enum Reference {
 
     /// The user information of a proxy URL: the `http` one, or the `https` one.
     Proxy { https: bool },
-
-    /// An entry of the credentials resources artifacts may use.
-    Declared(String),
 }
 
 impl Reference {
@@ -67,9 +53,6 @@ impl Reference {
             ProxySettings::NATIVE_HTTP_CREDENTIAL => return Some(Self::Proxy { https: false }),
             ProxySettings::NATIVE_HTTPS_CREDENTIAL => return Some(Self::Proxy { https: true }),
             _ => {}
-        }
-        if let Some(name) = reference.strip_prefix(CREDENTIALS_NAMESPACE) {
-            return (!name.is_empty()).then(|| Self::Declared(name.to_string()));
         }
         let (endpoint_digest, index) = reference.strip_prefix(ADDITIONAL_API_KEY_PREFIX)?.split_once('/')?;
         let digest = endpoint_digest.len() == 16 && endpoint_digest.bytes().all(|b| b.is_ascii_hexdigit());
@@ -103,14 +86,6 @@ impl Reference {
                 let proxy = &shared.endpoints.proxy;
                 userinfo(if *https { &proxy.https } else { &proxy.http })
             }
-            Self::Declared(name) => config
-                .control
-                .programmable_metrics
-                .resources
-                .credentials
-                .get(name)
-                .filter(|value| !is_unresolved_secret(value))
-                .map(|value| value.as_str().into()),
         }
     }
 }
@@ -134,13 +109,6 @@ fn userinfo(url: &str) -> Option<MetaString> {
         None if !user.is_empty() => Some(user.into()),
         None => None,
     }
-}
-
-/// Returns `true` for a value that is still a secret handle, `ENC[...]`, which only a secret backend resolves: ADP
-/// resolves no secrets itself, so such a credential is not configured.
-fn is_unresolved_secret(value: &str) -> bool {
-    let value = value.trim();
-    value.starts_with("ENC[") && value.ends_with(']')
 }
 
 /// The credentials of a process: each reference resolved to a live view of the configuration.
@@ -170,30 +138,9 @@ impl CredentialSource for AdpCredentialSource {
     }
 }
 
-/// Returns the declared credentials that `artifacts` reference and `config` does not configure: absent from
-/// `experimental.programmable_metrics.resources.credentials`, or still a secret handle.
-pub fn missing_credentials<'a>(
-    artifacts: impl IntoIterator<Item = &'a ResourcesArtifact>, config: &SalukiConfiguration,
-) -> BTreeSet<CredentialRef> {
-    artifacts
-        .into_iter()
-        .flat_map(|artifact| artifact.recipients.iter().map(|recipient| &recipient.credential))
-        .filter(|credential| {
-            !matches!(Reference::parse(credential.as_str()), Some(reference @ Reference::Declared(_))
-                if reference.value(config).is_some())
-        })
-        .cloned()
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-
-    use saluki_metric_plan::{
-        ir::HostId,
-        resources::{DeclaredProtocol, DeclaredRecipient, RESOURCES_VERSION},
-    };
 
     use super::*;
     use crate::programmable_metrics::{resources::additional_api_key, test_support::ConfigCell};
@@ -208,10 +155,6 @@ mod tests {
         config.domains.multi_region_failover.api_key = Some("mrf-key".to_string());
         config.shared.endpoints.proxy.https = "http://user:p%40ss@proxy.example.com:3129".to_string();
         config.shared.endpoints.proxy.http = "http://proxy.example.com:3128".to_string();
-        let credentials = &mut config.control.programmable_metrics.resources.credentials;
-        credentials.insert("team_d".to_string(), "team-d-key".to_string());
-        credentials.insert("sealed".to_string(), "ENC[team_e]".to_string());
-        credentials.insert("blank".to_string(), String::new());
         config
     }
 
@@ -241,14 +184,13 @@ mod tests {
         // The user information as the URL writes it, percent-encoding included; none without any.
         assert_eq!(value("native:proxy.https").as_deref(), Some("user:p%40ss"));
         assert_eq!(value("native:proxy.http"), None);
-        assert_eq!(value("credentials/team_d").as_deref(), Some("team-d-key"));
-        // A blank entry is configured, which keeps a host's last usable key; a secret handle and an absent entry are
-        // not configured.
-        assert_eq!(value("credentials/blank").as_deref(), Some(""));
-        assert_eq!(value("credentials/sealed"), None);
-        assert_eq!(value("credentials/team_e"), None);
         // References no configuration value stands behind are unknown.
-        for unknown in ["api_key", "credentials/", "native:additional/zz/0", "native:other"] {
+        for unknown in [
+            "api_key",
+            "credentials/team_d",
+            "native:additional/zz/0",
+            "native:other",
+        ] {
             assert!(source.resolve(&unknown.into()).is_none(), "{}", unknown);
         }
     }
@@ -257,65 +199,23 @@ mod tests {
     async fn a_resolved_view_follows_the_configuration_and_wakes_only_on_its_own_value() {
         let cell = ConfigCell::new(config());
         let source = AdpCredentialSource::new(cell.live());
-        let mut team_d = source.resolve(&"credentials/team_d".into()).unwrap();
         let mut dual = source.resolve(&"native:additional/fa8d2eae247dcfe1/0".into()).unwrap();
-        assert_eq!(team_d.as_deref(), Some("team-d-key"));
+        assert_eq!(dual.as_deref(), Some("dual-0"));
 
         // A rotation of another credential leaves the view waiting; its own rotation and its removal wake it.
         let mut changed = config();
         changed.shared.endpoints.api_key = "rotated-primary".to_string();
         cell.set(changed.clone());
-        let waited = tokio::time::timeout(std::time::Duration::from_millis(50), team_d.changed()).await;
+        let waited = tokio::time::timeout(std::time::Duration::from_millis(50), dual.changed()).await;
         assert!(waited.is_err());
-        changed
-            .control
-            .programmable_metrics
-            .resources
-            .credentials
-            .insert("team_d".to_string(), "rotated-d".to_string());
+        changed.shared.endpoints.additional_endpoints.insert(
+            "https://dual.example.com".to_string(),
+            vec!["rotated-0".to_string(), "dual-1".to_string()],
+        );
         cell.set(changed.clone());
-        assert_eq!(team_d.changed().await.as_deref(), Some("rotated-d"));
-        changed
-            .control
-            .programmable_metrics
-            .resources
-            .credentials
-            .remove("team_d");
+        assert_eq!(dual.changed().await.as_deref(), Some("rotated-0"));
         changed.shared.endpoints.additional_endpoints.clear();
         cell.set(changed);
-        assert_eq!(team_d.changed().await, None);
         assert_eq!(dual.changed().await, None, "a removed endpoint's key is not configured");
-    }
-
-    #[test]
-    fn missing_credentials_are_the_declared_ones_not_configured() {
-        let recipient = |credential: &str| DeclaredRecipient {
-            name: "r".to_string(),
-            host: HostId::new("dd_out").unwrap(),
-            endpoint: "http://127.0.0.1:17105".to_string(),
-            credential: CredentialRef::new(credential).unwrap(),
-            protocol: DeclaredProtocol::default(),
-            delivery: None,
-        };
-        let artifact = |credentials: &[&str]| ResourcesArtifact {
-            resources_version: RESOURCES_VERSION,
-            recipients: credentials.iter().map(|credential| recipient(credential)).collect(),
-            outputs: Vec::new(),
-        };
-        let first = artifact(&["credentials/team_d", "credentials/team_e"]);
-        let second = artifact(&["credentials/sealed", "credentials/blank", "native:api_key"]);
-        let missing = missing_credentials([&first, &second], &config())
-            .into_iter()
-            .map(|credential| credential.to_string())
-            .collect::<Vec<_>>();
-        // A native reference is never available to a resources artifact, so it counts as missing too.
-        assert_eq!(missing, ["credentials/sealed", "credentials/team_e", "native:api_key"]);
-        assert!(missing_credentials([&first], &{
-            let mut config = config();
-            let credentials = &mut config.control.programmable_metrics.resources.credentials;
-            credentials.insert("team_e".to_string(), "e".to_string());
-            config
-        })
-        .is_empty());
     }
 }

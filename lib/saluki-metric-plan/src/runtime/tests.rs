@@ -522,11 +522,11 @@ fn bound_detour_plan() -> (Plan, MemoryCatalog, FrameHosts) {
     let mut value = serde_json::to_value(detour_plan()).unwrap();
     value["outputs"][0]["fingerprint"] = json!(fingerprint);
     value["outputs"][0]["binding"] = json!({
-        "host": host, "selector": selector, "telemetry": "out", "provenance": "native",
+        "host": host, "selector": selector, "telemetry": "out",
     });
     value["resources"] = json!({"recipients": [{
         "id": "out/out", "host": host, "endpoint": "https://intake.example.com", "credential": "native:api_key",
-        "classes": "all", "provenance": "native",
+        "classes": "all",
     }]});
     let catalog = MemoryCatalog::new().with_output(
         OutputId::new("out").unwrap(),

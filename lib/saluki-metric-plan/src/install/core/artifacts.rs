@@ -487,9 +487,6 @@ impl InstallerCore {
     /// - **Supervision failures** arrive through [`generation_failed`][Self::generation_failed]: a failed artifact
     ///   generation's artifacts are acknowledged `failed`, and the core rolls back to last-known-good, or to the
     ///   default program.
-    ///
-    /// A snapshot of the resources product changes nothing here: the caller reads it and hands what it says to
-    /// [`on_resources`][Self::on_resources].
     pub fn on_snapshot(&mut self, snapshot: &ArtifactSnapshot, composer: &dyn Composer) -> Vec<Action> {
         if snapshot.product != ArtifactProduct::Policy || self.artifacts.last_snapshot.as_ref() == Some(snapshot) {
             return Vec::new();
@@ -635,14 +632,12 @@ impl InstallerCore {
             .collect()
     }
 
-    /// Returns the latest acknowledgment of every config the channel delivered: the policy product's, then the
-    /// resources product's, each in config ID order.
+    /// Returns the latest acknowledgment of every config the channel delivered, in config ID order.
     pub fn config_states(&self) -> Vec<ConfigAcknowledgment> {
         self.artifacts
             .configs
             .values()
             .map(|tracked| tracked.ack.clone())
-            .chain(self.resources_config_states())
             .collect()
     }
 
@@ -711,7 +706,6 @@ impl InstallerCore {
             degraded,
             live_generations: u64::try_from(self.live.len()).unwrap_or(u64::MAX),
             scopes,
-            resources: self.resources_status(),
             program: active.map(|active| {
                 let published = active.origin.can_roll_back();
                 ProgramStatus {
@@ -1418,8 +1412,6 @@ impl InstallerCore {
         &mut self, candidate: CandidateId, origin: Origin, plan: &Arc<Plan>, target: CandidateId,
         actions: &mut Vec<Action>,
     ) {
-        // The resources revision the candidate was lowered with is installed by the generation that holds its plan.
-        self.declared.serve(target, candidate);
         let Some(source) = self.artifacts.sources.get(&candidate).cloned() else {
             if matches!(origin, Origin::DefaultProgram { .. }) && self.artifacts.policy.is_empty() {
                 self.artifacts.sources.remove(&target);
@@ -1814,7 +1806,6 @@ impl InstallerCore {
 
         self.refresh_acknowledgments();
         self.prune_configs();
-        self.refresh_resources_acknowledgments();
         actions.extend(self.take_released_credits());
         actions
     }

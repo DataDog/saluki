@@ -1,14 +1,12 @@
 //! The artifact channel stub protocol, version 1: the messages ADP and the stub exchange.
 //!
 //! ADP polls `POST {stub_url}/v1/artifacts/poll` with its acknowledgments and a status summary, and receives a complete
-//! snapshot of each product it asks for: `policy`, and, from stage 7, `resources`. Each config's `payload` is a JSON
+//! snapshot of the product it asks for, `policy`. Each config's `payload` is a JSON
 //! **string** holding the envelope, so that the transport hash (`sha256`, lowercase hexadecimal of the payload's UTF-8
 //! bytes) covers exact bytes.
 //!
-//! The `resources` product holds at most one config, whose envelope carries a resources artifact (the recipients and
-//! outputs it declares) under revisions of its own: ADP keeps a separate revision high-water mark for it, which its
-//! status reports as `resources.revision_high_water`. The privileged status route also lists the recipients of ADP's
-//! delivery hosts (`recipients`, see [`RecipientEntry`]), which the demo's Recipients panel shows.
+//! The privileged status route also lists the recipients of ADP's delivery hosts (`recipients`, see
+//! [`RecipientEntry`]), which the demo's Recipients panel shows.
 //!
 //! Readers ignore unknown fields, so the protocol can grow additively. The stub goes further with what ADP reports:
 //! [`PollRequest::read`] and [`AdpStatus::read`] read each known field on its own, so that a field of an unexpected
@@ -28,16 +26,8 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// The product policy artifacts are delivered in.
 pub const POLICY_PRODUCT: &str = "policy";
 
-/// The product resources artifacts are delivered in.
-pub const RESOURCES_PRODUCT: &str = "resources";
-
 /// The config ID the demo publishes its artifact for the policy scope under.
 pub const DEMO_CONFIG_ID: &str = "demo";
-
-/// The config ID the stub's tests publish a resources artifact under: the product's only config. The demo itself
-/// publishes none.
-#[cfg(test)]
-pub const RESOURCES_CONFIG_ID: &str = "demo-resources";
 
 /// The scope whose artifact the top-level status members describe, and which the demo's config `demo` replaces.
 pub const POLICY_SCOPE: &str = saluki_metric_plan::channel::POLICY_SCOPE;
@@ -208,7 +198,7 @@ const RECIPIENT_EMITS_DROPPED: &str = " are dropped until they are available aga
 /// any.
 ///
 /// ADP joins what composition says about an artifact in effect with `; `. A reason for a degraded artifact starts with
-/// the output and says its emits are dropped (``output `resources_team_d` is no longer declared; its emits are dropped
+/// the output and says its emits are dropped (``output `implied_team_d` is no longer declared; its emits are dropped
 /// until it returns``), or starts with the emits to recipients and says they are dropped (`the emits to
 /// ["http://127.0.0.1:17105"] are dropped until they are available again: the host has no recipient ...`). Any other
 /// note names nothing dropped: such an artifact runs as written.
@@ -278,9 +268,6 @@ pub struct ChannelStatus {
     /// The status of each scope, by scope, when ADP reports them: the top-level members describe the policy scope.
     pub scopes: BTreeMap<String, ScopeState>,
 
-    /// The status of the resources product, once ADP has seen a resources config.
-    pub resources: Option<ResourcesStatus>,
-
     /// Which program the active generation runs, and whether native policy settings apply to it, when ADP says.
     pub program: Option<ProgramStatus>,
 }
@@ -300,33 +287,6 @@ pub struct ProgramStatus {
     /// The native policy settings, by binding, whose current value the running program does not run.
     #[serde(default)]
     pub differs: Vec<String>,
-}
-
-/// The status of the resources product, as ADP reports it.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-pub struct ResourcesStatus {
-    /// The highest resources revision ADP has seen: the product's own mark, apart from the policy product's.
-    pub revision_high_water: Option<u64>,
-
-    /// The resources artifact ADP's active generation was lowered with, or `None` when it runs with none.
-    pub active_artifact: Option<ActiveArtifact>,
-}
-
-impl ResourcesStatus {
-    /// Reads the `resources` member of a status, noting the fields that cannot be read. A missing or `null` member is
-    /// no resources status.
-    fn read(status: &Map<String, Value>, path: &str, notes: &mut Vec<String>) -> Option<Self> {
-        let resources_path = format!("{}resources", path);
-        let resources = status
-            .get("resources")
-            .filter(|resources| !resources.is_null())
-            .and_then(|resources| object(resources, &resources_path, notes))?;
-        let path = format!("{}.", resources_path);
-        Some(Self {
-            revision_high_water: member(resources, &path, "revision_high_water", notes).flatten(),
-            active_artifact: ActiveArtifact::read(resources, &path, notes),
-        })
-    }
 }
 
 /// The status of one scope of ADP's default program.
@@ -380,7 +340,6 @@ impl ChannelStatus {
             degraded: member(status, path, "degraded", notes).flatten(),
             live_generations: member(status, path, "live_generations", notes).flatten(),
             scopes: ScopeState::read_all(status, path, notes),
-            resources: ResourcesStatus::read(status, path, notes),
             program: member::<Option<ProgramStatus>>(status, path, "program", notes).flatten(),
         }
     }
@@ -501,9 +460,6 @@ pub struct RecipientEntry {
     /// `preparing`, `live`, `draining`, `failed`, `exiting`, or `retired`.
     pub state: String,
 
-    /// Who declared it: `native`, or the resources revision that declared it, as ADP writes it.
-    pub provenance: Option<Value>,
-
     /// The bytes its retry queue holds.
     pub queue_bytes: Option<u64>,
 
@@ -575,10 +531,6 @@ impl RecipientEntry {
             slot: member(entry, &path, "slot", notes).flatten(),
             incarnation: member(entry, &path, "incarnation", notes).flatten(),
             state: member(entry, &path, "state", notes).unwrap_or_default(),
-            provenance: entry
-                .get("provenance")
-                .filter(|provenance| !provenance.is_null())
-                .cloned(),
             queue_bytes: member(entry, &path, "queue_bytes", notes).flatten(),
             last_drain,
         })
@@ -667,8 +619,6 @@ pub struct ConfigEntry {
 }
 
 /// The envelope inside a config's payload.
-///
-/// A resources config's envelope has the same members, without `approved_against`.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Envelope {
     /// The artifact revision, which must exceed ADP's revision high-water mark of the config's product.
@@ -677,11 +627,11 @@ pub struct Envelope {
     /// The plan crate's hash of the artifact document as received: the digest of its canonical JSON form.
     pub artifact_hash: String,
 
-    /// What the approver reviewed the artifact against, if known (policy configs only).
+    /// What the approver reviewed the artifact against, if known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved_against: Option<ApprovedAgainst>,
 
-    /// The artifact document: a policy artifact, or a resources artifact.
+    /// The artifact document: a program.
     pub artifact: Value,
 }
 
@@ -832,21 +782,21 @@ mod tests {
     #[test]
     fn an_active_acknowledgment_is_degraded_only_by_reasons_that_drop_emits() {
         // The reasons and the note as the plan crate writes them, joined as ADP joins them.
-        let removed = "output `resources_team_d` is no longer declared; its emits are dropped until it returns";
+        let removed = "output `implied_team_d` is no longer declared; its emits are dropped until it returns";
         let rebound = "output `b` now delivers elsewhere; its emits are dropped; rebase";
         let renumbered = "output `metrics_routing_encode_0` renumbered: the recorded output is now \
                           `metrics_routing_encode_1`; its emits are dropped; rebase";
         let rebase = "a note about `dd_metrics_encode` and `metrics_routing_encode_0` that drops nothing";
-        assert_eq!(dropped_outputs(removed), ["resources_team_d"]);
+        assert_eq!(dropped_outputs(removed), ["implied_team_d"]);
         assert_eq!(dropped_outputs(rebase), Vec::<&str>::new());
         assert_eq!(
             dropped_outputs(&[rebound, renumbered, rebase, removed].join("; ")),
-            ["b", "metrics_routing_encode_0", "resources_team_d"]
+            ["b", "metrics_routing_encode_0", "implied_team_d"]
         );
         assert_eq!(dropped_outputs(&[rebase, rebound, rebound].join("; ")), ["b"]);
         // An output named inside a note does not start one, and a refusal drops nothing.
         assert_eq!(
-            dropped_outputs("waiting for output `resources_team_d`"),
+            dropped_outputs("waiting for output `implied_team_d`"),
             Vec::<&str>::new()
         );
         assert_eq!(
@@ -860,7 +810,7 @@ mod tests {
         assert_eq!(dropped_outputs(gone), ["to [\"http://127.0.0.1:50001\"]"]);
         assert_eq!(
             dropped_outputs(&[removed, gone].join("; ")),
-            ["resources_team_d", "to [\"http://127.0.0.1:50001\"]"]
+            ["implied_team_d", "to [\"http://127.0.0.1:50001\"]"]
         );
 
         let (status, notes) = AdpStatus::read(&json!({"config_states": [
@@ -874,36 +824,30 @@ mod tests {
             .iter()
             .map(|state| state.dropped_outputs.clone())
             .collect::<Vec<_>>();
-        assert_eq!(dropped, [vec!["resources_team_d".to_string()], Vec::new(), Vec::new()]);
+        assert_eq!(dropped, [vec!["implied_team_d".to_string()], Vec::new(), Vec::new()]);
         // The UI reads it as a member of the acknowledgment, absent when nothing is dropped.
         let written = serde_json::to_value(&status.config_states).unwrap();
-        assert_eq!(written[0]["dropped_outputs"], json!(["resources_team_d"]));
+        assert_eq!(written[0]["dropped_outputs"], json!(["implied_team_d"]));
         assert!(written[1].get("dropped_outputs").is_none());
     }
 
     #[test]
-    fn the_resources_status_and_the_recipients_are_read_field_by_field() {
+    fn the_recipients_are_read_field_by_field() {
         let (status, notes) = AdpStatus::read(&json!({
             "revision_high_water": 7,
-            "resources": {"revision_high_water": 3, "future_field": [],
-                          "active_artifact": {"id": "demo-resources", "revision": 3, "artifact_hash": "sha256:03"}},
-            "config_states": [{"product": "resources", "id": "demo-resources", "revision": 3, "state": "active"}],
+            // A member of an earlier version, which is not read.
+            "resources": {"revision_high_water": 3},
             "recipients": [
                 {"host": "dd_out", "id": "dd_out/primary/0", "slot": 0, "incarnation": 1, "state": "live",
-                 "provenance": "native", "queue_bytes": 2048, "future_field": true},
-                {"host": "dd_out", "id": "dd_out/declared/team_d/http://127.0.0.1:17105", "slot": 1, "incarnation": "2",
-                 "state": "retired", "provenance": {"declared": {"revision": 3, "hash": "sha256:03"}},
+                 "queue_bytes": 2048, "future_field": true},
+                {"host": "dd_out", "id": "dd_out/additional/0/http://127.0.0.1:17105", "slot": 1, "incarnation": "2",
+                 "state": "retired",
                  "last_drain": {"delivered": 4, "persisted": 0, "dropped": 2, "deadline_reached": true,
                                 "retired_ms": 1_700_000_000_000_u64}},
                 "not a recipient"
             ]
         }));
-        // The two products' marks are apart.
         assert_eq!(status.status.revision_high_water, Some(7));
-        let resources = status.status.resources.as_ref().unwrap();
-        assert_eq!(resources.revision_high_water, Some(3));
-        assert_eq!(resources.active_artifact.as_ref().unwrap().id, "demo-resources");
-        assert_eq!(status.config_states[0].product, "resources");
 
         let recipients = status.recipients.as_ref().unwrap();
         assert_eq!(recipients.len(), 2);
@@ -915,7 +859,6 @@ mod tests {
             ),
             ("live", Some(2048), None)
         );
-        assert_eq!(recipients[0].provenance, Some(json!("native")));
         let team_d = &recipients[1];
         assert_eq!(team_d.incarnation, None);
         assert_eq!(
@@ -936,21 +879,15 @@ mod tests {
             ]
         );
 
-        // A status of an ADP before stage 7 has neither, which is not the same as listing no recipients.
-        let (status, notes) = AdpStatus::read(&json!({"revision_high_water": 1, "resources": null}));
+        // A status of an ADP before stage 7 lists no recipients, which is not the same as listing none.
+        let (status, notes) = AdpStatus::read(&json!({"revision_high_water": 1}));
         assert!(notes.is_empty());
-        assert_eq!((status.status.resources, status.recipients), (None, None));
+        assert_eq!(status.recipients, None);
         let (status, _) = AdpStatus::read(&json!({"recipients": []}));
         assert_eq!(status.recipients, Some(Vec::new()));
-        let (status, notes) = AdpStatus::read(&json!({"recipients": {}, "resources": 5}));
-        assert_eq!((status.status.resources, status.recipients), (None, None));
-        assert_eq!(
-            notes,
-            [
-                "resources: expected an object (got 5)",
-                "recipients: expected a list (got {})"
-            ]
-        );
+        let (status, notes) = AdpStatus::read(&json!({"recipients": {}}));
+        assert_eq!(status.recipients, None);
+        assert_eq!(notes, ["recipients: expected a list (got {})"]);
     }
 
     #[test]

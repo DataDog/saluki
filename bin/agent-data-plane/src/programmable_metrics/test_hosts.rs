@@ -850,7 +850,7 @@ mod tests {
             spec: RecipientSpec {
                 id: recipient.id.clone(),
                 endpoint: "https://team-d.example.com".to_string(),
-                credential: "credentials/team_d".into(),
+                credential: "native:additional/0123456789abcdef/0".into(),
                 classes: PayloadClasses::MetricsOnly,
                 protocol: RecipientProtocol::DatadogIntake {
                     authorities: IntakeAuthorities::default(),

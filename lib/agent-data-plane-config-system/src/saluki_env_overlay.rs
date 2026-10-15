@@ -472,8 +472,8 @@ mod tests {
     }
 
     #[test]
-    fn the_resources_credentials_are_one_leaf_read_from_the_environment_as_a_json_object() {
-        let path = ["experimental", "programmable_metrics", "resources", "credentials"];
+    fn a_map_is_one_leaf_read_from_the_environment_as_a_json_object() {
+        let path = ["experimental", "metrics_endpoint_routing", "metric_allowlist"];
         let decode = leaf_specs()
             .iter()
             .find(|(leaf, _)| leaf.iter().map(String::as_str).eq(path))
@@ -483,7 +483,7 @@ mod tests {
             !leaf_specs()
                 .iter()
                 .any(|(leaf, _)| leaf.len() > path.len() && leaf.iter().map(String::as_str).take(path.len()).eq(path)),
-            "the credentials map is not split into sub-fields"
+            "the allowlist map is not split into sub-fields"
         );
     }
 

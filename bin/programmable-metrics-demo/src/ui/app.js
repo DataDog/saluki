@@ -927,16 +927,15 @@
     ui.banner.hidden = !ui.banner.childNodes.length;
   }
 
-  // The outputs a program's emits resolve to, from ADP's export: the native ones, those ADP added for a program's
-  // recipient sets (implied), and any a resources artifact declares.
+  // The outputs a program's emits resolve to, from ADP's export: the native ones, and those ADP added for a program's
+  // recipient sets (implied).
   function renderOutputs(s) {
     const exported = s.legend ? s.legend.outputs : [];
     const intakeLabel = (name) => {
       const intake = s.intakes.find((i) => i.name === name);
       return intake ? intake.label : "—";
     };
-    const kindOf = (output) => (output.declared ? "resources artifact"
-      : output.id.startsWith("implied_") ? "implied by a program" : "configuration");
+    const kindOf = (output) => (output.id.startsWith("implied_") ? "implied by a program" : "configuration");
     const rows = exported.map((output) => el("tr", {},
       el("td", { class: "mono", text: output.id, title: output.label || "" }),
       el("td", { text: kindOf(output) }),
@@ -1593,12 +1592,8 @@
     ui.recipientsHint.textContent = `${listed} listed by ADP · those it stops listing are kept 10 min`;
     for (const recipient of view.recipients) {
       const incarnation = recipient.incarnation ? ` #${recipient.incarnation}` : "";
-      const declaredBy = recipient.provenance;
-      const provenance = declaredBy === null || declaredBy === undefined ? ""
-        : ` · ${typeof declaredBy === "string" ? declaredBy : JSON.stringify(declaredBy)}`;
       const id = el("td", { class: "id" }, ...breakable(recipient.id, "/"), incarnation);
-      id.title = `${recipient.declared ? "declared by a resources artifact" : "native"}${provenance}`
-        + `${recipient.slot === null || recipient.slot === undefined ? "" : ` · slot ${recipient.slot}`}`;
+      id.title = recipient.slot === null || recipient.slot === undefined ? "" : `slot ${recipient.slot}`;
       const stateCell = el("td", {}, el("span", { class: `pill ${recipient.state}`, text: recipient.state }));
       stateCell.title = `${recipient.state} since ${clock(recipient.state_since_ms)}`
         + (recipient.listed ? "" : `; last listed ${ago(recipient.last_seen_ms)}`);

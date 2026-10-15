@@ -1069,37 +1069,30 @@ mod resources {
         Plan::from_value(with_resources(DEFAULT_PROGRAM_JSON)).unwrap()
     }
 
-    /// The bound default program after a configuration change and a new resources revision: a dual-ship endpoint
-    /// added under the main output's role, `dd_out`'s request timeout raised, team D declared again alike by revision
-    /// 2, and team E's output and recipient no longer declared.
+    /// The bound default program after a configuration change: a dual-ship endpoint added under the main output's role,
+    /// `dd_out`'s request timeout raised, and routing group 1's output and recipients no longer declared.
     fn changed_default_program() -> Plan {
         let mut value = with_resources(DEFAULT_PROGRAM_JSON);
         let dual = "dd_out/additional_2/0";
-        let revision_2 = json!({"declared": {"revision": 2, "hash": format!("sha256:{}", "d".repeat(64))}});
         let outputs = value["outputs"].as_array_mut().unwrap();
-        outputs.retain(|output| output["id"] != "resources_team_e");
         for output in outputs.iter_mut() {
             if output["id"] == "dd_metrics_encode" {
                 output["recipients"] = json!(["dd_out/additional_2/0", "dd_out/primary/0"]);
             }
-            if output["id"] == "resources_team_d" {
-                output["binding"]["provenance"] = revision_2.clone();
+            if output["id"] == "metrics_routing_encode_1" {
+                output["recipients"] = json!([]);
             }
         }
         let resources = &mut value["resources"];
         resources["hosts"][0]["settings"]["request_timeout"] = json!("30s");
         let recipients = resources["recipients"].as_array_mut().unwrap();
-        recipients.retain(|recipient| recipient["id"] != "dd_out/declared/team_e/https://e.example.com");
-        for recipient in recipients.iter_mut() {
-            if recipient["provenance"] != "native" {
-                recipient["provenance"] = revision_2.clone();
-            }
-        }
+        recipients.retain(|recipient| {
+            recipient["id"] != "dd_out/additional_1/0" && recipient["id"] != "dd_out/additional_1/1"
+        });
         recipients.push(json!({
             "id": dual, "host": "dd_out", "endpoint": "https://dual.example.com",
             "credential": "native:additional/0000111122223333/0", "classes": "all",
-            "protocol": {"kind": "datadog_intake", "v3": {"series": false, "sketches": false}},
-            "provenance": "native"
+            "protocol": {"kind": "datadog_intake", "v3": {"series": false, "sketches": false}}
         }));
         Plan::from_value(value).unwrap()
     }
@@ -1144,7 +1137,7 @@ mod resources {
     }
 
     #[test]
-    fn the_bound_default_program_validates_and_explains_its_resources_with_their_provenance() {
+    fn the_bound_default_program_validates_and_explains_its_resources() {
         let plan = bound_default_program();
         let registry = OperatorRegistry::native();
         let report = Validator::new(&registry, &default_program_resources_catalog()).validate(&plan);
@@ -1155,7 +1148,7 @@ mod resources {
             .resources
             .as_ref()
             .expect("a plan with bound outputs explains its resources");
-        // Seven bound outputs (the client telemetry tap is a fixed destination), three hosts, eight recipients.
+        // Five bound outputs (the client telemetry tap is a fixed destination), three hosts, six recipients.
         let bound = resources
             .outputs
             .iter()
@@ -1168,21 +1161,18 @@ mod resources {
                 "metrics_routing_encode_0",
                 "metrics_routing_encode_1",
                 "mrf_metrics_encode",
-                "af_metrics_encode",
-                "resources_team_d",
-                "resources_team_e"
+                "af_metrics_encode"
             ]
         );
         assert_eq!(resources.hosts.len(), 3);
-        assert_eq!(resources.recipients.len(), 8);
-        let team_d = &resources.recipients[6];
-        assert!(matches!(
-            team_d.provenance,
-            crate::ir::ResourceProvenance::Declared(ref revision) if revision.revision == 1
-        ));
-        assert_eq!(team_d.outputs, vec!["resources_team_d".parse::<OutputId>().unwrap()]);
-        assert_eq!(team_d.credential.as_str(), "credentials/team_d");
-        assert!(matches!(team_d.delivery, DeliveryPolicy::Bounded(_)));
+        assert_eq!(resources.recipients.len(), 6);
+        let cluster_agent = &resources.recipients[5];
+        assert_eq!(
+            cluster_agent.outputs,
+            vec!["af_metrics_encode".parse::<OutputId>().unwrap()]
+        );
+        assert_eq!(cluster_agent.credential.as_str(), "native:cluster_agent.auth_token");
+        assert!(matches!(cluster_agent.delivery, DeliveryPolicy::Native));
         // Nothing compared yet: no change is said.
         assert!(resources.outputs.iter().all(|output| output.change.is_none()));
         assert!(resources.removed.is_empty());
@@ -1267,8 +1257,8 @@ mod resources {
                 .map(|(id, change)| (id.to_string(), change.to_string()))
                 .collect::<Vec<_>>()
         };
-        // The main output gained a recipient: rebound (a new lease), with its fingerprint unchanged; the others keep
-        // their encoder streams.
+        // The main output gained a recipient, and routing group 1's lost both of its: rebound (new leases), with their
+        // fingerprints unchanged; the others keep their encoder streams.
         assert_eq!(
             changes(
                 resources
@@ -1277,14 +1267,12 @@ mod resources {
                     .map(|output| (output.id.to_string(), output.change.clone()))
                     .collect()
             ),
-            // Team D, declared again alike by another revision, keeps its encoder stream.
             owned(&[
                 ("dd_metrics_encode", "rebound"),
                 ("metrics_routing_encode_0", "reused"),
-                ("metrics_routing_encode_1", "reused"),
+                ("metrics_routing_encode_1", "rebound"),
                 ("mrf_metrics_encode", "reused"),
                 ("af_metrics_encode", "reused"),
-                ("resources_team_d", "reused"),
             ])
         );
         assert_eq!(
@@ -1306,20 +1294,17 @@ mod resources {
             (dual.id.as_str(), dual.change.as_deref()),
             ("dd_out/additional_2/0", Some("new"))
         );
-        // Every other recipient is reused, team D's whose provenance alone changed included.
-        assert_eq!(resources.recipients.len(), 8);
-        assert!(resources.recipients[..7]
+        // Every other recipient is reused, and routing group 1's are removed.
+        assert_eq!(resources.recipients.len(), 5);
+        assert!(resources.recipients[..4]
             .iter()
             .all(|recipient| recipient.change.as_deref() == Some("reused")));
-        assert_eq!(
-            resources.removed.outputs,
-            vec!["resources_team_e".parse::<OutputId>().unwrap()]
-        );
+        assert!(resources.removed.outputs.is_empty());
         assert_eq!(
             resources.removed.recipients,
-            vec!["dd_out/declared/team_e/https://e.example.com"
-                .parse::<crate::ir::RecipientId>()
-                .unwrap()]
+            ["dd_out/additional_1/0", "dd_out/additional_1/1"]
+                .map(|id| id.parse::<crate::ir::RecipientId>().unwrap())
+                .to_vec()
         );
         assert!(resources.removed.hosts.is_empty());
     }
@@ -1383,14 +1368,6 @@ mod resources {
         let tap = binding("dsd_client_telemetry");
         assert_eq!(tap.encode_host, None);
         assert!(!tap.removed && !main.removed);
-        // Team E's output, which the frame's boot plan binds and the explained plan no longer declares, runs no lease:
-        // it has no encode host, and the encode host's exits are not its own.
-        let team_e = binding("resources_team_e");
-        assert!(team_e.removed);
-        assert_eq!(team_e.encode_host, None);
-        assert!(team_e.fed_by.is_empty() && team_e.idle.is_empty(), "{:?}", team_e);
-        assert!(!binding("resources_team_d").removed);
-
         // Every fused slot with an output downstream has one exit to every encode host, named after it, and none to
         // the outputs bound to them; the isolation slot has only its boot edges' exits.
         for slot in physical.slots.iter().filter(|slot| slot.isolation.is_none()) {

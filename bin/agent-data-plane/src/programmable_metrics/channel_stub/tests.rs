@@ -381,7 +381,7 @@ fn polls_are_written_as_the_stub_protocol_says() {
         json!({
             "protocol_version": 1,
             "client": {"id": "a1", "version": "1.8.0"},
-            "products": ["policy", "resources"],
+            "products": ["policy"],
             "config_states": [],
             "status": {
                 "default_program_hash": null, "revision_high_water": null, "active_generation": null,
@@ -405,9 +405,8 @@ fn answers_are_read_as_complete_policy_snapshots() {
         "protocol_version": 1,
         "products": {
             "policy": [{"id": "demo", "version": 7, "sha256": "00", "payload": "{}", "future": true}],
-            // A resources member that is not a list of configs makes only that product unreadable.
+            // Another product's entries can have any shape, `resources` included: they are not read.
             "resources": [{"name": "endpoint", "spec": {"url": "http://example.com"}}],
-            // Another product's entries can have any shape: they are not read.
             "other": "not a list"
         },
         "future_member": 1
@@ -418,28 +417,13 @@ fn answers_are_read_as_complete_policy_snapshots() {
     assert_eq!(read.configs[0].id, ArtifactConfigId::new("demo"));
     assert_eq!(read.configs[0].version, 7);
     assert_eq!(read.configs[0].payload, "{}");
-    assert_eq!(snapshot_of(answered.clone(), ArtifactProduct::Resources), None);
     let response = serde_json::from_value::<PollResponse>(answered).unwrap();
-    let error = &response.products.unreadable[&ArtifactProduct::Resources];
-    assert!(error.starts_with("product `resources`:"), "{}", error);
+    assert!(response.products.unreadable.is_empty());
 
     // An empty list, or a missing product, revokes.
     assert!(snapshot(answer(Vec::new())).revokes());
     assert!(snapshot(json!({"protocol_version": 1, "products": {}})).revokes());
     assert!(snapshot(json!({"protocol_version": 1, "products": {"resources": []}})).revokes());
-    for product in [ArtifactProduct::Policy, ArtifactProduct::Resources] {
-        let revoked = snapshot_of(json!({"protocol_version": 1, "products": {}}), product).unwrap();
-        assert!(revoked.revokes(), "{}", product);
-    }
-    let resources = snapshot_of(
-        json!({"protocol_version": 1, "products": {"resources": [
-            {"id": "resources", "version": 2, "sha256": "00", "payload": "{}"}
-        ]}}),
-        ArtifactProduct::Resources,
-    )
-    .unwrap();
-    assert_eq!(resources.product, ArtifactProduct::Resources);
-    assert_eq!(resources.configs[0].id, ArtifactConfigId::new("resources"));
 
     // An answer without products, such as an error object, is unreadable, which is a transport failure: it never
     // revokes.
@@ -550,58 +534,6 @@ async fn an_empty_or_missing_policy_product_revokes() {
     ));
     assert!(worker.next_snapshot().await.revokes());
     stub.polls(1).await;
-    worker.stop().await;
-}
-
-#[tokio::test]
-async fn each_product_reaches_its_own_slot_and_an_unreadable_resources_member_keeps_the_last_resources_snapshot() {
-    let resources = |version: u64| {
-        json!({
-            "id": "resources",
-            "version": version,
-            "sha256": ArtifactConfig::transport_hash("{}"),
-            "payload": "{}",
-        })
-    };
-    let both = |policy: Vec<Value>, resources: Value| {
-        json!({
-            "protocol_version": 1,
-            "products": {"policy": policy, "resources": resources},
-        })
-    };
-    let mut stub = FakeStub::start(Answer::Json(both(
-        vec![config(r#"{"revision": 1}"#)],
-        json!([resources(1)]),
-    )))
-    .await;
-    let mut worker = RunningWorker::start(&stub.url()).await;
-    // One poll publishes both products, back to back: neither overwrites the other.
-    let policy = worker.next_snapshot_of(ArtifactProduct::Policy).await;
-    let first = worker.next_snapshot_of(ArtifactProduct::Resources).await;
-    assert_eq!(policy.configs.len(), 1);
-    assert_eq!(first.configs[0].version, 1);
-    assert_eq!(worker.feed().latest(ArtifactProduct::Policy), Some(Arc::clone(&policy)));
-
-    // A resources member that cannot be read keeps the resources snapshot in effect; policy is still read.
-    stub.answer(Answer::Json(both(
-        vec![config(r#"{"revision": 2}"#)],
-        json!({"id": "x"}),
-    )));
-    let changed = worker.next_snapshot_of(ArtifactProduct::Policy).await;
-    assert_ne!(changed, policy);
-    stub.polls(2).await;
-    assert_eq!(
-        worker.feed().latest(ArtifactProduct::Resources),
-        Some(Arc::clone(&first))
-    );
-
-    // Readable again, the newer resources snapshot is delivered.
-    stub.answer(Answer::Json(both(
-        vec![config(r#"{"revision": 2}"#)],
-        json!([resources(2)]),
-    )));
-    let second = worker.next_snapshot_of(ArtifactProduct::Resources).await;
-    assert_eq!(second.configs[0].version, 2);
     worker.stop().await;
 }
 

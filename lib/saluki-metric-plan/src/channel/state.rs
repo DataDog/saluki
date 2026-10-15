@@ -28,9 +28,8 @@ pub enum ApplyState {
     /// The artifact is waiting to be prepared, or is being prepared.
     ///
     /// With an error, it is held rather than in progress: it waits for something only another change provides, such
-    /// as a policy artifact waiting for an output a resources artifact declares ("waiting for output X"), or a
-    /// resources artifact waiting for a credential the operator has not configured. It is re-evaluated on every
-    /// configuration change and every resources snapshot.
+    /// as a program waiting for a recipient that configuration does not declare ("waiting for recipient X"). It is
+    /// re-evaluated on every configuration change.
     Pending,
 
     /// Every region holds the artifact's generation, which is not committed yet, or is kept to roll back to.
@@ -170,11 +169,6 @@ pub struct StatusSummary {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub scopes: BTreeMap<ScopeName, ScopeStatus>,
 
-    /// The status of the resources product, which has its own revisions: an additive member, left out while the host
-    /// has seen no resources config, so the wire form of a host that uses only policy artifacts is unchanged.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resources: Option<ResourcesStatus>,
-
     /// Which program the active generation runs, and whether the host's native policy settings apply to it: an
     /// additive member, left out by a host that does not say, and while no generation is active.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -233,17 +227,6 @@ pub enum NativePolicy {
     Unknown,
 }
 
-/// The status of the resources product.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ResourcesStatus {
-    /// The highest resources revision seen, if any: the product's own mark, apart from the policy product's. A
-    /// resources artifact at or below it is stale.
-    pub revision_high_water: Option<u64>,
-
-    /// The resources artifact whose declarations the active generation carries, or `None` when it carries none.
-    pub active_artifact: Option<ActiveArtifact>,
-}
-
 /// The status of one replaceable scope of the default program.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ScopeStatus {
@@ -299,7 +282,6 @@ mod tests {
                 degraded: None,
                 live_generations: 2,
                 scopes: BTreeMap::new(),
-                resources: None,
                 program: Some(ProgramStatus {
                     runs: ProgramRuns::Published,
                     native_policy: NativePolicy::NotApplied,
@@ -380,35 +362,6 @@ mod tests {
             serde_json::from_value::<StatusSummary>(document).unwrap(),
             StatusSummary::default()
         );
-    }
-
-    #[test]
-    fn the_resources_status_is_written_member_for_member_and_left_out_until_the_product_is_seen() {
-        let hash: PlanHash = HASH.parse().unwrap();
-        let summary = StatusSummary {
-            resources: Some(ResourcesStatus {
-                revision_high_water: Some(2),
-                active_artifact: Some(ActiveArtifact {
-                    id: ArtifactConfigId::new("demo-resources"),
-                    revision: 2,
-                    artifact_hash: hash,
-                }),
-            }),
-            ..StatusSummary::default()
-        };
-        let document = serde_json::to_value(&summary).unwrap();
-        assert_eq!(
-            document["resources"],
-            json!({
-                "revision_high_water": 2,
-                "active_artifact": {"id": "demo-resources", "revision": 2, "artifact_hash": HASH}
-            })
-        );
-        assert_eq!(serde_json::from_value::<StatusSummary>(document).unwrap(), summary);
-        assert!(serde_json::to_value(StatusSummary::default())
-            .unwrap()
-            .get("resources")
-            .is_none());
     }
 
     #[test]

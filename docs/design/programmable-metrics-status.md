@@ -377,7 +377,7 @@ lane (`plan_lane_misrouted_total` above 0) fails the check.
 | S14a, S14b | `dsd_agg` renamed `agg`; then renamed with `demo.debug.*` dropped. | The rename does what the plan running does: a generation with no cut (it leaves out what does nothing, which the default program running has; it adopted the running generation before amendment 191); with the routing change, a new generation and still no cut (`plan_cuts_total` unchanged for every outcome), the state lanes counting events under `component_id:dsd_agg`. |
 
 Before this phase, S8 to S11 declared team D with a resources artifact and S14 routed to it on the post-aggregation
-lanes; the demo no longer uses resources artifacts, whose code and tests stay in the plan crate and ADP.
+lanes; version 2's step V2 then removed resources artifacts altogether.
 
 Through stage 9 and the detached programs' phases 1 and 2 the first launch took 144 to 154 s and the second 270 to 300
 s. With this phase's steps the first launch takes 143 to 175 s and the second 269 to 293 s (see the
@@ -740,9 +740,8 @@ the default program with its hash, though its artifact document, and so its arti
   the autoscaling failover gateway also tests the signal `autoscaling_failover.enabled`, which is always true while its
   branch exists. Behavior is unchanged; the default program's plan hash and its export's base change.
 - The export bundle's catalog gives every binding a `class` (`fact`, `signal`, or `policy`) and carries the recipient
-  directory (`recipients`: `primary`, `mrf`, `cluster_agent`, each additional endpoint's resolved URL, and declared
-  names); the bundle carries `annotations`, ADP's notes on each node and binding. A resources artifact may not name
-  a recipient `primary`, `mrf`, or `cluster_agent`.
+  directory (`recipients`: `primary`, `mrf`, `cluster_agent`, and each additional endpoint's resolved URL); the
+  bundle carries `annotations`, ADP's notes on each node and binding.
 - Version 1 output fingerprints are gone: status no longer reports `legacy_fingerprint`, and an artifact that records
   one, as only old demo run directories hold, is refused as rebound ("Rebase the artifact on the current export"), or
   runs degraded if it is in effect, until it is republished.
@@ -766,9 +765,9 @@ the default program with its hash, though its artifact document, and so its arti
   `program.differs`, and ADP logs one line per change. Status reports `program`: which program runs, and whether native
   policy settings are applied.
 - `emit to [<recipient>, ...]` addresses recipients by name. ADP adds an **implied output** for each set no output
-  delivers to (`implied_<emit>_<set digest>`), up to 16 outputs together with those resources artifacts declare,
-  counted over every program the installer holds, and retires it once no program asks for it; a program waits for its
-  recipients and their output, as for an undeclared output.
+  delivers to (`implied_<emit>_<set digest>`), up to 16 outputs, counted over every program the installer holds, and
+  retires it once no program asks for it; a program waits for its recipients and their output, as for an undeclared
+  output.
 - Nodes have no provenance: `explain` is version 2, without each node's provenance, and the plan's provenance names
   each composed artifact with its scope. Every node of a published program is the program's: its loss, its panics
   (against the program's budget), and its limits, whether its author changed it or kept it; a limit rises to what the
@@ -796,8 +795,11 @@ the default program with its hash, though its artifact document, and so its arti
   program runs degraded, its acknowledgment naming the gone recipients. Only an `emit` with none of its recipients
   left is dropped whole (amendment 189). ADP adds the output for the remaining recipients in the same generation that
   removes the gone one, so nothing they receive is lost.
+- Resources artifacts are gone (version 2's step V2, amendment 192): the stub protocol's `resources` product, the
+  `experimental.programmable_metrics.resources.credentials` key, declared recipients and outputs, and resource
+  provenance in plans, explain, and status. Destinations are configured endpoints, applied live.
 - The demo (a development tool, not shipped) configures teams B and C as ordinary additional endpoints, adds and
-  removes destinations live through the standalone configuration reload, no longer uses resources artifacts, and
+  removes destinations live through the standalone configuration reload, and
   validates programs that need implied outputs against stand-ins for them before publishing.
 
 **What does nothing, left out** (not committed; **not release-noted**; see [what does nothing, as
@@ -827,8 +829,8 @@ per cut and per reset; `aggregate_passthrough_flushes_total` counts incoming bat
 
 **New surfaces** (experimental, release-noted): the `experimental.programmable_metrics.artifact_channel.{stub_url,
 poll_interval}` keys, the privileged routes `/programmable-metrics/{status,export,plan,explain,default-program}`, and,
-in stage 7, `experimental.programmable_metrics.resources.credentials`, the stub's `resources` product, and
-`/programmable-metrics/resources`.
+in stage 7, `/programmable-metrics/resources` (stage 7's `experimental.programmable_metrics.resources.credentials` and
+the stub's `resources` product were removed by version 2's step V2).
 
 Native quirks are preserved on purpose and pinned by fixtures; see
 [native behavior: preserved and changed](programmable-metrics-implementation.md#native-behavior-preserved-and-changed)
@@ -929,8 +931,7 @@ the local `--test-threads 4` in the gate (see [Environment notes](#environment-n
 | **Release-note gaps** | The items marked not release-noted under [Changes users can see](#changes-users-can-see), and the stale stage 5 sentence on stateful artifacts. Nothing is released, so every stage's fragment ships in one release, and each was written as a delta from the stage before it: the stage 3 and stage 9 notes were reconciled in the stage 9 review (the `_region` components only without lanes, the socket and admission-time sentences phrased against the release), the other stages' notes not yet. | Decide which to note, and reconcile the remaining notes against the last released ADP, before the notes ship. |
 | **Capability stage numbers** | Placement maps `MissingCapability::State` to stage 6, the frame names stage 10 for a state owner without an isolation fence, and the interpreter names stage 7 for a cut or reset with state in a host component or without a fence. | Settle the numbering in the stage 7, 9, and 10 plans. |
 | **Stage 7 changes against native** | Amendments 135 (a burst reaching several outputs of one encode host backs up sooner: 451 batches where native held 515 with one routing group) and 137 (a removed endpoint loses what its old generation's leases still build after the transaction that withdraws it), both release-noted. | Accept, or size the encode host's input by its boot leases (135), or withdraw after the generation without the recipient commits (137). |
-| **Stage 7 deferrals** | Static mode stays the native forwarder (not folded into the delivery host); platform roots load per client build; failures stay text-matched to declared resources; a declared recipient's directory does not include its name; growth in place is not admitted; 4.13's validation errors are caps at run time. See [Stage 7](#stage-7-resource-generations). | Decide which belong in a stage 7 follow-up. |
-| **The Core Agent and the credentials key (A36)** | ADP follows `experimental.programmable_metrics.resources.credentials` on the configuration stream over the boot base (pinned by `resources_credentials_follow_the_agent_stream_over_the_boot_base`); whether the Core Agent streams a Saluki-only map key is outside ADP. | Confirm with the Agent, or document the key as restart-only in connected mode. |
+| **Stage 7 deferrals** | Static mode stays the native forwarder (not folded into the delivery host); platform roots load per client build; failures stay text-matched; growth in place is not admitted; 4.13's validation errors are caps at run time. See [Stage 7](#stage-7-resource-generations). | Decide which belong in a stage 7 follow-up. |
 | **The stage 9 gate host** ([Q2](programmable-metrics-stages-7-and-9.md#12-open-questions)) | Items 1 to 4 of the gate (throughput, scaling, CPU and p99, one stream connection) and item 6 (the SMP RSS gate) need a Linux host with at least 20 homogeneous cores (36 for W = 32), with an A/A series first. This Mac decided item 5 and the curves' shape at up to four workers, both passing (plan 8.5). | Provide or approve a host; the runbook is plan 8.4's P9.0 (`test/scaling/`) and 8.6. |
 | **Lanes on by default before the gate host ran** (amendment 157) | `lanes.mode: auto` with D one below three workers, P at most 4, M at most 8, chosen on macOS and the 6-vCPU VM; where every count comes to one, as below three workers, `auto` runs the layout without lanes (since the stage 9 review), so hosts of two workers or fewer keep the stage 7 layout. Process CPU per metric on lanes read 1.04 to 1.13 of legacy's saturated and up to 1.30 paced, against item 3's 1.07 (the per-buffer cost of lanes, plan 8.6). | Accept auto by default now, or ship `off` until the gate passes (one default in `control.rs`, the docs, and the release note). Production limits of 0.3 to 1.2 cores make lanes matter little: [next steps N2 and N3](programmable-metrics-next.md#n2-and-n3-one-region-from-decode-to-encode-with-an-interleaved-flush) recommends `off`. |
 | **ADP's allocator setting** (the memory investigation) | `.cargo/config.toml` compiles `narenas:1,tcache:false` into every Linux build (since #378, for low RSS on the 4-CPU targets of SMP): every allocation takes one arena's lock, 0.5 µs at two threads and 1.6 at four against 31 ns alone. In ADP at N = 2 the thread cache gave legacy +7.1% throughput and -6.9% CPU per point, the plan +2.8% and -4.1%, for about +8 MiB of peak (+11 to +13 MiB at N = 4); with it on, the shared group counters of the tracking allocator become the next choke point, which per-decoder resource groups would remove. `MALLOC_CONF` overrides the setting at run time without a rebuild. | Measure `MALLOC_CONF=tcache:true` (and with `narenas:<W>`) beside the native setting on the gate host and the RSS gates of SMP, then choose; per-decoder groups are a small stage 9 part if the cache lands. |
@@ -1062,7 +1063,7 @@ Amendments 88 to 191 are in [the stages 7 and 9 plan's section
 from its stage 9 design, 129 to 138 from stage 7's parts and integration, 139 and 140 from stage 9's foundations (P9.F),
 141 to 162 from stage 9's parts and integration, 163 to 167 from stage 9's review, 168 and 169 from the one-scope
 change after stage 9, 170 to 182 from the detached-programs design, 183 to 188 from its phase 2, 189 and 190 from its
-phase 3, and 191 from leaving out what does nothing; the next is 192.
+phase 3, 191 from leaving out what does nothing, and 192 from version 2's step V2; the next is 193.
 Stage 7's:
 
 | # | Short title | Theme | Kind | Owner |
@@ -1072,7 +1073,7 @@ Stage 7's:
 | 90 | Output fingerprints cover the selector | ART | D | no |
 | 91 | Removal by the resource authority wins, and fails closed | ART | D | yes: accept degraded over fallback |
 | 92 | Pending and degraded | ART | C | no |
-| 93 | Resources artifacts | ART | D | yes: endpoint privilege |
+| 93 | Resources artifacts (withdrawn by 192) | ART | D | yes: endpoint privilege |
 | 94 | Declared recipient identity | NAT | C | no |
 | 95 | Credentials | IR | C | no |
 | 96 | Retirement closure for recipients | INS | C | no |
@@ -1202,6 +1203,7 @@ After detached programs, what does nothing left out (built, not committed):
 | # | Short title | Theme | Kind | Owner |
 |---|---|---|---|---|
 | 191 | The detached export leaves out what does nothing as configured | ART | D | requested by the owner (2026-10-15) |
+| 192 | Resources artifacts are removed | ART | D | version 2, decided by the owner (2026-10-15) |
 
 Wording proposed for adoption: amendment 49 ("under the reference interpreter's delivery order"), 51 ("a maximal
 group of `split` and `tee` operators joined directly by edges within one region"), and 52 ("operator parameters,
@@ -1304,24 +1306,20 @@ its reason in the plan's [Stage 7 as built](programmable-metrics-stages-7-and-9.
 
 - Static mode folded into the delivery host (it stays the native forwarder, pinned against the host).
 - Platform root certificates loaded once per process across client rebuilds.
-- A structured prepare failure naming the recipient, in place of text matching; a declared recipient's directory
-  including its name. (Since the stage 7 review, a prepare whose directory a dropped loop owns waits for that loop's
-  exit, so the text matching no longer meets that race.)
+- A structured prepare failure naming the recipient, in place of text matching. (Since the stage 7 review, a prepare
+  whose directory a dropped loop owns waits for that loop's exit, so the text matching no longer meets that race.)
 - Growth in place of a live recipient's bound (its credit keeps its creation's bytes).
-- 4.13's validation errors for a declared queue bound above the native one and for spilling without storage (capped at
-  run time instead).
 - The follow-up of the plan's A18 and A19: credentials at rest, version-stable directories, upgrade adoption, and a
   janitor for orphaned directories.
 - Tests the plan's 6.11 lists that stage 7 did not build in ADP, each covered at a lower level: a recipient loop that
   fails replaced without a configuration change (delivery host and core tests), a host's prepare timeout and worker
   restarts during transactions (the installer's tests with fake hosts), disk full during a retirement's persist (the
   recipient loop's flush tests), generation failures with and without a kept last-known-good across two scopes, and a
-  cancelled cut whose generation adds an endpoint (the core's property test); the resources product end to end (the
-  demo's S8 to S11 against the real binary, until the demo stopped using resources artifacts in the detached programs'
-  phase 3; ADP's delivery and resources tests still cover it); and autoscaling failover's delivery, whose Cluster Agent host needs an
-  `https` endpoint the recording intakes do not serve (the delivery host's Cluster Agent tests). Since the stage 7
-  review, the failed-prepare test checks events, logs, and traces too; not built: a routing-group add and remove in
-  the reclamation cycle, and the non-metrics delivery of an `additional_endpoints` change while a cut is in flight.
+  cancelled cut whose generation adds an endpoint (the core's property test); and autoscaling failover's delivery, whose
+  Cluster Agent host needs an `https` endpoint the recording intakes do not serve (the delivery host's Cluster Agent
+  tests). Since the stage 7 review, the failed-prepare test checks events, logs, and traces too, and since version 2's
+  step V2 the reclamation cycle adds and removes a routing group with its endpoint; not built: the non-metrics delivery
+  of an `additional_endpoints` change while a cut is in flight.
 
 ### Stage 8: production control plane
 

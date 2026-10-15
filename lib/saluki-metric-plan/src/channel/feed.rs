@@ -1,16 +1,9 @@
 //! The in-process channel between a transport (such as the local stub) and the installer.
 //!
 //! Both directions are [`watch`] channels, which keep only the latest value: the installer needs the latest complete
-//! snapshot, never the ones in between, and the transport sends the latest acknowledgments with each poll. Snapshots
-//! travel in one slot per [product](ArtifactProduct), so a snapshot of one product published right after one of
-//! another never replaces it.
+//! snapshot, never the ones in between, and the transport sends the latest acknowledgments with each poll.
 
-use std::{
-    future::{poll_fn, Future as _},
-    pin::pin,
-    sync::Arc,
-    task::Poll,
-};
+use std::sync::Arc;
 
 use tokio::sync::watch;
 
@@ -25,18 +18,15 @@ type Slots<T> = [T; ArtifactProduct::ALL.len()];
 /// Creates the channel between a transport and the installer, returning the transport's end and the installer's end.
 pub fn artifact_channel() -> (TransportEnd, InstallerEnd) {
     let (policy, policy_feed) = watch::channel(None);
-    let (resources, resources_feed) = watch::channel(None);
     let (states, reported) = watch::channel(Arc::new(ApplyStates::default()));
     (
         TransportEnd {
-            publisher: ArtifactPublisher {
-                snapshots: [policy, resources],
-            },
+            publisher: ArtifactPublisher { snapshots: [policy] },
             apply_states: ApplyStateReceiver { states: reported },
         },
         InstallerEnd {
             feed: ArtifactFeed {
-                snapshots: [policy_feed, resources_feed],
+                snapshots: [policy_feed],
                 closed: [false; ArtifactProduct::ALL.len()],
             },
             reporter: ApplyStateReporter { states },
@@ -118,30 +108,11 @@ impl ArtifactFeed {
     pub async fn changed(&mut self) -> Option<(ArtifactProduct, Arc<ArtifactSnapshot>)> {
         loop {
             let (index, changed) = {
-                let [policy, resources] = &mut self.snapshots;
-                let open = self.closed.map(|closed| !closed);
-                let mut policy = pin!(policy.changed());
-                let mut resources = pin!(resources.changed());
-                // Polled in product order, so the first product that changed is returned first. A slot whose
-                // publisher is gone is not waited on again.
-                let next = poll_fn(|cx| {
-                    if open[0] {
-                        if let Poll::Ready(changed) = policy.as_mut().poll(cx) {
-                            return Poll::Ready(Some((0, changed.is_ok())));
-                        }
-                    }
-                    if open[1] {
-                        if let Poll::Ready(changed) = resources.as_mut().poll(cx) {
-                            return Poll::Ready(Some((1, changed.is_ok())));
-                        }
-                    }
-                    if open.iter().any(|open| *open) {
-                        Poll::Pending
-                    } else {
-                        Poll::Ready(None)
-                    }
-                });
-                next.await?
+                let [policy] = &mut self.snapshots;
+                if self.closed[0] {
+                    return None;
+                }
+                (0, policy.changed().await.is_ok())
             };
             if !changed {
                 self.closed[index] = true;
@@ -302,50 +273,6 @@ mod tests {
     }
 
     #[test]
-    fn each_product_has_its_own_slot_so_neither_snapshot_published_back_to_back_is_lost() {
-        run(async {
-            let (transport, mut installer) = artifact_channel();
-            let resources = snapshot_of(ArtifactProduct::Resources, 1);
-            assert!(transport.publisher.publish(snapshot(1)));
-            assert!(transport.publisher.publish(resources.clone()));
-            // A snapshot equal to its own product's current one is a repeat; the other product's does not count.
-            assert!(!transport.publisher.publish(resources.clone()));
-
-            // Both are delivered, in product order, each with its product.
-            assert_eq!(
-                next_with_product(&mut installer.feed).await,
-                Some((ArtifactProduct::Policy, Arc::new(snapshot(1))))
-            );
-            assert_eq!(
-                next_with_product(&mut installer.feed).await,
-                Some((ArtifactProduct::Resources, Arc::new(resources.clone())))
-            );
-            assert_eq!(
-                installer.feed.latest(ArtifactProduct::Policy).as_deref(),
-                Some(&snapshot(1))
-            );
-            assert_eq!(
-                installer.feed.latest(ArtifactProduct::Resources).as_deref(),
-                Some(&resources)
-            );
-
-            // Re-arming one product re-delivers that product only.
-            installer.feed.mark_unseen(ArtifactProduct::Resources);
-            assert!(transport.publisher.publish(snapshot(2)));
-            assert_eq!(next(&mut installer.feed).await.as_deref(), Some(&snapshot(2)));
-            assert_eq!(next(&mut installer.feed).await.as_deref(), Some(&resources));
-
-            // A product published after the publisher is gone cannot be, but the last snapshot of each stays.
-            drop(transport);
-            assert_eq!(next(&mut installer.feed).await, None);
-            assert_eq!(
-                installer.feed.latest(ArtifactProduct::Resources).as_deref(),
-                Some(&resources)
-            );
-        });
-    }
-
-    #[test]
     fn a_cancelled_wait_loses_no_snapshot() {
         run(async {
             let (transport, mut installer) = artifact_channel();
@@ -375,17 +302,6 @@ mod tests {
             };
             assert!(first.is_pending(), "nothing new had been published");
             assert_eq!(next(&mut installer.feed).await.as_deref(), Some(&snapshot(2)));
-
-            // The same holds for the second product's slot.
-            let resources = snapshot_of(ArtifactProduct::Resources, 3);
-            let first = {
-                let mut wait = pin!(installer.feed.changed());
-                let first = wait.as_mut().poll(&mut context);
-                assert!(transport.publisher.publish(resources.clone()));
-                first
-            };
-            assert!(first.is_pending(), "nothing new had been published");
-            assert_eq!(next(&mut installer.feed).await.as_deref(), Some(&resources));
         });
     }
 

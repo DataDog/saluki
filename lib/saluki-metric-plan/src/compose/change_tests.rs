@@ -40,9 +40,6 @@ fn fingerprint_of(id: &str, digit: char) -> PlanHash {
 
 /// The declaration of output `id` with digit `digit`, and of the recipient it declares, if any:
 ///
-/// - an output named `resources_<name>` is one a resources artifact declares: it is bound to `dd_out` with one declared
-///   recipient, which the digit chooses (outputs with one digit name the same recipient), and its fingerprint is the
-///   version 2 digest of that binding;
 /// - an output named `metrics_routing_encode_<i>` is a routing group's: it is bound to `dd_out` with the group key the
 ///   digit gives, and its fingerprint is the version 2 digest of that binding;
 /// - any other output is unbound, with the digit as its fingerprint.
@@ -51,29 +48,14 @@ fn declaration(id: &str, digit: char) -> (Value, Option<Value>) {
         let selector = json!({"group": hash(digit)});
         let output = json!({
             "id": id, "accepts": PortType::ANY, "fingerprint": bound_fingerprint(&selector),
-            "binding": {"host": "dd_out", "selector": selector, "telemetry": id, "provenance": "native"},
+            "binding": {"host": "dd_out", "selector": selector, "telemetry": id},
         });
         return (output, None);
     }
-    if OutputId::new(id).unwrap().declared_name().is_none() {
-        return (
-            json!({"id": id, "accepts": PortType::ANY, "fingerprint": hash(digit)}),
-            None,
-        );
-    }
-    let name = format!("team_{}", digit);
-    let recipient = format!("dd_out/declared/{}/https://{}.example.com", name, name);
-    let selector = json!({"declared": [recipient]});
-    let provenance = json!({"declared": {"revision": 1, "hash": hash('c')}});
-    let output = json!({
-        "id": id, "accepts": PortType::ANY, "fingerprint": bound_fingerprint(&selector), "recipients": [recipient],
-        "binding": {"host": "dd_out", "selector": selector, "telemetry": id, "provenance": provenance},
-    });
-    let declared = json!({
-        "id": recipient, "host": "dd_out", "endpoint": format!("https://{}.example.com", name),
-        "credential": format!("credentials/{}", name), "classes": "metrics_only", "provenance": provenance,
-    });
-    (output, Some(declared))
+    (
+        json!({"id": id, "accepts": PortType::ANY, "fingerprint": hash(digit)}),
+        None,
+    )
 }
 
 /// A default program delivering every record to each of `outputs`, each `(output, fingerprint digit)`, and the host's
@@ -333,73 +315,6 @@ fn a_renumbered_routing_output_names_the_output_that_now_carries_the_recorded_fi
         "{}",
         error
     );
-}
-
-#[test]
-fn a_policy_routed_to_a_declared_output_waits_for_it_in_either_product_order() {
-    // The author records the declared output's fingerprint, as the editor computes it.
-    let declared = ("resources_team_d", '5');
-    let (plan, catalog) = program(&[("a", '1'), declared]);
-    let artifact = artifact_of(&plan, &catalog);
-
-    // Policy first: the resources artifact that declares the output has not arrived, so the policy waits.
-    let before = program(&[("a", '1')]);
-    assert_eq!(
-        compose_into(&artifact, &before, false).unwrap_err(),
-        ComposeError::PendingOutput {
-            output: output("resources_team_d")
-        }
-    );
-    // The resources arrive, and the next composition installs it; resources first composes at once the same way.
-    let after = program(&[("a", '1'), declared]);
-    let composed = compose_into(&artifact, &after, false).unwrap();
-    assert!(composed.report.is_valid(), "{}", composed.report);
-    assert_eq!(scope(&composed).outcome, ComposeOutcome::Composed);
-
-    // Revoking the resources while the policy is in effect drops its emits to the declared output, and keeps the rest
-    // of what it does.
-    let revoked = compose_into(&artifact, &before, true).unwrap();
-    assert!(revoked.report.is_valid(), "{}", revoked.report);
-    assert_eq!(
-        scope(&revoked).notes().as_deref(),
-        Some("output `resources_team_d` is no longer declared; its emits are dropped until it returns")
-    );
-    assert_eq!(
-        revoked.plan.node(&node_id("emit_a")).map(|node| node.op.as_str()),
-        Some(names::EMIT)
-    );
-}
-
-#[test]
-fn a_policy_waiting_for_a_declared_output_is_pending_while_another_declared_output_has_the_same_recipients() {
-    // Resources revision 2 is to declare team E's output with the recipient team D's has (digit `5`), so the editor
-    // recorded the fingerprint team D's output carries: a declared output's covers its recipients, not its name.
-    let (plan, catalog) = program(&[("a", '1'), ("resources_team_e", '5')]);
-    let artifact = artifact_of(&plan, &catalog);
-    assert_eq!(
-        fingerprint_of("resources_team_e", '5'),
-        fingerprint_of("resources_team_d", '5')
-    );
-
-    // Revision 1 declares only team D's: team E's is not renumbered, only not declared yet, and the policy waits.
-    let revision_1 = program(&[("a", '1'), ("resources_team_d", '5')]);
-    assert_eq!(
-        compose_into(&artifact, &revision_1, false).unwrap_err(),
-        ComposeError::PendingOutput {
-            output: output("resources_team_e")
-        }
-    );
-    let composed = compose_into(&artifact, &revision_1, true).unwrap();
-    assert_eq!(
-        scope(&composed).notes().as_deref(),
-        Some("output `resources_team_e` is no longer declared; its emits are dropped until it returns")
-    );
-
-    // Revision 2 cures it.
-    let revision_2 = program(&[("a", '1'), ("resources_team_d", '5'), ("resources_team_e", '5')]);
-    let composed = compose_into(&artifact, &revision_2, false).unwrap();
-    assert!(composed.report.is_valid(), "{}", composed.report);
-    assert_eq!(scope(&composed).outcome, ComposeOutcome::Composed);
 }
 
 #[test]

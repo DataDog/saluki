@@ -26,7 +26,6 @@ use saluki_metric_plan::{
     extension::{Closure, DeliveryPolicy, Spill},
     install::{HostPublish, LeasePrepare, RecipientPrepare, RecipientRef, RecipientSlot, RetirementReport},
     ir::{HostBinding, PayloadClasses, RecipientDecl, RecipientId, Resources},
-    resources::CREDENTIALS_NAMESPACE,
 };
 use stringtheory::MetaString;
 
@@ -100,16 +99,14 @@ pub fn recipient_policy(policy: &DeliveryPolicy) -> RecipientPolicy {
 
 /// Returns the specification of a recipient a delivery host prepares, reopens, or publishes settings for.
 ///
-/// A native recipient's origin is the forwarder's own recipient, which its identity spells (`<host>/<route>/<key
+/// A recipient's origin is the forwarder's own recipient, which its identity spells (`<host>/<route>/<key
 /// index>/<endpoint>`) with its configured endpoint: its task and its queue directory are named after it, as natively.
-/// A declared recipient's is its name in the resources artifact, `declared_name`, or, when that is not known, its
-/// credential's name, and its credential's name.
 ///
 /// # Errors
 ///
-/// Returns an error naming the recipient if its protocol does not decode, or if its identity or credential is not of
-/// its provenance's form.
-pub fn recipient_spec(decl: &RecipientDecl, declared_name: Option<&str>) -> Result<RecipientSpec, GenericError> {
+/// Returns an error naming the recipient if its protocol does not decode, or if its identity is not of the native
+/// form.
+pub fn recipient_spec(decl: &RecipientDecl) -> Result<RecipientSpec, GenericError> {
     let invalid = |what: &str| generic_error!("Recipient `{}` cannot be prepared: {}.", decl.id, what);
     let protocol = decode_protocol(&decl.protocol)
         .error_context(format!("Failed to read the protocol of recipient `{}`.", decl.id))?;
@@ -117,31 +114,25 @@ pub fn recipient_spec(decl: &RecipientDecl, declared_name: Option<&str>) -> Resu
         PayloadClasses::MetricsOnly => Classes::MetricsOnly,
         PayloadClasses::All => Classes::All,
     };
-    let origin = match decl.credential.as_str().strip_prefix(CREDENTIALS_NAMESPACE) {
-        Some(credential) => RecipientOrigin::Declared {
-            name: declared_name.unwrap_or(credential).into(),
-            credential: credential.into(),
-        },
-        None => {
-            let mut segments = decl.id.as_str().splitn(4, '/');
-            let (_host, route, index) = (segments.next(), segments.next(), segments.next());
-            let route = match route {
-                Some("primary") => MetricsRecipientRoute::Primary,
-                Some("metrics_override") => MetricsRecipientRoute::MetricsOverride,
-                Some("additional") => MetricsRecipientRoute::Additional,
-                _ => return Err(invalid("its identity names no native route")),
-            };
-            let index = index
-                .and_then(|index| index.parse::<usize>().ok())
-                .ok_or_else(|| invalid("its identity names no key index"))?;
-            RecipientOrigin::Native(MetricsRecipient {
-                route,
-                configured_endpoint: decl.endpoint.clone(),
-                api_key_index: (route == MetricsRecipientRoute::Additional).then_some(index),
-                classes,
-                protocol: protocol.clone(),
-            })
-        }
+    let origin = {
+        let mut segments = decl.id.as_str().splitn(4, '/');
+        let (_host, route, index) = (segments.next(), segments.next(), segments.next());
+        let route = match route {
+            Some("primary") => MetricsRecipientRoute::Primary,
+            Some("metrics_override") => MetricsRecipientRoute::MetricsOverride,
+            Some("additional") => MetricsRecipientRoute::Additional,
+            _ => return Err(invalid("its identity names no native route")),
+        };
+        let index = index
+            .and_then(|index| index.parse::<usize>().ok())
+            .ok_or_else(|| invalid("its identity names no key index"))?;
+        RecipientOrigin::Native(MetricsRecipient {
+            route,
+            configured_endpoint: decl.endpoint.clone(),
+            api_key_index: (route == MetricsRecipientRoute::Additional).then_some(index),
+            classes,
+            protocol: protocol.clone(),
+        })
     };
     Ok(RecipientSpec {
         id: decl.id.as_str().into(),
@@ -217,12 +208,10 @@ pub fn lease_spec(prepare: &LeasePrepare, recipients: &Resources) -> Result<Enco
 /// # Errors
 ///
 /// Returns an error naming the recipient if its specification cannot be read (see [`recipient_spec`]).
-pub fn recipient_settings(
-    prepare: &RecipientPrepare, declared_name: Option<&str>,
-) -> Result<RecipientSettings, GenericError> {
+pub fn recipient_settings(prepare: &RecipientPrepare) -> Result<RecipientSettings, GenericError> {
     Ok(RecipientSettings {
         recipient: delivery_ref(&prepare.recipient),
-        spec: recipient_spec(&prepare.decl, declared_name)?,
+        spec: recipient_spec(&prepare.decl)?,
     })
 }
 
@@ -247,18 +236,14 @@ pub struct Publication {
 
 /// Returns what a delivery host publishes for revision `revision` of a resource transaction, or at boot.
 ///
-/// `declared_name` returns the name a resources artifact declares a recipient under, if it is known.
-///
 /// # Errors
 ///
 /// Returns an error naming the host or recipient whose parameters do not decode.
-pub fn publication(
-    revision: u64, publish: &HostPublish, declared_name: impl Fn(&RecipientId) -> Option<String>,
-) -> Result<Publication, GenericError> {
+pub fn publication(revision: u64, publish: &HostPublish) -> Result<Publication, GenericError> {
     let recipients = publish
         .recipients
         .iter()
-        .map(|prepare| recipient_settings(prepare, declared_name(&prepare.decl.id).as_deref()))
+        .map(recipient_settings)
         .collect::<Result<_, _>>()?;
     Ok(Publication {
         revision,
@@ -275,9 +260,8 @@ mod tests {
     use saluki_core::execution::EntryId;
     use saluki_metric_plan::{
         canonical::PlanHash,
-        extension::BoundedDelivery,
         install::{LeaseKey, LeaseRef},
-        ir::{CredentialRef, HostId, OutputBinding, OutputDecl, OutputId, ResourceProvenance, RoleName, Selector},
+        ir::{CredentialRef, HostId, OutputBinding, OutputDecl, OutputId, RoleName, Selector},
         model::PortType,
     };
 
@@ -305,7 +289,6 @@ mod tests {
             classes: PayloadClasses::All,
             protocol: encode_protocol(protocol),
             delivery: DeliveryPolicy::Native,
-            provenance: ResourceProvenance::Native,
         }
     }
 
@@ -325,7 +308,7 @@ mod tests {
             "native:additional/fa8d2eae247dcfe1/1",
             &intake(true, false),
         );
-        let spec = recipient_spec(&additional, None).unwrap();
+        let spec = recipient_spec(&additional).unwrap();
         assert_eq!(&*spec.id, "dd_out/additional/1/https://dual.example.com");
         assert_eq!(&*spec.credential, "native:additional/fa8d2eae247dcfe1/1");
         assert_eq!(spec.classes, Classes::All);
@@ -351,7 +334,7 @@ mod tests {
             "native:api_key",
             &intake(false, false),
         );
-        let RecipientOrigin::Native(native) = recipient_spec(&primary, None).unwrap().origin else {
+        let RecipientOrigin::Native(native) = recipient_spec(&primary).unwrap().origin else {
             panic!("a native recipient");
         };
         assert_eq!(native.route, MetricsRecipientRoute::Primary);
@@ -360,47 +343,9 @@ mod tests {
 
         let unroutable = decl("dd_out/elsewhere/0/x", "x", "native:api_key", &intake(false, false));
         assert_eq!(
-            recipient_spec(&unroutable, None).unwrap_err().to_string(),
+            recipient_spec(&unroutable).unwrap_err().to_string(),
             "Recipient `dd_out/elsewhere/0/x` cannot be prepared: its identity names no native route."
         );
-    }
-
-    #[test]
-    fn declared_recipients_carry_their_names_and_their_bounded_policy() {
-        let mut team_d = decl(
-            "dd_out/declared/team_d/http://127.0.0.1:17105",
-            "http://127.0.0.1:17105",
-            "credentials/team_d",
-            &intake(false, false),
-        );
-        team_d.classes = PayloadClasses::MetricsOnly;
-        team_d.delivery = DeliveryPolicy::Bounded(BoundedDelivery {
-            queue_bytes: Some(4_194_304),
-            spill: Spill::Never,
-            on_retire: Closure::Discard,
-        });
-        let spec = recipient_spec(&team_d, Some("team_d_intake")).unwrap();
-        assert_eq!(
-            spec.origin,
-            RecipientOrigin::Declared {
-                name: "team_d_intake".into(),
-                credential: "team_d".into(),
-            }
-        );
-        assert_eq!(spec.classes, Classes::MetricsOnly);
-        assert_eq!(
-            spec.policy,
-            RecipientPolicy {
-                queue_bytes: Some(4_194_304),
-                spill: SpillPolicy::Never,
-                on_retire: RetireClosure::Discard,
-            }
-        );
-        // Without the artifact's name, the credential's names the recipient's task.
-        let RecipientOrigin::Declared { name, .. } = recipient_spec(&team_d, None).unwrap().origin else {
-            panic!("a declared recipient");
-        };
-        assert_eq!(&*name, "team_d");
     }
 
     #[test]
@@ -450,7 +395,6 @@ mod tests {
                 selector: Selector::Role(RoleName::new("main").unwrap()),
                 encoder: encode_encoder(&settings).unwrap(),
                 telemetry: "dd_metrics_encode".parse().unwrap(),
-                provenance: ResourceProvenance::Native,
             }),
         };
         let binding: PlanHash = HASH.parse().unwrap();
@@ -495,10 +439,10 @@ mod tests {
 
     #[test]
     fn addresses_and_drain_reports_translate_both_ways() {
-        let core = recipient(4, "dd_out/declared/team_d/http://127.0.0.1:17105");
+        let core = recipient(4, "dd_out/additional/0/http://127.0.0.1:17105");
         let host = delivery_ref(&core);
         assert_eq!(host.slot.get(), 4);
-        assert_eq!(&*host.id, "dd_out/declared/team_d/http://127.0.0.1:17105");
+        assert_eq!(&*host.id, "dd_out/additional/0/http://127.0.0.1:17105");
         assert_eq!(host.incarnation, 14);
         assert_eq!(core_ref(&host).unwrap(), core);
         let invalid = delivery::RecipientRef {

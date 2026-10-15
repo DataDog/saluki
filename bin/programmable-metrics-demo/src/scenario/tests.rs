@@ -256,7 +256,6 @@ fn named_fixture() -> (saluki_metric_plan::ir::Plan, crate::export::ExportBundle
             .parse()
             .unwrap(),
             endpoint: endpoint.to_string(),
-            source: saluki_metric_plan::validate::RecipientSource::Native,
         };
         catalog
             .with_recipient(
@@ -476,25 +475,15 @@ fn acknowledgments_are_found_by_product_and_revision_and_status_says_which_progr
     let status = Status::read(json!({
         "program": {"runs": "published", "native_policy": "not_applied", "differs": ["dogstatsd.metric_filter.values"]},
         "config_states": [
-            {"product": "resources", "id": "demo-resources", "revision": 2, "state": "active"},
             {"id": "demo", "revision": 2, "state": "pending", "error": "waiting for recipient `team_z`: ..."},
             {"product": "policy", "id": "demo", "revision": 3, "state": "active"}
         ]
     }));
-    assert_eq!(
-        status
-            .acknowledgment(crate::stub::protocol::RESOURCES_PRODUCT, 2)
-            .unwrap()["state"],
-        "active"
-    );
     // A config state without a product is the policy product's, as the first protocol wrote it.
     let policy = status.acknowledgment(POLICY_PRODUCT, 2).unwrap();
     assert!(waiting_for(policy, UNKNOWN_RECIPIENT) && !settled(policy));
     assert!(!waiting_for(policy, "team_y"));
     assert!(settled(status.acknowledgment(POLICY_PRODUCT, 3).unwrap()));
-    assert!(status
-        .acknowledgment(crate::stub::protocol::RESOURCES_PRODUCT, 3)
-        .is_none());
     assert_eq!(
         (status.runs(), status.native_policy(), status.differs()),
         (

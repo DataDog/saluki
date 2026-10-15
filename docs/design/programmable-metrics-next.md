@@ -41,7 +41,7 @@ become a more complex control surface over native features.
 
 | Kind | Examples | How a program uses them |
 |---|---|---|
-| **Resources** (privileged) | endpoints and recipients, credentials, sources | declared in configuration or a resources artifact; referenced by name |
+| **Resources** (privileged) | endpoints and recipients, credentials, sources | declared in configuration (since version 2's step V2, the only place); referenced by name |
 | **Facts and signals** | hostname, host tags, whether Multi-Region Failover is failing over metrics, whether autoscaling failover is on | referenced as bindings, resolved by the host |
 | **Policy settings** | routing allowlists, the metric and tag filterlists, the failover mirroring list, aggregation's window and other parameters | owned by the published program, as literals |
 

@@ -1,4 +1,4 @@
-//! The artifact channel stub: the server side of the channel that ADP polls for policy and resources artifacts.
+//! The artifact channel stub: the server side of the channel that ADP polls for programs.
 //!
 //! The stub implements the stub protocol (see [`protocol`]): every poll gets the complete current snapshot of each
 //! product it asks for. The `policy` product holds at most one config per scope of the default program: `demo` for the
@@ -30,11 +30,11 @@ use crate::clock::unix_millis;
 pub mod protocol;
 use self::protocol::{
     ApprovedAgainst, ChannelStatus, ConfigState, Envelope, PollRequest, PollResponse, POLICY_PRODUCT, POLL_PATH,
-    PROTOCOL_VERSION, RESOURCES_PRODUCT,
+    PROTOCOL_VERSION,
 };
 
 pub mod store;
-use self::store::{ArtifactStore, HistoryEntry, PublishedConfig, PublishedResources};
+use self::store::{ArtifactStore, HistoryEntry, PublishedConfig};
 
 /// How many raw polls the stub keeps.
 const POLL_CAPACITY: usize = 120;
@@ -177,61 +177,11 @@ pub struct ChannelView {
     /// The most recent poll.
     pub last_poll: Option<PollRecord>,
 
-    /// The acknowledgment timeline, most recent first: the acknowledgments of both products.
+    /// The acknowledgment timeline, most recent first.
     pub timeline: Vec<TimelineEntry>,
 
-    /// The store's most recent changes of the policy product, most recent first.
+    /// The store's most recent changes, most recent first.
     pub history: Vec<HistoryEntry>,
-
-    /// What the stub serves for the resources product.
-    pub resources: ResourcesView,
-}
-
-/// What the stub serves for the resources product, as the UI shows it.
-#[derive(Clone, Debug, Serialize)]
-pub struct ResourcesView {
-    /// The resources config served, if any.
-    pub current: Option<ResourcesConfig>,
-
-    /// The highest resources revision issued.
-    pub revision_counter: u64,
-
-    /// The resources revision the next publish would use, given what ADP has reported.
-    pub next_revision: u64,
-
-    /// The store's most recent changes of the resources product, most recent first.
-    pub history: Vec<HistoryEntry>,
-}
-
-/// The resources config the stub serves, without its payload.
-#[derive(Clone, Debug, Serialize)]
-pub struct ResourcesConfig {
-    /// The config ID.
-    pub id: String,
-
-    /// The resources revision.
-    pub revision: u64,
-
-    /// The hash of the resources document.
-    pub artifact_hash: String,
-
-    /// The transport hash.
-    pub sha256: String,
-
-    /// When it was published.
-    pub published_ms: u64,
-}
-
-impl From<&PublishedResources> for ResourcesConfig {
-    fn from(config: &PublishedResources) -> Self {
-        Self {
-            id: config.id.clone(),
-            revision: config.revision,
-            artifact_hash: config.artifact_hash.clone(),
-            sha256: config.sha256.clone(),
-            published_ms: config.published_ms,
-        }
-    }
 }
 
 /// The config the stub serves for one scope, without its payload.
@@ -311,18 +261,12 @@ impl StubChannel {
             protocol_version: PROTOCOL_VERSION,
             ..PollResponse::default()
         };
-        // A complete snapshot of every product asked for. A poll that names no products gets the policy product, as
-        // the first version of the protocol had only that one; another product is served only to a poll that asks for
-        // it, since ADP reads only the products it asks for.
+        // A complete snapshot of the policy product, to a poll that asks for it or names no products, as the first
+        // version of the protocol did.
         let asked = |name: &str| request.products.iter().any(|product| product == name);
         let store = self.lock_store();
         if request.products.is_empty() || asked(POLICY_PRODUCT) {
             response.products.insert(POLICY_PRODUCT.to_string(), store.snapshot());
-        }
-        if asked(RESOURCES_PRODUCT) {
-            response
-                .products
-                .insert(RESOURCES_PRODUCT.to_string(), store.resources_snapshot());
         }
         Ok(response)
     }
@@ -410,81 +354,19 @@ impl StubChannel {
         self.lock_store().next_revision(high_water)
     }
 
-    /// Returns the resources document the stub serves, with its config, if it serves one.
-    ///
-    /// The demo publishes no resources artifacts; the stub still serves the resources product, which ADP polls, and its
-    /// tests publish one through this and the next two methods.
-    #[cfg(test)]
-    pub fn resources(&self) -> Option<(ResourcesConfig, Value)> {
-        let store = self.lock_store();
-        let config = store.resources()?;
-        let envelope = serde_json::from_str::<Envelope>(&config.payload).ok()?;
-        Some((ResourcesConfig::from(config), envelope.artifact))
-    }
-
-    /// Publishes a resources document as the next resources revision.
-    ///
-    /// The revision is one more than the larger of the store's resources counter and ADP's resources revision
-    /// high-water mark, taken from the latest poll and from `reported_high_water` (such as the privileged status
-    /// route's), whichever is higher: the resources product's revisions are apart from the policy product's.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the document cannot be hashed or the store cannot be written.
-    #[cfg(test)]
-    pub fn publish_resources(
-        &self, document: Value, reported_high_water: Option<u64>, now_ms: u64,
-    ) -> Result<ResourcesConfig, GenericError> {
-        let high_water = self.resources_high_water(reported_high_water);
-        self.lock_store()
-            .publish_resources(document, high_water, now_ms)
-            .map(|config| ResourcesConfig::from(&config))
-    }
-
-    /// Empties the resources snapshot, revoking every resource the resources artifact declared. Returns `false`, and
-    /// changes nothing, if it is already empty.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the store cannot be written.
-    #[cfg(test)]
-    pub fn revoke_resources(&self, now_ms: u64) -> Result<bool, GenericError> {
-        self.lock_store().revoke_resources(now_ms)
-    }
-
     /// Returns what the stub knows, with up to `timeline_limit` timeline entries.
     ///
-    /// The next revisions count `reported_high_water` and `reported_resources_high_water` as
-    /// [`publish`][Self::publish] and [`publish_resources`][Self::publish_resources] do.
-    pub fn view(
-        &self, timeline_limit: usize, reported_high_water: Option<u64>, reported_resources_high_water: Option<u64>,
-    ) -> ChannelView {
+    /// The next revision counts `reported_high_water` as [`publish`][Self::publish] does.
+    pub fn view(&self, timeline_limit: usize, reported_high_water: Option<u64>) -> ChannelView {
         let high_water = self.high_water(reported_high_water);
-        let resources_high_water = self.resources_high_water(reported_resources_high_water);
-        let (current, configs, revision_counter, next_revision, history, resources) = {
+        let (current, configs, revision_counter, next_revision, history) = {
             let store = self.lock_store();
-            let recent = |resources: bool| -> Vec<HistoryEntry> {
-                store
-                    .history()
-                    .iter()
-                    .rev()
-                    .filter(|entry| entry.is_resources() == resources)
-                    .take(20)
-                    .cloned()
-                    .collect()
-            };
             (
                 store.current().map(current_config),
                 store.configs().map(current_config).collect(),
                 store.revision_counter(),
                 store.next_revision(high_water),
-                recent(false),
-                ResourcesView {
-                    current: store.resources().map(ResourcesConfig::from),
-                    revision_counter: store.resources_revision_counter(),
-                    next_revision: store.next_resources_revision(resources_high_water),
-                    history: recent(true),
-                },
+                store.history().iter().rev().take(20).cloned().collect(),
             )
         };
         let polls = self.lock_polls();
@@ -497,7 +379,6 @@ impl StubChannel {
             last_poll: polls.records.back().cloned(),
             timeline: polls.timeline.iter().rev().take(timeline_limit).cloned().collect(),
             history,
-            resources,
         }
     }
 
@@ -505,13 +386,6 @@ impl StubChannel {
     fn high_water(&self, reported_high_water: Option<u64>) -> Option<u64> {
         self.latest_status()
             .and_then(|(_, status)| status.revision_high_water)
-            .max(reported_high_water)
-    }
-
-    /// Returns ADP's resources revision high-water mark: the larger of the latest poll's and `reported_high_water`.
-    fn resources_high_water(&self, reported_high_water: Option<u64>) -> Option<u64> {
-        self.latest_status()
-            .and_then(|(_, status)| status.resources.and_then(|resources| resources.revision_high_water))
             .max(reported_high_water)
     }
 

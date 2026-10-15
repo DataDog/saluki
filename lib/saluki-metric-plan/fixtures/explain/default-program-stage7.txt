@@ -2,8 +2,8 @@ explain_version 2
 
 plan
   ir_version 1
-  hash sha256:777a16e553013175d30a4805777115db354853003e56bca2aa4464edc03e8b3c
-  structural_hash sha256:8028dfdc7b287e3efe981af17b70283c1f6231641ba9d5965b1ce9eafb29e59f
+  hash sha256:6e194ad57c45b8b3a6203e8e28336580fd3ee1ebf8d0436096da6616957b9f99
+  structural_hash sha256:1e9fdd8821acf1fdc87bffc4fe3bbf5b90f0a7982dffad04d7336ddcc3f9ea9e
   valid: 0 errors, 0 warnings
 
 nodes (34)
@@ -230,7 +230,7 @@ edges (34)
   af_metrics_gateway.true -> af_metrics_gateway_true.in: counter, rate, gauge, set (mixed timestamps)
   af_metrics_gateway.false -> af_metrics_gateway_false.in: every kind (mixed timestamps)
 
-outputs (7)
+outputs (6)
   dsd_client_telemetry
     accepts every kind (mixed timestamps)
     fingerprint sha256:1111111111111111111111111111111111111111111111111111111111111111
@@ -252,7 +252,7 @@ outputs (7)
   metrics_routing_encode_1
     accepts every kind (mixed timestamps)
     fingerprint sha256:ccc6ed3c9012f1da6fe870fbf4a1c9e3357dfa31e85c0ba234a8d4ec7b740a99
-    recipients dd_out/additional_1/0, dd_out/additional_1/1
+    recipients none
     delivery native
     emitted by metrics_routing_filter_1_true
   mrf_metrics_encode
@@ -267,48 +267,37 @@ outputs (7)
     recipients cluster_agent_out/primary/0
     delivery native
     emitted by af_metrics_gateway_true
-  resources_team_d
-    accepts every kind (mixed timestamps)
-    fingerprint sha256:361f843bc9a6b25663cc6da865dd3af0daf04bb8890e3717ae98d7d30bb1c838
-    recipients dd_out/declared/team_d/http://127.0.0.1:17105
-    delivery native
-    emitted by none
 
 scopes (1)
   metrics: checks = checks_ipc_in.metrics, dogstatsd = dsd_in.metrics, liveness = liveness_in.metrics, otlp = otlp_in.metrics, trace_sampler = trace_sampler.metrics
 
 resources
-  bound outputs (6)
-    dd_metrics_encode (rebound, native)
+  bound outputs (5)
+    dd_metrics_encode (rebound)
       host dd_out
       selector role main
       encoder {"flush_timeout":"2s","series":"v2"}
       telemetry dd_metrics_encode
-    metrics_routing_encode_0 (reused, native)
+    metrics_routing_encode_0 (reused)
       host dd_out
       selector group sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
       encoder {"flush_timeout":"2s","series":"v2"}
       telemetry metrics_routing_encode_0
-    metrics_routing_encode_1 (reused, native)
+    metrics_routing_encode_1 (rebound)
       host dd_out
       selector group sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
       encoder {"flush_timeout":"2s","series":"v2"}
       telemetry metrics_routing_encode_1
-    mrf_metrics_encode (reused, native)
+    mrf_metrics_encode (reused)
       host mrf_dd_out
       selector role multi_region_failover
       encoder {"flush_timeout":"2s","series":"v2"}
       telemetry mrf_metrics_encode
-    af_metrics_encode (reused, native)
+    af_metrics_encode (reused)
       host cluster_agent_out
       selector role autoscaling_failover
       encoder {"flush_timeout":"2s","series":"v2"}
       telemetry af_metrics_encode
-    resources_team_d (reused, resources revision 2 sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd)
-      host dd_out
-      selector declared dd_out/declared/team_d/http://127.0.0.1:17105
-      encoder {"flush_timeout":"2s","series":"v2"}
-      telemetry resources_team_d
   hosts (3)
     dd_out (reconfigured)
       settings {"endpoint_concurrency":1,"request_timeout":"30s"}
@@ -316,59 +305,41 @@ resources
       settings {"endpoint_concurrency":1,"request_timeout":"20s"}
     cluster_agent_out (reused)
       settings {"endpoint_concurrency":1,"request_timeout":"20s"}
-  recipients (8)
-    dd_out/primary/0 (reused, native)
+  recipients (5)
+    dd_out/primary/0 (reused)
       host dd_out, endpoint https://app.datadoghq.com
       credential native:api_key, classes all
       protocol {"kind":"datadog_intake","v3":{"series":false,"sketches":false}}
       delivery native
       outputs dd_metrics_encode
-    dd_out/additional_0/0 (reused, native)
+    dd_out/additional_0/0 (reused)
       host dd_out, endpoint https://group0.example.com
       credential native:additional/0123456789abcdef/0, classes all
       protocol {"kind":"datadog_intake","v3":{"series":false,"sketches":false}}
       delivery native
       outputs metrics_routing_encode_0
-    dd_out/additional_1/0 (reused, native)
-      host dd_out, endpoint https://group1.example.com
-      credential native:additional/fedcba9876543210/0, classes all
-      protocol {"kind":"datadog_intake","v3":{"series":false,"sketches":false}}
-      delivery native
-      outputs metrics_routing_encode_1
-    dd_out/additional_1/1 (reused, native)
-      host dd_out, endpoint https://group1.example.com
-      credential native:additional/fedcba9876543210/1, classes all
-      protocol {"kind":"datadog_intake","v3":{"series":false,"sketches":false}}
-      delivery native
-      outputs metrics_routing_encode_1
-    mrf_dd_out/primary/0 (reused, native)
+    mrf_dd_out/primary/0 (reused)
       host mrf_dd_out, endpoint https://app.datadoghq.eu
       credential native:multi_region_failover.api_key, classes all
       protocol {"kind":"datadog_intake","v3":{"series":false,"sketches":false}}
       delivery native
       outputs mrf_metrics_encode
-    cluster_agent_out/primary/0 (reused, native)
+    cluster_agent_out/primary/0 (reused)
       host cluster_agent_out, endpoint https://datadog-cluster-agent.default.svc:5005
       credential native:cluster_agent.auth_token, classes metrics only
       protocol {"kind":"cluster_agent"}
       delivery native
       outputs af_metrics_encode
-    dd_out/declared/team_d/http://127.0.0.1:17105 (reused, resources revision 2 sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd)
-      host dd_out, endpoint http://127.0.0.1:17105
-      credential credentials/team_d, classes metrics only
-      protocol {"kind":"datadog_intake","v3":{"series":false,"sketches":false}}
-      delivery {"bounded":{"on_retire":"attempt","queue_bytes":4194304,"spill":"never"}}
-      outputs resources_team_d
-    dd_out/additional_2/0 (new, native)
+    dd_out/additional_2/0 (new)
       host dd_out, endpoint https://dual.example.com
       credential native:additional/0000111122223333/0, classes all
       protocol {"kind":"datadog_intake","v3":{"series":false,"sketches":false}}
       delivery native
       outputs dd_metrics_encode
   removed
-    outputs resources_team_e
+    outputs none
     hosts none
-    recipients dd_out/declared/team_e/https://e.example.com
+    recipients dd_out/additional_1/0, dd_out/additional_1/1
 
 bounds (4)
   plan artifact_nodes: 34 of 256 (within the limit, not enforced)
@@ -545,7 +516,7 @@ segments (6)
     nodes dsd_post_agg_filter_in, dsd_post_agg_filter, dsd_post_agg_filter_true, dsd_post_agg_filter_fanout, dsd_post_agg_filter_fanout_0, metrics_enrich_in, metrics_enrich, metrics_enrich_host_tags, metrics_policy, metrics_policy_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false
     ends output af_metrics_encode, output dd_metrics_encode, output dsd_client_telemetry, output metrics_routing_encode_0, output metrics_routing_encode_1, output mrf_metrics_encode
 
-output bindings (8)
+output bindings (6)
   dsd_client_telemetry
     recipients none
     delivery native (overflow wait, closure native)
@@ -562,7 +533,7 @@ output bindings (8)
     fed by metrics_enrich.dd_metrics_encode
     idle dsd_pre_aggregation.dd_metrics_encode, dsd_prefix_filter_region.dd_metrics_encode, dsd_no_agg_split_region.dd_metrics_encode, dsd_post_agg_filter_region.dd_metrics_encode
   metrics_routing_encode_1: a lease in encode host dd_metrics_encode of dd_out
-    recipients dd_out/additional_1/0, dd_out/additional_1/1
+    recipients none
     delivery native (overflow wait, closure native)
     fed by metrics_enrich.dd_metrics_encode
     idle dsd_pre_aggregation.dd_metrics_encode, dsd_prefix_filter_region.dd_metrics_encode, dsd_no_agg_split_region.dd_metrics_encode, dsd_post_agg_filter_region.dd_metrics_encode
@@ -576,13 +547,3 @@ output bindings (8)
     delivery native (overflow wait, closure native)
     fed by metrics_enrich.af_metrics_encode
     idle dsd_pre_aggregation.af_metrics_encode, dsd_prefix_filter_region.af_metrics_encode, dsd_no_agg_split_region.af_metrics_encode, dsd_post_agg_filter_region.af_metrics_encode
-  resources_team_d: a lease in encode host dd_metrics_encode of dd_out
-    recipients dd_out/declared/team_d/http://127.0.0.1:17105
-    delivery native (overflow wait, closure native)
-    fed by none
-    idle dsd_pre_aggregation.dd_metrics_encode, dsd_prefix_filter_region.dd_metrics_encode, dsd_no_agg_split_region.dd_metrics_encode, dsd_post_agg_filter_region.dd_metrics_encode, metrics_enrich.dd_metrics_encode
-  resources_team_e: removed, the plan no longer declares it; below as the boot plan declares it
-    recipients dd_out/declared/team_e/https://e.example.com
-    delivery native (overflow wait, closure native)
-    fed by none
-    idle none

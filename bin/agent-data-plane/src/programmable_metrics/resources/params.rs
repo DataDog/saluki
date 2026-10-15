@@ -137,14 +137,12 @@ pub const RECIPIENT_PROTOCOL: &[ParamSpec] = &[
     ParamSpec::optional("v3", ParamType::Record(V3)),
 ];
 
-/// Returns the schema of a delivery host's parameters: these tables, and whether the host accepts recipients a
-/// resources artifact declares, which only `dd_out` does.
-pub fn host_schema(host: &FixedHost) -> HostSchema {
+/// Returns the schema of a delivery host's parameters: these tables, which every fixed host shares.
+pub fn host_schema(_: &FixedHost) -> HostSchema {
     HostSchema {
         encoder: ENCODER,
         settings: HOST_SETTINGS,
         protocol: RECIPIENT_PROTOCOL,
-        declared_recipients: host.declared_recipients,
     }
 }
 
@@ -532,13 +530,13 @@ mod tests {
     }
 
     #[test]
-    fn only_the_datadog_delivery_host_accepts_declared_recipients() {
+    fn every_delivery_host_shares_the_parameter_tables() {
         use crate::programmable_metrics::resources::{CLUSTER_AGENT_HOST, DD_HOST, MRF_HOST};
 
-        assert!(host_schema(&DD_HOST).declared_recipients);
-        assert!(!host_schema(&MRF_HOST).declared_recipients);
-        assert!(!host_schema(&CLUSTER_AGENT_HOST).declared_recipients);
-        assert_eq!(host_schema(&DD_HOST).settings, HOST_SETTINGS);
+        for host in [DD_HOST, MRF_HOST, CLUSTER_AGENT_HOST] {
+            assert_eq!(host_schema(&host).settings, HOST_SETTINGS);
+            assert_eq!(host_schema(&host).encoder, ENCODER);
+        }
     }
 
     #[test]

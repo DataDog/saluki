@@ -10,32 +10,23 @@ use std::{
 use saluki_components::forwarders::delivery::DeliveryHostStatus;
 use saluki_metric_plan::{
     canonical::PlanHash,
-    channel::{ApplyState, ApplyStates, ArtifactProduct, ConfigAcknowledgment},
+    channel::ApplyStates,
     extension::DeliveryPolicy,
     install::{LeaseState, RecipientRef, RecipientState, ResourceTable, RetirementReport},
-    ir::{HostId, PayloadClasses, ResourceProvenance},
+    ir::{HostId, PayloadClasses},
 };
 use serde::Serialize;
 
 use super::budget::BudgetUsage;
-use crate::programmable_metrics::resources::{
-    specs::delivery_ref, spelled_endpoint, FixedHosts, NativeResources, OutputKind,
-};
+use crate::programmable_metrics::resources::{specs::delivery_ref, spelled_endpoint, FixedHosts, NativeResources};
 
-/// What the default program delivers through: the resources product's state, the delivery hosts, the outputs, the
-/// recipients, and the resource budget.
+/// What the default program delivers through: the delivery hosts, the outputs, the recipients, and the resource
+/// budget.
 ///
-/// Outputs and recipients are those of the default program last lowered: what the current configuration and the
-/// accepted resources artifact declare. Credentials appear by reference only.
+/// Outputs and recipients are those of the default program last lowered: what the current configuration declares.
+/// Credentials appear by reference only.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct ResourcesView {
-    /// The resources product's config, as the installer acknowledges it, if one was delivered.
-    pub declared: Option<DeclaredView>,
-
-    /// The declared credentials the resources artifacts the installer core holds reference that are not configured,
-    /// by reference: an artifact that uses one waits, `pending`, until it is.
-    pub missing_credentials: Vec<String>,
-
     /// The delivery hosts, each with its encode host.
     pub hosts: Vec<HostView>,
 
@@ -49,27 +40,6 @@ pub struct ResourcesView {
     pub budget: BudgetView,
 }
 
-/// The state of the resources product's config.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct DeclaredView {
-    /// The config's identifier.
-    pub config: String,
-
-    /// The config's state: `pending` with an error while it waits for a credential, `active` once the active
-    /// generation carries its declarations, `rejected` with the reason, or `retired`.
-    pub state: ApplyState,
-
-    /// The revision of the artifact the config last delivered, once its envelope was read.
-    pub revision: Option<u64>,
-
-    /// Why the config is held, rejected, or refused, in plain text.
-    pub error: Option<String>,
-
-    /// The revision whose declarations lowering uses: the one installing or active. It stays in place while a newer
-    /// revision is pending or rejected; `None` once the product is revoked.
-    pub installed_revision: Option<u64>,
-}
-
 /// A delivery host, with its encode host.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct HostView {
@@ -79,9 +49,6 @@ pub struct HostView {
     /// Its encode host's component ID.
     pub encoder: String,
 
-    /// Whether it accepts recipients a resources artifact declares.
-    pub declared_recipients: bool,
-
     /// The leases its encode host runs, by identifier: those generations use, those a generation prepares, and those
     /// draining.
     pub leases: Vec<LeaseView>,
@@ -89,7 +56,8 @@ pub struct HostView {
     /// The recipients it drops every payload to, by identity: those the latest lowering no longer declares.
     pub withdrawn: Vec<String>,
 
-    /// The declared recipients that send to the same endpoint with the same key as another of its recipients.
+    /// The recipients that send to the same endpoint with the same key as another of its recipients, which the host
+    /// detects for recipients it holds under a declared origin: ADP creates none, so the list is empty.
     pub conflicts: Vec<ConflictView>,
 
     /// Why it could not build a client for its current settings, while it sends through the client it had.
@@ -134,7 +102,7 @@ impl From<LeaseState> for LeaseViewState {
     }
 }
 
-/// A declared recipient that sends to the same endpoint with the same key as another recipient of its host.
+/// A recipient that sends to the same endpoint with the same key as another recipient of its host.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ConflictView {
     /// The declared recipient's identity.
@@ -161,9 +129,6 @@ pub struct OutputView {
 
     /// The identities of its recipients, sorted.
     pub recipients: Vec<String>,
-
-    /// Who declared it: `native`, or the resources artifact's revision.
-    pub provenance: Provenance,
 }
 
 /// A recipient.
@@ -186,38 +151,6 @@ pub struct RecipientView {
 
     /// Its delivery policy.
     pub delivery: DeliveryPolicy,
-
-    /// Who declared it: `native`, or the resources artifact's revision.
-    pub provenance: Provenance,
-}
-
-/// Who declared a resource: `"native"`, or `{"declared": {"revision": 2, "hash": "sha256:…"}}`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Provenance {
-    /// Native configuration.
-    Native,
-
-    /// A resources artifact, by its revision and hash.
-    Declared {
-        /// The artifact's revision.
-        revision: u64,
-
-        /// The artifact's hash.
-        hash: PlanHash,
-    },
-}
-
-impl From<&ResourceProvenance> for Provenance {
-    fn from(provenance: &ResourceProvenance) -> Self {
-        match provenance {
-            ResourceProvenance::Native => Self::Native,
-            ResourceProvenance::Declared(artifact) => Self::Declared {
-                revision: artifact.revision,
-                hash: artifact.hash,
-            },
-        }
-    }
 }
 
 /// The status route's document: the apply states, as a poll reports them, and the recipient incarnations, which only
@@ -262,10 +195,6 @@ pub struct RecipientEntry {
 
     /// Its state.
     pub state: RecipientEntryState,
-
-    /// Who declared the incarnation, as the installer core held it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provenance: Option<Provenance>,
 
     /// When its drain started, in milliseconds since the Unix epoch, while it drains.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -337,11 +266,9 @@ pub(super) struct RetiredRecipients {
 }
 
 impl RetiredRecipients {
-    /// Records that `recipient` of `host`, which `provenance` declared, retired at `at` after the drain `report`
-    /// describes.
+    /// Records that `recipient` of `host` retired at `at` after the drain `report` describes.
     pub(super) fn record(
-        &mut self, host: &HostId, recipient: &RecipientRef, report: &RetirementReport, provenance: Provenance,
-        at: SystemTime,
+        &mut self, host: &HostId, recipient: &RecipientRef, report: &RetirementReport, at: SystemTime,
     ) {
         let retired_ms = unix_millis(at);
         if self.entries.len() == KEPT_RETIRED {
@@ -353,7 +280,6 @@ impl RetiredRecipients {
             slot: recipient.slot.get(),
             incarnation: recipient.incarnation,
             state: RecipientEntryState::Retired,
-            provenance: Some(provenance),
             draining_since_ms: None,
             last_drain: Some(LastDrain {
                 delivered: report.delivered,
@@ -392,7 +318,6 @@ pub(super) fn recipient_entries(
                 slot: held.recipient.slot.get(),
                 incarnation: held.recipient.incarnation,
                 state: held.state.into(),
-                provenance: Some(Provenance::from(&held.provenance)),
                 draining_since_ms,
                 last_drain: None,
             }
@@ -425,9 +350,6 @@ pub(super) struct Parts<'a> {
     pub(super) host_status: &'a BTreeMap<String, DeliveryHostStatus>,
     pub(super) lowered: &'a NativeResources,
     pub(super) labels: &'a std::collections::BTreeMap<saluki_metric_plan::ir::OutputId, String>,
-    pub(super) config_states: &'a [ConfigAcknowledgment],
-    pub(super) installed_revision: Option<u64>,
-    pub(super) missing_credentials: Vec<String>,
     pub(super) budget: BudgetUsage,
 }
 
@@ -439,40 +361,19 @@ pub(super) fn resources_view(parts: Parts<'_>) -> ResourcesView {
         host_status,
         lowered,
         labels,
-        config_states,
-        installed_revision,
-        missing_credentials,
         budget,
     } = parts;
-    let declared = config_states
-        .iter()
-        .find(|state| state.product == ArtifactProduct::Resources)
-        .map(|state| DeclaredView {
-            config: state.id.to_string(),
-            state: state.state,
-            revision: state.revision,
-            error: state.error.clone(),
-            installed_revision,
-        });
     let outputs = lowered
         .outputs
         .iter()
         .map(|output| {
             let decl = &output.decl;
-            let provenance = decl
-                .binding
-                .as_ref()
-                .map_or(Provenance::Native, |binding| Provenance::from(&binding.provenance));
             OutputView {
                 id: decl.id.to_string(),
-                label: labels.get(&decl.id).cloned().unwrap_or_else(|| match &output.kind {
-                    OutputKind::Declared { name, .. } => name.clone(),
-                    _ => decl.id.to_string(),
-                }),
+                label: labels.get(&decl.id).cloned().unwrap_or_else(|| decl.id.to_string()),
                 host: decl.binding.as_ref().map(|binding| binding.host.to_string()),
                 fingerprint: decl.fingerprint,
                 recipients: decl.recipients.iter().map(ToString::to_string).collect(),
-                provenance,
             }
         })
         .collect();
@@ -487,12 +388,9 @@ pub(super) fn resources_view(parts: Parts<'_>) -> ResourcesView {
             credential: recipient.credential.to_string(),
             classes: recipient.classes,
             delivery: recipient.delivery,
-            provenance: Provenance::from(&recipient.provenance),
         })
         .collect();
     ResourcesView {
-        declared,
-        missing_credentials,
         hosts: hosts
             .iter()
             .map(|host| {
@@ -500,7 +398,6 @@ pub(super) fn resources_view(parts: Parts<'_>) -> ResourcesView {
                 HostView {
                     host: host.delivery.to_string(),
                     encoder: host.encoder.to_string(),
-                    declared_recipients: host.declared_recipients,
                     leases: table
                         .lease_states(&host.id())
                         .into_iter()

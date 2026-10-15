@@ -119,7 +119,7 @@ segments (6)
     nodes dsd_post_agg_filter_in, dsd_post_agg_filter, dsd_post_agg_filter_true, dsd_post_agg_filter_fanout, dsd_post_agg_filter_fanout_0, metrics_enrich_in, metrics_enrich, metrics_enrich_host_tags, metrics_policy, metrics_policy_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false
     ends output af_metrics_encode, output dd_metrics_encode, output dsd_client_telemetry, output metrics_routing_encode_0, output metrics_routing_encode_1, output mrf_metrics_encode
 
-output bindings (8)
+output bindings (6)
   dsd_client_telemetry
     recipients none
     delivery native (overflow wait, closure native)
@@ -150,13 +150,3 @@ output bindings (8)
     delivery native (overflow wait, closure native)
     fed by metrics_enrich.af_metrics_encode
     idle dsd_pre_aggregation.af_metrics_encode
-  resources_team_d: a lease in encode host dd_metrics_encode of dd_out
-    recipients dd_out/declared/team_d/http://127.0.0.1:17105
-    delivery native (overflow wait, closure native)
-    fed by none
-    idle dsd_pre_aggregation.dd_metrics_encode, metrics_enrich.dd_metrics_encode
-  resources_team_e: a lease in encode host dd_metrics_encode of dd_out
-    recipients dd_out/declared/team_e/https://e.example.com
-    delivery native (overflow wait, closure native)
-    fed by none
-    idle dsd_pre_aggregation.dd_metrics_encode, metrics_enrich.dd_metrics_encode

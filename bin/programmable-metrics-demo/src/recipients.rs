@@ -9,7 +9,6 @@
 use std::collections::BTreeMap;
 
 use serde::Serialize;
-use serde_json::Value;
 
 use crate::stub::protocol::{DrainReport, RecipientEntry};
 
@@ -52,9 +51,6 @@ pub struct RecipientView {
     /// The recipient's identity.
     pub id: String,
 
-    /// Whether a resources artifact declared it, rather than ADP's configuration.
-    pub declared: bool,
-
     /// Its slot in its host's table.
     pub slot: Option<u64>,
 
@@ -73,9 +69,6 @@ pub struct RecipientView {
 
     /// When ADP's status last listed it.
     pub last_seen_ms: u64,
-
-    /// Who declared it, as ADP writes it.
-    pub provenance: Option<Value>,
 
     /// The bytes its retry queue held, when ADP last listed it.
     pub queue_bytes: Option<u64>,
@@ -185,14 +178,12 @@ impl RecipientLog {
                 .map(|tracked| RecipientView {
                     host: tracked.entry.host.clone(),
                     id: tracked.entry.id.clone(),
-                    declared: tracked.entry.id.contains("/declared/"),
                     slot: tracked.entry.slot,
                     incarnation: tracked.entry.incarnation,
                     state: tracked.state.clone(),
                     state_since_ms: tracked.state_since_ms,
                     listed: tracked.listed,
                     last_seen_ms: tracked.last_seen_ms,
-                    provenance: tracked.entry.provenance.clone(),
                     queue_bytes: tracked.entry.queue_bytes,
                     last_drain: tracked.entry.last_drain,
                 })
@@ -205,7 +196,7 @@ impl RecipientLog {
 mod tests {
     use super::*;
 
-    const TEAM_D: &str = "dd_out/declared/team_d/http://127.0.0.1:17105";
+    const TEAM_D: &str = "dd_out/additional/0/http://127.0.0.1:17105";
 
     fn entry(id: &str, incarnation: u64, state: &str) -> RecipientEntry {
         RecipientEntry {
@@ -250,7 +241,7 @@ mod tests {
             states(&log),
             [
                 (
-                    "dd_out/declared/team_d/http://127.0.0.1:17105".to_string(),
+                    "dd_out/additional/0/http://127.0.0.1:17105".to_string(),
                     Some(1),
                     "retired".to_string(),
                     4_000,
@@ -266,7 +257,6 @@ mod tests {
             ]
         );
         let team_d = &log.view().recipients[0];
-        assert!(team_d.declared);
         assert_eq!(team_d.last_drain.unwrap().dropped, Some(2));
 
         // A new incarnation of the same identity is a recipient of its own.

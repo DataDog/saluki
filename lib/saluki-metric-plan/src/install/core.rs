@@ -4,8 +4,6 @@ mod artifacts;
 
 mod cut;
 
-mod declared;
-
 mod resources;
 
 mod retry;
@@ -27,8 +25,7 @@ use self::artifacts::{ArtifactState, Settle};
 use self::cut::CutSetup;
 pub use self::cut::{AfterCancel, ArmCut, CutDeferReason, CutInFlight, CutPhase, CutProgress, CutStatus};
 #[cfg(test)]
-pub(super) use self::declared::keeps;
-use self::declared::DeclaredState;
+pub(super) use self::resources::keeps;
 use self::resources::TransactionState;
 use self::retry::{Wait, Waits};
 use super::resources::{
@@ -953,9 +950,7 @@ type CutOverride = dyn Fn(&Plan, &Plan) -> Option<(CutPlan, Vec<AdmissionPointId
 /// Snapshots from the artifact channel arrive through [`on_snapshot`][Self::on_snapshot], and configuration changes
 /// through [`on_default_program`][Self::on_default_program], which composes the policy in effect again. Every event
 /// keeps each config's acknowledgment ([`config_states`][Self::config_states]) and the status summary
-/// ([`status_summary`][Self::status_summary]) current. The resources product arrives through
-/// [`on_resources`][Self::on_resources], and lowering declares resources from
-/// [`accepted_resources`][Self::accepted_resources].
+/// ([`status_summary`][Self::status_summary]) current.
 ///
 /// # Resources
 ///
@@ -1001,8 +996,6 @@ pub struct InstallerCore {
     resources: ResourceTable,
     /// The retry and the failures of resource transactions.
     transactions: TransactionState,
-    /// The resources product: its revisions, acknowledgments, and the revision lowering declares resources from.
-    declared: DeclaredState,
     /// The credits the event being handled released, which its last action returns.
     released_credits: Vec<CreditKey>,
     #[cfg(test)]
@@ -1073,7 +1066,6 @@ impl InstallerCore {
             default_program: (!boot.origin.can_roll_back()).then(|| Arc::clone(&boot.plan)),
             resources: ResourceTable::with_bounds(bounds),
             transactions: TransactionState::default(),
-            declared: DeclaredState::default(),
             released_credits: Vec::new(),
             #[cfg(test)]
             cut_override: None,
@@ -1206,12 +1198,10 @@ impl InstallerCore {
         (id, self.settle(actions, Settle::Quiet))
     }
 
-    /// Records the latest lowering of native configuration: later candidates are composed against it and lowered with
-    /// the resources artifact lowering declares resources from now, and a resource transaction follows it, before any
-    /// generation lowered with it is prepared.
+    /// Records the latest lowering of native configuration: later candidates are composed against it, and a resource
+    /// transaction follows it, before any generation lowered with it is prepared.
     fn lowered(&mut self, plan: Arc<Plan>, actions: &mut Vec<Action>) {
         self.default_program = Some(plan);
-        self.declared.lowering = self.declared.installed_revision();
         self.follow_lowering(actions);
     }
 
@@ -1219,7 +1209,6 @@ impl InstallerCore {
     ///
     /// Returns `true` if the candidate is unchanged: it equals what the schedule will hold.
     fn submit(&mut self, id: CandidateId, candidate: Candidate, arrival: Arrival, actions: &mut Vec<Action>) -> bool {
-        self.declared.note_candidate(id);
         let origin = candidate.origin;
         let report = |outcome| {
             Action::Report(Report {
@@ -1335,7 +1324,7 @@ impl InstallerCore {
             return actions;
         };
         // A failure a resource caused is not the candidate's: an artifact composed over it is tried again, as a default
-        // program is, and a declared resource's failure rejects its resources revision instead.
+        // program is.
         let mut resource_failure = false;
         let failure = match (outcome, site) {
             (PrepareOutcome::Prepared, site @ (PrepareSite::Slot(_) | PrepareSite::Host(_))) => {
@@ -1378,18 +1367,14 @@ impl InstallerCore {
             )),
             (PrepareOutcome::Failed(message), PrepareSite::Host(host)) => {
                 resource_failure = true;
-                let message = format!("host `{}` failed to prepare: {}", host, message);
-                self.attribute_host_failure(generation, &host, &message, &mut actions);
-                Some(message)
+                Some(format!("host `{}` failed to prepare: {}", host, message))
             }
             (PrepareOutcome::Failed(message), PrepareSite::Budget { resource }) => {
-                let message = format!("the resource budget refused {}: {}", resource, message);
                 // A refusal of an artifact's kernel instances is that artifact's own failure.
                 if !matches!(resource, CreditKey::Instances(..)) {
                     resource_failure = true;
-                    self.attribute_credit_failure(&resource, &message, &mut actions);
                 }
-                Some(message)
+                Some(format!("the resource budget refused {}: {}", resource, message))
             }
         };
         if let Some(message) = failure {
@@ -1630,7 +1615,6 @@ impl InstallerCore {
         let Some(rollback) = self.rollback.take() else { return };
         let id = self.candidate_id();
         self.adopt_source(id, rollback.from);
-        self.declared.adopt(id, rollback.from);
         self.rollbacks.insert(id);
         let behind = self.lowered_after(rollback.from);
         self.submit(id, rollback.candidate, Arrival::Cancel, actions);

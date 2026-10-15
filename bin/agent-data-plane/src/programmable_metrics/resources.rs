@@ -1,5 +1,5 @@
 //! The resources outputs deliver through: the outputs, their bindings, the recipients, and the delivery hosts'
-//! settings, as plan parameters, resolved from the current configuration and the accepted resources artifact.
+//! settings, as plan parameters, resolved from the current configuration.
 //!
 //! - [`params`]: the names and types of the plan parameters that carry encoder settings, host settings, and recipient
 //!   protocols, which the catalog's host schemas are made of, and the codec between them and the typed specifications
@@ -23,8 +23,7 @@
 //! by the same helpers (`MetricsEndpointRoutingConfiguration`, `MrfConfiguration`, `AutoscalingFailoverConfiguration`,
 //! and the Cluster Agent configuration), from the **current** configuration: an endpoint routing group or a failover
 //! branch appears and disappears live. Only the client telemetry tap follows the startup configuration, with the
-//! DogStatsD pipeline it belongs to. A resources artifact adds the outputs it declares, `resources_<name>`, on
-//! `dd_out`.
+//! DogStatsD pipeline it belongs to. Programs add implied outputs on `dd_out` (see [`Demanded`]).
 //!
 //! The encoder keys the logs, events, service-check, and trace encoders read too (compression, the generic payload
 //! limits, the flush timeout), the retry storage root, the stop timeout, and turning disk persistence on or off stay
@@ -41,7 +40,6 @@
 //! URL are two recipients, and so is an additional endpoint that repeats the primary endpoint, as they are natively,
 //! with two directories; two spellings of the primary endpoint (a trailing slash, a default port, a site and the URL it
 //! implies) are one recipient, as they share one directory natively, and respelling it live changes only its settings.
-//! A declared recipient's is `<host>/declared/<credential name>/<canonical endpoint>`.
 //! An endpoint that is not plain printable ASCII, contains `@` (which may introduce credentials), or is too long is
 //! written as `sha256:` and the first 16 hexadecimal digits of its digest instead.
 //!
@@ -49,14 +47,13 @@
 //! native forwarder of the host sends to, which the host routes payloads that do not name their recipients over (logs,
 //! events, service checks, traces), by payload class. Each recipient names its credential by reference, never by value:
 //! `native:api_key` (the primary endpoint and the alternate metrics intake), `native:additional/<endpoint digest>/<key
-//! index>`, `native:multi_region_failover.api_key`, `native:cluster_agent.auth_token`, or, for a declared recipient,
-//! `credentials/<name>`.
+//! index>`, `native:multi_region_failover.api_key`, or `native:cluster_agent.auth_token`.
 //!
 //! # Fingerprints
 //!
 //! An output's fingerprint, version 2, covers what its declaration says it delivers to: its host, the records it
-//! accepts, and its selector, a role for the main and failover outputs, a routing group's endpoint set, or a declared
-//! output's recipients ([`resources::fingerprint`][declared_resources::fingerprint]). Recipients added to or removed
+//! accepts, and its selector, a role for the main and failover outputs, a routing group's endpoint set, or an implied
+//! output's recipients ([`resources::fingerprint`][fingerprints::fingerprint]). Recipients added to or removed
 //! from a role change nothing.
 
 pub mod params;
@@ -70,9 +67,8 @@ use saluki_components::{
     config::{AutoscalingFailoverConfiguration, MrfConfiguration},
     encoders::{DatadogMetricsConfiguration, MetricsEndpointRouting},
     forwarders::{
-        delivery::{EncoderSettings, PayloadClasses as NativeClasses, RecipientProtocol, SeriesVariant, V3Acceptance},
-        queue_endpoint, resolved_endpoint, ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration,
-        MetricsRecipient, MetricsRecipientRoute,
+        delivery::PayloadClasses as NativeClasses, queue_endpoint, resolved_endpoint,
+        ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration, MetricsRecipient, MetricsRecipientRoute,
     },
 };
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -82,12 +78,12 @@ use saluki_metric_plan::{
     compose::Demand,
     extension::DeliveryPolicy,
     ir::{
-        ArtifactRevision, CredentialRef, HostBinding, HostId, NativeComponentId, OutputBinding, OutputDecl, OutputId,
-        PayloadClasses, RecipientDecl, RecipientId, RecipientName, ResourceProvenance, Resources, RoleName, Selector,
+        CredentialRef, HostBinding, HostId, NativeComponentId, OutputBinding, OutputDecl, OutputId, PayloadClasses,
+        RecipientDecl, RecipientId, RecipientName, Resources, RoleName, Selector,
     },
     model::{Kind, KindSet, PortType, TimestampForm},
-    resources::{self as declared_resources, declared_recipient_id, ResourcesArtifact, CREDENTIALS_NAMESPACE},
-    validate::{CatalogRecipient, RecipientSource},
+    resources as fingerprints,
+    validate::CatalogRecipient,
 };
 use serde_json::{json, Value};
 
@@ -110,7 +106,7 @@ pub const MRF_METRICS_ENCODE: &str = "mrf_metrics_encode";
 /// The autoscaling failover output.
 pub const AF_METRICS_ENCODE: &str = "af_metrics_encode";
 
-/// The delivery host of the main and endpoint routing outputs, and of declared outputs.
+/// The delivery host of the main, endpoint routing, and implied outputs.
 pub const DD_OUT: &str = "dd_out";
 
 /// The delivery host of the multi-region failover output.
@@ -156,9 +152,6 @@ pub struct FixedHost {
 
     /// The component ID of its encode host, which runs the leases of the outputs bound to it.
     pub encoder: &'static str,
-
-    /// Whether the host accepts recipients a resources artifact declares.
-    pub declared_recipients: bool,
 }
 
 impl FixedHost {
@@ -168,25 +161,22 @@ impl FixedHost {
     }
 }
 
-/// `dd_out`, with `dd_metrics_encode`: the only host recipients a resources artifact declares may run in.
+/// `dd_out`, with `dd_metrics_encode`.
 pub const DD_HOST: FixedHost = FixedHost {
     delivery: DD_OUT,
     encoder: DD_METRICS_ENCODE,
-    declared_recipients: true,
 };
 
 /// `mrf_dd_out`, with `mrf_metrics_encode`.
 pub const MRF_HOST: FixedHost = FixedHost {
     delivery: MRF_DD_OUT,
     encoder: MRF_METRICS_ENCODE,
-    declared_recipients: false,
 };
 
 /// `cluster_agent_out`, with `af_metrics_encode`.
 pub const CLUSTER_AGENT_HOST: FixedHost = FixedHost {
     delivery: CLUSTER_AGENT_OUT,
     encoder: AF_METRICS_ENCODE,
-    declared_recipients: false,
 };
 
 /// The delivery hosts of a process's metrics path, decided at boot and fixed for its life.
@@ -299,15 +289,6 @@ pub enum OutputKind {
     /// The autoscaling failover output.
     AutoscalingFailover,
 
-    /// An output a resources artifact declares.
-    Declared {
-        /// The output's name in the artifact: its ID is `resources_<name>`.
-        name: String,
-
-        /// The output's display label, if the artifact gives one.
-        label: Option<String>,
-    },
-
     /// An output lowering adds for the recipients a program's `emit`s address when no other output delivers to exactly
     /// them: an **implied output** (see [`Demanded`]).
     Implied {
@@ -332,8 +313,7 @@ pub struct NativeOutput {
     /// The delivery host the output is bound to, or `None` for an output without recipients.
     pub forwarder: Option<&'static str>,
 
-    /// The output's recipients, as its native forwarder resolves them, in the order the forwarder sends to them; empty
-    /// for a declared output.
+    /// The output's recipients, as its native forwarder resolves them, in the order the forwarder sends to them.
     pub recipients: Vec<MetricsRecipient>,
 }
 
@@ -393,7 +373,7 @@ impl NativeOutputs {
     }
 }
 
-/// What lowering adds outputs for beside native configuration and the resources artifact: the **demand** of the
+/// What lowering adds outputs for beside native configuration: the **demand** of the
 /// programs the installer holds, one set of recipients per distinct set their `emit`s address
 /// ([`demanded_outputs`][saluki_metric_plan::compose::demanded_outputs]), and the outputs of the resolution before,
 /// whose implied outputs keep their IDs.
@@ -408,13 +388,13 @@ impl NativeOutputs {
 /// endpoints, or for the main output without the others, and its selector its recipients ([`Selector::Recipients`]). It
 /// retires, its lease draining, once no program asks for its set.
 ///
-/// Implied outputs and the outputs a resources artifact declares together number at most
-/// [`MAX_DECLARED_OUTPUTS`](saluki_metric_plan::limits::values::MAX_DECLARED_OUTPUTS), counted over the demand of every
+/// Implied outputs number at most
+/// [`MAX_IMPLIED_OUTPUTS`](saluki_metric_plan::limits::values::MAX_IMPLIED_OUTPUTS), counted over the demand of every
 /// program the installer holds, which is what exists together: the program running, any kept to roll back to, and any
 /// installing or waiting. A replacement's outputs are built before it runs and the running program's retire after, so
 /// a replacement that asks for new sets counts them beside the running program's. Lowering adds them on `dd_out`
 /// only, for the main output's recipients (the primary endpoint and the additional endpoints): a set beyond the limit,
-/// on another host, or with recipients a resources artifact declares is refused, with the reason, which composition
+/// or on another host is refused, with the reason, which composition
 /// reports ([`Catalog::implied_output_refused`][saluki_metric_plan::validate::Catalog::implied_output_refused]).
 #[derive(Clone, Copy, Debug)]
 pub struct Demanded<'a> {
@@ -440,21 +420,10 @@ impl Default for Demanded<'_> {
 /// The prefix of an implied output's ID.
 pub const IMPLIED_OUTPUT_PREFIX: &str = "implied_";
 
-/// The resources a resources artifact declares, as lowering takes them: the accepted document, and the revision and
-/// hash it was delivered with, which the resources it declares record as their provenance.
-#[derive(Clone, Copy, Debug)]
-pub struct Declared<'a> {
-    /// The accepted resources artifact, validated: its endpoints are in canonical form.
-    pub artifact: &'a ResourcesArtifact,
-
-    /// The artifact's revision and hash.
-    pub provenance: &'a ArtifactRevision,
-}
-
 /// The outputs, recipients, and host settings of one configuration: what the default program delivers through.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NativeResources {
-    /// Every output, native and declared.
+    /// Every output, native and implied.
     pub outputs: NativeOutputs,
 
     /// Every delivery host's settings, and every recipient the outputs name or a host's native set holds, by
@@ -478,18 +447,13 @@ pub const MRF_RECIPIENT: &str = "mrf";
 /// The name of the Cluster Agent.
 pub const CLUSTER_AGENT_RECIPIENT: &str = "cluster_agent";
 
-/// The names lowering gives recipients of its own, which no declaration may use: an additional endpoint's name is its
-/// resolved URL, which always has a scheme and so is never an identifier, so these are all.
-pub const RESERVED_RECIPIENT_NAMES: [&str; 3] = [PRIMARY_RECIPIENT, MRF_RECIPIENT, CLUSTER_AGENT_RECIPIENT];
-
 /// The recipient directory: what each name a program may address resolves to.
 ///
 /// Lowering, the compatibility layer, names the native recipients: `primary` for the main output's primary endpoint
 /// (or the alternate metrics intake that replaces it for metrics), `mrf` for the Multi-Region Failover endpoint,
 /// `cluster_agent` for the Cluster Agent, and each additional endpoint by its URL as the forwarder resolves it
 /// ([`additional_endpoint_name`]), which stands for every API key's recipient of that endpoint, under every spelling
-/// of it. A resources artifact's recipients keep the names it gives them, which are identifiers. So no two kinds of
-/// name meet: an entry never spans two delivery hosts, and lowering fails, as a bug, rather than merge two.
+/// of it. An entry never spans two delivery hosts: lowering fails, as a bug, rather than merge two.
 /// Recipient identities stay positional and internal: names resolve to them when a program is composed.
 ///
 /// The directory lists what is available, which is more than what the default program sends to: the Cluster Agent is
@@ -520,8 +484,8 @@ pub fn additional_endpoint_name(configured_endpoint: &str) -> RecipientName {
 ///
 /// # Errors
 ///
-/// Returns an error if the name already stands for recipients of another host, or for a recipient a resources
-/// artifact declares: lowering never gives two such recipients one name, so this is a bug.
+/// Returns an error if the name already stands for recipients of another host: lowering never gives two such
+/// recipients one name, so this is a bug.
 fn name_recipient(
     directory: &mut Directory, name: RecipientName, host: &FixedHost, id: RecipientId, endpoint: &str,
 ) -> Result<(), GenericError> {
@@ -529,9 +493,8 @@ fn name_recipient(
         recipients: Vec::new(),
         host: host.id(),
         endpoint: spelled_endpoint(endpoint),
-        source: RecipientSource::Native,
     });
-    if entry.host != host.id() || entry.source != RecipientSource::Native {
+    if entry.host != host.id() {
         return Err(generic_error!(
             "The recipient name `{}` would stand for recipients of `{}` and `{}`; this is a lowering bug.",
             name,
@@ -552,13 +515,12 @@ fn recipient_name(name: &str) -> RecipientName {
 
 impl NativeResources {
     /// Resolves the outputs, recipients, and host settings of the configuration `current`, for a process that started
-    /// with `startup`, the host facts `facts`, and the delivery hosts `hosts`, with the resources `declared` declares.
+    /// with `startup`, the host facts `facts`, and the delivery hosts `hosts`.
     ///
     /// There are none when the metrics pipeline is not required. Otherwise the main output always exists; the client
     /// telemetry tap when DogStatsD is enabled at startup; one output per endpoint routing group; the multi-region
     /// failover output when its endpoint override resolves; the autoscaling failover output when the branch is
-    /// requested, forwarding to the Cluster Agent is enabled with a token, and its endpoint resolved at boot; and every
-    /// output the resources artifact declares.
+    /// requested, forwarding to the Cluster Agent is enabled with a token, and its endpoint resolved at boot.
     ///
     /// Which native recipients exist is decided as native construction decides it at startup: the primary endpoint,
     /// and each additional endpoint's key whose value is not blank, can be sent in a header, and is not a key an
@@ -568,18 +530,15 @@ impl NativeResources {
     /// # Errors
     ///
     /// Returns the native error when `run.rs` would fail to build an output: an endpoint routing policy naming an
-    /// unknown endpoint, or an endpoint that a forwarder cannot resolve. Returns an error also for a declared resource
-    /// that cannot be lowered, which validating the artifact rules out.
+    /// unknown endpoint, or an endpoint that a forwarder cannot resolve.
     pub fn resolve(
         startup: &SalukiConfiguration, current: &SalukiConfiguration, facts: &HostFacts, hosts: &FixedHosts,
-        declared: Option<Declared<'_>>,
     ) -> Result<Self, GenericError> {
         Self::resolve_after(
             startup,
             current,
             facts,
             hosts,
-            declared,
             Demanded::default(),
             &Resources::default(),
         )
@@ -602,7 +561,7 @@ impl NativeResources {
     /// As for [`resolve`][Self::resolve].
     pub fn resolve_after(
         startup: &SalukiConfiguration, current: &SalukiConfiguration, facts: &HostFacts, hosts: &FixedHosts,
-        declared: Option<Declared<'_>>, demanded: Demanded<'_>, previous: &Resources,
+        demanded: Demanded<'_>, previous: &Resources,
     ) -> Result<Self, GenericError> {
         let dp = DataPlaneConfiguration::from_configuration(startup);
         if !dp.metrics_pipeline_required() {
@@ -749,22 +708,7 @@ impl NativeResources {
             )?);
         }
 
-        let declared_outputs = declared.map_or(0, |declared| declared.artifact.outputs.len());
-        if let Some(declared) = declared {
-            let base = DatadogMetricsConfiguration::from_configuration(&shared)
-                .encoder_settings()
-                .error_context("Failed to resolve the encoder settings of declared outputs.")?;
-            let allow_arbitrary_tags = shared.endpoints.allow_arbitrary_tags;
-            declare(
-                declared,
-                &base,
-                allow_arbitrary_tags,
-                &mut outputs,
-                &mut recipients,
-                &mut directory,
-            )?;
-        }
-        let refused_demand = imply(demanded, &shared, &dd_out, declared_outputs, &recipients, &mut outputs)?;
+        let refused_demand = imply(demanded, &shared, &dd_out, &recipients, &mut outputs)?;
 
         // Every fixed host has settings, idle or not, so that a branch enabled later finds them published.
         let settings = encode_host_settings(&dd_out.delivery_settings())
@@ -1038,11 +982,10 @@ fn bound_output(output: BoundOutput<'_>, recipients: Vec<MetricsRecipient>) -> R
             .error_context(format!("Failed to resolve the encoder settings of output `{}`.", id))?,
         telemetry: lease_telemetry(&id)?,
         selector: selector.clone(),
-        provenance: ResourceProvenance::Native,
     };
     Ok(NativeOutput {
         decl: OutputDecl {
-            fingerprint: declared_resources::fingerprint(&host_id, accepts, &selector),
+            fingerprint: fingerprints::fingerprint(&host_id, accepts, &selector),
             id: id.clone(),
             accepts,
             recipients: ids,
@@ -1056,156 +999,18 @@ fn bound_output(output: BoundOutput<'_>, recipients: Vec<MetricsRecipient>) -> R
     })
 }
 
-/// Adds the outputs and recipients a resources artifact declares.
-///
-/// A declared recipient receives metrics only, from the outputs that name it, with its delivery policy, and its
-/// requests carry `Allow-Arbitrary-Tag-Value` as native ones do when `allow_arbitrary_tags` is set; a declared output's
-/// encoder settings are the main output's, with the protocol variants its recipients accept.
-fn declare(
-    declared: Declared<'_>, base: &EncoderSettings, allow_arbitrary_tags: bool, outputs: &mut Vec<NativeOutput>,
-    recipients: &mut BTreeMap<RecipientId, RecipientDecl>, directory: &mut Directory,
-) -> Result<(), GenericError> {
-    let Declared { artifact, provenance } = declared;
-    let provenance = ResourceProvenance::Declared(provenance.clone());
-    // V3 metrics intake is incompatible with zlib, and V3 series need the V2 series protocol, as natively.
-    let v3_allowed = !base.compressor_kind.trim().eq_ignore_ascii_case("zlib");
-    let mut by_name = BTreeMap::new();
-    for recipient in &artifact.recipients {
-        let invalid = |what: &str| {
-            generic_error!(
-                "Declared recipient `{}` cannot be lowered: {}; this is a validation bug.",
-                recipient.name,
-                what
-            )
-        };
-        let credential_name = recipient
-            .credential
-            .as_str()
-            .strip_prefix(CREDENTIALS_NAMESPACE)
-            .ok_or_else(|| invalid("its credential is not in the `credentials/` namespace"))?;
-        let id = declared_recipient_id(&recipient.host, credential_name, &recipient.endpoint);
-        let v3 = V3Acceptance {
-            series: v3_allowed && base.series == SeriesVariant::V2 && recipient.protocol.v3_series,
-            sketches: v3_allowed && recipient.protocol.v3_sketches,
-        };
-        let decl = RecipientDecl {
-            id: id.clone(),
-            host: recipient.host.clone(),
-            endpoint: recipient.endpoint.clone(),
-            credential: recipient.credential.clone(),
-            classes: PayloadClasses::MetricsOnly,
-            protocol: encode_protocol(&RecipientProtocol::DatadogIntake {
-                authorities: Default::default(),
-                allow_arbitrary_tags,
-                v3,
-            }),
-            delivery: match recipient.delivery {
-                Some(bounded) => DeliveryPolicy::Bounded(bounded),
-                None => DeliveryPolicy::Native,
-            },
-            provenance: provenance.clone(),
-        };
-        // Validation refused a name lowering gives a recipient of its own, and a native name is never an identifier,
-        // as a declared one is: the name is free.
-        let name =
-            RecipientName::new(recipient.name.clone()).map_err(|_| invalid("its name is not a recipient name"))?;
-        if directory.contains_key(&name) {
-            return Err(invalid("its name is already a native recipient's"));
-        }
-        directory.insert(
-            name,
-            CatalogRecipient {
-                recipients: vec![decl.id.clone()],
-                host: decl.host.clone(),
-                endpoint: spelled_endpoint(&decl.endpoint),
-                source: RecipientSource::Resources,
-            },
-        );
-        by_name.insert(recipient.name.as_str(), (decl.clone(), v3));
-        insert(recipients, decl);
-    }
-
-    for output in &artifact.outputs {
-        let invalid = |what: String| {
-            generic_error!(
-                "Declared output `{}` cannot be lowered: {}; this is a validation bug.",
-                output.name,
-                what
-            )
-        };
-        let id = output
-            .id()
-            .map_err(|error| invalid(format!("its name is not a valid output name: {}", error)))?;
-        let named = output
-            .recipients
-            .iter()
-            .map(|name| {
-                by_name.get(name.as_str()).ok_or_else(|| {
-                    invalid(format!(
-                        "it names recipient `{}`, which the artifact does not declare",
-                        name
-                    ))
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let host = named
-            .first()
-            .map(|(decl, _)| decl.host.clone())
-            .ok_or_else(|| invalid("it names no recipient".to_string()))?;
-        let mut ids = named.iter().map(|(decl, _)| decl.id.clone()).collect::<Vec<_>>();
-        ids.sort();
-        ids.dedup();
-        let selector = Selector::Declared(ids.clone());
-        let accepts = output.accepts.port_type();
-        let mut settings = base.clone();
-        // Acceptance of a variant is exclusive: a recipient that takes V3 sketches takes no V2 sketches (plan F21), so
-        // the output encodes a variant only for the recipients that take it.
-        settings.variants.v2_series = named.iter().any(|(_, v3)| !v3.series);
-        settings.variants.v2_sketches = named.iter().any(|(_, v3)| !v3.sketches);
-        settings.variants.v3_series = named.iter().any(|(_, v3)| v3.series);
-        settings.variants.v3_sketches = named.iter().any(|(_, v3)| v3.sketches);
-        let binding = OutputBinding {
-            host: host.clone(),
-            selector: selector.clone(),
-            encoder: encode_encoder(&settings)
-                .error_context(format!("Failed to resolve the encoder settings of output `{}`.", id))?,
-            telemetry: lease_telemetry(&id)?,
-            provenance: provenance.clone(),
-        };
-        outputs.push(NativeOutput {
-            decl: OutputDecl {
-                fingerprint: declared_resources::fingerprint(&host, accepts, &selector),
-                id: id.clone(),
-                accepts,
-                recipients: ids,
-                delivery: DeliveryPolicy::Native,
-                binding: Some(binding),
-            },
-            kind: OutputKind::Declared {
-                name: output.name.clone(),
-                label: output.label.clone(),
-            },
-            component: id.to_string(),
-            forwarder: Some(DD_OUT),
-            recipients: Vec::new(),
-        });
-    }
-    Ok(())
-}
-
 /// Adds an implied output for each set of recipients of `demanded` that no output of `outputs` delivers to exactly,
-/// within the limit on declared and implied outputs, of which a resources artifact declares `declared_outputs` (see
-/// [`Demanded`]), and returns the sets it refused, each with why.
+/// within the limit on implied outputs (see [`Demanded`]), and returns the sets it refused, each with why.
 ///
 /// # Errors
 ///
 /// Returns an error if the encoder settings of an implied output do not resolve, as for the native outputs.
 fn imply(
     demanded: Demanded<'_>, shared: &SharedConfiguration, dd_out: &DatadogForwarderConfiguration,
-    declared_outputs: usize, recipients: &BTreeMap<RecipientId, RecipientDecl>, outputs: &mut Vec<NativeOutput>,
+    recipients: &BTreeMap<RecipientId, RecipientDecl>, outputs: &mut Vec<NativeOutput>,
 ) -> Result<BTreeMap<Vec<RecipientId>, String>, GenericError> {
     let mut refused = BTreeMap::new();
-    let limit = usize::try_from(saluki_metric_plan::limits::values::MAX_DECLARED_OUTPUTS).unwrap_or(usize::MAX);
+    let limit = usize::try_from(saluki_metric_plan::limits::values::MAX_IMPLIED_OUTPUTS).unwrap_or(usize::MAX);
     let mut added = 0usize;
     // The resolution before's implied outputs, by their recipients: their IDs stay theirs.
     let kept = demanded
@@ -1230,27 +1035,18 @@ fn imply(
             refused.insert(set, why);
             continue;
         }
-        if declared_outputs + added >= limit {
+        if added >= limit {
             let (set, why) = refuse(format!(
-                "it would be one more than the limit of {} outputs that resources artifacts declare and programs \
-                 imply together, counted over every program the installer holds: the one running, any kept to roll \
-                 back to, and any installing or waiting, whose outputs exist together until one replaces another",
+                "it would be one more than the limit of {} outputs programs imply, counted over every program the \
+                 installer holds: the one running, any kept to roll back to, and any installing or waiting, whose \
+                 outputs exist together until one replaces another",
                 limit
             ));
             refused.insert(set, why);
             continue;
         }
-        let native = wanted.recipients.iter().all(|id| {
-            recipients
-                .get(id)
-                .is_some_and(|recipient| recipient.provenance == ResourceProvenance::Native)
-        });
-        if !native {
-            let (set, why) = refuse(
-                "some are recipients a resources artifact declares, which programs reach through the outputs it \
-                 declares"
-                    .to_string(),
-            );
+        if !wanted.recipients.iter().all(|id| recipients.contains_key(id)) {
+            let (set, why) = refuse("some are recipients the configuration does not declare".to_string());
             refused.insert(set, why);
             continue;
         }
@@ -1355,8 +1151,7 @@ fn implied_output_id(emit: &str, recipients: &[RecipientId], outputs: &[NativeOu
         .expect("some number is free")
 }
 
-/// Adds a recipient, keeping the first declaration of an identity: a native recipient that a resources artifact
-/// declares again under the same identity, which declared identities rule out, stays native.
+/// Adds a recipient, keeping the first declaration of an identity.
 fn insert(recipients: &mut BTreeMap<RecipientId, RecipientDecl>, decl: RecipientDecl) {
     recipients.entry(decl.id.clone()).or_insert(decl);
 }
@@ -1374,7 +1169,6 @@ fn native_recipient(host: &FixedHost, recipient: &MetricsRecipient) -> Recipient
         },
         protocol: encode_protocol(&recipient.protocol),
         delivery: DeliveryPolicy::Native,
-        provenance: ResourceProvenance::Native,
     }
 }
 
@@ -1435,8 +1229,7 @@ fn spelled_id(host: &str, route: MetricsRecipientRoute, key_index: Option<usize>
 
 /// Returns an endpoint as a native recipient's identity spells it, which status shows: as written when it is plain
 /// printable ASCII without `@`, of at most 400 bytes, and not spelled like a digest; otherwise `sha256:` and the first
-/// 16 hexadecimal digits of its digest, as the plan crate spells a declared recipient's
-/// ([`declared_recipient_id`]).
+/// 16 hexadecimal digits of its digest.
 pub fn spelled_endpoint(endpoint: &str) -> String {
     let spelled_out = endpoint.len() <= MAX_RECIPIENT_ENDPOINT_LEN
         && !endpoint.is_empty()

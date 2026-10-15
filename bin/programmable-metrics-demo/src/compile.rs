@@ -26,7 +26,7 @@ use saluki_metric_plan::{
     compose::receive_artifact,
     ir::{ArtifactBase, OutputId, PolicyArtifact, ReceivedArtifact},
     operators::names,
-    validate::{Catalog as _, CatalogRecipient, RecipientSource},
+    validate::{Catalog as _, CatalogRecipient},
 };
 use saluki_metric_plan_syntax::{parse_with, print, ParseOptions, PrintOptions, Span};
 use serde::Serialize;
@@ -330,7 +330,7 @@ fn wrapped(note: &str, width: usize) -> Vec<String> {
 /// Returns the comment lines that list the export's recipient directory: a heading, then one row per recipient, in
 /// aligned columns: its name as a program writes it (quoted when it is an endpoint's URL), the demo's label of its
 /// endpoint, its endpoint when the name is not the endpoint, and notes: whether no `emit` of `artifact` reaches it (by
-/// its name, or through an output that delivers to it), and whether a resources artifact declares it. The primary and
+/// its name, or through an output that delivers to it). The primary and
 /// failover recipients come first, then the others by label.
 fn recipient_lines(artifact: &PolicyArtifact, export: &ExportBundle, labels: &RecipientLabels) -> Vec<String> {
     let emits = artifact
@@ -373,9 +373,6 @@ fn recipient_lines(artifact: &PolicyArtifact, export: &ExportBundle, labels: &Re
                 entry.endpoint.clone()
             };
             let mut notes = Vec::new();
-            if entry.source == RecipientSource::Resources {
-                notes.push("resources");
-            }
             if !reached(name.as_str(), entry) {
                 notes.push("not addressed");
             }

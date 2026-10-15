@@ -65,31 +65,6 @@
   },
   "additionalProperties": false,
   "definitions": {
-    "ArtifactRevision": {
-      "description": "One revision of an approved artifact.",
-      "type": "object",
-      "required": [
-        "hash",
-        "revision"
-      ],
-      "properties": {
-        "hash": {
-          "description": "The hash of the artifact.",
-          "allOf": [
-            {
-              "$ref": "#/definitions/PlanHash"
-            }
-          ]
-        },
-        "revision": {
-          "description": "The artifact's revision number. Revisions strictly increase.",
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0.0
-        }
-      },
-      "additionalProperties": false
-    },
     "BoundedDelivery": {
       "description": "A recipient's delivery within bounds tighter than its host's native ones.\n\nA dual-ship destination added for an experiment should not take the primary's memory, should not fill the disk, and may not deserve the whole drain deadline of retries when it is removed: these knobs cover that.",
       "type": "object",
@@ -404,7 +379,6 @@
       "type": "object",
       "required": [
         "host",
-        "provenance",
         "selector",
         "telemetry"
       ],
@@ -422,14 +396,6 @@
           "allOf": [
             {
               "$ref": "#/definitions/HostId"
-            }
-          ]
-        },
-        "provenance": {
-          "description": "Who declared the output: native configuration, or a resources artifact.",
-          "allOf": [
-            {
-              "$ref": "#/definitions/ResourceProvenance"
             }
           ]
         },
@@ -539,7 +505,7 @@
       "description": "Which payloads a recipient receives when a payload does not name its recipients itself.\n\nMetrics payloads from leases name their recipients, so classes decide where every other payload goes: logs, events, service checks, traces, and APM statistics, for example.",
       "oneOf": [
         {
-          "description": "Metrics only: a recipient that only metrics are routed to, such as one a resources artifact declares.",
+          "description": "Metrics only: a recipient that only metrics are routed to, such as the Cluster Agent or a metrics override.",
           "type": "string",
           "enum": [
             "metrics_only"
@@ -631,8 +597,7 @@
         "credential",
         "endpoint",
         "host",
-        "id",
-        "provenance"
+        "id"
       ],
       "properties": {
         "classes": {
@@ -686,14 +651,6 @@
               "$ref": "#/definitions/Params"
             }
           ]
-        },
-        "provenance": {
-          "description": "Who declared the recipient: native configuration, or a resources artifact.",
-          "allOf": [
-            {
-              "$ref": "#/definitions/ResourceProvenance"
-            }
-          ]
         }
       },
       "additionalProperties": false
@@ -704,31 +661,6 @@
       "maxLength": 512,
       "minLength": 1,
       "pattern": "^[!-~]{1,512}$"
-    },
-    "ResourceProvenance": {
-      "description": "Who declared a resource, which is also the authority that can remove it.\n\nSerialized as `\"native\"`, or as `{\"declared\": {\"revision\": <n>, \"hash\": \"<hash>\"}}`.",
-      "oneOf": [
-        {
-          "description": "Native configuration.",
-          "type": "string",
-          "enum": [
-            "native"
-          ]
-        },
-        {
-          "description": "A resources artifact, by its revision and hash.",
-          "type": "object",
-          "required": [
-            "declared"
-          ],
-          "properties": {
-            "declared": {
-              "$ref": "#/definitions/ArtifactRevision"
-            }
-          },
-          "additionalProperties": false
-        }
-      ]
     },
     "Resources": {
       "description": "The resources of a plan: the settings of each delivery host, and every recipient the plan names.\n\nSerialized as the plan member `resources`, left out when empty.",
@@ -790,7 +722,7 @@
       "pattern": "^[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}$"
     },
     "Selector": {
-      "description": "What an output's declaration says it delivers to.\n\nAn output's fingerprint covers its selector, not its resolved recipients: a role delivers to whatever native configuration resolves for it, so its recipients can change without changing its fingerprint, while an explicit recipient list is part of the declaration.\n\nSerialized as an object with one member: `{\"role\": \"main\"}`, `{\"group\": \"sha256:<hex>\"}`, `{\"declared\": [<recipient ID>, ...]}`, or `{\"recipients\": [<recipient ID>, ...]}`.",
+      "description": "What an output's declaration says it delivers to.\n\nAn output's fingerprint covers its selector, not its resolved recipients: a role delivers to whatever native configuration resolves for it, so its recipients can change without changing its fingerprint, while an explicit recipient list is part of the declaration.\n\nSerialized as an object with one member: `{\"role\": \"main\"}`, `{\"group\": \"sha256:<hex>\"}`, or `{\"recipients\": [<recipient ID>, ...]}`.",
       "oneOf": [
         {
           "description": "A role of the delivery host, such as `main`, `multi_region_failover`, or `autoscaling_failover`.",
@@ -819,23 +751,7 @@
           "additionalProperties": false
         },
         {
-          "description": "The recipients a resources artifact declared for the output, sorted and without duplicates.",
-          "type": "object",
-          "required": [
-            "declared"
-          ],
-          "properties": {
-            "declared": {
-              "type": "array",
-              "items": {
-                "$ref": "#/definitions/RecipientId"
-              }
-            }
-          },
-          "additionalProperties": false
-        },
-        {
-          "description": "Exactly these recipients, sorted and without duplicates: an **implied output**, which the host adds for the recipients a program's `emit`s address when no other output delivers to exactly them. Its recipients may be native or declared.",
+          "description": "Exactly these recipients, sorted and without duplicates: an **implied output**, which the host adds for the recipients a program's `emit`s address when no other output delivers to exactly them.",
           "type": "object",
           "required": [
             "recipients"

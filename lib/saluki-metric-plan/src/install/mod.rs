@@ -43,7 +43,7 @@ pub mod resources;
 pub use self::resources::{
     Creator, CreditKey, HostPrepare, HostPublish, LeaseKey, LeasePrepare, LeaseRef, LeaseState, NoResourceBounds,
     RecipientPrepare, RecipientRef, RecipientSlot, RecipientState, RecipientStatus, ResourceBounds, ResourcePlan,
-    ResourceTable, ResourceTransaction, ResourcesEvent, ResourcesRevision, RetirementReport,
+    ResourceTable, ResourceTransaction, ResourcesRevision, RetirementReport,
 };
 
 #[cfg(any(test, feature = "test-util"))]

@@ -308,10 +308,7 @@ impl OutputDecl {
     /// Returns what decides whether two plans bind the output alike ([`Plan::binding_digest`]), with `resources` the
     /// resources of the plan that declares the output.
     fn binding_identity<'a>(&self, resources: &'a Resources) -> BindingIdentity<'a> {
-        let mut declaration = self.clone();
-        if let Some(binding) = &mut declaration.binding {
-            binding.provenance = super::ResourceProvenance::Native;
-        }
+        let declaration = self.clone();
         let recipients = self
             .recipients
             .iter()

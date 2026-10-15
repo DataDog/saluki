@@ -3,7 +3,7 @@
 //!
 //! Boot verification checks the firm bounds of the topology against the memory grant once (see
 //! `saluki_app::accounting`). Everything a generation or a resource transaction adds later (leases, an idle host's
-//! queue, declared recipients, new kernel instances) is admitted against what that check left: the budget's capacity
+//! queue, new kernel instances) is admitted against what that check left: the budget's capacity
 //! is the grant less the boot firm total, plus the boot generation's own resource bounds, which it then holds, so that
 //! every release returns what was acquired.
 //!
@@ -26,14 +26,11 @@ use saluki_components::{
 use saluki_core::execution::StateBudget;
 use saluki_metric_plan::{
     install::{CreditKey, ResourceBounds},
-    ir::{HostBinding, HostId, OutputDecl, RecipientDecl, ResourceProvenance},
+    ir::{HostBinding, HostId, OutputDecl, RecipientDecl},
 };
 use tracing::warn;
 
-use crate::programmable_metrics::resources::{
-    params::decode_encoder,
-    specs::{host_settings, recipient_policy},
-};
+use crate::programmable_metrics::resources::{params::decode_encoder, specs::host_settings};
 
 /// The memory each resource the installer core admits after boot holds at most, as ADP's hosts bound them (plan
 /// 4.12).
@@ -58,15 +55,10 @@ impl ResourceBounds for AdpResourceBounds {
             .map_or(0, |settings| lease_settings_bound_bytes(&settings, NonZeroU8::MIN))
     }
 
-    fn recipient(&self, recipient: &RecipientDecl, settings: Option<&HostBinding>) -> u64 {
-        match recipient.provenance {
-            ResourceProvenance::Native => 0,
-            ResourceProvenance::Declared(_) => settings
-                .and_then(|settings| host_settings(settings).ok())
-                .map_or(0, |settings| {
-                    recipient_queue_bound(&settings, &recipient_policy(&recipient.delivery))
-                }),
-        }
+    /// A recipient's queue is within its host's native bounds, which the host's queue credit and the boot bounds
+    /// count, so it takes no credit of its own.
+    fn recipient(&self, _: &RecipientDecl, _: Option<&HostBinding>) -> u64 {
+        0
     }
 
     fn host_queue(&self, _: &HostId, settings: Option<&HostBinding>) -> u64 {

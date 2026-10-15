@@ -62,13 +62,12 @@ pub const POLL_TIMEOUT: Duration = Duration::from_secs(5);
 /// The largest answer read from the stub, in bytes.
 ///
 /// A policy snapshot holds at most one config to be installed, whose artifact is within the artifact size limit in its
-/// canonical form, and a resources snapshot one config, whose artifact is smaller still; each payload is its artifact
-/// as written, inside an envelope, escaped as a JSON string. An answer larger than this is unreadable, which is a
+/// canonical form; its payload is its artifact as written, inside an envelope, escaped as a JSON string. An answer larger than this is unreadable, which is a
 /// transport failure.
 const MAX_ANSWER_SIZE: usize = 32 * limits::values::ARTIFACT_SIZE as usize;
 
 /// The products ADP asks the stub for, and reads from its answers.
-const PRODUCTS: &[ArtifactProduct] = &[ArtifactProduct::Policy, ArtifactProduct::Resources];
+const PRODUCTS: &[ArtifactProduct] = &[ArtifactProduct::Policy];
 
 /// The configuration key of the stub URL, as errors name it.
 const STUB_URL_KEY: &str = "experimental.programmable_metrics.artifact_channel.stub_url";

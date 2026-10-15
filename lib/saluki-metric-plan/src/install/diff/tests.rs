@@ -50,36 +50,17 @@ fn changes(diff: &PlanDiff) -> Changes {
     (outputs, recipients, hosts)
 }
 
-const TEAM_D: &str = "dd_out/declared/team_d/http://127.0.0.1:17105";
-const TEAM_E: &str = "dd_out/declared/team_e/https://e.example.com";
+const PRIMARY: &str = "dd_out/primary/0";
+const CLUSTER_AGENT: &str = "cluster_agent_out/primary/0";
 
 #[test]
-fn a_resources_revision_declaring_the_same_resources_changes_nothing_but_provenance() {
+fn equal_plans_diff_as_nothing_and_bind_alike() {
     let registry = OperatorRegistry::native();
     let active = bound(|_| {});
     assert!(diff(&active, &active, &registry).is_empty());
-
-    let redeclared = bound(|value| {
-        let revision = json!({"declared": {"revision": 2, "hash": format!("sha256:{}", "e".repeat(64))}});
-        for output in value["outputs"].as_array_mut().unwrap() {
-            if output["id"] == "resources_team_d" {
-                output["binding"]["provenance"] = revision.clone();
-            }
-        }
-        recipient_mut(value, TEAM_D)["provenance"] = revision;
-    });
-    let unchanged = diff(&active, &redeclared, &registry);
-    assert_eq!(changes(&unchanged), (Vec::new(), Vec::new(), Vec::new()));
-    assert!(unchanged.is_empty());
-    // The plans differ, so the candidate is a new plan, but its output keeps its encoder stream.
-    assert_ne!(
-        active.hash(crate::canonical::ResolvedValues::Include).unwrap(),
-        redeclared.hash(crate::canonical::ResolvedValues::Include).unwrap()
-    );
-    let team_d = "resources_team_d".parse().unwrap();
-    assert!(active.binding_digest(&team_d).is_some());
-    assert_eq!(active.binding_digest(&team_d), redeclared.binding_digest(&team_d));
-    assert!(active.binds_alike(&redeclared, &team_d));
+    let main = "dd_metrics_encode".parse().unwrap();
+    assert!(active.binding_digest(&main).is_some());
+    assert!(active.binds_alike(&active, &main));
     assert_eq!(active.binding_digest(&"absent".parse().unwrap()), None);
 }
 
@@ -106,15 +87,14 @@ fn a_recipient_whose_protocol_changes_rebinds_every_output_naming_it_and_its_oth
         )
     );
 
-    // A recipient's delivery policy changes how it sends, not which payloads reach it: its output keeps its stream.
-    let shrunk = bound(|value| recipient_mut(value, TEAM_D)["delivery"]["bounded"]["queue_bytes"] = json!(1024));
-    let team_d = "resources_team_d".parse().unwrap();
-    assert_eq!(active.binding_digest(&team_d), shrunk.binding_digest(&team_d));
+    // A recipient's credential changes how it sends, not which payloads reach it: its output keeps its stream.
+    let rotated = bound(|value| recipient_mut(value, PRIMARY)["credential"] = json!("native:api_key_rotated"));
+    assert_eq!(active.binding_digest(&main), rotated.binding_digest(&main));
     assert_eq!(
-        changes(&diff(&active, &shrunk, &registry)),
+        changes(&diff(&active, &rotated, &registry)),
         (
             Vec::new(),
-            vec![(TEAM_D.to_string(), ResourceChange::Reconfigured)],
+            vec![(PRIMARY.to_string(), ResourceChange::Reconfigured)],
             Vec::new()
         )
     );
@@ -124,19 +104,20 @@ fn a_recipient_whose_protocol_changes_rebinds_every_output_naming_it_and_its_oth
 fn recipients_and_host_settings_are_reconfigured_added_or_removed() {
     let registry = OperatorRegistry::native();
     let active = bound(|_| {});
-    // Team D's queue shrunk, `mrf_dd_out`'s timeout changed, team E revoked, and a dual-ship recipient added.
+    // The primary's credential rotated, `mrf_dd_out`'s timeout changed, autoscaling failover's output and recipient
+    // gone, and a dual-ship recipient added.
     let changed = bound(|value| {
-        recipient_mut(value, TEAM_D)["delivery"]["bounded"]["queue_bytes"] = json!(1024);
+        recipient_mut(value, PRIMARY)["credential"] = json!("native:api_key_rotated");
         value["resources"]["hosts"][1]["settings"]["request_timeout"] = json!("5s");
         value["outputs"]
             .as_array_mut()
             .unwrap()
-            .retain(|output| output["id"] != "resources_team_e");
+            .retain(|output| output["id"] != "af_metrics_encode");
         let recipients = value["resources"]["recipients"].as_array_mut().unwrap();
-        recipients.retain(|recipient| recipient["id"] != TEAM_E);
+        recipients.retain(|recipient| recipient["id"] != CLUSTER_AGENT);
         recipients.push(json!({
             "id": "dd_out/additional_2/0", "host": "dd_out", "endpoint": "https://dual.example.com",
-            "credential": "native:additional/0000111122223333/0", "classes": "all", "provenance": "native"
+            "credential": "native:additional/0000111122223333/0", "classes": "all"
         }));
     });
     let diff = diff(&active, &changed, &registry);
@@ -144,11 +125,11 @@ fn recipients_and_host_settings_are_reconfigured_added_or_removed() {
     assert_eq!(
         changes(&diff),
         (
-            vec![("resources_team_e".to_string(), OutputChange::Removed)],
+            vec![("af_metrics_encode".to_string(), OutputChange::Removed)],
             vec![
-                (TEAM_D.to_string(), ResourceChange::Reconfigured),
+                (PRIMARY.to_string(), ResourceChange::Reconfigured),
                 ("dd_out/additional_2/0".to_string(), ResourceChange::Added),
-                (TEAM_E.to_string(), ResourceChange::Removed),
+                (CLUSTER_AGENT.to_string(), ResourceChange::Removed),
             ],
             vec![("mrf_dd_out".to_string(), ResourceChange::Reconfigured)],
         )

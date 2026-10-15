@@ -13,23 +13,18 @@ use crate::canonical::PlanHash;
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactProduct {
-    /// Policy artifacts, each replacing the policy region of the plan.
+    /// Policy artifacts: programs.
     Policy,
-
-    /// Resources artifacts, which declare recipients and outputs apart from native configuration (see
-    /// [`resources`](crate::resources)). The product has its own revisions, and one config.
-    Resources,
 }
 
 impl ArtifactProduct {
     /// Every product, in the order the [feed](super::ArtifactFeed) returns products that changed together.
-    pub const ALL: [Self; 2] = [Self::Policy, Self::Resources];
+    pub const ALL: [Self; 1] = [Self::Policy];
 
     /// Returns the product's name, as the channel writes it.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Policy => "policy",
-            Self::Resources => "resources",
         }
     }
 
@@ -37,7 +32,6 @@ impl ArtifactProduct {
     pub const fn index(self) -> usize {
         match self {
             Self::Policy => 0,
-            Self::Resources => 1,
         }
     }
 }
@@ -50,7 +44,7 @@ impl fmt::Display for ArtifactProduct {
 
 /// The name of a product the channel does not know.
 #[derive(Clone, Debug, Eq, PartialEq, Snafu)]
-#[snafu(display("Unknown artifact product `{}`: the products are `policy` and `resources`.", name))]
+#[snafu(display("Unknown artifact product `{}`: the only product is `policy`.", name))]
 pub struct UnknownProduct {
     /// The name.
     pub name: String,
@@ -62,7 +56,6 @@ impl FromStr for ArtifactProduct {
     fn from_str(name: &str) -> Result<Self, Self::Err> {
         match name {
             "policy" => Ok(Self::Policy),
-            "resources" => Ok(Self::Resources),
             other => Err(UnknownProduct {
                 name: other.to_string(),
             }),
@@ -162,8 +155,8 @@ pub struct TransportHashMismatch {
 /// A complete snapshot of one product's configs: never a delta.
 ///
 /// Each snapshot replaces the previous one of its product. An empty snapshot revokes: for policy, the default program
-/// runs; for resources, every declared resource is retired. A snapshot of the policy product with more than one config
-/// for one scope rejects all of them, since one policy replaces one scope; a snapshot of the resources product with
+/// runs. A snapshot of the policy product with more than one config for one scope rejects all of them, since one policy
+/// replaces one scope; a snapshot with
 /// more than one config rejects all of them. A transport failure delivers no snapshot, so the current one stays in
 /// effect.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -249,10 +242,9 @@ mod tests {
             assert_eq!(product.index(), index);
             assert!(ArtifactSnapshot::revoked(product).revokes());
         }
-        assert_eq!(ArtifactProduct::Resources.as_str(), "resources");
         assert_eq!(
             "signals".parse::<ArtifactProduct>().unwrap_err().to_string(),
-            "Unknown artifact product `signals`: the products are `policy` and `resources`."
+            "Unknown artifact product `signals`: the only product is `policy`."
         );
     }
 }

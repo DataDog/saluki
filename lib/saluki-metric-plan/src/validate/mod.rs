@@ -68,7 +68,6 @@ pub(crate) use self::bounds::predicate_leaves;
 mod catalog;
 pub use self::catalog::{
     BindingClass, Catalog, CatalogBinding, CatalogOutput, CatalogRecipient, HostSchema, Liveness, MemoryCatalog,
-    RecipientSource,
 };
 
 mod duplicates;

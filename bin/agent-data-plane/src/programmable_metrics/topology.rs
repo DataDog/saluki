@@ -479,8 +479,7 @@ pub(super) fn configure_wired_host(
     let settings = Arc::new(host_settings(binding)?);
     let mut boot = match &boot_publish {
         Some(publish) => {
-            // No resources artifact is delivered before boot, so every boot recipient is native and has no name.
-            let published = publication(boot_revision, publish, |_| None)?;
+            let published = publication(boot_revision, publish)?;
             BootPublication {
                 revision: published.revision,
                 settings: published.settings,
@@ -493,7 +492,7 @@ pub(super) fn configure_wired_host(
     };
     // A recipient the boot generation creates that the boot publication does not set runs from the start too.
     for create in boot_prepare.iter().flat_map(|prepare| &prepare.create) {
-        let created = recipient_settings(create, None)?;
+        let created = recipient_settings(create)?;
         if !boot.recipients.iter().any(|known| known.recipient == created.recipient) {
             boot.recipients.push(created);
         }

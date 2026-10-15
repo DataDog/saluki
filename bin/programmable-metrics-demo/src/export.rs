@@ -186,7 +186,7 @@ impl ExportBundle {
     }
 
     /// Returns what the editor shows next to a program: each output with its label, recipients, and the intake it
-    /// most likely reaches, the outputs resources artifacts declare beside the native ones, and each configuration
+    /// most likely reaches, the outputs ADP added for a program's recipient sets beside the native ones, and each configuration
     /// binding with its current value.
     pub fn legend(&self, intakes: &[Recipient]) -> Legend {
         let outputs = self
@@ -202,7 +202,6 @@ impl ExportBundle {
                 Some(LegendOutput {
                     id: id.clone(),
                     label,
-                    declared: output_id.is_declared(),
                     fingerprint: declared.fingerprint.to_string(),
                     recipients,
                     intake,
@@ -244,9 +243,6 @@ pub struct LegendOutput {
 
     /// The output's display label, if the export gives one.
     pub label: Option<String>,
-
-    /// Whether a resources artifact declares the output (`resources_<name>`), rather than ADP's configuration.
-    pub declared: bool,
 
     /// The output's fingerprint, which an artifact that emits to it records in its base.
     pub fingerprint: String,
@@ -350,7 +346,7 @@ fn known_catalog_members(catalog: Value, labels: &mut BTreeMap<OutputId, String>
                 let entries = entries
                     .into_iter()
                     .filter(|(name, _)| name.parse::<RecipientName>().is_ok())
-                    .map(|(name, entry)| (name, keep_members(entry, &["recipients", "host", "endpoint", "source"])))
+                    .map(|(name, entry)| (name, keep_members(entry, &["recipients", "host", "endpoint"])))
                     .filter(|(_, entry)| serde_json::from_value::<CatalogRecipient>(entry.clone()).is_ok())
                     .collect();
                 kept.insert(member, Value::Object(entries));
@@ -485,14 +481,14 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_legend_lists_declared_outputs_beside_native_ones_with_the_intake_they_reach() {
+    fn the_legend_lists_implied_outputs_beside_native_ones_with_the_intake_they_reach() {
         let mut bundle = serde_json::from_str::<Value>(DEMO_EXPORT).unwrap();
-        bundle["catalog"]["outputs"]["resources_team_d"] = serde_json::json!({
+        bundle["catalog"]["outputs"]["implied_to_d_true_0a1b2c3d"] = serde_json::json!({
             "accepts": {"kinds": "all", "timestamps": "mixed"},
-            "fingerprint": "sha256:361f843bc9a6b25663cc6da865dd3af0daf04bb8890e3717ae98d7d30bb1c838",
-            "recipients": ["dd_out/declared/team_d/http://127.0.0.1:17105"]
+            "fingerprint": "sha256:078861188ff436606d2e89dae13fb835b363b844df9d556384fcd72127f85045",
+            "recipients": ["dd_out/additional/0/http://127.0.0.1:17105"]
         });
-        bundle["labels"]["resources_team_d"] = "Team D".into();
+        bundle["labels"]["implied_to_d_true_0a1b2c3d"] = "Implied output of emit to_d_true".into();
         let export = ExportBundle::from_value(bundle).unwrap();
         let mut intakes = crate::settings::DemoPorts::default().recipients();
         intakes.push(Recipient::added('D', 17105));
@@ -500,21 +496,26 @@ pub(crate) mod tests {
         let outputs = legend
             .outputs
             .iter()
-            .map(|output| (output.id.as_str(), output.declared, output.intake.as_deref()))
+            .map(|output| (output.id.as_str(), output.intake.as_deref()))
             .collect::<Vec<_>>();
-        assert_eq!(
-            outputs,
-            [
-                ("dd_metrics_encode", false, Some("primary")),
-                ("metrics_routing_encode_0", false, Some("team-b")),
-                ("metrics_routing_encode_1", false, Some("team-c")),
-                ("mrf_metrics_encode", false, Some("mrf")),
-                ("resources_team_d", true, Some("dest-d")),
-            ]
+        assert!(
+            outputs.contains(&("dd_metrics_encode", Some("primary"))),
+            "{:?}",
+            outputs
         );
+        assert!(
+            outputs.contains(&("implied_to_d_true_0a1b2c3d", Some("dest-d"))),
+            "{:?}",
+            outputs
+        );
+        let implied = legend
+            .outputs
+            .iter()
+            .find(|output| output.id == "implied_to_d_true_0a1b2c3d")
+            .unwrap();
         assert_eq!(
-            legend.outputs[4].fingerprint,
-            "sha256:361f843bc9a6b25663cc6da865dd3af0daf04bb8890e3717ae98d7d30bb1c838"
+            implied.fingerprint,
+            "sha256:078861188ff436606d2e89dae13fb835b363b844df9d556384fcd72127f85045"
         );
     }
 
@@ -522,8 +523,7 @@ pub(crate) mod tests {
     fn a_directory_or_notes_the_demo_cannot_read_lose_only_their_comments() {
         let mut bundle = serde_json::from_str::<Value>(DEMO_EXPORT).unwrap();
         let directory = &mut bundle["catalog"]["recipients"];
-        // A member the demo does not know is left out; an entry from an unknown source, or one that does not read, is
-        // left out alone.
+        // A member the demo does not know is left out, and an entry that does not read is left out alone.
         directory["primary"]["label"] = "Primary".into();
         directory["mrf"]["source"] = "fleet".into();
         directory["http://127.0.0.1:17103"]["recipients"] = "not a list".into();
@@ -534,7 +534,7 @@ pub(crate) mod tests {
             .recipients()
             .map(|(name, _)| name.to_string())
             .collect::<Vec<_>>();
-        assert_eq!(names, ["http://127.0.0.1:17102", "primary"]);
+        assert_eq!(names, ["http://127.0.0.1:17102", "mrf", "primary"]);
         assert!(export.annotations.is_empty());
         assert_eq!(export.output_ids.len(), 4);
     }

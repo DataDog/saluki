@@ -1236,3 +1236,41 @@ shorter program installs, and the fixes followed, on 2026-10-15, not committed:
   which still expected adoption; with S14a expecting a generation with no cut, the check passed (`omit-check-c`):
   152.7 s and 283.5 s, 7 minutes 24 seconds with the build, canaries 2,886 of 2,886 and 4,798 sent with 4,799
   received, within the allowance.
+
+## Version 2: the plan, and V2 (resources artifacts removed)
+
+On 2026-10-15 the owner agreed that the premise behind stages 1 to 9 (programmability inside a native system that
+stays the authority) had shifted to one where native configuration is a front end and the program is the system, and
+asked for the machinery of coexistence to be removed step by step, in the foreground, keeping program mode compatible
+with native mode and differentially testable. [Version 2 simplifications](programmable-metrics-v2.md) lists ten steps.
+
+**V2 went first, not V1.** Opaque hosts (V1) turned out to carry about 50 tests of the frame and the interpreter's
+re-admission, which V7 and V8 rework anyway; resources artifacts were a cleaner cut, since the demo no longer used them.
+
+**What V2 removed** (amendment 192):
+
+- The plan crate: `ResourceProvenance` and the `provenance` of recipients and output bindings; `Selector::Declared`;
+  `ResourcesArtifact` and its validation; the installer core's `declared` module (the resources product's revisions,
+  acknowledgments, credentials, and failure attribution); `ResourcesEvent`; the channel's `resources` product, whose
+  feed is now one watch channel; `ResourcesStatus`; the `resources_` output prefix; the reserved-recipient-name hook;
+  `RecipientSource`, so directory entries carry no `source`; the resources schema; and the declared-recipient limits.
+  `MAX_DECLARED_OUTPUTS` became `MAX_IMPLIED_OUTPUTS`. The keep rule, which native endpoint changes need too, moved to
+  `install/core/resources.rs`; every recipient keeps its host's native delivery policy.
+- ADP: the resources product's reader (`installer/product.rs`), declared credentials (`credentials/<name>`), the
+  declared lowering in `resources.rs`, `Lowering::lower_with`, status provenance and the declared-config view, and the
+  `experimental.programmable_metrics.resources.credentials` key with its source model, seed, `SALUKI_KEYS` entry, and
+  generated reference.
+- The demo: the stub's resources product, store, and views (an old store with resources still reads), and the page's
+  declared-output and recipient-provenance text.
+
+**Tests.** Native-path tests that used declared recipients as their vehicle now use native ones: the
+reopen test to routing group 0, the explain change test to routing group 1's removal, the placement test to an
+implied output of an endpoint of its own (an implied output for group 0's endpoint is a duplicate delivery, which
+validation rightly refuses), and ADP's 50- and 1,000-cycle reclamation test to two live endpoints, one with an endpoint
+routing group of its own, so that a lease is still prepared and drained each cycle. Tests of the resources product
+itself were deleted. The plan crate passes 904 tests (property tests excluded, the resource table's included), ADP's
+`programmable_metrics` tests 323, the config crates 250, the demo 146; clippy (`-D warnings`) and `cargo check
+--workspace --tests` are clean.
+
+**Left for later**, in the plan: the delivery host's declared origin, bounded delivery policies, and conflict
+detection in `saluki-components`, which ADP no longer uses.

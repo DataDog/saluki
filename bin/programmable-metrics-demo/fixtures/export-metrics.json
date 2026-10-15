@@ -151,18 +151,16 @@
     "single_aggregation": true,
     "recipients": {
       "primary": {
-        "recipients": ["dd_out/primary/0/http://127.0.0.1:17101"], "host": "dd_out", "endpoint": "http://127.0.0.1:17101",
-        "source": "native"
+        "recipients": ["dd_out/primary/0/http://127.0.0.1:17101"], "host": "dd_out", "endpoint": "http://127.0.0.1:17101"
       },
       "http://127.0.0.1:17102": {
-        "recipients": ["dd_out/additional/0/http://127.0.0.1:17102"], "host": "dd_out", "endpoint": "http://127.0.0.1:17102", "source": "native"
+        "recipients": ["dd_out/additional/0/http://127.0.0.1:17102"], "host": "dd_out", "endpoint": "http://127.0.0.1:17102"
       },
       "http://127.0.0.1:17103": {
-        "recipients": ["dd_out/additional/0/http://127.0.0.1:17103"], "host": "dd_out", "endpoint": "http://127.0.0.1:17103", "source": "native"
+        "recipients": ["dd_out/additional/0/http://127.0.0.1:17103"], "host": "dd_out", "endpoint": "http://127.0.0.1:17103"
       },
       "mrf": {
-        "recipients": ["mrf_dd_out/primary/0/http://127.0.0.1:17104"], "host": "mrf_dd_out", "endpoint": "http://127.0.0.1:17104",
-        "source": "native"
+        "recipients": ["mrf_dd_out/primary/0/http://127.0.0.1:17104"], "host": "mrf_dd_out", "endpoint": "http://127.0.0.1:17104"
       }
     },
     "future_member": "ignored"

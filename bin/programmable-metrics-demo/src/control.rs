@@ -3,7 +3,7 @@
 //!
 //! The export is fetched again when the default program hash ADP's status reports changes from what it reported when
 //! the export in hand was fetched, when what its catalog declares may have changed while that hash stays as it is (the
-//! resources artifact the active generation was lowered with, the active generation, or the recipients the status
+//! active generation, or the recipients the status
 //! [`EXPORT_MAX_AGE`] otherwise, so the editor's checks and the recipient directory follow configuration changes. The
 //! watcher compares the reported values with their own earlier values, never with the export's `base.program_hash`,
 //! since the protocol does not say that the two are computed alike.
@@ -116,23 +116,10 @@ impl ControlState {
     }
 
     /// Returns what ADP's status reports of what the export's catalog follows, besides the default program hash: the
-    /// resources artifact active (`<revision> <hash>`), the active generation, and the recipients it lists, which
-    /// change when a destination is added or removed. `None` without a status.
+    /// active generation, and the recipients it lists, which change when a destination is added or removed. `None`
+    /// without a status.
     fn reported_catalog(&self) -> Option<String> {
         let status = self.status.as_ref()?;
-        let resources = status
-            .status
-            .resources
-            .as_ref()
-            .and_then(|resources| resources.active_artifact.as_ref())
-            .map(|artifact| {
-                format!(
-                    "{} {}",
-                    artifact.revision.unwrap_or_default(),
-                    artifact.artifact_hash.as_deref().unwrap_or_default()
-                )
-            })
-            .unwrap_or_default();
         let mut recipients = status
             .recipients
             .iter()
@@ -142,8 +129,7 @@ impl ControlState {
             .collect::<Vec<_>>();
         recipients.sort_unstable();
         Some(format!(
-            "{} | generation {} | {}",
-            resources,
+            "generation {} | {}",
             status.status.active_generation.unwrap_or_default(),
             recipients.join(" ")
         ))
@@ -664,34 +650,6 @@ mod tests {
         assert_eq!(failed.state(), SurfaceState::Failed);
         assert!(control.view().export_error.unwrap().contains("export_version 9"));
         assert!(control.export().is_some());
-    }
-
-    #[test]
-    fn the_export_is_fetched_again_when_the_active_resources_artifact_changes() {
-        // Declaring an output changes the catalog, not the default program hash.
-        let reported = format!("sha256:{}", "b".repeat(64));
-        let with_resources = |active: Value| {
-            let mut status = status(&reported);
-            status["resources"] = serde_json::json!({ "revision_high_water": 2, "active_artifact": active });
-            status
-        };
-        let export = || Surface::Available(serde_json::from_str(DEMO_EXPORT).unwrap());
-        let control = ControlSurface::new();
-        control.record_status(Surface::Available(status(&reported)), 1_000);
-        control.record_export(export(), 1_000);
-        assert!(!control.export_wanted(1_100));
-
-        let team_d = serde_json::json!({ "id": "demo-resources", "revision": 2, "artifact_hash": "sha256:02" });
-        control.record_status(Surface::Available(with_resources(team_d.clone())), 2_000);
-        assert!(control.export_wanted(2_000));
-        control.record_export(export(), 2_100);
-        assert!(!control.export_wanted(2_200));
-        control.record_status(Surface::Available(with_resources(team_d)), 3_000);
-        assert!(!control.export_wanted(3_000));
-
-        // A revocation leaves no resources artifact active: fetch again.
-        control.record_status(Surface::Available(with_resources(Value::Null)), 4_000);
-        assert!(control.export_wanted(4_000));
     }
 
     #[test]

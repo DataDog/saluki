@@ -2,35 +2,22 @@
 //!
 //! A plan carries the resources its outputs deliver through as parameters, and the plan crate does not read what they
 //! mean, so these rules check what it can: that each resource is declared once, on a delivery host the catalog
-//! declares, with parameters the host's schema accepts; that each output binding's fingerprint is the one its selector
-//! gives, and its recipients are declared on its host and accept what it produces, as the host decides; and that
-//! outputs and recipients a resources artifact declares stay apart from native ones.
+//! declares, with parameters the host's schema accepts; and that each output binding's fingerprint is the one its
+//! selector gives, and its recipients are declared on its host and accept what it produces, as the host decides.
 
 use std::collections::BTreeSet;
 
 use super::{catalog::Catalog, Finding, Location, Rule, ValidationReport};
 use crate::{
-    extension::DeliveryPolicy,
-    ir::{
-        decode_params, HostId, OutputBinding, OutputDecl, ParamError, ParamSpec, Params, PayloadClasses, Plan,
-        RecipientDecl, ResourceProvenance, Selector,
-    },
-    resources::{credential_name, fingerprint, CREDENTIALS_NAMESPACE},
+    ir::{decode_params, HostId, OutputBinding, OutputDecl, ParamError, ParamSpec, Params, Plan, Selector},
+    resources::fingerprint,
 };
 
 pub(super) fn check(plan: &Plan, catalog: &dyn Catalog, report: &mut ValidationReport) {
     check_declarations(plan, catalog, report);
     for output in &plan.outputs {
-        match &output.binding {
-            Some(binding) => check_binding(plan, output, binding, catalog, report),
-            // The prefix is reserved for outputs a resources artifact declares, which always deliver through a host.
-            None if output.id.is_declared() => report.push(Finding::new(
-                Rule::OutputBinding,
-                Location::Output(output.id.clone()),
-                "an output named `resources_<name>` is declared by a resources artifact and delivers through a \
-                 delivery host, but this one has no binding; native outputs never use the prefix",
-            )),
-            None => {}
+        if let Some(binding) = &output.binding {
+            check_binding(plan, output, binding, catalog, report);
         }
     }
 }
@@ -88,49 +75,12 @@ fn check_declarations(plan: &Plan, catalog: &dyn Catalog, report: &mut Validatio
         if let Err(problem) = check_host(&recipient.host, &recipient.protocol, |schema| schema.protocol, catalog) {
             push(at(problem));
         }
-        match &recipient.provenance {
-            ResourceProvenance::Native => {
-                if !recipient.delivery.is_native() {
-                    push(at(
-                        "it has a bounded delivery policy, which only a recipient a resources artifact declares may \
-                         have; native recipients keep their host's native policy"
-                            .to_string(),
-                    ));
-                }
-            }
-            ResourceProvenance::Declared(_) => check_declared_recipient(recipient, catalog, &mut push),
-        }
-    }
-}
-
-/// Checks what only a recipient a resources artifact declares must satisfy.
-fn check_declared_recipient(recipient: &RecipientDecl, catalog: &dyn Catalog, push: &mut impl FnMut(String)) {
-    let at = |message: String| format!("recipient `{}`: {}", recipient.id, message);
-    if catalog
-        .host(&recipient.host)
-        .is_some_and(|schema| !schema.declared_recipients)
-    {
-        push(at(format!(
-            "it is declared by a resources artifact, but host `{}` does not accept declared recipients",
-            recipient.host
-        )));
-    }
-    if credential_name(&recipient.credential).is_none() {
-        push(at(format!(
-            "it is declared by a resources artifact, so its credential must be a `{}<name>` reference, not `{}`",
-            CREDENTIALS_NAMESPACE, recipient.credential
-        )));
-    }
-    if recipient.classes != PayloadClasses::MetricsOnly {
-        push(at(
-            "it is declared by a resources artifact, so it receives metrics only: its payload classes must be \
-             `metrics_only`"
-                .to_string(),
-        ));
-    }
-    if let DeliveryPolicy::Bounded(bounded) = recipient.delivery {
-        if bounded.queue_bytes == Some(0) {
-            push(at("its queue is bounded to 0 bytes, which holds nothing".to_string()));
+        if !recipient.delivery.is_native() {
+            push(at(
+                "it has a bounded delivery policy, which nothing declares yet; recipients keep their host's native \
+                 policy"
+                    .to_string(),
+            ));
         }
     }
 }
@@ -159,16 +109,7 @@ fn check_binding(
         ));
     }
 
-    let declared_selector = matches!(binding.selector, Selector::Declared(_));
-    let declared_provenance = matches!(binding.provenance, ResourceProvenance::Declared(_));
-    if output.id.is_declared() != declared_selector || output.id.is_declared() != declared_provenance {
-        push(
-            "an output a resources artifact declares has an identifier `resources_<name>`, a declared selector, and \
-             the artifact's provenance, and a native output has none of them; this output mixes them"
-                .to_string(),
-        );
-    }
-    if let Selector::Declared(selected) | Selector::Recipients(selected) = &binding.selector {
+    if let Selector::Recipients(selected) = &binding.selector {
         let mut sorted = selected.clone();
         sorted.sort();
         sorted.dedup();
@@ -192,13 +133,6 @@ fn check_binding(
             ));
             continue;
         }
-        if declared_selector && !matches!(recipient.provenance, ResourceProvenance::Declared(_)) {
-            push(format!(
-                "it is declared by a resources artifact, so it delivers to declared recipients only, but `{}` is a \
-                 native recipient",
-                id
-            ));
-        }
         if let Some(reason) = catalog.refuses(output, recipient) {
             push(format!(
                 "its recipient `{}` cannot receive what it produces: {}",
@@ -215,9 +149,10 @@ mod tests {
     use super::*;
     use crate::{
         canonical::PlanHash,
+        extension::DeliveryPolicy,
         ir::{
-            ArtifactRevision, BindingName, CredentialRef, HostBinding, InputName, NativeComponentId, OutputId,
-            ParamType, RecipientId, Resources, RoleName, ScopeName,
+            BindingName, CredentialRef, HostBinding, InputName, NativeComponentId, OutputId, ParamType, PayloadClasses,
+            RecipientDecl, RecipientId, Resources, RoleName, ScopeName,
         },
         model::PortType,
         operators::OperatorRegistry,
@@ -228,8 +163,8 @@ mod tests {
     const SETTINGS: &[ParamSpec] = &[ParamSpec::optional("timeout", ParamType::Duration)];
     const PROTOCOL: &[ParamSpec] = &[ParamSpec::optional("v3_series", ParamType::Bool)];
 
-    /// A catalog that declares `dd_out` (which accepts declared recipients) and `mrf_dd_out`, the outputs of the plan
-    /// it validates, and every host when asked to, refusing V3 series for recipients that do not take them.
+    /// A catalog that declares `dd_out` and `mrf_dd_out`, the outputs of the plan it validates, and every host when
+    /// asked to, refusing V3 series for recipients that do not take them.
     struct Hosts {
         outputs: Vec<(OutputId, CatalogOutput)>,
         every_host: bool,
@@ -252,17 +187,12 @@ mod tests {
         }
 
         fn host(&self, host: &HostId) -> Option<HostSchema> {
-            let schema = |declared_recipients| HostSchema {
+            let schema = HostSchema {
                 encoder: ENCODER,
                 settings: SETTINGS,
                 protocol: PROTOCOL,
-                declared_recipients,
             };
-            match host.as_str() {
-                "dd_out" => Some(schema(true)),
-                "mrf_dd_out" => Some(schema(false)),
-                _ => None,
-            }
+            matches!(host.as_str(), "dd_out" | "mrf_dd_out").then_some(schema)
         }
 
         fn declares_hosts(&self) -> bool {
@@ -277,37 +207,19 @@ mod tests {
         }
     }
 
-    fn revision() -> ArtifactRevision {
-        ArtifactRevision {
-            revision: 1,
-            hash: PlanHash::of_bytes(b"resources"),
-        }
-    }
-
-    fn recipient(id: &str, provenance: ResourceProvenance) -> RecipientDecl {
-        let declared = matches!(provenance, ResourceProvenance::Declared(_));
+    fn recipient(id: &str) -> RecipientDecl {
         RecipientDecl {
             id: RecipientId::new(id).unwrap(),
             host: HostId::new("dd_out").unwrap(),
             endpoint: "https://intake.example.com".to_string(),
-            credential: CredentialRef::new(if declared {
-                "credentials/team_d"
-            } else {
-                "native:api_key"
-            })
-            .unwrap(),
-            classes: if declared {
-                PayloadClasses::MetricsOnly
-            } else {
-                PayloadClasses::All
-            },
+            credential: CredentialRef::new("native:api_key").unwrap(),
+            classes: PayloadClasses::All,
             protocol: Params::new(),
             delivery: DeliveryPolicy::Native,
-            provenance,
         }
     }
 
-    fn bound(id: &str, selector: Selector, recipients: &[&str], provenance: ResourceProvenance) -> OutputDecl {
+    fn bound(id: &str, selector: Selector, recipients: &[&str]) -> OutputDecl {
         let host = HostId::new("dd_out").unwrap();
         OutputDecl {
             id: OutputId::new(id).unwrap(),
@@ -320,27 +232,24 @@ mod tests {
                 selector,
                 encoder: Params::new(),
                 telemetry: NativeComponentId::new(id).unwrap(),
-                provenance,
             }),
         }
     }
 
     const PRIMARY: &str = "dd_out/primary/0/https://app.example.com";
-    const TEAM_D: &str = "dd_out/declared/team_d/https://intake.example.com";
+    const TEAM_B: &str = "dd_out/additional/0/https://intake.example.com";
 
-    /// A plan whose main output and declared output `resources_team_d` deliver through `dd_out`.
+    /// A plan whose main output, and an implied output for team B's endpoint, deliver through `dd_out`.
     fn plan() -> Plan {
         let main = bound(
             "dd_metrics_encode",
             Selector::Role(RoleName::new("main").unwrap()),
             &[PRIMARY],
-            ResourceProvenance::Native,
         );
-        let team_d = bound(
-            "resources_team_d",
-            Selector::Declared(vec![RecipientId::new(TEAM_D).unwrap()]),
-            &[TEAM_D],
-            ResourceProvenance::Declared(revision()),
+        let team_b = bound(
+            "implied_team_b_e7b845f5",
+            Selector::Recipients(vec![RecipientId::new(TEAM_B).unwrap()]),
+            &[TEAM_B],
         );
         let value = json!({
             "ir_version": 1,
@@ -348,20 +257,17 @@ mod tests {
                 {"id": "in", "op": "source", "params": {"binding": "otlp"}},
                 {"id": "copy", "op": "tee", "params": {"ports": 2}},
                 {"id": "main", "op": "emit", "params": {"output": "dd_metrics_encode"}},
-                {"id": "team", "op": "emit", "params": {"output": "resources_team_d"}}
+                {"id": "team", "op": "emit", "params": {"output": "implied_team_b_e7b845f5"}}
             ],
             "edges": [
                 {"from": "in.metrics", "to": "copy.in"},
                 {"from": "copy.0", "to": "main.in"},
                 {"from": "copy.1", "to": "team.in"}
             ],
-            "outputs": [main, team_d],
+            "outputs": [main, team_b],
             "resources": Resources {
                 hosts: vec![HostBinding { host: HostId::new("dd_out").unwrap(), settings: Params::new() }],
-                recipients: vec![
-                    recipient(PRIMARY, ResourceProvenance::Native),
-                    recipient(TEAM_D, ResourceProvenance::Declared(revision())),
-                ],
+                recipients: vec![recipient(PRIMARY), recipient(TEAM_B)],
             },
         });
         Plan::from_value(value).unwrap()
@@ -412,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn a_plan_whose_outputs_bind_to_declared_resources_validates() {
+    fn a_plan_whose_outputs_bind_to_its_resources_validates() {
         let plan = plan();
         assert_eq!(findings(&plan, &catalog(&plan)), Vec::new());
     }
@@ -466,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn declared_recipients_receive_metrics_only_with_operator_credentials_and_native_ones_keep_native_delivery() {
+    fn recipients_keep_their_hosts_native_delivery_policy() {
         let mut bounded = plan();
         bounded.resources.recipients[0].delivery = DeliveryPolicy::Bounded(crate::extension::BoundedDelivery {
             queue_bytes: Some(1024),
@@ -476,29 +382,7 @@ mod tests {
         rejected(
             &bounded,
             Rule::ResourceDeclarations,
-            "only a recipient a resources artifact declares may have",
-        );
-
-        let mut classes = plan();
-        classes.resources.recipients[1].classes = PayloadClasses::All;
-        rejected(&classes, Rule::ResourceDeclarations, "it receives metrics only");
-
-        let mut credential = plan();
-        credential.resources.recipients[1].credential = CredentialRef::new("native:api_key").unwrap();
-        rejected(
-            &credential,
-            Rule::ResourceDeclarations,
-            "its credential must be a `credentials/<name>` reference",
-        );
-
-        let mut failover = plan();
-        for recipient in &mut failover.resources.recipients {
-            recipient.host = HostId::new("mrf_dd_out").unwrap();
-        }
-        rejected(
-            &failover,
-            Rule::ResourceDeclarations,
-            "host `mrf_dd_out` does not accept declared recipients",
+            "it has a bounded delivery policy, which nothing declares yet",
         );
     }
 
@@ -549,42 +433,5 @@ mod tests {
             Rule::OutputBinding,
             "cannot receive what it produces: it takes no V3 series",
         );
-    }
-
-    #[test]
-    fn declared_outputs_deliver_to_declared_recipients_only_and_native_ones_are_not_declared() {
-        // A declared output naming a native recipient.
-        let mut native = plan();
-        let selector = Selector::Declared(vec![RecipientId::new(PRIMARY).unwrap()]);
-        let output = &mut native.outputs[1];
-        output.recipients = vec![RecipientId::new(PRIMARY).unwrap()];
-        output.fingerprint = fingerprint(&HostId::new("dd_out").unwrap(), output.accepts, &selector);
-        output.binding.as_mut().unwrap().selector = selector;
-        rejected(
-            &native,
-            Rule::OutputBinding,
-            "so it delivers to declared recipients only",
-        );
-
-        // A declared selector that does not list the output's recipients.
-        let mut listed = plan();
-        listed.outputs[1].recipients.push(RecipientId::new(PRIMARY).unwrap());
-        rejected(&listed, Rule::OutputBinding, "its selector must list its recipients");
-
-        // A native output with a declared provenance, and a declared output with a role.
-        let mut mixed = plan();
-        mixed.outputs[0].binding.as_mut().unwrap().provenance = ResourceProvenance::Declared(revision());
-        rejected(&mixed, Rule::OutputBinding, "this output mixes them");
-        let mut role = plan();
-        let selector = Selector::Role(RoleName::new("main").unwrap());
-        let output = &mut role.outputs[1];
-        output.fingerprint = fingerprint(&HostId::new("dd_out").unwrap(), output.accepts, &selector);
-        output.binding.as_mut().unwrap().selector = selector;
-        rejected(&role, Rule::OutputBinding, "this output mixes them");
-
-        // The prefix is reserved: a fixed destination cannot have it.
-        let mut unbound = plan();
-        unbound.outputs[1].binding = None;
-        rejected(&unbound, Rule::OutputBinding, "but this one has no binding");
     }
 }

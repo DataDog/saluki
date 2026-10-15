@@ -170,14 +170,6 @@ impl App {
             .and_then(|(_, status)| status.status.revision_high_water)
     }
 
-    /// Returns the resources revision high-water mark the privileged status route reported, which the stub's view
-    /// reports beside its own.
-    fn reported_resources_high_water(&self) -> Option<u64> {
-        self.control
-            .status()
-            .and_then(|(_, status)| status.status.resources?.revision_high_water)
-    }
-
     fn recipients(&self) -> Vec<Recipient> {
         self.destinations
             .intakes()
@@ -482,11 +474,7 @@ async fn state(State(app): State<App>) -> Json<StateResponse> {
         aggregate_window_secs: app.settings.aggregate_window_secs,
         control: app.control.view(),
         legend: export.map(|export| export.legend(&app.recipients())),
-        channel: app.channel.view(
-            TIMELINE_LIMIT,
-            app.reported_high_water(),
-            app.reported_resources_high_water(),
-        ),
+        channel: app.channel.view(TIMELINE_LIMIT, app.reported_high_water()),
         intakes,
         native: app.destinations.native(),
         traffic: app.traffic.state(),

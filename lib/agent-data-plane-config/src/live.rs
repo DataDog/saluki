@@ -288,12 +288,11 @@ mod tests {
         let base = Live::new_dynamic(Arc::clone(&cell), tick.subscribe(), |config| config);
         let mut key = base.map(|config| {
             config
-                .control
-                .programmable_metrics
-                .resources
-                .credentials
+                .shared
+                .endpoints
+                .additional_endpoints
                 .get("team_d")
-                .map(|key| key.to_uppercase())
+                .map(|keys| keys.concat().to_uppercase())
         });
         assert_eq!(*key, None);
 
@@ -302,8 +301,8 @@ mod tests {
         assert_eq!(changed_now(&mut key), None);
 
         update(&cell, &tick, |config| {
-            let credentials = &mut config.control.programmable_metrics.resources.credentials;
-            credentials.insert("team_d".to_string(), "key-d".to_string());
+            let endpoints = &mut config.shared.endpoints.additional_endpoints;
+            endpoints.insert("team_d".to_string(), vec!["key-d".to_string()]);
         });
         assert_eq!(changed_now(&mut key), Some(Some("KEY-D".to_string())));
         assert_eq!(*key, Some("KEY-D".to_string()));

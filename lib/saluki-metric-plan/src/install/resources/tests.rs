@@ -7,7 +7,6 @@ use crate::ir::Plan;
 
 const MAIN: &str = "dd_metrics_encode";
 const GROUP: &str = "metrics_routing_encode_0";
-const HASH: &str = "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 
 fn dd_out() -> HostId {
     HostId::new("dd_out").unwrap()
@@ -26,40 +25,30 @@ fn id(name: &str) -> RecipientId {
     id_on("dd_out", name)
 }
 
-/// A recipient declaration of `host`: native, or declared by resources revision 3, with V3 series or not.
-fn recipient_on(host: &str, name: &str, declared: bool, v3: bool) -> Value {
-    let provenance = if declared {
-        json!({"declared": {"revision": 3, "hash": HASH}})
-    } else {
-        json!("native")
-    };
+/// A recipient declaration of `host`, with V3 series or not.
+fn recipient_on(host: &str, name: &str, v3: bool) -> Value {
     json!({
         "id": id_on(host, name), "host": host, "endpoint": format!("https://{}.example.com", name),
-        "credential": "native:api_key", "classes": if declared { "metrics_only" } else { "all" },
-        "protocol": {"v3_series": v3}, "provenance": provenance,
+        "credential": "native:api_key", "classes": "all", "protocol": {"v3_series": v3},
     })
 }
 
 fn native(name: &str) -> Value {
-    recipient_on("dd_out", name, false, false)
+    recipient_on("dd_out", name, false)
 }
 
-fn declared(name: &str) -> Value {
-    recipient_on("dd_out", name, true, false)
-}
-
-/// An output of `host` bound to the recipients `names`, declared by `provenance`.
-fn output_on(output: &str, host: &str, names: &[&str], provenance: Value) -> Value {
+/// An output of `host` bound to the recipients `names`.
+fn output_on(output: &str, host: &str, names: &[&str]) -> Value {
     let recipients = names.iter().map(|name| id_on(host, name)).collect::<Vec<_>>();
     json!({
         "id": output, "accepts": {"kinds": "all", "timestamps": "mixed"},
         "fingerprint": format!("sha256:{}", "0".repeat(64)), "recipients": recipients,
-        "binding": {"host": host, "selector": {"role": "main"}, "telemetry": output, "provenance": provenance},
+        "binding": {"host": host, "selector": {"role": "main"}, "telemetry": output},
     })
 }
 
 fn output(output: &str, names: &[&str]) -> Value {
-    output_on(output, "dd_out", names, json!("native"))
+    output_on(output, "dd_out", names)
 }
 
 fn plan(outputs: Vec<Value>, recipients: Vec<Value>) -> Plan {
@@ -138,10 +127,12 @@ impl ResourceBounds for Bounds {
         100
     }
 
+    /// Recipient `d` has a bound of its own; every other is within its host's bounds at boot.
     fn recipient(&self, recipient: &RecipientDecl, _: Option<&HostBinding>) -> u64 {
-        match recipient.provenance {
-            ResourceProvenance::Declared(_) => 10,
-            ResourceProvenance::Native => 0,
+        if recipient.id == id("d") {
+            10
+        } else {
+            0
         }
     }
 
@@ -183,17 +174,8 @@ fn a_generation_reuses_a_live_lease_of_an_equal_binding_and_a_changed_binding_ge
         }]
     );
 
-    // The same binding, declared by a resources revision: provenance is not part of the key, so the lease and its
-    // recipient are reused, and the recipient is required live.
-    let again = plan(
-        vec![output_on(
-            MAIN,
-            "dd_out",
-            &["a"],
-            json!({"declared": {"revision": 3, "hash": HASH}}),
-        )],
-        vec![native("a")],
-    );
+    // The same binding again: the lease and its recipient are reused, and the recipient is required live.
+    let again = plan(vec![output(MAIN, &["a"])], vec![native("a")]);
     let second = install(&mut table, generation(2), &again);
     assert_eq!(lease_of(&second, MAIN), EntryId::new(0));
     assert_eq!(second.hosts.len(), 1);
@@ -482,7 +464,7 @@ fn a_superseded_transaction_keeps_what_the_newer_one_prepares_and_drops_the_rest
 #[test]
 fn a_timed_out_host_is_aborted_and_publishes_without_its_additions() {
     let mut table = ResourceTable::new();
-    let lowered = plan(vec![], vec![native("a"), recipient_on("mrf_dd_out", "m", false, false)]);
+    let lowered = plan(vec![], vec![native("a"), recipient_on("mrf_dd_out", "m", false)]);
     let transaction = table.transaction(&lowered.resources).unwrap();
     assert_eq!(transaction.prepare.len(), 2);
     table.begin(&transaction, &lowered.resources);
@@ -588,15 +570,15 @@ fn credits_are_listed_for_what_a_preparation_adds_and_each_is_released_once_howe
     let candidate = plan(
         vec![
             output(MAIN, &["d"]),
-            output_on("mrf_metrics_encode", "mrf_dd_out", &["m"], json!("native")),
+            output_on("mrf_metrics_encode", "mrf_dd_out", &["m"]),
         ],
-        vec![declared("d"), recipient_on("mrf_dd_out", "m", false, false)],
+        vec![native("d"), recipient_on("mrf_dd_out", "m", false)],
     );
     let planned = table.plan(&candidate);
     let main = lease_of(&planned, MAIN);
     let failover = lease_of(&planned, "mrf_metrics_encode");
     let d = reference("d", 0, 1);
-    // Each new lease, the declared recipient's own bound, and each idle host's queue, once.
+    // Each new lease, recipient `d`'s own bound, and each idle host's queue, once.
     assert_eq!(
         planned.admitted,
         vec![
@@ -647,7 +629,7 @@ fn credits_are_listed_for_what_a_preparation_adds_and_each_is_released_once_howe
 #[test]
 fn a_failed_recipient_returns_its_credit_at_the_failure_and_its_next_incarnation_holds_its_own() {
     let mut table = ResourceTable::with_bounds(Arc::new(Bounds));
-    let candidate = plan(vec![output(MAIN, &["d"])], vec![declared("d")]);
+    let candidate = plan(vec![output(MAIN, &["d"])], vec![native("d")]);
     install(&mut table, generation(1), &candidate);
     let released = table.recipient_failed(&reference("d", 0, 1)).unwrap();
     assert_eq!(
@@ -655,7 +637,7 @@ fn a_failed_recipient_returns_its_credit_at_the_failure_and_its_next_incarnation
         vec![CreditKey::Recipient(dd_out(), reference("d", 0, 1))]
     );
     table.failure_due(&dd_out(), &reference("d", 0, 1).id);
-    // A declared recipient no native set names is recovered by a transaction too, since a generation uses it.
+    // The failed recipient is recovered by a transaction, since a generation uses it.
     let transaction = table.transaction(&candidate.resources).unwrap();
     assert_eq!(transaction.prepare[0].create[0].recipient, reference("d", 0, 2));
     assert_eq!(
@@ -665,7 +647,7 @@ fn a_failed_recipient_returns_its_credit_at_the_failure_and_its_next_incarnation
 }
 
 #[test]
-fn lease_keys_cover_the_binding_the_accepted_records_and_each_recipients_protocol_but_not_provenance() {
+fn lease_keys_cover_the_binding_the_accepted_records_and_each_recipients_protocol() {
     let key = |output: Value, recipients: Vec<Value>| {
         let decl = serde_json::from_value::<OutputDecl>(output).unwrap();
         LeaseKey::of(&decl, &plan(vec![], recipients).resources)
@@ -673,14 +655,9 @@ fn lease_keys_cover_the_binding_the_accepted_records_and_each_recipients_protoco
             .binding
     };
     let base = key(output(MAIN, &["a"]), vec![native("a")]);
-    let declared_by = json!({"declared": {"revision": 9, "hash": HASH}});
-    assert_eq!(
-        key(output_on(MAIN, "dd_out", &["a"], declared_by), vec![native("a")]),
-        base
-    );
     assert_ne!(key(output(MAIN, &["a", "b"]), vec![native("a"), native("b")]), base);
     assert_ne!(
-        key(output(MAIN, &["a"]), vec![recipient_on("dd_out", "a", false, true)]),
+        key(output(MAIN, &["a"]), vec![recipient_on("dd_out", "a", true)]),
         base,
         "a recipient's V3 acceptance changes the variants the lease produces"
     );
@@ -726,7 +703,7 @@ fn credits_name_their_resource_in_words() {
     let host = dd_out();
     let recipient = RecipientRef {
         slot: RecipientSlot::new(2),
-        id: RecipientId::new("dd_out/declared/team_d/https://team-d.example.com").unwrap(),
+        id: RecipientId::new("dd_out/additional/0/https://team-d.example.com").unwrap(),
         incarnation: 5,
     };
     let cases = [
@@ -736,7 +713,7 @@ fn credits_name_their_resource_in_words() {
         ),
         (
             CreditKey::Recipient(host.clone(), recipient),
-            "recipient `dd_out/declared/team_d/https://team-d.example.com` (slot 2, incarnation 5) of delivery \
+            "recipient `dd_out/additional/0/https://team-d.example.com` (slot 2, incarnation 5) of delivery \
              host `dd_out`",
         ),
         (CreditKey::HostQueue(host), "the queue of delivery host `dd_out`"),

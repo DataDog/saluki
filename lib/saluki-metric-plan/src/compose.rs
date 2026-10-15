@@ -1589,7 +1589,7 @@ fn check_output(
         return OutputCheck::Fine;
     };
     let Some(recorded) = base.outputs.get(&output) else {
-        if catalog.output(&output).is_none() && !output.is_declared() {
+        if catalog.output(&output).is_none() {
             let declared = default_plan
                 .outputs
                 .iter()

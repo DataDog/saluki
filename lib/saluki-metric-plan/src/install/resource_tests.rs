@@ -7,8 +7,7 @@
 //! to its endpoints of `dd_out` while they are configured, and the failover output to `mrf_dd_out`'s recipient while
 //! failover is on. What a configuration changes is which recipients the lowering declares, and so which of them each
 //! output's lease resolves to: a routing group's endpoints, the failover recipient, each endpoint's protocol,
-//! additional endpoints that only the native set names (as a logs dual-ship endpoint), and team D's recipient and
-//! output, which a resources artifact declares and lowering declares from `accepted_resources` alone.
+//! and additional endpoints that only the native set names (as a logs dual-ship endpoint).
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -25,16 +24,12 @@ use super::{
     *,
 };
 use crate::{
-    canonical::{PlanHash, ResolvedValues},
-    channel::{ApplyState, ArtifactConfigId, ArtifactProduct},
+    canonical::ResolvedValues,
     compile::{Frame, FrameHosts, LeaseTable, SlotId},
     compose::{Approval, ComposeError, Composed, Composer},
-    ir::{
-        HostBinding, HostId, NativeComponentId, OutputDecl, Plan, ReceivedArtifact, RecipientDecl, RecipientId,
-        ResourceProvenance,
-    },
+    ir::{HostBinding, HostId, NativeComponentId, OutputDecl, Plan, ReceivedArtifact, RecipientDecl, RecipientId},
     operators::OperatorRegistry,
-    resources::{fingerprint, DeclaredAccepts, DeclaredOutput, DeclaredProtocol, DeclaredRecipient, ResourcesArtifact},
+    resources::fingerprint,
     testing::{default_program_catalog, default_program_slot_name, DEFAULT_PROGRAM_JSON},
     validate::{CatalogOutput, Validator},
 };
@@ -80,11 +75,7 @@ fn additional(name: &str) -> RecipientId {
     RecipientId::new(format!("dd_out/additional/0/https://{}.example.com", name)).unwrap()
 }
 
-fn team_d() -> RecipientId {
-    recipient_id("dd_out/declared/team_d/https://team-d.example.com")
-}
-
-/// What native configuration declares, and whether the operator publishes team D's resources artifact.
+/// What native configuration declares.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Config {
     /// The additional endpoints of `dd_out` that only its native set names.
@@ -99,9 +90,6 @@ struct Config {
     /// Whether Multi-Region Failover is on.
     failover: bool,
 
-    /// Whether the resources product delivers team D's artifact.
-    declared: bool,
-
     /// The listener filterlist, which makes plans differ without changing their resources.
     listener: &'static str,
 }
@@ -113,70 +101,48 @@ impl Default for Config {
             groups: BTreeSet::new(),
             v3: false,
             failover: false,
-            declared: false,
             listener: BOOT_LISTENER,
         }
     }
 }
 
-fn config(endpoints: &[&'static str], groups: &[u8], failover: bool, declared: bool) -> Config {
+fn config(endpoints: &[&'static str], groups: &[u8], failover: bool) -> Config {
     Config {
         endpoints: endpoints.iter().copied().collect(),
         groups: groups.iter().copied().collect(),
         failover,
-        declared,
         ..Config::default()
     }
 }
 
-fn recipient_decl(id: &RecipientId, host: &str, v3: bool, provenance: Value) -> Value {
-    let declared = provenance != json!("native");
+fn recipient_decl(id: &RecipientId, host: &str, v3: bool) -> Value {
     json!({
         "id": id, "host": host, "endpoint": format!("https://{}.example.com", id.as_str().replace('/', "-")),
-        "credential": if declared { "credentials/team_d" } else { "native:api_key" },
-        "classes": if declared { "metrics_only" } else { "all" },
+        "credential": "native:api_key",
+        "classes": "all",
         "protocol": {"v3_series": v3},
-        "provenance": provenance,
     })
 }
 
-/// Lowers a configuration into the default program: its outputs bound as at boot, and its resources declared, team
-/// D's recipient only while the resources artifact `declared` (revision and hash) is accepted.
-fn lowered(config: &Config, declared: Option<(u64, PlanHash)>) -> Plan {
+/// Lowers a configuration into the default program: its outputs bound as at boot, and its resources declared.
+fn lowered(config: &Config) -> Plan {
     let mut value = serde_json::from_str::<Value>(DEFAULT_PROGRAM_JSON).unwrap();
     node_mut(&mut value, "dsd_prefix_filter_blocklist")["params"]["predicate"]["intake_name"]["matches"]["values"]
         ["resolved"] = json!([config.listener]);
-    let native = json!("native");
-    let mut recipients = vec![recipient_decl(&primary(), "dd_out", false, native.clone())];
+    let mut recipients = vec![recipient_decl(&primary(), "dd_out", false)];
     if config.groups.contains(&0) {
-        recipients.push(recipient_decl(&group_0(), "dd_out", config.v3, native.clone()));
+        recipients.push(recipient_decl(&group_0(), "dd_out", config.v3));
     }
     if config.groups.contains(&1) {
         for id in group_1() {
-            recipients.push(recipient_decl(&id, "dd_out", false, native.clone()));
+            recipients.push(recipient_decl(&id, "dd_out", false));
         }
     }
     for endpoint in &config.endpoints {
-        recipients.push(recipient_decl(&additional(endpoint), "dd_out", false, native.clone()));
-    }
-    if let Some((revision, hash)) = declared {
-        let provenance = json!({"declared": {"revision": revision, "hash": hash}});
-        recipients.push(recipient_decl(&team_d(), "dd_out", false, provenance.clone()));
-        // The declared output delivers to team D's recipient: placement binds it to `dd_out`'s encode host, and no
-        // default-program node emits to it.
-        value["outputs"].as_array_mut().unwrap().push(json!({
-            "id": "resources_team_d",
-            "accepts": {"kinds": "all", "timestamps": "mixed"},
-            "fingerprint": PlanHash::of_bytes(b"computed below"),
-            "recipients": [team_d()],
-            "binding": {
-                "host": "dd_out", "selector": {"declared": [team_d()]}, "telemetry": "resources_team_d",
-                "provenance": provenance,
-            },
-        }));
+        recipients.push(recipient_decl(&additional(endpoint), "dd_out", false));
     }
     if config.failover {
-        recipients.push(recipient_decl(&mrf_primary(), "mrf_dd_out", false, native));
+        recipients.push(recipient_decl(&mrf_primary(), "mrf_dd_out", false));
     }
     let bindings = [
         ("dd_metrics_encode", "dd_out", json!({"role": "main"})),
@@ -216,7 +182,7 @@ fn lowered(config: &Config, declared: Option<(u64, PlanHash)>) -> Plan {
     );
     for output in value["outputs"].as_array_mut().unwrap() {
         if let Some((id, host, selector)) = bindings.iter().find(|(id, ..)| output["id"] == *id) {
-            output["binding"] = json!({"host": host, "selector": selector, "telemetry": id, "provenance": "native"});
+            output["binding"] = json!({"host": host, "selector": selector, "telemetry": id});
             output["recipients"] = json!(delivers_to[id]);
         }
     }
@@ -337,7 +303,7 @@ impl Known {
             .collect()
     }
 
-    /// Returns every recipient the generation uses, by host: those its leases name, and the declared ones.
+    /// Returns every recipient the generation uses, by host: those its leases name.
     fn recipients(&self) -> BTreeSet<(HostId, RecipientId)> {
         let mut used = BTreeSet::new();
         for output in &self.plan.outputs {
@@ -348,46 +314,7 @@ impl Known {
                 }
             }
         }
-        for recipient in &self.plan.resources.recipients {
-            if matches!(recipient.provenance, ResourceProvenance::Declared(_)) {
-                used.insert((recipient.host.clone(), recipient.id.clone()));
-            }
-        }
         used
-    }
-}
-
-fn document() -> ResourcesArtifact {
-    ResourcesArtifact {
-        resources_version: 1,
-        recipients: vec![DeclaredRecipient {
-            name: "team_d".to_string(),
-            host: dd_out(),
-            endpoint: "https://team-d.example.com".to_string(),
-            credential: "credentials/team_d".parse().unwrap(),
-            protocol: DeclaredProtocol::default(),
-            delivery: None,
-        }],
-        outputs: vec![DeclaredOutput {
-            name: "team_d".to_string(),
-            recipients: vec!["team_d".to_string()],
-            accepts: DeclaredAccepts::Any,
-            label: None,
-        }],
-    }
-}
-
-fn resources_hash(revision: u64) -> PlanHash {
-    PlanHash::of_bytes(format!("resources revision {}", revision).as_bytes())
-}
-
-fn delivered(revision: u64, document: Result<ResourcesArtifact, String>) -> ResourcesEvent {
-    ResourcesEvent::Delivered {
-        config: ArtifactConfigId::new("resources"),
-        version: revision,
-        revision,
-        artifact_hash: resources_hash(revision),
-        document,
     }
 }
 
@@ -416,8 +343,6 @@ struct World {
     cancelling: Option<GenerationId>,
     config: Config,
     lowered: Arc<Plan>,
-    /// The revision the resources product delivered last, if it delivers one.
-    resources_revision: u64,
     known: BTreeMap<GenerationId, Known>,
     /// The credits the caller holds, and every credit ever listed and returned.
     ledger: BTreeMap<CreditKey, u64>,
@@ -445,7 +370,7 @@ impl World {
             RetireNotifier::new(move |id| notified.lock().unwrap().push(id))
         };
         let config = Config::default();
-        let plan = lowered(&config, None);
+        let plan = lowered(&config);
         let frame = Arc::new(
             Frame::compute_with_hosts(
                 &plan,
@@ -490,7 +415,6 @@ impl World {
             cancelling: None,
             config,
             lowered: Arc::new(plan.clone()),
-            resources_revision: 0,
             known: BTreeMap::new(),
             ledger: BTreeMap::new(),
             listed: BTreeSet::new(),
@@ -577,13 +501,9 @@ impl World {
             .collect()
     }
 
-    /// Lowers the configuration as ADP does: with team D's recipient only while the core accepts its artifact.
+    /// Lowers the configuration as ADP does.
     fn lower(&mut self) -> Candidate {
-        let declared = self
-            .core
-            .accepted_resources()
-            .map(|_| (self.resources_revision, resources_hash(self.resources_revision)));
-        let plan = lowered(&self.config, declared);
+        let plan = lowered(&self.config);
         self.lowered = Arc::new(plan.clone());
         let change = self.next_change;
         self.next_change += 1;
@@ -884,22 +804,10 @@ impl World {
         None
     }
 
-    /// Changes the configuration: the resources product delivers or revokes team D's artifact if that changed, and the
-    /// configuration is lowered.
+    /// Changes the configuration, which is lowered.
     fn configure(&mut self, config: Config) -> Vec<Action> {
-        let declare = config.declared && !self.config.declared;
-        let revoke = !config.declared && self.config.declared;
         self.config = config;
         let mut actions = Vec::new();
-        if declare {
-            self.resources_revision += 1;
-            actions.extend(
-                self.core
-                    .on_resources(delivered(self.resources_revision, Ok(document()))),
-            );
-        } else if revoke {
-            actions.extend(self.core.on_resources(ResourcesEvent::Revoked));
-        }
         let candidate = self.lower();
         actions.extend(self.core.on_default_program(candidate, &NoComposer).1);
         actions
@@ -913,12 +821,7 @@ impl World {
             listener,
             ..self.config.clone()
         };
-        let declared = self
-            .lowered
-            .resources
-            .recipient(&team_d())
-            .map(|_| (self.resources_revision, resources_hash(self.resources_revision)));
-        let plan = lowered(&config, declared);
+        let plan = lowered(&config);
         let hash = plan.hash(ResolvedValues::Include).unwrap();
         self.core
             .propose(candidate(plan, Origin::Artifact { revision, hash }))
@@ -1135,25 +1038,6 @@ impl World {
             }
         }
 
-        // A resources revision is never rejected for a queue directory a loop still owns: the core prepares an
-        // identity's next incarnation only once its previous one exited, and a host holds a part on a dropped loop's
-        // directory until that loop exits.
-        let resources = self
-            .core
-            .config_states()
-            .into_iter()
-            .find(|ack| ack.product == ArtifactProduct::Resources);
-        if let Some(error) = resources
-            .filter(|ack| ack.state == ApplyState::Rejected)
-            .and_then(|ack| ack.error)
-            .filter(|error| error.contains("owned by"))
-        {
-            self.errors.push(format!(
-                "a resources revision was rejected for a directory race: {}",
-                error
-            ));
-        }
-
         // Nothing kept to roll back to declares an output or recipient the latest lowering does not.
         let status = self.core.status();
         if let Some(kept) = status.last_known_good.as_ref() {
@@ -1345,21 +1229,6 @@ enum Step {
     Restart,
 }
 
-fn resources_ack(core: &InstallerCore) -> (ApplyState, Option<u64>, Option<String>) {
-    let ack = core
-        .config_states()
-        .into_iter()
-        .find(|ack| ack.product == ArtifactProduct::Resources)
-        .unwrap();
-    (ack.state, ack.revision, ack.error)
-}
-
-fn has_install(actions: &[Action]) -> bool {
-    actions
-        .iter()
-        .any(|action| matches!(action, Action::InstallDefaultProgram))
-}
-
 fn assert_clean(world: &mut World) {
     world.quiesce();
     world.check_reclaimed();
@@ -1409,7 +1278,7 @@ fn the_boot_generation_builds_its_hosts_with_its_resources_and_publishes_the_fir
 #[test]
 fn an_added_endpoint_is_published_by_a_transaction_and_the_new_lease_naming_it_creates_it_again() {
     let mut world = World::new();
-    world.step(&Step::Configure(config(&[], &[0], false, false)));
+    world.step(&Step::Configure(config(&[], &[0], false)));
     // First the transaction prepares the routing group's endpoint, then the generation prepares the group's new lease,
     // which creates the endpoint again under the transaction's reference, so that either one's abort keeps it.
     assert_eq!(world.log[0], "prepare resources revision 2 in 1 hosts within 10s");
@@ -1440,12 +1309,12 @@ fn an_added_endpoint_is_published_by_a_transaction_and_the_new_lease_naming_it_c
 #[test]
 fn a_removed_endpoint_is_withdrawn_at_the_transaction_and_released_after_the_last_lease_naming_it_drains() {
     let mut world = World::new();
-    world.step(&Step::Configure(config(&[], &[0], false, false)));
+    world.step(&Step::Configure(config(&[], &[0], false)));
     world.quiesce();
     let (endpoint, _) = world.held(&dd_out(), &group_0()).unwrap();
 
     world.log.clear();
-    world.step(&Step::Configure(config(&[], &[], false, false)));
+    world.step(&Step::Configure(config(&[], &[], false)));
     // The removal publishes at once, withdrawing the endpoint, while the generation without it prepares.
     assert_eq!(world.log[0], "publish resources revision 3 in 1 hosts");
     assert!(world.delivery[&dd_out()].withdrawn().contains(&group_0()));
@@ -1480,7 +1349,7 @@ fn a_recipient_its_transaction_failed_to_prepare_is_created_by_the_generation_th
     let mut world = World::new();
     // The failover host fails its next preparation: the transaction's addition of the failover recipient.
     world.step(&Step::FailNextPrepare(true));
-    world.step(&Step::Configure(config(&[], &[], true, false)));
+    world.step(&Step::Configure(config(&[], &[], true)));
     world.step(&Step::AcknowledgeHosts);
     let degraded = world.core.status_summary(None, None).degraded.unwrap();
     assert!(
@@ -1538,9 +1407,9 @@ fn a_generation_that_requires_a_recipient_its_host_no_longer_holds_live_fails_an
 #[test]
 fn a_newer_lowering_supersedes_a_transaction_that_has_not_published() {
     let mut world = World::new();
-    world.step(&Step::Configure(config(&["a", "b"], &[], false, false)));
+    world.step(&Step::Configure(config(&["a", "b"], &[], false)));
     world.log.clear();
-    world.step(&Step::Configure(config(&["b"], &[], false, false)));
+    world.step(&Step::Configure(config(&["b"], &[], false)));
     // The newer transaction prepares `b` again under the older one's reference, then the older one is aborted.
     assert_eq!(world.log[0], "prepare resources revision 3 in 1 hosts within 10s");
     assert_eq!(world.log[1], "abort resources revision 2 in 1 hosts");
@@ -1556,7 +1425,7 @@ fn a_newer_lowering_supersedes_a_transaction_that_has_not_published() {
 #[test]
 fn an_unanswered_host_is_aborted_at_the_timeout_and_the_transaction_is_tried_again() {
     let mut world = World::new();
-    world.step(&Step::Configure(config(&["a"], &[], false, false)));
+    world.step(&Step::Configure(config(&["a"], &[], false)));
     world.resource_acks.clear();
     world.log.clear();
     world.step(&Step::TimeOutResources);
@@ -1580,26 +1449,26 @@ fn an_unanswered_host_is_aborted_at_the_timeout_and_the_transaction_is_tried_aga
 #[test]
 fn a_reopen_that_finds_the_loop_exited_prepares_the_generation_again_once_the_exit_is_reported() {
     let mut world = World::new();
-    world.step(&Step::Configure(config(&[], &[], false, true)));
+    world.step(&Step::Configure(config(&[], &[0], false)));
     world.quiesce();
-    // Team D's recipient is released once a configuration without it commits, and the lease of its output, which
-    // names it, drained.
-    world.step(&Step::Configure(config(&[], &[], false, false)));
+    // Routing group 0's recipient is released once a configuration without it commits, and the lease of its output,
+    // which names it, drained.
+    world.step(&Step::Configure(config(&[], &[], false)));
     world.step(&Step::AcknowledgeHosts);
     world.step(&Step::AcknowledgeRegions);
     world.step(&Step::Retirements);
     world.step(&Step::LeaseReleases);
-    let (d, state) = world.held(&dd_out(), &team_d()).unwrap();
+    let (d, state) = world.held(&dd_out(), &group_0()).unwrap();
     assert_eq!(state, FakeRecipientState::Draining);
     // Its drain ends as it is declared again: the reopen finds its loop exited, and the generation waits for the exit.
     world.step(&Step::EndDrains);
-    world.step(&Step::Configure(config(&[], &[], false, true)));
+    world.step(&Step::Configure(config(&[], &[0], false)));
     world.step(&Step::AcknowledgeHosts);
     assert_eq!(world.core.status().preparing, None);
     world.step(&Step::Exits);
     let preparing = world.core.status().preparing.expect("prepared again after the exit");
     assert_clean(&mut world);
-    let (next, state) = world.held(&dd_out(), &team_d()).unwrap();
+    let (next, state) = world.held(&dd_out(), &group_0()).unwrap();
     assert_eq!(state, FakeRecipientState::Live);
     assert!(next.incarnation > d.incarnation, "its next incarnation");
     assert_eq!(world.core.status().active.unwrap().id, preparing.id);
@@ -1608,7 +1477,7 @@ fn a_reopen_that_finds_the_loop_exited_prepares_the_generation_again_once_the_ex
 #[test]
 fn a_failed_recipient_is_replaced_in_its_slot_after_its_backoff_without_a_plan_change() {
     let mut world = World::new();
-    world.step(&Step::Configure(config(&["a"], &[], false, false)));
+    world.step(&Step::Configure(config(&["a"], &[], false)));
     world.quiesce();
     let (a, _) = world.held(&dd_out(), &additional("a")).unwrap();
     assert!(world.delivery_mut(&dd_out()).fail(&a, "connection reset"));
@@ -1631,7 +1500,7 @@ fn a_failed_recipient_is_replaced_in_its_slot_after_its_backoff_without_a_plan_c
 #[test]
 fn a_lowering_that_removes_what_the_kept_generation_uses_releases_it() {
     let mut world = World::new();
-    world.step(&Step::Configure(config(&[], &[0], false, false)));
+    world.step(&Step::Configure(config(&[], &[0], false)));
     world.quiesce();
     world.step(&Step::Artifact("policy-a"));
     world.quiesce();
@@ -1642,10 +1511,10 @@ fn a_lowering_that_removes_what_the_kept_generation_uses_releases_it() {
         .expect("the default program is kept")
         .id;
     // Adding a routing group's endpoints keeps it: everything it uses is still declared.
-    world.step(&Step::Configure(config(&[], &[0, 1], false, false)));
+    world.step(&Step::Configure(config(&[], &[0, 1], false)));
     assert_eq!(world.core.status().last_known_good.map(|record| record.id), Some(kept));
     // Removing the endpoint its group's lease names releases it at once, before anything is prepared.
-    world.step(&Step::Configure(config(&[], &[1], false, false)));
+    world.step(&Step::Configure(config(&[], &[1], false)));
     assert_eq!(world.core.status().last_known_good, None);
     let state = world
         .core
@@ -1662,7 +1531,7 @@ fn a_lowering_that_removes_what_the_kept_generation_uses_releases_it() {
 #[test]
 fn a_lowering_that_flips_a_recipients_protocol_releases_the_kept_generation_and_rebinds_the_lease() {
     let mut world = World::new();
-    world.step(&Step::Configure(config(&[], &[0], false, false)));
+    world.step(&Step::Configure(config(&[], &[0], false)));
     world.quiesce();
     world.step(&Step::Artifact("policy-a"));
     world.quiesce();
@@ -1670,7 +1539,7 @@ fn a_lowering_that_flips_a_recipients_protocol_releases_the_kept_generation_and_
     let before = world.core.resource_table().leases(&dd_out());
     world.step(&Step::Configure(Config {
         v3: true,
-        ..config(&[], &[0], false, false)
+        ..config(&[], &[0], false)
     }));
     assert_eq!(world.core.status().last_known_good, None);
     assert_clean(&mut world);
@@ -1680,156 +1549,10 @@ fn a_lowering_that_flips_a_recipients_protocol_releases_the_kept_generation_and_
 }
 
 #[test]
-fn a_budget_refusal_of_a_declared_recipient_rejects_its_resources_revision_and_lowers_without_it() {
-    let mut world = World::new();
-    world.step(&Step::RefuseCredits);
-    world.step(&Step::Configure(config(&[], &[], false, true)));
-    // The refused credit is team D's recipient's: its revision is rejected, the host lowers without it, and the
-    // candidate that needed it is not rejected but tried again, as a native resource's would be.
-    let (state, revision, error) = resources_ack(&world.core);
-    assert_eq!((state, revision), (ApplyState::Rejected, Some(1)));
-    assert!(error.unwrap().contains("the resource budget refused recipient"));
-    assert_eq!(world.core.accepted_resources(), None);
-    assert!(world.lowered.resources.recipient(&team_d()).is_none());
-    assert_clean(&mut world);
-    assert!(world.held(&dd_out(), &team_d()).is_none());
-}
-
-#[test]
-fn a_declared_recipient_that_fails_to_prepare_rejects_its_revision_and_native_changes_keep_applying() {
-    let mut world = World::new();
-    world
-        .delivery_mut(&dd_out())
-        .fail_next_prepare(format!("{} duplicates recipient `dd_out/primary/0`", team_d()));
-    world.step(&Step::Configure(config(&[], &[], false, true)));
-    world.step(&Step::AcknowledgeHosts);
-    let (state, _, error) = resources_ack(&world.core);
-    assert_eq!(state, ApplyState::Rejected);
-    assert!(error.unwrap().contains("duplicates recipient"));
-    assert_eq!(world.core.accepted_resources(), None);
-    assert!(world.log.iter().any(|action| action == "install the default program"));
-    // Native configuration changes keep applying.
-    world.step(&Step::Configure(config(&["a"], &[], false, true)));
-    assert_clean(&mut world);
-    assert_eq!(
-        world.native_ids(&dd_out()),
-        BTreeSet::from([primary(), additional("a")])
-    );
-}
-
-#[test]
-fn a_resources_revision_is_active_once_a_generation_lowered_with_it_commits_and_retires_after_a_revocation() {
-    let mut world = World::new();
-    world.step(&Step::Configure(config(&[], &[], false, true)));
-    assert_eq!(resources_ack(&world.core).0, ApplyState::Pending);
-    world.quiesce();
-    assert_eq!(resources_ack(&world.core), (ApplyState::Active, Some(1), None));
-    let active = world.core.status_summary(None, None).resources.unwrap().active_artifact;
-    assert_eq!(active.map(|artifact| artifact.revision), Some(1));
-    // Revoked: lowered without it, and retired once the generation lowered with it retired.
-    world.step(&Step::Configure(config(&[], &[], false, false)));
-    assert_eq!(resources_ack(&world.core).0, ApplyState::Active);
-    assert_clean(&mut world);
-    assert_eq!(resources_ack(&world.core).0, ApplyState::Retired);
-    assert_eq!(
-        world.core.status_summary(None, None).resources.unwrap().active_artifact,
-        None
-    );
-}
-
-#[test]
-fn resources_revisions_follow_the_policy_products_rules_on_their_own_high_water_mark() {
-    let mut world = World::new();
-    let core = &mut world.core;
-    assert_eq!(core.status_summary(None, None).resources, None);
-    // Accepted: lowering declares from it.
-    assert!(has_install(&core.on_resources(delivered(5, Ok(document())))));
-    assert_eq!(core.accepted_resources(), Some(&document()));
-    assert_eq!(resources_ack(core), (ApplyState::Pending, Some(5), None));
-    // A redelivery changes nothing; a stale revision is rejected and changes nothing.
-    assert!(core.on_resources(delivered(5, Ok(document()))).is_empty());
-    assert!(!has_install(&core.on_resources(delivered(4, Ok(document())))));
-    let (state, revision, error) = resources_ack(core);
-    assert_eq!((state, revision), (ApplyState::Rejected, Some(4)));
-    assert!(error.unwrap().starts_with("revision 4 is stale"));
-    assert_eq!(core.accepted_resources(), Some(&document()));
-    // A newer invalid document is rejected: its revision is seen, and the accepted one stays in place.
-    core.on_resources(delivered(6, Err("endpoint `ftp://x` is not http".to_string())));
-    let expected = (
-        ApplyState::Rejected,
-        Some(6),
-        Some("endpoint `ftp://x` is not http".to_string()),
-    );
-    assert_eq!(resources_ack(core), expected);
-    assert_eq!(core.accepted_resources(), Some(&document()));
-    let mark = |core: &InstallerCore| core.status_summary(None, None).resources.unwrap().revision_high_water;
-    assert_eq!(mark(core), Some(6));
-    // A refused config's revision is not seen.
-    core.on_resources(ResourcesEvent::Refused {
-        config: ArtifactConfigId::new("resources"),
-        version: 9,
-        reason: "two configs in one snapshot".to_string(),
-    });
-    assert_eq!(mark(core), Some(6));
-    // The same document under a newer revision is approved again: what lowering sees is another revision.
-    assert!(has_install(&core.on_resources(delivered(7, Ok(document())))));
-    // Revocation removes it.
-    assert!(has_install(&core.on_resources(ResourcesEvent::Revoked)));
-    assert_eq!(core.accepted_resources(), None);
-}
-
-#[test]
-fn a_pending_resources_revision_leaves_the_one_in_use_in_place_until_its_credential_is_configured() {
-    let mut world = World::new();
-    let core = &mut world.core;
-    let other = |credential: &str| {
-        let mut document = document();
-        document.recipients[0].credential = credential.parse().unwrap();
-        document
-    };
-    let revision = |revision: u64| crate::ir::ArtifactRevision {
-        revision,
-        hash: resources_hash(revision),
-    };
-    core.on_resources(delivered(1, Ok(document())));
-    assert_eq!(core.accepted_revision(), Some(revision(1)));
-    assert_eq!(core.held_resources(), vec![(&document(), revision(1))]);
-    // Revision 2 references a credential the configuration does not provide: revision 1 stays in use, and both are
-    // held, the newest first, so that the host can tell which credentials either still needs.
-    core.credentials_changed(BTreeSet::from(["credentials/team_e".parse().unwrap()]));
-    let actions = core.on_resources(delivered(2, Ok(other("credentials/team_e"))));
-    assert!(!has_install(&actions), "what lowering sees did not change");
-    assert_eq!(core.accepted_resources(), Some(&document()));
-    assert_eq!(core.accepted_revision(), Some(revision(1)));
-    assert_eq!(
-        core.held_resources(),
-        vec![(&other("credentials/team_e"), revision(2)), (&document(), revision(1))]
-    );
-    let (state, _, error) = resources_ack(core);
-    assert_eq!(state, ApplyState::Pending);
-    assert!(error
-        .unwrap()
-        .starts_with("waiting for credential `credentials/team_e`"));
-    // Once the credential is configured, revision 2 is in use, and the only one held.
-    core.credentials_changed(BTreeSet::new());
-    assert_eq!(core.accepted_resources(), Some(&other("credentials/team_e")));
-    assert_eq!(core.accepted_revision(), Some(revision(2)));
-    assert_eq!(core.held_resources(), vec![(&other("credentials/team_e"), revision(2))]);
-    assert_eq!(resources_ack(core), (ApplyState::Pending, Some(2), None));
-    // The revision in use becoming pending itself removes the declared resources, though it is still held.
-    core.credentials_changed(BTreeSet::from(["credentials/team_e".parse().unwrap()]));
-    assert_eq!(core.accepted_resources(), None);
-    assert_eq!(core.accepted_revision(), None);
-    assert_eq!(core.held_resources().len(), 1);
-}
-
-// Races the property test below found, each pinned by hand.
-
-#[test]
 fn a_recipient_whose_transaction_the_budget_refused_holds_its_credit_through_the_generation_that_keeps_it() {
     let mut world = World::new();
     world.step(&Step::RefuseCredits);
-    world.step(&Step::Configure(config(&[], &[], true, false)));
+    world.step(&Step::Configure(config(&[], &[], true)));
     // The transaction's part for the failover host was refused and never sent; the generation that creates the
     // failover recipient again under the same reference lists the recipient's credits, and the idle host's queue, so
     // the caller holds them while the generation keeps the recipient.
@@ -1847,7 +1570,7 @@ fn a_recipient_whose_transaction_the_budget_refused_holds_its_credit_through_the
 #[test]
 fn a_part_a_worker_restart_sends_again_after_the_core_counted_it_failed_is_aborted_again() {
     let mut world = World::new();
-    world.step(&Step::Configure(config(&["c"], &[], false, false)));
+    world.step(&Step::Configure(config(&["c"], &[], false)));
     world.step(&Step::TimeOutResources);
     // The dropped loop exits, freeing its directory. The retried transaction's part is refused by the budget, then
     // sent anyway by a worker restart that repeats the action.
@@ -1866,13 +1589,13 @@ fn a_part_a_worker_restart_sends_again_after_the_core_counted_it_failed_is_abort
 #[test]
 fn a_released_recipient_that_fails_while_reopens_are_in_flight_is_gone_once_they_answer_exited() {
     let mut world = World::new();
-    world.step(&Step::Configure(config(&[], &[], true, false)));
+    world.step(&Step::Configure(config(&[], &[], true)));
     world.quiesce();
     let (failed, _) = world.held(&mrf_dd_out(), &mrf_primary()).unwrap();
     // The failover recipient's loop fails; its exit is still on the way when failover is turned off, and the core
     // releases it once its lease drained.
     assert!(world.delivery_mut(&mrf_dd_out()).fail(&failed, "connection reset"));
-    world.step(&Step::Configure(config(&[], &[], false, false)));
+    world.step(&Step::Configure(config(&[], &[], false)));
     world.step(&Step::AcknowledgeHosts);
     world.step(&Step::AcknowledgeRegions);
     world.step(&Step::Retirements);
@@ -1884,7 +1607,7 @@ fn a_released_recipient_that_fails_while_reopens_are_in_flight_is_gone_once_they
     );
     // Failover is turned on again: the transaction and the generation reopen the recipient, and its host answers both
     // that its loop exited. The failure's exit arrives between the reopens and their answers.
-    world.step(&Step::Configure(config(&[], &[], true, false)));
+    world.step(&Step::Configure(config(&[], &[], true)));
     world.step(&Step::Exits);
     world.step(&Step::AcknowledgeHosts);
     assert_clean(&mut world);
@@ -1897,154 +1620,15 @@ fn a_released_recipient_that_fails_while_reopens_are_in_flight_is_gone_once_they
 // Races a review found, each pinned by hand.
 
 #[test]
-fn a_failed_recipient_whose_creator_commits_while_its_next_incarnation_is_prepared_is_released_once_unused() {
-    let mut world = World::new();
-    world.step(&Step::Configure(config(&[], &[], false, true)));
-    // The generation that creates team D's recipient has its host part acknowledged; its regions have not answered.
-    world.step(&Step::AcknowledgeHosts);
-    let (d, _) = world.held(&dd_out(), &team_d()).unwrap();
-    assert!(world.delivery_mut(&dd_out()).fail(&d, "connection reset"));
-    world.step(&Step::Exits);
-    // The backoff passes: a transaction prepares the next incarnation into the slot, and the generation commits while
-    // that transaction is in flight, which commits the failed incarnation it created.
-    world.step(&Step::Retry);
-    assert!(world.core.resource_table().transaction_in_flight().is_some());
-    world.step(&Step::AcknowledgeRegions);
-    // The resources product is revoked: the transaction is superseded, and the failed incarnation, which nothing uses
-    // once the generation retires, is released.
-    world.step(&Step::Configure(config(&[], &[], false, false)));
-    assert_clean(&mut world);
-    assert_eq!(world.held(&dd_out(), &team_d()), None);
-    // Published again, team D's recipient is created anew, and the generation that declares it installs.
-    world.step(&Step::Configure(config(&[], &[], false, true)));
-    assert_clean(&mut world);
-    let active = world.core.active_plan().unwrap();
-    assert!(active.resources.recipient(&team_d()).is_some());
-    assert_eq!(
-        world.held(&dd_out(), &team_d()).map(|(_, state)| state),
-        Some(FakeRecipientState::Live)
-    );
-}
-
-#[test]
-fn a_host_failure_naming_a_declared_recipient_the_generation_does_not_create_is_retried_and_rejects_nothing() {
-    let mut world = World::new();
-    world.step(&Step::Configure(config(&[], &[], false, true)));
-    world.quiesce();
-    assert_eq!(resources_ack(&world.core).0, ApplyState::Active);
-    let (d, _) = world.held(&dd_out(), &team_d()).unwrap();
-    // A configuration change: the next generation uses team D's recipient, which it neither creates nor reopens. Its
-    // host answers that the recipient's loop failed before the exit reached the core, naming it, as a host does for a
-    // recipient a part requires.
-    world.step(&Step::Configure(Config {
-        listener: "x",
-        ..config(&[], &[], false, true)
-    }));
-    world.host_acks.clear();
-    let generation = world.core.status().preparing.unwrap().id;
-    let message = format!(
-        "Recipient {} is required by generation {}, but its loop failed. Prepare it again first.",
-        d,
-        generation.get()
-    );
-    let actions = world
-        .core
-        .prepare_acknowledged(generation, PrepareSite::Host(dd_out()), Err(message));
-    world.perform(actions);
-    // The revision stays accepted and active, and the candidate is tried again, as for a native recipient.
-    assert_eq!(resources_ack(&world.core), (ApplyState::Active, Some(1), None));
-    assert!(world.core.accepted_resources().is_some());
-    assert!(world.retry_due);
-    assert_clean(&mut world);
-    assert_eq!(listener(world.core.active_plan().unwrap()), "x");
-    assert!(world
-        .core
-        .active_plan()
-        .unwrap()
-        .resources
-        .recipient(&team_d())
-        .is_some());
-}
-
-#[test]
-fn a_host_failure_of_a_declared_recipients_next_incarnation_that_a_generation_creates_again_rejects_nothing() {
-    let mut world = World::new();
-    world.step(&Step::Configure(config(&[], &[], false, true)));
-    world.quiesce();
-    let (d, _) = world.held(&dd_out(), &team_d()).unwrap();
-    assert!(world.delivery_mut(&dd_out()).fail(&d, "connection reset"));
-    world.step(&Step::Exits);
-    // After its backoff, a transaction prepares the next incarnation; a configuration change's generation creates it
-    // again under the transaction's reference, and its host fails that part, naming the recipient.
-    world.step(&Step::Retry);
-    let (next, _) = world.held(&dd_out(), &team_d()).unwrap();
-    assert!(next.incarnation > d.incarnation);
-    world
-        .delivery_mut(&dd_out())
-        .fail_next_prepare(format!("{} was dropped: prepare its next incarnation", next));
-    world.step(&Step::Configure(Config {
-        listener: "x",
-        ..config(&[], &[], false, true)
-    }));
-    world.step(&Step::AcknowledgeHosts);
-    assert_eq!(resources_ack(&world.core).0, ApplyState::Active);
-    assert!(world.core.accepted_resources().is_some());
-    assert_clean(&mut world);
-    assert_eq!(listener(world.core.active_plan().unwrap()), "x");
-    assert!(world
-        .core
-        .active_plan()
-        .unwrap()
-        .resources
-        .recipient(&team_d())
-        .is_some());
-}
-
-#[test]
-fn a_resources_revision_whose_lowering_changes_no_plan_is_active_at_once_and_retires_when_revoked() {
-    let mut world = World::new();
-    let empty = ResourcesArtifact {
-        resources_version: 1,
-        recipients: vec![],
-        outputs: vec![],
-    };
-    assert!(has_install(&world.core.on_resources(delivered(1, Ok(empty)))));
-    // The document declares nothing, so the lowering equals what runs: the active generation installs the revision.
-    let plan = lowered(&Config::default(), None);
-    let (_, actions) = world.core.on_default_program(
-        candidate(plan, Origin::DefaultProgram { config_change: 1 }),
-        &NoComposer,
-    );
-    world.perform(actions);
-    assert_eq!(resources_ack(&world.core), (ApplyState::Active, Some(1), None));
-    let active = world.core.status_summary(None, None).resources.unwrap().active_artifact;
-    assert_eq!(active.map(|artifact| artifact.revision), Some(1));
-    // Revoked, the lowering is the same again, and the revision is retired.
-    assert!(has_install(&world.core.on_resources(ResourcesEvent::Revoked)));
-    let plan = lowered(&Config::default(), None);
-    let (_, actions) = world.core.on_default_program(
-        candidate(plan, Origin::DefaultProgram { config_change: 2 }),
-        &NoComposer,
-    );
-    world.perform(actions);
-    assert_eq!(resources_ack(&world.core).0, ApplyState::Retired);
-    assert_eq!(
-        world.core.status_summary(None, None).resources.unwrap().active_artifact,
-        None
-    );
-    assert_clean(&mut world);
-}
-
-#[test]
 fn a_failed_recipient_waits_its_own_backoff_and_not_the_longer_one_of_a_candidate_that_keeps_failing() {
     let mut world = World::new();
-    world.step(&Step::Configure(config(&["a"], &[], false, false)));
+    world.step(&Step::Configure(config(&["a"], &[], false)));
     world.quiesce();
     // A configuration change whose preparation keeps failing: its candidate waits 1 s, then 2 s, then 4 s.
     world.step(&Step::FailNextPrepare(false));
     world.step(&Step::Configure(Config {
         listener: "x",
-        ..config(&["a"], &[], false, false)
+        ..config(&["a"], &[], false)
     }));
     for delay in ["1s", "2s", "4s"] {
         world.log.clear();
@@ -2085,7 +1669,7 @@ fn a_failed_recipient_waits_its_own_backoff_and_not_the_longer_one_of_a_candidat
 #[test]
 fn each_failed_recipient_waits_its_own_backoff_before_its_next_incarnation() {
     let mut world = World::new();
-    world.step(&Step::Configure(config(&["a", "b"], &[], false, false)));
+    world.step(&Step::Configure(config(&["a", "b"], &[], false)));
     world.quiesce();
     // Endpoint `b` fails twice, and is replaced each time after its backoff.
     for _ in 0..2 {
@@ -2150,14 +1734,14 @@ fn a_recipient_its_host_dropped_while_another_part_naming_it_failed_there_is_nev
     // again under the transaction's references.
     let (main, _) = world.held(&dd_out(), &primary()).unwrap();
     assert!(world.delivery_mut(&dd_out()).fail(&main, "connection reset"));
-    world.step(&Step::Configure(config(&["b", "c"], &[1], false, false)));
+    world.step(&Step::Configure(config(&["b", "c"], &[1], false)));
     let (endpoint, _) = world.held(&dd_out(), &group_1()[0]).unwrap();
     assert!(world.delivery_mut(&dd_out()).fail(&endpoint, "connection reset"));
     // The transaction times out, and its host drops the endpoints; a newer lowering's transaction lists them again
     // under the same references, which the host created once already, so it fails that part rather than start
     // second loops under them.
     world.step(&Step::TimeOutResources);
-    world.step(&Step::Configure(config(&["a", "b"], &[1], false, false)));
+    world.step(&Step::Configure(config(&["a", "b"], &[1], false)));
     assert_eq!(
         world.held(&dd_out(), &additional("a")),
         None,
@@ -2176,50 +1760,13 @@ fn a_recipient_its_host_dropped_while_another_part_naming_it_failed_there_is_nev
 }
 
 #[test]
-fn a_declared_recipients_next_incarnation_waits_for_the_loop_a_cancelled_preparation_dropped_and_rejects_nothing() {
-    // A policy artifact arrives while the generation that first creates team D's recipient prepares: the core cancels
-    // that generation, whose abort drops the recipient, and the artifact's generation creates its next incarnation at
-    // once. The dropped loop still owns the queue directory, so the host holds that part until the loop's exit; the
-    // resources revision is not rejected, and the artifact's generation commits with the next incarnation.
-    let mut world = World::new();
-    world.step(&Step::Configure(config(&[], &[], false, true)));
-    let (dropped, _) = world
-        .held(&dd_out(), &team_d())
-        .expect("the generation created team D's recipient");
-    world.step(&Step::Artifact("policy-a"));
-    world.step(&Step::AcknowledgeHosts);
-    world.step(&Step::AcknowledgeRegions);
-    assert!(
-        world.held(&dd_out(), &team_d()).is_none(),
-        "the next incarnation waits for the dropped loop"
-    );
-    let preparing = world
-        .core
-        .status()
-        .preparing
-        .expect("the artifact's generation prepares");
-    world.step(&Step::Exits);
-    world.step(&Step::AcknowledgeHosts);
-    let (next, state) = world
-        .held(&dd_out(), &team_d())
-        .expect("the next incarnation is prepared");
-    assert!(next.incarnation > dropped.incarnation);
-    assert_eq!(state, FakeRecipientState::Live);
-    assert_eq!(world.core.status().active.map(|record| record.id), Some(preparing.id));
-    let (state, _, error) = resources_ack(&world.core);
-    assert_ne!(state, ApplyState::Rejected, "{:?}", error);
-    assert_clean(&mut world);
-    assert_eq!(resources_ack(&world.core).0, ApplyState::Active);
-}
-
-#[test]
 fn a_retired_endpoints_withdrawal_is_dropped_by_a_publication() {
     // Withdrawal is by identity: a withdrawn set still naming a retired endpoint would withdraw the next incarnation a
     // generation prepares for it, before any transaction restored it.
     let mut world = World::new();
-    world.step(&Step::Configure(config(&["a"], &[], false, false)));
+    world.step(&Step::Configure(config(&["a"], &[], false)));
     world.quiesce();
-    world.step(&Step::Configure(config(&[], &[], false, false)));
+    world.step(&Step::Configure(config(&[], &[], false)));
     world.quiesce();
     assert!(
         world.held(&dd_out(), &additional("a")).is_none(),
@@ -2241,9 +1788,9 @@ fn a_generation_using_an_endpoint_added_back_while_it_drains_commits_once_the_tr
     // transaction's publication: committing before it would send its lease's payloads to an endpoint its host still
     // withdraws.
     let mut world = World::new();
-    world.step(&Step::Configure(config(&[], &[0], false, false)));
+    world.step(&Step::Configure(config(&[], &[0], false)));
     world.quiesce();
-    world.step(&Step::Configure(config(&[], &[], false, false)));
+    world.step(&Step::Configure(config(&[], &[], false)));
     world.step(&Step::AcknowledgeRegions);
     world.step(&Step::AcknowledgeHosts);
     world.step(&Step::Retirements);
@@ -2252,8 +1799,8 @@ fn a_generation_using_an_endpoint_added_back_while_it_drains_commits_once_the_tr
     assert_eq!(state, FakeRecipientState::Draining);
     assert!(world.delivery[&dd_out()].withdrawn().contains(&group_0()));
 
-    world.step(&Step::Configure(config(&[], &[0], false, false)));
-    world.step(&Step::Configure(config(&["b"], &[0], false, false)));
+    world.step(&Step::Configure(config(&[], &[0], false)));
+    world.step(&Step::Configure(config(&["b"], &[0], false)));
     world.step(&Step::AcknowledgeRegions);
     world.step(&Step::AcknowledgeHosts);
     world.step(&Step::AcknowledgeRegions);
@@ -2282,9 +1829,9 @@ fn a_failed_recipient_keeps_its_slot_when_its_next_incarnation_fails_too_and_eve
     // preparation of the second and third aborts. The first, committed, failed incarnation takes the slot back, in its
     // host as in the table, so that the leases of the active generation keep naming it.
     let mut world = World::new();
-    let blocked = |declared| Config {
+    let blocked = |group: bool| Config {
         listener: "tenant.raw.blocked",
-        ..config(&[], &[], false, declared)
+        ..config(&[], if group { &[0] } else { &[] }, false)
     };
     for step in [
         Step::FailRecipient(0),
@@ -2335,7 +1882,7 @@ fn a_recipient_a_generation_of_an_older_lowering_creates_after_a_newer_publicati
     let mut world = World::new();
     let blocked = |groups: &[u8], failover| Config {
         listener: "tenant.raw.blocked",
-        ..config(&[], groups, failover, false)
+        ..config(&[], groups, failover)
     };
     for step in [
         Step::Configure(blocked(&[0, 1], false)),
@@ -2369,15 +1916,13 @@ fn arb_config() -> impl Strategy<Value = Config> {
         prop::sample::subsequence(vec![0u8, 1], 0..=2),
         any::<bool>(),
         any::<bool>(),
-        any::<bool>(),
         prop::sample::select(vec![BOOT_LISTENER, "x", "y"]),
     )
-        .prop_map(|(endpoints, groups, v3, failover, declared, listener)| Config {
+        .prop_map(|(endpoints, groups, v3, failover, listener)| Config {
             endpoints: endpoints.into_iter().collect(),
             groups: groups.into_iter().collect(),
             v3,
             failover,
-            declared,
             listener,
         })
 }

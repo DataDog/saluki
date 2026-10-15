@@ -627,8 +627,7 @@ mod tests {
                 incarnation,
             },
             decl: serde_json::from_value(json!({
-                "id": id, "host": "dd_out", "endpoint": endpoint, "credential": "native:api_key", "classes": "all",
-                "provenance": "native"
+                "id": id, "host": "dd_out", "endpoint": endpoint, "credential": "native:api_key", "classes": "all"
             }))
             .unwrap(),
         }

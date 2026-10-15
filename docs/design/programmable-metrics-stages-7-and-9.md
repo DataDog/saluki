@@ -3964,6 +3964,12 @@ After detached programs, phase 2 ([as built](programmable-metrics-detached-progr
      to the plan running still adopts its generation. The default program keeps every node, and its structure never
      depends on a configuration value. While a program without those nodes runs, their telemetry is absent; the
      gauges the installer sets from a plan read zero for a node the plan running lacks.
+192. **Resources artifacts are removed** (ART, D; withdraws amendments 93, 94, and the declared half of 176 and 177;
+     version 2's step V2, 2026-10-15). Destinations are the configuration's endpoints, which ADP applies live, and a
+     program reaches them by name or through an implied output. The channel carries one product, `policy`; resources,
+     declared recipients and outputs, credential references for them (`credentials/<name>` and its configuration key),
+     and resource provenance go. Every recipient keeps its host's native delivery policy, and implied outputs alone
+     count against the limit that declared outputs shared (`max_implied_outputs`, 16).
 
 ## 11. Risks
 

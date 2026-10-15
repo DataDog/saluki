@@ -32,23 +32,9 @@ pub struct CatalogOutput {
     pub recipients: Vec<RecipientId>,
 }
 
-/// Where an entry of the host's recipient directory comes from.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RecipientSource {
-    /// The host's native configuration: its endpoints, named by the host.
-    Native,
-
-    /// Recipients the operator declares in the host's configuration, apart from its native endpoints.
-    Config,
-
-    /// A resources artifact.
-    Resources,
-}
-
 /// An entry of the host's recipient directory: what a recipient name a program addresses resolves to.
 ///
-/// The directory is how programs name destinations: by a name the host or a declaration gives, never by a recipient's
+/// The directory is how programs name destinations: by a name the host gives, never by a recipient's
 /// identity, which stays internal to the host (its queues, slots, and leases keep it). It never holds a credential.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -62,9 +48,6 @@ pub struct CatalogRecipient {
 
     /// The endpoint, as the host's status spells it: never with credentials.
     pub endpoint: String,
-
-    /// Where the entry comes from.
-    pub source: RecipientSource,
 }
 
 /// Whether a configuration binding's value can change while the process runs.
@@ -147,9 +130,6 @@ pub struct HostSchema {
 
     /// A recipient's protocol ([`RecipientDecl::protocol`][crate::ir::RecipientDecl::protocol]).
     pub protocol: &'static [ParamSpec],
-
-    /// Whether the host accepts recipients that a resources artifact declares.
-    pub declared_recipients: bool,
 }
 
 /// What the host declares, which plans may refer to.
@@ -241,15 +221,6 @@ pub trait Catalog {
     /// The default lists none.
     fn facts_and_signals(&self) -> Vec<BindingName> {
         Vec::new()
-    }
-
-    /// Returns `true` if the host reserves the recipient name `name` for the recipients it names itself, whether or not
-    /// its directory has it now, so that no declaration may use it.
-    ///
-    /// The default reserves none.
-    fn reserves_recipient_name(&self, name: &RecipientName) -> bool {
-        let _ = name;
-        false
     }
 
     /// Returns the schema of the given delivery host's parameters, if the host declares it.
@@ -569,10 +540,10 @@ mod tests {
             },
             "recipients": {
                 "primary": {"recipients": ["out/primary/0/https://a.example.com"], "host": "out",
-                            "endpoint": "https://a.example.com", "source": "native"},
+                            "endpoint": "https://a.example.com"},
                 "https://b.example.com": {"recipients": ["out/additional/0/https://b.example.com",
                                                          "out/additional/1/https://b.example.com"],
-                                          "host": "out", "endpoint": "https://b.example.com", "source": "native"}
+                                          "host": "out", "endpoint": "https://b.example.com"}
             },
             "scopes": {"post_enrich": {"metrics": {"kinds": ["gauge"], "timestamps": "untimestamped"}}}
         })
@@ -605,10 +576,7 @@ mod tests {
         );
         // The directory names one recipient, and every key of an endpoint by its URL.
         let endpoint = catalog.recipient(&"https://b.example.com".parse().unwrap()).unwrap();
-        assert_eq!(
-            (endpoint.recipients.len(), endpoint.source),
-            (2, RecipientSource::Native)
-        );
+        assert_eq!(endpoint.recipients.len(), 2);
         assert!(catalog.recipient(&"mrf".parse().unwrap()).is_none());
 
         // A binding without a class is a policy setting's, as documents written before classes say.

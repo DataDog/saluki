@@ -165,7 +165,7 @@ fn an_idle_host_gets_its_exits_so_an_output_bound_to_it_later_places_without_a_r
         output["recipients"] = json!(["spare_out/primary/0"]);
         value["resources"]["recipients"].as_array_mut().unwrap().push(json!({
             "id": "spare_out/primary/0", "host": "spare_out", "endpoint": "https://spare.example.com",
-            "credential": "native:api_key", "classes": "metrics_only", "provenance": "native"
+            "credential": "native:api_key", "classes": "metrics_only"
         }));
     });
     let af = moved.output(&OutputId::new("af_metrics_encode").unwrap()).unwrap();
@@ -269,7 +269,7 @@ fn a_new_or_rebound_output_on_a_frame_host_places_as_a_lease_with_no_new_structu
         main["binding"]["encoder"]["flush_timeout"] = json!("5s");
         value["resources"]["recipients"].as_array_mut().unwrap().push(json!({
             "id": "dd_out/additional_2/0", "host": "dd_out", "endpoint": "https://dual.example.com",
-            "credential": "native:additional/0000111122223333/0", "classes": "all", "provenance": "native"
+            "credential": "native:additional/0000111122223333/0", "classes": "all"
         }));
     });
     let catalog_rebound = catalog.clone().with_output(
@@ -283,13 +283,41 @@ fn a_new_or_rebound_output_on_a_frame_host_places_as_a_lease_with_no_new_structu
     let report = validated(&rebound, &catalog_rebound);
     assert!(place(&rebound, &report, &registry, &frame).is_ok());
 
-    // The policy's primary branch emitting to the declared output instead: it runs as a lease of `dd_out`'s encode
-    // host, by the enrichment slot's exit to it, which writes the declared output's lease.
+    // The policy's primary branch emitting to an implied output for an endpoint of its own instead: it runs as a lease
+    // of `dd_out`'s encode host, by the enrichment slot's exit to it, which writes the implied output's lease.
+    let recipient = "dd_out/additional_3/0";
+    let selector = crate::ir::Selector::Recipients(vec![recipient.parse().unwrap()]);
+    let fingerprint =
+        crate::resources::fingerprint(&HostId::new("dd_out").unwrap(), crate::model::PortType::ANY, &selector);
     let routed = bound(|value| {
-        node_mut(value, "metrics_policy_0")["params"]["output"] = json!("resources_team_d");
+        node_mut(value, "metrics_policy_0")["params"]["output"] = json!("implied_to_own");
+        value["outputs"].as_array_mut().unwrap().push(json!({
+            "id": "implied_to_own", "accepts": {"kinds": "all", "timestamps": "mixed"},
+            "fingerprint": fingerprint, "recipients": [recipient],
+            "binding": {"host": "dd_out", "selector": selector, "telemetry": "implied_to_own"},
+        }));
+        value["resources"]["recipients"].as_array_mut().unwrap().push(json!({
+            "id": recipient, "host": "dd_out", "endpoint": "https://own.example.com",
+            "credential": "native:additional/4444555566667777/0", "classes": "all"
+        }));
     });
+    let catalog = catalog.with_output(
+        OutputId::new("implied_to_own").unwrap(),
+        crate::validate::CatalogOutput {
+            accepts: crate::model::PortType::ANY,
+            fingerprint,
+            recipients: vec![recipient.parse().unwrap()],
+        },
+    );
     let report = Validator::new(&registry, &catalog).validate(&routed);
-    assert!(report.is_valid(), "{}", report);
+    assert!(
+        report
+            .findings()
+            .iter()
+            .all(|finding| finding.severity != crate::validate::Severity::Error),
+        "{}",
+        report
+    );
     let compiled = compile(&routed, &report, &registry, &frame).unwrap();
     let enrich = frame
         .slots()
@@ -309,9 +337,9 @@ fn a_new_or_rebound_output_on_a_frame_host_places_as_a_lease_with_no_new_structu
     assert_eq!(
         leases.into_iter().collect::<Vec<_>>(),
         vec![
+            "implied_to_own".to_string(),
             "metrics_routing_encode_0".to_string(),
-            "metrics_routing_encode_1".to_string(),
-            "resources_team_d".to_string()
+            "metrics_routing_encode_1".to_string()
         ]
     );
 }
@@ -331,7 +359,7 @@ fn an_output_bound_to_a_delivery_host_the_frame_lacks_needs_a_restart() {
         main["recipients"] = json!(["elsewhere_out/primary/0"]);
         value["resources"]["recipients"].as_array_mut().unwrap().push(json!({
             "id": "elsewhere_out/primary/0", "host": "elsewhere_out", "endpoint": "https://elsewhere.example.com",
-            "credential": "native:api_key", "classes": "all", "provenance": "native"
+            "credential": "native:api_key", "classes": "all"
         }));
     });
     let main = &plan.outputs[1];

@@ -13,10 +13,7 @@ use super::sorted;
 use crate::{
     extension::DeliveryPolicy,
     install::diff::{resource_changes, ResourceChange},
-    ir::{
-        CredentialRef, HostId, NativeComponentId, OutputId, ParamName, PayloadClasses, Plan, RecipientId,
-        ResourceProvenance, Selector,
-    },
+    ir::{CredentialRef, HostId, NativeComponentId, OutputId, ParamName, PayloadClasses, Plan, RecipientId, Selector},
 };
 
 /// The resources a plan's outputs deliver through.
@@ -54,9 +51,6 @@ pub struct BoundOutputEntry {
 
     /// The component identifier its encoder telemetry reports under.
     pub telemetry: NativeComponentId,
-
-    /// Who declared it: native configuration, or a resources artifact.
-    pub provenance: ResourceProvenance,
 
     /// Whether the active plan binds the output alike (`reused`), otherwise (`rebound`), or not at all (`new`), once
     /// compared with it.
@@ -102,9 +96,6 @@ pub struct RecipientEntry {
 
     /// Its delivery policy.
     pub delivery: DeliveryPolicy,
-
-    /// Who declared it: native configuration, or a resources artifact.
-    pub provenance: ResourceProvenance,
 
     /// The bound outputs that deliver to it, in plan order.
     pub outputs: Vec<OutputId>,
@@ -159,7 +150,6 @@ impl ResourcesEntry {
                     selector: binding.selector.clone(),
                     encoder: params(&binding.encoder),
                     telemetry: binding.telemetry.clone(),
-                    provenance: binding.provenance.clone(),
                     change: None,
                 })
             })
@@ -189,7 +179,6 @@ impl ResourcesEntry {
                 classes: recipient.classes,
                 protocol: params(&recipient.protocol),
                 delivery: recipient.delivery,
-                provenance: recipient.provenance.clone(),
                 outputs: plan
                     .outputs
                     .iter()

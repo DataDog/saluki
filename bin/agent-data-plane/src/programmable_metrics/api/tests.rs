@@ -18,7 +18,6 @@ use saluki_core::{
 };
 use saluki_io::net::{client::http::HttpClient, BoundListenAddress, ListenAddress};
 use saluki_metric_plan::{
-    canonical::PlanHash,
     channel::ApplyStates,
     export::{ExportBundle, IrVersions, EXPORT_VERSION},
     ir::{OutputId, Plan, PolicyArtifact},
@@ -30,7 +29,7 @@ use tower::ServiceExt as _;
 
 use super::*;
 use crate::programmable_metrics::{
-    installer::status::{LastDrain, Provenance, RecipientEntry, RecipientEntryState},
+    installer::status::{LastDrain, RecipientEntry, RecipientEntryState},
     test_support::{configuration, programmable_metrics, ConfigCell},
 };
 
@@ -119,7 +118,6 @@ async fn the_status_route_serves_the_status_summary_and_acknowledgments_as_the_s
             "slot": 0,
             "incarnation": 1,
             "state": "live",
-            "provenance": "native",
         }])
     );
     // Every other member is the apply states', as a poll reports them.
@@ -136,14 +134,10 @@ async fn the_status_route_lists_each_retired_recipient_incarnation_with_its_drai
     let mut status = booted_status().await;
     status.recipients = vec![RecipientEntry {
         host: "dd_out".to_string(),
-        id: "dd_out/declared/team_d/http://127.0.0.1:17105".to_string(),
+        id: "dd_out/additional/0/http://127.0.0.1:17105".to_string(),
         slot: 3,
         incarnation: 2,
         state: RecipientEntryState::Retired,
-        provenance: Some(Provenance::Declared {
-            revision: 2,
-            hash: PlanHash::of_bytes(b"team d"),
-        }),
         draining_since_ms: None,
         last_drain: Some(LastDrain {
             delivered: 0,
@@ -160,11 +154,10 @@ async fn the_status_route_lists_each_retired_recipient_incarnation_with_its_drai
         body["recipients"],
         json!([{
             "host": "dd_out",
-            "id": "dd_out/declared/team_d/http://127.0.0.1:17105",
+            "id": "dd_out/additional/0/http://127.0.0.1:17105",
             "slot": 3,
             "incarnation": 2,
             "state": "retired",
-            "provenance": {"declared": {"revision": 2, "hash": PlanHash::of_bytes(b"team d").to_string()}},
             "last_drain": {
                 "delivered": 0,
                 "persisted": 0,
@@ -182,21 +175,20 @@ async fn the_resources_route_serves_the_hosts_outputs_and_recipients_with_creden
     let (code, content_type, body) = get(status, "/programmable-metrics/resources").await;
     assert_eq!((code, content_type), (StatusCode::OK, json_type()));
     let body: Value = serde_json::from_str(&body).unwrap();
-    // No resources config was delivered, and nothing is counted without a verified memory limit.
-    assert_eq!(body["declared"], Value::Null);
-    assert_eq!(body["missing_credentials"], json!([]));
+    // Nothing is counted without a verified memory limit.
+    assert!(body.get("declared").is_none() && body.get("missing_credentials").is_none());
     assert_eq!(body["budget"], json!({"granted": null, "used": 0}));
     assert_eq!(
         body["hosts"],
         json!([
             {
-                "host": "dd_out", "encoder": "dd_metrics_encode", "declared_recipients": true,
+                "host": "dd_out", "encoder": "dd_metrics_encode",
                 // The main output's lease runs from boot; the topology was not built, so no host reports its table.
                 "leases": [{"lease": 0, "output": "dd_metrics_encode", "state": "live"}],
                 "withdrawn": [], "conflicts": [],
             },
             {
-                "host": "mrf_dd_out", "encoder": "mrf_metrics_encode", "declared_recipients": false,
+                "host": "mrf_dd_out", "encoder": "mrf_metrics_encode",
                 "leases": [], "withdrawn": [], "conflicts": [],
             },
         ])
@@ -209,7 +201,6 @@ async fn the_resources_route_serves_the_hosts_outputs_and_recipients_with_creden
         .expect("the main output is listed");
     assert_eq!(main["label"], "Main metrics output");
     assert_eq!(main["host"], "dd_out");
-    assert_eq!(main["provenance"], "native");
     assert_eq!(
         main["recipients"],
         json!(["dd_out/primary/0/https://app.datadoghq.com"])
@@ -223,7 +214,6 @@ async fn the_resources_route_serves_the_hosts_outputs_and_recipients_with_creden
             "credential": "native:api_key",
             "classes": "all",
             "delivery": "native",
-            "provenance": "native",
         }])
     );
     // The test configuration's API key appears nowhere.

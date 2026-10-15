@@ -192,17 +192,15 @@ fn bundles_are_read_ignoring_the_members_the_reader_does_not_know() {
 }
 
 #[test]
-fn a_bound_default_programs_export_records_version_2_fingerprints_and_lists_declared_outputs_but_not_host_settings() {
+fn a_bound_default_programs_export_records_version_2_fingerprints_but_not_host_settings() {
     let plan = Plan::from_value(with_two_scopes(crate::testing::with_resources(DEFAULT_PROGRAM_JSON))).unwrap();
     let main = "dd_metrics_encode".parse::<OutputId>().unwrap();
-    let team_d = "resources_team_d".parse::<OutputId>().unwrap();
     let catalog = two_scopes_of(crate::testing::default_program_resources_catalog());
-    let labels = BTreeMap::from([(team_d.clone(), "Team D".to_string())]);
+    let labels = BTreeMap::from([(main.clone(), "Primary".to_string())]);
     let bundle = export(&plan, &post_enrich(), &catalog, &labels).unwrap();
 
-    // The base records the version 2 fingerprint of every output the scope emits to (the main output's is the digest
-    // of its role, written out in `resources::tests`), and not the declared output, which the default program does
-    // not emit to.
+    // The base records the version 2 fingerprint of every output the scope emits to: the main output's is the digest
+    // of its role, written out in `resources::tests`.
     assert_eq!(
         bundle
             .artifact
@@ -213,27 +211,15 @@ fn a_bound_default_programs_export_records_version_2_fingerprints_and_lists_decl
             .as_deref(),
         Some("sha256:35b6c7483c20787a99a97a2a2bb2684fd1a0a8f0315e5bf73fad5b48b74595f7")
     );
-    assert!(!bundle.artifact.base.outputs.contains_key(&team_d));
-
-    // The catalog lists the declared output with its fingerprint and recipients, and its label, which an author emits
-    // to by recording them.
     let written = serde_json::to_value(&bundle).unwrap();
-    assert_eq!(
-        written["catalog"]["outputs"]["resources_team_d"],
-        json!({
-            "accepts": {"kinds": "all", "timestamps": "mixed"},
-            "fingerprint": "sha256:361f843bc9a6b25663cc6da865dd3af0daf04bb8890e3717ae98d7d30bb1c838",
-            "recipients": ["dd_out/declared/team_d/http://127.0.0.1:17105"]
-        })
-    );
-    assert_eq!(written["labels"]["resources_team_d"], json!("Team D"));
+    assert_eq!(written["labels"]["dd_metrics_encode"], json!("Primary"));
     // Host settings and recipients' declarations, credential references included, stay on the host: the catalog names
     // recipients by identity only.
     let text = written.to_string();
     for private in [
         "request_timeout",
         "endpoint_concurrency",
-        "credentials/team_d",
+        "native:api_key",
         "datadog_intake",
     ] {
         assert!(!text.contains(private), "the export carries `{}`", private);
@@ -251,7 +237,6 @@ fn annotations_and_the_recipient_directory_travel_with_the_bundle_and_change_not
         recipients: vec!["dd_out/primary/0/https://primary.example.com".parse().unwrap()],
         host: "dd_out".parse().unwrap(),
         endpoint: "https://primary.example.com".to_string(),
-        source: crate::validate::RecipientSource::Native,
     };
     let catalog = two_scope_catalog().with_recipient("primary".parse().unwrap(), recipient.clone());
     let plain = export(&plan, &post_enrich(), &catalog, &BTreeMap::new()).unwrap();
@@ -276,15 +261,13 @@ fn annotations_and_the_recipient_directory_travel_with_the_bundle_and_change_not
     assert_eq!(
         written["catalog"]["recipients"]["primary"],
         json!({"recipients": ["dd_out/primary/0/https://primary.example.com"], "host": "dd_out",
-               "endpoint": "https://primary.example.com", "source": "native"})
+               "endpoint": "https://primary.example.com"})
     );
-    // Readers keep both, and ignore what they do not know in annotations and in directory entries; an entry from a
-    // source they do not know is left out.
+    // Readers keep both, and ignore what they do not know in annotations and in directory entries.
     let mut extended = written.clone();
     extended["annotations"]["outputs"] = json!({"dd_metrics_encode": "the main output"});
     extended["catalog"]["recipients"]["primary"]["label"] = json!("Primary");
-    extended["catalog"]["recipients"]["https://later.example.com"] = json!({"recipients": ["dd_out/x"],
-        "host": "dd_out", "endpoint": "https://later.example.com", "source": "fleet"});
+    extended["catalog"]["recipients"]["primary"]["source"] = json!("native");
     let read = serde_json::from_value::<ExportBundle>(extended).unwrap();
     assert_eq!(read, bundle);
     assert_eq!(
@@ -324,7 +307,7 @@ fn a_dual_ship_endpoint_under_the_main_role_changes_no_base_and_renumbered_routi
         main["recipients"] = json!(["dd_out/additional_2/0", "dd_out/primary/0"]);
         value["resources"]["recipients"].as_array_mut().unwrap().push(json!({
             "id": "dd_out/additional_2/0", "host": "dd_out", "endpoint": "https://dual.example.com",
-            "credential": "native:additional/0000111122223333/0", "classes": "all", "provenance": "native"
+            "credential": "native:additional/0000111122223333/0", "classes": "all"
         }));
     });
     assert_ne!(

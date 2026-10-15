@@ -1566,8 +1566,8 @@ async fn a_delivery_whose_recorded_output_is_not_declared_waits_for_it_and_leave
         .expect("the routing group's emit");
     emit["params"] = json!({"output": "gone_encode"});
     harness.deliver(vec![config(1, &artifact)]);
-    // A new artifact whose base records an output the host does not declare waits for it, as one published before the
-    // resources artifact declaring its output does: its revision is seen, and what runs keeps running.
+    // A new artifact whose base records an output the host does not declare waits for it: its revision is seen, and
+    // what runs keeps running.
     let waiting = harness
         .status_where(|status| {
             ack(status, CONFIG_ID).is_some_and(|ack| ack.version == 1 && ack.state == ApplyState::Pending)

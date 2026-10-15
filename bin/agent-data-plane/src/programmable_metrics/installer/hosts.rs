@@ -57,7 +57,7 @@ use tokio::{
 };
 use tracing::{debug, warn};
 
-use super::{status::Provenance, Acknowledged, Installer};
+use super::{Acknowledged, Installer};
 use crate::programmable_metrics::resources::{
     specs::{self, core_ref, delivery_ref, lease_spec, recipient_settings, recipient_spec, retirement_report},
     FixedHost, FixedHosts,
@@ -67,9 +67,9 @@ use crate::programmable_metrics::resources::{
 pub type Body = FrozenChunkedBytesBuffer;
 
 /// How many exits a delivery host's event channel holds before the host keeps further exits waiting: more than the
-/// recipients a host runs at once, the declared ones and those draining, ever need.
+/// recipients a host runs at once, those added live and those draining, ever need.
 pub const HOST_EVENTS: usize =
-    4 * (limits::values::MAX_DECLARED_RECIPIENTS as usize + limits::values::MAX_DRAINING_RECIPIENTS as usize);
+    4 * (limits::values::MAX_IMPLIED_OUTPUTS as usize + limits::values::MAX_DRAINING_RECIPIENTS as usize);
 
 /// The factories a built host exposes, through which the installer builds leases and recipients off the data path,
 /// and what the delivery host reports about its table.
@@ -459,9 +459,6 @@ impl Installer {
     /// Builds every new lease's builders and every new recipient's pieces of one host's part, through the host's
     /// factories, with the host's settings as `resources` declares them.
     fn build_part(&self, link: &HostLink, part: &HostPrepare, resources: &Resources) -> Result<BuiltPart, String> {
-        let held = self.resource_paths.held_resources(&self.core);
-        let declared_name =
-            |prepare: &saluki_metric_plan::install::RecipientPrepare| held.declared_name(&prepare.decl.id);
         let mut leases = Vec::with_capacity(part.leases.len());
         if !part.leases.is_empty() {
             let factory = link.factories.leases(&link.host)?;
@@ -481,8 +478,7 @@ impl Installer {
                 .ok_or_else(|| format!("the plan declares no settings for delivery host `{}`", part.host))?;
             let settings = specs::host_settings(binding).map_err(|error| format!("{:#}", error))?;
             for create in &part.create {
-                let spec = recipient_spec(&create.decl, declared_name(create).as_deref())
-                    .map_err(|error| format!("{:#}", error))?;
+                let spec = recipient_spec(&create.decl).map_err(|error| format!("{:#}", error))?;
                 let pieces = factory
                     .build(&spec, &settings)
                     .map_err(|error| format!("{} cannot be built: {:#}", create.recipient, error))?;
@@ -496,7 +492,7 @@ impl Installer {
         let reopen = part
             .reopen
             .iter()
-            .map(|prepare| recipient_settings(prepare, declared_name(prepare).as_deref()))
+            .map(recipient_settings)
             .collect::<Result<_, _>>()
             .map_err(|error| format!("{:#}", error))?;
         Ok(BuiltPart {
@@ -543,14 +539,13 @@ impl Installer {
         if self.resources_deadline.is_some_and(|(timed, _)| timed == revision) {
             self.resources_deadline = None;
         }
-        let held = self.resource_paths.held_resources(&self.core);
         for publish in hosts {
             let host = publish.host.clone();
             let Some(link) = self.hosts.get(&host) else {
                 warn!(%host, "The installer core published resources in a delivery host the topology does not have.");
                 continue;
             };
-            let publication = match specs::publication(revision.get(), &publish, |id| held.declared_name(id)) {
+            let publication = match specs::publication(revision.get(), &publish) {
                 Ok(publication) => publication,
                 Err(error) => {
                     // Only a bug writes parameters the codec cannot read: the host keeps what it published before.
@@ -654,18 +649,13 @@ impl Installer {
                         .recipient_retired(&mut self.core, recipient.clone(), report);
                 match released {
                     // Its delivery host counts the retirement (`plan_recipient_retirements_total`); the status route
-                    // lists it, declared as the core held it, since the latest lowering no longer declares it.
-                    Some(provenance) => {
+                    // lists it, since the latest lowering no longer declares it.
+                    true => {
                         debug!(%host, %recipient, ?report, "A recipient retired.");
-                        self.retired_recipients.record(
-                            &host,
-                            &recipient,
-                            &report,
-                            Provenance::from(&provenance),
-                            SystemTime::now(),
-                        );
+                        self.retired_recipients
+                            .record(&host, &recipient, &report, SystemTime::now());
                     }
-                    None => debug!(
+                    false => debug!(
                         %host,
                         %recipient,
                         "A recipient the installer was not releasing exited, such as one an abort dropped."

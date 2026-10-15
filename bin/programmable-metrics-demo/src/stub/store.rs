@@ -5,18 +5,16 @@
 //! counter never goes back:
 //!
 //! - `store.json`: the revision counter and the current config of each scope, if any: one config per scope, under the
-//!   config ID [`config_id`] names; and the resources product's own revision counter and its config, if any. Every
-//!   change writes a new file, flushes it to disk, and renames it over the old one, so the file always holds one
+//!   config ID [`config_id`] names. Every change writes a new file, flushes it to disk, and renames it over the old one, so the file always holds one
 //!   complete state. A publish or revoke takes effect exactly when this file is replaced: if writing it fails, nothing
-//!   changes. A store written by an earlier version of the demo (one config for the policy scope, or no resources)
-//!   still reads.
+//!   changes. A store written by an earlier version of the demo (one config for the policy scope, or with
+//!   resources artifacts) still reads; its resources are ignored.
 //! - `history.jsonl`: one line per publish or revoke, appended after the change. It is a log, not part of the state: a
-//!   line that cannot be written is logged and the change stands. The store also reads the highest revision of each
-//!   product from it, so that the counters keep increasing if `store.json` is moved aside.
+//!   line that cannot be written is logged and the change stands. The store also reads the highest revision from it,
+//!   so that the counter keeps increasing if `store.json` is moved aside.
 //!
-//! The policy revision counter is one for the whole product, whatever scope a revision is for: ADP orders revisions
-//! across scopes. The resources product has a counter of its own: its revisions and ADP's mark for them are apart from
-//! the policy product's.
+//! The revision counter is one for the whole product, whatever scope a revision is for: ADP orders revisions across
+//! scopes.
 
 use std::{
     collections::BTreeMap,
@@ -30,11 +28,11 @@ use saluki_metric_plan::{canonical::PlanHash, ir::ReceivedArtifact};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[cfg(test)]
-use super::protocol::RESOURCES_CONFIG_ID;
-use super::protocol::{
-    config_id, transport_hash, ApprovedAgainst, ConfigEntry, Envelope, POLICY_SCOPE, RESOURCES_PRODUCT,
-};
+use super::protocol::{config_id, transport_hash, ApprovedAgainst, ConfigEntry, Envelope, POLICY_SCOPE};
+
+/// The product name earlier versions of the demo wrote for history entries of resources artifacts, which no longer
+/// exist: such entries are skipped.
+const RESOURCES_PRODUCT: &str = "resources";
 
 /// The format version of `store.json`.
 const STORE_FORMAT: u32 = 2;
@@ -90,50 +88,6 @@ impl PublishedConfig {
     }
 }
 
-/// The config the stub currently serves for the resources product.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct PublishedResources {
-    /// The config ID, [`RESOURCES_CONFIG_ID`].
-    pub id: String,
-
-    /// The config version, equal to the revision.
-    pub version: u64,
-
-    /// The resources revision.
-    pub revision: u64,
-
-    /// The plan crate's hash of the resources document: the digest of its canonical JSON form.
-    pub artifact_hash: String,
-
-    /// The transport hash of the payload.
-    pub sha256: String,
-
-    /// The envelope, as the exact JSON text served.
-    pub payload: String,
-
-    /// When the config was published, in milliseconds since the Unix epoch.
-    pub published_ms: u64,
-}
-
-impl PublishedResources {
-    /// Returns the config as a snapshot entry.
-    pub fn entry(&self) -> ConfigEntry {
-        ConfigEntry {
-            id: self.id.clone(),
-            version: self.version,
-            sha256: self.sha256.clone(),
-            payload: self.payload.clone(),
-        }
-    }
-}
-
-/// The resources product's part of the store: its revision counter and its config.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-struct ResourcesState {
-    revision_counter: u64,
-    current: Option<PublishedResources>,
-}
-
 /// What a history entry records.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -151,7 +105,7 @@ pub struct HistoryEntry {
     /// When the change was made, in milliseconds since the Unix epoch.
     pub at_ms: u64,
 
-    /// The product changed: `None` for the policy product, as earlier versions of the demo wrote it, or `resources`.
+    /// The product changed: `None` for the policy product; earlier versions of the demo also wrote `resources`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub product: Option<String>,
 
@@ -170,7 +124,7 @@ pub struct HistoryEntry {
 }
 
 impl HistoryEntry {
-    /// Returns `true` if the entry records a change of the resources product.
+    /// Returns `true` if the entry records a change of resources artifacts, which earlier versions of the demo wrote.
     pub fn is_resources(&self) -> bool {
         self.product.as_deref() == Some(RESOURCES_PRODUCT)
     }
@@ -181,9 +135,6 @@ struct StoreFile {
     format: u32,
     revision_counter: u64,
     configs: BTreeMap<String, PublishedConfig>,
-    /// Absent from a store written before the resources product, which then has none.
-    #[serde(default)]
-    resources: ResourcesState,
 }
 
 /// The store file as the first version of the demo wrote it.
@@ -199,15 +150,13 @@ pub struct ArtifactStore {
     revision_counter: u64,
     /// The config served for each scope, by scope.
     configs: BTreeMap<String, PublishedConfig>,
-    resources: ResourcesState,
     history: Vec<HistoryEntry>,
 }
 
 impl ArtifactStore {
     /// Opens the store in `dir`, creating the directory if it does not exist.
     ///
-    /// Each product's revision counter is the larger of the store file's and the highest revision of that product in
-    /// the history.
+    /// The revision counter is the larger of the store file's and the highest revision in the history.
     ///
     /// # Errors
     ///
@@ -217,18 +166,16 @@ impl ArtifactStore {
             .with_error_context(|| format!("Failed to create the artifact store directory '{}'.", dir.display()))?;
 
         let store_path = dir.join("store.json");
-        let (revision_counter, configs, mut resources) = match fs::read_to_string(&store_path) {
+        let (revision_counter, configs) = match fs::read_to_string(&store_path) {
             Ok(text) => read_store_file(&text).map_err(|error| {
                 generic_error!(
                     "Failed to read the artifact store '{}': {} Move it aside to start with an empty store; the \
-                     revision counters then continue from the history.",
+                     revision counter then continues from the history.",
                     store_path.display(),
                     error
                 )
             })?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                (0, BTreeMap::new(), ResourcesState::default())
-            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (0, BTreeMap::new()),
             Err(error) => {
                 return Err(generic_error!(
                     "Failed to read the artifact store '{}': {}",
@@ -244,28 +191,19 @@ impl ArtifactStore {
                 .lines()
                 .filter(|line| !line.trim().is_empty())
                 .filter_map(|line| serde_json::from_str::<HistoryEntry>(line).ok())
+                .filter(|entry| !entry.is_resources())
                 .collect::<Vec<_>>(),
             Err(_) => Vec::new(),
         };
-        let history_high_water = |resources: bool| {
-            history
-                .iter()
-                .filter(|entry| entry.is_resources() == resources)
-                .filter_map(|entry| entry.revision)
-                .max()
-                .unwrap_or(0)
-        };
-        let (policy_high_water, resources_high_water) = (history_high_water(false), history_high_water(true));
+        let high_water = history.iter().filter_map(|entry| entry.revision).max().unwrap_or(0);
         if history.len() > HISTORY_IN_MEMORY {
             history.drain(..history.len() - HISTORY_IN_MEMORY);
         }
-        resources.revision_counter = resources.revision_counter.max(resources_high_water);
 
         Ok(Self {
             dir: dir.to_path_buf(),
-            revision_counter: revision_counter.max(policy_high_water),
+            revision_counter: revision_counter.max(high_water),
             configs,
-            resources,
             history,
         })
     }
@@ -301,27 +239,6 @@ impl ArtifactStore {
         self.configs.values().map(PublishedConfig::entry).collect()
     }
 
-    /// Returns the config the stub serves for the resources product, if any.
-    pub fn resources(&self) -> Option<&PublishedResources> {
-        self.resources.current.as_ref()
-    }
-
-    /// Returns the highest resources revision the store has issued.
-    pub fn resources_revision_counter(&self) -> u64 {
-        self.resources.revision_counter
-    }
-
-    /// Returns the revision the next resources publish uses: one more than the larger of the store's resources counter
-    /// and ADP's resources revision high-water mark.
-    pub fn next_resources_revision(&self, high_water: Option<u64>) -> u64 {
-        self.resources.revision_counter.max(high_water.unwrap_or(0)) + 1
-    }
-
-    /// Returns the snapshot of the resources product: its config, or nothing.
-    pub fn resources_snapshot(&self) -> Vec<ConfigEntry> {
-        self.resources.current.iter().map(PublishedResources::entry).collect()
-    }
-
     /// Publishes an artifact document as the next revision, replacing the current config of the scope the artifact
     /// replaces.
     ///
@@ -343,7 +260,7 @@ impl ArtifactStore {
 
         let mut configs = self.configs.clone();
         configs.insert(scope.clone(), config.clone());
-        self.write(revision, &configs, &self.resources)?;
+        self.write(revision, &configs)?;
         self.revision_counter = revision;
         self.configs = configs;
         self.append_history(HistoryEntry {
@@ -376,7 +293,7 @@ impl ArtifactStore {
             None if configs.is_empty() => return Ok(false),
             None => configs.clear(),
         }
-        self.write(self.revision_counter, &configs, &self.resources)?;
+        self.write(self.revision_counter, &configs)?;
         self.configs = configs;
         self.append_history(HistoryEntry {
             at_ms: now_ms,
@@ -389,102 +306,25 @@ impl ArtifactStore {
         Ok(true)
     }
 
-    /// Publishes a resources document as the next resources revision, replacing the resources config.
-    ///
-    /// The envelope's `artifact_hash` is the plan crate's hash of the document as received, the digest of its
-    /// canonical JSON form, as ADP recomputes it on receipt. The document is not checked otherwise: ADP validates it,
-    /// so a document it rejects can be published to show the rejection.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the document has no canonical form, or if the store file cannot be written. A failed
-    /// publish changes nothing.
-    #[cfg(test)]
-    pub fn publish_resources(
-        &mut self, document: Value, high_water: Option<u64>, now_ms: u64,
-    ) -> Result<PublishedResources, GenericError> {
-        let hash = PlanHash::of_value(&document)
-            .map_err(|error| generic_error!("The resources document cannot be published: {}", error))?;
-        let revision = self.next_resources_revision(high_water);
-        let (artifact_hash, payload, sha256) = envelope_payload(revision, &hash, None, document)?;
-        let config = PublishedResources {
-            id: RESOURCES_CONFIG_ID.to_string(),
-            version: revision,
-            revision,
-            artifact_hash,
-            sha256,
-            payload,
-            published_ms: now_ms,
-        };
-        let resources = ResourcesState {
-            revision_counter: revision,
-            current: Some(config.clone()),
-        };
-        self.write(self.revision_counter, &self.configs, &resources)?;
-        self.resources = resources;
-        self.append_history(HistoryEntry {
-            at_ms: now_ms,
-            product: Some(RESOURCES_PRODUCT.to_string()),
-            action: HistoryAction::Publish,
-            scope: None,
-            revision: Some(revision),
-            artifact_hash: Some(config.artifact_hash.clone()),
-        });
-        Ok(config)
-    }
-
-    /// Empties the resources snapshot, which revokes every resource the resources artifact declared.
-    ///
-    /// Returns `false`, and changes nothing, if the snapshot is already empty.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the store file cannot be written. A failed revoke changes nothing.
-    pub fn revoke_resources(&mut self, now_ms: u64) -> Result<bool, GenericError> {
-        if self.resources.current.is_none() {
-            return Ok(false);
-        }
-        let resources = ResourcesState {
-            revision_counter: self.resources.revision_counter,
-            current: None,
-        };
-        self.write(self.revision_counter, &self.configs, &resources)?;
-        self.resources = resources;
-        self.append_history(HistoryEntry {
-            at_ms: now_ms,
-            product: Some(RESOURCES_PRODUCT.to_string()),
-            action: HistoryAction::Revoke,
-            scope: None,
-            revision: None,
-            artifact_hash: None,
-        });
-        Ok(true)
-    }
-
-    /// Revokes every config of both products, the policy config of each scope and the resources config, so that ADP
-    /// runs the default program with nothing declared: what a check starts from. The revision counters stay.
+    /// Revokes every config, so that ADP runs the default program: what a check starts from. The revision counter
+    /// stays.
     ///
     /// Returns `false`, and changes nothing, if nothing is served.
     ///
     /// # Errors
     ///
-    /// Returns an error if the store file cannot be written; the policy configs may then be revoked already.
+    /// Returns an error if the store file cannot be written.
     pub fn revoke_all(&mut self, now_ms: u64) -> Result<bool, GenericError> {
-        let policy = self.revoke(None, now_ms)?;
-        let resources = self.revoke_resources(now_ms)?;
-        Ok(policy || resources)
+        self.revoke(None, now_ms)
     }
 
     /// Replaces `store.json`: writes the new state to a temporary file, flushes it to disk, renames it over the store
     /// file, and flushes the directory, so that a crash leaves either the old state or the new one.
-    fn write(
-        &self, revision_counter: u64, configs: &BTreeMap<String, PublishedConfig>, resources: &ResourcesState,
-    ) -> Result<(), GenericError> {
+    fn write(&self, revision_counter: u64, configs: &BTreeMap<String, PublishedConfig>) -> Result<(), GenericError> {
         let file = StoreFile {
             format: STORE_FORMAT,
             revision_counter,
             configs: configs.clone(),
-            resources: resources.clone(),
         };
         let text = serde_json::to_string_pretty(&file).error_context("Failed to serialize the artifact store.")?;
         let path = self.dir.join("store.json");
@@ -536,7 +376,7 @@ impl ArtifactStore {
 
 /// A store's state as read from its file: the policy revision counter, the config of each scope, and the resources
 /// product's state.
-type StoreState = (u64, BTreeMap<String, PublishedConfig>, ResourcesState);
+type StoreState = (u64, BTreeMap<String, PublishedConfig>);
 
 /// Reads a store file of either format.
 fn read_store_file(text: &str) -> Result<StoreState, String> {
@@ -544,7 +384,7 @@ fn read_store_file(text: &str) -> Result<StoreState, String> {
     match value.get("format").and_then(Value::as_u64) {
         Some(format) if format == u64::from(STORE_FORMAT) => {
             let file: StoreFile = serde_json::from_value(value).map_err(|error| error.to_string())?;
-            Ok((file.revision_counter, file.configs, file.resources))
+            Ok((file.revision_counter, file.configs))
         }
         Some(format) if format == u64::from(STORE_FORMAT_ONE_SCOPE) => {
             let file: OneScopeStoreFile = serde_json::from_value(value).map_err(|error| error.to_string())?;
@@ -553,7 +393,7 @@ fn read_store_file(text: &str) -> Result<StoreState, String> {
                 .map(|config| (config.scope.clone(), config))
                 .into_iter()
                 .collect();
-            Ok((file.revision_counter, configs, ResourcesState::default()))
+            Ok((file.revision_counter, configs))
         }
         other => Err(format!(
             "it has format {}, but this demo reads formats {} and {}. Use a new run directory.",

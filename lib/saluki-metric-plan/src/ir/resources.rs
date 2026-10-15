@@ -19,7 +19,6 @@ use serde::{Deserialize, Serialize};
 use super::{
     id::{CredentialRef, HostId, NativeComponentId, RecipientId, RoleName},
     params::Params,
-    plan::ArtifactRevision,
 };
 use crate::{canonical::PlanHash, extension::DeliveryPolicy};
 
@@ -46,9 +45,6 @@ pub struct OutputBinding {
 
     /// The component identifier the output's encoder telemetry reports under.
     pub telemetry: NativeComponentId,
-
-    /// Who declared the output: native configuration, or a resources artifact.
-    pub provenance: ResourceProvenance,
 }
 
 /// What an output's declaration says it delivers to.
@@ -57,8 +53,8 @@ pub struct OutputBinding {
 /// configuration resolves for it, so its recipients can change without changing its fingerprint, while an explicit
 /// recipient list is part of the declaration.
 ///
-/// Serialized as an object with one member: `{"role": "main"}`, `{"group": "sha256:<hex>"}`,
-/// `{"declared": [<recipient ID>, ...]}`, or `{"recipients": [<recipient ID>, ...]}`.
+/// Serialized as an object with one member: `{"role": "main"}`, `{"group": "sha256:<hex>"}`, or
+/// `{"recipients": [<recipient ID>, ...]}`.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Selector {
@@ -68,12 +64,8 @@ pub enum Selector {
     /// A routing group, by its key.
     Group(GroupKey),
 
-    /// The recipients a resources artifact declared for the output, sorted and without duplicates.
-    Declared(Vec<RecipientId>),
-
     /// Exactly these recipients, sorted and without duplicates: an **implied output**, which the host adds for the
-    /// recipients a program's `emit`s address when no other output delivers to exactly them. Its recipients may be
-    /// native or declared.
+    /// recipients a program's `emit`s address when no other output delivers to exactly them.
     Recipients(Vec<RecipientId>),
 }
 
@@ -153,14 +145,10 @@ pub struct RecipientDecl {
     /// The recipient's delivery policy: its only knobs beyond its host's settings. Defaults to the native policy.
     #[serde(default, skip_serializing_if = "DeliveryPolicy::is_native")]
     pub delivery: DeliveryPolicy,
-
-    /// Who declared the recipient: native configuration, or a resources artifact.
-    pub provenance: ResourceProvenance,
 }
 
 impl RecipientDecl {
-    /// Returns `true` if the recipient is declared as `other` is, but for its provenance: a recipient declared again
-    /// so is the same recipient with the same settings, whoever declared it.
+    /// Returns `true` if the recipient is declared as `other` is: the same recipient with the same settings.
     pub fn same_settings(&self, other: &RecipientDecl) -> bool {
         self.id == other.id
             && self.host == other.host
@@ -185,24 +173,11 @@ impl RecipientDecl {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PayloadClasses {
-    /// Metrics only: a recipient that only metrics are routed to, such as one a resources artifact declares.
+    /// Metrics only: a recipient that only metrics are routed to, such as the Cluster Agent or a metrics override.
     MetricsOnly,
 
     /// Every class of payload, as an additional endpoint natively receives.
     All,
-}
-
-/// Who declared a resource, which is also the authority that can remove it.
-///
-/// Serialized as `"native"`, or as `{"declared": {"revision": <n>, "hash": "<hash>"}}`.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub enum ResourceProvenance {
-    /// Native configuration.
-    Native,
-
-    /// A resources artifact, by its revision and hash.
-    Declared(ArtifactRevision),
 }
 
 #[cfg(test)]
@@ -214,35 +189,23 @@ mod tests {
     const HASH: &str = "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 
     #[test]
-    fn selectors_and_provenance_are_written_as_one_member_objects() {
+    fn selectors_are_written_as_one_member_objects() {
         let role = Selector::Role(RoleName::new("main").unwrap());
         assert_eq!(serde_json::to_value(&role).unwrap(), json!({"role": "main"}));
         let group = Selector::Group(HASH.parse().unwrap());
         assert_eq!(serde_json::to_value(&group).unwrap(), json!({"group": HASH}));
-        let declared = Selector::Declared(vec![
-            RecipientId::new("dd_out/declared/team_d/http://127.0.0.1:17105").unwrap()
+        let recipients = Selector::Recipients(vec![
+            RecipientId::new("dd_out/additional/0/http://127.0.0.1:17102").unwrap()
         ]);
         assert_eq!(
-            serde_json::to_value(&declared).unwrap(),
-            json!({"declared": ["dd_out/declared/team_d/http://127.0.0.1:17105"]})
+            serde_json::to_value(&recipients).unwrap(),
+            json!({"recipients": ["dd_out/additional/0/http://127.0.0.1:17102"]})
         );
-        for selector in [role, group, declared] {
+        for selector in [role, group, recipients] {
             let value = serde_json::to_value(&selector).unwrap();
             assert_eq!(serde_json::from_value::<Selector>(value).unwrap(), selector);
         }
         assert!(serde_json::from_value::<Selector>(json!({"role": "main", "group": HASH})).is_err());
-
-        assert_eq!(
-            serde_json::to_value(ResourceProvenance::Native).unwrap(),
-            json!("native")
-        );
-        let declared = ResourceProvenance::Declared(ArtifactRevision {
-            revision: 3,
-            hash: HASH.parse().unwrap(),
-        });
-        let value = json!({"declared": {"revision": 3, "hash": HASH}});
-        assert_eq!(serde_json::to_value(&declared).unwrap(), value);
-        assert_eq!(serde_json::from_value::<ResourceProvenance>(value).unwrap(), declared);
     }
 
     #[test]
@@ -252,8 +215,7 @@ mod tests {
             "host": "dd_out",
             "endpoint": "https://app.datadoghq.com",
             "credential": "native:api_key",
-            "classes": "all",
-            "provenance": "native"
+            "classes": "all"
         });
         let recipient = serde_json::from_value::<RecipientDecl>(value.clone()).unwrap();
         assert!(recipient.protocol.is_empty());

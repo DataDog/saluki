@@ -143,7 +143,7 @@ async fn publishing_approves_exactly_the_last_compiled_hash() {
         .as_str()
         .unwrap()
         .contains("is not the hash of the last compiled artifact"));
-    assert!(app.channel.view(10, None, None).current.is_none());
+    assert!(app.channel.view(10, None).current.is_none());
 
     // Compiling a source that does not parse withdraws the approval target.
     let (_, failed) = call(app, "POST", "/api/compile", Some(json!({"source": "policy {"}))).await;
@@ -164,7 +164,7 @@ async fn publishing_approves_exactly_the_last_compiled_hash() {
     assert_eq!(status, StatusCode::CONFLICT);
     assert!(body["error"].as_str().unwrap().contains("already used"), "{}", body);
     assert!(body["error"].as_str().unwrap().contains("revision 7"), "{}", body);
-    assert_eq!(app.channel.view(10, None, None).revision_counter, 7);
+    assert_eq!(app.channel.view(10, None).revision_counter, 7);
 
     // ADP's next poll receives an envelope approved against the plan that was active when the artifact was compiled.
     let response: PollResponse = {
@@ -182,12 +182,12 @@ async fn publishing_approves_exactly_the_last_compiled_hash() {
     let (status, body) = call(app, "POST", "/api/revoke", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["revoked"], true);
-    assert!(app.channel.view(10, None, None).current.is_none());
+    assert!(app.channel.view(10, None).current.is_none());
     // Revoking an empty snapshot changes nothing.
     let (status, body) = call(app, "POST", "/api/revoke", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["revoked"], false);
-    assert_eq!(app.channel.view(10, None, None).history.len(), 2);
+    assert_eq!(app.channel.view(10, None).history.len(), 2);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -211,7 +211,7 @@ async fn concurrent_approvals_of_one_compile_publish_it_once() {
         .filter(|(status, _)| *status == StatusCode::CONFLICT)
         .count();
     assert_eq!((published, refused), (1, 3), "{:?}", statuses);
-    assert_eq!(app.channel.view(10, None, None).revision_counter, 1);
+    assert_eq!(app.channel.view(10, None).revision_counter, 1);
 }
 
 #[tokio::test]

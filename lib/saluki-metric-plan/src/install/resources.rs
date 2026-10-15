@@ -61,13 +61,8 @@ use serde_json::{json, Value};
 
 use crate::{
     canonical::PlanHash,
-    channel::ArtifactConfigId,
     compile::{KernelKey, LeaseTable, SlotId},
-    ir::{
-        HostBinding, HostId, OutputDecl, OutputId, Params, Plan, RecipientDecl, RecipientId, ResourceProvenance,
-        Resources,
-    },
-    resources::ResourcesArtifact,
+    ir::{HostBinding, HostId, OutputDecl, OutputId, Params, Plan, RecipientDecl, RecipientId, Resources},
 };
 
 /// The revision of what resource transactions published: it grows with every transaction, and a host ignores a
@@ -392,7 +387,7 @@ pub struct HostPublish {
     /// The host's settings.
     pub settings: HostBinding,
 
-    /// The settings of every recipient of the host, native and declared, which the publication stores into each
+    /// The settings of every recipient of the host, which the publication stores into each
     /// recipient's settings: the only path that changes a live recipient's settings.
     pub recipients: Vec<RecipientPrepare>,
 
@@ -431,45 +426,6 @@ pub struct ResourceTransaction {
 
     /// The credits the transaction adds, per resource, in bytes: its new recipients' bounds, and an idle host's queue.
     pub admitted: Vec<(CreditKey, u64)>,
-}
-
-/// What a snapshot of the resources product says, once the caller checked its shape, its transport hash, and its
-/// envelope, and validated its document.
-#[derive(Clone, Debug, PartialEq)]
-pub enum ResourcesEvent {
-    /// An empty snapshot, or an answer without the product: every declared resource is revoked.
-    Revoked,
-
-    /// A config the caller could not read: one of several configs, a transport hash or envelope that does not check
-    /// out. Its revision is not seen.
-    Refused {
-        /// The config.
-        config: ArtifactConfigId,
-
-        /// The config's version.
-        version: u64,
-
-        /// Why it was refused, in plain text.
-        reason: String,
-    },
-
-    /// The product's one config, read.
-    Delivered {
-        /// The config.
-        config: ArtifactConfigId,
-
-        /// The config's version.
-        version: u64,
-
-        /// The resources artifact's revision, on the product's own high-water mark.
-        revision: u64,
-
-        /// The hash of the artifact document as received.
-        artifact_hash: PlanHash,
-
-        /// The document, validated, or why it is not valid.
-        document: Result<ResourcesArtifact, String>,
-    },
 }
 
 /// What a recipient's drain did, as its host reports when the recipient retires.
@@ -520,9 +476,6 @@ pub struct RecipientStatus {
 
     /// Its state.
     pub state: RecipientState,
-
-    /// Who declared it, as the declaration it runs says.
-    pub provenance: ResourceProvenance,
 }
 
 /// What the table released, for the core to turn into actions: leases to drain, recipients to release, and credits
@@ -711,14 +664,13 @@ impl Recipient {
         }
     }
 
-    /// Returns `true` if a publication may name the incarnation: it is committed, and live, or, for a native one,
-    /// failed in its slot. A failed native recipient waiting for its backoff stays in its host's native set, so that
+    /// Returns `true` if a publication may name the incarnation: it is committed, and live or failed in its slot. A
+    /// failed recipient waiting for its backoff stays in its host's native set, so that
     /// what is routed to it is dropped and counted at its slot, as a native forwarder counts what it cannot send: an
     /// abort that drops its next incarnation gives the slot back to it, in its host as in the table, before any later
     /// publication.
     fn publishable(&self) -> bool {
-        let native = matches!(self.decl.provenance, ResourceProvenance::Native);
-        self.committed && (self.phase == Phase::Live || (self.phase == Phase::Failed && native))
+        self.committed && matches!(self.phase, Phase::Live | Phase::Failed)
     }
 }
 
@@ -955,7 +907,7 @@ fn rotation(start: u32) -> impl Iterator<Item = u16> {
 }
 
 /// Returns the recipients a plan's generation uses, by host and identity, with their declarations: every recipient an
-/// output's binding names, and every recipient a resources artifact declared.
+/// output's binding names.
 fn used_recipients(plan: &Plan) -> BTreeMap<(HostId, RecipientId), &RecipientDecl> {
     let mut used = BTreeMap::new();
     for output in &plan.outputs {
@@ -964,11 +916,6 @@ fn used_recipients(plan: &Plan) -> BTreeMap<(HostId, RecipientId), &RecipientDec
             if let Some(decl) = plan.resources.recipient(id).filter(|decl| decl.host == binding.host) {
                 used.insert((decl.host.clone(), decl.id.clone()), decl);
             }
-        }
-    }
-    for decl in &plan.resources.recipients {
-        if matches!(decl.provenance, ResourceProvenance::Declared(_)) {
-            used.insert((decl.host.clone(), decl.id.clone()), decl);
         }
     }
     used
@@ -1022,7 +969,6 @@ impl ResourceTable {
                     host: host.clone(),
                     recipient: recipient.reference.clone(),
                     state: recipient.state(),
-                    provenance: recipient.decl.provenance.clone(),
                 })
             })
             .collect::<Vec<_>>();
@@ -1283,19 +1229,17 @@ impl ResourceTable {
             let mut native_set = Vec::new();
             let mut recipients = Vec::new();
             for decl in lowered.recipients.iter().filter(|decl| decl.host == host) {
-                let native = matches!(decl.provenance, ResourceProvenance::Native);
                 let held = resources.and_then(|resources| resources.recipients.get(&decl.id));
                 let reference = match held {
-                    None if native => planner.new_recipient(decl).inspect(|recipient| {
+                    None => planner.new_recipient(decl).inspect(|recipient| {
                         part.create.push(RecipientPrepare {
                             recipient: recipient.clone(),
                             decl: decl.clone(),
                         });
                     }),
-                    None => None,
                     Some(held) => match held.phase {
                         Phase::Live if held.committed => Some(held.reference.clone()),
-                        Phase::Live if native => {
+                        Phase::Live => {
                             part.create.push(RecipientPrepare {
                                 recipient: held.reference.clone(),
                                 decl: held.decl.clone(),
@@ -1303,7 +1247,7 @@ impl ResourceTable {
                             planner.hold_recipient(&host, &held.reference);
                             Some(held.reference.clone())
                         }
-                        Phase::Draining if native && !held.failed_exit => {
+                        Phase::Draining if !held.failed_exit => {
                             part.reopen.push(RecipientPrepare {
                                 recipient: held.reference.clone(),
                                 decl: decl.clone(),
@@ -1311,7 +1255,7 @@ impl ResourceTable {
                             planner.hold_recipient(&host, &held.reference);
                             Some(held.reference.clone())
                         }
-                        Phase::Failed if held.due && (native || !held.users.is_empty()) => {
+                        Phase::Failed if held.due => {
                             let next = RecipientRef {
                                 slot: held.reference.slot,
                                 id: decl.id.clone(),
@@ -1324,16 +1268,13 @@ impl ResourceTable {
                             });
                             Some(next)
                         }
-                        // A failed native recipient waits for its backoff in the native set, as a publication names it.
-                        Phase::Failed if native && held.committed => Some(held.reference.clone()),
-                        // A failed declared one waits for it left out of the publication.
-                        Phase::Live | Phase::Draining | Phase::Failed | Phase::Exiting => None,
+                        // A failed recipient waits for its backoff in the native set, as a publication names it.
+                        Phase::Failed if held.committed => Some(held.reference.clone()),
+                        Phase::Draining | Phase::Failed | Phase::Exiting => None,
                     },
                 };
                 let Some(reference) = reference else { continue };
-                if native {
-                    native_set.push(reference.clone());
-                }
+                native_set.push(reference.clone());
                 recipients.push(RecipientPrepare {
                     recipient: reference,
                     decl: decl.clone(),
@@ -1582,44 +1523,6 @@ impl ResourceTable {
             .iter()
             .find(|(held, _)| held == key)
             .map(|(_, builder)| *builder)
-    }
-
-    /// Returns what a generation's preparation creates first in a host: the recipients no other preparation created
-    /// before it, and the outputs of the leases it creates there.
-    ///
-    /// Only these can fail for what their declarations say. A recipient the part requires or reopens, or creates again
-    /// under another preparation's reference, was prepared before, so a failure that names it is a race the next
-    /// preparation recovers from, such as a loop that failed before its exit was reported.
-    pub(super) fn created_first(&self, generation: GenerationId, host: &HostId) -> (Vec<&RecipientId>, Vec<&OutputId>) {
-        let recipients = self
-            .uses
-            .get(&generation)
-            .map(|uses| {
-                uses.created
-                    .iter()
-                    .filter(|(created_in, _)| created_in == host)
-                    .map(|(_, id)| id)
-                    .collect()
-            })
-            .unwrap_or_default();
-        let outputs = self
-            .hosts
-            .get(host)
-            .map(|resources| {
-                resources
-                    .leases
-                    .values()
-                    .filter(|lease| lease.creator == Some(generation))
-                    .map(|lease| &lease.key.output)
-                    .collect()
-            })
-            .unwrap_or_default();
-        (recipients, outputs)
-    }
-
-    /// Returns the output a lease of a host's encode host runs, if the table holds the lease.
-    pub(super) fn lease_output(&self, host: &HostId, lease: EntryId) -> Option<&OutputId> {
-        self.hosts.get(host)?.leases.get(&lease).map(|held| &held.key.output)
     }
 
     /// Records that a host's part of a preparation holds nothing any more.
@@ -2177,7 +2080,7 @@ impl ResourceTable {
                 .lowered
                 .recipients
                 .iter()
-                .filter(|decl| decl.host == *host && matches!(decl.provenance, ResourceProvenance::Native))
+                .filter(|decl| decl.host == *host)
                 .map(|decl| decl.id.clone())
                 .collect::<BTreeSet<_>>();
             for (id, recipient) in resources.recipients.iter_mut() {
@@ -2226,9 +2129,7 @@ impl ResourceTable {
             else {
                 continue;
             };
-            if matches!(decl.provenance, ResourceProvenance::Native) {
-                native_set.push(held.reference.clone());
-            }
+            native_set.push(held.reference.clone());
             recipients.push(RecipientPrepare {
                 recipient: held.reference.clone(),
                 decl: decl.clone(),

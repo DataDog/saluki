@@ -3,7 +3,7 @@
 //! | Route | Body |
 //! |---|---|
 //! | `GET /programmable-metrics/status` | the status summary and `config_states`, as the stub protocol writes them |
-//! | `GET /programmable-metrics/resources` | the resources product's state, hosts, outputs, recipients, and budget |
+//! | `GET /programmable-metrics/resources` | the delivery hosts, outputs, recipients, and resource budget |
 //! | `GET /programmable-metrics/export?scope=metrics` | the export bundle of the scope |
 //! | `GET /programmable-metrics/plan` | the active composed logical plan, resolved values included |
 //! | `GET /programmable-metrics/default-program` | the default program last lowered, resolved values included |
@@ -16,7 +16,7 @@
 //! The status route's body also lists, as `recipients`, the delivery hosts' recipient incarnations: those retired
 //! lately, each with its drain report as `last_drain` (see [`StatusDocument`]). A poll's status does not carry them.
 //! The resources route says what the default program delivers through: the outputs and recipients the configuration
-//! and the accepted resources artifact declare, credentials by reference only.
+//! declares, credentials by reference only.
 //!
 //! A request the routes cannot answer gets a plain-text error: `400 Bad Request` for a missing or unknown query
 //! parameter value, `404 Not Found` for a scope the default program does not declare, `500 Internal Server Error` for a

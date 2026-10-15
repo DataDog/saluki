@@ -19,7 +19,7 @@ use super::{
     bindings::{Snapshots, BINDINGS},
     resources::{
         params::{decode_encoder, decode_protocol, host_schema},
-        Directory, FixedHosts, NativeResources, RESERVED_RECIPIENT_NAMES,
+        Directory, FixedHosts, NativeResources,
     },
 };
 use crate::config::DataPlaneConfiguration;
@@ -212,10 +212,6 @@ impl Catalog for AdpCatalog {
         // A published program owns its policy: it binds facts and signals only, and writes policy settings as
         // literals, as the detached export does.
         true
-    }
-
-    fn reserves_recipient_name(&self, name: &RecipientName) -> bool {
-        RESERVED_RECIPIENT_NAMES.contains(&name.as_str())
     }
 
     fn host(&self, host: &HostId) -> Option<HostSchema> {

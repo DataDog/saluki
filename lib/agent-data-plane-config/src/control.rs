@@ -5,7 +5,6 @@
 //! logging (read before topology exists), bootstrap IPC parameters, and process-lifecycle knobs.
 
 use std::{
-    collections::BTreeMap,
     num::{NonZeroU16, NonZeroUsize},
     path::PathBuf,
     time::Duration,
@@ -21,8 +20,7 @@ use crate::{
     ConfigValue,
 };
 
-/// Topology gates and orchestration decisions. Most are static; `logging.level` and
-/// `programmable_metrics.resources.credentials` are live.
+/// Topology gates and orchestration decisions. Most are static; `logging.level` is live.
 ///
 /// The derived `Default` is all zeroes, empty, and `false`, and serves only as the starting point for translation. The
 /// effective default of each field is the one translation resolves, noted per field below.
@@ -170,11 +168,8 @@ impl Default for StandaloneConfigReload {
 /// These settings are experimental: they may change, move, or be removed without backward compatibility.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct ProgrammableMetrics {
-    /// How policy and resources artifacts reach the process, read once at startup.
+    /// How programs reach the process, read once at startup.
     pub artifact_channel: ArtifactChannel,
-
-    /// What resources artifacts may use.
-    pub resources: ProgrammableMetricsResources,
 
     /// How many lanes the slots of the metrics path run on, read once at startup.
     pub lanes: ProgrammableMetricsLanes,
@@ -214,21 +209,6 @@ pub enum LanesMode {
 
     /// One lane per slot, laid out as before lanes existed; the lane counts are ignored.
     Off,
-}
-
-/// What resources artifacts, which declare destinations apart from native configuration, may use
-/// (`experimental.programmable_metrics.resources.*`). (not in Datadog Agent config schema)
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-pub struct ProgrammableMetricsResources {
-    /// The credentials resources artifacts may send with, by name: a declared recipient's credential
-    /// `credentials/<name>` is the value of entry `<name>`.
-    ///
-    /// Defaults to empty: no resources artifact can declare a recipient. The native API keys are never available to
-    /// resources artifacts; only the entries the operator lists here are. An entry whose value is absent, or still
-    /// reads `ENC[...]` because no secret backend resolved it, is not configured, and a resources artifact that uses
-    /// it waits until it is. A present but blank value keeps the last usable key of the recipients already sending with
-    /// it, as an API key rotation does.
-    pub credentials: BTreeMap<String, String>,
 }
 
 /// The artifact channel, which delivers approved policy artifacts for the metrics path

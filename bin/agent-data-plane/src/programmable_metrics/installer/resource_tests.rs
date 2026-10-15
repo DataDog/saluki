@@ -15,16 +15,10 @@ use saluki_app::accounting::MemoryMode;
 use saluki_components::forwarders::delivery::{Creator, DrainReport, RecipientExit, ReopenReply};
 use saluki_core::{accounting::ComponentRegistry, execution::EntryId};
 use saluki_metric_plan::{
-    channel::{ArtifactConfig, ArtifactConfigId},
     install::{HostPrepare, HostPublish, LeaseKey, RecipientPrepare, RecipientSlot},
     ir::{Params, RecipientId},
-    resources::{
-        DeclaredAccepts, DeclaredOutput, DeclaredProtocol, DeclaredRecipient, ResourcesError, RESOURCES_VERSION,
-    },
-    validate::Catalog,
 };
 use saluki_metrics::test::TestRecorder;
-use serde_json::{json, Value};
 
 use super::*;
 use crate::programmable_metrics::{
@@ -46,93 +40,19 @@ enum Call {
     LeaseReleased(HostId, LeaseRef),
     RecipientRetired(RecipientRef, RetirementReport),
     RecipientFailed(RecipientRef, String),
-    OnResources(ResourcesEvent),
-    CredentialsChanged(BTreeSet<CredentialRef>),
 }
 
-/// A resources artifact the core holds, with the revision and hash it was delivered with.
-type HeldArtifact = (ResourcesArtifact, ArtifactRevision);
-
-/// The installer core's rule for the resources artifacts it holds (stage 7 part P7.4's), without its revision checks:
-/// it holds the newest accepted artifact and, while that one is not usable, the one in use when it was accepted; an
-/// artifact is usable while none of its credentials is among those last reported missing.
-#[derive(Default)]
-struct DeclaredModel {
-    latest: Option<HeldArtifact>,
-    previous: Option<HeldArtifact>,
-    missing: BTreeSet<CredentialRef>,
-}
-
-impl DeclaredModel {
-    fn usable(&self, (artifact, _): &HeldArtifact) -> bool {
-        artifact
-            .recipients
-            .iter()
-            .all(|recipient| !self.missing.contains(&recipient.credential))
-    }
-
-    fn in_use(&self) -> Option<&HeldArtifact> {
-        [&self.latest, &self.previous]
-            .into_iter()
-            .flatten()
-            .find(|held| self.usable(held))
-    }
-
-    fn normalize(&mut self) {
-        if self.latest.as_ref().is_some_and(|latest| self.usable(latest)) {
-            self.previous = None;
-        }
-    }
-
-    /// Takes a resources event, and returns `true` if the artifact in use changed, for which the core asks for a
-    /// lowering.
-    fn on_resources(&mut self, event: &ResourcesEvent) -> bool {
-        let before = self.in_use().map(|(_, revision)| revision.clone());
-        match event {
-            ResourcesEvent::Revoked => {
-                self.latest = None;
-                self.previous = None;
-            }
-            ResourcesEvent::Delivered {
-                revision,
-                artifact_hash,
-                document: Ok(document),
-                ..
-            } => {
-                self.previous = self.in_use().cloned();
-                self.latest = Some((
-                    document.clone(),
-                    ArtifactRevision {
-                        revision: *revision,
-                        hash: *artifact_hash,
-                    },
-                ));
-            }
-            ResourcesEvent::Refused { .. } | ResourcesEvent::Delivered { .. } => {}
-        }
-        self.normalize();
-        self.in_use().map(|(_, revision)| revision.clone()) != before
-    }
-}
-
-/// A recorder of what the installer hands the core, which holds resources artifacts as the core does, and releases the
-/// recipient incarnations a test gives it, each with who declared it.
+/// A recorder of what the installer hands the core, which releases the recipient incarnations a test gives it.
 #[derive(Clone, Default)]
 struct Recorder {
     calls: Arc<StdMutex<Vec<Call>>>,
-    declared: Arc<StdMutex<DeclaredModel>>,
-    releasing: Arc<StdMutex<BTreeMap<RecipientRef, ResourceProvenance>>>,
+    releasing: Arc<StdMutex<BTreeSet<RecipientRef>>>,
 }
 
 impl Recorder {
-    /// Makes the core hold `artifact` as the newest accepted revision, as delivered with `revision`.
-    fn hold(&self, artifact: ResourcesArtifact, revision: ArtifactRevision) {
-        self.declared.lock().unwrap().latest = Some((artifact, revision));
-    }
-
-    /// Makes the core release `recipient`, which `provenance` declared.
-    fn release(&self, recipient: &RecipientRef, provenance: ResourceProvenance) {
-        self.releasing.lock().unwrap().insert(recipient.clone(), provenance);
+    /// Makes the core release `recipient`.
+    fn release(&self, recipient: &RecipientRef) {
+        self.releasing.lock().unwrap().insert(recipient.clone());
     }
 
     fn take(&self) -> Vec<Call> {
@@ -172,43 +92,13 @@ impl ResourcePaths for Recorder {
 
     fn recipient_retired(
         &mut self, _: &mut InstallerCore, recipient: RecipientRef, report: RetirementReport,
-    ) -> (Vec<Action>, Option<ResourceProvenance>) {
+    ) -> (Vec<Action>, bool) {
         let released = self.releasing.lock().unwrap().remove(&recipient);
         (self.record(Call::RecipientRetired(recipient, report)), released)
     }
 
     fn recipient_failed(&mut self, _: &mut InstallerCore, recipient: RecipientRef, reason: &str) -> Vec<Action> {
         self.record(Call::RecipientFailed(recipient, reason.to_string()))
-    }
-
-    fn on_resources(&mut self, _: &mut InstallerCore, event: ResourcesEvent) -> Vec<Action> {
-        let changed = self.declared.lock().unwrap().on_resources(&event);
-        self.record(Call::OnResources(event));
-        if changed {
-            vec![Action::InstallDefaultProgram]
-        } else {
-            Vec::new()
-        }
-    }
-
-    fn credentials_changed(&mut self, _: &mut InstallerCore, missing: BTreeSet<CredentialRef>) -> Vec<Action> {
-        let mut declared = self.declared.lock().unwrap();
-        declared.missing = missing.clone();
-        declared.normalize();
-        drop(declared);
-        self.record(Call::CredentialsChanged(missing))
-    }
-
-    fn held_resources(&self, _: &InstallerCore) -> HeldResources {
-        let declared = self.declared.lock().unwrap();
-        HeldResources {
-            held: [&declared.latest, &declared.previous]
-                .into_iter()
-                .flatten()
-                .cloned()
-                .collect(),
-            accepted: declared.in_use().cloned(),
-        }
     }
 }
 
@@ -219,7 +109,6 @@ struct Harness {
     recorder: Recorder,
     delivery: FakeHost,
     encode: FakeHost,
-    config: ConfigCell,
 }
 
 impl Harness {
@@ -261,7 +150,6 @@ impl Harness {
             recorder,
             delivery,
             encode,
-            config: cell,
         }
     }
 
@@ -278,19 +166,6 @@ impl Harness {
             .expect("the installer has an event to handle");
         self.installer.handle(event);
         self.installer.perform_actions().await;
-    }
-
-    /// Handles events until the recorder holds a call `wanted` accepts, and returns every call but the hosts'
-    /// acknowledgments, which the preparations the fake hosts answer add on the way.
-    async fn until(&mut self, wanted: impl Fn(&Call) -> bool) -> Vec<Call> {
-        while !self.recorder.calls.lock().unwrap().iter().any(&wanted) {
-            self.next().await;
-        }
-        self.recorder
-            .take()
-            .into_iter()
-            .filter(|call| !matches!(call, Call::HostPrepared(..)))
-            .collect()
     }
 
     /// Handles events until the recorder holds `count` calls, and returns them.
@@ -431,7 +306,7 @@ async fn a_release_and_the_retirement_it_leads_to_reach_the_core_once() {
         .delivery
         .hold(Creator::Transaction(1), &[delivery_ref(&primary)])
         .unwrap();
-    harness.recorder.release(&primary, ResourceProvenance::Native);
+    harness.recorder.release(&primary);
     harness
         .perform(Action::ReleaseRecipients {
             host: host(),
@@ -446,7 +321,7 @@ async fn a_release_and_the_retirement_it_leads_to_reach_the_core_once() {
     );
     assert!(harness.delivery.recipients().is_empty());
 
-    // The status route lists the retired incarnation with its drain report, and who declared it.
+    // The status route lists the retired incarnation with its drain report.
     let listed = retired(&mut harness.installer);
     let [entry] = listed.as_slice() else {
         panic!("one retired incarnation, not {:?}", listed);
@@ -456,7 +331,6 @@ async fn a_release_and_the_retirement_it_leads_to_reach_the_core_once() {
         (DD_OUT, PRIMARY, 0, 1)
     );
     assert_eq!(entry.state, status::RecipientEntryState::Retired);
-    assert_eq!(entry.provenance, Some(status::Provenance::Native));
     let drain = entry.last_drain.expect("a retired incarnation has its drain report");
     assert_eq!(
         (drain.delivered, drain.persisted, drain.dropped, drain.deadline_reached),
@@ -470,7 +344,7 @@ async fn an_exit_the_core_is_not_releasing_is_handed_to_it_and_listed_as_no_reti
     let mut harness = Harness::new("").await;
     // What a delivery host reports for a recipient an abort dropped: an exit with an empty drain report, of an
     // incarnation the core no longer holds.
-    let dropped = recipient(4, "dd_out/declared/team_d/http://127.0.0.1:17105", 7);
+    let dropped = recipient(4, "dd_out/additional/0/http://127.0.0.1:17105", 7);
     let actions = harness.installer.host_event(
         host(),
         DeliveryEvent::RecipientExited {
@@ -491,52 +365,6 @@ async fn an_exit_the_core_is_not_releasing_is_handed_to_it_and_listed_as_no_reti
 }
 
 #[tokio::test]
-async fn a_retired_recipient_is_listed_as_declared_by_the_incarnation_the_core_released() {
-    let mut harness = Harness::new("").await;
-    let declared = recipient(3, "dd_out/declared/team_d/http://127.0.0.1:17105", 2);
-    // The resources product was revoked: the latest lowering no longer declares the recipient being released.
-    assert!(harness
-        .installer
-        .lowered_resources
-        .resources
-        .recipient(&declared.id)
-        .is_none());
-    let revision = ArtifactRevision {
-        revision: 4,
-        hash: PlanHash::of_bytes(b"revision 4"),
-    };
-    harness
-        .recorder
-        .release(&declared, ResourceProvenance::Declared(revision));
-    harness
-        .delivery
-        .hold(Creator::Generation(GenerationId::new(3)), &[delivery_ref(&declared)])
-        .unwrap();
-    harness
-        .perform(Action::ReleaseRecipients {
-            host: host(),
-            recipients: vec![declared.clone()],
-        })
-        .await;
-    assert_eq!(
-        harness.calls(1).await,
-        [Call::RecipientRetired(declared.clone(), RetirementReport::default())]
-    );
-    let listed = retired(&mut harness.installer);
-    let [entry] = listed.as_slice() else {
-        panic!("one retired incarnation, not {:?}", listed);
-    };
-    assert_eq!((entry.id.as_str(), entry.incarnation), (declared.id.as_str(), 2));
-    assert_eq!(
-        entry.provenance,
-        Some(status::Provenance::Declared {
-            revision: 4,
-            hash: PlanHash::of_bytes(b"revision 4"),
-        })
-    );
-}
-
-#[tokio::test]
 async fn the_installer_leaves_counting_retirements_to_the_delivery_hosts() {
     let telemetry = TestRecorder::default();
     let mut harness = Harness::under("", Some(&telemetry)).await;
@@ -545,7 +373,7 @@ async fn the_installer_leaves_counting_retirements_to_the_delivery_hosts() {
         .delivery
         .hold(Creator::Transaction(1), &[delivery_ref(&primary)])
         .unwrap();
-    harness.recorder.release(&primary, ResourceProvenance::Native);
+    harness.recorder.release(&primary);
     harness
         .perform(Action::ReleaseRecipients {
             host: host(),
@@ -578,7 +406,6 @@ fn the_status_keeps_the_latest_sixteen_retired_incarnations_oldest_first() {
                 dropped: 1,
                 deadline_reached: true,
             },
-            status::Provenance::Native,
             at,
         );
     }
@@ -589,7 +416,6 @@ fn the_status_keeps_the_latest_sixteen_retired_incarnations_oldest_first() {
     );
     let drain = entries[0].last_drain.unwrap();
     assert_eq!((drain.delivered, drain.dropped, drain.retired_ms), (5, 1, 1_500));
-    assert_eq!(entries[0].provenance, Some(status::Provenance::Native));
 }
 
 #[tokio::test]
@@ -907,340 +733,4 @@ async fn a_restarted_worker_keeps_the_credit_ledger_and_hands_the_core_an_exit_r
     );
     coordinator.shutdown();
     tokio::time::timeout(PATIENCE, second).await.unwrap().unwrap();
-}
-
-/// The artifact `written("team_d", 17105)` validates to.
-fn team_d() -> ResourcesArtifact {
-    validated("team_d", 17105)
-}
-
-/// Revision `revision` of the resources product, with a hash of its own.
-fn revision(revision: u64) -> ArtifactRevision {
-    ArtifactRevision {
-        revision,
-        hash: PlanHash::of_bytes(&revision.to_be_bytes()),
-    }
-}
-
-/// Returns `config` with the declared credentials `names` configured, each with a key.
-fn with_credentials(mut config: SalukiConfiguration, names: &[&str]) -> SalukiConfiguration {
-    config.control.programmable_metrics.resources.credentials = names
-        .iter()
-        .map(|name| (name.to_string(), format!("key-{}", name)))
-        .collect();
-    config
-}
-
-/// A resources document as an operator writes it: the recipient `team_d_intake`, which sends with the declared
-/// credential `credential` to the local port `port`, written in a form that is not canonical, and the output `team_d`.
-fn written(credential: &str, port: u16) -> Value {
-    json!({
-        "resources_version": 1,
-        "recipients": [{
-            "name": "team_d_intake",
-            "host": "dd_out",
-            "endpoint": format!("HTTP://127.0.0.1:{}/", port),
-            "credential": format!("credentials/{}", credential)
-        }],
-        "outputs": [{"name": "team_d", "recipients": ["team_d_intake"], "label": "Team D"}]
-    })
-}
-
-/// The artifact validation makes of `written(credential, port)`: its endpoint in canonical form.
-fn validated(credential: &str, port: u16) -> ResourcesArtifact {
-    ResourcesArtifact {
-        resources_version: RESOURCES_VERSION,
-        recipients: vec![DeclaredRecipient {
-            name: "team_d_intake".to_string(),
-            host: host(),
-            endpoint: format!("http://127.0.0.1:{}", port),
-            credential: CredentialRef::new(format!("credentials/{}", credential)).unwrap(),
-            protocol: DeclaredProtocol::default(),
-            delivery: None,
-        }],
-        outputs: vec![DeclaredOutput {
-            name: "team_d".to_string(),
-            recipients: vec!["team_d_intake".to_string()],
-            accepts: DeclaredAccepts::Any,
-            label: Some("Team D".to_string()),
-        }],
-    }
-}
-
-/// Validation of the documents [`written`] writes, which it validates to what [`validated`] says, refusing any other.
-fn validate_written(document: Value, _: &dyn Catalog) -> Result<ResourcesArtifact, ResourcesError> {
-    let recipient = &document["recipients"][0];
-    let credential = recipient["credential"]
-        .as_str()
-        .and_then(|credential| credential.strip_prefix("credentials/"));
-    let port = recipient["endpoint"]
-        .as_str()
-        .and_then(|endpoint| endpoint.strip_prefix("HTTP://127.0.0.1:"))
-        .and_then(|port| port.strip_suffix('/'))
-        .and_then(|port| port.parse().ok());
-    match (credential, port) {
-        (Some(credential), Some(port)) if document == written(credential, port) => Ok(validated(credential, port)),
-        _ => Err(ResourcesError::Invalid {
-            message: format!("not a document the test writes: {}", document),
-        }),
-    }
-}
-
-/// A snapshot of the resources product that holds `document` as revision `revision`.
-fn resources_snapshot(revision: u64, document: &Value) -> Arc<ArtifactSnapshot> {
-    let hash = PlanHash::of_value(document).unwrap();
-    let payload = json!({"revision": revision, "artifact_hash": hash, "artifact": document}).to_string();
-    Arc::new(ArtifactSnapshot::new(
-        ArtifactProduct::Resources,
-        vec![ArtifactConfig {
-            id: ArtifactConfigId::new("resources"),
-            version: revision,
-            sha256: ArtifactConfig::transport_hash(&payload),
-            payload,
-        }],
-    ))
-}
-
-/// Returns the provenance of the declared output `resources_team_d` in the plan last lowered, if it declares it.
-fn team_d_provenance(installer: &Installer) -> Option<ResourceProvenance> {
-    installer
-        .last_lowered
-        .output(&OutputId::new("resources_team_d").unwrap())
-        .and_then(|output| output.binding.as_ref())
-        .map(|binding| binding.provenance.clone())
-}
-
-#[tokio::test]
-async fn a_valid_snapshot_reaches_the_core_after_the_credentials_it_misses_and_is_lowered_with_its_provenance() {
-    let mut harness = Harness::new("").await;
-    harness.installer.validate_resources = validate_written;
-    let document = written("team_d", 17105);
-    let delivery = ResourcesEvent::Delivered {
-        config: ArtifactConfigId::new("resources"),
-        version: 5,
-        revision: 5,
-        // The hash of the document as received, and the document validation made of it.
-        artifact_hash: PlanHash::of_value(&document).unwrap(),
-        document: Ok(validated("team_d", 17105)),
-    };
-    let team_d = CredentialRef::new("credentials/team_d").unwrap();
-
-    // `credentials/team_d` is not configured: the core is told so before it takes the delivery, which then waits.
-    harness
-        .installer
-        .handle(Event::Snapshot(resources_snapshot(5, &document)));
-    harness.installer.perform_actions().await;
-    assert_eq!(
-        harness.recorder.take(),
-        [
-            Call::CredentialsChanged([team_d.clone()].into()),
-            Call::OnResources(delivery)
-        ]
-    );
-    assert_eq!(team_d_provenance(&harness.installer), None);
-    assert_eq!(
-        harness.installer.current_status().resources.missing_credentials,
-        ["credentials/team_d"]
-    );
-
-    // Configured, it is told before the lowering, which declares the artifact's resources with its revision and hash.
-    harness
-        .config
-        .set(with_credentials(configuration("").await, &["team_d"]));
-    assert_eq!(
-        harness.until(|call| matches!(call, Call::CredentialsChanged(_))).await,
-        [Call::CredentialsChanged(BTreeSet::new())]
-    );
-    assert_eq!(
-        team_d_provenance(&harness.installer),
-        Some(ResourceProvenance::Declared(ArtifactRevision {
-            revision: 5,
-            hash: PlanHash::of_value(&document).unwrap(),
-        }))
-    );
-    let canonical = RecipientId::new("dd_out/declared/team_d/http://127.0.0.1:17105").unwrap();
-    assert_eq!(
-        harness
-            .installer
-            .last_lowered
-            .resources
-            .recipient(&canonical)
-            .map(|recipient| recipient.endpoint.as_str()),
-        Some("http://127.0.0.1:17105"),
-        "lowering declares what validation made of the document"
-    );
-
-    // A revocation is lowered without it.
-    harness.installer.handle(Event::Snapshot(Arc::new(ArtifactSnapshot::new(
-        ArtifactProduct::Resources,
-        Vec::new(),
-    ))));
-    harness.installer.perform_actions().await;
-    assert_eq!(harness.recorder.take(), [Call::OnResources(ResourcesEvent::Revoked)]);
-    assert_eq!(team_d_provenance(&harness.installer), None);
-}
-
-#[tokio::test]
-async fn a_revoked_artifact_stops_counting_the_credentials_it_waited_for() {
-    let mut harness = Harness::new("").await;
-    harness.installer.validate_resources = validate_written;
-    harness
-        .installer
-        .handle(Event::Snapshot(resources_snapshot(5, &written("team_d", 17105))));
-    harness.recorder.take();
-    harness.installer.handle(Event::Snapshot(Arc::new(ArtifactSnapshot::new(
-        ArtifactProduct::Resources,
-        Vec::new(),
-    ))));
-    // Once the core dropped the artifact, no artifact it holds waits for `credentials/team_d`.
-    assert_eq!(
-        harness.recorder.take(),
-        [
-            Call::OnResources(ResourcesEvent::Revoked),
-            Call::CredentialsChanged(BTreeSet::new())
-        ]
-    );
-    assert!(harness
-        .installer
-        .current_status()
-        .resources
-        .missing_credentials
-        .is_empty());
-}
-
-#[tokio::test]
-async fn the_revision_in_use_keeps_its_credentials_counted_while_newer_revisions_wait_for_another() {
-    let mut harness = Harness::new("").await;
-    harness.installer.validate_resources = validate_written;
-    let config = with_credentials(configuration("").await, &["team_d"]);
-    harness.config.set(config.clone());
-    harness.next().await;
-    let first = written("team_d", 17105);
-    let first_revision = ArtifactRevision {
-        revision: 1,
-        hash: PlanHash::of_value(&first).unwrap(),
-    };
-    harness.installer.handle(Event::Snapshot(resources_snapshot(1, &first)));
-    harness.installer.perform_actions().await;
-    assert_eq!(
-        team_d_provenance(&harness.installer),
-        Some(ResourceProvenance::Declared(first_revision.clone()))
-    );
-
-    // Four newer revisions each wait for `credentials/team_e`: the core keeps revision 1 in use all along.
-    for revision in 2..=5 {
-        let port = 17100 + revision as u16;
-        harness
-            .installer
-            .handle(Event::Snapshot(resources_snapshot(revision, &written("team_e", port))));
-        harness.installer.perform_actions().await;
-    }
-    harness.installer.propose_default_program(&config);
-    assert_eq!(
-        team_d_provenance(&harness.installer),
-        Some(ResourceProvenance::Declared(first_revision)),
-        "revision 1 is lowered with its own revision and hash"
-    );
-    assert_eq!(
-        harness.installer.current_status().resources.missing_credentials,
-        ["credentials/team_e"]
-    );
-    harness.recorder.take();
-
-    // Removing `credentials/team_d` makes revision 1 wait too: its recipient is withdrawn at the next lowering.
-    harness.config.set(with_credentials(configuration("").await, &[]));
-    let team_d = CredentialRef::new("credentials/team_d").unwrap();
-    let team_e = CredentialRef::new("credentials/team_e").unwrap();
-    assert_eq!(
-        harness.until(|call| matches!(call, Call::CredentialsChanged(_))).await,
-        [Call::CredentialsChanged([team_d, team_e].into())]
-    );
-    assert_eq!(team_d_provenance(&harness.installer), None);
-    assert!(harness
-        .installer
-        .last_lowered
-        .resources
-        .recipients
-        .iter()
-        .all(|recipient| recipient.provenance == ResourceProvenance::Native));
-}
-
-#[tokio::test]
-async fn missing_credentials_are_told_before_lowering_and_only_when_they_change() {
-    let mut harness = Harness::new("").await;
-    harness.recorder.hold(team_d(), revision(4));
-    let config = configuration("").await;
-    harness.installer.propose_default_program(&config);
-    let team_d = CredentialRef::new("credentials/team_d").unwrap();
-    assert!(harness
-        .recorder
-        .take()
-        .contains(&Call::CredentialsChanged([team_d.clone()].into())));
-    // The same configuration says nothing new.
-    harness.installer.propose_default_program(&config);
-    assert!(!harness
-        .recorder
-        .take()
-        .iter()
-        .any(|call| matches!(call, Call::CredentialsChanged(_))));
-    let config = with_credentials(config, &["team_d"]);
-    harness.installer.propose_default_program(&config);
-    assert!(harness
-        .recorder
-        .take()
-        .contains(&Call::CredentialsChanged(BTreeSet::new())));
-    assert!(harness
-        .installer
-        .current_status()
-        .resources
-        .missing_credentials
-        .is_empty());
-}
-
-#[tokio::test]
-async fn the_accepted_resources_are_lowered_with_their_provenance_and_shown_in_status() {
-    let mut harness = Harness::new("").await;
-    harness.recorder.hold(team_d(), revision(4));
-    let config = with_credentials(configuration("").await, &["team_d"]);
-    harness.config.set(config.clone());
-    harness.installer.propose_default_program(&config);
-
-    assert_eq!(
-        team_d_provenance(&harness.installer),
-        Some(ResourceProvenance::Declared(revision(4)))
-    );
-
-    let status = harness.installer.current_status();
-    let view = status
-        .resources
-        .outputs
-        .iter()
-        .find(|output| output.id == "resources_team_d")
-        .expect("status lists the declared output");
-    assert_eq!(view.label, "Team D");
-    assert_eq!(view.host.as_deref(), Some("dd_out"));
-    assert_eq!(
-        view.provenance,
-        status::Provenance::Declared {
-            revision: 4,
-            hash: PlanHash::of_bytes(&4u64.to_be_bytes()),
-        }
-    );
-    let recipient = status
-        .resources
-        .recipients
-        .iter()
-        .find(|recipient| recipient.id == "dd_out/declared/team_d/http://127.0.0.1:17105")
-        .expect("status lists the declared recipient");
-    assert_eq!(recipient.credential, "credentials/team_d");
-    // The declared recipient is named after the artifact's name for its task.
-    assert_eq!(
-        harness
-            .installer
-            .resource_paths
-            .held_resources(&harness.installer.core)
-            .declared_name(&RecipientId::new(recipient.id.as_str()).unwrap())
-            .as_deref(),
-        Some("team_d_intake")
-    );
 }

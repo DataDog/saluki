@@ -6,7 +6,7 @@
 //! - [`host_facts`]: what lowering needs to know about the process, captured once at boot;
 //! - [`bindings`]: the closed registry of configuration bindings that plan parameters may name;
 //! - [`resources`]: the outputs, their bindings, the recipients, and the delivery hosts' settings, resolved from the
-//!   current configuration and the accepted resources artifact, with the parameter codec of output bindings, host
+//!   current configuration, with the parameter codec of output bindings, host
 //!   settings, and recipient protocols;
 //! - [`credentials`]: the credentials recipients send with, resolved from their references;
 //! - [`catalog`]: the plan crate's catalog over the bindings, the outputs, and the delivery hosts;
@@ -15,7 +15,7 @@
 //! - [`lanes`]: how many lanes the slots of the metrics path run on, fixed at boot;
 //! - [`topology`]: the metrics path of the topology, built from the default program's physical frame;
 //! - [`installer`]: booting the metrics path, and installing a new generation of the plan whenever a configuration
-//!   change, a policy artifact, or a resources artifact changes it, with the resources its delivery hosts run;
+//!   change or a program changes it, with the resources its delivery hosts run;
 //! - [`telemetry`]: what regions and the installer publish, under the native identities of the nodes;
 //! - [`snapshot_bridge`]: the worker that answers DogStatsD aggregation's context snapshot requests from the region
 //!   that runs it, when aggregation runs as a stateful kernel;

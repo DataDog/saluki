@@ -2,8 +2,8 @@
   "explain_version": 2,
   "plan": {
     "ir_version": 1,
-    "hash": "sha256:777a16e553013175d30a4805777115db354853003e56bca2aa4464edc03e8b3c",
-    "structural_hash": "sha256:8028dfdc7b287e3efe981af17b70283c1f6231641ba9d5965b1ce9eafb29e59f",
+    "hash": "sha256:6e194ad57c45b8b3a6203e8e28336580fd3ee1ebf8d0436096da6616957b9f99",
+    "structural_hash": "sha256:1e9fdd8821acf1fdc87bffc4fe3bbf5b90f0a7982dffad04d7336ddcc3f9ea9e",
     "provenance": {
       "native_components": {
         "af_metrics_gateway_false": "af_metrics_gateway",
@@ -2133,10 +2133,7 @@
           "timestamps": "mixed"
         },
         "fingerprint": "sha256:ccc6ed3c9012f1da6fe870fbf4a1c9e3357dfa31e85c0ba234a8d4ec7b740a99",
-        "recipients": [
-          "dd_out/additional_1/0",
-          "dd_out/additional_1/1"
-        ],
+        "recipients": [],
         "delivery": "native",
         "emitted_by": [
           "metrics_routing_filter_1_true"
@@ -2176,19 +2173,6 @@
         "emitted_by": [
           "af_metrics_gateway_true"
         ]
-      },
-      {
-        "id": "resources_team_d",
-        "accepts": {
-          "kinds": "all",
-          "timestamps": "mixed"
-        },
-        "fingerprint": "sha256:361f843bc9a6b25663cc6da865dd3af0daf04bb8890e3717ae98d7d30bb1c838",
-        "recipients": [
-          "dd_out/declared/team_d/http://127.0.0.1:17105"
-        ],
-        "delivery": "native",
-        "emitted_by": []
       }
     ],
     "scopes": [
@@ -2217,7 +2201,6 @@
           "series": "v2"
         },
         "telemetry": "dd_metrics_encode",
-        "provenance": "native",
         "change": "rebound"
       },
       {
@@ -2231,7 +2214,6 @@
           "series": "v2"
         },
         "telemetry": "metrics_routing_encode_0",
-        "provenance": "native",
         "change": "reused"
       },
       {
@@ -2245,8 +2227,7 @@
           "series": "v2"
         },
         "telemetry": "metrics_routing_encode_1",
-        "provenance": "native",
-        "change": "reused"
+        "change": "rebound"
       },
       {
         "id": "mrf_metrics_encode",
@@ -2259,7 +2240,6 @@
           "series": "v2"
         },
         "telemetry": "mrf_metrics_encode",
-        "provenance": "native",
         "change": "reused"
       },
       {
@@ -2273,28 +2253,6 @@
           "series": "v2"
         },
         "telemetry": "af_metrics_encode",
-        "provenance": "native",
-        "change": "reused"
-      },
-      {
-        "id": "resources_team_d",
-        "host": "dd_out",
-        "selector": {
-          "declared": [
-            "dd_out/declared/team_d/http://127.0.0.1:17105"
-          ]
-        },
-        "encoder": {
-          "flush_timeout": "2s",
-          "series": "v2"
-        },
-        "telemetry": "resources_team_d",
-        "provenance": {
-          "declared": {
-            "revision": 2,
-            "hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-          }
-        },
         "change": "reused"
       }
     ],
@@ -2339,7 +2297,6 @@
           }
         },
         "delivery": "native",
-        "provenance": "native",
         "outputs": [
           "dd_metrics_encode"
         ],
@@ -2359,49 +2316,8 @@
           }
         },
         "delivery": "native",
-        "provenance": "native",
         "outputs": [
           "metrics_routing_encode_0"
-        ],
-        "change": "reused"
-      },
-      {
-        "id": "dd_out/additional_1/0",
-        "host": "dd_out",
-        "endpoint": "https://group1.example.com",
-        "credential": "native:additional/fedcba9876543210/0",
-        "classes": "all",
-        "protocol": {
-          "kind": "datadog_intake",
-          "v3": {
-            "series": false,
-            "sketches": false
-          }
-        },
-        "delivery": "native",
-        "provenance": "native",
-        "outputs": [
-          "metrics_routing_encode_1"
-        ],
-        "change": "reused"
-      },
-      {
-        "id": "dd_out/additional_1/1",
-        "host": "dd_out",
-        "endpoint": "https://group1.example.com",
-        "credential": "native:additional/fedcba9876543210/1",
-        "classes": "all",
-        "protocol": {
-          "kind": "datadog_intake",
-          "v3": {
-            "series": false,
-            "sketches": false
-          }
-        },
-        "delivery": "native",
-        "provenance": "native",
-        "outputs": [
-          "metrics_routing_encode_1"
         ],
         "change": "reused"
       },
@@ -2419,7 +2335,6 @@
           }
         },
         "delivery": "native",
-        "provenance": "native",
         "outputs": [
           "mrf_metrics_encode"
         ],
@@ -2435,40 +2350,8 @@
           "kind": "cluster_agent"
         },
         "delivery": "native",
-        "provenance": "native",
         "outputs": [
           "af_metrics_encode"
-        ],
-        "change": "reused"
-      },
-      {
-        "id": "dd_out/declared/team_d/http://127.0.0.1:17105",
-        "host": "dd_out",
-        "endpoint": "http://127.0.0.1:17105",
-        "credential": "credentials/team_d",
-        "classes": "metrics_only",
-        "protocol": {
-          "kind": "datadog_intake",
-          "v3": {
-            "series": false,
-            "sketches": false
-          }
-        },
-        "delivery": {
-          "bounded": {
-            "queue_bytes": 4194304,
-            "spill": "never",
-            "on_retire": "attempt"
-          }
-        },
-        "provenance": {
-          "declared": {
-            "revision": 2,
-            "hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-          }
-        },
-        "outputs": [
-          "resources_team_d"
         ],
         "change": "reused"
       },
@@ -2486,7 +2369,6 @@
           }
         },
         "delivery": "native",
-        "provenance": "native",
         "outputs": [
           "dd_metrics_encode"
         ],
@@ -2494,11 +2376,9 @@
       }
     ],
     "removed": {
-      "outputs": [
-        "resources_team_e"
-      ],
       "recipients": [
-        "dd_out/declared/team_e/https://e.example.com"
+        "dd_out/additional_1/0",
+        "dd_out/additional_1/1"
       ]
     }
   },
@@ -3626,10 +3506,7 @@
       {
         "output": "metrics_routing_encode_1",
         "encode_host": "encode host dd_metrics_encode of dd_out",
-        "recipients": [
-          "dd_out/additional_1/0",
-          "dd_out/additional_1/1"
-        ],
+        "recipients": [],
         "delivery": "native",
         "overflow": "wait",
         "closure": "native",
@@ -3680,36 +3557,6 @@
           "dsd_no_agg_split_region.af_metrics_encode",
           "dsd_post_agg_filter_region.af_metrics_encode"
         ]
-      },
-      {
-        "output": "resources_team_d",
-        "encode_host": "encode host dd_metrics_encode of dd_out",
-        "recipients": [
-          "dd_out/declared/team_d/http://127.0.0.1:17105"
-        ],
-        "delivery": "native",
-        "overflow": "wait",
-        "closure": "native",
-        "fed_by": [],
-        "idle": [
-          "dsd_pre_aggregation.dd_metrics_encode",
-          "dsd_prefix_filter_region.dd_metrics_encode",
-          "dsd_no_agg_split_region.dd_metrics_encode",
-          "dsd_post_agg_filter_region.dd_metrics_encode",
-          "metrics_enrich.dd_metrics_encode"
-        ]
-      },
-      {
-        "output": "resources_team_e",
-        "removed": true,
-        "recipients": [
-          "dd_out/declared/team_e/https://e.example.com"
-        ],
-        "delivery": "native",
-        "overflow": "wait",
-        "closure": "native",
-        "fed_by": [],
-        "idle": []
       }
     ]
   }

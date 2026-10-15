@@ -89,17 +89,10 @@
 //! # Resources
 //!
 //! The outputs, recipients, and host settings the default program delivers through follow the current configuration
-//! and the accepted resources artifact (see [`resources`](super::resources)), and run in the fixed encode and delivery
+//! (see [`resources`](super::resources)), and run in the fixed encode and delivery
 //! hosts (see the `hosts` module). The worker performs the core's resource actions in those hosts: each generation's
 //! and each resource transaction's part for a host, publications, aborts, and the two-phase release of leases, then
 //! recipients, whose exits the hosts report on event channels the installer keeps outside the worker.
-//!
-//! A snapshot of the `resources` product is read here, not in the core: its shape, transport hash, envelope, artifact
-//! hash, and document (the `product` module). Before every lowering, the worker tells the core which declared
-//! credentials the documents it holds ([`InstallerCore::held_resources`]) reference that are not configured
-//! ([`InstallerCore::credentials_changed`]), and lowers with the resources artifact the core accepted
-//! ([`InstallerCore::accepted_resources`]), whose revision and hash the resources it declares record
-//! ([`InstallerCore::accepted_revision`]).
 //!
 //! Everything a preparation adds after boot is admitted against the memory limit's headroom: the worker acquires each
 //! credit the core lists before it sends anything, and releases it when the core says its creation ended (the `budget`
@@ -158,15 +151,11 @@ use saluki_metric_plan::{
     install::{
         Action, ArmCut, Candidate, CandidateId, CreditKey, CutDeferReason, CutPhase, GenerationState, InstallerConfig,
         InstallerCore, InstallerStatus, LeaseRef, Origin, Outcome, PendingReason, Prepare, PrepareOutcome, PrepareSite,
-        RecipientRef, Report, ResourcesEvent, ResourcesRevision, RetirementReport, SlotPrepare, StateBinding,
+        RecipientRef, Report, ResourcesRevision, RetirementReport, SlotPrepare, StateBinding,
     },
-    ir::{
-        ArtifactRevision, CredentialRef, HostId, NodeId, OutputId, Plan, ReceivedArtifact, ResourceProvenance,
-        ScopeName,
-    },
+    ir::{HostId, NodeId, OutputId, Plan, ReceivedArtifact, ScopeName},
     limits,
     operators::{LaneBinding, LaneCell, OperatorRegistry},
-    resources::ResourcesArtifact,
     runtime::{
         build_kernels, GenerationFailureReporter, LanePreparation, PanicBudget, PrepareRegion, RegionControl,
         RegionError, StateBudgets,
@@ -185,17 +174,16 @@ use self::{
     budget::{AdpResourceBounds, ResourceBudget},
     cut::{ArmOutcome, CancelOutcome, Polled},
     hosts::{next_host_event, wire_hosts, BootHosts, HostLink},
-    product::HeldResources,
     status::{RecipientEntry, ResourcesView, RetiredRecipients},
 };
 use super::{
     bindings,
     catalog::AdpCatalog,
-    credentials::{missing_credentials, AdpCredentialSource},
+    credentials::AdpCredentialSource,
     host_facts::HostFacts,
     lanes::LaneCounts,
     lowering::{omitted_name, Lowering},
-    resources::{Declared, FixedHosts, NativeOutputs, NativeResources, OutputKind},
+    resources::{FixedHosts, NativeOutputs, NativeResources, OutputKind},
     snapshot_bridge::{SnapshotBridge, SnapshotBridgeState},
     telemetry::{CutOutcome, InstallOutcome, InstallerTelemetry, LaneTelemetry, RegionTelemetry, SlotLaneStats},
     topology::{aggregation_slot, slot_name},
@@ -514,10 +502,8 @@ impl ProgrammableMetrics {
             resources_deadline: None,
             budget: ResourceBudget::uncounted(),
             boot_credits: boot.admitted.clone(),
-            validate_resources: saluki_metric_plan::resources::validate,
             lowered_resources: lowered.resources,
             lowered_demand: Vec::new(),
-            missing_credentials: BTreeSet::new(),
             retired_recipients: RetiredRecipients::default(),
         };
         let status = Arc::new(ArcSwap::from_pointee(installer.current_status()));
@@ -689,8 +675,7 @@ pub struct PlanStatus {
     /// The active generation's plan and explain document.
     pub active: Option<Arc<ActivePlan>>,
 
-    /// What the default program delivers through: the resources product's state, the outputs, the recipients, and
-    /// the resource budget.
+    /// What the default program delivers through: the outputs, the recipients, and the resource budget.
     pub resources: ResourcesView,
 
     /// The recipient incarnations of the delivery hosts, which the status route lists: those retired lately, with
@@ -924,26 +909,17 @@ pub(super) trait ResourcePaths: Send {
     /// Tells the core an encode host released a lease: its last payload is in the delivery host's input.
     fn lease_released(&mut self, core: &mut InstallerCore, host: HostId, lease: LeaseRef) -> Vec<Action>;
 
-    /// Hands the core a recipient's retirement, returning the core's actions and, if the retirement ended an
-    /// incarnation the core was releasing, who declared that incarnation.
+    /// Hands the core a recipient's retirement, returning the core's actions and whether the retirement ended an
+    /// incarnation the core was releasing.
     ///
     /// A host also reports an exit for each recipient an abort drops, which the core no longer holds: such an exit ends
     /// nothing, so it is no retirement.
     fn recipient_retired(
         &mut self, core: &mut InstallerCore, recipient: RecipientRef, report: RetirementReport,
-    ) -> (Vec<Action>, Option<ResourceProvenance>);
+    ) -> (Vec<Action>, bool);
 
     /// Hands the core a recipient's failure.
     fn recipient_failed(&mut self, core: &mut InstallerCore, recipient: RecipientRef, reason: &str) -> Vec<Action>;
-
-    /// Hands the core what a snapshot of the resources product says.
-    fn on_resources(&mut self, core: &mut InstallerCore, event: ResourcesEvent) -> Vec<Action>;
-
-    /// Tells the core which declared credentials are not configured.
-    fn credentials_changed(&mut self, core: &mut InstallerCore, missing: BTreeSet<CredentialRef>) -> Vec<Action>;
-
-    /// Returns the resources artifacts the core holds, with the one lowering takes.
-    fn held_resources(&self, core: &InstallerCore) -> HeldResources;
 }
 
 /// The core's own resource paths.
@@ -981,7 +957,7 @@ impl ResourcePaths for CoreResourcePaths {
 
     fn recipient_retired(
         &mut self, core: &mut InstallerCore, recipient: RecipientRef, report: RetirementReport,
-    ) -> (Vec<Action>, Option<ResourceProvenance>) {
+    ) -> (Vec<Action>, bool) {
         // The core holds an incarnation it releases from its release until its exit, which removes it from the
         // resource table; an exit of one it does not hold (an abort's drop), or of one it keeps (a live or failed
         // incarnation, which it counts failed), leaves the table as it was. So the exit ended a release exactly when
@@ -991,36 +967,16 @@ impl ResourcePaths for CoreResourcePaths {
             core.resource_table()
                 .recipients()
                 .into_iter()
-                .find(|held| held.recipient == recipient)
-                .map(|held| held.provenance)
+                .any(|held| held.recipient == recipient)
         };
         let before = held(core);
         let actions = core.recipient_retired(recipient.clone(), report);
-        let ended = before.filter(|_| held(core).is_none());
+        let ended = before && !held(core);
         (actions, ended)
     }
 
     fn recipient_failed(&mut self, core: &mut InstallerCore, recipient: RecipientRef, reason: &str) -> Vec<Action> {
         core.recipient_failed(recipient, reason)
-    }
-
-    fn on_resources(&mut self, core: &mut InstallerCore, event: ResourcesEvent) -> Vec<Action> {
-        core.on_resources(event)
-    }
-
-    fn credentials_changed(&mut self, core: &mut InstallerCore, missing: BTreeSet<CredentialRef>) -> Vec<Action> {
-        core.credentials_changed(missing)
-    }
-
-    fn held_resources(&self, core: &InstallerCore) -> HeldResources {
-        HeldResources {
-            held: core
-                .held_resources()
-                .into_iter()
-                .map(|(document, revision)| (document.clone(), revision))
-                .collect(),
-            accepted: core.accepted_resources().cloned().zip(core.accepted_revision()),
-        }
     }
 }
 
@@ -1170,8 +1126,7 @@ pub(super) fn export_annotations(bundle: &ExportBundle, nodes: &BTreeMap<NodeId,
 
 /// Returns the display label of every output, by output ID, as exports carry them.
 ///
-/// A label says what its output is, never where it delivers: the catalog's recipients identify that. A declared output
-/// is labeled as its resources artifact labels it, or by its name.
+/// A label says what its output is, never where it delivers: the catalog's recipients identify that.
 fn output_labels(outputs: &NativeOutputs) -> BTreeMap<OutputId, String> {
     outputs
         .iter()
@@ -1182,9 +1137,6 @@ fn output_labels(outputs: &NativeOutputs) -> BTreeMap<OutputId, String> {
                 OutputKind::RoutingGroup(group) => format!("Endpoint routing group {}", group.index),
                 OutputKind::MultiRegionFailover => "Multi-region failover".to_string(),
                 OutputKind::AutoscalingFailover => "Autoscaling failover".to_string(),
-                OutputKind::Declared { name, label } => {
-                    label.clone().unwrap_or_else(|| format!("Declared output {}", name))
-                }
                 OutputKind::Implied { emit } => format!("Implied output of emit {}", emit),
             };
             (output.decl.id.clone(), label)
@@ -1390,15 +1342,10 @@ struct Installer {
     /// The boot generation's own resource credits, which the budget holds from the start, once memory bounds are
     /// verified ([`ProgrammableMetrics::admit_against`]).
     boot_credits: Vec<(CreditKey, u64)>,
-    /// Validates the documents of the resources product, or a test double.
-    validate_resources: product::Validate,
     /// The outputs, recipients, and host settings of the last lowering.
     lowered_resources: NativeResources,
     /// The demand of the programs the core held at the last lowering, which it added implied outputs for.
     lowered_demand: Vec<Demand>,
-    /// The declared credentials the resources artifacts the core holds reference that the configuration does not
-    /// configure, as the core was last told.
-    missing_credentials: BTreeSet<CredentialRef>,
     /// The latest recipient incarnations the delivery hosts reported retired, with what their drains did.
     retired_recipients: RetiredRecipients,
 }
@@ -1529,17 +1476,12 @@ impl Installer {
                     configs = snapshot.configs.len(),
                     "The artifact channel delivered a snapshot."
                 );
-                let actions = match snapshot.product {
-                    ArtifactProduct::Policy => {
-                        let composer = DefaultProgramComposer {
-                            plan: &self.last_lowered,
-                            catalog: &self.default_program.catalog,
-                            registry: &self.registry,
-                        };
-                        self.artifact_paths.on_snapshot(&mut self.core, &snapshot, &composer)
-                    }
-                    ArtifactProduct::Resources => self.on_resources_snapshot(&snapshot),
+                let composer = DefaultProgramComposer {
+                    plan: &self.last_lowered,
+                    catalog: &self.default_program.catalog,
+                    registry: &self.registry,
                 };
+                let actions = self.artifact_paths.on_snapshot(&mut self.core, &snapshot, &composer);
                 // The actions are queued in the installer's state, so a restarted worker performs them: the snapshot
                 // is handled.
                 if let Some(channel) = &mut self.channel {
@@ -1602,87 +1544,12 @@ impl Installer {
         }
     }
 
-    /// Reads a snapshot of the resources product and hands what it says to the core, returning the core's actions.
-    ///
-    /// The core is first told which declared credentials are not configured among those of the documents it holds and
-    /// of those the snapshot delivers, so that it holds a delivered document whose credential is missing pending from
-    /// its delivery; once it took the snapshot, which may let it drop a document, it is told again.
-    fn on_resources_snapshot(&mut self, snapshot: &ArtifactSnapshot) -> Vec<Action> {
-        let events = product::read_snapshot(snapshot, &self.default_program.catalog, self.validate_resources);
-        let mut delivered = Vec::new();
-        for event in &events {
-            match event {
-                ResourcesEvent::Refused { config, reason, .. } => {
-                    warn!(config = %config, reason = %reason, "A resources config was refused.");
-                }
-                ResourcesEvent::Delivered {
-                    config,
-                    revision,
-                    document: Err(reason),
-                    ..
-                } => {
-                    warn!(
-                        config = %config,
-                        revision,
-                        reason = %reason,
-                        "A resources artifact is not valid, and is rejected."
-                    );
-                }
-                ResourcesEvent::Delivered {
-                    document: Ok(document), ..
-                } => delivered.push(document.clone()),
-                ResourcesEvent::Revoked => {}
-            }
-        }
-        let current = SalukiConfiguration::clone(&self.config);
-        let mut actions = self.tell_missing_credentials(&current, &delivered);
-        for event in events {
-            actions.extend(self.resource_paths.on_resources(&mut self.core, event));
-        }
-        actions.extend(self.tell_missing_credentials(&current, &[]));
-        actions
-    }
-
-    /// Tells the core which declared credentials `current` does not configure, among those of the resources artifacts
-    /// it holds and of `delivered`, if that changed since it was last told, returning the core's actions.
-    ///
-    /// The core takes a revision it holds as usable while none of its credentials is among them, so every document it
-    /// holds counts: the revision in use while a newer one is pending, as well as the newer one.
-    fn tell_missing_credentials(
-        &mut self, current: &SalukiConfiguration, delivered: &[ResourcesArtifact],
-    ) -> Vec<Action> {
-        let held = self.resource_paths.held_resources(&self.core);
-        let documents = held.held.iter().map(|(document, _)| document).chain(delivered);
-        let missing = missing_credentials(documents, current);
-        if missing == self.missing_credentials {
-            return Vec::new();
-        }
-        if !missing.is_empty() {
-            let names = missing.iter().map(ToString::to_string).collect::<Vec<_>>();
-            info!(
-                credentials = %names.join(", "),
-                "A resources artifact uses credentials that are not configured under \
-                 `experimental.programmable_metrics.resources.credentials`: it waits until they are."
-            );
-        }
-        self.missing_credentials = missing.clone();
-        self.resource_paths.credentials_changed(&mut self.core, missing)
-    }
-
-    /// Returns the resources the core accepted, as lowering takes them, with the revision and hash they were delivered
-    /// with.
-    fn accepted_resources(&self) -> Option<(ResourcesArtifact, ArtifactRevision)> {
-        self.resource_paths.held_resources(&self.core).accepted
-    }
-
     /// Lowers the configuration into the default program and proposes it, returning the core's actions.
     ///
-    /// The core is told which declared credentials are missing first, and the program is lowered with the resources
-    /// artifact it then accepts. While an artifact is in effect, the core composes it again against the new default
-    /// program, and proposes that instead.
+    /// While an artifact is in effect, the core composes it again against the new default program, and proposes that
+    /// instead.
     fn propose_default_program(&mut self, current: &SalukiConfiguration) -> Vec<Action> {
-        let mut actions = self.tell_missing_credentials(current, &[]);
-        actions.extend(self.propose_lowered(current));
+        let mut actions = self.propose_lowered(current);
         // The lowering may name recipients its directory did not have, which a program's demand asks for.
         actions.extend(self.follow_demand());
         actions
@@ -1725,20 +1592,13 @@ impl Installer {
         self.propose_lowered(&current)
     }
 
-    /// Lowers the configuration, with the accepted resources artifact, into the default program and proposes it,
-    /// returning the core's actions.
+    /// Lowers the configuration into the default program and proposes it, returning the core's actions.
     ///
     /// The native recipients of the last lowering stay while their endpoints and key positions stay configured,
     /// whatever their keys now hold: a key is a credential its recipient follows, never a reason to add or remove one.
     fn propose_lowered(&mut self, current: &SalukiConfiguration) -> Vec<Action> {
-        let accepted = self.accepted_resources();
-        let declared = accepted
-            .as_ref()
-            .map(|(artifact, provenance)| Declared { artifact, provenance });
         let mut demand = self.demand();
-        let mut lowered = self
-            .lowering
-            .lower_after(current, declared, &demand, &self.lowered_resources);
+        let mut lowered = self.lowering.lower_after(current, &demand, &self.lowered_resources);
         // The demand as the new directory resolves it: when a recipient leaves the configuration, an `emit` of the
         // program in effect that also names others delivers to those that remain, through an output for exactly them,
         // which the same lowering adds, so that nothing the others receive is lost between two lowerings.
@@ -1752,9 +1612,7 @@ impl Installer {
             };
             if sets(&anticipated) != sets(&demand) {
                 demand = anticipated;
-                lowered = self
-                    .lowering
-                    .lower_after(current, declared, &demand, &self.lowered_resources);
+                lowered = self.lowering.lower_after(current, &demand, &self.lowered_resources);
             }
         }
         // Recorded whether or not the lowering succeeds, so that a lowering that fails is tried again at the next
@@ -1781,7 +1639,7 @@ impl Installer {
         let report = Validator::new(&self.registry, &lowered.catalog).validate(&lowered.plan);
         let degraded = errors(&report);
         let plan = Arc::new(lowered.plan);
-        // Outputs follow the configuration and the resources artifact, and their labels with them.
+        // Outputs follow the configuration, and their labels with them.
         let labels = output_labels(&lowered.resources.outputs);
         if *plan != *self.last_lowered || lowered.catalog != self.default_program.catalog || labels != self.labels {
             self.labels = labels;
@@ -2545,9 +2403,6 @@ impl Installer {
             host_status: &host_status,
             lowered: &self.lowered_resources,
             labels: &self.labels,
-            config_states: &apply_states.config_states,
-            installed_revision: self.accepted_resources().map(|(_, provenance)| provenance.revision),
-            missing_credentials: self.missing_credentials.iter().map(ToString::to_string).collect(),
             budget: self.budget.usage(),
         });
         PlanStatus {
@@ -2770,7 +2625,6 @@ fn errors(report: &ValidationReport) -> Vec<String> {
 mod budget;
 mod cut;
 pub mod hosts;
-mod product;
 pub mod status;
 
 #[cfg(test)]

@@ -50,20 +50,11 @@ pub mod values {
     /// The maximum number of generations alive at once.
     pub const OVERLAP_BUDGET: u64 = 4;
 
-    /// The maximum number of recipients one resources artifact declares.
+    /// The maximum number of implied outputs: outputs the host adds for the recipient sets programs address.
     ///
-    /// Decision log: new with live resources. A resources artifact adds at most this many recipient queues, each within
-    /// its host's native bounds and admitted against the memory limit.
-    pub const MAX_DECLARED_RECIPIENTS: u64 = 16;
-
-    /// The maximum number of outputs one resources artifact declares.
-    ///
-    /// Decision log: new with live resources. Each declared output runs as one lease, so this bounds the leases a
-    /// resources artifact adds, before overlap.
-    pub const MAX_DECLARED_OUTPUTS: u64 = 16;
-
-    /// The maximum serialized size of a resources artifact, in bytes.
-    pub const RESOURCES_ARTIFACT_SIZE: u64 = 64 * 1024;
+    /// Decision log: new with live resources, for the outputs resources artifacts declared; since detached programs,
+    /// for implied outputs. Each runs as one lease, so this bounds the leases programs add, before overlap.
+    pub const MAX_IMPLIED_OUTPUTS: u64 = 16;
 
     /// The number of whole buffers queued for one builder shard of a lease in an encode host.
     ///
@@ -438,30 +429,13 @@ pub const OVERLAP_BUDGET: LimitSpec = LimitSpec {
                   behavior, not only tuning.",
 };
 
-/// The maximum number of recipients one resources artifact declares.
-pub const MAX_DECLARED_RECIPIENTS: LimitSpec = LimitSpec {
-    name: "max_declared_recipients",
-    default: LimitValue::Count(values::MAX_DECLARED_RECIPIENTS),
+/// The maximum number of implied outputs.
+pub const MAX_IMPLIED_OUTPUTS: LimitSpec = LimitSpec {
+    name: "max_implied_outputs",
+    default: LimitValue::Count(values::MAX_IMPLIED_OUTPUTS),
     source: LimitSource::Fixed,
-    description: "Maximum number of recipients a resources artifact declares. A resources artifact with more is \
-                  rejected.",
-};
-
-/// The maximum number of outputs one resources artifact declares.
-pub const MAX_DECLARED_OUTPUTS: LimitSpec = LimitSpec {
-    name: "max_declared_outputs",
-    default: LimitValue::Count(values::MAX_DECLARED_OUTPUTS),
-    source: LimitSource::Fixed,
-    description: "Maximum number of outputs a resources artifact declares. A resources artifact with more is \
-                  rejected.",
-};
-
-/// The maximum serialized size of a resources artifact.
-pub const RESOURCES_ARTIFACT_SIZE: LimitSpec = LimitSpec {
-    name: "resources_artifact_size",
-    default: LimitValue::Bytes(values::RESOURCES_ARTIFACT_SIZE),
-    source: LimitSource::Fixed,
-    description: "Maximum size of a resources artifact's JSON. Larger resources artifacts are rejected.",
+    description: "Maximum number of outputs the host adds for the recipient sets programs address. A program that \
+                  needs more waits, as pending.",
 };
 
 /// The number of whole buffers queued for one builder shard of a lease.
@@ -725,9 +699,7 @@ pub const LIMITS: &[LimitSpec] = &[
     PREPARE_TIMEOUT,
     DRAIN_DEADLINE,
     OVERLAP_BUDGET,
-    MAX_DECLARED_RECIPIENTS,
-    MAX_DECLARED_OUTPUTS,
-    RESOURCES_ARTIFACT_SIZE,
+    MAX_IMPLIED_OUTPUTS,
     LEASE_QUEUE_BUFFERS,
     MAX_DRAINING_RECIPIENTS,
     HEARTBEAT_PERIOD,
@@ -813,9 +785,7 @@ mod tests {
         assert_eq!(duration(&PREPARE_TIMEOUT), Duration::from_secs(10));
         assert_eq!(duration(&DRAIN_DEADLINE), Duration::from_secs(30));
         assert_eq!(count(&OVERLAP_BUDGET), 4);
-        assert_eq!(count(&MAX_DECLARED_RECIPIENTS), 16);
-        assert_eq!(count(&MAX_DECLARED_OUTPUTS), 16);
-        assert_eq!(count(&RESOURCES_ARTIFACT_SIZE), 65_536);
+        assert_eq!(count(&MAX_IMPLIED_OUTPUTS), 16);
         assert_eq!(count(&LEASE_QUEUE_BUFFERS), 8);
         assert_eq!(count(&MAX_DRAINING_RECIPIENTS), 16);
         assert_eq!(count(&BLOB_SIZE), 65_536);

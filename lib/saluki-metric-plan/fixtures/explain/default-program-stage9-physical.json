@@ -912,36 +912,6 @@
       "idle": [
         "dsd_pre_aggregation.af_metrics_encode"
       ]
-    },
-    {
-      "output": "resources_team_d",
-      "encode_host": "encode host dd_metrics_encode of dd_out",
-      "recipients": [
-        "dd_out/declared/team_d/http://127.0.0.1:17105"
-      ],
-      "delivery": "native",
-      "overflow": "wait",
-      "closure": "native",
-      "fed_by": [],
-      "idle": [
-        "dsd_pre_aggregation.dd_metrics_encode",
-        "metrics_enrich.dd_metrics_encode"
-      ]
-    },
-    {
-      "output": "resources_team_e",
-      "encode_host": "encode host dd_metrics_encode of dd_out",
-      "recipients": [
-        "dd_out/declared/team_e/https://e.example.com"
-      ],
-      "delivery": "native",
-      "overflow": "wait",
-      "closure": "native",
-      "fed_by": [],
-      "idle": [
-        "dsd_pre_aggregation.dd_metrics_encode",
-        "metrics_enrich.dd_metrics_encode"
-      ]
     }
   ]
 }

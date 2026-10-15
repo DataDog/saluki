@@ -116,9 +116,7 @@ fn check_outputs(graph: &Graph<'_>, plan: &Plan, catalog: &dyn Catalog, report: 
             ));
         }
     }
-    // An output a resources artifact declares is emitted to by the artifacts that route to it, never by the default
-    // program, so it is not reported unused.
-    for output in plan.outputs.iter().filter(|output| !output.id.is_declared()) {
+    for output in &plan.outputs {
         if !emitted.contains(&output.id) {
             report.push(Finding::new(
                 Rule::UnusedOutput,
