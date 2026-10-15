@@ -76,7 +76,7 @@ use crate::{
     },
     dogstatsd_contexts::DogStatsDContextDumpAPIHandler,
     internal::{
-        create_internal_supervisor, logging::LoggingConfigurationTranslator, ConfigUpdatesWorker,
+        create_internal_supervisor, logging::get_translated_logging_config, ConfigUpdatesWorker,
         DogStatsDControlSurface, TopologyControlSurfaces,
     },
 };
@@ -148,11 +148,10 @@ pub async fn handle_run_command(
         (config_sys, Some(ra_bootstrap), Some(config_updates))
     };
 
-    // Connected mode may have replaced the bootstrap-phase settings with the Agent's authoritative
-    // config, so reload logging to match. Standalone resolves the same local sources seen at
-    // bootstrap, making a reload redundant.
+    // Connected mode may have replaced the bootstrap-phase settings with the Agent's authoritative config, so reload
+    // logging to match. Standalone resolves the same local sources seen at bootstrap, making a reload redundant.
     if !standalone {
-        match LoggingConfigurationTranslator::translate(&config_sys.config().control.logging) {
+        match get_translated_logging_config(&config_sys.config().control.logging) {
             Ok(logging_config) => {
                 if let Err(e) = bootstrap_guard.logging_mut().reload(logging_config).await {
                     warn!(

@@ -17,7 +17,7 @@ use tracing_rolling_file::RollingFileAppenderBase;
 use tracing_subscriber::{layer::SubscriberExt as _, reload, util::SubscriberInitExt as _, Layer, Registry};
 
 mod api;
-pub use self::api::{LoggingAPIHandler, LoggingOverrideController, LoggingOverrideWorker};
+pub use self::api::{DynamicLogLevelWorker, LoggingAPIHandler, LoggingOverrideController, LoggingOverrideWorker};
 
 mod config;
 pub use self::config::{LogLevel, LoggingConfiguration};

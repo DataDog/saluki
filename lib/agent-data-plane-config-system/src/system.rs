@@ -410,6 +410,7 @@ mod tests {
     use agent_data_plane_config::Provenance;
     use agent_data_plane_config::{Live, SalukiConfiguration};
     use datadog_agent_config::DatadogConfiguration;
+    use futures::StreamExt as _;
     use saluki_config::dynamic::{ConfigSetting, ConfigUpdate, Provenance as StreamProvenance};
     use serde_json::{json, Value};
     use tokio::sync::mpsc;
@@ -1476,6 +1477,36 @@ mod tests {
         assert!(*view);
         // A fixed view never resolves, so this bound is deterministic rather than timing-dependent.
         assert!(tokio::time::timeout(Duration::from_millis(100), view.changed())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn live_stream_yields_each_change() {
+        let (system, agent_tx) = connected_system(json!({})).await;
+        let mut levels = Box::pin(system.live(|c| &c.control.logging.level).into_stream());
+
+        for level in ["debug", "warn"] {
+            agent_tx
+                .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                    "log_level",
+                    json!(level),
+                )))
+                .await
+                .unwrap();
+
+            let updated = tokio::time::timeout(Duration::from_secs(2), levels.next())
+                .await
+                .expect("the stream observes the log level update");
+            assert_eq!(updated.as_deref(), Some(level));
+        }
+    }
+
+    #[tokio::test]
+    async fn fixed_live_stream_never_yields_or_ends() {
+        let mut values = Box::pin(Live::new_fixed(true).into_stream());
+        // Like `changed`, the stream of a fixed view never resolves, so this bound is deterministic.
+        assert!(tokio::time::timeout(Duration::from_millis(100), values.next())
             .await
             .is_err());
     }
