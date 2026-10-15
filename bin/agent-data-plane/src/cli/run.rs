@@ -26,7 +26,7 @@ use saluki_components::{
         AutoscalingFailoverConfiguration, ClusterAgentConfiguration, MetricsEndpointRoutingConfiguration,
         MrfConfiguration,
     },
-    decoders::{datadog::ApmTraceV1DecoderConfiguration, otlp::OtlpDecoderConfiguration},
+    decoders::otlp::OtlpDecoderConfiguration,
     destinations::{
         DogStatsDClientTelemetryConfiguration, DogStatsDDebugLogConfiguration, DogStatsDStatisticsConfiguration,
     },
@@ -1096,12 +1096,9 @@ async fn add_apm_pipeline_to_blueprint(
 ) -> Result<(), GenericError> {
     let config = config_system.config();
     let dd_traces_relay = ApmRelayConfiguration::from_configuration(&config.domains.apm);
-    let dd_traces_v1_decoder = ApmTraceV1DecoderConfiguration::new();
     blueprint
         .add_relay("dd_traces_relay", dd_traces_relay)?
-        .add_decoder("dd_traces_v1_decoder", dd_traces_v1_decoder)?
-        .connect_components("dd_traces_relay.traces", "dd_traces_v1_decoder")?
-        .connect_components("dd_traces_v1_decoder", "traces_enrich")?;
+        .connect_components("dd_traces_relay.traces", "dd_out")?; // the relay currently does not have an output
     Ok(())
 }
 

@@ -1,40 +1,28 @@
 //! APM relay.
 //!
-//! Sits in front of the trace-agent, listening on TCP and/or a Unix domain socket where the trace-agent normally
-//! would. v1.0 (ETP) tracer payloads sent with `POST /v1.0/traces` are dispatched as a `Payload::Http` for downstream
-//! decoding: headers are preserved verbatim and the body is handed off unmodified, so tracer metadata and the raw
-//! msgpack payload both survive to the decoder untouched. Every other request is proxied to the trace-agent.
-
-use std::sync::LazyLock;
+//! Listens on TCP and/or a Unix domain socket where the trace-agent normally listens and forwards every request
+//! to the relocated trace-agent.
 
 use agent_data_plane_config::domains;
 use async_trait::async_trait;
-use axum::body::to_bytes;
 use axum::extract::{Request as AxumRequest, State};
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
 use axum::Router;
-use http::{Request, StatusCode};
 use saluki_api::APIHandler;
-use saluki_common::buf::FrozenChunkedBytesBuffer;
-use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, MemoryLimiter};
+use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::components::relays::{Relay, RelayBuilder, RelayContext};
 use saluki_core::components::BuildContext;
-use saluki_core::data_model::payload::{HttpPayload, Payload, PayloadMetadata, PayloadType};
+use saluki_core::data_model::payload::PayloadType;
 use saluki_core::runtime;
 use saluki_core::topology::OutputDefinition;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::server::http::HttpServer;
 use saluki_io::net::ListenAddress;
-use tokio::sync::mpsc;
 use tokio::{pin, select};
-use tracing::{debug, error};
+use tracing::debug;
 
 mod proxy;
 use self::proxy::TraceAgentProxy;
-
-/// Path served by the v1.0 trace receiver.
-const TRACES_PATH: &str = "/v1.0/traces";
 
 /// Configuration for the APM relay.
 ///
@@ -56,13 +44,6 @@ pub struct ApmRelayConfiguration {
     ///
     /// Empty disables the Unix domain socket listener.
     pub receiver_socket: String,
-
-    /// Maximum accepted `/v1.0/traces` request body size, in bytes.
-    ///
-    /// Requests whose body exceeds this size are rejected with `413 Payload Too Large` before any decoding is attempted.
-    ///
-    /// There is no default here: the effective default lives in the configuration layer, so this struct cannot state a second one. The caller supplies every field.
-    pub max_payload_size: usize,
 
     /// URL of the trace-agent that every request other than `POST /v1.0/traces` is proxied to: `http://host:port` or
     /// `unix:///path/to/socket`.
@@ -87,7 +68,6 @@ impl ApmRelayConfiguration {
         Self {
             receiver_endpoint,
             receiver_socket: config.receiver_socket.clone().unwrap_or_default(),
-            max_payload_size: config.max_payload_size,
             proxy_destination: config.proxy_destination.to_owned(),
         }
     }
@@ -135,9 +115,7 @@ impl MemoryBounds for ApmRelayConfiguration {
 #[async_trait]
 impl RelayBuilder for ApmRelayConfiguration {
     fn outputs(&self) -> &[OutputDefinition<PayloadType>] {
-        static OUTPUTS: LazyLock<Vec<OutputDefinition<PayloadType>>> =
-            LazyLock::new(|| vec![OutputDefinition::named_output("traces", PayloadType::Http)]);
-        &OUTPUTS
+        &[]
     }
 
     async fn build(&self, _context: BuildContext) -> Result<Box<dyn Relay + Send>, GenericError> {
@@ -155,7 +133,6 @@ impl RelayBuilder for ApmRelayConfiguration {
         Ok(Box::new(ApmRelay {
             tcp_endpoint,
             uds_endpoint,
-            max_payload_size: self.max_payload_size,
             proxy,
         }))
     }
@@ -163,12 +140,10 @@ impl RelayBuilder for ApmRelayConfiguration {
 
 /// APM relay.
 ///
-/// Receives tracer requests via HTTP, on TCP and/or a Unix domain socket. Dispatches v1.0 trace payloads for downstream
-/// decoding and proxies everything else to the trace-agent.
+/// Receives requests via HTTP, on TCP and/or a Unix domain socket, and proxies them to the trace-agent.
 pub struct ApmRelay {
     tcp_endpoint: Option<ListenAddress>,
     uds_endpoint: Option<ListenAddress>,
-    max_payload_size: usize,
     proxy: TraceAgentProxy,
 }
 
@@ -178,7 +153,6 @@ impl Relay for ApmRelay {
         let Self {
             tcp_endpoint,
             uds_endpoint,
-            max_payload_size,
             proxy,
         } = *self;
 
@@ -187,10 +161,7 @@ impl Relay for ApmRelay {
 
         let mut health = context.take_health_handle();
         let worker_pool = context.topology_context().global_thread_pool().clone();
-        let memory_limiter = context.topology_context().memory_limiter().clone();
-
-        let (payload_tx, mut payload_rx) = mpsc::channel(1024);
-        let api_handler = ApmRelayAPIHandler::new(RelayState::new(payload_tx, max_payload_size, memory_limiter, proxy));
+        let api_handler = ApmRelayAPIHandler::new(RelayState { proxy });
         let router = api_handler
             .generate_routes()
             .with_state(api_handler.generate_initial_state());
@@ -219,12 +190,6 @@ impl Relay for ApmRelay {
                     debug!("Received shutdown signal.");
                     break
                 },
-                Some(payload) = payload_rx.recv() => {
-                    let http_payload = HttpPayload::new(payload.metadata, payload.request);
-                    if let Err(e) = context.dispatcher().dispatch_named("traces", Payload::Http(http_payload)).await {
-                        error!(error = %e, "Failed to dispatch APM payload.");
-                    }
-                },
                 _ = health.live() => continue,
             }
         }
@@ -238,9 +203,6 @@ impl Relay for ApmRelay {
 /// Shared HTTP handler state.
 #[derive(Clone)]
 struct RelayState {
-    tx: mpsc::Sender<ApmPayload>,
-    max_payload_size: usize,
-    memory_limiter: MemoryLimiter,
     proxy: TraceAgentProxy,
 }
 
@@ -256,35 +218,6 @@ impl ApmRelayAPIHandler {
     async fn proxy_request(State(state): State<RelayState>, request: AxumRequest) -> impl IntoResponse {
         state.proxy.forward(request).await
     }
-
-    async fn handle_traces(State(state): State<RelayState>, request: AxumRequest) -> impl IntoResponse {
-        state.memory_limiter.wait_for_capacity().await;
-
-        let (parts, body) = request.into_parts();
-
-        let body_bytes = match to_bytes(body, state.max_payload_size).await {
-            Ok(bytes) => bytes,
-            Err(err) => return body_size_error_status(&err),
-        };
-
-        let apm_request = Request::from_parts(parts, FrozenChunkedBytesBuffer::from(body_bytes));
-        let payload = ApmPayload {
-            metadata: PayloadMetadata::from_event_count(1),
-            request: apm_request,
-        };
-
-        match state.tx.send(payload).await {
-            Ok(()) => StatusCode::OK,
-            Err(_) => {
-                error!("Failed to send APM payload to relay dispatcher: channel closed.");
-                StatusCode::SERVICE_UNAVAILABLE
-            }
-        }
-    }
-
-    async fn services_handler() -> impl IntoResponse {
-        "OK\n"
-    }
 }
 
 impl APIHandler for ApmRelayAPIHandler {
@@ -294,49 +227,9 @@ impl APIHandler for ApmRelayAPIHandler {
         self.state.clone()
     }
 
-    /// Builds the router: `POST` on `TRACES_PATH` is handled here, and every other path or method is proxied to the
-    /// trace-agent, which answers it exactly as it would without the relay in front.
+    /// Forwards every request to the trace-agent.
     fn generate_routes(&self) -> Router<Self::State> {
-        Router::new()
-            .route("/services", get(Self::services_handler))
-            .route("/v0.1/services", get(Self::services_handler))
-            .route("/v0.2/services", get(Self::services_handler))
-            .route("/v0.3/services", get(Self::services_handler))
-            .route("/v0.4/services", get(Self::services_handler))
-            .route(TRACES_PATH, post(Self::handle_traces).fallback(Self::proxy_request))
-            .fallback(Self::proxy_request)
-    }
-}
-
-impl RelayState {
-    fn new(
-        tx: mpsc::Sender<ApmPayload>, max_payload_size: usize, memory_limiter: MemoryLimiter, proxy: TraceAgentProxy,
-    ) -> Self {
-        Self {
-            tx,
-            max_payload_size,
-            memory_limiter,
-            proxy,
-        }
-    }
-}
-
-/// A dispatched APM payload: the request body plus its original headers.
-struct ApmPayload {
-    metadata: PayloadMetadata,
-    request: Request<FrozenChunkedBytesBuffer>,
-}
-
-/// Maps a body-collection error to a status code, distinguishing an over-limit body (`413`) from any other error
-/// while reading the body (`400`).
-fn body_size_error_status(err: &axum::Error) -> StatusCode {
-    let too_large =
-        std::error::Error::source(err).is_some_and(|source| source.is::<http_body_util::LengthLimitError>());
-
-    if too_large {
-        StatusCode::PAYLOAD_TOO_LARGE
-    } else {
-        StatusCode::BAD_REQUEST
+        Router::new().fallback(Self::proxy_request)
     }
 }
 
@@ -344,6 +237,7 @@ fn body_size_error_status(err: &axum::Error) -> StatusCode {
 mod tests {
     use std::time::Duration;
 
+    use http::{Request, StatusCode};
     use saluki_core::components::test_util::TestComponentSupervisor;
     use saluki_core::runtime::state::{DataspaceUpdate, IdentifierFilter};
     use saluki_io::net::BoundListenAddress;
@@ -370,22 +264,15 @@ mod tests {
             .with_state(api_handler.generate_initial_state())
     }
 
-    fn test_router(max_payload_size: usize) -> (Router, mpsc::Receiver<ApmPayload>) {
-        let (tx, rx) = mpsc::channel(4);
-        (
-            build_router(RelayState::new(
-                tx,
-                max_payload_size,
-                MemoryLimiter::noop(),
-                unreachable_proxy(),
-            )),
-            rx,
-        )
+    fn test_router() -> Router {
+        build_router(RelayState {
+            proxy: unreachable_proxy(),
+        })
     }
 
     #[tokio::test]
-    async fn proxies_other_paths_to_the_trace_agent() {
-        let (router, mut rx) = test_router(1024);
+    async fn proxies_requests_to_the_trace_agent() {
+        let router = test_router();
 
         let response = router
             .oneshot(
@@ -399,95 +286,6 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-        assert!(rx.try_recv().is_err(), "a proxied request must not be dispatched");
-    }
-
-    #[tokio::test]
-    async fn proxies_other_methods_on_the_traces_path() {
-        let (router, mut rx) = test_router(1024);
-
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(TRACES_PATH)
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-        assert!(rx.try_recv().is_err(), "a proxied request must not be dispatched");
-    }
-
-    #[tokio::test]
-    async fn rejects_oversized_body_with_413() {
-        let (router, _rx) = test_router(4);
-
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(TRACES_PATH)
-                    .body(axum::body::Body::from(vec![0u8; 64]))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
-    }
-
-    #[tokio::test]
-    async fn accepts_body_within_limit_and_dispatches_it() {
-        let (router, mut rx) = test_router(1024);
-
-        let body = b"raw msgpack payload".to_vec();
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(TRACES_PATH)
-                    .header("datadog-meta-lang", "go")
-                    .header("datadog-meta-tracer-version", "1.2.3")
-                    .header("x-datadog-trace-count", "42")
-                    .body(axum::body::Body::from(body.clone()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let payload = rx.recv().await.expect("payload should be dispatched");
-        let (parts, buffer) = payload.request.into_parts();
-        assert_eq!(buffer.into_bytes().as_ref(), body.as_slice());
-        assert_eq!(parts.headers.get("datadog-meta-lang").unwrap(), "go");
-        assert_eq!(parts.headers.get("datadog-meta-tracer-version").unwrap(), "1.2.3");
-        assert_eq!(parts.headers.get("x-datadog-trace-count").unwrap(), "42");
-    }
-
-    #[tokio::test]
-    async fn returns_503_when_dispatch_channel_is_closed() {
-        let (tx, rx) = mpsc::channel(4);
-        // Drop the receiver immediately so the channel is closed before the handler sends into it.
-        drop(rx);
-
-        let router = build_router(RelayState::new(tx, 1024, MemoryLimiter::noop(), unreachable_proxy()));
-
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(TRACES_PATH)
-                    .body(axum::body::Body::from(b"raw msgpack payload".to_vec()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
@@ -499,13 +297,7 @@ mod tests {
         // Bind to an OS-assigned ephemeral port, and discover it via the published `BoundListenAddress`.
         let tcp_endpoint = ListenAddress::try_from("tcp://127.0.0.1:0").expect("TCP APM endpoint should parse");
 
-        let (tx, mut rx) = mpsc::channel(4);
-        let router = build_router(RelayState::new(
-            tx,
-            1024 * 1024,
-            MemoryLimiter::noop(),
-            unreachable_proxy(),
-        ));
+        let router = test_router();
         let server = HttpServer::from_listen_address(tcp_endpoint)
             .with_routes(router)
             .with_server_id(BOUND_ADDRESS_ID)
@@ -531,9 +323,9 @@ mod tests {
             .expect("should connect to TCP listener within the timeout")
             .expect("should connect to TCP listener");
 
-        let body = b"raw msgpack payload over tcp";
+        let body = b"proxied request over tcp";
         let request = format!(
-            "POST {TRACES_PATH} HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            "POST /info HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
         );
         stream
@@ -549,14 +341,10 @@ mod tests {
             .expect("should read response");
 
         assert!(
-            response.starts_with(b"HTTP/1.1 200"),
-            "expected a 200 OK response, got: {}",
+            response.starts_with(b"HTTP/1.1 502"),
+            "expected a 502 Bad Gateway response, got: {}",
             String::from_utf8_lossy(&response)
         );
-
-        let payload = rx.recv().await.expect("payload should be dispatched");
-        let (_, buffer) = payload.request.into_parts();
-        assert_eq!(buffer.into_bytes().as_ref(), body);
     }
 
     #[cfg(unix)]
@@ -569,13 +357,7 @@ mod tests {
         let uds_endpoint = ListenAddress::try_from(format!("unix://{}", socket_path.display()).as_str())
             .expect("Unix APM endpoint should parse");
 
-        let (tx, mut rx) = mpsc::channel(4);
-        let router = build_router(RelayState::new(
-            tx,
-            1024 * 1024,
-            MemoryLimiter::noop(),
-            unreachable_proxy(),
-        ));
+        let router = test_router();
         let server = HttpServer::from_listen_address(uds_endpoint)
             .with_routes(router)
             .with_worker_pool(tokio::runtime::Handle::current());
@@ -592,9 +374,9 @@ mod tests {
             .await
             .expect("should connect to Unix domain socket");
 
-        let body = b"raw msgpack payload over uds";
+        let body = b"proxied request over uds";
         let request = format!(
-            "POST {TRACES_PATH} HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            "POST /info HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
         );
         stream
@@ -610,14 +392,10 @@ mod tests {
             .expect("should read response");
 
         assert!(
-            response.starts_with(b"HTTP/1.1 200"),
-            "expected a 200 OK response, got: {}",
+            response.starts_with(b"HTTP/1.1 502"),
+            "expected a 502 Bad Gateway response, got: {}",
             String::from_utf8_lossy(&response)
         );
-
-        let payload = rx.recv().await.expect("payload should be dispatched");
-        let (_, buffer) = payload.request.into_parts();
-        assert_eq!(buffer.into_bytes().as_ref(), body);
     }
 
     #[cfg(unix)]
@@ -637,7 +415,6 @@ mod tests {
         let config = ApmRelayConfiguration {
             receiver_endpoint: String::new(),
             receiver_socket: String::new(),
-            max_payload_size: 1024,
             proxy_destination: "http://127.0.0.1:8127".to_string(),
         };
 
@@ -653,7 +430,6 @@ mod tests {
         let config = ApmRelayConfiguration {
             receiver_endpoint: "0.0.0.0:8127".to_string(),
             receiver_socket: String::new(),
-            max_payload_size: 1024,
             proxy_destination: "http://127.0.0.1:8127".to_string(),
         };
 
@@ -668,7 +444,6 @@ mod tests {
         let config = ApmRelayConfiguration {
             receiver_endpoint: "127.0.0.1:8126".to_string(),
             receiver_socket: String::new(),
-            max_payload_size: 1024,
             proxy_destination: "ftp://127.0.0.1:8127".to_string(),
         };
 
@@ -683,7 +458,6 @@ mod tests {
         let config = ApmRelayConfiguration {
             receiver_endpoint: "not a valid host:port".to_string(),
             receiver_socket: String::new(),
-            max_payload_size: 1024,
             proxy_destination: "http://127.0.0.1:8127".to_string(),
         };
 
@@ -702,7 +476,6 @@ mod tests {
         let config = ApmRelayConfiguration {
             receiver_endpoint: "0.0.0.0:8127".to_string(),
             receiver_socket: String::new(),
-            max_payload_size: 1024,
             proxy_destination: "http://127.0.0.1:8127".to_string(),
         };
         assert_eq!(
@@ -717,7 +490,6 @@ mod tests {
         let config = ApmRelayConfiguration {
             receiver_endpoint: String::new(),
             receiver_socket: "/tmp/apm.sock".to_string(),
-            max_payload_size: 1024,
             proxy_destination: "http://127.0.0.1:8127".to_string(),
         };
         assert_eq!(

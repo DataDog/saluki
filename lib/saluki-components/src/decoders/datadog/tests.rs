@@ -13,13 +13,13 @@ use base64::{engine::general_purpose, Engine as _};
 use proptest::prelude::*;
 use rmp::encode;
 use saluki_common::collections::FastHashMap;
-use saluki_core::data_model::event::trace::{AttributeValue, Trace};
+use saluki_core::data_model::event::trace::AttributeValue;
 use serde::Deserialize;
 use stringtheory::MetaString;
 
 use super::error::DecodeError;
 use super::string_table::StringTable;
-use super::{decode_span, decode_v1_payload_with_headers, read, split_trace_id, value};
+use super::{decode_span, decode_v1_payload, read, split_trace_id, value};
 
 /// Fixture cases, each pairing a base64-encoded payload with the value it must decode to.
 const FIXTURE_CASES_JSON: &str = include_str!("testdata/v1_decoder_cases.json");
@@ -161,10 +161,6 @@ impl From<&AnyJson> for AttributeValue {
             ),
         }
     }
-}
-
-fn decode_v1_payload(bytes: &[u8]) -> Result<Vec<Trace>, DecodeError> {
-    decode_v1_payload_with_headers(&http::HeaderMap::new(), bytes)
 }
 
 fn expected_attributes(attributes: &BTreeMap<String, AnyJson>) -> FastHashMap<MetaString, AttributeValue> {

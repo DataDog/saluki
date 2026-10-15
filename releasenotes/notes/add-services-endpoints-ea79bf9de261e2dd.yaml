@@ -1,4 +1,0 @@
----
-features:
-  - |
-    Add dummy /services endpoints for backward compatibility with the go trace agent.

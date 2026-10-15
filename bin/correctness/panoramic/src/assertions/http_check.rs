@@ -9,10 +9,8 @@ use futures::TryStreamExt as _;
 use reqwest::ClientBuilder;
 use tracing::trace;
 
-use crate::{
-    assertions::{Assertion, AssertionContext, AssertionResult},
-    config::{HttpBodyMatcher, HttpStatusMatcher},
-};
+use crate::assertions::{Assertion, AssertionContext, AssertionResult};
+use crate::config::HttpStatusMatcher;
 
 /// Assertion that probes an HTTP/HTTPS endpoint and checks the response status code.
 ///
@@ -24,20 +22,15 @@ use crate::{
 pub struct HttpCheckAssertion {
     endpoint: String,
     status: HttpStatusMatcher,
-    body: Option<HttpBodyMatcher>,
     insecure_skip_verify: bool,
     timeout: Duration,
 }
 
 impl HttpCheckAssertion {
-    pub fn new(
-        endpoint: String, status: HttpStatusMatcher, body: Option<HttpBodyMatcher>, insecure_skip_verify: bool,
-        timeout: Duration,
-    ) -> Self {
+    pub fn new(endpoint: String, status: HttpStatusMatcher, insecure_skip_verify: bool, timeout: Duration) -> Self {
         Self {
             endpoint,
             status,
-            body,
             insecure_skip_verify,
             timeout,
         }
@@ -75,19 +68,6 @@ impl HttpCheckAssertion {
             HttpStatusMatcher::NotEqual(forbidden) => actual != forbidden,
         }
     }
-
-    fn body_matches(&self, actual: Option<&str>) -> bool {
-        let Some(body_matcher) = &self.body else {
-            return true;
-        };
-        let Some(actual) = actual else {
-            // we want to match a text body but didn't receive any
-            return false;
-        };
-        match body_matcher {
-            HttpBodyMatcher::Equal(expected) => actual == expected,
-        }
-    }
 }
 
 #[async_trait::async_trait]
@@ -97,22 +77,17 @@ impl Assertion for HttpCheckAssertion {
     }
 
     fn description(&self) -> String {
-        let description = match &self.status {
+        match &self.status {
             HttpStatusMatcher::Equal(code) => {
-                format!("HTTP endpoint '{}' returns status {}", self.endpoint, code)
+                format!("HTTP endpoint '{}' returns status {}.", self.endpoint, code)
             }
             HttpStatusMatcher::NotEqual(code) => {
                 format!(
-                    "HTTP endpoint '{}' returns any status other than {}",
+                    "HTTP endpoint '{}' returns any status other than {}.",
                     self.endpoint, code
                 )
             }
-        };
-        let description = match &self.body {
-            Some(HttpBodyMatcher::Equal(body)) => format!("{description} with body equal to {body:?}"),
-            None => description,
-        };
-        description
+        }
     }
 
     async fn check(&self, ctx: &AssertionContext) -> AssertionResult {
@@ -166,21 +141,21 @@ impl Assertion for HttpCheckAssertion {
                 };
             }
 
-            let response = probe.get_response(&endpoint).await;
+            let response_status = probe.get_status(&endpoint).await;
 
-            match response {
+            match response_status {
                 Ok(Some(actual)) => {
-                    if self.status_matches(actual.status) && self.body_matches(actual.body.as_deref()) {
+                    if self.status_matches(actual) {
                         return AssertionResult {
                             name: self.name().to_string(),
                             passed: true,
-                            message: format!("HTTP endpoint '{}' returned status {}.", endpoint, actual.status),
+                            message: format!("HTTP endpoint '{}' returned status {}.", endpoint, actual),
                             duration: started.elapsed(),
                         };
                     }
                     trace!(
                         endpoint = %endpoint,
-                        actual_status = actual.status,
+                        actual = actual,
                         "HTTP check returned non-matching status, retrying..."
                     );
                 }
@@ -218,37 +193,29 @@ enum HttpProbe {
     },
 }
 
-struct HttpResponse {
-    status: u16,
-    body: Option<String>,
-}
-
 impl HttpProbe {
-    /// Returns the HTTP response observed for `endpoint`, if any.
+    /// Returns the HTTP status code observed for `endpoint`, if any.
     ///
-    /// `Ok(Some(response))` is the only success path. `Ok(None)` means the request did not
+    /// `Ok(Some(status))` is the only success path. `Ok(None)` means the request did not
     /// produce a status (for example, `curl.exe` exited non-zero); `Err` is reserved for
     /// transport-level failures the caller should log and retry.
-    async fn get_response(&self, endpoint: &str) -> Result<Option<HttpResponse>, String> {
+    async fn get_status(&self, endpoint: &str) -> Result<Option<u16>, String> {
         match self {
             Self::HostClient { client } => match client.get(endpoint).send().await {
-                Ok(resp) => Ok(Some(HttpResponse {
-                    status: resp.status().as_u16(),
-                    body: resp.text().await.ok(),
-                })),
+                Ok(resp) => Ok(Some(resp.status().as_u16())),
                 Err(e) => Err(e.to_string()),
             },
             Self::InContainerCurl {
                 container_name,
                 insecure_skip_verify,
-            } => get_response_in_container(container_name, endpoint, *insecure_skip_verify).await,
+            } => get_status_in_container(container_name, endpoint, *insecure_skip_verify).await,
         }
     }
 }
 
-async fn get_response_in_container(
+async fn get_status_in_container(
     container_name: &str, endpoint: &str, insecure_skip_verify: bool,
-) -> Result<Option<HttpResponse>, String> {
+) -> Result<Option<u16>, String> {
     let docker = docker::connect().map_err(|e| format!("Failed to connect to Docker: {}", e))?;
     let endpoint = endpoint.replace("localhost", "127.0.0.1");
     let mut cmd = vec!["curl.exe".to_string()];
@@ -257,8 +224,10 @@ async fn get_response_in_container(
     }
     cmd.extend([
         "-s".to_string(),
+        "-o".to_string(),
+        "NUL".to_string(),
         "-w".to_string(),
-        "\r\n%{http_code}".to_string(),
+        "%{http_code}".to_string(),
         endpoint,
     ]);
     let exec = docker
@@ -300,14 +269,5 @@ async fn get_response_in_container(
         return Ok(None);
     }
 
-    let Some((body, status)) = stdout.rsplit_once("\r\n") else {
-        return Err(format!("Failed to parse curl.exe output: stdout={stdout:?}"));
-    };
-
-    let status = status.trim().parse::<u16>().ok().filter(|status| *status != 0);
-    let response = status.map(|status| HttpResponse {
-        status,
-        body: Some(body.to_string()),
-    });
-    Ok(response)
+    Ok(stdout.trim().parse::<u16>().ok().filter(|status| *status != 0))
 }

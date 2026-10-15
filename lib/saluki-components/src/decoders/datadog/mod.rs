@@ -13,33 +13,11 @@
 //! `Trace` model, producing one `Trace` per trace chunk. String references are resolved to owned
 //! strings during decode.
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
-use http::HeaderMap;
 use saluki_common::collections::FastHashMap;
-use saluki_core::{
-    accounting::MemoryBounds,
-    components::{
-        decoders::{Decoder, DecoderBuilder, DecoderContext},
-        BuildContext,
-    },
-    data_model::{
-        event::{
-            trace::{AttributeValue, PayloadFields, Span, SpanEvent, SpanLink, Trace},
-            Event, EventType,
-        },
-        payload::PayloadType,
-    },
-    topology::interconnect::EventBufferManager,
-};
-use saluki_error::GenericError;
+use saluki_core::data_model::event::trace::{AttributeValue, PayloadFields, Span, SpanEvent, SpanLink, Trace};
 use stringtheory::MetaString;
-use tokio::{
-    select,
-    time::{interval, MissedTickBehavior},
-};
-use tonic::async_trait;
-use tracing::{debug, error, warn};
 
 mod error;
 mod read;
@@ -58,121 +36,6 @@ const MIN_BYTES_PER_TRACE_CHUNK: u32 = 22;
 /// Plausible minimum average wire size of a span containing a random span ID and epoch-nanosecond start time.
 const MIN_BYTES_PER_SPAN: u32 = 21;
 
-/// Configuration for the APM V1 trace decoder.
-pub struct ApmTraceV1DecoderConfiguration {}
-
-impl ApmTraceV1DecoderConfiguration {
-    /// Creates a new [`ApmTraceV1DecoderConfiguration`].
-    pub fn new() -> Self {
-        Self {}
-    }
-}
-
-#[async_trait]
-impl DecoderBuilder for ApmTraceV1DecoderConfiguration {
-    fn input_payload_type(&self) -> PayloadType {
-        PayloadType::Http
-    }
-
-    fn output_event_type(&self) -> EventType {
-        EventType::Trace
-    }
-
-    async fn build(&self, _context: BuildContext) -> Result<Box<dyn Decoder + Send>, GenericError> {
-        Ok(Box::new(ApmTraceV1Decoder::new()))
-    }
-}
-
-impl MemoryBounds for ApmTraceV1DecoderConfiguration {
-    fn specify_bounds(&self, builder: &mut saluki_core::accounting::MemoryBoundsBuilder) {
-        builder
-            .minimum()
-            .with_single_value::<ApmTraceV1Decoder>("decoder struct");
-    }
-}
-
-struct ApmTraceV1Decoder {}
-
-impl ApmTraceV1Decoder {
-    fn new() -> Self {
-        Self {}
-    }
-}
-
-#[async_trait]
-impl Decoder for ApmTraceV1Decoder {
-    async fn run(self: Box<Self>, mut context: DecoderContext) -> Result<(), GenericError> {
-        // Set a buffer flush interval of 100ms to ensure we flush buffered events periodically.
-        let mut buffer_flush = interval(Duration::from_millis(100));
-        buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
-
-        let mut event_buffer_manager = EventBufferManager::default();
-
-        let mut health = context.take_health_handle();
-        health.mark_ready();
-
-        debug!("V1 decoder started.");
-
-        loop {
-            select! {
-                maybe_payload = context.payloads().next() => {
-                    let payload = match maybe_payload {
-                        Some(payload) => payload,
-                        None => {
-                            debug!("Payloads stream closed, shutting down decoder.");
-                            break;
-                        }
-                    };
-                    let http_payload = match payload.try_into_http_payload() {
-                        Some(http) => http,
-                        None => {
-                            warn!("Received non-HTTP payload in V1 decoder. Dropping payload.");
-                            continue;
-                        }
-                    };
-                    let (_meta, request) = http_payload.into_parts();
-                    let (parts, body) = request.into_parts();
-                    let payload_bytes = body.into_bytes();
-                    let traces = match decode_v1_payload_with_headers(&parts.headers, &payload_bytes) {
-                        Ok(traces) => traces,
-                        Err(e) => {
-                            // TODO: metrics ?
-                            error!(error = %e, "Failed to decode V1 trace request.");
-                            continue;
-                        }
-                    };
-
-                    for trace in traces {
-                        if let Some(event_buffer) = event_buffer_manager.try_push(Event::Trace(trace)) {
-                            if let Err(e) = context.dispatcher().dispatch(event_buffer).await {
-                                error!(error = %e, "Failed to dispatch trace events.");
-                            }
-                        }
-                    }
-                },
-                _ = buffer_flush.tick() => {
-                    if let Some(event_buffer) = event_buffer_manager.consume() {
-                        if let Err(e) = context.dispatcher().dispatch(event_buffer).await {
-                            error!(error = %e, "Failed to dispatch buffered trace events.");
-                        }
-                    }
-                },
-                _ = health.live() => continue,
-            }
-        }
-
-        if let Some(event_buffer) = event_buffer_manager.consume() {
-            if let Err(e) = context.dispatcher().dispatch(event_buffer).await {
-                error!(error = %e, "Failed to dispatch final trace events.");
-            }
-        }
-
-        debug!("V1 decoder stopped.");
-
-        Ok(())
-    }
-}
-
 /// Decodes a single v1.0 tracer payload into unified trace events.
 ///
 /// Each trace chunk in the payload becomes one [`Trace`]. Payload-level metadata (container ID,
@@ -183,7 +46,7 @@ impl Decoder for ApmTraceV1Decoder {
 ///
 /// Returns a [`DecodeError`] if the input is not a well-formed v1.0 tracer payload (truncated,
 /// malformed MessagePack, oversized headers, out-of-range string references, and so on).
-pub fn decode_v1_payload_with_headers(headers: &HeaderMap, bytes: &[u8]) -> Result<Vec<Trace>, DecodeError> {
+pub fn decode_v1_payload(bytes: &[u8]) -> Result<Vec<Trace>, DecodeError> {
     let mut reader = bytes;
     let payload = decode_tracer_payload(&mut reader)?;
     if !reader.is_empty() {
@@ -200,8 +63,6 @@ pub fn decode_v1_payload_with_headers(headers: &HeaderMap, bytes: &[u8]) -> Resu
         hostname: payload.hostname,
         app_version: payload.app_version,
         client_dropped_p0s_weight: 0.0,
-        client_computed_stats: headers.contains_key("datadog-client-computed-stats"),
-        client_computed_top_level: headers.contains_key("datadog-client-computed-top-level"),
     };
 
     let mut traces = Vec::with_capacity(payload.chunks.len());
