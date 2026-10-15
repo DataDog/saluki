@@ -62,8 +62,7 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
     where
         F: Fn(&Event) -> bool,
     {
-        let mut indices_to_remove = Vec::new();
-        let mut removed_events = VecDeque::new();
+        let mut indices_to_remove = Vec::with_capacity(self.events.len());
         let mut seen_event_types = EventType::none();
 
         for (pos, event) in self.events.iter_mut().enumerate() {
@@ -73,6 +72,8 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
                 seen_event_types |= event.event_type();
             }
         }
+
+        let mut removed_events = VecDeque::with_capacity(indices_to_remove.len());
 
         // Remove elements from back to front to avoid index shifting issues
         for &pos in indices_to_remove.iter().rev() {
