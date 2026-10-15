@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Concept","Provider","ValueType"],"fn":["lookup_float64","lookup_int64","lookup_string"],"static":["EMBEDDED_REGISTRY"],"struct":["Condition","Registry","SemanticRegistryProvider","TagInfo"],"trait":["Accessor"]};
