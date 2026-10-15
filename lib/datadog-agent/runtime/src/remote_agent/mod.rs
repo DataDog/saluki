@@ -8,7 +8,6 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::{sync::Arc, time::Duration};
 
-use agent_data_plane_config_system::config_event_to_update;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use datadog_agent_commons::ipc::{
@@ -52,6 +51,8 @@ use tokio::{
 };
 use tonic::{server::NamedService, Status};
 use tracing::{debug, error, info, warn};
+
+use crate::agent_stream::config_event_to_update;
 
 mod status;
 pub use self::status::{StatusBuilder, StatusSectionProvider, StatusSectionWriter};

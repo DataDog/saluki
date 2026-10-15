@@ -90,6 +90,7 @@ dependencies = [
  "datadog-agent-config",
  "datadog-agent-config-corpus",
  "datadog-agent-config-overlay-model",
+ "datadog-agent-runtime",
  "datadog-protos",
  "prost-types",
  "saluki-antithesis",

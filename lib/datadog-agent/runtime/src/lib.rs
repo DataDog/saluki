@@ -21,4 +21,5 @@
 //!   build also requires `--cfg tokio_unstable`.
 #![deny(missing_docs)]
 
+pub mod agent_stream;
 pub mod remote_agent;
