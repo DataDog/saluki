@@ -300,6 +300,40 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.endpoints.api_key = value;
     }
 
+    fn consume_apm_config_analyzed_rate_by_service(&mut self, value: HashMap<String, f64>) {
+        self.config.domains.traces.analyzed_rate_by_service = value;
+    }
+
+    fn consume_apm_config_analyzed_spans(&mut self, value: serde_json::Map<String, serde_json::Value>) {
+        // Malformed entries recover at translation: each bad key or rate is dropped with a
+        // warning so one entry does not reject the whole configuration.
+        let mut rates_by_service: HashMap<String, HashMap<String, f64>> = HashMap::with_capacity(value.len());
+        for (key, rate) in value {
+            let rate = match datadog_agent_config::cast_to_f64(&rate) {
+                Ok(rate) => rate,
+                Err(error) => {
+                    warn!("invalid rate for `apm_config.analyzed_spans` key `{key}`: {error}; skipping");
+                    continue;
+                }
+            };
+            let mut parts = key.split('|');
+            let (service, operation) = match (parts.next(), parts.next(), parts.next()) {
+                (Some(service), Some(operation), None) => (service, operation),
+                _ => {
+                    warn!(
+                        "`apm_config.analyzed_spans` key `{key}` is malformed; expected `service|operation`; skipping"
+                    );
+                    continue;
+                }
+            };
+            rates_by_service
+                .entry(service.to_owned())
+                .or_default()
+                .insert(operation.to_owned(), rate);
+        }
+        self.config.domains.traces.analyzed_spans_by_service = rates_by_service;
+    }
+
     fn consume_apm_config_compute_stats_by_span_kind(&mut self, value: bool) {
         self.config.domains.traces.compute_stats_by_span_kind = value;
     }
@@ -337,6 +371,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
             Ok(entries) => self.config.domains.traces.max_catalog_entries = entries,
             Err(error) => self.record_error(TranslateError::new("apm_config.max_catalog_entries", error)),
         }
+    }
+
+    fn consume_apm_config_max_events_per_second(&mut self, value: f64) {
+        self.config.domains.traces.max_events_per_second = value;
     }
 
     fn consume_apm_config_max_traces_per_second(&mut self, value: f64) {
