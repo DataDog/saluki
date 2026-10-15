@@ -36,6 +36,6 @@ pub use self::snapshot::{
 
 mod state;
 pub use self::state::{
-    ActiveArtifact, ApplyState, ApplyStates, ConfigAcknowledgment, ResourcesStatus, ScopeStatus, StatusSummary,
-    POLICY_SCOPE,
+    ActiveArtifact, ApplyState, ApplyStates, ConfigAcknowledgment, NativePolicy, ProgramRuns, ProgramStatus,
+    ResourcesStatus, ScopeStatus, StatusSummary, POLICY_SCOPE,
 };

@@ -376,7 +376,7 @@ fn catalog() -> MemoryCatalog {
 }
 
 fn node(id: &str, op: &str, params: Value) -> Value {
-    json!({"id": id, "op": op, "params": params, "provenance": {"native": id}})
+    json!({"id": id, "op": op, "params": params})
 }
 
 fn dogstatsd(id: &str) -> Value {
@@ -800,14 +800,12 @@ fn unpartitioned_default_program(artifact: bool) -> Plan {
     let mut value = serde_json::from_str::<Value>(DEFAULT_PROGRAM_JSON).unwrap();
     let hash = format!("sha256:{}", "a".repeat(64));
     if artifact {
-        value["provenance"] = json!({"artifacts": [{"revision": 1, "hash": hash}]});
+        // The program of an artifact replacing the one scope, whose region holds aggregation.
+        value["provenance"] = json!({"artifacts": [{"scope": "metrics", "revision": 1, "hash": hash}]});
     }
     for node in value["nodes"].as_array_mut().unwrap() {
         if node["id"] == "dsd_agg" {
             node["op"] = json!(UNPARTITIONED);
-            if artifact {
-                node["provenance"] = json!({"artifact": {"revision": 1, "hash": hash}});
-            }
         }
     }
     Plan::from_value(value).unwrap()

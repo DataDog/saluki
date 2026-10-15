@@ -14,7 +14,10 @@ use std::{
 use serde::Serialize;
 
 use crate::{
-    defaults::{DEFAULT_ARTIFACT_CHANNEL_POLL_INTERVAL, DEFAULT_REMOTE_AGENT_STRING_INTERNER_SIZE_BYTES},
+    defaults::{
+        DEFAULT_ARTIFACT_CHANNEL_POLL_INTERVAL, DEFAULT_REMOTE_AGENT_STRING_INTERNER_SIZE_BYTES,
+        DEFAULT_STANDALONE_CONFIG_RELOAD_INTERVAL,
+    },
     ConfigValue,
 };
 
@@ -123,6 +126,42 @@ pub struct ControlConfiguration {
 
     /// Programmable metric processing settings. (not in Datadog Agent config schema)
     pub programmable_metrics: ProgrammableMetrics,
+
+    /// Whether standalone mode re-reads its configuration file, read once at startup. (not in Datadog Agent config
+    /// schema)
+    pub standalone_config_reload: StandaloneConfigReload,
+}
+
+/// Experimental re-reading of the configuration file in standalone mode (`experimental.standalone_config_reload.*`).
+/// (not in Datadog Agent config schema)
+///
+/// This exists only for the programmable metrics demo (`bin/programmable-metrics-demo`). It is not for production use
+/// and may be removed without notice. Both settings are read once at startup: changing them in the file has no effect
+/// until a restart.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct StandaloneConfigReload {
+    /// Whether standalone mode re-reads its configuration file and applies the changes it finds.
+    ///
+    /// Defaults to `false`: standalone mode reads its configuration once, at startup. When `true` and standalone mode
+    /// is active, the file is re-read every [`interval`](Self::interval), and a change is applied as a configuration
+    /// update from the Datadog Agent is in connected mode. Has no effect in connected mode.
+    pub enabled: bool,
+
+    /// How often the configuration file is re-read.
+    ///
+    /// Defaults to [`DEFAULT_STANDALONE_CONFIG_RELOAD_INTERVAL`] (1 second). A shorter interval applies an edit
+    /// sooner, at the cost of reading the file more often. It is greater than zero: a configured value of zero fails
+    /// the configuration load.
+    pub interval: Duration,
+}
+
+impl Default for StandaloneConfigReload {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval: DEFAULT_STANDALONE_CONFIG_RELOAD_INTERVAL,
+        }
+    }
 }
 
 /// Programmable metric processing settings (`experimental.programmable_metrics.*`). (not in Datadog Agent config

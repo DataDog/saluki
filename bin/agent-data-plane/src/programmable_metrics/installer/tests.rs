@@ -857,6 +857,7 @@ fn plan_status_describes_itself_for_the_logs() {
         overdue: vec![generation(1)],
         apply_states: ApplyStates::default(),
         exports: BTreeMap::new(),
+        bound_exports: BTreeMap::new(),
         default_program: Arc::new(Plan::from_json(saluki_metric_plan::testing::DEFAULT_PROGRAM_JSON).unwrap()),
         active: None,
         resources: Default::default(),

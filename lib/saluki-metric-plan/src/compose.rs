@@ -9,12 +9,13 @@
 //!    document as received, which approval binds to.
 //! 2. **Composition** ([`compose`], or [`compose_all`] for one artifact per scope): each artifact replaces its scope in
 //!    the current default program, reaching the scope's inputs as `input.<name>` and its exits as `exit.<name>`. Each
-//!    artifact node gets its plan ID by correspondence (see [`Correspondence`]) and its provenance: native for a
-//!    reserved node the artifact keeps unmodified (and, if it can lose records or runs in a host, fed as the default
-//!    program feeds it), the artifact's revision otherwise. Bindings resolve from the catalog, and the composed plan is
-//!    validated, with the artifact limits applied to artifact-provenance nodes. Composition also reports whether each
-//!    artifact's base no longer matches the default program (a stale base: it still installs) and whether it was
-//!    approved against another active plan (a stale review: it still installs).
+//!    artifact node gets its plan ID by correspondence (see [`Correspondence`]): a reserved node the artifact keeps
+//!    unmodified is the default program's node exactly, and every other node is the artifact's as written. Bindings
+//!    resolve from the catalog, and the composed plan is validated, with the artifact limits applied to the program's
+//!    nodes, every node of the scope the artifact replaces. The plan's provenance names each artifact and its scope:
+//!    what a plan runs is a property of the plan, not of its nodes. Composition also reports whether each artifact's
+//!    base no longer matches the default program (a stale base: it still installs) and whether it was approved against
+//!    another active plan (a stale review: it still installs).
 //!
 //! Artifacts reference outputs by ID only, native ones and those a resources artifact declares, never declaring one.
 //! An artifact may hold state owners, such as `aggregate`: whether the frame can run them where the artifact puts them
@@ -41,8 +42,8 @@
 //!
 //! Removal by the resource authority fails closed: the artifact in effect keeps running, but nothing it sends an output
 //! that was removed or rebound reaches that output, and nothing else it does is undone. A dropped `emit` keeps its node
-//! ID and becomes a `drop` with the artifact's provenance, so its loss is the artifact's policy loss at that node. When
-//! the output returns with the recorded fingerprint, the next composition restores the `emit`.
+//! ID and becomes a `drop`, so its loss is the program's policy loss at that node. When the output returns with the
+//! recorded fingerprint, the next composition restores the `emit`.
 //!
 //! An artifact that records an output's fingerprint as an earlier fingerprint version computed it, such as one kept in
 //! an old run directory, is an artifact whose output now delivers elsewhere: a new one is refused, asking for a rebase,
@@ -55,19 +56,19 @@ use snafu::Snafu;
 
 use crate::{
     canonical::{contains_resolved_values, to_canonical_string, PlanHash, BINDING_MEMBER, RESOLVED_MEMBER},
-    export::{emitted_output, unresolved, ScopeRegion},
+    export::{emitted_output, operation_params, unresolved, ScopeRegion},
     install::{
         correspondence::{CorrespondenceKind, NodeCorrespondence},
         Correspondence,
     },
     ir::{
-        decode_params, ArtifactBase, ArtifactNodeId, ArtifactPortRef, ArtifactRevision, BindingName, BlobError, Blobs,
-        Edge, IrError, Node, NodeId, OperatorName, OutputId, Params, Plan, PlanProvenance, PolicyArtifact, PortName,
-        PortRef, Provenance, ReceivedArtifact, ScopeDecl, ScopeName, Selector, BLOB_MEMBER,
+        decode_params, ArtifactBase, ArtifactNodeId, ArtifactPortRef, BindingName, BlobError, Blobs, ComposedArtifact,
+        Edge, HostId, IrError, Node, NodeId, OperatorName, OutputId, Params, Plan, PlanProvenance, PolicyArtifact,
+        PortRef, ReceivedArtifact, RecipientId, RecipientName, ScopeDecl, ScopeName, Selector, BLOB_MEMBER,
     },
     limits::values::{ARTIFACT_NODES, ARTIFACT_SIZE, BLOB_SIZE, PREDICATE_LEAVES},
-    operators::{names, OperatorRegistry, StateContract},
-    validate::{predicate_leaves, Catalog, ValidationReport, Validator},
+    operators::{names, OperatorRegistry, StateContract, EMIT_TO},
+    validate::{predicate_leaves, BindingClass, Catalog, ValidationReport, Validator},
 };
 
 /// Reads an artifact document received from the channel, after checking it against the artifact limits.
@@ -90,7 +91,7 @@ use crate::{
 ///
 /// These bound what the host does with a document before it knows what the document does, so they count every node of
 /// the artifact, kept from the default program or not. Validation of the composed plan applies the node and leaf limits
-/// again to the nodes that have the artifact's provenance.
+/// again to the program's nodes, with their bindings resolved.
 ///
 /// # Errors
 ///
@@ -337,7 +338,7 @@ pub struct Approval {
 /// Artifacts composed into the default program, one per scope.
 #[derive(Clone, Debug)]
 pub struct Composed {
-    /// The composed plan, with every configuration binding resolved and every node's provenance set.
+    /// The composed plan, with every configuration binding resolved, and the artifacts it composes in its provenance.
     pub plan: Plan,
 
     /// The composed plan's validation report. An artifact whose report has errors is rejected.
@@ -410,11 +411,21 @@ impl ComposeOutcome {
     }
 }
 
-/// The `emit`s of one output that composition dropped, and why.
+/// What dropped `emit`s delivered to: an output, by its ID, or recipients, by the names the artifact gives them.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum DropTarget {
+    /// An output the artifact's base records.
+    Output(OutputId),
+
+    /// The recipients an `emit` names.
+    Recipients(Vec<RecipientName>),
+}
+
+/// The `emit`s of one output, or one set of recipients, that composition dropped, and why.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DroppedEmits {
-    /// The output the artifact's base records.
-    pub output: OutputId,
+    /// What they delivered to.
+    pub target: DropTarget,
 
     /// Why its `emit`s were dropped.
     pub reason: DropReason,
@@ -425,21 +436,30 @@ pub struct DroppedEmits {
 
 impl std::fmt::Display for DroppedEmits {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let output = match &self.target {
+            DropTarget::Output(output) => output.to_string(),
+            DropTarget::Recipients(names) => format!("to {}", describe_names(names)),
+        };
         match &self.reason {
             DropReason::Removed => write!(
                 f,
                 "output `{}` is no longer declared; its emits are dropped until it returns",
-                self.output
+                output
             ),
             DropReason::Rebound { renumbered: None } => write!(
                 f,
                 "output `{}` now delivers elsewhere; its emits are dropped; rebase",
-                self.output
+                output
             ),
             DropReason::Rebound { renumbered: Some(now) } => write!(
                 f,
                 "output `{}` renumbered: the recorded output is now `{}`; its emits are dropped; rebase",
-                self.output, now
+                output, now
+            ),
+            DropReason::Unavailable(why) => write!(
+                f,
+                "the emits {} are dropped until they are available again: {}",
+                output, why
             ),
         }
     }
@@ -457,6 +477,26 @@ pub enum DropReason {
         /// The output that now carries the recorded fingerprint, if one does.
         renumbered: Option<OutputId>,
     },
+
+    /// The recipients an `emit` names are no longer available, as the plain-text reason says: a name the directory no
+    /// longer has, names of recipients on more than one delivery host, or no output for their recipients.
+    Unavailable(String),
+}
+
+/// Writes recipient names as a program does, as `[primary, "https://intake.example.com"]`.
+fn describe_names(names: &[RecipientName]) -> String {
+    let names = names
+        .iter()
+        .map(|name| {
+            if crate::ir::is_identifier(name.as_str()) {
+                name.to_string()
+            } else {
+                // Quoted as a string literal, with its quotes and backslashes escaped.
+                serde_json::to_string(name.as_str()).unwrap_or_else(|_| format!("\"{}\"", name))
+            }
+        })
+        .collect::<Vec<_>>();
+    format!("[{}]", names.join(", "))
 }
 
 /// Composes a received artifact into the default program, replacing the artifact's scope.
@@ -489,18 +529,16 @@ pub fn compose(
 /// - An artifact node whose local ID equals a reserved ID inside the scope keeps that ID. If its operator and
 ///   parameters are the default program's (parameters compared without resolved values, as their operator decodes
 ///   them, so that a set written in another order is the same set), the node is the default program's node exactly,
-///   with its native provenance and resolved values. A node that can lose records or runs in a host must also be fed
-///   what the default program feeds it, the same streams from the same places through nodes that are themselves
-///   unchanged (a `tee` or `merge` passes its input on unchanged, whatever its port count), since native configuration
-///   authorizes the loss it expresses on the records it expresses it on. Otherwise the node's provenance is the
-///   artifact's revision. Every other artifact node is placed as `policy/<local>` with the artifact's provenance. A
-///   local ID equal to a reserved ID outside the scope is rejected.
+///   with its resolved values. Otherwise it is the artifact's node as written. Every other artifact node is placed as
+///   `policy/<local>`. A local ID equal to a reserved ID outside the scope is rejected. Every node of the scope is the
+///   program's either way: what a node may do, and who answers for its loss, never depends on whether the author kept
+///   it, so keeping a node unmodified only spares the installer rebuilding it.
 /// - Where the catalog runs at most one aggregation per program ([`Catalog::single_aggregation`]), an artifact's one
 ///   state owner takes the reserved ID of the region's one state owner, whatever the artifact calls it, unless another
 ///   artifact node has that ID: one aggregation is the aggregation. It is then composed as any node with that ID is.
-/// - Blob references are replaced with their content, and the configuration bindings of artifact-provenance nodes
-///   resolve from `catalog`. A binding the catalog does not declare is left unresolved, for validation to report; one
-///   it declares without a value is rejected.
+/// - Blob references are replaced with their content, and the configuration bindings of the nodes the artifact modifies
+///   or adds resolve from `catalog`. A binding the catalog does not declare is left unresolved, for validation to
+///   report; one it declares without a value is rejected.
 /// - Every output an `emit` of an artifact delivers to must be recorded in the artifact's base, and declared by the
 ///   catalog with the fingerprint the base records. One that is not declared, or declared with another fingerprint,
 ///   refuses a new artifact (pending, or rebound), and turns the `emit`s of the artifact in effect into counted drops
@@ -508,12 +546,12 @@ pub fn compose(
 ///   artifact](self#outputs-that-change-under-an-artifact).
 /// - State owners, such as `aggregate`, compose like any node: placement decides whether the frame can run them where
 ///   the artifact puts them, and validation rejects host components in artifacts.
-/// - The composed plan's provenance lists every artifact's revision, in scope order, and its nodes and edges are in the
-///   default program's order, each artifact's taking the places of its region's in order (any left over follow the
-///   last of them). An artifact's edges are first put in the default program's order: an edge the region has takes
-///   that edge's place, and a new edge follows the region's edge the artifact lists before it. So composing an
-///   unmodified export gives the default program again, with the same hash, whatever order its edges are written in,
-///   as a printed and parsed export writes them.
+/// - The composed plan's provenance lists every artifact's revision and scope, in scope order, and its nodes and edges
+///   are in the default program's order, each artifact's taking the places of its region's in order (any left over
+///   follow the last of them). An artifact's edges are first put in the default program's order: an edge the region has
+///   takes that edge's place, and a new edge follows the region's edge the artifact lists before it. So composing an
+///   unmodified export gives the default program again, with the same hash, whatever order its edges are written in, as
+///   a printed and parsed export writes them.
 /// - The composed plan is validated with `registry` and `catalog`; the report is returned, not judged, so the caller
 ///   rejects an artifact with errors as it does any candidate.
 ///
@@ -566,6 +604,8 @@ pub fn compose_all(
                 .as_ref()
                 .and_then(|provenance| provenance.config_change),
             artifacts: revisions,
+            // A composed plan is never a boot plan: the native components describe the default program's layout only.
+            native_components: BTreeMap::new(),
         }),
         nodes,
         edges,
@@ -574,7 +614,9 @@ pub fn compose_all(
         // Resources, like output declarations, come from the default program only: an artifact cannot declare them.
         resources: default_plan.resources.clone(),
     };
-    let report = Validator::new(registry, catalog).validate(&plan);
+    let report = Validator::new(registry, catalog)
+        .with_baseline(default_plan)
+        .validate(&plan);
     let stale_base = scopes.values().any(|scope| scope.stale_base);
     let stale_review = scopes.values().any(|scope| scope.stale_review);
     let correspondence = match scopes.values().collect::<Vec<_>>()[..] {
@@ -602,8 +644,8 @@ struct ScopePart {
     /// The default program's nodes of the scope's region, which the artifact's replace.
     members: BTreeSet<NodeId>,
 
-    /// The artifact's revision, as provenance names it.
-    revision: ArtifactRevision,
+    /// The artifact's revision and scope, as the plan's provenance names it.
+    revision: ComposedArtifact,
 
     composition: ScopeComposition,
 }
@@ -628,7 +670,8 @@ fn compose_scope(
     let stale_review = approval
         .approved_against
         .is_some_and(|approved| approval.active_plan_hash != Some(approved));
-    let revision = ArtifactRevision {
+    let revision = ComposedArtifact {
+        scope: scope.clone(),
         revision: approval.revision,
         hash: received.hash,
     };
@@ -643,6 +686,13 @@ fn compose_scope(
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
+    // A published program owns its policy: it binds facts and signals only. The rule judges what the author wrote, so
+    // it covers every node, kept from the default program or not, before anything is resolved.
+    if catalog.detached_programs() {
+        for (node, params) in artifact.nodes.iter().zip(&inlined) {
+            check_policy_bindings(&node.id, params, catalog)?;
+        }
+    }
     let aggregation = catalog
         .single_aggregation()
         .then(|| the_aggregation(default_plan, artifact, &inlined, &region, catalog, registry))
@@ -667,47 +717,92 @@ fn compose_scope(
         .map(|node| (&node.id, node))
         .collect::<BTreeMap<_, _>>();
 
-    // Each artifact node with its plan ID, its parameters with blobs inlined, and the default program's node it does
-    // the operation of, if any.
+    // Each artifact node with its plan ID, its parameters with blobs inlined and any recipients it emits to resolved
+    // to their output, how it is addressed, and the default program's node it does the operation of, if any.
     let mut placed = Vec::with_capacity(artifact.nodes.len());
+    let mut outputs = EmittedOutputs::default();
     for (node, params) in artifact.nodes.iter().zip(inlined) {
         let id = &ids[&node.id];
+        let (params, addressed) = address(&node.id, &node.op, params, catalog)?;
+        if let Addressed::Unavailable { recipients, reason } = &addressed {
+            if !approval.in_effect {
+                // A new artifact is refused for recipients on two hosts, and waits for unknown recipients, and for an
+                // output for its recipients, unless another error refuses it first.
+                let pending = match reason {
+                    Unavailable::TwoHosts(hosts) => {
+                        return Err(ComposeError::RecipientsOnTwoHosts {
+                            node: node.id.clone(),
+                            recipients: hosts.clone(),
+                        })
+                    }
+                    Unavailable::Unknown(recipient) => ComposeError::UnknownRecipient {
+                        node: node.id.clone(),
+                        recipient: recipient.clone(),
+                    },
+                    Unavailable::NoOutput => ComposeError::PendingRecipients {
+                        node: node.id.clone(),
+                        recipients: recipients.clone(),
+                    },
+                    Unavailable::Refused(why) => {
+                        return Err(ComposeError::NoOutputFor {
+                            node: node.id.clone(),
+                            recipients: recipients.clone(),
+                            reason: why.clone(),
+                        })
+                    }
+                };
+                outputs.pending_recipients.get_or_insert(pending);
+            }
+        }
         let same = region_nodes
             .get(id)
             .copied()
-            .filter(|default| same_operation(default, &node.op, &params, registry));
-        placed.push((node, id, params, same));
+            .filter(|default| same_operation(default, &node.op, &params, &node.id, catalog, registry));
+        placed.push((node, id, params, addressed, same));
     }
 
-    // What reaches each node of the region, in the default program and in the composition.
-    let default_feeds = Feeds::new(
-        region_nodes.iter().map(|(id, node)| (*id, node.op.as_str(), true)),
-        &default_plan.edges,
-    )
-    .compute(None);
-    let feeds = Feeds::new(
-        placed
-            .iter()
-            .map(|(node, id, _, same)| (*id, node.op.as_str(), same.is_some())),
-        &edges,
-    )
-    .compute(Some(&default_feeds));
-
     let mut correspondence = Correspondence::new();
-    let mut outputs = EmittedOutputs::default();
     let mut nodes = Vec::with_capacity(artifact.nodes.len());
-    for (node, id, params, same) in placed {
+    for (node, id, params, addressed, same) in placed {
         let id = id.clone();
-        // A node that can lose records, or runs in a host, keeps native authority only if it is fed what the default
-        // program feeds it: native configuration authorizes the loss it expresses, on the records it expresses it on.
-        let kept = same.filter(|default| {
-            !guards_authority(default, registry) || {
-                let feed = feeds.get(&id);
-                feed.is_some_and(|feed| !feed.is_changed()) && feed == default_feeds.get(&id)
-            }
-        });
-        let (composed, kind) = match kept {
-            Some(default) => (default.clone(), CorrespondenceKind::Unmodified),
+        if let Addressed::Unavailable { recipients, reason } = addressed {
+            // The artifact in effect keeps running, but nothing it emits reaches recipients that are no longer
+            // available, or no longer on one host: the `emit` becomes a counted drop, under its ID.
+            let entry = outputs
+                .dropped
+                .entry(DropTarget::Recipients(recipients))
+                .or_insert_with(|| (DropReason::Unavailable(reason.describe()), Vec::new()));
+            entry.1.push(id.clone());
+            let kind = if region_nodes.contains_key(&id) {
+                CorrespondenceKind::Modified
+            } else {
+                CorrespondenceKind::Added
+            };
+            let dropped = Node {
+                id: id.clone(),
+                op: OperatorName::new(names::DROP).expect("`drop` is an operator name"),
+                params: Params::new(),
+            };
+            correspondence.insert(node.id.clone(), NodeCorrespondence { node: id, kind });
+            nodes.push(dropped);
+            continue;
+        }
+        let by_name = matches!(addressed, Addressed::Recipients);
+        let (composed, kind) = match same {
+            // Written as the default program writes it, the node is the default program's own, bindings and all, and
+            // follows native configuration.
+            Some(default) if unresolved(&default.params) == params => (default.clone(), CorrespondenceKind::Unmodified),
+            // The same only by value: the node is unmodified, but it runs what the artifact wrote, so that a detached
+            // program never follows native policy. The plan does the same as the default program's, so the installer,
+            // which compares plans by what they do, adopts or keeps the running generation, and builds nothing.
+            Some(_) => (
+                Node {
+                    id: id.clone(),
+                    op: node.op.clone(),
+                    params: resolve_bindings(params, catalog, &node.id)?,
+                },
+                CorrespondenceKind::Unmodified,
+            ),
             None => {
                 let params = resolve_bindings(params, catalog, &node.id)?;
                 let kind = if region_nodes.contains_key(&id) {
@@ -719,19 +814,22 @@ fn compose_scope(
                     id: id.clone(),
                     op: node.op.clone(),
                     params,
-                    provenance: Some(Provenance::Artifact(revision.clone())),
                 };
                 (composed, kind)
             }
         };
-        let (composed, kind) = if composed.op.as_str() == names::EMIT {
+        let (composed, kind) = if composed.op.as_str() == names::EMIT && !by_name {
+            // An emit addressed to recipients follows them by name, so no fingerprint is recorded for it.
             let checked = check_output(&node.id, &composed.params, &artifact.base, default_plan, catalog);
             match checked {
                 OutputCheck::Fine => (composed, kind),
                 OutputCheck::Changed { output, reason } if approval.in_effect => {
                     // The artifact in effect keeps running, but nothing it emits reaches an output that was removed
-                    // or now delivers elsewhere: the `emit` becomes a counted drop of the artifact's, under its ID.
-                    let entry = outputs.dropped.entry(output).or_insert_with(|| (reason, Vec::new()));
+                    // or now delivers elsewhere: the `emit` becomes a counted drop, under its ID.
+                    let entry = outputs
+                        .dropped
+                        .entry(DropTarget::Output(output))
+                        .or_insert_with(|| (reason, Vec::new()));
                     entry.1.push(id.clone());
                     let kind = if region_nodes.contains_key(&id) {
                         CorrespondenceKind::Modified
@@ -742,7 +840,6 @@ fn compose_scope(
                         id: id.clone(),
                         op: OperatorName::new(names::DROP).expect("`drop` is an operator name"),
                         params: Params::new(),
-                        provenance: Some(Provenance::Artifact(revision.clone())),
                     };
                     (dropped, kind)
                 }
@@ -757,6 +854,11 @@ fn compose_scope(
                     output,
                     reason: DropReason::Rebound { renumbered },
                 } => return Err(ComposeError::ReboundOutput { output, renumbered }),
+                // Only an emit addressed to recipients is unavailable, and those are not checked here.
+                OutputCheck::Changed {
+                    reason: DropReason::Unavailable(_),
+                    ..
+                } => (composed, kind),
                 OutputCheck::Refused(error) => return Err(error),
             }
         } else {
@@ -769,6 +871,9 @@ fn compose_scope(
     // is refused with any other error first, since that one would not go away when the output is declared.
     if let Some(output) = outputs.pending {
         return Err(ComposeError::PendingOutput { output });
+    }
+    if let Some(pending) = outputs.pending_recipients {
+        return Err(pending);
     }
     for node in default_plan
         .nodes
@@ -787,7 +892,7 @@ fn compose_scope(
             outputs
                 .dropped
                 .into_iter()
-                .map(|(output, (reason, nodes))| DroppedEmits { output, reason, nodes })
+                .map(|(target, (reason, nodes))| DroppedEmits { target, reason, nodes })
                 .collect(),
         )
     };
@@ -808,11 +913,220 @@ fn compose_scope(
 /// What composing one artifact's `emit`s found about the outputs they deliver to.
 #[derive(Default)]
 struct EmittedOutputs {
-    /// The outputs whose `emit`s were dropped, with why and the nodes, for the artifact in effect.
-    dropped: BTreeMap<OutputId, (DropReason, Vec<NodeId>)>,
+    /// The outputs, or recipients, whose `emit`s were dropped, with why and the nodes, for the artifact in effect.
+    dropped: BTreeMap<DropTarget, (DropReason, Vec<NodeId>)>,
 
     /// The first output a new artifact records that the host does not declare.
     pending: Option<OutputId>,
+
+    /// Why a new artifact waits for the recipients an `emit` names, for the first such `emit`: a name the directory
+    /// does not have, or no output with exactly their recipients yet.
+    pending_recipients: Option<ComposeError>,
+}
+
+/// How an artifact node delivers, if it is an `emit`.
+enum Addressed {
+    /// Not an `emit` addressed to recipients: another operator, or an `emit` naming its output.
+    Output,
+
+    /// An `emit` addressed to recipients, resolved to the output whose recipients they are.
+    Recipients,
+
+    /// An `emit` addressed to recipients that have no output now.
+    Unavailable {
+        /// The names, as the artifact writes them.
+        recipients: Vec<RecipientName>,
+
+        /// Why.
+        reason: Unavailable,
+    },
+}
+
+/// Why the recipients an `emit` names have no output now.
+enum Unavailable {
+    /// The directory has no recipient of this name.
+    Unknown(RecipientName),
+
+    /// The names stand for recipients of more than one delivery host, each with its host.
+    TwoHosts(Vec<(RecipientName, HostId)>),
+
+    /// No output delivers to exactly their recipients yet: the host adds one, an implied output, once it lowers with
+    /// the artifact's demand.
+    NoOutput,
+
+    /// No output delivers to exactly their recipients, and the host does not add one, for the plain-text reason.
+    Refused(String),
+}
+
+impl Unavailable {
+    fn describe(&self) -> String {
+        match self {
+            Self::Unknown(name) => format!("the host has no recipient `{}`", name),
+            Self::TwoHosts(_) => "they are recipients of more than one delivery host".to_string(),
+            Self::NoOutput => "no output delivers to exactly them".to_string(),
+            Self::Refused(why) => format!("no output delivers to exactly them, and the host adds none: {}", why),
+        }
+    }
+}
+
+/// Resolves the recipients an `emit` node `node` names in its `to` parameter, if it has one, into the output whose
+/// recipients are exactly theirs, which `params` then name in place of them.
+///
+/// Each name resolves through the host's recipient directory to the recipients it stands for. The names must stand for
+/// recipients of one delivery host, since an output is one encoder stream on one host. Their recipients, sorted and
+/// without repeats, are matched to an output with exactly those recipients ([`Catalog::output_for`]): a native output,
+/// a declared one, or one the host added for a program's demand ([`demanded_outputs`]). The names' order and spelling
+/// never matter, only the recipients they stand for.
+///
+/// # Errors
+///
+/// Returns an error if `to` is not a list of recipient names, or is given beside `output`, for which validation would
+/// report the `emit` anyway.
+fn address(
+    node: &ArtifactNodeId, op: &OperatorName, mut params: Params, catalog: &dyn Catalog,
+) -> Result<(Params, Addressed), ComposeError> {
+    if op.as_str() != names::EMIT {
+        return Ok((params, Addressed::Output));
+    }
+    let Some(names) = recipient_names(node, &params)? else {
+        return Ok((params, Addressed::Output));
+    };
+    match resolve_recipients(&names, catalog) {
+        Ok(recipients) => match catalog.output_for(&recipients) {
+            Some(output) => {
+                params = std::iter::once((
+                    "output".parse().expect("`output` is a parameter name"),
+                    Value::String(output.to_string()),
+                ))
+                .collect();
+                Ok((params, Addressed::Recipients))
+            }
+            None => {
+                let reason = match catalog.implied_output_refused(&recipients) {
+                    Some(why) => Unavailable::Refused(why),
+                    None => Unavailable::NoOutput,
+                };
+                Ok((
+                    params,
+                    Addressed::Unavailable {
+                        recipients: names,
+                        reason,
+                    },
+                ))
+            }
+        },
+        Err(reason) => Ok((
+            params,
+            Addressed::Unavailable {
+                recipients: names,
+                reason,
+            },
+        )),
+    }
+}
+
+/// Returns the recipient names of an `emit`'s `to` parameter, or `None` if it has none.
+///
+/// # Errors
+///
+/// Returns an error if `to` is not a list of recipient names, or is given beside `output`.
+fn recipient_names(node: &ArtifactNodeId, params: &Params) -> Result<Option<Vec<RecipientName>>, ComposeError> {
+    let Some(to) = params.get(EMIT_TO) else {
+        return Ok(None);
+    };
+    let malformed = |what: &str| ComposeError::Malformed {
+        message: format!("node `{}`: {}", node, what),
+    };
+    if params.get("output").is_some() {
+        return Err(malformed(
+            "an `emit` names an output or recipients, not both: write `emit <output>` or `emit to [<recipient>, ...]`",
+        ));
+    }
+    let names = to
+        .as_array()
+        .filter(|names| !names.is_empty())
+        .ok_or_else(|| malformed("an `emit` to recipients names at least one recipient, in a list"))?
+        .iter()
+        .map(|name| {
+            name.as_str()
+                .and_then(|name| RecipientName::new(name).ok())
+                .ok_or_else(|| malformed(&format!("`{}` is not a recipient name", name)))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Some(names))
+}
+
+/// Resolves recipient names through the host's directory into the recipients they stand for, sorted and without
+/// repeats, all on one delivery host.
+fn resolve_recipients(names: &[RecipientName], catalog: &dyn Catalog) -> Result<Vec<RecipientId>, Unavailable> {
+    let mut hosts = Vec::new();
+    let mut recipients = BTreeSet::new();
+    for name in names {
+        let entry = catalog
+            .recipient(name)
+            .ok_or_else(|| Unavailable::Unknown(name.clone()))?;
+        hosts.push((name.clone(), entry.host.clone()));
+        recipients.extend(entry.recipients.iter().cloned());
+    }
+    if hosts.iter().any(|(_, host)| *host != hosts[0].1) {
+        return Err(Unavailable::TwoHosts(hosts));
+    }
+    Ok(recipients.into_iter().collect())
+}
+
+/// The recipients one output of a program's demand delivers to: on one delivery host, sorted and without repeats.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct Demand {
+    /// The delivery host the recipients belong to.
+    pub host: HostId,
+
+    /// The recipients, sorted and without repeats.
+    pub recipients: Vec<RecipientId>,
+
+    /// The local ID of the first `emit` of the artifact, in artifact node ID order, that addresses these recipients,
+    /// which a host may name the output it adds for them after.
+    pub emit: ArtifactNodeId,
+}
+
+/// Returns the outputs an artifact's `emit`s addressed to recipients need: one per distinct set of recipients, on its
+/// delivery host, in recipient order, whether or not the host has an output for the set yet.
+///
+/// A host that adds an output for each set no output serves (an **implied output**) before composing the artifact lets
+/// a program route to any recipient its directory names, with one encoder per distinct set, as native routing groups
+/// share one per set of endpoints. A name the directory does not have, or names that stand for recipients of more than
+/// one host, are left out: composition reports them.
+///
+/// # Errors
+///
+/// Returns an error if an `emit`'s `to` is not a list of recipient names, or is given beside `output`.
+pub fn demanded_outputs(artifact: &PolicyArtifact, catalog: &dyn Catalog) -> Result<Vec<Demand>, ComposeError> {
+    let mut demand: BTreeMap<(HostId, Vec<RecipientId>), ArtifactNodeId> = BTreeMap::new();
+    for node in artifact.nodes.iter().filter(|node| node.op.as_str() == names::EMIT) {
+        let params = inline_blobs(&node.params, &artifact.blobs).map_err(|error| ComposeError::Malformed {
+            message: format!("node `{}`: {}", node.id, error),
+        })?;
+        let Some(names) = recipient_names(&node.id, &params)? else {
+            continue;
+        };
+        let Ok(recipients) = resolve_recipients(&names, catalog) else {
+            continue;
+        };
+        let Some(host) = names
+            .first()
+            .and_then(|name| catalog.recipient(name))
+            .map(|entry| entry.host.clone())
+        else {
+            continue;
+        };
+        let emit = demand.entry((host, recipients)).or_insert_with(|| node.id.clone());
+        if node.id < *emit {
+            *emit = node.id.clone();
+        }
+    }
+    Ok(demand
+        .into_iter()
+        .map(|((host, recipients), emit)| Demand { host, recipients, emit })
+        .collect())
 }
 
 /// Returns the artifact's one state owner and the reserved ID it takes, for a host that runs at most one aggregation
@@ -967,164 +1281,85 @@ fn inline_blobs(params: &Params, blobs: &Blobs) -> Result<Params, BlobError> {
         .collect()
 }
 
-/// Returns `true` if an artifact node with operator `op` and parameters `params` does what the default program's node
-/// `default` does: the same operator, and the same parameters without resolved values, compared as written or, when
-/// both decode, as their operator decodes them.
-fn same_operation(default: &Node, op: &OperatorName, params: &Params, registry: &OperatorRegistry) -> bool {
+/// Returns `true` if an artifact node `node` with operator `op` and parameters `params` does what the default
+/// program's node `default` does: the same operator, and the same parameters, compared by the values they have.
+///
+/// Parameters written as the default program writes them are the same. Otherwise both sides are compared with every
+/// configuration binding written as the value it has now (the artifact's resolved from `catalog`), and every literal
+/// `flag` and `is_empty` folded, as the detached export writes them ([`Predicate::fold_literals`]), as written or, when
+/// both decode, as their operator decodes them, so that a set written in another order is the same set. So a literal
+/// equal to a binding's value is the same operation, and the detached export composes to the default program: an
+/// operation is what it does with the values it has, not where they come from. Such a node composes as the artifact
+/// writes it, so a later change of the binding's value leaves it as it is: the next composition, which follows every
+/// configuration change, finds it modified, still with the artifact's value.
+///
+/// [`Predicate::fold_literals`]: crate::predicate::Predicate::fold_literals
+fn same_operation(
+    default: &Node, op: &OperatorName, params: &Params, node: &ArtifactNodeId, catalog: &dyn Catalog,
+    registry: &OperatorRegistry,
+) -> bool {
     if default.op != *op {
         return false;
     }
-    let default_params = unresolved(&default.params);
-    if default_params == *params {
+    if unresolved(&default.params) == *params {
+        return true;
+    }
+    let Ok(resolved) = resolve_bindings(params.clone(), catalog, node) else {
+        return false;
+    };
+    let (default_params, artifact_params) = (operation_params(op, &default.params), operation_params(op, &resolved));
+    if default_params == artifact_params {
         return true;
     }
     match (
         registry.configure(op.as_str(), &default_params),
-        registry.configure(op.as_str(), params),
+        registry.configure(op.as_str(), &artifact_params),
     ) {
         (Ok(default), Ok(artifact)) => default.params().encode() == artifact.params().encode(),
         _ => false,
     }
 }
 
-/// Returns `true` if a node of the default program needs the authority its provenance gives for more than what it
-/// does: a node that can lose records, whose loss its provenance authorizes, or a fence, which runs in a host that only
-/// native configuration places. Such a node keeps its native provenance in a composition only if it is also fed what
-/// the default program feeds it. A node whose operator does not configure is taken to need it.
-fn guards_authority(node: &Node, registry: &OperatorRegistry) -> bool {
-    registry
-        .configure(node.op.as_str(), &node.params)
-        .map_or(true, |configured| {
-            let contract = configured.contract();
-            contract.loss.is_lossy() || contract.boundary.is_fence()
-        })
-}
-
-/// A stream of records, named by where it comes from in the default program's terms.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-enum Stream {
-    /// What a port outside the region produces: a scope input's port.
-    Outside(PortRef),
-
-    /// What an output port of a region node produces, where the node does what the default program's node of its ID
-    /// does and is fed what the default program feeds it.
-    Port(PortRef),
-
-    /// Records the default program does not produce at this point.
-    Changed,
-}
-
-/// The streams of records one port carries, counted.
-type Streams = BTreeMap<Stream, u64>;
-
-/// What reaches a node: for each of its input ports, the streams of records that enter it, counted.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-struct Feed(BTreeMap<(PortName, Stream), u64>);
-
-impl Feed {
-    /// Returns `true` if some of what reaches the node is not what the default program produces.
-    fn is_changed(&self) -> bool {
-        self.0.keys().any(|(_, stream)| *stream == Stream::Changed)
-    }
-}
-
-/// Adds `count` copies of `key` to a counted set.
-fn add_count<K: Ord>(counts: &mut BTreeMap<K, u64>, key: K, count: u64) {
-    let total = counts.entry(key).or_insert(0);
-    *total = total.saturating_add(count);
-}
-
-/// The nodes of a scope's region and the edges that enter them, in one plan, for working out what reaches each node.
+/// Refuses a node of an artifact for a host whose programs bind facts and signals only
+/// ([`Catalog::detached_programs`]) if its parameters bind a binding the catalog declares a policy setting.
 ///
-/// A stream is named by the port it comes from: a port outside the region (a scope input), or the output port of a
-/// region node that does what the default program's node of the same ID does and is fed as it is there. Any other node
-/// produces records the default program does not, except `tee` and `merge`, which pass on what enters them unchanged:
-/// a stream through them keeps its name, so a `tee` resized, or a branch moved to another of its ports, changes nothing
-/// downstream. Streams are counted, so a node fed one stream twice is not fed what it was fed once, and a long chain of
-/// copies costs no more than counting.
-struct Feeds<'a> {
-    /// Each region node's operator, and whether it does what the default program's node of the same ID does.
-    nodes: BTreeMap<&'a NodeId, (&'a str, bool)>,
-
-    /// The edges entering each region node.
-    inbound: BTreeMap<&'a NodeId, Vec<&'a Edge>>,
-}
-
-impl<'a> Feeds<'a> {
-    fn new(nodes: impl IntoIterator<Item = (&'a NodeId, &'a str, bool)>, edges: &'a [Edge]) -> Self {
-        let nodes = nodes
-            .into_iter()
-            .map(|(id, op, same)| (id, (op, same)))
-            .collect::<BTreeMap<_, _>>();
-        let mut inbound = BTreeMap::<_, Vec<_>>::new();
-        for edge in edges.iter().filter(|edge| nodes.contains_key(&edge.to.node)) {
-            inbound.entry(&edge.to.node).or_default().push(edge);
-        }
-        Self { nodes, inbound }
-    }
-
-    /// Returns what reaches every node of the region.
-    ///
-    /// `default` is what reaches each node of the default program's region, against which a node's own feed is
-    /// compared to tell whether it is fed as there; it is `None` for the default program itself, each of whose nodes
-    /// is.
-    fn compute(&self, default: Option<&BTreeMap<&NodeId, Feed>>) -> BTreeMap<&'a NodeId, Feed> {
-        let mut memo = BTreeMap::new();
-        for &id in self.nodes.keys() {
-            self.feed(id, default, &mut memo);
-        }
-        memo.into_iter().filter_map(|(id, feed)| Some((id, feed?))).collect()
-    }
-
-    /// Returns what reaches one node, recording it, and every feed it depends on, in `memo`.
-    ///
-    /// A node whose feed is being worked out is recorded as `None`, so that a cycle is a changed stream.
-    fn feed(
-        &self, id: &'a NodeId, default: Option<&BTreeMap<&NodeId, Feed>>, memo: &mut BTreeMap<&'a NodeId, Option<Feed>>,
-    ) -> Feed {
-        if let Some(Some(feed)) = memo.get(id) {
-            return feed.clone();
-        }
-        memo.insert(id, None);
-        let mut feed = Feed::default();
-        for edge in self.inbound.get(id).into_iter().flatten() {
-            for (stream, count) in self.streams(&edge.from, default, memo) {
-                add_count(&mut feed.0, (edge.to.port.clone(), stream), count);
+/// # Errors
+///
+/// Returns [`ComposeError::PolicyBinding`] for the first such binding, with its current value and the facts and
+/// signals the catalog declares.
+fn check_policy_bindings(node: &ArtifactNodeId, params: &Params, catalog: &dyn Catalog) -> Result<(), ComposeError> {
+    fn find(value: &Value, found: &mut Vec<BindingName>) {
+        match value {
+            Value::Object(members) if members.contains_key(BINDING_MEMBER) => {
+                if let Some(binding) = members
+                    .get(BINDING_MEMBER)
+                    .and_then(Value::as_str)
+                    .and_then(|name| name.parse::<BindingName>().ok())
+                {
+                    found.push(binding);
+                }
             }
-        }
-        memo.insert(id, Some(feed.clone()));
-        feed
-    }
-
-    /// Returns the streams an output port carries.
-    fn streams(
-        &self, port: &'a PortRef, default: Option<&BTreeMap<&NodeId, Feed>>,
-        memo: &mut BTreeMap<&'a NodeId, Option<Feed>>,
-    ) -> Streams {
-        let Some(&(op, same)) = self.nodes.get(&port.node) else {
-            return Streams::from([(Stream::Outside(port.clone()), 1)]);
-        };
-        if matches!(memo.get(&port.node), Some(None)) {
-            return Streams::from([(Stream::Changed, 1)]);
-        }
-        let feed = self.feed(&port.node, default, memo);
-        if op == names::TEE || op == names::MERGE {
-            let mut streams = Streams::new();
-            for ((_, stream), count) in feed.0 {
-                add_count(&mut streams, stream, count);
-            }
-            return streams;
-        }
-        let as_default = match default {
-            None => true,
-            Some(default) => same && !feed.is_changed() && default.get(&port.node) == Some(&feed),
-        };
-        if as_default {
-            Streams::from([(Stream::Port(port.clone()), 1)])
-        } else {
-            Streams::from([(Stream::Changed, 1)])
+            Value::Object(members) => members.values().for_each(|member| find(member, found)),
+            Value::Array(values) => values.iter().for_each(|element| find(element, found)),
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
         }
     }
+    let mut found = Vec::new();
+    params.iter().for_each(|(_, value)| find(value, &mut found));
+    for binding in found {
+        let Some(declared) = catalog.binding(&binding) else {
+            continue;
+        };
+        if declared.class == BindingClass::Policy {
+            return Err(ComposeError::PolicyBinding {
+                node: node.clone(),
+                binding,
+                value: declared.value.clone(),
+                allowed: catalog.facts_and_signals(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Fills in the resolved value of every configuration binding in `params` that the catalog declares.
@@ -1458,6 +1693,111 @@ pub enum ComposeError {
 
         /// The output that now carries the recorded fingerprint, if one does.
         renumbered: Option<OutputId>,
+    },
+
+    /// An artifact node binds a policy setting, which a published program owns and writes as a literal, on a host whose
+    /// programs bind facts and signals only ([`Catalog::detached_programs`]).
+    #[snafu(display(
+        "`{}` binds `{}`, a native policy setting. A published program owns its policy: write the value itself ({}; the \
+         detached export writes current values). Only facts and signals can be bound{}.",
+        node,
+        binding,
+        value.as_ref().map_or_else(
+            || "it has no value now".to_string(),
+            |value| format!("now `{}`", value)
+        ),
+        if allowed.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ": {}",
+                allowed.iter().map(|name| format!("`{}`", name)).collect::<Vec<_>>().join(", ")
+            )
+        }
+    ))]
+    PolicyBinding {
+        /// The artifact node.
+        node: ArtifactNodeId,
+
+        /// The binding.
+        binding: BindingName,
+
+        /// The binding's current value, if the catalog carries it: what the author writes in its place.
+        value: Option<Value>,
+
+        /// The facts and signals the host declares, which a program may bind, in name order.
+        allowed: Vec<BindingName>,
+    },
+
+    /// A new artifact emits to a recipient name the host's recipient directory does not have: it waits, a held state,
+    /// until configuration or a resources artifact declares the recipient.
+    #[snafu(display(
+        "Waiting for recipient `{}`: artifact node `{}` emits to it, and the host's recipient directory does not name \
+         it. The artifact installs once configuration or a resources artifact declares the recipient; whatever runs \
+         keeps running.",
+        recipient,
+        node
+    ))]
+    UnknownRecipient {
+        /// The artifact node.
+        node: ArtifactNodeId,
+
+        /// The recipient name.
+        recipient: RecipientName,
+    },
+
+    /// A new artifact emits to recipients that no output delivers to yet: it waits, a held state, until the host adds
+    /// an output for them, which it does when it lowers with the artifact's demand.
+    #[snafu(display(
+        "Waiting for an output to {}: artifact node `{}` emits to these recipients, and no output delivers to exactly \
+         them yet. The host adds one; whatever runs keeps running.",
+        describe_names(recipients),
+        node
+    ))]
+    PendingRecipients {
+        /// The artifact node.
+        node: ArtifactNodeId,
+
+        /// The recipient names, as the artifact writes them.
+        recipients: Vec<RecipientName>,
+    },
+
+    /// An `emit` of the artifact names recipients that no output delivers to exactly, and for which the host adds none.
+    #[snafu(display(
+        "Artifact node `{}` emits to {}, and no output delivers to exactly these recipients: {}.",
+        node,
+        describe_names(recipients),
+        reason
+    ))]
+    NoOutputFor {
+        /// The artifact node.
+        node: ArtifactNodeId,
+
+        /// The recipient names, as the artifact writes them.
+        recipients: Vec<RecipientName>,
+
+        /// Why the host adds no output for them.
+        reason: String,
+    },
+
+    /// An `emit` of the artifact names recipients of more than one delivery host, which no one output reaches.
+    #[snafu(display(
+        "Artifact node `{}` emits to {}, recipients of more than one delivery host ({}). An output is one encoder stream \
+         on one host: emit to each host's recipients from a branch of its own.",
+        node,
+        describe_names(&recipients.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>()),
+        recipients
+            .iter()
+            .map(|(name, host)| format!("`{}` on `{}`", name, host))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))]
+    RecipientsOnTwoHosts {
+        /// The artifact node.
+        node: ArtifactNodeId,
+
+        /// Each recipient name, as the artifact writes them, with its delivery host.
+        recipients: Vec<(RecipientName, HostId)>,
     },
 
     /// The artifact's structure cannot be placed into a plan: two nodes have one ID, an edge names an unknown node or

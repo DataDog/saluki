@@ -29,7 +29,7 @@ fn id(value: &str) -> NodeId {
 
 /// A node with native provenance of its own.
 fn node(id: &str, op: &str, params: Value) -> Value {
-    json!({"id": id, "op": op, "params": params, "provenance": {"native": id}})
+    json!({"id": id, "op": op, "params": params})
 }
 
 fn split(id: &str, predicate: Value) -> Value {
@@ -1094,6 +1094,6 @@ fn port_types_of_constant_splits_carry_nothing_on_the_port_never_taken() {
     let port = |name: &str| fixture.report.port_type(&name.parse().unwrap()).unwrap();
     assert_eq!(port("s.true"), port("k.out"));
     assert_eq!(port("s.false").kinds, crate::model::KindSet::EMPTY);
-    let revalidated = revalidate(&fixture.registry, &fixture.apply().unwrap().plan);
+    let revalidated = revalidate(&fixture.registry, &fixture.apply().unwrap().plan, &Default::default());
     assert!(revalidated.is_valid(), "{}", revalidated);
 }

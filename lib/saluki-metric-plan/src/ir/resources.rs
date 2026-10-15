@@ -57,8 +57,8 @@ pub struct OutputBinding {
 /// configuration resolves for it, so its recipients can change without changing its fingerprint, while an explicit
 /// recipient list is part of the declaration.
 ///
-/// Serialized as an object with one member: `{"role": "main"}`, `{"group": "sha256:<hex>"}`, or
-/// `{"declared": [<recipient ID>, ...]}`.
+/// Serialized as an object with one member: `{"role": "main"}`, `{"group": "sha256:<hex>"}`,
+/// `{"declared": [<recipient ID>, ...]}`, or `{"recipients": [<recipient ID>, ...]}`.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Selector {
@@ -70,6 +70,11 @@ pub enum Selector {
 
     /// The recipients a resources artifact declared for the output, sorted and without duplicates.
     Declared(Vec<RecipientId>),
+
+    /// Exactly these recipients, sorted and without duplicates: an **implied output**, which the host adds for the
+    /// recipients a program's `emit`s address when no other output delivers to exactly them. Its recipients may be
+    /// native or declared.
+    Recipients(Vec<RecipientId>),
 }
 
 /// The resources of a plan: the settings of each delivery host, and every recipient the plan names.

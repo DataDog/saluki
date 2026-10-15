@@ -78,8 +78,18 @@ pub fn prepare_run_dir(settings: &RunSettings) -> Result<(), GenericError> {
 
     let config = config::render(&config::adp_config(settings)).error_context("Failed to write ADP's configuration.")?;
     let config_path = settings.adp_config_path();
-    fs::write(&config_path, config)
+    write_atomically(&config_path, config.as_bytes())
         .with_error_context(|| format!("Failed to write ADP's configuration to '{}'.", config_path.display()))
+}
+
+/// Writes `contents` to `path` under a temporary name next to it, and renames it into place, so that a reader never
+/// sees a partly written file: ADP, with the experimental standalone configuration reload on, re-reads its file.
+fn write_atomically(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let mut temporary = path.as_os_str().to_owned();
+    temporary.push(".tmp");
+    let temporary = std::path::PathBuf::from(temporary);
+    fs::write(&temporary, contents)?;
+    fs::rename(&temporary, path)
 }
 
 /// Returns `true` if a PEM file holds a certificate and a private key, as the IPC certificate file must.

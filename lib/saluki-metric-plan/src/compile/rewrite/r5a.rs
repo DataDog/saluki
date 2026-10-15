@@ -32,10 +32,10 @@
 //!   copy each, since every branch's records reach it; the merge changes nothing, so this always holds for every
 //!   kind. An input of whose kinds the filter can remove nothing keeps its edge, without a copy. Only a `merge` is
 //!   crossed this way: for another operator with several inputs, filtering each input need not filter its output.
-//! - **Native filters move only whole.** A host reports native series under a native node's ID, such as a
-//!   filterlist's filtered-metrics counter on one port of its `split`; copies would not carry them. A filter with
-//!   native provenance is therefore never copied (neither across a merge nor partially): it is only moved, whole,
-//!   keeping its ID and its counts exactly.
+//! - **Native filters move only whole.** A host reports native series under a reserved node's ID, such as a
+//!   filterlist's filtered-metrics counter on one port of its `split`; copies would not carry them. A filter with a
+//!   reserved ID is therefore never copied (neither across a merge nor partially): it is only moved, whole, keeping
+//!   its ID and its counts exactly.
 //! - **Scopes.** The filter never crosses a scope's input or exit, and no port of its own nodes is one: a rewrite
 //!   moves no work out of or into the part of the plan an artifact replaces, and never removes a node a scope names.
 //! - **The frame is fixed.** The pipeline checks that the rewritten plan places into the boot frame, with every

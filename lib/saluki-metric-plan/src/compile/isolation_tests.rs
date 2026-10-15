@@ -201,18 +201,18 @@ fn source(id: &str) -> Value {
 }
 
 fn source_of(id: &str, params: Value) -> Value {
-    json!({"id": id, "op": "source", "params": params, "provenance": {"native": id}})
+    json!({"id": id, "op": "source", "params": params})
 }
 
 fn aggregate(id: &str, window: &str) -> Value {
-    json!({"id": id, "op": "aggregate", "provenance": {"native": id}, "params": {
+    json!({"id": id, "op": "aggregate", "params": {
         "window": window, "flush_interval": "15s", "context_limit": 100, "counter_expiry": "5m",
         "flush_open_windows": false, "histogram_aggregates": ["max"], "histogram_percentiles": [],
         "copy_to_distribution": false, "copy_to_distribution_prefix": ""}})
 }
 
 fn node(id: &str, op: &str, params: Value) -> Value {
-    json!({"id": id, "op": op, "params": params, "provenance": {"native": id}})
+    json!({"id": id, "op": op, "params": params})
 }
 
 fn emit() -> Value {

@@ -672,6 +672,37 @@ the default program with its hash, though its artifact document, and so its arti
 - The demo's editor hides the `base` line and prints ADP's notes as comments, with the recipient directory above the
   policy `tee`, in place of its fixed section comments.
 
+**Detached programs, phase 2** (not committed; **not release-noted** yet; see
+[phase 2 as built](programmable-metrics-detached-programs.md#106-phase-2-as-built)):
+
+- `GET /programmable-metrics/export` serves the **detached** export by default: native policy settings written as
+  their current values, facts and signals still bound, literal `flag` and `is_empty` folded, and every native output
+  that a set of directory names stands for addressed by those names (`emit to [primary]`, `emit to
+  ["https://..."]`, `emit to [mrf]`). `?form=bound` serves the export as before. The bundle has `form`.
+- ADP refuses a published artifact that binds a native policy setting (`policy_binding`): the message gives the value
+  to write instead and lists the facts and signals a program may bind. The bound export is therefore refused, and the
+  detached one composes to the default program, with its hash.
+- A native policy change while a published program runs does not reach it: status lists the setting under
+  `program.differs`, and ADP logs one line per change. Status reports `program`: which program runs, and whether native
+  policy settings are applied.
+- `emit to [<recipient>, ...]` addresses recipients by name. ADP adds an **implied output** for each set no output
+  delivers to (`implied_<emit>_<set digest>`), up to 16 outputs together with those resources artifacts declare,
+  counted over every program the installer holds, and retires it once no program asks for it; a program waits for its
+  recipients and their output, as for an undeclared output.
+- Nodes have no provenance: `explain` is version 2, without each node's provenance, and the plan's provenance names
+  each composed artifact with its scope. Every node of a published program is the program's: its loss, its panics
+  (against the program's budget), and its limits, whether its author changed it or kept it; a limit rises to what the
+  default program has in the scope, so a native configuration beyond one can still be published unmodified. The plan
+  diff has no "provenance only" changes. A scope holding a host component cannot be replaced (`trusted_host`), which no ADP
+  default program has.
+- Publishing a program that does what the plan running does **adopts** the running generation: no generation is
+  created, the config is `active` on the generation already running, and status names the program; revoking it hands
+  the generation back to the default program the same way. Plans are compared with bindings written as their values,
+  so a native policy change while a detached program runs creates no generation. A plan's hash no longer depends on who wrote its nodes, so
+  every plan hash changed once.
+- `experimental.standalone_config_reload.{enabled, interval}` (Saluki-only, demo-only): standalone mode re-reads its
+  configuration file and applies a change live once two reads agree, at most every 100 milliseconds.
+
 **Telemetry** (all release-noted): the fused components' and gateways' component, health, and task series are gone;
 `metrics_enrich` and `dsd_agg` report sent counts per output instead of `_default`; accounting paths nest under the
 slot; `dsd_agg` no longer counts sent metrics twice, no longer emits what R5b suppresses, and counts one extra flush
@@ -797,7 +828,8 @@ the local `--test-threads 4` in the gate (see [Environment notes](#environment-n
 | **O4's queue and O5's size** | O4's shared queue is provisional (per-decoder queues measured higher at one and two decoders on macOS); O5's front cache has 4,096 slots per decoder, where 16,384 cost 25 to 30% less per resolution in a paired timing. | Rerun M2 on the gate host before recording O4's choice; size O5 from the hit share at lading's distributions. |
 | **`make check-deny`** | Fails on `RUSTSEC-2024-0449` (`unsafe-libyaml` unmaintained, through `serde_yaml` in `agent-data-plane-config-system`, `datadog-agent-config-overlay-model`, and `antithesis-intake`): the advisory database has it now, and `main`'s `Cargo.lock` at the merge base already holds `unsafe-libyaml` 0.2.11. | An exception in `deny.toml`, or a move off `serde_yaml`. |
 | **One scope, one aggregation** (amendments 168 and 169) | The default program has one scope, `metrics`, over the whole metrics path, and a program at most one aggregation (`single_aggregation`, declared by ADP's catalog). After a width change, every lossy node fed by the timestamp split or aggregation (eight in the fixtures) carries the artifact's provenance, so its loss is attributed to the artifact. Composition puts an artifact's edges in the default program's order. | Accept both, or narrow the scope again; lift the one-aggregation rule once the demo and the operator surfaces handle several. |
-| **Programs replace native policy** (decided by the owner on 2026-10-14; amendment 170) | Decided: a published program owns its policy settings as literals and binds only facts and signals; native policy configuration only feeds the default program, which runs when no artifact is published; status says when native policy settings are not applied; machinery for native compatibility stays in lowering. See the [direction](programmable-metrics-next.md#direction-programs-replace-native-policy) and the [design](programmable-metrics-detached-programs.md), not yet built. | Nothing for the decision; the design's [open questions](programmable-metrics-detached-programs.md#12-open-questions-for-the-owner). |
+| **Programs replace native policy** (decided by the owner on 2026-10-14; amendment 170) | Decided: a published program owns its policy settings as literals and binds only facts and signals; native policy configuration only feeds the default program, which runs when no artifact is published; status says when native policy settings are not applied; machinery for native compatibility stays in lowering. See the [direction](programmable-metrics-next.md#direction-programs-replace-native-policy) and the [design](programmable-metrics-detached-programs.md), built in phases 1 and 2. | Nothing for the decision; the design's open questions were decided (no configuration-declared recipients; no node provenance). |
+| **Detached programs, phase 2** (owner’s decisions of 2026-10-14; amendments 183 to 188) | Built, not committed: no node provenance (a plan-level `native_components` annotation keeps the boot layout, a deviation), adoption on the unchanged generation ID, implied outputs on `dd_out` for native recipients only (Cluster Agent and declared recipients refused, a deviation), the detached export's base equal to the bound one, and `program` without `partly_applied`. See [phase 2 as built](programmable-metrics-detached-programs.md#106-phase-2-as-built). | Confirm the deviations, and the release notes, which are not written yet. |
 | **The specification's Vale errors** | The specification, which only its author edits, adds 12 errors to `make check-docs`, a CI job (see [Environment notes](#environment-notes)). | Before CI runs: add the 11 flagged words to the Vale vocabulary, and edit or exempt the hyphenated `Exactly-once`. |
 
 ## Spec amendments index
@@ -811,7 +843,7 @@ the shutdown row, the expiry row, and the timestamped row.
 
 - **Themes:** EXE execution (admission, generations, time); FRM frame, fusion, rewrites; NAT native parity; IR IR,
   predicates, validation; INS installation and lifecycle; ART artifacts and channel; TEL telemetry; STA state (stage
-  6); VER verification.
+  6); VER verification; CFG configuration.
 - **Kinds:** C clarifies the specification; N restates it to match native behavior; D changes the design or a rule; L
   defers to a later stage.
 - **Owner:** "yes" means a decision beyond approving the text.
@@ -908,11 +940,12 @@ the shutdown row, the expiry row, and the timestamped row.
 
 Totals: kinds C 49, D 26, N 9, L 3; themes STA 20, ART 16, NAT 12, INS 9, IR 8, VER 8, FRM 7, TEL 4, EXE 3.
 
-Amendments 88 to 182 are in [the stages 7 and 9 plan's section
+Amendments 88 to 187 are in [the stages 7 and 9 plan's section
 10](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments): 88 to 107 from its stage 7 design, 108 to 128
 from its stage 9 design, 129 to 138 from stage 7's parts and integration, 139 and 140 from stage 9's foundations (P9.F),
 141 to 162 from stage 9's parts and integration, 163 to 167 from stage 9's review, 168 and 169 from the one-scope
-change after stage 9, and 170 to 182 from the detached-programs design; the next is 183. Stage 7's:
+change after stage 9, 170 to 182 from the detached-programs design, and 183 to 188 from its phase 2; the next is 189.
+Stage 7's:
 
 | # | Short title | Theme | Kind | Owner |
 |---|---|---|---|---|
@@ -1009,7 +1042,8 @@ After stage 9, the one-scope change:
 | 168 | One scope over the whole metrics path | ART | D | yes: accept one scope, and its loss attribution after a width change |
 | 169 | At most one aggregation per program | IR | D | yes: accept the restriction for now |
 
-After stage 9, detached programs ([design](programmable-metrics-detached-programs.md), not built):
+After stage 9, detached programs ([design](programmable-metrics-detached-programs.md); built in phases 1 and 2 but 177,
+which was dropped):
 
 | # | Short title | Theme | Kind | Owner |
 |---|---|---|---|---|
@@ -1026,6 +1060,17 @@ After stage 9, detached programs ([design](programmable-metrics-detached-program
 | 180 | Recipients are available apart from failover requests | NAT | D | no |
 | 181 | Published programs bind only facts and signals | IR | D | no |
 | 182 | One aggregation is the aggregation | STA | D | no |
+
+After detached programs, phase 2 (built, not committed):
+
+| # | Short title | Theme | Kind | Owner |
+|---|---|---|---|---|
+| 183 | Nodes have no provenance | IR | D | decided by the owner (2026-10-14) |
+| 184 | A program equal to the running plan adopts its generation | INS | D | decided by the owner (2026-10-14) |
+| 185 | Standalone configuration reload, for the demo | CFG | D | decided by the owner (2026-10-14) |
+| 186 | Implied output IDs | EXE | D | no |
+| 187 | Duplicates are pairs of outputs that share a recipient | IR | C | no |
+| 188 | A program's limits rise to what the default program has | IR | C | no |
 
 Wording proposed for adoption: amendment 49 ("under the reference interpreter's delivery order"), 51 ("a maximal
 group of `split` and `tee` operators joined directly by edges within one region"), and 52 ("operator parameters,

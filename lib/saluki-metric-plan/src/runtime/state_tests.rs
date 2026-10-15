@@ -89,10 +89,9 @@ fn plan_with(params: Value) -> Plan {
     Plan::from_value(json!({
         "ir_version": 1,
         "nodes": [
-            {"id": "src", "op": "source", "params": {"binding": "dogstatsd", "timestamps": "untimestamped"},
-             "provenance": {"native": "dsd_in"}},
-            {"id": "dsd_agg", "op": "aggregate", "provenance": {"native": "dsd_agg"}, "params": params},
-            {"id": "out", "op": "emit", "params": {"output": OUTPUT}, "provenance": {"native": "dd_metrics_encode"}},
+            {"id": "src", "op": "source", "params": {"binding": "dogstatsd", "timestamps": "untimestamped"}},
+            {"id": "dsd_agg", "op": "aggregate", "params": params},
+            {"id": "out", "op": "emit", "params": {"output": OUTPUT}},
         ],
         "edges": [{"from": "src.metrics", "to": "dsd_agg.in"}, {"from": "dsd_agg.out", "to": "out.in"}],
         "outputs": [{"id": OUTPUT, "accepts": {"kinds": "all", "timestamps": "mixed"},
@@ -802,24 +801,21 @@ fn a_tick_of_a_lineage_no_published_generation_binds_moves_on_without_firing() {
 /// dropping them otherwise.
 fn branched_plan(two: bool, second: &str) -> Plan {
     let mut nodes = vec![
-        json!({"id": "src", "op": "source", "params": {"binding": "dogstatsd", "timestamps": "untimestamped"},
-               "provenance": {"native": "dsd_in"}}),
-        json!({"id": "pick", "op": "split", "provenance": {"native": "pick"},
+        json!({"id": "src", "op": "source", "params": {"binding": "dogstatsd", "timestamps": "untimestamped"}}),
+        json!({"id": "pick", "op": "split",
                "params": {"predicate": {"name": {"prefix_in": ["a."]}}}}),
-        json!({"id": "dsd_agg", "op": PANICKING, "provenance": {"native": "dsd_agg"},
+        json!({"id": "dsd_agg", "op": PANICKING,
                "params": aggregate_params("10s")}),
-        json!({"id": "out", "op": "emit", "params": {"output": OUTPUT}, "provenance": {"native": "dd_metrics_encode"}}),
+        json!({"id": "out", "op": "emit", "params": {"output": OUTPUT}}),
     ];
     let mut edges = vec![
         json!({"from": "src.metrics", "to": "pick.in"}),
         json!({"from": "pick.true", "to": "dsd_agg.in"}),
     ];
     if two {
-        nodes.push(
-            json!({"id": "second", "op": "aggregate", "provenance": {"native": "second"},
-                          "params": aggregate_params(second)}),
-        );
-        nodes.push(json!({"id": "join", "op": "merge", "provenance": {"native": "join"}, "params": {"inputs": 2}}));
+        nodes.push(json!({"id": "second", "op": "aggregate",
+                          "params": aggregate_params(second)}));
+        nodes.push(json!({"id": "join", "op": "merge", "params": {"inputs": 2}}));
         edges.extend([
             json!({"from": "pick.false", "to": "second.in"}),
             json!({"from": "dsd_agg.out", "to": "join.0"}),
@@ -827,7 +823,7 @@ fn branched_plan(two: bool, second: &str) -> Plan {
             json!({"from": "join.out", "to": "out.in"}),
         ]);
     } else {
-        nodes.push(json!({"id": "pick_false", "op": "drop", "provenance": {"native": "pick"}}));
+        nodes.push(json!({"id": "pick_false", "op": "drop"}));
         edges.extend([
             json!({"from": "pick.false", "to": "pick_false.in"}),
             json!({"from": "dsd_agg.out", "to": "out.in"}),
@@ -1638,14 +1634,13 @@ fn filtered_plan() -> Plan {
     Plan::from_value(json!({
         "ir_version": 1,
         "nodes": [
-            {"id": "src", "op": "source", "params": {"binding": "dogstatsd", "timestamps": "untimestamped"},
-             "provenance": {"native": "dsd_in"}},
-            {"id": "pick", "op": "split", "provenance": {"native": "pick"},
+            {"id": "src", "op": "source", "params": {"binding": "dogstatsd", "timestamps": "untimestamped"}},
+            {"id": "pick", "op": "split",
              "params": {"predicate": {"name": {"prefix_in": ["keep."]}}}},
-            {"id": "pick_false", "op": "drop", "provenance": {"native": "pick"}},
-            {"id": "dsd_agg", "op": "aggregate", "provenance": {"native": "dsd_agg"},
+            {"id": "pick_false", "op": "drop"},
+            {"id": "dsd_agg", "op": "aggregate",
              "params": aggregate_params("10s")},
-            {"id": "out", "op": "emit", "params": {"output": OUTPUT}, "provenance": {"native": "dd_metrics_encode"}},
+            {"id": "out", "op": "emit", "params": {"output": OUTPUT}},
         ],
         "edges": [
             {"from": "src.metrics", "to": "pick.in"}, {"from": "pick.true", "to": "dsd_agg.in"},
@@ -1905,13 +1900,22 @@ fn an_artifacts_state_owner_at_the_native_context_limit_is_within_the_artifact_m
     for limit in [1_000_000u64, 10_000_000] {
         let mut params = aggregate_params("30s");
         params["context_limit"] = json!(limit);
+        // The program of an artifact that replaces the scope after the source.
         let mut value = serde_json::to_value(plan_with(params)).unwrap();
-        value["provenance"] =
-            json!({"artifacts": [{"revision": 7, "hash": PlanHash::of_bytes(b"artifact").to_string()}]});
-        value["nodes"][1]["provenance"] =
-            json!({"artifact": {"revision": 7, "hash": PlanHash::of_bytes(b"artifact").to_string()}});
+        value["scopes"] = json!({"program": {"inputs": {"metrics": "src.metrics"}}});
+        value["provenance"] = json!({"artifacts": [
+            {"scope": "program", "revision": 7, "hash": PlanHash::of_bytes(b"artifact").to_string()}
+        ]});
         let plan = Plan::from_value(value).unwrap();
-        let report = Validator::new(&OperatorRegistry::native(), &catalog()).validate(&plan);
+        let catalog = catalog().with_scope_input("program".parse().unwrap(), "metrics".parse().unwrap(), PortType::ANY);
+        let report = Validator::new(&OperatorRegistry::native(), &catalog).validate(&plan);
+        assert!(
+            report
+                .bounds()
+                .iter()
+                .any(|bound| matches!(bound.scope, crate::validate::BoundScope::Artifact(_))),
+            "the aggregation is measured as the program's"
+        );
         assert!(
             report
                 .findings()

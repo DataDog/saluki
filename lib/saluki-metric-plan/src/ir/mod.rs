@@ -41,8 +41,8 @@ pub use self::params::{
 
 mod plan;
 pub use self::plan::{
-    ArtifactBase, ArtifactEdge, ArtifactNode, ArtifactRevision, BlobError, Blobs, Edge, Node, OutputDecl, Plan,
-    PlanProvenance, PolicyArtifact, Provenance, ReceivedArtifact, ScopeDecl, Scopes, BLOB_MEMBER,
+    ArtifactBase, ArtifactEdge, ArtifactNode, ArtifactRevision, BlobError, Blobs, ComposedArtifact, Edge, Node,
+    OutputDecl, Plan, PlanProvenance, PolicyArtifact, ReceivedArtifact, ScopeDecl, Scopes, BLOB_MEMBER,
 };
 
 mod resources;

@@ -2,8 +2,10 @@
 
 The design that follows the owner's decision that programs replace native policy
 ([direction](programmable-metrics-next.md#direction-programs-replace-native-policy)). Its goal: simplify as much as we
-can, so that the demo and the default program read well, with less magic. Phase 1 (parts A, C, F, G1, and H) is built,
-not committed: see [phase 1 as built](#105-phase-1-as-built); the rest is not built yet. Amendments 170 to 182 are in
+can, so that the demo and the default program read well, with less magic. Phase 1 (parts A, C, F, G1, and H) is
+committed (`cfd4a28072`): see [phase 1 as built](#105-phase-1-as-built). Phase 2 (parts B, D, and E, with the owner's
+later decisions: no node provenance, adoption, and a standalone configuration reload for the demo) is built, not
+committed: see [phase 2 as built](#106-phase-2-as-built). Part G2, the demo, is phase 3. Amendments 170 to 187 are in
 [the stages 7 and 9 plan](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments).
 
 ## Contents
@@ -17,7 +19,8 @@ not committed: see [phase 1 as built](#105-phase-1-as-built); the rest is not bu
 - [7. Step 4: one aggregation is the aggregation](#7-step-4-one-aggregation-is-the-aggregation)
 - [8. The editor and the demo](#8-the-editor-and-the-demo)
 - [9. What this lets us remove](#9-what-this-lets-us-remove)
-- [10. Implementation plan](#10-implementation-plan), and [phase 1 as built](#105-phase-1-as-built)
+- [10. Implementation plan](#10-implementation-plan), [phase 1 as built](#105-phase-1-as-built), and
+  [phase 2 as built](#106-phase-2-as-built)
 - [11. Assumptions](#11-assumptions)
 - [12. Open questions for the owner](#12-open-questions-for-the-owner)
 
@@ -94,7 +97,7 @@ and service checks. A program that needs it would bind a `host.name` fact; none 
 | Policy bindings and their liveness (`Startup` or `Live`) | Lowering only: the default program keeps them; artifacts cannot bind them (step 3). |
 | Hash-keyed routing-group bindings (`metrics_endpoint_routing.group.<16 hex>.*`, `BindingKey::RoutingGroup`) | Lowering only, never shown: the export writes the lists, and the emits as recipients. |
 | Outputs shaped by native routing (`metrics_routing_encode_<n>`, `Selector::Group`, the main output sending to every endpoint without a routing policy) | Lowering only: artifacts emit to recipients; composition maps a recipient set to such an output only when the sets are equal. |
-| Native authority bookkeeping (`compose.rs` `guards_authority`, `Feeds`) | Kept for now: [open question 2](#12-open-questions-for-the-owner). |
+| Native authority bookkeeping (`compose.rs` `guards_authority`, `Feeds`) | Removed in phase 2, with node provenance ([open question 2](#12-open-questions-for-the-owner)). |
 | Version 1 fingerprints and legacy recipient IDs | Removed ([9](#9-what-this-lets-us-remove)). |
 | Base staleness (`stale_base`) | Replaced in status by which program runs and which native settings differ ([3.3](#33-status)); removed later. |
 
@@ -689,11 +692,190 @@ Phase 1 built parts A, C (without C2), F, G1, and H, in the main checkout, not c
   is an artifact whose output delivers elsewhere: a new one is refused with `ReboundOutput` ("Rebase the artifact on
   the current export"), and one in effect runs degraded until republished.
 
-Notes for phase 2:
+Notes for phase 2 (taken up in [phase 2 as built](#106-phase-2-as-built)):
 
 - **D:** implied output IDs `to_<a>__<b>` are not identifiers (no double underscores), and URL names cannot be part
   of an ID at all: derive implied output IDs from the set's digest, or from a short label. The syntax needs a quoted
   form for URL names, as in `emit to ["http://127.0.0.1:17102"]`.
+
+### 10.6 Phase 2 as built
+
+Phase 2 built parts B, D, and E, and the owner's decisions made after this design: nodes have no provenance, a
+published program equal to the running plan adopts its generation, and standalone mode can reload its configuration
+file for the demo. It is in the main checkout, not committed. Amendments 183 to 188 record the changes to the model.
+
+**Ownership removed** (owner's decision; amendment 183). `Node.provenance` and `ir::Provenance` are gone; what a plan
+runs is a property of the plan. `PlanProvenance.artifacts` lists each composed artifact with the scope it replaces
+(`ComposedArtifact { scope, revision, hash }`), and the program of an artifact is every node of that scope's region
+(`export::program_nodes`, over `export::scope_members`), whether its author changed a node or kept it.
+
+- **What replaced each use.** The artifact limits, the `state_budget` warning, and placement's attribution of missing
+  structure apply to the program's nodes. Since a program holds every node of its scope, the limits rise to what the
+  default program has there (amendment 188, below). `trusted_host` is a property of the operator,
+  `OperatorDef::authorable` (`false` for `source` and `opaque_host`), checked on the program's nodes: a scope that holds
+  a host component cannot be replaced at all, even by its unmodified export (the plan crate's opaque-gateway fixtures,
+  never ADP's). A panic in a generation counts against the budget of the program it runs, in every region
+  (`PanicBudget::for_origin`; the driver's `with_artifact_nodes` and the per-node coverage are gone). Loss is attributed
+  to its node ID, and the program is the plan's provenance, which explain, now version 2, prints with its scope.
+- **Removed:** the rules `loss_authority`, `provenance_consistency`, and `provenance_namespace`; composition's
+  `guards_authority` and its `Feeds` and `Stream` analysis, so a node fed other records than natively is still the
+  default program's node when it does what that node does; the `provenance` aspect of plan diffs; and node provenance
+  in `explain`.
+- **Native components, a deviation.** R1's cost model prices native components, and ADP sizes a region's input by the
+  native components it replaces; both read, at boot, which native component each node stands for, which node
+  provenance carried. That is now `PlanProvenance.native_components` (a node lowering lists no component for is a
+  component of its own), which lowering writes, composition does not carry, and the hash leaves out, as all
+  plan-level provenance. It decides no ownership, loss, or reuse. The alternative, a host input to `Frame::compute`,
+  would have kept it out of the IR at the cost of every frame test.
+- **Native telemetry identity** still follows the reserved node ID and the operator (`telemetry_profiles.rs`), and
+  R5a and R6 now keep native filters whole by their reserved IDs, which is where native series report. The lowering
+  matrix test checks every lowered node's identity against its component.
+- **Hashes.** Node provenance was hashed, so every plan hash, fixture, and explain golden changed once: the plan crate's
+  `default-program.json` and `default-program-no-aggregation-pipeline-off.json` (provenance moved to
+  `native_components`), ADP's `every-branch.json`, the explain golden files (regenerated with
+  `SALUKI_METRIC_PLAN_UPDATE_EXPLAIN`), the JSON schemas (`SALUKI_METRIC_PLAN_UPDATE_SCHEMA`), and one hand-computed
+  hash in `ir/plan.rs`. Export hashes did not change: exports never carried provenance.
+
+**Precise updates and adoption** (owner's decision; amendment 184). Reuse is decided by operators, parameters, and
+edges only, compared by what they do: `export::operation_params` writes every binding as its value and folds literal
+predicates, and `export::operation_hash` hashes a plan with every node in that form, encoded by its operator when it
+decodes, so a set in another order is the same set. The core decides "unchanged" by the operation hash (`does`, beside
+`plan_hash`, which status keeps), kernels are keyed by the operation form (`KernelKey`), and the plan diff compares it.
+A published program whose composition does what the plan running does **adopts** its generation: the core records the
+new origin (`InstallerCore::adopt`, from `serve_unchanged`), replaces the plan it holds, and its hash, with the
+composition, which names the program in its provenance, and asks the host for
+`Action::Adopt { generation, origin }`; ADP sends every region `RegionControl::Adopt`, which gives the generation the
+program's panic budget. Nothing is built, cut, or drained. The default program takes a generation back the same way
+when the program is revoked. In the protocol, the config is acknowledged `active` on the **unchanged** generation ID,
+and status names the program (`active_artifact`, the active generation's origin, `program.runs: published`). A new
+generation ID with no physical change was rejected as more surprising: a generation ID names a physical installation
+(programs, kernels, leases, lineages), and every series and acknowledgment keyed by it would move for nothing. One
+consequence: an adopted generation can roll back, so a later artifact keeps it as last-known-good. The installer
+tests pin it: `install::unified_scope_tests::an_unmodified_export_of_the_one_scope_adopts_the_running_generation` (no
+preparation, so no kernel built; a reordered document adopts again as its revision; the revocation hands it back), and
+beside it a routing edit that rebuilds only the policy region's slots, a width edit that is a cut, and a renamed
+aggregation that keeps its state with no cut, fed otherwise or not.
+
+- **An adopted generation that fails** (found in review). If an artifact's generation exhausts its panic budget and the
+  revocation is processed before the region's report, the default program adopts it with a zero budget and the report
+  then fails a default-program generation, which cannot roll back: every metric would be dropped until the next
+  configuration change. The core marks a generation the default program adopted from an artifact
+  (`adopted_from_artifact`) and, when such a generation fails, asks for the default program, which gets a new
+  generation, since a candidate equal to a failed one is never unchanged. A default-program generation that was never
+  an artifact's still asks for nothing: under its zero budget a panic fails the region, as a native component does.
+  This was preferred to refusing the adoption of a generation with charged panics, which would need the regions'
+  ledgers in the core and still race with a report in flight. Test:
+  `a_generation_the_default_program_adopted_after_its_artifacts_budget_ran_out_is_replaced`.
+- **Revoking a program with implied outputs** makes two default-program generations: one at once, while the program's
+  artifact is still held and its implied outputs declared, and one when its demand is gone and lowering drops them.
+  The second differs only in its output declarations, so it is a commit that reuses every kernel; avoiding it would
+  need the core to tell an unused output declaration from a change, which it does not.
+
+**B: the detached export.** `export::export_as(plan, scope, catalog, labels, ExportForm::Detached)` writes policy
+bindings as their resolved values, keeps facts and signals bound, folds literal `flag` and `is_empty`
+(`Predicate::fold_literals`, with the junctions they decide), and addresses native outputs to their recipients (see D).
+The bundle has `form`. ADP's route serves `detached` by default and `bound` for `?form=bound`. Deviations:
+
+- **The base is the bound export's.** The detached artifact records the bound export's base, so composing it is no
+  stale base, and `status.default_program_hash` is unchanged. A client therefore refetches on structural changes only;
+  `program.differs` says when native values changed.
+- **`program` in status** is `{runs, native_policy, differs}` (`channel::ProgramStatus`): `runs` is `default` or
+  `published`, from the active generation's origin; `native_policy` is `applied` or `not_applied`. There is no
+  `partly_applied` and no `bound` list: with E in place, ADP never runs a program that binds a policy setting.
+  `differs` (`export::policy_differences`) lists each policy binding of a default-program node whose value at the
+  binding's place in the running node differs, or whose node or place the program does not have; a node kept
+  unmodified lists nothing. ADP logs one `info` line per native policy value that changes while a published program
+  runs.
+- **Comparison by value** (`same_operation`): parameters as written, or else both sides in their operation form. A
+  node written as the default program writes it is the default program's, bindings and all. A node that matches only
+  by value, such as a literal equal to a binding's value, is unmodified but composes as the artifact writes it (fixed
+  in review: it was the default program's node, still bound, so a native change made a generation that did nothing
+  new, and another when the value returned). So a detached program never follows native policy: a native policy change
+  recomposes it to a plan that does what the running one does, and no generation is made. ADP's
+  `a_native_policy_change_under_an_adopted_detached_program_changes_nothing_and_neither_does_its_return` pins it, and
+  the edited-program test keeps generation 2 through the change. `policy_differences` skips a node that does what the
+  default program's does.
+
+**D: emits addressed to recipients.** `emit` takes exactly one of `output` and `to` (`operators::EMIT_TO`, a list of
+recipient names); the syntax writes `emit to [primary, "https://127.0.0.1:17102"]`, a name bare when it is an
+identifier and quoted otherwise. Validation refuses a plan's `emit` with `to` (`declared_output`): composition resolves
+it.
+
+- **Composition** resolves each `to` through the directory to its recipients, which must lie on one host, and
+  `Catalog::output_for` gives the output with exactly those recipients, which the `emit` then names; it records no
+  fingerprint. A new artifact waits for an unknown name (`ComposeError::UnknownRecipient`) or for an output for its
+  recipients (`PendingRecipients`), and is refused for recipients of two hosts (`RecipientsOnTwoHosts`) or a set the
+  host does not add an output for (`NoOutputFor`, from `Catalog::implied_output_refused`). The artifact in effect turns
+  such an `emit` into a counted drop and runs degraded (`DropTarget::Recipients`).
+- **Demand and implied outputs.** `compose::demanded_outputs` returns each distinct set an artifact's `emit`s address,
+  with the first `emit` that addresses it. ADP computes the demand of every program the core holds
+  (`InstallerCore::held_policy_artifacts`: in effect, installing, active, kept, waiting) and lowers again whenever it
+  changes, after every installer event, so a waiting program's implied output is added and one nobody asks for retires.
+  Lowering (`resources::imply`, through `Demanded`) adds one output per set no output serves: on `dd_out`, with the
+  encoder native configuration builds for an endpoint routing group of those endpoints (or the main output without the
+  others), selector `Selector::Recipients` (new), and native provenance. Implied and declared outputs together number at
+  most `MAX_DECLARED_OUTPUTS`, counted over the demand of every program the core holds, which is what exists together:
+  a replacement's outputs are built before it runs and the running program's retire after it, so a replacement that
+  asks for nine new sets beside a running program's nine is refused. The refusal says so.
+- **The implied output ID rule:** `implied_`, the local ID of the first `emit`, in node ID order, that addresses the
+  set, and `_` with the first eight hexadecimal digits of the SHA-256 digest of the set's recipient IDs (each followed
+  by a newline), the `emit`'s part cut to fit the 63 bytes of an identifier, and the whole numbered `_2`, `_3`, and so
+  on after a collision; an implied output keeps the ID it had in the lowering before while any program asks for its set,
+  so renaming an `emit` later renames nothing. The digest makes the ID the set's (fixed in review): an `emit` whose
+  recipients change asks for another set, which gets another ID, so telemetry under one ID always means one set. No
+  recipient name is ever part of an ID. For example, the branch `to_team_b`'s inline `emit to [...]` on its `true` port
+  is the node `to_team_b_true`, whose output is `implied_to_team_b_true_e7b845f5`.
+- **The detached export addresses native outputs to their recipients** wherever a set of directory names stands for
+  exactly an output's recipients and `output_for` gives that output back, so composing it maps each `emit` to its
+  native output and the plan hash is unchanged: `emit to [primary, "https://..."]` for a main output that dual-ships,
+  `emit to ["https://..."]` for a routing group, `emit to [mrf]`, `emit to [cluster_agent]`. The client telemetry tap,
+  which has no recipients, stays `emit dsd_client_telemetry`.
+- **Simpler than designed:** implied outputs are added on `dd_out` only, for native recipients. A set on another host
+  (only the Cluster Agent's could lack an output, while autoscaling failover is off) or with a recipient a resources
+  artifact declares is refused, with the reason; a resources artifact's own outputs still serve its recipients. The
+  `cluster_agent` recipient therefore still runs only while autoscaling failover requests its branch.
+- **Found on the way:** the duplicate analysis grouped outputs that share a recipient transitively, so copies to two
+  implied outputs with no recipient in common, beside the main output that shares one with each, were refused. It now
+  compares only paths whose outputs share a recipient (amendment 187).
+
+**Program limits** (found in review; amendment 188). A program is every node of its scope, so the artifact limits
+measured every node, and an unmodified export of a native configuration beyond a limit, such as a 128 MiB mapper
+interner (`artifact_memory`) or a routing tee with a port for each of 40 routing groups (`tee_fan_out`), could not be
+published at all. Composition now validates against the default program (`Validator::with_baseline`), and each limit
+rises to the default program's own measure in the program's scope, where that is more: node count, predicate leaves,
+and declared memory for the program, fan-out by copying node, and work per input by entry node. A program may keep
+what native configuration sized the host for, but not grow past it, and is held to the limits wherever the default
+program is within them, so the limits keep their meaning for what an author adds. Measuring growth over the default
+program instead would have let an author add up to the limit beyond any native size; exempting unmodified nodes would
+have let a modified node keep its native size only by luck of correspondence. The validation report keeps the
+baselines, so a rewritten plan is checked against the same limits. ADP's export tests pin both cases.
+
+**E: facts and signals only.** `Catalog::detached_programs` (a `MemoryCatalog` member, `detached_programs`) makes
+composition refuse a node, kept or not, that binds a policy binding, before anything is resolved:
+`ComposeError::PolicyBinding { node, binding, value, allowed }`, whose message gives the value to write and the facts
+and signals the host declares (`Catalog::facts_and_signals`). ADP's catalog declares it; the plan crate's fixtures do
+not. The demo places the error at the binding's text.
+
+**Composition pass order, as built:** inline blobs; refuse policy bindings (E); assign plan IDs, with the one
+aggregation (F); resolve `to` into outputs (D); compare by value (B); keep, modify, or add each node, resolving the
+bindings of the nodes not kept; check the fingerprints of output-addressed `emit`s.
+
+**Standalone configuration reload** (owner's decision; amendment 185). Saluki-only
+`experimental.standalone_config_reload.enabled` (default `false`) and `.interval` (default `1s`), both read at startup:
+standalone mode then re-reads its configuration file every interval and applies a change through the path connected
+mode's updates use (the file and environment merged again, environment precedence as at startup, translated and
+validated whole, live views woken), rejecting an unreadable or invalid file with a warning and keeping the last
+configuration it accepted. Restart-only keys stay restart-only, since their consumers read the configuration once. It
+exists only for the demo. A change is taken once two consecutive reads agree, so a file caught while it is written is
+never applied; the file is read off the async runtime, an interval under 100 milliseconds is raised to it with a
+warning, and connected mode warns once that the setting does not apply there. The demo launcher writes the file
+atomically. ADP tests: an endpoint added to the file becomes a live recipient, one removed drains and retires, an
+invalid file is reported and changes nothing (`standalone_reload_tests.rs`); the configuration system's tests add a
+half-written file, a removed key returning to its default, a deleted and recreated file, and `BeforeFile` precedence,
+and prove each rejected file was read.
+
+**Left for phase 3:** the demo's configuration, scenarios, and "Add destination" (part G2), the headless check's new
+steps (S2's recipe, S15), and dropping resources artifacts from the demo.
 
 
 ## 11. Assumptions
@@ -716,7 +898,11 @@ Each minimizes surprise for operators and contributors, and can be revisited.
 1. **Recipients declared in configuration** (`experimental.programmable_metrics.resources.recipients`), recommended for
    the demo's teams B and C and as the operator's path to destinations only programs route to. Accept the new
    Saluki-only key, or seed the resources product at the demo's launch instead?
+   *Decided by the owner (2026-10-14): neither. Native `additional_endpoints` declare destinations, named by their URLs,
+   and the demo adds them live through the standalone configuration reload; part C2 is dropped.*
 2. **Provenance under a published program.** Today an unmodified lossy node of a published program keeps native
    provenance, so its loss is attributed to native configuration and its panics fail the component. Under "programs
    own policy", should every node of a published program be the program's (simpler, and removes `guards_authority`),
    at the cost of S0 making a stateless generation? Assumed: keep today's rule for now.
+   *Decided by the owner (2026-10-14): drop node provenance entirely, and keep S0 free of a generation by adoption.
+   Built in [phase 2](#106-phase-2-as-built).*

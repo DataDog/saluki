@@ -770,7 +770,8 @@ opaque_reference!(
 
 const NATIVE_COMPONENT_ID_PATTERN: &str = "^[A-Za-z0-9](?:[A-Za-z0-9_]*[A-Za-z0-9])?$";
 
-/// The identifier of a native component, as used in node provenance.
+/// The identifier of a native component: what lowering says a node stands for, and what an output's encoder telemetry
+/// reports under.
 ///
 /// Native component identifiers contain only ASCII letters, digits, and underscores, and start and end with a letter or
 /// digit.

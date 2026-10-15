@@ -248,7 +248,7 @@ fn large_observations_compare_exactly_after_scaling() {
 
 /// A node with native provenance of its own.
 fn node(id: &str, op: &str, params: Value) -> Value {
-    json!({"id": id, "op": op, "params": params, "provenance": {"native": id}})
+    json!({"id": id, "op": op, "params": params})
 }
 
 fn namer(nodes: &[NodeId]) -> Result<NativeComponentId, String> {

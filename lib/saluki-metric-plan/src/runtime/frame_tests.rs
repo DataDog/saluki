@@ -399,7 +399,7 @@ fn arb_plan_params_of(distinct: usize) -> impl Strategy<Value = PlanParams> {
 /// A node with native provenance of its own, so that lossy and host nodes have authority, and so that R1's cost model
 /// may cut between any two nodes, as it cuts between native components.
 fn node(id: &str, op: &str, params: Value) -> Value {
-    json!({"id": id, "op": op, "params": params, "provenance": {"native": id}})
+    json!({"id": id, "op": op, "params": params})
 }
 
 fn kernel_node(id: &str, kind: KernelKind, params: &NodeParams) -> Value {

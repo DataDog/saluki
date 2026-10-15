@@ -73,12 +73,14 @@
 //! acknowledges, or proposes the artifact it holds, composed into the default program ADP last lowered, with its
 //! catalog. While an artifact is in effect, each configuration change composes it again against the new default
 //! program ([`InstallerCore::on_default_program`]), so native configuration still reaches it through its bindings.
-//! The core's actions are performed as for any candidate. A preparation's panic budget is zero for the default program,
-//! and, for an artifact, [`PanicBudget::ARTIFACT`] in the regions where the composed plan places a node with the
-//! artifact's provenance, and zero in the others, which run native nodes only. Even in those regions the budget covers
-//! only the nodes with the artifact's provenance: a panic in a native node, such as host enrichment beside the policy
-//! region, fails the region as the native component does. When a region fails an artifact generation, the core rolls
-//! back to the generation kept as last-known-good, or asks for the default program.
+//! The core's actions are performed as for any candidate. A preparation's panic budget is the budget of the program it
+//! runs, in every region: zero for the default program, so that a panic fails its region as a native component's does,
+//! and [`PanicBudget::ARTIFACT`] for a published program, covering every node it runs, whether its author changed the
+//! node or kept it. When a region fails an artifact generation, the core rolls back to the generation kept as
+//! last-known-good, or asks for the default program. A published program whose composed plan equals the plan running
+//! adopts its generation ([`Action::Adopt`]): nothing is built, cut, or drained, the generation keeps its ID, and only
+//! its origin changes, in status and in every region's panic budget; the default program takes a generation back the
+//! same way when the program is revoked.
 //!
 //! After every event, the worker reports the core's acknowledgments and its status summary back through the channel
 //! ([`InstallerCore::apply_states`]), with the base program hash of the default program's export and whether ADP is
@@ -146,19 +148,21 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_metric_plan::runtime::state::BudgetRecordings;
 use saluki_metric_plan::{
     canonical::PlanHash,
-    channel::{artifact_channel, ApplyStates, ArtifactProduct, ArtifactSnapshot, InstallerEnd, TransportEnd},
-    compile::{compile, compile_unvalidated, place_unvalidated, Frame, LeaseTable, RegionProgram, SlotId},
-    compose::{compose_all, Approval, ComposeError, Composed, Composer},
+    channel::{
+        artifact_channel, ApplyStates, ArtifactProduct, ArtifactSnapshot, InstallerEnd, ProgramRuns, TransportEnd,
+    },
+    compile::{compile, compile_unvalidated, Frame, LeaseTable, RegionProgram, SlotId},
+    compose::{compose_all, demanded_outputs, Approval, ComposeError, Composed, Composer, Demand},
     explain::Explain,
-    export::{base, export, Annotations, ExportBundle},
+    export::{base, export_as, policy_differences, Annotations, ExportBundle, ExportForm},
     install::{
         Action, ArmCut, Candidate, CandidateId, CreditKey, CutDeferReason, CutPhase, GenerationState, InstallerConfig,
         InstallerCore, InstallerStatus, LeaseRef, Origin, Outcome, PendingReason, Prepare, PrepareOutcome, PrepareSite,
         RecipientRef, Report, ResourcesEvent, ResourcesRevision, RetirementReport, SlotPrepare, StateBinding,
     },
     ir::{
-        ArtifactRevision, CredentialRef, HostId, NodeId, OutputId, Plan, Provenance, ReceivedArtifact,
-        ResourceProvenance, ScopeName,
+        ArtifactRevision, CredentialRef, HostId, NodeId, OutputId, Plan, ReceivedArtifact, ResourceProvenance,
+        ScopeName,
     },
     limits,
     operators::{LaneBinding, LaneCell, OperatorRegistry},
@@ -511,6 +515,7 @@ impl ProgrammableMetrics {
             boot_credits: boot.admitted.clone(),
             validate_resources: saluki_metric_plan::resources::validate,
             lowered_resources: lowered.resources,
+            lowered_demand: Vec::new(),
             missing_credentials: BTreeSet::new(),
             retired_recipients: RetiredRecipients::default(),
         };
@@ -668,8 +673,13 @@ pub struct PlanStatus {
     /// when one is connected.
     pub apply_states: ApplyStates,
 
-    /// The export of every scope of the default program last lowered, by scope, or why the scope cannot be exported.
+    /// The export of every scope of the default program last lowered, by scope, or why the scope cannot be exported,
+    /// in the detached form a published program starts from: its policy settings written as their current values.
     pub exports: BTreeMap<ScopeName, Result<Arc<ExportBundle>, String>>,
+
+    /// The same exports in the bound form, as the default program binds its policy settings, for tools that study
+    /// lowering.
+    pub bound_exports: BTreeMap<ScopeName, Result<Arc<ExportBundle>, String>>,
 
     /// The default program last lowered, with every configuration binding resolved: the plan artifacts are composed
     /// into, and the exports are taken from.
@@ -1056,8 +1066,12 @@ impl ChannelEnd {
 struct DefaultProgramView {
     /// The catalog the default program was lowered and validated with.
     catalog: AdpCatalog,
-    /// The export of every scope of the default program, or why the scope cannot be exported.
+    /// The export of every scope of the default program, or why the scope cannot be exported, detached.
     exports: BTreeMap<ScopeName, Result<Arc<ExportBundle>, String>>,
+    /// The same exports, bound.
+    bound_exports: BTreeMap<ScopeName, Result<Arc<ExportBundle>, String>>,
+    /// The catalog's document form, as exports carry it, which says which bindings are policy settings.
+    document: saluki_metric_plan::validate::MemoryCatalog,
     /// The base program hash an artifact derived from the export of each scope records, for every scope whose base can
     /// be computed.
     bases: BTreeMap<ScopeName, PlanHash>,
@@ -1070,19 +1084,22 @@ impl DefaultProgramView {
         plan: &Plan, catalog: AdpCatalog, labels: &BTreeMap<OutputId, String>, annotations: &BTreeMap<NodeId, String>,
     ) -> Self {
         let document = catalog.to_document();
-        let exports = plan
-            .scopes
-            .keys()
-            .map(|scope| {
-                let bundle = export(plan, scope, &document, labels)
-                    .map(|mut bundle| {
-                        bundle.annotations = export_annotations(&bundle, annotations);
-                        Arc::new(bundle)
-                    })
-                    .map_err(|error| error.to_string());
-                (scope.clone(), bundle)
-            })
-            .collect();
+        let exports_as = |form: ExportForm| {
+            plan.scopes
+                .keys()
+                .map(|scope| {
+                    let bundle = export_as(plan, scope, &document, labels, form)
+                        .map(|mut bundle| {
+                            bundle.annotations = export_annotations(&bundle, annotations);
+                            Arc::new(bundle)
+                        })
+                        .map_err(|error| error.to_string());
+                    (scope.clone(), bundle)
+                })
+                .collect()
+        };
+        let exports = exports_as(ExportForm::Detached);
+        let bound_exports = exports_as(ExportForm::Bound);
         let bases = plan
             .scopes
             .keys()
@@ -1101,7 +1118,9 @@ impl DefaultProgramView {
         Self {
             catalog,
             exports,
+            bound_exports,
             bases,
+            document,
         }
     }
 }
@@ -1143,6 +1162,7 @@ fn output_labels(outputs: &NativeOutputs) -> BTreeMap<OutputId, String> {
                 OutputKind::Declared { name, label } => {
                     label.clone().unwrap_or_else(|| format!("Declared output {}", name))
                 }
+                OutputKind::Implied { emit } => format!("Implied output of emit {}", emit),
             };
             (output.decl.id.clone(), label)
         })
@@ -1348,6 +1368,8 @@ struct Installer {
     validate_resources: product::Validate,
     /// The outputs, recipients, and host settings of the last lowering.
     lowered_resources: NativeResources,
+    /// The demand of the programs the core held at the last lowering, which it added implied outputs for.
+    lowered_demand: Vec<Demand>,
     /// The declared credentials the resources artifacts the core holds reference that the configuration does not
     /// configure, as the core was last told.
     missing_credentials: BTreeSet<CredentialRef>,
@@ -1513,6 +1535,11 @@ impl Installer {
             }
         };
         self.actions.extend(actions);
+        // The programs the core holds may have changed: one that emits to recipients no output delivers to waits for
+        // the implied output its demand asks for, which lowering adds, and an implied output no program asks for any
+        // more retires.
+        let actions = self.follow_demand();
+        self.actions.extend(actions);
     }
 
     /// Hands an acknowledgment to the core, or logs one the core does not take.
@@ -1630,7 +1657,41 @@ impl Installer {
     fn propose_default_program(&mut self, current: &SalukiConfiguration) -> Vec<Action> {
         let mut actions = self.tell_missing_credentials(current, &[]);
         actions.extend(self.propose_lowered(current));
+        // The lowering may name recipients its directory did not have, which a program's demand asks for.
+        actions.extend(self.follow_demand());
         actions
+    }
+
+    /// Returns the demand of every program the core holds: one set of recipients per distinct set their `emit`s address
+    /// ([`demanded_outputs`]), resolved through the recipient directory of the default program last lowered.
+    fn demand(&self) -> Vec<Demand> {
+        let mut demand = self
+            .core
+            .held_policy_artifacts()
+            .into_iter()
+            .filter_map(|artifact| demanded_outputs(artifact, &self.default_program.catalog).ok())
+            .flatten()
+            .collect::<Vec<_>>();
+        // One per set: the first program's `emit`, in node ID order, names its output.
+        demand.sort();
+        demand.dedup_by(|later, earlier| later.host == earlier.host && later.recipients == earlier.recipients);
+        demand
+    }
+
+    /// Lowers the configuration again if the demand of the programs the core holds changed since the last lowering, so
+    /// that lowering adds the implied outputs a program waits for, and retires those no program asks for any more.
+    fn follow_demand(&mut self) -> Vec<Action> {
+        let sets = |demand: &[Demand]| {
+            demand
+                .iter()
+                .map(|demand| (demand.host.clone(), demand.recipients.clone()))
+                .collect::<Vec<_>>()
+        };
+        if sets(&self.demand()) == sets(&self.lowered_demand) {
+            return Vec::new();
+        }
+        let current = SalukiConfiguration::clone(&self.config);
+        self.propose_lowered(&current)
     }
 
     /// Lowers the configuration, with the accepted resources artifact, into the default program and proposes it,
@@ -1643,7 +1704,14 @@ impl Installer {
         let declared = accepted
             .as_ref()
             .map(|(artifact, provenance)| Declared { artifact, provenance });
-        let lowered = match self.lowering.lower_after(current, declared, &self.lowered_resources) {
+        let demand = self.demand();
+        // Recorded whether or not the lowering succeeds, so that a lowering that fails is tried again at the next
+        // change of the demand or the configuration, not after every event.
+        self.lowered_demand = demand.clone();
+        let lowered = match self
+            .lowering
+            .lower_after(current, declared, &demand, &self.lowered_resources)
+        {
             Ok(lowered) => lowered,
             Err(error) => {
                 let error = format!("{:#}", error);
@@ -1668,7 +1736,9 @@ impl Installer {
         let labels = output_labels(&lowered.resources.outputs);
         if *plan != *self.last_lowered || lowered.catalog != self.default_program.catalog || labels != self.labels {
             self.labels = labels;
-            self.default_program = DefaultProgramView::of(&plan, lowered.catalog, &self.labels, &lowered.annotations);
+            let view = DefaultProgramView::of(&plan, lowered.catalog, &self.labels, &lowered.annotations);
+            self.note_native_policy_changes(&view.document);
+            self.default_program = view;
         }
         self.last_lowered = Arc::clone(&plan);
         for (output, was, is) in lowered
@@ -1754,6 +1824,23 @@ impl Installer {
                 self.actions.extend(actions);
             }
             Action::Report(report) => self.report(report),
+            Action::Adopt { generation, origin } => {
+                // Nothing is built, cut, or drained: every region gives the generation the panic budget of the program
+                // it now runs, and the active plan's explain document is made again, since its provenance names that
+                // program.
+                let budget = PanicBudget::for_origin(&origin);
+                for region in &self.regions {
+                    drop(region.send(RegionControl::Adopt { generation, budget }));
+                }
+                info!(generation = %generation, origin = %origin, "A generation now runs {}.", origin);
+                if self
+                    .active_plan
+                    .as_ref()
+                    .is_some_and(|active| active.generation == generation)
+                {
+                    self.active_plan = None;
+                }
+            }
             Action::ArmCut(arm) => self.arm_cut(arm).await,
             Action::WatchCut { generation, at } => self.watch_cut(generation, at),
             Action::CancelCut { generation, old } => self.cancel_cut(generation, old).await,
@@ -2054,16 +2141,14 @@ impl Installer {
         }
         let usage = self.budget.usage();
         self.telemetry.resource_budget(usage.granted, usage.used);
-        let (budgets, artifact_nodes) = self.preparing_budgets(id);
+        // A preparation the core replaced before it was sent gets the default program's budget: the regions'
+        // acknowledgments of it are ignored.
+        let budget = self.preparing_budget(id);
 
         // Each slot's preparation, built for the lanes its region runs on.
         let work = slots
             .into_iter()
             .map(|slot| {
-                let budget = budgets
-                    .get(slot.slot.get())
-                    .copied()
-                    .unwrap_or(PanicBudget::DEFAULT_PROGRAM);
                 let lanes = self
                     .core
                     .frame()
@@ -2077,7 +2162,7 @@ impl Installer {
             work.into_iter()
                 .map(|(slot, budget, lanes)| {
                     let slot_id = slot.slot;
-                    let message = region_preparation(telemetry, &generation, slot, budget, &artifact_nodes, lanes);
+                    let message = region_preparation(telemetry, &generation, slot, budget, lanes);
                     (slot_id, message)
                 })
                 .collect::<Vec<_>>()
@@ -2112,21 +2197,21 @@ impl Installer {
         self.prepare_hosts(id, hosts);
     }
 
-    /// Returns the panic budget of every slot, in slot order, for generation `id`, which the core is preparing (see
-    /// [`slot_budgets`]), and the nodes the budgets cover: those with an artifact's provenance.
-    fn preparing_budgets(&self, id: GenerationId) -> (Vec<PanicBudget>, BTreeSet<NodeId>) {
-        let preparing = self.core.status().preparing.filter(|preparing| preparing.id == id);
-        match (preparing, self.core.preparing_plan()) {
-            (Some(preparing), Some(plan)) => (
-                slot_budgets(plan, &preparing.origin, &self.registry, self.core.frame()),
-                artifact_nodes(plan),
-            ),
-            // A preparation the core replaced before it was sent: the regions' acknowledgments of it are ignored.
-            _ => (
-                vec![PanicBudget::DEFAULT_PROGRAM; self.core.frame().slots().len()],
-                BTreeSet::new(),
-            ),
-        }
+    /// Returns the panic budget of generation `id`, which the core is preparing: the budget of the program it runs,
+    /// in every region ([`PanicBudget::for_origin`]).
+    ///
+    /// A published program's budget covers every node it runs, whether its author changed the node or kept it as the
+    /// default program has it, and a panic past it rolls the program back; the default program's is zero, so a panic
+    /// fails its region as a native component's does. A generation whose origin changes later, adopted by a published
+    /// program equal to it or taken back by the default program, is given its new budget then ([`Action::Adopt`]).
+    fn preparing_budget(&self, id: GenerationId) -> PanicBudget {
+        self.core
+            .status()
+            .preparing
+            .filter(|preparing| preparing.id == id)
+            .map_or(PanicBudget::DEFAULT_PROGRAM, |preparing| {
+                PanicBudget::for_origin(&preparing.origin)
+            })
     }
 
     /// Records what happened to a candidate, in telemetry, the logs, and status.
@@ -2313,6 +2398,35 @@ impl Installer {
         }
     }
 
+    /// Logs each native policy setting whose value differs in `next`, the catalog of the default program just lowered,
+    /// from the last one, while a published program runs: the program owns its policy, so the change reaches the
+    /// default program only, and status lists the setting under `program.differs`.
+    fn note_native_policy_changes(&self, next: &saluki_metric_plan::validate::MemoryCatalog) {
+        let Some(Origin::Artifact { revision, .. }) = self.core.status().active.map(|active| active.origin) else {
+            return;
+        };
+        let previous = &self.default_program.document;
+        for (name, binding) in next.bindings() {
+            if binding.class != saluki_metric_plan::validate::BindingClass::Policy {
+                continue;
+            }
+            let was = previous
+                .bindings()
+                .find(|(other, _)| *other == name)
+                .and_then(|(_, other)| other.value.as_ref());
+            if was.is_some() && was != binding.value.as_ref() {
+                info!(
+                    binding = %name,
+                    revision,
+                    "`{}` changed; the published program (revision {}) owns its policy, so the change applies to the \
+                     default program only; revoke the program, or publish one with the new value, to apply it.",
+                    name,
+                    revision
+                );
+            }
+        }
+    }
+
     /// Returns the installer's current status.
     fn current_status(&mut self) -> PlanStatus {
         let installer = self.core.status();
@@ -2344,11 +2458,17 @@ impl Installer {
             .iter()
             .filter_map(|(host, link)| Some((host.to_string(), link.status()?)))
             .collect::<BTreeMap<_, _>>();
-        let apply_states = self.artifact_paths.apply_states(
+        let mut apply_states = self.artifact_paths.apply_states(
             &self.core,
             &self.default_program.bases,
             self.degraded_reason(&host_status),
         );
+        // A published program owns its policy: status names the native settings it does not run as they are now.
+        if let (Some(program), Some(active)) = (apply_states.status.program.as_mut(), self.core.active_plan()) {
+            if program.runs == ProgramRuns::Published {
+                program.differs = policy_differences(&self.last_lowered, active, &self.default_program.document);
+            }
+        }
         let resources = status::resources_view(status::Parts {
             hosts: self.lowering.hosts(),
             table: self.core.resource_table(),
@@ -2369,6 +2489,7 @@ impl Installer {
             overdue,
             apply_states,
             exports: self.default_program.exports.clone(),
+            bound_exports: self.default_program.bound_exports.clone(),
             default_program: Arc::clone(&self.last_lowered),
             resources,
             recipients: status::recipient_entries(self.core.resource_table(), &host_status, &self.retired_recipients),
@@ -2420,7 +2541,10 @@ impl Installer {
             return Some(Arc::clone(cached));
         }
         let plan = Arc::clone(self.core.active_plan()?);
-        let report = Validator::new(&self.registry, &self.default_program.catalog).validate(&plan);
+        // Measured against the default program, as composition measures a program.
+        let report = Validator::new(&self.registry, &self.default_program.catalog)
+            .with_baseline(&self.last_lowered)
+            .validate(&plan);
         // The rewrites section lists what compiling the active generation considered, as the core recorded it.
         let rewrites = self.core.active_rewrites().unwrap_or_default();
         let explain = Explain::of(&plan, &self.registry, &report).with_rewrites(rewrites);
@@ -2455,15 +2579,6 @@ impl Installer {
     }
 }
 
-/// Returns the nodes of `plan` with an artifact's provenance: those an artifact generation's panic budget covers.
-fn artifact_nodes(plan: &Plan) -> BTreeSet<NodeId> {
-    plan.nodes
-        .iter()
-        .filter(|node| matches!(node.provenance, Some(Provenance::Artifact(_))))
-        .map(|node| node.id.clone())
-        .collect()
-}
-
 /// Runs `work`, which blocks its thread for a while, such as building kernels, so that it holds up no other task: on a
 /// worker of a multi-thread runtime, the runtime hands the worker's other tasks to other threads while it runs, and
 /// elsewhere it runs inline.
@@ -2491,8 +2606,7 @@ fn blocking<R>(work: impl FnOnce() -> R) -> R {
 ///
 /// Returns an error if a kernel fails to build.
 fn region_preparation(
-    telemetry: &RegionTelemetry, generation: &GenerationRef, slot: SlotPrepare, budget: PanicBudget,
-    artifact_nodes: &BTreeSet<NodeId>, lanes: u16,
+    telemetry: &RegionTelemetry, generation: &GenerationRef, slot: SlotPrepare, budget: PanicBudget, lanes: u16,
 ) -> Result<PrepareRegion, RegionError> {
     // Every part of the core's preparation of the slot is named, so that none is left behind: a region reuses the
     // instances it holds for the kernels the preparation does not list to build, whether or not the program is
@@ -2509,10 +2623,8 @@ fn region_preparation(
     if lanes <= 1 {
         // Kernels are built off the data path, each in its own resource group under its region's.
         let kernels = build_kernels(&program, &build, |node| telemetry.kernel_context(&program, node))?;
-        // The budget covers the artifact's nodes only: a native node's panic fails the region.
         return Ok(
             PrepareRegion::new(generation.clone(), program, kernels, budget, telemetry)
-                .with_artifact_nodes(artifact_nodes.iter().cloned())
                 .with_state_bindings(state)
                 .with_leases(leases),
         );
@@ -2548,50 +2660,9 @@ fn region_preparation(
         .collect::<Result<Vec<_>, RegionError>>()?;
     Ok(
         PrepareRegion::new(generation.clone(), program, Vec::new(), budget, telemetry)
-            .with_artifact_nodes(artifact_nodes.iter().cloned())
             .with_leases(leases)
             .with_lanes(shares),
     )
-}
-
-/// Returns the panic budget of every slot of `frame`, in slot order, for a generation of `origin` that runs `plan`.
-///
-/// A default program's budget is zero in every slot. An artifact's budget applies only in the slots where `plan`
-/// places a node with artifact provenance: a slot that runs native nodes only fails on a panic as the native component
-/// does, so that a native kernel's panic is never charged to the artifact, nor survived silently. In a slot that runs
-/// both kinds of node, the budget covers the artifact's nodes ([`artifact_nodes`]), and a native node's panic fails
-/// the region all the same.
-fn slot_budgets(plan: &Plan, origin: &Origin, registry: &OperatorRegistry, frame: &Frame) -> Vec<PanicBudget> {
-    let budget = PanicBudget::for_origin(origin);
-    let slots = frame.slots().len();
-    if budget == PanicBudget::DEFAULT_PROGRAM {
-        return vec![budget; slots];
-    }
-    let artifact_nodes = artifact_nodes(plan);
-    match place_unvalidated(plan, registry, frame) {
-        Ok(placement) => placement
-            .slots()
-            .iter()
-            .map(|slot| {
-                if slot.nodes.iter().any(|node| artifact_nodes.contains(node)) {
-                    budget
-                } else {
-                    PanicBudget::DEFAULT_PROGRAM
-                }
-            })
-            .collect(),
-        // The core placed the plan into the frame to prepare it, so it places again. If it did not, nothing tells the
-        // artifact's slots from the others: all of them get the artifact's budget, which still covers the artifact's
-        // nodes only.
-        Err(error) => {
-            warn!(
-                error = %error,
-                "The plan being prepared cannot be placed into the frame again: every region runs it with the \
-                 artifact's panic budget."
-            );
-            vec![budget; slots]
-        }
-    }
 }
 
 /// Polls the admission points once the next poll of the cut in flight is due, returning the cut's generation and what

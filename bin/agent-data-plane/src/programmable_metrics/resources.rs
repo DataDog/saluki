@@ -79,6 +79,7 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_metric_plan::{
     canonical::PlanHash,
     compile::FrameHosts,
+    compose::Demand,
     extension::DeliveryPolicy,
     ir::{
         ArtifactRevision, CredentialRef, HostBinding, HostId, NativeComponentId, OutputBinding, OutputDecl, OutputId,
@@ -306,6 +307,13 @@ pub enum OutputKind {
         /// The output's display label, if the artifact gives one.
         label: Option<String>,
     },
+
+    /// An output lowering adds for the recipients a program's `emit`s address when no other output delivers to exactly
+    /// them: an **implied output** (see [`Demanded`]).
+    Implied {
+        /// The local ID of the `emit` its ID was derived from.
+        emit: String,
+    },
 }
 
 /// An output of the metrics path.
@@ -385,6 +393,53 @@ impl NativeOutputs {
     }
 }
 
+/// What lowering adds outputs for beside native configuration and the resources artifact: the **demand** of the
+/// programs the installer holds, one set of recipients per distinct set their `emit`s address
+/// ([`demanded_outputs`][saluki_metric_plan::compose::demanded_outputs]), and the outputs of the resolution before,
+/// whose implied outputs keep their IDs.
+///
+/// For each set no output delivers to exactly, lowering adds an **implied output**: one encoder stream on the set's
+/// delivery host, shared by every `emit` to the set, as a native routing group's is by the branches that reach it. Its
+/// ID never contains a recipient name, since a name may be a URL: it is `implied_`, the local ID of the first `emit`,
+/// in node ID order, of the first program that asks for the set, and eight hexadecimal digits of the set's digest (cut
+/// to fit an identifier, and numbered after a collision; see `implied_output_id`), so that another set never takes it,
+/// even from the same `emit`. It keeps the ID it had in the resolution before while any program asks for its set, so it
+/// is stable across lowerings. Its encoder is the one native configuration builds for an endpoint routing group of its
+/// endpoints, or for the main output without the others, and its selector its recipients ([`Selector::Recipients`]). It
+/// retires, its lease draining, once no program asks for its set.
+///
+/// Implied outputs and the outputs a resources artifact declares together number at most
+/// [`MAX_DECLARED_OUTPUTS`](saluki_metric_plan::limits::values::MAX_DECLARED_OUTPUTS), counted over the demand of every
+/// program the installer holds, which is what exists together: the program running, any kept to roll back to, and any
+/// installing or waiting. A replacement's outputs are built before it runs and the running program's retire after, so
+/// a replacement that asks for new sets counts them beside the running program's. Lowering adds them on `dd_out`
+/// only, for the main output's recipients (the primary endpoint and the additional endpoints): a set beyond the limit,
+/// on another host, or with recipients a resources artifact declares is refused, with the reason, which composition
+/// reports ([`Catalog::implied_output_refused`][saluki_metric_plan::validate::Catalog::implied_output_refused]).
+#[derive(Clone, Copy, Debug)]
+pub struct Demanded<'a> {
+    /// The sets of recipients the programs ask for.
+    pub demand: &'a [Demand],
+
+    /// The outputs of the resolution before.
+    pub previous: &'a NativeOutputs,
+}
+
+/// No outputs of the resolution before.
+static NO_OUTPUTS: NativeOutputs = NativeOutputs { outputs: Vec::new() };
+
+impl Default for Demanded<'_> {
+    fn default() -> Self {
+        Self {
+            demand: &[],
+            previous: &NO_OUTPUTS,
+        }
+    }
+}
+
+/// The prefix of an implied output's ID.
+pub const IMPLIED_OUTPUT_PREFIX: &str = "implied_";
+
 /// The resources a resources artifact declares, as lowering takes them: the accepted document, and the revision and
 /// hash it was delivered with, which the resources it declares record as their provenance.
 #[derive(Clone, Copy, Debug)]
@@ -408,6 +463,10 @@ pub struct NativeResources {
 
     /// The recipient directory: every recipient a program may address, by name (see [`Directory`]).
     pub directory: Directory,
+
+    /// The sets of recipients a program asks for that lowering adds no implied output for, each with why
+    /// ([`Demanded`]).
+    pub refused_demand: BTreeMap<Vec<RecipientId>, String>,
 }
 
 /// The name of the main output's primary endpoint, or of the alternate metrics intake that replaces it for metrics.
@@ -515,7 +574,15 @@ impl NativeResources {
         startup: &SalukiConfiguration, current: &SalukiConfiguration, facts: &HostFacts, hosts: &FixedHosts,
         declared: Option<Declared<'_>>,
     ) -> Result<Self, GenericError> {
-        Self::resolve_after(startup, current, facts, hosts, declared, &Resources::default())
+        Self::resolve_after(
+            startup,
+            current,
+            facts,
+            hosts,
+            declared,
+            Demanded::default(),
+            &Resources::default(),
+        )
     }
 
     /// Resolves the outputs, recipients, and host settings of the configuration `current`, as
@@ -535,7 +602,7 @@ impl NativeResources {
     /// As for [`resolve`][Self::resolve].
     pub fn resolve_after(
         startup: &SalukiConfiguration, current: &SalukiConfiguration, facts: &HostFacts, hosts: &FixedHosts,
-        declared: Option<Declared<'_>>, previous: &Resources,
+        declared: Option<Declared<'_>>, demanded: Demanded<'_>, previous: &Resources,
     ) -> Result<Self, GenericError> {
         let dp = DataPlaneConfiguration::from_configuration(startup);
         if !dp.metrics_pipeline_required() {
@@ -682,6 +749,7 @@ impl NativeResources {
             )?);
         }
 
+        let declared_outputs = declared.map_or(0, |declared| declared.artifact.outputs.len());
         if let Some(declared) = declared {
             let base = DatadogMetricsConfiguration::from_configuration(&shared)
                 .encoder_settings()
@@ -696,6 +764,7 @@ impl NativeResources {
                 &mut directory,
             )?;
         }
+        let refused_demand = imply(demanded, &shared, &dd_out, declared_outputs, &recipients, &mut outputs)?;
 
         // Every fixed host has settings, idle or not, so that a branch enabled later finds them published.
         let settings = encode_host_settings(&dd_out.delivery_settings())
@@ -714,6 +783,7 @@ impl NativeResources {
                 recipients: recipients.into_values().collect(),
             },
             directory,
+            refused_demand,
         })
     }
 }
@@ -1121,6 +1191,168 @@ fn declare(
         });
     }
     Ok(())
+}
+
+/// Adds an implied output for each set of recipients of `demanded` that no output of `outputs` delivers to exactly,
+/// within the limit on declared and implied outputs, of which a resources artifact declares `declared_outputs` (see
+/// [`Demanded`]), and returns the sets it refused, each with why.
+///
+/// # Errors
+///
+/// Returns an error if the encoder settings of an implied output do not resolve, as for the native outputs.
+fn imply(
+    demanded: Demanded<'_>, shared: &SharedConfiguration, dd_out: &DatadogForwarderConfiguration,
+    declared_outputs: usize, recipients: &BTreeMap<RecipientId, RecipientDecl>, outputs: &mut Vec<NativeOutput>,
+) -> Result<BTreeMap<Vec<RecipientId>, String>, GenericError> {
+    let mut refused = BTreeMap::new();
+    let limit = usize::try_from(saluki_metric_plan::limits::values::MAX_DECLARED_OUTPUTS).unwrap_or(usize::MAX);
+    let mut added = 0usize;
+    // The resolution before's implied outputs, by their recipients: their IDs stay theirs.
+    let kept = demanded
+        .previous
+        .iter()
+        .filter(|output| matches!(output.kind, OutputKind::Implied { .. }))
+        .map(|output| (output.decl.recipients.clone(), output))
+        .collect::<BTreeMap<_, _>>();
+    // Sets the resolution before served first, then new ones, so that a new set never takes a kept set's ID.
+    let mut demand = demanded.demand.iter().collect::<Vec<_>>();
+    demand.sort_by_key(|demand| (!kept.contains_key(&demand.recipients), demand.recipients.clone()));
+    for wanted in demand {
+        if outputs.iter().any(|output| output.decl.recipients == wanted.recipients) {
+            continue;
+        }
+        let refuse = |why: String| (wanted.recipients.clone(), why);
+        if wanted.host.as_str() != DD_OUT {
+            let (set, why) = refuse(format!(
+                "outputs are added for the recipients of `{}` only, and these are recipients of `{}`",
+                DD_OUT, wanted.host
+            ));
+            refused.insert(set, why);
+            continue;
+        }
+        if declared_outputs + added >= limit {
+            let (set, why) = refuse(format!(
+                "it would be one more than the limit of {} outputs that resources artifacts declare and programs \
+                 imply together, counted over every program the installer holds: the one running, any kept to roll \
+                 back to, and any installing or waiting, whose outputs exist together until one replaces another",
+                limit
+            ));
+            refused.insert(set, why);
+            continue;
+        }
+        let native = wanted.recipients.iter().all(|id| {
+            recipients
+                .get(id)
+                .is_some_and(|recipient| recipient.provenance == ResourceProvenance::Native)
+        });
+        if !native {
+            let (set, why) = refuse(
+                "some are recipients a resources artifact declares, which programs reach through the outputs it \
+                 declares"
+                    .to_string(),
+            );
+            refused.insert(set, why);
+            continue;
+        }
+        // The encoder native configuration builds for these endpoints: a routing group's, or the main output's
+        // without the other endpoints.
+        let all = metrics_recipients(dd_out, None)?;
+        let included = |recipient: &MetricsRecipient| wanted.recipients.contains(&recipient_id(DD_OUT, recipient));
+        let primary = all
+            .iter()
+            .any(|recipient| recipient.route != MetricsRecipientRoute::Additional && included(recipient));
+        let additional = |selected: bool| {
+            all.iter()
+                .filter(|recipient| recipient.route == MetricsRecipientRoute::Additional)
+                .filter(|recipient| included(recipient) == selected)
+                .map(|recipient| recipient.configured_endpoint.clone())
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        let routing = if primary {
+            let others = additional(false);
+            (!others.is_empty()).then(|| MetricsEndpointRouting::AllExcept(others.into_iter().collect()))
+        } else {
+            Some(MetricsEndpointRouting::Only(additional(true).into_iter().collect()))
+        };
+        let reached = metrics_recipients(dd_out, routing.as_ref())?;
+        let mut ids = reached
+            .iter()
+            .map(|recipient| recipient_id(DD_OUT, recipient))
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids.dedup();
+        if ids != wanted.recipients {
+            let (set, why) = refuse(
+                "they are not every recipient of their endpoints, which one encoder sends to together".to_string(),
+            );
+            refused.insert(set, why);
+            continue;
+        }
+        let mut encoder = DatadogMetricsConfiguration::from_configuration(shared);
+        if let Some(routing) = routing {
+            encoder = encoder.with_endpoint_routing(routing);
+        }
+        let id = match kept.get(&wanted.recipients) {
+            Some(output) => output.decl.id.to_string(),
+            None => implied_output_id(wanted.emit.as_str(), &wanted.recipients, outputs),
+        };
+        let mut output = bound_output(
+            BoundOutput {
+                id: &id,
+                kind: OutputKind::Implied {
+                    emit: wanted.emit.to_string(),
+                },
+                host: &DD_HOST,
+                selector: Selector::Recipients(wanted.recipients.clone()),
+                accepts: PortType::ANY,
+                encoder: &encoder,
+            },
+            reached,
+        )?;
+        output.decl.recipients = wanted.recipients.clone();
+        outputs.push(output);
+        added += 1;
+    }
+    Ok(refused)
+}
+
+/// Returns the ID of an implied output for the recipients `recipients` whose first `emit` has the local ID `emit`:
+/// `implied_<emit>_<set>`, where `<set>` is the first eight hexadecimal digits of the SHA-256 digest of the recipient
+/// IDs, in order, each followed by a newline; the emit's part is cut to fit an identifier, and the whole numbered
+/// (`_2`, `_3`, ...) if an output of `outputs` already has it.
+///
+/// The digest makes the ID the set's: an `emit` whose recipients change asks for another set, which gets another ID,
+/// so telemetry under one ID always means one set of recipients. It never spells a recipient, since a name may be a
+/// URL with credentials.
+fn implied_output_id(emit: &str, recipients: &[RecipientId], outputs: &[NativeOutput]) -> String {
+    let max = saluki_metric_plan::ir::MAX_IDENTIFIER_LEN;
+    let listed = recipients.iter().map(|id| format!("{}\n", id)).collect::<String>();
+    let digest = saluki_metric_plan::canonical::PlanHash::of_bytes(listed.as_bytes()).to_string();
+    let set = &digest[digest.len() - 64..digest.len() - 56];
+    let suffix = format!("_{}", set);
+    let fit = |id: &str, room: usize| {
+        let mut id = id[..id.len().min(room)].to_string();
+        while id.ends_with('_') {
+            id.pop();
+        }
+        id
+    };
+    let base = format!(
+        "{}{}",
+        fit(&format!("{}{}", IMPLIED_OUTPUT_PREFIX, emit), max - suffix.len()),
+        suffix
+    );
+    let taken = |id: &str| outputs.iter().any(|output| output.decl.id.as_str() == id);
+    if !taken(&base) {
+        return base;
+    }
+    (2..)
+        .map(|n| {
+            let suffix = format!("_{}", n);
+            format!("{}{}", fit(&base, max - suffix.len()), suffix)
+        })
+        .find(|id| !taken(id))
+        .expect("some number is free")
 }
 
 /// Adds a recipient, keeping the first declaration of an identity: a native recipient that a resources artifact

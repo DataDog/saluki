@@ -21,7 +21,8 @@ pub const TEAM_D_ROUTE: &str = "team_d_route";
 /// The family the team D routing scenarios route to team D.
 pub const TEAM_D_FAMILY: &str = "demo.platform.queue_depth";
 
-/// The outputs of the default program that feed each intake, from the export's legend.
+/// What the default program's source writes after `emit` to reach each intake, from the export's legend: the names of
+/// the output's recipients, as `to [<recipient>, ...]`, or the output's ID.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Outputs {
     /// The output that feeds the primary endpoint.
@@ -228,16 +229,40 @@ pub fn width_change(source: &str, width: &str) -> Result<String, GenericError> {
         let end = edited[start + 1..]
             .find("\n  }\n")
             .map_or(edited.len(), |end| start + 1 + end);
-        const WINDOW: &str = "\n    window: ";
+        // The parameter is on a line of its own, or inline when it is the operator's only one, as in a detached
+        // export, where it holds a literal: `timestamp_split(window: 10s)`.
+        const WINDOW: &str = "window: ";
         let window = edited[start..end]
-            .find(WINDOW)
-            .map(|offset| start + offset + WINDOW.len())
+            .match_indices(WINDOW)
+            .map(|(offset, _)| start + offset)
+            .find(|at| matches!(edited.as_bytes()[at - 1], b' ' | b'('))
+            .map(|at| at + WINDOW.len())
             .ok_or_else(|| generic_error!("Node `{}` of the default program sets no `window`.", node))?;
+        // The value ends at the first comma or closing parenthesis outside its own parentheses, as in
+        // `config("...")`.
+        let mut depth = 0usize;
         let value_end = edited[window..]
-            .find(",\n")
-            .map(|offset| window + offset)
-            .filter(|value_end| *value_end <= end)
-            .ok_or_else(|| generic_error!("The `window` of node `{}` does not end its line with a comma.", node))?;
+            .char_indices()
+            .find(|(_, c)| match c {
+                '(' => {
+                    depth += 1;
+                    false
+                }
+                ')' if depth > 0 => {
+                    depth -= 1;
+                    false
+                }
+                ',' | ')' | '\n' => depth == 0,
+                _ => false,
+            })
+            .map(|(offset, _)| window + offset)
+            .filter(|value_end| *value_end <= end && edited.as_bytes()[*value_end] != b'\n')
+            .ok_or_else(|| {
+                generic_error!(
+                    "The `window` of node `{}` ends with neither a comma nor a parenthesis.",
+                    node
+                )
+            })?;
         edited.replace_range(window..value_end, width);
     }
     Ok(edited)

@@ -63,7 +63,7 @@ fn optimizing_the_default_program_changes_nothing_while_no_rewrite_applies() {
 #[test]
 fn rewritten_plans_revalidate_without_a_catalog_as_the_catalog_validated_them() {
     let (plan, report, _) = default_program();
-    let revalidated = revalidate(&OperatorRegistry::native(), &plan);
+    let revalidated = revalidate(&OperatorRegistry::native(), &plan, &Default::default());
     assert!(revalidated.is_valid());
     assert_eq!(
         revalidated.port_types().collect::<Vec<_>>(),

@@ -56,6 +56,11 @@ impl OperatorDef for OpaqueHost {
         "Runs a native component that has no extracted kernel, as an opaque fence."
     }
 
+    /// A host component of its own, which only native configuration places.
+    fn authorable(&self) -> bool {
+        false
+    }
+
     fn params(&self) -> &'static [ParamSpec] {
         OPAQUE_HOST_PARAMS
     }

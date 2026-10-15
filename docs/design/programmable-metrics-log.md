@@ -1019,3 +1019,60 @@ details; the design's section 10.2 now records the composition pass order that B
   at 82%, above `forwarder_storage_max_disk_ratio`, as before. `make demo-programmable-metrics-check` passed
   (`target/programmable-metrics-demo/check-1792017162`): the first launch in 150.5 s, the second in 290.3 s, every
   canary balanced (2,848 and 4,997 sent and received), S0 active with no new generation.
+
+## Detached programs, phase 2
+
+On 2026-10-14, after phase 1 was committed (`cfd4a28072`), phase 2 was built in the main checkout, not committed:
+parts B (the detached export, composition by value, and `program` in status), D (emits addressed to recipients, demand,
+and implied outputs), and E (facts and signals only), with the owner's decisions made after the design. [Phase 2 as
+built](programmable-metrics-detached-programs.md#106-phase-2-as-built) has the details; amendments 183 to 188 record
+the changes to the model.
+
+- **Owner decisions before the phase.** Recipients are `primary`, `mrf`, `cluster_agent`, and each additional
+  endpoint's URL, and native `additional_endpoints` declare destinations (no configuration key for recipients, so C2 is
+  dropped). Node provenance goes entirely: the program a generation runs decides panics, and loss is attributed to its
+  node and the program; `trusted_host` becomes an operator property. Reuse is decided by what nodes do, so a published
+  program equal to the running plan adopts its generation. Standalone mode gains an opt-in configuration reload, for the
+  demo only.
+- **What removing provenance took.** Besides the authority rules and composition's feed analysis, provenance carried
+  which native component each node stands for, which R1's cost model and ADP's region input capacity read at boot:
+  it moved to a plan-level `native_components` annotation that composition does not carry and the hash leaves out.
+  R5a and R6 keep native filters whole by their reserved IDs. A scope holding a host component cannot be replaced
+  even unmodified, which only the plan crate's opaque-gateway fixtures have. Every plan hash changed once.
+- **Adoption** keeps the generation ID: the core records the origin and the composed plan, and regions are told the
+  program's panic budget (`RegionControl::Adopt`). A new generation ID with no physical change was rejected: the ID
+  names the installation.
+- **Found on the way.** A program that stops dual-shipping (`emit to [primary]`) and routes to an additional endpoint
+  (`emit to ["https://b..."]`) was refused as a duplicate contribution, since the duplicate analysis grouped outputs
+  sharing a recipient transitively, through the main output it no longer emits to; it now pairs only outputs that share
+  a recipient (amendment 187). The detached export's base is the bound export's, so composing it is no stale base.
+  Implied outputs are added on `dd_out` only, for native recipients. The demo check's width change (S13a) looked for
+  each `window` on a line of its own, while the detached export prints a split's only parameter inline
+  (`timestamp_split(window: 10s)`); the edit now finds it either way.
+- **The standalone reload** (`experimental.standalone_config_reload.{enabled, interval}`) was built by a subagent in
+  parallel, in the configuration system and ADP's boot, with tests at both levels.
+- **First results.** Before the review, the plan, syntax, and demo crates passed 1,177 tests, ADP 582 of 583 (only
+  the disk-ratio drain test failing, at 84% full), and the demo check passed both launches in 7 minutes 20 seconds
+  (`check-1792026960`), S0 adopting generation 1.
+- **Review.** A review found three high-priority problems and several smaller ones, all fixed:
+  - An artifact generation the default program adopted after its panic budget ran out, with the revocation processed
+    before the failure report, was left failed with nothing to replace it. The core now marks a generation adopted
+    from an artifact and asks for the default program when it fails.
+  - A kept node that matched the default program's only by value composed as the default program's node, still
+    bound, so a native policy change under a detached program made a generation that did nothing new. It now composes
+    as the artifact writes it, and the core, the kernel keys, and the plan diff compare plans by what they do, with
+    bindings written as values (the operation hash), so S0 still adopts and a native change makes no generation.
+  - The artifact limits measured every node of a program's scope, so an unmodified export of a configuration beyond a
+    limit, such as a 128 MiB mapper interner, could not be published. Each limit now rises to the default program's
+    own measure in the scope (amendment 188).
+  - Smaller fixes: the standalone reload applies a change once two reads agree, reads off the async runtime, raises an
+    interval under 100 milliseconds, and warns in connected mode; implied output IDs carry a digest of their set, so a
+    changed set never inherits an ID; the implied-output limit's refusal says it counts every program held; recipient
+    names are escaped where they are quoted; the demo places a policy-binding error inside its node, and writes ADP's
+    configuration file atomically; the status enums and the export form read unknown values.
+- **Results.** The plan, syntax, and demo crates pass 1,127 tests with the plan crate's `test-util` (property tests
+  apart) and 1,180 without it, property tests included; the 53 property tests pass in release. ADP passes 584 of 586:
+  the disk-ratio drain test fails, at 86% full, and a telemetry test's flush count, which passes alone, failed once
+  under the full run's load. The configuration crates pass 252. Clippy and the format check are clean. The demo
+  check passed both launches in 7 minutes 14 seconds (`check-1792033049`: 153.7 s and 269.9 s), S0 adopting
+  generation 1 with no new generation.

@@ -563,6 +563,15 @@ pub(super) enum LaneEvent {
         generation: GenerationId,
     },
 
+    /// The lane gave `generation` the panic budget of the program it now runs.
+    Adopted {
+        /// The lane.
+        lane: u16,
+
+        /// The generation.
+        generation: GenerationId,
+    },
+
     /// The lane released what retired.
     Released {
         /// The lane.
@@ -701,6 +710,7 @@ fn handle_laned(
             },
             RegionControl::Abort { generation } => LaneEvent::Aborted { lane, generation },
             RegionControl::Release => LaneEvent::Released { lane },
+            RegionControl::Adopt { generation, .. } => LaneEvent::Adopted { lane, generation },
             RegionControl::Kernel(_) => unreachable!("a kernel control message never splits"),
         });
     }

@@ -105,6 +105,28 @@ pub enum Predicate {
     Not(Box<Predicate>),
 }
 
+/// Folds the operands of a junction: `all` when `neutral` is `true`, whose constant operands that are `true` change
+/// nothing and a `false` one decides it, and `any` otherwise. A junction none of whose operands folded is kept as it
+/// was.
+fn fold_junction(operands: &[Predicate], neutral: bool, junction: fn(Vec<Predicate>) -> Predicate) -> Predicate {
+    let folded = operands.iter().map(Predicate::fold_literals).collect::<Vec<_>>();
+    if folded == operands {
+        return junction(folded);
+    }
+    if folded.contains(&Predicate::Const(!neutral)) {
+        return Predicate::Const(!neutral);
+    }
+    let mut kept = folded
+        .into_iter()
+        .filter(|operand| *operand != Predicate::Const(neutral))
+        .collect::<Vec<_>>();
+    match kept.len() {
+        0 => Predicate::Const(neutral),
+        1 => kept.remove(0),
+        _ => junction(kept),
+    }
+}
+
 /// How a string field is matched.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
@@ -294,6 +316,30 @@ impl Predicate {
     pub fn canonical(&self) -> Self {
         canonical::canonicalize(self)
     }
+
+    /// Returns the predicate with every `flag` and `is_empty` over a literal written as the constant it is, and the
+    /// junctions those constants decide simplified: an `all` drops its `const(true)` operands and is `const(false)` if
+    /// one is false, an `any` drops its `const(false)` operands and is `const(true)` if one is true, a junction left
+    /// with one operand is that operand, an empty `all` is `const(true)` and an empty `any` `const(false)`, and `not`
+    /// of a constant is the other constant.
+    ///
+    /// Nothing else changes: an operand bound to configuration stays bound, a string match over an empty list stays
+    /// (`name in []` is where an author adds names), and a junction none of whose operands folded keeps its form. The
+    /// result matches exactly the metrics the predicate matches. A detached export writes predicates so, after writing
+    /// policy bindings as literals, and composition compares predicates so, after writing every binding as its value.
+    pub fn fold_literals(&self) -> Self {
+        match self {
+            Self::Flag(Operand::Literal(value)) => Self::Const(*value),
+            Self::IsEmpty(Operand::Literal(values)) => Self::Const(values.is_empty()),
+            Self::Not(operand) => match operand.fold_literals() {
+                Self::Const(value) => Self::Const(!value),
+                folded => Self::Not(Box::new(folded)),
+            },
+            Self::All(operands) => fold_junction(operands, true, Self::All),
+            Self::Any(operands) => fold_junction(operands, false, Self::Any),
+            other => other.clone(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -309,6 +355,41 @@ mod tests {
 
     fn literal_strings(values: &[&str]) -> Operand<Vec<String>> {
         Operand::literal(values.iter().map(|s| s.to_string()).collect())
+    }
+
+    #[test]
+    fn folding_writes_literal_flags_and_emptiness_tests_as_constants_and_simplifies_what_they_decide() {
+        let fold = |value: Value| {
+            serde_json::to_value(serde_json::from_value::<Predicate>(value).unwrap().fold_literals()).unwrap()
+        };
+        let name = json!({"intake_name": {"in": []}});
+        let mirrored = json!({"intake_name": {"in": ["a"]}});
+        let cases = [
+            // The failover gateway with an empty mirroring list: it mirrors every metric while its flags hold.
+            (
+                json!({"all": [{"flag": {"config": "f"}}, {"any": [{"is_empty": []}, name]}]}),
+                json!({"flag": {"config": "f"}}),
+            ),
+            // With a list, the list is written once.
+            (
+                json!({"all": [{"flag": {"config": "f"}}, {"any": [{"is_empty": ["a"]}, mirrored]}]}),
+                json!({"all": [{"flag": {"config": "f"}}, mirrored]}),
+            ),
+            (json!({"all": [{"flag": false}, name]}), json!({"const": false})),
+            (json!({"not": {"flag": true}}), json!({"const": false})),
+            // Nothing that does not fold changes: `in []` stays, and so does a junction none of whose operands fold.
+            (
+                json!({"any": [name, {"has_tag": "a"}]}),
+                json!({"any": [name, {"has_tag": "a"}]}),
+            ),
+            (
+                json!({"is_empty": {"config": "list"}}),
+                json!({"is_empty": {"config": "list"}}),
+            ),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(fold(input.clone()), expected, "{}", input);
+        }
     }
 
     #[test]

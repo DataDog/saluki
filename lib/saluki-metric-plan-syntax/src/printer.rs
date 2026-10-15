@@ -10,11 +10,11 @@ use std::{collections::HashMap, str::FromStr as _};
 use saluki_metric_plan::{
     canonical::{contains_resolved_values, PlanHash, BINDING_MEMBER},
     ir::{
-        ArtifactEdge, ArtifactNode, ArtifactPortRef, BindingName, Operand, OutputId, ParamType, PolicyArtifact,
-        PortName, BLOB_MEMBER, IR_VERSION,
+        is_identifier, ArtifactEdge, ArtifactNode, ArtifactPortRef, BindingName, Operand, OutputId, ParamType,
+        PolicyArtifact, PortName, BLOB_MEMBER, IR_VERSION,
     },
     model::KindSet,
-    operators::names,
+    operators::{names, EMIT_TO},
     predicate::{Predicate, SetMatch, StringMatch, TagMatch},
 };
 use serde_json::{Map, Value};
@@ -246,8 +246,11 @@ impl<'a> Graph<'a> {
     }
 }
 
-/// Returns the inline form of a terminal node, `emit <output>` or `drop`, if its operator and parameters are exactly
-/// what that form stands for.
+/// Returns the inline form of a terminal node, `emit <output>`, `emit to [<recipient>, ...]`, or `drop`, if its
+/// operator and parameters are exactly what that form stands for.
+///
+/// A recipient name that is an identifier, such as `primary`, is written bare, and any other, such as an endpoint's
+/// URL, as a quoted string.
 fn terminal_form(node: &ArtifactNode) -> Option<String> {
     match node.op.as_str() {
         names::DROP if node.params.is_empty() => Some("drop".to_string()),
@@ -258,6 +261,22 @@ fn terminal_form(node: &ArtifactNode) -> Option<String> {
                     OutputId::new(output.as_str())
                         .ok()
                         .map(|output| format!("emit {}", output))
+                }
+                (Some((name, Value::Array(recipients))), None)
+                    if name.as_str() == EMIT_TO && !recipients.is_empty() =>
+                {
+                    let names = recipients
+                        .iter()
+                        .map(|recipient| {
+                            let name = recipient.as_str()?;
+                            Some(if is_identifier(name) {
+                                name.to_string()
+                            } else {
+                                quote(name)
+                            })
+                        })
+                        .collect::<Option<Vec<_>>>()?;
+                    Some(format!("emit to [{}]", names.join(", ")))
                 }
                 _ => None,
             }

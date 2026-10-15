@@ -383,7 +383,6 @@ async fn every_lowered_node_has_a_legacy_counterpart_by_the_mapping_table() {
         id: id.parse().unwrap(),
         op: op.parse().unwrap(),
         params: serde_json::from_value(params).unwrap(),
-        provenance: None,
     };
     let component = |id: &str, ty| Legacy::Component(id.to_string(), ty);
     let cases = [

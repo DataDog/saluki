@@ -82,7 +82,7 @@ use saluki_metric_plan::{
         AdmissionPointInfo, ExitRouting, FixedComponent, Frame, FrameSource, FrameTarget, PointRouting, RegionProgram,
         Slot, SlotId, SlotKind,
     },
-    ir::{NativeComponentId, NodeId, Plan, Provenance, Resources},
+    ir::{NativeComponentId, NodeId, Plan, Resources},
     limits,
     operators::{names, ConfiguredOperator, LaneBinding, LaneCell, OperatorRegistry},
     runtime::{
@@ -784,7 +784,8 @@ fn state_owners(
 /// runs through `n` of those components, `n * (interconnect + 1)` buffers waited natively, so the region's input holds
 /// `n * (interconnect + 1) - 1`, for the path that runs through the most: no path holds fewer buffers than natively,
 /// and a region that runs one chain of components holds exactly as many. A path runs through a component where it
-/// enters the component's nodes, by their native provenance, from outside the region or from another component's
+/// enters the component's nodes, by the native components lowering names for them, from outside the region or from
+/// another component's
 /// nodes. The components the plan-driven topology still builds are not replaced, and their interconnects remain: the
 /// sources (the frame's fixed components), and the encoders and destinations of the outputs, which the `emit`s and the
 /// client telemetry tap's fan-out are lowered from. Aggregation, which runs in its isolation slot `dsd_agg`, is one of
@@ -804,10 +805,15 @@ fn region_input_capacity(
         .map(component_id)
         .chain(outputs.iter().map(|output| output.component.clone()))
         .collect::<BTreeSet<_>>();
-    // The native component that a node of the region does the work of, if the region replaces it.
-    let replaced = |node: &NodeId| match plan.node(node).and_then(|node| node.provenance.as_ref()) {
-        Some(Provenance::Native(component)) if !kept.contains(component.as_str()) => Some(component.as_str()),
-        _ => None,
+    // The native component that a node of the region does the work of, if the region replaces it: the one lowering
+    // names for it, or the node's own.
+    let native_components = plan.provenance.as_ref().map(|provenance| &provenance.native_components);
+    let replaced = |node: &NodeId| {
+        let node = &plan.node(node).filter(|found| found.id.is_reserved())?.id;
+        let component = native_components
+            .and_then(|components| components.get(node))
+            .map_or_else(|| node.local().as_str(), NativeComponentId::as_str);
+        (!kept.contains(component)).then_some(component)
     };
     // Whether a path enters a replaced component at `to`, from `from` or, for `None`, from outside the region.
     let enters = |from: Option<&NodeId>, to: &NodeId| {

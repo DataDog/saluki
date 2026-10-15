@@ -210,7 +210,7 @@ fn predicate_json(predicate: &Predicate) -> Value {
 
 /// A node with native provenance of its own, so that lossy and host nodes have authority.
 fn node(id: &str, op: &str, params: Value) -> Value {
-    json!({"id": id, "op": op, "params": params, "provenance": {"native": id}})
+    json!({"id": id, "op": op, "params": params})
 }
 
 fn kernel_node(id: &str, kind: KernelKind) -> Value {

@@ -665,7 +665,7 @@ impl World {
                 let candidate = self.lower();
                 self.core.on_default_program(candidate, &NoComposer).1
             }
-            Action::Report(_) | Action::WatchCut { .. } => Vec::new(),
+            Action::Report(_) | Action::WatchCut { .. } | Action::Adopt { .. } => Vec::new(),
             Action::ArmCut(arm) => {
                 self.check_not_withdrawn(arm.generation.id());
                 self.arming = Some(arm.generation.id());

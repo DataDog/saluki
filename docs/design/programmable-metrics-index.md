@@ -31,7 +31,8 @@ partitioned **lanes** across cores (stage 9).
 | 7 | Outputs, recipients, and delivery settings change live (resource generations) | `b7e63f147b` |
 | 9 | Stage 9 foundations and first measurements; then partitioned lanes | `b523d9002b`, `8b44c153aa` |
 | After 9 | One editable scope, `metrics`, over the whole metrics path; at most one aggregation per program (amendments 168, 169) | `e9fd618187` |
-| Detached programs, phase 1 | Binding classes and host facts, the recipient directory, one aggregation's identity, editor annotations, version 1 fingerprints removed | not committed |
+| Detached programs, phase 1 | Binding classes and host facts, the recipient directory, one aggregation's identity, editor annotations, version 1 fingerprints removed | `cfd4a28072` |
+| Detached programs, phase 2 | The detached export, composition by value, `program` in status, emits addressed to recipients with implied outputs, facts and signals only, no node provenance, adoption, the standalone configuration reload | not committed |
 
 Stage 8 (the production Remote Config channel) was skipped on purpose, and stage 10 (measured extensions) is not
 started. Current state, in detail: [status: where things stand](programmable-metrics-status.md#where-things-stand).
@@ -46,7 +47,7 @@ started. Current state, in detail: [status: where things stand](programmable-met
 4. [Deployment context and next steps](programmable-metrics-next.md): **what production looks like (limits of 0.3 to
    1.2 cores, 50 millicores in the worst case), what that means for the work, and the next chunk of work**, and the
    owner's direction that programs replace native policy. Its design is
-   [detached programs](programmable-metrics-detached-programs.md), whose phase 1 is built.
+   [detached programs](programmable-metrics-detached-programs.md), whose phases 1 and 2 are built.
 5. [Implementation log](programmable-metrics-log.md): the history. What was tried, what failed, what reviews and
    integration found, measured results, and the decisions made along the way.
 6. The designs as built, for depth:

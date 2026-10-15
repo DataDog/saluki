@@ -315,11 +315,12 @@ async fn feed_until(
     .await;
     assert!(
         waited.is_ok(),
-        "{} never happened: {}\n{}\n{:#?}",
+        "{} never happened: {}\n{}\n{:#?}\n{:#?}",
         what,
         status.load(),
         serde_json::to_string_pretty(&status.load().resources.hosts).unwrap(),
-        status.load().recipients
+        status.load().recipients,
+        status.load().apply_states.config_states
     );
     for _ in 0..after {
         next = feed(topology, next, names);
@@ -1675,4 +1676,177 @@ async fn an_endpoint_that_cannot_be_prepared_is_retried_while_the_endpoint_its_e
         assert_eq!(after.end, sent, "{what}");
         assert!(before.end <= after.start, "{what}: {:?} {:?}", before, after);
     }
+}
+
+/// Returns the config delivering the policy artifact `artifact` as revision `revision`.
+fn policy_config(revision: u64, artifact: &serde_json::Value) -> saluki_metric_plan::channel::ArtifactConfig {
+    use saluki_metric_plan::channel::{ArtifactConfig, ArtifactConfigId};
+
+    let hash = saluki_metric_plan::ir::ReceivedArtifact::from_json(&artifact.to_string())
+        .expect("the artifact is readable")
+        .hash;
+    let payload = json!({"revision": revision, "artifact_hash": hash, "artifact": artifact}).to_string();
+    ArtifactConfig {
+        id: ArtifactConfigId::new("demo"),
+        version: revision,
+        sha256: ArtifactConfig::transport_hash(&payload),
+        payload,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_program_routing_to_an_additional_endpoint_by_its_url_gets_an_implied_output_that_carries_only_its_route() {
+    use saluki_metric_plan::channel::{ArtifactProduct, ArtifactSnapshot};
+
+    let intakes = [Intake::start().await, Intake::start().await];
+    let template = "dd_url: \"{P}\"\nadditional_endpoints: {\"{B}\": [key-b]}";
+    let config = configured(template, &["P", "B"], &intakes);
+    let (system, updates, _stream) = connected_configuration_system(&[FLUSH, ZSTD, &config].join("\n")).await;
+    let mut options = Options::new(MetricsPath::Plan, Aggregation::Native);
+    options.encoders = Encoders::Real;
+    options.recipients = Recipients::Sending;
+    let transport = std::sync::Arc::new(std::sync::Mutex::new(None));
+    options.before_install = Some(Box::new({
+        let transport = std::sync::Arc::clone(&transport);
+        move |metrics: &mut super::installer::ProgrammableMetrics| {
+            *transport.lock().unwrap() = Some(metrics.connect_artifact_channel());
+        }
+    }));
+    let topology = TestTopology::start(&system, options, |supervisor| {
+        supervisor.add_worker(ConfigUpdatesWorker::new(updates))
+    })
+    .await;
+    let transport = transport
+        .lock()
+        .unwrap()
+        .take()
+        .expect("the artifact channel is connected");
+    let status = topology.status().unwrap();
+    let names = ["checkout.requests", "catalog.items"];
+
+    // Natively, team B's endpoint receives everything: the main output dual-ships to every additional endpoint. The
+    // detached export addresses it to both recipients, by name: `primary`, and B by its URL.
+    let next = feed_until(&topology, 0, &names, "B receives the dual-shipped metrics", 0, |_| {
+        !intakes[1].points().is_empty()
+    })
+    .await;
+    let scope = saluki_metric_plan::ir::ScopeName::new("metrics").unwrap();
+    let bundle = status.load().exports[&scope].clone().expect("the scope exports");
+    let b = bundle
+        .catalog
+        .recipients()
+        .map(|(name, _)| name.to_string())
+        .find(|name| name.starts_with("http"))
+        .expect("the directory names team B's endpoint by its URL");
+    let mut artifact = serde_json::to_value(&bundle.artifact).unwrap();
+    let main = artifact["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|node| node["id"] == "metrics_policy_0")
+        .unwrap();
+    assert_eq!(main["params"], json!({"to": ["primary", b]}));
+
+    // The recipe: stop dual-shipping, and route `checkout.` to B alone, through a branch of its own.
+    main["params"] = json!({"to": ["primary"]});
+    let tee = artifact["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|node| node["id"] == "metrics_policy")
+        .unwrap();
+    let ports = tee["params"]["ports"].as_u64().unwrap();
+    tee["params"]["ports"] = json!(ports + 1);
+    artifact["nodes"].as_array_mut().unwrap().extend([
+        json!({"id": "to_team_b", "op": "split", "params": {"predicate": {"name": {"prefix": "checkout."}}}}),
+        json!({"id": "to_team_b_true", "op": "emit", "params": {"to": [b]}}),
+        json!({"id": "to_team_b_false", "op": "drop"}),
+    ]);
+    artifact["edges"].as_array_mut().unwrap().extend([
+        json!({"from": format!("metrics_policy.{}", ports), "to": "to_team_b.in"}),
+        json!({"from": "to_team_b.true", "to": "to_team_b_true.in"}),
+        json!({"from": "to_team_b.false", "to": "to_team_b_false.in"}),
+    ]);
+    assert!(transport.publisher.publish(ArtifactSnapshot::new(
+        ArtifactProduct::Policy,
+        vec![policy_config(1, &artifact)]
+    )));
+
+    // The program waits for its output, which lowering adds for its demand, then runs: an implied output, named after
+    // the emit, delivers to B what the program routes there.
+    let installed = |status: &PlanStatus| {
+        status.apply_states.status.active_artifact.is_some()
+            && status
+                .resources
+                .hosts
+                .iter()
+                .flat_map(|host| &host.leases)
+                .any(|lease| lease.output.starts_with("implied_to_team_b_true_"))
+    };
+    let switched = feed_until(
+        &topology,
+        next,
+        &names,
+        "the program and its implied output",
+        0,
+        installed,
+    )
+    .await;
+    // The first batch the program routes: B receives its `checkout.` metric, and not the other.
+    let routed = |index: usize| {
+        let points = intakes[1].points();
+        points.contains_key(&context("checkout.requests", index))
+            && !points.contains_key(&context("catalog.items", index))
+    };
+    let after = feed_until(&topology, switched, &names, "B receives a routed metric", 20, |_| {
+        (switched..switched + 200).any(routed)
+    })
+    .await;
+    let first = (switched..after).find(|index| routed(*index)).unwrap();
+    let last = after - 1;
+    feed_until(&topology, after, &names, "every batch to arrive", 0, |_| {
+        intakes[1].points().contains_key(&context("checkout.requests", last))
+            && names
+                .iter()
+                .all(|name| intakes[0].points().contains_key(&context(name, last)))
+    })
+    .await;
+    for index in first..=last {
+        assert_eq!(
+            batches_received(&intakes[1], "checkout.requests", last + 1).get(&index),
+            Some(&1),
+            "B receives the routed metric of batch {} once",
+            index
+        );
+        assert!(
+            !intakes[1].points().contains_key(&context("catalog.items", index)),
+            "B receives nothing else from the program: batch {}",
+            index
+        );
+        for name in names {
+            assert_eq!(
+                batches_received(&intakes[0], name, last + 1).get(&index),
+                Some(&1),
+                "the primary endpoint receives `{}` of batch {} once",
+                name,
+                index
+            );
+        }
+    }
+
+    // Revoked, the default program runs again, and the implied output retires: no program asks for it.
+    assert!(transport
+        .publisher
+        .publish(ArtifactSnapshot::new(ArtifactProduct::Policy, Vec::new())));
+    feed_until(&topology, after, &names, "the implied output retires", 0, |status| {
+        status.apply_states.status.active_artifact.is_none()
+            && !status
+                .resources
+                .hosts
+                .iter()
+                .flat_map(|host| &host.leases)
+                .any(|lease| lease.output.starts_with("implied_to_team_b_true_"))
+    })
+    .await;
+    topology.stop().await;
 }

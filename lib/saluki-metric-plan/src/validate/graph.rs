@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use super::{Finding, Location, Rule, ValidationReport};
 use crate::{
-    ir::{Namespace, NodeId, OutputId, ParamValue, Plan, PortName, Provenance},
+    ir::{NodeId, OutputId, ParamValue, Plan, PortName},
     operators::{names, Cardinality, ConfigureError, ConfiguredOperator, OperatorRegistry},
     predicate::Predicate,
 };
@@ -62,27 +62,6 @@ impl<'p> Graph<'p> {
                 continue;
             }
             index.insert(&node.id, nodes.len());
-
-            // Only an artifact adds nodes in the policy namespace, and an artifact's limits apply to the nodes with its
-            // provenance: a policy-namespace node without it would escape them.
-            if node.id.namespace() == Namespace::Policy {
-                let problem = match &node.provenance {
-                    Some(Provenance::Artifact(_)) => None,
-                    Some(Provenance::Native(_)) => Some("cannot have native provenance"),
-                    None => Some("must have the provenance of the artifact that added them"),
-                };
-                if let Some(problem) = problem {
-                    report.push(Finding::new(
-                        Rule::ProvenanceNamespace,
-                        at.clone(),
-                        format!(
-                            "nodes in the policy namespace come from artifacts, so they {}; give the node the \
-                             provenance of its artifact revision",
-                            problem
-                        ),
-                    ));
-                }
-            }
 
             let op = match registry.configure(node.op.as_str(), &node.params) {
                 Ok(op) => Some(op),

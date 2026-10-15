@@ -771,3 +771,44 @@ fn comments_and_whitespace_do_not_matter() {
         .replace(" -> ", " ->\t");
     assert_eq!(parse_ok(&spaced).artifact, routing_artifact());
 }
+
+#[test]
+fn emits_to_recipients_name_them_bare_or_quoted_and_print_back() {
+    let source = format!(
+        r#"policy metrics {{
+  base "{BASE}"
+
+  input.metrics -> metrics_policy
+
+  node metrics_policy = tee {{
+    -> emit to [primary, "https://127.0.0.1:17102"]
+    -> emit dsd_client_telemetry
+  }}
+}}
+"#
+    );
+    let expected = artifact(json!({
+        "ir_version": 1,
+        "scope": "metrics",
+        "base": {"program_hash": BASE},
+        "nodes": [
+            {"id": "metrics_policy", "op": "tee", "params": {"ports": 2}},
+            {"id": "metrics_policy_0", "op": "emit", "params": {"to": ["primary", "https://127.0.0.1:17102"]}},
+            {"id": "metrics_policy_1", "op": "emit", "params": {"output": "dsd_client_telemetry"}},
+        ],
+        "edges": [
+            {"from": "input.metrics", "to": "metrics_policy.in"},
+            {"from": "metrics_policy.0", "to": "metrics_policy_0.in"},
+            {"from": "metrics_policy.1", "to": "metrics_policy_1.in"},
+        ],
+    }));
+    assert_round_trip(&source, &expected);
+
+    // An output may be called `to`: `emit to` without a list names it.
+    let parsed = parse_ok(&policy("  input.metrics -> emit to\n"));
+    assert_eq!(parsed.artifact.nodes[0].params.get("output"), Some(&json!("to")));
+
+    // A name that is neither an identifier nor a string is refused where it is written.
+    let errors = parse_err(&policy("  input.metrics -> emit to [1]\n"));
+    assert!(errors[0].message.contains("a recipient name"), "{:?}", errors);
+}

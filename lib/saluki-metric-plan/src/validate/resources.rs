@@ -168,15 +168,12 @@ fn check_binding(
                 .to_string(),
         );
     }
-    if let Selector::Declared(selected) = &binding.selector {
+    if let Selector::Declared(selected) | Selector::Recipients(selected) = &binding.selector {
         let mut sorted = selected.clone();
         sorted.sort();
         sorted.dedup();
         if &sorted != selected || *selected != output.recipients {
-            push(
-                "its declared selector must list its recipients, sorted and without repeats, as `recipients` does"
-                    .to_string(),
-            );
+            push("its selector must list its recipients, sorted and without repeats, as `recipients` does".to_string());
         }
     }
 
@@ -348,7 +345,7 @@ mod tests {
         let value = json!({
             "ir_version": 1,
             "nodes": [
-                {"id": "in", "op": "source", "params": {"binding": "otlp"}, "provenance": {"native": "in"}},
+                {"id": "in", "op": "source", "params": {"binding": "otlp"}},
                 {"id": "copy", "op": "tee", "params": {"ports": 2}},
                 {"id": "main", "op": "emit", "params": {"output": "dd_metrics_encode"}},
                 {"id": "team", "op": "emit", "params": {"output": "resources_team_d"}}
@@ -572,11 +569,7 @@ mod tests {
         // A declared selector that does not list the output's recipients.
         let mut listed = plan();
         listed.outputs[1].recipients.push(RecipientId::new(PRIMARY).unwrap());
-        rejected(
-            &listed,
-            Rule::OutputBinding,
-            "its declared selector must list its recipients",
-        );
+        rejected(&listed, Rule::OutputBinding, "its selector must list its recipients");
 
         // A native output with a declared provenance, and a declared output with a role.
         let mut mixed = plan();

@@ -181,9 +181,27 @@ pub struct PlanProvenance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_change: Option<u64>,
 
-    /// The artifact revisions composed into the plan.
+    /// The artifact revisions composed into the plan, each with the scope it replaces, in scope order: the program the
+    /// plan runs. A plan without them is the default program.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub artifacts: Vec<ArtifactRevision>,
+    pub artifacts: Vec<ComposedArtifact>,
+
+    /// Which native component each node of a lowered default program does the work of, as lowering writes it.
+    ///
+    /// This describes native configuration's topology, for the layout the host builds at boot from its default
+    /// program: R1's cost model prices native components, not nodes, and a host may size a region's input by the
+    /// native components it replaces. It decides nothing else: not what a node may do, not who answers for its loss,
+    /// and not what a later generation reuses. Composition does not carry it, since a composed plan is never a boot
+    /// plan. A node it does not list is a component of its own.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub native_components: BTreeMap<NodeId, NativeComponentId>,
+}
+
+impl PlanProvenance {
+    /// Returns `true` if the plan runs a program composed from artifacts, rather than the default program.
+    pub fn is_composed(&self) -> bool {
+        !self.artifacts.is_empty()
+    }
 }
 
 /// One revision of an approved artifact.
@@ -197,15 +215,28 @@ pub struct ArtifactRevision {
     pub hash: PlanHash,
 }
 
-/// Where a node came from, which is also the authority for any loss it causes.
+/// An artifact revision composed into a plan, and the scope it replaces.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub enum Provenance {
-    /// Lowered from native configuration of the named component, serialized as `{"native": "<component>"}`.
-    Native(NativeComponentId),
+#[serde(deny_unknown_fields)]
+pub struct ComposedArtifact {
+    /// The scope the artifact replaces: every node of the scope's region in the plan is the artifact's.
+    pub scope: ScopeName,
 
-    /// Added or changed by an approved artifact, serialized as `{"artifact": {"revision": <n>, "hash": "<hash>"}}`.
-    Artifact(ArtifactRevision),
+    /// The artifact's revision number.
+    pub revision: u64,
+
+    /// The hash of the artifact.
+    pub hash: PlanHash,
+}
+
+impl ComposedArtifact {
+    /// Returns the artifact's revision and hash.
+    pub fn revision(&self) -> ArtifactRevision {
+        ArtifactRevision {
+            revision: self.revision,
+            hash: self.hash,
+        }
+    }
 }
 
 /// One operator node.
@@ -224,10 +255,6 @@ pub struct Node {
     /// The operator's parameters.
     #[serde(default, skip_serializing_if = "Params::is_empty")]
     pub params: Params,
-
-    /// Where the node came from.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provenance: Option<Provenance>,
 }
 
 /// An edge from one node's output port to another node's input port.
@@ -345,7 +372,7 @@ pub struct ScopeDecl {
 /// base program and the fingerprints of the outputs it refers to, so that a structural change to the default program
 /// or to an output is detected rather than silently merged. One artifact replaces exactly one scope.
 ///
-/// Artifact nodes have local identifiers and no provenance: composing the artifact into a plan assigns both. Artifact
+/// Artifact nodes have local identifiers: composing the artifact into a plan assigns their plan IDs. Artifact
 /// edges refer to the scope's inputs as `input.<name>`. Artifacts refer to configuration by binding only, never with
 /// resolved values, and may write any parameter value as a reference to a blob in their blob table, which composition
 /// replaces with the blob's content (see [`Blobs::inline`]).
@@ -677,19 +704,21 @@ mod tests {
         json!({
             "ir_version": 1,
             "nodes": [
-                {"id": "dsd_in", "op": "source", "params": {"binding": "dogstatsd", "timestamps": "mixed"},
-                 "provenance": {"native": "dsd_in"}},
+                {"id": "dsd_in", "op": "source", "params": {"binding": "dogstatsd", "timestamps": "mixed"}},
                 {"id": "dsd_prefix_filter_blocklist", "op": "split",
                  "params": {"predicate": {"intake_name": {"matches": {
                     "values": {"config": "dogstatsd.metric_filter.values"},
                     "prefix": {"config": "dogstatsd.metric_filter.match_prefix"}}}}}},
-                {"id": "policy/drop_debug", "op": "drop",
-                 "provenance": {"artifact": {"revision": 3, "hash": ZERO_HASH}}}
+                {"id": "policy/drop_debug", "op": "drop"}
             ],
             "edges": [{"from": "dsd_in.metrics", "to": "dsd_enrich.in"}],
             "outputs": [{"id": "dd_metrics_encode", "accepts": {"kinds": "all", "timestamps": "mixed"},
                          "fingerprint": ZERO_HASH, "recipients": ["dd_out/primary"], "delivery": "native"}],
-            "scopes": {"post_enrich": {"inputs": {"metrics": "metrics_enrich_host_tags.out"}}}
+            "scopes": {"post_enrich": {"inputs": {"metrics": "metrics_enrich_host_tags.out"}}},
+            "provenance": {
+                "artifacts": [{"scope": "post_enrich", "revision": 3, "hash": ZERO_HASH}],
+                "native_components": {"dsd_in": "dsd_in"}
+            }
         })
     }
 
@@ -716,11 +745,15 @@ mod tests {
 
         assert_eq!(plan.ir_version, IR_VERSION);
         assert_eq!(plan.nodes.len(), 3);
+        let provenance = plan.provenance.as_ref().unwrap();
+        assert!(provenance.is_composed());
+        assert_eq!(provenance.artifacts[0].revision().revision, 3);
         assert_eq!(
-            plan.nodes[0].provenance,
-            Some(Provenance::Native(NativeComponentId::new("dsd_in").unwrap()))
+            provenance
+                .native_components
+                .get(&NodeId::reserved(LocalId::new("dsd_in").unwrap())),
+            Some(&NativeComponentId::new("dsd_in").unwrap())
         );
-        assert_eq!(plan.nodes[1].provenance, None);
         assert!(!plan.nodes[2].id.is_reserved());
         assert_eq!(plan.edges[0].from.to_string(), "dsd_in.metrics");
         let output = plan.output(&OutputId::new("dd_metrics_encode").unwrap()).unwrap();
@@ -747,8 +780,8 @@ mod tests {
         let plan_document = json!({
             "ir_version": 1,
             "nodes": [
-                {"id": "src", "op": "source", "params": {"binding": "otlp"}, "provenance": {"native": "src"}},
-                {"id": "e", "op": "emit", "params": {"output": "internal"}, "provenance": {"native": "e"}}
+                {"id": "src", "op": "source", "params": {"binding": "otlp"}},
+                {"id": "e", "op": "emit", "params": {"output": "internal"}}
             ],
             "edges": [{"from": "src.metrics", "to": "e.in"}],
             "outputs": [
@@ -757,7 +790,7 @@ mod tests {
         });
         let plan = Plan::from_value(plan_document.clone()).unwrap();
         assert_eq!(serde_json::to_value(&plan).unwrap(), plan_document);
-        let expected = "sha256:2d05d24f670bfb222f93c82a9f8d6dcc7802c4d8030d100c369b63be2b3bb625";
+        let expected = "sha256:36dfd124297bfdf914a5963390f56f8e705f8f1ee90a541e12c70e75af441be5";
         assert_eq!(plan.hash(ResolvedValues::Include).unwrap().to_string(), expected);
         assert_eq!(PlanHash::of_value(&plan_document).unwrap().to_string(), expected);
 
@@ -981,10 +1014,13 @@ mod tests {
             ("output", |v| v["outputs"][0]["extra"] = json!(1)),
             ("port type", |v| v["outputs"][0]["accepts"]["extra"] = json!(1)),
             ("scope", |v| v["scopes"]["post_enrich"]["extra"] = json!(1)),
-            ("artifact provenance", |v| {
-                v["nodes"][2]["provenance"]["artifact"]["extra"] = json!(1)
+            ("plan provenance", |v| {
+                v["provenance"]["artifacts"][0]["extra"] = json!(1)
             }),
-            ("provenance", |v| v["nodes"][0]["provenance"]["copied"] = json!("x")),
+            // Nodes have no provenance: what a plan runs is a property of the plan.
+            ("node provenance", |v| {
+                v["nodes"][0]["provenance"] = json!({"native": "dsd_in"})
+            }),
         ];
         for (what, mutate) in cases {
             let mut value = design_example();
@@ -1001,7 +1037,7 @@ mod tests {
         let artifact_cases: Vec<(&str, Mutation)> = vec![
             ("artifact", |v| v["extra"] = json!(1)),
             ("base", |v| v["base"]["extra"] = json!(1)),
-            // Artifacts cannot claim provenance for their nodes: composition assigns it.
+            // Artifact nodes have no provenance either.
             ("node provenance", |v| {
                 v["nodes"][0]["provenance"] = json!({"native": "dsd_in"})
             }),
@@ -1041,7 +1077,7 @@ mod tests {
             ),
             (
                 "native ID",
-                |v| v["nodes"][0]["provenance"]["native"] = json!("_x"),
+                |v| v["provenance"]["native_components"]["dsd_in"] = json!("_x"),
                 "Invalid native component ID",
             ),
             (
@@ -1088,7 +1124,7 @@ mod tests {
         let mut with_provenance = plan.clone();
         with_provenance.provenance = Some(PlanProvenance {
             config_change: Some(12),
-            artifacts: vec![],
+            ..PlanProvenance::default()
         });
         assert_eq!(
             hash(&plan, ResolvedValues::Include),

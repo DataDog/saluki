@@ -8,7 +8,10 @@ use std::{collections::BTreeMap, fmt};
 use serde::{Deserialize, Serialize};
 
 use super::snapshot::{ArtifactConfigId, ArtifactProduct};
-use crate::{canonical::PlanHash, ir::ScopeName};
+use crate::{
+    canonical::PlanHash,
+    ir::{BindingName, ScopeName},
+};
 
 /// The scope the top-level members of the [status summary](StatusSummary) describe, as version 1 of the stub protocol
 /// defines them: the one scope of the default program, which artifacts replace to change the metrics path after its
@@ -171,6 +174,63 @@ pub struct StatusSummary {
     /// has seen no resources config, so the wire form of a host that uses only policy artifacts is unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resources: Option<ResourcesStatus>,
+
+    /// Which program the active generation runs, and whether the host's native policy settings apply to it: an
+    /// additive member, left out by a host that does not say, and while no generation is active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<ProgramStatus>,
+}
+
+/// Which program the active generation runs, and whether the host's native policy settings apply to it.
+///
+/// A published program owns its policy: it writes what to do with metrics as literals, so a change of a native policy
+/// setting reaches the default program only, and runs only once the program is revoked, or a program with the new
+/// value is published. `differs` says which settings that leaves different.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ProgramStatus {
+    /// Which program runs: the default program, or a published one.
+    pub runs: ProgramRuns,
+
+    /// Whether the native policy settings apply: always for the default program, never for a published one.
+    pub native_policy: NativePolicy,
+
+    /// The native policy settings, by binding, whose current value the running program does not run as the default
+    /// program would: a setting of a node the program left out, or whose value at the setting's place differs. Empty
+    /// for the default program. A host that cannot tell leaves it empty.
+    #[serde(default)]
+    pub differs: Vec<BindingName>,
+}
+
+/// Which program the active generation runs.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgramRuns {
+    /// The default program, lowered from native configuration.
+    #[default]
+    Default,
+
+    /// A program published through the channel: the active artifact's.
+    Published,
+
+    /// A value a later host writes that this reader does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Whether the host's native policy settings apply to the program that runs.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativePolicy {
+    /// They apply: the default program runs, and binds them.
+    #[default]
+    Applied,
+
+    /// They do not: a published program runs, which owns its policy.
+    NotApplied,
+
+    /// A value a later host writes that this reader does not know.
+    #[serde(other)]
+    Unknown,
 }
 
 /// The status of the resources product.
@@ -240,6 +300,11 @@ mod tests {
                 live_generations: 2,
                 scopes: BTreeMap::new(),
                 resources: None,
+                program: Some(ProgramStatus {
+                    runs: ProgramRuns::Published,
+                    native_policy: NativePolicy::NotApplied,
+                    differs: vec!["dogstatsd.metric_filter.values".parse().unwrap()],
+                }),
             },
             config_states: vec![ConfigAcknowledgment {
                 product: ArtifactProduct::Policy,
@@ -263,6 +328,7 @@ mod tests {
             "stale_review": false,
             "degraded": null,
             "live_generations": 2,
+            "program": {"runs": "published", "native_policy": "not_applied", "differs": ["dogstatsd.metric_filter.values"]},
             "config_states": [{
                 "product": "policy", "id": "demo", "version": 7, "revision": 7, "artifact_hash": HASH,
                 "state": "active", "generation": 12, "cut_at": null, "error": null

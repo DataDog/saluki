@@ -14,7 +14,7 @@ use std::{
 use serde_json::{json, Value};
 
 use crate::{
-    ir::{Edge, Namespace, Node, NodeId, Plan, PortName, PortRef, Provenance, MAX_IDENTIFIER_LEN},
+    ir::{Edge, Namespace, Node, NodeId, Plan, PortName, PortRef, MAX_IDENTIFIER_LEN},
     model::{Field, FieldSet, Kind, KindSet, PortType},
     operators::{
         names, Boundary, Cardinality, ConfiguredOperator, OrderContract, PerKind, StateContract, TimestampMap,
@@ -157,15 +157,14 @@ impl Filter {
         std::iter::once(self.node).chain(self.drop()).collect()
     }
 
-    /// Returns `true` if one of the filter's nodes has native provenance.
+    /// Returns `true` if one of the filter's nodes has a reserved ID, outside the policy namespace.
     ///
-    /// A host reports native series under a native node's ID, such as the native filtered-metrics counter of a
-    /// filterlist, which counts what one port of its `split` carries. A copy of the filter would not carry them, so
-    /// native filters are only ever moved whole, keeping their IDs and their counts.
+    /// A host reports native series under a reserved node's ID, as long as its operator is the one the series are for,
+    /// such as the native filtered-metrics counter of a filterlist, which counts what one port of its `split` carries.
+    /// A copy of the filter would not carry them, so native filters are only ever moved whole, keeping their IDs and
+    /// their counts. That holds whoever wrote the node: a program that edits a filterlist's values keeps its series.
     pub fn is_native(&self, graph: &Graph<'_>) -> bool {
-        self.nodes()
-            .into_iter()
-            .any(|node| matches!(graph.nodes[node].node.provenance, Some(Provenance::Native(_))))
+        self.nodes().into_iter().any(|node| graph.id(node).is_reserved())
     }
 
     /// Returns `true` if the filter reads a host signal, which makes it dynamic: it is never moved.

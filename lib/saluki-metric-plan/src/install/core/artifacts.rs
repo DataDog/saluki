@@ -71,11 +71,12 @@ use crate::{
     canonical::PlanHash,
     channel::{
         ActiveArtifact, ApplyState, ApplyStates, ArtifactConfig, ArtifactConfigId, ArtifactProduct, ArtifactSnapshot,
-        ConfigAcknowledgment, Envelope, ScopeStatus, StatusSummary, POLICY_SCOPE,
+        ConfigAcknowledgment, Envelope, NativePolicy, ProgramRuns, ProgramStatus, ScopeStatus, StatusSummary,
+        POLICY_SCOPE,
     },
     compose::{receive_artifact, Approval, ComposeError, Composed, Composer},
     install::lifecycle::{GenerationState, LifecycleEvent},
-    ir::{OutputId, ReceivedArtifact, ScopeName},
+    ir::{Plan, PolicyArtifact, ReceivedArtifact, ScopeName},
 };
 
 /// The most configs absent from the latest snapshot whose final acknowledgment the core keeps.
@@ -371,22 +372,25 @@ struct Waiting {
     reason: String,
 }
 
-/// Returns the output a composition waits for, if its error says that an output the artifact's base records is not
-/// declared: a new artifact then waits for it rather than being rejected.
-fn pending_output(error: &ComposeError) -> Option<&OutputId> {
+/// Returns why a new artifact waits, if its composition's error says that something it delivers to is not there yet:
+/// an output its base records that the host does not declare, a recipient the host's directory does not name, or an
+/// output for the recipients an `emit` names, which the host adds once it lowers with the artifact's demand. The
+/// artifact then waits rather than being rejected.
+fn waiting_reason(error: &ComposeError) -> Option<String> {
     match error {
-        ComposeError::PendingOutput { output } => Some(output),
+        ComposeError::PendingOutput { output } => Some(format!(
+            "waiting for output `{}`: the artifact's base records it, and the host does not declare it; the artifact is \
+             installed once the output is declared",
+            output
+        )),
+        ComposeError::UnknownRecipient { recipient, .. } => Some(format!(
+            "waiting for recipient `{}`: the artifact emits to it, and the host's recipient directory does not name it; \
+             the artifact is installed once the recipient is declared",
+            recipient
+        )),
+        ComposeError::PendingRecipients { .. } => Some(format!("waiting: {}", error)),
         _ => None,
     }
-}
-
-/// Returns why an artifact waits for `output`.
-fn waiting_reason(output: &OutputId) -> String {
-    format!(
-        "waiting for output `{}`: the artifact's base records it, and the host does not declare it; the artifact is \
-         installed once the output is declared",
-        output
-    )
 }
 
 /// What the core keeps about the artifacts the channel delivered.
@@ -524,10 +528,11 @@ impl InstallerCore {
         let id = if self.artifacts.policy.is_empty() {
             let id = self.candidate_id();
             let origin = candidate.origin;
+            let plan = Arc::clone(&candidate.plan);
             if self.submit(id, candidate, Arrival::Queue, &mut actions) {
                 // The generation that holds the default program's plan serves the default program.
                 if let Some(target) = self.target_candidate() {
-                    self.serve_unchanged(id, origin, target);
+                    self.serve_unchanged(id, origin, &plan, target, &mut actions);
                 }
             }
             id
@@ -600,6 +605,34 @@ impl InstallerCore {
                 id
             }
         }
+    }
+
+    /// Returns every policy artifact the core holds, once each, in no particular order: the policy in effect, those
+    /// the candidates it holds serve (installing, active, or kept to roll back to), and those that wait.
+    ///
+    /// These are what a host's lowering must keep outputs for: the implied outputs their `emit`s addressed to
+    /// recipients need ([`demanded_outputs`][crate::compose::demanded_outputs]), so that none of them, composed again,
+    /// finds its output gone.
+    pub fn held_policy_artifacts(&self) -> Vec<&PolicyArtifact> {
+        let mut seen = BTreeSet::new();
+        self.artifacts
+            .policy
+            .values()
+            .chain(
+                self.artifacts
+                    .sources
+                    .values()
+                    .flat_map(|source| source.artifacts.values()),
+            )
+            .chain(
+                self.artifacts
+                    .waiting
+                    .values()
+                    .map(|waiting| &waiting.acceptance.artifact),
+            )
+            .filter(|accepted| seen.insert(accepted.hash))
+            .map(|accepted| &accepted.artifact.artifact)
+            .collect()
     }
 
     /// Returns the latest acknowledgment of every config the channel delivered: the policy product's, then the
@@ -679,6 +712,22 @@ impl InstallerCore {
             live_generations: u64::try_from(self.live.len()).unwrap_or(u64::MAX),
             scopes,
             resources: self.resources_status(),
+            program: active.map(|active| {
+                let published = active.origin.can_roll_back();
+                ProgramStatus {
+                    runs: if published {
+                        ProgramRuns::Published
+                    } else {
+                        ProgramRuns::Default
+                    },
+                    native_policy: if published {
+                        NativePolicy::NotApplied
+                    } else {
+                        NativePolicy::Applied
+                    },
+                    differs: Vec::new(),
+                }
+            }),
         }
     }
 
@@ -914,8 +963,7 @@ impl InstallerCore {
         let policy = with_accepted(&self.artifacts.policy, &acceptances);
         let composed = compose_policy(composer, &policy, &self.artifacts.policy);
         if let (Err(error), [acceptance]) = (&composed, acceptances.as_slice()) {
-            if let Some(output) = pending_output(error) {
-                let reason = waiting_reason(output);
+            if let Some(reason) = waiting_reason(error) {
                 self.wait_for_output(acceptance.clone(), reason);
                 return false;
             }
@@ -938,10 +986,9 @@ impl InstallerCore {
                     let alone = with_accepted(&self.artifacts.policy, std::slice::from_ref(&acceptance));
                     let checked = match compose_policy(composer, &alone, &self.artifacts.policy) {
                         Ok(composed) => self.check_composed(&composed, &alone),
-                        Err(error) => match pending_output(&error) {
-                            Some(output) => {
+                        Err(error) => match waiting_reason(&error) {
+                            Some(reason) => {
                                 failing = true;
-                                let reason = waiting_reason(output);
                                 self.wait_for_output(acceptance, reason);
                                 continue;
                             }
@@ -1050,9 +1097,8 @@ impl InstallerCore {
             let alone = with_accepted(&self.artifacts.policy, std::slice::from_ref(&waiting.acceptance));
             match compose_policy(composer, &alone, &self.artifacts.policy) {
                 Ok(_) => ready.push(waiting.acceptance),
-                Err(error) => match pending_output(&error) {
-                    Some(output) => {
-                        let reason = waiting_reason(output);
+                Err(error) => match waiting_reason(&error) {
+                    Some(reason) => {
                         if reason != waiting.reason {
                             let acceptance = waiting.acceptance.clone();
                             self.track(
@@ -1348,15 +1394,16 @@ impl InstallerCore {
         };
         self.artifacts.sources.insert(id, source);
         let origin = origin_of(policy);
+        let plan = Arc::new(plan);
         let candidate = Candidate {
-            plan: Arc::new(plan),
+            plan: Arc::clone(&plan),
             report,
             origin,
         };
         if self.submit(id, candidate, arrival, actions) {
             // The candidate equals what the schedule will hold: the generation that holds it serves the policy.
             if let Some(target) = self.target_candidate() {
-                self.serve_unchanged(id, origin, target);
+                self.serve_unchanged(id, origin, &plan, target, actions);
             }
         }
         id
@@ -1365,16 +1412,22 @@ impl InstallerCore {
     /// Makes the candidate `target`, whose plan a candidate reported unchanged equals, serve what that candidate was
     /// created for: the artifacts it serves, or, for a default program while no artifact is in effect, the default
     /// program, even if `target` was created for a revoked artifact that composed to the same plan; and the resources
-    /// revision it was lowered with.
-    pub(super) fn serve_unchanged(&mut self, candidate: CandidateId, origin: Origin, target: CandidateId) {
+    /// revision it was lowered with. Its generation then runs the program of the candidate's origin: it is adopted
+    /// ([`adopt`][Self::adopt]).
+    pub(super) fn serve_unchanged(
+        &mut self, candidate: CandidateId, origin: Origin, plan: &Arc<Plan>, target: CandidateId,
+        actions: &mut Vec<Action>,
+    ) {
         // The resources revision the candidate was lowered with is installed by the generation that holds its plan.
         self.declared.serve(target, candidate);
         let Some(source) = self.artifacts.sources.get(&candidate).cloned() else {
             if matches!(origin, Origin::DefaultProgram { .. }) && self.artifacts.policy.is_empty() {
                 self.artifacts.sources.remove(&target);
+                self.adopt(target, origin, plan, actions);
             }
             return;
         };
+        self.adopt(target, origin, plan, actions);
         match self.artifacts.sources.get_mut(&target) {
             // The same documents: the generation that holds their composition serves their latest acceptance, such as
             // an approval under a newer revision, or a delivery after a revocation.
@@ -1862,7 +1915,13 @@ impl InstallerCore {
             return;
         }
         let Some(active) = &self.active else { return };
-        let failed = self.has_failed(active.generation.id()) && active.origin.can_roll_back();
+        // A default-program generation that fails fails its component, as a native one does, and the core asks for
+        // nothing: unless the default program adopted it from an artifact, and its region decided the failure under
+        // the artifact's budget, as when a revocation is processed before the failure report. The generation runs
+        // the default program, which is asked for again: a candidate equal to a failed generation is never
+        // unchanged, so it gets a new one.
+        let failed =
+            self.has_failed(active.generation.id()) && (active.origin.can_roll_back() || active.adopted_from_artifact);
         let behind = revisited && self.artifacts.lowered.is_some_and(|lowered| lowered > active.candidate);
         if failed || behind {
             actions.push(Action::InstallDefaultProgram);

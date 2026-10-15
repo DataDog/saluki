@@ -14,8 +14,9 @@ use serde_json::Value;
 use snafu::Snafu;
 use tokio::sync::{mpsc, watch, Mutex};
 use tokio::time::timeout;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
+use crate::loaded::ConfigFile;
 use crate::saluki_only::SalukiOnly;
 use crate::source::SourceTree;
 use crate::translators::DatadogTranslator;
@@ -133,38 +134,62 @@ impl ConfigurationSystem {
         let merged = base.overlay(&agent);
         let config = translate_authoritative(&merged)?;
 
-        let current = Arc::new(ArcSwap::from_pointee(config));
-        let sources = Arc::new(RwLock::new(Arc::new(merged)));
-        // The initial receiver is dropped immediately; `send_replace` works with zero receivers, and
-        // each live view subscribes its own receiver from the sender.
-        let (tick, _) = watch::channel(());
-        let tick = Arc::new(tick);
-
-        let updates = ConfigurationUpdates {
-            state: Arc::new(Mutex::new(UpdateState {
-                agent_rx,
-                base,
-                agent,
-                current: Arc::clone(&current),
-                sources: Arc::clone(&sources),
-                tick: Arc::clone(&tick),
-            })),
-        };
-
-        Ok((Self { current, sources, tick }, updates))
+        Ok(Self::with_updates(config, merged, base, agent, Feed::Agent(agent_rx)))
     }
 
     /// Installs a static configuration without an update task.
     ///
     /// Live views retain their initial values because this system sends no update notifications.
     pub(crate) fn standalone(config: SalukiConfiguration, sources: SourceTree) -> Self {
-        let current = Arc::new(ArcSwap::from_pointee(config));
+        Self::install(config, sources)
+    }
+
+    /// Standalone authority that re-reads its configuration file: installs `config`, translated from the local
+    /// `base`, and returns the [`ConfigurationUpdates`] that re-read `file` every `interval` and apply each change.
+    ///
+    /// This backs the experimental `experimental.standalone_config_reload` setting, which exists only for the
+    /// programmable metrics demo. A change is applied as connected mode applies an update from the Datadog Agent: the
+    /// rebuilt base is translated and validated as a whole, and a configuration that fails either is rejected, keeping
+    /// the last-known-good configuration. No change is applied until the caller runs the updates.
+    pub(crate) fn standalone_reloading(
+        config: SalukiConfiguration, base: SourceTree, file: ConfigFile, interval: Duration,
+    ) -> (Self, ConfigurationUpdates) {
+        // Standalone mode has no Agent layer, so the merged sources are the base itself.
+        let merged = base.clone();
+        Self::with_updates(config, merged, base, SourceTree::empty(), Feed::File { file, interval })
+    }
+
+    /// Installs `config`, translated from `merged`, with no update task.
+    fn install(config: SalukiConfiguration, merged: SourceTree) -> Self {
+        // The initial receiver is dropped immediately; `send_replace` works with zero receivers, and
+        // each live view subscribes its own receiver from the sender.
         let (tick, _) = watch::channel(());
         Self {
-            current,
-            sources: Arc::new(RwLock::new(Arc::new(sources))),
+            current: Arc::new(ArcSwap::from_pointee(config)),
+            sources: Arc::new(RwLock::new(Arc::new(merged))),
             tick: Arc::new(tick),
         }
+    }
+
+    /// Installs `config`, translated from `merged` (`base` overlaid by `agent`), together with the
+    /// [`ConfigurationUpdates`] that apply what `feed` delivers next.
+    fn with_updates(
+        config: SalukiConfiguration, merged: SourceTree, base: SourceTree, agent: SourceTree, feed: Feed,
+    ) -> (Self, ConfigurationUpdates) {
+        let system = Self::install(config, merged);
+        let updates = ConfigurationUpdates {
+            state: Arc::new(Mutex::new(UpdateState {
+                feed,
+                applied: Applied {
+                    base,
+                    agent,
+                    current: Arc::clone(&system.current),
+                    sources: Arc::clone(&system.sources),
+                    tick: Arc::clone(&system.tick),
+                },
+            })),
+        };
+        (system, updates)
     }
 
     /// Returns a live view of the given projection of the current configuration. Narrow further with
@@ -209,27 +234,33 @@ fn load_sources(sources: &RwLock<Arc<SourceTree>>) -> Arc<SourceTree> {
     Arc::clone(&sources.read().unwrap_or_else(PoisonError::into_inner))
 }
 
-/// Applies each configuration update from the Datadog Agent after the initial snapshot.
+/// Applies each later configuration update: from the Datadog Agent after the initial snapshot, or, in standalone mode
+/// with the experimental `experimental.standalone_config_reload` setting enabled, from re-reads of the configuration
+/// file.
 ///
 /// [`LoadedConfiguration::run`][crate::LoadedConfiguration::run] returns this once the system holds
-/// the initial snapshot. No later update is applied until the caller calls [`run`][Self::run].
-/// Until then, updates stay queued in the Agent configuration stream.
-#[must_use = "configuration updates from the Datadog Agent are never applied unless the updates are run"]
+/// the initial snapshot, and [`LoadedConfiguration::standalone`][crate::LoadedConfiguration::standalone] returns it
+/// when the reload is enabled. No later update is applied until the caller calls [`run`][Self::run].
+/// Until then, updates stay queued in the Agent configuration stream, and the file is not re-read.
+#[must_use = "configuration updates are never applied unless the updates are run"]
 pub struct ConfigurationUpdates {
     state: Arc<Mutex<UpdateState>>,
 }
 
 impl ConfigurationUpdates {
-    /// Applies each update from the Datadog Agent until the configuration stream closes.
+    /// Applies each update from the Datadog Agent until the configuration stream closes, or each change to the
+    /// configuration file, re-read on an interval, until the future is dropped.
     ///
-    /// Each call continues from where the previous call stopped, because the stream and the
-    /// accepted configuration persist between calls. Thus, a caller can run this again after a call
-    /// fails or panics. If a call panicked while it applied an update, that update is lost.
+    /// Each call continues from where the previous call stopped, because the stream (or the last
+    /// read of the file) and the accepted configuration persist between calls. Thus, a caller can
+    /// run this again after a call fails or panics. If a call panicked while it applied an update,
+    /// that update is lost.
     ///
     /// # Errors
     ///
     /// Returns [`Error::UpdateStreamClosed`] when the configuration stream closes. The stream does
-    /// not reopen, so each later call fails in the same way at once.
+    /// not reopen, so each later call fails in the same way at once. Re-reading the configuration
+    /// file never ends on its own, so it never returns an error.
     pub fn run(&self) -> impl Future<Output = std::result::Result<(), Error>> + Send + 'static {
         let state = Arc::clone(&self.state);
         async move {
@@ -242,9 +273,23 @@ impl ConfigurationUpdates {
 
 /// The state that [`ConfigurationUpdates`] keeps between runs.
 struct UpdateState {
-    agent_rx: mpsc::Receiver<ConfigUpdate>,
+    feed: Feed,
+    applied: Applied,
+}
+
+/// Where later configuration updates come from.
+enum Feed {
+    /// The Datadog Agent's configuration stream. Each update folds onto the Agent layer.
+    Agent(mpsc::Receiver<ConfigUpdate>),
+    /// The local configuration file, re-read every `interval`, in standalone mode. Each change rebuilds the base from
+    /// the file and the environment, as at startup.
+    File { file: ConfigFile, interval: Duration },
+}
+
+/// The layers of the last accepted configuration, and where it is published.
+struct Applied {
     base: SourceTree,
-    // The accumulated Agent layer of the last accepted update.
+    // The accumulated Agent layer of the last accepted update. Empty in standalone mode.
     agent: SourceTree,
     current: Arc<ArcSwap<SalukiConfiguration>>,
     sources: Arc<RwLock<Arc<SourceTree>>>,
@@ -252,38 +297,89 @@ struct UpdateState {
 }
 
 impl UpdateState {
-    /// Validates each update from the Datadog Agent config stream against the typed model and commits
-    /// it on success. Ends when the stream closes.
-    ///
-    /// Each update is processed individually (no burst collapse) so a rejection can be attributed to
-    /// the exact update that caused it. Updates are infrequent, so re-translating per update is cheap.
+    /// Applies what the feed delivers until it ends: the Agent stream closing, which re-reading the
+    /// file never does.
     async fn apply_updates(&mut self) -> Result<()> {
-        while let Some(update) = self.agent_rx.recv().await {
-            // Validate-then-commit: fold onto a tentative copy of the Agent layer and drive the typed
-            // model from it. Only a fully successful update advances the committed layer, so a rejected
-            // value never lingers to re-poison a later merge.
-            let mut tentative = self.agent.clone();
-            fold(&mut tentative, &update);
-            let merged = self.base.overlay(&tentative);
-            match translate_authoritative(&merged) {
-                Ok(config) => {
-                    self.agent = tentative;
-                    {
-                        let mut sources = self.sources.write().unwrap_or_else(PoisonError::into_inner);
-                        *sources = Arc::new(merged);
-                        self.current.store(Arc::new(config));
-                    }
-                    self.tick.send_replace(());
-                    debug!("Applied configuration update.");
-                }
-                Err(e) => warn!(
-                    error = %e,
-                    "Rejected configuration update; keeping the last-known-good typed configuration."
-                ),
-            }
+        match &mut self.feed {
+            Feed::Agent(agent_rx) => apply_agent_updates(agent_rx, &mut self.applied).await,
+            Feed::File { file, interval } => apply_file_changes(file, *interval, &mut self.applied).await,
         }
+    }
+}
 
-        Err(Error::UpdateStreamClosed)
+/// Validates each update from the Datadog Agent config stream against the typed model and commits
+/// it on success. Ends when the stream closes.
+///
+/// Each update is processed individually (no burst collapse) so a rejection can be attributed to
+/// the exact update that caused it. Updates are infrequent, so re-translating per update is cheap.
+async fn apply_agent_updates(agent_rx: &mut mpsc::Receiver<ConfigUpdate>, applied: &mut Applied) -> Result<()> {
+    while let Some(update) = agent_rx.recv().await {
+        // Validate-then-commit: fold onto a tentative copy of the Agent layer and drive the typed
+        // model from it. Only a fully successful update advances the committed layer, so a rejected
+        // value never lingers to re-poison a later merge.
+        let mut tentative = applied.agent.clone();
+        fold(&mut tentative, &update);
+        match applied.commit(None, Some(tentative)) {
+            Ok(()) => debug!("Applied configuration update."),
+            Err(e) => warn!(
+                error = %e,
+                "Rejected configuration update; keeping the last-known-good typed configuration."
+            ),
+        }
+    }
+
+    Err(Error::UpdateStreamClosed)
+}
+
+/// Re-reads the configuration file every `interval` and, when it changed, validates the rebuilt base
+/// against the typed model and commits it on success, as [`apply_agent_updates`] does for an Agent
+/// update. Never ends.
+///
+/// A change is taken once two consecutive reads agree, so a file caught while it is being written is
+/// never applied, and a change applies one interval after it is first read. A file that reads as it
+/// did when it last changed is no change, so a rejected file is reported once rather than on every
+/// read, and is retried only once it changes again. The file is read off the async runtime.
+async fn apply_file_changes(file: &mut ConfigFile, interval: Duration, applied: &mut Applied) -> Result<()> {
+    loop {
+        tokio::time::sleep(interval).await;
+        let read = file.read().await;
+        let Some(base) = file.observe(read) else {
+            continue;
+        };
+        match base.and_then(|base| applied.commit(Some(SourceTree::all_explicit(base)), None)) {
+            Ok(()) => info!(path = %file.path().display(), "Applied a change to the configuration file."),
+            Err(e) => warn!(
+                path = %file.path().display(),
+                error = %e,
+                "Rejected a change to the configuration file; keeping the last-known-good typed configuration."
+            ),
+        }
+    }
+}
+
+impl Applied {
+    /// Translates and validates the tentative `base` and `agent` layers, each the committed layer when `None`, and on
+    /// success commits them: the layers, the merged sources, and the typed configuration, after which live views
+    /// wake. On failure nothing changes, so a rejected value never lingers to re-poison a later merge.
+    fn commit(&mut self, base: Option<SourceTree>, agent: Option<SourceTree>) -> Result<()> {
+        let merged = base
+            .as_ref()
+            .unwrap_or(&self.base)
+            .overlay(agent.as_ref().unwrap_or(&self.agent));
+        let config = translate_authoritative(&merged)?;
+        if let Some(base) = base {
+            self.base = base;
+        }
+        if let Some(agent) = agent {
+            self.agent = agent;
+        }
+        {
+            let mut sources = self.sources.write().unwrap_or_else(PoisonError::into_inner);
+            *sources = Arc::new(merged);
+            self.current.store(Arc::new(config));
+        }
+        self.tick.send_replace(());
+        Ok(())
     }
 }
 

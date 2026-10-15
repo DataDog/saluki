@@ -1,7 +1,8 @@
 //! `explain`: a stable, versioned description of a plan.
 //!
 //! [`Explain::of`] describes a plan and what validation computed for it: its logical graph (nodes, their operators,
-//! parameters with every configuration binding and its resolved value, ports, and provenance), the port type carried
+//! parameters with every configuration binding and its resolved value, and ports), the plan's provenance (which
+//! artifacts it composes, and the scope each replaces), the port type carried
 //! by every edge, its outputs and scopes, its resource bounds against their limits, and the validation findings. The
 //! document has a deterministic JSON form ([`Explain::to_json`]) and a deterministic text rendering
 //! ([`Explain::to_text`]).
@@ -26,8 +27,10 @@
 //! laid out on them, in the physical sections only: the lane counts and whether R1 pipelines slots, the lanes of each
 //! admission point and slot, how each edge reaches the lanes of its target (with the key groups behind a keyed exit),
 //! and each lane's output point of an isolation slot. A frame on one lane laid out with R1's pipelining has none of
-//! them; lanes never enter the logical sections or the plan's hash. Later stages add the plan diff, and state owners
-//! with their transitions.
+//! them; lanes never enter the logical sections or the plan's hash. Version 2 removes each node's provenance: what a
+//! plan runs is a property of the plan, which its provenance states (the artifacts it composes, each with the scope it
+//! replaces, whose nodes are the artifact's program), so a node's loss is attributed to its node ID and to the program
+//! the plan runs. Later versions add the plan diff, and state owners with their transitions.
 
 use std::collections::BTreeMap;
 
@@ -40,7 +43,7 @@ use crate::{
     extension::DeliveryPolicy,
     ir::{
         ArtifactRevision, BindingName, ExitName, InputName, NodeId, OperatorName, OutputId, ParamName, Plan,
-        PlanProvenance, PortName, PortRef, Provenance, RecipientId, ScopeName,
+        PlanProvenance, PortName, PortRef, RecipientId, ScopeName,
     },
     model::PortType,
     operators::{Boundary, Loss, LossClass, OperatorRegistry, StateContract},
@@ -59,7 +62,7 @@ pub use self::resources::{BoundOutputEntry, HostSettingsEntry, RecipientEntry, R
 mod text;
 
 /// The version of the explain document this crate produces.
-pub const EXPLAIN_VERSION: u32 = 1;
+pub const EXPLAIN_VERSION: u32 = 2;
 
 /// The explain document of one plan.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -149,9 +152,6 @@ pub struct NodeEntry {
 
     /// The classes of loss the operator declares: `policy`, `capacity`, `invalid`, or `shutdown`.
     pub loss: Vec<String>,
-
-    /// Where the node came from, which is also the authority for its loss.
-    pub provenance: Option<Provenance>,
 
     /// The parameters as written, with the resolved value of every configuration binding.
     pub params: BTreeMap<ParamName, Value>,
@@ -431,7 +431,6 @@ impl Explain {
                             .map(|loss| loss_class_name(loss.class).to_string())
                             .collect(),
                     }),
-                    provenance: node.provenance.clone(),
                     params: node
                         .params
                         .iter()

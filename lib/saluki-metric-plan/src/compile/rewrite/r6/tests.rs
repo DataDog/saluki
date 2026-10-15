@@ -253,7 +253,11 @@ fn a_rewritten_plan_whose_scope_names_a_removed_port_is_skipped() {
     let a = id("policy/a");
     removed.nodes.retain(|node| node.id != a);
     removed.edges.retain(|edge| edge.from.node != a && edge.to.node != a);
-    let report = crate::validate::revalidate(crate::compile::rewrite::harness::registry(), &removed);
+    let report = crate::validate::revalidate(
+        crate::compile::rewrite::harness::registry(),
+        &removed,
+        &Default::default(),
+    );
     assert!(
         report.errors().any(|finding| finding
             .to_string()

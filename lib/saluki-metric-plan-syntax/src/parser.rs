@@ -92,14 +92,21 @@ pub(crate) enum Target {
     Input { name: InputName, span: Span },
     /// A scope exit: where the edge leaves the scope.
     Exit { name: ExitName, span: Span },
-    /// An inline `emit`.
-    Emit {
-        output: OutputId,
-        output_span: Span,
-        span: Span,
-    },
+    /// An inline `emit`: `emit <output>`, or `emit to [<recipient>, ...]`.
+    Emit { to: EmitTo, output_span: Span, span: Span },
     /// An inline `drop`.
     Drop { span: Span },
+}
+
+/// Where an inline `emit` delivers: to an output, by its ID, or to recipients, by their names.
+#[derive(Clone, Debug)]
+pub(crate) enum EmitTo {
+    /// `emit <output>`.
+    Output(OutputId),
+
+    /// `emit to [<recipient>, ...]`: each name an identifier, such as `primary`, or a quoted string, such as an
+    /// endpoint's URL.
+    Recipients(Vec<String>),
 }
 
 impl Target {
@@ -701,16 +708,27 @@ impl<'s> Parser<'s> {
 
     fn target(&mut self) -> Result<Target, Error> {
         let token = self.peek();
-        let what = "a target: a node ID, `exit.<name>`, `emit <output>`, or `drop`";
+        let what = "a target: a node ID, `exit.<name>`, `emit <output>`, `emit to [<recipient>, ...]`, or `drop`";
         if token.kind != TokenKind::Ident {
             return Err(self.expected(what));
         }
         let dotted = self.peek_is(1, &TokenKind::Dot);
         if self.is_word(token, "emit") && !dotted {
             self.advance();
-            let (output, output_span) = self.ident("an output ID after `emit`", OutputId::new)?;
+            let next = self.peek();
+            if self.is_word(next, "to") && self.peek_is(1, &TokenKind::LBracket) {
+                self.advance();
+                let (recipients, list_span) = self.recipient_names()?;
+                return Ok(Target::Emit {
+                    to: EmitTo::Recipients(recipients),
+                    output_span: list_span,
+                    span: token.span.to(list_span),
+                });
+            }
+            let (output, output_span) =
+                self.ident("an output ID, or `to [<recipient>, ...]`, after `emit`", OutputId::new)?;
             return Ok(Target::Emit {
-                output,
+                to: EmitTo::Output(output),
                 output_span,
                 span: token.span.to(output_span),
             });
@@ -1165,6 +1183,51 @@ impl<'s> Parser<'s> {
                     if values.is_none() { "values" } else { "prefix" }
                 ),
             )),
+        }
+    }
+
+    /// Parses the recipients of an `emit to`: a bracketed list of names, each an identifier or a quoted string, and
+    /// returns them with the list's span.
+    fn recipient_names(&mut self) -> Result<(Vec<String>, Span), Error> {
+        let open = self
+            .expect(
+                TokenKind::LBracket,
+                "a list of recipients, such as `[primary, \"https://intake.example.com\"]`",
+            )?
+            .span;
+        let mut names = Vec::new();
+        loop {
+            let token = self.peek();
+            match &token.kind {
+                TokenKind::RBracket => {
+                    self.advance();
+                    return Ok((names, open.to(token.span)));
+                }
+                TokenKind::Str(value) => {
+                    self.advance();
+                    names.push(value.clone());
+                }
+                TokenKind::Ident => {
+                    self.advance();
+                    names.push(self.text(token).to_string());
+                }
+                _ => {
+                    return Err(self.unclosed(
+                        "a recipient name (an identifier, or a quoted string such as a URL), or `]` to close the list",
+                        open,
+                    ))
+                }
+            }
+            match self.separator(&TokenKind::RBracket) {
+                Some(true) => {}
+                Some(false) => {
+                    let close = self.tokens[self.pos.saturating_sub(1)].span;
+                    return Ok((names, open.to(close)));
+                }
+                None => {
+                    return Err(self.unclosed("`,` or `]` after the recipient, to continue or close the list", open))
+                }
+            }
         }
     }
 

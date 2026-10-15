@@ -79,15 +79,13 @@ fn declaration(id: &str, digit: char) -> (Value, Option<Value>) {
 /// A default program delivering every record to each of `outputs`, each `(output, fingerprint digit)`, and the host's
 /// catalog of it.
 fn program(outputs: &[(&str, char)]) -> (Plan, MemoryCatalog) {
-    let mut nodes = vec![json!({"id": "src", "op": "source", "params": {"binding": "otlp"},
-                                "provenance": {"native": "src"}})];
+    let mut nodes = vec![json!({"id": "src", "op": "source", "params": {"binding": "otlp"}})];
     let mut edges = Vec::new();
     if let [(only, _)] = outputs {
         nodes.push(json!({"id": format!("emit_{}", only), "op": "emit", "params": {"output": only}}));
         edges.push(json!({"from": "src.metrics", "to": format!("emit_{}.in", only)}));
     } else {
-        nodes.push(json!({"id": "fanout", "op": "tee", "params": {"ports": outputs.len()},
-                          "provenance": {"native": "fanout"}}));
+        nodes.push(json!({"id": "fanout", "op": "tee", "params": {"ports": outputs.len()}}));
         edges.push(json!({"from": "src.metrics", "to": "fanout.in"}));
         for (port, (output, _)) in outputs.iter().enumerate() {
             nodes.push(json!({"id": format!("emit_{}", output), "op": "emit", "params": {"output": output}}));
@@ -221,7 +219,7 @@ fn a_rebound_output_rejects_a_new_artifact_and_drops_the_emits_of_the_one_in_eff
     assert_eq!(
         scope.outcome,
         ComposeOutcome::Degraded(vec![DroppedEmits {
-            output: output("b"),
+            target: DropTarget::Output(output("b")),
             reason: DropReason::Rebound { renumbered: None },
             nodes: vec![node_id("emit_b")],
         }])
@@ -231,12 +229,12 @@ fn a_rebound_output_rejects_a_new_artifact_and_drops_the_emits_of_the_one_in_eff
         scope.notes().as_deref(),
         Some("output `b` now delivers elsewhere; its emits are dropped; rebase")
     );
-    // The `emit` keeps its node ID and becomes a drop of the artifact's, so its loss is the artifact's policy loss
-    // there; the emit to `a` is the default program's, unchanged.
+    // The `emit` keeps its node ID and becomes a drop, so its loss is the program's policy loss there; the emit to `a`
+    // is the default program's, unchanged.
     let dropped = composed.plan.node(&node_id("emit_b")).unwrap();
     assert_eq!(dropped.op.as_str(), names::DROP);
     assert!(dropped.params.is_empty());
-    assert!(matches!(&dropped.provenance, Some(Provenance::Artifact(revision)) if revision.revision == 7));
+    assert_eq!(composed.plan.provenance.as_ref().unwrap().artifacts[0].revision, 7);
     assert_eq!(composed.plan.node(&node_id("emit_a")), host.0.node(&node_id("emit_a")));
     assert_eq!(
         scope
@@ -260,7 +258,7 @@ fn a_removed_output_holds_a_new_artifact_pending_and_drops_the_emits_of_the_one_
     assert_eq!(
         scope(&composed).outcome,
         ComposeOutcome::Degraded(vec![DroppedEmits {
-            output: output("b"),
+            target: DropTarget::Output(output("b")),
             reason: DropReason::Removed,
             // The default program no longer has the node, so the artifact's is placed in the policy namespace.
             nodes: vec![node_id("policy/emit_b")],

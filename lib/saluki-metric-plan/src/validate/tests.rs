@@ -75,6 +75,11 @@ fn test_catalog() -> MemoryCatalog {
             PortType::ANY,
         )
         .with_scope_input(
+            PROGRAM.parse().unwrap(),
+            InputName::new("metrics").unwrap(),
+            PortType::ANY,
+        )
+        .with_scope_input(
             "post".parse().unwrap(),
             InputName::new("gauges").unwrap(),
             PortType {
@@ -84,18 +89,21 @@ fn test_catalog() -> MemoryCatalog {
         )
 }
 
-/// A node with native provenance.
+/// A node.
 fn n(id: &str, op: &str, params: Value) -> Value {
-    json!({"id": id, "op": op, "params": params, "provenance": {"native": "test"}})
+    json!({"id": id, "op": op, "params": params})
 }
 
-/// A node with artifact provenance.
+/// The member that marks a node, until [`plan`] removes it, as one that makes the plan a program an artifact composed.
+const PROGRAM: &str = "program";
+
+/// A node that makes the plan a program: [`plan`] then declares the scope `program` after the plan's first source,
+/// and lists artifact revision 7 as replacing it, so that every node after that source is the program's.
 fn a(id: &str, op: &str, params: Value) -> Value {
-    json!({"id": id, "op": op, "params": params,
-           "provenance": {"artifact": {"revision": 7, "hash": ZERO_HASH}}})
+    json!({"id": id, "op": op, "params": params, PROGRAM: true})
 }
 
-/// A node without provenance.
+/// A node.
 fn bare(id: &str, op: &str, params: Value) -> Value {
     json!({"id": id, "op": op, "params": params})
 }
@@ -155,8 +163,22 @@ fn output_decls(ids: &[&str]) -> Value {
 
 /// Builds a plan from nodes, edges written as `"node.port -> node.port"`, and the IDs of the outputs it declares.
 ///
-/// The plan's provenance lists artifact revision 7, which [`a`] gives its nodes.
+/// If a node is marked as [`a`] marks it, the plan is a program: it declares the scope `program`, whose input
+/// `metrics` is the `metrics` port of the plan's first source, and its provenance lists artifact revision 7 as
+/// replacing that scope.
 fn plan(nodes: Vec<Value>, edges: &[&str], outputs: &[&str]) -> Value {
+    let program = nodes.iter().any(|node| node.get(PROGRAM).is_some());
+    let source = nodes
+        .iter()
+        .find(|node| node["op"] == "source")
+        .map(|node| format!("{}.metrics", node["id"].as_str().unwrap()));
+    let nodes = nodes
+        .into_iter()
+        .map(|mut node| {
+            node.as_object_mut().unwrap().remove(PROGRAM);
+            node
+        })
+        .collect::<Vec<_>>();
     let edges = edges
         .iter()
         .map(|edge| {
@@ -164,8 +186,12 @@ fn plan(nodes: Vec<Value>, edges: &[&str], outputs: &[&str]) -> Value {
             json!({"from": from, "to": to})
         })
         .collect::<Vec<_>>();
-    json!({"ir_version": 1, "provenance": {"artifacts": [{"revision": 7, "hash": ZERO_HASH}]},
-           "nodes": nodes, "edges": edges, "outputs": output_decls(outputs)})
+    let mut value = json!({"ir_version": 1, "nodes": nodes, "edges": edges, "outputs": output_decls(outputs)});
+    if let (true, Some(source)) = (program, source) {
+        value["scopes"] = json!({PROGRAM: {"inputs": {"metrics": source}}});
+        value["provenance"] = json!({"artifacts": [{"scope": PROGRAM, "revision": 7, "hash": ZERO_HASH}]});
+    }
+    value
 }
 
 fn validate(value: &Value) -> ValidationReport {
@@ -389,29 +415,7 @@ fn structure_rules() {
             vec![(UniqueSources, "node `src2`")],
         ),
         (
-            "policy-namespace nodes do not claim native provenance",
-            plan(
-                vec![otlp("src"), n("policy/x", "host_enrichment", json!({})), emit("e", "a")],
-                &["src.metrics -> policy/x.in", "policy/x.out -> e.in"],
-                &["a"],
-            ),
-            vec![(ProvenanceNamespace, "node `policy/x`")],
-        ),
-        (
-            "policy-namespace nodes have the provenance of their artifact, even when lossless",
-            plan(
-                vec![
-                    otlp("src"),
-                    bare("policy/t", "tee", json!({"ports": 1})),
-                    emit("e", "a"),
-                ],
-                &["src.metrics -> policy/t.in", "policy/t.0 -> e.in"],
-                &["a"],
-            ),
-            vec![(ProvenanceNamespace, "node `policy/t`")],
-        ),
-        (
-            "policy-namespace nodes with artifact provenance are valid",
+            "policy-namespace nodes are valid",
             plan(
                 vec![otlp("src"), a("policy/t", "tee", json!({"ports": 1})), emit("e", "a")],
                 &["src.metrics -> policy/t.in", "policy/t.0 -> e.in"],
@@ -1630,14 +1634,11 @@ fn a_host_that_runs_one_aggregation_per_program_rejects_every_other_one_at_its_n
     use Rule::*;
 
     let registry = crate::operators::OperatorRegistry::native();
-    // Three state owners fed by one source, each delivering to its own output; `artifact_first` gives `agg_1`
-    // artifact provenance.
-    let three_owners = |artifact_first: bool| {
-        let mut first = aggregate("agg_1");
-        if artifact_first {
-            first["provenance"] = json!({"artifact": {"revision": 1, "hash": ZERO_HASH}});
-        }
-        let mut value = plan(
+    // Three state owners fed by one source, each delivering to its own output. (Which one is the first when an artifact
+    // adds one beside the default program's is the reserved ID's: `install::unified_scope_tests`.)
+    let three_owners = |_: bool| {
+        let first = aggregate("agg_1");
+        plan(
             vec![
                 otlp("src"),
                 tee("t", 3),
@@ -1658,11 +1659,7 @@ fn a_host_that_runs_one_aggregation_per_program_rejects_every_other_one_at_its_n
                 "agg_3.out -> e3.in",
             ],
             &["a", "b", "shared_1"],
-        );
-        if artifact_first {
-            value["provenance"] = json!({"artifacts": [{"revision": 1, "hash": ZERO_HASH}]});
-        }
-        value
+        )
     };
     let validate_with = |value: &Value, catalog: &MemoryCatalog| {
         Validator::new(&registry, catalog).validate(&Plan::from_value(value.clone()).unwrap())
@@ -1698,27 +1695,6 @@ fn a_host_that_runs_one_aggregation_per_program_rejects_every_other_one_at_its_n
         ]
     );
     assert!(!report.is_valid());
-
-    // The first is a state owner without artifact provenance where there is one, so that the ones an artifact adds
-    // are reported, wherever they are listed.
-    let report = validate_with(&three_owners(true), &single);
-    let at = report
-        .findings()
-        .iter()
-        .filter(|finding| finding.rule == SingleAggregation)
-        .map(|finding| {
-            (
-                finding.location.to_string(),
-                finding.message.contains("(`agg_2` is the first)"),
-            )
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        at,
-        [("node `agg_1`".to_string(), true), ("node `agg_3`".to_string(), true)],
-        "{}",
-        report
-    );
 
     // One state owner, or none, is valid; a state owner whose parameters are invalid is not counted.
     let one = plan(
@@ -1807,96 +1783,39 @@ fn an_artifacts_context_limit_above_the_hosts_state_budget_is_a_warning() {
 }
 
 #[test]
-fn authority_rules() {
+fn what_a_program_may_hold() {
     use Rule::*;
 
     let cases: Vec<Case> = vec![
         (
-            "a drop needs provenance",
+            "a lossy node needs no provenance: a node is what it does",
             plan(
                 vec![otlp("src"), bare("d", "drop", json!({}))],
                 &["src.metrics -> d.in"],
                 &[],
             ),
-            vec![(LossAuthority, "node `d`")],
+            vec![],
         ),
         (
-            "a tag projection needs provenance",
+            "the default program may hold an opaque host",
             plan(
                 vec![
                     otlp("src"),
-                    bare(
-                        "tags",
-                        "tag_projection",
-                        json!({"rules": [], "value_rules": [], "cache_capacity": 1}),
+                    n(
+                        "o",
+                        "opaque_host",
+                        json!({"component": "x", "input": {"kinds": "all", "timestamps": "mixed"},
+                               "outputs": {"out": {"kinds": "all", "timestamps": "mixed"}}}),
                     ),
                     emit("e", "a"),
                 ],
-                &["src.metrics -> tags.in", "tags.out -> e.in"],
-                &["a"],
-            ),
-            vec![(LossAuthority, "node `tags`")],
-        ),
-        (
-            "a lossless node needs no provenance",
-            plan(
-                vec![
-                    otlp("src"),
-                    bare("s", "split", json!({"predicate": {"const": true}})),
-                    emit("e", "a"),
-                    drop("d"),
-                ],
-                &["src.metrics -> s.in", "s.true -> e.in", "s.false -> d.in"],
+                &["src.metrics -> o.in", "o.out -> e.in"],
                 &["a"],
             ),
             vec![],
         ),
         (
-            "an artifact drop has authority",
-            plan(
-                vec![otlp("src"), a("d", "drop", json!({}))],
-                &["src.metrics -> d.in"],
-                &[],
-            ),
-            vec![],
-        ),
-        (
-            "an artifact revision a node names is one the plan lists",
-            {
-                let mut value = plan(
-                    vec![otlp("src"), a("d", "drop", json!({}))],
-                    &["src.metrics -> d.in"],
-                    &[],
-                );
-                value["nodes"][1]["provenance"]["artifact"]["revision"] = json!(999);
-                value
-            },
-            vec![(ProvenanceConsistency, "node `d`")],
-        ),
-        (
-            "a plan without provenance lists no artifact revision",
-            {
-                let mut value = plan(
-                    vec![otlp("src"), a("d", "drop", json!({}))],
-                    &["src.metrics -> d.in"],
-                    &[],
-                );
-                value.as_object_mut().unwrap().remove("provenance");
-                value
-            },
-            vec![(ProvenanceConsistency, "node `d`")],
-        ),
-        (
-            "an artifact cannot add a source",
-            plan(
-                vec![a("src", "source", json!({"binding": "otlp"})), emit("e", "a")],
-                &["src.metrics -> e.in"],
-                &["a"],
-            ),
-            vec![(TrustedHost, "node `src`")],
-        ),
-        (
-            "an artifact cannot add an opaque host",
+            "a program cannot hold an opaque host",
             plan(
                 vec![
                     otlp("src"),
@@ -1911,7 +1830,8 @@ fn authority_rules() {
                 &["src.metrics -> o.in", "o.out -> e.in"],
                 &["a"],
             ),
-            vec![(TrustedHost, "node `o`")],
+            // An opaque host may expand what it receives without bound, which the artifact limits refuse too.
+            vec![(TrustedHost, "node `o`"), (WorkPerInput, "node `o`")],
         ),
     ];
     for (name, value, expected) in cases {
@@ -1944,11 +1864,10 @@ fn every_finding_is_reported_not_only_the_first() {
             (Reachable, "node `x`"),
             (UnusedOutput, "output `b`"),
             (DuplicateContribution, "node `t`"),
-            (LossAuthority, "node `d`"),
         ],
     );
     assert!(!report.is_valid());
-    assert_eq!(report.errors().count(), 5);
+    assert_eq!(report.errors().count(), 4);
     assert_eq!(report.warnings().count(), 1);
     assert!(report
         .to_string()
@@ -1981,4 +1900,55 @@ fn every_rule_has_a_stable_name() {
             "state_budget"
         ]
     );
+}
+
+#[test]
+fn copies_to_outputs_without_a_recipient_in_common_are_no_duplicate_even_beside_an_output_they_each_share_one_with() {
+    // `both` dual-ships to B and C; `to_b` and `to_c` each deliver to one of them, as a program's implied outputs do
+    // beside the main output it no longer emits to. A copy to each of `to_b` and `to_c` reaches no recipient twice;
+    // a copy to `both` and one to `to_b` reaches B twice.
+    let all = json!({"kinds": "all", "timestamps": "mixed"});
+    let outputs = [
+        ("both", vec!["out/b", "out/c"]),
+        ("to_b", vec!["out/b"]),
+        ("to_c", vec!["out/c"]),
+    ];
+    let catalog = outputs.iter().fold(test_catalog(), |catalog, (id, recipients)| {
+        catalog.with_output(
+            OutputId::new(*id).unwrap(),
+            CatalogOutput {
+                accepts: serde_json::from_value(all.clone()).unwrap(),
+                fingerprint: fingerprint(id),
+                recipients: recipients.iter().map(|r| RecipientId::new(*r).unwrap()).collect(),
+            },
+        )
+    });
+    let plan_to = |first: &str, second: &str| {
+        let mut value = plan(
+            vec![otlp("src"), tee("t", 2), emit("e1", first), emit("e2", second)],
+            &["src.metrics -> t.in", "t.0 -> e1.in", "t.1 -> e2.in"],
+            &[],
+        );
+        value["outputs"] = Value::Array(
+            outputs
+                .iter()
+                .map(|(id, recipients)| {
+                    json!({"id": id, "accepts": all, "fingerprint": fingerprint(id).to_string(), "recipients": recipients})
+                })
+                .collect(),
+        );
+        value
+    };
+    let duplicates = |value: &Value| {
+        let report = Validator::new(&crate::operators::OperatorRegistry::native(), &catalog)
+            .validate(&Plan::from_value(value.clone()).unwrap());
+        report
+            .findings()
+            .iter()
+            .filter(|finding| finding.rule == Rule::DuplicateContribution)
+            .count()
+    };
+    assert_eq!(duplicates(&plan_to("to_b", "to_c")), 0);
+    assert_eq!(duplicates(&plan_to("both", "to_b")), 1);
+    assert_eq!(duplicates(&plan_to("to_b", "to_b")), 1);
 }

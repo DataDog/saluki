@@ -175,7 +175,6 @@ fn a_live_change_diffs_as_one_changed_node() {
             NodeChange::Changed {
                 operator: false,
                 params: true,
-                provenance: false,
                 edges: false,
             }
         )]
@@ -199,7 +198,6 @@ fn removing_a_branch_diffs_as_removed_nodes_edges_and_output() {
                 NodeChange::Changed {
                     operator: false,
                     params: true,
-                    provenance: false,
                     edges: true,
                 }
             ),
@@ -438,6 +436,7 @@ pub(super) fn describe(action: &Action) -> String {
             format!("candidate {}{}: {}", report.candidate, generation, outcome)
         }
         Action::ArmCut(arm) => format!("arm the cut of {} over {:?}", arm.generation.id(), arm.affected),
+        Action::Adopt { generation, origin } => format!("adopt {} as {}", generation, origin),
         Action::WatchCut { generation, at } => format!("watch the cut of {} at {}", generation, at),
         Action::CancelCut { generation, .. } => format!("cancel the cut of {}", generation),
         Action::FinalizeCut { generation } => format!("finalize the cut of {}", generation.id()),

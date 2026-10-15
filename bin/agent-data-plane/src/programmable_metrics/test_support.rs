@@ -1,6 +1,7 @@
 //! Helpers for tests: configuration from YAML, the environment provider, and host facts.
 
 use std::{
+    path::PathBuf,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -90,6 +91,7 @@ pub(super) async fn layered_configuration_system(layers: &[&str]) -> Configurati
         .standalone()
         .await
         .expect("test configuration is valid")
+        .0
 }
 
 /// Loads the configuration system for the YAML configuration `yaml`, as [`configuration_system`] does, but with the
@@ -101,6 +103,7 @@ pub(super) async fn configuration_system_with_default_lanes(yaml: &str) -> Confi
         .standalone()
         .await
         .expect("test configuration is valid")
+        .0
 }
 
 /// Loads the local configuration for the YAML configurations `layers`, as [`layered_configuration_system`] does.
@@ -118,6 +121,15 @@ async fn load(layers: &[&str]) -> Result<LoadedConfiguration, ConfigurationError
 /// Loads the local configuration for the YAML configurations `layers`, each merged over the previous ones and the
 /// first over `base`.
 async fn load_over(base: &str, layers: &[&str]) -> Result<LoadedConfiguration, ConfigurationError> {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("datadog.yaml");
+    std::fs::write(&path, render(base, layers)).unwrap();
+    LoadedConfiguration::load(&path, EnvPrecedence::Disabled).await
+}
+
+/// Returns the YAML configurations `layers`, each merged over the previous ones and the first over `base`, as one
+/// document.
+fn render(base: &str, layers: &[&str]) -> String {
     let mut config = serde_yaml::from_str::<serde_yaml::Value>(base).unwrap();
     for layer in layers.iter().filter(|layer| !layer.trim().is_empty()) {
         merge(
@@ -125,10 +137,72 @@ async fn load_over(base: &str, layers: &[&str]) -> Result<LoadedConfiguration, C
             serde_yaml::from_str(layer).expect("test configuration is YAML"),
         );
     }
+    serde_yaml::to_string(&config).unwrap()
+}
+
+/// What a test of the experimental standalone configuration reload merges over the base configuration and the lanes
+/// of tests: the reload on, re-reading the file every 100 milliseconds, the shortest interval.
+const RELOAD: &str = "
+experimental:
+  standalone_config_reload:
+    enabled: true
+    interval: 100ms
+";
+
+/// The configuration file that the experimental standalone configuration reload re-reads, which a test rewrites while
+/// the process runs. The file, and its temporary directory, are removed on drop.
+pub(super) struct ReloadedFile {
+    path: PathBuf,
+    _directory: tempfile::TempDir,
+}
+
+impl ReloadedFile {
+    /// Replaces the file with the YAML configurations `layers`, merged as [`reloading_configuration_system`] merges
+    /// them.
+    pub(super) fn rewrite(&self, layers: &[&str]) {
+        self.write(&Self::rendered(layers));
+    }
+
+    /// Returns what [`rewrite`](Self::rewrite) writes for the YAML configurations `layers`.
+    pub(super) fn rendered(layers: &[&str]) -> String {
+        let base = [BASE, LANES_OFF].join("");
+        let layers = std::iter::once(RELOAD)
+            .chain(layers.iter().copied())
+            .collect::<Vec<_>>();
+        render(&base, &layers)
+    }
+
+    /// Replaces the file with `contents`, which need not be a valid configuration, or even YAML.
+    ///
+    /// The file is replaced atomically, by writing a new file and renaming it over the old one, so a re-read never
+    /// sees a partly written file.
+    pub(super) fn write(&self, contents: &str) {
+        let staged = self.path.with_extension("yaml.staged");
+        std::fs::write(&staged, contents).unwrap();
+        std::fs::rename(&staged, &self.path).unwrap();
+    }
+}
+
+/// Loads the configuration system for the YAML configurations `layers` in standalone mode with the experimental
+/// standalone configuration reload on ([`RELOAD`]), merged as [`layered_configuration_system`] merges them, after the
+/// reload settings. Returns the system, its updates, which re-read the file and apply each change once they run, and
+/// the file, which a test rewrites.
+pub(super) async fn reloading_configuration_system(
+    layers: &[&str],
+) -> (ConfigurationSystem, ConfigurationUpdates, ReloadedFile) {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("datadog.yaml");
-    std::fs::write(&path, serde_yaml::to_string(&config).unwrap()).unwrap();
-    LoadedConfiguration::load(&path, EnvPrecedence::Disabled).await
+    let file = ReloadedFile {
+        path: directory.path().join("datadog.yaml"),
+        _directory: directory,
+    };
+    file.rewrite(layers);
+    let (system, updates) = LoadedConfiguration::load(&file.path, EnvPrecedence::Disabled)
+        .await
+        .expect("test configuration loads")
+        .standalone()
+        .await
+        .expect("test configuration is valid");
+    (system, updates.expect("the reload is on"), file)
 }
 
 /// Returns why the YAML configuration `yaml`, merged over the base configuration, fails to load.

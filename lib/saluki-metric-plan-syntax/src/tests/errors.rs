@@ -206,7 +206,7 @@ fn common_mistakes_are_reported_at_the_offending_text() {
             6,
             3,
             "}",
-            "Expected an output ID after `emit`, found `}`.",
+            "Expected an output ID, or `to [<recipient>, ...]`, after `emit`, found `}`.",
         ),
         case(
             lines("  node s = split(name ==)"),

@@ -19,7 +19,7 @@ use saluki_metric_plan::{
         diff::{NodeChange, OutputChange},
         diff_with_correspondence, Correspondence,
     },
-    ir::{OutputId, Plan, PortRef, Provenance, ReceivedArtifact},
+    ir::{OutputId, Plan, PortRef, ReceivedArtifact},
     operators::{names, ConfigureError, OperatorRegistry},
     validate::{Finding, Location, Rule, Severity as ValidationSeverity},
 };
@@ -55,7 +55,7 @@ pub struct ScopeArtifact {
     /// The artifact, as ADP received it.
     pub artifact: ReceivedArtifact,
 
-    /// The revision ADP runs it under, which composition records in its nodes' provenance.
+    /// The revision ADP runs it under, which composition records in the plan's provenance.
     pub revision: u64,
 }
 
@@ -101,7 +101,7 @@ pub struct CompileContext<'a> {
     /// [`other_scope_artifacts`]). One for the edited artifact's own scope is ignored: the edited artifact replaces it.
     pub others: &'a [ScopeArtifact],
 
-    /// The revision a publish would give the artifact, which composition records in its nodes' provenance.
+    /// The revision a publish would give the artifact, which composition records in the plan's provenance.
     pub revision: u64,
 }
 
@@ -161,11 +161,8 @@ pub struct NodeChangeView {
     /// How it differs.
     pub change: ChangeKind,
 
-    /// What differs, for a changed node: `operator`, `params`, `provenance`, `edges`.
+    /// What differs, for a changed node: `operator`, `params`, `edges`.
     pub aspects: Vec<&'static str>,
-
-    /// Its provenance in the composed plan: `native`, or `revision <n>`; `None` for a removed node.
-    pub provenance: Option<String>,
 
     /// Where it is in the source, if it came from the artifact.
     pub range: Option<Range>,
@@ -380,19 +377,13 @@ pub fn compose_preview(
                 NodeChange::Changed {
                     operator,
                     params,
-                    provenance,
                     edges,
                 } => {
-                    let aspects = [
-                        (*operator, "operator"),
-                        (*params, "params"),
-                        (*provenance, "provenance"),
-                        (*edges, "edges"),
-                    ]
-                    .into_iter()
-                    .filter(|(differs, _)| *differs)
-                    .map(|(_, aspect)| aspect)
-                    .collect();
+                    let aspects = [(*operator, "operator"), (*params, "params"), (*edges, "edges")]
+                        .into_iter()
+                        .filter(|(differs, _)| *differs)
+                        .map(|(_, aspect)| aspect)
+                        .collect();
                     (ChangeKind::Changed, aspects)
                 }
             };
@@ -406,11 +397,6 @@ pub fn compose_preview(
                 op,
                 change: kind,
                 aspects,
-                provenance: candidate.map(|node| match &node.provenance {
-                    Some(Provenance::Native(_)) => "native".to_string(),
-                    Some(Provenance::Artifact(revision)) => format!("revision {}", revision.revision),
-                    None => "none".to_string(),
-                }),
                 range: artifact_node
                     .and_then(|node| parsed.spans.node(node.as_str()))
                     .map(|span| index.range(Some(span))),
@@ -503,6 +489,22 @@ fn compose_error_span(error: &ComposeError, parsed: &Parsed, source: &str) -> Op
         ComposeError::ReservedOutsideScope { node, .. } | ComposeError::UnresolvedBinding { node, .. } => {
             parsed.spans.node(node.as_str())
         }
+        // A policy binding is placed where the node writes it, as `config("<binding>")`, or at the node.
+        ComposeError::PolicyBinding { node, binding, .. } => {
+            let within = parsed.spans.node(node.as_str())?;
+            source
+                .get(within.start..within.end)
+                .and_then(|text| find(text, &format!("config(\"{}\")", binding)))
+                .map(|found| Span::new(within.start + found.start, within.start + found.end))
+                .or(Some(within))
+        }
+        ComposeError::UnknownRecipient { node, .. }
+        | ComposeError::PendingRecipients { node, .. }
+        | ComposeError::NoOutputFor { node, .. }
+        | ComposeError::RecipientsOnTwoHosts { node, .. } => parsed
+            .spans
+            .param(node.as_str(), "to")
+            .or_else(|| parsed.spans.node(node.as_str())),
         ComposeError::UnrecordedOutput { node, .. } | ComposeError::UndeclaredOutput { node, .. } => parsed
             .spans
             .param(node.as_str(), "output")

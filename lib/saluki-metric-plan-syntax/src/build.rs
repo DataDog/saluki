@@ -8,14 +8,14 @@ use saluki_metric_plan::{
         ParamName, Params, PolicyArtifact, PortName, IR_VERSION,
     },
     limits::values::ARTIFACT_SIZE,
-    operators::{names, IN},
+    operators::{names, EMIT_TO, IN},
 };
 use serde_json::Value;
 
 use crate::{
     diagnostic::{Error, LineIndex, Span},
     graph::{canonical_order, terminal_id, NodeShape, INPUT_PARENT},
-    parser::{Policy, Target},
+    parser::{EmitTo, Policy, Target},
     spans::SpanMap,
 };
 
@@ -116,7 +116,9 @@ pub(crate) fn build(
         for edge in block {
             let emit = match &edge.target {
                 Target::Emit {
-                    output, output_span, ..
+                    to: EmitTo::Output(output),
+                    output_span,
+                    ..
                 } => Some((output.clone(), *output_span)),
                 _ => None,
             };
@@ -366,16 +368,18 @@ impl Builder<'_> {
     /// A target that names a node is resolved once every node is known. Returns `None`, after recording why, if an
     /// inline terminal's derived ID is already taken.
     fn target(&mut self, parent: &str, port: &PortName, target: Target) -> Option<PendingTarget> {
-        let (op, params, output_span, span, what) = match target {
+        let (op, params, output_span, span, what, param) = match target {
             Target::Node { id, port, span } => return Some(PendingTarget::Node { id, port, span }),
             Target::Input { name, .. } => return Some(PendingTarget::Resolved(ArtifactPortRef::Input(name))),
             Target::Exit { name, .. } => return Some(PendingTarget::Resolved(ArtifactPortRef::Exit(name))),
-            Target::Emit {
-                output,
-                output_span,
-                span,
-            } => (names::EMIT, emit_params(&output), Some(output_span), span, "emit"),
-            Target::Drop { span } => (names::DROP, Params::new(), None, span, "drop"),
+            Target::Emit { to, output_span, span } => {
+                let param = match to {
+                    EmitTo::Output(_) => "output",
+                    EmitTo::Recipients(_) => EMIT_TO,
+                };
+                (names::EMIT, emit_params(&to), Some(output_span), span, "emit", param)
+            }
+            Target::Drop { span } => (names::DROP, Params::new(), None, span, "drop", "output"),
         };
         let in_port = PortName::new(IN).ok();
         let (Some(id), Ok(op), Some(in_port)) = (terminal_id(parent, port), OperatorName::new(op), in_port) else {
@@ -407,10 +411,7 @@ impl Builder<'_> {
             },
             shape,
             span,
-            param_spans: output_span
-                .map(|span| ("output".to_string(), span))
-                .into_iter()
-                .collect(),
+            param_spans: output_span.map(|span| (param.to_string(), span)).into_iter().collect(),
         });
         Some(PendingTarget::Resolved(ArtifactPortRef::Node {
             node: id,
@@ -472,9 +473,16 @@ impl Builder<'_> {
 }
 
 /// Returns the parameters of an inline `emit`.
-fn emit_params(output: &OutputId) -> Params {
-    ParamName::new("output")
-        .map(|name| std::iter::once((name, Value::String(output.to_string()))).collect())
+fn emit_params(to: &EmitTo) -> Params {
+    let (name, value) = match to {
+        EmitTo::Output(output) => ("output", Value::String(output.to_string())),
+        EmitTo::Recipients(names) => (
+            EMIT_TO,
+            Value::Array(names.iter().cloned().map(Value::String).collect()),
+        ),
+    };
+    ParamName::new(name)
+        .map(|name| std::iter::once((name, value)).collect())
         .unwrap_or_default()
 }
 

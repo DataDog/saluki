@@ -41,6 +41,8 @@ pub mod topology;
 #[cfg(test)]
 mod delivery_tests;
 #[cfg(test)]
+mod standalone_reload_tests;
+#[cfg(test)]
 mod test_hosts;
 #[cfg(test)]
 mod test_intake;

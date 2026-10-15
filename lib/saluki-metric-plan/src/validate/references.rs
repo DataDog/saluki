@@ -13,7 +13,7 @@ use super::{
 use crate::{
     canonical::to_canonical_string,
     ir::{BindingName, InputName, Operand, ParamType, ParamValue, Plan, PortRef, ScopeName, ValueType},
-    operators::ConfiguredOperator,
+    operators::{names, ConfiguredOperator, EMIT_TO},
     predicate::{Predicate, StringMatch},
 };
 
@@ -88,6 +88,19 @@ fn check_outputs(graph: &Graph<'_>, plan: &Plan, catalog: &dyn Catalog, report: 
 
     let mut emitted = BTreeSet::new();
     for node in 0..graph.nodes.len() {
+        // An `emit` addressed to recipients is an artifact's: composition resolves it into its output.
+        if graph
+            .op(node)
+            .is_some_and(|op| op.name() == names::EMIT && op.params().get(EMIT_TO).is_some())
+        {
+            report.push(Finding::new(
+                Rule::DeclaredOutput,
+                graph.location(node),
+                "this `emit` names recipients, which a plan cannot: composing an artifact resolves the recipients an \
+                 `emit` names into the output whose recipients they are, so every `emit` of a plan names its output",
+            ));
+            continue;
+        }
         let Some(output) = graph.op(node).and_then(emit_output) else {
             continue;
         };

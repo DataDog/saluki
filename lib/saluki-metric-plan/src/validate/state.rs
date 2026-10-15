@@ -5,11 +5,14 @@
 //! Which widths a state owner may use at all is its operator's parameter check (an allowed bucket width); these rules
 //! relate the state owners of one plan to each other and to the host.
 
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Duration,
+};
 
 use super::{graph::Graph, Catalog, Finding, Rule, ValidationReport};
 use crate::{
-    ir::{ParamValue, Provenance},
+    ir::{ComposedArtifact, NodeId, ParamValue},
     operators::{names, ConfiguredOperator, KeyedState, StateContract, StateTime, DEFAULT_PORT},
 };
 
@@ -17,14 +20,18 @@ use crate::{
 /// divides.
 const SHARED_WIDTH_LIMIT: Duration = Duration::from_secs(60);
 
-pub(super) fn check(graph: &Graph<'_>, catalog: Option<&dyn Catalog>, report: &mut ValidationReport) {
+pub(super) fn check(
+    graph: &Graph<'_>, catalog: Option<&dyn Catalog>, programs: &[(ComposedArtifact, BTreeSet<NodeId>)],
+    report: &mut ValidationReport,
+) {
     if catalog.is_some_and(|catalog| catalog.single_aggregation()) {
         check_single_aggregation(graph, report);
     }
     check_widths_above_sixty(graph, report);
     check_split_windows(graph, report);
     if let Some(capacity) = catalog.and_then(|catalog| catalog.state_budget()) {
-        check_state_budget(graph, capacity, report);
+        let program = programs.iter().flat_map(|(_, nodes)| nodes).collect::<BTreeSet<_>>();
+        check_state_budget(graph, &program, capacity, report);
     }
 }
 
@@ -49,21 +56,18 @@ fn bucket_width(op: &ConfiguredOperator) -> Option<Duration> {
 /// Placement alone would accept a second one wherever the frame's isolation slot can run it, such as on the other
 /// branch of a split ahead of the first, since an isolation slot runs several state owners by design; this rule
 /// restricts the host's programs to one aggregation, wherever it is. The first is, in plan order, the first state owner
-/// without artifact provenance, or else the first with a reserved ID (outside the artifact namespace, `policy/`), or
-/// else the first of all, so that the one an artifact adds beside the default program's is the one reported, even when
-/// the artifact also modifies the default program's (a width change gives it the artifact's provenance); each of the
-/// others is reported at its node, in plan order.
-/// A node whose operator is not configured, such as one with invalid parameters, is reported by its parameter check
-/// instead, and not counted.
+/// with a reserved ID (outside the artifact namespace, `policy/`), or else the first of all, so that the one an
+/// artifact adds beside the default program's is the one reported, even when the artifact also modifies the default
+/// program's; each of the others is reported at its node, in plan order. A node whose operator is not configured, such
+/// as one with invalid parameters, is reported by its parameter check instead, and not counted.
 fn check_single_aggregation(graph: &Graph<'_>, report: &mut ValidationReport) {
     let owners = (0..graph.nodes.len())
         .filter(|&node| graph.op(node).and_then(keyed).is_some())
         .collect::<Vec<_>>();
-    let artifact = |node: usize| matches!(graph.nodes[node].node.provenance, Some(Provenance::Artifact(_)));
     let Some(first) = owners
         .iter()
         .copied()
-        .min_by_key(|&node| (artifact(node), !graph.id(node).is_reserved(), node))
+        .min_by_key(|&node| (!graph.id(node).is_reserved(), node))
     else {
         return;
     };
@@ -197,11 +201,13 @@ fn state_owners_below(graph: &Graph<'_>, node: usize, port: usize) -> Vec<usize>
     owners
 }
 
-/// `state_budget`: an artifact's state owner whose context limit exceeds what the host's state owners hold together
-/// never reaches its limit, since every lineage of every state owner draws on one budget of that size.
-fn check_state_budget(graph: &Graph<'_>, capacity: u64, report: &mut ValidationReport) {
+/// `state_budget`: a program's state owner whose context limit exceeds what the host's state owners hold together
+/// never reaches its limit, since every lineage of every state owner draws on one budget of that size. `program` is
+/// every node of the programs the plan composes; the default program's state owners set the budget, so it is not
+/// checked.
+fn check_state_budget(graph: &Graph<'_>, program: &BTreeSet<&NodeId>, capacity: u64, report: &mut ValidationReport) {
     for node in 0..graph.nodes.len() {
-        if !matches!(graph.nodes[node].node.provenance, Some(Provenance::Artifact(_))) {
+        if !program.contains(graph.id(node)) {
             continue;
         }
         let Some(op) = graph.op(node).filter(|op| keyed(op).is_some()) else {

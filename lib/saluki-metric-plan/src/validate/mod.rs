@@ -26,10 +26,16 @@
 //!   most one bucket width above 60 seconds, a `timestamp_split` gives timestamped counters the rate interval of the
 //!   aggregation its untimestamped points go to, and an artifact's context limits fit within the host's state budget
 //!   (a warning).
-//! - **Bounds:** the [limits][crate::limits] on artifacts apply to nodes with artifact provenance only, so that large
-//!   native configurations stay valid.
-//! - **Authority:** every lossy node has provenance, only native configuration places host-owned operators, nodes in
-//!   the policy namespace come from artifacts, and every artifact revision a node names is one the plan lists.
+//! - **Bounds:** the [limits][crate::limits] on artifacts apply to the nodes of the programs a plan's artifacts
+//!   compose, every node of the scope each replaces (see [`program_nodes`][crate::export::program_nodes]), and never
+//!   to the default program, so that large native configurations stay valid. Validated against the default program
+//!   ([`Validator::with_baseline`]), a program's limit is the larger of the limit and what the default program has
+//!   in the program's scope: its node count, predicate leaves, and declared memory, a copying node's fan-out by node,
+//!   and the work per input by entry node. So a program may keep what native configuration sized the host for, such
+//!   as a 128 MiB interner or a tee with a port per routing group, but never grow past it, and is held to the limits
+//!   wherever the default program is within them.
+//! - **Programs:** a program holds no host-owned operator, which only native configuration places (an operator says
+//!   whether a program may hold it, [`OperatorDef::authorable`][crate::operators::OperatorDef::authorable]).
 //!
 //! # Duplicate analysis
 //!
@@ -144,8 +150,6 @@ rules! {
     Reachable => "reachable", Error;
     /// No two sources bind the same host source, which enters the plan once.
     UniqueSources => "unique_sources", Error;
-    /// Every node in the policy namespace has artifact provenance: only artifacts add policy-namespace nodes.
-    ProvenanceNamespace => "provenance_namespace", Error;
     /// Every operator accepts the records it can receive.
     PortTypes => "port_types", Error;
     /// Every `emit`'s output accepts the records it can receive.
@@ -210,12 +214,9 @@ rules! {
     WorkPerInput => "work_per_input", Error;
     /// An artifact's nodes declare no more memory than the limit.
     ArtifactMemory => "artifact_memory", Error;
-    /// Every lossy node has provenance: native configuration or an approved artifact.
-    LossAuthority => "loss_authority", Error;
-    /// Host-owned operators, such as sources and opaque hosts, come only from native configuration.
+    /// A program holds no host-owned operator, such as a source or an opaque host: only native configuration places
+    /// them.
     TrustedHost => "trusted_host", Error;
-    /// Every node's artifact provenance names an artifact revision that the plan's provenance lists.
-    ProvenanceConsistency => "provenance_consistency", Error;
 }
 
 impl fmt::Display for Rule {
@@ -319,7 +320,8 @@ pub enum BoundScope {
     /// native configurations stay valid.
     Plan,
 
-    /// The nodes added or changed by one artifact revision. Limits are enforced on these.
+    /// The nodes of the program one artifact revision composes: every node of the scope it replaces. Limits are
+    /// enforced on these.
     Artifact(ArtifactRevision),
 }
 
@@ -361,6 +363,9 @@ pub struct ValidationReport {
     findings: Vec<Finding>,
     port_types: BTreeMap<PortRef, PortType>,
     bounds: Vec<BoundMeasure>,
+    /// What the default program has in each scope a program replaces, which raises the program's limits to it: kept
+    /// so that a rewritten plan is checked against the same limits.
+    baselines: BTreeMap<ScopeName, bounds::Baseline>,
 }
 
 impl ValidationReport {
@@ -430,12 +435,26 @@ impl fmt::Display for ValidationReport {
 pub struct Validator<'a> {
     registry: &'a OperatorRegistry,
     catalog: &'a dyn Catalog,
+    baseline: Option<&'a Plan>,
 }
 
 impl<'a> Validator<'a> {
     /// Creates a validator.
     pub fn new(registry: &'a OperatorRegistry, catalog: &'a dyn Catalog) -> Self {
-        Self { registry, catalog }
+        Self {
+            registry,
+            catalog,
+            baseline: None,
+        }
+    }
+
+    /// Measures the programs of the plans it validates against `default`, the default program they replace parts of:
+    /// a program's limit is raised to what the default program has in the program's scope where that is more, and
+    /// never above it (see [bounds](self#checks)). Without a baseline, a program is held to the limits whatever the
+    /// default program has.
+    pub fn with_baseline(mut self, default: &'a Plan) -> Self {
+        self.baseline = Some(default);
+        self
     }
 
     /// Validates a plan, returning every finding.
@@ -461,8 +480,17 @@ impl<'a> Validator<'a> {
         references::check(&graph, &types, plan, self.catalog, &mut report);
         resources::check(plan, self.catalog, &mut report);
         duplicates::check(&graph, &types, plan, &mut report);
-        state::check(&graph, Some(self.catalog), &mut report);
-        bounds::check(&graph, plan, &mut report);
+        let programs = crate::export::program_nodes(plan);
+        state::check(&graph, Some(self.catalog), &programs, &mut report);
+        if let Some(baseline) = self.baseline {
+            let scopes = programs
+                .iter()
+                .map(|(artifact, _)| artifact.scope.clone())
+                .collect::<Vec<_>>();
+            report.baselines = bounds::baselines(baseline, self.registry, &scopes);
+        }
+        let baselines = report.baselines.clone();
+        bounds::check(&graph, &programs, &baselines, &mut report);
 
         report
     }
@@ -474,16 +502,21 @@ impl<'a> Validator<'a> {
 /// its scopes, which are what the catalog checks: so every check but those runs, as [`Validator::validate`] runs it,
 /// and the report carries the rewritten plan's port types and bounds. Rewrites do remove nodes, so the ports that
 /// scopes name are checked to still be there: scope inputs here, and exits by scope closure.
-pub(crate) fn revalidate(registry: &OperatorRegistry, plan: &Plan) -> ValidationReport {
-    let mut report = ValidationReport::default();
+pub(crate) fn revalidate(registry: &OperatorRegistry, plan: &Plan, prior: &ValidationReport) -> ValidationReport {
+    let mut report = ValidationReport {
+        baselines: prior.baselines.clone(),
+        ..ValidationReport::default()
+    };
     let graph = graph::Graph::build(plan, registry, &mut report);
     let types = types::check(&graph, plan, &mut report);
     record_port_types(&graph, &types, &mut report);
     references::check_scope_input_ports(&graph, plan, &mut report);
     references::check_scope_closure(&graph, plan, &mut report);
     duplicates::check(&graph, &types, plan, &mut report);
-    state::check(&graph, None, &mut report);
-    bounds::check(&graph, plan, &mut report);
+    let programs = crate::export::program_nodes(plan);
+    state::check(&graph, None, &programs, &mut report);
+    let baselines = report.baselines.clone();
+    bounds::check(&graph, &programs, &baselines, &mut report);
     report
 }
 

@@ -6,13 +6,17 @@
 //! while [`LoadedConfiguration::standalone`] keeps the local sources authoritative. Both methods
 //! consume the loaded sources and return a [`ConfigurationSystem`].
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
+use agent_data_plane_config::defaults::MIN_STANDALONE_CONFIG_RELOAD_INTERVAL;
 use agent_data_plane_config::SalukiConfiguration;
 use datadog_agent_config::apply_datadog_env;
 use saluki_config::dynamic::ConfigUpdate;
 use serde_json::Value;
 use tokio::sync::mpsc;
+use tracing::{info, warn};
 
 use crate::saluki_env_overlay;
 use crate::source::SourceTree;
@@ -39,6 +43,9 @@ pub struct LoadedConfiguration {
     // Strictly translated local snapshot exposed before authority selection and used by standalone
     // mode.
     local: SalukiConfiguration,
+    // The file the base was built from, which standalone mode re-reads when the experimental
+    // `experimental.standalone_config_reload` setting is enabled.
+    file: ConfigFile,
 }
 
 impl LoadedConfiguration {
@@ -55,9 +62,18 @@ impl LoadedConfiguration {
     pub async fn load(path: impl AsRef<Path>, env: EnvPrecedence) -> Result<Self, Error> {
         // Every value the local sources supply was set explicitly: the file set it or an environment
         // variable supplied it.
-        let base = SourceTree::all_explicit(build_base(path.as_ref(), env)?);
+        let path = path.as_ref();
+        let text = read_file(path).map_err(|message| Error::Base { message })?;
+        let base = SourceTree::all_explicit(parse_base(path, &text, env)?);
         let local = translate_strict(&base)?;
-        Ok(Self { base, local })
+        let file = ConfigFile {
+            path: path.to_path_buf(),
+            env,
+            last_read: Ok(text),
+            unsettled: None,
+            changes: Arc::default(),
+        };
+        Ok(Self { base, local, file })
     }
 
     /// Returns the typed snapshot of the local file and environment.
@@ -80,36 +96,144 @@ impl LoadedConfiguration {
     pub async fn run(
         self, config_stream: mpsc::Receiver<ConfigUpdate>,
     ) -> Result<(ConfigurationSystem, ConfigurationUpdates), Error> {
+        if self.local.control.standalone_config_reload.enabled {
+            warn!(
+                path = %self.file.path.display(),
+                "The experimental standalone configuration reload is enabled, but the Datadog Agent's configuration \
+                 stream is the authority, so the configuration file is not re-read. The setting applies in standalone \
+                 mode only."
+            );
+        }
         ConfigurationSystem::connected(config_stream, self.base).await
     }
 
     /// Uses the translated local configuration as the runtime authority.
     ///
-    /// No configuration stream or update task is created. Because nothing further will be layered on,
-    /// the local snapshot is validated here, where [`run`](Self::run) instead validates the merged
-    /// result of the Agent's initial snapshot.
+    /// No configuration stream is created. Because nothing is layered on, the local snapshot is
+    /// validated here, where [`run`](Self::run) instead validates the merged result of the Agent's
+    /// initial snapshot.
+    ///
+    /// By default there is no update task either, and the second element is `None`. When the
+    /// experimental `experimental.standalone_config_reload.enabled` setting is on, the second element
+    /// is the [`ConfigurationUpdates`] that re-read the configuration file and apply each change, as
+    /// [`run`](Self::run)'s apply each update from the Agent. The caller must run them. The setting
+    /// exists only for the programmable metrics demo; it is not for production use and may be
+    /// removed without notice.
     ///
     /// # Errors
     ///
     /// Returns an error if the local configuration fails validation.
-    pub async fn standalone(self) -> Result<ConfigurationSystem, Error> {
+    pub async fn standalone(self) -> Result<(ConfigurationSystem, Option<ConfigurationUpdates>), Error> {
         validate(&self.local)?;
-        Ok(ConfigurationSystem::standalone(self.local, self.base))
+        // Read once, here: the setting is restart-only, so a later edit to it changes nothing.
+        let reload = self.local.control.standalone_config_reload.clone();
+        if !reload.enabled {
+            return Ok((ConfigurationSystem::standalone(self.local, self.base), None));
+        }
+
+        // A change is applied once two reads agree, so the file is read at most every 100 milliseconds.
+        let interval = reload.interval.max(MIN_STANDALONE_CONFIG_RELOAD_INTERVAL);
+        if interval != reload.interval {
+            warn!(
+                configured = ?reload.interval,
+                interval = ?interval,
+                "The standalone configuration reload interval is shorter than the shortest allowed; using the shortest."
+            );
+        }
+        info!(
+            path = %self.file.path.display(),
+            interval = ?interval,
+            "Experimental standalone configuration reload is enabled: the configuration file is re-read and changes \
+             are applied. This is for the programmable metrics demo only, not for production use."
+        );
+        let (system, updates) = ConfigurationSystem::standalone_reloading(self.local, self.base, self.file, interval);
+        Ok((system, Some(updates)))
     }
 }
 
-/// Builds the typed base: the configuration file parsed to its nested shape, with environment
+/// The configuration file the local base was built from, kept so standalone mode can re-read it.
+pub(crate) struct ConfigFile {
+    path: PathBuf,
+    // The precedence the base was built with at startup, which every re-read keeps.
+    env: EnvPrecedence,
+    // What the last read taken as a change found: the file's text, or why the file could not be read.
+    last_read: Result<String, String>,
+    // A read that differs from `last_read`, seen once. It is taken as a change only when the next read finds the
+    // same, so a file caught while it is being written is never applied half-written.
+    unsettled: Option<Result<String, String>>,
+    // How many changes were taken, applied or rejected: what a test waits for to know the file was read.
+    changes: Arc<AtomicU64>,
+}
+
+impl ConfigFile {
+    /// Returns the path of the file.
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Takes in what a read of the file found, `read`, and, if the file changed and has settled, rebuilds the base
+    /// from it and the environment as [`LoadedConfiguration::load`] did.
+    ///
+    /// Returns `None` when the file reads as it did when it last changed, whether that read succeeded or not, so an
+    /// unchanged file, valid or not, is no change; and when it reads differently for the first time, since a file
+    /// being written reads differently on every read until it is whole. A change is taken when two consecutive reads
+    /// agree: then this returns the new base, or why it could not be built: the file could not be read or parsed, or
+    /// an environment variable could not be decoded.
+    pub(crate) fn observe(&mut self, read: Result<String, String>) -> Option<Result<Value, Error>> {
+        if read == self.last_read {
+            self.unsettled = None;
+            return None;
+        }
+        if self.unsettled.as_ref() != Some(&read) {
+            self.unsettled = Some(read);
+            return None;
+        }
+        self.unsettled = None;
+        self.last_read = read.clone();
+        self.changes.fetch_add(1, Ordering::Relaxed);
+        Some(match read {
+            Ok(text) => parse_base(&self.path, &text, self.env),
+            Err(message) => Err(Error::Base { message }),
+        })
+    }
+
+    /// Reads the file, as [`observe`](Self::observe) takes it in, on a thread that may block, off the async runtime.
+    pub(crate) async fn read(&self) -> Result<String, String> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || read_file(&path))
+            .await
+            .unwrap_or_else(|e| Err(format!("read `{}`: {e}", self.path.display())))
+    }
+
+    /// Reads the file and takes in what it found, as the reload does.
+    #[cfg(test)]
+    fn reread(&mut self) -> Option<Result<Value, Error>> {
+        let read = read_file(&self.path);
+        self.observe(read)
+    }
+}
+
+/// Builds the typed base from the configuration file at `path`, as [`parse_base`] does from its text.
+#[cfg(test)]
+fn build_base(path: &Path, env: EnvPrecedence) -> Result<Value, Error> {
+    let text = read_file(path).map_err(|message| Error::Base { message })?;
+    parse_base(path, &text, env)
+}
+
+/// Reads the configuration file's text, or describes why it cannot be read.
+fn read_file(path: &Path) -> Result<String, String> {
+    std::fs::read_to_string(path).map_err(|e| format!("read `{}`: {e}", path.display()))
+}
+
+/// Builds the typed base: the text of the configuration file at `path` parsed to its nested shape, with environment
 /// variables read directly and decoded into the schema's shapes on top.
 ///
 /// A null-valued key is dropped and an empty file is an empty object. The environment is then
 /// overlaid via the generated Datadog reader, the Saluki-only reader, and the canonical proxy
 /// variables. `env` sets whether the environment overwrites the file (`AfterFile`) or only fills
 /// absent keys (`BeforeFile`); `Disabled` skips the environment entirely.
-fn build_base(path: &Path, env: EnvPrecedence) -> Result<Value, Error> {
-    let text = std::fs::read_to_string(path).map_err(|e| Error::Base {
-        message: format!("read `{}`: {e}", path.display()),
-    })?;
-    let mut base: Value = serde_yaml::from_str(&text).map_err(|e| Error::Base {
+fn parse_base(path: &Path, text: &str, env: EnvPrecedence) -> Result<Value, Error> {
+    let mut base: Value = serde_yaml::from_str(text).map_err(|e| Error::Base {
         message: format!("parse `{}`: {e}", path.display()),
     })?;
     drop_nulls(&mut base);
@@ -320,6 +444,336 @@ mod tests {
 
         let result = loaded.run(agent_rx).await;
         assert!(matches!(result, Err(Error::StreamClosed)));
+    }
+
+    /// A configuration file in the temporary directory that a test rewrites while the process runs.
+    ///
+    /// `test` names the file, so that tests which run at the same time do not share one. The file is
+    /// removed on drop.
+    struct EditedFile {
+        path: std::path::PathBuf,
+    }
+
+    impl EditedFile {
+        fn new(test: &str, contents: &str) -> Self {
+            let file = Self {
+                path: std::env::temp_dir().join(format!("adp_{test}_{}.yaml", std::process::id())),
+            };
+            file.write(contents);
+            file
+        }
+
+        /// Replaces the file's contents atomically, by writing a new file and renaming it over the old one, so a
+        /// re-read never sees a partly written file.
+        fn write(&self, contents: &str) {
+            let staged = self.path.with_extension("yaml.staged");
+            std::fs::write(&staged, contents).unwrap();
+            std::fs::rename(&staged, &self.path).unwrap();
+        }
+    }
+
+    impl Drop for EditedFile {
+        fn drop(&mut self) {
+            std::fs::remove_file(&self.path).ok();
+        }
+    }
+
+    /// Standalone configuration with the reload on, re-reading every 100 milliseconds, the shortest interval, followed
+    /// by `rest`.
+    fn reloading(rest: &str) -> String {
+        format!(
+            "api_key: test-api-key\nexperimental:\n  standalone_config_reload:\n    enabled: true\n    interval: 100ms\n{rest}"
+        )
+    }
+
+    /// Waits until the reload has taken `count` changes of the file, applied or rejected: proof that it read them.
+    async fn await_changes(changes: &AtomicU64, count: u64) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while changes.load(Ordering::Relaxed) < count {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the reload should take {count} changes"));
+    }
+
+    /// Waits until the live view `view` changes to `expected`.
+    async fn await_change<T: Clone + PartialEq + std::fmt::Debug + 'static>(
+        view: &mut agent_data_plane_config::Live<T>, expected: T,
+    ) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while view.changed().await != expected {}
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the live view should change to {expected:?}"));
+    }
+
+    /// Waits long enough for the reload, re-reading every 100 milliseconds, to have read the file several times.
+    async fn several_rereads() {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+
+    #[tokio::test]
+    async fn standalone_config_reload_is_off_by_default() {
+        let file = EditedFile::new("reload_off", "api_key: test-api-key\nlog_level: info\n");
+        let loaded = LoadedConfiguration::load(&file.path, EnvPrecedence::Disabled)
+            .await
+            .expect("local sources load");
+        assert!(!loaded.local().control.standalone_config_reload.enabled);
+
+        let (system, updates) = loaded.standalone().await.expect("standalone configuration is valid");
+        assert!(updates.is_none(), "no update task without the setting");
+
+        // Nothing re-reads the file, so an edit never reaches the configuration.
+        file.write("api_key: test-api-key\nlog_level: warn\n");
+        several_rereads().await;
+        assert_eq!(system.config().control.logging.level, "info");
+    }
+
+    #[tokio::test]
+    async fn standalone_config_reload_applies_a_file_change_to_live_views() {
+        let file = EditedFile::new("reload_applies", &reloading("log_level: info\n"));
+        let loaded = LoadedConfiguration::load(&file.path, EnvPrecedence::Disabled)
+            .await
+            .expect("local sources load");
+        let (system, updates) = loaded.standalone().await.expect("standalone configuration is valid");
+        let updates = updates.expect("the setting creates an update task");
+        let mut level = system.live(|config| &config.control.logging.level);
+
+        // Like a stream update, a file change waits until the updates run.
+        file.write(&reloading("log_level: warn\n"));
+        several_rereads().await;
+        assert_eq!(system.config().control.logging.level, "info");
+
+        tokio::spawn(updates.run());
+        await_change(&mut level, "warn".to_string()).await;
+
+        // The raw source view follows the accepted file too.
+        assert_eq!(system.raw_snapshot()()["log_level"], json!("warn"));
+    }
+
+    #[tokio::test]
+    async fn standalone_config_reload_rejects_an_invalid_file_and_applies_a_later_valid_one() {
+        let file = EditedFile::new("reload_invalid", &reloading("log_level: info\ndogstatsd_port: 9125\n"));
+        let loaded = LoadedConfiguration::load(&file.path, EnvPrecedence::Disabled)
+            .await
+            .expect("local sources load");
+        let changes = Arc::clone(&loaded.file.changes);
+        let (system, updates) = loaded.standalone().await.expect("standalone configuration is valid");
+        tokio::spawn(updates.expect("the setting creates an update task").run());
+        let mut level = system.live(|config| &config.control.logging.level);
+
+        // Each invalid file is rejected as a whole: its other values do not apply either. They are: YAML that does
+        // not parse, a value that fails translation, and a configuration that fails validation (no API key). The
+        // reload takes each as a change, so it read it.
+        for (taken, invalid) in (1..).zip([
+            reloading("log_level: error\ndogstatsd_port: [unterminated\n"),
+            reloading("log_level: error\ndogstatsd_port: 7000\ndogstatsd_tag_cardinality: bogus\n"),
+            "log_level: error\ndogstatsd_port: 7000\nexperimental:\n  standalone_config_reload:\n    enabled: true\n"
+                .to_string(),
+        ]) {
+            file.write(&invalid);
+            await_changes(&changes, taken).await;
+            let config = system.config();
+            assert_eq!(config.control.logging.level, "info", "{invalid}");
+            assert_eq!(config.domains.dogstatsd.listeners.port, 9125, "{invalid}");
+            assert_eq!(system.raw_snapshot()()["log_level"], json!("info"), "{invalid}");
+        }
+
+        // A later valid edit applies.
+        file.write(&reloading("log_level: warn\ndogstatsd_port: 7000\n"));
+        await_change(&mut level, "warn".to_string()).await;
+        assert_eq!(system.config().domains.dogstatsd.listeners.port, 7000);
+    }
+
+    #[tokio::test]
+    async fn standalone_config_reload_settings_are_read_at_startup() {
+        let file = EditedFile::new("reload_restart_only", &reloading("log_level: info\n"));
+        let loaded = LoadedConfiguration::load(&file.path, EnvPrecedence::Disabled)
+            .await
+            .expect("local sources load");
+        let (system, updates) = loaded.standalone().await.expect("standalone configuration is valid");
+        tokio::spawn(updates.expect("the setting creates an update task").run());
+        let mut level = system.live(|config| &config.control.logging.level);
+
+        // Turning the setting off, and slowing it down, in the file is applied as configuration, but the reload keeps
+        // running on the settings read at startup.
+        file.write(
+            "api_key: test-api-key\nlog_level: warn\nexperimental:\n  standalone_config_reload:\n    enabled: false\n    interval: 1h\n",
+        );
+        await_change(&mut level, "warn".to_string()).await;
+        assert!(!system.config().control.standalone_config_reload.enabled);
+
+        file.write("api_key: test-api-key\nlog_level: error\n");
+        await_change(&mut level, "error".to_string()).await;
+    }
+
+    #[test]
+    fn a_reread_reports_only_a_settled_change_and_names_the_file_it_cannot_parse() {
+        let file = EditedFile::new("reload_reread", "log_level: info\n");
+        let mut config_file = ConfigFile {
+            path: file.path.clone(),
+            env: EnvPrecedence::Disabled,
+            last_read: read_file(&file.path),
+            unsettled: None,
+            changes: Arc::default(),
+        };
+        assert!(config_file.reread().is_none(), "an unchanged file is no change");
+
+        // A change is taken once two reads agree.
+        file.write("log_level: [unterminated\n");
+        assert!(config_file.reread().is_none(), "a change read once has not settled");
+        let error = match config_file.reread() {
+            Some(Err(error)) => error,
+            other => panic!("YAML that does not parse is reported: {other:?}"),
+        };
+        assert!(matches!(error, Error::Base { .. }));
+        assert!(error.to_string().contains(&file.path.display().to_string()), "{error}");
+        // The same invalid file read again is no change, so it is reported once.
+        assert!(config_file.reread().is_none());
+        assert!(config_file.reread().is_none());
+
+        file.write("log_level: warn\n");
+        assert!(config_file.reread().is_none());
+        let base = config_file.reread().expect("a change").expect("a valid file");
+        assert_eq!(base["log_level"], json!("warn"));
+        assert_eq!(config_file.changes.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn a_file_caught_while_it_is_written_is_never_applied() {
+        let file = EditedFile::new("reload_half_written", "log_level: info\n");
+        let mut config_file = ConfigFile {
+            path: file.path.clone(),
+            env: EnvPrecedence::Disabled,
+            last_read: read_file(&file.path),
+            unsettled: None,
+            changes: Arc::default(),
+        };
+        // Each read finds more of the file, so none settles; the whole file, read twice, does.
+        assert!(config_file
+            .observe(Ok("log_level: info\ndogstatsd_po".to_string()))
+            .is_none());
+        assert!(config_file
+            .observe(Ok("log_level: info\ndogstatsd_port: 70".to_string()))
+            .is_none());
+        let whole = "log_level: info\ndogstatsd_port: 7000\n".to_string();
+        assert!(config_file.observe(Ok(whole.clone())).is_none());
+        let base = config_file.observe(Ok(whole)).expect("a change").expect("a valid file");
+        assert_eq!(base["dogstatsd_port"], json!(7000));
+        // A file that reads as it did when it last changed, after a read that differed, is no change.
+        assert!(config_file.observe(Ok("partial".to_string())).is_none());
+        assert!(config_file
+            .observe(Ok("log_level: info\ndogstatsd_port: 7000\n".to_string()))
+            .is_none());
+        assert!(config_file
+            .observe(Ok("log_level: info\ndogstatsd_port: 7000\n".to_string()))
+            .is_none());
+        assert_eq!(config_file.changes.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn standalone_config_reload_reverts_a_removed_key_to_its_default() {
+        let file = EditedFile::new("reload_removed", &reloading("log_level: info\ndogstatsd_port: 7000\n"));
+        let loaded = LoadedConfiguration::load(&file.path, EnvPrecedence::Disabled)
+            .await
+            .expect("local sources load");
+        let (system, updates) = loaded.standalone().await.expect("standalone configuration is valid");
+        tokio::spawn(updates.expect("the setting creates an update task").run());
+        let mut port = system.live(|config| &config.domains.dogstatsd.listeners.port);
+        assert_eq!(system.config().domains.dogstatsd.listeners.port, 7000);
+
+        // The file is the whole base: a key it no longer sets takes its default again.
+        file.write(&reloading("log_level: info\n"));
+        await_change(&mut port, 8125).await;
+    }
+
+    #[tokio::test]
+    async fn standalone_config_reload_keeps_the_configuration_while_the_file_is_gone_and_applies_it_recreated() {
+        let file = EditedFile::new("reload_recreated", &reloading("log_level: info\n"));
+        let loaded = LoadedConfiguration::load(&file.path, EnvPrecedence::Disabled)
+            .await
+            .expect("local sources load");
+        let changes = Arc::clone(&loaded.file.changes);
+        let (system, updates) = loaded.standalone().await.expect("standalone configuration is valid");
+        tokio::spawn(updates.expect("the setting creates an update task").run());
+        let mut level = system.live(|config| &config.control.logging.level);
+
+        // A file that cannot be read is a rejected change: the configuration stays as it was.
+        std::fs::remove_file(&file.path).unwrap();
+        await_changes(&changes, 1).await;
+        assert_eq!(system.config().control.logging.level, "info");
+
+        // Recreated, it applies.
+        file.write(&reloading("log_level: warn\n"));
+        await_change(&mut level, "warn".to_string()).await;
+        assert_eq!(changes.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn standalone_config_reload_keeps_the_environment_precedence_of_startup() {
+        let _guard = test_env_lock();
+        let file = EditedFile::new("reload_env", &reloading("log_level: info\ndogstatsd_port: 8125\n"));
+        std::env::set_var("DD_DOGSTATSD_PORT", "9125");
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("runtime builds");
+        let port = runtime.block_on(async {
+            let loaded = LoadedConfiguration::load(&file.path, EnvPrecedence::AfterFile)
+                .await
+                .expect("local sources load");
+            let (system, updates) = loaded.standalone().await.expect("standalone configuration is valid");
+            tokio::spawn(updates.expect("the setting creates an update task").run());
+            let mut level = system.live(|config| &config.control.logging.level);
+            assert_eq!(system.config().domains.dogstatsd.listeners.port, 9125);
+
+            // The file changes the port, but the environment still wins, as it did at startup.
+            file.write(&reloading("log_level: warn\ndogstatsd_port: 7000\n"));
+            await_change(&mut level, "warn".to_string()).await;
+            system.config().domains.dogstatsd.listeners.port
+        });
+
+        std::env::remove_var("DD_DOGSTATSD_PORT");
+        assert_eq!(port, 9125);
+    }
+
+    #[test]
+    fn standalone_config_reload_lets_the_file_win_over_the_environment_when_it_did_at_startup() {
+        let _guard = test_env_lock();
+        let file = EditedFile::new(
+            "reload_env_before",
+            &reloading("log_level: info\ndogstatsd_port: 8000\n"),
+        );
+        std::env::set_var("DD_DOGSTATSD_PORT", "9125");
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("runtime builds");
+        let ports = runtime.block_on(async {
+            let loaded = LoadedConfiguration::load(&file.path, EnvPrecedence::BeforeFile)
+                .await
+                .expect("local sources load");
+            let (system, updates) = loaded.standalone().await.expect("standalone configuration is valid");
+            tokio::spawn(updates.expect("the setting creates an update task").run());
+            let mut port = system.live(|config| &config.domains.dogstatsd.listeners.port);
+            let mut ports = vec![system.config().domains.dogstatsd.listeners.port];
+
+            // The environment only fills what the file leaves out, at startup and on every re-read: a port the file
+            // sets wins, and one it stops setting comes from the environment.
+            file.write(&reloading("log_level: info\ndogstatsd_port: 7000\n"));
+            await_change(&mut port, 7000).await;
+            ports.push(system.config().domains.dogstatsd.listeners.port);
+            file.write(&reloading("log_level: info\n"));
+            await_change(&mut port, 9125).await;
+            ports.push(system.config().domains.dogstatsd.listeners.port);
+            ports
+        });
+
+        std::env::remove_var("DD_DOGSTATSD_PORT");
+        assert_eq!(ports, [8000, 7000, 9125]);
     }
 
     // `LoadedConfiguration::load` is `async` only for symmetry with the rest of the API; it awaits

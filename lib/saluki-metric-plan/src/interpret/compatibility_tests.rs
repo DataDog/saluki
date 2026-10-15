@@ -132,14 +132,14 @@ impl Config {
     /// Returns the configuration's plan, not validated.
     fn unchecked_plan(&self) -> Plan {
         let nodes = json!([
-            {"id": "src", "op": "source", "params": self.source, "provenance": {"native": "dsd_in"}},
-            {"id": "agg", "op": "aggregate", "provenance": {"native": "dsd_agg"}, "params": {
+            {"id": "src", "op": "source", "params": self.source},
+            {"id": "agg", "op": "aggregate", "params": {
                 "window": self.window, "flush_interval": "15s", "context_limit": self.context_limit,
                 "counter_expiry": self.counter_expiry, "flush_open_windows": self.flush_open_windows,
                 "histogram_aggregates": self.aggregates, "histogram_percentiles": self.percentiles,
                 "copy_to_distribution": self.copy_to_distribution,
                 "copy_to_distribution_prefix": self.copy_to_distribution_prefix}},
-            {"id": "out", "op": "emit", "params": {"output": OUTPUT}, "provenance": {"native": "dd_metrics_encode"}},
+            {"id": "out", "op": "emit", "params": {"output": OUTPUT}},
         ]);
         Plan::from_value(json!({
             "ir_version": 1,

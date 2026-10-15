@@ -207,23 +207,12 @@ fn a_change_diffs_node_by_node_in_the_artifacts_terms() {
                 node.op.as_str(),
                 node.change,
                 node.aspects.clone(),
-                node.provenance.as_deref(),
             )
         })
         .collect::<Vec<_>>();
-    // The new split and its inline drop are the artifact's (`policy/` IDs, revision 7). The host tags node, which fed
-    // the `tee`, now feeds the split, and the `tee` is fed by it: both keep their native provenance, with other edges. The four routing drops are fed other records than the default program feeds them (what the split lets
-    // through), so native configuration no longer authorizes their loss: the artifact does.
-    let changed_drop = |id| {
-        (
-            id,
-            Some(id),
-            "drop",
-            ChangeKind::Changed,
-            vec!["provenance"],
-            Some("revision 7"),
-        )
-    };
+    // The new split and its inline drop are the artifact's (`policy/` IDs). The host tags node, which fed the `tee`,
+    // now feeds the split, and the `tee` is fed by it: both are the default program's nodes, with other edges. Nothing
+    // else changes: a node is what it does, whatever feeds it, so the routing drops behind the `tee` are unchanged.
     let expected = vec![
         (
             "metrics_enrich_host_tags",
@@ -231,7 +220,6 @@ fn a_change_diffs_node_by_node_in_the_artifacts_terms() {
             "host_tags",
             ChangeKind::Changed,
             vec!["edges"],
-            Some("native"),
         ),
         (
             "policy/drop_debug",
@@ -239,7 +227,6 @@ fn a_change_diffs_node_by_node_in_the_artifacts_terms() {
             "split",
             ChangeKind::Added,
             vec![],
-            Some("revision 7"),
         ),
         (
             "policy/drop_debug_true",
@@ -247,7 +234,6 @@ fn a_change_diffs_node_by_node_in_the_artifacts_terms() {
             "drop",
             ChangeKind::Added,
             vec![],
-            Some("revision 7"),
         ),
         (
             "metrics_policy",
@@ -255,12 +241,7 @@ fn a_change_diffs_node_by_node_in_the_artifacts_terms() {
             "tee",
             ChangeKind::Changed,
             vec!["edges"],
-            Some("native"),
         ),
-        changed_drop("metrics_routing_filter_0_false"),
-        changed_drop("metrics_routing_filter_1_false"),
-        changed_drop("mrf_metrics_gateway_false"),
-        changed_drop("af_metrics_gateway_false"),
     ];
     assert_eq!(found, expected);
     assert_eq!(
@@ -549,4 +530,53 @@ fn a_stale_base_is_a_warning_and_the_artifact_still_composes() {
     assert!(canonical.starts_with(&stale), "{}", canonical);
     assert!(!canonical.contains("outputs {"), "{}", canonical);
     assert_eq!(compile_against(&canonical, &plan, &export).diagnostics.len(), 1);
+}
+
+/// The plan crate's default program, and its detached export, as ADP serves it by default.
+pub(crate) fn detached_fixture() -> (Plan, ExportBundle) {
+    let plan = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
+    let bundle = saluki_metric_plan::export::export_as(
+        &plan,
+        &crate::stub::protocol::POLICY_SCOPE.parse().unwrap(),
+        &catalog_for(&plan).with_detached_programs(),
+        &BTreeMap::new(),
+        saluki_metric_plan::export::ExportForm::Detached,
+    )
+    .unwrap();
+    (
+        plan,
+        ExportBundle::from_value(serde_json::to_value(bundle).unwrap()).unwrap(),
+    )
+}
+
+#[test]
+fn a_policy_binding_is_underlined_in_the_node_that_binds_it() {
+    // Two nodes bind the same setting; composition names the second, so the underline is its `config(...)`, not the
+    // first one in the source.
+    let source = r#"policy metrics {
+  base "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  input.dogstatsd -> first
+
+  node first = split(name matches(values: config("dogstatsd.metric_filter.values"), prefix: true)) {
+    true  -> drop
+    false -> second
+  }
+
+  node second = split(name matches(values: config("dogstatsd.metric_filter.values"), prefix: false)) {
+    true  -> drop
+    false -> emit dd_metrics_encode
+  }
+}
+"#;
+    let parsed = saluki_metric_plan_syntax::parse(source).unwrap();
+    let error = ComposeError::PolicyBinding {
+        node: "second".parse().unwrap(),
+        binding: "dogstatsd.metric_filter.values".parse().unwrap(),
+        value: None,
+        allowed: Vec::new(),
+    };
+    let span = compose_error_span(&error, &parsed, source).unwrap();
+    let written = "config(\"dogstatsd.metric_filter.values\")";
+    assert_eq!(&source[span.start..span.end], written);
+    assert_eq!(span.start, source.rfind(written).unwrap());
 }

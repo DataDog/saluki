@@ -362,10 +362,9 @@ fn structure_only_an_artifact_asks_for_is_unsupported_until_stage_10() {
     // one, since the frame is built from the default program.
     let hash = "sha256:00000000000000000000000000000000000000000000000000000000000000a7";
     let plan = bound(|value| {
-        value["provenance"] = json!({"artifacts": [{"revision": 7, "hash": hash}]});
+        value["provenance"] = json!({"artifacts": [{"scope": "metrics", "revision": 7, "hash": hash}]});
         let mut aggregate = node_mut(value, "dsd_agg").clone();
         aggregate["id"] = json!("policy/agg");
-        aggregate["provenance"] = json!({"artifact": {"revision": 7, "hash": hash}});
         value["nodes"].as_array_mut().unwrap().push(aggregate);
         for edge in value["edges"].as_array_mut().unwrap() {
             if edge["from"] == "metrics_enrich_host_tags.out" {

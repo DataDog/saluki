@@ -2,10 +2,10 @@
 //!
 //! Composition places an artifact's nodes into the plan under IDs that make the plan diff meaningful. An artifact node
 //! whose local ID equals a reserved ID inside its base export's scope keeps that reserved ID, so it corresponds to the
-//! default program's node across generations. Its provenance switches to the artifact if its operator or parameters
-//! differ, or, for a node that can lose records or runs in a host, if it is fed other records than the default program
-//! feeds it (see [`compose`](crate::compose::compose)), so installing an unmodified export diffs as no change. Every
-//! other artifact node enters the `policy` namespace, as `policy/<local>`.
+//! default program's node across generations: with the operator and parameters the default program gives it, it is the
+//! default program's node exactly (see [`compose`](crate::compose::compose)), so installing an unmodified export diffs
+//! as no change. Every other artifact node enters the `policy` namespace, as `policy/<local>`. Every node of the scope
+//! is the artifact's program either way: the kinds below say only how the node compares with the default program's.
 //!
 //! The diff itself compares nodes by ID, as for any two plans; the correspondence adds the way back from a plan node to
 //! the artifact node it came from, so that a diff can be shown in the artifact's own terms, such as in its source.
@@ -21,16 +21,14 @@ use crate::{
 /// How an artifact node relates to the default program it was composed into.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum CorrespondenceKind {
-    /// The node keeps a reserved ID of the scope, with the operator and parameters the default program gives it, and,
-    /// if it can lose records or runs in a host, fed what the default program feeds it: it keeps its native
-    /// provenance.
+    /// The node keeps a reserved ID of the scope, with the operator and parameters the default program gives it: it is
+    /// the default program's node exactly.
     Unmodified,
 
-    /// The node keeps a reserved ID of the scope, with another operator or other parameters, or, if it can lose records
-    /// or runs in a host, fed other records: its provenance is the artifact.
+    /// The node keeps a reserved ID of the scope, with another operator or other parameters.
     Modified,
 
-    /// The node is the artifact's own, in the `policy` namespace, with the artifact's provenance.
+    /// The node is the artifact's own, in the `policy` namespace.
     Added,
 }
 
@@ -237,7 +235,6 @@ mod tests {
                     NodeChange::Changed {
                         operator: false,
                         params: false,
-                        provenance: false,
                         edges: true
                     }
                 ),

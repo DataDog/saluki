@@ -2,7 +2,7 @@
 
 use std::{
     any::Any,
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fmt,
     sync::{Arc, Weak},
     time::Instant,
@@ -290,15 +290,13 @@ impl fmt::Debug for RegionConfig {
     }
 }
 
-/// What a region prepares for one generation: its program, the kernels to build it with, its panic budget and the
-/// nodes it covers, and the counters it publishes to.
+/// What a region prepares for one generation: its program, the kernels to build it with, its panic budget, and the
+/// counters it publishes to.
 pub struct PrepareRegion {
     generation: GenerationRef,
     program: Arc<RegionProgram>,
     kernels: Vec<PreparedKernel>,
     budget: PanicBudget,
-    /// The nodes whose panics the budget covers, or `None` for every node.
-    budgeted: Option<BTreeSet<NodeId>>,
     /// How the program's state owners bind to instances of their state, in an isolation slot.
     state: Vec<StateBinding>,
     /// The lease of each output the program delivers to, or `None` if exits to outputs write no entry.
@@ -343,7 +341,6 @@ impl PrepareRegion {
             program,
             kernels,
             budget,
-            budgeted: None,
             state: Vec::new(),
             leases: None,
             lanes: Vec::new(),
@@ -379,21 +376,6 @@ impl PrepareRegion {
     /// one, and otherwise to the new instance the preparation brings: what a preparation without a cut needs.
     pub fn with_state_bindings(mut self, bindings: Vec<StateBinding>) -> Self {
         self.state = bindings;
-        self
-    }
-
-    /// Limits the panic budget to the given nodes: those of the generation's plan with an artifact's provenance.
-    ///
-    /// A panic in any other node of the program, one native configuration placed, fails the region at once, as under a
-    /// zero budget, whatever the generation's budget: a native node fails as the native component does, even in an
-    /// artifact's generation, and its panics are never charged to the artifact. A decision runs its nodes as one step,
-    /// so a panic while it runs is charged to the budget if the budget covers any of its nodes. A panic in the
-    /// region's own steps between nodes is charged to the budget. Without this, the budget covers every node.
-    pub fn with_artifact_nodes<I>(mut self, nodes: I) -> Self
-    where
-        I: IntoIterator<Item = NodeId>,
-    {
-        self.budgeted = Some(nodes.into_iter().collect());
         self
     }
 
@@ -448,7 +430,6 @@ impl PrepareRegion {
                 program: Arc::clone(&self.program),
                 kernels: share.kernels,
                 budget: self.budget,
-                budgeted: self.budgeted.clone(),
                 state: share.state,
                 leases: self.leases.clone(),
                 lanes: Vec::new(),
@@ -467,7 +448,6 @@ impl fmt::Debug for PrepareRegion {
             .field("fingerprint", &self.program.fingerprint())
             .field("kernels", &self.kernels)
             .field("budget", &self.budget)
-            .field("budgeted", &self.budgeted)
             .field("state", &self.state)
             .field("leases", &self.leases)
             .field("lanes", &self.lanes)
@@ -499,6 +479,20 @@ pub enum RegionControl {
 
     /// Delivers a control message to the kernels it targets, then replies with the message.
     Kernel(KernelControl),
+
+    /// Gives a prepared or committed generation another panic budget, because the program it runs changed without any
+    /// change to what the region runs: a published program equal to the plan the generation runs adopted it, or the
+    /// default program took it back. Nothing is built, cut, or drained.
+    ///
+    /// Panics charged to the generation so far stay charged. Adopting a generation the region does not have does
+    /// nothing.
+    Adopt {
+        /// The generation.
+        generation: GenerationId,
+
+        /// Its panic budget from now on: the budget of the program it now runs.
+        budget: PanicBudget,
+    },
 }
 
 impl LaneSplit for RegionControl {
@@ -512,6 +506,7 @@ impl LaneSplit for RegionControl {
                 Err(prepare) => Err(Self::Prepare(prepare)),
             },
             Self::Abort { generation } => Ok((0..lanes).map(|_| Self::Abort { generation }).collect()),
+            Self::Adopt { generation, budget } => Ok((0..lanes).map(|_| Self::Adopt { generation, budget }).collect()),
             Self::Release => Ok((0..lanes).map(|_| Self::Release).collect()),
             Self::Kernel(control) => Err(Self::Kernel(control)),
         }
@@ -521,7 +516,7 @@ impl LaneSplit for RegionControl {
     fn lane(&self) -> Option<u16> {
         match self {
             Self::Kernel(control) => control.lane,
-            Self::Prepare(_) | Self::Abort { .. } | Self::Release => None,
+            Self::Prepare(_) | Self::Abort { .. } | Self::Adopt { .. } | Self::Release => None,
         }
     }
 }
@@ -603,11 +598,6 @@ struct LiveGeneration {
     counts: ProgramCounts,
     telemetry: ProgramTelemetry,
     budget: PanicBudget,
-    /// Whether each of the program's kernels, by kernel index, is a node the budget does not cover: a panic in it
-    /// fails the region at once.
-    native_kernels: Vec<bool>,
-    /// Whether each of the program's decisions, by decision index, has only nodes the budget does not cover.
-    native_decisions: Vec<bool>,
     /// The generation's panics and what the region does with its batches after its program panicked, shared by the
     /// lanes of the slot (see [`PanicLedger`]).
     ledger: Arc<GenerationLedger>,
@@ -812,12 +802,11 @@ struct InvalidLoss {
 /// After a panic, the driver discards every buffer the call that panicked held, and its kernels' unrecorded loss
 /// counts, and charges the panic to the generation and node it was running. What the call counted before it panicked
 /// stays counted: it is work the nodes did. Under the generation's [`PanicBudget::Zero`], the default program's, the
-/// region fails, as a native component does, and so it does after a panic in a node the budget does not cover
-/// ([`PrepareRegion::with_artifact_nodes`]): one native configuration placed, in an artifact's generation. Under a
-/// limited budget, the driver rebuilds the kernels of the generation that panicked from their specs and continues; a
-/// generation that exceeds its budget fails, its later batches are dropped as invalid loss, and the failure goes to the
-/// [failure reporter][RegionConfig::failures]. A kernel that cannot be rebuilt fails every generation that uses it, and
-/// the region if one of them has a zero budget. A panic outside any program's steps fails the region.
+/// region fails, as a native component does. Under a limited budget, the driver rebuilds the kernels of the generation
+/// that panicked from their specs and continues; a generation that exceeds its budget fails, its later batches are
+/// dropped as invalid loss, and the failure goes to the [failure reporter][RegionConfig::failures]. A kernel that
+/// cannot be rebuilt fails every generation that uses it, and the region if one of them has a zero budget. A panic
+/// outside any program's steps fails the region.
 ///
 /// # Accounting
 ///
@@ -1092,7 +1081,6 @@ impl MetricRegionDriver {
             program,
             kernels,
             budget,
-            budgeted,
             state: bindings,
             leases,
             lanes,
@@ -1257,17 +1245,6 @@ impl MetricRegionDriver {
                 counts: ExitSetCounts::with_capacity(if decision.is_some() { COUNTED_EXIT_SETS } else { 0 }),
             })
             .collect();
-        let native = |node: &NodeId| budgeted.as_ref().is_some_and(|budgeted| !budgeted.contains(node));
-        let native_kernels = program
-            .kernels()
-            .iter()
-            .map(|kernel| native(&kernel.key.node))
-            .collect();
-        let native_decisions = program
-            .decisions()
-            .iter()
-            .map(|decision| decision.nodes.iter().all(|node| native(&node.node)))
-            .collect();
         let live = LiveGeneration {
             id,
             token: Arc::downgrade(&generation),
@@ -1279,8 +1256,6 @@ impl MetricRegionDriver {
             kernels,
             telemetry,
             budget,
-            native_kernels,
-            native_decisions,
             ledger: self.ledger.generation(id),
         };
         if self.scratch.registers.len() < live.code.registers {
@@ -1686,8 +1661,8 @@ impl MetricRegionDriver {
 
     /// Records a panic against the budget of the live generation at `index`, as charged to the node the cursor names.
     ///
-    /// Returns the outcome if the region fails: a zero budget, or a native node's panic. A generation that exceeds a
-    /// limited budget fails, and the region continues.
+    /// Returns the outcome if the region fails: a zero budget. A generation that exceeds a limited budget fails, and
+    /// the region continues.
     fn charge(&mut self, index: usize, panic: &RegionPanic, cursor: &Cursor, now: Instant) -> Option<PanicOutcome> {
         let generation = &mut self.generations[index];
         let node = match cursor.node {
@@ -1702,28 +1677,13 @@ impl MetricRegionDriver {
             None => None,
         }
         .unwrap_or_else(|| "the region's own steps".to_string());
-        // A node native configuration placed has a zero budget, even in an artifact's generation.
-        let native = match cursor.node {
-            Some(NodeRef::Kernel(kernel)) => generation.native_kernels.get(kernel).copied(),
-            Some(NodeRef::Decision(decision)) => generation.native_decisions.get(decision).copied(),
-            None => None,
-        }
-        .unwrap_or(false);
-        let budget = if native { PanicBudget::Zero } else { generation.budget };
+        // The generation's budget covers every node it runs: a published program's, whether its author changed the
+        // node or kept it, and the default program's, whose budget is zero.
+        let budget = generation.budget;
 
         // The budget is the generation's across the slot's lanes.
         let (survives, total) = generation.ledger.record(budget, now);
         if !survives {
-            if native && generation.budget != PanicBudget::Zero {
-                return Some(PanicOutcome::Fail(generic_error!(
-                    "Region `{}` panicked in {} of generation {}, which native configuration placed: a native node's \
-                     panic budget is zero, as the default program's is, even in an artifact's generation, so the \
-                     region fails as a native component does.",
-                    self.name,
-                    node,
-                    generation.id
-                )));
-            }
             if budget == PanicBudget::Zero {
                 return Some(PanicOutcome::Fail(generic_error!(
                     "Region `{}` panicked in {} of generation {}, whose panic budget is zero, as the default \
@@ -1871,6 +1831,13 @@ impl RegionDriver for MetricRegionDriver {
             }
             RegionControl::Release => {
                 self.prune();
+                Ok(())
+            }
+            RegionControl::Adopt { generation, budget } => {
+                if let Some(live) = self.generations.iter_mut().find(|live| live.id == generation) {
+                    debug!(region = %self.name, generation = %generation, ?budget, "Adopted a generation.");
+                    live.budget = budget;
+                }
                 Ok(())
             }
             RegionControl::Kernel(control) => {

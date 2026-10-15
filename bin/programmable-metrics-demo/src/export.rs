@@ -153,6 +153,38 @@ impl ExportBundle {
         })
     }
 
+    /// Returns what the exported program writes after `emit` to deliver to `output`, if one of its `emit`s addresses it
+    /// by the names of its recipients: `to [<name>, ...]`, each name bare if it is an identifier and quoted otherwise,
+    /// as the editor prints it.
+    fn emit_target(&self, output: &OutputId) -> Option<String> {
+        self.artifact.artifact.nodes.iter().find_map(|node| {
+            let names = node.params.get("to")?.as_array()?;
+            let mut recipients = names
+                .iter()
+                .filter_map(|name| self.catalog.recipient(&name.as_str()?.parse().ok()?))
+                .flat_map(|entry| entry.recipients.iter().cloned())
+                .collect::<Vec<_>>();
+            recipients.sort();
+            recipients.dedup();
+            if self.catalog.output_for(&recipients).as_ref() != Some(output) {
+                return None;
+            }
+            let names = names
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|name| {
+                    if saluki_metric_plan::ir::is_identifier(name) {
+                        name.to_string()
+                    } else {
+                        // Quoted as the syntax writes a string, with its quotes and backslashes escaped.
+                        serde_json::to_string(name).unwrap_or_else(|_| format!("\"{}\"", name))
+                    }
+                })
+                .collect::<Vec<_>>();
+            Some(format!("to [{}]", names.join(", ")))
+        })
+    }
+
     /// Returns what the editor shows next to a program: each output with its label, recipients, and the intake it
     /// most likely reaches, the outputs resources artifacts declare beside the native ones, and each configuration
     /// binding with its current value.
@@ -166,6 +198,7 @@ impl ExportBundle {
                 let label = self.labels.get(&output_id).cloned();
                 let recipients = declared.recipients.iter().map(ToString::to_string).collect::<Vec<_>>();
                 let intake = intake_of(label.as_deref(), &recipients, intakes);
+                let emit = self.emit_target(&output_id).unwrap_or_else(|| id.clone());
                 Some(LegendOutput {
                     id: id.clone(),
                     label,
@@ -173,6 +206,7 @@ impl ExportBundle {
                     fingerprint: declared.fingerprint.to_string(),
                     recipients,
                     intake,
+                    emit,
                 })
             })
             .collect();
@@ -222,6 +256,10 @@ pub struct LegendOutput {
 
     /// The name of the intake the output most likely reaches, if it can be told.
     pub intake: Option<&'static str>,
+
+    /// What the program's source writes after `emit` to deliver to the output: `to [<recipient>, ...]`, the names of
+    /// its recipients, where the export addresses it so, or else its ID.
+    pub emit: String,
 }
 
 /// One configuration binding, as the legend shows it.

@@ -838,6 +838,7 @@ async fn resolved_after_config(
         &facts,
         &FixedHosts::at_boot(&facts),
         None,
+        Demanded::default(),
         &previous.resources,
     )
     .unwrap()
@@ -1194,4 +1195,206 @@ fn a_name_never_stands_for_recipients_of_two_hosts_or_of_two_sources() {
     let error = name_recipient(&mut directory, name(), &DD_HOST, id("dd_out/c"), "https://c").unwrap_err();
     assert!(error.to_string().contains("this is a lowering bug"), "{}", error);
     assert_eq!(directory[&name()].recipients.len(), 2);
+}
+
+/// Resolves the resources of the configuration `yaml` with the demand `demand`, following the resolution `previous`.
+async fn resolved_with_demand(yaml: &str, demand: &[Demand], previous: &NativeResources) -> NativeResources {
+    let startup = configuration(yaml).await;
+    let facts = facts(&startup);
+    NativeResources::resolve_after(
+        &startup,
+        &startup,
+        &facts,
+        &FixedHosts::at_boot(&facts),
+        None,
+        Demanded {
+            demand,
+            previous: &previous.outputs,
+        },
+        &previous.resources,
+    )
+    .unwrap()
+}
+
+/// The demand of an `emit` with local ID `emit` addressed to the directory names `names` of `resolved`.
+fn demand_of(resolved: &NativeResources, names: &[&str], emit: &str) -> Demand {
+    let entry = |name: &str| &resolved.directory[&name.parse::<RecipientName>().unwrap()];
+    let mut recipients = names
+        .iter()
+        .flat_map(|name| entry(name).recipients.clone())
+        .collect::<Vec<_>>();
+    recipients.sort();
+    recipients.dedup();
+    Demand {
+        host: entry(names[0]).host.clone(),
+        recipients,
+        emit: emit.parse().unwrap(),
+    }
+}
+
+/// Returns each implied output of `resolved`: its ID and recipients, in ID order.
+fn implied(resolved: &NativeResources) -> Vec<(String, Vec<RecipientId>)> {
+    let mut implied = resolved
+        .outputs
+        .iter()
+        .filter(|output| matches!(output.kind, OutputKind::Implied { .. }))
+        .map(|output| (output.decl.id.to_string(), output.decl.recipients.clone()))
+        .collect::<Vec<_>>();
+    implied.sort();
+    implied
+}
+
+/// Two additional endpoints, `b` with one key and `c` with two, and Multi-Region Failover, without endpoint routing.
+const TEAMS: &str = r#"
+dd_url: https://primary.example.com
+api_key: primary-key
+additional_endpoints: {https://b.example.com: [key-b], https://c.example.com: [key-c1, key-c2]}
+multi_region_failover: {enabled: true, api_key: mrf-key, dd_url: https://mrf.example.com}
+"#;
+
+#[tokio::test]
+async fn lowering_adds_an_implied_output_for_each_set_of_recipients_no_output_delivers_to() {
+    let native = resolved(TEAMS).await;
+    // The main output dual-ships to every endpoint: `[primary, b, c]` is its set, and needs no implied output.
+    let main = demand_of(
+        &native,
+        &["primary", "https://b.example.com", "https://c.example.com"],
+        "metrics_policy_0",
+    );
+    assert_eq!(
+        main.recipients,
+        native.outputs.get(DD_METRICS_ENCODE).unwrap().decl.recipients
+    );
+    let to_b = demand_of(&native, &["https://b.example.com"], "to_team_b_true");
+    let to_c = demand_of(&native, &["https://c.example.com"], "to_team_c_true");
+    let primary = demand_of(&native, &["primary"], "metrics_policy_0");
+    let demand = [main, to_b.clone(), to_c.clone(), primary.clone()];
+    let resolved = resolved_with_demand(TEAMS, &demand, &NativeResources::default()).await;
+
+    // One implied output per set no output delivers to, named after its first emit and the set's digest, never after
+    // a recipient name, with the recipients as its selector.
+    assert_eq!(
+        implied(&resolved),
+        [
+            (
+                "implied_metrics_policy_0_dbd87652".to_string(),
+                primary.recipients.clone()
+            ),
+            ("implied_to_team_b_true_e7b845f5".to_string(), to_b.recipients.clone()),
+            ("implied_to_team_c_true_ff043b9d".to_string(), to_c.recipients.clone()),
+        ]
+    );
+    let output = resolved.outputs.get("implied_to_team_c_true_ff043b9d").unwrap();
+    let binding = output.decl.binding.as_ref().unwrap();
+    assert_eq!(binding.selector, Selector::Recipients(to_c.recipients.clone()));
+    assert_eq!(binding.host.as_str(), DD_OUT);
+    assert_eq!(output.recipients.len(), 2, "both of `c`'s keys");
+    assert!(resolved.refused_demand.is_empty());
+
+    // Lowered again with one more set, the implied outputs keep their IDs, whatever the new set's emit is called.
+    let renamed = Demand {
+        emit: "aaa_first_true".parse().unwrap(),
+        ..to_b.clone()
+    };
+    let again = resolved_with_demand(TEAMS, &[renamed, to_c.clone()], &resolved).await;
+    assert_eq!(
+        implied(&again),
+        [
+            ("implied_to_team_b_true_e7b845f5".to_string(), to_b.recipients.clone()),
+            ("implied_to_team_c_true_ff043b9d".to_string(), to_c.recipients.clone()),
+        ]
+    );
+    // An emit whose recipients change asks for another set, which gets another ID, though its emit is the same: an
+    // ID's telemetry always means one set of recipients.
+    let widened = demand_of(
+        &native,
+        &["https://b.example.com", "https://c.example.com"],
+        "to_team_b_true",
+    );
+    let changed = resolved_with_demand(TEAMS, std::slice::from_ref(&widened), &again).await;
+    let ids = implied(&changed);
+    assert_eq!(ids.len(), 1);
+    assert_eq!(ids[0].1, widened.recipients);
+    assert!(
+        ids[0].0.starts_with("implied_to_team_b_true_") && ids[0].0 != "implied_to_team_b_true_e7b845f5",
+        "{:?}",
+        ids
+    );
+
+    // Without demand, none: an implied output retires once no program asks for it.
+    assert!(implied(&resolved_with_demand(TEAMS, &[], &again).await).is_empty());
+}
+
+/// Six additional endpoints, `e0` to `e5`, one key each, beside the primary endpoint: enough sets of recipients for
+/// more implied outputs than the limit.
+const SIX_ENDPOINTS: &str = r#"
+dd_url: https://primary.example.com
+api_key: primary-key
+additional_endpoints: {https://e0.example.com: [k0], https://e1.example.com: [k1], https://e2.example.com: [k2],
+  https://e3.example.com: [k3], https://e4.example.com: [k4], https://e5.example.com: [k5]}
+"#;
+
+#[tokio::test]
+async fn implied_outputs_are_refused_beyond_the_limit_and_off_the_main_outputs_host() {
+    // Seventeen sets no output delivers to: each endpoint alone, the primary endpoint alone, and pairs of endpoints.
+    let six = resolved(SIX_ENDPOINTS).await;
+    let endpoints = (0..6)
+        .map(|index| format!("https://e{}.example.com", index))
+        .collect::<Vec<_>>();
+    let mut sets = vec![vec!["primary".to_string()]];
+    sets.extend(endpoints.iter().map(|endpoint| vec![endpoint.clone()]));
+    for (first, endpoint) in endpoints.iter().enumerate() {
+        for other in &endpoints[first + 1..] {
+            sets.push(vec![endpoint.clone(), other.clone()]);
+        }
+    }
+    sets.truncate(17);
+    let demand = sets
+        .iter()
+        .enumerate()
+        .map(|(index, names)| {
+            let names = names.iter().map(String::as_str).collect::<Vec<_>>();
+            demand_of(&six, &names, &format!("e_{:02}", index))
+        })
+        .collect::<Vec<_>>();
+    assert!(demand.iter().all(|wanted| !six
+        .outputs
+        .iter()
+        .any(|output| output.decl.recipients == wanted.recipients)));
+    // Sixteen fit: the limit is shared with the outputs resources artifacts declare, of which there are none. The
+    // seventeenth, last in recipient order, is refused, with why.
+    let beyond = resolved_with_demand(SIX_ENDPOINTS, &demand, &NativeResources::default()).await;
+    assert_eq!(implied(&beyond).len(), 16);
+    assert_eq!(beyond.refused_demand.len(), 1, "{:?}", beyond.refused_demand);
+    let why = beyond.refused_demand.values().next().unwrap();
+    assert!(why.contains("one more than the limit of 16 outputs"), "{}", why);
+    assert!(why.contains("every program the installer holds"), "{}", why);
+    assert!(!why.contains("  "), "{}", why);
+    // Sixteen alone fit.
+    let fits = resolved_with_demand(SIX_ENDPOINTS, &demand[..16], &NativeResources::default()).await;
+    assert_eq!(implied(&fits).len(), 16);
+    assert!(fits.refused_demand.is_empty());
+
+    let native = resolved(TEAMS).await;
+    let mut both = demand_of(&native, &["https://b.example.com", "https://c.example.com"], "e_bc");
+
+    // Recipients of another host than the main output's are refused, with why.
+    let mrf = demand_of(&native, &["mrf"], "e_mrf");
+    assert!(native
+        .outputs
+        .iter()
+        .any(|output| output.decl.recipients == mrf.recipients));
+    let mut off_host = mrf.clone();
+    off_host.recipients.push("mrf_dd_out/other/0".parse().unwrap());
+    let refused = resolved_with_demand(TEAMS, &[off_host.clone()], &NativeResources::default()).await;
+    assert!(
+        refused.refused_demand[&off_host.recipients].contains("recipients of `mrf_dd_out`"),
+        "{:?}",
+        refused.refused_demand
+    );
+
+    // So is a set that is not every key of its endpoints, which one encoder cannot send to alone.
+    both.recipients.pop();
+    let partial = resolved_with_demand(TEAMS, &[both.clone()], &NativeResources::default()).await;
+    assert!(partial.refused_demand.contains_key(&both.recipients));
 }

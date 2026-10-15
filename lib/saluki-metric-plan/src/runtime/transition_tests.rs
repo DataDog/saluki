@@ -98,7 +98,7 @@ pub(super) fn aggregation(window: &str) -> Value {
 }
 
 pub(super) fn node(id: &str, op: &str, params: Value) -> Value {
-    json!({"id": id, "op": op, "params": params, "provenance": {"native": id}})
+    json!({"id": id, "op": op, "params": params})
 }
 
 /// Builds a valid plan from nodes, edges written as `from -> to`, and the outputs it declares.

@@ -26,12 +26,10 @@ fn lane_plan(window: &str, op: &str) -> Plan {
     Plan::from_value(json!({
         "ir_version": 1,
         "nodes": [
-            {"id": "src", "op": "source", "params": {"binding": "dogstatsd", "timestamps": "untimestamped"},
-             "provenance": {"native": "dsd_in"}},
-            {"id": "dsd_enrich", "op": "namespace_prefix", "params": {"namespace": "t", "exclusions": []},
-             "provenance": {"native": "dsd_prefix_filter"}},
-            {"id": "dsd_agg", "op": op, "provenance": {"native": "dsd_agg"}, "params": aggregate_params(window)},
-            {"id": "out", "op": "emit", "params": {"output": OUTPUT}, "provenance": {"native": "dd_metrics_encode"}},
+            {"id": "src", "op": "source", "params": {"binding": "dogstatsd", "timestamps": "untimestamped"}},
+            {"id": "dsd_enrich", "op": "namespace_prefix", "params": {"namespace": "t", "exclusions": []}},
+            {"id": "dsd_agg", "op": op, "params": aggregate_params(window)},
+            {"id": "out", "op": "emit", "params": {"output": OUTPUT}},
         ],
         "edges": [
             {"from": "src.metrics", "to": "dsd_enrich.in"},

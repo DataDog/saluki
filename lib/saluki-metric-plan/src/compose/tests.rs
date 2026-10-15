@@ -13,14 +13,14 @@ use serde_json::{json, Value};
 use super::*;
 use crate::{
     canonical::ResolvedValues,
-    export::{export, ExportBundle},
+    export::{export, ExportBundle, ExportForm},
     install::diff::{diff, NodeChange},
     ir::{ArtifactEdge, ExitName, Plan, PlanProvenance},
     testing::{
         arb_predicate, default_program_catalog, predicate_json, two_scope_catalog, with_opaque_gateways,
         with_two_scopes, DEFAULT_PROGRAM_JSON, NO_AGGREGATION_PIPELINE_OFF_JSON, TWO_SCOPES,
     },
-    validate::{CatalogBinding, Location, MemoryCatalog, Rule},
+    validate::{BindingClass, BoundScope, CatalogBinding, Location, MemoryCatalog, Rule},
 };
 
 const ZERO_HASH: &str = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
@@ -36,21 +36,15 @@ fn two_scopes(plan_json: &str) -> Plan {
 
 /// The default-program fixtures, with two scopes: both configurations, each with its gateways as routing operators and
 /// as opaque hosts.
+///
+/// A default program whose scope holds a host component, such as stage 2's opaque gateways, cannot be replaced at all
+/// ([`a_scope_that_holds_a_host_component_cannot_be_replaced_even_unmodified`]), so none is listed.
 fn default_programs() -> Vec<(&'static str, Plan)> {
-    let read = |value: Value| Plan::from_value(with_two_scopes(value)).unwrap();
     vec![
         ("default program", two_scopes(DEFAULT_PROGRAM_JSON)),
         (
             "no-aggregation pipeline off",
             two_scopes(NO_AGGREGATION_PIPELINE_OFF_JSON),
-        ),
-        (
-            "default program, opaque gateways",
-            read(with_opaque_gateways(DEFAULT_PROGRAM_JSON)),
-        ),
-        (
-            "no-aggregation pipeline off, opaque gateways",
-            read(with_opaque_gateways(NO_AGGREGATION_PIPELINE_OFF_JSON)),
         ),
     ]
 }
@@ -239,15 +233,9 @@ fn describe(change: &NodeChange) -> String {
         NodeChange::Changed {
             operator,
             params,
-            provenance,
             edges,
         } => {
-            let parts = [
-                (*operator, "operator"),
-                (*params, "params"),
-                (*provenance, "provenance"),
-                (*edges, "edges"),
-            ];
+            let parts = [(*operator, "operator"), (*params, "params"), (*edges, "edges")];
             let parts = parts
                 .iter()
                 .filter(|(changed, _)| *changed)
@@ -278,23 +266,32 @@ fn unmodified_exports_of_the_default_programs_compose_back_to_them() {
             "{}",
             name
         );
-        // Only the plan's own provenance, which is not hashed, says that an artifact was composed.
+        // Only the plan's own provenance, which is not hashed, says that an artifact was composed, and which scope its
+        // program is.
         assert_eq!(
             composed.plan.provenance,
             Some(PlanProvenance {
                 config_change: None,
-                artifacts: vec![ArtifactRevision {
+                artifacts: vec![ComposedArtifact {
+                    scope: fixture.export.scope.clone(),
                     revision: 7,
                     hash: received.hash
                 }],
+                native_components: Default::default(),
             }),
             "{}",
             name
         );
         assert!(!composed.stale_base && !composed.stale_review, "{}", name);
-        assert_eq!(
-            composed.report,
-            Validator::new(&registry, &fixture.catalog).validate(plan),
+        // The same findings: the program's nodes are measured against the artifact limits too, and are within them.
+        let native = Validator::new(&registry, &fixture.catalog).validate(plan);
+        assert_eq!(composed.report.findings(), native.findings(), "{}", name);
+        assert!(
+            composed
+                .report
+                .bounds()
+                .iter()
+                .any(|bound| matches!(bound.scope, BoundScope::Artifact(_))),
             "{}",
             name
         );
@@ -335,7 +332,7 @@ struct Accepted {
 }
 
 #[test]
-fn edits_of_the_export_compose_with_their_correspondence_and_provenance() {
+fn edits_of_the_export_compose_with_their_correspondence() {
     use CorrespondenceKind::{Added, Modified};
 
     let kinds_list = json!(["counter", "rate", "gauge", "set"]);
@@ -367,8 +364,6 @@ fn edits_of_the_export_compose_with_their_correspondence_and_provenance() {
                 edge_to(document, "af_metrics_gateway.in")["from"] = json!("metrics_policy.3");
             },
             Accepted {
-                // A `tee` copies what enters it to every port, however many it has, so the drops of the other branches
-                // are fed as before, and keep their native provenance.
                 changed: &[("metrics_policy", "metrics_policy", Modified)],
                 removed: &[
                     "mrf_metrics_gateway",
@@ -376,7 +371,7 @@ fn edits_of_the_export_compose_with_their_correspondence_and_provenance() {
                     "mrf_metrics_gateway_false",
                 ],
                 diff: &[
-                    ("metrics_policy", "changed params provenance edges"),
+                    ("metrics_policy", "changed params edges"),
                     ("af_metrics_gateway", "changed edges"),
                     ("mrf_metrics_gateway", "removed"),
                     ("mrf_metrics_gateway_true", "removed"),
@@ -430,23 +425,11 @@ fn edits_of_the_export_compose_with_their_correspondence_and_provenance() {
                 push_edge(document, "drop_debug.true", "drop_debug_true.in");
             },
             Accepted {
-                // Every drop of the scope now drops what is left after the new filter, which native configuration did
-                // not express: their loss is the artifact's.
+                // Every drop of the scope now drops what is left after the new filter, but does what it did: only
+                // the new nodes change.
                 changed: &[
                     ("drop_debug", "policy/drop_debug", Added),
                     ("drop_debug_true", "policy/drop_debug_true", Added),
-                    (
-                        "metrics_routing_filter_0_false",
-                        "metrics_routing_filter_0_false",
-                        Modified,
-                    ),
-                    (
-                        "metrics_routing_filter_1_false",
-                        "metrics_routing_filter_1_false",
-                        Modified,
-                    ),
-                    ("mrf_metrics_gateway_false", "mrf_metrics_gateway_false", Modified),
-                    ("af_metrics_gateway_false", "af_metrics_gateway_false", Modified),
                 ],
                 removed: &[],
                 // The node feeding the scope's input is outside the scope, but the edge at its output port changes.
@@ -455,10 +438,6 @@ fn edits_of_the_export_compose_with_their_correspondence_and_provenance() {
                     ("policy/drop_debug", "added"),
                     ("policy/drop_debug_true", "added"),
                     ("metrics_policy", "changed edges"),
-                    ("metrics_routing_filter_0_false", "changed provenance"),
-                    ("metrics_routing_filter_1_false", "changed provenance"),
-                    ("mrf_metrics_gateway_false", "changed provenance"),
-                    ("af_metrics_gateway_false", "changed provenance"),
                 ],
                 stale_base: false,
             },
@@ -474,19 +453,12 @@ fn edits_of_the_export_compose_with_their_correspondence_and_provenance() {
                 push_edge(document, "metrics_routing_filter_0.false", "discard.in");
             },
             Accepted {
-                changed: &[
-                    (
-                        "metrics_routing_filter_0_false",
-                        "metrics_routing_filter_0_false",
-                        Modified,
-                    ),
-                    ("discard", "policy/discard", Added),
-                ],
+                changed: &[("discard", "policy/discard", Added)],
                 removed: &["metrics_policy_0"],
                 diff: &[
                     ("metrics_policy", "changed edges"),
                     ("metrics_routing_filter_0", "changed edges"),
-                    ("metrics_routing_filter_0_false", "changed provenance edges"),
+                    ("metrics_routing_filter_0_false", "changed edges"),
                     ("policy/discard", "added"),
                     ("metrics_policy_0", "removed"),
                 ],
@@ -500,18 +472,14 @@ fn edits_of_the_export_compose_with_their_correspondence_and_provenance() {
                 edge_to(document, "metrics_routing_filter_0_false.in")["from"] = json!("metrics_policy.0");
             },
             Accepted {
-                // The `emit` loses nothing, so it keeps its native provenance whatever feeds it; the drop does not.
-                changed: &[(
-                    "metrics_routing_filter_0_false",
-                    "metrics_routing_filter_0_false",
-                    Modified,
-                )],
+                // Both do what they did, whatever feeds them: only edges change.
+                changed: &[],
                 removed: &[],
                 diff: &[
                     ("metrics_policy", "changed edges"),
                     ("metrics_policy_0", "changed edges"),
                     ("metrics_routing_filter_0", "changed edges"),
-                    ("metrics_routing_filter_0_false", "changed provenance edges"),
+                    ("metrics_routing_filter_0_false", "changed edges"),
                 ],
                 stale_base: false,
             },
@@ -522,16 +490,9 @@ fn edits_of_the_export_compose_with_their_correspondence_and_provenance() {
                 node(document, "af_metrics_gateway")["params"]["predicate"]["all"][0] = json!({"kind_in": ["counter"]});
             },
             Accepted {
-                // The gateway's drop now drops what the new predicate rejects.
-                changed: &[
-                    ("af_metrics_gateway", "af_metrics_gateway", Modified),
-                    ("af_metrics_gateway_false", "af_metrics_gateway_false", Modified),
-                ],
+                changed: &[("af_metrics_gateway", "af_metrics_gateway", Modified)],
                 removed: &[],
-                diff: &[
-                    ("af_metrics_gateway", "changed params provenance"),
-                    ("af_metrics_gateway_false", "changed provenance"),
-                ],
+                diff: &[("af_metrics_gateway", "changed params")],
                 stale_base: false,
             },
         ),
@@ -540,16 +501,23 @@ fn edits_of_the_export_compose_with_their_correspondence_and_provenance() {
             |document| {
                 node(document, "mrf_metrics_gateway")["params"]["predicate"]["all"][1] = json!({"flag": true});
             },
+            // A literal equal to the binding's value is the same operation: composition compares values.
             Accepted {
-                changed: &[
-                    ("mrf_metrics_gateway", "mrf_metrics_gateway", Modified),
-                    ("mrf_metrics_gateway_false", "mrf_metrics_gateway_false", Modified),
-                ],
+                changed: &[],
                 removed: &[],
-                diff: &[
-                    ("mrf_metrics_gateway", "changed params provenance"),
-                    ("mrf_metrics_gateway_false", "changed provenance"),
-                ],
+                diff: &[],
+                stale_base: false,
+            },
+        ),
+        (
+            "a binding replaced by another value",
+            |document| {
+                node(document, "mrf_metrics_gateway")["params"]["predicate"]["all"][1] = json!({"flag": false});
+            },
+            Accepted {
+                changed: &[("mrf_metrics_gateway", "mrf_metrics_gateway", Modified)],
+                removed: &[],
+                diff: &[("mrf_metrics_gateway", "changed params")],
                 stale_base: false,
             },
         ),
@@ -613,7 +581,8 @@ fn edits_of_the_export_compose_with_their_correspondence_and_provenance() {
         assert_eq!(composed.stale_base, expected.stale_base, "{}", what);
         assert!(!composed.stale_review, "{}", what);
 
-        let revision = ArtifactRevision {
+        let revision = ComposedArtifact {
+            scope: fixture.export.scope.clone(),
             revision: 3,
             hash: received.hash,
         };
@@ -644,20 +613,19 @@ fn edits_of_the_export_compose_with_their_correspondence_and_provenance() {
             .collect::<Vec<_>>();
         assert_eq!(removed, expected.removed, "{}", what);
 
-        // Unmodified nodes are the default program's own; every other artifact node has the artifact's provenance,
-        // which the plan lists.
+        // Unmodified nodes do what the default program's do, the artifact's literals where it wrote them; the plan
+        // lists the artifact and its scope.
         for (_, correspondence) in composed.correspondence.iter() {
             let node = composed.plan.node(&correspondence.node).unwrap();
-            match correspondence.kind {
-                CorrespondenceKind::Unmodified => {
-                    assert_eq!(Some(node), fixture.plan.node(&correspondence.node), "{}", what)
-                }
-                _ => assert_eq!(
-                    node.provenance,
-                    Some(Provenance::Artifact(revision.clone())),
+            if correspondence.kind == CorrespondenceKind::Unmodified {
+                let default = fixture.plan.node(&correspondence.node).unwrap();
+                assert_eq!(node.op, default.op, "{}", what);
+                assert_eq!(
+                    crate::export::operation_params(&node.op, &node.params),
+                    crate::export::operation_params(&default.op, &default.params),
                     "{}",
                     what
-                ),
+                );
             }
         }
         assert_eq!(
@@ -682,19 +650,19 @@ fn edits_of_the_export_compose_with_their_correspondence_and_provenance() {
 }
 
 #[test]
-fn kept_host_components_keep_native_authority_only_while_fed_as_in_the_default_program() {
-    use CorrespondenceKind::{Modified, Unmodified};
-
+fn a_scope_that_holds_a_host_component_cannot_be_replaced_even_unmodified() {
     const GATEWAYS: [&str; 4] = [
         "metrics_routing_filter_0",
         "metrics_routing_filter_1",
         "mrf_metrics_gateway",
         "af_metrics_gateway",
     ];
-    let fixture = Fixture::new(Plan::from_value(with_two_scopes(with_opaque_gateways(DEFAULT_PROGRAM_JSON))).unwrap());
-    let kind = |composed: &Composed, id: &str| composed.correspondence.get(&id.parse().unwrap()).unwrap().kind;
-    let trusted_host_errors = |composed: &Composed| {
-        composed
+    for json in [DEFAULT_PROGRAM_JSON, NO_AGGREGATION_PIPELINE_OFF_JSON] {
+        let fixture = Fixture::new(Plan::from_value(with_two_scopes(with_opaque_gateways(json))).unwrap());
+        // Every node of the scope is the program's, kept or not, and a program cannot hold a host component, which
+        // only native configuration places: the unmodified export is refused at each gateway.
+        let composed = fixture.compose(fixture.artifact(), &approval(1)).unwrap();
+        let trusted_host_errors = composed
             .report
             .errors()
             .filter(|finding| finding.rule == Rule::TrustedHost)
@@ -702,38 +670,15 @@ fn kept_host_components_keep_native_authority_only_while_fed_as_in_the_default_p
                 crate::validate::Location::Node { id, .. } => id.to_string(),
                 other => panic!("a host component's finding is at its node, not {:?}", other),
             })
-            .collect::<Vec<_>>()
-    };
-
-    // Without the multi-region branch, the other gateways still get a copy of everything: they stay native.
-    let mut document = fixture.artifact();
-    remove_nodes(&mut document, &["mrf_metrics_gateway", "mrf_metrics_gateway_out"]);
-    node(&mut document, "metrics_policy")["params"]["ports"] = json!(4);
-    edge_to(&mut document, "af_metrics_gateway.in")["from"] = json!("metrics_policy.3");
-    let composed = fixture.compose(document, &approval(1)).unwrap();
-    assert!(composed.report.is_valid(), "{}", composed.report);
-    assert_eq!(kind(&composed, "metrics_policy"), Modified);
-    for gateway in GATEWAYS.iter().filter(|gateway| **gateway != "mrf_metrics_gateway") {
-        assert_eq!(kind(&composed, gateway), Unmodified, "{}", gateway);
-    }
-
-    // Behind a new filter, each gateway gets another stream than native configuration placed it on, so it would run
-    // with the artifact's authority, which cannot place host components. Their `emit`s lose nothing, and stay native.
-    let mut document = fixture.artifact();
-    let nodes = document["nodes"].as_array_mut().unwrap();
-    nodes.insert(
-        0,
-        json!({"id": "drop_debug", "op": "split", "params": {"predicate": {"name": {"prefix": "demo.debug."}}}}),
-    );
-    nodes.insert(1, json!({"id": "drop_debug_true", "op": "drop"}));
-    edge_to(&mut document, "metrics_policy.in")["from"] = json!("drop_debug.false");
-    push_edge(&mut document, "input.metrics", "drop_debug.in");
-    push_edge(&mut document, "drop_debug.true", "drop_debug_true.in");
-    let composed = fixture.compose(document, &approval(1)).unwrap();
-    assert_eq!(trusted_host_errors(&composed), GATEWAYS);
-    for gateway in GATEWAYS {
-        assert_eq!(kind(&composed, gateway), Modified, "{}", gateway);
-        assert_eq!(kind(&composed, &format!("{}_out", gateway)), Unmodified, "{}", gateway);
+            .collect::<Vec<_>>();
+        assert_eq!(trusted_host_errors, GATEWAYS);
+        // The default program itself holds them: native configuration placed them.
+        let native = Validator::new(&OperatorRegistry::native(), &fixture.catalog).validate(&fixture.plan);
+        assert!(
+            native.errors().all(|finding| finding.rule != Rule::TrustedHost),
+            "{}",
+            native
+        );
     }
 }
 
@@ -978,8 +923,7 @@ fn a_state_owner_composes_with_the_artifacts_provenance_whatever_its_parameters(
         let correspondence = composed.correspondence.get(&"agg".parse().unwrap()).unwrap();
         assert_eq!(correspondence.node.to_string(), "policy/agg");
         assert_eq!(correspondence.kind, CorrespondenceKind::Added);
-        let node = composed.plan.node(&correspondence.node).unwrap();
-        assert!(matches!(node.provenance, Some(Provenance::Artifact(_))));
+        assert!(composed.plan.node(&correspondence.node).is_some());
     }
 }
 
@@ -1703,7 +1647,14 @@ fn explains(error: &ComposeError, artifact: &PolicyArtifact, fixture: &Fixture) 
         }
         ComposeError::UnknownScope { .. }
         | ComposeError::DefaultProgram { .. }
-        | ComposeError::UnresolvedBinding { .. } => None,
+        | ComposeError::UnresolvedBinding { .. }
+        // The edits never address emits to recipients.
+        | ComposeError::UnknownRecipient { .. }
+        | ComposeError::PendingRecipients { .. }
+        | ComposeError::RecipientsOnTwoHosts { .. }
+        | ComposeError::NoOutputFor { .. }
+        // The fixture's catalog allows any binding.
+        | ComposeError::PolicyBinding { .. } => None,
     }
 }
 
@@ -1720,28 +1671,18 @@ proptest! {
         prop_assert!(composed.report.is_valid(), "{:?}\n{}", tree, composed.report);
         prop_assert!(!composed.stale_base);
 
-        // Kept gateways are the default program's nodes, but a kept drop behind a `split` of the artifact's, which
-        // drops another stream than native configuration does, has the artifact's provenance. Every other artifact
-        // node is the artifact's own, and every reserved node of the scope not kept is removed.
+        // Kept gateways are the default program's nodes, and so is a kept drop behind a `split` of the artifact's,
+        // which drops another stream than native configuration does: a node is what it does, whatever feeds it. Every
+        // other artifact node is the artifact's own, and every reserved node of the scope not kept is removed.
         let kept_nodes = kept
             .iter()
             .flat_map(|(gateway, _)| {
                 ["", "_true", "_false"].map(|suffix| format!("{}{}", GATEWAYS[*gateway].0, suffix))
             })
             .collect::<Vec<_>>();
-        let refed_drops = kept
-            .iter()
-            .filter(|(_, filtered)| *filtered)
-            .map(|(gateway, _)| format!("{}_false", GATEWAYS[*gateway].0))
-            .collect::<Vec<_>>();
         for node in &received.artifact.nodes {
             let correspondence = composed.correspondence.get(&node.id).unwrap();
-            if refed_drops.contains(&node.id.to_string()) {
-                prop_assert_eq!(correspondence.kind, CorrespondenceKind::Modified);
-                prop_assert_eq!(correspondence.node.to_string(), node.id.to_string());
-                let composed_node = composed.plan.node(&correspondence.node).unwrap();
-                prop_assert!(matches!(composed_node.provenance, Some(Provenance::Artifact(_))));
-            } else if kept_nodes.contains(&node.id.to_string()) {
+            if kept_nodes.contains(&node.id.to_string()) {
                 prop_assert_eq!(correspondence.kind, CorrespondenceKind::Unmodified);
                 prop_assert_eq!(composed.plan.node(&correspondence.node), fixture.plan.node(&correspondence.node));
             } else {
@@ -1767,7 +1708,7 @@ proptest! {
                 prop_assert_eq!(change.id.to_string(), "metrics_enrich_host_tags");
                 prop_assert_eq!(
                     &change.change,
-                    &NodeChange::Changed { operator: false, params: false, provenance: false, edges: true }
+                    &NodeChange::Changed { operator: false, params: false, edges: true }
                 );
             }
         }
@@ -1806,11 +1747,19 @@ proptest! {
             }
             Ok(composed) => {
                 prop_assert!(!reserved_outside, "{:?}", edits);
+                // A node that aggregates is in the artifact's scope, the program's, unless a removed edge leaves it
+                // unreachable from the scope's inputs, which validation reports.
+                let program = crate::export::program_nodes(&composed.plan)
+                    .into_iter()
+                    .flat_map(|(_, nodes)| nodes)
+                    .collect::<BTreeSet<_>>();
                 for node in composed.plan.nodes.iter().filter(|node| node.op.as_str() == names::AGGREGATE) {
-                    if fixture.is_scope_node(&node.id) || !fixture.plan.nodes.iter().any(|kept| kept.id == node.id) {
+                    let artifacts = fixture.is_scope_node(&node.id)
+                        || !fixture.plan.nodes.iter().any(|kept| kept.id == node.id);
+                    if artifacts && !removed {
                         prop_assert!(
-                            matches!(node.provenance, Some(Provenance::Artifact(_))),
-                            "{:?}: `{}` aggregates without the artifact's provenance",
+                            program.contains(&node.id),
+                            "{:?}: `{}` aggregates outside the program",
                             edits,
                             node.id
                         );
@@ -1820,17 +1769,12 @@ proptest! {
                 if removed {
                     prop_assert!(!composed.report.is_valid(), "{:?}", edits);
                 }
-                // Every artifact node became one plan node, with the provenance its correspondence says.
+                // Every artifact node became one plan node, as its correspondence says.
                 prop_assert_eq!(composed.correspondence.iter().count(), received.artifact.nodes.len());
                 for (_, correspondence) in composed.correspondence.iter() {
                     let node = composed.plan.node(&correspondence.node).unwrap();
-                    match correspondence.kind {
-                        CorrespondenceKind::Unmodified => {
-                            prop_assert_eq!(Some(node), fixture.plan.node(&correspondence.node))
-                        }
-                        CorrespondenceKind::Modified | CorrespondenceKind::Added => {
-                            prop_assert!(matches!(node.provenance, Some(Provenance::Artifact(_))))
-                        }
+                    if correspondence.kind == CorrespondenceKind::Unmodified {
+                        prop_assert_eq!(Some(node), fixture.plan.node(&correspondence.node))
                     }
                 }
                 // Every node outside the scope is kept as it is.
@@ -2024,11 +1968,12 @@ fn an_artifacts_edges_into_its_scopes_exits_replace_those_of_the_default_program
         .changes()
         .map(|node| node.id.to_string())
         .collect::<Vec<_>>();
-    // Aggregation is fed other records than the default program feeds it, so it keeps no native authority; the
-    // timestamp split feeds it from another port.
+    // The timestamp split feeds aggregation from another port: both change in their edges only. Aggregation is fed
+    // other records than the default program feeds it, but it does what the default program's does, so it is that
+    // node, unmodified.
     assert_eq!(changed, ["dsd_no_agg_split", "dsd_agg", "dsd_tag_filterlist"]);
     let aggregation = composed.correspondence.get(&"dsd_agg".parse().unwrap()).unwrap();
-    assert_eq!(aggregation.kind, CorrespondenceKind::Modified);
+    assert_eq!(aggregation.kind, CorrespondenceKind::Unmodified);
 }
 
 #[test]
@@ -2108,4 +2053,462 @@ fn artifacts_of_two_scopes_compose_each_against_the_default_program_with_their_o
         ]
     );
     assert!(composed.stale_base && composed.stale_review);
+}
+
+/// The one-scope default program fixtures, with the host's catalog, carrying every binding's value.
+fn one_scope_programs() -> Vec<(&'static str, Plan, MemoryCatalog)> {
+    [
+        ("default program", DEFAULT_PROGRAM_JSON),
+        ("no-aggregation pipeline off", NO_AGGREGATION_PIPELINE_OFF_JSON),
+    ]
+    .into_iter()
+    .map(|(name, json)| {
+        let plan = Plan::from_json(json).unwrap();
+        let catalog = catalog_for(&plan);
+        (name, plan, catalog)
+    })
+    .collect()
+}
+
+fn metrics_scope() -> ScopeName {
+    crate::testing::DEFAULT_PROGRAM_SCOPE.parse().unwrap()
+}
+
+/// Returns every binding a parameter value binds.
+fn bindings_in(value: &Value, found: &mut BTreeSet<String>) {
+    match value {
+        Value::Object(members) => {
+            if let Some(Value::String(name)) = members.get("config") {
+                found.insert(name.clone());
+            }
+            members.values().for_each(|member| bindings_in(member, found));
+        }
+        Value::Array(values) => values.iter().for_each(|value| bindings_in(value, found)),
+        _ => {}
+    }
+}
+
+#[test]
+fn the_detached_export_writes_policy_settings_as_their_values_and_keeps_facts_and_signals_bound() {
+    for (name, plan, catalog) in one_scope_programs() {
+        let bound = export(&plan, &metrics_scope(), &catalog, &BTreeMap::new()).unwrap();
+        let detached = crate::export::export_as(
+            &plan,
+            &metrics_scope(),
+            &catalog,
+            &BTreeMap::new(),
+            ExportForm::Detached,
+        )
+        .unwrap();
+        assert_eq!(detached.form, ExportForm::Detached, "{}", name);
+        // The base describes the scope's structure, which writing values does not change.
+        assert_eq!(detached.artifact.base, bound.artifact.base, "{}", name);
+
+        let mut found = BTreeSet::new();
+        for node in &detached.artifact.nodes {
+            node.params.iter().for_each(|(_, value)| bindings_in(value, &mut found));
+        }
+        for binding in &found {
+            let declared = catalog.binding(&binding.parse().unwrap()).unwrap();
+            assert_ne!(
+                declared.class,
+                BindingClass::Policy,
+                "{}: `{}` is still bound",
+                name,
+                binding
+            );
+        }
+        for kept in [
+            "host.tags",
+            "host.tags_deadline",
+            "multi_region_failover.metric_mirroring.enabled",
+        ] {
+            assert!(found.contains(kept), "{}: `{}` is not bound: {:?}", name, kept, found);
+        }
+
+        // The failover gateway mirrors every metric while its flags hold: its empty mirroring list is not written
+        // twice, as an emptiness test and as a match.
+        let gateway = detached
+            .artifact
+            .nodes
+            .iter()
+            .find(|node| node.id.as_str() == "mrf_metrics_gateway")
+            .unwrap();
+        let predicate = gateway.params.get("predicate").unwrap().to_string();
+        assert!(!predicate.contains("is_empty"), "{}: {}", name, predicate);
+        assert!(
+            predicate.contains("multi_region_failover.metric_mirroring.enabled"),
+            "{}: {}",
+            name,
+            predicate
+        );
+
+        // It reads back as a bundle in the detached form.
+        let read = serde_json::from_value::<ExportBundle>(serde_json::to_value(&detached).unwrap()).unwrap();
+        assert_eq!(read, detached, "{}", name);
+    }
+}
+
+#[test]
+fn the_unmodified_detached_export_composes_to_what_the_default_program_does_in_its_own_words() {
+    let registry = OperatorRegistry::native();
+    for (name, plan, catalog) in one_scope_programs() {
+        let detached = crate::export::export_as(
+            &plan,
+            &metrics_scope(),
+            &catalog,
+            &BTreeMap::new(),
+            ExportForm::Detached,
+        )
+        .unwrap();
+        let received = received_directly(detached.artifact);
+        let composed = compose(&plan, &received, &approval(1), &catalog, &registry).unwrap();
+        // It does what the default program does, writing as literals what the default program binds: a detached
+        // program never follows native policy.
+        assert_eq!(does(&composed.plan), does(&plan), "{}", name);
+        let bound = |plan: &Plan| {
+            plan.nodes
+                .iter()
+                .filter(|node| {
+                    node.params
+                        .iter()
+                        .any(|(_, value)| value.to_string().contains("\"config\""))
+                })
+                .count()
+        };
+        assert!(bound(&composed.plan) < bound(&plan), "{}", name);
+        assert!(!composed.stale_base, "{}", name);
+        assert!(
+            composed
+                .correspondence
+                .iter()
+                .all(|(_, correspondence)| correspondence.kind == CorrespondenceKind::Unmodified),
+            "{}",
+            name
+        );
+    }
+}
+
+#[test]
+fn a_native_policy_change_after_publishing_leaves_the_program_its_own_value() {
+    let registry = OperatorRegistry::native();
+    let (_, plan, catalog) = one_scope_programs().remove(0);
+    let detached = crate::export::export_as(
+        &plan,
+        &metrics_scope(),
+        &catalog,
+        &BTreeMap::new(),
+        ExportForm::Detached,
+    )
+    .unwrap();
+    let received = received_directly(detached.artifact);
+
+    // The metric filterlist changes natively: the default program is lowered again with the new list, and the
+    // published program composed again against it.
+    let mut changed = serde_json::to_value(&plan).unwrap();
+    for node in changed["nodes"].as_array_mut().unwrap() {
+        if node["id"] == "dsd_prefix_filter_blocklist" {
+            node["params"]["predicate"]["intake_name"]["matches"]["values"]["resolved"] = json!(["tenant.raw.other"]);
+        }
+    }
+    let changed = Plan::from_value(changed).unwrap();
+    let changed_catalog = catalog_for(&changed);
+    let composed = compose(&changed, &received, &approval(1), &changed_catalog, &registry).unwrap();
+
+    // The program owns its filterlist: the node is the program's, with the value it was published with, and every
+    // other node is still the default program's.
+    let filter = composed
+        .correspondence
+        .get(&"dsd_prefix_filter_blocklist".parse().unwrap())
+        .unwrap();
+    assert_eq!(filter.kind, CorrespondenceKind::Modified);
+    let node = composed.plan.node(&filter.node).unwrap();
+    assert_eq!(
+        node.params.get("predicate").unwrap()["intake_name"]["matches"]["values"],
+        json!(["tenant.raw.blocked"])
+    );
+    let modified = composed
+        .correspondence
+        .iter()
+        .filter(|(_, correspondence)| correspondence.kind != CorrespondenceKind::Unmodified)
+        .count();
+    assert_eq!(modified, 1);
+
+    // Status names the native setting the program no longer follows; before the change, nothing differed.
+    let differs = crate::export::policy_differences(&changed, &composed.plan, &changed_catalog);
+    assert_eq!(
+        differs,
+        ["dogstatsd.metric_filter.values".parse::<BindingName>().unwrap()]
+    );
+    let before = compose(&plan, &received, &approval(1), &catalog, &registry).unwrap();
+    assert!(crate::export::policy_differences(&plan, &before.plan, &catalog).is_empty());
+}
+
+/// The one-scope default program's catalog with a recipient directory: `primary`, `mrf`, `cluster_agent`, and two
+/// additional endpoints named by their URLs, the second with two API keys.
+fn with_directory(catalog: MemoryCatalog) -> MemoryCatalog {
+    let entry = |recipients: &[&str], host: &str, endpoint: &str| crate::validate::CatalogRecipient {
+        recipients: recipients.iter().map(|id| id.parse().unwrap()).collect(),
+        host: host.parse().unwrap(),
+        endpoint: endpoint.to_string(),
+        source: crate::validate::RecipientSource::Native,
+    };
+    [
+        (
+            "primary",
+            entry(&["dd_out/primary/0"], "dd_out", "https://app.example.com"),
+        ),
+        (
+            "https://a.example.com",
+            entry(&["dd_out/additional_0/0"], "dd_out", "https://a.example.com"),
+        ),
+        (
+            "https://b.example.com",
+            entry(
+                &["dd_out/additional_1/0", "dd_out/additional_1/1"],
+                "dd_out",
+                "https://b.example.com",
+            ),
+        ),
+        (
+            "mrf",
+            entry(&["mrf_dd_out/primary/0"], "mrf_dd_out", "https://mrf.example.com"),
+        ),
+        (
+            "cluster_agent",
+            entry(
+                &["cluster_agent_out/primary/0"],
+                "cluster_agent_out",
+                "https://cluster-agent:5005",
+            ),
+        ),
+    ]
+    .into_iter()
+    .fold(catalog, |catalog, (name, entry)| {
+        catalog.with_recipient(name.parse().unwrap(), entry)
+    })
+}
+
+/// Returns what each `emit` node of an artifact names: its output, or `to` and its recipient names.
+fn emits(artifact: &PolicyArtifact) -> Vec<(String, Value)> {
+    artifact
+        .nodes
+        .iter()
+        .filter(|node| node.op.as_str() == names::EMIT)
+        .map(|node| (node.id.to_string(), serde_json::to_value(&node.params).unwrap()))
+        .collect()
+}
+
+#[test]
+fn the_detached_export_addresses_native_outputs_to_their_recipients_and_composes_back_to_them() {
+    let registry = OperatorRegistry::native();
+    let (_, plan, catalog) = one_scope_programs().remove(0);
+    let catalog = with_directory(catalog);
+    let detached = crate::export::export_as(
+        &plan,
+        &metrics_scope(),
+        &catalog,
+        &BTreeMap::new(),
+        ExportForm::Detached,
+    )
+    .unwrap();
+    assert_eq!(
+        emits(&detached.artifact),
+        [
+            // The client telemetry tap has no recipients: it stays addressed to its output.
+            (
+                "dsd_post_agg_filter_fanout_0".to_string(),
+                json!({"output": "dsd_client_telemetry"})
+            ),
+            ("metrics_policy_0".to_string(), json!({"to": ["primary"]})),
+            (
+                "metrics_routing_filter_0_true".to_string(),
+                json!({"to": ["https://a.example.com"]})
+            ),
+            // A URL stands for every API key's recipient of its endpoint.
+            (
+                "metrics_routing_filter_1_true".to_string(),
+                json!({"to": ["https://b.example.com"]})
+            ),
+            ("mrf_metrics_gateway_true".to_string(), json!({"to": ["mrf"]})),
+            ("af_metrics_gateway_true".to_string(), json!({"to": ["cluster_agent"]})),
+        ]
+    );
+
+    // Composed back, each emit delivers to the output it was written from: the default program, with its hash.
+    let received = received_directly(detached.artifact.clone());
+    let composed = compose(&plan, &received, &approval(1), &catalog, &registry).unwrap();
+    assert_eq!(does(&composed.plan), does(&plan));
+
+    // The names' order and spelling do not matter, only the recipients they stand for: two names whose recipients
+    // together are an output's deliver to it.
+    let demand = crate::compose::demanded_outputs(&detached.artifact, &catalog).unwrap();
+    assert_eq!(demand.len(), 5);
+    assert!(demand
+        .iter()
+        .all(|demand| catalog.output_for(&demand.recipients).is_some()));
+}
+
+#[test]
+fn emits_to_recipients_wait_for_unknown_names_and_outputs_and_are_refused_across_hosts() {
+    let registry = OperatorRegistry::native();
+    let (_, plan, catalog) = one_scope_programs().remove(0);
+    let catalog = with_directory(catalog);
+    let detached = crate::export::export_as(
+        &plan,
+        &metrics_scope(),
+        &catalog,
+        &BTreeMap::new(),
+        ExportForm::Detached,
+    )
+    .unwrap();
+    let with_main_to = |to: Value| {
+        let mut document = serde_json::to_value(&detached.artifact).unwrap();
+        node(&mut document, "metrics_policy_0")["params"] = json!({"to": to});
+        received_directly(PolicyArtifact::from_value(document).unwrap())
+    };
+    let composing = |artifact: &ReceivedArtifact, in_effect: bool| {
+        let approval = Approval {
+            in_effect,
+            ..approval(1)
+        };
+        compose(&plan, artifact, &approval, &catalog, &registry)
+    };
+
+    // A name the directory does not have: a new artifact waits for it.
+    let unknown = with_main_to(json!(["team_z"]));
+    let error = composing(&unknown, false).unwrap_err();
+    assert!(matches!(&error, ComposeError::UnknownRecipient { recipient, .. } if recipient.as_str() == "team_z"));
+    assert!(
+        error.to_string().starts_with("Waiting for recipient `team_z`"),
+        "{}",
+        error
+    );
+
+    // Recipients no output delivers to exactly: it waits for the host to add one, which its demand asks for.
+    let unserved = with_main_to(json!(["primary", "https://a.example.com"]));
+    let error = composing(&unserved, false).unwrap_err();
+    assert!(matches!(error, ComposeError::PendingRecipients { .. }), "{}", error);
+    assert_eq!(
+        error.to_string(),
+        "Waiting for an output to [primary, \"https://a.example.com\"]: artifact node `metrics_policy_0` emits to these \
+         recipients, and no output delivers to exactly them yet. The host adds one; whatever runs keeps running."
+    );
+    let demand = crate::compose::demanded_outputs(&unserved.artifact, &catalog).unwrap();
+    let wanted = demand
+        .iter()
+        .find(|demand| demand.recipients.len() == 2 && demand.host.as_str() == "dd_out")
+        .unwrap();
+    assert_eq!(wanted.emit.as_str(), "metrics_policy_0");
+
+    // The artifact in effect keeps running: the emit becomes a counted drop, and it runs degraded.
+    let composed = composing(&unserved, true).unwrap();
+    assert_eq!(
+        composed
+            .plan
+            .node(&"metrics_policy_0".parse().unwrap())
+            .unwrap()
+            .op
+            .as_str(),
+        names::DROP
+    );
+    assert!(composed.scopes[&metrics_scope()].outcome.is_degraded());
+
+    // Recipients of two hosts: refused, naming each host.
+    let error = composing(&with_main_to(json!(["primary", "mrf"])), false).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "Artifact node `metrics_policy_0` emits to [primary, mrf], recipients of more than one delivery host (`primary` \
+         on `dd_out`, `mrf` on `mrf_dd_out`). An output is one encoder stream on one host: emit to each host's \
+         recipients from a branch of its own."
+    );
+}
+
+#[test]
+fn a_host_whose_programs_own_their_policy_refuses_a_policy_binding_and_accepts_facts_and_signals() {
+    let registry = OperatorRegistry::native();
+    let (_, plan, catalog) = one_scope_programs().remove(0);
+    let catalog = catalog.with_detached_programs();
+
+    // The bound export binds policy settings: refused at the first node that does, kept unmodified or not, since the
+    // rule is about what the author wrote. The message gives the value to write instead.
+    let bound = export(&plan, &metrics_scope(), &catalog, &BTreeMap::new()).unwrap();
+    let error = compose(
+        &plan,
+        &received_directly(bound.artifact),
+        &approval(1),
+        &catalog,
+        &registry,
+    )
+    .unwrap_err();
+    let ComposeError::PolicyBinding {
+        node,
+        binding,
+        value,
+        allowed,
+    } = &error
+    else {
+        panic!("{}", error);
+    };
+    assert_eq!(node.as_str(), "dsd_enrich");
+    assert_eq!(binding.as_str(), "dogstatsd.mapper.cache_size");
+    assert_eq!(value, &Some(json!(1000)));
+    assert!(allowed.iter().any(|name| name.as_str() == "host.tags"), "{:?}", allowed);
+    assert!(!allowed.iter().any(|name| name.as_str() == binding.as_str()));
+    let message = error.to_string();
+    assert!(
+        message.starts_with(
+            "`dsd_enrich` binds `dogstatsd.mapper.cache_size`, a native policy setting. A published program owns its \
+             policy: write the value itself (now `1000`; the detached export writes current values). Only facts and \
+             signals can be bound: `"
+        ),
+        "{}",
+        message
+    );
+
+    // The detached export binds facts and signals only: it composes, to the default program.
+    let detached = crate::export::export_as(
+        &plan,
+        &metrics_scope(),
+        &catalog,
+        &BTreeMap::new(),
+        ExportForm::Detached,
+    )
+    .unwrap();
+    let composed = compose(
+        &plan,
+        &received_directly(detached.artifact),
+        &approval(1),
+        &catalog,
+        &registry,
+    )
+    .unwrap();
+    assert_eq!(does(&composed.plan), does(&plan));
+
+    // Without the host's say-so, any binding is allowed, as the fixtures' own catalog shows.
+    let (_, plan, catalog) = one_scope_programs().remove(0);
+    let bound = export(&plan, &metrics_scope(), &catalog, &BTreeMap::new()).unwrap();
+    assert!(compose(
+        &plan,
+        &received_directly(bound.artifact),
+        &approval(1),
+        &catalog,
+        &registry
+    )
+    .is_ok());
+}
+
+/// Returns what `plan` does: its [operation hash](crate::export::operation_hash), by which the installer decides
+/// whether a candidate changes anything.
+fn does(plan: &Plan) -> crate::canonical::PlanHash {
+    crate::export::operation_hash(plan, &OperatorRegistry::native()).unwrap()
+}
+
+#[test]
+fn recipient_names_are_quoted_with_their_quotes_and_backslashes_escaped() {
+    let names = ["primary", r#"https://a"b\c.example.com"#]
+        .iter()
+        .map(|name| name.parse::<RecipientName>().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(describe_names(&names), r#"[primary, "https://a\"b\\c.example.com"]"#);
 }

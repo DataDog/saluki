@@ -9,7 +9,7 @@ use super::{
 };
 use crate::{
     canonical::to_canonical_string,
-    ir::{OutputId, Plan},
+    ir::{OutputId, Plan, RecipientId},
     limits::values,
     model::FieldSet,
     operators::{Cardinality, PortRelation, TRUE_PORT},
@@ -130,12 +130,26 @@ struct Analysis<'g, 'p> {
     reported: BTreeSet<(usize, usize, usize, usize)>,
     /// How many more pairs of crossing sets the analysis may compare.
     pair_budget: u64,
+    /// The output each `emit` node delivers to, and its recipients, by node.
+    emits: HashMap<usize, (&'p OutputId, BTreeSet<&'p RecipientId>)>,
 }
 
 /// The analysis gave up because it reached its work limit.
 struct WorkLimitReached;
 
 impl Analysis<'_, '_> {
+    /// Returns `true` if the `emit` nodes `first` and `second` deliver to one recipient: to one output, or to outputs
+    /// that share a recipient. Copies that reach outputs in one group without a recipient in common, as through a third
+    /// output that shares a recipient with each, reach no recipient twice.
+    fn share(&self, first: usize, second: usize) -> bool {
+        match (self.emits.get(&first), self.emits.get(&second)) {
+            (Some((first, first_recipients)), Some((second, second_recipients))) => {
+                first == second || !first_recipients.is_disjoint(second_recipients)
+            }
+            _ => true,
+        }
+    }
+
     /// Returns the fields a node may write to the records it receives.
     fn writes(&self, node: usize) -> FieldSet {
         self.graph.op(node).map_or(FieldSet::ALL, |op| {
@@ -250,8 +264,26 @@ impl Analysis<'_, '_> {
                             }
                             // The exception applies to a pair when one path crosses a protected `split` by its
                             // `true` port and the other crosses a protected `split` with an equal predicate by its
-                            // `false` port.
-                            if let Some((first, second)) = self.unseparated(first_paths, second_paths, depth)? {
+                            // `false` port. Only paths to outputs that share a recipient are compared.
+                            let mut unseparated = None;
+                            let ends = |paths: &Vec<&Path>| paths.iter().map(|path| path.end).collect::<BTreeSet<_>>();
+                            'ends: for first_end in ends(first_paths) {
+                                for second_end in ends(second_paths) {
+                                    if !self.share(first_end, second_end) {
+                                        continue;
+                                    }
+                                    fn ending<'p>(paths: &[&'p Path], end: usize) -> Vec<&'p Path> {
+                                        paths.iter().copied().filter(|path| path.end == end).collect()
+                                    }
+                                    let (first, second) =
+                                        (ending(first_paths, first_end), ending(second_paths, second_end));
+                                    unseparated = self.unseparated(&first, &second, depth)?;
+                                    if unseparated.is_some() {
+                                        break 'ends;
+                                    }
+                                }
+                            }
+                            if let Some((first, second)) = unseparated {
                                 self.reported.insert((group, node, first_port, second_port));
                                 let op = self.graph.op(node).map_or("?", |op| op.name());
                                 report.push(Finding::new(
@@ -348,6 +380,18 @@ pub(super) fn check_within(
             Some((*numbers.entry(key).or_insert(next), predicate.reads()))
         })
         .collect();
+    let recipients = plan
+        .outputs
+        .iter()
+        .map(|output| (&output.id, output.recipients.iter().collect::<BTreeSet<_>>()))
+        .collect::<HashMap<_, _>>();
+    let emits = (0..graph.nodes.len())
+        .filter_map(|node| {
+            let output = graph.op(node).and_then(emit_output)?;
+            let (id, recipients) = recipients.get_key_value(output)?;
+            Some((node, (*id, recipients.clone())))
+        })
+        .collect();
     let mut analysis = Analysis {
         graph,
         types,
@@ -355,6 +399,7 @@ pub(super) fn check_within(
         predicates: numbers.len(),
         reported: BTreeSet::new(),
         pair_budget,
+        emits,
     };
 
     for (group, outputs) in groups.iter().enumerate() {

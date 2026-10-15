@@ -291,7 +291,9 @@ fn every_default_programs_export_prints_and_parses_back_to_the_same_document() {
                         .hash
                 };
                 assert_eq!(hash(&parsed.artifact), hash(&export), "{}", what);
-            } else {
+            } else if !what.ends_with("opaque gateways") {
+                // (A scope that holds host components, such as opaque gateways, cannot be replaced at all: a program
+                // cannot hold them.)
                 assert_eq!(
                     composed_hash(&plan, &parsed.artifact),
                     plan.hash(ResolvedValues::Include).unwrap(),

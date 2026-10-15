@@ -67,6 +67,7 @@ fn bundle() -> ExportBundle {
             "Main metrics output".to_string(),
         )]),
         annotations: Default::default(),
+        form: Default::default(),
     }
 }
 
@@ -399,7 +400,7 @@ async fn the_explain_route_serves_the_active_plans_explain_document_as_json_or_t
     let (code, content_type, body) = get(status.clone(), "/programmable-metrics/explain?format=text").await;
     assert_eq!((code, content_type), (StatusCode::OK, text_type()));
     assert_eq!(body, active.explain.to_text());
-    assert!(body.starts_with("explain_version 1"), "{}", body);
+    assert!(body.starts_with("explain_version 2"), "{}", body);
 
     let (code, content_type, body) = get(status.clone(), "/programmable-metrics/explain?format=yaml").await;
     assert_eq!(

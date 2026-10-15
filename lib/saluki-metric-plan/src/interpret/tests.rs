@@ -73,7 +73,7 @@ fn test_catalog() -> MemoryCatalog {
 
 /// A node with native provenance, so that lossy and host nodes have authority.
 fn node(id: &str, op: &str, params: Value) -> Value {
-    json!({"id": id, "op": op, "params": params, "provenance": {"native": "test"}})
+    json!({"id": id, "op": op, "params": params})
 }
 
 fn source(id: &str, binding: &str) -> Value {

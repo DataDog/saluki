@@ -67,7 +67,7 @@ use super::{
     resolve, Role,
 };
 use crate::{
-    ir::{NodeId, OutputId, Plan, PortRef, Provenance},
+    ir::{NodeId, OutputId, Plan, PortRef},
     operators::{OperatorRegistry, PartitionKey, StateContract},
     validate::{graph::emit_output, ValidationReport},
 };
@@ -374,11 +374,19 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
     let graph = resolve(plan, registry).map_err(|problems| PlacementError::Invalid { problems })?;
     let roles = super::roles(&graph);
     let mut problems = Vec::new();
-    // Structure at a node an artifact wrote is the artifact's to ask for; anything else follows native configuration.
-    // Outputs, host components, and the nodes the default program keeps are native: an artifact cannot declare them.
-    let asked_by = |node: usize| match graph.nodes[node].node.provenance {
-        Some(Provenance::Artifact(_)) => AskedBy::Artifact,
-        _ => AskedBy::Native,
+    // Structure at a node of a program an artifact composes is the artifact's to ask for, whether its author changed
+    // the node or kept it; anything else follows native configuration. Outputs and host components are native: an
+    // artifact cannot declare them.
+    let program = crate::export::program_nodes(plan)
+        .into_iter()
+        .flat_map(|(_, nodes)| nodes)
+        .collect::<std::collections::BTreeSet<_>>();
+    let asked_by = |node: usize| {
+        if program.contains(graph.id(node)) {
+            AskedBy::Artifact
+        } else {
+            AskedBy::Native
+        }
     };
     let problem = |node: Option<&NodeId>, asked: AskedBy, message: String| {
         PlacementProblem::new(node, Some(asked.capability()), message)
@@ -526,7 +534,7 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
             let asked = if plan
                 .provenance
                 .as_ref()
-                .is_some_and(|provenance| !provenance.artifacts.is_empty())
+                .is_some_and(|provenance| provenance.is_composed())
             {
                 AskedBy::Artifact
             } else {

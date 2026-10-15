@@ -1248,7 +1248,9 @@ struct Refused {
 
 /// Returns `artifact` with the base's fingerprint of `output` set to `fingerprint`, or removed.
 fn with_fingerprint(artifact: &Value, output: &str, fingerprint: Option<PlanHash>) -> Value {
-    let mut artifact = artifact.clone();
+    // The detached export addresses native outputs to their recipients, which records no fingerprint: the emit to
+    // `output` names it, as an artifact written against the output does.
+    let mut artifact = addressed_to_output(artifact, output);
     let outputs = artifact["base"]["outputs"]
         .as_object_mut()
         .expect("the base records outputs");
@@ -1256,6 +1258,25 @@ fn with_fingerprint(artifact: &Value, output: &str, fingerprint: Option<PlanHash
         Some(fingerprint) => outputs.insert(output.to_string(), json!(fingerprint)),
         None => outputs.remove(output),
     };
+    artifact
+}
+
+/// Returns `artifact` with its `emit` to the output `output` addressed to the output by its ID, rather than to its
+/// recipients by their names, as the detached export writes it.
+fn addressed_to_output(artifact: &Value, output: &str) -> Value {
+    let mut artifact = artifact.clone();
+    let emit = match output {
+        MAIN => Some("metrics_policy_0"),
+        ROUTED => Some("metrics_routing_filter_0_true"),
+        _ => None,
+    };
+    if let Some(emit) = emit {
+        let node = nodes(&mut artifact)
+            .iter_mut()
+            .find(|node| node["id"] == emit)
+            .expect("the export emits to the output");
+        node["params"] = json!({"output": output});
+    }
     artifact
 }
 
@@ -1543,7 +1564,7 @@ async fn a_delivery_whose_recorded_output_is_not_declared_waits_for_it_and_leave
         .iter_mut()
         .find(|node| node["id"] == "metrics_routing_filter_0_true")
         .expect("the routing group's emit");
-    emit["params"]["output"] = json!("gone_encode");
+    emit["params"] = json!({"output": "gone_encode"});
     harness.deliver(vec![config(1, &artifact)]);
     // A new artifact whose base records an output the host does not declare waits for it, as one published before the
     // resources artifact declaring its output does: its revision is seen, and what runs keeps running.
@@ -1779,8 +1800,7 @@ impl NativeFault {
 /// plan `plan`, where host enrichment's region runs it.
 fn native_fault_in_front_of_the_main_output(plan: &mut Value) {
     let node = json!({
-        "id": "native_fault", "op": "test_panic", "params": {"on": PANIC_NATIVE},
-        "provenance": {"native": "metrics_enrich"}
+        "id": "native_fault", "op": "test_panic", "params": {"on": PANIC_NATIVE}
     });
     in_front_of_the_main_output(plan, node, "out");
 }
@@ -1952,8 +1972,7 @@ impl Composer for WithNativeFault<'_> {
         let composed = self.composer.compose_all(artifacts)?;
         let mut plan = serde_json::to_value(&composed.plan).unwrap();
         let node = json!({
-            "id": "native_fault", "op": "test_panic", "params": {"on": PANIC_NATIVE},
-            "provenance": {"native": "metrics_enrich"}
+            "id": "native_fault", "op": "test_panic", "params": {"on": PANIC_NATIVE}
         });
         in_front_of_the_main_output(&mut plan, node, "out");
         let plan = Plan::from_value(plan).expect("the composed plan with a native fault is a plan");
@@ -1995,7 +2014,7 @@ impl ArtifactPaths for NativeFaultBesideArtifacts {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_native_node_that_panics_beside_an_artifact_fails_the_topology_and_is_not_charged_to_the_artifact() {
+async fn a_native_node_that_panics_beside_an_artifact_is_the_programs_and_charged_to_its_budget() {
     let mut options = Options::new(MetricsPath::Plan, Aggregation::Native);
     options.operators = operators();
     let mut start = Start::new(options);
@@ -2006,59 +2025,30 @@ async fn a_native_node_that_panics_beside_an_artifact_fails_the_topology_and_is_
     // The artifact's own `test_panic` node and the native one both run in the region of the policy decision.
     let artifact = faulty(&drop_family(&harness.export, "drop_debug", "debug."), "faulty", PANIC_A);
     harness.deliver(vec![config(1, &artifact)]);
-    let installed = harness.status_where(|status| active(status) == Some(2)).await;
-    let plan = &installed.active.as_ref().expect("a generation is active").plan;
-    let frame = Frame::compute_with_hosts(
-        &harness.default_program.0,
-        &operators(),
-        &slot_name,
-        &crate::programmable_metrics::test_support::frame_hosts(),
-    )
-    .expect("the boot plan lays out");
-    let placement = place_unvalidated(plan, &operators(), &frame).expect("the plan places");
-    let slot_of = |node: &str| {
-        placement
-            .slots()
-            .iter()
-            .position(|slot| slot.nodes.iter().any(|id| id.to_string() == node))
-            .unwrap_or_else(|| panic!("`{}` is not placed", node))
-    };
-    assert_eq!(slot_of("native_fault"), slot_of("policy/faulty"));
+    harness.status_where(|status| active(status) == Some(2)).await;
     assert_eq!(harness.send().await, Some(2));
 
-    // A panic in the artifact's node is charged to the artifact's budget: the region survives it.
-    let lost = BTreeSet::from([harness.feed(&[KEPT, PANIC_A])]);
+    // Every node of a published program is the program's, whether its author wrote it or kept it from the default
+    // program: a panic in the native node is charged to the program's budget, as one in the artifact's own node is.
+    // The region survives each, losing the batch that panicked, and the program keeps running.
+    let lost = BTreeSet::from([harness.feed(&[KEPT, PANIC_NATIVE]), harness.feed(&[KEPT, PANIC_A])]);
     assert_eq!(harness.send().await, Some(2));
-
-    // A panic in the native node fails the region at once, as the native component's failure does, although the
-    // artifact's budget has room: the artifact is not failed or rolled back, and the topology stops.
-    let status = Arc::clone(&harness.status);
-    let fatal = harness.feed(&[KEPT, PANIC_NATIVE]);
-    let (error, mut finished) = harness.failure().await;
-    assert!(
-        matches!(&error, SupervisorError::FailedToInitialize { child_name, .. } if child_name == "primary"),
-        "{:?}",
-        error
-    );
-    let failed = status.load_full();
+    let running = harness.status_where(|status| active(status) == Some(2)).await;
     assert_eq!(
-        (active(&failed), record(&failed, 2).map(|(state, _)| state)),
-        (Some(2), Some(GenerationState::Active)),
+        record(&running, 2).map(|(state, _)| state),
+        Some(GenerationState::Active),
         "{}",
-        failed
+        running
     );
-    assert_eq!(ack_of(&failed, CONFIG_ID), Some((ApplyState::Active, Some(1), Some(2))));
-    let reached = finished
-        .arrivals
-        .keys()
-        .filter(|(output, _, seq)| *seq == fatal && output != TAP)
-        .collect::<Vec<_>>();
-    assert!(reached.is_empty(), "the fatal batch reached {:?}", reached);
-    finished.sent.truncate(fatal);
+    assert_eq!(
+        ack_of(&running, CONFIG_ID),
+        Some((ApplyState::Active, Some(1), Some(2)))
+    );
 
-    // Every batch before the fatal one arrived exactly once, as the artifact delivers it, but the one lost to the
-    // artifact's panic, which only the tap, ahead of the policy region, received.
-    let everything = [KEPT, ORDERS, APP, DEBUG, PANIC_A];
+    // Every batch arrived exactly once, as the artifact delivers it, but the two lost to panics, which only the tap,
+    // ahead of the policy region, received.
+    let finished = harness.finish().await;
+    let everything = [KEPT, ORDERS, APP, DEBUG, PANIC_NATIVE, PANIC_A];
     finished.check(&lost, |generation| match generation {
         2 => BTreeMap::from([
             (MAIN, BTreeSet::from([KEPT, ORDERS, APP])),
@@ -2774,8 +2764,7 @@ fn on_producer_lanes(lanes: &'static str, aggregation: Aggregation) -> Start {
 /// split of the plan `plan`, where pre-aggregation's producer lanes run it.
 fn native_fault_before_aggregation(plan: &mut Value) {
     let node = json!({
-        "id": "native_fault", "op": "test_panic", "params": {"on": PANIC_NATIVE},
-        "provenance": {"native": "dsd_no_agg_split"}
+        "id": "native_fault", "op": "test_panic", "params": {"on": PANIC_NATIVE}
     });
     in_front_of(plan, "dsd_no_agg_split.in", node, "out");
 }

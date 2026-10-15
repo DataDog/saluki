@@ -262,6 +262,31 @@ mod tests {
             }
 
             #[test]
+            fn property_test_folding_literals_preserves_evaluation_and_leaves_no_literal_flag(
+                predicate in arb_predicate(),
+                metrics in proptest::collection::vec(arb_metric(), 1..8),
+            ) {
+                let folded = predicate.fold_literals();
+                let original = predicate.compile(&NoBindings).expect("generated predicates compile");
+                let compiled = folded.compile(&NoBindings).expect("folded predicates compile");
+                for metric in &metrics {
+                    prop_assert_eq!(
+                        original.evaluate(&mut EventView::new(metric)),
+                        compiled.evaluate(&mut EventView::new(metric)),
+                        "folded {:?} disagrees with {:?} on {:?}",
+                        folded,
+                        predicate,
+                        metric
+                    );
+                }
+                // Folding is a fixed point, and no literal `flag` or `is_empty` is left.
+                prop_assert_eq!(folded.fold_literals(), folded.clone());
+                let text = serde_json::to_string(&folded).unwrap();
+                prop_assert!(!text.contains("\"flag\":true") && !text.contains("\"flag\":false"), "{}", text);
+                prop_assert!(!text.contains("\"is_empty\":["), "{}", text);
+            }
+
+            #[test]
             fn property_test_canonical_form_is_a_fixed_point(predicate in arb_predicate()) {
                 let canonical = predicate.canonical();
                 prop_assert_eq!(canonical.canonical(), canonical.clone());

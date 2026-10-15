@@ -57,13 +57,12 @@ fn plan() -> Plan {
     Plan::from_value(json!({
         "ir_version": 1,
         "nodes": [
-            {"id": "src", "op": "source", "params": {"binding": "dogstatsd", "timestamps": "untimestamped"},
-             "provenance": {"native": "dsd_in"}},
-            {"id": "agg", "op": "aggregate", "provenance": {"native": "dsd_agg"}, "params": {
+            {"id": "src", "op": "source", "params": {"binding": "dogstatsd", "timestamps": "untimestamped"}},
+            {"id": "agg", "op": "aggregate", "params": {
                 "window": "10s", "flush_interval": "15s", "context_limit": 1000, "counter_expiry": "5m",
                 "flush_open_windows": false, "histogram_aggregates": ["max", "count"], "histogram_percentiles": [],
                 "copy_to_distribution": false, "copy_to_distribution_prefix": ""}},
-            {"id": "out", "op": "emit", "params": {"output": "a"}, "provenance": {"native": "out"}},
+            {"id": "out", "op": "emit", "params": {"output": "a"}},
         ],
         "edges": [{"from": "src.metrics", "to": "agg.in"}, {"from": "agg.out", "to": "out.in"}],
         "outputs": [{"id": "a", "accepts": {"kinds": "all", "timestamps": "mixed"},

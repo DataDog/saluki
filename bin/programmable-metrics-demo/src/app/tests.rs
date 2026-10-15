@@ -309,10 +309,7 @@ async fn the_compile_api_composes_into_the_default_program_adp_serves_as_the_rev
         .iter()
         .find(|node| node["node"] == "policy/drop_debug")
         .expect("the new split is in the diff");
-    assert_eq!(
-        (&split["change"], &split["provenance"]),
-        (&json!("added"), &json!("revision 5"))
-    );
+    assert_eq!(split["change"], json!("added"));
 
     // A default program that is not the one the export was taken from (the configuration changed between the two
     // requests) is refused, and compiling falls back to the structural checks.

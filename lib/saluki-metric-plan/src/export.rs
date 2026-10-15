@@ -22,7 +22,10 @@
 //!   out when there are none;
 //! - `annotations`: notes for tools, left out when there are none: one line per node of the exported artifact and per
 //!   binding, saying what it is and where it comes from, which a tool shows beside the program
-//!   ([`Annotations`]). They are not part of the artifact.
+//!   ([`Annotations`]). They are not part of the artifact;
+//! - `form`: how the artifact writes the default program's policy settings ([`ExportForm`]): `bound` to the native
+//!   settings, as the default program has them, or `detached`, as the literal values they have now. A reader of a
+//!   bundle without `form` reads `bound`.
 //!
 //! Readers ignore members they do not know.
 //!
@@ -32,7 +35,7 @@
 //! its exits names. The exported artifact has:
 //!
 //! - one node per region node, in plan order, whose local ID is the node's local ID (a reserved ID, for the default
-//!   program), with the node's operator and its parameters without resolved values, and without provenance;
+//!   program), with the node's operator and its parameters without resolved values;
 //! - every edge that enters a region node or an exit's port, in plan order, with an edge from a scope input's port
 //!   written as leaving `input.<name>`, and an edge into an exit's port as entering `exit.<name>`;
 //! - a base whose `outputs` hold the fingerprint the plan declares for every output a region `emit` delivers to, and
@@ -40,7 +43,24 @@
 //!   [`base`]).
 //!
 //! Composing an unmodified export back into the plan it came from gives that plan again (see
-//! [`compose`](crate::compose::compose)).
+//! [`compose`](crate::compose::compose)), in either form.
+//!
+//! # The detached form
+//!
+//! A published program owns its policy: it writes what to do with metrics as literals, and binds only facts and
+//! signals, which describe the host and its state rather than choose anything. The detached form is the export such a
+//! program starts from ([`export_as`] with [`ExportForm::Detached`]): every parameter bound to a binding whose catalog
+//! class is [`policy`](BindingClass::Policy) is written as the value it resolves to now, fact and signal bindings stay
+//! bound, and every predicate is written with its literal `flag` and `is_empty` folded
+//! ([`Predicate::fold_literals`]), so that a list the default program reads twice, such as a mirroring allowlist
+//! tested for emptiness and then matched, is not written twice. A binding the catalog does not declare stays bound.
+//! Every `emit` to an output whose recipients the catalog's recipient directory names exactly is written as an `emit`
+//! to those names, such as `emit to [primary]`, as a published program addresses destinations: by the recipients it
+//! sends to, never by the native output that encodes for them.
+//!
+//! The detached artifact records the same base as the bound one: the base describes the scope's structure, which a
+//! literal does not change, so composing the detached export is no stale base. Composition compares nodes by what
+//! they do with the values they have, so the detached export composes to the default program exactly, with its hash.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -49,14 +69,15 @@ use serde_json::Value;
 use snafu::Snafu;
 
 use crate::{
-    canonical::{strip_resolved_values, CanonicalError, PlanHash},
+    canonical::{strip_resolved_values, CanonicalError, PlanHash, BINDING_MEMBER, RESOLVED_MEMBER},
     ir::{
-        ArtifactBase, ArtifactEdge, ArtifactNode, ArtifactNodeId, ArtifactPortRef, BindingName, Blobs, ExitName,
-        InputName, NodeId, OutputId, Params, Plan, PolicyArtifact, PortRef, ScopeName, ACCEPTED_IR_VERSIONS,
-        IR_VERSION,
+        is_identifier, ArtifactBase, ArtifactEdge, ArtifactNode, ArtifactNodeId, ArtifactPortRef, BindingName, Blobs,
+        ComposedArtifact, ExitName, InputName, NodeId, OperatorName, OutputId, ParamType, Params, Plan, PolicyArtifact,
+        PortRef, ScopeName, ACCEPTED_IR_VERSIONS, IR_VERSION,
     },
-    operators::names,
-    validate::MemoryCatalog,
+    operators::{names, OperatorRegistry, EMIT_TO},
+    predicate::Predicate,
+    validate::{BindingClass, Catalog, MemoryCatalog},
 };
 
 /// The version of the export bundle's format.
@@ -113,6 +134,27 @@ pub struct ExportBundle {
     /// Notes for tools about the exported program's nodes and the catalog's bindings.
     #[serde(default, skip_serializing_if = "Annotations::is_empty")]
     pub annotations: Annotations,
+
+    /// How the artifact writes the default program's policy settings: bound to them, or as their current values.
+    #[serde(default)]
+    pub form: ExportForm,
+}
+
+/// How an export writes the default program's policy settings (see [the detached form](self#the-detached-form)).
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportForm {
+    /// Bound to the native settings, as the default program has them: the form for tools that study lowering.
+    #[default]
+    Bound,
+
+    /// Written as the literal values the settings have now, with facts and signals still bound: the form a published
+    /// program starts from.
+    Detached,
+
+    /// A form a later host writes that this reader does not know. A host never exports in it.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Notes for tools about an exported program: what each of its nodes and each binding is, and where it comes from, in
@@ -151,6 +193,8 @@ struct BundleDocument {
     labels: BTreeMap<OutputId, String>,
     #[serde(default)]
     annotations: Annotations,
+    #[serde(default)]
+    form: ExportForm,
 }
 
 /// The members of a catalog document that [`MemoryCatalog`] reads.
@@ -161,6 +205,7 @@ const CATALOG_MEMBERS: &[&str] = &[
     "state_budget",
     "single_aggregation",
     "recipients",
+    "detached_programs",
 ];
 
 /// The members of a catalog output that [`MemoryCatalog`] reads.
@@ -190,6 +235,7 @@ impl TryFrom<BundleDocument> for ExportBundle {
             catalog,
             mut labels,
             annotations,
+            form,
         } = document;
         let artifact = PolicyArtifact::from_value(artifact).map_err(|error| error.to_string())?;
         let catalog = known_catalog_members(catalog, &mut labels);
@@ -202,6 +248,7 @@ impl TryFrom<BundleDocument> for ExportBundle {
             catalog,
             labels,
             annotations,
+            form,
         })
     }
 }
@@ -257,8 +304,8 @@ fn known_catalog_members(catalog: Value, labels: &mut BTreeMap<OutputId, String>
 
 /// Exports one scope of a lowered plan as an artifact, with the host's catalog and output labels.
 ///
-/// `plan` is the default program as lowered, with its bindings resolved; the export strips the resolved values and the
-/// nodes' provenance, and writes reserved node IDs as the artifact's local IDs, so that composing the unmodified
+/// `plan` is the default program as lowered, with its bindings resolved; the export strips the resolved values, and
+/// writes reserved node IDs as the artifact's local IDs, so that composing the unmodified
 /// export back reproduces the default program. The catalog and labels are carried as given; the bundle has no
 /// annotations, which the host adds if it has any ([`ExportBundle::annotations`]).
 ///
@@ -269,9 +316,52 @@ fn known_catalog_members(catalog: Value, labels: &mut BTreeMap<OutputId, String>
 pub fn export(
     plan: &Plan, scope: &ScopeName, catalog: &MemoryCatalog, labels: &BTreeMap<OutputId, String>,
 ) -> Result<ExportBundle, ExportError> {
+    export_as(plan, scope, catalog, labels, ExportForm::Bound)
+}
+
+/// Exports one scope of a lowered plan as an artifact in the form `form`, with the host's catalog and output labels.
+///
+/// This is [`export`] for [`ExportForm::Bound`]. For [`ExportForm::Detached`], every parameter bound to a policy
+/// setting of `catalog` is written as the value it resolves to in `plan`, and every predicate's literal `flag` and
+/// `is_empty` are folded (see [the detached form](self#the-detached-form)); the base is the bound export's.
+///
+/// # Errors
+///
+/// As for [`export`].
+pub fn export_as(
+    plan: &Plan, scope: &ScopeName, catalog: &MemoryCatalog, labels: &BTreeMap<OutputId, String>, form: ExportForm,
+) -> Result<ExportBundle, ExportError> {
+    if form == ExportForm::Unknown {
+        return Err(ExportError::UnknownForm);
+    }
     let region = ScopeRegion::of(plan, scope)?;
     let base = region.base(plan, scope)?;
-    let ScopeRegion { nodes, edges, .. } = region;
+    let ScopeRegion { mut nodes, edges, .. } = region;
+    if form == ExportForm::Detached {
+        let policy = |binding: &BindingName| {
+            catalog
+                .bindings()
+                .any(|(name, declared)| name == binding && declared.class == BindingClass::Policy)
+        };
+        for node in &mut nodes {
+            let id = NodeId::reserved(node.id.to_local_id());
+            let Some(lowered) = plan.node(&id) else { continue };
+            let params = lowered
+                .params
+                .iter()
+                .map(|(name, value)| {
+                    let mut value = value.clone();
+                    write_bindings_as_values(&mut value, &policy);
+                    strip_resolved_values(&mut value);
+                    (name.clone(), value)
+                })
+                .collect();
+            node.params = fold_predicates(&node.op, params);
+            if let Some(to) = recipients_of_output(plan, catalog, &node.params) {
+                node.params = to;
+            }
+        }
+    }
     Ok(ExportBundle {
         export_version: EXPORT_VERSION,
         scope: scope.clone(),
@@ -287,7 +377,232 @@ pub fn export(
         catalog: catalog.clone(),
         labels: labels.clone(),
         annotations: Annotations::default(),
+        form,
     })
+}
+
+/// Returns the parameters of an `emit` to the output `params` names written as an `emit` to the names of its
+/// recipients, if the catalog's recipient directory names them exactly: the recipient names whose recipients are all
+/// the output's, together all of them, for which the catalog's output with exactly those recipients is this output, so
+/// that composing the `emit` gives it back ([`Catalog::output_for`]). Returns `None` for an `emit` to an output without
+/// recipients, such as an internal tap, or whose recipients no set of names stands for exactly.
+///
+/// The names that are identifiers, such as `primary`, come first, then the others, such as endpoint URLs, each in name
+/// order.
+fn recipients_of_output(plan: &Plan, catalog: &MemoryCatalog, params: &Params) -> Option<Params> {
+    let output = emitted_output(params)?;
+    let declared = plan.output(&output)?;
+    if declared.recipients.is_empty() || params.iter().count() != 1 {
+        return None;
+    }
+    let recipients = declared.recipients.iter().collect::<BTreeSet<_>>();
+    let mut names = Vec::new();
+    let mut covered = BTreeSet::new();
+    for (name, entry) in catalog.recipients() {
+        if !entry.recipients.is_empty() && entry.recipients.iter().all(|id| recipients.contains(id)) {
+            names.push(name.clone());
+            covered.extend(entry.recipients.iter());
+        }
+    }
+    if covered != recipients || catalog.output_for(&declared.recipients) != Some(output) {
+        return None;
+    }
+    names.sort_by_key(|name| (!is_identifier(name.as_str()), name.clone()));
+    let names = names
+        .into_iter()
+        .map(|name| Value::String(name.to_string()))
+        .collect::<Vec<_>>();
+    Some(std::iter::once((EMIT_TO.parse().expect("`to` is a parameter name"), Value::Array(names))).collect())
+}
+
+/// Returns the policy settings of `catalog`, by binding, whose current value in the default program `default` the plan
+/// `running` does not run, in name order: for every node of `default` bound to a policy setting, the node is absent
+/// from `running`, or the value at the binding's place in the node's parameters, written as a literal or as a binding
+/// with its resolved value, differs from the value the setting has now.
+///
+/// So for a published program, which owns its policy, it lists the native settings changed since the program was
+/// published, or that the program changes. A node of `running` that does what the default program's does, as its
+/// [operation form](operation_params) says, lists nothing, whether it binds the settings or writes their values. A node
+/// that does something else and wrote its parameters in another structure, such as a predicate folded otherwise, lists
+/// each setting whose place it no longer has.
+pub fn policy_differences(default: &Plan, running: &Plan, catalog: &MemoryCatalog) -> Vec<BindingName> {
+    fn walk(
+        value: &Value, path: &mut Vec<PathStep>, policy: &dyn Fn(&BindingName) -> bool,
+        found: &mut Vec<(Vec<PathStep>, BindingName, Value)>,
+    ) {
+        match value {
+            Value::Object(members) if members.contains_key(BINDING_MEMBER) => {
+                let binding = members
+                    .get(BINDING_MEMBER)
+                    .and_then(Value::as_str)
+                    .and_then(|name| name.parse::<BindingName>().ok());
+                if let (Some(binding), Some(resolved)) = (binding, members.get(RESOLVED_MEMBER)) {
+                    if policy(&binding) {
+                        found.push((path.clone(), binding, resolved.clone()));
+                    }
+                }
+            }
+            Value::Object(members) => {
+                for (name, member) in members {
+                    path.push(PathStep::Member(name.clone()));
+                    walk(member, path, policy, found);
+                    path.pop();
+                }
+            }
+            Value::Array(values) => {
+                for (index, element) in values.iter().enumerate() {
+                    path.push(PathStep::Index(index));
+                    walk(element, path, policy, found);
+                    path.pop();
+                }
+            }
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+        }
+    }
+    fn at<'v>(value: &'v Value, path: &[PathStep]) -> Option<&'v Value> {
+        path.iter().try_fold(value, |value, step| match step {
+            PathStep::Member(name) => value.get(name),
+            PathStep::Index(index) => value.get(index),
+        })
+    }
+
+    let policy = |binding: &BindingName| {
+        catalog
+            .bindings()
+            .any(|(name, declared)| name == binding && declared.class == BindingClass::Policy)
+    };
+    let mut differs = BTreeSet::new();
+    for node in &default.nodes {
+        let counterpart = running.node(&node.id).filter(|other| other.op == node.op);
+        // A node that does what the default program's does follows every setting it binds, however it writes them.
+        if counterpart
+            .is_some_and(|other| operation_params(&other.op, &other.params) == operation_params(&node.op, &node.params))
+        {
+            continue;
+        }
+        for (name, value) in node.params.iter() {
+            let mut found = Vec::new();
+            walk(value, &mut Vec::new(), &policy, &mut found);
+            for (path, binding, current) in found {
+                let running_value = counterpart
+                    .and_then(|other| other.params.get(name.as_str()))
+                    .and_then(|value| at(value, &path))
+                    .map(|value| match value {
+                        Value::Object(members) if members.contains_key(BINDING_MEMBER) => {
+                            members.get(RESOLVED_MEMBER).cloned()
+                        }
+                        literal => Some(literal.clone()),
+                    });
+                if running_value.flatten().as_ref() != Some(&current) {
+                    differs.insert(binding);
+                }
+            }
+        }
+    }
+    differs.into_iter().collect()
+}
+
+/// One step into a JSON value: a member of an object, or an element of an array.
+#[derive(Clone)]
+enum PathStep {
+    Member(String),
+    Index(usize),
+}
+
+/// Writes every configuration binding in a parameter value for which `literal` holds as the value it resolved to.
+///
+/// A binding without a resolved value is left as it is.
+pub(crate) fn write_bindings_as_values(value: &mut Value, literal: &dyn Fn(&BindingName) -> bool) {
+    match value {
+        Value::Object(members) if members.contains_key(BINDING_MEMBER) => {
+            let chosen = members
+                .get(BINDING_MEMBER)
+                .and_then(Value::as_str)
+                .and_then(|name| name.parse::<BindingName>().ok())
+                .is_some_and(|name| literal(&name));
+            if chosen {
+                if let Some(resolved) = members.remove(RESOLVED_MEMBER) {
+                    *value = resolved;
+                }
+            }
+        }
+        Value::Object(members) => members
+            .values_mut()
+            .for_each(|member| write_bindings_as_values(member, literal)),
+        Value::Array(values) => values
+            .iter_mut()
+            .for_each(|element| write_bindings_as_values(element, literal)),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
+
+/// Returns what a node of operator `op` with parameters `params` does: its parameters with every configuration binding
+/// written as the value it has ([`write_bindings_as_values`]) and every predicate's literal `flag` and `is_empty`
+/// folded ([`fold_predicates`]), as the detached export writes them.
+///
+/// A parameter bound to a value and the same literal do the same thing: kernels are keyed by this form, the plan diff
+/// compares it, and the installer decides by it whether a candidate changes anything.
+pub fn operation_params(op: &OperatorName, params: &Params) -> Params {
+    let literal = params
+        .iter()
+        .map(|(name, value)| {
+            let mut value = value.clone();
+            write_bindings_as_values(&mut value, &|_| true);
+            (name.clone(), value)
+        })
+        .collect();
+    fold_predicates(op, literal)
+}
+
+/// Returns the hash of what `plan` does: the plan, without provenance, with each node's parameters in their
+/// [operation form](operation_params), as their operator decodes and encodes them when it can, so that a
+/// set written in another order is the same set.
+///
+/// Two plans with one operation hash run the same kernels on the same edges: a parameter bound to a value and the same
+/// literal hash alike. A candidate whose operation hash is the active generation's changes nothing, and adopts it if it
+/// is another program's.
+pub fn operation_hash(plan: &Plan, registry: &OperatorRegistry) -> Result<PlanHash, CanonicalError> {
+    let mut plan = plan.clone();
+    plan.provenance = None;
+    for node in &mut plan.nodes {
+        let params = operation_params(&node.op, &node.params);
+        node.params = match registry.configure(node.op.as_str(), &params) {
+            Ok(configured) => configured.params().encode(),
+            Err(_) => params,
+        };
+    }
+    plan.hash(crate::canonical::ResolvedValues::Include)
+}
+
+/// Returns `params`, parameters of a node of operator `op`, with every predicate parameter's literal `flag` and
+/// `is_empty` folded ([`Predicate::fold_literals`]). A predicate that does not read, or that folding leaves as it is,
+/// is kept as written.
+pub(crate) fn fold_predicates(op: &OperatorName, params: Params) -> Params {
+    let Some(def) = OperatorRegistry::native().get(op.as_str()) else {
+        return params;
+    };
+    let predicates = def
+        .params()
+        .iter()
+        .filter(|spec| spec.ty == ParamType::Predicate)
+        .map(|spec| spec.name)
+        .collect::<Vec<_>>();
+    params
+        .iter()
+        .map(|(name, value)| {
+            let folded = predicates
+                .contains(&name.as_str())
+                .then(|| serde_json::from_value::<Predicate>(value.clone()).ok())
+                .flatten()
+                .and_then(|predicate| {
+                    let folded = predicate.fold_literals();
+                    (folded != predicate)
+                        .then(|| serde_json::to_value(folded).ok())
+                        .flatten()
+                });
+            (name.clone(), folded.unwrap_or_else(|| value.clone()))
+        })
+        .collect()
 }
 
 /// Returns the base an artifact derived from one scope of a plan records: the base program hash, and the fingerprint
@@ -296,13 +611,12 @@ pub fn export(
 /// The **program hash** is the hash of the scope's export: the RFC 8785 digest of the exported artifact document
 /// without its `base.program_hash` member, that is, of its `ir_version`, `scope`, `nodes`, `edges`, and the output
 /// fingerprints of its base. It covers the scope's structure, operators, literal parameters, binding names, and the
-/// outputs it delivers to, but neither resolved values (an export has none) nor node provenance (an export has none),
-/// nor anything outside the scope. So a change of native configuration values never changes it, while a structural
-/// change inside the scope, or another binding of an output the scope emits to, always does, and a change outside the
-/// scope never does: the base program hash changes exactly when the export's artifact does, so a client that keeps an
-/// export knows to fetch it again when the hash it last saw changes. An author's tool can tell whether an artifact is
-/// an unmodified export by comparing the hash of its document without `base.program_hash` with its
-/// `base.program_hash`.
+/// outputs it delivers to, but neither resolved values (an export has none) nor anything outside the scope. So a change
+/// of native configuration values never changes it, while a structural change inside the scope, or another binding of
+/// an output the scope emits to, always does, and a change outside the scope never does: the base program hash changes
+/// exactly when the export's artifact does, so a client that keeps an export knows to fetch it again when the hash it
+/// last saw changes. An author's tool can tell whether an artifact is an unmodified export by comparing the hash of its
+/// document without `base.program_hash` with its `base.program_hash`.
 ///
 /// [`export`] fills the exported artifact's base with this, and composition compares an artifact's base with this
 /// for the current default program: a different program hash is a stale base, and a different or missing output
@@ -344,6 +658,55 @@ pub enum ExportError {
         /// The underlying error.
         source: CanonicalError,
     },
+
+    /// The form is one this version does not know ([`ExportForm::Unknown`]).
+    #[snafu(display("The export form is not one this host writes: it writes `bound` and `detached`."))]
+    UnknownForm,
+}
+
+/// Returns the nodes of the region of `scope` in `plan`: every node reachable from the ports its inputs name, without
+/// entering a port one of its exits names. A scope the plan does not declare has none.
+///
+/// In a plan composed from artifacts, the region of a scope an artifact replaced is the artifact's nodes: what the
+/// program running there consists of ([`program_nodes`]).
+pub fn scope_members(plan: &Plan, scope: &ScopeName) -> BTreeSet<NodeId> {
+    let Some(declaration) = plan.scopes.get(scope) else {
+        return BTreeSet::new();
+    };
+    let inputs = declaration.inputs.values().collect::<BTreeSet<_>>();
+    let exits = declaration.exits.values().collect::<BTreeSet<_>>();
+    let mut members = BTreeSet::new();
+    let mut frontier = plan
+        .edges
+        .iter()
+        .filter(|edge| inputs.contains(&edge.from) && !exits.contains(&edge.to))
+        .map(|edge| &edge.to.node)
+        .collect::<Vec<_>>();
+    while let Some(node) = frontier.pop() {
+        if members.insert(node.clone()) {
+            frontier.extend(
+                plan.edges
+                    .iter()
+                    .filter(|edge| &edge.from.node == node && !exits.contains(&edge.to))
+                    .map(|edge| &edge.to.node),
+            );
+        }
+    }
+    members
+}
+
+/// Returns the nodes of the program each artifact composed into `plan` runs, by artifact, in the order the plan's
+/// provenance lists them: the region of the scope it replaced ([`scope_members`]). A default program has none.
+///
+/// What a plan runs is a property of the plan, not of its nodes: every node of a scope an artifact replaced is the
+/// artifact's, whether the author changed it or kept it as the default program has it. This is what the artifact limits
+/// and placement's attributions apply to.
+pub fn program_nodes(plan: &Plan) -> Vec<(ComposedArtifact, BTreeSet<NodeId>)> {
+    plan.provenance
+        .iter()
+        .flat_map(|provenance| &provenance.artifacts)
+        .map(|artifact| (artifact.clone(), scope_members(plan, &artifact.scope)))
+        .collect()
 }
 
 /// One scope of a plan, as the parts of the artifact that replaces it.
@@ -351,7 +714,7 @@ pub enum ExportError {
 /// This is what [`export`] writes, what [`base`] hashes, and what composition replaces: the region's nodes and the
 /// edges that enter them.
 pub(crate) struct ScopeRegion {
-    /// The region's nodes as artifact nodes, in plan order: local IDs, no provenance, no resolved values.
+    /// The region's nodes as artifact nodes, in plan order: local IDs, no resolved values.
     pub(crate) nodes: Vec<ArtifactNode>,
 
     /// Every edge that enters a region node or an exit's port, in plan order, with edges from a scope input leaving
@@ -406,24 +769,7 @@ impl ScopeRegion {
             }
         }
 
-        // The region: every node reachable from the inputs' ports, without entering an exit's port.
-        let mut members = BTreeSet::new();
-        let mut frontier = plan
-            .edges
-            .iter()
-            .filter(|edge| inputs.contains_key(&edge.from) && !exits.contains_key(&edge.to))
-            .map(|edge| &edge.to.node)
-            .collect::<Vec<_>>();
-        while let Some(node) = frontier.pop() {
-            if members.insert(node.clone()) {
-                frontier.extend(
-                    plan.edges
-                        .iter()
-                        .filter(|edge| &edge.from.node == node && !exits.contains_key(&edge.to))
-                        .map(|edge| &edge.to.node),
-                );
-            }
-        }
+        let members = scope_members(plan, scope);
 
         let mut nodes = Vec::new();
         let mut locals = BTreeSet::new();

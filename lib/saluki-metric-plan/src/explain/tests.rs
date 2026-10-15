@@ -84,7 +84,7 @@ fn explain_is_deterministic() {
 #[test]
 fn the_default_programs_explain_describes_its_graph() {
     let explain = default_program();
-    assert_eq!(explain.explain_version, 1);
+    assert_eq!(explain.explain_version, 2);
     assert!(explain.plan.valid);
     assert!(explain.findings.is_empty());
 
@@ -95,7 +95,6 @@ fn the_default_programs_explain_describes_its_graph() {
     let source = node(&explain, "dsd_in");
     assert_eq!(source.op.as_str(), "source");
     assert_eq!(source.boundary.as_deref(), Some("io_host"));
-    assert_eq!(source.provenance, Some(Provenance::Native("dsd_in".parse().unwrap())));
     assert!(source.inputs.is_empty());
     assert_eq!(
         source.outputs[0].to.as_ref().map(ToString::to_string).as_deref(),
@@ -332,7 +331,7 @@ fn explain_describes_invalid_plans_with_their_findings() {
     let plan = Plan::from_value(json!({
         "ir_version": 1,
         "nodes": [
-            {"id": "src", "op": "source", "params": {"binding": "otlp"}, "provenance": {"native": "src"}},
+            {"id": "src", "op": "source", "params": {"binding": "otlp"}},
             {"id": "mystery", "op": "no_such_operator"}
         ],
         "edges": [{"from": "src.metrics", "to": "mystery.in"}],
@@ -354,7 +353,7 @@ fn explain_describes_invalid_plans_with_their_findings() {
     let text = explain.to_text();
     assert!(text.contains("  invalid: 1 error, 0 warnings\n"), "{}", text);
     assert!(
-        text.contains("  mystery: no_such_operator [not configured] no provenance\n"),
+        text.contains("  mystery: no_such_operator [not configured]\n"),
         "{}",
         text
     );
@@ -368,18 +367,17 @@ fn explain_describes_invalid_plans_with_their_findings() {
 #[test]
 fn artifact_bounds_are_enforced_and_reported_per_revision() {
     let hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
-    let artifact = json!({"artifact": {"revision": 7, "hash": hash}});
+    // The program of artifact revision 7, which replaces the scope `program`: every node after the source.
     let plan = Plan::from_value(json!({
         "ir_version": 1,
-        "provenance": {"artifacts": [{"revision": 7, "hash": hash}]},
+        "provenance": {"artifacts": [{"scope": "program", "revision": 7, "hash": hash}]},
         "nodes": [
-            {"id": "src", "op": "source", "params": {"binding": "otlp"}, "provenance": {"native": "src"}},
-            {"id": "policy/t", "op": "tee", "params": {"ports": 2}, "provenance": artifact},
-            {"id": "policy/s", "op": "split", "params": {"predicate": {"any": [{"has_tag": "a"}, {"has_tag": "b"}]}},
-             "provenance": artifact},
-            {"id": "policy/e1", "op": "emit", "params": {"output": "dd_metrics_encode"}, "provenance": artifact},
-            {"id": "policy/d1", "op": "drop", "provenance": artifact},
-            {"id": "policy/d2", "op": "drop", "provenance": artifact}
+            {"id": "src", "op": "source", "params": {"binding": "otlp"}},
+            {"id": "policy/t", "op": "tee", "params": {"ports": 2}},
+            {"id": "policy/s", "op": "split", "params": {"predicate": {"any": [{"has_tag": "a"}, {"has_tag": "b"}]}}},
+            {"id": "policy/e1", "op": "emit", "params": {"output": "dd_metrics_encode"}},
+            {"id": "policy/d1", "op": "drop"},
+            {"id": "policy/d2", "op": "drop"}
         ],
         "edges": [
             {"from": "src.metrics", "to": "policy/t.in"},
@@ -390,11 +388,17 @@ fn artifact_bounds_are_enforced_and_reported_per_revision() {
         ],
         "outputs": [{"id": "dd_metrics_encode", "accepts": {"kinds": "all", "timestamps": "mixed"},
                      "fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-                     "recipients": ["dd_out/primary/0"], "delivery": "native"}]
+                     "recipients": ["dd_out/primary/0"], "delivery": "native"}],
+        "scopes": {"program": {"inputs": {"metrics": "src.metrics"}}}
     }))
     .unwrap();
     let registry = OperatorRegistry::native();
-    let report = Validator::new(&registry, &default_program_catalog()).validate(&plan);
+    let catalog = default_program_catalog().with_scope_input(
+        "program".parse().unwrap(),
+        "metrics".parse().unwrap(),
+        crate::model::PortType::ANY,
+    );
+    let report = Validator::new(&registry, &catalog).validate(&plan);
     assert!(report.is_valid(), "{}", report);
     let explain = Explain::of(&plan, &registry, &report);
 
@@ -567,13 +571,10 @@ mod physical {
     ///   port drops): R3 folds it and removes the drop.
     fn artifact_like_plan() -> Plan {
         let hash = "sha256:00000000000000000000000000000000000000000000000000000000000000a1";
-        let artifact = json!({"artifact": {"revision": 1, "hash": hash}});
         let mut value = serde_json::from_str::<serde_json::Value>(DEFAULT_PROGRAM_JSON).unwrap();
-        value["provenance"] = json!({"artifacts": [{"revision": 1, "hash": hash}]});
-        let node = |id: &str, op: &str, params: serde_json::Value| {
-            let provenance = artifact.clone();
-            json!({"id": id, "op": op, "params": params, "provenance": provenance})
-        };
+        // An artifact replacing the one scope composed it: every node of the scope is its program's.
+        value["provenance"] = json!({"artifacts": [{"scope": "metrics", "revision": 1, "hash": hash}]});
+        let node = |id: &str, op: &str, params: serde_json::Value| json!({"id": id, "op": op, "params": params});
         let edge = |from: String, to: String| json!({"from": from, "to": to});
 
         // Where each port of the policy fan-out led in the default program.

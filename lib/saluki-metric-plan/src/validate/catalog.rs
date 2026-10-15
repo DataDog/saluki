@@ -206,6 +206,43 @@ pub trait Catalog {
         None
     }
 
+    /// Returns the output whose recipients are exactly `recipients`, sorted and without repeats, if the host declares
+    /// one: the output an `emit` addressed to the names of those recipients delivers to. Of several, the first in
+    /// output ID order.
+    ///
+    /// The default looks for none.
+    fn output_for(&self, recipients: &[RecipientId]) -> Option<OutputId> {
+        let _ = recipients;
+        None
+    }
+
+    /// Returns why the host does not add an output for exactly `recipients`, sorted and without repeats, for the `emit`s
+    /// of a program that address them, if it refuses to: an output it would add beyond its limit on outputs, or
+    /// recipients it cannot encode for together. A program that needs one is then refused rather than left waiting.
+    ///
+    /// The default refuses none.
+    fn implied_output_refused(&self, recipients: &[RecipientId]) -> Option<String> {
+        let _ = recipients;
+        None
+    }
+
+    /// Returns `true` if a program composed for the host binds facts and signals only, never a policy setting, which a
+    /// published program owns and writes as a literal ([`BindingClass::Policy`]); composition then refuses an artifact
+    /// that binds one.
+    ///
+    /// The default allows any binding.
+    fn detached_programs(&self) -> bool {
+        false
+    }
+
+    /// Returns the bindings the host declares as facts or signals, in name order: what a program for a host whose
+    /// programs bind facts and signals only may bind.
+    ///
+    /// The default lists none.
+    fn facts_and_signals(&self) -> Vec<BindingName> {
+        Vec::new()
+    }
+
     /// Returns `true` if the host reserves the recipient name `name` for the recipients it names itself, whether or not
     /// its directory has it now, so that no declaration may use it.
     ///
@@ -298,6 +335,9 @@ pub struct MemoryCatalog {
 
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     recipients: BTreeMap<RecipientName, CatalogRecipient>,
+
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    detached_programs: bool,
 }
 
 /// What a catalog declares about one scope: the port types of its inputs and of its exits.
@@ -432,6 +472,12 @@ impl MemoryCatalog {
         self
     }
 
+    /// Declares that programs bind facts and signals only ([`Catalog::detached_programs`]).
+    pub fn with_detached_programs(mut self) -> Self {
+        self.detached_programs = true;
+        self
+    }
+
     /// Declares that the host runs at most one aggregation per program.
     pub fn with_single_aggregation(mut self) -> Self {
         self.single_aggregation = true;
@@ -482,6 +528,25 @@ impl Catalog for MemoryCatalog {
 
     fn recipient(&self, name: &RecipientName) -> Option<&CatalogRecipient> {
         self.recipients.get(name)
+    }
+
+    fn output_for(&self, recipients: &[RecipientId]) -> Option<OutputId> {
+        self.outputs
+            .iter()
+            .find(|(_, output)| !output.recipients.is_empty() && output.recipients == recipients)
+            .map(|(id, _)| id.clone())
+    }
+
+    fn detached_programs(&self) -> bool {
+        self.detached_programs
+    }
+
+    fn facts_and_signals(&self) -> Vec<BindingName> {
+        self.bindings
+            .iter()
+            .filter(|(_, binding)| binding.class != BindingClass::Policy)
+            .map(|(name, _)| name.clone())
+            .collect()
     }
 }
 

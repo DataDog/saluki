@@ -391,7 +391,6 @@ textarea#source:focus-visible { outline: none; }
 .plan-diff-nodes .changed .sign { color: var(--accent); }
 .plan-diff-nodes .what { color: var(--muted); font-family: var(--sans); font-size: 13px; white-space: nowrap; }
 .plan-diff-nodes .id { overflow-wrap: anywhere; }
-.plan-diff-nodes .authority { color: var(--muted); }
 .plan-diff-edges summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 .plan-diff-edges ul { margin: 4px 0 0; padding-left: 18px; font-family: var(--mono); font-size: 12.5px; }
 .confirm-diff { font-size: 14px; }

@@ -8,7 +8,7 @@ use super::{
 };
 use crate::{
     compile::MEMO_COST_FLOOR,
-    ir::{DecodedParams, ParamSpec, ParamType, PortName},
+    ir::{DecodedParams, ParamError, ParamSpec, ParamType, ParamValue, PortName},
     model::{Field, FieldSet, PortType},
     predicate::Predicate,
 };
@@ -276,12 +276,24 @@ impl OperatorDef for Merge {
 
 /// The `emit` operator: delivers every record to a declared output.
 ///
-/// Parameters: `output` (the identifier of a declared output). Each `emit` receives its own records: operations on
-/// other paths never change them.
+/// Parameters: exactly one of `output` (the identifier of a declared output) and `to` (the names of recipients, which
+/// the host's recipient directory resolves). Each `emit` receives its own records: operations on other paths never
+/// change them.
+///
+/// `to` is how a program addresses destinations: by the names of the recipients it sends to, never by the output that
+/// encodes for them. Composition resolves it into the output whose recipients are exactly those the names stand for
+/// (see [`compose`](crate::compose::compose)), so a plan's `emit` always names its output, and validation refuses a
+/// plan's `emit` that does not.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Emit;
 
-const EMIT_PARAMS: &[ParamSpec] = &[ParamSpec::required("output", ParamType::OutputRef)];
+/// The parameter of an `emit` that names recipients rather than an output.
+pub const EMIT_TO: &str = "to";
+
+const EMIT_PARAMS: &[ParamSpec] = &[
+    ParamSpec::optional("output", ParamType::OutputRef),
+    ParamSpec::optional(EMIT_TO, ParamType::List(&ParamType::String)),
+];
 
 impl OperatorDef for Emit {
     fn name(&self) -> &'static str {
@@ -294,6 +306,25 @@ impl OperatorDef for Emit {
 
     fn params(&self) -> &'static [ParamSpec] {
         EMIT_PARAMS
+    }
+
+    fn check_params(&self, params: &DecodedParams) -> Vec<ParamError> {
+        let to = params.get(EMIT_TO);
+        match (params.get("output"), to) {
+            (Some(_), Some(_)) => vec![super::support::error(
+                EMIT_TO,
+                "an `emit` names an output or recipients, not both: write `emit <output>` or `emit to [<recipient>, ...]`",
+            )],
+            (None, None) => vec![super::support::error(
+                "output",
+                "an `emit` names the output it delivers to, or the recipients it sends to",
+            )],
+            (None, Some(ParamValue::List(names))) if names.is_empty() => vec![super::support::error(
+                EMIT_TO,
+                "an `emit` to recipients names at least one recipient",
+            )],
+            _ => Vec::new(),
+        }
     }
 
     fn ports(&self, _params: &DecodedParams) -> Ports {

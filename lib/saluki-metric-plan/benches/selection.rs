@@ -92,10 +92,8 @@ fn fingerprint(output: &str) -> String {
 
 /// The policy region of `policies` routing policies, with every node in one region, and its validation catalog.
 fn policy_plan(policies: usize) -> (Plan, MemoryCatalog) {
-    let node = |id: &str, op: &str, params: Value| {
-        let provenance = json!({"native": "policy"});
-        json!({"id": id, "op": op, "params": params, "provenance": provenance})
-    };
+    // Every node but the source stands for one native component, `policy`.
+    let node = |id: &str, op: &str, params: Value| json!({"id": id, "op": op, "params": params});
     let mut nodes = vec![
         json!({"id": "src", "op": "source", "params": {"binding": "otlp"}}),
         node("metrics_policy", "tee", json!({"ports": policies + 1})),
@@ -130,8 +128,16 @@ fn policy_plan(policies: usize) -> (Plan, MemoryCatalog) {
         .iter()
         .map(|output| json!({"id": output, "accepts": accepts, "fingerprint": fingerprint(output)}))
         .collect::<Vec<_>>();
-    let plan = Plan::from_value(json!({"ir_version": 1, "nodes": nodes, "edges": edges, "outputs": plan_outputs}))
-        .expect("the policy plan is well-formed");
+    let components = nodes
+        .iter()
+        .filter(|node| node["op"] != "source")
+        .map(|node| (node["id"].as_str().unwrap().to_string(), json!("policy")))
+        .collect::<serde_json::Map<_, _>>();
+    let plan = Plan::from_value(json!({
+        "ir_version": 1, "provenance": {"native_components": components},
+        "nodes": nodes, "edges": edges, "outputs": plan_outputs,
+    }))
+    .expect("the policy plan is well-formed");
     let catalog = outputs.iter().fold(MemoryCatalog::new(), |catalog, output| {
         catalog.with_output(
             OutputId::new(output.as_str()).unwrap(),
@@ -533,12 +539,14 @@ fn default_program_with(policies: usize) -> (Plan, MemoryCatalog) {
             json!({"intake_name": {"matches": {"values": values, "prefix": prefix}}})
         };
         let predicate = json!({"any": [matches("names", &names, false), matches("prefixes", &prefixes, true)]});
-        let provenance = |native: &str| json!({"native": native});
+        let components = &mut value["provenance"]["native_components"];
+        components[split.as_str()] = json!(split);
+        components[format!("{}_true", split)] = json!(output);
+        components[format!("{}_false", split)] = json!(split);
         value["nodes"].as_array_mut().unwrap().extend([
-            json!({"id": split, "op": "split", "params": {"predicate": predicate}, "provenance": provenance(&split)}),
-            json!({"id": format!("{}_true", split), "op": "emit", "params": {"output": output},
-                   "provenance": provenance(&output)}),
-            json!({"id": format!("{}_false", split), "op": "drop", "provenance": provenance(&split)}),
+            json!({"id": split, "op": "split", "params": {"predicate": predicate}}),
+            json!({"id": format!("{}_true", split), "op": "emit", "params": {"output": output}}),
+            json!({"id": format!("{}_false", split), "op": "drop"}),
         ]);
         value["edges"].as_array_mut().unwrap().extend([
             json!({"from": format!("metrics_policy.{}", index + 1), "to": format!("{}.in", split)}),

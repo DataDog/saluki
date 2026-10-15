@@ -4,10 +4,15 @@ use std::collections::BTreeMap;
 
 use saluki_components::forwarders::delivery::RecipientProtocol;
 use saluki_metric_plan::{
-    ir::{BindingName, HostId, InputName, OutputDecl, OutputId, RecipientDecl, RecipientName, ScopeName, ValueType},
+    ir::{
+        BindingName, HostId, InputName, OutputDecl, OutputId, RecipientDecl, RecipientId, RecipientName, ScopeName,
+        ValueType,
+    },
     model::{Kind, PortType},
     operators::SourceBinding,
-    validate::{Catalog, CatalogBinding, CatalogOutput, CatalogRecipient, HostSchema, Liveness, MemoryCatalog},
+    validate::{
+        BindingClass, Catalog, CatalogBinding, CatalogOutput, CatalogRecipient, HostSchema, Liveness, MemoryCatalog,
+    },
 };
 
 use super::{
@@ -50,6 +55,8 @@ pub struct AdpCatalog {
     scope_inputs: BTreeMap<InputName, PortType>,
     state_budget: Option<u64>,
     hosts: FixedHosts,
+    /// The sets of recipients lowering added no implied output for, each with why.
+    refused_demand: BTreeMap<Vec<RecipientId>, String>,
 }
 
 impl AdpCatalog {
@@ -106,6 +113,7 @@ impl AdpCatalog {
             scope_inputs: BTreeMap::new(),
             state_budget,
             hosts,
+            refused_demand: resources.refused_demand.clone(),
         }
     }
 
@@ -140,6 +148,9 @@ impl AdpCatalog {
         }
         if Catalog::single_aggregation(self) {
             catalog = catalog.with_single_aggregation();
+        }
+        if Catalog::detached_programs(self) {
+            catalog = catalog.with_detached_programs();
         }
         match self.state_budget {
             Some(capacity) => catalog.with_state_budget(capacity),
@@ -176,6 +187,31 @@ impl Catalog for AdpCatalog {
 
     fn recipient(&self, name: &RecipientName) -> Option<&CatalogRecipient> {
         self.directory.get(name)
+    }
+
+    fn output_for(&self, recipients: &[RecipientId]) -> Option<OutputId> {
+        self.outputs
+            .iter()
+            .find(|(_, output)| !output.recipients.is_empty() && output.recipients == recipients)
+            .map(|(id, _)| id.clone())
+    }
+
+    fn implied_output_refused(&self, recipients: &[RecipientId]) -> Option<String> {
+        self.refused_demand.get(recipients).cloned()
+    }
+
+    fn facts_and_signals(&self) -> Vec<BindingName> {
+        self.bindings
+            .iter()
+            .filter(|(_, binding)| binding.class != BindingClass::Policy)
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    fn detached_programs(&self) -> bool {
+        // A published program owns its policy: it binds facts and signals only, and writes policy settings as
+        // literals, as the detached export does.
+        true
     }
 
     fn reserves_recipient_name(&self, name: &RecipientName) -> bool {

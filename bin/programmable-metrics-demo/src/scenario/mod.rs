@@ -1711,7 +1711,7 @@ fn outputs(legend: &Value) -> Result<Outputs, GenericError> {
             .into_iter()
             .flatten()
             .find(|output| output["intake"] == intake)
-            .and_then(|output| output["id"].as_str())
+            .and_then(|output| output["emit"].as_str())
             .map(ToString::to_string)
             .ok_or_else(|| generic_error!("No output of the export feeds the `{}` intake: {}", intake, legend))
     };
@@ -1742,15 +1742,10 @@ fn diff_summary(preview: &Value) -> String {
     }
     let nodes = preview["nodes"].as_array().cloned().unwrap_or_default();
     let count = |change: &str| nodes.iter().filter(|node| node["change"] == change).count();
-    let provenance_only = nodes
-        .iter()
-        .filter(|node| node["change"] == "changed" && node["aspects"] == json!(["provenance"]))
-        .count();
     format!(
-        "{} added, {} changed ({} in provenance only), {} removed, {} edges added, {} removed",
+        "{} added, {} changed, {} removed, {} edges added, {} removed",
         count("added"),
         count("changed"),
-        provenance_only,
         count("removed"),
         preview["edges_added"].as_array().map_or(0, Vec::len),
         preview["edges_removed"].as_array().map_or(0, Vec::len)

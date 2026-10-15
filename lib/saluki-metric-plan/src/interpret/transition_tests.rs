@@ -84,7 +84,7 @@ fn aggregation_limited(window: &str, context_limit: u64) -> Value {
 }
 
 pub(super) fn node(id: &str, op: &str, params: Value) -> Value {
-    json!({"id": id, "op": op, "params": params, "provenance": {"native": id}})
+    json!({"id": id, "op": op, "params": params})
 }
 
 pub(super) fn output_decls(outputs: &[&str]) -> Value {

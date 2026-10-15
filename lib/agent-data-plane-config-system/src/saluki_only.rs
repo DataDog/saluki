@@ -77,8 +77,8 @@ use std::{
 use agent_data_plane_config::control::{LanesMode, MemoryMode};
 use agent_data_plane_config::defaults::{
     DEFAULT_ARTIFACT_CHANNEL_POLL_INTERVAL, DEFAULT_ENABLE_GLOBAL_LIMITER, DEFAULT_MAX_RESOURCE_LEN,
-    DEFAULT_MEMORY_SLOP_FACTOR, DEFAULT_METRICS_LEVEL, DEFAULT_STRING_INTERNER_SIZE_BYTES,
-    MAX_STRING_INTERNER_SIZE_BYTES,
+    DEFAULT_MEMORY_SLOP_FACTOR, DEFAULT_METRICS_LEVEL, DEFAULT_STANDALONE_CONFIG_RELOAD_INTERVAL,
+    DEFAULT_STRING_INTERNER_SIZE_BYTES, MAX_STRING_INTERNER_SIZE_BYTES,
 };
 use agent_data_plane_config::domains::dogstatsd::MetricTagValueAllowlistEntry;
 use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlFilter, OttlTransform};
@@ -302,6 +302,26 @@ pub struct Experimental {
     pub metrics_endpoint_routing: MetricsEndpointRouting,
     /// Programmable metric processing (`experimental.programmable_metrics.*`).
     pub programmable_metrics: ProgrammableMetrics,
+    /// Re-reading of the configuration file in standalone mode (`experimental.standalone_config_reload.*`).
+    pub standalone_config_reload: StandaloneConfigReload,
+}
+
+/// Experimental re-reading of the configuration file in standalone mode (`experimental.standalone_config_reload.*`).
+///
+/// This exists only for the programmable metrics demo; it is not for production use and may be removed without notice.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct StandaloneConfigReload {
+    /// Whether standalone mode re-reads its configuration file (`experimental.standalone_config_reload.enabled`).
+    /// Defaults to absent, which is off.
+    pub enabled: Option<bool>,
+    /// How often the file is re-read (`experimental.standalone_config_reload.interval`), given as a duration string
+    /// such as `1s`. Defaults to 1 second.
+    ///
+    /// The file cannot be re-read continuously, so a zero interval is rejected here, and standalone mode raises one
+    /// shorter than 100 milliseconds to that.
+    #[serde(deserialize_with = "deserialize_optional_positive_duration")]
+    pub interval: Option<DurationString>,
 }
 
 /// Experimental programmable metric processing settings (`experimental.programmable_metrics.*`).
@@ -859,6 +879,12 @@ impl SalukiOnly {
                 .map(|(name, value)| (name.clone(), value.clone()))
                 .collect();
         }
+        let reload = &self.experimental.standalone_config_reload;
+        let destination = &mut config.control.standalone_config_reload;
+        destination.enabled = reload.enabled.unwrap_or(false);
+        destination.interval = reload
+            .interval
+            .map_or(DEFAULT_STANDALONE_CONFIG_RELOAD_INTERVAL, |v| v.as_duration());
         let lanes = &self.experimental.programmable_metrics.lanes;
         let destination = &mut config.control.programmable_metrics.lanes;
         destination.mode = lanes.mode.map(LanesMode::from).unwrap_or_default();
@@ -1364,6 +1390,33 @@ mod tests {
                 serde_json::from_value::<SalukiOnly>(unreadable).is_err(),
                 "{poll_interval}"
             );
+        }
+    }
+
+    #[test]
+    fn the_standalone_config_reload_is_off_by_default_and_seeds_when_set() {
+        let saluki_only: SalukiOnly = serde_json::from_value(json!({})).expect("the source deserializes");
+        let mut config = SalukiConfiguration::default();
+        saluki_only.seed(&mut config);
+        let reload = &config.control.standalone_config_reload;
+        assert!(!reload.enabled);
+        assert_eq!(reload.interval, DEFAULT_STANDALONE_CONFIG_RELOAD_INTERVAL);
+        assert_eq!(DEFAULT_STANDALONE_CONFIG_RELOAD_INTERVAL, Duration::from_secs(1));
+
+        let saluki_only: SalukiOnly = serde_json::from_value(json!({ "experimental": { "standalone_config_reload": {
+            "enabled": true, "interval": "250ms"
+        } } }))
+        .expect("the source deserializes");
+        let mut config = SalukiConfiguration::default();
+        saluki_only.seed(&mut config);
+        let reload = &config.control.standalone_config_reload;
+        assert!(reload.enabled);
+        assert_eq!(reload.interval, Duration::from_millis(250));
+
+        // An interval that is not a duration, or is zero, fails the load.
+        for interval in [json!("often"), json!("0s")] {
+            let unreadable = json!({ "experimental": { "standalone_config_reload": { "interval": interval } } });
+            assert!(serde_json::from_value::<SalukiOnly>(unreadable).is_err(), "{interval}");
         }
     }
 

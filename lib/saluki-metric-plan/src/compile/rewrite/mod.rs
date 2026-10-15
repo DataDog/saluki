@@ -454,7 +454,7 @@ fn run_pipeline(plan: &Plan, ctx: &RewriteContext<'_>, rewrites: &[&dyn Rewrite]
 fn check(
     ctx: &RewriteContext<'_>, placement: &Placement, plan: &Plan,
 ) -> Result<(ValidationReport, Placement), String> {
-    let report = revalidate(ctx.registry, plan);
+    let report = revalidate(ctx.registry, plan, ctx.report);
     if !report.is_valid() {
         let errors = report.errors().map(ToString::to_string).collect::<BTreeSet<_>>();
         return Err(format!(

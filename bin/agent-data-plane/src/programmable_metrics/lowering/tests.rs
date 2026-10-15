@@ -233,14 +233,21 @@ async fn every_configuration_of_the_matrix_lowers_to_a_valid_plan() {
             name
         );
 
-        // Every node is reserved, stands for a native component, and has that component's telemetry identity.
+        // Every node is reserved, stands for a native component (its own, unless the plan's provenance names
+        // another), and has that component's telemetry identity, which follows from its ID and operator alone.
+        let components = lowered
+            .plan
+            .provenance
+            .as_ref()
+            .map(|provenance| &provenance.native_components);
         for node in &lowered.plan.nodes {
-            let Some(Provenance::Native(component)) = &node.provenance else {
-                panic!("{}: node `{}` has no native provenance", name, node.id);
-            };
+            assert!(node.id.is_reserved(), "{}: node `{}` is not reserved", name, node.id);
+            let component = components
+                .and_then(|components| components.get(&node.id))
+                .map_or_else(|| node.id.local().to_string(), ToString::to_string);
             let telemetry = native_telemetry(&node.id, node.op.as_str())
                 .unwrap_or_else(|| panic!("{}: node `{}` has no telemetry profile", name, node.id));
-            assert_eq!(telemetry.component_id, component.to_string(), "{}: `{}`", name, node.id);
+            assert_eq!(telemetry.component_id, component, "{}: `{}`", name, node.id);
         }
     }
 }
@@ -641,11 +648,14 @@ async fn live_bindings_are_only_on_components_that_read_live_views_natively() {
             for (param, binding, _) in bindings_of(node) {
                 let catalog = lowered.catalog.binding(&binding.parse().unwrap()).unwrap();
                 if catalog.liveness == Liveness::Live {
-                    let Some(Provenance::Native(component)) = &node.provenance else {
-                        unreachable!("every lowered node has native provenance");
-                    };
+                    let component = lowered
+                        .plan
+                        .provenance
+                        .as_ref()
+                        .and_then(|provenance| provenance.native_components.get(&node.id))
+                        .map_or_else(|| node.id.local().to_string(), ToString::to_string);
                     assert!(
-                        live_components.contains(&component.to_string().as_str()),
+                        live_components.contains(&component.as_str()),
                         "{}: `{}.{}` is bound to the live `{}`",
                         name,
                         node.id,

@@ -7,11 +7,13 @@ use saluki_core::runtime::{InitializationError, Supervisable, SupervisorFuture};
 use saluki_error::ErrorContext as _;
 use tokio::select;
 
-/// A worker that applies configuration updates from the Datadog Agent.
+/// A worker that applies configuration updates from the Datadog Agent, or, in standalone mode with the experimental
+/// `experimental.standalone_config_reload` setting on, from re-reads of the configuration file.
 ///
 /// The worker runs until it is shut down, or until the Agent configuration stream closes, in which case it fails. Each
 /// restart continues with the same stream, so a restart recovers from a panic while an update is applied. A restart
 /// does not recover from a closed stream: the stream does not reopen, so the restarted worker fails again at once.
+/// Re-reading the configuration file never ends on its own.
 pub struct ConfigUpdatesWorker {
     updates: ConfigurationUpdates,
 }
@@ -35,7 +37,7 @@ impl Supervisable for ConfigUpdatesWorker {
         Ok(Box::pin(async move {
             select! {
                 _ = process_shutdown => Ok(()),
-                result = updates => result.error_context("Stopped applying configuration updates from the Datadog Agent."),
+                result = updates => result.error_context("Stopped applying configuration updates."),
             }
         }))
     }

@@ -11,8 +11,8 @@
 //! - **Nothing between.** The filters are the `tee`'s direct targets, so nothing between the `tee` and a filter
 //!   changes what the filter reads. R5a, which runs before R6 in every pass, moves a filter up to the `tee` across the
 //!   operators it commutes with.
-//! - **Native filters stay.** A host reports native series under a native node's ID; hoisting replaces the per-path
-//!   filters by a new node, so no filter with native provenance is hoisted.
+//! - **Native filters stay.** A host reports native series under a reserved node's ID; hoisting replaces the per-path
+//!   filters by a new node, so no filter with a reserved ID is hoisted.
 //! - **Scopes.** No filter crosses a scope's input or exit, and no port of a removed filter or `drop` is one, which
 //!   the scope would then name although the plan no longer has it.
 //! - **The frame is fixed.** The hoisted filter runs where the `tee`'s input runs; the pipeline checks that the

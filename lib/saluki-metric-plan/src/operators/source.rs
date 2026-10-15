@@ -148,6 +148,11 @@ impl OperatorDef for Source {
         "Where the metrics of one host source enter the plan."
     }
 
+    /// A host component of its own, which only native configuration places.
+    fn authorable(&self) -> bool {
+        false
+    }
+
     fn params(&self) -> &'static [ParamSpec] {
         SOURCE_PARAMS
     }

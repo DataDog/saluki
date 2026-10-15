@@ -746,6 +746,8 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `experimental.programmable_metrics.lanes.post`                     | Post-aggregation lanes of the metrics path (0 is automatic)                 | 0              |
 | `experimental.programmable_metrics.lanes.state`                    | State lanes of DogStatsD aggregation (0 is automatic)                       | 0              |
 | `experimental.programmable_metrics.resources.credentials`          | Credentials resources artifacts may send with, by name                      | {}             |
+| `experimental.standalone_config_reload.enabled`                    | Re-read the configuration file in standalone mode (demo only)               | false          |
+| `experimental.standalone_config_reload.interval`                   | Standalone configuration file re-read interval (demo only)                  | 1 second       |
 | `flush_timeout_secs`                                               | Encoder flush timeout (secs)                                                |                |
 | `memory_limit`                                                     | Process memory limit                                                        |                |
 | `memory_mode`                                                      | Memory bounds validation mode                                               | disabled       |
@@ -887,6 +889,23 @@ experimental:
       mode: auto
       state: 0
       post: 0
+```
+
+### `experimental.standalone_config_reload.*`
+
+In standalone mode, ADP reads its configuration file once, at startup. With `enabled: true`, ADP instead re-reads the file every `interval` (1 second by default) and, once two consecutive reads find the same changed file, applies the change the way connected mode applies a configuration update from the Core Agent: the file and the environment are merged again, with environment variables keeping the precedence they had at startup, and the result is translated and validated as a whole. A file that cannot be read or parsed, or a configuration that fails translation or validation, is logged as a warning and rejected; ADP keeps running on the last configuration it accepted until a later edit is valid. Only settings that ADP applies without a restart take effect; the others, including both keys in this section, are read at startup. `interval` must be greater than zero, and ADP raises one shorter than 100 milliseconds to 100 milliseconds, with a warning. A change takes effect one interval after ADP first reads it. The setting has no effect in connected mode, where ADP logs a warning if it is set.
+
+> [!WARNING]
+> This setting exists only for the programmable metrics demo (`bin/programmable-metrics-demo`). It is not for production use and may be removed without notice. Replace the file atomically, by writing a new file and renaming it over the old one. ADP waits for two reads to agree, so it never applies a file it reads while it changes, but a write that stalls for longer than `interval` can still be read twice partly written.
+
+```yaml
+# Experimental keys may change, move, or be removed without backward compatibility.
+data_plane:
+  standalone_mode: true
+experimental:
+  standalone_config_reload:
+    enabled: true
+    interval: 1s
 ```
 
 ### `data_plane.apm.*`

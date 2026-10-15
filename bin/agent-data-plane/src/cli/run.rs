@@ -130,12 +130,17 @@ pub async fn handle_run_command(
     // the Core Agent's config stream as authority; standalone mode treats the local sources as
     // authoritative. Both terminals block until the first configuration is received, deserialized,
     // and translated, failing the boot if it cannot be -- the strict startup gate.
+    //
+    // Standalone mode applies no later updates, unless the experimental
+    // `experimental.standalone_config_reload` setting, which exists only for the programmable metrics
+    // demo, has it re-read the configuration file and apply each change as connected mode applies
+    // the Core Agent's updates.
     let (config_sys, ra_bootstrap, config_updates) = if standalone {
-        let config_sys = local_config
+        let (config_sys, config_updates) = local_config
             .standalone()
             .await
             .error_context("Failed to load configuration.")?;
-        (config_sys, None, None)
+        (config_sys, None, config_updates)
     } else {
         // Blocks until the Core Agent acknowledges registration.
         let client_config = remote_agent_client_configuration(local_config.local())?;
@@ -328,8 +333,9 @@ pub async fn handle_run_command(
     root_supervisor.add_worker(bootstrap_supervisor);
     internal_supervisor.add_worker(resource_registry.worker());
 
-    // Apply configuration updates from the Datadog Agent. Until the supervision tree starts, updates stay queued in the
-    // Agent configuration stream and are not applied.
+    // Apply configuration updates from the Datadog Agent, or, in standalone mode with the experimental configuration
+    // reload on, from re-reads of the configuration file. Until the supervision tree starts, updates stay queued in the
+    // Agent configuration stream and are not applied, and the file is not re-read.
     //
     // A restart of the worker recovers from a panic, but not from a closed configuration stream, which never reopens:
     // the restarted worker fails again at once. The failure then escalates and stops ADP, rather than leaving ADP to run

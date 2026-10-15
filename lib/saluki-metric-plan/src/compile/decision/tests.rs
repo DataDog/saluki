@@ -541,7 +541,7 @@ fn grouped_plan(nodes: &[(&str, &str, Value)], edges: &[(&str, &str)]) -> Plan {
     all.extend(
         nodes
             .iter()
-            .map(|(id, op, params)| json!({"id": id, "op": op, "params": params, "provenance": {"native": "policy"}})),
+            .map(|(id, op, params)| json!({"id": id, "op": op, "params": params})),
     );
     let edges = edges
         .iter()

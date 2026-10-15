@@ -79,7 +79,7 @@ pub use self::opaque::OpaqueHost;
 
 mod routing;
 pub(crate) use self::routing::decision_cost;
-pub use self::routing::{DropOperator, Emit, Merge, Split, Tee, FALSE_PORT, TRUE_PORT};
+pub use self::routing::{DropOperator, Emit, Merge, Split, Tee, EMIT_TO, FALSE_PORT, TRUE_PORT};
 
 mod source;
 pub use self::source::{Source, SourceBinding, METRICS_PORT};
@@ -178,6 +178,17 @@ pub trait OperatorDef: Send + Sync {
     /// ([`ARTIFACT_MEMORY`][crate::limits::ARTIFACT_MEMORY]) leaves it out, counting only what
     /// [`specify_bounds`][Self::specify_bounds] declares. The default declares nothing.
     fn specify_state_bounds(&self, _params: &DecodedParams, _builder: &mut MemoryBoundsBuilder) {}
+
+    /// Returns `true` if a program may contain a node of the operator: an artifact's author may write it, and a scope
+    /// an artifact replaces may hold it.
+    ///
+    /// Operators that run in a host component of their own, such as sources and opaque hosts, are the host's: only
+    /// native configuration places them, since the host builds their components at boot and a program cannot build,
+    /// replace, or remove one. Validation refuses a program's node whose operator says `false` (`trusted_host`). The
+    /// default is `true`.
+    fn authorable(&self) -> bool {
+        true
+    }
 
     /// Returns an estimate of the work the operator does per event, in nanoseconds, for rewrite R1's cost model.
     ///

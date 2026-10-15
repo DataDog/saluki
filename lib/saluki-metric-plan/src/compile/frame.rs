@@ -50,7 +50,9 @@
 //! as far as that throughput is kept, by a cost model:
 //!
 //! - Each operator estimates its work per event ([`OperatorDef::cost`][crate::operators::OperatorDef::cost]), and each
-//!   native component, the nodes with its provenance, costs the sum of its nodes' estimates.
+//!   native component, the nodes that lowering says do its work (the plan's
+//!   [`native_components`][crate::ir::PlanProvenance::native_components]), costs the sum of its nodes' estimates. A
+//!   node lowering names no component for is a component of its own.
 //! - The **budget** of a region is the estimated cost of the costliest native component that runs in any slot, or
 //!   [`REGION_COST_FLOOR`] if that is less: a region within the floor is fast enough for one stream whatever it fuses.
 //! - In a region, `split`s and `tee`s joined by edges are one **decision**, run as one function (see
@@ -132,7 +134,7 @@ use crate::{
     canonical::{PlanHash, ResolvedValues},
     ir::{
         HostId, Namespace, NativeComponentId, NodeId, OperatorName, OutputDecl, OutputId, Params, Plan, PortName,
-        PortRef, Provenance,
+        PortRef,
     },
     operators::{decision_cost, names, Boundary, OperatorRegistry, SourceBinding, StateContract, METRICS_PORT},
     validate::graph::{emit_output, Graph},
@@ -2049,9 +2051,10 @@ impl Layout {
                 _ => 0,
             })
             .collect::<Vec<_>>();
-        let component = |node: usize| match &graph.nodes[node].node.provenance {
-            Some(Provenance::Native(component)) => component.to_string(),
-            _ => graph.id(node).to_string(),
+        let native_components = plan.provenance.as_ref().map(|provenance| &provenance.native_components);
+        let component = |node: usize| match native_components.and_then(|components| components.get(graph.id(node))) {
+            Some(component) => component.to_string(),
+            None => graph.id(node).to_string(),
         };
         // The budget is what the costliest native component costs natively.
         let mut component_cost: BTreeMap<String, u32> = BTreeMap::new();

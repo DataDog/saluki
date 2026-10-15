@@ -1248,7 +1248,6 @@ async fn a_preparation_hands_each_region_how_its_state_owners_bind_to_instances_
         state,
         leases: Default::default(),
     };
-    let artifact_nodes = BTreeSet::new();
 
     // A cut from a 10-second aggregation window to a 30-second one: the old window's instance retires at the cut, and
     // the new window's starts empty; or a parameter change that keeps the instance; or a slot without state owners.
@@ -1277,7 +1276,6 @@ async fn a_preparation_hands_each_region_how_its_state_owners_bind_to_instances_
             &new,
             preparation(state.clone()),
             PanicBudget::ARTIFACT,
-            &artifact_nodes,
             1,
         )
         .expect("the preparation builds no kernel");

@@ -142,6 +142,50 @@ fn the_width_change_composes_into_the_default_program_as_the_check_expects() {
 }
 
 #[test]
+fn the_width_change_sets_the_inline_window_of_a_detached_export() {
+    use crate::{
+        compile::{compile, default_program_source},
+        preview::{tests::detached_fixture, CompileContext},
+    };
+
+    // A detached export holds the window as a literal, and prints the split's only parameter inline.
+    let (plan, export) = detached_fixture();
+    let source = default_program_source(&export);
+    assert!(source.contains("timestamp_split(window: 10s)"), "{}", source);
+    let edited = edits::width_change(&source, "30s").unwrap();
+    let changed = source
+        .lines()
+        .zip(edited.lines())
+        .filter(|(old, new)| old != new)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        changed,
+        [
+            (
+                "  node dsd_no_agg_split = timestamp_split(window: 10s) {",
+                "  node dsd_no_agg_split = timestamp_split(window: 30s) {"
+            ),
+            ("    window: 10s,", "    window: 30s,"),
+        ]
+    );
+    let context = CompileContext {
+        export: &export,
+        default_program: Some(&plan),
+        active: None,
+        others: &[],
+        revision: 2,
+    };
+    let (outcome, compiled) = compile(&edited, Some(&context));
+    assert!(outcome.diagnostics.is_empty(), "{:#?}", outcome.diagnostics);
+    assert!(
+        outcome.preview.valid && !outcome.preview.unchanged,
+        "{:#?}",
+        outcome.preview
+    );
+    assert_eq!(crate::canary::artifact_widths(&compiled.unwrap().document), [30, 30]);
+}
+
+#[test]
 fn a_routing_difference_names_what_each_intake_misses_and_has_besides() {
     let expected = changed(default_routing(), "primary", &["demo.debug.*"], true);
     // S1 not in effect yet at the primary endpoint, and team B receiving the platform family it should not.
@@ -404,13 +448,13 @@ fn plan_diffs_are_summarized_by_kind_of_change() {
                 "nodes": [
                     { "change": "added", "aspects": [] },
                     { "change": "changed", "aspects": ["edges"] },
-                    { "change": "changed", "aspects": ["provenance"] },
+                    { "change": "changed", "aspects": ["params"] },
                     { "change": "removed", "aspects": [] },
                 ],
                 "edges_added": ["a.out -> b.in", "b.out -> c.in"],
                 "edges_removed": ["a.out -> c.in"],
             }),
-            "1 added, 2 changed (1 in provenance only), 1 removed, 2 edges added, 1 removed",
+            "1 added, 2 changed, 1 removed, 2 edges added, 1 removed",
         ),
     ];
     for (preview, expected) in cases {

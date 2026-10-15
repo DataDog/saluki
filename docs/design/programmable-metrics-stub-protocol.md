@@ -76,6 +76,17 @@ Request body:
   the artifact the active generation serves: a payload that acknowledges the current state (section 2) under a newer
   revision, or in another config, becomes the active artifact without a new generation. `degraded` is `null` or a
   short reason.
+- A payload whose artifact composes to a plan that does what the running plan does **adopts** the running generation
+  (detached programs, phase 2): its config is acknowledged `active` with the generation ID already running, no
+  generation is created, and `active_artifact` and `program` name it from then on. Plans are compared by what their
+  nodes do, with every binding written as its value, so a detached program's literals adopt the generation of the
+  default program that binds them, and a later change of a native policy setting creates no generation. Revoking it
+  hands that generation back to the default program the same way, so an unmodified export is published and revoked
+  without a generation of its own.
+- `status.program` (additive, detached programs): `{"runs": "default" | "published", "native_policy": "applied" |
+  "not_applied", "differs": ["<binding>", ...]}`, left out while no generation is active. A published program owns its
+  policy settings, so native ones are not applied to it; `differs` lists the native policy settings, by binding, whose
+  current value the running program does not run as the default program would (none for the default program).
 - `status.stale_review` is `true` when the active artifact's `approved_against.active_plan_hash` (section 2) differs
   from the active plan hash it was prepared against, or, for a delivery that acknowledged the current state, from the
   active plan hash when it was delivered. It was added after the first version of this contract, as an
@@ -181,7 +192,7 @@ Response body (`200`):
 |---|---|
 | `GET /programmable-metrics/status` | the `status` object above plus `config_states`, and `recipients` (below) |
 | `GET /programmable-metrics/resources` | the resources view (below) |
-| `GET /programmable-metrics/export?scope=<scope>` | export bundle (below) of a scope of the default program: `metrics`, its one scope |
+| `GET /programmable-metrics/export?scope=<scope>[&form=detached\|bound]` | export bundle (below) of a scope of the default program: `metrics`, its one scope; `detached` (the default) or `bound` |
 | `GET /programmable-metrics/plan` | the active composed logical plan, resolved values included |
 | `GET /programmable-metrics/default-program` | the default program ADP last lowered, resolved values included: the plan artifacts are composed into |
 | `GET /programmable-metrics/explain` | the explain document (JSON) for the active plan; `?format=text` for text |
@@ -196,9 +207,27 @@ Export bundle:
   "ir_versions": { "current": 1, "accepted": [1, 1] },
   "catalog": { "...": "the serialized plan-crate Catalog: scope inputs with port types, outputs with accepts, fingerprint, recipients; bindings with type, liveness, class, current value; the recipient directory" },
   "labels": { "<output id>": "<display label>" },
-  "annotations": { "nodes": { "<node id>": "<note>" }, "bindings": { "<binding>": "<class>: <what it is>" } }
+  "annotations": { "nodes": { "<node id>": "<note>" }, "bindings": { "<binding>": "<class>: <what it is>" } },
+  "form": "detached"
 }
 ```
+
+- `form` (additive, detached programs): `detached`, the default, writes every parameter bound to a `policy` binding as
+  its current value, keeps `fact` and `signal` bindings bound, folds `flag` and `is_empty` over literals, and writes
+  each `emit` to a native output whose recipients a set of directory names stands for exactly as an `emit` to those
+  names (`{"to": ["primary", "https://..."]}`); its base is the bound export's. `bound` writes the default program as
+  lowered, bound to its native settings. ADP refuses an artifact that binds a `policy` binding, with a rejection
+  message that names the binding, the value to write, and the facts and signals a program may bind, so `bound` is for
+  tools that study lowering. The acknowledgment carries the message only: `policy_binding` names the error in the
+  plan crate and the demo, and is no code on the wire. A
+  reader of a bundle without `form` reads `bound`; the catalog then has no `detached_programs` member either.
+- An `emit` names its output (`{"output": "<id>"}`) or recipients (`{"to": ["<name>", ...]}`), names from the
+  catalog's directory on one delivery host. ADP resolves the names into the output with exactly those recipients,
+  adding an implied output (`implied_<emit node>_<set digest>`, the digest's first eight hexadecimal digits) for a set
+  no output delivers to, so an artifact records no
+  fingerprint for an `emit` to recipients. A config whose `emit` names an unknown recipient, or recipients without an
+  output yet, is `pending` with the reason; one whose recipients lie on two hosts, or that the host adds no output for,
+  is `rejected`. The catalog document's `detached_programs: true` says that a program binds facts and signals only.
 
 - `catalog` is exactly the plan crate's `MemoryCatalog` document, so the plan crate reads it back. `labels` (optional,
   left out when there are none): display labels by output ID. Readers also accept a `label` member on a catalog
@@ -212,6 +241,10 @@ Export bundle:
   with the recipient identities it stands for, its delivery host, its endpoint as status spells it, and its `source`
   (`native`, `config`, or `resources`). It never holds a credential. Readers ignore members of an entry they do not
   know, and leave out an entry from a source they do not know.
+- `explain` (the route below) is version 2 since detached programs, phase 2: nodes carry no provenance, and the plan's
+  `provenance.artifacts` names each composed artifact with the `scope` it replaces, whose nodes are its program. A
+  default program's `provenance.native_components` maps a node to the native component it does the work of, for the
+  cost model and the layout built at boot; a composed plan has none.
 - `annotations` (optional, additive): ADP's notes for tools, one line per exported node and per binding, which an
   editor prints as comments. They are not part of the artifact. Readers ignore members they do not know.
 - The `metrics` scope has one input per metrics source the configuration enables, each named after its source's binding

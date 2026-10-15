@@ -7,7 +7,7 @@ use serde_json::Value;
 use super::{BoundEntry, BoundScopeEntry, Explain, PhysicalPlan, ResourcesEntry, RewriteEntry};
 use crate::{
     canonical::{to_canonical_string, PlanHash},
-    ir::{ParamName, PayloadClasses, Provenance, ResourceProvenance, Selector},
+    ir::{ParamName, PayloadClasses, ResourceProvenance, Selector},
     model::PortType,
     validate::describe_port_type,
 };
@@ -34,7 +34,11 @@ fn write_document(explain: &Explain, out: &mut String) -> std::fmt::Result {
             writeln!(out, "  config_change {}", change)?;
         }
         for artifact in &provenance.artifacts {
-            writeln!(out, "  artifact revision {} {}", artifact.revision, artifact.hash)?;
+            writeln!(
+                out,
+                "  artifact revision {} {} replaces scope {}",
+                artifact.revision, artifact.hash, artifact.scope
+            )?;
         }
     }
     let errors = explain.findings.iter().filter(|f| f.severity == "error").count();
@@ -55,13 +59,6 @@ fn write_document(explain: &Explain, out: &mut String) -> std::fmt::Result {
         match (&node.boundary, &node.state) {
             (Some(boundary), Some(state)) => write!(out, " [{}, state {}]", boundary, state)?,
             _ => write!(out, " [not configured]")?,
-        }
-        match &node.provenance {
-            Some(Provenance::Native(component)) => write!(out, " native {}", component)?,
-            Some(Provenance::Artifact(artifact)) => {
-                write!(out, " artifact revision {} {}", artifact.revision, artifact.hash)?
-            }
-            None => write!(out, " no provenance")?,
         }
         writeln!(out)?;
         if !node.loss.is_empty() {
@@ -222,6 +219,10 @@ fn write_resources(resources: &ResourcesEntry, out: &mut String) -> std::fmt::Re
             Selector::Declared(recipients) => {
                 let recipients = recipients.iter().map(ToString::to_string).collect::<Vec<_>>();
                 format!("declared {}", list(&recipients))
+            }
+            Selector::Recipients(recipients) => {
+                let recipients = recipients.iter().map(ToString::to_string).collect::<Vec<_>>();
+                format!("recipients {}", list(&recipients))
             }
         };
         writeln!(out, "      selector {}", selector)?;

@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 
 use super::{frame::REGION_COST_FLOOR, *};
 use crate::{
-    ir::{NativeComponentId, NodeId, OutputId, Plan, PortRef, Provenance},
+    ir::{NativeComponentId, NodeId, OutputId, Plan, PortRef},
     model::PortType,
     operators::Boundary,
     testing::{default_program_catalog, with_opaque_gateways, DEFAULT_PROGRAM_JSON, NO_AGGREGATION_PIPELINE_OFF_JSON},
@@ -637,7 +637,7 @@ fn with_gateways_as_routing_operators_enrichment_runs_the_whole_policy_region_as
 fn synthetic(nodes: &[(&str, &str, Value)], edges: &[(&str, &str)]) -> Plan {
     let nodes = nodes
         .iter()
-        .map(|(id, op, params)| json!({"id": id, "op": op, "params": params, "provenance": {"native": id}}))
+        .map(|(id, op, params)| json!({"id": id, "op": op, "params": params}))
         .collect::<Vec<_>>();
     let edges = edges
         .iter()
@@ -768,7 +768,9 @@ fn synchronous_nodes_that_a_fence_separates_get_their_own_slots() {
 fn host_tags_chain(nodes: &[(&str, &str)], operator: &str) -> Plan {
     let mut value = serde_json::to_value(synthetic(&[("otlp_in", "source", json!({"binding": "otlp"}))], &[])).unwrap();
     let mut previous = "otlp_in.metrics".to_string();
+    value["provenance"] = json!({"native_components": {}});
     for (node, component) in nodes {
+        value["provenance"]["native_components"][*node] = json!(component);
         let params = if operator == "host_tags" {
             json!({"tags": ["team:core"], "deadline": "1700000300s"})
         } else {
@@ -777,16 +779,17 @@ fn host_tags_chain(nodes: &[(&str, &str)], operator: &str) -> Plan {
         value["nodes"]
             .as_array_mut()
             .unwrap()
-            .push(json!({"id": node, "op": operator, "params": params, "provenance": {"native": component}}));
+            .push(json!({"id": node, "op": operator, "params": params}));
         value["edges"]
             .as_array_mut()
             .unwrap()
             .push(json!({"from": previous, "to": format!("{}.in", node)}));
         previous = format!("{}.out", node);
     }
-    value["nodes"].as_array_mut().unwrap().push(
-        json!({"id": "last_out", "op": "emit", "params": {"output": "out"}, "provenance": {"native": "last_out"}}),
-    );
+    value["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"id": "last_out", "op": "emit", "params": {"output": "out"}}));
     value["edges"]
         .as_array_mut()
         .unwrap()
@@ -879,26 +882,25 @@ fn the_cost_model_pipelines_a_chain_between_native_components_and_within_its_bud
 fn parallel_branches(join: bool) -> Plan {
     let tags = json!({"tags": ["team:core"], "deadline": "1700000300s"});
     let mut nodes = vec![json!(
-        {"id": "otlp_in", "op": "source", "params": {"binding": "otlp"}, "provenance": {"native": "otlp_in"}}
+        {"id": "otlp_in", "op": "source", "params": {"binding": "otlp"}}
     )];
     let mut edges = Vec::new();
+    let mut components = serde_json::Map::new();
     let inputs = if join {
         nodes.push(json!(
-            {"id": "checks_ipc_in", "op": "source", "params": {"binding": "checks"},
-             "provenance": {"native": "checks_ipc_in"}}
+            {"id": "checks_ipc_in", "op": "source", "params": {"binding": "checks"}}
         ));
         ["otlp_in.metrics", "checks_ipc_in.metrics"]
     } else {
-        nodes.push(json!({"id": "fanout", "op": "tee", "params": {"ports": 2}, "provenance": {"native": "fanout"}}));
+        nodes.push(json!({"id": "fanout", "op": "tee", "params": {"ports": 2}}));
         edges.push(json!({"from": "otlp_in.metrics", "to": "fanout.in"}));
         ["fanout.0", "fanout.1"]
     };
     for (input, branch) in inputs.into_iter().zip(["x", "y"]) {
         for step in 1..=2 {
-            nodes.push(json!({
-                "id": format!("{}{}", branch, step), "op": "host_tags", "params": tags,
-                "provenance": {"native": branch},
-            }));
+            let id = format!("{}{}", branch, step);
+            components.insert(id.clone(), json!(branch));
+            nodes.push(json!({"id": id, "op": "host_tags", "params": tags}));
         }
         edges.push(json!({"from": input, "to": format!("{}1.in", branch)}));
         edges.push(json!({"from": format!("{}1.out", branch), "to": format!("{}2.in", branch)}));
@@ -920,11 +922,12 @@ fn parallel_branches(join: bool) -> Plan {
         ]
     };
     for (id, op, params) in terminals {
-        nodes.push(json!({"id": id, "op": op, "params": params, "provenance": {"native": id}}));
+        nodes.push(json!({"id": id, "op": op, "params": params}));
     }
     let mut value = serde_json::to_value(synthetic(&[], &[])).unwrap();
     value["nodes"] = Value::Array(nodes);
     value["edges"] = Value::Array(edges);
+    value["provenance"] = json!({"native_components": components});
     Plan::from_value(value).unwrap()
 }
 
@@ -1020,10 +1023,9 @@ fn a_decision_is_never_cut_and_costs_what_its_function_does() {
         .collect::<Vec<_>>();
     let mut plan = synthetic(&nodes, &edges);
     let enrich = NativeComponentId::new("enrich").unwrap();
-    for node in &mut plan.nodes {
-        if ["tags", "fanout"].contains(&node.id.local().as_str()) {
-            node.provenance = Some(Provenance::Native(enrich.clone()));
-        }
+    let components = &mut plan.provenance.get_or_insert_with(Default::default).native_components;
+    for node in ["tags", "fanout"] {
+        components.insert(id(node), enrich.clone());
     }
     validated(&plan, &synthetic_catalog());
 
@@ -1047,7 +1049,7 @@ fn a_candidate_runs_its_boot_nodes_in_their_boot_regions_and_new_nodes_where_the
     value["nodes"]
         .as_array_mut()
         .unwrap()
-        .push(json!({"id": "between", "op": "host_enrichment", "params": {}, "provenance": {"native": "between"}}));
+        .push(json!({"id": "between", "op": "host_enrichment", "params": {}}));
     for edge in value["edges"].as_array_mut().unwrap() {
         if edge["from"] == "t2.out" {
             edge["from"] = json!("between.out");
@@ -1353,8 +1355,7 @@ fn adding_a_fixed_destination_needs_a_restart() {
         }));
         node_mut(value, "metrics_policy")["params"]["ports"] = json!(6);
         value["nodes"].as_array_mut().unwrap().push(json!({
-            "id": "metrics_policy_5", "op": "emit", "params": {"output": "new_encode"},
-            "provenance": {"native": "new_encode"}
+            "id": "metrics_policy_5", "op": "emit", "params": {"output": "new_encode"}
         }));
         value["edges"]
             .as_array_mut()
@@ -1391,7 +1392,7 @@ fn a_new_fence_crossing_native_configuration_asks_for_needs_a_restart() {
     // Processing after a gateway needs a region there; the topology connects the gateway straight to its encoder.
     let after_host = edited(|value| {
         value["nodes"].as_array_mut().unwrap().push(json!({
-            "id": "mrf_metrics_gateway_enrich", "op": "host_enrichment", "provenance": {"native": "mrf_metrics_gateway"}
+            "id": "mrf_metrics_gateway_enrich", "op": "host_enrichment"
         }));
         for edge in value["edges"].as_array_mut().unwrap() {
             if edge["from"] == "mrf_metrics_gateway.out" {
@@ -1423,7 +1424,7 @@ fn a_new_fence_crossing_native_configuration_asks_for_needs_a_restart() {
             .unwrap()
             .remove("dogstatsd_pre_aggregation");
         value["nodes"].as_array_mut().unwrap().push(json!({
-            "id": "dsd_enrich_in", "op": "merge", "params": {"inputs": 2}, "provenance": {"native": "dsd_enrich"}
+            "id": "dsd_enrich_in", "op": "merge", "params": {"inputs": 2}
         }));
         for edge in value["edges"].as_array_mut().unwrap() {
             if edge["from"] == "dsd_in.metrics" {

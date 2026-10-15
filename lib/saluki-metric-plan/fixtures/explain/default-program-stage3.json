@@ -1,9 +1,31 @@
 {
-  "explain_version": 1,
+  "explain_version": 2,
   "plan": {
     "ir_version": 1,
-    "hash": "sha256:dc3c9406ae14525e885614c89b9de03e1434e94b16431d5cc3dd8196441f8e9b",
-    "structural_hash": "sha256:c44a2c89603910524085c2b11ad295579fac3affaea14113e35a29d4f3c99b16",
+    "hash": "sha256:d797bfa4d6ff406e975e1cb4aaf9f9658016fd17ff6a2cb078204ca4d6c3dd83",
+    "structural_hash": "sha256:9f2fc112d68856c214d2fe2d4ae00298f9512b0e23c0bdd232c3f6da93327984",
+    "provenance": {
+      "native_components": {
+        "af_metrics_gateway_false": "af_metrics_gateway",
+        "af_metrics_gateway_true": "af_metrics_encode",
+        "dsd_post_agg_filter_fanout": "dsd_client_telemetry_out",
+        "dsd_post_agg_filter_fanout_0": "dsd_client_telemetry_out",
+        "dsd_post_agg_filter_in": "dsd_post_agg_filter",
+        "dsd_post_agg_filter_true": "dsd_post_agg_filter",
+        "dsd_prefix_filter_blocklist": "dsd_prefix_filter",
+        "dsd_prefix_filter_blocklist_true": "dsd_prefix_filter",
+        "metrics_enrich_host_tags": "metrics_enrich",
+        "metrics_enrich_in": "metrics_enrich",
+        "metrics_policy": "metrics_enrich",
+        "metrics_policy_0": "dd_metrics_encode",
+        "metrics_routing_filter_0_false": "metrics_routing_filter_0",
+        "metrics_routing_filter_0_true": "metrics_routing_encode_0",
+        "metrics_routing_filter_1_false": "metrics_routing_filter_1",
+        "metrics_routing_filter_1_true": "metrics_routing_encode_1",
+        "mrf_metrics_gateway_false": "mrf_metrics_gateway",
+        "mrf_metrics_gateway_true": "mrf_metrics_encode"
+      }
+    },
     "valid": true
   },
   "graph": {
@@ -14,9 +36,6 @@
         "boundary": "io_host",
         "state": "none",
         "loss": [],
-        "provenance": {
-          "native": "dsd_in"
-        },
         "params": {
           "binding": "dogstatsd",
           "timestamps": "mixed"
@@ -46,9 +65,6 @@
         "boundary": "synchronous",
         "state": "none",
         "loss": [],
-        "provenance": {
-          "native": "dsd_enrich"
-        },
         "params": {
           "cache_size": {
             "config": "dogstatsd.mapper.cache_size",
@@ -149,9 +165,6 @@
         "boundary": "synchronous",
         "state": "none",
         "loss": [],
-        "provenance": {
-          "native": "dsd_prefix_filter"
-        },
         "params": {
           "exclusions": {
             "config": "dogstatsd.prefix_filter.metric_namespace_blocklist",
@@ -213,9 +226,6 @@
         "boundary": "synchronous",
         "state": "none",
         "loss": [],
-        "provenance": {
-          "native": "dsd_prefix_filter"
-        },
         "params": {
           "predicate": {
             "intake_name": {
@@ -297,9 +307,6 @@
         "loss": [
           "policy"
         ],
-        "provenance": {
-          "native": "dsd_prefix_filter"
-        },
         "params": {},
         "bindings": [],
         "inputs": [
@@ -320,9 +327,6 @@
         "boundary": "synchronous",
         "state": "none",
         "loss": [],
-        "provenance": {
-          "native": "dsd_no_agg_split"
-        },
         "params": {
           "window": {
             "config": "dogstatsd.aggregation.window_duration_seconds",
@@ -385,9 +389,6 @@
         "loss": [
           "policy"
         ],
-        "provenance": {
-          "native": "dsd_tag_filterlist"
-        },
         "params": {
           "cache_capacity": {
             "config": "dogstatsd.aggregation.aggregator_tag_filter_cache_capacity",
@@ -494,9 +495,6 @@
           "capacity",
           "shutdown"
         ],
-        "provenance": {
-          "native": "dsd_agg"
-        },
         "params": {
           "context_limit": {
             "config": "dogstatsd.aggregation.context_limit",
@@ -628,9 +626,6 @@
         "boundary": "synchronous",
         "state": "none",
         "loss": [],
-        "provenance": {
-          "native": "dsd_post_agg_filter"
-        },
         "params": {
           "inputs": 2
         },
@@ -676,9 +671,6 @@
         "boundary": "synchronous",
         "state": "none",
         "loss": [],
-        "provenance": {
-          "native": "dsd_post_agg_filter"
-        },
         "params": {
           "predicate": {
             "all": [
@@ -770,9 +762,6 @@
         "loss": [
           "policy"
         ],
-        "provenance": {
-          "native": "dsd_post_agg_filter"
-        },
         "params": {},
         "bindings": [],
         "inputs": [
@@ -793,9 +782,6 @@
         "boundary": "synchronous",
         "state": "none",
         "loss": [],
-        "provenance": {
-          "native": "dsd_client_telemetry_out"
-        },
         "params": {
           "ports": 2
         },
@@ -847,9 +833,6 @@
         "boundary": "synchronous",
         "state": "none",
         "loss": [],
-        "provenance": {
-          "native": "dsd_client_telemetry_out"
-        },
         "params": {
           "output": "dsd_client_telemetry"
         },
@@ -872,9 +855,6 @@
         "boundary": "io_host",
         "state": "none",
         "loss": [],
-        "provenance": {
-          "native": "otlp_in"
-        },
         "params": {
           "binding": "otlp"
         },
@@ -902,9 +882,6 @@
         "boundary": "io_host",
         "state": "none",
         "loss": [],
-        "provenance": {
-          "native": "checks_ipc_in"
-        },
         "params": {
           "binding": "checks"
         },
@@ -932,9 +909,6 @@
         "boundary": "io_host",
         "state": "none",
         "loss": [],
-        "provenance": {
-          "native": "liveness_in"
-        },
         "params": {
           "binding": "liveness"
         },
@@ -959,9 +933,6 @@
         "boundary": "io_host",
         "state": "none",
         "loss": [],
-        "provenance": {
-          "native": "trace_sampler"
-        },
         "params": {
           "binding": "trace_sampler"
         },
@@ -987,9 +958,6 @@
         "boundary": "synchronous",
         "state": "none",
         "loss": [],
-        "provenance": {
-          "native": "metrics_enrich"
-        },
         "params": {
           "inputs": 5
         },
@@ -1053,9 +1021,6 @@
         "boundary": "synchronous",
         "state": "none",
         "loss": [],
-        "provenance": {
-          "native": "metrics_enrich"
-        },
         "params": {},
         "bindings": [],
         "inputs": [
@@ -1085,9 +1050,6 @@
         "boundary": "synchronous",
         "state": "none",
         "loss": [],
-        "provenance": {
-          "native": "metrics_enrich"
-        },
         "params": {
           "deadline": {
             "config": "host.tags_deadline",
@@ -1143,9 +1105,6 @@
         "boundary": "synchronous",
         "state": "none",
         "loss": [],
-        "provenance": {
-          "native": "metrics_enrich"
-        },
         "params": {
           "ports": 5
         },
@@ -1209,9 +1168,6 @@
         "boundary": "synchronous",
         "state": "none",
         "loss": [],
-        "provenance": {
-          "native": "dd_metrics_encode"
-        },
         "params": {
           "output": "dd_metrics_encode"
         },
@@ -1236,9 +1192,6 @@
         "loss": [
           "policy"
         ],
-        "provenance": {
-          "native": "metrics_routing_filter_0"
-        },
         "params": {
           "component": "metrics_routing_filter_0",
           "input": {
@@ -1280,9 +1233,6 @@
         "boundary": "synchronous",
         "state": "none",
         "loss": [],
-        "provenance": {
-          "native": "metrics_routing_encode_0"
-        },
         "params": {
           "output": "metrics_routing_encode_0"
         },
@@ -1307,9 +1257,6 @@
         "loss": [
           "policy"
         ],
-        "provenance": {
-          "native": "metrics_routing_filter_1"
-        },
         "params": {
           "component": "metrics_routing_filter_1",
           "input": {
@@ -1351,9 +1298,6 @@
         "boundary": "synchronous",
         "state": "none",
         "loss": [],
-        "provenance": {
-          "native": "metrics_routing_encode_1"
-        },
         "params": {
           "output": "metrics_routing_encode_1"
         },
@@ -1378,9 +1322,6 @@
         "loss": [
           "policy"
         ],
-        "provenance": {
-          "native": "mrf_metrics_gateway"
-        },
         "params": {
           "component": "mrf_metrics_gateway",
           "input": {
@@ -1422,9 +1363,6 @@
         "boundary": "synchronous",
         "state": "none",
         "loss": [],
-        "provenance": {
-          "native": "mrf_metrics_encode"
-        },
         "params": {
           "output": "mrf_metrics_encode"
         },
@@ -1449,9 +1387,6 @@
         "loss": [
           "policy"
         ],
-        "provenance": {
-          "native": "af_metrics_gateway"
-        },
         "params": {
           "component": "af_metrics_gateway",
           "input": {
@@ -1503,9 +1438,6 @@
         "boundary": "synchronous",
         "state": "none",
         "loss": [],
-        "provenance": {
-          "native": "af_metrics_encode"
-        },
         "params": {
           "output": "af_metrics_encode"
         },

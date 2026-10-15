@@ -73,6 +73,10 @@ pub struct ControlSurfaceState {
 struct ExportQuery {
     /// The scope to export.
     scope: Option<String>,
+
+    /// The form to export it in: `detached`, the default, which writes the default program's policy settings as their
+    /// current values, or `bound`, which binds them as the default program does.
+    form: Option<String>,
 }
 
 /// The query parameters of the explain route.
@@ -122,9 +126,20 @@ impl ControlSurfaceAPIHandler {
                 ),
             );
         };
-        let export = ScopeName::new(scope.as_str())
-            .ok()
-            .and_then(|name| status.exports.get(&name));
+        let exports = match query.form.as_deref() {
+            None | Some("detached") => &status.exports,
+            Some("bound") => &status.bound_exports,
+            Some(other) => {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "The `form` query parameter is `detached`, the default, or `bound`, not `{}`.",
+                        other
+                    ),
+                )
+            }
+        };
+        let export = ScopeName::new(scope.as_str()).ok().and_then(|name| exports.get(&name));
         match export {
             Some(Ok(bundle)) => json(&**bundle),
             Some(Err(reason)) => error(

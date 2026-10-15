@@ -472,11 +472,6 @@
     }
   }
 
-  // Whether a diff entry only changes a node's provenance: the artifact now authorizes what native configuration did.
-  function provenanceOnly(node) {
-    return node.change === "changed" && node.aspects.length === 1 && node.aspects[0] === "provenance";
-  }
-
   function diffBase(against) {
     if (against.kind !== "active") return "the default program (ADP's active plan was not available)";
     const program = against.artifact_revision ? `artifact rev ${against.artifact_revision}` : "default program";
@@ -485,16 +480,13 @@
 
   // Counts a preview's changes in a few words, for the diff's header and the approval panel.
   function diffCounts(preview) {
-    const structural = preview.nodes.filter((n) => !provenanceOnly(n));
     const parts = [];
-    const added = structural.filter((n) => n.change === "added").length;
-    const changed = structural.filter((n) => n.change === "changed").length;
-    const removed = structural.filter((n) => n.change === "removed").length;
+    const added = preview.nodes.filter((n) => n.change === "added").length;
+    const changed = preview.nodes.filter((n) => n.change === "changed").length;
+    const removed = preview.nodes.filter((n) => n.change === "removed").length;
     if (added) parts.push(`${added} added`);
     if (changed) parts.push(`${changed} changed`);
     if (removed) parts.push(`${removed} removed`);
-    const authority = preview.nodes.length - structural.length;
-    if (authority) parts.push(`${authority} re-authorized`);
     const outputs = preview.outputs.length;
     if (outputs) parts.push(plural(outputs, "output"));
     return parts.length ? parts.join(" · ") : "edges only";
@@ -546,9 +538,9 @@
       since || "");
 
     const signs = { added: "+", removed: "−", changed: "~" };
-    for (const node of preview.nodes.filter((n) => !provenanceOnly(n))) {
+    for (const node of preview.nodes) {
       let what;
-      if (node.change === "added") what = `${node.op} · ${node.provenance || ""}`;
+      if (node.change === "added") what = node.op;
       else if (node.change === "removed") what = node.op;
       else what = `${node.op}: ${node.aspects.join(", ")}`;
       const name = node.artifact_node && node.artifact_node !== node.node
@@ -562,16 +554,6 @@
         item.title = `Line ${node.range.line}: click to select it in the editor`;
         item.addEventListener("click", () => reveal(node.range));
       }
-      ui.diffNodes.append(item);
-    }
-    const reauthorized = preview.nodes.filter(provenanceOnly);
-    if (reauthorized.length) {
-      const ids = reauthorized.map((n) => n.node);
-      const item = el("li", { class: "changed authority" },
-        el("span", { class: "sign", text: "~" }),
-        el("span", { class: "id", text: ids.join(", ") }),
-        el("span", { class: "what", text: `now authorized by ${reauthorized[0].provenance || "the artifact"}` }));
-      item.title = "Unchanged nodes whose loss the artifact authorizes now, since what reaches them changed";
       ui.diffNodes.append(item);
     }
     for (const output of preview.outputs) {

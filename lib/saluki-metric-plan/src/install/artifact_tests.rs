@@ -119,7 +119,7 @@ impl Composer for TestComposer {
         match marker.as_str() {
             _ if degradable && configuration != BOOT_POST_AGGREGATION && approval.in_effect => {
                 outcome = ComposeOutcome::Degraded(vec![DroppedEmits {
-                    output: removed.clone(),
+                    target: crate::compose::DropTarget::Output(removed.clone()),
                     reason: DropReason::Removed,
                     nodes: vec!["metrics_policy_true".parse().unwrap()],
                 }]);
@@ -1794,12 +1794,21 @@ fn the_default_program_keeps_a_zero_panic_budget_and_artifacts_get_theirs() {
         }
     );
 
-    // An unmodified export runs in the default program's generation, whose budget stays zero: every node in it is
-    // native. Once composed again, it runs in an artifact generation.
+    // An unmodified export adopts the default program's generation: the generation now runs the artifact, with its
+    // budget, although nothing about it was built anew. Once composed again, it runs in an artifact generation too.
     let mut host = Host::new();
-    host.step(&Deliver(vec![policy(1, "unmodified")]));
-    let origin = host.core().status().active.unwrap().origin;
-    assert_eq!(origin, Origin::DefaultProgram { config_change: 0 });
+    let performed = host.step(&Deliver(vec![policy(1, "unmodified")]));
+    let adopted = Origin::Artifact {
+        revision: 1,
+        hash: artifact_hash("unmodified"),
+    };
+    assert!(
+        performed.contains(&format!("adopt 1 as {}", adopted)),
+        "{:?}",
+        performed
+    );
+    let active = host.core().status().active.unwrap();
+    assert_eq!((active.id.get(), active.origin), (1, adopted));
     host.step(&Configure("other"));
     host.step(&Acknowledge);
     let origin = host.core().status().active.unwrap().origin;

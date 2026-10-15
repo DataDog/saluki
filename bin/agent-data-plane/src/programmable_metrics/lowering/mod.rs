@@ -79,9 +79,10 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_metric_kernels::mapper::validate_profiles;
 use saluki_metric_plan::{
     canonical::MAX_SAFE_INTEGER,
+    compose::Demand,
     ir::{
         derived_terminal_id, format_duration, BindingName, Edge, NativeComponentId, Node, NodeId, OperatorName,
-        ParamName, Params, Plan, PortName, PortRef, Provenance, ScopeDecl, IR_VERSION,
+        ParamName, Params, Plan, PlanProvenance, PortName, PortRef, ScopeDecl, IR_VERSION,
     },
     model::{PortType, TimestampForm},
     operators::{names, SourceBinding, METRICS_PORT},
@@ -93,8 +94,8 @@ use super::{
     catalog::{scope_input_name, AdpCatalog, METRICS_SCOPE},
     host_facts::{host_tags_enabled, HostFacts},
     resources::{
-        cluster_agent_forwarder, spelled_endpoint, Declared, FixedHosts, NativeOutputs, NativeResources, OutputKind,
-        RoutingGroup, DSD_CLIENT_TELEMETRY, DSD_CLIENT_TELEMETRY_OUT,
+        cluster_agent_forwarder, spelled_endpoint, Declared, Demanded, FixedHosts, NativeOutputs, NativeResources,
+        OutputKind, RoutingGroup, DSD_CLIENT_TELEMETRY, DSD_CLIENT_TELEMETRY_OUT,
     },
 };
 use crate::{
@@ -313,11 +314,12 @@ impl Lowering {
     pub fn lower_with(
         &self, current: &SalukiConfiguration, declared: Option<Declared<'_>>,
     ) -> Result<Lowered, GenericError> {
-        self.lower_after(current, declared, &NativeResources::default())
+        self.lower_after(current, declared, &[], &NativeResources::default())
     }
 
-    /// Lowers native configuration, and the resources `declared` declares, into the default program that follows the
-    /// one lowered before it, whose resources were `previous`.
+    /// Lowers native configuration, the resources `declared` declares, and an implied output for each set of recipients
+    /// of `demand` that no output delivers to, into the default program that follows the one lowered before it, whose
+    /// resources were `previous` (see [`Demanded`]).
     ///
     /// The program is the one [`lower_with`][Self::lower_with] lowers, except that a native recipient `previous`
     /// declares stays while its endpoint and key position stay configured, whatever its key now holds: a key is a
@@ -327,7 +329,8 @@ impl Lowering {
     ///
     /// As for [`lower_with`][Self::lower_with].
     pub fn lower_after(
-        &self, current: &SalukiConfiguration, declared: Option<Declared<'_>>, previous: &NativeResources,
+        &self, current: &SalukiConfiguration, declared: Option<Declared<'_>>, demand: &[Demand],
+        previous: &NativeResources,
     ) -> Result<Lowered, GenericError> {
         let startup = &*self.startup;
         let resolved = NativeResources::resolve_after(
@@ -336,6 +339,10 @@ impl Lowering {
             &self.facts,
             &self.hosts,
             declared,
+            Demanded {
+                demand,
+                previous: &previous.outputs,
+            },
             &previous.resources,
         )?;
         let dp = DataPlaneConfiguration::from_configuration(startup);
@@ -389,9 +396,13 @@ impl Lowering {
         program.policy(enriched, &resolved.outputs)?;
 
         // The one scope: the whole metrics path after its sources, fed by each of them and with no exits.
+        let native_components = std::mem::take(&mut program.native_components);
         let mut plan = Plan {
             ir_version: IR_VERSION,
-            provenance: None,
+            provenance: (!native_components.is_empty()).then(|| PlanProvenance {
+                native_components,
+                ..PlanProvenance::default()
+            }),
             nodes: std::mem::take(&mut program.nodes),
             edges: std::mem::take(&mut program.edges),
             outputs: resolved.outputs.decls(),
@@ -517,6 +528,9 @@ struct Program<'a> {
     snapshots: Snapshots<'a>,
     nodes: Vec<Node>,
     edges: Vec<Edge>,
+    /// The native component each node stands for, where it is not the node's own ID: the plan's
+    /// [`native_components`][PlanProvenance::native_components], for the boot layout.
+    native_components: BTreeMap<NodeId, NativeComponentId>,
     /// Notes of nodes whose note depends on the configuration, beside [`ANNOTATIONS`].
     annotations: BTreeMap<NodeId, String>,
 }
@@ -527,6 +541,7 @@ impl<'a> Program<'a> {
             snapshots,
             nodes: Vec::new(),
             edges: Vec::new(),
+            native_components: BTreeMap::new(),
             annotations: BTreeMap::new(),
         }
     }
@@ -545,10 +560,11 @@ impl<'a> Program<'a> {
             id: id.clone(),
             op: OperatorName::new(op).expect("operator names are identifiers"),
             params,
-            provenance: Some(Provenance::Native(
-                NativeComponentId::new(native).expect("native component IDs are valid"),
-            )),
         });
+        if id.local().as_str() != native {
+            let native = NativeComponentId::new(native).expect("native component IDs are valid");
+            self.native_components.insert(id.clone(), native);
+        }
         id
     }
 
@@ -802,11 +818,16 @@ impl<'a> Program<'a> {
 
     /// Lowers the policy region fed by `enriched`: one branch per output other than the client telemetry tap.
     ///
-    /// Outputs a resources artifact declares get no branch: only artifacts emit to them.
+    /// Outputs a resources artifact declares, and those programs imply, get no branch: only artifacts emit to them.
     fn policy(&mut self, enriched: PortRef, outputs: &NativeOutputs) -> Result<(), GenericError> {
         let branches = outputs
             .iter()
-            .filter(|output| !matches!(output.kind, OutputKind::ClientTelemetry | OutputKind::Declared { .. }))
+            .filter(|output| {
+                !matches!(
+                    output.kind,
+                    OutputKind::ClientTelemetry | OutputKind::Declared { .. } | OutputKind::Implied { .. }
+                )
+            })
             .collect::<Vec<_>>();
         let policy = self.node(
             ids::METRICS_POLICY,
@@ -822,7 +843,7 @@ impl<'a> Program<'a> {
             // The gateway that selects what reaches the output, as a `split` whose `true` port leads to the output and
             // whose `false` port drops, and the predicate its native component applies.
             let (gateway, predicate) = match &output.kind {
-                OutputKind::ClientTelemetry | OutputKind::Declared { .. } => continue,
+                OutputKind::ClientTelemetry | OutputKind::Declared { .. } | OutputKind::Implied { .. } => continue,
                 OutputKind::Main => {
                     self.terminal(&policy, &branch, names::EMIT, emit, &output.component);
                     continue;

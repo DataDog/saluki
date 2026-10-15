@@ -155,6 +155,40 @@
         }
       ]
     },
+    "ComposedArtifact": {
+      "description": "An artifact revision composed into a plan, and the scope it replaces.",
+      "type": "object",
+      "required": [
+        "hash",
+        "revision",
+        "scope"
+      ],
+      "properties": {
+        "hash": {
+          "description": "The hash of the artifact.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PlanHash"
+            }
+          ]
+        },
+        "revision": {
+          "description": "The artifact's revision number.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "scope": {
+          "description": "The scope the artifact replaces: every node of the scope's region in the plan is the artifact's.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/ScopeName"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "CredentialRef": {
       "description": "A credential reference.",
       "type": "string",
@@ -347,17 +381,6 @@
               "$ref": "#/definitions/Params"
             }
           ]
-        },
-        "provenance": {
-          "description": "Where the node came from.",
-          "anyOf": [
-            {
-              "$ref": "#/definitions/Provenance"
-            },
-            {
-              "type": "null"
-            }
-          ]
         }
       },
       "additionalProperties": false
@@ -541,10 +564,10 @@
       "type": "object",
       "properties": {
         "artifacts": {
-          "description": "The artifact revisions composed into the plan.",
+          "description": "The artifact revisions composed into the plan, each with the scope it replaces, in scope order: the program the plan runs. A plan without them is the default program.",
           "type": "array",
           "items": {
-            "$ref": "#/definitions/ArtifactRevision"
+            "$ref": "#/definitions/ComposedArtifact"
           }
         },
         "config_change": {
@@ -555,6 +578,13 @@
           ],
           "format": "uint64",
           "minimum": 0.0
+        },
+        "native_components": {
+          "description": "Which native component each node of a lowered default program does the work of, as lowering writes it.\n\nThis describes native configuration's topology, for the layout the host builds at boot from its default program: R1's cost model prices native components, not nodes, and a host may size a region's input by the native components it replaces. It decides nothing else: not what a node may do, not who answers for its loss, and not what a later generation reuses. Composition does not carry it, since a composed plan is never a boot plan. A node it does not list is a component of its own.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/NativeComponentId"
+          }
         }
       },
       "additionalProperties": false
@@ -592,37 +622,6 @@
         }
       },
       "additionalProperties": false
-    },
-    "Provenance": {
-      "description": "Where a node came from, which is also the authority for any loss it causes.",
-      "oneOf": [
-        {
-          "description": "Lowered from native configuration of the named component, serialized as `{\"native\": \"<component>\"}`.",
-          "type": "object",
-          "required": [
-            "native"
-          ],
-          "properties": {
-            "native": {
-              "$ref": "#/definitions/NativeComponentId"
-            }
-          },
-          "additionalProperties": false
-        },
-        {
-          "description": "Added or changed by an approved artifact, serialized as `{\"artifact\": {\"revision\": <n>, \"hash\": \"<hash>\"}}`.",
-          "type": "object",
-          "required": [
-            "artifact"
-          ],
-          "properties": {
-            "artifact": {
-              "$ref": "#/definitions/ArtifactRevision"
-            }
-          },
-          "additionalProperties": false
-        }
-      ]
     },
     "RecipientDecl": {
       "description": "One recipient of a delivery host: one endpoint, with its credential, its queue, and its persisted directory.\n\nRecipients are shared by every output whose binding names them: outputs that share a recipient feed the same delivery queue.",
@@ -783,8 +782,15 @@
       },
       "additionalProperties": false
     },
+    "ScopeName": {
+      "description": "A scope name.",
+      "type": "string",
+      "maxLength": 63,
+      "minLength": 1,
+      "pattern": "^[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}$"
+    },
     "Selector": {
-      "description": "What an output's declaration says it delivers to.\n\nAn output's fingerprint covers its selector, not its resolved recipients: a role delivers to whatever native configuration resolves for it, so its recipients can change without changing its fingerprint, while an explicit recipient list is part of the declaration.\n\nSerialized as an object with one member: `{\"role\": \"main\"}`, `{\"group\": \"sha256:<hex>\"}`, or `{\"declared\": [<recipient ID>, ...]}`.",
+      "description": "What an output's declaration says it delivers to.\n\nAn output's fingerprint covers its selector, not its resolved recipients: a role delivers to whatever native configuration resolves for it, so its recipients can change without changing its fingerprint, while an explicit recipient list is part of the declaration.\n\nSerialized as an object with one member: `{\"role\": \"main\"}`, `{\"group\": \"sha256:<hex>\"}`, `{\"declared\": [<recipient ID>, ...]}`, or `{\"recipients\": [<recipient ID>, ...]}`.",
       "oneOf": [
         {
           "description": "A role of the delivery host, such as `main`, `multi_region_failover`, or `autoscaling_failover`.",
@@ -820,6 +826,22 @@
           ],
           "properties": {
             "declared": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/RecipientId"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "Exactly these recipients, sorted and without duplicates: an **implied output**, which the host adds for the recipients a program's `emit`s address when no other output delivers to exactly them. Its recipients may be native or declared.",
+          "type": "object",
+          "required": [
+            "recipients"
+          ],
+          "properties": {
+            "recipients": {
               "type": "array",
               "items": {
                 "$ref": "#/definitions/RecipientId"

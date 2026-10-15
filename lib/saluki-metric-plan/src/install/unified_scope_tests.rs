@@ -433,30 +433,22 @@ fn not_unmodified(composed: &Composed) -> Vec<(String, CorrespondenceKind)> {
 }
 
 #[test]
-fn a_width_only_edit_gives_every_lossy_node_downstream_of_aggregation_the_artifacts_provenance() {
+fn a_width_only_edit_modifies_only_the_nodes_whose_parameters_it_changes() {
     use CorrespondenceKind::Modified;
 
-    // In the one scope, every node that can lose records and is fed by the changed aggregation, however far down,
-    // is fed other records than the default program feeds it: it loses native authority, up to the policy region's
-    // routing drops.
+    // A node is what it does, whatever feeds it: the nodes downstream of the widened aggregation do what they did,
+    // so only the aggregation and the timestamp split, whose windows change, are the artifact's as written.
     let unified = composed(edited(widen)).unwrap();
     assert!(unified.report.findings().is_empty(), "{}", unified.report);
     assert_eq!(
         not_unmodified(&unified),
         [
-            ("af_metrics_gateway_false".to_string(), Modified),
             ("dsd_agg".to_string(), Modified),
             ("dsd_no_agg_split".to_string(), Modified),
-            ("dsd_post_agg_filter_true".to_string(), Modified),
-            ("dsd_tag_filterlist".to_string(), Modified),
-            ("metrics_routing_filter_0_false".to_string(), Modified),
-            ("metrics_routing_filter_1_false".to_string(), Modified),
-            ("mrf_metrics_gateway_false".to_string(), Modified),
         ]
     );
 
-    // The same edit of the two-scope program's pre-aggregation scope stops at its exits: the policy region is not
-    // composed, and keeps its native provenance, as does the post-aggregation filter outside both scopes.
+    // The same edit of the two-scope program's pre-aggregation scope.
     let plan = two_scope_plan();
     let pre = "dogstatsd_pre_aggregation".parse().unwrap();
     let catalog = catalog_for(&plan);
@@ -468,7 +460,6 @@ fn a_width_only_edit_gives_every_lossy_node_downstream_of_aggregation_the_artifa
         [
             ("dsd_agg".to_string(), Modified),
             ("dsd_no_agg_split".to_string(), Modified),
-            ("dsd_tag_filterlist".to_string(), Modified),
         ]
     );
 }
@@ -539,9 +530,9 @@ fn the_one_aggregation_keeps_the_default_programs_id_and_lineage_whatever_the_ar
     assert_eq!(aggregation(&widened), aggregation(&plain));
     assert!(aggregation(&widened).1, "a new width is a cut");
 
-    // Renamed and fed otherwise, through a new split ahead of it: still `dsd_agg`, now the artifact's, since what can
-    // lose records keeps native authority only fed as natively; its lineage parameters are unchanged, so it keeps its
-    // state, with no cut.
+    // Renamed and fed otherwise, through a new split ahead of it: still `dsd_agg`, and still the default program's
+    // node, since it does what that node does, whatever feeds it; its lineage parameters are unchanged, so it keeps
+    // its state, with no cut.
     let refed = composed(edited(|document| {
         rename_node(document, "dsd_agg", "agg");
         add_nodes(
@@ -567,7 +558,7 @@ fn the_one_aggregation_keeps_the_default_programs_id_and_lineage_whatever_the_ar
     assert!(refed.report.findings().is_empty(), "{}", refed.report);
     assert_eq!(
         correspondence(&refed, "agg"),
-        ("dsd_agg".to_string(), CorrespondenceKind::Modified)
+        ("dsd_agg".to_string(), CorrespondenceKind::Unmodified)
     );
     assert_eq!(
         aggregation(&refed),
@@ -689,6 +680,13 @@ impl Host {
         self.perform(actions)
     }
 
+    /// The channel revokes the policy: a snapshot without configs.
+    fn revoke(&mut self) -> Vec<String> {
+        let snapshot = ArtifactSnapshot::new(ArtifactProduct::Policy, Vec::new());
+        let actions = self.core.on_snapshot(&snapshot, &self.composer);
+        self.perform(actions)
+    }
+
     fn acknowledge(&mut self) -> Vec<String> {
         let generation = self.core.status().preparing.expect("a generation is being prepared").id;
         let mut actions = Vec::new();
@@ -711,6 +709,15 @@ impl Host {
                 match action {
                     Action::Commit { generation } | Action::FinalizeCut { generation } => self.schedule = generation,
                     Action::ArmCut(arming) => self.arming = Some(arming),
+                    Action::InstallDefaultProgram => {
+                        let plan = self.composer.plan.clone();
+                        let candidate = Candidate {
+                            report: report(&plan),
+                            plan: Arc::new(plan),
+                            origin: Origin::DefaultProgram { config_change: 1 },
+                        };
+                        next.extend(self.core.on_default_program(candidate, &self.composer).1);
+                    }
                     _ => {}
                 }
             }
@@ -781,12 +788,101 @@ fn dogstatsd_point() -> AdmissionPointId {
 }
 
 #[test]
-fn an_unmodified_export_of_the_one_scope_installs_as_the_running_plan() {
+fn an_unmodified_export_of_the_one_scope_adopts_the_running_generation() {
     let mut host = Host::new();
-    // The composition is the boot plan: no generation is created, and the config is acknowledged on the boot one.
-    let performed = host.deliver(1, exported());
-    assert_eq!(performed, strings(&["candidate 2: unchanged"]), "{:?}", performed);
+    let boot_hash = host.active_plan().hash(ResolvedValues::Include).unwrap();
+    // The composition is the boot plan: it adopts the boot generation. Nothing is prepared, so no kernel is built and
+    // nothing is cut or drained; the generation keeps its ID and only its origin changes, which the regions are told,
+    // for its panic budget. The config is acknowledged active on the boot generation.
+    let document = exported();
+    let hash = received(document.clone()).hash;
+    let performed = host.deliver(1, document);
+    let origin = Origin::Artifact { revision: 1, hash };
+    assert_eq!(
+        performed,
+        strings(&["candidate 2: unchanged", &format!("adopt 1 as {}", origin)]),
+        "{:?}",
+        performed
+    );
     assert_eq!(host.demo(), (crate::channel::ApplyState::Active, Some(1), None));
+    let status = host.core.status();
+    let active = status.active.as_ref().unwrap();
+    assert_eq!((active.id, active.origin), (GenerationId::new(1), origin));
+    assert_eq!(host.schedule.id(), GenerationId::new(1));
+    // The plan the generation holds is the composition's: the same hash, and a provenance that names the program.
+    let plan = host.active_plan();
+    assert_eq!(plan.hash(ResolvedValues::Include).unwrap(), boot_hash);
+    assert_eq!(plan.provenance.as_ref().unwrap().artifacts[0].revision().revision, 1);
+
+    // Another document that composes to the same plan, its edges in another order, adopts it again, as its revision.
+    let mut document = exported();
+    document["edges"].as_array_mut().unwrap().reverse();
+    let performed = host.deliver(2, document.clone());
+    let origin = Origin::Artifact {
+        revision: 2,
+        hash: received(document).hash,
+    };
+    assert_eq!(
+        performed,
+        strings(&["candidate 3: unchanged", &format!("adopt 1 as {}", origin)]),
+        "{:?}",
+        performed
+    );
+
+    // Revoked, the default program takes the generation back the same way: no new generation, native behavior again.
+    let performed = host.revoke();
+    assert!(
+        performed.contains(&format!("adopt 1 as {}", Origin::DefaultProgram { config_change: 1 })),
+        "{:?}",
+        performed
+    );
+    assert!(
+        !performed.iter().any(|action| action.starts_with("prepare")),
+        "{:?}",
+        performed
+    );
+    let status = host.core.status();
+    let active = status.active.as_ref().unwrap();
+    assert_eq!(active.id, GenerationId::new(1));
+    assert!(matches!(active.origin, Origin::DefaultProgram { .. }));
+}
+
+#[test]
+fn a_generation_the_default_program_adopted_after_its_artifacts_budget_ran_out_is_replaced() {
+    let mut host = Host::new();
+    host.deliver(1, exported());
+    // The artifact's generation exhausts its panic budget, but the revocation is processed before the region's report:
+    // the default program adopts the generation, with a zero budget.
+    let performed = host.revoke();
+    assert!(
+        performed.contains(&format!("adopt 1 as {}", Origin::DefaultProgram { config_change: 1 })),
+        "{:?}",
+        performed
+    );
+    // The failure was decided under the artifact's budget. The generation now runs the default program, which cannot
+    // roll back, so the default program is asked for again, and a candidate equal to a failed generation gets a new
+    // one rather than being unchanged: metrics are not dropped until the next configuration change.
+    let actions = host
+        .core
+        .generation_failed(GenerationId::new(1), "it exceeded its panic budget, with 4 panics");
+    let performed = host.perform(actions);
+    assert!(
+        performed.contains(&"install the default program".to_string()),
+        "{:?}",
+        performed
+    );
+    assert!(
+        performed.iter().any(|action| action.starts_with("prepare 2 ")),
+        "{:?}",
+        performed
+    );
+    let performed = host.acknowledge();
+    assert!(performed.contains(&"commit 2".to_string()), "{:?}", performed);
+    assert_eq!(host.schedule.id(), GenerationId::new(2));
+    let status = host.core.status();
+    let active = status.active.as_ref().unwrap();
+    assert_eq!(active.id, GenerationId::new(2));
+    assert!(matches!(active.origin, Origin::DefaultProgram { .. }));
 }
 
 #[test]
@@ -1158,8 +1254,8 @@ fn a_second_aggregation_is_rejected_by_validation_wherever_it_is_at_its_node() {
 
 #[test]
 fn a_second_aggregation_beside_a_widened_one_is_the_one_reported_wherever_it_is_listed() {
-    // A width change gives the default program's aggregation the artifact's provenance; an aggregation the artifact
-    // adds, listed ahead of it, is still the second one: the first is the one with a reserved ID.
+    // A width change modifies the default program's aggregation; an aggregation the artifact adds, listed ahead of it,
+    // is still the second one: the first is the one with a reserved ID.
     let composed = composed(edited(|document| {
         widen(document);
         let mut aggregation = node_mut(document, "dsd_agg").clone();
@@ -1176,15 +1272,15 @@ fn a_second_aggregation_beside_a_widened_one_is_the_one_reported_wherever_it_is_
         );
     }))
     .unwrap();
-    let provenance = |node: &str| composed.plan.node(&id(node)).unwrap().provenance.clone();
-    assert!(matches!(
-        provenance("dsd_agg"),
-        Some(crate::ir::Provenance::Artifact(_))
-    ));
-    assert!(matches!(
-        provenance("policy/early_agg"),
-        Some(crate::ir::Provenance::Artifact(_))
-    ));
+    let kind = |node: &str| {
+        composed
+            .correspondence
+            .artifact_node(&id(node))
+            .and_then(|local| composed.correspondence.get(local))
+            .map(|correspondence| correspondence.kind)
+    };
+    assert_eq!(kind("dsd_agg"), Some(CorrespondenceKind::Modified));
+    assert_eq!(kind("policy/early_agg"), Some(CorrespondenceKind::Added));
     let position = |node: &str| {
         composed
             .plan

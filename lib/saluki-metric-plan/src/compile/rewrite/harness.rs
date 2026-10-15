@@ -20,9 +20,9 @@
 //!   what every rewrite keeps (outputs, `emit`s, native nodes), that the rewritten plan compiles into the frame, and
 //!   that the records describe the plan they produced.
 //!
-//! Routing and filter nodes carry the provenance of one artifact revision, in the policy namespace, except filters a
-//! plan's parameters mark native; kernels, timestamp splits, sources, and hosts are native nodes of their own, so
-//! that R1 may cut between any two of them.
+//! Routing and filter nodes are an artifact's, in the policy namespace, except filters a plan's parameters mark native;
+//! kernels, timestamp splits, sources, and hosts are native nodes, with reserved IDs, each a native component of its
+//! own, so that R1 may cut between any two of them.
 
 use std::{collections::BTreeSet, sync::OnceLock};
 
@@ -46,7 +46,7 @@ use crate::{
     },
     ir::{
         DecodedParams, ExitName, InputName, NativeComponentId, NodeId, OutputId, ParamSpec, ParamType, Plan,
-        Provenance, RecipientId, ScopeDecl, ScopeName,
+        RecipientId, ScopeDecl, ScopeName,
     },
     model::{EventView, Field, FieldSet, Kind, PortType},
     operators::{
@@ -265,11 +265,6 @@ pub(crate) fn registry() -> &'static OperatorRegistry {
 
 // Plans.
 
-/// The artifact revision that routing and filter nodes of random plans come from.
-fn revision() -> Value {
-    json!({"revision": 1, "hash": PlanHash::of_bytes(b"rewrite harness").to_string()})
-}
-
 /// Returns the identifier of a node: in the policy namespace for an artifact node, reserved for a native one.
 pub(crate) fn node_id(local: &str, native: bool) -> String {
     if native {
@@ -279,13 +274,9 @@ pub(crate) fn node_id(local: &str, native: bool) -> String {
     }
 }
 
-/// A node with native provenance of its own, or the harness artifact's provenance.
+/// A native node, with a reserved ID, or an artifact's, in the policy namespace.
 pub(crate) fn node(local: &str, op: &str, params: Value, native: bool) -> Value {
-    if native {
-        json!({"id": local, "op": op, "params": params, "provenance": {"native": local}})
-    } else {
-        json!({"id": node_id(local, false), "op": op, "params": params, "provenance": {"artifact": revision()}})
-    }
+    json!({"id": node_id(local, native), "op": op, "params": params})
 }
 
 /// Builds a plan from nodes, edges written as `from.port -> to.port`, and the outputs it declares, in the harness's
@@ -304,7 +295,6 @@ pub(crate) fn plan_of(nodes: Vec<Value>, edges: &[(String, String)], outputs: &[
         .collect::<Vec<_>>();
     Plan::from_value(json!({
         "ir_version": 1,
-        "provenance": {"artifacts": [revision()]},
         "nodes": nodes,
         "edges": edges,
         "outputs": outputs,
@@ -1245,7 +1235,7 @@ impl Case {
             params
         };
         for node in &self.plan.nodes {
-            if !matches!(node.provenance, Some(Provenance::Native(_))) {
+            if !node.id.is_reserved() {
                 continue;
             }
             match rewritten.node(&node.id) {

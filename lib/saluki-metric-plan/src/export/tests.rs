@@ -72,6 +72,7 @@ fn the_default_programs_policy_scope_exports_as_the_hand_written_artifact() {
             "artifact",
             "catalog",
             "export_version",
+            "form",
             "ir_versions",
             "labels",
             "scope"
@@ -423,10 +424,6 @@ fn the_base_program_hash_covers_the_scopes_structure_and_outputs_but_not_its_val
             .insert("predicate".parse().unwrap(), predicate);
     });
     assert_eq!(resolved, expected);
-
-    // Another provenance inside the scope: the same base.
-    let provenance = with(|plan, inside, _| plan.nodes[inside].provenance = None);
-    assert_eq!(provenance, expected);
 
     // A structural change outside the scope: the same base.
     let outside = with(|plan, _, outside| plan.nodes[outside].params = Params::new());

@@ -3896,6 +3896,49 @@ built):
      state is retained or cut by its lineage parameters, as for an edit of `dsd_agg`, and its telemetry keeps the native
      component ID.
 
+After detached programs, phase 2 ([as built](programmable-metrics-detached-programs.md#106-phase-2-as-built)):
+
+183. **Nodes have no provenance** (IR, D; decided by the owner on 2026-10-14; revises amendments 13, 174, and 175's
+     "partly applied"). A node carries no provenance: a plan's provenance names each composed artifact and the scope it
+     replaces, and every node of that scope's region is the artifact's program, kept unmodified or not. The artifact
+     limits, `state_budget`, and `trusted_host` (an operator property: whether a program may hold it) apply to a
+     program's nodes; a generation's panic budget is its program's, in every region; loss is attributed to its node ID
+     and the program the plan runs. The rules `loss_authority`, `provenance_consistency`, and `provenance_namespace`
+     are withdrawn, and composition no longer asks what feeds a kept node. Which native component a node stands for is
+     a plan-level annotation for the boot layout only (R1's cost model, region input capacity). Explain is version 2.
+184. **A program equal to the running plan adopts its generation** (INS, D; decided by the owner on 2026-10-14). Reuse
+     is decided by operators, parameters, and edges, compared by what they do: every binding written as its value, and
+     literal predicates folded (the operation hash; kernels are keyed by the same form). An artifact whose composition
+     does what the plan the schedule holds does creates no generation: the generation keeps its ID, programs, kernels,
+     leases, and state, and only its origin changes, in status and in its panic budget; the default program takes it
+     back on revocation. The config is acknowledged `active` on the unchanged generation. A kept node that matches the
+     default program's only by value composes as the artifact writes it, so a detached program never follows native
+     policy, and a later native policy change creates no generation. A generation the default program adopted from an
+     artifact that then fails, for what its region decided under the artifact's budget, makes the core ask for the
+     default program again.
+185. **Standalone configuration reload, for the demo** (CFG, D; decided by the owner on 2026-10-14). Saluki-only
+     `experimental.standalone_config_reload.{enabled, interval}` makes standalone mode re-read its configuration file
+     and apply changes as connected mode applies updates, rejecting an invalid file and keeping restart-only keys
+     restart-only. A change applies once two consecutive reads agree, at most every 100 milliseconds. It exists only
+     for the demo.
+186. **Implied output IDs** (EXE, D; revises amendment 179's `to_<names>`). An implied output's ID is `implied_`, the
+     local ID of the first `emit`, in node ID order, that addresses its recipients, and the first eight hexadecimal
+     digits of the SHA-256 digest of its recipient IDs, cut to an identifier and numbered after a collision, and it
+     keeps its ID while any program asks for its set; no recipient name is part of an ID, and an `emit` whose recipients
+     change asks for another set, with another ID, so telemetry under one ID means one set. Its selector is its
+     recipients (`recipients`). Implied outputs are added on the main delivery host for native recipients; another set
+     is refused with the reason. The limit counts the demand of every program the installer holds (running, kept,
+     installing, waiting), whose outputs exist together.
+187. **Duplicates are pairs of outputs that share a recipient** (IR, C; refines the duplicate analysis). Copies that
+     reach two outputs are a duplicate contribution only if those two outputs share a recipient, not if each shares
+     one with a third.
+188. **A program's limits rise to what the default program has** (IR, C; refines amendment 183). Validated against the
+     default program, a program's artifact limit is the larger of the limit and the default program's own measure in
+     the program's scope: node count, predicate leaves, and declared memory for the program, fan-out by copying node,
+     and work per input by entry node. A program may keep what native configuration sized the host for, such as a
+     128 MiB interner or a tee with a port per routing group, but not grow past it, and is held to the limits
+     wherever the default program is within them.
+
 ## 11. Risks
 
 **Stage 7:**

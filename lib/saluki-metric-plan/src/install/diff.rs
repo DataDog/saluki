@@ -22,7 +22,7 @@ use crate::{
 /// How one node differs between the active plan and a candidate.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NodeChange {
-    /// The node is the same: operator, parameters with their resolved values, provenance, and edges.
+    /// The node is the same: operator, parameters with their resolved values, and edges.
     Unchanged,
 
     /// The node exists in both plans but differs.
@@ -30,11 +30,9 @@ pub enum NodeChange {
         /// The operator differs.
         operator: bool,
 
-        /// The parameters differ, including only in the resolved value of a configuration binding.
+        /// The parameters differ, including only in the resolved value of a configuration binding, but not where one plan
+        /// binds a value and the other writes the same literal.
         params: bool,
-
-        /// The provenance differs.
-        provenance: bool,
 
         /// The edges at the node's ports differ.
         edges: bool,
@@ -373,14 +371,14 @@ pub fn diff(active: &Plan, candidate: &Plan, registry: &OperatorRegistry) -> Pla
             continue;
         };
         let operator = old.op != node.op;
-        let params = old.params != node.params;
-        let provenance = old.provenance != node.provenance;
+        // Compared by what they do: a parameter bound to a value and the same literal are the same.
+        let params = crate::export::operation_params(&old.op, &old.params)
+            != crate::export::operation_params(&node.op, &node.params);
         let edges = old_edges.get(&node.id) != new_edges.get(&node.id);
-        let change = if operator || params || provenance || edges {
+        let change = if operator || params || edges {
             NodeChange::Changed {
                 operator,
                 params,
-                provenance,
                 edges,
             }
         } else {

@@ -40,6 +40,15 @@ pub const DEFAULT_DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = No
 /// Default interval between polls of the programmable metrics artifact channel's local stub.
 pub const DEFAULT_ARTIFACT_CHANNEL_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Default interval between re-reads of the configuration file when the experimental standalone configuration reload
+/// (`experimental.standalone_config_reload.*`) is enabled.
+pub const DEFAULT_STANDALONE_CONFIG_RELOAD_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Shortest interval between re-reads of the configuration file the experimental standalone configuration reload
+/// accepts: a change is applied once two consecutive reads agree, so a shorter interval would apply a file being
+/// written, and would read the file almost continuously.
+pub const MIN_STANDALONE_CONFIG_RELOAD_INTERVAL: Duration = Duration::from_millis(100);
+
 /// Default remote-agent IPC string interner budget.
 pub const DEFAULT_REMOTE_AGENT_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(512 * 1024).unwrap();
 

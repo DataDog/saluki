@@ -1,8 +1,26 @@
 {
   "ir_version": 1,
+  "provenance": {"native_components": {
+    "dsd_prefix_filter_blocklist": "dsd_prefix_filter",
+    "dsd_prefix_filter_blocklist_true": "dsd_prefix_filter",
+    "dsd_post_agg_filter_true": "dsd_post_agg_filter",
+    "dsd_post_agg_filter_fanout": "dsd_client_telemetry_out",
+    "dsd_post_agg_filter_fanout_0": "dsd_client_telemetry_out",
+    "metrics_enrich_in": "metrics_enrich",
+    "metrics_enrich_host_tags": "metrics_enrich",
+    "metrics_policy": "metrics_enrich",
+    "metrics_policy_0": "dd_metrics_encode",
+    "metrics_routing_filter_0_true": "metrics_routing_encode_0",
+    "metrics_routing_filter_0_false": "metrics_routing_filter_0",
+    "metrics_routing_filter_1_true": "metrics_routing_encode_1",
+    "metrics_routing_filter_1_false": "metrics_routing_filter_1",
+    "mrf_metrics_gateway_true": "mrf_metrics_encode",
+    "mrf_metrics_gateway_false": "mrf_metrics_gateway",
+    "af_metrics_gateway_true": "af_metrics_encode",
+    "af_metrics_gateway_false": "af_metrics_gateway"
+  }},
   "nodes": [
-    {"id": "dsd_in", "op": "source", "params": {"binding": "dogstatsd", "timestamps": "untimestamped"},
-     "provenance": {"native": "dsd_in"}},
+    {"id": "dsd_in", "op": "source", "params": {"binding": "dogstatsd", "timestamps": "untimestamped"}},
     {"id": "dsd_enrich", "op": "dogstatsd_mapper", "params": {
        "profiles": {"config": "dogstatsd.mapper.profiles", "resolved": [
          {"name": "checkout", "prefix": "raw.", "mappings": [
@@ -11,18 +29,15 @@
          ]}
        ]},
        "cache_size": {"config": "dogstatsd.mapper.cache_size", "resolved": 1000},
-       "string_interner_bytes": {"config": "dogstatsd.mapper.string_interner_size_bytes", "resolved": 65536}},
-     "provenance": {"native": "dsd_enrich"}},
+       "string_interner_bytes": {"config": "dogstatsd.mapper.string_interner_size_bytes", "resolved": 65536}}},
     {"id": "dsd_prefix_filter", "op": "namespace_prefix", "params": {
        "namespace": {"config": "dogstatsd.prefix_filter.metric_namespace", "resolved": "tenant"},
        "exclusions": {"config": "dogstatsd.prefix_filter.metric_namespace_blocklist",
-                      "resolved": ["internal.", "system."]}},
-     "provenance": {"native": "dsd_prefix_filter"}},
+                      "resolved": ["internal.", "system."]}}},
     {"id": "dsd_prefix_filter_blocklist", "op": "split", "params": {"predicate": {"intake_name": {"matches": {
        "values": {"config": "dogstatsd.metric_filter.values", "resolved": ["tenant.raw.blocked"]},
-       "prefix": {"config": "dogstatsd.metric_filter.match_prefix", "resolved": false}}}}},
-     "provenance": {"native": "dsd_prefix_filter"}},
-    {"id": "dsd_prefix_filter_blocklist_true", "op": "drop", "provenance": {"native": "dsd_prefix_filter"}},
+       "prefix": {"config": "dogstatsd.metric_filter.match_prefix", "resolved": false}}}}}},
+    {"id": "dsd_prefix_filter_blocklist_true", "op": "drop"},
     {"id": "dsd_tag_filterlist", "op": "tag_projection", "params": {
        "rules": {"config": "dogstatsd.tag_filterlist", "resolved": [
          {"metric_name": "tenant.checkout.latency", "action": "exclude", "tags": ["user_id"]}
@@ -31,8 +46,7 @@
          {"metric_prefix": "tenant.checkout.", "tag_name": "env", "values": ["prod", "staging"],
           "on_miss": "replace", "replacement": "other"}
        ]},
-       "cache_capacity": {"config": "dogstatsd.aggregation.aggregator_tag_filter_cache_capacity", "resolved": 100000}},
-     "provenance": {"native": "dsd_tag_filterlist"}},
+       "cache_capacity": {"config": "dogstatsd.aggregation.aggregator_tag_filter_cache_capacity", "resolved": 100000}}},
     {"id": "dsd_agg", "op": "aggregate", "params": {
        "window": {"config": "dogstatsd.aggregation.window_duration_seconds", "resolved": "10s"},
        "flush_interval": {"config": "dogstatsd.aggregation.flush_interval", "resolved": "15s"},
@@ -44,34 +58,27 @@
        "histogram_percentiles": {"config": "metrics_encoding.histogram.percentiles", "resolved": [95]},
        "copy_to_distribution": {"config": "metrics_encoding.histogram.copy_to_distribution", "resolved": false},
        "copy_to_distribution_prefix": {"config": "metrics_encoding.histogram.copy_to_distribution_prefix",
-                                       "resolved": ""}},
-     "provenance": {"native": "dsd_agg"}},
+                                       "resolved": ""}}},
     {"id": "dsd_post_agg_filter", "op": "split", "params": {"predicate": {"all": [
        {"kind_in": ["counter", "rate", "gauge", "set"]},
        {"intake_name": {"matches": {
          "values": {"config": "dogstatsd.post_aggregate_filter.values", "resolved": ["tenant.checkout.latency.max"]},
          "prefix": {"config": "dogstatsd.metric_filter.match_prefix", "resolved": false}}}}
-     ]}},
-     "provenance": {"native": "dsd_post_agg_filter"}},
-    {"id": "dsd_post_agg_filter_true", "op": "drop", "provenance": {"native": "dsd_post_agg_filter"}},
-    {"id": "dsd_post_agg_filter_fanout", "op": "tee", "params": {"ports": 2},
-     "provenance": {"native": "dsd_client_telemetry_out"}},
-    {"id": "dsd_post_agg_filter_fanout_0", "op": "emit", "params": {"output": "dsd_client_telemetry"},
-     "provenance": {"native": "dsd_client_telemetry_out"}},
-    {"id": "otlp_in", "op": "source", "params": {"binding": "otlp"}, "provenance": {"native": "otlp_in"}},
-    {"id": "checks_ipc_in", "op": "source", "params": {"binding": "checks"}, "provenance": {"native": "checks_ipc_in"}},
-    {"id": "liveness_in", "op": "source", "params": {"binding": "liveness"}, "provenance": {"native": "liveness_in"}},
-    {"id": "trace_sampler", "op": "source", "params": {"binding": "trace_sampler"},
-     "provenance": {"native": "trace_sampler"}},
-    {"id": "metrics_enrich_in", "op": "merge", "params": {"inputs": 5}, "provenance": {"native": "metrics_enrich"}},
-    {"id": "metrics_enrich", "op": "host_enrichment", "provenance": {"native": "metrics_enrich"}},
+     ]}}},
+    {"id": "dsd_post_agg_filter_true", "op": "drop"},
+    {"id": "dsd_post_agg_filter_fanout", "op": "tee", "params": {"ports": 2}},
+    {"id": "dsd_post_agg_filter_fanout_0", "op": "emit", "params": {"output": "dsd_client_telemetry"}},
+    {"id": "otlp_in", "op": "source", "params": {"binding": "otlp"}},
+    {"id": "checks_ipc_in", "op": "source", "params": {"binding": "checks"}},
+    {"id": "liveness_in", "op": "source", "params": {"binding": "liveness"}},
+    {"id": "trace_sampler", "op": "source", "params": {"binding": "trace_sampler"}},
+    {"id": "metrics_enrich_in", "op": "merge", "params": {"inputs": 5}},
+    {"id": "metrics_enrich", "op": "host_enrichment"},
     {"id": "metrics_enrich_host_tags", "op": "host_tags", "params": {
        "tags": {"config": "host.tags", "resolved": ["cloud_provider:example", "zone:a"]},
-       "deadline": {"config": "host.tags_deadline", "resolved": "1700000300s"}},
-     "provenance": {"native": "metrics_enrich"}},
-    {"id": "metrics_policy", "op": "tee", "params": {"ports": 5}, "provenance": {"native": "metrics_enrich"}},
-    {"id": "metrics_policy_0", "op": "emit", "params": {"output": "dd_metrics_encode"},
-     "provenance": {"native": "dd_metrics_encode"}},
+       "deadline": {"config": "host.tags_deadline", "resolved": "1700000300s"}}},
+    {"id": "metrics_policy", "op": "tee", "params": {"ports": 5}},
+    {"id": "metrics_policy_0", "op": "emit", "params": {"output": "dd_metrics_encode"}},
     {"id": "metrics_routing_filter_0", "op": "split", "params": {"predicate": {"any": [
        {"intake_name": {"matches": {
          "values": {"config": "metrics_endpoint_routing.group.0123456789abcdef.names", "resolved": ["checkout.requests"]},
@@ -79,11 +86,9 @@
        {"intake_name": {"matches": {
          "values": {"config": "metrics_endpoint_routing.group.0123456789abcdef.prefixes", "resolved": ["checkout."]},
          "prefix": true}}}
-     ]}},
-     "provenance": {"native": "metrics_routing_filter_0"}},
-    {"id": "metrics_routing_filter_0_true", "op": "emit", "params": {"output": "metrics_routing_encode_0"},
-     "provenance": {"native": "metrics_routing_encode_0"}},
-    {"id": "metrics_routing_filter_0_false", "op": "drop", "provenance": {"native": "metrics_routing_filter_0"}},
+     ]}}},
+    {"id": "metrics_routing_filter_0_true", "op": "emit", "params": {"output": "metrics_routing_encode_0"}},
+    {"id": "metrics_routing_filter_0_false", "op": "drop"},
     {"id": "metrics_routing_filter_1", "op": "split", "params": {"predicate": {"any": [
        {"intake_name": {"matches": {
          "values": {"config": "metrics_endpoint_routing.group.fedcba9876543210.names", "resolved": []},
@@ -91,11 +96,9 @@
        {"intake_name": {"matches": {
          "values": {"config": "metrics_endpoint_routing.group.fedcba9876543210.prefixes", "resolved": ["catalog."]},
          "prefix": true}}}
-     ]}},
-     "provenance": {"native": "metrics_routing_filter_1"}},
-    {"id": "metrics_routing_filter_1_true", "op": "emit", "params": {"output": "metrics_routing_encode_1"},
-     "provenance": {"native": "metrics_routing_encode_1"}},
-    {"id": "metrics_routing_filter_1_false", "op": "drop", "provenance": {"native": "metrics_routing_filter_1"}},
+     ]}}},
+    {"id": "metrics_routing_filter_1_true", "op": "emit", "params": {"output": "metrics_routing_encode_1"}},
+    {"id": "metrics_routing_filter_1_false", "op": "drop"},
     {"id": "mrf_metrics_gateway", "op": "split", "params": {"predicate": {"all": [
        {"flag": {"config": "multi_region_failover.enabled", "resolved": true}},
        {"flag": {"config": "multi_region_failover.metric_mirroring.enabled", "resolved": true}},
@@ -105,22 +108,18 @@
            "values": {"config": "multi_region_failover.metric_mirroring.allowlist", "resolved": []},
            "prefix": false}}}
        ]}
-     ]}},
-     "provenance": {"native": "mrf_metrics_gateway"}},
-    {"id": "mrf_metrics_gateway_true", "op": "emit", "params": {"output": "mrf_metrics_encode"},
-     "provenance": {"native": "mrf_metrics_encode"}},
-    {"id": "mrf_metrics_gateway_false", "op": "drop", "provenance": {"native": "mrf_metrics_gateway"}},
+     ]}}},
+    {"id": "mrf_metrics_gateway_true", "op": "emit", "params": {"output": "mrf_metrics_encode"}},
+    {"id": "mrf_metrics_gateway_false", "op": "drop"},
     {"id": "af_metrics_gateway", "op": "split", "params": {"predicate": {"all": [
        {"kind_in": ["counter", "rate", "gauge", "set"]},
        {"flag": {"config": "autoscaling_failover.enabled", "resolved": true}},
        {"name": {"matches": {
          "values": {"config": "autoscaling_failover.metrics", "resolved": ["requests.count"]},
          "prefix": false}}}
-     ]}},
-     "provenance": {"native": "af_metrics_gateway"}},
-    {"id": "af_metrics_gateway_true", "op": "emit", "params": {"output": "af_metrics_encode"},
-     "provenance": {"native": "af_metrics_encode"}},
-    {"id": "af_metrics_gateway_false", "op": "drop", "provenance": {"native": "af_metrics_gateway"}}
+     ]}}},
+    {"id": "af_metrics_gateway_true", "op": "emit", "params": {"output": "af_metrics_encode"}},
+    {"id": "af_metrics_gateway_false", "op": "drop"}
   ],
   "edges": [
     {"from": "dsd_in.metrics", "to": "dsd_enrich.in"},

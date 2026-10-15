@@ -45,6 +45,7 @@ use crate::{
         compile, compile_unvalidated, CompileError, CompiledPlan, Frame, KernelKey, LeaseTable, LineageKey,
         PlacementError, RegionProgram, RewriteRecord, SlotId,
     },
+    export::operation_hash,
     extension::TransitionClass,
     ir::{HostId, NodeId, Plan},
     limits::{self, values::MAX_TRANSITION_LCM},
@@ -380,6 +381,21 @@ pub enum Action {
 
     /// Report what happened to a candidate, in status, telemetry, and acknowledgments.
     Report(Report),
+
+    /// Tell every region that the generation now runs a program of another origin, with the panic budget that origin
+    /// has, such as a published program whose plan equals the one the generation runs (it **adopts** the generation),
+    /// or the default program taking the generation back after a revocation.
+    ///
+    /// Nothing is built, cut, or drained: the generation keeps its ID, its programs, its kernels, its leases, and its
+    /// state, and only its origin changes, in status and in what a panic in it does. The core asks for it for a
+    /// generation being prepared, armed at a cut, or active.
+    Adopt {
+        /// The generation.
+        generation: GenerationId,
+
+        /// The origin of the program it runs from now on.
+        origin: Origin,
+    },
 
     /// Arm a cut, after every region acknowledged its preparation, and report the outcome with
     /// [`InstallerCore::cut_armed`] or [`InstallerCore::cut_deferred`].
@@ -780,6 +796,12 @@ struct Installed {
     origin: Origin,
     plan: Arc<Plan>,
     plan_hash: PlanHash,
+    /// What the plan does: its [operation hash](crate::export::operation_hash), which decides whether a candidate
+    /// changes anything.
+    does: PlanHash,
+    /// Whether the default program adopted the generation from an artifact: a region may then report it failed, for a
+    /// failure it decided under the artifact's panic budget.
+    adopted_from_artifact: bool,
     /// The plan's validation report, for a rollback that installs the plan again.
     report: ValidationReport,
     programs: Vec<Arc<RegionProgram>>,
@@ -809,6 +831,8 @@ struct Queued {
     origin: Origin,
     plan: Arc<Plan>,
     plan_hash: PlanHash,
+    /// What the plan does: its [operation hash](crate::export::operation_hash).
+    does: PlanHash,
     report: ValidationReport,
     compiled: CompiledPlan,
     /// The preparations attempted so far.
@@ -835,6 +859,7 @@ impl Preparation {
             origin: self.installed.origin,
             plan: self.installed.plan,
             plan_hash: self.installed.plan_hash,
+            does: self.installed.does,
             report: self.installed.report,
             compiled: self.compiled,
             attempts: self.attempts,
@@ -1090,6 +1115,8 @@ impl InstallerCore {
             origin: queued.origin,
             plan: queued.plan,
             plan_hash: queued.plan_hash,
+            does: queued.does,
+            adopted_from_artifact: false,
             report: queued.report,
             programs: programs.clone(),
             rewrites: queued.compiled.rewrites.into(),
@@ -1212,22 +1239,23 @@ impl InstallerCore {
             .active
             .as_ref()
             .filter(|active| !self.has_failed(active.generation.id()))
-            .map(|active| active.plan_hash);
+            .map(|active| active.does);
         // A cut that failed, or that is being cancelled, may not be what the schedule ends up holding.
         let target = match (&self.preparing, &self.cut) {
-            (Some(preparing), _) => Some(preparing.installed.plan_hash),
-            (None, Some(cut)) if cut.failed.is_none() && !cut.cancelling => Some(cut.installed.plan_hash),
+            (Some(preparing), _) => Some(preparing.installed.does),
+            (None, Some(cut)) if cut.failed.is_none() && !cut.cancelling => Some(cut.installed.does),
             (None, Some(_)) => None,
             (None, None) => active,
         };
         let cancels = arrival == Arrival::Cancel
             && (self.preparing.is_some() || self.cut.as_ref().is_some_and(|cut| cut.phase == CutPhase::Barrier));
-        let plan_hash = candidate.plan.hash(ResolvedValues::Include).ok();
-        if plan_hash.is_some() && (plan_hash == target || (cancels && plan_hash == active)) {
+        // Compared by what the plans do: a parameter bound to a value and the same literal are the same.
+        let does = operation_hash(&candidate.plan, &self.registry).ok();
+        if does.is_some() && (does == target || (cancels && does == active)) {
             if let Some(replaced) = self.pending.take() {
                 actions.push(Self::report(&replaced, Outcome::Superseded));
             }
-            if plan_hash != target {
+            if does != target {
                 self.cancel_in_flight(actions);
             }
             actions.push(report(Outcome::Unchanged));
@@ -1483,8 +1511,11 @@ impl InstallerCore {
     /// installs the plan a cut replaced, or asks for the default program. Rolling back first cancels any preparation in
     /// flight, which was diffed against the failed generation and reuses its kernels, and prepares its candidate again
     /// against the generation that is active after the rollback. A failed default-program generation changes nothing
-    /// here: its component failed, as a native component does. A preparing generation is aborted; a kept or draining
-    /// one is marked failed, and a kept one is no longer kept.
+    /// here: its component failed, as a native component does. One the default program adopted from an artifact may
+    /// fail for what its region decided under the artifact's panic budget, as when a revocation is processed before the
+    /// failure report: it cannot roll back either, so, unless a candidate in flight replaces it, the core asks for the
+    /// default program, which gets a new generation, since a candidate equal to a failed one is never unchanged. A
+    /// preparing generation is aborted; a kept or draining one is marked failed, and a kept one is no longer kept.
     ///
     /// During a cut:
     ///
@@ -1557,7 +1588,8 @@ impl InstallerCore {
     /// Rolls back from the active generation, which supervision failed, if it is an artifact's: to last-known-good
     /// with one store, or, unless a candidate in flight replaces it anyway, by installing the plan a cut replaced.
     /// Without either, the failed generation stays active, and holds its kernels, until a new one commits: unless a
-    /// candidate in flight replaces it, the default program is asked for when the event settles.
+    /// candidate in flight replaces it, the default program is asked for when the event settles. So it is when the
+    /// failed generation is one the default program adopted from an artifact, which does not roll back.
     fn roll_back_active(&mut self, actions: &mut Vec<Action>) {
         let can_roll_back = self.active.as_ref().is_some_and(|active| active.origin.can_roll_back());
         if !can_roll_back {
@@ -1631,6 +1663,9 @@ impl InstallerCore {
             .map_err(|error| Rejection::Unhashable {
                 message: error.to_string(),
             })?;
+        let does = operation_hash(&candidate.plan, &self.registry).map_err(|error| Rejection::Unhashable {
+            message: error.to_string(),
+        })?;
         // The default program runs even when validation reports errors in it, reported degraded by the caller: it is
         // what native configuration says, and nothing else could run in its place. An artifact must validate.
         let compiled = if candidate.report.is_valid() {
@@ -1653,6 +1688,7 @@ impl InstallerCore {
             origin: candidate.origin,
             plan: candidate.plan,
             plan_hash,
+            does,
             report: candidate.report,
             compiled,
             attempts: 0,
@@ -1731,11 +1767,11 @@ impl InstallerCore {
         let unchanged = self
             .active
             .as_ref()
-            .filter(|active| active.plan_hash == queued.plan_hash && !self.has_failed(active.generation.id()))
+            .filter(|active| active.does == queued.does && !self.has_failed(active.generation.id()))
             .map(|active| active.candidate);
         if let Some(target) = unchanged {
             actions.push(Self::report(&queued, Outcome::Unchanged));
-            self.serve_unchanged(queued.candidate, queued.origin, target);
+            self.serve_unchanged(queued.candidate, queued.origin, &queued.plan, target, actions);
             return;
         }
         let mut cut = None;
@@ -1802,6 +1838,8 @@ impl InstallerCore {
                 origin: queued.origin,
                 plan: queued.plan,
                 plan_hash: queued.plan_hash,
+                does: queued.does,
+                adopted_from_artifact: false,
                 report: queued.report,
                 programs,
                 rewrites: queued.compiled.rewrites.clone().into(),
@@ -2114,6 +2152,79 @@ impl InstallerCore {
     /// Returns the state of a generation the core remembers.
     fn state_of(&self, generation: GenerationId) -> Option<GenerationState> {
         self.records.get(&generation).map(|record| record.state)
+    }
+
+    /// Makes the candidate `target`, which the schedule holds or will hold, run a program of `origin`, whose plan does
+    /// what its own does: an artifact equal to the plan running **adopts** its generation, and the default program takes
+    /// back a generation an artifact adopted or created when the artifact is revoked.
+    ///
+    /// The plan does not change, so nothing is built, cut, or drained, and the generation keeps its ID: only its origin
+    /// changes, in its record, and so in status, and in what a panic in it does, which [`Action::Adopt`] tells the
+    /// regions; and the plan it holds becomes `plan`, the candidate's, which has the same [operation
+    /// hash](crate::export::operation_hash), and so does the same, says in its provenance which program it is, and may
+    /// write as a literal what the other binds. Reuse is decided by what the plan does, never by where it came from. A
+    /// default program does not take over a default program's generation: one lowered after another configuration
+    /// change that leaves the plan as it is changes nothing, as before.
+    fn adopt(&mut self, target: CandidateId, origin: Origin, plan: &Arc<Plan>, actions: &mut Vec<Action>) {
+        let mut adopted = None;
+        let held = if let Some(queued) = self.pending.as_mut().filter(|queued| queued.candidate == target) {
+            (&mut queued.origin, &mut queued.plan, &mut queued.plan_hash, None)
+        } else if let Some(preparing) = self
+            .preparing
+            .as_mut()
+            .filter(|preparing| preparing.installed.candidate == target)
+        {
+            let installed = &mut preparing.installed;
+            adopted = Some(&mut installed.adopted_from_artifact);
+            (
+                &mut installed.origin,
+                &mut installed.plan,
+                &mut installed.plan_hash,
+                Some(installed.generation.id()),
+            )
+        } else if let Some(cut) = self.cut.as_mut().filter(|cut| cut.installed.candidate == target) {
+            let installed = &mut cut.installed;
+            adopted = Some(&mut installed.adopted_from_artifact);
+            (
+                &mut installed.origin,
+                &mut installed.plan,
+                &mut installed.plan_hash,
+                Some(installed.generation.id()),
+            )
+        } else if let Some(active) = self.active.as_mut().filter(|active| active.candidate == target) {
+            adopted = Some(&mut active.adopted_from_artifact);
+            (
+                &mut active.origin,
+                &mut active.plan,
+                &mut active.plan_hash,
+                Some(active.generation.id()),
+            )
+        } else {
+            return;
+        };
+        let (current, held_plan, held_hash, generation) = held;
+        let same = match (*current, origin) {
+            (Origin::DefaultProgram { .. }, Origin::DefaultProgram { .. }) => true,
+            (current, origin) => current == origin,
+        };
+        if same {
+            return;
+        }
+        // The plans do the same, but may write it differently: a literal where the other binds the same value.
+        let plan_hash = plan.hash(ResolvedValues::Include).unwrap_or(*held_hash);
+        if let Some(adopted) = adopted {
+            *adopted = current.can_roll_back() && !origin.can_roll_back();
+        }
+        *current = origin;
+        *held_plan = Arc::clone(plan);
+        *held_hash = plan_hash;
+        if let Some(generation) = generation {
+            if let Some(record) = self.records.get_mut(&generation) {
+                record.origin = origin;
+                record.plan_hash = plan_hash;
+            }
+            actions.push(Action::Adopt { generation, origin });
+        }
     }
 
     /// Returns `true` if supervision failed the generation.
