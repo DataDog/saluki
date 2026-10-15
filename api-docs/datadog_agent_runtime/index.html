@@ -7,7 +7,7 @@ its own.</p>
 <p>Constructors never spawn tasks. Long-running work is returned as a <a href="../saluki_core/runtime/supervisable/trait.Supervisable.html" title="trait saluki_core::runtime::supervisable::Supervisable"><code>Supervisable</code></a>
 worker or <a href="../saluki_core/runtime/supervisor/struct.Supervisor.html" title="struct saluki_core::runtime::supervisor::Supervisor"><code>Supervisor</code></a> for the caller to place in its supervision tree.</p>
 <p>Each subsystem that talks to the Datadog Agent opens its own connection with
-<a href="../datadog_agent_commons/ipc/client/struct.RemoteAgentClient.html#method.connect" title="associated function datadog_agent_commons::ipc::client::RemoteAgentClient::connect"><code>RemoteAgentClient::connect</code></a>, rather than sharing a
+[<code>RemoteAgentClient::connect</code>][datadog_agent_commons::ipc::client::RemoteAgentClient::connect], rather than sharing a
 clone of another subsystem’s client.</p>
 <h2 id="features"><a class="doc-anchor" href="#features">§</a>Features</h2>
 <ul>
