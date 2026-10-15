@@ -66,10 +66,12 @@ impl EnablePayloadsFilter {
 
 #[cfg(test)]
 mod tests {
-    use saluki_context::tags::RawTags;
-    use saluki_core::data_model::event::{
-        metric::MetricValues::{self, Counter, Distribution},
-        service_check::CheckStatus,
+    use saluki_core::data_model::{
+        event::{
+            metric::MetricValues::{self, Counter, Distribution},
+            service_check::CheckStatus,
+        },
+        tags::RawTags,
     };
 
     use super::*;

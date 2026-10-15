@@ -1,8 +1,10 @@
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
 use agent_data_plane_config::domains::otlp::Contexts;
-use saluki_context::{ContextResolver, ContextResolverBuilder, TagsResolverBuilder};
-use saluki_core::components::ComponentContext;
+use saluki_core::{
+    components::ComponentContext,
+    data_model::event::metric::context::{ContextResolver, ContextResolverBuilder, TagsResolverBuilder},
+};
 use saluki_error::{generic_error, GenericError};
 use stringtheory::interning::GenericMapInterner;
 
@@ -33,7 +35,7 @@ pub fn build_context_resolver(
         .with_heap_allocations(contexts.allow_context_heap_allocs)
         .with_origin_tags_resolver(
             maybe_origin_tags_resolver
-                .map(|resolver| -> Arc<dyn saluki_context::origin::OriginTagsResolver> { Arc::new(resolver) }),
+                .map(|resolver| -> Arc<dyn saluki_core::data_model::origin::OriginTagsResolver> { Arc::new(resolver) }),
         )
         .build();
 

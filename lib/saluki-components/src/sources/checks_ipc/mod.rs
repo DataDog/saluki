@@ -11,19 +11,21 @@ use datadog_protos::checks::{
     service_check::{ServiceCheck as ProtoServiceCheck, Status as ServiceCheckStatus},
     SendCheckPayloadRequest, SendCheckPayloadResponse,
 };
-use saluki_context::tags::{Tag, TagSet};
-use saluki_context::Context;
-use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_core::data_model::event::eventd::{AlertType, EventD, Priority};
-use saluki_core::data_model::event::log::Log;
-use saluki_core::data_model::event::metric::Metric;
-use saluki_core::data_model::event::service_check::{CheckStatus, ServiceCheck};
-use saluki_core::data_model::event::{Event, EventType};
-use saluki_core::runtime;
-use saluki_core::topology::OutputDefinition;
 use saluki_core::{
+    accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{sources::*, BuildContext},
-    data_model::event::log::LogStatus,
+    data_model::{
+        event::{
+            eventd::{AlertType, EventD, Priority},
+            log::{Log, LogStatus},
+            metric::{context::Context, Metric},
+            service_check::{CheckStatus, ServiceCheck},
+            Event, EventType,
+        },
+        tags::{Tag, TagSet},
+    },
+    runtime,
+    topology::OutputDefinition,
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::{

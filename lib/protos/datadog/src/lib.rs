@@ -84,6 +84,11 @@ pub mod agent {
     pub use super::agent_include::datadog::workloadmeta::*;
 }
 
+/// Remote Configuration definitions.
+pub mod remote_config {
+    pub use super::agent_include::datadog::config::*;
+}
+
 /// DDSketch definitions from (sketches-go).
 pub mod sketches {
     pub use super::sketch_include::ddsketch::*;

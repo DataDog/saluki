@@ -12,13 +12,12 @@ use std::{
 
 use futures::{stream::StreamExt as _, Stream};
 use papaya::HashMap;
-use saluki_context::Context;
 use saluki_error::{generic_error, GenericError};
 
 use super::histogram::AggregatedHistogram;
 use super::reflector::{Processor, Reflector, ReflectorWorker};
 use super::{MetricsSnapshot, MetricsStream};
-use crate::data_model::event::metric::MetricValues;
+use crate::data_model::event::metric::{context::Context, MetricValues};
 
 /// Aggregated metric value.
 #[derive(Clone, Debug)]
@@ -345,10 +344,11 @@ pub fn get_shared_metrics_state() -> Reflector<AggregatedMetricsProcessor> {
 
 #[cfg(test)]
 mod tests {
-    use saluki_context::Context;
-
     use super::*;
-    use crate::data_model::event::{metric::Metric, Event};
+    use crate::data_model::event::{
+        metric::{context::Context, Metric},
+        Event,
+    };
 
     fn process_metrics(metrics: Vec<Event>) -> Vec<(String, AggregatedMetricValue)> {
         let state = super::super::aggregate_upserts(metrics);

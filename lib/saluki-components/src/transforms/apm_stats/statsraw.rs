@@ -6,8 +6,10 @@ use ddsketch::canonical::PositiveOnlyDDSketch;
 use protobuf::Message;
 use rand::RngExt as _;
 use saluki_common::collections::{FastHashMap, PrehashedHashMap};
-use saluki_context::tags::TagSet;
-use saluki_core::data_model::event::trace_stats::{ClientGroupedStats, ClientStatsBucket};
+use saluki_core::data_model::{
+    event::trace_stats::{ClientGroupedStats, ClientStatsBucket},
+    tags::TagSet,
+};
 use stringtheory::MetaString;
 use tracing::error;
 

@@ -1,4 +1,7 @@
-use std::{io, mem, os::fd::AsRawFd};
+use std::{
+    io, mem,
+    os::fd::{AsRawFd, FromRawFd as _, OwnedFd},
+};
 
 use bytes::BufMut;
 use socket2::{Domain, MaybeUninitSlice, MsgHdrMut, Protocol, SockAddr, SockAddrStorage, SockRef, Socket, Type};
@@ -48,27 +51,48 @@ where
     let n = sock_ref.recvmsg(&mut msg_hdr, libc::MSG_CMSG_CLOEXEC)?;
 
     // If we got any socket credentials back, parse them.
+    //
+    // We intentionally don't treat truncated ancillary data (`MSG_CTRUNC`) as a failure: if the kernel had to truncate
+    // the credentials themselves, the resulting control message is too short and gets rejected during parsing, so any
+    // credentials we do find are complete, and truncation means that some _other_ control message didn't fit, such as
+    // file descriptors sent by the peer.
     let control_len = msg_hdr.control_len();
 
     let process_identity = if control_len > 0 {
+        // SAFETY: `recvmsg` initialized the first `control_len` bytes of the ancillary data buffer.
         unsafe {
             ancillary_data.set_len(control_len);
+        }
 
-            match ancillary_data
-                .messages()
-                .map(|m| match m {
-                    ControlMessage::Credentials(creds) => creds,
-                })
-                .next()
-            {
-                Some(creds) if creds.pid == 0 => ProcessIdentity::Error(ProcessCredentialsError::ZeroPid),
-                Some(creds) => ProcessIdentity::Credentials(ProcessCredentials {
-                    pid: creds.pid,
-                    uid: creds.uid,
-                    gid: creds.gid,
-                }),
-                None => ProcessIdentity::Error(ProcessCredentialsError::InvalidCredentials),
+        // We have to look at every control message, even after finding the credentials, so that we can close any file
+        // descriptors the peer sent.
+        let mut credentials = None;
+
+        // SAFETY: We've just set the length of the ancillary data buffer to the number of bytes `recvmsg` initialized.
+        for message in unsafe { ancillary_data.messages() } {
+            match message {
+                ControlMessage::Credentials(creds) => {
+                    credentials.get_or_insert(creds);
+                }
+                ControlMessage::FileDescriptors(fds) => {
+                    for fd in fds {
+                        // SAFETY: The kernel installed this file descriptor in our process during the `recvmsg` call
+                        // above, and nothing else knows about it. This is the only pass we make over the control
+                        // messages, so we take ownership of it, and close it by dropping it, exactly once.
+                        drop(unsafe { OwnedFd::from_raw_fd(fd) });
+                    }
+                }
             }
+        }
+
+        match credentials {
+            Some(creds) if creds.pid == 0 => ProcessIdentity::Error(ProcessCredentialsError::ZeroPid),
+            Some(creds) => ProcessIdentity::Credentials(ProcessCredentials {
+                pid: creds.pid,
+                uid: creds.uid,
+                gid: creds.gid,
+            }),
+            None => ProcessIdentity::Error(ProcessCredentialsError::InvalidCredentials),
         }
     } else {
         ProcessIdentity::Unavailable
@@ -181,7 +205,13 @@ fn sendmsg_with_ucred(fd: libc::c_int, payload: &[u8], creds: &libc::ucred) -> i
 
 #[cfg(test)]
 mod tests {
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::{
+        io::Read as _,
+        os::{
+            fd::{AsRawFd, FromRawFd, OwnedFd},
+            unix::net::UnixStream,
+        },
+    };
 
     use bytes::BytesMut;
 
@@ -239,6 +269,105 @@ mod tests {
             addr,
             ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable)
         ));
+        assert!(addr.process_credentials().is_none());
+    }
+
+    // Synchronously writes one payload to the raw file descriptor, passing the given file descriptors to the receiver
+    // via an `SCM_RIGHTS` ancillary block.
+    fn sendmsg_with_fds(fd: libc::c_int, payload: &[u8], fds: &[libc::c_int]) -> io::Result<usize> {
+        let fds_len = mem::size_of_val(fds);
+        let control_len = unsafe { libc::CMSG_SPACE(fds_len as u32) as usize };
+        let control_words = control_len.div_ceil(mem::size_of::<usize>());
+        let mut control_buf = vec![0usize; control_words];
+
+        // SAFETY: Mirrors `sendmsg_with_ucred`, with the cmsghdr body holding file descriptors instead of a ucred.
+        let n = unsafe {
+            let mut iov = libc::iovec {
+                iov_base: payload.as_ptr() as *mut libc::c_void,
+                iov_len: payload.len(),
+            };
+
+            let mut msg: libc::msghdr = mem::zeroed();
+            msg.msg_iov = &mut iov;
+            msg.msg_iovlen = 1;
+            msg.msg_control = control_buf.as_mut_ptr().cast::<libc::c_void>();
+            msg.msg_controllen = control_len as _;
+
+            let cmsg = libc::CMSG_FIRSTHDR(&msg);
+            (*cmsg).cmsg_level = libc::SOL_SOCKET;
+            (*cmsg).cmsg_type = libc::SCM_RIGHTS;
+            (*cmsg).cmsg_len = libc::CMSG_LEN(fds_len as u32) as _;
+            std::ptr::copy_nonoverlapping(fds.as_ptr().cast::<u8>(), libc::CMSG_DATA(cmsg), fds_len);
+
+            libc::sendmsg(fd, &msg, libc::MSG_NOSIGNAL)
+        };
+
+        if n < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(n as usize)
+        }
+    }
+
+    // Sends a payload along with several copies of a file descriptor, receives it with `uds_recvmsg`, and asserts that
+    // no copy of the file descriptor was left open in our process, returning the address the payload was received from.
+    fn receive_payload_with_fds(enable_credentials: bool) -> ConnectionAddress {
+        let (sender, receiver) = unix_dgram_socketpair();
+        if enable_credentials {
+            enable_uds_socket_credentials(&receiver).expect("enabling SO_PASSCRED should succeed");
+        }
+
+        // We send copies of one end of a stream socket pair, and drop our own copy once sent: reading from the other
+        // end then only reaches EOF if every copy that was installed in our process when receiving was closed again.
+        //
+        // We send more copies than can fit in the ancillary data buffer, even without credentials, which the kernel
+        // discards rather than installs.
+        let (sent_end, probe_end) = UnixStream::pair().expect("stream socketpair should succeed");
+        probe_end.set_nonblocking(true).unwrap();
+
+        let payload = b"origin-detection-payload";
+        let sent =
+            sendmsg_with_fds(sender.as_raw_fd(), payload, &[sent_end.as_raw_fd(); 8]).expect("send should succeed");
+        assert_eq!(sent, payload.len());
+        drop(sent_end);
+
+        let mut buf = BytesMut::with_capacity(128);
+        let (n, addr) = uds_recvmsg(&receiver, &mut buf).expect("recvmsg should succeed");
+        assert_eq!(n, payload.len());
+        assert_eq!(&buf[..], payload);
+
+        let mut probe_buf = [0u8; 1];
+        match (&probe_end).read(&mut probe_buf) {
+            Ok(0) => {}
+            Ok(_) => panic!("unexpected data read from probe socket"),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                panic!("file descriptors sent by the peer were left open in our process")
+            }
+            Err(e) => panic!("failed to read from probe socket: {e}"),
+        }
+
+        addr
+    }
+
+    #[test]
+    fn uds_recvmsg_reads_peer_credentials_when_peer_also_sends_file_descriptors() {
+        // When the peer sends file descriptors, any that don't fit in the ancillary data buffer are discarded with
+        // `MSG_CTRUNC` set. That truncation must not cause us to throw away complete credentials, and none of the
+        // file descriptors may be left open in our process.
+        let addr = receive_payload_with_fds(true);
+
+        let creds = addr
+            .process_credentials()
+            .expect("peer credentials should be present despite truncated ancillary data");
+        assert_eq!(creds.pid, std::process::id() as libc::pid_t);
+    }
+
+    #[test]
+    fn uds_recvmsg_closes_file_descriptors_received_without_credentials() {
+        // Without credentials taking up the ancillary data buffer, the kernel installs as many of the peer's file
+        // descriptors as fit in our process, which we must close rather than leak.
+        let addr = receive_payload_with_fds(false);
+
         assert!(addr.process_credentials().is_none());
     }
 

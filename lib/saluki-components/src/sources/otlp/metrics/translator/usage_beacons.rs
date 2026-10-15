@@ -3,9 +3,13 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use saluki_common::collections::FastHashSet;
-use saluki_context::tags::SharedTagSet;
-use saluki_core::data_model::event::metric::{Metric, MetricMetadata, MetricValues};
-use saluki_core::data_model::event::Event;
+use saluki_core::data_model::{
+    event::{
+        metric::{Metric, MetricMetadata, MetricValues},
+        Event,
+    },
+    tags::SharedTagSet,
+};
 
 use super::OtlpMetricsTranslator;
 

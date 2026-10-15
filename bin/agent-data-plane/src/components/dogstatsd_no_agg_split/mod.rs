@@ -8,7 +8,6 @@
 //! Only wired into the topology when the Datadog `dogstatsd_no_aggregation_pipeline` key is enabled (the default).
 
 use std::{
-    num::NonZeroU64,
     sync::LazyLock,
     time::{Duration, Instant},
 };
@@ -38,7 +37,16 @@ use self::telemetry::Telemetry;
 const PASSTHROUGH_OUTPUT: &str = "passthrough";
 const PASSTHROUGH_IDLE_FLUSH_CHECK_INTERVAL: Duration = Duration::from_secs(2);
 
+// Timestamped counters carry no duration. Core Agent encodes them as rates using this fixed compatibility interval,
+// independently of its time sampler's interval. Changing an Agent-owned aggregation window must not reinterpret
+// a client-provided point. This is a protocol convention, not a configurable aggregation default.
+// https://github.com/DataDog/datadog-agent/blob/78c2c984e848055b4aa63c5f6a9e94a534a07a44/pkg/aggregator/no_aggregation_stream_worker.go#L223-L235
+const PASSTHROUGH_COUNTER_NORMALIZATION_INTERVAL: Duration = Duration::from_secs(10);
+
 /// DogStatsD no-aggregation-pipeline split transform configuration.
+///
+/// Timestamped counters become rates with a fixed 10-second normalization interval, independently of the configured
+/// aggregation windows. Other timestamped metric values pass through unchanged.
 pub struct DogStatsDNoAggSplitConfiguration {
     /// How long to buffer passthrough metrics before flushing them while idle.
     ///
@@ -50,21 +58,13 @@ pub struct DogStatsDNoAggSplitConfiguration {
     /// The default is one second. Lowering it trades throughput for lower end-to-end latency on pre-aggregated
     /// metrics.
     passthrough_idle_flush_timeout: Duration,
-
-    /// Length, in seconds, of the aggregation window used as the rate interval for pre-aggregated counters.
-    ///
-    /// Passthrough counters are converted to rates over this interval to match the Datadog Agent, so this **MUST**
-    /// be the same value given to the aggregate transform's `window_duration_seconds`, even though passthrough
-    /// metrics never reach it. The default is 10 seconds.
-    window_duration_seconds: NonZeroU64,
 }
 
 impl DogStatsDNoAggSplitConfiguration {
     /// Creates a new `DogStatsDNoAggSplitConfiguration`.
-    pub fn new(passthrough_idle_flush_timeout: Duration, window_duration_seconds: NonZeroU64) -> Self {
+    pub fn new(passthrough_idle_flush_timeout: Duration) -> Self {
         Self {
             passthrough_idle_flush_timeout,
-            window_duration_seconds,
         }
     }
 }
@@ -89,11 +89,7 @@ impl TransformBuilder for DogStatsDNoAggSplitConfiguration {
         let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = Telemetry::new(&metrics_builder);
 
-        let passthrough_batcher = PassthroughBatcher::new(
-            self.passthrough_idle_flush_timeout,
-            self.window_duration_seconds,
-            telemetry.clone(),
-        );
+        let passthrough_batcher = PassthroughBatcher::new(self.passthrough_idle_flush_timeout, telemetry.clone());
 
         Ok(Box::new(DogStatsDNoAggSplit { passthrough_batcher }))
     }
@@ -129,9 +125,9 @@ fn try_split_timestamped_values(mut metric: Metric) -> (Option<Metric>, Option<M
     }
 }
 
-fn counter_values_to_rate(values: MetricValues, interval_secs: NonZeroU64) -> MetricValues {
+fn counter_values_to_rate(values: MetricValues) -> MetricValues {
     match values {
-        MetricValues::Counter(points) => MetricValues::rate(points, Duration::from_secs(interval_secs.get())),
+        MetricValues::Counter(points) => MetricValues::rate(points, PASSTHROUGH_COUNTER_NORMALIZATION_INTERVAL),
         values => values,
     }
 }
@@ -141,18 +137,16 @@ struct PassthroughBatcher {
     active_buffer_start: Instant,
     last_processed_at: Instant,
     idle_flush_timeout: Duration,
-    bucket_width_secs: NonZeroU64,
     telemetry: Telemetry,
 }
 
 impl PassthroughBatcher {
-    fn new(idle_flush_timeout: Duration, bucket_width_secs: NonZeroU64, telemetry: Telemetry) -> Self {
+    fn new(idle_flush_timeout: Duration, telemetry: Telemetry) -> Self {
         Self {
             active_buffer: EventsBuffer::default(),
             active_buffer_start: Instant::now(),
             last_processed_at: Instant::now(),
             idle_flush_timeout,
-            bucket_width_secs,
             telemetry,
         }
     }
@@ -160,11 +154,10 @@ impl PassthroughBatcher {
     async fn push_metric(&mut self, metric: Metric, dispatcher: &EventsDispatcher) {
         // Convert counters to rates before we batch them up.
         //
-        // This involves specifying the rate interval as the bucket width of the aggregate transform itself, which when
-        // you say it out loud is sort of confusing and nonsensical since the whole point is that these are
-        // _pre-aggregated_ metrics but we have to match the behavior of the Datadog Agent. ¯\_(ツ)_/¯
+        // Pin the compatibility interval on each metric before buffering it. Later configuration or flush timing
+        // cannot change the interpretation of a point already accepted by this path.
         let (context, values, metadata) = metric.into_parts();
-        let adjusted_values = counter_values_to_rate(values, self.bucket_width_secs);
+        let adjusted_values = counter_values_to_rate(values);
         let metric = Metric::from_parts(context, adjusted_values, metadata);
 
         // Try pushing the metric into our active buffer.
@@ -302,8 +295,9 @@ impl Transform for DogStatsDNoAggSplit {
             }
         }
 
-        // Do a final flush of any timestamped metrics that we've buffered up.
-        self.passthrough_batcher.try_flush(context.dispatcher()).await;
+        // Forward any timestamped metrics we've buffered up. Unlike the periodic check, this doesn't wait for the idle
+        // flush timeout: nothing else will flush them once we stop.
+        self.passthrough_batcher.dispatch_events(context.dispatcher()).await;
 
         debug!("DogStatsD no-aggregation-pipeline split transform stopped.");
 
@@ -313,10 +307,14 @@ impl Transform for DogStatsDNoAggSplit {
 
 #[cfg(test)]
 mod tests {
-    use saluki_context::Context;
+    use std::num::NonZeroU64;
+
+    use agent_data_plane_config::{shared::SharedConfiguration, ConfigValue};
+    use http_body_util::BodyExt as _;
+    use saluki_components::encoders::DatadogMetricsConfiguration;
     use saluki_core::{
-        components::ComponentContext,
-        data_model::event::metric::ScalarPoints,
+        components::{test_util::TestComponentDriver, ComponentContext},
+        data_model::event::metric::{context::Context, ScalarPoints},
         topology::{interconnect::Dispatcher, OutputName},
     };
     use tokio::sync::mpsc;
@@ -352,16 +350,13 @@ mod tests {
         (dispatcher, DispatcherReceiver { receiver: buffer_rx })
     }
 
-    const BUCKET_WIDTH_SECS: NonZeroU64 = NonZeroU64::new(10).expect("not zero");
-    const BUCKET_WIDTH: Duration = Duration::from_secs(BUCKET_WIDTH_SECS.get());
-
     #[tokio::test]
     async fn preaggregated_counters_to_rate() {
         let counter_value = 42.0;
         let timestamp = 123456;
 
         // Create a basic passthrough batcher and forwarder.
-        let mut batcher = PassthroughBatcher::new(Duration::from_nanos(1), BUCKET_WIDTH_SECS, Telemetry::noop());
+        let mut batcher = PassthroughBatcher::new(Duration::from_nanos(1), Telemetry::noop());
         let (dispatcher, mut dispatcher_receiver) = build_passthrough_dispatcher();
 
         // Create a simple pre-aggregated counter, and batch it.
@@ -369,14 +364,107 @@ mod tests {
         batcher.push_metric(input_metric.clone(), &dispatcher).await;
 
         // Flush the batcher, and observe that we've emitted the expected counter and that it has the right
-        // value, but specifically that it's a rate with an interval that matches our configured bucket width:
+        // value, with the fixed 10-second compatibility interval rather than an aggregation window:
         batcher.try_flush(&dispatcher).await;
 
         let mut flushed_metrics = dispatcher_receiver.collect_next();
         assert_eq!(flushed_metrics.len(), 1);
         assert_eq!(
-            Metric::rate("metric1", (timestamp, counter_value), BUCKET_WIDTH),
+            Metric::rate("metric1", (timestamp, counter_value), Duration::from_secs(10)),
             flushed_metrics.remove(0)
+        );
+    }
+
+    /// Returns a metrics encoder configuration that writes uncompressed-size-limited V1 JSON series payloads.
+    ///
+    /// V1 JSON makes the encoded rate and interval directly readable, without decoding protobuf.
+    fn v1_series_encoder() -> DatadogMetricsConfiguration {
+        let mut shared = SharedConfiguration::default();
+        shared.endpoints.dd_url = ConfigValue::explicit("https://example.com".to_string());
+        shared.endpoints.compression.compressor_kind = "zstd".to_string();
+        shared.metrics_encoding.max_payload_size = 64 * 1024;
+        shared.metrics_encoding.max_uncompressed_payload_size = 64 * 1024;
+        shared.metrics_encoding.max_series_payload_size = 64 * 1024;
+        shared.metrics_encoding.max_series_uncompressed_payload_size = 64 * 1024;
+        shared.metrics_encoding.max_series_points_per_payload = 100;
+        shared.metrics_encoding.flush_timeout = Duration::from_millis(10);
+        shared.metrics_encoding.use_v2_series_api = false;
+        DatadogMetricsConfiguration::from_configuration(&shared)
+    }
+
+    /// Regression test: the passthrough path once normalized timestamped counters by the configured aggregation window
+    /// (`aggregate_window_duration_seconds`), so a 60-second window reported one sixth of the Core Agent's rate. The
+    /// Core Agent always divides by its fixed 10-second bucket size, independently of its time sampler's interval:
+    /// https://github.com/DataDog/datadog-agent/blob/78c2c984e848055b4aa63c5f6a9e94a534a07a44/pkg/aggregator/no_aggregation_stream_worker.go#L223-L235
+    ///
+    /// This drives the real split transform and the real metrics encoder, since the encoder performs the division.
+    #[tokio::test]
+    async fn timestamped_counters_encode_as_ten_second_rates() {
+        let (split, mut split_outputs) =
+            TestComponentDriver::transform(DogStatsDNoAggSplitConfiguration::new(Duration::from_millis(1)))
+                .await
+                .expect("split transform should build");
+        split
+            .send_event(Event::Metric(Metric::counter("app.requests", (1_700_000_000, 60.0))))
+            .await;
+        split.shutdown().await.expect("split transform should stop cleanly");
+        let passthrough = split_outputs.named_output(PASSTHROUGH_OUTPUT).collect_events().await;
+        assert!(split_outputs.default_output().collect_events().await.is_empty());
+
+        let (encoder, mut payloads) = TestComponentDriver::encoder(v1_series_encoder())
+            .await
+            .expect("metrics encoder should build");
+        encoder.send_events(passthrough).await;
+        encoder.shutdown().await.expect("metrics encoder should stop cleanly");
+        let mut payloads = payloads.collect().await;
+        assert_eq!(payloads.len(), 1);
+
+        let (_, request) = payloads
+            .remove(0)
+            .try_into_http_payload()
+            .expect("metrics are sent over HTTP")
+            .into_parts();
+        assert_eq!(request.uri().path(), "/api/v1/series");
+        let body = request
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let body = zstd::stream::decode_all(body.as_ref()).expect("body should decompress");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("body should be JSON");
+        let series = json["series"].as_array().expect("payload should contain series");
+        assert_eq!(series.len(), 1);
+        assert_eq!(series[0]["metric"], "app.requests");
+        assert_eq!(series[0]["type"], "rate");
+        assert_eq!(series[0]["interval"], 10);
+        assert_eq!(series[0]["points"], serde_json::json!([[1_700_000_000, 6.0]]));
+    }
+
+    /// Regression test: the final flush at shutdown used to dispatch only once the idle flush timeout had elapsed since
+    /// the last batch, so timestamped metrics received within that timeout before stopping (one second by default)
+    /// were dropped. The Core Agent's no-aggregation worker sends its pending batch unconditionally when stopped:
+    /// https://github.com/DataDog/datadog-agent/blob/78c2c984e848055b4aa63c5f6a9e94a534a07a44/pkg/aggregator/no_aggregation_stream_worker.go#L178-L182
+    #[tokio::test]
+    async fn shutdown_forwards_buffered_metrics_before_the_idle_timeout() {
+        // Far longer than the test, so only the shutdown flush can forward the metric.
+        let config = DogStatsDNoAggSplitConfiguration::new(Duration::from_secs(60));
+        let (split, mut outputs) = TestComponentDriver::transform(config)
+            .await
+            .expect("split transform should build");
+        let metric = Metric::counter("app.requests", (1_700_000_000, 1.0));
+        split.send_event(Event::Metric(metric.clone())).await;
+        split.shutdown().await.expect("split transform should stop cleanly");
+
+        let passthrough = outputs.named_output(PASSTHROUGH_OUTPUT).collect_events().await;
+        assert_eq!(passthrough.len(), 1, "buffered metrics must be forwarded at shutdown");
+        assert_eq!(
+            passthrough[0].clone().try_into_metric(),
+            Some(Metric::rate(
+                "app.requests",
+                (1_700_000_000, 1.0),
+                Duration::from_secs(10)
+            ))
         );
     }
 

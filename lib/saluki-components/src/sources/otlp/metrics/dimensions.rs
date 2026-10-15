@@ -1,10 +1,9 @@
 //! OTLP metric dimensions.
 
 use otlp_protos::opentelemetry::proto::common::v1 as otlp_common;
-use saluki_context::{
-    hash_context_with_host,
+use saluki_core::data_model::{
+    event::metric::context::{hash_context_with_host, ContextKey},
     tags::{SharedTagSet, Tag, TagSet},
-    ContextKey,
 };
 use stringtheory::MetaString;
 
@@ -131,7 +130,7 @@ impl Dimensions {
 
 #[cfg(test)]
 mod tests {
-    use saluki_context::tags::{Tag, TagSet};
+    use saluki_core::data_model::tags::{Tag, TagSet};
 
     use super::*;
 

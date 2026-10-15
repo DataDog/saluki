@@ -2,9 +2,10 @@
 
 use std::collections::HashMap;
 
-use saluki_context::tags::TagSet;
 use serde_json::Value as JsonValue;
 use stringtheory::MetaString;
+
+use crate::data_model::tags::TagSet;
 
 /// A log event.
 #[derive(Clone, Debug, PartialEq)]

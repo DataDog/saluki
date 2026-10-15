@@ -11,10 +11,16 @@ use otlp_protos::opentelemetry::proto::metrics::v1::{
     ResourceMetrics as OtlpResourceMetrics,
 };
 use saluki_common::collections::FastHashSet;
-use saluki_context::tags::{SharedTagSet, TagSet};
-use saluki_context::{ContextResolver, ContextResolverBuilder};
-use saluki_core::data_model::event::metric::{Metric, MetricMetadata, MetricValues};
-use saluki_core::data_model::event::Event;
+use saluki_core::data_model::{
+    event::{
+        metric::{
+            context::{ContextResolver, ContextResolverBuilder},
+            Metric, MetricMetadata, MetricValues,
+        },
+        Event,
+    },
+    tags::{SharedTagSet, TagSet},
+};
 use saluki_error::{ErrorContext as _, GenericError};
 use stringtheory::MetaString;
 use tracing::{debug, trace, warn};
@@ -497,7 +503,7 @@ mod tests {
         number_data_point::Value as OtlpNumberDataPointValue, Gauge, HistogramDataPoint as OtlpHistogramDataPoint,
         NumberDataPoint as OtlpNumberDataPoint, ScopeMetrics, Sum,
     };
-    use saluki_context::tags::Tag;
+    use saluki_core::data_model::tags::Tag;
 
     use super::*;
 

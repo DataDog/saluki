@@ -6,8 +6,10 @@ use otlp_common::any_value::Value::{ArrayValue, BoolValue, BytesValue, DoubleVal
 use otlp_protos::opentelemetry::proto::common::v1 as otlp_common;
 use otlp_protos::opentelemetry::proto::logs::v1::LogRecord;
 use otlp_protos::opentelemetry::proto::resource::v1::Resource;
-use saluki_context::tags::TagSet;
-use saluki_core::data_model::event::log::{Log, LogStatus};
+use saluki_core::data_model::{
+    event::log::{Log, LogStatus},
+    tags::TagSet,
+};
 use serde_json::Value as JsonValue;
 use stringtheory::MetaString;
 use tracing::error;

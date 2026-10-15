@@ -14,7 +14,7 @@ use saluki_components::transforms::{
     aggregate_context_snapshot_channel_for_test, AggregateContextSnapshotEntry, AggregateContextSnapshotHandle,
     AggregateContextSnapshotPendingResponse, AggregateMetricType,
 };
-use saluki_context::Context;
+use saluki_core::data_model::event::metric::context::Context;
 use saluki_error::{generic_error, GenericError};
 use stringtheory::MetaString;
 use tower::ServiceExt as _;

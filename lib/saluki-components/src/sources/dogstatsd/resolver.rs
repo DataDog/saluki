@@ -1,9 +1,13 @@
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
-use saluki_context::{
-    origin::RawOrigin, tags::SharedTagSet, ContextResolver, ContextResolverBuilder, TagsResolver, TagsResolverBuilder,
+use saluki_core::{
+    components::ComponentContext,
+    data_model::{
+        event::metric::context::{ContextResolver, ContextResolverBuilder, TagsResolver, TagsResolverBuilder},
+        origin::RawOrigin,
+        tags::SharedTagSet,
+    },
 };
-use saluki_core::components::ComponentContext;
 use saluki_error::{generic_error, GenericError};
 use stringtheory::interning::GenericMapInterner;
 
@@ -43,15 +47,15 @@ impl ContextResolvers {
         let interner = GenericMapInterner::new(context_string_interner_size);
 
         let origin_tags = maybe_origin_tags_resolver.clone();
-        let tags_resolver = TagsResolverBuilder::new(format!("{}/dsd/tags", context.component_id()), interner.clone())?
-            .with_cached_tagsets_limit(cached_tagsets_limit)
-            .with_idle_tagsets_expiration(context_expiry_seconds)
-            .with_heap_allocations(allow_context_heap_allocations)
-            .with_origin_tags_resolver(
-                maybe_origin_tags_resolver
-                    .map(|resolver| -> Arc<dyn saluki_context::origin::OriginTagsResolver> { Arc::new(resolver) }),
-            )
-            .build();
+        let tags_resolver =
+            TagsResolverBuilder::new(format!("{}/dsd/tags", context.component_id()), interner.clone())?
+                .with_cached_tagsets_limit(cached_tagsets_limit)
+                .with_idle_tagsets_expiration(context_expiry_seconds)
+                .with_heap_allocations(allow_context_heap_allocations)
+                .with_origin_tags_resolver(maybe_origin_tags_resolver.map(
+                    |resolver| -> Arc<dyn saluki_core::data_model::origin::OriginTagsResolver> { Arc::new(resolver) },
+                ))
+                .build();
 
         let primary_resolver = ContextResolverBuilder::from_name(format!("{}/dsd/primary", context.component_id()))?
             .with_interner_capacity_bytes(context_string_interner_size)

@@ -5,8 +5,9 @@
 //! of tags copied and/or renamed from the source, and an optional set of additional fixed tags.
 //! Rules also carry optional help text that the renderer emits in the Prometheus `# HELP` header.
 
-use saluki_context::{tags::TagSet, Context};
 use stringtheory::MetaString;
+
+use crate::data_model::{event::metric::context::Context, tags::TagSet};
 
 /// A metric remapping rule.
 ///
@@ -221,9 +222,8 @@ pub struct RemappedMetric {
 
 #[cfg(test)]
 mod tests {
-    use saluki_context::Context;
-
     use super::*;
+    use crate::data_model::event::metric::context::Context;
 
     struct MatchCase {
         description: &'static str,

@@ -3,13 +3,13 @@ use datadog_protos::events as proto;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use protobuf::{rt::WireType, CodedOutputStream};
 use saluki_common::iter::ReusableDeduplicator;
-use saluki_context::tags::Tag;
-use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
+    accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{encoders::*, BuildContext},
     data_model::{
         event::{eventd::EventD, Event, EventType},
         payload::{HttpPayload, Payload, PayloadMetadata, PayloadType},
+        tags::Tag,
     },
     observability::ComponentMetricsExt as _,
     topology::PayloadsDispatcher,
@@ -285,8 +285,10 @@ mod tests {
     use std::collections::BTreeSet;
 
     use saluki_common::iter::ReusableDeduplicator;
-    use saluki_context::tags::{Tag, TagSet};
-    use saluki_core::data_model::event::eventd::{AlertType, EventD, Priority};
+    use saluki_core::data_model::{
+        event::eventd::{AlertType, EventD, Priority},
+        tags::{Tag, TagSet},
+    };
     use stringtheory::MetaString;
 
     use super::encode_eventd;

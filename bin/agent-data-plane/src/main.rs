@@ -15,7 +15,10 @@ use agent_data_plane_config_system::{EnvPrecedence, LoadedConfiguration};
 use antithesis_instrumentation as _;
 use datadog_agent_commons::platform::PlatformSettings;
 use metrics::Level;
-use saluki_app::bootstrap::{AppBootstrapper, Bootstrap, BootstrapGuard};
+use saluki_app::{
+    bootstrap::{AppBootstrapper, Bootstrap, BootstrapGuard},
+    util::get_async_runtime_parallelism,
+};
 use saluki_core::runtime::Supervisor;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_metadata::AppDetails;
@@ -51,8 +54,7 @@ const APP_DETAILS: AppDetails = saluki_metadata::declare_app_details!(
     identifier = "adp",
 );
 
-#[tokio::main]
-async fn main() -> Result<(), GenericError> {
+fn main() -> Result<(), GenericError> {
     let started = Instant::now();
 
     // Register who we are before anything else, so that everything from here on -- including code that runs before
@@ -62,6 +64,19 @@ async fn main() -> Result<(), GenericError> {
     #[cfg(feature = "antithesis")]
     initialize_antithesis();
 
+    // We build the primary runtime by hand, rather than with `#[tokio::main]`, so that we can enforce a minimum number
+    // of worker threads.
+    let worker_threads = get_async_runtime_parallelism()?;
+
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(worker_threads)
+        .enable_all()
+        .build()
+        .error_context("Failed to build the primary runtime.")?
+        .block_on(async_main(started))
+}
+
+async fn async_main(started: Instant) -> Result<(), GenericError> {
     let cli: Cli = argh::from_env();
 
     // Print version and exit early without requiring config.

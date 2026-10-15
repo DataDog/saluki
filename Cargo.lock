@@ -19,7 +19,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agent-data-plane"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "agent-data-plane-config",
  "agent-data-plane-config-system",
@@ -34,6 +34,7 @@ dependencies = [
  "datadog-agent-commons",
  "datadog-agent-config",
  "datadog-agent-config-testing",
+ "datadog-agent-runtime",
  "datadog-protos",
  "derive-where",
  "futures",
@@ -42,9 +43,7 @@ dependencies = [
  "hyper",
  "metrics",
  "ottl",
- "process-memory",
  "prost",
- "prost-types",
  "rcgen",
  "saluki-antithesis",
  "saluki-api",
@@ -52,7 +51,6 @@ dependencies = [
  "saluki-common",
  "saluki-components",
  "saluki-config",
- "saluki-context",
  "saluki-core",
  "saluki-env",
  "saluki-error",
@@ -67,7 +65,6 @@ dependencies = [
  "tikv-jemallocator",
  "tokio",
  "tokio-util",
- "tonic",
  "tower",
  "tracing",
  "uuid",
@@ -92,7 +89,7 @@ dependencies = [
  "bytesize",
  "datadog-agent-config",
  "datadog-agent-config-overlay-model",
- "figment",
+ "saluki-antithesis",
  "saluki-config",
  "saluki-error",
  "serde",
@@ -369,9 +366,9 @@ dependencies = [
 
 [[package]]
 name = "async-compression"
-version = "0.4.48"
+version = "0.4.50"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb61aea1a7def73ee7c350a184f0e70b32c182344e2e75bf70c9b621b83417fd"
+checksum = "ee19bd99b43e3691acbad4e840420a4881cea6c0b66a208125a824f8fd53f5a1"
 dependencies = [
  "compression-codecs",
  "compression-core",
@@ -969,7 +966,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -984,9 +981,9 @@ dependencies = [
 
 [[package]]
 name = "comfy-table"
-version = "8.0.0"
+version = "8.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "136c8c4c3823846e8ba6d4bda011b4e5d5827b8bb0ac26c31f9ab31abe9f54f2"
+checksum = "b96a46ad395a5e00676eddaca4a45ed78b29c08be5a878d35e4b071c625637dd"
 dependencies = [
  "unicode-segmentation",
  "unicode-width",
@@ -994,9 +991,9 @@ dependencies = [
 
 [[package]]
 name = "compression-codecs"
-version = "0.4.43"
+version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bef16c47ba2797aa6a909cc37d39911f3a6743811fe7408ac0b0cc0276b656e9"
+checksum = "98fc98460ba0ad5317075d3632b8dfc45d0be8c4a49347c2a38272019717614a"
 dependencies = [
  "compression-core",
  "flate2",
@@ -1295,6 +1292,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 
 [[package]]
+name = "datadog-agent-apm"
+version = "0.1.0"
+dependencies = [
+ "datadog-agent-apm",
+ "datadog-agent-remote-config",
+ "saluki-common",
+ "saluki-error",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "datadog-agent-commons"
 version = "0.1.0"
 dependencies = [
@@ -1366,6 +1378,57 @@ version = "0.1.0"
 dependencies = [
  "foldhash 0.2.0",
  "protobuf",
+]
+
+[[package]]
+name = "datadog-agent-remote-config"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "datadog-agent-commons",
+ "datadog-agent-remote-config",
+ "datadog-protos",
+ "faster-hex",
+ "metrics",
+ "metrics-util",
+ "saluki-common",
+ "saluki-core",
+ "saluki-error",
+ "saluki-io",
+ "saluki-metrics",
+ "saluki-tls",
+ "serde",
+ "serde_json",
+ "snafu",
+ "tokio",
+ "tonic",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "datadog-agent-runtime"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "datadog-agent-commons",
+ "datadog-protos",
+ "futures",
+ "process-memory",
+ "prost-types",
+ "saluki-common",
+ "saluki-config",
+ "saluki-core",
+ "saluki-error",
+ "saluki-io",
+ "saluki-metadata",
+ "serde_json",
+ "tokio",
+ "tonic",
+ "tracing",
 ]
 
 [[package]]
@@ -1674,7 +1737,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2335,7 +2398,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c91d8cffac8849493a82233811bd02b2b183b8cf39bf704de0fa0841b737595"
 dependencies = [
  "bstr",
- "hashbrown 0.17.1",
+ "hashbrown 0.16.1",
 ]
 
 [[package]]
@@ -2974,9 +3037,9 @@ dependencies = [
 
 [[package]]
 name = "headers"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3314d5adb5d94bcdf56771f2e50dbbc80bb4bdf88967526706205ac9eff24eb"
+checksum = "fc2700e3fe555c3310aa7286cac6167449f2c87e0eb58769c9208a1c58a1d106"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -3179,16 +3242,17 @@ dependencies = [
 
 [[package]]
 name = "hyper-util"
-version = "0.1.20"
+version = "0.1.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96547c2556ec9d12fb1578c4eaf448b04993e7fb79cbaad930a656880a6bdfa0"
+checksum = "ddc03d96684f9226b8a787cdb71488417b53ab5ea8fdb1dac946cb9431cc8bff"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "futures-channel",
  "futures-util",
  "http",
  "http-body",
+ "httparse",
  "hyper",
  "ipnet",
  "libc",
@@ -3668,14 +3732,14 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
 name = "libc"
-version = "0.2.189"
+version = "0.2.190"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
+checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
 
 [[package]]
 name = "libdd-capabilities"
-version = "3.0.1"
-source = "git+https://github.com/DataDog/libdatadog.git?rev=9b339e98215443e3764b741eef06565f3f91a6a6#9b339e98215443e3764b741eef06565f3f91a6a6"
+version = "4.0.1"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=2b4587ed49cbc539ff861ef549c9689baf86b920#2b4587ed49cbc539ff861ef549c9689baf86b920"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3687,10 +3751,11 @@ dependencies = [
 
 [[package]]
 name = "libdd-common"
-version = "6.0.0"
-source = "git+https://github.com/DataDog/libdatadog.git?rev=9b339e98215443e3764b741eef06565f3f91a6a6#9b339e98215443e3764b741eef06565f3f91a6a6"
+version = "8.0.0"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=2b4587ed49cbc539ff861ef549c9689baf86b920#2b4587ed49cbc539ff861ef549c9689baf86b920"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "bytes",
  "cc",
  "const_format",
@@ -3710,16 +3775,16 @@ dependencies = [
 
 [[package]]
 name = "libdd-tinybytes"
-version = "1.1.3"
-source = "git+https://github.com/DataDog/libdatadog.git?rev=9b339e98215443e3764b741eef06565f3f91a6a6#9b339e98215443e3764b741eef06565f3f91a6a6"
+version = "1.1.5"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=2b4587ed49cbc539ff861ef549c9689baf86b920#2b4587ed49cbc539ff861ef549c9689baf86b920"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "libdd-trace-normalization"
-version = "4.0.0"
-source = "git+https://github.com/DataDog/libdatadog.git?rev=9b339e98215443e3764b741eef06565f3f91a6a6#9b339e98215443e3764b741eef06565f3f91a6a6"
+version = "4.2.0"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=2b4587ed49cbc539ff861ef549c9689baf86b920#2b4587ed49cbc539ff861ef549c9689baf86b920"
 dependencies = [
  "anyhow",
  "libdd-trace-protobuf",
@@ -3727,8 +3792,8 @@ dependencies = [
 
 [[package]]
 name = "libdd-trace-obfuscation"
-version = "8.0.0"
-source = "git+https://github.com/DataDog/libdatadog.git?rev=9b339e98215443e3764b741eef06565f3f91a6a6#9b339e98215443e3764b741eef06565f3f91a6a6"
+version = "10.0.0"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=2b4587ed49cbc539ff861ef549c9689baf86b920#2b4587ed49cbc539ff861ef549c9689baf86b920"
 dependencies = [
  "anyhow",
  "fluent-uri",
@@ -3744,8 +3809,8 @@ dependencies = [
 
 [[package]]
 name = "libdd-trace-protobuf"
-version = "5.0.0"
-source = "git+https://github.com/DataDog/libdatadog.git?rev=9b339e98215443e3764b741eef06565f3f91a6a6#9b339e98215443e3764b741eef06565f3f91a6a6"
+version = "5.1.0"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=2b4587ed49cbc539ff861ef549c9689baf86b920#2b4587ed49cbc539ff861ef549c9689baf86b920"
 dependencies = [
  "prost",
  "serde",
@@ -3754,8 +3819,8 @@ dependencies = [
 
 [[package]]
 name = "libdd-trace-utils"
-version = "12.0.0"
-source = "git+https://github.com/DataDog/libdatadog.git?rev=9b339e98215443e3764b741eef06565f3f91a6a6#9b339e98215443e3764b741eef06565f3f91a6a6"
+version = "14.0.0"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=2b4587ed49cbc539ff861ef549c9689baf86b920#2b4587ed49cbc539ff861ef549c9689baf86b920"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5305,7 +5370,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5318,7 +5383,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5389,7 +5454,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5487,9 +5552,7 @@ dependencies = [
 name = "saluki-common"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "bytes",
- "crossbeam-queue",
  "foldhash 0.2.0",
  "http-body",
  "http-body-util",
@@ -5500,7 +5563,6 @@ dependencies = [
  "papaya",
  "pin-project",
  "proptest",
- "quick_cache",
  "regex",
  "saluki-antithesis",
  "saluki-error",
@@ -5510,11 +5572,9 @@ dependencies = [
  "serde_with",
  "shake",
  "smallvec",
- "snafu",
  "stringtheory",
  "tokio",
  "tokio-test",
- "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]
@@ -5531,6 +5591,7 @@ dependencies = [
  "bytes",
  "bytesize",
  "chrono",
+ "datadog-agent-apm",
  "datadog-agent-commons",
  "datadog-agent-metrics-v3",
  "datadog-protos",
@@ -5569,7 +5630,6 @@ dependencies = [
  "saluki-api",
  "saluki-common",
  "saluki-config",
- "saluki-context",
  "saluki-core",
  "saluki-env",
  "saluki-error",
@@ -5616,27 +5676,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "saluki-context"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "indexmap",
- "memchr",
- "metrics",
- "metrics-util",
- "proptest",
- "saluki-antithesis",
- "saluki-common",
- "saluki-error",
- "saluki-metrics",
- "serde",
- "smallvec",
- "stringtheory",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "saluki-core"
 version = "0.1.0"
 dependencies = [
@@ -5644,11 +5683,14 @@ dependencies = [
  "async-trait",
  "bitmask-enum",
  "bytesize",
+ "criterion",
+ "crossbeam-queue",
  "ddsketch",
  "futures",
  "http",
  "indexmap",
  "loom",
+ "memchr",
  "metrics",
  "metrics-util",
  "ordered-float 5.5.0",
@@ -5658,10 +5700,10 @@ dependencies = [
  "process-memory",
  "prometheus-exposition",
  "proptest",
+ "quick_cache",
  "saluki-antithesis",
  "saluki-api",
  "saluki-common",
- "saluki-context",
  "saluki-error",
  "saluki-metrics",
  "serde",
@@ -5693,7 +5735,6 @@ dependencies = [
  "prost",
  "regex",
  "saluki-common",
- "saluki-context",
  "saluki-core",
  "saluki-error",
  "saluki-metrics",
@@ -5750,7 +5791,6 @@ dependencies = [
  "rustls-cng-crypto",
  "saluki-antithesis",
  "saluki-common",
- "saluki-context",
  "saluki-core",
  "saluki-error",
  "saluki-metrics",
@@ -6108,9 +6148,9 @@ dependencies = [
 
 [[package]]
 name = "serde_with"
-version = "3.23.0"
+version = "3.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "935177bb8c0cd8ca1a4e6d1a2ac8988bea69cab4f9d3a31311e012ad27868ea4"
+checksum = "df9adc193c780ef8f159aee8b61e2d5801aaa555e6eb0947fe45530ec506296f"
 dependencies = [
  "serde_core",
  "serde_with_macros",
@@ -6118,9 +6158,9 @@ dependencies = [
 
 [[package]]
 name = "serde_with_macros"
-version = "3.23.0"
+version = "3.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d607aa01a3cb0ad757d6fd216136910db3c97b102fe686585689615a02dbcdc"
+checksum = "3e17bbc68e28663bbbb90df47e058aa7eda4fb445b89fe70457bb94fbccf6e49"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -6485,10 +6525,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.2",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6663,9 +6703,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.53.1"
+version = "1.53.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
+checksum = "e95f91fcc7a621e8b030f6aa23c71fe9838ae2fb4d8118b75602a328f5144044"
 dependencies = [
  "backtrace",
  "bytes",
@@ -6691,9 +6731,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-rustls"
-version = "0.26.5"
+version = "0.26.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0c85f2c3ef0b1cd58b36682f4b17aaa995f0e5db534d85692b4903abce21f67"
+checksum = "c9cc2678c2cdd569ef8215e2afd7954ada2ae20b4fdd2c5fe6139a3b02d105db"
 dependencies = [
  "rustls",
  "tokio",
@@ -6712,9 +6752,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-test"
-version = "0.4.5"
+version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f6d24790a10a7af737693a3e8f1d03faef7e6ca0cc99aae5066f533766de545"
+checksum = "12bc5db7778a8e08ee255090861e0e7aac55e784300077e7ed293c7be36168b2"
 dependencies = [
  "futures-core",
  "tokio",
@@ -7099,11 +7139,11 @@ dependencies = [
 
 [[package]]
 name = "twox-hash"
-version = "2.1.4"
+version = "2.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5283634e518fe9e82c7b20520bb4bc209009fd16c82077c802f8111ecbb0117a"
+checksum = "86a801b3cea342a06d468c8710662aa29e5e05e4f5c0d62f00bbb7f2ad7941c2"
 dependencies = [
- "rand 0.10.3",
+ "rand 0.9.4",
 ]
 
 [[package]]
@@ -7245,9 +7285,9 @@ checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 
 [[package]]
 name = "uuid"
-version = "1.26.1"
+version = "1.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ef6dac1e96601b4fb3acccccff2139741fcb757cb9a36089bf5be91cfb285ce"
+checksum = "97277d36b9c3ace13e58fa6e753f8b0bbbf302a18dd193240d70f9e29681059a"
 dependencies = [
  "getrandom 0.4.2",
 ]
@@ -7497,7 +7537,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

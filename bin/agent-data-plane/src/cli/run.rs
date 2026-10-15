@@ -14,6 +14,7 @@ use agent_data_plane_config_system::{ConfigurationSystem, LoadedConfiguration};
 use argh::FromArgs;
 use bytesize::ByteSize;
 use datadog_agent_commons::{ipc::config::RemoteAgentClientConfiguration, platform::PlatformSettings};
+use datadog_agent_runtime::remote_agent::RemoteAgentBootstrap;
 use saluki_app::{
     accounting::{initialize_memory_bounds, MemoryBoundsConfiguration, MemoryMode as AppMemoryMode},
     bootstrap::BootstrapGuard,
@@ -48,11 +49,13 @@ use saluki_components::{
         ReplaceRule, TraceObfuscationConfiguration, TraceSamplerConfiguration, TraceTagReplacerConfiguration,
     },
 };
-use saluki_context::origin::OriginTagCardinality;
-use saluki_core::accounting::{ComponentBounds, ComponentRegistry};
-use saluki_core::health::HealthRegistry;
-use saluki_core::runtime::{state::ResourceRegistry, RestartMode, RestartStrategy, Supervisor, SupervisorError};
-use saluki_core::topology::TopologyBlueprint;
+use saluki_core::{
+    accounting::{ComponentBounds, ComponentRegistry},
+    data_model::origin::OriginTagCardinality,
+    health::HealthRegistry,
+    runtime::{state::ResourceRegistry, RestartMode, RestartStrategy, Supervisor, SupervisorError},
+    topology::TopologyBlueprint,
+};
 use saluki_env::{features, EnvironmentProvider as _, HostProvider as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::ListenAddress;
@@ -70,7 +73,7 @@ use crate::{
     },
     dogstatsd_contexts::DogStatsDContextDumpAPIHandler,
     internal::{
-        create_internal_supervisor, logging::LoggingConfigurationTranslator, remote_agent::RemoteAgentBootstrap,
+        create_internal_supervisor, logging::LoggingConfigurationTranslator, ConfigUpdatesWorker,
         DogStatsDControlSurface, TopologyControlSurfaces,
     },
 };
@@ -111,32 +114,35 @@ pub async fn handle_run_command(
     // the Core Agent's config stream as authority; standalone mode treats the local sources as
     // authoritative. Both terminals block until the first configuration is received, deserialized,
     // and translated, failing the boot if it cannot be -- the strict startup gate.
-    let (config_sys, ra_bootstrap) = if standalone {
+    let (config_sys, ra_bootstrap, config_updates) = if standalone {
         let config_sys = local_config
             .standalone()
             .await
             .error_context("Failed to load configuration.")?;
-        (config_sys, None)
+        (config_sys, None, None)
     } else {
         // Blocks until the Core Agent acknowledges registration.
         let client_config = remote_agent_client_configuration(local_config.local())?;
-        let ra_bootstrap = RemoteAgentBootstrap::new(&client_config, &bootstrap_dp_config)
-            .await
-            .error_context("Failed to bootstrap remote agent state.")?;
+        let ra_bootstrap = async {
+            let secure_api_listen_address = bootstrap_dp_config.secure_api_listen_address()?;
+            RemoteAgentBootstrap::new(&client_config, &secure_api_listen_address).await
+        }
+        .await
+        .error_context("Failed to bootstrap remote agent state.")?;
 
         // The configuration system owns the config stream: it reads `ConfigUpdate`s directly to
-        // build the typed model and forwards them to the legacy compat map. `create_config_stream`
-        // stays on `ra_bootstrap`, which we keep to build the status/flare/telemetry services below.
+        // build the typed model. `create_config_stream` stays on `ra_bootstrap`, which we keep to
+        // build the status/flare/telemetry services below.
         let config_stream = ra_bootstrap.create_config_stream();
 
         info!("Waiting for initial configuration from Datadog Agent...");
-        let config_sys = local_config
+        let (config_sys, config_updates) = local_config
             .run(config_stream)
             .await
             .error_context("Failed to load initial configuration from the Datadog Agent.")?;
         info!("Initial configuration received.");
 
-        (config_sys, Some(ra_bootstrap))
+        (config_sys, Some(ra_bootstrap), Some(config_updates))
     };
 
     // Connected mode may have replaced the bootstrap-phase settings with the Agent's authoritative
@@ -266,6 +272,17 @@ pub async fn handle_run_command(
 
     root_supervisor.add_worker(bootstrap_supervisor);
     internal_supervisor.add_worker(resource_registry.worker());
+
+    // Apply configuration updates from the Datadog Agent. Until the supervision tree starts, updates stay queued in the
+    // Agent configuration stream and are not applied.
+    //
+    // A restart of the worker recovers from a panic, but not from a closed configuration stream, which never reopens:
+    // the restarted worker fails again at once. The failure then escalates and stops ADP, rather than leaving ADP to run
+    // on a configuration that can no longer change.
+    if let Some(config_updates) = config_updates {
+        internal_supervisor.add_worker(ConfigUpdatesWorker::new(config_updates));
+    }
+
     if let Some(env_supervisor) = maybe_env_supervisor {
         internal_supervisor.add_worker(env_supervisor);
     }
@@ -712,8 +729,7 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         .with_transform_builder("ottl_transform", ottl_transform_config)
         .with_transform_builder("apm_onboarding", ApmOnboardingConfiguration)
         .with_transform_builder("trace_obfuscation", trace_obfuscation_config)
-        .with_transform_builder("trace_tag_replacer", trace_tag_replacer_config)
-        .with_transform_builder("trace_sampler", trace_sampler_config);
+        .with_transform_builder("trace_tag_replacer", trace_tag_replacer_config);
     let apm_stats_transform_config = ApmStatsTransformConfiguration::from_configuration(&config.domains.traces)
         .with_environment_provider(env_provider.clone())
         .await?;
@@ -724,10 +740,15 @@ async fn add_baseline_traces_pipeline_to_blueprint(
 
     blueprint
         .add_transform("traces_enrich", dd_traces_enrich_config)?
+        .add_transform("trace_sampler", trace_sampler_config)?
         .add_transform("dd_apm_stats", apm_stats_transform_config)?
         .add_encoder("dd_stats_encode", dd_apm_stats_encoder)?
         .add_encoder("dd_traces_encode", dd_traces_config)?
-        .connect_components("traces_enrich", ["dd_apm_stats", "dd_traces_encode"])?
+        .connect_components("traces_enrich", "trace_sampler")?
+        .connect_components("trace_sampler", ["dd_apm_stats", "dd_traces_encode"])?
+        // The sampler reports its sampling telemetry as metric events through this dedicated
+        // output, delivering the metrics through the metrics pipeline to the backend.
+        .connect_components("trace_sampler.metrics", "metrics_enrich")?
         .connect_components("dd_apm_stats", "dd_stats_encode")?
         .connect_components(["dd_traces_encode", "dd_stats_encode"], "dd_out")?;
 
@@ -953,10 +974,7 @@ async fn add_dsd_pipeline_to_blueprint(
         hist_config: dsd_hist_config,
         context_snapshot_receiver: dsd_context_snapshot_receiver,
     };
-    let dsd_no_agg_split_config = DogStatsDNoAggSplitConfiguration::new(
-        aggregation.passthrough_idle_flush_timeout,
-        aggregation.window_duration_seconds,
-    );
+    let dsd_no_agg_split_config = DogStatsDNoAggSplitConfiguration::new(aggregation.passthrough_idle_flush_timeout);
     let dsd_post_agg_filter_config = DogStatsDPostAggregateFilterConfiguration::new(
         config_system.live(|config| &config.domains.dogstatsd.metric_filter),
         &histogram.aggregates,
@@ -1209,7 +1227,6 @@ mod tests {
         AggregateContextSnapshotEntry, AggregateMetricType, ChainedConfiguration, DogStatsDMapperConfiguration,
         DogStatsDMapperProfile, DogStatsDMetricMapping, HistogramConfiguration,
     };
-    use saluki_context::Context;
     use saluki_core::{
         accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder, MemoryLimiter},
         components::{
@@ -1217,7 +1234,10 @@ mod tests {
             sources::{Source, SourceBuilder, SourceContext},
             BuildContext,
         },
-        data_model::event::{metric::Metric, Event, EventType},
+        data_model::event::{
+            metric::{context::Context, Metric},
+            Event, EventType,
+        },
         health::HealthRegistry,
         runtime::{state::ResourceRegistry, Supervisor},
         topology::{OutputDefinition, TopologyBlueprint},
@@ -1454,10 +1474,7 @@ mod tests {
     #[tokio::test]
     async fn no_agg_split_excludes_timestamped_metrics_from_tag_filterlist() {
         tokio::time::timeout(Duration::from_secs(5), async {
-            let no_agg_split = DogStatsDNoAggSplitConfiguration::new(
-                Duration::from_millis(50),
-                NonZeroU64::new(10).expect("not zero"),
-            );
+            let no_agg_split = DogStatsDNoAggSplitConfiguration::new(Duration::from_millis(50));
             let tag_filter = TagFilterlistConfiguration::new(
                 Live::new_fixed(vec![MetricTagFilterEntry {
                     metric_name: "app.requests".to_string(),

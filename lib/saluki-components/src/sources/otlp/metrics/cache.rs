@@ -1,11 +1,11 @@
 use std::time::Duration;
 
-use saluki_common::cache::{Cache, CacheBuilder};
+use saluki_core::cache::{Cache, CacheBuilder};
 
 use super::config::OtlpMetricsTranslatorConfig;
 use super::dimensions::Dimensions;
 
-type CacheKey = saluki_context::ContextKey;
+type CacheKey = saluki_core::data_model::event::metric::context::ContextKey;
 
 fn cache_key(dimensions: &Dimensions) -> CacheKey {
     dimensions.context_key()

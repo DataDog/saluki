@@ -3,6 +3,7 @@ use std::sync::Arc;
 use agent_data_plane_config::SalukiConfiguration;
 use agent_data_plane_config_system::ConfigurationSystem;
 use arc_swap::ArcSwap;
+use datadog_agent_runtime::remote_agent::RemoteAgentBootstrap;
 use saluki_app::logging::LoggingOverrideController;
 use saluki_core::accounting::ComponentRegistry;
 use saluki_core::health::HealthRegistry;
@@ -10,6 +11,9 @@ use saluki_core::runtime::{SupervisionTreeHandle, Supervisor};
 use saluki_error::GenericError;
 
 mod config_runtime;
+
+mod config_updates;
+pub use self::config_updates::ConfigUpdatesWorker;
 
 mod control_plane;
 pub use self::control_plane::create_control_plane_supervisor;
@@ -21,8 +25,8 @@ pub mod env;
 
 pub mod logging;
 
-pub mod remote_agent;
-use self::remote_agent::RemoteAgentBootstrap;
+mod status;
+pub use self::status::DogStatsDStatusSection;
 
 mod telemetry;
 

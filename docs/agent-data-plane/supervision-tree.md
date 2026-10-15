@@ -10,12 +10,16 @@ nest to form the tree. That structure is the most complete description of what A
 questions that logs answer only indirectly: whether a subsystem is running, whether it has been restarting in a loop,
 and which part of the tree is accumulating memory.
 
+A worker can also have children. If a process starts work as its own, the tree shows that work under the process,
+not next to it. For example, a listener starts a handler for each connection that it accepts. A process does not stop
+until all of its children stop.
+
 Each node reports:
 
 | Field | Meaning |
 | --- | --- |
 | `name` | The process's name, as registered with its supervisor. |
-| `kind` | Whether the node is a supervisor or a leaf worker. |
+| `kind` | Whether the node is a supervisor or a worker. |
 | `state` | `running`, `exited` (ran and was not restarted), or `registered` (declared but not currently running). |
 | `process_id` | The identifier of the node's most recent process. A restart produces a new one. |
 | `process_name` | The fully qualified, dot-scoped process name. |

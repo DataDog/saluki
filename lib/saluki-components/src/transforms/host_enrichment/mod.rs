@@ -99,10 +99,14 @@ impl SynchronousTransform for HostEnrichment {
 
 #[cfg(test)]
 mod tests {
-    use saluki_context::Context;
-    use saluki_core::components::transforms::SynchronousTransform;
-    use saluki_core::data_model::event::{metric::Metric, Event};
-    use saluki_core::topology::EventsBuffer;
+    use saluki_core::{
+        components::transforms::SynchronousTransform,
+        data_model::event::{
+            metric::{context::Context, Metric},
+            Event,
+        },
+        topology::EventsBuffer,
+    };
     use stringtheory::MetaString;
 
     use super::HostEnrichment;

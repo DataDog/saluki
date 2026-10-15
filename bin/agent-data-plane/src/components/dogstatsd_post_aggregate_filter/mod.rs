@@ -220,9 +220,11 @@ mod tests {
     use std::{sync::Arc, time::Duration};
 
     use metrics::set_default_local_recorder;
-    use saluki_context::Context;
     use saluki_core::{
-        data_model::event::{metric::Metric, Event},
+        data_model::event::{
+            metric::{context::Context, Metric},
+            Event,
+        },
         topology::EventsBuffer,
     };
     use saluki_metrics::{test::TestRecorder, MetricsBuilder};

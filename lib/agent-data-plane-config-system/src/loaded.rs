@@ -11,28 +11,14 @@ use std::path::Path;
 use agent_data_plane_config::SalukiConfiguration;
 use datadog_agent_config::apply_datadog_env;
 use saluki_config::dynamic::ConfigUpdate;
-use saluki_config::ConfigurationLoader;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use crate::env_provider::EnvironmentProvider;
 use crate::saluki_env_overlay;
 use crate::source::SourceTree;
-use crate::system::{translate_strict, validate, ConfigurationSystem, Error};
-
-// The environment-variable prefix ADP reads (`DD_`). Mirrors
-// `PlatformSettings::get_env_var_prefix()`; hardcoded so the configuration system need not depend on
-// `datadog-agent-commons` for a single constant.
-const ENV_VAR_PREFIX: &str = "DD";
-
-// Bound on the internal channel that forwards Agent updates into the compatibility map. Matches the
-// Agent stream's own channel depth (`RemoteAgentBootstrap::create_config_stream`).
-const COMPAT_FORWARD_CHANNEL_SIZE: usize = 100;
+use crate::system::{translate_strict, validate, ConfigurationSystem, ConfigurationUpdates, Error};
 
 /// Where environment variables sit relative to the configuration file.
-///
-/// One setting, applied identically to the Figment provider order for the by-key view and to the
-/// order the typed base is composed in.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EnvPrecedence {
     /// Environment variables are read below the file: the file wins.
@@ -47,11 +33,7 @@ pub enum EnvPrecedence {
 }
 
 /// Local configuration prepared before a runtime authority is selected.
-///
-/// Retains a nested base for the typed path and a loader for the legacy by-key path. Both use the
-/// same source path and precedence but build their representations independently.
 pub struct LoadedConfiguration {
-    loader: ConfigurationLoader,
     // Nested local base used for typed translation and Agent-layer merges.
     base: SourceTree,
     // Strictly translated local snapshot exposed before authority selection and used by standalone
@@ -71,12 +53,11 @@ impl LoadedConfiguration {
     ///
     /// Returns an error if a local source cannot be read, decoded, deserialized, or translated.
     pub async fn load(path: impl AsRef<Path>, env: EnvPrecedence) -> Result<Self, Error> {
-        let loader = build_loader(path.as_ref(), env)?;
         // Every value the local sources supply was set explicitly: the file set it or an environment
         // variable supplied it.
         let base = SourceTree::all_explicit(build_base(path.as_ref(), env)?);
         let local = translate_strict(&base)?;
-        Ok(Self { loader, base, local })
+        Ok(Self { base, local })
     }
 
     /// Returns the typed snapshot of the local file and environment.
@@ -88,20 +69,18 @@ impl LoadedConfiguration {
 
     /// Uses the Datadog Agent's configuration stream as the runtime authority.
     ///
-    /// Waits for the initial Agent snapshot, layers it over the local sources, strictly translates
-    /// the result, and then starts the update task.
+    /// Waits for the initial Agent snapshot, layers it over the local sources, and strictly
+    /// translates the result. Returns the system together with the [`ConfigurationUpdates`] that
+    /// apply each later update. The caller must run them.
     ///
     /// # Errors
     ///
-    /// Returns an error if the compatibility map cannot be built, the stream closes before its
-    /// initial snapshot, or the merged configuration cannot be deserialized or translated.
-    pub async fn run(self, config_stream: mpsc::Receiver<ConfigUpdate>) -> Result<ConfigurationSystem, Error> {
-        // The configuration system owns the Agent stream and forwards each update into this
-        // compatibility map, so `raw_map()` keeps serving un-migrated components.
-        let (compat_tx, compat_rx) = mpsc::channel(COMPAT_FORWARD_CHANNEL_SIZE);
-        let compat_map = self.loader.with_dynamic_configuration(compat_rx).into_generic().await?;
-
-        ConfigurationSystem::connected(config_stream, compat_tx, compat_map, self.base).await
+    /// Returns an error if the stream closes before its initial snapshot, or the merged configuration
+    /// cannot be deserialized or translated.
+    pub async fn run(
+        self, config_stream: mpsc::Receiver<ConfigUpdate>,
+    ) -> Result<(ConfigurationSystem, ConfigurationUpdates), Error> {
+        ConfigurationSystem::connected(config_stream, self.base).await
     }
 
     /// Uses the translated local configuration as the runtime authority.
@@ -112,23 +91,20 @@ impl LoadedConfiguration {
     ///
     /// # Errors
     ///
-    /// Returns an error if the compatibility map cannot be built from the local sources, or if the
-    /// local configuration fails validation.
+    /// Returns an error if the local configuration fails validation.
     pub async fn standalone(self) -> Result<ConfigurationSystem, Error> {
         validate(&self.local)?;
-        let compat_map = self.loader.into_generic().await?;
-        Ok(ConfigurationSystem::standalone(compat_map, self.local))
+        Ok(ConfigurationSystem::standalone(self.local, self.base))
     }
 }
 
 /// Builds the typed base: the configuration file parsed to its nested shape, with environment
 /// variables read directly and decoded into the schema's shapes on top.
 ///
-/// It reads the same file as the by-key compatibility view, normalizes it the same way (drop
-/// null-valued keys; an empty file is an empty object), and then overlays the environment via the
-/// generated Datadog reader, the Saluki-only reader, and the
-/// canonical proxy variables. `env` sets whether the environment overwrites the file (`AfterFile`)
-/// or only fills absent keys (`BeforeFile`); `Disabled` skips the environment entirely.
+/// A null-valued key is dropped and an empty file is an empty object. The environment is then
+/// overlaid via the generated Datadog reader, the Saluki-only reader, and the canonical proxy
+/// variables. `env` sets whether the environment overwrites the file (`AfterFile`) or only fills
+/// absent keys (`BeforeFile`); `Disabled` skips the environment entirely.
 fn build_base(path: &Path, env: EnvPrecedence) -> Result<Value, Error> {
     let text = std::fs::read_to_string(path).map_err(|e| Error::Base {
         message: format!("read `{}`: {e}", path.display()),
@@ -151,8 +127,8 @@ fn build_base(path: &Path, env: EnvPrecedence) -> Result<Value, Error> {
     Ok(base)
 }
 
-/// Recursively removes object entries whose value is JSON null, mirroring the compatibility loader's
-/// file normalization: an explicitly null YAML key must not override a model default with null.
+/// Recursively removes object entries whose value is JSON null: an explicitly null YAML key must not
+/// override a model default with null.
 fn drop_nulls(value: &mut Value) {
     if let Value::Object(map) = value {
         map.retain(|_, v| !v.is_null());
@@ -160,37 +136,6 @@ fn drop_nulls(value: &mut Value) {
             drop_nulls(v);
         }
     }
-}
-
-/// Builds the by-key configuration view at the given precedence, with later sources overriding
-/// earlier ones.
-///
-/// Two environment providers are used together. [`ConfigurationLoader::from_environment`] scans the
-/// `DD_` prefix and contributes every variable as a flat key, which is what a key not covered by
-/// either source model needs. [`EnvironmentProvider`] then contributes the modeled keys at their
-/// canonical paths, so a nested key such as `proxy.http` is reachable in the shape the Datadog Agent
-/// itself uses. It sits at the higher precedence of the two because it knows a key's real shape,
-/// while the scanning provider can only guess from the variable's name.
-fn build_loader(path: &Path, env: EnvPrecedence) -> Result<ConfigurationLoader, Error> {
-    let loader = ConfigurationLoader::default();
-    let loader = match env {
-        EnvPrecedence::AfterFile => loader
-            .from_yaml(path)?
-            .from_environment(ENV_VAR_PREFIX)?
-            .add_providers([schema_env_provider()?]),
-        EnvPrecedence::BeforeFile => loader
-            .from_environment(ENV_VAR_PREFIX)?
-            .add_providers([schema_env_provider()?])
-            .from_yaml(path)?,
-        EnvPrecedence::Disabled => loader.from_yaml(path)?,
-    };
-    Ok(loader)
-}
-
-/// Builds the schema-driven environment provider, reporting a malformed value the same way the typed
-/// base does.
-fn schema_env_provider() -> Result<EnvironmentProvider, Error> {
-    EnvironmentProvider::new().map_err(|message| Error::Base { message })
 }
 
 #[cfg(test)]
@@ -251,7 +196,7 @@ mod tests {
     #[tokio::test]
     async fn load_rejects_translation_invalid_local_sources() {
         let path = std::env::temp_dir().join(format!("adp_local_bad_{}.yaml", std::process::id()));
-        // The compatibility loader accepts this value, but typed translation rejects it.
+        // The file parses, but typed translation rejects the value.
         std::fs::write(&path, "dogstatsd_tag_cardinality: bogus\n").unwrap();
 
         let result = LoadedConfiguration::load(&path, EnvPrecedence::Disabled).await;
@@ -278,6 +223,103 @@ mod tests {
 
         std::fs::remove_file(&path).ok();
         assert!(matches!(result, Err(Error::MissingApiKey)));
+    }
+
+    /// Loads the local sources from a temporary configuration file with the given contents.
+    ///
+    /// `test` names the file, so that tests which run at the same time do not share one.
+    async fn load_from_file(test: &str, contents: &str) -> LoadedConfiguration {
+        let path = std::env::temp_dir().join(format!("adp_{test}_{}.yaml", std::process::id()));
+        std::fs::write(&path, contents).unwrap();
+        let loaded = LoadedConfiguration::load(&path, EnvPrecedence::Disabled)
+            .await
+            .expect("local sources load");
+        std::fs::remove_file(&path).ok();
+        loaded
+    }
+
+    /// Waits until `system` reports `level` as the log level.
+    async fn await_log_level(system: &ConfigurationSystem, level: &str) {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while system.config().control.logging.level != level {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the configuration should report the log level `{level}`"));
+    }
+
+    fn log_level_update(level: &str) -> ConfigUpdate {
+        use saluki_config::dynamic::ConfigSetting;
+
+        ConfigUpdate::Partial(ConfigSetting::explicit("log_level", json!(level)))
+    }
+
+    #[tokio::test]
+    async fn run_applies_later_updates_only_once_the_updates_run() {
+        let loaded = load_from_file("run_updates", "api_key: test-api-key\nlog_level: info\n").await;
+
+        // `run` itself applies the initial snapshot. This is the startup gate.
+        let (agent_tx, agent_rx) = mpsc::channel(8);
+        agent_tx.send(ConfigUpdate::snapshot([])).await.unwrap();
+        let (system, updates) = loaded.run(agent_rx).await.expect("the initial snapshot is accepted");
+        assert_eq!(system.config().control.logging.level, "info");
+
+        // A later update waits until the updates run. Nothing applies it in the background before
+        // then.
+        agent_tx.send(log_level_update("warn")).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(system.config().control.logging.level, "info");
+
+        tokio::spawn(updates.run());
+        await_log_level(&system, "warn").await;
+    }
+
+    #[tokio::test]
+    async fn updates_continue_where_a_stopped_run_left_off() {
+        let loaded = load_from_file("run_restart", "api_key: test-api-key\nlog_level: info\n").await;
+
+        let (agent_tx, agent_rx) = mpsc::channel(8);
+        agent_tx.send(ConfigUpdate::snapshot([])).await.unwrap();
+        let (system, updates) = loaded.run(agent_rx).await.expect("the initial snapshot is accepted");
+
+        let first_run = tokio::spawn(updates.run());
+        agent_tx.send(log_level_update("warn")).await.unwrap();
+        await_log_level(&system, "warn").await;
+
+        // Stop the run, as a supervisor does when it restarts a worker. The next run reads the same
+        // stream, so an update sent in between is not lost.
+        first_run.abort();
+        let _ = first_run.await;
+        agent_tx.send(log_level_update("error")).await.unwrap();
+
+        tokio::spawn(updates.run());
+        await_log_level(&system, "error").await;
+    }
+
+    #[tokio::test]
+    async fn updates_fail_once_the_stream_closes() {
+        let loaded = load_from_file("run_ended", "api_key: test-api-key\n").await;
+
+        let (agent_tx, agent_rx) = mpsc::channel(8);
+        agent_tx.send(ConfigUpdate::snapshot([])).await.unwrap();
+        let (_system, updates) = loaded.run(agent_rx).await.expect("the initial snapshot is accepted");
+        drop(agent_tx);
+
+        // The stream does not reopen, so running the updates again fails in the same way.
+        assert!(matches!(updates.run().await, Err(Error::UpdateStreamClosed)));
+        assert!(matches!(updates.run().await, Err(Error::UpdateStreamClosed)));
+    }
+
+    #[tokio::test]
+    async fn run_fails_if_the_stream_closes_before_the_initial_snapshot() {
+        let loaded = load_from_file("run_closed", "api_key: test-api-key\n").await;
+
+        let (agent_tx, agent_rx) = mpsc::channel::<ConfigUpdate>(1);
+        drop(agent_tx);
+
+        let result = loaded.run(agent_rx).await;
+        assert!(matches!(result, Err(Error::StreamClosed)));
     }
 
     // `LoadedConfiguration::load` is `async` only for symmetry with the rest of the API; it awaits

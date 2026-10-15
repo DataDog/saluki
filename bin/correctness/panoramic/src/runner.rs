@@ -26,8 +26,9 @@ use tracing::{debug, error, info, warn};
 use crate::test::{RunnerSettings, Test, TestContext};
 use crate::{
     assertions::{AssertionContext, AssertionResult, LogBuffer, TargetCommand},
-    config::{parse_file_spec, parse_port_spec, CaseConfig as _, IntegrationConfig},
+    config::{parse_file_spec, parse_port_spec},
     events::TestEvent,
+    integration::IntegrationTestCase,
     reporter::{ErrorKind, PhaseTiming, TestResult, TimeoutAttribution},
 };
 
@@ -523,7 +524,7 @@ fn generate_isolation_group_id() -> String {
 
 /// Runner for a single integration test case.
 pub(crate) struct IntegrationRunner {
-    test_case: IntegrationConfig,
+    test_case: IntegrationTestCase,
     isolation_group_id: String,
     tctx: TestContext,
     log_buffer: Arc<RwLock<LogBuffer>>,
@@ -531,7 +532,7 @@ pub(crate) struct IntegrationRunner {
 
 impl IntegrationRunner {
     /// Create a new test runner for the given test case.
-    pub(crate) fn new(test_case: IntegrationConfig, tctx: TestContext) -> Self {
+    pub(crate) fn new(test_case: IntegrationTestCase, tctx: TestContext) -> Self {
         Self {
             test_case,
             isolation_group_id: generate_isolation_group_id(),
@@ -543,7 +544,7 @@ impl IntegrationRunner {
     /// Run the test case and return the result.
     pub(crate) async fn run(&mut self) -> TestResult {
         let started = Instant::now();
-        let test_name = self.test_case.name.clone();
+        let test_name = self.test_case.config.name.clone();
         let mut phase_timings = Vec::new();
 
         info!(
@@ -555,7 +556,7 @@ impl IntegrationRunner {
         // The intake sidecar is a Linux container, so it creates the isolation group's network with
         // Docker's `bridge` driver. A Windows target needs a `nat` network and cannot join that one,
         // so reject the combination up front instead of failing later inside Docker.
-        if self.test_case.intake.enabled && self.test_case.active_runtime == crate::config::WINDOWS_RUNTIME {
+        if self.test_case.config.intake.enabled && self.test_case.active_runtime == crate::config::WINDOWS_RUNTIME {
             return TestResult::errored(
                 test_name,
                 ErrorKind::Setup,
@@ -590,7 +591,7 @@ impl IntegrationRunner {
         // Start the intake sidecar first, so the target can flush to it from the moment it runs.
         let mut intake_host_port = None;
         let mut _intake_driver = None;
-        if self.test_case.intake.enabled {
+        if self.test_case.config.intake.enabled {
             let phase = self.tctx.phases.enter("intake_start");
             info!(test = %test_name, "Starting intake sidecar...");
             let outcome = self.start_intake().await;
@@ -701,12 +702,12 @@ impl IntegrationRunner {
         let port_mappings = self.build_port_mappings(&details);
 
         // Resolve dynamic variables if any PANORAMIC_DYNAMIC_* env vars are defined.
-        if crate::dynamic_vars::has_dynamic_vars(&self.test_case) {
+        if crate::dynamic_vars::has_dynamic_vars(&self.test_case.config) {
             let phase = self.tctx.phases.enter("dynamic_vars");
             debug!(test = %test_name, "Resolving dynamic variables...");
 
             let resolved_vars = if self.test_case.active_runtime == crate::config::WINDOWS_RUNTIME {
-                crate::dynamic_vars::resolve_windows_vars(&self.test_case, details.container_ip()).await
+                crate::dynamic_vars::resolve_windows_vars(&self.test_case.config, details.container_ip()).await
             } else {
                 crate::dynamic_vars::read_resolved_vars(&driver).await
             };
@@ -850,14 +851,14 @@ impl IntegrationRunner {
     }
 
     async fn build_driver_config(&self) -> Result<DriverConfig, GenericError> {
-        let container = &self.test_case.container;
+        let container = &self.test_case.config.container;
 
         // Merge framework-level port-isolation env vars with the test's own env. Framework
         // defaults are applied first so the test's `env` block takes precedence. Keeps the test
         // surface consistent across the linux and `mac` runtimes — both see the same shifted
         // port table.
         let mut merged_env = crate::test_env::port_isolation_env();
-        for (k, v) in &self.test_case.env {
+        for (k, v) in &self.test_case.config.env {
             merged_env.insert(k.clone(), v.clone());
         }
         let merged_env = normalize_env_for_runtime(merged_env, &self.test_case.active_runtime);
@@ -904,7 +905,7 @@ impl IntegrationRunner {
         // Add file mounts.
         for file_spec in &container.files {
             let (host_path, container_path) = parse_file_spec(file_spec)?;
-            let absolute_host_path = self.test_case.resolve_path(host_path);
+            let absolute_host_path = crate::test::resolve_case_path(&self.test_case.config.loaded_from, host_path);
 
             // Verify the host path exists.
             if !absolute_host_path.exists() {
@@ -982,7 +983,7 @@ impl IntegrationRunner {
     fn build_port_mappings(&self, details: &DriverDetails) -> HashMap<String, u16> {
         build_port_mappings_for_runtime(
             &self.test_case.active_runtime,
-            &self.test_case.container.exposed_ports,
+            &self.test_case.config.container.exposed_ports,
             details,
         )
     }
@@ -1240,10 +1241,6 @@ mod tests {
 
         fn images(&self) -> BTreeMap<&str, String> {
             BTreeMap::new()
-        }
-
-        fn set_image(&mut self, _name: &str, _image: &str) -> bool {
-            false
         }
 
         async fn run(&self, tctx: TestContext) -> TestResult {

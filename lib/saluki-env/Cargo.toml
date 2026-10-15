@@ -25,7 +25,6 @@ hyper-util = { workspace = true }
 prost = { workspace = true }
 regex = { workspace = true, features = ["std", "perf"] }
 saluki-common = { workspace = true }
-saluki-context = { workspace = true }
 saluki-core = { workspace = true }
 saluki-error = { workspace = true }
 saluki-metrics = { workspace = true }

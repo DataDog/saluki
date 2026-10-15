@@ -125,13 +125,10 @@ mod tests {
         let (cfg, sender) = ConfigurationLoader::for_tests(
             Some(serde_json::json!({ "foobar": { "a": false, "b": "c" } })),
             None,
-            true,
+            Some(ConfigUpdate::snapshot([])),
         )
         .await;
         let sender = sender.expect("sender should exist");
-
-        sender.send(ConfigUpdate::snapshot([])).await.unwrap();
-        cfg.ready().await;
 
         let mut watcher = cfg.watch_for_updates("watched_key");
 
@@ -156,13 +153,10 @@ mod tests {
         let (cfg, sender) = ConfigurationLoader::for_tests(
             Some(serde_json::json!({ "foobar": { "a": false, "b": "c" } })),
             None,
-            true,
+            Some(ConfigUpdate::snapshot([])),
         )
         .await;
         let sender = sender.expect("sender should exist");
-
-        sender.send(ConfigUpdate::snapshot([])).await.unwrap();
-        cfg.ready().await;
 
         let mut watcher = cfg.watch_for_updates("foobar.a");
 
@@ -192,13 +186,10 @@ mod tests {
         let (cfg, sender) = ConfigurationLoader::for_tests(
             Some(serde_json::json!({ "foobar": { "a": false, "b": "c" } })),
             None,
-            true,
+            Some(ConfigUpdate::snapshot([])),
         )
         .await;
         let sender = sender.expect("sender should exist");
-
-        sender.send(ConfigUpdate::snapshot([])).await.unwrap();
-        cfg.ready().await;
 
         let mut watcher = cfg.watch_for_updates("foobar.a");
 

@@ -12,14 +12,18 @@ use ddsketch::DDSketch;
 use http::{Response, StatusCode};
 use prometheus_exposition::{MetricType, PrometheusRenderer};
 use saluki_common::{collections::FastIndexMap, iter::ReusableDeduplicator};
-use saluki_context::{tags::Tag, Context};
-use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_core::components::{destinations::*, BuildContext};
-use saluki_core::data_model::event::{
-    metric::{Histogram, Metric, MetricValues},
-    EventType,
+use saluki_core::{
+    accounting::{MemoryBounds, MemoryBoundsBuilder},
+    components::{destinations::*, BuildContext},
+    data_model::{
+        event::{
+            metric::{context::Context, Histogram, Metric, MetricValues},
+            EventType,
+        },
+        tags::Tag,
+    },
+    runtime,
 };
-use saluki_core::runtime;
 use saluki_error::GenericError;
 use saluki_io::net::{server::http::HttpServer, ListenAddress};
 use serde::Deserialize;
@@ -560,7 +564,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     use http_body_util::BodyExt as _;
-    use saluki_context::tags::TagSet;
+    use saluki_core::data_model::tags::TagSet;
 
     use super::*;
 

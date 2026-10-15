@@ -7,18 +7,20 @@ use http::{uri::PathAndQuery, HeaderName, HeaderValue, Method, Uri};
 use piecemeal::{ScratchBuffer, ScratchWriter};
 use saluki_common::collections::{FastHashMap, FastIndexSet};
 use saluki_common::strings::StringBuilder;
-use saluki_context::tags::TagSet;
-use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_core::data_model::event::trace::AttributeValue;
-use saluki_core::runtime;
-use saluki_core::topology::{EventsBuffer, PayloadsBuffer};
 use saluki_core::{
+    accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{encoders::*, BuildContext},
     data_model::{
-        event::{trace::Trace, EventType},
+        event::{
+            trace::{AttributeValue, Trace},
+            EventType,
+        },
         payload::{HttpPayload, Payload, PayloadMetadata, PayloadType},
+        tags::TagSet,
     },
     observability::ComponentMetricsExt as _,
+    runtime,
+    topology::{EventsBuffer, PayloadsBuffer},
 };
 use saluki_env::host::providers::BoxedHostProvider;
 use saluki_env::{EnvironmentProvider, HostProvider};
@@ -882,8 +884,10 @@ mod tests {
 
     use datadog_protos::traces::{idx, AgentPayload};
     use protobuf::Message as _;
-    use saluki_context::tags::Tag;
-    use saluki_core::data_model::event::trace::{Span as DdSpan, Trace};
+    use saluki_core::data_model::{
+        event::trace::{Span as DdSpan, Trace},
+        tags::Tag,
+    };
     use stringtheory::MetaString;
 
     use super::*;

@@ -13,12 +13,13 @@ use datadog_protos::agent::{
     StreamTagsRequest, StreamTagsResponse, TagCardinality, WorkloadmetaEventType, WorkloadmetaFilter, WorkloadmetaKind,
     WorkloadmetaSource, WorkloadmetaStreamRequest, WorkloadmetaStreamResponse,
 };
+use datadog_protos::remote_config::{ClientGetConfigsRequest, ClientGetConfigsResponse};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::client::http::HttpsCapableConnectorBuilder;
 use tonic::{
     service::interceptor::InterceptedService,
     transport::{Channel, Endpoint},
-    Code, Request, Response,
+    Code, Request, Response, Status,
 };
 use tracing::warn;
 
@@ -234,6 +235,20 @@ impl RemoteAgentClient {
         let mut client = self.secure_client.clone();
         let response = client.get_host_tags(HostTagRequest {}).await?;
         Ok(response)
+    }
+
+    /// Polls the Agent for the Remote Configuration assigned to a client.
+    ///
+    /// # Errors
+    ///
+    /// Returns the gRPC status unchanged, so that callers can distinguish `Unimplemented`, which the Agent returns when
+    /// Remote Configuration is disabled, from other failures.
+    pub async fn client_get_configs(
+        &self, request: ClientGetConfigsRequest,
+    ) -> Result<ClientGetConfigsResponse, Status> {
+        let mut client = self.secure_client.clone();
+        let response = client.client_get_configs(request).await?;
+        Ok(response.into_inner())
     }
 
     /// Gets a stream of autodiscovery config updates.

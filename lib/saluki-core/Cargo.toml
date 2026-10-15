@@ -19,11 +19,13 @@ anymap3 = { workspace = true }
 async-trait = { workspace = true }
 bitmask-enum = { workspace = true }
 bytesize = { workspace = true }
+crossbeam-queue = { workspace = true }
 ddsketch = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 indexmap = { workspace = true, features = ["std"] }
 loom = { workspace = true, optional = true }
+memchr = { workspace = true }
 metrics = { workspace = true }
 metrics-util = { workspace = true, features = ["recency", "registry"] }
 ordered-float = { workspace = true }
@@ -32,10 +34,10 @@ pastey = { workspace = true }
 pin-project = { workspace = true }
 process-memory = { workspace = true }
 prometheus-exposition = { workspace = true }
+quick_cache = { workspace = true }
 saluki-antithesis = { workspace = true }
 saluki-api = { workspace = true }
 saluki-common = { workspace = true }
-saluki-context = { workspace = true }
 saluki-error = { workspace = true }
 saluki-metrics = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -54,9 +56,14 @@ tokio-util = { workspace = true, features = ["time"] }
 tracing = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
+criterion = { workspace = true }
 metrics-util = { workspace = true, features = ["debugging"] }
 proptest = { workspace = true }
 saluki-metrics = { workspace = true, features = ["test"] }
 tokio-test = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["ansi", "fmt"] }
+
+[[bench]]
+name = "tagset"
+harness = false

@@ -9,7 +9,7 @@ use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
 use saluki_components::transforms::{AggregateContextSnapshotEntry, AggregateMetricType};
-use saluki_context::tags::TagSet;
+use saluki_core::data_model::tags::TagSet;
 use saluki_error::{ErrorContext as _, GenericError};
 use serde::{ser::SerializeStruct as _, Deserialize, Serialize, Serializer};
 use tempfile::Builder as TempFileBuilder;

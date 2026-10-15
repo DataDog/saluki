@@ -59,6 +59,25 @@
 //! Both are synchronous and infallible. As with [`tokio::spawn`], a child being accepted doesn't mean it will run: a
 //! supervisor that shuts down before it reaches the child never starts it at all.
 //!
+//! # Scopes
+//!
+//! A supervisor owns its children. If a worker spawns a child through [`spawn`], the child is only a sibling of the
+//! worker, and their supervisor owns it. Every supervised worker also has a [scope]. The worker owns the children that
+//! it spawns into its scope with [`ChildBuilder::spawn_child`].
+//!
+//! Each of these children runs as a separate task. The worker does not finish until all of these children finish. When
+//! the body of the worker returns, the scope stops them, each according to its own shutdown strategy, as a supervisor
+//! does.
+//!
+//! A scope restarts its children according to their restart policies, as a supervisor does. If a child stops more often
+//! than the restart limit of the scope allows, the owner of the child fails. A supervisor fails in the same condition.
+//! The owner also fails if a child marked [needed][ChildBuilder::needed] terminates and the scope does not restart it.
+//! After the owner is told to stop, the scope no longer restarts its children, and no exit of a child fails the owner.
+//!
+//! A value can also own a scope, so that the background tasks of a primitive stop when the primitive stops. See
+//! [`scope::nested`]. You can also create a scope before the process that will own it exists, with [`UnadoptedScope`].
+//! This lets work spawned during the construction of something belong to the process that later runs that thing.
+//!
 //! # Supervision trees
 //!
 //! As supervisors can be nested, this allows building a tree of supervisors (hence _supervision trees_) where leaf
@@ -98,12 +117,10 @@ mod dedicated;
 pub use self::dedicated::{RuntimeConfiguration, RuntimeMode};
 
 mod restart;
-// The `Supervisable` contract itself lives one crate down, in `saluki-common`, so that leaf crates can describe
-// restartable background work without depending on the supervisor engine here. It's re-exported so that this module
-// remains the single place to import supervision from.
-pub use saluki_common::supervision::{InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture};
-
 pub use self::restart::{RestartMode, RestartStrategy, RestartType};
+
+mod supervisable;
+pub use self::supervisable::{InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture};
 
 mod supervisor;
 pub use self::supervisor::{
@@ -121,54 +138,16 @@ pub use self::tree::{
 mod spawn;
 pub use self::spawn::spawn;
 
+pub mod scope;
+pub use self::scope::{Scope, ScopeError, ScopeGuard, UnadoptedScope};
+
 mod builder;
 pub use self::builder::{
-    nested_supervisor, supervisable, worker, BuilderState, CanTerminate, ChildBuilder, NestedSupervisorBuilder,
-    OneShot, Restartable, Terminable,
+    nested_supervisor, supervisable, worker, worker_with_shutdown, BuilderState, CanTerminate, ChildBuilder,
+    NestedSupervisorBuilder, OneShot, Restartable, Terminable,
 };
 
 mod workers;
 pub use self::workers::{FnWorker, IntoWorkerResult};
 
 mod worker_state;
-
-#[cfg(test)]
-mod tests {
-    use async_trait::async_trait;
-    use saluki_common::sync::shutdown::ShutdownHandle;
-
-    use super::{InitializationError, Supervisable, SupervisorFuture};
-
-    struct Noop;
-
-    #[async_trait]
-    impl Supervisable for Noop {
-        fn name(&self) -> &str {
-            "noop"
-        }
-
-        async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
-            Ok(Box::pin(async move {
-                process_shutdown.await;
-                Ok(())
-            }))
-        }
-    }
-
-    #[test]
-    fn contract_reexport_is_the_same_type_as_the_definition() {
-        // The contract is defined in `saluki-common` and re-exported here, which is what keeps every existing
-        // `use saluki_core::runtime::Supervisable` compiling. A second, parallel definition would also compile, but
-        // would make the two mutually unusable: this pins that an implementation written against the re-export
-        // satisfies the original.
-        fn accepts_the_definition(worker: Box<dyn saluki_common::supervision::Supervisable>) -> &'static str {
-            match worker.name() {
-                "noop" => "noop",
-                other => panic!("unexpected worker name: {other}"),
-            }
-        }
-
-        let worker: Box<dyn Supervisable> = Box::new(Noop);
-        assert_eq!(accepts_the_definition(worker), "noop");
-    }
-}

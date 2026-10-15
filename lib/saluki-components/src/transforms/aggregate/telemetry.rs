@@ -1,6 +1,5 @@
 use metrics::{Counter, Gauge};
-use saluki_context::Context;
-use saluki_core::data_model::event::metric::MetricValues;
+use saluki_core::data_model::event::metric::{context::Context, MetricValues};
 use saluki_metrics::MetricsBuilder;
 
 #[derive(Clone)]
@@ -67,7 +66,7 @@ impl Telemetry {
             active_contexts_by_type: MetricTypedGauge::new(builder, "aggregate_active_contexts_by_type"),
             active_contexts_bytes_by_type: MetricTypedGauge::new(builder, "aggregate_active_contexts_bytes_by_type"),
             events_dropped: builder.register_counter_with_tags("component_events_dropped_total", ["intentional:true"]),
-            flushes: builder.register_debug_counter("aggregate_flushes_total"),
+            flushes: builder.register_counter("aggregate_flushes_total"),
             series_flushed: builder.register_counter_with_tags("aggregate_flushed_total", ["data_type:series"]),
             sketches_flushed: builder.register_counter_with_tags("aggregate_flushed_total", ["data_type:sketches"]),
         }

@@ -23,11 +23,6 @@ use metrics::{
 };
 use metrics_util::storage::AtomicBucket;
 use saluki_common::{collections::FastHashMap, sync::shutdown::ShutdownHandle};
-use saluki_context::{
-    origin::RawOrigin,
-    tags::{Tag, TagSet},
-    Context, ContextResolver, ContextResolverBuilder,
-};
 use saluki_error::GenericError;
 use tokio::{
     select,
@@ -37,7 +32,17 @@ use tokio_util::sync::ReusableBoxFuture;
 use tracing::debug;
 
 use crate::{
-    data_model::event::{metric::*, Event},
+    data_model::{
+        event::{
+            metric::{
+                context::{Context, ContextResolver, ContextResolverBuilder},
+                *,
+            },
+            Event,
+        },
+        origin::RawOrigin,
+        tags::{Tag, TagSet},
+    },
     runtime::{InitializationError, Supervisable, SupervisorFuture},
 };
 

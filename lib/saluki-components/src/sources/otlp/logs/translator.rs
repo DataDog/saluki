@@ -4,9 +4,11 @@ use opentelemetry_semantic_conventions::resource::{HOST_NAME, SERVICE_NAME};
 use otlp_protos::opentelemetry::proto::common::v1::InstrumentationScope;
 use otlp_protos::opentelemetry::proto::logs::v1::{LogRecord, ResourceLogs as OtlpResourceLogs, ScopeLogs};
 use otlp_protos::opentelemetry::proto::resource::v1::Resource;
-use saluki_context::origin::OriginTagsResolver;
-use saluki_context::tags::{Tag, TagSet};
-use saluki_core::data_model::event::Event;
+use saluki_core::data_model::{
+    event::Event,
+    origin::OriginTagsResolver,
+    tags::{Tag, TagSet},
+};
 use stringtheory::MetaString;
 
 use crate::common::otlp::attributes::raw_origin_from_attributes;

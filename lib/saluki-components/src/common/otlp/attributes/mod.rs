@@ -5,7 +5,7 @@ use std::sync::LazyLock;
 use opentelemetry_semantic_conventions::{resource::*, trace::*};
 use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common, any_value::Value};
 use saluki_common::collections::{FastHashMap, FastHashSet};
-use saluki_context::{origin::RawOrigin, tags::TagSet};
+use saluki_core::data_model::{origin::RawOrigin, tags::TagSet};
 
 use crate::common::otlp::util::extract_container_tags_from_resource_attributes;
 

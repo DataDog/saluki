@@ -80,8 +80,10 @@ mod tests {
         metric::Data as OtlpMetricData, number_data_point::Value as OtlpNumberDataPointValue, AggregationTemporality,
         Metric as OtlpMetric, NumberDataPoint as OtlpNumberDataPoint,
     };
-    use saluki_context::tags::{SharedTagSet, Tag};
-    use saluki_core::data_model::event::metric::MetricValues;
+    use saluki_core::data_model::{
+        event::metric::MetricValues,
+        tags::{SharedTagSet, Tag},
+    };
 
     use super::super::tests::{nanos_from_seconds, string_attribute};
     use super::super::OtlpMetricsTranslator;

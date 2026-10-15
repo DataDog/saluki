@@ -275,7 +275,7 @@ mod tests {
 
         assert_size_budget!(Event, 336);
         assert_size_budget!(Metric, 160);
-        assert_size_budget!(saluki_context::Context, 8);
+        assert_size_budget!(super::metric::context::Context, 8);
         assert_size_budget!(super::metric::MetricValues, 104);
         assert_size_budget!(super::metric::MetricMetadata, 48);
         assert_size_budget!(EventD, 200);

@@ -42,7 +42,7 @@ use crate::runtime::{InitializationError, ShutdownStrategy, Supervisable, Superv
 /// Implemented for each of the seven component kinds. Producing the run-future is where the per-kind
 /// differences live: which context type is used, and whether the supervisor-provided shutdown handle is
 /// installed into the context (sources and relays) or ignored (everything else).
-pub(super) trait RunnableComponent: Send + 'static {
+pub(crate) trait RunnableComponent: Send + 'static {
     /// Whether this component kind observes the shutdown signal it is handed.
     ///
     /// True for the kinds that install it into their context (sources and relays), false for the kinds that stop when
@@ -66,7 +66,7 @@ pub(super) trait RunnableComponent: Send + 'static {
 ///
 /// Holds the component behind a take-once [`Mutex`] -- a component is built and run exactly once -- and
 /// exposes it to a supervisor via [`Supervisable`].
-pub(super) struct ComponentWorker<C> {
+pub(crate) struct ComponentWorker<C> {
     component_context: ComponentContext,
     inner: Mutex<Option<C>>,
 }
@@ -75,7 +75,7 @@ impl<C: RunnableComponent> ComponentWorker<C> {
     /// Creates a new `ComponentWorker` for the given runnable component.
     ///
     /// `component_context` identifies the component (its kind and id).
-    pub(super) fn new(component_context: ComponentContext, runnable: C) -> Self {
+    pub(crate) fn new(component_context: ComponentContext, runnable: C) -> Self {
         Self {
             component_context,
             inner: Mutex::new(Some(runnable)),
@@ -132,9 +132,9 @@ impl<C: RunnableComponent> Supervisable for ComponentWorker<C> {
 macro_rules! runnable_component {
     ($name:ident, $component:path, $context:ty, inject_shutdown) => {
         /// Pairs a built component with its context for supervised execution.
-        pub(super) struct $name {
-            pub(super) component: Box<dyn $component + Send>,
-            pub(super) context: $context,
+        pub(crate) struct $name {
+            pub(crate) component: Box<dyn $component + Send>,
+            pub(crate) context: $context,
         }
 
         impl RunnableComponent for $name {
@@ -152,9 +152,9 @@ macro_rules! runnable_component {
     };
     ($name:ident, $component:path, $context:ty) => {
         /// Pairs a built component with its context for supervised execution.
-        pub(super) struct $name {
-            pub(super) component: Box<dyn $component + Send>,
-            pub(super) context: $context,
+        pub(crate) struct $name {
+            pub(crate) component: Box<dyn $component + Send>,
+            pub(crate) context: $context,
         }
 
         impl RunnableComponent for $name {

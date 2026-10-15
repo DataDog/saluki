@@ -4,14 +4,15 @@ use async_trait::async_trait;
 use ddsketch::DDSketch;
 use hashbrown::{hash_map::Entry, HashMap};
 use saluki_common::time::get_unix_timestamp;
-use saluki_context::Context;
-use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_core::{
+    accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr},
     components::{transforms::*, BuildContext},
-    data_model::event::{metric::*, Event, EventType},
+    data_model::event::{
+        metric::{context::Context, *},
+        Event, EventType,
+    },
     observability::ComponentMetricsExt as _,
-    topology::EventsBuffer,
-    topology::{interconnect::BufferedDispatcher, OutputDefinition},
+    topology::{interconnect::BufferedDispatcher, EventsBuffer, OutputDefinition},
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_metrics::MetricsBuilder;
@@ -474,20 +475,34 @@ impl Transform for Aggregate {
                         let was_breached = self.state.context_limit_breached();
 
                         let mut dispatcher = context.dispatcher().buffered().expect("default output should always exist");
-                        if let Err(e) = self.state.flush(get_unix_timestamp(), should_flush_open_windows, &mut dispatcher).await {
-                            error!(error = %e, "Failed to flush aggregation state.");
-                        }
+                        let flush = async {
+                            if let Err(e) = self.state.flush(get_unix_timestamp(), should_flush_open_windows, &mut dispatcher).await {
+                                error!(error = %e, "Failed to flush aggregation state.");
+                            }
 
-                        self.telemetry.increment_flushes();
+                            self.telemetry.increment_flushes();
 
-                        // If flush recovered us from a breach, log the recovery.
-                        if was_breached && !self.state.context_limit_breached() {
-                            info!("Context limit no longer exceeded, metrics are being accepted again.");
-                        }
+                            // If flush recovered us from a breach, log the recovery.
+                            if was_breached && !self.state.context_limit_breached() {
+                                info!("Context limit no longer exceeded, metrics are being accepted again.");
+                            }
 
-                        match dispatcher.flush().await {
-                            Ok(aggregated_events) => debug!(aggregated_events, "Dispatched events."),
-                            Err(e) => error!(error = %e, "Failed to flush aggregated events."),
+                            match dispatcher.flush().await {
+                                Ok(aggregated_events) => debug!(aggregated_events, "Dispatched events."),
+                                Err(e) => error!(error = %e, "Failed to flush aggregated events."),
+                            }
+                        };
+                        tokio::pin!(flush);
+
+                        // A flush can wait a long time for space in a full downstream channel. Keep answering liveness
+                        // probes while it waits. Probes go first so that a waiting probe is seen on every wakeup, even
+                        // when the flush would use up the task's cooperative budget.
+                        loop {
+                            select! {
+                                biased;
+                                _ = health.live() => {},
+                                _ = &mut flush => break,
+                            }
                         }
                     }
 
@@ -617,6 +632,13 @@ impl AggregationState {
             return false;
         }
 
+        // An empty state has no counters to keep alive. The owner skips flushing an empty state, so its last flush can
+        // be arbitrarily old; carrying that timestamp into a newly inserted counter would synthesize zero buckets from
+        // before the counter existed.
+        if self.contexts.is_empty() {
+            self.last_flush = 0;
+        }
+
         let (context, mut values, metadata) = metric.into_parts();
 
         // Collapse all non-timestamped values into a single timestamped value.
@@ -669,9 +691,13 @@ impl AggregationState {
         let bucket_width_secs = self.bucket_width_secs;
         let counter_expire_secs = self.counter_expire_secs.map(|d| d.get()).unwrap_or(0);
 
-        // We want our split timestamp to be before the start of the current bucket, which ensures any timestamp that is
-        // less than or equal to `split_timestamp` resides in a closed bucket.
-        let split_timestamp = align_to_bucket_start(current_time, bucket_width_secs).saturating_sub(1);
+        // Values with a timestamp less than or equal to `split_timestamp` are flushed. Normally that's just before the
+        // start of the current bucket, so only closed buckets are flushed. When flushing open buckets, it's every value.
+        let split_timestamp = if flush_open_buckets {
+            u64::MAX
+        } else {
+            align_to_bucket_start(current_time, bucket_width_secs).saturating_sub(1)
+        };
 
         // Calculate the buckets we need to potentially generate zero-value counters for.
         //
@@ -738,7 +764,7 @@ impl AggregationState {
                         "aggregate counter expiry add does not overflow",
                         { "last_seen": am.last_seen, "counter_expire_secs": counter_expire_secs }
                     );
-                    counter_expire_secs != 0 && am.last_seen.saturating_add(counter_expire_secs) < current_time
+                    counter_expire_secs == 0 || am.last_seen.saturating_add(counter_expire_secs) < current_time
                 }
                 _ => true,
             };
@@ -940,7 +966,6 @@ mod tests {
     use std::{cell::Cell, mem::size_of};
 
     use float_cmp::ApproxEqRatio as _;
-    use saluki_context::tags::{Tag, TagSet};
     use saluki_core::{
         accounting::{ComponentRegistry, MemoryLimiter},
         components::{
@@ -948,6 +973,7 @@ mod tests {
             sources::{Source, SourceBuilder, SourceContext},
             ComponentContext,
         },
+        data_model::tags::{Tag, TagSet},
         health::HealthRegistry,
         runtime::{state::ResourceRegistry, Supervisor},
         support::SubsystemIdentifier,
@@ -1093,12 +1119,18 @@ mod tests {
     }
 
     async fn get_flushed_metrics(timestamp: u64, state: &mut AggregationState) -> Vec<Metric> {
+        get_flushed_metrics_with_open_windows(timestamp, true, state).await
+    }
+
+    async fn get_flushed_metrics_with_open_windows(
+        timestamp: u64, flush_open_buckets: bool, state: &mut AggregationState,
+    ) -> Vec<Metric> {
         let (dispatcher, mut dispatcher_receiver) = build_basic_dispatcher();
         let mut buffered_dispatcher = dispatcher.buffered().expect("default output should always exist");
 
         // Flush the metrics to an event buffer.
         state
-            .flush(timestamp, true, &mut buffered_dispatcher)
+            .flush(timestamp, flush_open_buckets, &mut buffered_dispatcher)
             .await
             .expect("should not fail to flush aggregation state");
 
@@ -1708,6 +1740,95 @@ mod tests {
         let flushed_metrics = get_flushed_metrics(flush_ts(5), &mut state).await;
         assert_eq!(flushed_metrics.len(), 1);
         assert_flushed_scalar_metric!(&input_metrics[2], &flushed_metrics[0], [bucket_ts(5) => 3.0]);
+    }
+
+    /// Regression test: with idle-counter keep-alive disabled (`dogstatsd_expiry_seconds: 0`), a flushed counter used
+    /// to stay in the aggregation state forever. It emitted no zero values, but still counted toward
+    /// `aggregate_context_limit`, so enough distinct counters eventually blocked new contexts.
+    #[tokio::test]
+    async fn disabled_counter_keep_alive_releases_contexts_after_flush() {
+        let mut state = AggregationState::new(
+            BUCKET_WIDTH_SECS,
+            10,
+            None,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+
+        assert!(state.insert(insert_ts(1), Metric::counter("counter", 1.0)));
+        let flushed = get_flushed_metrics(flush_ts(1), &mut state).await;
+
+        assert_eq!(flushed.len(), 1);
+        assert!(state.is_empty());
+    }
+
+    /// Regression test: after the state emptied and sat idle, its last flush time stayed behind. The next flush then
+    /// generated zero-value buckets for the whole idle period and merged them into a counter inserted afterward, so
+    /// the counter reported points from before it existed (97 extra zeros in this scenario).
+    #[tokio::test]
+    async fn counter_after_idle_single_window_does_not_backfill_zeros() {
+        let mut state = AggregationState::new(
+            BUCKET_WIDTH_SECS,
+            10,
+            Some(Duration::from_secs(300)),
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+
+        assert!(state.insert(11, Metric::gauge("previous", 1.0)));
+        let flushed = get_flushed_metrics_with_open_windows(30, false, &mut state).await;
+        assert_eq!(flushed.len(), 1);
+        assert!(state.is_empty());
+
+        let counter = Metric::counter("counter", 7.0);
+        assert!(state.insert(1_000, counter.clone()));
+        let flushed = get_flushed_metrics_with_open_windows(1_010, false, &mut state).await;
+
+        assert_eq!(flushed.len(), 1);
+        assert_flushed_scalar_metric!(&counter, &flushed[0], [1_000 => 7.0]);
+    }
+
+    /// Regression test: flushing open windows (`dogstatsd_flush_incomplete_buckets`) only affected idle-counter zero
+    /// values. Real values in the still-open window stayed behind the closed-bucket cutoff, so a shutdown flush
+    /// discarded them. The Core Agent flushes every bucket, open or not, when forced:
+    /// https://github.com/DataDog/datadog-agent/blob/78c2c984e848055b4aa63c5f6a9e94a534a07a44/pkg/aggregator/time_sampler.go#L184
+    #[tokio::test]
+    async fn flushing_open_windows_emits_values_in_the_open_window() {
+        for flush_open_buckets in [false, true] {
+            let mut state = AggregationState::new(
+                BUCKET_WIDTH_SECS,
+                10,
+                COUNTER_EXPIRE,
+                HistogramConfiguration::default(),
+                Telemetry::noop(),
+            );
+            let gauge = Metric::gauge("gauge", 1.0);
+            let counter = Metric::counter("counter", 2.0);
+            let distribution = Metric::distribution("distribution", 3.0);
+            for metric in [&gauge, &counter, &distribution] {
+                assert!(state.insert(1_001, metric.clone()));
+            }
+
+            // The window [1000, 1010) is still open at 1005.
+            let mut flushed = get_flushed_metrics_with_open_windows(1_005, flush_open_buckets, &mut state).await;
+            if !flush_open_buckets {
+                assert!(
+                    flushed.is_empty(),
+                    "open windows must wait unless they're being flushed"
+                );
+                continue;
+            }
+
+            flushed.sort_by(|a, b| a.context().name().cmp(b.context().name()));
+            let names = flushed
+                .iter()
+                .map(|metric| metric.context().name().as_ref())
+                .collect::<Vec<_>>();
+            assert_eq!(names, ["counter", "distribution", "gauge"]);
+            assert_flushed_scalar_metric!(&counter, &flushed[0], [1_000 => 2.0]);
+            assert_flushed_distribution_metric!(&distribution, &flushed[1], [1_000 => &[3.0][..]]);
+            assert_flushed_scalar_metric!(&gauge, &flushed[2], [1_000 => 1.0]);
+        }
     }
 
     #[tokio::test]

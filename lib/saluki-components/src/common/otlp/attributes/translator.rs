@@ -1,5 +1,5 @@
 use otlp_protos::opentelemetry::proto::common::v1 as otlp_common;
-use saluki_context::tags::TagSet;
+use saluki_core::data_model::tags::TagSet;
 
 use super::{origin_id_from_attributes, tags_from_attributes, ResourceAttributeTagMode};
 use crate::common::otlp::util::{resource_to_metric_source, Source};

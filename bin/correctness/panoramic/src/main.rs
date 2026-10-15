@@ -32,6 +32,7 @@ use self::cli::{Cli, Command, LogLevel};
 
 mod config;
 mod dynamic_vars;
+mod integration;
 mod mounts;
 use self::config::{default_host_runtime, discover_tests};
 
@@ -184,7 +185,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         .runtime
         .clone()
         .unwrap_or_else(|| default_host_runtime().to_string());
-    let mut test_cases = match discover_tests(&cmd.test_dirs, &integration_runtime) {
+    let test_cases = match discover_tests(&cmd.test_dirs, &integration_runtime, &cmd.image_overrides) {
         Ok(tests) => tests,
         Err(e) => {
             if use_tui {
@@ -195,17 +196,6 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-
-    // Images the command line names replace what the cases declare, before anything is selected or
-    // started: a run against the wrong images is worth no time at all.
-    if let Err(e) = image_override::apply(&mut test_cases, &cmd.image_overrides) {
-        if use_tui {
-            eprintln!("{}", e);
-        } else {
-            error!("{}", e);
-        }
-        return ExitCode::from(EXIT_HARNESS_ERROR);
-    }
 
     if test_cases.is_empty() {
         let dirs_str: Vec<_> = cmd.test_dirs.iter().map(|d| d.display().to_string()).collect();
@@ -545,7 +535,7 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
         .runtime
         .clone()
         .unwrap_or_else(|| default_host_runtime().to_string());
-    let test_cases = match discover_tests(&cmd.test_dirs, &integration_runtime) {
+    let test_cases = match discover_tests(&cmd.test_dirs, &integration_runtime, &[]) {
         Ok(tests) => tests,
         Err(e) => {
             error!("Failed to discover tests: {}", e);
@@ -671,6 +661,44 @@ mod tests {
             exit_code_for(&suite_of(vec![failing("b"), errored])),
             ExitCode::from(EXIT_HARNESS_ERROR)
         );
+    }
+
+    #[tokio::test]
+    async fn image_override_validation_precedes_name_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        let case_dir = dir.path().join("unselected");
+        std::fs::create_dir(&case_dir).unwrap();
+        std::fs::write(
+            case_dir.join("config.yaml"),
+            r#"
+type: correctness
+runtime: docker
+analysis_mode: metrics
+baseline: {image: base}
+comparison: {image: comp}
+"#,
+        )
+        .unwrap();
+        for (entry, expected) in [
+            ("millstone=tools:custom", EXIT_NO_TESTS_SELECTED),
+            ("typo=tools:custom", EXIT_HARNESS_ERROR),
+        ] {
+            let cli = Cli::try_parse_from([
+                "panoramic",
+                "run",
+                "-d",
+                dir.path().to_str().unwrap(),
+                "-t",
+                "not-discovered",
+                "--image-override",
+                entry,
+            ])
+            .unwrap();
+            let Command::Run(cmd) = cli.command else {
+                panic!("expected run")
+            };
+            assert_eq!(run_tests(cmd, false).await, ExitCode::from(expected));
+        }
     }
 
     #[test]

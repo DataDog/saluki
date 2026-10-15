@@ -10,6 +10,7 @@ pub mod reexport {
 }
 
 pub mod accounting;
+pub mod cache;
 pub mod components;
 pub mod constants;
 pub mod data_model;

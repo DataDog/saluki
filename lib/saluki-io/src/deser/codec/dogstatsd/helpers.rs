@@ -6,7 +6,7 @@ use nom::{
     sequence::preceded,
     IResult, Parser as _,
 };
-use saluki_context::{origin::OriginTagCardinality, tags::RawTags};
+use saluki_core::data_model::{origin::OriginTagCardinality, tags::RawTags};
 
 use super::DogStatsDCodecConfiguration;
 
@@ -219,7 +219,7 @@ pub fn cardinality(input: &[u8]) -> IResult<&[u8], Option<OriginTagCardinality>>
 
 #[cfg(test)]
 mod tests {
-    use saluki_context::origin::OriginTagCardinality;
+    use saluki_core::data_model::origin::OriginTagCardinality;
 
     use super::{cardinality, to_valid_utf8, CARDINALITY_PREFIX};
 

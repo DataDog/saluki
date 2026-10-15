@@ -5,8 +5,10 @@ use ddsketch::DDSketch;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use protobuf::{rt::WireType, CodedOutputStream, Enum};
 use saluki_common::iter::ReusableDeduplicator;
-use saluki_context::tags::{SharedTagSet, Tag};
-use saluki_core::data_model::event::metric::{Metric, MetricOrigin, MetricValues};
+use saluki_core::data_model::{
+    event::metric::{Metric, MetricOrigin, MetricValues},
+    tags::{SharedTagSet, Tag},
+};
 use saluki_error::GenericError;
 use tracing::warn;
 
@@ -649,8 +651,10 @@ mod tests {
     use ddsketch::DDSketch;
     use protobuf::{CodedOutputStream, Message};
     use saluki_common::iter::ReusableDeduplicator;
-    use saluki_context::{tags::SharedTagSet, Context};
-    use saluki_core::data_model::event::metric::{Metric, MetricMetadata, MetricValues};
+    use saluki_core::data_model::{
+        event::metric::{context::Context, Metric, MetricMetadata, MetricValues},
+        tags::SharedTagSet,
+    };
     use stringtheory::MetaString;
 
     use super::{encode_series_metric, encode_sketch_metric, v1, MetricsEndpoint, MetricsEndpointEncoder};

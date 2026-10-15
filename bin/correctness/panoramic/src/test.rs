@@ -120,12 +120,6 @@ pub(crate) trait Test: Send + Sync {
     /// so we offer a command by which a build process can see these.
     fn images(&self) -> BTreeMap<&str, String>;
 
-    /// Replaces the image used for the container named `name`, reporting whether the test has one.
-    ///
-    /// The names are those [`Test::images`] reports, so every image a test declares can be replaced
-    /// from the command line. A test that has no such container returns `false` and is left alone.
-    fn set_image(&mut self, name: &str, image: &str) -> bool;
-
     /// The runtime identifier for this test (for example, `"docker"`, `"kubernetes_in_docker"`).
     ///
     /// Used by the CI pipeline generator to select the appropriate job template. Defaults to `"docker"`.
@@ -139,4 +133,14 @@ pub(crate) trait Test: Send + Sync {
     /// `TestContext` carries a `CancelToken`. created by the `Runner` which a test should watch in a `tokio::select!`
     /// structure. When a cancellation signal is received, the test should stop executing and tear down its resources.
     async fn run(&self, tctx: TestContext) -> TestResult;
+}
+
+/// Resolves a file-relative path without requiring the destination to exist.
+pub(crate) fn resolve_case_path(loaded_from: &Path, path: impl AsRef<Path>) -> PathBuf {
+    let path = path.as_ref();
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        loaded_from.parent().unwrap_or(Path::new("")).join(path)
+    }
 }

@@ -16,11 +16,11 @@ use saluki_core::{
     runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture},
     support::SubsystemIdentifier,
 };
-use saluki_error::{generic_error, GenericError};
+use saluki_error::generic_error;
 use serde_json::Value;
 
 /// Produces a fresh serialized configuration snapshot per call.
-pub type ConfigSnapshotFn = Arc<dyn Fn() -> Result<Value, GenericError> + Send + Sync>;
+pub type ConfigSnapshotFn = Arc<dyn Fn() -> Value + Send + Sync>;
 
 /// State used for the config API handler.
 #[derive(Clone)]
@@ -45,14 +45,8 @@ impl ConfigAPIHandler {
     }
 
     async fn config_handler(State(state): State<ConfigState>) -> impl IntoResponse {
-        match (state.snapshot)() {
-            Ok(config) => (StatusCode::OK, serde_json::to_string(&config).unwrap()).into_response(),
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to get configuration: {}", e),
-            )
-                .into_response(),
-        }
+        let config = (state.snapshot)();
+        (StatusCode::OK, serde_json::to_string(&config).unwrap()).into_response()
     }
 }
 
@@ -106,9 +100,7 @@ impl Supervisable for ConfigWorker {
             let diagnostics =
                 DiagnosticsEmitter::from_dataspace(SubsystemIdentifier::from_segments(["config-api"]), dataspace);
             diagnostics.register_collector("runtime_config_dump.yaml", move || {
-                snapshot()
-                    .map(|v| serde_json::to_vec_pretty(&v).unwrap_or_default())
-                    .unwrap_or_default()
+                serde_json::to_vec_pretty(&snapshot()).unwrap_or_default()
             });
 
             process_shutdown.await;
@@ -122,7 +114,6 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use http_body_util::BodyExt as _;
-    use saluki_error::generic_error;
     use serde_json::json;
 
     use super::*;
@@ -141,9 +132,9 @@ mod tests {
     async fn config_endpoint_serves_a_fresh_snapshot_per_request() {
         let calls = Arc::new(AtomicUsize::new(0));
         let snapshot_calls = Arc::clone(&calls);
-        let handler = ConfigAPIHandler::new(Arc::new(move || {
-            Ok(json!({ "revision": snapshot_calls.fetch_add(1, Ordering::Relaxed) }))
-        }));
+        let handler = ConfigAPIHandler::new(Arc::new(
+            move || json!({ "revision": snapshot_calls.fetch_add(1, Ordering::Relaxed) }),
+        ));
 
         let (status, body) = response_parts(&handler).await;
         assert_eq!(status, StatusCode::OK);
@@ -153,14 +144,5 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, r#"{"revision":1}"#);
         assert_eq!(calls.load(Ordering::Relaxed), 2);
-    }
-
-    #[tokio::test]
-    async fn config_endpoint_reports_a_failed_snapshot() {
-        let handler = ConfigAPIHandler::new(Arc::new(|| Err(generic_error!("cannot serialize"))));
-
-        let (status, body) = response_parts(&handler).await;
-        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert!(body.contains("cannot serialize"), "unexpected body: {body}");
     }
 }

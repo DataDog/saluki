@@ -1,5 +1,4 @@
 pub mod buf;
-pub mod cache;
 pub mod collections;
 pub mod deser;
 pub mod hash;
@@ -9,7 +8,6 @@ pub mod rate;
 pub mod resource_tracking;
 pub mod scrubber;
 pub mod strings;
-pub mod supervision;
 pub mod sync;
 pub mod task;
 pub mod time;

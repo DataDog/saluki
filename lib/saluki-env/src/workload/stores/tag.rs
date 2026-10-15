@@ -1,11 +1,13 @@
 use std::{num::NonZeroUsize, sync::Arc};
 
 use saluki_common::collections::{FastConcurrentHashMap, FastConcurrentHashSet};
-use saluki_context::{
-    origin::OriginTagCardinality,
-    tags::{SharedTagSet, TagSet},
+use saluki_core::{
+    accounting::{MemoryBounds, MemoryBoundsBuilder},
+    data_model::{
+        origin::OriginTagCardinality,
+        tags::{SharedTagSet, TagSet},
+    },
 };
-use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_metrics::{static_metrics, Counter, Gauge};
 use tracing::{debug, trace};
 
@@ -338,7 +340,7 @@ impl TagStoreQuerier {
 mod tests {
     use std::num::NonZeroUsize;
 
-    use saluki_context::tags::TagSet;
+    use saluki_core::data_model::tags::TagSet;
     use stringtheory::MetaString;
 
     use super::*;

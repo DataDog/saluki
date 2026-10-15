@@ -1,0 +1,11 @@
+---
+upgrade:
+  - |
+    The number of worker threads in the data plane's primary async runtime is now overridden with the
+    ``SALUKI_WORKER_THREADS`` environment variable, which must be set to a positive integer. The data plane uses this
+    value as-is, and fails to start if it's invalid. ``TOKIO_WORKER_THREADS`` no longer affects this runtime.
+fixes:
+  - |
+    The data plane's primary async runtime now uses at least two worker threads by default, even when the system reports
+    a single available CPU. This can help keep the data plane responsive when a single task is busy for an extended
+    period.

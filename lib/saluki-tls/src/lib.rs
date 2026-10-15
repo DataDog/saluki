@@ -24,7 +24,8 @@ use rustls::{
     pki_types::{pem::PemObject as _, CertificateDer, PrivateKeyDer, ServerName, UnixTime},
     server::WebPkiClientVerifier,
     version::{TLS12, TLS13},
-    ClientConfig, DigitallySignedStruct, RootCertStore, ServerConfig, SignatureScheme, SupportedProtocolVersion,
+    ClientConfig, DigitallySignedStruct, RootCertStore, ServerConfig, SignatureScheme, SupportedCipherSuite,
+    SupportedProtocolVersion, Tls13CipherSuite,
 };
 #[cfg(not(feature = "fips"))]
 use saluki_common::collections::FastHashMap;
@@ -605,6 +606,33 @@ fn default_crypto_provider() -> CryptoProvider {
     rustls_cng_crypto::default_provider()
 }
 
+/// Computes the SHA-256 digest of `data` with the platform's TLS crypto provider.
+///
+/// This is AWS-LC on non-Windows platforms (its FIPS module when the `fips` feature is enabled) and CNG on Windows, so
+/// the digest comes from the same module as TLS.
+pub fn sha256(data: &[u8]) -> [u8; 32] {
+    SHA256_SUITE
+        .common
+        .hash_provider
+        .hash(data)
+        .as_ref()
+        .try_into()
+        .expect("SHA-256 digest should be 32 bytes")
+}
+
+// Neither provider exports its hash directly, so borrow it from a TLS 1.3 suite. This is evaluated at compile time.
+#[cfg(not(windows))]
+static SHA256_SUITE: &Tls13CipherSuite = tls13_suite(rustls::crypto::aws_lc_rs::cipher_suite::TLS13_AES_128_GCM_SHA256);
+#[cfg(windows)]
+static SHA256_SUITE: &Tls13CipherSuite = tls13_suite(rustls_cng_crypto::cipher_suite::TLS13_AES_128_GCM_SHA256);
+
+const fn tls13_suite(suite: SupportedCipherSuite) -> &'static Tls13CipherSuite {
+    match suite.tls13() {
+        Some(suite) => suite,
+        None => panic!("SHA-256 source should be a TLS 1.3 cipher suite"),
+    }
+}
+
 /// Initializes the default root certificate store from the platform's native certificate store.
 ///
 /// ## Environment Variables
@@ -814,6 +842,16 @@ mod tests {
         let tempdir = tempfile::tempdir().expect("temporary directory should be created");
         let path = tempdir.path().join(file_name);
         (tempdir, path)
+    }
+
+    #[test]
+    fn sha256_matches_known_answer() {
+        // FIPS 180-2, appendix B.1.
+        let expected = [
+            0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23, 0xb0, 0x03,
+            0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad,
+        ];
+        assert_eq!(super::sha256(b"abc"), expected);
     }
 
     #[test]

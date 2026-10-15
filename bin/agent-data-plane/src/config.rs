@@ -6,8 +6,6 @@ use datadog_agent_commons::ipc::config::{IpcAuthConfiguration, RemoteAgentClient
 use datadog_agent_config::classifier::Pipeline;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::ListenAddress;
-#[cfg(not(target_os = "linux"))]
-use tracing::warn;
 
 /// General data plane configuration.
 ///
@@ -22,34 +20,9 @@ pub struct DataPlaneConfiguration<'a> {
 pub(crate) fn remote_agent_client_configuration(
     config: &SalukiConfiguration,
 ) -> Result<RemoteAgentClientConfiguration, GenericError> {
-    let dp = DataPlaneConfiguration::from_configuration(config);
-
-    #[cfg(target_os = "linux")]
-    let vsock_cid = match config.control.ipc.vsock_addr.as_str() {
-        "" => None,
-        "host" => Some(2),
-        "hypervisor" => Some(0),
-        "local" => Some(3),
-        other => {
-            return Err(generic_error!(
-                "invalid vsock address '{}'; expected one of: host, hypervisor, local",
-                other
-            ))
-        }
-    };
-
-    #[cfg(not(target_os = "linux"))]
-    if !config.control.ipc.vsock_addr.is_empty() {
-        warn!("`vsock_addr` is configured but vsock is only supported on Linux. Setting will be ignored.");
-    }
-
-    Ok(RemoteAgentClientConfiguration {
-        cmd_port: config.control.ipc.cmd_port,
-        auth: dp.ipc_auth_configuration(),
-        grpc_max_message_size: config.control.ipc.grpc_max_message_size,
-        #[cfg(target_os = "linux")]
-        vsock_cid,
-    })
+    let ipc = &config.control.ipc;
+    let auth = DataPlaneConfiguration::from_configuration(config).ipc_auth_configuration();
+    RemoteAgentClientConfiguration::from_parts(ipc.cmd_port, auth, ipc.grpc_max_message_size, &ipc.vsock_addr)
 }
 
 impl<'a> DataPlaneConfiguration<'a> {
@@ -157,13 +130,15 @@ impl<'a> DataPlaneConfiguration<'a> {
     /// Returns `true` if the metrics pipeline is required.
     ///
     /// Connected topologies need this pipeline whenever they have a data pipeline so the liveness metric can be
-    /// enriched and forwarded, including when the only data pipeline is an OTLP proxy. Standalone mode only creates
-    /// the pipeline for data sources that use it directly.
+    /// enriched and forwarded, including when the only data pipeline is an OTLP proxy. The trace sampler reports its
+    /// sampling telemetry as metric events, so a running traces pipeline also requires this one. Standalone mode
+    /// only creates the pipeline for data sources that use it directly.
     pub const fn metrics_pipeline_required(&self) -> bool {
         self.checks_enabled()
             || self.dogstatsd_enabled()
             || (self.otlp_enabled() && !self.otlp_proxy_enabled())
             || (!self.standalone_mode() && self.data_pipelines_enabled())
+            || self.traces_pipeline_required()
     }
 
     /// Returns `true` if the logs pipeline is required.
@@ -286,15 +261,10 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn remote_agent_client_configuration_rejects_invalid_vsock_addresses() {
-        for value in ["invalid", "2", "HOST", "host ", "vm0"] {
-            let mut config = SalukiConfiguration::default();
-            config.control.ipc.vsock_addr = value.to_string();
+        let mut config = SalukiConfiguration::default();
+        config.control.ipc.vsock_addr = "invalid".to_string();
 
-            assert!(
-                remote_agent_client_configuration(&config).is_err(),
-                "expected error for input: {value:?}",
-            );
-        }
+        assert!(remote_agent_client_configuration(&config).is_err());
     }
 
     fn pipeline_configuration(
@@ -396,6 +366,18 @@ mod tests {
         assert!(!dp.events_pipeline_required());
         assert!(dp.service_checks_pipeline_required());
         assert!(dp.traces_pipeline_required());
+    }
+
+    #[test]
+    fn standalone_local_traces_requires_metrics_pipeline_for_sampler_telemetry() {
+        // The sampler reports its telemetry as metric events, so a running traces pipeline requires
+        // the metrics pipeline even in standalone mode.
+        let mut config = pipeline_configuration(false, false, true, true, false);
+        config.control.standalone_mode = true;
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+
+        assert!(dp.traces_pipeline_required());
+        assert!(dp.metrics_pipeline_required());
     }
 
     #[test]

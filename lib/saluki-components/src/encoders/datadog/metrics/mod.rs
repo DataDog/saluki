@@ -9,10 +9,8 @@ use saluki_common::{
     buf::{ChunkedBytesBuffer, FrozenChunkedBytesBuffer},
     iter::ReusableDeduplicator,
 };
-use saluki_context::tags::{SharedTagSet, Tag};
-use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_core::runtime;
 use saluki_core::{
+    accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{encoders::*, BuildContext},
     data_model::{
         event::{
@@ -20,8 +18,10 @@ use saluki_core::{
             EventType,
         },
         payload::{HttpPayload, Payload, PayloadMetadata, PayloadType},
+        tags::{SharedTagSet, Tag},
     },
     observability::ComponentMetricsExt as _,
+    runtime,
     topology::{EventsBuffer, PayloadsBuffer},
 };
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -1813,13 +1813,13 @@ mod tests {
     use bytes::Bytes;
     use datadog_protos::metrics::v3::MetricData as V3MetricData;
     use protobuf::Message as _;
-    use saluki_context::{
-        tags::{Tag, TagSet},
-        Context,
-    };
     use saluki_core::data_model::{
-        event::{metric::MetricMetadata, Event},
+        event::{
+            metric::{context::Context, MetricMetadata},
+            Event,
+        },
         payload::Payload,
+        tags::{Tag, TagSet},
     };
     use saluki_metrics::test::TestRecorder;
     use stringtheory::MetaString;

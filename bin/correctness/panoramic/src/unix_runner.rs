@@ -46,7 +46,8 @@ use tracing::{debug, error, info};
 
 use crate::{
     assertions::{AssertionContext, AssertionResult, LogBuffer, TargetCommand},
-    config::{parse_port_spec, IntegrationConfig},
+    config::parse_port_spec,
+    integration::IntegrationTestCase,
     reporter::{ErrorKind, PhaseTiming, TestResult},
     test::{Test, TestContext},
 };
@@ -99,14 +100,14 @@ fn host_core_agent_cli_command(
 
 /// Runner for a single Unix-process integration test case.
 pub(crate) struct UnixIntegrationRunner {
-    test_case: IntegrationConfig,
+    test_case: IntegrationTestCase,
     tctx: TestContext,
     log_buffer: Arc<RwLock<LogBuffer>>,
 }
 
 impl UnixIntegrationRunner {
     /// Creates a new runner for the given test case.
-    pub(crate) fn new(test_case: IntegrationConfig, tctx: TestContext) -> Self {
+    pub(crate) fn new(test_case: IntegrationTestCase, tctx: TestContext) -> Self {
         Self {
             test_case,
             tctx,
@@ -123,7 +124,7 @@ impl UnixIntegrationRunner {
         info!(test = %test_name, "Starting Unix integration test case.");
 
         // Host-process runtimes have no container network, so there is nowhere for a sidecar to run.
-        if self.test_case.intake.enabled {
+        if self.test_case.config.intake.enabled {
             return make_error_result(
                 test_name,
                 started,
@@ -203,11 +204,11 @@ impl UnixIntegrationRunner {
         //     would try to write its runtime state (remote-config db, sockets, pid file)
         //     back to /opt — typically not writable in CI. Scope it to the per-test state
         //     directory so each test gets a clean slate and nothing leaks across runs.
-        let agent_forced = build_core_agent_forced_env(&self.test_case.env, &state_dir, auth_token_path.clone());
-        let agent_env = build_process_env(&self.test_case.env, &agent_forced);
+        let agent_forced = build_core_agent_forced_env(&self.test_case.config.env, &state_dir, auth_token_path.clone());
+        let agent_env = build_process_env(&self.test_case.config.env, &agent_forced);
         let core_agent_cli_command = host_core_agent_cli_command(&agent_binary, &state_dir, agent_env.clone());
 
-        let agent_config = UnixProcessConfig::new(format!("{}-core-agent", self.test_case.name), agent_binary)
+        let agent_config = UnixProcessConfig::new(format!("{}-core-agent", self.test_case.config.name), agent_binary)
             .with_args(vec![
                 "run".to_string(),
                 "-c".to_string(),
@@ -240,9 +241,9 @@ impl UnixIntegrationRunner {
         let config_path_str = config_path.to_string_lossy().into_owned();
         let core_agent_auth_token_path = PathBuf::from(auth_token_path.clone());
         let adp_forced = build_adp_forced_env(auth_token_path);
-        let adp_env = build_process_env(&self.test_case.env, &adp_forced);
+        let adp_env = build_process_env(&self.test_case.config.env, &adp_forced);
         let adp_cli_command = host_adp_cli_command(&binary_path, &config_path, adp_env.clone());
-        let process_config = UnixProcessConfig::new(self.test_case.name.clone(), binary_path)
+        let process_config = UnixProcessConfig::new(self.test_case.config.name.clone(), binary_path)
             .with_args(vec!["-c".to_string(), config_path_str, "run".to_string()])
             .with_env_map(adp_env);
 
@@ -302,7 +303,7 @@ impl UnixIntegrationRunner {
     /// port to appear in the mapping) works unchanged.
     fn build_port_mappings(&self) -> HashMap<String, u16> {
         let mut mappings = HashMap::new();
-        for spec in &self.test_case.container.exposed_ports {
+        for spec in &self.test_case.config.container.exposed_ports {
             if let Ok((port, protocol)) = parse_port_spec(spec) {
                 mappings.insert(format!("{}/{}", port, protocol), port);
             }

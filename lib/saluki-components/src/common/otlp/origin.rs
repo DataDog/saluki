@@ -3,7 +3,7 @@ use std::sync::Arc;
 use agent_data_plane_config::domains::dogstatsd::OriginTagCardinality as ConfigOriginTagCardinality;
 use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common, any_value::Value};
 use saluki_common::collections::FastHashSet;
-use saluki_context::{
+use saluki_core::data_model::{
     origin::{OriginTagCardinality, OriginTagsResolver, RawOrigin},
     tags::{SharedTagSet, TagSet},
 };

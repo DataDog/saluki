@@ -14,7 +14,7 @@ use figment::{
 use saluki_error::GenericError;
 use serde::Deserialize;
 use snafu::Snafu;
-use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
+use tokio::sync::broadcast;
 use tracing::{debug, error};
 
 pub mod duration_string;
@@ -43,7 +43,7 @@ impl Provider for ArcProvider {
 
 enum ProviderSource {
     Static(ArcProvider),
-    Dynamic(Option<mpsc::Receiver<ConfigUpdate>>),
+    Dynamic(Option<ConfigUpdate>),
 }
 
 impl Clone for ProviderSource {
@@ -288,11 +288,13 @@ impl ConfigurationLoader {
         Ok(self)
     }
 
-    /// Enables dynamic configuration.
+    /// Enables dynamic configuration, starting from the given initial update.
     ///
-    /// The receiver is used in `run_dynamic_config_updater` to handle retrieving the initial snapshot and subsequent updates.
-    pub fn with_dynamic_configuration(mut self, receiver: mpsc::Receiver<ConfigUpdate>) -> Self {
-        self.provider_sources.push(ProviderSource::Dynamic(Some(receiver)));
+    /// The dynamic configuration layers over the providers added before this call, and under the providers added after
+    /// it. [`into_generic`][Self::into_generic] applies `initial` to it, and returns the [`ConfigUpdater`] that applies
+    /// each later update.
+    pub fn with_dynamic_configuration(mut self, initial: ConfigUpdate) -> Self {
+        self.provider_sources.push(ProviderSource::Dynamic(Some(initial)));
         self
     }
 
@@ -310,59 +312,69 @@ impl ConfigurationLoader {
     }
 
     /// Consumes the configuration loader and wraps it in a generic wrapper.
-    pub async fn into_generic(mut self) -> Result<GenericConfiguration, ConfigurationError> {
+    ///
+    /// If dynamic configuration is enabled, the returned configuration already contains the initial update, and this
+    /// also returns the [`ConfigUpdater`] that applies each later update.
+    ///
+    /// ## Errors
+    ///
+    /// If dynamic configuration is enabled and the initial configuration can't be extracted from its providers, an
+    /// error will be returned.
+    pub async fn into_generic(mut self) -> Result<(GenericConfiguration, Option<ConfigUpdater>), ConfigurationError> {
         let has_dynamic_provider = self
             .provider_sources
             .iter()
             .any(|s| matches!(s, ProviderSource::Dynamic(_)));
 
         if has_dynamic_provider {
-            let mut receiver_opt = None;
+            let mut initial_opt = None;
             for source in self.provider_sources.iter_mut() {
-                if let ProviderSource::Dynamic(ref mut receiver) = source {
-                    receiver_opt = receiver.take();
+                if let ProviderSource::Dynamic(ref mut initial) = source {
+                    initial_opt = initial.take();
                     break;
                 }
             }
-            let receiver = receiver_opt.expect("Dynamic receiver should exist but was not found");
+            let initial = initial_opt.expect("Dynamic initial update should exist but was not found");
 
-            // Build the initial figment object from the static providers. The dynamic provider is empty for now.
-            let figment = build_figment_from_sources(&self.provider_sources);
+            // Build the configuration from the initial update, so that no caller can read the configuration before it
+            // contains that update.
+            let mut dynamic_state = serde_json::Value::Null;
+            apply_to_dynamic_state(&mut dynamic_state, initial);
+            let figment = build_figment_with_dynamic_state(&self.provider_sources, &dynamic_state);
+            let current_config = figment.extract()?;
 
             let (event_sender, _) = broadcast::channel(100);
-            let (ready_sender, ready_receiver) = oneshot::channel();
 
             let generic_config = GenericConfiguration {
                 inner: Arc::new(Inner {
                     figment: RwLock::new(figment),
                     lookup_sources: self.lookup_sources,
                     event_sender: Some(event_sender.clone()),
-                    ready_signal: Mutex::new(Some(ready_receiver)),
                 }),
             };
 
-            // Spawn the background task to handle retrieving the initial snapshot and subsequent updates.
-            tokio::spawn(run_dynamic_config_updater(
-                generic_config.inner.clone(),
-                receiver,
-                self.provider_sources,
-                event_sender,
-                ready_sender,
-            ));
+            let updater = ConfigUpdater {
+                inner: generic_config.inner.clone(),
+                provider_sources: self.provider_sources,
+                sender: event_sender,
+                dynamic_state,
+                current_config,
+            };
 
-            Ok(generic_config)
+            Ok((generic_config, Some(updater)))
         } else {
             // Otherwise, just build the static configuration.
             let figment = build_figment_from_sources(&self.provider_sources);
 
-            Ok(GenericConfiguration {
+            let generic_config = GenericConfiguration {
                 inner: Arc::new(Inner {
                     figment: RwLock::new(figment),
                     lookup_sources: self.lookup_sources,
                     event_sender: None,
-                    ready_signal: Mutex::new(None),
                 }),
-            })
+            };
+
+            Ok((generic_config, None))
         }
     }
 
@@ -373,15 +385,18 @@ impl ConfigurationLoader {
     /// - configuration from a JSON file
     /// - configuration from environment variables
     ///
-    /// If `enable_dynamic_configuration` is true, a dynamic configuration sender is returned.
+    /// If `initial_snapshot` is set, dynamic configuration is enabled: the returned configuration already contains that
+    /// snapshot, and a dynamic configuration sender is returned for each later update. This function also spawns a task
+    /// on the current runtime that applies each update the sender sends.
     ///
-    /// This is generally only useful for testing purposes, and is exposed publicly in order to be used in cross-crate testing scenarios.
+    /// This is generally only useful for testing purposes, and is exposed publicly in order to be used in cross-crate
+    /// testing scenarios.
     #[cfg(any(test, feature = "test-util"))]
     pub async fn for_tests(
         file_values: Option<serde_json::Value>, env_vars: Option<&[(String, String)]>,
-        enable_dynamic_configuration: bool,
+        initial_snapshot: Option<ConfigUpdate>,
     ) -> (GenericConfiguration, Option<tokio::sync::mpsc::Sender<ConfigUpdate>>) {
-        Self::for_tests_with_provider_factory(file_values, env_vars, enable_dynamic_configuration, |_| {
+        Self::for_tests_with_provider_factory(file_values, env_vars, initial_snapshot, |_| {
             Serialized::defaults(serde_json::json!({}))
         })
         .await
@@ -398,7 +413,7 @@ impl ConfigurationLoader {
     #[cfg(any(test, feature = "test-util"))]
     pub async fn for_tests_with_provider_factory<P, F>(
         file_values: Option<serde_json::Value>, env_vars: Option<&[(String, String)]>,
-        enable_dynamic_configuration: bool, provider_factory: F,
+        initial_snapshot: Option<ConfigUpdate>, provider_factory: F,
     ) -> (GenericConfiguration, Option<tokio::sync::mpsc::Sender<ConfigUpdate>>)
     where
         P: Provider + Send + Sync + 'static,
@@ -410,11 +425,8 @@ impl ConfigurationLoader {
         serde_json::to_writer(&json_file, &json_to_write).expect("should not fail to write to temp file.");
 
         let mut loader = ConfigurationLoader::default().try_from_json(path);
-        let mut maybe_sender = None;
-        if enable_dynamic_configuration {
-            let (sender, receiver) = tokio::sync::mpsc::channel(1);
-            loader = loader.with_dynamic_configuration(receiver);
-            maybe_sender = Some(sender);
+        if let Some(initial_snapshot) = initial_snapshot {
+            loader = loader.with_dynamic_configuration(initial_snapshot);
         }
 
         // All tests that mutate process-wide environment variables while loading configuration serialize against a
@@ -451,10 +463,21 @@ impl ConfigurationLoader {
 
         drop(guard);
 
-        let cfg = loader
+        let (cfg, updater) = loader
             .into_generic()
             .await
             .expect("should not fail to build generic configuration");
+        let maybe_sender = updater.map(|mut updater| {
+            let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+            tokio::spawn(async move {
+                while let Some(update) = receiver.recv().await {
+                    updater
+                        .apply(update)
+                        .expect("should not fail to apply dynamic configuration update");
+                }
+            });
+            sender
+        });
 
         (cfg, maybe_sender)
     }
@@ -494,7 +517,7 @@ pub fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
 /// re-implementing it per file.
 #[cfg(any(test, feature = "test-util"))]
 pub async fn config_from(file_values: serde_json::Value) -> GenericConfiguration {
-    let (config, _) = ConfigurationLoader::for_tests(Some(file_values), None, false).await;
+    let (config, _) = ConfigurationLoader::for_tests(Some(file_values), None, None).await;
     config
 }
 
@@ -547,105 +570,42 @@ pub fn upsert(root: &mut serde_json::Value, key: &str, value: serde_json::Value)
     }
 }
 
-async fn run_dynamic_config_updater(
-    inner: Arc<Inner>, mut receiver: mpsc::Receiver<ConfigUpdate>, provider_sources: Vec<ProviderSource>,
-    sender: broadcast::Sender<ConfigChangeEvent>, ready_sender: oneshot::Sender<()>,
-) {
-    // The first message on the channel will be the initial snapshot.
-    let initial_update = match receiver.recv().await {
-        Some(update) => update,
-        None => {
-            // The channel was closed before we even received the initial snapshot.
-            debug!("Dynamic configuration channel closed before initial snapshot.");
-            return;
-        }
-    };
+/// Applies dynamic configuration updates to a [`GenericConfiguration`].
+///
+/// [`ConfigurationLoader::into_generic`] returns this when dynamic configuration is enabled, after it has applied the
+/// initial update. The caller decides where later updates come from and when to apply them, by calling
+/// [`apply`][Self::apply] for each one.
+pub struct ConfigUpdater {
+    inner: Arc<Inner>,
+    provider_sources: Vec<ProviderSource>,
+    sender: broadcast::Sender<ConfigChangeEvent>,
+    dynamic_state: serde_json::Value,
+    current_config: figment::value::Value,
+}
 
-    // The by-key view is an effective-value view: it holds what each key resolves to, so it drops the
-    // provenance carried by each setting.
-    let mut dynamic_state = match initial_update {
-        ConfigUpdate::Snapshot(settings) => settings_to_state(&settings),
-        ConfigUpdate::Partial(_) => {
-            // This is theoretically unreachable, as `configstream` should always send a snapshot first.
-            error!("First dynamic config message was not a snapshot. Updater may be in an inconsistent state.");
-            serde_json::Value::Null
-        }
-    };
-
-    // Rebuild the configuration with the initial snapshot.
-    let new_figment = provider_sources
-        .iter()
-        .fold(Figment::new(), |figment, source| match source {
-            ProviderSource::Static(p) => figment.admerge(p.clone()),
-            ProviderSource::Dynamic(_) => {
-                figment.admerge(figment::providers::Serialized::defaults(dynamic_state.clone()))
-            }
-        });
-
-    // Update the main figment object and then release the lock.
-    {
-        let mut figment_guard = inner.figment.write().unwrap();
-        *figment_guard = new_figment.clone();
-    }
-
-    // Signal that the initial snapshot has been processed and the configuration is ready.
-    if ready_sender.send(()).is_err() {
-        debug!("Configuration readiness receiver dropped. Updater task shutting down.");
-        return;
-    }
-
-    // Set our "current" state for the main loop.
-    let mut current_config: figment::value::Value = new_figment.extract().unwrap();
-
-    // Enter the main loop to process subsequent updates.
-    loop {
-        let update = match receiver.recv().await {
-            Some(update) => update,
-            None => {
-                // The sender was dropped, which means the config stream has terminated. We can exit.
-                debug!("Dynamic configuration update channel closed. Updater task shutting down.");
-                return;
-            }
-        };
-
-        // Update our local dynamic state based on the received message.
-        match update {
-            ConfigUpdate::Snapshot(settings) => {
-                debug!("Received configuration snapshot update.");
-                dynamic_state = settings_to_state(&settings);
-            }
-            ConfigUpdate::Partial(setting) => {
-                debug!(key = %setting.key, "Received partial configuration update.");
-                if dynamic_state.is_null() {
-                    dynamic_state = serde_json::Value::Object(serde_json::Map::new());
-                }
-                if dynamic_state.is_object() {
-                    upsert(&mut dynamic_state, &setting.key, setting.value);
-                } else {
-                    error!(
-                        "Received partial update but current dynamic state is not an object. This should not happen."
-                    );
-                }
-            }
-        }
+impl ConfigUpdater {
+    /// Applies an update to the dynamic configuration.
+    ///
+    /// A snapshot replaces the whole dynamic configuration, and a partial update sets one key. When this returns, the
+    /// configuration contains the update, and a change event has been sent for each key whose value changed.
+    ///
+    /// ## Errors
+    ///
+    /// If the updated configuration can't be extracted from its providers, an error will be returned, and the
+    /// configuration keeps its previous values. The update is still recorded, so each later update applies on top of
+    /// it.
+    pub fn apply(&mut self, update: ConfigUpdate) -> Result<(), ConfigurationError> {
+        apply_to_dynamic_state(&mut self.dynamic_state, update);
 
         // Rebuild the figment object on every update, respecting the original provider order.
-        let new_figment = provider_sources
-            .iter()
-            .fold(Figment::new(), |figment, source| match source {
-                ProviderSource::Static(p) => figment.admerge(p.clone()),
-                ProviderSource::Dynamic(_) => {
-                    figment.admerge(figment::providers::Serialized::defaults(dynamic_state.clone()))
-                }
-            });
+        let new_figment = build_figment_with_dynamic_state(&self.provider_sources, &self.dynamic_state);
+        let new_config: figment::value::Value = new_figment.extract()?;
 
-        let new_config: figment::value::Value = new_figment.clone().extract().unwrap();
-
-        if current_config != new_config {
-            let changes = dynamic::diff_config(&current_config, &new_config);
+        if self.current_config != new_config {
+            let changes = dynamic::diff_config(&self.current_config, &new_config);
 
             {
-                let mut figment_guard = inner.figment.write().unwrap_or_else(|e| {
+                let mut figment_guard = self.inner.figment.write().unwrap_or_else(|e| {
                     error!("Failed to acquire write lock for dynamic configuration: {}", e);
                     e.into_inner()
                 });
@@ -656,13 +616,46 @@ async fn run_dynamic_config_updater(
                 // Send the change event to any receivers of the dynamic handler.
                 // If there are no receivers, `send` will fail. This is expected and fine,
                 // so we can ignore the error to avoid log spam.
-                let _ = sender.send(change);
+                let _ = self.sender.send(change);
             }
 
-            // Update our "current" state for the next iteration.
-            current_config = new_config;
+            // Update our "current" state for the next update.
+            self.current_config = new_config;
+        }
+
+        Ok(())
+    }
+}
+
+/// Applies one update to the dynamic state: a snapshot replaces it, and a partial update sets one (possibly dotted) key.
+fn apply_to_dynamic_state(dynamic_state: &mut serde_json::Value, update: ConfigUpdate) {
+    // The by-key view is an effective-value view: it holds what each key resolves to, so it drops the
+    // provenance carried by each setting.
+    match update {
+        ConfigUpdate::Snapshot(settings) => {
+            debug!("Received configuration snapshot update.");
+            *dynamic_state = settings_to_state(&settings);
+        }
+        ConfigUpdate::Partial(setting) => {
+            debug!(key = %setting.key, "Received partial configuration update.");
+            if dynamic_state.is_null() {
+                *dynamic_state = serde_json::Value::Object(serde_json::Map::new());
+            }
+            if dynamic_state.is_object() {
+                upsert(dynamic_state, &setting.key, setting.value);
+            } else {
+                error!("Received partial update but current dynamic state is not an object. This should not happen.");
+            }
         }
     }
+}
+
+/// Builds the figment from every provider source, in order, with `dynamic_state` in place of the dynamic provider.
+fn build_figment_with_dynamic_state(sources: &[ProviderSource], dynamic_state: &serde_json::Value) -> Figment {
+    sources.iter().fold(Figment::new(), |figment, source| match source {
+        ProviderSource::Static(p) => figment.admerge(p.clone()),
+        ProviderSource::Dynamic(_) => figment.admerge(Serialized::defaults(dynamic_state.clone())),
+    })
 }
 
 #[derive(Debug)]
@@ -670,7 +663,6 @@ struct Inner {
     figment: RwLock<Figment>,
     lookup_sources: HashSet<LookupSource>,
     event_sender: Option<broadcast::Sender<ConfigChangeEvent>>,
-    ready_signal: Mutex<Option<oneshot::Receiver<()>>>,
 }
 
 /// A generic configuration object.
@@ -700,36 +692,6 @@ pub struct GenericConfiguration {
 }
 
 impl GenericConfiguration {
-    /// Waits for the configuration to be ready, if dynamic configuration is enabled.
-    ///
-    /// If dynamic configuration is in use, this method will asynchronously wait until the first snapshot has been
-    /// received and applied.
-    ///
-    /// If dynamic configuration isn't used, it returns immediately.
-    pub async fn ready(&self) {
-        // We need a lock to both ensure that multiple callers can race against this,
-        // and to allow us mutable access to consume the receiver.
-        let mut maybe_ready_rx = self.inner.ready_signal.lock().await;
-        if let Some(ready_rx) = maybe_ready_rx.take() {
-            // We're the first caller to wait for readiness.
-            //
-            // There is no timeout on this await by design: if the Core Agent never sends the first snapshot, startup
-            // blocks here forever.
-            saluki_antithesis::reachable!("config readiness wait entered");
-
-            let ready_result = ready_rx.await;
-
-            if ready_result.is_err() {
-                saluki_antithesis::unreachable!(
-                    "config readiness sender dropped before signalling — updater task may have panicked"
-                );
-                error!("Failed to receive configuration readiness signal; updater task may have panicked.");
-            } else {
-                saluki_antithesis::sometimes!(true, "config readiness signal received");
-            }
-        }
-    }
-
     fn get<'a, T>(&self, key: &str) -> Result<T, ConfigurationError>
     where
         T: Deserialize<'a>,
@@ -908,10 +870,9 @@ mod tests {
                 "foobar": { "a": false, "b": "c" }
             })),
             Some(&[("ENV_VAR".to_string(), "from_env".to_string())]),
-            false,
+            None,
         )
         .await;
-        cfg.ready().await;
 
         assert_eq!(cfg.get_typed::<String>("foo").unwrap(), "bar");
         assert_eq!(cfg.get_typed::<i32>("baz").unwrap(), 5);
@@ -932,19 +893,13 @@ mod tests {
                 "foobar": { "a": false, "b": "c" }
             })),
             Some(&[("ENV_VAR".to_string(), "from_env".to_string())]),
-            true,
+            Some(ConfigUpdate::snapshot([ConfigSetting::explicit(
+                "new",
+                serde_json::json!("from_snapshot"),
+            )])),
         )
         .await;
         let sender = sender.expect("sender should exist");
-        sender
-            .send(ConfigUpdate::snapshot([ConfigSetting::explicit(
-                "new",
-                serde_json::json!("from_snapshot"),
-            )]))
-            .await
-            .unwrap();
-
-        cfg.ready().await;
 
         // Test that existing values still exist.
         assert_eq!(cfg.get_typed::<String>("foo").unwrap(), "bar");
@@ -1021,17 +976,16 @@ mod tests {
 
         let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
         let (cfg, sender) = runtime.block_on(async {
-            let (cfg, sender) = ConfigurationLoader::for_tests(None, None, true).await;
-            let sender = sender.expect("sender should exist");
-            sender
-                .send(ConfigUpdate::snapshot([ConfigSetting::explicit(
+            let (cfg, sender) = ConfigurationLoader::for_tests(
+                None,
+                None,
+                Some(ConfigUpdate::snapshot([ConfigSetting::explicit(
                     "observed",
                     serde_json::json!("old"),
-                )]))
-                .await
-                .unwrap();
-            cfg.ready().await;
-            (cfg, sender)
+                )])),
+            )
+            .await;
+            (cfg, sender.expect("sender should exist"))
         });
 
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
@@ -1080,20 +1034,13 @@ mod tests {
                 "foobar": { "a": false, "b": "c" }
             })),
             Some(&[("ENV_VAR".to_string(), "from_env".to_string())]),
-            true,
+            Some(ConfigUpdate::snapshot([ConfigSetting::explicit(
+                "env_var",
+                serde_json::json!("from_snapshot_env_var"),
+            )])),
         )
         .await;
         let sender = sender.expect("sender should exist");
-
-        sender
-            .send(ConfigUpdate::snapshot([ConfigSetting::explicit(
-                "env_var",
-                serde_json::json!("from_snapshot_env_var"),
-            )]))
-            .await
-            .unwrap();
-
-        cfg.ready().await;
 
         // Env provider has highest precedence so the snapshot should not override it.
         assert_eq!(cfg.get_typed::<String>("env_var").unwrap(), "from_env");
@@ -1151,13 +1098,10 @@ mod tests {
                 "foobar": { "a": false, "b": "c" }
             })),
             None,
-            true,
+            Some(ConfigUpdate::snapshot([])),
         )
         .await;
         let sender = sender.expect("sender should exist");
-
-        sender.send(ConfigUpdate::snapshot([])).await.unwrap();
-        cfg.ready().await;
 
         let mut rx = cfg.subscribe_for_updates().expect("dynamic updates should be enabled");
 
@@ -1190,10 +1134,9 @@ mod tests {
         let (cfg, _) = ConfigurationLoader::for_tests(
             Some(serde_json::json!({})),
             Some(&[("RANDOM_KEY".to_string(), "from_env_only".to_string())]),
-            false,
+            None,
         )
         .await;
-        cfg.ready().await;
 
         assert_eq!(cfg.get_typed::<String>("random.key").unwrap(), "from_env_only");
     }
@@ -1210,10 +1153,9 @@ mod tests {
                 "DATA_PLANE_API_LISTEN_ADDRESS".to_string(),
                 "tcp://0.0.0.0:55100".to_string(),
             )]),
-            false,
+            None,
         )
         .await;
-        cfg.ready().await;
 
         assert_eq!(
             cfg.try_get_typed::<String>("data_plane.api_listen_address").unwrap(),
@@ -1222,26 +1164,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn static_configuration_ready_and_subscribe() {
-        let (cfg, maybe_sender) = ConfigurationLoader::for_tests(Some(serde_json::json!({})), None, false).await;
+    async fn static_configuration_has_no_updates() {
+        let (cfg, maybe_sender) = ConfigurationLoader::for_tests(Some(serde_json::json!({})), None, None).await;
         assert!(maybe_sender.is_none());
-
-        tokio::time::timeout(std::time::Duration::from_millis(500), cfg.ready())
-            .await
-            .expect("ready() should not block when dynamic is disabled");
-
         assert!(cfg.subscribe_for_updates().is_none());
     }
 
     #[tokio::test]
-    async fn dynamic_configuration_ready_requires_initial_snapshot() {
-        // Enable dynamic but do not send the initial snapshot.
-        let (cfg, maybe_sender) = ConfigurationLoader::for_tests(Some(serde_json::json!({})), None, true).await;
-        assert!(maybe_sender.is_some());
+    async fn updater_applies_each_update_before_returning() {
+        let (cfg, updater) = ConfigurationLoader::default()
+            .with_dynamic_configuration(ConfigUpdate::snapshot([ConfigSetting::explicit(
+                "key",
+                serde_json::json!("from_snapshot"),
+            )]))
+            .into_generic()
+            .await
+            .expect("should not fail to build generic configuration");
+        let mut updater = updater.expect("dynamic configuration should return an updater");
+        assert_eq!(cfg.get_typed::<String>("key").unwrap(), "from_snapshot");
 
-        // ready() should not resolve until the initial snapshot is processed.
-        let res = tokio::time::timeout(std::time::Duration::from_millis(1000), cfg.ready()).await;
-        assert!(res.is_err(), "ready() should time out without an initial snapshot");
+        let mut rx = cfg.subscribe_for_updates().expect("dynamic updates should be enabled");
+        updater
+            .apply(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "key",
+                serde_json::json!("from_update"),
+            )))
+            .expect("should not fail to apply the update");
+
+        // Nothing runs in the background: the update and its change event are both visible as soon as `apply` returns.
+        assert_eq!(cfg.get_typed::<String>("key").unwrap(), "from_update");
+        let event = rx.try_recv().expect("the change event should already be sent");
+        assert_eq!(event.key, "key");
     }
 
     #[tokio::test]
@@ -1252,10 +1205,9 @@ mod tests {
                 "nested": { "a": 1, "b": { "c": true } }
             })),
             None,
-            false,
+            None,
         )
         .await;
-        cfg.ready().await;
 
         let pairs = cfg.flattened_keys().unwrap();
         let map: std::collections::HashMap<&str, &serde_json::Value> =
@@ -1276,10 +1228,9 @@ mod tests {
                 "matrix": [[1, 2], [3, 4]]
             })),
             None,
-            false,
+            None,
         )
         .await;
-        cfg.ready().await;
 
         let pairs = cfg.flattened_keys().unwrap();
         let map: std::collections::HashMap<&str, &serde_json::Value> =
@@ -1297,10 +1248,9 @@ mod tests {
                 "absent": null
             })),
             None,
-            false,
+            None,
         )
         .await;
-        cfg.ready().await;
 
         let pairs = cfg.flattened_keys().unwrap();
         let map: std::collections::HashMap<&str, &serde_json::Value> =
@@ -1320,7 +1270,7 @@ mod tests {
             .expect("should write temp file");
         file.flush().expect("should flush temp file");
 
-        let cfg = ConfigurationLoader::default()
+        let (cfg, _) = ConfigurationLoader::default()
             .from_yaml(file.path())
             .expect("YAML file should load")
             .into_generic()
@@ -1335,7 +1285,7 @@ mod tests {
     async fn try_from_yaml_ignores_unreadable_file() {
         // `try_from_yaml` swallows load errors (here, a nonexistent path), yielding a config with no values rather
         // than failing to build.
-        let cfg = ConfigurationLoader::default()
+        let (cfg, _) = ConfigurationLoader::default()
             .try_from_yaml("/nonexistent/definitely/not/here.yaml")
             .into_generic()
             .await
