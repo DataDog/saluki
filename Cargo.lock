@@ -1397,6 +1397,7 @@ dependencies = [
 name = "datadog-agent-runtime"
 version = "0.1.0"
 dependencies = [
+ "agent-data-plane-config",
  "async-trait",
  "chrono",
  "datadog-agent-commons",

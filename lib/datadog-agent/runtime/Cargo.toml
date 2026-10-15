@@ -15,6 +15,7 @@ default = []
 taskdump = ["dep:tokio"]
 
 [dependencies]
+agent-data-plane-config = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 datadog-agent-commons = { workspace = true }
@@ -36,6 +37,10 @@ tracing = { workspace = true }
 # The targets where Tokio supports task dumps. This must match the `cfg` guarding the task dump code.
 [target.'cfg(all(target_os = "linux", any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64", target_arch = "s390x")))'.dependencies]
 tokio = { workspace = true, features = ["taskdump"], optional = true }
+
+[dev-dependencies]
+# `start_paused` in tests, for deterministic clock control in the InvalidApiKey report throttle tests.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
