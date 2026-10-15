@@ -78,7 +78,11 @@ impl Hasher for ByteSink<'_> {
 }
 
 pub(super) fn partition(events: impl IntoIterator<Item = Event>, workers: usize) -> Vec<LogicalMetricBatch> {
-    let mut shards: Vec<Vec<LogicalMetricSeries>> = (0..workers).map(|_| Vec::new()).collect();
+    let events = events.into_iter();
+    // Hashing spreads series about evenly; the slack keeps a shard slightly over its share from doubling.
+    let share = events.size_hint().0.div_ceil(workers);
+    let mut shards: Vec<Vec<LogicalMetricSeries>> =
+        (0..workers).map(|_| Vec::with_capacity(share + share / 4)).collect();
     for event in events {
         let Event::Metric(metric) = event else { continue };
         let Some(series) = conversion::convert(&metric) else {
