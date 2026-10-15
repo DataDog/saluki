@@ -629,14 +629,14 @@ mod tests {
         };
 
         let Some(saluki_config::dynamic::ConfigUpdate::Snapshot(settings)) =
-            crate::config_event_to_update(events[0].clone())
+            datadog_agent_runtime::agent_stream::config_event_to_update(events[0].clone())
         else {
             panic!("the snapshot event did not convert to a snapshot update")
         };
         assert_eq!(settings.len(), 3, "settings: {settings:?}");
 
         let Some(saluki_config::dynamic::ConfigUpdate::Partial(converted)) =
-            crate::config_event_to_update(events[1].clone())
+            datadog_agent_runtime::agent_stream::config_event_to_update(events[1].clone())
         else {
             panic!("the update event did not convert to a partial update")
         };

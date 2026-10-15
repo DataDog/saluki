@@ -117,12 +117,9 @@
 //!   build also requires `--cfg tokio_unstable`.
 #![deny(missing_docs)]
 
+pub mod agent_stream;
 pub mod control_plane;
-
 pub mod env;
-
 pub mod facade;
-
 pub mod logging;
-
 pub mod remote_agent;
