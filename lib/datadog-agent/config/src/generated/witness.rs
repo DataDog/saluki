@@ -18,6 +18,7 @@ pub trait DatadogConfigWitness {
     fn consume_aggregator_stop_timeout(&mut self, value: i64);
     fn consume_allow_arbitrary_tags(&mut self, value: bool);
     fn consume_api_key(&mut self, value: String);
+    fn consume_apm_config_apm_non_local_traffic(&mut self, value: bool);
     fn consume_apm_config_compute_stats_by_span_kind(&mut self, value: bool);
     fn consume_apm_config_enable_rare_sampler(&mut self, value: bool);
     fn consume_apm_config_error_tracking_standalone_enabled(&mut self, value: bool);
@@ -51,6 +52,8 @@ pub trait DatadogConfigWitness {
     fn consume_apm_config_probabilistic_sampler_enabled(&mut self, value: bool);
     fn consume_apm_config_probabilistic_sampler_hash_seed(&mut self, value: i64);
     fn consume_apm_config_probabilistic_sampler_sampling_percentage(&mut self, value: f64);
+    fn consume_apm_config_receiver_port(&mut self, value: i64);
+    fn consume_apm_config_receiver_socket(&mut self, value: Option<String>);
     fn consume_apm_config_replace_tags(&mut self, value: Vec<HashMap<String, String>>);
     fn consume_apm_config_target_traces_per_second(&mut self, value: f64);
     fn consume_auth_token_file_path(&mut self, value: String);
@@ -278,6 +281,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_aggregator_stop_timeout(config.aggregator_stop_timeout.clone());
     consumer.consume_allow_arbitrary_tags(config.allow_arbitrary_tags.clone());
     consumer.consume_api_key(config.api_key.clone());
+    consumer.consume_apm_config_apm_non_local_traffic(config.apm_config.apm_non_local_traffic.clone());
     consumer.consume_apm_config_compute_stats_by_span_kind(config.apm_config.compute_stats_by_span_kind.clone());
     consumer.consume_apm_config_enable_rare_sampler(config.apm_config.enable_rare_sampler.clone());
     consumer.consume_apm_config_error_tracking_standalone_enabled(
@@ -344,6 +348,8 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_apm_config_probabilistic_sampler_sampling_percentage(
         config.apm_config.probabilistic_sampler.sampling_percentage.clone(),
     );
+    consumer.consume_apm_config_receiver_port(config.apm_config.receiver_port.clone());
+    consumer.consume_apm_config_receiver_socket(config.apm_config.receiver_socket.clone());
     consumer.consume_apm_config_replace_tags(config.apm_config.replace_tags.clone());
     consumer.consume_apm_config_target_traces_per_second(config.apm_config.target_traces_per_second.clone());
     consumer.consume_auth_token_file_path(config.auth_token_file_path.clone());

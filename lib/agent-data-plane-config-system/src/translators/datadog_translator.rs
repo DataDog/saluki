@@ -22,6 +22,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use agent_data_plane_config::defaults::DEFAULT_APM_RECEIVER_SOCKET_UNIX;
 use agent_data_plane_config::domains::dogstatsd::{
     FilterAction, MapperProfile, MetricMapping, MetricTagFilterEntry, OriginTagCardinality,
 };
@@ -300,6 +301,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.endpoints.api_key = value;
     }
 
+    fn consume_apm_config_apm_non_local_traffic(&mut self, value: bool) {
+        self.config.domains.apm.non_local_traffic = value;
+    }
+
     fn consume_apm_config_compute_stats_by_span_kind(&mut self, value: bool) {
         self.config.domains.traces.compute_stats_by_span_kind = value;
     }
@@ -453,6 +458,24 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.traces.probabilistic_sampler.sampling_percentage = value;
     }
 
+    fn consume_apm_config_receiver_port(&mut self, value: i64) {
+        if let Some(port) = self.parse_port("apm_config.receiver_port", value) {
+            self.config.domains.apm.receiver_port = port;
+        }
+    }
+
+    fn consume_apm_config_receiver_socket(&mut self, value: Option<String>) {
+        // The schema default is platform-specific, which the generated model cannot express, so an unset value
+        // arrives as `None` and the platform default is applied here. An explicit empty string disables the socket.
+        self.config.domains.apm.receiver_socket = match value {
+            Some(path) => non_empty(path),
+            None if cfg!(any(target_os = "linux", target_os = "aix")) => {
+                Some(DEFAULT_APM_RECEIVER_SOCKET_UNIX.to_string())
+            }
+            None => None,
+        };
+    }
+
     fn consume_apm_config_replace_tags(&mut self, value: Vec<HashMap<String, String>>) {
         // The schema models each rule as a free string map; this gives it the typed
         // `name`/`pattern`/`repl` shape the replacer consumes.
@@ -503,7 +526,7 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_bind_host(&mut self, value: String) {
-        self.config.domains.dogstatsd.listeners.bind_host = non_empty(value);
+        self.config.shared.bind_host = non_empty(value);
     }
 
     fn consume_cluster_agent_auth_token(&mut self, value: String) {
@@ -2002,6 +2025,55 @@ mod tests {
     }
 
     #[test]
+    fn apm_receiver_settings_translate_to_the_apm_domain() {
+        let (config, errors) = translate_explicit(json!({
+            "apm_config": {
+                "receiver_port": 9126,
+                "receiver_socket": "/tmp/apm.socket",
+                "apm_non_local_traffic": true,
+            },
+        }));
+
+        assert!(errors.is_none());
+        let apm = &config.domains.apm;
+        assert_eq!(apm.receiver_port, 9126);
+        assert_eq!(apm.receiver_socket.as_deref(), Some("/tmp/apm.socket"));
+        assert!(apm.non_local_traffic);
+    }
+
+    #[test]
+    fn apm_receiver_defaults_match_the_trace_agent() {
+        let (config, errors) = translate_explicit(json!({}));
+
+        assert!(errors.is_none());
+        let apm = &config.domains.apm;
+        assert_eq!(apm.receiver_port, 8126);
+        assert!(!apm.non_local_traffic);
+        // The socket default is platform-specific: on by default only where the trace-agent enables it.
+        let expected_socket =
+            cfg!(any(target_os = "linux", target_os = "aix")).then_some("/var/run/datadog/apm.socket");
+        assert_eq!(apm.receiver_socket.as_deref(), expected_socket);
+    }
+
+    #[test]
+    fn an_empty_apm_receiver_socket_disables_the_socket() {
+        let (config, errors) = translate_explicit(json!({ "apm_config": { "receiver_socket": "" } }));
+
+        assert!(errors.is_none());
+        assert_eq!(config.domains.apm.receiver_socket, None);
+    }
+
+    #[test]
+    fn out_of_range_apm_receiver_ports_record_translation_errors() {
+        for value in [-1, 70_000] {
+            let (_, errors) = translate_explicit(json!({ "apm_config": { "receiver_port": value } }));
+
+            let errors = errors.unwrap_or_else(|| panic!("receiver_port = {value} should record a translation error"));
+            assert!(errors.to_string().contains("apm_config.receiver_port"));
+        }
+    }
+
+    #[test]
     fn dogstatsd_tag_cardinality_accepts_the_agent_spellings() {
         for (value, expected) in [
             ("low", OriginTagCardinality::Low),
@@ -2034,8 +2106,8 @@ mod tests {
         }));
 
         assert!(errors.is_none());
+        assert_eq!(config.shared.bind_host, None);
         let listeners = &config.domains.dogstatsd.listeners;
-        assert_eq!(listeners.bind_host, None);
         assert_eq!(listeners.pipe_name, None);
         assert_eq!(listeners.socket, None);
         assert_eq!(listeners.stream_socket, None);
