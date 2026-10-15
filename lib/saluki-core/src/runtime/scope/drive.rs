@@ -13,6 +13,7 @@ use tracing::{debug, error, warn};
 
 use super::{Adoption, Edge, PendingScopeChild, Scope, ScopeError, ScopeSlot, CURRENT_SCOPE};
 use crate::runtime::{
+    halt::{Halt, HaltSignal, HaltWatch},
     process::Process,
     restart::{RestartAction, RestartState, RestartStrategy},
     supervisor::{ChildConfig, SupervisedChild, SupervisorHandle, WorkerError, WorkerFuture},
@@ -23,7 +24,7 @@ use crate::runtime::{
 /// The number of queued children that a scope starts in one batch before it continues with the rest of its loop.
 ///
 /// This is the same as the spawn batches of a supervisor. Many spawns at the same time cause only one wake-up. But the
-/// loop soon returns to reap children.
+/// loop soon returns to reap children and to watch for shutdown.
 const SPAWN_DRAIN_BATCH: usize = 64;
 
 /// The data that the supervisor or scope that starts a worker gives to the scope of that worker.
@@ -42,6 +43,9 @@ pub(in crate::runtime) struct DriveContext {
 
     /// The stop signals of the processes above the worker, if the worker runs in a scope.
     pub(in crate::runtime) ancestors: Option<Arc<StopLink>>,
+
+    /// Resolves when the worker is halted.
+    pub(in crate::runtime) halt: HaltSignal,
 
     /// A pre-created scope that the worker adopts, so that it does not create a scope on demand.
     pub(in crate::runtime) adopt: Option<Adoption>,
@@ -81,6 +85,8 @@ fn requested_stop(owner_signal: &ShutdownView, ancestors: Option<&StopLink>) -> 
 ///
 /// The returned future completes only after the body finishes and every child in the scope exits. A worker that never
 /// spawns a child has no scope, and the wrapper adds almost no cost to its body.
+///
+/// When the worker is [halted][crate::runtime::halt], the body is dropped and every child in the scope is halted too.
 pub(in crate::runtime) fn drive(body: WorkerFuture, ctx: DriveContext) -> WorkerFuture {
     Box::pin(Driver::new(body, ctx).run())
 }
@@ -92,6 +98,9 @@ enum Stop {
 
     /// A child terminated and failed the worker with this error.
     ChildFailed(WorkerError),
+
+    /// The worker was halted.
+    Halted(Halt),
 }
 
 struct Driver {
@@ -109,6 +118,7 @@ struct Driver {
     supervisor: SupervisorHandle,
     owner_signal: ShutdownView,
     ancestors: Option<Arc<StopLink>>,
+    halt: HaltWatch,
 
     /// The worker's scope, when the worker has one.
     scope: Option<ScopeRuntime>,
@@ -122,6 +132,7 @@ impl Driver {
             supervisor,
             owner_signal,
             ancestors,
+            halt,
             adopt,
         } = ctx;
 
@@ -159,6 +170,7 @@ impl Driver {
             supervisor,
             owner_signal,
             ancestors,
+            halt: HaltWatch::new(halt),
             scope: None,
         }
     }
@@ -175,7 +187,7 @@ impl Driver {
             Stop::Body(Ok(result)) => {
                 // A body that returned an error failed, so the children that it spawned but that did not start yet do
                 // not start.
-                let (aborted, child_failure) = self.close(result.is_ok()).await;
+                let (halted, child_failure) = self.close(result.is_ok()).await;
 
                 // A body can return because a child failed, for example when it sees the output channel of that child
                 // close. Then the scope sees the failure only as it closes, and the failure is the result of the worker.
@@ -184,7 +196,7 @@ impl Driver {
                     (Ok(()), Some(failure)) => Err(failure),
                     (result, _) => result,
                 };
-                self.finish(result, aborted)
+                self.finish(result, halted)
             }
             Stop::Body(Err(panic)) => {
                 self.close(false).await;
@@ -194,10 +206,24 @@ impl Driver {
                 self.close(false).await;
                 Err(error)
             }
+            // `close` sees the same halt, so it halts every child. Whoever halted the worker already logged it, but the
+            // count includes it.
+            Stop::Halted(reason) => {
+                let (halted, _) = self.close(false).await;
+                match reason {
+                    Halt::Overdue => Err(WorkerError::ShutdownTimedOut { aborted: 1 + halted }),
+                    Halt::Immediate => Ok(()),
+                }
+            }
         }
     }
 
     fn poll_running(&mut self, cx: &mut Context<'_>) -> Poll<Stop> {
+        // Checked first, so that a halted body is never polled again.
+        if let Poll::Ready(reason) = self.halt.poll_halted(cx) {
+            return Poll::Ready(Stop::Halted(reason));
+        }
+
         let body = self.body.as_mut().expect("body is present while the worker runs");
         match catch_unwind(AssertUnwindSafe(|| body.as_mut().poll(cx))) {
             Ok(Poll::Ready(result)) => return Poll::Ready(Stop::Body(Ok(result))),
@@ -271,7 +297,7 @@ impl Driver {
         });
 
         self.scope = Some(ScopeRuntime {
-            worker_state: WorkerState::new(self.process.clone(), self.supervisor.clone(), None, Arc::clone(&node))
+            worker_state: WorkerState::new(self.process.clone(), self.supervisor.clone(), Arc::clone(&node))
                 .with_ancestors(ancestors),
             restart_state: RestartState::new(RestartStrategy::default()),
             roster: Roster::new(node),
@@ -292,14 +318,14 @@ impl Driver {
     /// If `start_queued` is set, this method first starts the children that were spawned but did not start yet. Thus,
     /// every child that the body spawned before it finished runs and is then told to stop. This is also true if the
     /// body returned before the scope took those spawns from its queue. If `start_queued` is not set, this method
-    /// discards those children, because nothing must start after the worker fails.
+    /// discards those children, because nothing must start after the worker fails or is halted.
     ///
-    /// Each child is stopped according to its own shutdown strategy, the same as a supervisor stops its children. The
-    /// scope sets no deadline of its own.
+    /// Each child gets as long as its own shutdown strategy allows, unless the worker is halted, in which case every
+    /// child still running is halted.
     ///
-    /// Returns the number of processes that were forcefully aborted, and the first failure of a child that fails the
-    /// worker. The count includes the processes that children reported as forcefully stopped when they exited while the
-    /// scope was open. See [`ScopeRuntime::on_close_exit`] for when a child fails the worker as the scope closes.
+    /// Returns the number of processes that were halted, and the first failure of a child that fails the worker. The
+    /// count includes the processes that children reported as halted when they exited while the scope was open. See
+    /// [`ScopeRuntime::on_close_exit`] for when a child fails the worker as the scope closes.
     async fn close(&mut self, start_queued: bool) -> (usize, Option<WorkerError>) {
         self.adopt_if_created();
         let Some(mut scope) = self.scope.take() else {
@@ -326,9 +352,9 @@ impl Driver {
         // requested while the scope closes.
         let mut exits = Vec::new();
         let (owner_signal, ancestors) = (&self.owner_signal, self.ancestors.as_deref());
-        let aborted = scope
+        let halted = scope
             .worker_state
-            .shutdown_workers_reporting(|child_id, result| {
+            .shutdown_workers_reporting(&mut self.halt, |child_id, result| {
                 exits.push((child_id, result, requested_stop(owner_signal, ancestors)));
             })
             .await;
@@ -341,15 +367,13 @@ impl Driver {
         }
 
         // The scope is dropped after this call, and that detaches it from the supervision tree.
-        (scope.aborted + aborted, child_failure)
+        (scope.aborted + halted, child_failure)
     }
 
-    /// Reports how the worker finished, and counts the children that were forcefully aborted.
+    /// Reports how the worker finished, and counts the children that were halted.
     fn finish(&self, result: Result<(), WorkerError>, aborted: usize) -> Result<(), WorkerError> {
-        // If the worker stopped but nothing told it or a process above it to stop, forcefully aborted children do not
-        // make the stop unclean. The runtime already logged the name of each child when it aborted that child. Only a
-        // requested stop must report the aborted children, the same as for a supervisor. This makes sure that the count
-        // reaches the root.
+        // As for a supervisor, halted children make the stop unclean only if the worker, or a process above it, was
+        // told to stop. Each was already logged when it was halted.
         if aborted == 0 || !self.stop_requested() {
             return result;
         }
@@ -385,7 +409,7 @@ struct ScopeRuntime {
     restart_state: RestartState,
     roster: Roster<ScopeEntry>,
 
-    /// The number of processes that children reported as forcefully stopped when they exited while the scope was open.
+    /// The number of processes that children reported as halted when they exited while the scope was open.
     aborted: usize,
 
     _attachment: Option<ScopeAttachment>,
@@ -467,8 +491,8 @@ impl ScopeRuntime {
         if requested {
             self.roster.remove(child_id);
 
-            // A child that forcefully stopped its own children reports how many it stopped. The runtime already logged
-            // each of them, and they count towards the stop of the owner, the same as when the scope closes.
+            // A child that halted its own children reports how many it halted. The runtime already logged each of them,
+            // and they count towards the stop of the owner, the same as when the scope closes.
             let aborted = reported_abort_count(&result);
             self.aborted += aborted;
             if abnormal && aborted == 0 {
@@ -528,8 +552,8 @@ impl ScopeRuntime {
     /// `requested` is set if the owner, or a process above it, was told to stop before the child exited.
     ///
     /// The scope never restarts a child as it closes. A clean exit is how a child normally stops when its scope closes,
-    /// so it never fails the owner. Neither does an exit after which processes were forcefully aborted, because the
-    /// scope counts those processes instead. The scope logs every other error.
+    /// so it never fails the owner. Neither does an exit after which processes were halted, because the scope counts
+    /// those processes instead. The scope logs every other error.
     ///
     /// If nothing told the owner to stop, the error also fails the owner if the child is needed or forwards failures,
     /// the same as when the scope is open. This case is common: the body of an owner can return because a child failed,

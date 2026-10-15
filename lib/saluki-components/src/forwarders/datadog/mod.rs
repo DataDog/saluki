@@ -194,8 +194,8 @@ impl Forwarder for Datadog {
         }
 
         // Start the forwarder's drain. Dropping `validation` stops API key validation the same way. This component does
-        // not wait for either of them here. But this component does not finish until its children finish. The deadline
-        // of the component bounds this wait.
+        // not wait for either of them here. But this component does not finish until its children finish. The shutdown
+        // timeout of the component bounds this wait.
         forwarder.shutdown();
         drop(validation);
 

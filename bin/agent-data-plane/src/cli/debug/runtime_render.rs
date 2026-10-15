@@ -266,7 +266,6 @@ mod tests {
             restart_intensity: 3,
             restart_period_ms: 5_000,
             auto_shutdown: AutoShutdown::Never,
-            shutdown_budget_ms: None,
             dedicated_threads: None,
             restarts_performed: 0,
             generation: 1,

@@ -16,13 +16,9 @@
 //!
 //! # How a scope closes
 //!
-//! A scope closes when the body of its owner finishes. When the scope closes, it stops each child according to the
-//! child's own shutdown strategy, the same as a supervisor stops its children. It tells each graceful child to stop,
-//! waits for the child up to the child's own timeout, and then aborts the child if it still runs. It aborts each
-//! brutal child at once. The scope adds no deadline of its own, and it does not pass the deadline of its owner to its
-//! children. A supervisor's [shutdown budget][crate::runtime::Supervisor::with_shutdown_budget] does not reach into a
-//! scope either. Thus, a closure-based child keeps the default strategy of a closure: it is graceful, with a timeout of
-//! five seconds.
+//! A scope closes when the body of its owner finishes. It then stops each child according to the child's own shutdown
+//! strategy, the same as a supervisor does: a graceful child is told to stop and halted if it outlives its timeout, and
+//! a brutal child is halted at once. A closure-based child defaults to graceful, with a timeout of five seconds.
 //!
 //! The body can spawn children right before it returns, before they start. If the body returns normally, these
 //! children still start, and then they are told to stop. If the body fails, they never start.
@@ -35,10 +31,8 @@
 //!
 //! The timeouts of the children start only when the scope closes, after the body of the owner returns. Thus, the
 //! shutdown strategy of the owner must cover the time for its own body to stop and the time for its children to stop.
-//! If the owner does not stop in time, whatever supervises the owner aborts it. Its children are then aborted with it,
-//! without a signal and without being counted, and the runtime logs their names. Along any path in the supervision
-//! tree, the outermost finite timeout is the actual limit, and a child timeout that is longer than the timeout of its
-//! owner has no effect.
+//! If the owner's timeout expires, the owner and everything still running in its scope, nested scopes included, are
+//! halted, logged, and counted. A child timeout can't extend past its owner's.
 //!
 //! # Requested exits and other exits
 //!
@@ -313,7 +307,6 @@ impl UnadoptedScope {
     pub fn into_host(self) -> ChildSpecification<WorkerSpec> {
         let name = self.scope.name().to_string();
         ChildSpecification::worker(ScopeHost::new(name, None))
-            .with_budget_bounded_shutdown()
             .forwarding_failures()
             .adopting(self)
     }
@@ -528,7 +521,6 @@ fn nested_under(owner: &Scope, name: String) -> ScopeGuard {
     // because the scope of the owner closed first, the specification is dropped. The nested scope then closes, and it
     // drops the children that wait in it and each child that is spawned into it later.
     let host = ChildSpecification::worker(ScopeHost::new(name, Some(close_signal)))
-        .with_budget_bounded_shutdown()
         .forwarding_failures()
         .adopting(unadopted);
     owner.spawn(host);

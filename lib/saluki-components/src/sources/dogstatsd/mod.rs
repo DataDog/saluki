@@ -1002,8 +1002,8 @@ impl Source for DogStatsD {
         // datagrams that remain.
         //
         // When dispatch is backpressured, the drain can take longer than five seconds, the default timeout of a
-        // closure-based child. Thus, the decoders have no timeout of their own. The shutdown budget of the component
-        // bounds the source, and the decoders stop with the source if that budget elapses.
+        // closure-based child. Thus, the decoders have no timeout of their own, and are halted with the source if the
+        // component's shutdown timeout expires.
         for worker_id in 0..self.decoder_worker_count.get() {
             let datagram_receiver = datagram_receiver.clone();
             let decoder_source_context = context.clone();
@@ -4394,8 +4394,8 @@ mod supervision {
     /// only if the decoders have no timeout of their own.
     const DRAIN_HOLD: Duration = Duration::from_secs(6);
 
-    /// Shutdown budget of the component in a drain test. It must be longer than [`DRAIN_HOLD`].
-    const DRAIN_SHUTDOWN_BUDGET: Duration = Duration::from_secs(30);
+    /// Shutdown timeout of the component in a drain test. It must be longer than [`DRAIN_HOLD`].
+    const DRAIN_COMPONENT_TIMEOUT: Duration = Duration::from_secs(30);
 
     /// Children a running source with one UDP listener should have.
     ///
@@ -4613,8 +4613,9 @@ mod supervision {
         // Rather than race a datagram against shutdown, this pins a decoder open: the metrics output holds a single
         // buffer, so one dispatched buffer fills it and the next blocks a decoder mid-dispatch. The source must not
         // finish while that is true, even after the test signals shutdown. The test holds the decoder there for longer
-        // than the default timeout of a closure-based child, but for less than the budget of the component.
-        let mut supervisor = TestComponentSupervisor::start_with_budget("dogstatsd", DRAIN_SHUTDOWN_BUDGET).await;
+        // than the default timeout of a closure-based child, but for less than the shutdown timeout of the component.
+        let mut supervisor =
+            TestComponentSupervisor::start_with_component_timeout("dogstatsd", DRAIN_COMPONENT_TIMEOUT).await;
         let health_registry = HealthRegistry::new();
         let Harness {
             source,
@@ -4683,11 +4684,12 @@ mod supervision {
     }
 
     #[tokio::test]
-    async fn a_source_ignoring_shutdown_is_cut_off_with_its_children() {
+    async fn a_source_ignoring_shutdown_is_halted_with_its_children() {
         // In the orderly path, the body of the source returns when it receives the shutdown signal, and this stops its
-        // children. This test covers the other path: a source that never sees the signal. The supervisor aborts the
-        // source when the budget elapses. Its children then stop with it, and the result does not count them.
-        let supervisor = TestComponentSupervisor::start_with_budget("dogstatsd", Duration::from_millis(500)).await;
+        // children. This test covers the other path: a source that never sees the signal is halted along with
+        // everything below it.
+        let supervisor =
+            TestComponentSupervisor::start_with_component_timeout("dogstatsd", Duration::from_millis(500)).await;
         let health_registry = HealthRegistry::new();
 
         // This signal belongs to the test, and the test deliberately never fires it. Thus, the body of the source stays
@@ -4702,12 +4704,12 @@ mod supervision {
 
         let result = timeout(RUN_TIMEOUT, supervisor.shutdown())
             .await
-            .expect("the source should be cut off within its budget");
+            .expect("the source should be halted once its timeout runs out");
         match result {
-            // The count includes at least the source itself. It does not include children that stop on their own
-            // immediately before the forced stop. Thus, the number of counted children depends on timing.
-            Err(SupervisorError::ShutdownTimedOut { aborted }) => assert!(aborted >= 1),
-            other => panic!("expected the source to be cut off and counted, got {other:?}"),
+            // The body never returned, so every child is still running when the source is halted. All are counted
+            // except the brutal pool shrinker.
+            Err(SupervisorError::ShutdownTimedOut { aborted }) => assert_eq!(aborted, udp_descendant_count() - 1),
+            other => panic!("expected the source to be halted and counted, got {other:?}"),
         }
 
         drop(source_shutdown);

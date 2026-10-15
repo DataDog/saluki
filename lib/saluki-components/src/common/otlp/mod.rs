@@ -1135,9 +1135,7 @@ mod tests {
         // Use an ephemeral TCP port for HTTP since we are only testing the gRPC path here.
         let http_endpoint = ListenAddress::Tcp("127.0.0.1:0".parse().expect("addr should parse"));
 
-        let mut supervisor = Supervisor::new("otlp-test")
-            .expect("test supervisor name should be valid")
-            .with_shutdown_budget(Duration::from_secs(5));
+        let mut supervisor = Supervisor::new("otlp-test").expect("test supervisor name should be valid");
         let supervisor_handle = supervisor.handle();
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
@@ -1186,9 +1184,7 @@ mod tests {
             .expect("Unix gRPC endpoint should parse");
         let http_endpoint = ListenAddress::Tcp("127.0.0.1:0".parse().expect("addr should parse"));
 
-        let mut supervisor = Supervisor::new("otlp-test")
-            .expect("test supervisor name should be valid")
-            .with_shutdown_budget(Duration::from_secs(5));
+        let mut supervisor = Supervisor::new("otlp-test").expect("test supervisor name should be valid");
         let supervisor_handle = supervisor.handle();
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();

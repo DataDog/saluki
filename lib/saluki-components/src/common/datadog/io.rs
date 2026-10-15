@@ -6,11 +6,9 @@
 //! forwarder component. The tasks make a subtree below the component. The main I/O loop and the background refreshers
 //! are children of the component. Each endpoint has one I/O loop, which is a child of the main I/O loop.
 //!
-//! A scope does not pass the deadline of its owner to its children, and a closure-based child has a default timeout of
-//! five seconds. A drain can take longer than that: each endpoint loop waits for its in-flight requests, which the
-//! request timeout bounds, and then flushes its retry queue. Thus, the main I/O loop and the endpoint loops have no
-//! timeout of their own. The shutdown budget of the component bounds them, and they stop with the component if that
-//! budget elapses.
+//! A drain can outlast the five-second default timeout of a closure-based task: each endpoint loop waits for its
+//! in-flight requests, which the request timeout bounds, and then flushes its retry queue. Thus, the main I/O loop and
+//! the endpoint loops have no timeout of their own, and the component's shutdown timeout bounds them instead.
 //!
 //! Shutdown needs no explicit handshake between them, because the tasks are connected by channels and each stops at
 //! its own terminal condition. Dropping [`Handle`] closes the transaction channel, so the main I/O loop finishes and
@@ -243,8 +241,8 @@ where
     /// Dropping the transaction channel is what starts the drain: the main I/O loop finishes, its per-endpoint senders
     /// drop, and each endpoint loop completes its in-flight requests and flushes its retry queue. This doesn't wait for
     /// any of that. The tasks of the forwarder are children of the process that spawned them. That process does not
-    /// finish until the tasks finish. Thus, that process waits for the tasks, and the caller does not. The deadline of
-    /// that process bounds this wait.
+    /// finish until the tasks finish. Thus, that process waits for the tasks, and the caller does not. The shutdown
+    /// timeout of that process bounds this wait.
     pub fn shutdown(self) {
         drop(self.transactions_tx);
     }
@@ -2452,10 +2450,8 @@ mod tests {
 
     #[tokio::test]
     async fn forwarder_drain_inside_a_component_outlasts_the_default_child_timeout() {
-        // In a topology, the forwarder runs inside a component, and its tasks run in scopes below the component. A
-        // scope does not pass the deadline of its owner to its children, and a closure-based child has a timeout of
-        // five seconds by default. Here the endpoint answers six seconds after it receives the request, and the
-        // component has a budget of thirty seconds. The drain must wait for the answer, and must not be aborted.
+        // The endpoint answers after six seconds: past the five-second default timeout of a closure-based task, but
+        // within the component's thirty. The drain must wait for the answer, and nothing must be halted.
         const RESPONSE_DELAY: Duration = Duration::from_secs(6);
 
         let (server_url, _counter, mut requests) =
@@ -2466,7 +2462,8 @@ mod tests {
         };
         let (_, forwarder) = build_test_forwarder_with_request_timeout(&server_url, live, 30).await;
 
-        let supervisor = TestComponentSupervisor::start_with_budget("test_forwarder", Duration::from_secs(30)).await;
+        let supervisor =
+            TestComponentSupervisor::start_with_component_timeout("test_forwarder", Duration::from_secs(30)).await;
         supervisor.spawn_component("forwarder", move |shutdown| async move {
             let handle = forwarder.spawn();
             handle
@@ -2481,7 +2478,7 @@ mod tests {
         requests.recv().await.expect("the endpoint should receive the request");
 
         // The request is in flight, and nothing remains to do but wait for timers. From here, time moves only when
-        // every task waits, and it moves to the next timer. Thus, a five-second abort deadline would expire before the
+        // every task waits, and it moves to the next timer. Thus, a five-second shutdown timeout would expire before the
         // answer arrives, without this test waiting six seconds.
         tokio::time::pause();
         let result = supervisor.shutdown().await;
