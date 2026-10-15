@@ -95,7 +95,7 @@ for N5's shedding.
 | Step | State | Commit |
 |---|---|---|
 | V1 | not started (V2 went first: opaque hosts carry about 50 tests of the frame and the interpreter's re-admission, which V7 and V8 rework anyway) | |
-| V2 | done: amendment 192 | (this commit) |
+| V2 | done: amendment 192 | `06e7301501` |
 | V3 | not started | |
 | V4 | not started | |
 | V5 | not started | |
