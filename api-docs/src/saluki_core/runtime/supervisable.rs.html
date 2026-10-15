@@ -73,56 +73,73 @@
 <a href=#73 id=73 data-nosnippet>73</a>        <span class="bool-val">true
 <a href=#74 id=74 data-nosnippet>74</a>    </span>}
 <a href=#75 id=75 data-nosnippet>75</a>
-<a href=#76 id=76 data-nosnippet>76</a>    <span class="doccomment">/// Initializes the process asynchronously.
+<a href=#76 id=76 data-nosnippet>76</a>    <span class="doccomment">/// Returns whether the process can be started again after it has started once.
 <a href=#77 id=77 data-nosnippet>77</a>    ///
-<a href=#78 id=78 data-nosnippet>78</a>    /// During initialization, any resources or configuration for the process can be created asynchronously, and the
-<a href=#79 id=79 data-nosnippet>79</a>    /// same runtime that's used for running the process is used for initialization. The resulting future is expected to
-<a href=#80 id=80 data-nosnippet>80</a>    /// complete as soon as reasonably possible after `shutdown` resolves.
-<a href=#81 id=81 data-nosnippet>81</a>    ///
-<a href=#82 id=82 data-nosnippet>82</a>    /// **Important:** The `process_shutdown` signal must be moved into the returned [`SupervisorFuture`] so the worker
-<a href=#83 id=83 data-nosnippet>83</a>    /// can respond to supervisor-initiated shutdown. If `process_shutdown` is dropped during initialization, the worker
-<a href=#84 id=84 data-nosnippet>84</a>    /// will be unable to shut down gracefully and will be forcefully aborted after the shutdown timeout.
-<a href=#85 id=85 data-nosnippet>85</a>    ///
-<a href=#86 id=86 data-nosnippet>86</a>    /// # Errors
-<a href=#87 id=87 data-nosnippet>87</a>    ///
-<a href=#88 id=88 data-nosnippet>88</a>    /// If the process can't be initialized, an error is returned.
-<a href=#89 id=89 data-nosnippet>89</a>    </span><span class="kw">async fn </span>initialize(<span class="kw-2">&amp;</span><span class="self">self</span>, process_shutdown: ShutdownHandle) -&gt; <span class="prelude-ty">Result</span>&lt;SupervisorFuture, InitializationError&gt;;
-<a href=#90 id=90 data-nosnippet>90</a>}
+<a href=#78 id=78 data-nosnippet>78</a>    /// [`initialize`][Self::initialize] builds the future of the process each time the process starts. Most processes
+<a href=#79 id=79 data-nosnippet>79</a>    /// can build it again, so their owner can restart them. A process that consumes something when it starts cannot
+<a href=#80 id=80 data-nosnippet>80</a>    /// build its future a second time. Examples are a connection, or a value that the process received before it ran.
+<a href=#81 id=81 data-nosnippet>81</a>    /// Such a process returns `false` here.
+<a href=#82 id=82 data-nosnippet>82</a>    ///
+<a href=#83 id=83 data-nosnippet>83</a>    /// The owner of a process that returns `false` never restarts it, whatever restart policy the process has. When the
+<a href=#84 id=84 data-nosnippet>84</a>    /// process stops, its owner reaps it, or fails if it needs the process. See the
+<a href=#85 id=85 data-nosnippet>85</a>    /// [runtime documentation][crate::runtime#restart-policy] for how this decides the restart policy.
+<a href=#86 id=86 data-nosnippet>86</a>    ///
+<a href=#87 id=87 data-nosnippet>87</a>    /// Defaults to `true`.
+<a href=#88 id=88 data-nosnippet>88</a>    </span><span class="kw">fn </span>can_restart(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; bool {
+<a href=#89 id=89 data-nosnippet>89</a>        <span class="bool-val">true
+<a href=#90 id=90 data-nosnippet>90</a>    </span>}
 <a href=#91 id=91 data-nosnippet>91</a>
-<a href=#92 id=92 data-nosnippet>92</a><span class="attr">#[cfg(test)]
-<a href=#93 id=93 data-nosnippet>93</a></span><span class="kw">mod </span>tests {
-<a href=#94 id=94 data-nosnippet>94</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
-<a href=#95 id=95 data-nosnippet>95</a>
-<a href=#96 id=96 data-nosnippet>96</a>    <span class="doccomment">/// The smallest possible implementation, existing only to be erased below.
-<a href=#97 id=97 data-nosnippet>97</a>    </span><span class="kw">struct </span>Noop;
-<a href=#98 id=98 data-nosnippet>98</a>
-<a href=#99 id=99 data-nosnippet>99</a>    <span class="attr">#[async_trait]
-<a href=#100 id=100 data-nosnippet>100</a>    </span><span class="kw">impl </span>Supervisable <span class="kw">for </span>Noop {
-<a href=#101 id=101 data-nosnippet>101</a>        <span class="kw">fn </span>name(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>str {
-<a href=#102 id=102 data-nosnippet>102</a>            <span class="string">"noop"
-<a href=#103 id=103 data-nosnippet>103</a>        </span>}
-<a href=#104 id=104 data-nosnippet>104</a>
-<a href=#105 id=105 data-nosnippet>105</a>        <span class="kw">async fn </span>initialize(<span class="kw-2">&amp;</span><span class="self">self</span>, process_shutdown: ShutdownHandle) -&gt; <span class="prelude-ty">Result</span>&lt;SupervisorFuture, InitializationError&gt; {
-<a href=#106 id=106 data-nosnippet>106</a>            <span class="prelude-val">Ok</span>(Box::pin(<span class="kw">async move </span>{
-<a href=#107 id=107 data-nosnippet>107</a>                process_shutdown.<span class="kw">await</span>;
-<a href=#108 id=108 data-nosnippet>108</a>                <span class="prelude-val">Ok</span>(())
-<a href=#109 id=109 data-nosnippet>109</a>            }))
-<a href=#110 id=110 data-nosnippet>110</a>        }
-<a href=#111 id=111 data-nosnippet>111</a>    }
-<a href=#112 id=112 data-nosnippet>112</a>
-<a href=#113 id=113 data-nosnippet>113</a>    <span class="attr">#[test]
-<a href=#114 id=114 data-nosnippet>114</a>    </span><span class="kw">fn </span>trait_is_object_safe() {
-<a href=#115 id=115 data-nosnippet>115</a>        <span class="comment">// Producers hand their background work over as `Vec&lt;Box&lt;dyn Supervisable&gt;&gt;`, so object safety is load-bearing
-<a href=#116 id=116 data-nosnippet>116</a>        // here rather than incidental: a default method taking `self` by value, or a generic one, would break every
-<a href=#117 id=117 data-nosnippet>117</a>        // one of those call sites.
-<a href=#118 id=118 data-nosnippet>118</a>        </span><span class="kw">let </span>worker: Box&lt;<span class="kw">dyn </span>Supervisable&gt; = Box::new(Noop);
-<a href=#119 id=119 data-nosnippet>119</a>
-<a href=#120 id=120 data-nosnippet>120</a>        <span class="macro">assert_eq!</span>(worker.name(), <span class="string">"noop"</span>);
-<a href=#121 id=121 data-nosnippet>121</a>        <span class="macro">assert!</span>(worker.wants_shutdown_signal());
-<a href=#122 id=122 data-nosnippet>122</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(
-<a href=#123 id=123 data-nosnippet>123</a>            worker.shutdown_strategy(),
-<a href=#124 id=124 data-nosnippet>124</a>            ShutdownStrategy::Graceful(timeout) <span class="kw">if </span>timeout == Duration::from_secs(<span class="number">5</span>)
-<a href=#125 id=125 data-nosnippet>125</a>        ));
-<a href=#126 id=126 data-nosnippet>126</a>    }
-<a href=#127 id=127 data-nosnippet>127</a>}
+<a href=#92 id=92 data-nosnippet>92</a>    <span class="doccomment">/// Initializes the process asynchronously.
+<a href=#93 id=93 data-nosnippet>93</a>    ///
+<a href=#94 id=94 data-nosnippet>94</a>    /// During initialization, any resources or configuration for the process can be created asynchronously, and the
+<a href=#95 id=95 data-nosnippet>95</a>    /// same runtime that's used for running the process is used for initialization. The resulting future is expected to
+<a href=#96 id=96 data-nosnippet>96</a>    /// complete as soon as reasonably possible after `shutdown` resolves.
+<a href=#97 id=97 data-nosnippet>97</a>    ///
+<a href=#98 id=98 data-nosnippet>98</a>    /// **Important:** The `process_shutdown` signal must be moved into the returned [`SupervisorFuture`] so the worker
+<a href=#99 id=99 data-nosnippet>99</a>    /// can respond to supervisor-initiated shutdown. If `process_shutdown` is dropped during initialization, the worker
+<a href=#100 id=100 data-nosnippet>100</a>    /// will be unable to shut down gracefully and will be forcefully aborted after the shutdown timeout.
+<a href=#101 id=101 data-nosnippet>101</a>    ///
+<a href=#102 id=102 data-nosnippet>102</a>    /// # Errors
+<a href=#103 id=103 data-nosnippet>103</a>    ///
+<a href=#104 id=104 data-nosnippet>104</a>    /// If the process can't be initialized, an error is returned.
+<a href=#105 id=105 data-nosnippet>105</a>    </span><span class="kw">async fn </span>initialize(<span class="kw-2">&amp;</span><span class="self">self</span>, process_shutdown: ShutdownHandle) -&gt; <span class="prelude-ty">Result</span>&lt;SupervisorFuture, InitializationError&gt;;
+<a href=#106 id=106 data-nosnippet>106</a>}
+<a href=#107 id=107 data-nosnippet>107</a>
+<a href=#108 id=108 data-nosnippet>108</a><span class="attr">#[cfg(test)]
+<a href=#109 id=109 data-nosnippet>109</a></span><span class="kw">mod </span>tests {
+<a href=#110 id=110 data-nosnippet>110</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+<a href=#111 id=111 data-nosnippet>111</a>
+<a href=#112 id=112 data-nosnippet>112</a>    <span class="doccomment">/// The smallest possible implementation, existing only to be erased below.
+<a href=#113 id=113 data-nosnippet>113</a>    </span><span class="kw">struct </span>Noop;
+<a href=#114 id=114 data-nosnippet>114</a>
+<a href=#115 id=115 data-nosnippet>115</a>    <span class="attr">#[async_trait]
+<a href=#116 id=116 data-nosnippet>116</a>    </span><span class="kw">impl </span>Supervisable <span class="kw">for </span>Noop {
+<a href=#117 id=117 data-nosnippet>117</a>        <span class="kw">fn </span>name(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>str {
+<a href=#118 id=118 data-nosnippet>118</a>            <span class="string">"noop"
+<a href=#119 id=119 data-nosnippet>119</a>        </span>}
+<a href=#120 id=120 data-nosnippet>120</a>
+<a href=#121 id=121 data-nosnippet>121</a>        <span class="kw">async fn </span>initialize(<span class="kw-2">&amp;</span><span class="self">self</span>, process_shutdown: ShutdownHandle) -&gt; <span class="prelude-ty">Result</span>&lt;SupervisorFuture, InitializationError&gt; {
+<a href=#122 id=122 data-nosnippet>122</a>            <span class="prelude-val">Ok</span>(Box::pin(<span class="kw">async move </span>{
+<a href=#123 id=123 data-nosnippet>123</a>                process_shutdown.<span class="kw">await</span>;
+<a href=#124 id=124 data-nosnippet>124</a>                <span class="prelude-val">Ok</span>(())
+<a href=#125 id=125 data-nosnippet>125</a>            }))
+<a href=#126 id=126 data-nosnippet>126</a>        }
+<a href=#127 id=127 data-nosnippet>127</a>    }
+<a href=#128 id=128 data-nosnippet>128</a>
+<a href=#129 id=129 data-nosnippet>129</a>    <span class="attr">#[test]
+<a href=#130 id=130 data-nosnippet>130</a>    </span><span class="kw">fn </span>trait_is_object_safe() {
+<a href=#131 id=131 data-nosnippet>131</a>        <span class="comment">// Producers hand their background work over as `Vec&lt;Box&lt;dyn Supervisable&gt;&gt;`, so object safety is load-bearing
+<a href=#132 id=132 data-nosnippet>132</a>        // here rather than incidental: a default method taking `self` by value, or a generic one, would break every
+<a href=#133 id=133 data-nosnippet>133</a>        // one of those call sites.
+<a href=#134 id=134 data-nosnippet>134</a>        </span><span class="kw">let </span>worker: Box&lt;<span class="kw">dyn </span>Supervisable&gt; = Box::new(Noop);
+<a href=#135 id=135 data-nosnippet>135</a>
+<a href=#136 id=136 data-nosnippet>136</a>        <span class="macro">assert_eq!</span>(worker.name(), <span class="string">"noop"</span>);
+<a href=#137 id=137 data-nosnippet>137</a>        <span class="macro">assert!</span>(worker.wants_shutdown_signal());
+<a href=#138 id=138 data-nosnippet>138</a>        <span class="macro">assert!</span>(worker.can_restart());
+<a href=#139 id=139 data-nosnippet>139</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(
+<a href=#140 id=140 data-nosnippet>140</a>            worker.shutdown_strategy(),
+<a href=#141 id=141 data-nosnippet>141</a>            ShutdownStrategy::Graceful(timeout) <span class="kw">if </span>timeout == Duration::from_secs(<span class="number">5</span>)
+<a href=#142 id=142 data-nosnippet>142</a>        ));
+<a href=#143 id=143 data-nosnippet>143</a>    }
+<a href=#144 id=144 data-nosnippet>144</a>}
 </code></pre></div></section></main></body></html>

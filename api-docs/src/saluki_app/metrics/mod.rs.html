@@ -55,9 +55,9 @@
 <a href=#55 id=55 data-nosnippet>55</a>    supervisor.add_worker(runtime);
 <a href=#56 id=56 data-nosnippet>56</a>    supervisor.add_worker(override_processor);
 <a href=#57 id=57 data-nosnippet>57</a>
-<a href=#58 id=58 data-nosnippet>58</a>    <span class="comment">// Transient rather than permanent: the reflector worker treats an exhausted source as terminal and returns
-<a href=#59 id=59 data-nosnippet>59</a>    // normally, so restarting it would only hand it the same dead source again.
-<a href=#60 id=60 data-nosnippet>60</a>    </span>supervisor.add_worker(runtime::supervisable(reflector).transient().build());
+<a href=#58 id=58 data-nosnippet>58</a>    <span class="comment">// Hosted rather than needed: the reflector worker treats an exhausted source as terminal and returns normally, so
+<a href=#59 id=59 data-nosnippet>59</a>    // restarting it would only hand it the same dead source again.
+<a href=#60 id=60 data-nosnippet>60</a>    </span>supervisor.add_worker(runtime::supervisable(reflector).hosted().build());
 <a href=#61 id=61 data-nosnippet>61</a>
 <a href=#62 id=62 data-nosnippet>62</a>    <span class="prelude-val">Ok</span>(supervisor)
 <a href=#63 id=63 data-nosnippet>63</a>}
