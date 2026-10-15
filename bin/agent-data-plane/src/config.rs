@@ -124,7 +124,7 @@ impl<'a> DataPlaneConfiguration<'a> {
 
     /// Returns `true` if any data pipelines are enabled.
     pub const fn data_pipelines_enabled(&self) -> bool {
-        self.checks_enabled() || self.dogstatsd_enabled() || self.otlp_enabled() || self.apm_enabled()
+        self.checks_enabled() || self.dogstatsd_enabled() || self.otlp_enabled()
     }
 
     /// Returns `true` if the metrics pipeline is required.
@@ -174,10 +174,9 @@ impl<'a> DataPlaneConfiguration<'a> {
     /// This indicates that the "baseline" traces pipeline (encoding, forwarding) is required by higher-level data
     /// pipelines, such as OTLP.
     pub const fn traces_pipeline_required(&self) -> bool {
-        // We consider the traces pipeline to be enabled if either:
+        // We consider the traces pipeline to be enabled if:
         // - OTLP is enabled and not in proxy mode or proxy mode is enabled and proxy traces are disabled
-        // - APM is enabled
-        (self.otlp_enabled() && (!self.otlp_proxy_enabled() || !self.otlp_proxy_traces_enabled())) || self.apm_enabled()
+        self.otlp_enabled() && (!self.otlp_proxy_enabled() || !self.otlp_proxy_traces_enabled())
     }
 
     /// Returns the set of [`Pipeline`] variants that are active based on our configuration.

@@ -3,6 +3,8 @@
 //! Listens on TCP and/or a Unix domain socket where the trace-agent normally listens and forwards every request
 //! to the relocated trace-agent.
 
+use std::sync::LazyLock;
+
 use agent_data_plane_config::domains;
 use async_trait::async_trait;
 use axum::extract::{Request as AxumRequest, State};
@@ -115,7 +117,9 @@ impl MemoryBounds for ApmRelayConfiguration {
 #[async_trait]
 impl RelayBuilder for ApmRelayConfiguration {
     fn outputs(&self) -> &[OutputDefinition<PayloadType>] {
-        &[]
+        static OUTPUTS: LazyLock<Vec<OutputDefinition<PayloadType>>> =
+            LazyLock::new(|| vec![OutputDefinition::named_output("traces", PayloadType::Http)]);
+        &OUTPUTS
     }
 
     async fn build(&self, _context: BuildContext) -> Result<Box<dyn Relay + Send>, GenericError> {
