@@ -312,10 +312,8 @@ contexts drawn from 10 metric names and randomized tags. Each scenario measures 
 and ingress throughput:
 
 - `metric_routing_dual_ship_500mb_3k_contexts`: both endpoints receive everything without filtering.
-- `metric_routing_all_match_500mb_3k_contexts`: the secondary has an allowlist matching every
+- `metric_routing_all_match_500mb_3k_contexts`: the primary has an allowlist matching every
   generated metric; both endpoints receive everything.
-- `metric_mirroring_drop_all_500mb_3k_contexts`: the secondary's allowlist matches nothing;
-  only the primary receives metrics.
 - `metric_mirroring_primary_drop_all_500mb_3k_contexts`: the primary's allowlist matches nothing;
   only the secondary receives metrics.
 
@@ -329,6 +327,45 @@ This small corpus models selective routing of a few important metrics, not large
 Compare these named-corpus cases with each other, not directly with earlier 100-name or random-name
 runs or the ordinary `dsd_uds_500mb_3k_contexts` case. These experiments belong to the full suite and do
 not define pass/fail quality gates or assert on received metric contents.
+
+#### Matched policy-size comparison
+
+`matched_control`, `matched_exact_{1000,10000,100000}`, and
+`matched_prefix_{1000,10000,100000}` compare an unfiltered control with exact and prefix
+all-match policies at three sizes. Each has CPU and memory cases, for 14 additional
+full-suite cases. All seven scenarios share a 100-name input pool, approximately
+100,000 generated contexts, and 300 MiB/s offered traffic. The aggregator limit is
+101,000, the string interner is 32 MiB, and the generator's fixed prebuilt cache is
+512 MiB. Target resources, tags, metric types, and seed are identical; timestamped
+traffic is disabled.
+
+The smaller pool lets every policy admit all traffic, including histogram-derived names,
+even at 1,000 entries. Exact policies contain 600 matching names and enough nonmatching
+filler names to reach the requested size. Prefix policies contain 100 matching prefixes
+and enough nonmatching fillers to reach the same size. Prefixes do not subsume each other.
+Only the primary has a policy; the secondary remains unfiltered. Both destinations
+retain the full metric stream, exposing filtering and extra encoding work without
+output savings. These experiments do not assert on received metric contents.
+
+Use this matched set for the notebook's CPU and RSS graphs, comparing each policy with
+`matched_control` in the same build and run, not with the 3,000-context control.
+SMP's `baseline` and `comparison` labels identify build variants, not filtering
+disabled and enabled. All-match describes the traffic, not usage of every policy entry;
+this is not a universal worst-case bound or a test of 100,000 active metric names.
+
+Start the steady-state interval 120 seconds after each replicate's first valid sample
+and exclude the final partial bucket. Keep startup/peak RSS separate. Report per-replicate
+CPU/RSS means and their spread across all ten replicates. Use throughput telemetry from
+these same runs to verify comparable input; separate throughput experiments and graphs
+are unnecessary. Check for context-limit drops and successful output to both destinations.
+Names are sampled, so verify observed name/context coverage rather than assuming every
+configured name is active. If any case cannot sustain 300 MiB/s, rerun all seven at the
+same lower rate before interpreting the results as equal-input overhead.
+
+Run the manual `run-benchmarks-adp-full` job to include these cases; the automatic
+`run-benchmarks-adp` job runs only the unchanged quality gates. Earlier scaling sweeps
+and high-cardinality stress cases were removed from this branch's current suite;
+their configurations and results remain in Git history and previous CI runs.
 
 ## Regenerating Experiments
 
