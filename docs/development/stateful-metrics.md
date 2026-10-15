@@ -258,8 +258,7 @@ number of inflight payloads (8 per endpoint per worker). Adding endpoints splits
 budgets rather than multiplying them, but adds a transport and inflight window per endpoint. Each worker also adds a transport, compression state,
 dictionaries, a partial batch, and a two-batch input queue. Series distribution and dictionary
 reuse affect actual memory; these limits do not bound total process memory.
-The flush timeout applies independently to each worker. The series threshold is split evenly across
-workers, rounded up, so the workers together flush at about `max_metrics_per_payload` series.
+The configured series threshold and flush timeout apply independently to each worker.
 
 Each worker's dictionary uses Foldspace local eviction, capped by two startup-only settings that
 apply **per worker**, so the process-wide totals are each value times
@@ -328,9 +327,7 @@ finish their shutdown paths. Telemetry carries a `worker` label to distinguish w
 ADP owns the flush timer. The first logical batch accepted into a partial core buffer starts the
 `flush_timeout_secs` countdown (default 2 seconds; zero uses 10 milliseconds). Later arrivals do not
 postpone it. ADP calls `flush()` when the deadline expires or input closes. Foldspace also flushes
-automatically at each worker's share of `max_metrics_per_payload` (10,000 split across 3 workers is
-3,334), which counts series rather than bytes. An aggregator flush of one payload's worth of series
-therefore ships as it arrives instead of waiting for the deadline. Empty flushes
+automatically at `max_metrics_per_payload`, which counts series rather than bytes. Empty flushes
 emit nothing. Retries taken from the queue begin a new encoding attempt and get a new partial-batch deadline.
 Foldspace itself reads no clock and creates no runtime task.
 
