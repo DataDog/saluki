@@ -15,12 +15,12 @@
 use agent_data_plane_config::SalukiConfiguration;
 use datadog_agent_config::TranslateErrors;
 use datadog_agent_config_corpus::Corpus;
+use datadog_agent_runtime::agent_stream::config_event_to_update;
 use saluki_config::dynamic::ConfigUpdate;
 
 use super::guard;
 use super::leaf_replay::lookup;
 use super::loader::{build_events, CaseEvents};
-use crate::agent_stream::config_event_to_update;
 use crate::source::SourceTree;
 use crate::system::{evaluate, Error, Evaluation, Stages};
 
