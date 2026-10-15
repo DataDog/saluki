@@ -30,6 +30,12 @@ pub enum TargetAddress {
 
     /// gRPC endpoint with service/method path.
     Grpc(String),
+
+    /// HTTP endpoint that each payload is `POST`ed to.
+    ///
+    /// Stored as the full URL (for example, `http://baseline:8126/v0.4/traces`) so that Docker network aliases are
+    /// resolved at connection time rather than at config-parse time.
+    Http(String),
 }
 
 impl TargetAddress {
@@ -41,6 +47,7 @@ impl TargetAddress {
             Self::UnixDatagram(_) => "unixgram",
             Self::Unix(_) => "unix",
             Self::Grpc(_) => "grpc",
+            Self::Http(_) => "http",
         }
     }
 }
@@ -73,6 +80,20 @@ impl TryFrom<String> for TargetAddress {
                 "unixgram" => Ok(Self::UnixDatagram(PathBuf::from(addr_data))),
                 "unix" => Ok(Self::Unix(PathBuf::from(addr_data))),
                 "grpc" => Ok(Self::Grpc(addr_data.to_string())),
+                "http" => {
+                    // Validate the URL shape only; the host is resolved when sending, for the same reason as TCP.
+                    let uri = value
+                        .parse::<hyper::Uri>()
+                        .map_err(|e| format!("invalid HTTP address '{}': {}", value, e))?;
+                    if uri.authority().is_some() {
+                        Ok(Self::Http(value))
+                    } else {
+                        Err(format!(
+                            "invalid HTTP address '{}': expected http://host:port/path",
+                            value
+                        ))
+                    }
+                }
                 _ => Err(format!("invalid scheme '{}' for target address '{}'", scheme, value)),
             }
         } else {
@@ -102,6 +123,10 @@ pub enum Payload {
     /// OpenTelemetry-encoded traces.
     #[serde(rename = "opentelemetry_traces")]
     OpenTelemetryTraces(lading_payload::opentelemetry::trace::Config),
+
+    /// Datadog trace-agent traces (for example, v0.4 MessagePack), as sent by Datadog tracing libraries.
+    #[serde(rename = "datadog_traces")]
+    DatadogTraces(lading_payload::trace_agent::Config),
 }
 
 impl Payload {
@@ -113,6 +138,22 @@ impl Payload {
             Self::StaticBase64(_) => "Static Base64",
             Self::OpenTelemetryMetrics(_) => "OpenTelemetry Metrics",
             Self::OpenTelemetryTraces(_) => "OpenTelemetry Traces",
+            Self::DatadogTraces(_) => "Datadog Traces",
+        }
+    }
+
+    /// Returns the headers to send along with each payload when the target is HTTP.
+    ///
+    /// The first header is always `Content-Type`.
+    pub fn http_headers(&self) -> &'static [(&'static str, &'static str)] {
+        match self {
+            // Mimic a tracing library: the trace-agent reads the tracer's language and version from these headers.
+            Self::DatadogTraces(_) => &[
+                ("content-type", "application/msgpack"),
+                ("datadog-meta-lang", "millstone"),
+                ("datadog-meta-tracer-version", "0.1.0"),
+            ],
+            _ => &[("content-type", "application/octet-stream")],
         }
     }
 }
@@ -156,6 +197,9 @@ impl CorpusBlueprint {
                 .valid()
                 .map_err(|e| generic_error!("Invalid OpenTelemetry Metrics payload configuration: {}", e)),
             Payload::OpenTelemetryTraces(_) => Ok(()),
+            Payload::DatadogTraces(config) => config
+                .valid()
+                .map_err(|e| generic_error!("Invalid Datadog Traces payload configuration: {}", e)),
         }
     }
 }
@@ -230,5 +274,49 @@ impl Config {
             serde_yaml::from_str(&config_file_raw).error_context("Failed to parse configuration file.")?;
 
         Ok(config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Config, Payload, TargetAddress};
+
+    #[test]
+    fn parses_an_http_target() {
+        let target = TargetAddress::try_from("http://baseline:8126/v0.4/traces".to_string()).unwrap();
+
+        assert!(matches!(&target, TargetAddress::Http(url) if url == "http://baseline:8126/v0.4/traces"));
+        assert_eq!(target.kind(), "http");
+    }
+
+    #[test]
+    fn rejects_an_http_target_without_a_host() {
+        assert!(TargetAddress::try_from("http:///v0.4/traces".to_string()).is_err());
+    }
+
+    #[test]
+    fn parses_a_datadog_traces_corpus() {
+        let config: Config = serde_yaml::from_str(
+            r#"
+seed: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+target: "http://baseline:8126/v0.4/traces"
+volume: 10
+corpus:
+  size: 10
+  payload:
+    datadog_traces:
+      v0.4:
+        contexts:
+          inclusive: { min: 1, max: 2 }
+"#,
+        )
+        .unwrap();
+
+        assert!(matches!(config.corpus.payload, Payload::DatadogTraces(_)));
+        assert_eq!(
+            config.corpus.payload.http_headers()[0],
+            ("content-type", "application/msgpack")
+        );
+        config.corpus.validate().unwrap();
     }
 }

@@ -13,6 +13,9 @@ backon = { workspace = true, features = ["tokio-sleep"] }
 base64 = { workspace = true }
 bytes = { workspace = true }
 bytesize = { workspace = true, features = ["serde"] }
+http-body-util = { workspace = true }
+hyper = { workspace = true, features = ["client", "http1"] }
+hyper-util = { workspace = true, features = ["client-legacy", "http1", "tokio"] }
 lading-payload = { workspace = true }
 prost = { workspace = true }
 rand = { workspace = true, features = ["std_rng"] }

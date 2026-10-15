@@ -9,6 +9,12 @@ use std::{
 };
 
 use backon::{Backoff, BackoffBuilder as _, ExponentialBuilder, Retryable as _};
+use http_body_util::{BodyExt as _, Full};
+use hyper::{Method, Request, StatusCode, Uri};
+use hyper_util::{
+    client::legacy::{connect::HttpConnector, Client},
+    rt::TokioExecutor,
+};
 use prost::bytes::Bytes;
 use saluki_error::{ErrorContext as _, GenericError};
 use tonic::{client::Grpc, transport::Channel};
@@ -26,6 +32,7 @@ enum TargetBackend {
     #[cfg(unix)]
     Unix(UnixStream),
     Grpc(GrpcBackend),
+    Http(HttpBackend),
     File(File),
 }
 
@@ -35,9 +42,16 @@ struct GrpcBackend {
     service_method_path: String,
 }
 
+struct HttpBackend {
+    client: Client<HttpConnector, Full<Bytes>>,
+    uri: Uri,
+    /// Headers sent with every request, which depend on the payload type.
+    headers: &'static [(&'static str, &'static str)],
+}
+
 pub struct TargetSender {
     backend: TargetBackend,
-    // Runtime for gRPC operations (only used when backend is Grpc)
+    // Runtime for gRPC and HTTP operations (only used when backend is Grpc or Http)
     runtime: Option<tokio::runtime::Runtime>,
 }
 
@@ -80,6 +94,7 @@ impl TargetSender {
             TargetAddress::UnixDatagram(path) => create_unix_datagram_backend(path)?,
             TargetAddress::Unix(path) => create_unix_stream_backend(path)?,
             TargetAddress::Grpc(url) => create_grpc_client(url)?,
+            TargetAddress::Http(url) => create_http_client(url, config.corpus.payload.http_headers())?,
         };
 
         Ok(Self { backend, runtime })
@@ -112,6 +127,15 @@ impl TargetSender {
                     .ok_or_else(|| saluki_error::generic_error!("Runtime not available for gRPC send."))?;
 
                 send_grpc_payload(runtime, channel, &service_method_path, payload)?;
+                payload.len()
+            }
+            TargetBackend::Http(backend) => {
+                let runtime = self
+                    .runtime
+                    .as_ref()
+                    .ok_or_else(|| saluki_error::generic_error!("Runtime not available for HTTP send."))?;
+
+                send_http_payload(runtime, backend, payload)?;
                 payload.len()
             }
             TargetBackend::File(file) => file.write_all(payload).map(|_| payload.len())?,
@@ -191,7 +215,7 @@ fn send_grpc_payload(
 ) -> Result<(), GenericError> {
     let result = runtime.block_on(
         (|| try_grpc_unary(channel.clone(), service_method_path, payload))
-            .retry(grpc_retry_backoff())
+            .retry(retry_backoff())
             .when(|status| status.code() == tonic::Code::Unavailable)
             .notify(|status, delay| {
                 warn!(
@@ -211,7 +235,8 @@ fn send_grpc_payload(
     })
 }
 
-fn grpc_retry_backoff() -> impl Backoff {
+/// Backoff used when retrying transient connection and send failures for the gRPC and HTTP targets.
+fn retry_backoff() -> impl Backoff {
     ExponentialBuilder::default()
         .with_min_delay(Duration::from_millis(100))
         .with_max_delay(Duration::from_millis(1600))
@@ -228,7 +253,7 @@ fn grpc_retry_backoff() -> impl Backoff {
 /// Returns an error if the runtime can't be created or the connection can't be established after exhausting the
 /// configured retries.
 fn create_grpc_client(url: &str) -> Result<(TargetBackend, Option<tokio::runtime::Runtime>), GenericError> {
-    create_grpc_client_with_backoff(url, grpc_retry_backoff())
+    create_grpc_client_with_backoff(url, retry_backoff())
 }
 
 fn create_grpc_client_with_backoff(
@@ -265,6 +290,120 @@ fn create_grpc_client_with_backoff(
         service_method_path,
     };
     Ok((TargetBackend::Grpc(backend), Some(runtime)))
+}
+
+/// Creates an HTTP backend with a tokio runtime for the given HTTP URL.
+///
+/// No connection is made until the first payload is sent, so connection failures surface (and are retried) when
+/// sending.
+///
+/// # Errors
+///
+/// Returns an error if the URL is invalid or the runtime can't be created.
+fn create_http_client(
+    url: &str, headers: &'static [(&'static str, &'static str)],
+) -> Result<(TargetBackend, Option<tokio::runtime::Runtime>), GenericError> {
+    let uri = url
+        .parse::<Uri>()
+        .with_error_context(|| format!("Invalid HTTP target URL '{}'.", url))?;
+    let runtime = tokio::runtime::Runtime::new().error_context("Failed to create tokio runtime for HTTP client.")?;
+    let client = Client::builder(TokioExecutor::new()).build_http();
+
+    let backend = HttpBackend { client, uri, headers };
+    Ok((TargetBackend::Http(backend), Some(runtime)))
+}
+
+/// Error from a single HTTP send attempt.
+enum HttpSendError {
+    /// The request could not be sent, or the response could not be read.
+    Transport(String),
+
+    /// The target answered with a non-success status.
+    Status { status: StatusCode, body: String },
+}
+
+impl HttpSendError {
+    /// Returns `true` if the failure is likely transient and the payload should be sent again.
+    ///
+    /// Connection failures are retried since the target may still be starting, as are `429` and `5xx` responses, which
+    /// include a proxy reporting that its own upstream isn't reachable yet.
+    fn is_retriable(&self) -> bool {
+        match self {
+            Self::Transport(_) => true,
+            Self::Status { status, .. } => status.is_server_error() || *status == StatusCode::TOO_MANY_REQUESTS,
+        }
+    }
+}
+
+impl std::fmt::Display for HttpSendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Transport(error) => write!(f, "{}", error),
+            Self::Status { status, body } => write!(f, "unexpected status {}: {}", status, body),
+        }
+    }
+}
+
+async fn try_http_post(backend: &HttpBackend, payload: &[u8]) -> Result<(), HttpSendError> {
+    let mut builder = Request::builder().method(Method::POST).uri(backend.uri.clone());
+    for (name, value) in backend.headers {
+        builder = builder.header(*name, *value);
+    }
+    let request = builder
+        .body(Full::new(Bytes::copy_from_slice(payload)))
+        .map_err(|e| HttpSendError::Transport(format!("failed to build request: {}", e)))?;
+
+    let response = backend
+        .client
+        .request(request)
+        .await
+        .map_err(|e| HttpSendError::Transport(format!("{:?}", e)))?;
+    let status = response.status();
+
+    // Always read the body to completion so the connection can be reused for the next payload.
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .map_err(|e| HttpSendError::Transport(format!("failed to read response body: {}", e)))?
+        .to_bytes();
+
+    if status.is_success() {
+        Ok(())
+    } else {
+        Err(HttpSendError::Status {
+            status,
+            body: String::from_utf8_lossy(&body).into_owned(),
+        })
+    }
+}
+
+/// Sends a payload as the body of an HTTP `POST` request using the provided runtime.
+///
+/// Transient failures (see [`HttpSendError::is_retriable`]) are retried with exponential backoff, up to `MAX_RETRIES`
+/// retries.
+///
+/// # Errors
+///
+/// Returns an error if a non-retriable failure occurs, or if the request still fails after all retry attempts are
+/// exhausted.
+fn send_http_payload(
+    runtime: &tokio::runtime::Runtime, backend: &HttpBackend, payload: &[u8],
+) -> Result<(), GenericError> {
+    runtime
+        .block_on(
+            (|| try_http_post(backend, payload))
+                .retry(retry_backoff())
+                .when(HttpSendError::is_retriable)
+                .notify(|error, delay| {
+                    warn!(
+                        delay_ms = delay.as_millis(),
+                        error = %error,
+                        "Retriable HTTP error, retrying after backoff."
+                    );
+                }),
+        )
+        .map_err(|error| saluki_error::generic_error!("HTTP request to '{}' failed: {}", backend.uri, error))
 }
 
 // No-op codec for sending raw protobuf bytes via gRPC without encoding/decoding.
@@ -321,7 +460,79 @@ impl tonic::codec::Decoder for NoopDecoder {
 
 #[cfg(test)]
 mod tests {
-    use super::{create_grpc_client_with_backoff, grpc_retry_backoff};
+    use std::{
+        io::{BufRead as _, BufReader, Read as _, Write as _},
+        net::TcpListener,
+        thread,
+    };
+
+    use super::{create_grpc_client_with_backoff, create_http_client, retry_backoff, TargetSender};
+
+    /// Accepts a single HTTP/1.1 request, answers it with `response`, and returns the request head and body.
+    fn serve_one_request(listener: TcpListener, response: &'static str) -> thread::JoinHandle<(String, Vec<u8>)> {
+        thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+
+            let mut head = String::new();
+            let mut content_length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    content_length = value.trim().parse().unwrap();
+                }
+                if line == "\r\n" {
+                    break;
+                }
+                head.push_str(&line);
+            }
+            let mut body = vec![0; content_length];
+            reader.read_exact(&mut body).unwrap();
+
+            (&stream).write_all(response.as_bytes()).unwrap();
+            (head, body)
+        })
+    }
+
+    fn http_sender(listener: &TcpListener, headers: &'static [(&'static str, &'static str)]) -> TargetSender {
+        let url = format!("http://{}/v0.4/traces", listener.local_addr().unwrap());
+        let (backend, runtime) = create_http_client(&url, headers).unwrap();
+        TargetSender { backend, runtime }
+    }
+
+    #[test]
+    fn http_target_posts_the_payload_with_its_headers() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut sender = http_sender(&listener, &[("content-type", "application/msgpack")]);
+        let server = serve_one_request(listener, "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}");
+
+        assert_eq!(sender.send(b"payload").unwrap(), 7);
+
+        let (head, body) = server.join().unwrap();
+        assert!(
+            head.starts_with("POST /v0.4/traces HTTP/1.1\r\n"),
+            "unexpected request head: {head}"
+        );
+        assert!(
+            head.contains("content-type: application/msgpack\r\n"),
+            "unexpected request head: {head}"
+        );
+        assert_eq!(body, b"payload");
+    }
+
+    #[test]
+    fn http_target_does_not_retry_a_client_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut sender = http_sender(&listener, &[("content-type", "application/octet-stream")]);
+        let server = serve_one_request(listener, "HTTP/1.1 400 Bad Request\r\ncontent-length: 3\r\n\r\nbad");
+
+        let error = sender.send(b"payload").unwrap_err().to_string();
+        server.join().unwrap();
+
+        // The listener is gone after one request, so a retry would have failed with a connection error instead.
+        assert!(error.contains("400 Bad Request: bad"), "unexpected error: {error}");
+    }
 
     #[test]
     fn preserves_the_final_grpc_connection_error() {
@@ -338,8 +549,8 @@ mod tests {
     }
 
     #[test]
-    fn grpc_retry_backoff_uses_bounded_exponential_delays() {
-        let delays_ms = grpc_retry_backoff().map(|delay| delay.as_millis()).collect::<Vec<_>>();
+    fn retry_backoff_uses_bounded_exponential_delays() {
+        let delays_ms = retry_backoff().map(|delay| delay.as_millis()).collect::<Vec<_>>();
 
         assert_eq!(delays_ms, [100, 200, 400, 800, 1600]);
     }

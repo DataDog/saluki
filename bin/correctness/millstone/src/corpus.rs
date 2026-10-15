@@ -3,12 +3,20 @@ use std::num::NonZeroUsize;
 use base64::Engine as _;
 use bytes::{BufMut as _, Bytes, BytesMut};
 use bytesize::ByteSize;
-use lading_payload::{opentelemetry::metric::OpentelemetryMetrics, DogStatsD, OpentelemetryTraces};
+use lading_payload::{
+    opentelemetry::metric::OpentelemetryMetrics, trace_agent::v04::V04, DogStatsD, OpentelemetryTraces,
+};
 use rand::{rngs::StdRng, SeedableRng as _};
 use saluki_error::{generic_error, GenericError};
 use tracing::info;
 
 use crate::config::{Config, CorpusBlueprint, Payload, TargetAddress};
+
+/// Maximum size of a single Datadog traces payload.
+///
+/// Tracing libraries flush batches of whole traces, which are routinely larger than a datagram-sized payload, so we
+/// allow several traces of a few dozen spans each per payload. This is still far below the trace-agent's intake limit.
+const DATADOG_TRACES_MAX_PAYLOAD_BYTES: usize = 64 * 1024;
 
 /// A generated test corpus.
 pub struct Corpus {
@@ -61,7 +69,8 @@ fn get_finalized_corpus_blueprint(config: &Config) -> Result<CorpusBlueprint, Ge
         Payload::Static(_)
         | Payload::StaticBase64(_)
         | Payload::OpenTelemetryMetrics(_)
-        | Payload::OpenTelemetryTraces(_) => {}
+        | Payload::OpenTelemetryTraces(_)
+        | Payload::DatadogTraces(_) => {}
     }
 
     // Validate that the blueprint is valid from a payload generation standpoint.
@@ -90,6 +99,16 @@ fn generate_payloads(mut rng: StdRng, blueprint: CorpusBlueprint) -> Result<(Vec
         Payload::OpenTelemetryTraces(config) => {
             let mut generator = OpentelemetryTraces::with_config(&config, &mut rng)?;
             generate_payloads_inner(&mut generator, rng, &mut payloads, blueprint.size, 8192)?
+        }
+        Payload::DatadogTraces(lading_payload::trace_agent::Config::V04(config)) => {
+            let mut generator = V04::with_config(config, &mut rng)?;
+            generate_payloads_inner(
+                &mut generator,
+                rng,
+                &mut payloads,
+                blueprint.size,
+                DATADOG_TRACES_MAX_PAYLOAD_BYTES,
+            )?
         }
     }
 
