@@ -11,7 +11,7 @@
 <a href=#11 id=11 data-nosnippet>11</a><span class="kw">use </span>saluki_io::net::util::retry::{EventContainer, Retryable};
 <a href=#12 id=12 data-nosnippet>12</a><span class="kw">use </span>serde::{ser::SerializeSeq <span class="kw">as _</span>, Deserialize, Serialize, Serializer};
 <a href=#13 id=13 data-nosnippet>13</a>
-<a href=#14 id=14 data-nosnippet>14</a><span class="kw">use </span><span class="kw">super</span>::protocol::{MetricsEndpointRouting, MetricsPayloadInfo};
+<a href=#14 id=14 data-nosnippet>14</a><span class="kw">use </span>super::{protocol::MetricsPayloadInfo, routing::MetricsRoutingTargets};
 <a href=#15 id=15 data-nosnippet>15</a>
 <a href=#16 id=16 data-nosnippet>16</a><span class="doccomment">/// Data type for the body of `TransactionBody&lt;B&gt;`.
 <a href=#17 id=17 data-nosnippet>17</a></span><span class="kw">pub enum </span>TransactionBodyData&lt;B&gt;
@@ -188,11 +188,11 @@
 <a href=#188 id=188 data-nosnippet>188</a>    </span><span class="attr">#[serde(default, skip_serializing_if = <span class="string">"Option::is_none"</span>)]
 <a href=#189 id=189 data-nosnippet>189</a>    </span><span class="kw">pub </span>payload_info: <span class="prelude-ty">Option</span>&lt;MetricsPayloadInfo&gt;,
 <a href=#190 id=190 data-nosnippet>190</a>
-<a href=#191 id=191 data-nosnippet>191</a>    <span class="doccomment">/// Endpoint targeting for a metrics payload, if applicable.
+<a href=#191 id=191 data-nosnippet>191</a>    <span class="doccomment">/// Routing targets a metrics payload is addressed to, if applicable.
 <a href=#192 id=192 data-nosnippet>192</a>    ///
 <a href=#193 id=193 data-nosnippet>193</a>    /// Not saved to disk: queued retries already belong to a specific endpoint.
 <a href=#194 id=194 data-nosnippet>194</a>    </span><span class="attr">#[serde(skip)]
-<a href=#195 id=195 data-nosnippet>195</a>    </span><span class="kw">pub </span>metrics_endpoint_routing: <span class="prelude-ty">Option</span>&lt;Arc&lt;MetricsEndpointRouting&gt;&gt;,
+<a href=#195 id=195 data-nosnippet>195</a>    </span><span class="kw">pub </span>metrics_routing_targets: <span class="prelude-ty">Option</span>&lt;Arc&lt;MetricsRoutingTargets&gt;&gt;,
 <a href=#196 id=196 data-nosnippet>196</a>}
 <a href=#197 id=197 data-nosnippet>197</a>
 <a href=#198 id=198 data-nosnippet>198</a><span class="kw">impl </span>Metadata {
@@ -202,7 +202,7 @@
 <a href=#202 id=202 data-nosnippet>202</a>            event_count,
 <a href=#203 id=203 data-nosnippet>203</a>            data_point_count,
 <a href=#204 id=204 data-nosnippet>204</a>            payload_info: <span class="prelude-val">None</span>,
-<a href=#205 id=205 data-nosnippet>205</a>            metrics_endpoint_routing: <span class="prelude-val">None</span>,
+<a href=#205 id=205 data-nosnippet>205</a>            metrics_routing_targets: <span class="prelude-val">None</span>,
 <a href=#206 id=206 data-nosnippet>206</a>        }
 <a href=#207 id=207 data-nosnippet>207</a>    }
 <a href=#208 id=208 data-nosnippet>208</a>}
@@ -293,27 +293,27 @@
 <a href=#293 id=293 data-nosnippet>293</a>    <span class="kw">use </span>saluki_io::net::util::retry::{EventContainer <span class="kw">as _</span>, Retryable <span class="kw">as _</span>};
 <a href=#294 id=294 data-nosnippet>294</a>
 <a href=#295 id=295 data-nosnippet>295</a>    <span class="kw">use </span>super::{Metadata, Transaction, TransactionBody};
-<a href=#296 id=296 data-nosnippet>296</a>    <span class="kw">use </span><span class="kw">crate</span>::common::datadog::protocol::MetricsEndpointRouting;
+<a href=#296 id=296 data-nosnippet>296</a>    <span class="kw">use </span><span class="kw">crate</span>::common::datadog::routing::{MetricsRoutingTargets, RoutingTargetCatalog};
 <a href=#297 id=297 data-nosnippet>297</a>
 <a href=#298 id=298 data-nosnippet>298</a>    <span class="attr">#[test]
 <a href=#299 id=299 data-nosnippet>299</a>    </span><span class="kw">fn </span>basic_transaction_ser_deser_roundtrip() {
 <a href=#300 id=300 data-nosnippet>300</a>        <span class="comment">// Create a basic transaction with a simple body.
 <a href=#301 id=301 data-nosnippet>301</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>metadata = Metadata::from_event_and_data_point_count(<span class="number">1</span>, <span class="number">7</span>);
-<a href=#302 id=302 data-nosnippet>302</a>        metadata.metrics_endpoint_routing =
-<a href=#303 id=303 data-nosnippet>303</a>            <span class="prelude-val">Some</span>(MetricsEndpointRouting::Only([<span class="string">"http://example.com"</span>.to_string()].into()).into());
+<a href=#302 id=302 data-nosnippet>302</a>        <span class="kw">let </span>catalog = RoutingTargetCatalog::new(<span class="string">"http://example.com"</span>, <span class="kw-2">&amp;</span>Default::default()).unwrap();
+<a href=#303 id=303 data-nosnippet>303</a>        metadata.metrics_routing_targets = <span class="prelude-val">Some</span>(MetricsRoutingTargets::new(catalog.select(|<span class="kw">_</span>| <span class="bool-val">true</span>)).into());
 <a href=#304 id=304 data-nosnippet>304</a>        <span class="kw">let </span>body = VecDeque::from(<span class="string">"hello, world!"</span>.as_bytes().to_vec());
 <a href=#305 id=305 data-nosnippet>305</a>        <span class="kw">let </span>request = Request::builder().uri(<span class="string">"http://example.com"</span>).body(body.clone()).unwrap();
 <a href=#306 id=306 data-nosnippet>306</a>
 <a href=#307 id=307 data-nosnippet>307</a>        <span class="comment">// Create our `Transaction`, and then roundtrip it: serialize and then deserialize.
 <a href=#308 id=308 data-nosnippet>308</a>        </span><span class="kw">let </span>transaction = Transaction::from_original(metadata.clone(), request);
 <a href=#309 id=309 data-nosnippet>309</a>        <span class="kw">let </span>serialized = serde_json::to_string(<span class="kw-2">&amp;</span>transaction).unwrap();
-<a href=#310 id=310 data-nosnippet>310</a>        <span class="macro">assert!</span>(!serialized.contains(<span class="string">"metrics_endpoint_routing"</span>));
+<a href=#310 id=310 data-nosnippet>310</a>        <span class="macro">assert!</span>(!serialized.contains(<span class="string">"metrics_routing_targets"</span>));
 <a href=#311 id=311 data-nosnippet>311</a>        <span class="kw">let </span>deserialized: Transaction&lt;VecDeque&lt;u8&gt;&gt; = serde_json::from_str(<span class="kw-2">&amp;</span>serialized).unwrap();
 <a href=#312 id=312 data-nosnippet>312</a>
 <a href=#313 id=313 data-nosnippet>313</a>        <span class="comment">// Check some basic properties.
 <a href=#314 id=314 data-nosnippet>314</a>        </span><span class="macro">assert_eq!</span>(deserialized.metadata.event_count, metadata.event_count);
 <a href=#315 id=315 data-nosnippet>315</a>        <span class="macro">assert_eq!</span>(deserialized.metadata.data_point_count, metadata.data_point_count);
-<a href=#316 id=316 data-nosnippet>316</a>        <span class="macro">assert_eq!</span>(deserialized.metadata.metrics_endpoint_routing, <span class="prelude-val">None</span>);
+<a href=#316 id=316 data-nosnippet>316</a>        <span class="macro">assert_eq!</span>(deserialized.metadata.metrics_routing_targets, <span class="prelude-val">None</span>);
 <a href=#317 id=317 data-nosnippet>317</a>        <span class="macro">assert_eq!</span>(deserialized.event_count(), metadata.event_count <span class="kw">as </span>u64);
 <a href=#318 id=318 data-nosnippet>318</a>        <span class="macro">assert_eq!</span>(deserialized.data_point_count(), metadata.data_point_count <span class="kw">as </span>u64);
 <a href=#319 id=319 data-nosnippet>319</a>        <span class="macro">assert_eq!</span>(deserialized.request.uri(), <span class="string">"http://example.com"</span>);

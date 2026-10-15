@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["ClusterAgentForwarderConfiguration","DatadogForwarderConfiguration","OtlpForwarderConfiguration"]};
+window.SIDEBAR_ITEMS = {"enum":["RoutingTargetKind"],"struct":["ClusterAgentForwarderConfiguration","DatadogForwarderConfiguration","MetricsRoutingTargets","OtlpForwarderConfiguration","RoutingTarget","RoutingTargetCatalog","RoutingTargetId","RoutingTargetSet"]};
