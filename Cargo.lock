@@ -1292,6 +1292,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 
 [[package]]
+name = "datadog-agent-apm"
+version = "0.1.0"
+dependencies = [
+ "datadog-agent-apm",
+ "datadog-agent-remote-config",
+ "saluki-common",
+ "saluki-error",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "datadog-agent-commons"
 version = "0.1.0"
 dependencies = [
@@ -5576,6 +5588,7 @@ dependencies = [
  "bytes",
  "bytesize",
  "chrono",
+ "datadog-agent-apm",
  "datadog-agent-commons",
  "datadog-agent-metrics-v3",
  "datadog-protos",
