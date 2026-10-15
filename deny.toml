@@ -13,6 +13,13 @@ ignore = [
   # once AWS-LC-FIPS 4.x is certified, or if rustls backports the fix to a release built
   # against aws-lc-rs 1.14.
   { id = "RUSTSEC-2026-0285", reason = "blocked on aws-lc-rs FIPS pin; see comment in Cargo.toml" },
+  # These additional rustls advisories are blocked by the same aws-lc-rs FIPS pin as RUSTSEC-2026-0285.
+  # Revisit once AWS-LC-FIPS 4.x is FIPS 140-3 certified, or if rustls backports the fixes to a release
+  # compatible with our pinned aws-lc-rs line. Track the upgrade and removal of these exceptions in
+  # https://linear.app/datadoghq/issue/AGENTDP-7/track-rustls-upgrade-pending-aws-lc-4-fips-validation.
+  { id = "RUSTSEC-2026-0346", reason = "blocked on aws-lc-rs FIPS pin; see comment in Cargo.toml" },
+  { id = "RUSTSEC-2026-0348", reason = "blocked on aws-lc-rs FIPS pin; see comment in Cargo.toml" },
+  { id = "RUSTSEC-2026-0349", reason = "blocked on aws-lc-rs FIPS pin; see comment in Cargo.toml" },
   # RUSTSEC-2024-0449: unsafe-libyaml (via the deprecated serde_yaml, and lading-payload) is unmaintained. No known
   # vulnerability. Migrating to serde-saphyr needs reworking our serde_yaml::Value usage and coordinating with lading.
   { id = "RUSTSEC-2024-0449", reason = "unmaintained only; no drop-in safe replacement, pending serde-saphyr migration" },
