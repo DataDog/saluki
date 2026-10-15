@@ -1,9 +1,16 @@
 //! Retained sender counters, including idle periods between metric batches.
 
-use foldspace_core::{MetricDictionaryStats, MetricStreamFailureKind};
+use std::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+    time::Instant,
+};
+
+use foldspace_core::MetricStreamFailureKind;
 use saluki_common::collections::FastHashMap;
 use saluki_io::net::util::retry::PushResult;
-use saluki_metrics::{Counter, Gauge, MetricsBuilder};
+use saluki_metrics::{Counter, Gauge, Histogram, MetricsBuilder};
 use tracing::warn;
 
 pub(super) struct Telemetry {
@@ -11,44 +18,22 @@ pub(super) struct Telemetry {
     pub batches_retried: Counter,
     pub batches_abandoned: Counter,
     pub points_dropped: Counter,
-    /// Retained definitions, which the entry cap governs; transient definitions are reported apart.
-    dictionary_entries: Gauge,
-    /// Estimated bytes of retained definitions, which the byte cap governs.
-    dictionary_estimated_bytes: Gauge,
-    /// Definitions sent only for the payloads that reference them, outside the caps.
-    dictionary_transient_entries: Gauge,
-    dictionary_transient_bytes: Gauge,
-    /// Fixed size of the admission frequency sketch, sized from the caps; outside the byte cap.
-    dictionary_frequency_sketch_bytes: Gauge,
+    pub profile: WorkerProfile,
     builder: MetricsBuilder,
     stream_failures: FastHashMap<&'static str, Counter>,
 }
 
 impl Telemetry {
-    pub fn new(builder: MetricsBuilder) -> Self {
+    pub fn new(builder: MetricsBuilder, endpoints: usize) -> Self {
         Self {
             batches_acked: builder.register_counter("stateful_metrics_batches_acked_total"),
             batches_retried: builder.register_counter("stateful_metrics_batches_retried_total"),
             batches_abandoned: builder.register_counter("stateful_metrics_batches_abandoned_total"),
             points_dropped: builder.register_counter("stateful_metrics_points_dropped_total"),
-            dictionary_entries: builder.register_gauge("stateful_metrics_dictionary_entries"),
-            dictionary_estimated_bytes: builder.register_gauge("stateful_metrics_dictionary_estimated_bytes"),
-            dictionary_transient_entries: builder.register_gauge("stateful_metrics_dictionary_transient_entries"),
-            dictionary_transient_bytes: builder.register_gauge("stateful_metrics_dictionary_transient_bytes"),
-            dictionary_frequency_sketch_bytes: builder
-                .register_gauge("stateful_metrics_dictionary_frequency_sketch_bytes"),
+            profile: WorkerProfile::new(&builder, endpoints),
             builder,
             stream_failures: FastHashMap::default(),
         }
-    }
-
-    pub fn record_dictionary(&self, stats: MetricDictionaryStats) {
-        self.dictionary_entries.set(stats.entries as f64);
-        self.dictionary_estimated_bytes.set(stats.estimated_bytes as f64);
-        self.dictionary_transient_entries.set(stats.transient_entries as f64);
-        self.dictionary_transient_bytes.set(stats.transient_bytes as f64);
-        self.dictionary_frequency_sketch_bytes
-            .set(stats.frequency_sketch_bytes as f64);
     }
 
     pub fn stream_failed(&mut self, kind: MetricStreamFailureKind) {
@@ -81,4 +66,151 @@ impl Telemetry {
             self.points_dropped.increment(result.data_points_dropped);
         }
     }
+}
+
+/// Load-test instrumentation for one sender worker: where its time goes and whether it keeps up.
+pub(super) struct WorkerProfile {
+    /// Time spent inside polls of the worker task; its rate is the share of one core the worker uses.
+    pub busy_nanos: Counter,
+    pub push_batch_nanos: Counter,
+    pub flush_nanos: Counter,
+    pub send_batch_to_nanos: Counter,
+    /// Logical batches the core encoded, including re-encoded retries.
+    encodings: Counter,
+    /// Definitions sent across every endpoint, including re-sends on new streams.
+    definitions_sent: Counter,
+    /// Protobuf-encoded size of those definitions, before compression.
+    definition_bytes: Counter,
+    reported: CoreTotals,
+    /// From the first batch received while idle until everything is acknowledged again.
+    pub burst_drain_seconds: Histogram,
+    /// Retained definitions, which the entry cap governs; transient definitions are reported apart.
+    pub dictionary_entries: Gauge,
+    /// Estimated bytes of retained definitions, which the byte cap governs.
+    pub dictionary_estimated_bytes: Gauge,
+    /// Definitions sent only for the payloads that reference them, outside the caps.
+    pub dictionary_transient_entries: Gauge,
+    pub dictionary_transient_bytes: Gauge,
+    /// Fixed size of the admission frequency sketch, sized from the caps; outside the byte cap.
+    pub dictionary_frequency_sketch_bytes: Gauge,
+    pub inflight_payloads: Gauge,
+    pub buffered_series: Gauge,
+    /// Indexed by endpoint.
+    pub endpoints: Vec<EndpointProfile>,
+}
+
+/// Cumulative counts the core keeps; the profile reports how much each grew since the last call.
+#[derive(Clone, Copy, Default)]
+pub(super) struct CoreTotals {
+    pub encodings: u64,
+    pub definitions_sent: u64,
+    pub definition_bytes: u64,
+}
+
+pub(super) struct EndpointProfile {
+    pub payloads_sent: Counter,
+    /// Compressed payload bytes handed to the transport.
+    pub payload_bytes: Counter,
+    pub ack_latency_seconds: Histogram,
+}
+
+impl WorkerProfile {
+    fn new(builder: &MetricsBuilder, endpoints: usize) -> Self {
+        let core_nanos = |op: &'static str| {
+            builder.register_debug_counter_with_tags("stateful_metrics_core_nanos_total", [("op", op)])
+        };
+        Self {
+            busy_nanos: builder
+                .register_debug_counter_with_tags("stateful_metrics_task_busy_nanos_total", [("task", "worker")]),
+            push_batch_nanos: core_nanos("push_batch"),
+            flush_nanos: core_nanos("flush"),
+            send_batch_to_nanos: core_nanos("send_batch_to"),
+            encodings: builder.register_debug_counter("stateful_metrics_encodings_total"),
+            definitions_sent: builder.register_debug_counter("stateful_metrics_definitions_sent_total"),
+            definition_bytes: builder.register_debug_counter("stateful_metrics_definition_bytes_total"),
+            reported: CoreTotals::default(),
+            burst_drain_seconds: builder.register_debug_histogram("stateful_metrics_burst_drain_seconds"),
+            dictionary_entries: builder.register_debug_gauge("stateful_metrics_dictionary_entries"),
+            dictionary_estimated_bytes: builder.register_debug_gauge("stateful_metrics_dictionary_estimated_bytes"),
+            dictionary_transient_entries: builder.register_debug_gauge("stateful_metrics_dictionary_transient_entries"),
+            dictionary_transient_bytes: builder.register_debug_gauge("stateful_metrics_dictionary_transient_bytes"),
+            dictionary_frequency_sketch_bytes: builder
+                .register_debug_gauge("stateful_metrics_dictionary_frequency_sketch_bytes"),
+            inflight_payloads: builder.register_debug_gauge("stateful_metrics_inflight_payloads"),
+            buffered_series: builder.register_debug_gauge("stateful_metrics_buffered_series"),
+            endpoints: (0..endpoints)
+                .map(|endpoint| {
+                    let tag = ("endpoint", endpoint.to_string());
+                    EndpointProfile {
+                        payloads_sent: builder
+                            .register_debug_counter_with_tags("stateful_metrics_payloads_sent_total", [tag.clone()]),
+                        payload_bytes: builder
+                            .register_debug_counter_with_tags("stateful_metrics_payload_bytes_total", [tag.clone()]),
+                        ack_latency_seconds: builder
+                            .register_debug_histogram_with_tags("stateful_metrics_ack_latency_seconds", [tag]),
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    pub fn record_totals(&mut self, totals: CoreTotals) {
+        let reported = self.reported;
+        self.encodings
+            .increment(totals.encodings.saturating_sub(reported.encodings));
+        self.definitions_sent
+            .increment(totals.definitions_sent.saturating_sub(reported.definitions_sent));
+        self.definition_bytes
+            .increment(totals.definition_bytes.saturating_sub(reported.definition_bytes));
+        self.reported = totals;
+    }
+}
+
+/// Load-test instrumentation for the dispatcher, which converts, hashes, and routes every series on one task.
+pub(super) struct DispatchProfile {
+    /// Conversion and sharding time; its rate is the share of one core the dispatcher spends on them.
+    pub partition_nanos: Counter,
+    /// Time waiting for full worker input queues to accept a buffer.
+    pub blocked_nanos: Counter,
+    pub series: Counter,
+}
+
+impl DispatchProfile {
+    pub fn new(builder: &MetricsBuilder) -> Self {
+        Self {
+            partition_nanos: builder.register_debug_counter("stateful_metrics_dispatch_partition_nanos_total"),
+            blocked_nanos: builder.register_debug_counter("stateful_metrics_dispatch_blocked_nanos_total"),
+            series: builder.register_debug_counter("stateful_metrics_dispatch_series_total"),
+        }
+    }
+}
+
+/// Adds the time spent inside each poll of the wrapped future to a counter.
+pub(super) struct PollTimer<F> {
+    inner: Pin<Box<F>>,
+    busy_nanos: Counter,
+}
+
+impl<F: Future> PollTimer<F> {
+    pub fn new(inner: F, busy_nanos: Counter) -> Self {
+        Self {
+            inner: Box::pin(inner),
+            busy_nanos,
+        }
+    }
+}
+
+impl<F: Future> Future for PollTimer<F> {
+    type Output = F::Output;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
+        let started = Instant::now();
+        let output = self.inner.as_mut().poll(cx);
+        self.busy_nanos.increment(elapsed_nanos(started));
+        output
+    }
+}
+
+pub(super) fn elapsed_nanos(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }

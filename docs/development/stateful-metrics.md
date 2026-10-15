@@ -105,9 +105,11 @@ from its existing configuration stream. The test-only standalone mode can also d
 
 ## Delivery and retry behavior
 
-ADP converts enriched series once to self-contained `LogicalMetricBatch` values. Rate normalization,
+ADP converts enriched series once to `LogicalMetricBatch` values. Rate normalization,
 resources, tags, origin, source type, and unit follow the V3 encoder's semantics. Non-finite points
-and empty series are excluded. The sender does not retain original ADP `Metric` objects.
+and empty series are excluded. The sender does not retain original ADP `Metric` objects, but each
+series shares the `Tag` handles of its context instead of copying the tag strings. Interned, shared,
+and inlined tags clone without copying.
 
 The destination reuses the HTTP forwarder's `PendingTransactions<T>` scheduling and `RetryQueue<T>`
 storage machinery with a distinct logical-batch entry type:
@@ -126,8 +128,10 @@ storage machinery with a distinct logical-batch entry type:
 Queue capacity, memory limits, disk location, disk limits, spill ratio, and file age use the existing
 forwarder settings, including `forwarder_high_prio_buffer_size`,
 `forwarder_retry_queue_payloads_max_size`, `forwarder_storage_path`, and
-`forwarder_storage_max_size_in_bytes`. Queue byte accounting estimates the owned logical data,
-including series, points, tags, and resource strings. This is not a total process memory bound.
+`forwarder_storage_max_size_in_bytes`. Queue byte accounting estimates the logical data as if owned,
+including series, points, tags, and resource strings. Conversion shares tags with the aggregator's
+contexts instead of copying them, but queued batches keep those tags alive, so they count in full.
+This is not a total process memory bound.
 
 Disk storage is enabled only when configured. Its directory is separate from HTTP transactions and
 includes the logical format version, destination hash, and worker index. If requested storage cannot
@@ -301,7 +305,8 @@ needs it but is not counted against the caps, and it is removed once no payload 
 references it. A working set above the caps therefore costs one definition per payload that
 references each value outside the retained set, rather than churning the retained set itself.
 
-Each worker reports its dictionary through these gauges, tagged with `worker`:
+At `metrics_level: debug`, each worker reports its dictionary through these gauges, tagged with
+`worker`:
 
 - `stateful_metrics_dictionary_entries` and `stateful_metrics_dictionary_estimated_bytes`: retained
   definitions only, the figures the caps govern. Transient definitions are not included.
@@ -409,3 +414,34 @@ The HTTP decoder's comparison model preserves host, tags, types, intervals, and 
 other resource and origin fields. Those fields have explicit expectations in `timer_and_metadata`.
 Retries can duplicate points after a lost ACK; the two ACK-failure cases check that behavior explicitly.
 The remaining stateful cases also check that series never reach the HTTP receiver.
+
+## Load and outage testing
+
+This tooling exists only on the vendored benchmarking branches and goes away with them.
+
+- **Telemetry.** At `metrics_level: debug`, the destination reports per-task busy time
+  (`stateful_metrics_task_busy_nanos_total`), dispatcher conversion and blocked time, time in each
+  Foldspace call (`stateful_metrics_core_nanos_total`), burst drain time, per-endpoint payloads,
+  bytes, and acknowledgement latency, definitions sent and their bytes, encodings, and dictionary
+  gauges.
+- **Ack-only intake.** `stateful-metrics-blackhole` acknowledges every batch without decoding it.
+  `ACK_DELAY_MS`, `ACK_PAUSE_EVERY_SECS`/`ACK_PAUSE_FOR_SECS`, and
+  `OUTAGE_EVERY_SECS`/`OUTAGE_FOR_SECS` inject latency, stalled acknowledgements, and outages.
+- **SMP.** The `stateful_dsd_*` experiments in `test/smp/regression/adp/experiments.yaml` ramp
+  context count and packet rate under steady load.
+- **Local outages.** `ci/tooling/stateful-metrics-outages.py` runs ADP, the intakes, and lading from
+  a generated SMP case through outage, stall, and slow-endpoint scenarios, and writes lading's
+  capture (with ADP's telemetry once a second), RSS and CPU samples, and a summary per scenario:
+
+  ```sh
+  cargo build --release --bin agent-data-plane --bin stateful-metrics-blackhole
+  /tmp/foldspace-binary-venv/bin/python -m pip install PyYAML
+  /tmp/foldspace-binary-venv/bin/python ci/tooling/stateful-metrics-outages.py \
+    --adp target/release/agent-data-plane \
+    --intake target/release/stateful-metrics-blackhole \
+    --lading /path/to/lading
+  ```
+
+  Use the lading version in `test/smp/regression/adp/config.yaml`. Run on Linux for representative
+  memory: ADP uses `jemalloc` there and the system allocator on macOS, and lading only observes the
+  target process on Linux.

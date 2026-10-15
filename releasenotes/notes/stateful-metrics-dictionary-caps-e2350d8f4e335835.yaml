@@ -14,8 +14,8 @@ enhancements:
     control. Lower them
     only on memory-constrained hosts. Both require a restart and reject zero.
   - |
-    Report each stateful metrics sender worker's dictionary size through the
-    ``stateful_metrics_dictionary_entries``,
+    At ``metrics_level: debug``, report each stateful metrics sender worker's
+    dictionary size through the ``stateful_metrics_dictionary_entries``,
     ``stateful_metrics_dictionary_estimated_bytes``,
     ``stateful_metrics_dictionary_transient_entries``,
     ``stateful_metrics_dictionary_transient_bytes``, and

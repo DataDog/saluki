@@ -82,6 +82,7 @@ CFLAGS="${TARGET_CFLAGS} ${BUILD_CFLAGS:-}" \
         ${TARGET_CARGO_ARGS}
 
 cp "${TARGET_OUTPUT_DIR}/agent-data-plane" /out/agent-data-plane
+cp "${TARGET_OUTPUT_DIR}/stateful-metrics-blackhole" /out/stateful-metrics-blackhole
 
 if command -v buildcache >/dev/null 2>&1; then
     buildcache --show-stats
