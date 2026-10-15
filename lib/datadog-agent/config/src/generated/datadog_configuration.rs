@@ -757,6 +757,10 @@ impl Default for AgentIpc {
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct ApmConfig {
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub apm_non_local_traffic: bool,
+
     #[serde(default = "defaults::default_bool::<true>")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub compute_stats_by_span_kind: bool,
@@ -804,6 +808,14 @@ pub struct ApmConfig {
     #[serde(default)]
     pub probabilistic_sampler: ApmConfigProbabilisticSampler,
 
+    #[serde(default = "defaults::default_u64::<i64, 8126>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
+    pub receiver_port: i64,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_optional_string")]
+    pub receiver_socket: Option<String>,
+
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
     #[serde(deserialize_with = "crate::list_de::deserialize_json_array_or_string")]
     pub replace_tags: Vec<HashMap<String, String>>,
@@ -818,6 +830,7 @@ pub struct ApmConfig {
 impl Default for ApmConfig {
     fn default() -> Self {
         Self {
+            apm_non_local_traffic: Default::default(),
             compute_stats_by_span_kind: defaults::default_bool::<true>(),
             enable_rare_sampler: Default::default(),
             error_tracking_standalone: Default::default(),
@@ -830,6 +843,8 @@ impl Default for ApmConfig {
             peer_tags: Default::default(),
             peer_tags_aggregation: defaults::default_bool::<true>(),
             probabilistic_sampler: Default::default(),
+            receiver_port: defaults::default_u64::<i64, 8126>(),
+            receiver_socket: Default::default(),
             replace_tags: Default::default(),
             target_traces_per_second: defaults::datadog_configuration_apm_config_target_traces_per_second(),
         }

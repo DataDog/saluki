@@ -36,7 +36,7 @@ use saluki_components::{
         DatadogTraceConfiguration, MetricsEndpointRouting,
     },
     forwarders::{ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration, OtlpForwarderConfiguration},
-    relays::otlp::OtlpRelayConfiguration,
+    relays::{apm::ApmRelayConfiguration, otlp::OtlpRelayConfiguration},
     sources::{
         ChecksIPCConfiguration, DogStatsDCaptureAPIHandler, DogStatsDCaptureControl, DogStatsDConfiguration,
         DogStatsDReplayAPIHandler, DogStatsDReplayControl, EnablePayloadsConfiguration, OriginEnrichmentConfiguration,
@@ -413,6 +413,10 @@ async fn create_topology(
 
     if dp.otlp_enabled() {
         add_otlp_pipeline_to_blueprint(&mut blueprint, config_system, env_provider).await?;
+    }
+
+    if dp.apm_enabled() {
+        add_apm_pipeline_to_blueprint(&mut blueprint, config_system).await?;
     }
 
     Ok((blueprint, control_surfaces))
@@ -826,7 +830,7 @@ fn dogstatsd_source_configuration(
         windows_pipe_security_descriptor: listeners.windows_pipe_security_descriptor.clone(),
         disable_verbose_logs: dogstatsd.debug_log.disable_verbose_logs,
         eol_required: listeners.eol_required.clone(),
-        bind_host: listeners.bind_host.clone(),
+        bind_host: config.shared.bind_host.clone(),
         non_local_traffic: listeners.non_local_traffic,
         autoscale_udp_listeners: listeners.autoscale_udp_listeners,
         allow_context_heap_allocations: contexts.allow_context_heap_allocs,
@@ -1085,6 +1089,17 @@ async fn add_dsd_pipeline_to_blueprint(
         replay_api_handler,
         context_dump_api_handler,
     })
+}
+
+async fn add_apm_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
+) -> Result<(), GenericError> {
+    let config = config_system.config();
+    let dd_traces_relay = ApmRelayConfiguration::from_configuration(&config.domains.apm);
+    blueprint
+        .add_relay("dd_traces_relay", dd_traces_relay)?
+        .connect_components("dd_traces_relay.traces", "dd_out")?; // the relay currently does not have an output
+    Ok(())
 }
 
 async fn add_otlp_pipeline_to_blueprint(
