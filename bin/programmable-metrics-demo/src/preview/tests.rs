@@ -553,6 +553,7 @@ pub(crate) fn detached_fixture_with(host: impl FnOnce(MemoryCatalog) -> MemoryCa
         &host(catalog_for(&plan).with_detached_programs()),
         &BTreeMap::new(),
         saluki_metric_plan::export::ExportForm::Detached,
+        &saluki_metric_plan::operators::OperatorRegistry::native(),
     )
     .unwrap();
     (
@@ -591,4 +592,25 @@ fn a_policy_binding_is_underlined_in_the_node_that_binds_it() {
     let written = "config(\"dogstatsd.metric_filter.values\")";
     assert_eq!(&source[span.start..span.end], written);
     assert_eq!(span.start, source.rfind(written).unwrap());
+}
+
+#[test]
+fn the_detached_export_shows_no_change_in_what_it_does_and_a_note_that_adp_drops_what_does_nothing() {
+    // The fixture's detached export leaves out host enrichment, which changes no metric.
+    let (plan, export) = detached_fixture();
+    let source = crate::compile::default_program_source(&export, &crate::compile::RecipientLabels::default());
+    let outcome = compile_against(&source, &plan, &export);
+    assert!(
+        outcome.preview.available && outcome.preview.valid,
+        "{:?}",
+        outcome.preview
+    );
+    assert!(outcome.preview.unchanged, "{:?}", outcome.preview.nodes);
+    assert!(
+        outcome.preview.notes.iter().any(|note| note
+            == "ADP will drop 1 node that does nothing as configured, which the program leaves out; that builds no \
+                kernel."),
+        "{:?}",
+        outcome.preview.notes
+    );
 }

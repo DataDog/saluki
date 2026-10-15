@@ -883,18 +883,18 @@ async fn continuous_input_across_a_series_of_real_artifacts_delivers_every_point
     // re-approval happens with batches in flight.
     harness.feed_until(|_| true).await;
 
-    // The unmodified export composes to the default program that runs: no generation is created for it, and the
-    // default program's generation serves it.
+    // The unmodified export does what the default program does, but leaves out what does nothing as configured: a
+    // generation of its own, which builds no kernel.
     harness.deliver(vec![config(1, &export)]);
-    let no_op = harness
-        .feed_until(|status| ack_of(status, CONFIG_ID) == Some((ApplyState::Active, Some(1), Some(1))))
+    let unmodified = harness
+        .feed_until(|status| ack_of(status, CONFIG_ID) == Some((ApplyState::Active, Some(1), Some(2))))
         .await;
-    assert_eq!((active(&no_op), active_revision(&no_op)), (Some(1), Some(1)));
-    assert_eq!(no_op.installer.revision_high_water, Some(1));
+    assert_eq!((active(&unmodified), active_revision(&unmodified)), (Some(2), Some(1)));
+    assert_eq!(unmodified.installer.revision_high_water, Some(1));
 
     // A route change: the routing group receives `app.requests` in place of `orders.total`.
     harness.deliver(vec![config(2, &route_change)]);
-    let routed = harness.feed_until(|status| active(status) == Some(2)).await;
+    let routed = harness.feed_until(|status| active(status) == Some(3)).await;
     assert!(matches!(
         active_origin(&routed),
         Some(Origin::Artifact { revision: 2, .. })
@@ -902,10 +902,10 @@ async fn continuous_input_across_a_series_of_real_artifacts_delivers_every_point
 
     // A family drop, on top of the route change: the main output no longer receives `debug.noise`.
     harness.deliver(vec![config(3, &family_drop)]);
-    let dropped = harness.feed_until(|status| active(status) == Some(3)).await;
+    let dropped = harness.feed_until(|status| active(status) == Some(4)).await;
     assert_eq!(
         dropped.installer.last_known_good.as_ref().map(|kept| kept.id.get()),
-        Some(2)
+        Some(3)
     );
 
     // A revocation: the default program of the current configuration is installed again, and the revoked artifact's
@@ -913,7 +913,7 @@ async fn continuous_input_across_a_series_of_real_artifacts_delivers_every_point
     harness.deliver(Vec::new());
     let revoked = harness
         .feed_until(|status| {
-            active(status) == Some(4)
+            active(status) == Some(5)
                 && ack_of(status, CONFIG_ID).is_some_and(|(state, ..)| state == ApplyState::Retired)
         })
         .await;
@@ -921,7 +921,7 @@ async fn continuous_input_across_a_series_of_real_artifacts_delivers_every_point
     assert_eq!(*revoked.active.as_ref().unwrap().plan, harness.default_program.0);
     assert_eq!(
         ack_of(&revoked, CONFIG_ID),
-        Some((ApplyState::Retired, Some(3), Some(3)))
+        Some((ApplyState::Retired, Some(3), Some(4)))
     );
     assert_eq!(
         (active_revision(&revoked), revoked.installer.revision_high_water),
@@ -931,14 +931,14 @@ async fn continuous_input_across_a_series_of_real_artifacts_delivers_every_point
     // The route change approved again under a higher revision: the same document, delivered anew after the
     // revocation, installs again as a generation of its own, which keeps the default program's to roll back to.
     harness.deliver(vec![config(4, &route_change)]);
-    let reapproved = harness.feed_until(|status| active(status) == Some(5)).await;
+    let reapproved = harness.feed_until(|status| active(status) == Some(6)).await;
     assert_eq!(
         ack_of(&reapproved, CONFIG_ID),
-        Some((ApplyState::Active, Some(4), Some(5)))
+        Some((ApplyState::Active, Some(4), Some(6)))
     );
     assert_eq!(
         reapproved.installer.last_known_good.as_ref().map(|kept| kept.id.get()),
-        Some(4)
+        Some(5)
     );
     // Its plan is the route change's, but for the provenance, which names the revision that approved it.
     assert_eq!(structure(&reapproved), structure(&routed));
@@ -947,21 +947,21 @@ async fn continuous_input_across_a_series_of_real_artifacts_delivers_every_point
     // revision, without a generation, and the high-water mark moves.
     harness.deliver(vec![config(5, &route_change)]);
     let idempotent = harness
-        .feed_until(|status| ack_of(status, CONFIG_ID) == Some((ApplyState::Active, Some(5), Some(5))))
+        .feed_until(|status| ack_of(status, CONFIG_ID) == Some((ApplyState::Active, Some(5), Some(6))))
         .await;
     assert_eq!(idempotent.installer.revision_high_water, Some(5));
-    assert!(record(&idempotent, 6).is_none(), "{}", idempotent);
+    assert!(record(&idempotent, 7).is_none(), "{}", idempotent);
     let finished = harness.finish().await;
 
     // Every batch was processed by one generation, in the order the schedule held them, and every point arrived at
     // every output as that generation's policy says, exactly once.
     let mut order = finished.generations();
     order.dedup();
-    assert_eq!(order, [1, 2, 3, 4, 5]);
+    assert_eq!(order, [1, 2, 3, 4, 5, 6]);
     finished.check(&BTreeSet::new(), |generation| match generation {
-        1 | 4 => default_routing(),
-        2 | 5 => routing(&FAMILIES, &[APP]),
-        3 => routing(&[KEPT, ORDERS, APP], &[APP]),
+        1 | 2 | 5 => default_routing(),
+        3 | 6 => routing(&FAMILIES, &[APP]),
+        4 => routing(&[KEPT, ORDERS, APP], &[APP]),
         other => panic!("generation {} processed a batch", other),
     });
 }

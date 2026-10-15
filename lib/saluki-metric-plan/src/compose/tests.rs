@@ -2108,6 +2108,7 @@ fn the_detached_export_writes_policy_settings_as_their_values_and_keeps_facts_an
             &catalog,
             &BTreeMap::new(),
             ExportForm::Detached,
+            &OperatorRegistry::native(),
         )
         .unwrap();
         assert_eq!(detached.form, ExportForm::Detached, "{}", name);
@@ -2169,6 +2170,7 @@ fn the_unmodified_detached_export_composes_to_what_the_default_program_does_in_i
             &catalog,
             &BTreeMap::new(),
             ExportForm::Detached,
+            &OperatorRegistry::native(),
         )
         .unwrap();
         let received = received_directly(detached.artifact);
@@ -2209,6 +2211,7 @@ fn a_native_policy_change_after_publishing_leaves_the_program_its_own_value() {
         &catalog,
         &BTreeMap::new(),
         ExportForm::Detached,
+        &OperatorRegistry::native(),
     )
     .unwrap();
     let received = received_directly(detached.artifact);
@@ -2245,13 +2248,14 @@ fn a_native_policy_change_after_publishing_leaves_the_program_its_own_value() {
     assert_eq!(modified, 1);
 
     // Status names the native setting the program no longer follows; before the change, nothing differed.
-    let differs = crate::export::policy_differences(&changed, &composed.plan, &changed_catalog);
+    let differs =
+        crate::export::policy_differences(&changed, &composed.plan, &changed_catalog, &OperatorRegistry::native());
     assert_eq!(
         differs,
         ["dogstatsd.metric_filter.values".parse::<BindingName>().unwrap()]
     );
     let before = compose(&plan, &received, &approval(1), &catalog, &registry).unwrap();
-    assert!(crate::export::policy_differences(&plan, &before.plan, &catalog).is_empty());
+    assert!(crate::export::policy_differences(&plan, &before.plan, &catalog, &OperatorRegistry::native()).is_empty());
 }
 
 /// The one-scope default program's catalog with a recipient directory: `primary`, `mrf`, `cluster_agent`, and two
@@ -2320,6 +2324,7 @@ fn the_detached_export_addresses_native_outputs_to_their_recipients_and_composes
         &catalog,
         &BTreeMap::new(),
         ExportForm::Detached,
+        &OperatorRegistry::native(),
     )
     .unwrap();
     assert_eq!(
@@ -2370,6 +2375,7 @@ fn emits_to_recipients_wait_for_unknown_names_and_outputs_and_are_refused_across
         &catalog,
         &BTreeMap::new(),
         ExportForm::Detached,
+        &OperatorRegistry::native(),
     )
     .unwrap();
     let with_main_to = |to: Value| {
@@ -2445,6 +2451,7 @@ fn an_emit_in_effect_delivers_to_its_recipients_that_remain_and_counts_what_the_
         &catalog,
         &BTreeMap::new(),
         ExportForm::Detached,
+        &OperatorRegistry::native(),
     )
     .unwrap();
     let mut document = serde_json::to_value(&detached.artifact).unwrap();
@@ -2593,6 +2600,7 @@ fn a_host_whose_programs_own_their_policy_refuses_a_policy_binding_and_accepts_f
         &catalog,
         &BTreeMap::new(),
         ExportForm::Detached,
+        &OperatorRegistry::native(),
     )
     .unwrap();
     let composed = compose(
@@ -2618,10 +2626,14 @@ fn a_host_whose_programs_own_their_policy_refuses_a_policy_binding_and_accepts_f
     .is_ok());
 }
 
-/// Returns what `plan` does: its [operation hash](crate::export::operation_hash), by which the installer decides
-/// whether a candidate changes anything.
+/// Returns what `plan` does with every record: the [operation hash](crate::export::operation_hash) of the plan without
+/// what does nothing as configured, as the detached export leaves it out, with the fixtures' policy settings as the
+/// literals.
 fn does(plan: &Plan) -> crate::canonical::PlanHash {
-    crate::export::operation_hash(plan, &OperatorRegistry::native()).unwrap()
+    let catalog = crate::testing::default_program_catalog();
+    let literal = crate::export::policy_literals(&catalog);
+    let registry = OperatorRegistry::native();
+    crate::export::operation_hash(&crate::export::eliminate(plan, &registry, &literal).plan, &registry).unwrap()
 }
 
 #[test]

@@ -896,3 +896,34 @@ proptest! {
         prop_assert_eq!(expected_recorder.gauge(COUNTERS[5]), actual_recorder.gauge(COUNTERS[5]));
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// With no tag rules and no value rules, every counter and distribution is a rule miss: the kernel leaves every
+    /// metric as it is, whatever its memo, which a plan's `tag_projection` node with no rules says when it is left out of
+    /// what a program does. It still counts the misses, as the native tag filterlist does.
+    #[test]
+    fn property_test_no_rules_leave_every_metric_as_it_is_and_count_misses(
+        capacity in prop_oneof![Just(0usize), Just(2usize), Just(1000usize)],
+        batches in vec(vec(arb_metric(), 0..16), 1..3),
+    ) {
+        let runtime = runtime();
+        let _context = runtime.enter();
+        let recorder = TestRecorder::default();
+        let _local = set_default_local_recorder(&recorder);
+        let mut kernel = TagProjection::new(
+            TagProjectionRules::new(&[], ValueRules::new(&[]).unwrap()),
+            Some(ContextMemo::new(NATIVE_CONTEXT_CACHE_ID, capacity)),
+            TagProjectionTelemetry::new(&MetricsBuilder::default()),
+        );
+        let mut projected = 0;
+        for metrics in batches {
+            projected += metrics.iter().filter(|metric| is_projected(metric.values())).count();
+            let consumed = consume(&mut kernel, &BatchHeader::default(), 1, buffer_of(metrics.clone()));
+            prop_assert_eq!(&consumed.ports[0], &metrics);
+        }
+        let misses = recorder.counter("tag_filterlist_rule_misses_total").unwrap_or(0);
+        prop_assert_eq!(misses, projected as u64);
+    }
+}

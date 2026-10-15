@@ -154,7 +154,7 @@ use saluki_metric_plan::{
     compile::{compile, compile_unvalidated, Frame, LeaseTable, RegionProgram, SlotId},
     compose::{compose_all, demanded_outputs, Approval, ComposeError, Composed, Composer, Demand},
     explain::Explain,
-    export::{base, export_as, policy_differences, Annotations, ExportBundle, ExportForm},
+    export::{base, export_as, policy_differences, Annotations, ExportBundle, ExportForm, Omission},
     install::{
         Action, ArmCut, Candidate, CandidateId, CreditKey, CutDeferReason, CutPhase, GenerationState, InstallerConfig,
         InstallerCore, InstallerStatus, LeaseRef, Origin, Outcome, PendingReason, Prepare, PrepareOutcome, PrepareSite,
@@ -194,7 +194,7 @@ use super::{
     credentials::{missing_credentials, AdpCredentialSource},
     host_facts::HostFacts,
     lanes::LaneCounts,
-    lowering::Lowering,
+    lowering::{omitted_name, Lowering},
     resources::{Declared, FixedHosts, NativeOutputs, NativeResources, OutputKind},
     snapshot_bridge::{SnapshotBridge, SnapshotBridgeState},
     telemetry::{CutOutcome, InstallOutcome, InstallerTelemetry, LaneTelemetry, RegionTelemetry, SlotLaneStats},
@@ -468,7 +468,7 @@ impl ProgrammableMetrics {
         telemetry.rewrites(core.active_rewrites());
 
         let labels = output_labels(&lowered.resources.outputs);
-        let default_program = DefaultProgramView::of(&plan, lowered.catalog, &labels, &lowered.annotations);
+        let default_program = DefaultProgramView::of(&plan, lowered.catalog, &labels, &lowered.annotations, &registry);
         let outputs = lowering.outputs().clone();
         let credentials = Arc::new(AdpCredentialSource::new(config.clone()));
         let hosts_at_boot = *lowering.hosts();
@@ -508,6 +508,7 @@ impl ProgrammableMetrics {
             channel: None,
             artifact_paths: Box::new(CoreArtifactPaths),
             active_plan: None,
+            differs: None,
             hosts,
             resource_paths: Box::new(CoreResourcePaths),
             resources_deadline: None,
@@ -1079,16 +1080,18 @@ struct DefaultProgramView {
 
 impl DefaultProgramView {
     /// Derives the view of a default program lowered with `catalog`, with output display labels `labels` and the notes
-    /// lowering wrote for its nodes, `annotations`.
+    /// lowering wrote for its nodes, `annotations`; `registry` is the operator registry plans are compiled with, which
+    /// says which nodes the detached export leaves out because they do nothing.
     fn of(
         plan: &Plan, catalog: AdpCatalog, labels: &BTreeMap<OutputId, String>, annotations: &BTreeMap<NodeId, String>,
+        registry: &OperatorRegistry,
     ) -> Self {
         let document = catalog.to_document();
         let exports_as = |form: ExportForm| {
             plan.scopes
                 .keys()
                 .map(|scope| {
-                    let bundle = export_as(plan, scope, &document, labels, form)
+                    let bundle = export_as(plan, scope, &document, labels, form, registry)
                         .map(|mut bundle| {
                             bundle.annotations = export_annotations(&bundle, annotations);
                             Arc::new(bundle)
@@ -1125,9 +1128,25 @@ impl DefaultProgramView {
     }
 }
 
-/// Returns the notes an export bundle carries: lowering's note of each exported node, by its local ID, and what each
-/// binding of the catalog is, with its class.
+/// Returns the notes an export bundle carries: lowering's note of each exported node, by its local ID, what each
+/// binding of the catalog is, with its class, and, for a detached export that leaves nodes out because they do nothing
+/// as configured, one line that names them as a reader knows them, in program order.
 pub(super) fn export_annotations(bundle: &ExportBundle, nodes: &BTreeMap<NodeId, String>) -> Annotations {
+    let mut omitted = bundle
+        .omitted
+        .iter()
+        .filter(|(_, why)| **why != Omission::Unreachable)
+        .map(|(node, _)| {
+            let note = nodes.get(&NodeId::reserved(node.to_local_id())).map(String::as_str);
+            // A node the table does not know is named by its ID, rather than left out of the line.
+            omitted_name(node.as_str(), note).unwrap_or((usize::MAX, format!("`{}`", node)))
+        })
+        .collect::<Vec<_>>();
+    omitted.sort();
+    let omitted = (!omitted.is_empty()).then(|| {
+        let names = omitted.into_iter().map(|(_, name)| name).collect::<Vec<_>>();
+        format!("Not shown, because they do nothing as configured: {}", names.join(", "))
+    });
     let nodes = bundle
         .artifact
         .nodes
@@ -1142,7 +1161,11 @@ pub(super) fn export_annotations(bundle: &ExportBundle, nodes: &BTreeMap<NodeId,
         .bindings()
         .filter_map(|(name, _)| Some((name.clone(), bindings::annotation(name)?)))
         .collect();
-    Annotations { nodes, bindings }
+    Annotations {
+        nodes,
+        bindings,
+        omitted,
+    }
 }
 
 /// Returns the display label of every output, by output ID, as exports carry them.
@@ -1352,6 +1375,9 @@ struct Installer {
     artifact_paths: Box<dyn ArtifactPaths>,
     /// The active generation's plan and explain document, once published.
     active_plan: Option<Arc<ActivePlan>>,
+    /// The native policy settings the published program running does not follow, computed for the plan running and the
+    /// default program last lowered, which it was computed for: computing it decides what does nothing in both.
+    differs: Option<(Arc<Plan>, Arc<Plan>, Vec<saluki_metric_plan::ir::BindingName>)>,
     /// The links to every fixed delivery host and its encode host, with their event channels.
     hosts: BTreeMap<HostId, HostLink>,
     /// The core's resource paths, or a test double.
@@ -1759,7 +1785,13 @@ impl Installer {
         let labels = output_labels(&lowered.resources.outputs);
         if *plan != *self.last_lowered || lowered.catalog != self.default_program.catalog || labels != self.labels {
             self.labels = labels;
-            let view = DefaultProgramView::of(&plan, lowered.catalog, &self.labels, &lowered.annotations);
+            let view = DefaultProgramView::of(
+                &plan,
+                lowered.catalog,
+                &self.labels,
+                &lowered.annotations,
+                &self.registry,
+            );
             self.note_native_policy_changes(&view.document);
             self.default_program = view;
         }
@@ -2489,7 +2521,22 @@ impl Installer {
         // A published program owns its policy: status names the native settings it does not run as they are now.
         if let (Some(program), Some(active)) = (apply_states.status.program.as_mut(), self.core.active_plan()) {
             if program.runs == ProgramRuns::Published {
-                program.differs = policy_differences(&self.last_lowered, active, &self.default_program.document);
+                let cached = self.differs.as_ref().filter(|(running, lowered, _)| {
+                    Arc::ptr_eq(running, active) && Arc::ptr_eq(lowered, &self.last_lowered)
+                });
+                program.differs = match cached {
+                    Some((_, _, differs)) => differs.clone(),
+                    None => {
+                        let differs = policy_differences(
+                            &self.last_lowered,
+                            active,
+                            &self.default_program.document,
+                            &self.registry,
+                        );
+                        self.differs = Some((Arc::clone(active), Arc::clone(&self.last_lowered), differs.clone()));
+                        differs
+                    }
+                };
             }
         }
         let resources = status::resources_view(status::Parts {

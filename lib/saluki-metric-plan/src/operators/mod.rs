@@ -190,6 +190,18 @@ pub trait OperatorDef: Send + Sync {
         true
     }
 
+    /// Returns `true` if a node of the operator with these parameters passes every record it receives through
+    /// unchanged, in the order it receives them, on its one output port: it does nothing, as configured.
+    ///
+    /// Only known values decide it: a literal, or a binding's resolved value. A parameter bound to configuration and
+    /// not resolved is not known, so an operator whose answer depends on it says `false`, unless the node does nothing
+    /// for every value it could take. The answer says nothing about telemetry: a node that does nothing may still count
+    /// what it sees. A host leaves such a node out of what a reader is shown, and out of the comparison of what two
+    /// plans do ([`eliminate`](crate::export::eliminate)); it still runs it. The default is `false`.
+    fn is_identity(&self, _params: &DecodedParams) -> bool {
+        false
+    }
+
     /// Returns an estimate of the work the operator does per event, in nanoseconds, for rewrite R1's cost model.
     ///
     /// The estimates come from the stage 3 measurements of the default program's kernels running in a region over a
@@ -713,6 +725,12 @@ impl ConfiguredOperator {
     /// [`OperatorDef::cost`].
     pub fn cost(&self) -> u32 {
         self.def.cost(&self.params)
+    }
+
+    /// Returns `true` if the node passes every record through unchanged as configured; see
+    /// [`OperatorDef::is_identity`].
+    pub fn is_identity(&self) -> bool {
+        self.def.is_identity(&self.params)
     }
 
     /// Returns how to build the operator's kernel, or `None` if it has none.

@@ -1162,3 +1162,77 @@ A review of phase 3 found no blockers; its fixes, on 2026-10-15, not committed:
   `p3r2-check-a`, 155.0 s and 292.6 s, 7 minutes 34 seconds, canaries 2,928 and 4,998 sent and received;
   `p3r2-check-b`, 175.0 s and 269.7 s, 7 minutes 30 seconds, canaries 3,147 sent and 3,145 received, and 4,597 and
   4,598, balanced within the allowance. In S10b team C's removal left the primary endpoint's rolling checks balanced.
+
+## Detached programs: what does nothing, left out
+
+On 2026-10-15, after phase 3 (`c9e27cea81`), the owner asked that the detached default program show only what
+happens: an empty filterlist, a namespace prefix with no namespace, a mapper with no profiles, a tag filterlist with no
+rules, a one-input merge, and host enrichment do nothing as configured. Built in the main checkout, not committed;
+amendment 191, and [what does nothing, as built](programmable-metrics-detached-programs.md#107-what-does-nothing-as-built)
+has the design.
+
+- **Identity and constant splits.** `OperatorDef::is_identity` for six operators, each backed by a kernel property
+  test; `Predicate::literal_value` for splits that literal operands decide, including string matches over a literal
+  empty list, folded with R3's own obligations (`r3::fold_split`, split out of R3's `Site::find`; R3 unchanged).
+- **One pass, two uses.** `export::eliminate` serves the detached export (`omitted` in the bundle, and ADP's note,
+  `annotations.omitted`, printed at the top of the editor) and `export::operation_hash`. ADP's export test checks, for
+  every configuration of the lowering matrix, that the export leaves out exactly what the comparison does and that
+  the composed program has nothing left to leave out. A random-plan property test checks that leaving nodes out
+  changes no output, or its order, with bound operands counted as literals or not.
+- **Found on the way.**
+  - The comparison needs the host's facts and signals, which the core did not know: `InstallerConfig` gained
+    `facts_and_signals`, which ADP sets from its catalog. Without it, a failover flag (a fact) would fold.
+  - Revoking a program whose generation was built from the shorter export would have adopted that generation for the
+    default program, which would then run without its nodes and report none of their telemetry. The core now keeps
+    two hashes per generation (`Does`): a published program is compared by what it does with every record, a default
+    program node by node (`export::operation_hash_as_written`). The headless check's S6 and S11b now make a generation
+    on revoke, which the check accepts.
+  - `program.differs` listed every setting of a default-program node the running plan lacks, so a filterlist set
+    natively under the shorter program would have listed its match mode too. It now lists the settings that, turned
+    off alone, would make the node do nothing again, or all of them when none would.
+  - Program memory limits measure the whole program, so leaving out the tag filterlist frees its context cache's
+    declared memory for other nodes; ADP's interner-limit test grows the interner by 64 MiB instead of one byte.
+  - The editor's preview diffed plans node by node, so S0 would have shown removed nodes: it now uses
+    `install::diff_operations`.
+  - The check's S5e bound the filterlist, which the demo's export no longer has; it binds the aggregation's
+    percentiles. The S5d and S14 edits found the edge into the aggregation by `-> dsd_agg` on a line of its own; the
+    timestamp split now feeds it from its `default` port line.
+- **Telemetry, called out.** While a generation built from the shorter program runs, the left-out nodes report
+  nothing. The Datadog Agent's `aggregator.filtered_tags_cache_miss`, which counts the tag filterlist memo's lookups
+  even with no rules, stops counting; the other remapped series of those nodes are zero or constant then. The default
+  program, and any generation that still runs the nodes, report them as before.
+- **Results.** The plan, syntax, kernels, and demo crates pass 1,368 tests, with and without
+  `saluki-metric-plan/test-util`; ADP 588 of 588; the release property tests of the plan, syntax, and kernels crates
+  79 of 79. Clippy (`-D warnings`), `make check-fmt`, and Vale on the changed documents are clean. The demo check
+  passed, both launches: `omit-check-a`, 154.7 s and 267.4 s, 7 minutes 56 seconds with the build, canaries 2,926 and
+  4,600 sent and received. An interactive run (`omit-interactive-a`) served the shorter program with its note, which
+  compiled with no findings and no change.
+
+### What does nothing: review fixes
+
+A review found no blockers; every identity claim checked out against the kernels. The owner then decided how the
+shorter program installs, and the fixes followed, on 2026-10-15, not committed:
+
+- **Installation compares as written** (the owner's choice of the review's option (b)). The core compares a candidate
+  with the running generation's plan by the operation hash without leaving anything out (nodes and edges sorted), so
+  publishing the shorter export over the default program is a generation that builds no kernel and makes no cut; the
+  plan running is then the program as published, and `/explain`, telemetry, and the core's active plan agree. The
+  two-hash `Does` and `InstallerConfig::facts_and_signals` are gone. Elimination serves only the export, the editor's
+  `diff_operations`, and `policy_differences`, each with `export::policy_literals` of one catalog and the host's
+  registry (`export_as` and `policy_differences` take it). The editor shows no change in what the program does, with
+  a note that ADP drops what does nothing and builds no kernel for it.
+- **Tests.** An installer test pins the shorter export as a commit that builds no kernel, aggregation `retain`, then
+  an edit that changes only its slot, then the same program adopted; an ADP test does the same through ADP's own
+  frame and core, and the artifact test checks deliveries under it. The random-plan generator gained empty-configuration
+  mapper, prefix, tag projection, and host tags kernels, which the elimination property test now leaves out.
+- **Telemetry.** A gauge the installer sets from a plan (`filterlist.size`, `tag_filterlist.size`, the endpoint
+  allowlist sizes) reads zero for a node the plan running lacks, rather than keep a stale value. The documents add
+  `metrics_endpoint_allowlist_metrics_filtered_total` (not remapped) and confirm `aggregator.filtered_tags_cache_miss`
+  as the only change the Agent sees. `program.differs` is computed once per plan running and default program.
+- **The check.** S0 and S14a are generations with no cut now (S0 checks `plan_cuts_total`); S6 and S11b were already.
+- **Results.** The plan, syntax, kernels, and demo crates pass 1,369 tests, with and without
+  `saluki-metric-plan/test-util`; ADP 590 of 590; the release property tests 79 of 79; clippy (`-D warnings`),
+  `make check-fmt`, and Vale on the changed documents are clean. The first check run (`omit-check-b`) failed at S14a,
+  which still expected adoption; with S14a expecting a generation with no cut, the check passed (`omit-check-c`):
+  152.7 s and 283.5 s, 7 minutes 24 seconds with the build, canaries 2,886 of 2,886 and 4,798 sent with 4,799
+  received, within the allowance.

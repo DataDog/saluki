@@ -638,3 +638,24 @@ proptest! {
         prop_assert_eq!(describe(expected_buffer), describe(buffer));
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// A mapper with no profiles maps nothing, whatever its cache: it leaves every metric as it is, which a plan's
+    /// `dogstatsd_mapper` node with no profiles says when it is left out of what a program does.
+    #[test]
+    fn property_test_a_mapper_with_no_profiles_leaves_every_metric_as_it_is(
+        cache_size in prop_oneof![Just(0usize), Just(2usize), Just(1000usize)],
+        batches in vec(vec(crate::testing::arb_metric(), 0..16), 1..3),
+    ) {
+        let runtime = runtime();
+        let _context = runtime.enter();
+        let mut mapper = mapper_with_cache(Vec::new(), cache_size);
+        for metrics in batches {
+            let mut buffer = crate::test_support::buffer_of(metrics.clone());
+            mapper.map_buffer(&mut buffer);
+            prop_assert_eq!(crate::test_support::metrics_of(buffer), metrics);
+        }
+    }
+}

@@ -1345,14 +1345,18 @@ async fn an_exported_artifact_installs_follows_configuration_and_rolls_back_thro
         Some(bundle.artifact.base.program_hash)
     );
 
-    // The unmodified export is in effect without a generation of its own: it adopts the boot generation.
+    // The unmodified export leaves out what does nothing as configured, such as host enrichment: it is a generation
+    // of its own, which builds no kernel.
     harness.deliver(vec![real_config(1, exported.clone())]);
     let unmodified = harness
         .status_where(|status| ack(status).is_some_and(|(state, ..)| state == ApplyState::Active))
         .await;
-    assert_eq!(active(&unmodified), Some(1));
+    assert_eq!(active(&unmodified), Some(2));
     assert_eq!(active_revision(&unmodified), Some(1));
     assert_eq!(recorder.gauge(Key::from_name(PLAN_ACTIVE_REVISION)), Some(1.0));
+    // It delivers what the default program delivers: every name, `dropped` and `blocked` included (checked below for
+    // every batch generation 2 processed).
+    harness.send_until(&names, 2).await;
 
     // An edited export: a split in front of the main output that drops `dropped`.
     let mut edited = exported.clone();
@@ -1371,16 +1375,16 @@ async fn an_exported_artifact_installs_follows_configuration_and_rolls_back_thro
     }));
     nodes.push(json!({"id": "drop_true", "op": "drop"}));
     harness.deliver(vec![real_config(2, edited)]);
-    let installed = harness.status_where(|status| active(status) == Some(2)).await;
+    let installed = harness.status_where(|status| active(status) == Some(3)).await;
     assert!(matches!(
         active_origin(&installed),
         Some(Origin::Artifact { revision: 2, .. })
     ));
-    assert_eq!(ack(&installed), Some((ApplyState::Active, Some(2), Some(2))));
-    assert_eq!(harness.send_until(&names, 2).await, harness.sent - 1);
+    assert_eq!(ack(&installed), Some((ApplyState::Active, Some(2), Some(3))));
+    assert_eq!(harness.send_until(&names, 3).await, harness.sent - 1);
 
     // A native policy change does not reach the published program, which owns its policy: composed again against the
-    // new default program, its filterlist keeps the value it was published with, so the plan does what generation 2
+    // new default program, its filterlist keeps the value it was published with, so the plan does what generation 3
     // does, and nothing is built: no generation. Status says the program no longer follows the setting.
     let filter = "dogstatsd.metric_filter.values"
         .parse::<saluki_metric_plan::ir::BindingName>()
@@ -1400,7 +1404,7 @@ async fn an_exported_artifact_installs_follows_configuration_and_rolls_back_thro
                 .is_some_and(|program| program.differs == [filter.clone()])
         })
         .await;
-    assert_eq!(active(&recomposed), Some(2));
+    assert_eq!(active(&recomposed), Some(3));
     assert!(recomposed.installer.preparing.is_none());
     assert!(matches!(
         active_origin(&recomposed),
@@ -1445,14 +1449,14 @@ async fn an_exported_artifact_installs_follows_configuration_and_rolls_back_thro
                 .is_some_and(|program| program.differs.is_empty())
         })
         .await;
-    assert_eq!(active(&flipped), Some(2));
+    assert_eq!(active(&flipped), Some(3));
     assert!(flipped.installer.preparing.is_none());
-    harness.send_until(&names, 2).await;
+    harness.send_until(&names, 3).await;
 
     // It fails under supervision: the core rolls back to the generation kept, which serves the unmodified export of
     // revision 1. Composed again against the current configuration, that does what the kept generation does: it
     // keeps running, with no generation of its own.
-    harness.fail(2, "it exceeded its panic budget");
+    harness.fail(3, "it exceeded its panic budget");
     let fallen_back = harness
         .status_where(|status| matches!(active_origin(status), Some(Origin::Artifact { revision: 1, .. })))
         .await;
@@ -1465,8 +1469,9 @@ async fn an_exported_artifact_installs_follows_configuration_and_rolls_back_thro
     for (index, generation) in finished.processed.iter().enumerate() {
         // `blocked` is never blocked: the configuration change came while published programs ran, which own their
         // filterlist.
+        // Generations 1 (the default program) and 2 (its unmodified export, without what does nothing) deliver alike.
         let (dropped, blocked) = match generation {
-            2 => (false, true),
+            3 => (false, true),
             _ => (true, true),
         };
         assert_eq!(
@@ -1483,14 +1488,14 @@ async fn an_exported_artifact_installs_follows_configuration_and_rolls_back_thro
 }
 
 #[tokio::test]
-async fn a_native_policy_change_under_an_adopted_detached_program_changes_nothing_and_neither_does_its_return() {
+async fn a_native_policy_change_under_a_published_detached_program_changes_nothing_and_neither_does_its_return() {
     use saluki_metric_plan::{channel::ApplyState, ir::BindingName};
 
     let mut harness = Harness::start_with(Options::new(MetricsPath::Plan, Aggregation::Native), Paths::Core).await;
     let names = [KEPT[0], KEPT[1], "blocked"];
     assert_eq!(harness.send(&names).await, Some(1));
 
-    // The unmodified detached export adopts the boot generation.
+    // The unmodified detached export, which leaves out what does nothing as configured, is a generation of its own.
     let boot = harness.status.load_full();
     let scope = ScopeName::new(METRICS_SCOPE).unwrap();
     let exported = serde_json::to_value(&boot.exports[&scope].clone().unwrap().artifact).unwrap();
@@ -1498,11 +1503,11 @@ async fn a_native_policy_change_under_an_adopted_detached_program_changes_nothin
     let adopted = harness
         .status_where(|status| ack(status).is_some_and(|(state, ..)| state == ApplyState::Active))
         .await;
-    assert_eq!(active(&adopted), Some(1));
+    assert_eq!(active(&adopted), Some(2));
     let filter = "dogstatsd.metric_filter.values".parse::<BindingName>().unwrap();
 
     // The filterlist changes natively. The program owns its filterlist, which it wrote as a literal: composed again,
-    // it does what generation 1 does, so it keeps running generation 1, with nothing prepared, and its plan keeps the
+    // it does what generation 2 does, so it keeps running generation 2, with nothing prepared, and its plan keeps the
     // literal. Status says the program no longer follows the setting.
     harness
         .stream
@@ -1519,7 +1524,7 @@ async fn a_native_policy_change_under_an_adopted_detached_program_changes_nothin
                 .is_some_and(|program| program.differs == [filter.clone()])
         })
         .await;
-    assert_eq!(active(&changed), Some(1));
+    assert_eq!(active(&changed), Some(2));
     assert!(changed.installer.preparing.is_none());
     assert!(matches!(
         active_origin(&changed),
@@ -1546,18 +1551,96 @@ async fn a_native_policy_change_under_an_adopted_detached_program_changes_nothin
                 .is_some_and(|program| program.differs.is_empty())
         })
         .await;
-    assert_eq!(active(&returned), Some(1));
+    assert_eq!(active(&returned), Some(2));
     assert!(returned.installer.preparing.is_none());
     assert!(matches!(
         active_origin(&returned),
         Some(Origin::Artifact { revision: 1, .. })
     ));
 
-    // Generation 1 processed every batch, `blocked` included: the native change never reached the program.
-    harness.send_until(&names, 1).await;
+    // Generations 1 and 2 processed every batch, `blocked` included: the native change never reached the program.
+    harness.send_until(&names, 2).await;
     let finished = harness.finish().await;
-    assert!(finished.processed.iter().all(|generation| *generation == 1));
+    assert!(finished.processed.iter().all(|generation| [1, 2].contains(generation)));
     for index in 0..finished.processed.len() {
         assert!(arrived(&finished.received, "blocked", index), "batch {}", index);
+    }
+}
+
+#[tokio::test]
+async fn the_shorter_detached_export_over_the_default_program_builds_no_kernel_and_makes_no_cut_in_adps_frame() {
+    use saluki_metric_plan::{
+        compose::{compose, receive_artifact, Approval},
+        export::{export_as, ExportForm},
+        install::StateBinding,
+    };
+
+    let config = configuration("").await;
+    let cell = ConfigCell::new(config.clone());
+    let mut path = programmable_metrics(&config, cell.live(), &ComponentRegistry::default())
+        .expect("a metrics pipeline is required");
+    let installer = &mut path.installer;
+    let (default, catalog) = lowered("").await;
+    let registry = OperatorRegistry::native();
+
+    // The detached export of a configuration with nothing for DogStatsD's processing to do leaves its nodes out.
+    let scope = ScopeName::new(METRICS_SCOPE).unwrap();
+    let bundle = export_as(
+        &default,
+        &scope,
+        &catalog.to_document(),
+        &BTreeMap::new(),
+        ExportForm::Detached,
+        &registry,
+    )
+    .unwrap();
+    assert!(bundle.omitted.len() >= 7, "{:?}", bundle.omitted);
+    let received = receive_artifact(serde_json::to_value(&bundle.artifact).unwrap()).unwrap();
+    let approval = Approval {
+        revision: 1,
+        approved_against: None,
+        active_plan_hash: None,
+        in_effect: false,
+    };
+    let composed = compose(&default, &received, &approval, &catalog, &registry).unwrap();
+    assert!(composed.report.is_valid(), "{}", composed.report);
+
+    // Through ADP's own frame and core: a generation, whose every slot reuses what it runs and builds nothing, and
+    // whose aggregation keeps its state (`retain`): a commit, never a cut.
+    let (_, actions) = Script::propose(
+        &mut installer.core,
+        Arc::new(composed.plan),
+        composed.report,
+        1,
+        received.hash,
+    );
+    let prepare = actions
+        .iter()
+        .find_map(|action| match action {
+            Action::Prepare(prepare) => Some(prepare),
+            _ => None,
+        })
+        .expect("the program is a generation");
+    assert_eq!(prepare.generation.id(), GenerationId::new(2));
+    for slot in &prepare.slots {
+        assert!(slot.build.is_empty(), "slot {} builds {:?}", slot.slot, slot.build);
+        for binding in &slot.state {
+            assert!(matches!(binding, StateBinding::Retain { .. }), "{:?}", binding);
+        }
+    }
+    assert!(prepare.slots.iter().any(|slot| !slot.state.is_empty()));
+    let actions = actions.clone();
+    settle(installer, actions).await;
+    let installed = installer.current_status();
+    assert_eq!(active(&installed), Some(2));
+    assert!(installed.installer.cut.is_none());
+    // The plan running is the program as published: the nodes it leaves out are not in it.
+    let running = installed.active.as_ref().unwrap();
+    for node in bundle.omitted.keys() {
+        assert!(
+            running.plan.node(&NodeId::reserved(node.to_local_id())).is_none(),
+            "{} runs",
+            node
+        );
     }
 }

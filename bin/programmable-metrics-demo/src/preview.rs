@@ -2,8 +2,9 @@
 //! validation of the composed plan, and the plan diff against the active plan.
 //!
 //! This is what ADP's installer computes when the artifact arrives (`saluki_metric_plan::compose::receive_artifact`,
-//! `compose_all`, and `install::diff_with_correspondence`), run against what ADP serves: the default program it last
-//! lowered (`GET /programmable-metrics/default-program`), the catalog of the export of the artifact's scope, the
+//! `compose_all`, and `install::diff_operations`, which compares what plans do, without what does nothing as
+//! configured), run against what ADP serves: the default program it last lowered
+//! (`GET /programmable-metrics/default-program`), the catalog of the export of the artifact's scope, the
 //! artifacts it runs for the other scopes (as its status names them, read from the configs the stub serves), and its
 //! active plan (`GET /programmable-metrics/plan`). So the editor shows ADP's own verdict, each finding placed in the
 //! source through the correspondence of plan nodes to artifact nodes, and the diff publishing would install. ADP still
@@ -15,9 +16,10 @@
 use saluki_metric_plan::{
     canonical::{PlanHash, ResolvedValues},
     compose::{compose_all, demanded_outputs, receive_artifact, Approval, ComposeError, ComposeOutcome},
+    export::{eliminate, policy_literals},
     install::{
         diff::{NodeChange, OutputChange},
-        diff_with_correspondence, Correspondence,
+        diff_operations, Correspondence,
     },
     ir::{
         ArtifactNodeId, OutputBinding, OutputDecl, OutputId, Plan, PortRef, ReceivedArtifact, RecipientName, Selector,
@@ -484,7 +486,23 @@ pub fn compose_preview(
             },
         ),
     };
-    let diff = diff_with_correspondence(base, &composed.plan, correspondence, &registry);
+    // By what the plans do: what does nothing as configured, which the detached export leaves out and the default
+    // program runs, is no change in what the program does. ADP compares plans as written, so dropping those nodes is a
+    // generation of its own, which builds no kernel for them: a note says so.
+    let diff = diff_operations(base, &composed.plan, correspondence, &registry, &export.catalog);
+    let dropped = eliminate(base, &registry, &policy_literals(&export.catalog))
+        .omitted
+        .into_iter()
+        .filter(|(node, _)| composed.plan.node(node).is_none())
+        .count();
+    if dropped > 0 {
+        notes.push(format!(
+            "ADP will drop {} {} that {} nothing as configured, which the program leaves out; that builds no kernel.",
+            dropped,
+            if dropped == 1 { "node" } else { "nodes" },
+            if dropped == 1 { "does" } else { "do" }
+        ));
+    }
     let nodes = diff
         .diff
         .changes()

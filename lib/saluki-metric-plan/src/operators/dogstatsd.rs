@@ -233,6 +233,11 @@ impl OperatorDef for DogstatsdMapper {
         }
     }
 
+    fn is_identity(&self, params: &DecodedParams) -> bool {
+        // No profile, no mapping: every metric passes unchanged, whatever the caches.
+        params.list("profiles").is_some_and(<[_]>::is_empty)
+    }
+
     fn cost(&self, params: &DecodedParams) -> u32 {
         // Every name is looked up in the mapper's cache; names that match a profile are rebuilt.
         match params.get("profiles").and_then(decode_mapper_profiles) {
@@ -320,6 +325,11 @@ impl OperatorDef for NamespacePrefix {
             identity: PerKind::uniform(Identity::Quotient),
             ..EffectContract::passthrough()
         }
+    }
+
+    fn is_identity(&self, params: &DecodedParams) -> bool {
+        // An empty namespace disables prefixing, whatever the exclusions: the kernel leaves every batch as it is.
+        params.str("namespace") == Some("")
     }
 
     fn cost(&self, params: &DecodedParams) -> u32 {
@@ -639,6 +649,12 @@ impl OperatorDef for TagProjection {
                 .firm()
                 .with_fixed_amount("context cache", capacity.saturating_mul(CONTEXT_CACHE_ENTRY_BYTES));
         }
+    }
+
+    fn is_identity(&self, params: &DecodedParams) -> bool {
+        // No rule names any metric: every metric is a rule miss, which leaves it unchanged. The kernel still counts
+        // the misses, and its memo the lookups.
+        params.list("rules").is_some_and(<[_]>::is_empty) && params.list("value_rules").is_some_and(<[_]>::is_empty)
     }
 
     fn cost(&self, _params: &DecodedParams) -> u32 {

@@ -436,7 +436,7 @@ fn the_scenario_edits_compose_as_the_check_expects() {
         outcome.diagnostics
     );
 
-    // S14a: the aggregation renamed composes to the default program itself.
+    // S14a: the aggregation renamed does what the default program does.
     let (outcome, _) = compile(&edits::rename_aggregation(&source).unwrap(), Some(&context));
     assert!(
         outcome.diagnostics.is_empty() && outcome.preview.unchanged,

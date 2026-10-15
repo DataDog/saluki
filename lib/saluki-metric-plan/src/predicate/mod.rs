@@ -278,6 +278,61 @@ impl Predicate {
         }
     }
 
+    /// Returns the predicate's value for every metric, when its literal operands alone decide it.
+    ///
+    /// `Some(value)` means the predicate is `value` whatever the metric: a `const`; a `flag` or `is_empty` over a
+    /// literal; a string match over a literal empty list (`name in []`, `intake_name prefix_in []`, or `matches` whose
+    /// `values` are a literal `[]`, whatever its mode), which matches nothing, a metric without the field included; a
+    /// tag value match over one; or a junction or negation those decide, in three-valued logic. Every other leaf is
+    /// undecided, including any operand bound to configuration, whatever its resolved value, and `kind_in`.
+    ///
+    /// The detached export and the comparison of what plans do leave out a `split` this decides
+    /// ([`eliminate`](crate::export::eliminate)). Validation's port types, and rewrite R3, do not use it: structure
+    /// never depends on a configuration value.
+    pub fn literal_value(&self) -> Option<bool> {
+        fn matches_nothing(matched: &StringMatch) -> bool {
+            match matched {
+                StringMatch::In(values) | StringMatch::PrefixIn(values) => values.is_empty(),
+                StringMatch::Matches(SetMatch {
+                    values: Operand::Literal(values),
+                    ..
+                }) => values.is_empty(),
+                StringMatch::Eq(_) | StringMatch::Prefix(_) | StringMatch::Matches(_) => false,
+            }
+        }
+        fn junction(operands: &[Predicate], decisive: bool) -> Option<bool> {
+            let mut decided = Some(!decisive);
+            for operand in operands {
+                match operand.literal_value() {
+                    Some(value) if value == decisive => return Some(decisive),
+                    Some(_) => {}
+                    None => decided = None,
+                }
+            }
+            decided
+        }
+        match self {
+            Self::Const(value) => Some(*value),
+            Self::Flag(Operand::Literal(value)) => Some(*value),
+            Self::IsEmpty(Operand::Literal(values)) => Some(values.is_empty()),
+            Self::Name(matched) | Self::IntakeName(matched) | Self::Host(matched) => {
+                matches_nothing(matched).then_some(false)
+            }
+            Self::Tag(TagMatch { value, .. }) | Self::OriginTag(TagMatch { value, .. }) => {
+                matches_nothing(value).then_some(false)
+            }
+            Self::All(operands) => junction(operands, false),
+            Self::Any(operands) => junction(operands, true),
+            Self::Not(operand) => operand.literal_value().map(|value| !value),
+            Self::Flag(_)
+            | Self::IsEmpty(_)
+            | Self::HostUnset {}
+            | Self::HasTag(_)
+            | Self::HasOriginTag(_)
+            | Self::KindIn(_) => None,
+        }
+    }
+
     /// Returns the kinds, among `kinds`, for which this predicate can be `value`.
     ///
     /// A kind is included unless [`truth_for_kind`][Self::truth_for_kind] decides the predicate is `!value` for it.

@@ -14,8 +14,10 @@ use std::collections::BTreeMap;
 
 use super::diff::{diff, PlanDiff};
 use crate::{
+    export::{eliminate, policy_literals},
     ir::{ArtifactNodeId, NodeId, Plan},
     operators::OperatorRegistry,
+    validate::Catalog,
 };
 
 /// How an artifact node relates to the default program it was composed into.
@@ -124,6 +126,25 @@ pub fn diff_with_correspondence(
         })
         .collect();
     CorrespondingDiff { diff, artifact_nodes }
+}
+
+/// Diffs a composed candidate plan against the active one by what they do, keeping the way back to the artifact's
+/// nodes: as [`diff_with_correspondence`], over both plans without the nodes that do nothing as configured
+/// ([`eliminate`], with the policy settings of `catalog` as the literals, as the detached export leaves them out).
+///
+/// So a program written from the detached export, which leaves out an empty filterlist, diffs as no change in what it
+/// does against the default program, which has it, and an edit of it lists only what it changes. This is the diff a
+/// tool shows before publishing. The installer compares plans as written
+/// ([`operation_hash`](crate::export::operation_hash)): over the default program, that program is a generation that
+/// builds no kernel and leaves the nodes out; [`diff_with_correspondence`] lists them as removed.
+pub fn diff_operations(
+    active: &Plan, candidate: &Plan, correspondence: &Correspondence, registry: &OperatorRegistry,
+    catalog: &dyn Catalog,
+) -> CorrespondingDiff {
+    let literal = policy_literals(catalog);
+    let active = eliminate(active, registry, &literal).plan;
+    let candidate = eliminate(candidate, registry, &literal).plan;
+    diff_with_correspondence(&active, &candidate, correspondence, registry)
 }
 
 #[cfg(test)]

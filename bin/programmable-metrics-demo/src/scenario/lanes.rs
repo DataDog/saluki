@@ -23,7 +23,8 @@
 //! - **S13b**: revoking the artifact brings 10-second buckets back at the next cut, with the same checks. A revoke
 //!   undoes everything the artifact changed, routing included, so the routing steps come after it.
 //! - **S14a**: the default program with its aggregation renamed `agg`: a program's one aggregation is the aggregation
-//!   whatever its name, so it composes to the plan running, which it adopts, with no new generation and no cut.
+//!   whatever its name, so it does what the plan running does. It leaves out what does nothing as configured, which
+//!   the default program running has, so it is a new generation, which builds no kernel and makes no cut.
 //! - **S14b**: the renamed aggregation with `demo.debug.*` dropped ahead of the policy: a new generation, which keeps
 //!   the aggregation's state on every state lane: no cut is armed, completed, or given up
 //!   (`plan_cuts_total`), and the state lanes go on counting events under `component_id:dsd_agg`.
@@ -80,7 +81,7 @@ const MAX_PROBES: usize = 12;
 const PROBE_SEEN: Duration = Duration::from_secs(5);
 
 /// The outcomes `plan_cuts_total` counts: no cut may change any of them while the aggregation is renamed.
-const CUT_OUTCOMES: [&str; 3] = ["completed", "cancelled", "not_armed"];
+pub(super) const CUT_OUTCOMES: [&str; 3] = ["completed", "cancelled", "not_armed"];
 
 /// Returns the values of a `plan_lane_*` series by lane, for the lanes of `component`, from a sample of the demo's
 /// state; with `kind`, of the series with that `kind` label only.
@@ -111,7 +112,7 @@ fn plan_value(state: &Value, name: &str, label: (&str, &str)) -> Option<f64> {
 }
 
 /// Returns the cut installations ADP counted as ending with `outcome`.
-fn cuts(state: &Value, outcome: &str) -> f64 {
+pub(super) fn cuts(state: &Value, outcome: &str) -> f64 {
     plan_value(state, "plan_cuts_total", ("outcome", outcome)).unwrap_or_default()
 }
 
@@ -263,11 +264,11 @@ impl Runner {
         let renamed = edits::rename_aggregation(source)?;
         self.step(
             "S14a",
-            "rename the aggregation agg: the running generation is adopted",
+            "rename the aggregation agg: a generation that keeps its state",
             renamed.clone(),
             Compiled::Clean { unchanged: true },
             Installed::Active {
-                new_generation: false,
+                new_generation: true,
                 routing: Some(default_routing()),
             },
         )

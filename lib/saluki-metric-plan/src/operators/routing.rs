@@ -272,6 +272,11 @@ impl OperatorDef for Merge {
     fn contract(&self, _params: &DecodedParams) -> EffectContract {
         EffectContract::passthrough()
     }
+
+    fn is_identity(&self, params: &DecodedParams) -> bool {
+        // A merge of one input passes it on as it arrives.
+        params.integer("inputs") == Some(1)
+    }
 }
 
 /// The `emit` operator: delivers every record to a declared output.

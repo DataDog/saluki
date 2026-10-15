@@ -3950,6 +3950,20 @@ After detached programs, phase 2 ([as built](programmable-metrics-detached-progr
 190. **A refused newer delivery stays its config's acknowledgment** (INS, C; phase 3). While a config's newer delivery
      stands refused, rejected, or failed, the installation it would have replaced moving to another generation (as a
      lowering makes it) does not replace that acknowledgment; a change of that installation's state still does.
+191. **The detached export leaves out what does nothing as configured** (ART, D; refines amendments 173, 174, and 184;
+     requested by the owner, 2026-10-15, and its installation decided after review). An operator says when a node
+     passes every record through unchanged with the parameters it knows (a mapper with no profiles, a namespace prefix
+     with no namespace, a tag filterlist with no rules, a `merge` of one input, host enrichment, host tags with none); a
+     `split` whose literal operands decide its predicate (a filterlist with nothing in it) is folded by R3's rules and
+     obligations, with what only its dead port reaches. One pass removes both. It serves the detached export, which
+     leaves those nodes out and lists them, with a note a host writes for readers, a tool's diff of what plans do, and
+     the policy settings status says a program no longer follows; each takes its literals from one catalog (its policy
+     settings), so a node bound to a fact or signal is never left out for its value. The installer compares plans as
+     written, leaving nothing out: publishing the shorter export over the default program is a generation that builds
+     no kernel and makes no cut, after which the plan running is the program as published; a program equal as written
+     to the plan running still adopts its generation. The default program keeps every node, and its structure never
+     depends on a configuration value. While a program without those nodes runs, their telemetry is absent; the
+     gauges the installer sets from a plan read zero for a node the plan running lacks.
 
 ## 11. Risks
 

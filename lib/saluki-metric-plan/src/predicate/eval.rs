@@ -481,6 +481,76 @@ mod tests {
         }
     }
 
+    /// A predicate its literal operands decide evaluates to that value for every metric, with or without the fields its
+    /// leaves read: the detached export and the comparison of what plans do leave its `split` out on that ground.
+    #[test]
+    fn a_predicate_its_literals_decide_has_that_value_for_every_metric() {
+        let metrics = [
+            metric("app.requests", Some("web-1"), &["env:prod", "team:"], &["pod:web-1"]),
+            metric("my metric-name", None, &[], &[]),
+            metric("123", Some(""), &[], &[]),
+            metric("", None, &["canary", "env:"], &["env:"]),
+            Metric::counter(Context::from_static_name("x.y"), 1.0),
+        ];
+        let decided = [
+            (json!({"name": {"in": []}}), false),
+            (json!({"intake_name": {"in": []}}), false),
+            (json!({"intake_name": {"prefix_in": []}}), false),
+            (json!({"host": {"prefix_in": []}}), false),
+            (json!({"name": {"matches": {"values": [], "prefix": true}}}), false),
+            (
+                json!({"intake_name": {"matches": {"values": [], "prefix": false}}}),
+                false,
+            ),
+            (
+                json!({"intake_name": {"matches": {"values": [], "prefix": {"config": "p", "resolved": true}}}}),
+                false,
+            ),
+            (json!({"tag": {"key": "env", "value": {"in": []}}}), false),
+            (json!({"origin_tag": {"key": "env", "value": {"prefix_in": []}}}), false),
+            // The post-aggregation filter with no filterlisted statistics.
+            (
+                json!({"all": [{"kind_in": ["counter", "rate", "gauge", "set"]}, {"intake_name": {"in": []}}]}),
+                false,
+            ),
+            // An endpoint routing group with neither names nor prefixes.
+            (
+                json!({"any": [{"intake_name": {"in": []}}, {"intake_name": {"prefix_in": []}}]}),
+                false,
+            ),
+            (json!({"not": {"name": {"in": []}}}), true),
+            (json!({"any": [{"has_tag": "a"}, {"is_empty": []}]}), true),
+            (json!({"all": [{"flag": true}, {"is_empty": []}]}), true),
+            (json!({"const": true}), true),
+        ];
+        for (predicate, value) in decided {
+            let parsed = serde_json::from_value::<Predicate>(predicate.clone()).unwrap();
+            assert_eq!(parsed.literal_value(), Some(value), "{}", predicate);
+            for metric in &metrics {
+                assert_eq!(
+                    evaluate_json(predicate.clone(), metric),
+                    value,
+                    "{} on {:?}",
+                    predicate,
+                    metric
+                );
+            }
+        }
+        // A bound operand never decides, whatever its resolved value, and neither do kinds or non-empty lists.
+        for predicate in [
+            json!({"flag": {"config": "f", "resolved": false}}),
+            json!({"is_empty": {"config": "l", "resolved": []}}),
+            json!({"intake_name": {"matches": {"values": {"config": "l", "resolved": []}, "prefix": false}}}),
+            json!({"kind_in": "all"}),
+            json!({"name": {"in": ["a"]}}),
+            json!({"name": {"eq": ""}}),
+            json!({"all": [{"kind_in": ["counter"]}, {"name": {"in": ["a"]}}]}),
+        ] {
+            let parsed = serde_json::from_value::<Predicate>(predicate.clone()).unwrap();
+            assert_eq!(parsed.literal_value(), None, "{}", predicate);
+        }
+    }
+
     #[test]
     fn kind_leaves_match_every_variant() {
         let context = || Context::from_static_name("m");

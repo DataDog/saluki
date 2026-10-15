@@ -243,10 +243,12 @@ taken, which is usually such a leftover ADP.
 **A visible change in about 30 seconds:**
 
 1. The editor loads the default program, detached, once ADP serves its export (**Load default program** reloads it):
-   the whole metrics path, the one scope `metrics`, from the input edge (`input.dogstatsd -> dsd_enrich`) through
-   DogStatsD's processing, aggregation (`dsd_agg`), and enrichment to the policy `tee`. Native policy settings are
-   written as literals; ADP's notes are `#` comments, with the recipients above the policy. The header reads "Running:
-   the default program", and teams B and C receive everything:
+   the whole metrics path, the one scope `metrics`, from the input edge (`input.dogstatsd -> dsd_no_agg_split`)
+   through aggregation (`dsd_agg`) and the client telemetry tap to the policy `tee`. Native policy settings are written
+   as literals, and what does nothing as configured is left out: a comment at the top names it ("Not shown, because
+   they do nothing as configured: mapper (no profiles), namespace prefix (none), metric filterlist (empty), and so
+   on," amendment 191). ADP's other notes are `#` comments too, with the recipients above the policy. Teams B and C
+   receive everything, and the header reads "Running: the default program":
 
    ```text
    node metrics_policy = tee {
@@ -283,8 +285,9 @@ taken, which is usually such a leftover ADP.
 Other edits, each on the default program as loaded (each one replaces the one before; revoke between them to show one
 change at a time):
 
-- **Drop debug metrics**: in `metrics_enrich`'s block, change `-> metrics_policy` to `-> drop_debug`, and define
-  `drop_debug` above the `# Recipients:` comment. `demo.debug.*` leaves every endpoint:
+- **Drop debug metrics**: in the block of `dsd_post_agg_filter_fanout`, the node that feeds the policy `tee`, change
+  `-> metrics_policy` to `-> drop_debug`, and define `drop_debug` above the `# Recipients:` comment. `demo.debug.*`
+  leaves every endpoint:
 
   ```text
   node drop_debug = split(name starts_with "demo.debug.") {
@@ -322,9 +325,9 @@ change at a time):
   written for the old URL does not deliver to it until it names the new one.
 - **Guardrails**: a second `-> emit to [...]` branch with the main `emit`'s recipients (`duplicate_contribution`),
   `emit to [primary, mrf]` (two delivery hosts), a second full `aggregate`, the one aggregation moved after enrichment
-  (refused by placement, which the editor does not run), `values: config("dogstatsd.metric_filter.values")` in the
-  filterlist split (a policy binding, refused in a published program), and `emit to [team_z]` (an unknown recipient,
-  held `pending`). ADP rejects or holds each while the previous generation keeps running. **Revoke** restores the
+  (refused by placement, which the editor does not run), `histogram_percentiles:
+  config("metrics_encoding.histogram.percentiles")` in `dsd_agg` (a policy binding, refused in a published program),
+  and `emit to [team_z]` (an unknown recipient, held `pending`). ADP rejects or holds each while the previous generation keeps running. **Revoke** restores the
   default program.
 
 **Headless check.** `make demo-programmable-metrics-check` builds the same binaries and runs
@@ -355,13 +358,13 @@ lane (`plan_lane_misrouted_total` above 0) fails the check.
 
 | Step | Edit or change | What it proves |
 |---|---|---|
-| S0 | The unmodified detached export. | Acknowledged `active`, adopting the running generation (no new one), with an empty diff; status says `program.runs: published`, `native_policy: not_applied`; `/export` and `/default-program` hash as expected. |
+| S0 | The unmodified detached export, without what does nothing as configured. | The editor shows no change in what it does, with a note that ADP drops what does nothing; acknowledged `active` in a new generation that builds no kernel, with `plan_cuts_total` unchanged and canaries exact; status says `program.runs: published`, `native_policy: not_applied`; `/export` and `/default-program` hash as expected. |
 | S1 | `drop_debug` ahead of the policy `tee`. | `demo.debug.*` leaves every endpoint; `/plan` and `/explain` describe it. |
 | S2 | The recipe: team B's URL out of the main `emit`, and `to_team_b` sending `demo.checkout.*` to it. | The editor says ADP adds implied outputs; ADP adds them (`implied_metrics_policy_0_...` for `[primary, team C]`, `implied_to_team_b_true_...` for team B) and installs; team B receives checkout only; compiled again, the editor composes the plan ADP runs. |
 | S3a, S3b | S2's route widened with `or tag("team") == "platform"`; then, on the default program as loaded, `split(tag("team") == "checkout")` ahead of the `tee`, `true` to team B only. | Team B also receives the platform family; then exclusive routing: checkout reaches team B and neither the primary endpoint nor team C. |
 | S4a to S4c | The failover gateway gains `and name in ["demo.checkout.requests"]`; then `failover_metrics: true` in the file; then `false`. | Nothing mirrored while failover is off; with it on, the failover endpoint receives that family alone, with no new revision (a signal read live); off again, nothing. |
-| S5a to S5f | A duplicate branch to the main `emit`'s recipients; `emit to [primary, mrf]`; a second, full `aggregate`; the aggregation moved after enrichment; a policy binding (`config("dogstatsd.metric_filter.values")`); `emit to [team_z]`. | Rejected, each naming the problem (`duplicate_contribution`; "more than one delivery host"; `single_aggregation`; placement's "runs only in an isolation slot"; "a native policy setting"), and the last held `pending` ("waiting for recipient `team_z`"), while S4's generation keeps running. The editor flags each, but S5d, which needs placement. |
-| S6 | Revoke (an empty snapshot). | The default program, the boot plan, again; it adopts the running generation when that one does what the default program does (S4's gateway with failover off does). |
+| S5a to S5f | A duplicate branch to the main `emit`'s recipients; `emit to [primary, mrf]`; a second, full `aggregate`; the aggregation moved after enrichment; a policy binding (the aggregation's percentiles bound to `config("metrics_encoding.histogram.percentiles")`); `emit to [team_z]`. | Rejected, each naming the problem (`duplicate_contribution`; "more than one delivery host"; `single_aggregation`; placement's "runs only in an isolation slot"; "a native policy setting"), and the last held `pending` ("waiting for recipient `team_z`"), while S4's generation keeps running. The editor flags each, but S5d, which needs placement. |
+| S6 | Revoke (an empty snapshot). | The default program, the boot plan, again; it adopts the running generation only when that one is the default program as written (since amendment 191 the generations before it were built from programs without what does nothing, so S6 makes a generation; the check accepts either). |
 | S8a, S8b | Add destination D under the default program; remove it. | D receives every family, canaries included (dual shipping); removed, its recipient drains and retires, its intake stops, and the others are unchanged. |
 | S9a to S9c | Publish the recipe again; add destination E; route `team:platform` to E. | E is declared (in ADP's directory) and not addressed, and receives nothing, until the program routes to it; then it receives the platform family alone. |
 | S10 | Remove E while the program routes to it. | The program stays `active` without a new revision, degraded: the acknowledgment says the emits to E's URL are dropped, policy loss is counted at `to_destination_true`, E's recipient retires, and the others are unchanged. |
@@ -371,7 +374,7 @@ lane (`plan_lane_misrouted_total` above 0) fails the check.
 | S12b | Canary-only traffic until a state lane is empty for two windows, then probe counters one at a time. | A counter first seen in a state lane that was empty at ticks arrives as one point at its bucket, with no zero before it (fixture X1 end to end); every probe once. |
 | S13a | `window: 30s` on `dsd_no_agg_split` and `dsd_agg` in the default program. | Installs at a cut at a multiple of 30 s; every state lane crosses (`plan_lane_crossings_total{kind:cut}`); the last 10 s bucket and the first 30 s bucket each balance, whole. |
 | S13b | Revoke (an empty snapshot). | The cut back to 10 s, with the same checks. |
-| S14a, S14b | `dsd_agg` renamed `agg`; then renamed with `demo.debug.*` dropped. | The rename adopts the running generation, with no cut; with the routing change, a new generation and still no cut (`plan_cuts_total` unchanged for every outcome), the state lanes counting events under `component_id:dsd_agg`. |
+| S14a, S14b | `dsd_agg` renamed `agg`; then renamed with `demo.debug.*` dropped. | The rename does what the plan running does: a generation with no cut (it leaves out what does nothing, which the default program running has; it adopted the running generation before amendment 191); with the routing change, a new generation and still no cut (`plan_cuts_total` unchanged for every outcome), the state lanes counting events under `component_id:dsd_agg`. |
 
 Before this phase, S8 to S11 declared team D with a resources artifact and S14 routed to it on the post-aggregation
 lanes; the demo no longer uses resources artifacts, whose code and tests stay in the plan crate and ADP.
@@ -379,7 +382,8 @@ lanes; the demo no longer uses resources artifacts, whose code and tests stay in
 Through stage 9 and the detached programs' phases 1 and 2 the first launch took 144 to 154 s and the second 270 to 300
 s. With this phase's steps the first launch takes 143 to 175 s and the second 269 to 293 s (see the
 [log](programmable-metrics-log.md#detached-programs-phase-3-the-demo) for the recorded runs), 7.5 to 8 minutes in all
-with the build;
+with the build. With the detached export leaving out what does nothing (amendment 191), installed as a generation, the first
+launch took 152.7 s and the second 283.5 s.
 S13's two cuts (each waits for a 30 s boundary) and S12b's wait for an empty lane make the second launch long. About 18
 s go to waiting at the start for a whole canary range behind ADP's start, and about 10 s at the end for the rolling
 range to cover the last change. In stage 9 a part saw canaries lost in 2 of 18 first launches; the investigation found
@@ -796,6 +800,22 @@ the default program with its hash, though its artifact document, and so its arti
   removes destinations live through the standalone configuration reload, no longer uses resources artifacts, and
   validates programs that need implied outputs against stand-ins for them before publishing.
 
+**What does nothing, left out** (not committed; **not release-noted**; see [what does nothing, as
+built](programmable-metrics-detached-programs.md#107-what-does-nothing-as-built)):
+
+- The detached export leaves out the nodes that do nothing as configured (an empty metric filterlist, a namespace
+  prefix with no namespace, a mapper with no profiles, a tag filterlist with no rules, a one-input merge, host
+  enrichment), lists them in the bundle's `omitted`, and names them in one note, `annotations.omitted`, which the
+  editor prints at the top. The bound export and the default program ADP runs keep every node (amendment 191).
+- Publishing that shorter export over the default program is a new generation that builds no kernel and makes no
+  cut (aggregation keeps its state), where before the unmodified export adopted the running generation; the plan
+  running is then the program as published. Publishing the same program again adopts its generation. While it runs,
+  the left-out nodes' telemetry is absent: the Datadog Agent's `aggregator.filtered_tags_cache_miss`, which counts the
+  tag filterlist memo's lookups even with no rules, stops counting; `filterlist.size` and `tag_filterlist.size` read
+  zero, as an empty list and no rules imply; the other remapped series of those nodes stay zero.
+- `program.differs` lists, for a node the published program left out that native configuration later makes do
+  something, the settings that make it do something (a filterlist's entries, not its match mode).
+
 **Telemetry** (all release-noted): the fused components' and gateways' component, health, and task series are gone;
 `metrics_enrich` and `dsd_agg` report sent counts per output instead of `_default`; accounting paths nest under the
 slot; `dsd_agg` no longer counts sent metrics twice, no longer emits what R5b suppresses, and counts one extra flush
@@ -926,6 +946,7 @@ the local `--test-threads 4` in the gate (see [Environment notes](#environment-n
 | **Detached programs, phase 3: the demo** (owner’s decisions of 2026-10-14) | Built, not committed: teams B and C as ordinary additional endpoints, **Add destination** and **Remove** through the standalone reload, no resources artifacts in the demo, the scenarios reworked (S2 is the recipe, S8 to S11 destinations and a native change, S14 the renamed aggregation), and one installer-core fix (a refused revision's acknowledgment is kept, amendment 190); after the review, an `emit` that
 loses some of its recipients keeps delivering to the others (amendment 189, decided on the owner's behalf), and the
 editor validates against stand-ins for the outputs ADP adds. No release note for `experimental.standalone_config_reload`: it changes only standalone mode, which is not for production, and it is documented in the configuration reference. The demo's export fixture stays a bound export, which the export reader's and editor's tests use; the demo's composition tests use a detached export with a directory. See [the demo as built](programmable-metrics-detached-programs.md#85-the-demo-as-built). | Confirm amendment 189, the release-note decision, and the acknowledgment fix. |
+| **What does nothing, left out** (requested by the owner on 2026-10-15; amendment 191; installation as written decided after review) | Built, not committed: the detached export leaves out identity nodes and constant splits, by one pass the editor's diff and `program.differs` share, and notes them; the bound default program is unchanged. The installer compares plans as written, so publishing the shorter export over the default program is a generation that builds no kernel and makes no cut, and the plan running is the program as published. Under it the left-out nodes' telemetry is absent: the Agent's `aggregator.filtered_tags_cache_miss` stops counting the tag filterlist memo's lookups (with no rules), the only change the Agent sees; installer-set size gauges read zero. See [what does nothing, as built](programmable-metrics-detached-programs.md#107-what-does-nothing-as-built). | Accept the `aggregator.filtered_tags_cache_miss` change, or keep a tag filterlist with no rules in the export. |
 | **The specification's Vale errors** | The specification, which only its author edits, adds 12 errors to `make check-docs`, a CI job (see [Environment notes](#environment-notes)). | Before CI runs: add the 11 flagged words to the Vale vocabulary, and edit or exempt the hyphenated `Exactly-once`. |
 
 ## Spec amendments index
@@ -1036,12 +1057,12 @@ the shutdown row, the expiry row, and the timestamped row.
 
 Totals: kinds C 49, D 26, N 9, L 3; themes STA 20, ART 16, NAT 12, INS 9, IR 8, VER 8, FRM 7, TEL 4, EXE 3.
 
-Amendments 88 to 190 are in [the stages 7 and 9 plan's section
+Amendments 88 to 191 are in [the stages 7 and 9 plan's section
 10](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments): 88 to 107 from its stage 7 design, 108 to 128
 from its stage 9 design, 129 to 138 from stage 7's parts and integration, 139 and 140 from stage 9's foundations (P9.F),
 141 to 162 from stage 9's parts and integration, 163 to 167 from stage 9's review, 168 and 169 from the one-scope
-change after stage 9, 170 to 182 from the detached-programs design, 183 to 188 from its phase 2, and 189 and 190 from
-its phase 3; the next is 191.
+change after stage 9, 170 to 182 from the detached-programs design, 183 to 188 from its phase 2, 189 and 190 from its
+phase 3, and 191 from leaving out what does nothing; the next is 192.
 Stage 7's:
 
 | # | Short title | Theme | Kind | Owner |
@@ -1175,6 +1196,12 @@ After detached programs, phase 3, the demo (built, not committed):
 |---|---|---|---|---|
 | 189 | An `emit` delivers to the recipients that remain | ART | D | decided on the owner's behalf (2026-10-15): confirm |
 | 190 | A refused newer delivery stays its config's acknowledgment | INS | C | no |
+
+After detached programs, what does nothing left out (built, not committed):
+
+| # | Short title | Theme | Kind | Owner |
+|---|---|---|---|---|
+| 191 | The detached export leaves out what does nothing as configured | ART | D | requested by the owner (2026-10-15) |
 
 Wording proposed for adoption: amendment 49 ("under the reference interpreter's delivery order"), 51 ("a maximal
 group of `split` and `tee` operators joined directly by edges within one region"), and 52 ("operator parameters,

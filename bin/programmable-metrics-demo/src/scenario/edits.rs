@@ -238,22 +238,24 @@ pub fn two_hosts(source: &str) -> Result<String, GenericError> {
     )
 }
 
-/// S5, a policy binding: the metric filterlist's split binds the native setting again, `config(...)`, where the
-/// detached export writes its value. A published program owns its policy: it may bind facts and signals only.
+/// S5, a policy binding: the aggregation's percentiles bind the native setting again, `config(...)`, where the
+/// detached export writes their value. A published program owns its policy: it may bind facts and signals only.
+///
+/// The aggregation is in every default program's export, configured or not; the metric filterlist, which this edit
+/// bound before, is left out of the export while it is empty, as it is in the demo.
 pub fn policy_binding(source: &str) -> Result<String, GenericError> {
-    const NODE: &str = "dsd_prefix_filter_blocklist";
-    let span = definition(source, NODE)?;
-    const VALUES: &str = "values: [";
+    const PERCENTILES: &str = "histogram_percentiles: ";
+    let span = definition(source, AGGREGATION_NODE)?;
     let start = source[span.clone()]
-        .find(VALUES)
-        .map(|at| span.start + at + "values: ".len())
-        .ok_or_else(|| generic_error!("The metric filterlist's split `{}` writes no `values: [...]`.", NODE))?;
+        .find(PERCENTILES)
+        .map(|at| span.start + at + PERCENTILES.len())
+        .ok_or_else(|| generic_error!("The aggregation `{}` writes no `{}...`.", AGGREGATION_NODE, PERCENTILES))?;
     let end = source[start..span.end]
-        .find(']')
-        .map(|at| start + at + 1)
-        .ok_or_else(|| generic_error!("The metric filterlist's values have no end."))?;
+        .find(",\n")
+        .map(|at| start + at)
+        .ok_or_else(|| generic_error!("The aggregation's percentiles have no end."))?;
     Ok(format!(
-        "{}config(\"dogstatsd.metric_filter.values\"){}",
+        "{}config(\"metrics_encoding.histogram.percentiles\"){}",
         &source[..start],
         &source[end..]
     ))
@@ -286,10 +288,17 @@ pub fn rename_aggregation(source: &str) -> Result<String, GenericError> {
     )?;
     replace_once(
         &defined,
-        &format!("\n    -> {}\n", AGGREGATION_NODE),
-        &format!("\n    -> {}\n", RENAMED_AGGREGATION),
+        &into(AGGREGATION_NODE),
+        &into(RENAMED_AGGREGATION),
         "edge into the aggregation",
     )
+}
+
+/// Returns how the end of an edge into `node` reads, whatever port it leaves: `-> <node>` and the line's end. The
+/// timestamp split feeds the aggregation from its `default` port, whose line names it (`default     -> dsd_agg`), and a
+/// node of one output port feeds it from a line without a port (`-> dsd_agg`).
+fn into(node: &str) -> String {
+    format!("-> {}\n", node)
 }
 
 /// The nodes whose windows a width change sets: DogStatsD aggregation, and the timestamp split ahead of it, whose
@@ -383,11 +392,10 @@ pub fn aggregation_after_enrichment(source: &str) -> Result<String, GenericError
         span.end
     };
     let mut edited = format!("{}{}", &source[..start], &source[after..]);
-    let into = format!("\n    -> {}\n", AGGREGATION_NODE);
     edited = replace_once(
         &edited,
-        &into,
-        &format!("\n    -> {}\n", target),
+        &into(AGGREGATION_NODE),
+        &into(&target),
         &format!("node that feeds `{}`", AGGREGATION_NODE),
     )?;
     let moved = block.replacen(&format!("{}{}\n", EDGE, target), &format!("{}{{next}}\n", EDGE), 1);

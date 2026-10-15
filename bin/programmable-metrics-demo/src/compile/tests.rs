@@ -575,3 +575,57 @@ fn the_recipient_directory_names_the_demos_labels_and_what_the_program_addresses
     };
     assert_eq!(parse(&source), parse(&default_program_source(&export, &NO_LABELS)));
 }
+
+#[test]
+fn what_the_export_leaves_out_is_one_comment_at_the_top_wrapped_to_the_editors_width() {
+    let mut document = serde_json::from_str::<serde_json::Value>(DEMO_EXPORT).unwrap();
+    let note = "Not shown, because they do nothing as configured: mapper (no profiles), namespace prefix (none), \
+                metric filterlist (empty), tag filterlist (empty), post-aggregation filter (empty), \
+                enrichment merge (one input), host enrichment (changes no metric)";
+    document["annotations"]["omitted"] = serde_json::json!(note);
+    let export = ExportBundle::from_value(document).unwrap();
+    let source = default_program_source(&export, &NO_LABELS);
+    let lines = source.lines().collect::<Vec<_>>();
+    assert_eq!(lines[0], "policy metrics {");
+    let comment = lines[1..]
+        .iter()
+        .take_while(|line| !line.is_empty())
+        .copied()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        comment,
+        [
+            "  # Not shown, because they do nothing as configured: mapper (no",
+            "  #   profiles), namespace prefix (none), metric filterlist (empty), tag",
+            "  #   filterlist (empty), post-aggregation filter (empty), enrichment",
+            "  #   merge (one input), host enrichment (changes no metric)",
+        ],
+        "{}",
+        source
+    );
+    assert!(comment.iter().all(|line| line.chars().count() <= 72), "{}", source);
+    // A blank line, then the inputs' line.
+    assert_eq!(
+        lines[1 + comment.len() + 1],
+        "  # Sources: where each one's metrics enter",
+        "{}",
+        source
+    );
+    // The comment is not part of the artifact.
+    let parse = |text: &str| {
+        saluki_metric_plan_syntax::parse_with(
+            text,
+            &ParseOptions {
+                base: Some(export.artifact.artifact.base.clone()),
+            },
+        )
+        .unwrap()
+        .artifact
+    };
+    let plain = source
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .map(|line| format!("{}\n", line))
+        .collect::<String>();
+    assert_eq!(parse(&source), parse(&plain));
+}

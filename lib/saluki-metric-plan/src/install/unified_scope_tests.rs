@@ -629,7 +629,11 @@ struct Host {
 
 impl Host {
     fn new() -> Self {
-        let plan = unified_plan();
+        Self::with(unified_plan(), InstallerConfig::default())
+    }
+
+    /// Boots the default program `plan`, with the installer configured as `config` says.
+    fn with(plan: Plan, config: InstallerConfig) -> Self {
         let retired = Arc::new(Mutex::new(Vec::new()));
         let notified = Arc::clone(&retired);
         let notifier = move |_: GenerationId| {
@@ -641,14 +645,7 @@ impl Host {
             report: report(&plan),
             origin: Origin::DefaultProgram { config_change: 0 },
         };
-        let (core, boot) = InstallerCore::new(
-            Arc::new(frame(&plan)),
-            registry(),
-            InstallerConfig::default(),
-            notifier,
-            boot,
-        )
-        .unwrap();
+        let (core, boot) = InstallerCore::new(Arc::new(frame(&plan)), registry(), config, notifier, boot).unwrap();
         Self {
             core,
             composer: UnifiedComposer {
@@ -1421,4 +1418,241 @@ fn the_one_aggregation_fed_by_the_otlp_input_has_no_isolation_slot_in_the_boot_f
     }));
     assert!(moved.as_ref().is_ok_and(|composed| composed.report.is_valid()));
     assert_eq!(outcome(moved), no_isolation_slot("dsd_agg", "metrics_enrich"));
+}
+
+// What does nothing as configured: the detached export leaves it out; published over the default program, it is a
+// generation that builds no kernel.
+
+/// The default-program fixture with nothing configured for DogStatsD processing: no mapper profiles, no namespace, an
+/// empty metric filterlist, no tag rules, and no histogram statistic filterlisted.
+fn unconfigured_plan() -> Plan {
+    unified_with(|value| {
+        let mut resolve = |node: &str, path: &[&str], resolved: Value| {
+            let mut at = &mut node_mut(value, node)["params"];
+            for step in path {
+                at = match step.parse::<usize>() {
+                    Ok(index) => &mut at[index],
+                    Err(_) => &mut at[*step],
+                };
+            }
+            at["resolved"] = resolved;
+        };
+        resolve("dsd_enrich", &["profiles"], json!([]));
+        resolve("dsd_prefix_filter", &["namespace"], json!(""));
+        resolve(
+            "dsd_prefix_filter_blocklist",
+            &["predicate", "intake_name", "matches", "values"],
+            json!([]),
+        );
+        resolve("dsd_tag_filterlist", &["rules"], json!([]));
+        resolve("dsd_tag_filterlist", &["value_rules"], json!([]));
+        resolve(
+            "dsd_post_agg_filter",
+            &["predicate", "all", "1", "intake_name", "matches", "values"],
+            json!([]),
+        );
+    })
+}
+
+/// The detached export of the one scope of `plan`, as an artifact document, and what it leaves out.
+fn detached(plan: &Plan) -> (Value, Vec<String>) {
+    let bundle = crate::export::export_as(
+        plan,
+        &scope(),
+        &unified_catalog(plan),
+        &BTreeMap::new(),
+        crate::export::ExportForm::Detached,
+        &registry(),
+    )
+    .unwrap();
+    let omitted = bundle.omitted.keys().map(ToString::to_string).collect();
+    (serde_json::to_value(&bundle.artifact).unwrap(), omitted)
+}
+
+/// Puts the metric filterlist back into a detached export that left it out, between the scope's DogStatsD input and the
+/// timestamp split, matching `values` exactly.
+fn with_filterlist(document: &mut Value, values: &[&str]) {
+    add_nodes(
+        document,
+        &[
+            json!({"id": "dsd_prefix_filter_blocklist", "op": "split",
+                   "params": {"predicate": {"intake_name": {"matches": {"values": values, "prefix": false}}}}}),
+            json!({"id": "dsd_prefix_filter_blocklist_true", "op": "drop"}),
+        ],
+    );
+    replace_edge(
+        document,
+        "input.dogstatsd",
+        "dsd_no_agg_split.in",
+        &[
+            ("input.dogstatsd", "dsd_prefix_filter_blocklist.in"),
+            (
+                "dsd_prefix_filter_blocklist.true",
+                "dsd_prefix_filter_blocklist_true.in",
+            ),
+            ("dsd_prefix_filter_blocklist.false", "dsd_no_agg_split.in"),
+        ],
+    );
+}
+
+#[test]
+fn the_shorter_detached_export_over_the_default_program_is_a_commit_that_builds_no_kernel() {
+    let plan = unconfigured_plan();
+    let mut host = Host::with(plan.clone(), InstallerConfig::default());
+    let (document, omitted) = detached(&plan);
+    assert_eq!(
+        omitted,
+        [
+            "dsd_enrich",
+            "dsd_post_agg_filter",
+            "dsd_post_agg_filter_true",
+            "dsd_prefix_filter",
+            "dsd_prefix_filter_blocklist",
+            "dsd_prefix_filter_blocklist_true",
+            "dsd_tag_filterlist",
+            "metrics_enrich",
+        ]
+    );
+
+    // The program does what the default program does, but without the nodes that do nothing: the plans differ as
+    // written, so it is a generation. Aggregation keeps its lineage (`retain`), so it is a commit, not a cut, and no
+    // kernel is built: every slot that ran a left-out node gets a program without it, whose kernels it already has.
+    let composed = composed(document.clone()).unwrap();
+    let changes = super::diff::diff(&plan, &composed.plan, &registry());
+    assert_eq!(
+        changes
+            .state_owners
+            .iter()
+            .map(|owner| (owner.node.to_string(), owner.class))
+            .collect::<Vec<_>>(),
+        [("dsd_agg".to_string(), TransitionClass::Retain)]
+    );
+    assert!(changes.cut().is_none());
+    let performed = host.deliver(1, document.clone());
+    assert_eq!(
+        performed,
+        strings(&[
+            &prepare(
+                2,
+                "0:changed reuse 1 build 0, 1:changed reuse 1 build 0, 2:changed reuse 0 build 0, 3:changed reuse 1 \
+                 build 0"
+            ),
+            "candidate 2 generation 2: pending"
+        ])
+    );
+    let performed = host.acknowledge();
+    assert_eq!(
+        performed[..2],
+        strings(&["commit 2", "candidate 2 generation 2: active"])
+    );
+    assert!(host.arming.is_none() && host.core.cut_in_flight().is_none());
+    // The plan running is the program as published: the nodes it leaves out are gone.
+    assert!(host.active_plan().node(&id("dsd_prefix_filter_blocklist")).is_none());
+
+    // An edit of it changes only the program of the slot it edits: putting the filterlist back with an entry.
+    let mut filtered = document.clone();
+    with_filterlist(&mut filtered, &["tenant.raw.blocked"]);
+    let performed = host.deliver(2, filtered);
+    assert_eq!(
+        performed,
+        strings(&[
+            &prepare(
+                3,
+                "0:changed reuse 1 build 0, 1:unchanged reuse 1 build 0, 2:unchanged reuse 0 build 0, 3:unchanged \
+                 reuse 1 build 0"
+            ),
+            "candidate 3 generation 3: pending"
+        ])
+    );
+    host.acknowledge();
+
+    // The program published again, without the filterlist, is a generation again; then the same program once more
+    // adopts the generation that runs it.
+    let performed = host.deliver(3, document.clone());
+    assert_eq!(
+        performed,
+        strings(&[
+            &prepare(
+                4,
+                "0:changed reuse 1 build 0, 1:unchanged reuse 1 build 0, 2:unchanged reuse 0 build 0, 3:unchanged \
+                 reuse 1 build 0"
+            ),
+            "candidate 4 generation 4: pending"
+        ])
+    );
+    host.acknowledge();
+    // The same program again, its edges in another order (an identical document is the same delivery): it composes to
+    // the plan generation 4 runs, which it adopts, with nothing prepared.
+    let mut reordered = document;
+    reordered["edges"].as_array_mut().unwrap().reverse();
+    let performed = host.deliver(4, reordered.clone());
+    let origin = Origin::Artifact {
+        revision: 4,
+        hash: received(reordered).hash,
+    };
+    assert_eq!(
+        performed,
+        strings(&["candidate 5: unchanged", &format!("adopt 4 as {}", origin)])
+    );
+}
+
+#[test]
+fn the_default_program_takes_back_only_a_generation_that_runs_every_node_it_has() {
+    let plan = unconfigured_plan();
+    let mut host = Host::with(plan.clone(), InstallerConfig::default());
+    let (document, _) = detached(&plan);
+    host.deliver(1, document);
+    host.acknowledge();
+    assert_eq!(host.schedule.id(), GenerationId::new(2));
+    // Revoked, the default program, which runs every node it has, gets a generation of its own: the one running does
+    // what it does with every record, but leaves its nodes out.
+    let performed = host.revoke();
+    assert!(
+        performed.iter().any(|action| action.starts_with("prepare 3 ")),
+        "{:?}",
+        performed
+    );
+    assert!(
+        !performed.iter().any(|action| action.starts_with("adopt")),
+        "{:?}",
+        performed
+    );
+}
+
+#[test]
+fn a_published_program_without_a_node_that_does_nothing_follows_no_setting_until_the_node_does_something() {
+    let registry = registry();
+    let plan = unconfigured_plan();
+    let catalog = unified_catalog(&plan);
+    let (document, _) = detached(&plan);
+    let composed = compose_all(
+        &plan,
+        &[(&received(document.clone()), &approval(1))],
+        &catalog,
+        &registry,
+    )
+    .unwrap();
+    assert!(crate::export::policy_differences(&plan, &composed.plan, &catalog, &registry).is_empty());
+
+    // The filterlist set natively: the program, which has none, no longer does what the default program does, and
+    // its entries differ, not its match mode, which alone would not make it do nothing again.
+    let changed = unified_with(|value| {
+        *value = serde_json::to_value(&plan).unwrap();
+        node_mut(value, "dsd_prefix_filter_blocklist")["params"]["predicate"]["intake_name"]["matches"]["values"]
+            ["resolved"] = json!(["tenant.raw.blocked"]);
+    });
+    let changed_catalog = unified_catalog(&changed);
+    let recomposed = compose_all(
+        &changed,
+        &[(&received(document), &approval(1))],
+        &changed_catalog,
+        &registry,
+    )
+    .unwrap();
+    assert_eq!(
+        crate::export::policy_differences(&changed, &recomposed.plan, &changed_catalog, &registry),
+        ["dogstatsd.metric_filter.values"
+            .parse::<crate::ir::BindingName>()
+            .unwrap()]
+    );
 }

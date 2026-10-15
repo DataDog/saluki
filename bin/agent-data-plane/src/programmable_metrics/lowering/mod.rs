@@ -217,6 +217,43 @@ const ANNOTATIONS: &[(&str, &str)] = &[
     ),
 ];
 
+/// How a reader knows each node of the default program that the detached export can leave out because it does nothing
+/// as configured, with why it does nothing then, in program order: the note the export carries
+/// ([`Annotations::omitted`](saluki_metric_plan::export::Annotations::omitted)).
+///
+/// An endpoint routing group's filter is named from its note ([`omitted_name`]). The nodes a left-out `split` alone
+/// reached, such as its `drop`, go with it and are not named. The failover gateways' flags are a fact and signals, which
+/// a published program keeps bound, so the export never leaves those gateways out for their values.
+const OMITTED: &[(&str, &str)] = &[
+    (ids::DSD_ENRICH, "mapper (no profiles)"),
+    (ids::DSD_PREFIX_FILTER, "namespace prefix (none)"),
+    (ids::DSD_PREFIX_FILTER_BLOCKLIST, "metric filterlist (empty)"),
+    (ids::DSD_TAG_FILTERLIST, "tag filterlist (empty)"),
+    (ids::DSD_POST_AGG_FILTER_IN, "post-aggregation merge (one input)"),
+    (ids::DSD_POST_AGG_FILTER, "post-aggregation filter (empty)"),
+    (ids::METRICS_ENRICH_IN, "enrichment merge (one input)"),
+    (ids::METRICS_ENRICH, "host enrichment (changes no metric)"),
+    (ids::METRICS_ENRICH_HOST_TAGS, "host tags (none)"),
+    (ids::AF_METRICS_GATEWAY, "autoscaling failover (no metrics listed)"),
+];
+
+/// Returns how a reader knows the node `local` of the default program, left out of the detached export because it does
+/// nothing as configured, and its rank in program order; `note` is lowering's note of it, if it has one. `None` for a
+/// node no reader needs named: one a left-out `split` alone reached.
+pub fn omitted_name(local: &str, note: Option<&str>) -> Option<(usize, String)> {
+    if let Some(rank) = OMITTED.iter().position(|(id, _)| *id == local) {
+        return Some((rank, OMITTED[rank].1.to_string()));
+    }
+    // Endpoint routing groups come after enrichment, in the policy, with neither names nor prefixes.
+    let routed = note.and_then(|note| note.strip_prefix("Endpoint routing to "))?;
+    local.starts_with("metrics_routing_filter_").then(|| {
+        (
+            OMITTED.len(),
+            format!("endpoint routing to {} (no names or prefixes)", routed),
+        )
+    })
+}
+
 /// The default program, and what the host declares for it.
 #[derive(Clone, Debug)]
 pub struct Lowered {

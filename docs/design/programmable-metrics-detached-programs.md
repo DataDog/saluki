@@ -6,8 +6,10 @@ can, so that the demo and the default program read well, with less magic. Phase 
 committed (`cfd4a28072`): see [phase 1 as built](#105-phase-1-as-built). Phase 2 (parts B, D, and E, with the owner's
 later decisions: no node provenance, adoption, and a standalone configuration reload for the demo) is committed
 (`7f9d67a033`): see [phase 2 as built](#106-phase-2-as-built). Phase 3, part G2, the demo, is built, not committed, with
-the owner's decisions for it: see [the demo as built](#85-the-demo-as-built). Amendments 170 to 190 are in
-[the stages 7 and 9 plan](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments).
+the owner's decisions for it: see [the demo as built](#85-the-demo-as-built). The detached export then learned to
+leave out what does nothing as configured, built, not committed: see [what does nothing, as
+built](#107-what-does-nothing-as-built). Amendments 170 to 191 are in [the stages 7 and 9
+plan](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments).
 
 ## Contents
 
@@ -20,8 +22,8 @@ the owner's decisions for it: see [the demo as built](#85-the-demo-as-built). Am
 - [7. Step 4: one aggregation is the aggregation](#7-step-4-one-aggregation-is-the-aggregation)
 - [8. The editor and the demo](#8-the-editor-and-the-demo), and [the demo as built](#85-the-demo-as-built)
 - [9. What this lets us remove](#9-what-this-lets-us-remove)
-- [10. Implementation plan](#10-implementation-plan), [phase 1 as built](#105-phase-1-as-built), and
-  [phase 2 as built](#106-phase-2-as-built)
+- [10. Implementation plan](#10-implementation-plan), [phase 1 as built](#105-phase-1-as-built),
+  [phase 2 as built](#106-phase-2-as-built), and [what does nothing, as built](#107-what-does-nothing-as-built)
 - [11. Assumptions](#11-assumptions)
 - [12. Open questions for the owner](#12-open-questions-for-the-owner)
 
@@ -371,6 +373,11 @@ enforces it.
 
 ### 8.2 The demo's initial program
 
+> [!NOTE]
+> As built later, the detached export leaves out what does nothing as configured: here the mapper, the namespace
+> prefix, the metric filterlist, the tag filterlist, the post-aggregation filter, the one-input merge, and host
+> enrichment, which a comment at the top names. See [what does nothing, as built](#107-what-does-nothing-as-built).
+
 ADP boots with no artifact, so the editor loads the default program, detached. Abbreviated (`…`):
 
 ```text
@@ -579,7 +586,7 @@ and parts of [8.3](#83-a-visible-change-in-about-30-seconds) and [8.4](#84-scena
   again, a destination added under it (declared, not addressed), then routed to; S10 that destination removed while
   routed to (the program stays `active`, degraded, with policy loss at the route); S11a to S11c the filterlist set
   under the program (no new generation, `program.differs`), revoked (the default program applies it), and cleared;
-  the second launch's S12 and S13 as before, and S14a and S14b the aggregation renamed (adopted), then renamed with a
+  the second launch's S12 and S13 as before, and S14a and S14b the aggregation renamed (adopted; since amendment 191 a generation with no cut), then renamed with a
   routing change (a generation, no cut). The status document's [demo section](programmable-metrics-status.md#the-demo)
   has the table and the run times.
 - **After the review (amendments 189 and 190).**
@@ -897,7 +904,7 @@ The bundle has `form`. ADP's route serves `detached` by default and `bound` for 
   in review: it was the default program's node, still bound, so a native change made a generation that did nothing
   new, and another when the value returned). So a detached program never follows native policy: a native policy change
   recomposes it to a plan that does what the running one does, and no generation is made. ADP's
-  `a_native_policy_change_under_an_adopted_detached_program_changes_nothing_and_neither_does_its_return` pins it, and
+  `a_native_policy_change_under_a_published_detached_program_changes_nothing_and_neither_does_its_return` pins it, and
   the edited-program test keeps generation 2 through the change. `policy_differences` skips a node that does what the
   default program's does.
 
@@ -980,6 +987,88 @@ half-written file, a removed key returning to its default, a deleted and recreat
 and prove each rejected file was read.
 
 **Phase 3**, the demo, is [built](#85-the-demo-as-built): S15 became the second launch's S14.
+
+### 10.7 What does nothing, as built
+
+The owner's request of 2026-10-15: the detached default program showed native features that do nothing as
+configured (an empty filterlist, a namespace prefix with no namespace, a mapper with no profiles, a tag filterlist
+with no rules, a one-input merge, host enrichment), so that the program a user read was not only what happens. The
+detached export now leaves them out (amendment 191). The default program, which ADP runs with no artifact, is
+unchanged: its parameters are live bindings, and its structure never depends on a configuration value.
+
+- **Identity, per operator.** `OperatorDef::is_identity` (default `false`) says that a node passes every record
+  through unchanged with the parameters it knows: `dogstatsd_mapper` with no profiles, `namespace_prefix` with an
+  empty namespace (whatever its exclusions: the kernel is disabled), `tag_projection` with neither rules nor value
+  rules (every counter and distribution is a rule miss), `merge` of one input, `host_enrichment` always (it takes no
+  parameters and changes no metric), and `host_tags` with a literal empty list. A parameter still bound, a fact or a
+  signal, is not known, so ADP's `host_tags`, bound to the host's tags, is never left out. Each claim has a kernel
+  property test (`property_test_..._leave(s)_every_metric_as_it_is`, in the kernels crate) and, together, a reference
+  interpreter test: the fixture with nothing configured for DogStatsD, with and without the nodes delivers the same points to every output
+  (`export::eliminate::tests::what_is_left_out_changes_nothing_the_reference_interpreter_delivers`).
+- **Constant splits.** `Predicate::literal_value` decides a predicate by its literal operands: a `const`, a literal
+  `flag` or `is_empty`, and a string match over a literal empty list (`intake_name in []`, which matches nothing),
+  with the junctions they decide, as `kind in [...] and intake_name in []`. A bound operand never decides, whatever its
+  value, so the failover gateways, whose flags are a fact and signals, stay. Such a `split` is folded by R3's own
+  rules (`compile::rewrite::r3::fold_split`, which shares R3's obligations: no source, fence, stateful or dynamic
+  operator, or node a scope names is removed, a `merge` keeps its other inputs, and an `emit` that goes leaves its
+  output declared). R3 itself is unchanged: it still folds only what port types decide.
+- **One pass, shared.** `export::eliminate(plan, registry, literal)` removes constant splits, then identity nodes,
+  until none is left, deciding on the plan's literal form and applying the same removals to the plan as given. Every
+  use takes its literals from one catalog, `export::policy_literals` (the bindings the catalog declares as policy
+  settings; facts, signals, and undeclared bindings stay bound), and the host's operator registry, so they leave out
+  exactly the same nodes. The detached export (`export_as`, which now takes the registry) lists what it left out in
+  the bundle's `omitted` (`identity`, `constant_split`, or `unreachable`, by local ID). `install::diff_operations`
+  diffs what plans do the same way, for the editor's preview, and `export::policy_differences` treats a node that does
+  nothing as following nothing. ADP's export test checks, for every configuration of the lowering matrix, that the
+  export leaves out what this pass leaves out of the default program, and that the composed program has nothing left
+  to leave out.
+- **Installation compares as written** (the owner's decision after review, replacing adoption across what is left
+  out). The installer compares a candidate with the running generation's plan by `export::operation_hash`, which does
+  not leave anything out (it sorts nodes and edges, whose order means nothing to how a plan runs). So publishing the
+  shorter export over the default program is a **generation that builds no kernel and makes no cut**: aggregation
+  keeps its lineage (`retain`), every slot that ran a left-out node gets a program without it, and those kernels are
+  released. The plan running is then the program as published, so `/plan`, `/explain`, telemetry, and the core's
+  active plan agree, and later edits are precise. A program whose written form equals the running generation's, such
+  as the same program published again, still adopts it. Revoked, the default program, which has every node, makes a
+  generation of its own over such a program. The installer tests: `install::unified_scope_tests`'s
+  `the_shorter_detached_export_over_the_default_program_is_a_commit_that_builds_no_kernel` (no kernel built, no cut,
+  `retain`; then a filterlist edit changes only its slot; then the same program again adopts) and
+  `the_default_program_takes_back_only_a_generation_that_runs_every_node_it_has`, and ADP's
+  `the_shorter_detached_export_over_the_default_program_builds_no_kernel_and_makes_no_cut_in_adps_frame`, through ADP's
+  own frame and core.
+- **The editor.** The preview diffs what plans do, so the shorter export shows no change, with a note: "ADP will drop
+  N nodes that do nothing as configured, which the program leaves out; that builds no kernel."
+- **The note.** ADP names what the export left out in one line, `Annotations::omitted`, from the lowering module's
+  table of names (`lowering::omitted_name`), in program order; the `drop` of a left-out filterlist goes with it,
+  unnamed. The editor prints it at the top of the program, wrapped to 72 columns: "Not shown, because they do nothing
+  as configured: mapper (no profiles), namespace prefix (none), metric filterlist (empty), tag filterlist (empty),
+  post-aggregation filter (empty), enrichment merge (one input), host enrichment (changes no metric)".
+- **Consequences.**
+  - A published program built from the shorter export really does not contain those nodes, and runs without them.
+    Under detachment that is correct: the program does what it says. Set natively later, a left-out filterlist does
+    something the program does not, and `program.differs` lists the setting that made the difference (its entries,
+    not its match mode: a node the running plan lacks lists the settings that, turned off alone, would make it do
+    nothing again, or all its settings when none would). ADP computes it once per plan running and default program
+    lowered, not at every status.
+  - While such a program runs, the left-out nodes' telemetry is absent, as for any node a program removes:
+    `plan_node_events_total` for their ports, and the native series their profiles keep. The installer sets the
+    gauges it records from a plan for a node the plan running lacks to zero, what an empty list and no rules imply,
+    rather than keep the value of the generation before: `filterlist.size` and `tag_filterlist.size`, as the Datadog
+    Agent reads them, and the endpoint allowlist sizes. The other remapped series of those nodes are counters that
+    stay zero under the configuration that leaves the node out (`dogstatsd.listener_filtered_points`,
+    `aggregator.dogstatsd_filtered_metrics`, `aggregator.filtered_tags`, the tag filterlist memo's hits and evictions,
+    `filterlist.updates`, `tag_filterlist.updates`). The only change the Agent sees is
+    `aggregator.filtered_tags_cache_miss`, which counts the tag filterlist memo's lookups even with no rules (one per
+    counter and distribution) and stops counting. Three counters no remapping reads stop too: the tag filterlist
+    kernel's `tag_filterlist_rule_misses_total`, the mapper's cache series, and, for an endpoint routing group with
+    neither names nor prefixes, `metrics_endpoint_allowlist_metrics_filtered_total` on `metrics_routing_filter_<i>`,
+    which counted every metric the group did not receive. The default program reports all of them.
+  - Memory limits: a program is measured against the default program's total, so a program that leaves out the tag
+    filterlist may give its context cache's memory to another node (the ADP limit test now grows the mapper's interner
+    by 64 MiB rather than one byte).
+- **Left out of the design, on purpose.** A one-port `tee` is an identity too, but the policy `tee` is where a program
+  routes, so it stays even with one branch. `timestamp_split` and aggregation are never left out: one is not an
+  identity, the other a state owner.
 
 
 ## 11. Assumptions

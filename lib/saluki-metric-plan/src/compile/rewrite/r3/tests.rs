@@ -890,6 +890,30 @@ proptest! {
         }
     }
 
+    /// The pass that leaves out what does nothing as configured, which the detached export and the comparison of what
+    /// plans do share, folds `split`s that their literal operands decide by R3's rules, and leaves out identity nodes:
+    /// whether bound operands count as the literals they resolve to or not, it changes no output of random plans, nor
+    /// the order in which any output receives its records.
+    #[test]
+    fn property_test_leaving_out_what_does_nothing_changes_no_output_of_random_plans(
+        shape in arb_shape(prop_oneof![
+            3 => arb_split_predicate(),
+            1 => Just(Predicate::IntakeName(crate::predicate::StringMatch::In(Vec::new()))),
+            1 => crate::testing::arb_predicate().prop_map(|other| Predicate::All(vec![
+                other,
+                Predicate::Name(crate::predicate::StringMatch::PrefixIn(Vec::new())),
+            ])),
+        ]),
+        batches in arb_batches(),
+    ) {
+        let case = Case::new(&shape)?;
+        for literal in [true, false] {
+            let eliminated = crate::export::eliminate(&case.plan, &OperatorRegistry::native(), &|_| literal);
+            let (before, after) = check_equivalent(&case, &case.plan, &eliminated.plan, &batches)?;
+            check_same_order(&case.plan, &before, &after)?;
+        }
+    }
+
     #[test]
     fn property_test_r3_under_capacity_pressure_delivers_and_refuses_what_the_original_does(
         shape in arb_shape(arb_split_predicate()),

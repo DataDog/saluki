@@ -207,8 +207,13 @@ Export bundle:
   "ir_versions": { "current": 1, "accepted": [1, 1] },
   "catalog": { "...": "the serialized plan-crate Catalog: scope inputs with port types, outputs with accepts, fingerprint, recipients; bindings with type, liveness, class, current value; the recipient directory" },
   "labels": { "<output id>": "<display label>" },
-  "annotations": { "nodes": { "<node id>": "<note>" }, "bindings": { "<binding>": "<class>: <what it is>" } },
-  "form": "detached"
+  "annotations": {
+    "nodes": { "<node id>": "<note>" },
+    "bindings": { "<binding>": "<class>: <what it is>" },
+    "omitted": "Not shown, because they do nothing as configured: ..."
+  },
+  "form": "detached",
+  "omitted": { "<node id>": "identity | constant_split | unreachable" }
 }
 ```
 
@@ -246,7 +251,15 @@ Export bundle:
   default program's `provenance.native_components` maps a node to the native component it does the work of, for the
   cost model and the layout built at boot; a composed plan has none.
 - `annotations` (optional, additive): ADP's notes for tools, one line per exported node and per binding, which an
-  editor prints as comments. They are not part of the artifact. Readers ignore members they do not know.
+  editor prints as comments, and `omitted`, one line naming what the export left out, in words a reader knows, which
+  an editor prints at the top. They are not part of the artifact. Readers ignore members they do not know.
+- `omitted` (optional, additive): the nodes of the scope a `detached` export leaves out because they do nothing as
+  configured (amendment 191), by local ID, each with why: `identity` (a node that passes every record through
+  unchanged with its literal parameters, such as a mapper with no profiles or a one-input `merge`), `constant_split`
+  (a `split` its literal operands decide, such as an empty filterlist), or `unreachable` (a node only such a split's
+  dead port reached, such as its `drop`). A program built from the export does not have them: published unmodified
+  over the default program, it is a new generation that builds no kernel and makes no cut, acknowledged `active` on
+  that generation. A `bound` export leaves nothing out.
 - The `metrics` scope has one input per metrics source the configuration enables, each named after its source's binding
   and carrying what the source produces (`dogstatsd`, `otlp`, `checks`, `liveness`, `trace_sampler`), and no exits: its
   artifact covers every node after the sources, aggregation included. The catalog document's `single_aggregation:

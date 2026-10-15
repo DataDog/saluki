@@ -179,3 +179,19 @@ proptest! {
         prop_assert_eq!(multiset(&metrics_of(native)), multiset(kept));
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// An empty namespace disables prefixing whatever the exclusions: the kernel leaves every metric as it is, which a
+    /// plan's `namespace_prefix` node with no namespace says when it is left out of what a program does.
+    #[test]
+    fn property_test_an_empty_namespace_leaves_every_metric_as_it_is(
+        exclusions in vec(select(PREFIX_VOCABULARY), 0..3),
+        metrics in vec(arb_metric(), 0..24),
+    ) {
+        let mut kernel = prefix("", &exclusions);
+        let consumed = consume(&mut kernel, &BatchHeader::default(), 1, buffer_of(metrics.clone()));
+        prop_assert_eq!(&consumed.ports[0], &metrics);
+    }
+}

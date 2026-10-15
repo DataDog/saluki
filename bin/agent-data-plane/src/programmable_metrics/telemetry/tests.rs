@@ -1516,3 +1516,37 @@ experimental: {metrics_endpoint_routing: {metric_allowlist: {https://b.example.c
     assert_eq!(leases("host:mrf_dd_out"), "gauge 0");
     topology.stop().await;
 }
+
+#[test]
+fn a_binding_gauge_of_a_node_the_running_plan_leaves_out_reads_zero() {
+    use saluki_metric_plan::ir::Plan;
+
+    let recorder = TestRecorder::default();
+    let _recorder = metrics::set_default_local_recorder(&recorder);
+    let mut telemetry = InstallerTelemetry::new(SubsystemIdentifier::from_dotted("primary"));
+    let prefix_filter = ["component_id:dsd_prefix_filter", "component_type:transform"];
+    let tag_filterlist = ["component_id:dsd_tag_filterlist", "component_type:transform"];
+
+    // The default program's filterlist has one entry, and its tag filterlist two rules (a tag rule and a value rule).
+    let plan = Plan::from_json(saluki_metric_plan::testing::DEFAULT_PROGRAM_JSON).unwrap();
+    telemetry.set_binding_gauges(&plan);
+    let reported = recorded(&recorder);
+    assert_eq!(value(&reported, "metric_filterlist_size", &prefix_filter), "gauge 1");
+    assert_eq!(value(&reported, "tag_filterlist_size", &tag_filterlist), "gauge 2");
+
+    // A plan without them, as a program written from the detached export leaves out a filterlist with nothing in it
+    // and a tag filterlist with no rules, reports what an empty list and no rules imply, not the last generation's.
+    let mut without = plan.clone();
+    without
+        .nodes
+        .retain(|node| !["dsd_prefix_filter_blocklist", "dsd_tag_filterlist"].contains(&node.id.local().as_str()));
+    telemetry.set_binding_gauges(&without);
+    let reported = recorded(&recorder);
+    assert_eq!(value(&reported, "metric_filterlist_size", &prefix_filter), "gauge 0");
+    assert_eq!(value(&reported, "tag_filterlist_size", &tag_filterlist), "gauge 0");
+
+    // Back, they report their values again.
+    telemetry.set_binding_gauges(&plan);
+    let reported = recorded(&recorder);
+    assert_eq!(value(&reported, "metric_filterlist_size", &prefix_filter), "gauge 1");
+}

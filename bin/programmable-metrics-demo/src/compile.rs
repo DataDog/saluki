@@ -247,10 +247,11 @@ const INPUTS_SECTION: &str = "# Sources: where each one's metrics enter";
 /// The node above which the recipient directory is listed: the policy `tee`, where a program routes.
 const POLICY_NODE: &str = "metrics_policy";
 
-/// Returns a printed program with ADP's notes as comment lines: a line before the first edge from a scope input, each
-/// node's note from the export ([`ExportBundle::annotations`]) above its definition, and the recipient directory above
-/// the policy `tee`, each recipient with its endpoint and the label `labels` gives it, said to be not addressed when no
-/// `emit` of `artifact` reaches it.
+/// Returns a printed program with ADP's notes as comment lines: what the export leaves out because it does nothing as
+/// configured, at the top of the program, wrapped to the editor's width, a line before the first edge from a scope
+/// input, each node's note from the export ([`ExportBundle::annotations`]) above its definition, and the recipient
+/// directory above the policy `tee`, each recipient with its endpoint and the label `labels` gives it, said to be not
+/// addressed when no `emit` of `artifact` reaches it.
 ///
 /// A program whose nodes ADP did not write, such as one that renames them, gets fewer comments; without an export, only
 /// the inputs line. The comments change nothing in the artifact.
@@ -258,6 +259,15 @@ pub fn annotate(
     printed: &str, artifact: &PolicyArtifact, export: Option<&ExportBundle>, labels: &RecipientLabels,
 ) -> String {
     let mut marks = Vec::new();
+    if let (Some(omitted), Some(at)) = (
+        export.and_then(|export| export.annotations.omitted.as_deref()),
+        printed.find(" {\n").map(|at| at + " {\n".len()),
+    ) {
+        let mut lines = wrapped(omitted, OMITTED_WIDTH);
+        lines.push(String::new());
+        // Before anything else at the top, the inputs' line included.
+        marks.push((at, -1, lines));
+    }
     if let Some(at) = printed.find("\n  input.") {
         marks.push((at + 1, 0, vec![INPUTS_SECTION.to_string()]));
     }
@@ -281,14 +291,40 @@ pub fn annotate(
     for (at, _, lines) in marks {
         annotated.push_str(&printed[copied..at]);
         for line in lines {
-            annotated.push_str("  ");
-            annotated.push_str(&line);
+            if !line.is_empty() {
+                annotated.push_str("  ");
+                annotated.push_str(&line);
+            }
             annotated.push('\n');
         }
         copied = at;
     }
     annotated.push_str(&printed[copied..]);
     annotated
+}
+
+/// The widest comment line the note of what the export leaves out wraps to, its indentation and `# ` included: the
+/// printed program's width, [`DISPLAY`]'s, and a little more, since a comment is not code.
+const OMITTED_WIDTH: usize = 72;
+
+/// Returns `note` as comment lines of at most `width` characters once [`annotate`] indents them, broken at spaces, the
+/// lines after the first indented a little further.
+fn wrapped(note: &str, width: usize) -> Vec<String> {
+    // `annotate` indents every comment line by two spaces.
+    let room = width.saturating_sub(2);
+    let mut lines = Vec::new();
+    let mut line = String::from("#");
+    let mut started = false;
+    for word in note.split_whitespace() {
+        if started && line.chars().count() + 1 + word.chars().count() > room {
+            lines.push(std::mem::replace(&mut line, String::from("#  ")));
+        }
+        line.push(' ');
+        line.push_str(word);
+        started = true;
+    }
+    lines.push(line);
+    lines
 }
 
 /// Returns the comment lines that list the export's recipient directory: a heading, then one row per recipient, in

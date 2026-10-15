@@ -31,7 +31,7 @@ pub use self::core::{
 };
 
 pub mod correspondence;
-pub use self::correspondence::{diff_with_correspondence, Correspondence, CorrespondingDiff};
+pub use self::correspondence::{diff_operations, diff_with_correspondence, Correspondence, CorrespondingDiff};
 
 pub mod diff;
 pub use self::diff::{diff, kernel_reuse, state_bindings, CutPlan, PlanDiff, StateOwnerChange, StateOwnerDiff};

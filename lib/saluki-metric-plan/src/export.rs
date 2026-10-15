@@ -25,7 +25,9 @@
 //!   ([`Annotations`]). They are not part of the artifact;
 //! - `form`: how the artifact writes the default program's policy settings ([`ExportForm`]): `bound` to the native
 //!   settings, as the default program has them, or `detached`, as the literal values they have now. A reader of a
-//!   bundle without `form` reads `bound`.
+//!   bundle without `form` reads `bound`;
+//! - `omitted`: the nodes of the scope a detached export leaves out because they do nothing as configured, by local
+//!   ID, each with why (`identity`, `constant_split`, or `unreachable`), left out when there are none.
 //!
 //! Readers ignore members they do not know.
 //!
@@ -42,8 +44,8 @@
 //!   whose `program_hash` is the hash of the artifact document itself without its `base.program_hash` member (see
 //!   [`base`]).
 //!
-//! Composing an unmodified export back into the plan it came from gives that plan again (see
-//! [`compose`](crate::compose::compose)), in either form.
+//! Composing an unmodified bound export back into the plan it came from gives that plan again (see
+//! [`compose`](crate::compose::compose)), and an unmodified detached one a plan that does what it does.
 //!
 //! # The detached form
 //!
@@ -58,9 +60,18 @@
 //! to those names, such as `emit to [primary]`, as a published program addresses destinations: by the recipients it
 //! sends to, never by the native output that encodes for them.
 //!
+//! The detached form is only what happens: a node that does nothing with the literal values it now has, such as a
+//! metric filterlist with nothing in it, a mapper with no profiles, or a `merge` of one input, is left out, with what
+//! only it reached, and listed in `omitted` with why ([`eliminate`], with the policy settings as the literals). A node
+//! bound to a fact or signal is never left out for its value. The default program itself keeps every node.
+//!
 //! The detached artifact records the same base as the bound one: the base describes the scope's structure, which a
 //! literal does not change, so composing the detached export is no stale base. Composition compares nodes by what
-//! they do with the values they have, so the detached export composes to the default program exactly, with its hash.
+//! they do with the values they have, so the detached export composes to a plan that does what the default program
+//! does, without the nodes it leaves out. Over the default program it is therefore a generation of its own, which
+//! builds no kernel and keeps aggregation's state: plans are compared as written ([`operation_hash`]), so that the
+//! plan running is always the plan its generation was built from. When it leaves out nothing, it adopts the running
+//! generation.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -77,8 +88,11 @@ use crate::{
     },
     operators::{names, OperatorRegistry, EMIT_TO},
     predicate::Predicate,
-    validate::{BindingClass, Catalog, MemoryCatalog},
+    validate::{Catalog, MemoryCatalog},
 };
+
+mod eliminate;
+pub use self::eliminate::{eliminate, policy_literals, Eliminated, Omission};
 
 /// The version of the export bundle's format.
 pub const EXPORT_VERSION: u32 = 1;
@@ -138,6 +152,12 @@ pub struct ExportBundle {
     /// How the artifact writes the default program's policy settings: bound to them, or as their current values.
     #[serde(default)]
     pub form: ExportForm,
+
+    /// The nodes of the scope's region the artifact leaves out because they do nothing as configured, by local ID, with
+    /// why ([`eliminate`]): only a detached export leaves any out. A host names them for a reader in
+    /// [`Annotations::omitted`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub omitted: BTreeMap<ArtifactNodeId, Omission>,
 }
 
 /// How an export writes the default program's policy settings (see [the detached form](self#the-detached-form)).
@@ -172,12 +192,18 @@ pub struct Annotations {
     /// A note for each of the catalog's bindings that has one, by name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub bindings: BTreeMap<BindingName, String>,
+
+    /// One line saying what the exported artifact leaves out because it does nothing as configured
+    /// ([`ExportBundle::omitted`]), in words a reader knows, such as "Not shown, because they do nothing as configured:
+    /// metric filterlist (empty), mapper (no profiles)", which an editor prints near the top of the program.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omitted: Option<String>,
 }
 
 impl Annotations {
     /// Returns `true` if there are no notes.
     pub fn is_empty(&self) -> bool {
-        self.nodes.is_empty() && self.bindings.is_empty()
+        self.nodes.is_empty() && self.bindings.is_empty() && self.omitted.is_none()
     }
 }
 
@@ -195,6 +221,8 @@ struct BundleDocument {
     annotations: Annotations,
     #[serde(default)]
     form: ExportForm,
+    #[serde(default)]
+    omitted: BTreeMap<ArtifactNodeId, Omission>,
 }
 
 /// The members of a catalog document that [`MemoryCatalog`] reads.
@@ -236,6 +264,7 @@ impl TryFrom<BundleDocument> for ExportBundle {
             mut labels,
             annotations,
             form,
+            omitted,
         } = document;
         let artifact = PolicyArtifact::from_value(artifact).map_err(|error| error.to_string())?;
         let catalog = known_catalog_members(catalog, &mut labels);
@@ -249,6 +278,7 @@ impl TryFrom<BundleDocument> for ExportBundle {
             labels,
             annotations,
             form,
+            omitted,
         })
     }
 }
@@ -316,33 +346,57 @@ fn known_catalog_members(catalog: Value, labels: &mut BTreeMap<OutputId, String>
 pub fn export(
     plan: &Plan, scope: &ScopeName, catalog: &MemoryCatalog, labels: &BTreeMap<OutputId, String>,
 ) -> Result<ExportBundle, ExportError> {
-    export_as(plan, scope, catalog, labels, ExportForm::Bound)
+    // The bound form leaves nothing out, so no operator's identity is asked for.
+    export_as(
+        plan,
+        scope,
+        catalog,
+        labels,
+        ExportForm::Bound,
+        &OperatorRegistry::native(),
+    )
 }
 
 /// Exports one scope of a lowered plan as an artifact in the form `form`, with the host's catalog and output labels.
 ///
 /// This is [`export`] for [`ExportForm::Bound`]. For [`ExportForm::Detached`], every parameter bound to a policy
-/// setting of `catalog` is written as the value it resolves to in `plan`, and every predicate's literal `flag` and
-/// `is_empty` are folded (see [the detached form](self#the-detached-form)); the base is the bound export's.
+/// setting of `catalog` is written as the value it resolves to in `plan`, every predicate's literal `flag` and
+/// `is_empty` are folded, and the nodes that do nothing with those values are left out and listed in
+/// [`ExportBundle::omitted`] (see [the detached form](self#the-detached-form)); the base is the bound export's.
+/// `registry` is the host's operator registry, which says which nodes do nothing.
 ///
 /// # Errors
 ///
 /// As for [`export`].
 pub fn export_as(
     plan: &Plan, scope: &ScopeName, catalog: &MemoryCatalog, labels: &BTreeMap<OutputId, String>, form: ExportForm,
+    registry: &OperatorRegistry,
 ) -> Result<ExportBundle, ExportError> {
     if form == ExportForm::Unknown {
         return Err(ExportError::UnknownForm);
     }
     let region = ScopeRegion::of(plan, scope)?;
     let base = region.base(plan, scope)?;
-    let ScopeRegion { mut nodes, edges, .. } = region;
-    if form == ExportForm::Detached {
-        let policy = |binding: &BindingName| {
-            catalog
-                .bindings()
-                .any(|(name, declared)| name == binding && declared.class == BindingClass::Policy)
-        };
+    let policy = policy_literals(catalog);
+    // The detached form is only what happens: what does nothing with the policy settings' values is left out.
+    let (eliminated, omitted) = match form {
+        ExportForm::Detached => {
+            let eliminated = eliminate(plan, registry, &policy);
+            let omitted = eliminated
+                .omitted
+                .iter()
+                .filter(|(node, _)| region.members.contains(node))
+                .filter_map(|(node, why)| Some((ArtifactNodeId::new(node.local().as_str()).ok()?, *why)))
+                .collect();
+            (Some(eliminated.plan), omitted)
+        }
+        ExportForm::Bound | ExportForm::Unknown => (None, BTreeMap::new()),
+    };
+    let ScopeRegion { mut nodes, edges, .. } = match &eliminated {
+        Some(eliminated) => ScopeRegion::of(eliminated, scope)?,
+        None => region,
+    };
+    if let Some(plan) = &eliminated {
         for node in &mut nodes {
             let id = NodeId::reserved(node.id.to_local_id());
             let Some(lowered) = plan.node(&id) else { continue };
@@ -378,6 +432,7 @@ pub fn export_as(
         labels: labels.clone(),
         annotations: Annotations::default(),
         form,
+        omitted,
     })
 }
 
@@ -424,8 +479,17 @@ fn recipients_of_output(plan: &Plan, catalog: &MemoryCatalog, params: &Params) -
 /// published, or that the program changes. A node of `running` that does what the default program's does, as its
 /// [operation form](operation_params) says, lists nothing, whether it binds the settings or writes their values. A node
 /// that does something else and wrote its parameters in another structure, such as a predicate folded otherwise, lists
-/// each setting whose place it no longer has.
-pub fn policy_differences(default: &Plan, running: &Plan, catalog: &MemoryCatalog) -> Vec<BindingName> {
+/// each setting whose place it no longer has. A node of `default` that does nothing as configured ([`eliminate`]), such
+/// as a filterlist with nothing in it, lists nothing when `running` leaves it out, as the detached export does, or has
+/// it doing nothing too. Set natively later, it does something that `running`, without the node, does not: it lists
+/// the settings that make it do something, those that, turned off alone (an empty list or string, the other flag,
+/// zero), would make it do nothing again, such as a filterlist's entries but not its match mode, or every policy setting
+/// it binds when none would.
+///
+/// `registry` is the host's operator registry, which says which nodes do nothing.
+pub fn policy_differences(
+    default: &Plan, running: &Plan, catalog: &MemoryCatalog, registry: &OperatorRegistry,
+) -> Vec<BindingName> {
     fn walk(
         value: &Value, path: &mut Vec<PathStep>, policy: &dyn Fn(&BindingName) -> bool,
         found: &mut Vec<(Vec<PathStep>, BindingName, Value)>,
@@ -465,14 +529,80 @@ pub fn policy_differences(default: &Plan, running: &Plan, catalog: &MemoryCatalo
             PathStep::Index(index) => value.get(index),
         })
     }
+    fn at_mut<'v>(value: &'v mut Value, path: &[PathStep]) -> Option<&'v mut Value> {
+        path.iter().try_fold(value, |value, step| match step {
+            PathStep::Member(name) => value.get_mut(name),
+            PathStep::Index(index) => value.get_mut(index),
+        })
+    }
+    /// The values that commonly turn a setting off: an empty list or string, the other flag, zero.
+    fn neutral(value: &Value) -> Option<Value> {
+        match value {
+            Value::Array(values) if !values.is_empty() => Some(Value::Array(Vec::new())),
+            Value::String(value) if !value.is_empty() => Some(Value::String(String::new())),
+            Value::Bool(value) => Some(Value::Bool(!value)),
+            Value::Number(number) if number.as_f64() != Some(0.0) => Some(Value::from(0)),
+            _ => None,
+        }
+    }
 
-    let policy = |binding: &BindingName| {
-        catalog
-            .bindings()
-            .any(|(name, declared)| name == binding && declared.class == BindingClass::Policy)
+    let policy = policy_literals(catalog);
+    // What does nothing as configured, as the detached export leaves it out.
+    let does = |plan: &Plan| {
+        eliminate(plan, registry, &policy)
+            .omitted
+            .into_iter()
+            .map(|(node, _)| node)
+            .collect::<BTreeSet<_>>()
     };
+    let (idle_default, idle_running) = (does(default), does(running));
     let mut differs = BTreeSet::new();
     for node in &default.nodes {
+        // A node that does nothing, which the running plan leaves out or has doing nothing too, follows nothing.
+        if idle_default.contains(&node.id) && (idle_running.contains(&node.id) || running.node(&node.id).is_none()) {
+            continue;
+        }
+        if running.node(&node.id).is_none() {
+            // The running plan leaves out a node the default program has doing something: the settings that make it do
+            // something differ, those that, turned off alone, would make it do nothing, such as a filterlist's entries
+            // but not its match mode; or, when none would, every policy setting it binds.
+            let mut found = Vec::new();
+            for (name, value) in node.params.iter() {
+                let mut at_param = Vec::new();
+                walk(value, &mut Vec::new(), &policy, &mut at_param);
+                found.extend(
+                    at_param
+                        .into_iter()
+                        .map(|(path, binding, current)| (name, path, binding, current)),
+                );
+            }
+            let explains = found
+                .iter()
+                .filter(|(name, path, _, current)| {
+                    let Some(off) = neutral(current) else { return false };
+                    let Some(mut param) = node.params.get(name.as_str()).cloned() else {
+                        return false;
+                    };
+                    let Some(resolved) = at_mut(&mut param, path).and_then(|binding| binding.get_mut(RESOLVED_MEMBER))
+                    else {
+                        return false;
+                    };
+                    *resolved = off;
+                    let mut turned_off = default.clone();
+                    if let Some(other) = turned_off.nodes.iter_mut().find(|other| other.id == node.id) {
+                        other.params.insert((*name).clone(), param);
+                    }
+                    does(&turned_off).contains(&node.id)
+                })
+                .map(|(_, _, binding, _)| binding.clone())
+                .collect::<Vec<_>>();
+            if explains.is_empty() {
+                differs.extend(found.into_iter().map(|(_, _, binding, _)| binding));
+            } else {
+                differs.extend(explains);
+            }
+            continue;
+        }
         let counterpart = running.node(&node.id).filter(|other| other.op == node.op);
         // A node that does what the default program's does follows every setting it binds, however it writes them.
         if counterpart
@@ -554,16 +684,23 @@ pub fn operation_params(op: &OperatorName, params: &Params) -> Params {
     fold_predicates(op, literal)
 }
 
-/// Returns the hash of what `plan` does: the plan, without provenance, with each node's parameters in their
-/// [operation form](operation_params), as their operator decodes and encodes them when it can, so that a
-/// set written in another order is the same set.
+/// Returns the hash of what `plan` does: the plan, without provenance, its nodes and edges in order, with each node's
+/// parameters in their [operation form](operation_params), as their operator decodes and encodes them when it can, so
+/// that a set written in another order is the same set.
 ///
 /// Two plans with one operation hash run the same kernels on the same edges: a parameter bound to a value and the same
-/// literal hash alike. A candidate whose operation hash is the active generation's changes nothing, and adopts it if it
-/// is another program's.
+/// literal hash alike, and so do plans that list their nodes or edges in another order, which means nothing to how a
+/// plan runs. (Composition puts the edges a program shares with the default program in the default program's order,
+/// but an edge it does not share, such as the one that takes the place of a node the detached export leaves out,
+/// follows the program's own order.) A candidate whose operation hash is the active generation's changes nothing, and
+/// adopts it if it is another program's. A node that does nothing as configured counts: a program written from the
+/// detached export, which leaves such nodes out ([`eliminate`]), is a new generation over the default program, which
+/// builds no kernel, so that the plan running is always the plan the generation was built from.
 pub fn operation_hash(plan: &Plan, registry: &OperatorRegistry) -> Result<PlanHash, CanonicalError> {
     let mut plan = plan.clone();
     plan.provenance = None;
+    plan.nodes.sort_by(|a, b| a.id.cmp(&b.id));
+    plan.edges.sort_by(|a, b| (&a.from, &a.to).cmp(&(&b.from, &b.to)));
     for node in &mut plan.nodes {
         let params = operation_params(&node.op, &node.params);
         node.params = match registry.configure(node.op.as_str(), &params) {

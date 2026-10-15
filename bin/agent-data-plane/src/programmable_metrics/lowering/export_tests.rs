@@ -1,7 +1,8 @@
 //! Exports of lowered default programs: every configuration of the matrix exports its one scope, the export prints
 //! and parses back as the same document but for the order of its edges, and composing the detached export, or its
-//! printed form, back gives a plan that does what the default program does, with its operation hash. The bound
-//! export, which binds native policy settings, is refused: ADP's programs bind facts and signals only.
+//! printed form, back gives a plan that does what the default program does, with its operation hash. The detached
+//! export leaves out exactly the nodes the comparison of what plans do leaves out. The bound export, which binds native
+//! policy settings, is refused: ADP's programs bind facts and signals only.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -11,9 +12,9 @@ use std::{
 use saluki_metric_plan::{
     canonical::PlanHash,
     compose::{compose, receive_artifact, Approval},
-    export::{export, export_as, operation_hash, operation_params, ExportForm},
-    install::diff_with_correspondence,
-    ir::{OutputId, ScopeName},
+    export::{eliminate, export, export_as, operation_hash, operation_params, policy_literals, ExportForm, Omission},
+    install::diff_operations,
+    ir::{OutputId, Plan, ScopeName},
     operators::{names, OperatorRegistry},
     validate::{Catalog as _, Rule},
 };
@@ -127,21 +128,27 @@ async fn every_lowered_default_program_exports_and_composes_back_unchanged() {
         }
 
         // Composing the detached export back, with ADP's catalog, gives a plan that does what the default program
-        // does, writing its policy as literals, and its diff against the default program is empty.
+        // does, writing its policy as literals, and its diff against the default program by what they do is empty.
         let detached = export_as(
             plan,
             &scope,
             &lowered.catalog.to_document(),
             &BTreeMap::new(),
             ExportForm::Detached,
+            &OperatorRegistry::native(),
         )
         .unwrap_or_else(|e| panic!("{}: {}", name, e));
         assert_eq!(detached.artifact.base, bundle.artifact.base, "{}", name);
+        let catalog = &lowered.catalog;
+        assert_leaves_out_what_the_comparison_does(&detached, plan, &registry, catalog, name);
         let composed = compose_document(&detached.artifact);
         assert!(composed.report.findings().is_empty(), "{}:\n{}", name, composed.report);
         assert!(!composed.stale_base && !composed.stale_review, "{}", name);
-        assert_does_the_same(&composed.plan, plan, &registry, name);
-        let diff = diff_with_correspondence(plan, &composed.plan, &composed.correspondence, &registry);
+        assert_does_the_same(&composed.plan, plan, &registry, catalog, name);
+        // The composed plan has nothing left that the comparison would leave out: the export left out all of it.
+        let left = eliminate(&composed.plan, &registry, &policy_literals(catalog)).omitted;
+        assert!(left.is_empty(), "{}: {:?}", name, left);
+        let diff = diff_operations(plan, &composed.plan, &composed.correspondence, &registry, catalog);
         assert!(diff.diff.is_empty(), "{}: {:?}", name, diff.diff);
         assert_eq!(diff.artifact_nodes.len(), detached.artifact.nodes.len(), "{}", name);
 
@@ -151,21 +158,66 @@ async fn every_lowered_default_program_exports_and_composes_back_unchanged() {
         let parsed = parse(&printed).unwrap_or_else(|diagnostics| panic!("{}:\n{}\n{}", name, diagnostics, printed));
         let composed = compose_document(&parsed.artifact);
         assert!(composed.report.findings().is_empty(), "{}:\n{}", name, composed.report);
-        assert_does_the_same(&composed.plan, plan, &registry, name);
-        let diff = diff_with_correspondence(plan, &composed.plan, &composed.correspondence, &registry);
+        assert_does_the_same(&composed.plan, plan, &registry, catalog, name);
+        let diff = diff_operations(plan, &composed.plan, &composed.correspondence, &registry, catalog);
         assert!(diff.diff.is_empty(), "{}: {:?}", name, diff.diff);
     }
 }
 
-/// Asserts that `composed` does what the default program `plan` does: the same edges, each node the same operation,
-/// and so the same operation hash, by which the installer adopts or keeps the running generation.
+/// Asserts that the detached export of `plan` leaves out exactly the nodes of its scope that the comparison of what
+/// plans do leaves out of `plan`, with ADP's facts and signals kept bound, for the same reasons: one pass decides both.
+fn assert_leaves_out_what_the_comparison_does(
+    detached: &saluki_metric_plan::export::ExportBundle, plan: &Plan, registry: &OperatorRegistry,
+    catalog: &dyn saluki_metric_plan::validate::Catalog, name: &str,
+) {
+    let compared = eliminate(plan, registry, &policy_literals(catalog))
+        .omitted
+        .into_iter()
+        // The sources are outside the scope, and are never left out.
+        .map(|(node, why)| (node.local().to_string(), why))
+        .collect::<BTreeMap<_, _>>();
+    let exported = detached
+        .omitted
+        .iter()
+        .map(|(node, why)| (node.to_string(), *why))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(exported, compared, "{}", name);
+    // Host enrichment changes no metric in any configuration, and the nodes the export keeps are all it has.
+    assert_eq!(exported.get("metrics_enrich"), Some(&Omission::Identity), "{}", name);
+    for node in &detached.artifact.nodes {
+        assert!(!exported.contains_key(node.id.as_str()), "{}: {}", name, node.id);
+    }
+}
+
+/// Asserts that `composed` does what the default program `plan` does: without what does nothing as configured, the
+/// same nodes, each the same operation, the same edges, and so the same operation hash, by which the installer adopts
+/// or keeps the running generation.
 fn assert_does_the_same(
-    composed: &saluki_metric_plan::ir::Plan, plan: &saluki_metric_plan::ir::Plan, registry: &OperatorRegistry,
+    composed: &Plan, plan: &Plan, registry: &OperatorRegistry, catalog: &dyn saluki_metric_plan::validate::Catalog,
     name: &str,
 ) {
-    assert_eq!(composed.edges, plan.edges, "{}", name);
+    let literal = policy_literals(catalog);
+    let (composed, plan) = (
+        &eliminate(composed, registry, &literal).plan,
+        &eliminate(plan, registry, &literal).plan,
+    );
+    let edges = |plan: &Plan| {
+        let mut edges = plan
+            .edges
+            .iter()
+            .map(|edge| format!("{} -> {}", edge.from, edge.to))
+            .collect::<Vec<_>>();
+        edges.sort();
+        edges
+    };
+    assert_eq!(edges(composed), edges(plan), "{}", name);
     assert_eq!(composed.nodes.len(), plan.nodes.len(), "{}", name);
-    for (composed, default) in composed.nodes.iter().zip(&plan.nodes) {
+    let by_id = |plan: &Plan| {
+        let mut nodes = plan.nodes.clone();
+        nodes.sort_by(|a, b| a.id.cmp(&b.id));
+        nodes
+    };
+    for (composed, default) in by_id(composed).iter().zip(&by_id(plan)) {
         assert_eq!((&composed.id, &composed.op), (&default.id, &default.op), "{}", name);
         assert_eq!(
             operation_params(&composed.op, &composed.params),
@@ -184,7 +236,7 @@ fn assert_does_the_same(
 }
 
 /// Lowers the configuration `yaml`, and composes its unmodified detached export, and then the export with `edit`.
-/// Returns the default program, the export, and both compositions.
+/// Returns the default program, the export, both compositions, and the catalog.
 async fn compose_detached(
     yaml: &str, edit: impl FnOnce(&mut Value),
 ) -> (
@@ -192,6 +244,7 @@ async fn compose_detached(
     Value,
     saluki_metric_plan::compose::Composed,
     saluki_metric_plan::compose::Composed,
+    crate::programmable_metrics::catalog::AdpCatalog,
 ) {
     let registry = OperatorRegistry::native();
     let config = configuration(yaml).await;
@@ -207,6 +260,7 @@ async fn compose_detached(
         &lowered.catalog.to_document(),
         &BTreeMap::new(),
         ExportForm::Detached,
+        &OperatorRegistry::native(),
     )
     .unwrap();
     let approval = Approval {
@@ -233,6 +287,7 @@ async fn compose_detached(
         document.clone(),
         compose_document(document),
         compose_document(edited),
+        lowered.catalog.clone(),
     )
 }
 
@@ -251,20 +306,28 @@ async fn a_program_may_keep_a_mapper_interner_beyond_the_memory_limit_that_nativ
     // Native configuration sizes the DogStatsD mapper's interner at 128 MiB, twice the memory limit on programs.
     let yaml = "dogstatsd_mapper_string_interner_size: 134217728\ndogstatsd_mapper_profiles: [{name: p, prefix: \
                 \"p.\", mappings: [{match: \"p.*\", name: q}]}]";
-    let (plan, _, unmodified, grown) = compose_detached(yaml, |document| {
+    let (plan, _, unmodified, grown, catalog) = compose_detached(yaml, |document| {
         let mapper = document["nodes"]
             .as_array_mut()
             .unwrap()
             .iter_mut()
             .find(|node| node["op"] == "dogstatsd_mapper")
             .expect("the program maps DogStatsD names");
-        mapper["params"]["string_interner_bytes"] = serde_json::json!(134217728 + 1);
+        mapper["params"]["string_interner_bytes"] = serde_json::json!(134217728 + 67108864);
     })
     .await;
     // The unmodified export keeps it: valid, and the same as the default program, so it would adopt its generation.
     assert!(unmodified.report.is_valid(), "{}", unmodified.report);
-    assert_does_the_same(&unmodified.plan, &plan, &OperatorRegistry::native(), "unmodified");
-    // One byte more is growth beyond what native configuration sized the host for: the limit holds.
+    assert_does_the_same(
+        &unmodified.plan,
+        &plan,
+        &OperatorRegistry::native(),
+        &catalog,
+        "unmodified",
+    );
+    // Growth beyond what native configuration sized the host for is refused: the limit holds. (The program leaves out
+    // the tag filterlist, which has no rules, and the memory its context cache declares with it, which the mapper may
+    // take instead; 64 MiB more it may not.)
     let errors = errors_of(&grown, Rule::ArtifactMemory);
     assert_eq!(errors.len(), 1, "{}", grown.report);
     assert!(
@@ -306,7 +369,7 @@ async fn a_program_may_keep_a_routing_tee_wider_than_the_fan_out_limit_but_not_w
             .max()
             .unwrap_or(0)
     };
-    let (plan, exported, unmodified, widened) = compose_detached(&yaml, |document| {
+    let (plan, exported, unmodified, widened, catalog) = compose_detached(&yaml, |document| {
         // Another copy of the widest tee's input: one more port, to a drop.
         let tee = document["nodes"]
             .as_array_mut()
@@ -330,7 +393,13 @@ async fn a_program_may_keep_a_routing_tee_wider_than_the_fan_out_limit_but_not_w
     .await;
     assert!(wide(&exported) > 32, "{}", wide(&exported));
     assert!(unmodified.report.is_valid(), "{}", unmodified.report);
-    assert_does_the_same(&unmodified.plan, &plan, &OperatorRegistry::native(), "unmodified");
+    assert_does_the_same(
+        &unmodified.plan,
+        &plan,
+        &OperatorRegistry::native(),
+        &catalog,
+        "unmodified",
+    );
     let errors = errors_of(&widened, Rule::TeeFanOut);
     assert_eq!(errors.len(), 1, "{}", widened.report);
     assert!(
@@ -352,6 +421,85 @@ async fn served_export(yaml: &str) -> saluki_metric_plan::export::ExportBundle {
     let mut bundle = export(&lowered.plan, &scope, &lowered.catalog.to_document(), &BTreeMap::new()).unwrap();
     bundle.annotations = crate::programmable_metrics::installer::export_annotations(&bundle, &lowered.annotations);
     bundle
+}
+
+/// Returns the detached export of the one scope of the configuration `yaml` as ADP serves it, with its annotations.
+async fn served_detached_export(yaml: &str) -> saluki_metric_plan::export::ExportBundle {
+    let config = configuration(yaml).await;
+    let lowered = Lowering::new(Arc::new(config.clone()), facts(&config))
+        .unwrap()
+        .unwrap()
+        .lower(&config)
+        .unwrap();
+    let scope = ScopeName::new(METRICS_SCOPE).unwrap();
+    let mut bundle = export_as(
+        &lowered.plan,
+        &scope,
+        &lowered.catalog.to_document(),
+        &BTreeMap::new(),
+        ExportForm::Detached,
+        &OperatorRegistry::native(),
+    )
+    .unwrap();
+    bundle.annotations = crate::programmable_metrics::installer::export_annotations(&bundle, &lowered.annotations);
+    bundle
+}
+
+#[tokio::test]
+async fn the_detached_export_names_what_it_leaves_out_in_one_note_in_program_order() {
+    // DogStatsD with its defaults: nothing configured for its processing, and DogStatsD the only source.
+    let bundle = served_detached_export("").await;
+    let omitted = bundle
+        .omitted
+        .iter()
+        .map(|(node, why)| (node.as_str(), *why))
+        .collect::<Vec<_>>();
+    use Omission::*;
+    assert_eq!(
+        omitted,
+        [
+            ("dsd_enrich", Identity),
+            ("dsd_post_agg_filter", ConstantSplit),
+            ("dsd_post_agg_filter_true", Unreachable),
+            ("dsd_prefix_filter", Identity),
+            ("dsd_prefix_filter_blocklist", ConstantSplit),
+            ("dsd_prefix_filter_blocklist_true", Unreachable),
+            ("dsd_tag_filterlist", Identity),
+            ("metrics_enrich", Identity),
+            ("metrics_enrich_in", Identity),
+        ]
+    );
+    // Human names, in program order; the `drop`s go with their filters, unnamed.
+    assert_eq!(
+        bundle.annotations.omitted.as_deref(),
+        Some(
+            "Not shown, because they do nothing as configured: mapper (no profiles), namespace prefix (none), metric \
+             filterlist (empty), tag filterlist (empty), post-aggregation filter (empty), enrichment merge \
+             (one input), host enrichment (changes no metric)"
+        )
+    );
+    for node in bundle.omitted.keys() {
+        assert!(!bundle.annotations.nodes.contains_key(node), "{}", node);
+    }
+
+    // Configured, they show: with a mapper profile, a namespace, a filterlist entry, a tag rule, and a second source,
+    // only host enrichment and the histogram statistics filter, since the filterlist names no statistic, are left out.
+    let bundle = served_detached_export(
+        "metric_filterlist: [a.b]\nstatsd_metric_namespace: tenant\ndogstatsd_mapper_profiles: [{name: p, prefix: \
+         \"p.\", mappings: [{match: \"p.*\", name: q}]}]\nmetric_tag_filterlist: [{metric_name: x, action: exclude, \
+         tags: [y]}]\ndata_plane: {otlp: {enabled: true}}",
+    )
+    .await;
+    let omitted = bundle.omitted.keys().map(|node| node.as_str()).collect::<Vec<_>>();
+    assert_eq!(
+        omitted,
+        ["dsd_post_agg_filter", "dsd_post_agg_filter_true", "metrics_enrich"],
+        "{:?}",
+        bundle.annotations.omitted
+    );
+    // The bound export leaves nothing out, and says nothing.
+    let bound = served_export("").await;
+    assert!(bound.omitted.is_empty() && bound.annotations.omitted.is_none());
 }
 
 #[tokio::test]

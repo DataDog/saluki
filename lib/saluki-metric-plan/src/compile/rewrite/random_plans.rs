@@ -35,6 +35,10 @@ use crate::{
 };
 
 /// A stateless kernel of a random plan, with fixed parameters.
+///
+/// The `Unconfigured` kinds are nodes with nothing configured, which pass every record through unchanged
+/// ([`OperatorDef::is_identity`](crate::operators::OperatorDef::is_identity)): a namespace prefix with no namespace,
+/// a tag projection with no rules, host tags with none, and a mapper with no profiles.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum KernelKind {
     NamespacePrefix,
@@ -42,14 +46,22 @@ pub(super) enum KernelKind {
     HostEnrichment,
     HostTags,
     Mapper,
+    UnconfiguredNamespacePrefix,
+    UnconfiguredTagProjection,
+    UnconfiguredHostTags,
+    UnconfiguredMapper,
 }
 
-const KERNEL_KINDS: [KernelKind; 5] = [
+const KERNEL_KINDS: [KernelKind; 9] = [
     KernelKind::NamespacePrefix,
     KernelKind::TagProjection,
     KernelKind::HostEnrichment,
     KernelKind::HostTags,
     KernelKind::Mapper,
+    KernelKind::UnconfiguredNamespacePrefix,
+    KernelKind::UnconfiguredTagProjection,
+    KernelKind::UnconfiguredHostTags,
+    KernelKind::UnconfiguredMapper,
 ];
 
 /// One step of a chain inside a [`Shape::Rejoin`].
@@ -247,6 +259,22 @@ fn kernel_node(id: &str, kind: KernelKind) -> Value {
                 "cache_size": 100,
                 "string_interner_bytes": 65_536
             }),
+        ),
+        KernelKind::UnconfiguredNamespacePrefix => node(
+            id,
+            names::NAMESPACE_PREFIX,
+            json!({"namespace": "", "exclusions": ["app."]}),
+        ),
+        KernelKind::UnconfiguredTagProjection => node(
+            id,
+            names::TAG_PROJECTION,
+            json!({"rules": [], "value_rules": [], "cache_capacity": 16}),
+        ),
+        KernelKind::UnconfiguredHostTags => node(id, names::HOST_TAGS, json!({"tags": [], "deadline": "1003s"})),
+        KernelKind::UnconfiguredMapper => node(
+            id,
+            names::DOGSTATSD_MAPPER,
+            json!({"profiles": [], "cache_size": 100, "string_interner_bytes": 65_536}),
         ),
     }
 }

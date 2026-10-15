@@ -3,35 +3,22 @@ use super::*;
 /// Team B's URL, as the default program names its recipient.
 const TEAM_B: &str = "http://127.0.0.1:17102";
 
-/// The default program of the demo's configuration, detached and trimmed, as the editor prints it: the main `emit`
-/// names the primary endpoint and teams B and C, and the failover gateway reads its two signals.
+/// The default program of the demo's configuration, detached and trimmed, as the editor prints it: what does nothing as
+/// configured left out and noted at the top, the main `emit` names the primary endpoint and teams B and C, and the
+/// failover gateway reads its two signals.
 const PRINTED: &str = r#"policy metrics {
+  # Not shown, because they do nothing as configured: mapper (no
+  #   profiles), namespace prefix (none), metric filterlist (empty)
+
   base "sha256:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
 
   # Sources: where each one's metrics enter
-  input.dogstatsd -> dsd_prefix_filter_blocklist
-
-  # Metric filterlist, from `metric_filterlist`: matches drop
-  node dsd_prefix_filter_blocklist = split(
-    intake_name matches(values: [], prefix: false)
-  ) {
-    true  -> drop
-    false -> dsd_no_agg_split
-  }
+  input.dogstatsd -> dsd_no_agg_split
 
   # Timestamped points skip aggregation (no-aggregation pipeline)
   node dsd_no_agg_split = timestamp_split(window: 1s) {
-    default     -> dsd_tag_filterlist
+    default     -> dsd_agg
     passthrough -> dsd_post_agg_filter_in.1
-  }
-
-  # Tag filterlist and value rules: `metric_tag_filterlist`, `metric_tag_value_allowlist`
-  node dsd_tag_filterlist = tag_projection(
-    rules: [],
-    value_rules: [],
-    cache_capacity: 100000,
-  ) {
-    -> dsd_agg
   }
 
   # Aggregation; edits keep its state unless they change its window or lineage
@@ -51,11 +38,12 @@ const PRINTED: &str = r#"policy metrics {
 
   # Aggregated and timestamped points rejoin
   node dsd_post_agg_filter_in = merge(inputs: 2) {
-    -> metrics_enrich
+    -> dsd_post_agg_filter_fanout
   }
 
-  # Host enrichment: leaves metrics unchanged
-  node metrics_enrich = host_enrichment {
+  # Copies every metric to the client telemetry tap and to enrichment
+  node dsd_post_agg_filter_fanout = tee {
+    -> emit dsd_client_telemetry
     -> metrics_policy
   }
 
@@ -110,6 +98,7 @@ fn each_edit_changes_the_lines_its_scenario_describes() {
             &[
                 "    -> drop_debug",
                 "  node drop_debug = split(name starts_with \"demo.debug.\") {",
+                "    true  -> drop",
                 "    false -> metrics_policy",
             ],
             &["    -> metrics_policy"],
@@ -169,8 +158,8 @@ fn each_edit_changes_the_lines_its_scenario_describes() {
             "S5e",
             PRINTED,
             Box::new(policy_binding),
-            &["    intake_name matches(values: config(\"dogstatsd.metric_filter.values\"), prefix: false)"],
-            &["    intake_name matches(values: [], prefix: false)"],
+            &["    histogram_percentiles: config(\"metrics_encoding.histogram.percentiles\"),"],
+            &["    histogram_percentiles: [95],"],
         ),
         (
             "S5f",
@@ -194,8 +183,8 @@ fn each_edit_changes_the_lines_its_scenario_describes() {
             "S14a",
             PRINTED,
             Box::new(rename_aggregation),
-            &["    -> agg", "  node agg = aggregate("],
-            &["    -> dsd_agg", "  node dsd_agg = aggregate("],
+            &["    default     -> agg", "  node agg = aggregate("],
+            &["    default     -> dsd_agg", "  node dsd_agg = aggregate("],
         ),
     ];
     for (case, source, edit, added, removed) in cases {
@@ -265,8 +254,8 @@ fn the_aggregation_moves_after_enrichment_and_its_feeder_feeds_what_it_fed() {
         .map(|edge| format!("{} -> {}", edge.from, edge.to))
         .collect::<Vec<_>>();
     for edge in [
-        "dsd_tag_filterlist.out -> dsd_post_agg_filter_in.0",
-        "metrics_enrich.out -> dsd_agg.in",
+        "dsd_no_agg_split.default -> dsd_post_agg_filter_in.0",
+        "dsd_post_agg_filter_fanout.1 -> dsd_agg.in",
         "dsd_agg.out -> metrics_policy.in",
     ] {
         assert!(edges.iter().any(|found| found == edge), "{} in {:?}", edge, edges);
@@ -274,7 +263,9 @@ fn the_aggregation_moves_after_enrichment_and_its_feeder_feeds_what_it_fed() {
     assert_eq!(parsed.nodes.len(), parses("default", PRINTED).nodes.len());
     // The aggregation's section comment goes with it; it is defined right above the policy section.
     assert!(!edited.contains("# Aggregation"), "{}", edited);
-    assert!(edited.find("\n  node dsd_agg = ").unwrap() > edited.find("\n  node metrics_enrich = ").unwrap());
+    assert!(
+        edited.find("\n  node dsd_agg = ").unwrap() > edited.find("\n  node dsd_post_agg_filter_fanout = ").unwrap()
+    );
     assert!(edited.find("\n  node dsd_agg = ").unwrap() < edited.find("  # Recipients:").unwrap());
 }
 

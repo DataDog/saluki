@@ -68,6 +68,7 @@ fn bundle() -> ExportBundle {
         )]),
         annotations: Default::default(),
         form: Default::default(),
+        omitted: Default::default(),
     }
 }
 

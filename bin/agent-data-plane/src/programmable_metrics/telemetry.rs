@@ -593,6 +593,8 @@ pub struct InstallerTelemetry {
     cut_cancellations_refused: Counter,
     rewrites: Vec<(RewriteId, Gauge)>,
     native_gauges: BTreeMap<NativeKey, Gauge>,
+    /// The node each native gauge the installer sets from a plan was last set for.
+    binding_gauge_nodes: BTreeMap<NativeKey, NodeId>,
     native_counters: BTreeMap<NativeKey, Counter>,
     budget_granted: Gauge,
     budget_used: Gauge,
@@ -633,6 +635,7 @@ impl InstallerTelemetry {
             rewrites: Vec::new(),
             topology,
             native_gauges: BTreeMap::new(),
+            binding_gauge_nodes: BTreeMap::new(),
             native_counters: BTreeMap::new(),
             budget_granted: builder.register_gauge_with_tags(PLAN_RESOURCE_BUDGET_BYTES, [("state", "granted")]),
             budget_used: builder.register_gauge_with_tags(PLAN_RESOURCE_BUDGET_BYTES, [("state", "used")]),
@@ -728,6 +731,10 @@ impl InstallerTelemetry {
     /// Sets the native gauges the installer records from the plan of a generation, as the generation is installed:
     /// the length of a bound list (`BindingLength`), the entries a name matcher keeps for it (`MatcherEntries`), and
     /// the rules a tag filterlist puts in effect (`TagProjectionRules`).
+    ///
+    /// A gauge set before for a node the plan does not have is set to zero: a published program written from the
+    /// detached export leaves out a filterlist with nothing in it and a tag filterlist with no rules, which is what an
+    /// empty list and no rules imply, rather than keep the value of a generation that no longer runs.
     pub fn set_binding_gauges(&mut self, plan: &Plan) {
         for node in &plan.nodes {
             let Some(native) = native_telemetry(&node.id, node.op.as_str()) else {
@@ -750,7 +757,16 @@ impl InstallerTelemetry {
                 if let (Some(value), NativeMetricKind::Gauge) = (value, metric.kind) {
                     if let Some(gauge) = self.native_gauge(&native, metric) {
                         gauge.set(value as f64);
+                        self.binding_gauge_nodes
+                            .insert(Self::native_key(&native, metric), node.id.clone());
                     }
+                }
+            }
+        }
+        for (key, node) in &self.binding_gauge_nodes {
+            if plan.node(node).is_none() {
+                if let Some(gauge) = self.native_gauges.get(key) {
+                    gauge.set(0.0);
                 }
             }
         }

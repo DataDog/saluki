@@ -46,6 +46,11 @@ impl OperatorDef for HostEnrichment {
         EffectContract::passthrough()
     }
 
+    fn is_identity(&self, _params: &DecodedParams) -> bool {
+        // Its kernel leaves every batch as it is, whatever the host.
+        true
+    }
+
     fn kernel(&self, _params: &DecodedParams) -> Option<KernelSpec> {
         Some(KernelSpec::new(|_context| Ok(Box::new(HostEnrichmentKernel))))
     }
@@ -100,6 +105,12 @@ impl OperatorDef for HostTags {
     fn cost(&self, _params: &DecodedParams) -> u32 {
         // Until its deadline, every metric's tags are extended.
         30
+    }
+
+    fn is_identity(&self, params: &DecodedParams) -> bool {
+        // No tags to add leaves every metric as it is, whatever the deadline. Tags still bound to a host fact are not
+        // known, so a node that binds them is never left out.
+        params.list("tags").is_some_and(<[_]>::is_empty)
     }
 
     fn kernel(&self, params: &DecodedParams) -> Option<KernelSpec> {

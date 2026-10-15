@@ -162,3 +162,23 @@ proptest! {
         );
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// With no host tags, the kernel adds nothing before its deadline or after: it leaves every metric as it is, which a
+    /// plan's `host_tags` node whose tags are a literal empty list says when it is left out of what a program does.
+    #[test]
+    fn property_test_no_host_tags_leave_every_metric_as_it_is(
+        metrics in vec(arb_metric(), 0..24),
+        before in any::<bool>(),
+    ) {
+        let mut kernel = HostTags::new(SharedTagSet::default(), AdmissionTime::from_unix_secs(1000));
+        let header = BatchHeader {
+            admitted_at: Some(AdmissionTime::from_unix_secs(if before { 999 } else { 1000 })),
+            ..Default::default()
+        };
+        let consumed = consume(&mut kernel, &header, 1, buffer_of(metrics.clone()));
+        prop_assert_eq!(&consumed.ports[0], &metrics);
+    }
+}

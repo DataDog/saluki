@@ -229,7 +229,17 @@ impl Site {
             },
             _ => Constant::Kinds(input),
         };
+        Self::folding(graph, scoped, split, (live, dead, value), constant)
+    }
 
+    /// Returns the application that folds `split`, whose every record leaves by `live` and none by `dead`, as `value`
+    /// says, if R3's obligations for removing what only `dead` feeds hold: no source, fence, stateful or dynamic
+    /// operator, or node a scope names is removed, every other node that loses an input is a `merge` that keeps
+    /// another, and no scope exit names the port `live` leads to.
+    fn folding(
+        graph: &Graph<'_>, scoped: &ScopePorts<'_>, split: usize, (live, dead, value): (usize, usize, bool),
+        constant: Constant,
+    ) -> Option<Self> {
         // The nodes every one of whose inputs the dead port, or a node removed already, feeds. In topological order,
         // every node's inputs are decided before it is.
         let mut dead_inputs = BTreeSet::from([graph.target(split, dead)?]);
@@ -499,6 +509,56 @@ impl Site {
             })
             .collect()
     }
+}
+
+/// A constant `split` folded by R3's rules for a caller that decides constancy on its own terms: the detached export and
+/// the comparison of what plans do ([`eliminate`](crate::export::eliminate)), which decide by literal operands that R3
+/// leaves alone.
+pub(crate) struct Folded {
+    /// Each plan given, with the `split` folded and what only its dead port fed removed.
+    pub plans: Vec<Plan>,
+
+    /// The nodes removed besides the `split`, in plan order: those only its dead port reached.
+    pub unreachable: Vec<NodeId>,
+}
+
+/// Folds the `split` at position `split` of `graph`, whose every record leaves by its `true` port if `value` is true,
+/// and by its `false` port otherwise, in each of `plans`, if R3's obligations hold: the `split` is no dynamic operator,
+/// and no scope names it, and what only its dead port feeds can be removed ([`Site`]'s obligations).
+///
+/// Every plan must have the nodes and edges of the plan `graph` was built from, in the same order, but may differ in
+/// parameters that no port depends on: the decision is the graph's, and is applied to each as it is.
+pub(crate) fn fold_split(plans: &[&Plan], graph: &Graph<'_>, split: usize, value: bool) -> Option<Folded> {
+    let op = graph.op(split)?;
+    if op.name() != names::SPLIT || op.contract().is_dynamic() {
+        return None;
+    }
+    let scoped = ScopePorts::of(plans.first()?);
+    if scoped.names_node(graph.id(split)) {
+        return None;
+    }
+    let true_port = op.ports().output(&PortName::from_static(TRUE_PORT))?;
+    let false_port = op.ports().output(&PortName::from_static(FALSE_PORT))?;
+    let ports = if value {
+        (true_port, false_port, true)
+    } else {
+        (false_port, true_port, false)
+    };
+    let site = Site::folding(
+        graph,
+        &scoped,
+        split,
+        ports,
+        Constant::Literal {
+            predicate_is_const: false,
+        },
+    )?;
+    let plans = plans
+        .iter()
+        .map(|plan| site.rewrite(plan, graph).map(|rewritten| rewritten.plan))
+        .collect::<Option<Vec<_>>>()?;
+    let unreachable = site.removed.iter().map(|&node| graph.id(node).clone()).collect();
+    Some(Folded { plans, unreachable })
 }
 
 /// Returns the name of one output port of a node.

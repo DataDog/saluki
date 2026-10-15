@@ -889,17 +889,31 @@ impl Runner {
     async fn scenarios(&mut self) -> Result<(), GenericError> {
         let (source, boot) = self.baseline().await?;
 
+        // The default program as the editor loads it leaves out what does nothing as configured: it does what the
+        // default program does, so the editor shows no change in what it does, and ADP installs it as a generation
+        // that builds no kernel and makes no cut, after which the plan running is the program as published.
+        let cuts_of = |state: &Value| lanes::CUT_OUTCOMES.map(|outcome| lanes::cuts(state, outcome));
+        let cuts_before = cuts_of(&self.state().await?);
         self.step(
             "S0",
             "publish the unmodified default program",
             source.clone(),
             Compiled::Clean { unchanged: true },
             Installed::Active {
-                new_generation: false,
+                new_generation: true,
                 routing: Some(default_routing()),
             },
         )
         .await?;
+        let cuts_after = cuts_of(&self.state().await?);
+        if cuts_after != cuts_before {
+            return Err(generic_error!(
+                "S0: publishing the unmodified default program changed plan_cuts_total (completed, cancelled, \
+                 not_armed) from {:?} to {:?}: it should be a commit.",
+                cuts_before,
+                cuts_after
+            ));
+        }
         self.check_routes(&boot, None).await?;
         self.check_program("S0", "published", "not_applied").await?;
 

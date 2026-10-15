@@ -1431,7 +1431,8 @@ fn inline_blobs(params: &Params, blobs: &Blobs) -> Result<Params, BlobError> {
 /// configuration binding written as the value it has now (the artifact's resolved from `catalog`), and every literal
 /// `flag` and `is_empty` folded, as the detached export writes them ([`Predicate::fold_literals`]), as written or, when
 /// both decode, as their operator decodes them, so that a set written in another order is the same set. So a literal
-/// equal to a binding's value is the same operation, and the detached export composes to the default program: an
+/// equal to a binding's value is the same operation, and the detached export composes to what the default program
+/// does, without the nodes it leaves out because they do nothing ([`eliminate`](crate::export::eliminate)): an
 /// operation is what it does with the values it has, not where they come from. Such a node composes as the artifact
 /// writes it, so a later change of the binding's value leaves it as it is: the next composition, which follows every
 /// configuration change, finds it modified, still with the artifact's value.
