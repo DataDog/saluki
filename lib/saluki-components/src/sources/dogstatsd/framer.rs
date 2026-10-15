@@ -17,6 +17,23 @@ impl DsdFramer {
             Self::Stream(framer) => framer.take_completed_outer_frames(),
         }
     }
+
+    /// Sets whether newly extracted outer frames are retained. Has no effect on non-stream framers.
+    pub fn set_retain_outer_frames(&mut self, retain: bool) {
+        if let Self::Stream(framer) = self {
+            framer.set_retain_outer_frames(retain);
+        }
+    }
+
+    /// Drains the outer frames retained since the last call. Always empty for non-stream framers.
+    pub fn drain_outer_frames(&mut self) -> impl Iterator<Item = Bytes> + '_ {
+        match self {
+            Self::NonStream(_) => None,
+            Self::Stream(framer) => Some(framer.drain_outer_frames()),
+        }
+        .into_iter()
+        .flatten()
+    }
 }
 
 impl Framer for DsdFramer {
