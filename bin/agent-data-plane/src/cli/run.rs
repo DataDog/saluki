@@ -53,7 +53,7 @@ use saluki_core::{
     accounting::{ComponentBounds, ComponentRegistry},
     data_model::origin::OriginTagCardinality,
     health::HealthRegistry,
-    runtime::{state::ResourceRegistry, RestartMode, RestartStrategy, Supervisor, SupervisorError},
+    runtime::{self, state::ResourceRegistry, RestartMode, RestartStrategy, Supervisor, SupervisorError},
     topology::TopologyBlueprint,
 };
 use saluki_env::{features, EnvironmentProvider as _, HostProvider as _};
@@ -287,7 +287,7 @@ pub async fn handle_run_command(
         internal_supervisor.add_worker(env_supervisor);
     }
     root_supervisor.add_worker(internal_supervisor);
-    root_supervisor.add_worker(blueprint);
+    root_supervisor.add_worker(runtime::supervisable(blueprint).needed().build());
 
     // Once the topology is healthy, log readiness and emit our startup metrics.
     tokio::spawn(async move {

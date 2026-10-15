@@ -580,6 +580,7 @@ impl Encoder for DatadogMetrics {
         );
         runtime::worker("request_builder", request_builder_fut)
             .on_runtime(context.topology_context().global_thread_pool().clone())
+            .needed()
             .spawn();
 
         health.mark_ready();

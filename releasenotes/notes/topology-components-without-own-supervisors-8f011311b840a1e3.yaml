@@ -1,0 +1,5 @@
+enhancements:
+  - |
+    In the supervision tree that ``agent-data-plane debug runtime show-processes`` shows, each topology component now
+    runs directly under the topology. Before, each component ran under a supervisor of its own. The node of each
+    component shows its own memory and CPU figures, and everything that the component starts appears under that node.

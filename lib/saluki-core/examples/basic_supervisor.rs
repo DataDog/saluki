@@ -52,8 +52,8 @@ async fn main() -> Result<(), GenericError> {
     // Based on the timing of the simulated failures, we should see a few things happen:
     //
     // - the admin API supervisor will periodically restart the failed connection handler worker
-    // - the admin API acceptor will keep accepting connections, and each restart of that supervisor discards the
-    //   connections accepted since the last one, since dynamic children aren't restored by a restart
+    // - the admin API acceptor will continue to accept connections, and a child of the acceptor handles each connection
+    // - when the acceptor stops, it also stops these children
     // - the telemetry supervisor will periodically restart the panicked collector worker
     // - since the telemetry collector worker fails too often, the telemetry supervisor will eventually shutdown due to
     //   its restart strategy, which the parent supervisor will detect, causing it to restart the entire telemetry
@@ -123,13 +123,15 @@ impl Supervisable for ConnectionAcceptor {
                         accepted += 1;
                         info!(accepted, "Accepted connection; spawning handler.");
 
-                        // Spawned on the ambient supervisor, which is the one supervising *this* worker: the admin API
-                        // supervisor. Handlers are therefore siblings of the acceptor rather than tasks it has to
-                        // manage itself, and they're torn down whenever that supervisor stops or restarts -- including
-                        // the restarts the connection handler worker above triggers.
+                        // This call spawns the handler as a child of *this* worker, and the scope of the worker holds
+                        // it. The handlers belong to the acceptor, and the acceptor does not finish until they finish.
+                        // When the acceptor stops, its scope stops the handlers. The acceptor stops when it is told to
+                        // stop, or when its supervisor restarts it.
                         //
                         // Note that nothing had to be threaded here to make that work: no handle of any kind. Any code
-                        // running under supervision can do this, including helpers several calls deep.
+                        // running under supervision can do this, including helpers several calls deep. To give a
+                        // child to the supervisor instead, so that it outlives the acceptor, use `spawn_sibling`. The
+                        // acceptor runs directly under that supervisor, so such a child is its sibling.
                         //
                         // `Brutal` because this stand-in for a connection has no terminal condition of its own: it
                         // sleeps for far longer than any shutdown would wait, and never looks at anything that would

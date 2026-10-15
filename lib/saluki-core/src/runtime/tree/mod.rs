@@ -857,7 +857,18 @@ impl Walk {
             PendingKind::Supervisor(node) => self.supervisor(&node, child.facts, depth),
 
             PendingKind::Worker { adopted, scope } => {
-                let mut snapshot = self.worker(child.facts, child.start, worker_group, depth);
+                // Usually, a worker counts against the resource group of its supervisor. But a worker can represent
+                // something with its own accounting, for example a topology component. Such a worker owns a group with
+                // the name of its process.
+                let own_group = child
+                    .start
+                    .as_ref()
+                    .map(|start| &start.process_name)
+                    .filter(|name| self.groups.contains_key(*name))
+                    .cloned();
+                let worker_group = own_group.as_ref().or(worker_group);
+
+                let mut snapshot = self.worker(child.facts, child.start, worker_group, own_group.is_some(), depth);
 
                 // The worker was found to drive a supervisor of its own. The parent supervises the worker, so the
                 // worker stays the node. The supervisor that the worker drives appears under the worker.
@@ -888,10 +899,18 @@ impl Walk {
     }
 
     fn worker(
-        &mut self, facts: ParentFacts, start: Option<StartedChild>, worker_group: Option<&Arc<str>>, depth: usize,
+        &mut self, facts: ParentFacts, start: Option<StartedChild>, worker_group: Option<&Arc<str>>, owns_group: bool,
+        depth: usize,
     ) -> NodeSnapshot {
         let (process_id, process_name, started) = split_run(start.as_ref());
         let state = node_state(facts.exited, process_id.is_some());
+
+        // Usually, a worker owns no resource group. Its allocations count against the supervisor named above. If each
+        // worker reports the totals of its supervisor, the same totals are counted many times. A worker that owns a
+        // resource group reports its figures, as a supervisor does.
+        let resources = owns_group
+            .then(|| worker_group.and_then(|group| self.groups.get(group).cloned()))
+            .flatten();
 
         self.node_snapshot(
             NodeKind::Worker,
@@ -902,9 +921,7 @@ impl Walk {
                 started,
                 state,
                 resource_group: worker_group.cloned(),
-                // A worker owns no resource group: its allocations are counted against the supervisor named above.
-                // Reporting the supervisor's totals against each of its workers would count them many times over.
-                resources: None,
+                resources,
             },
             depth,
         )
