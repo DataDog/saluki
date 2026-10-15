@@ -513,6 +513,14 @@ pub enum HttpStatusMatcher {
     NotEqual(u16),
 }
 
+/// Matcher for the response body of an [`AssertionConfig::HttpCheck`].
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HttpBodyMatcher {
+    /// Assertion passes when the response body equals this value.
+    Equal(String),
+}
+
 impl CaseConfig for IntegrationConfig {
     fn set_loaded_from(&mut self, path: PathBuf) {
         self.loaded_from = path;
