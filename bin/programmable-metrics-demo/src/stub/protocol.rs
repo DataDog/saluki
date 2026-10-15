@@ -34,7 +34,9 @@ pub const RESOURCES_PRODUCT: &str = "resources";
 /// The config ID the demo publishes its artifact for the policy scope under.
 pub const DEMO_CONFIG_ID: &str = "demo";
 
-/// The config ID the demo publishes its resources artifact under: the product's only config.
+/// The config ID the stub's tests publish a resources artifact under: the product's only config. The demo itself
+/// publishes none.
+#[cfg(test)]
 pub const RESOURCES_CONFIG_ID: &str = "demo-resources";
 
 /// The scope whose artifact the top-level status members describe, and which the demo's config `demo` replaces.
@@ -150,8 +152,8 @@ pub struct ConfigState {
     /// composition says beside its state: why it runs degraded, or a note such as advice to rebase.
     pub error: Option<String>,
 
-    /// The outputs whose emits an `active` artifact runs without, which its `error` names (see [`dropped_outputs`]):
-    /// the artifact is degraded if there are any. The demo derives this; it is not a member ADP writes.
+    /// `error` names (see [`dropped_outputs`]): the artifact is degraded if there are any. The demo derives this; it is
+    /// not a member ADP writes.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub dropped_outputs: Vec<String>,
 }
@@ -194,31 +196,53 @@ const DROPPED_OUTPUT_NOTE: &str = "output `";
 /// an output that is no longer declared, or now delivers elsewhere, with counted drops.
 const EMITS_DROPPED: &str = "its emits are dropped";
 
-/// Returns the outputs an `active` acknowledgment's error says the artifact's emits to are dropped, each once, in the
-/// order it names them: the artifact runs degraded if there are any.
+/// How each reason for an artifact's `emit`s addressed to recipients that are no longer available starts, followed by
+/// the recipients as the program writes them (`to ["http://127.0.0.1:17105"]`) and [`RECIPIENT_EMITS_DROPPED`].
+const DROPPED_RECIPIENTS_NOTE: &str = "the emits ";
+
+/// What follows the recipients in a reason that the `emit`s to them are dropped.
+const RECIPIENT_EMITS_DROPPED: &str = " are dropped until they are available again";
+
+/// Returns what an `active` acknowledgment's error says the artifact's emits to are dropped, each once, in the order it
+/// names them: the outputs, and the recipients written as `to [<name>, ...]`. The artifact runs degraded if there are
+/// any.
 ///
-/// ADP joins what composition says about an artifact in effect with `; `, and each reason for a degraded artifact
-/// starts with the output and says its emits are dropped (``output `resources_team_d` is no longer declared; its emits
-/// are dropped until it returns``). Any other note names no dropped output: such an artifact runs as written.
+/// ADP joins what composition says about an artifact in effect with `; `. A reason for a degraded artifact starts with
+/// the output and says its emits are dropped (``output `resources_team_d` is no longer declared; its emits are dropped
+/// until it returns``), or starts with the emits to recipients and says they are dropped (`the emits to
+/// ["http://127.0.0.1:17105"] are dropped until they are available again: the host has no recipient ...`). Any other
+/// note names nothing dropped: such an artifact runs as written.
 pub fn dropped_outputs(error: &str) -> Vec<&str> {
-    // Where each note about an output starts: the start of the text, or after the separator.
+    // Where each note starts: the start of the text, or after the separator.
     let starts = error
-        .match_indices(DROPPED_OUTPUT_NOTE)
-        .map(|(index, _)| index)
-        .filter(|&index| index == 0 || error[..index].ends_with("; "))
+        .match_indices("; ")
+        .map(|(index, _)| index + 2)
+        .chain(std::iter::once(0))
+        .filter(|&index| {
+            error[index..].starts_with(DROPPED_OUTPUT_NOTE) || error[index..].starts_with(DROPPED_RECIPIENTS_NOTE)
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
         .collect::<Vec<_>>();
-    let mut outputs = Vec::new();
+    let mut dropped = Vec::new();
     for (position, &start) in starts.iter().enumerate() {
         let end = starts.get(position + 1).copied().unwrap_or(error.len());
-        let note = &error[start + DROPPED_OUTPUT_NOTE.len()..end];
-        let Some((output, said)) = note.split_once('`') else {
-            continue;
+        let note = &error[start..end];
+        let target = if let Some(note) = note.strip_prefix(DROPPED_OUTPUT_NOTE) {
+            note.split_once('`')
+                .filter(|(_, said)| said.contains(EMITS_DROPPED))
+                .map(|(output, _)| output)
+        } else {
+            note.strip_prefix(DROPPED_RECIPIENTS_NOTE)
+                .and_then(|note| note.find(RECIPIENT_EMITS_DROPPED).map(|at| &note[..at]))
         };
-        if said.contains(EMITS_DROPPED) && !outputs.contains(&output) {
-            outputs.push(output);
+        if let Some(target) = target {
+            if !dropped.contains(&target) {
+                dropped.push(target);
+            }
         }
     }
-    outputs
+    dropped
 }
 
 /// ADP's status summary, sent with every poll and served by `GET /programmable-metrics/status`.
@@ -256,6 +280,26 @@ pub struct ChannelStatus {
 
     /// The status of the resources product, once ADP has seen a resources config.
     pub resources: Option<ResourcesStatus>,
+
+    /// Which program the active generation runs, and whether native policy settings apply to it, when ADP says.
+    pub program: Option<ProgramStatus>,
+}
+
+/// Which program ADP's active generation runs, as its status's `program` member says.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ProgramStatus {
+    /// `default` (the default program, lowered from native configuration) or `published`.
+    #[serde(default)]
+    pub runs: String,
+
+    /// `applied` (the default program's native policy settings apply) or `not_applied` (a published program owns its
+    /// policy).
+    #[serde(default)]
+    pub native_policy: String,
+
+    /// The native policy settings, by binding, whose current value the running program does not run.
+    #[serde(default)]
+    pub differs: Vec<String>,
 }
 
 /// The status of the resources product, as ADP reports it.
@@ -337,6 +381,7 @@ impl ChannelStatus {
             live_generations: member(status, path, "live_generations", notes).flatten(),
             scopes: ScopeState::read_all(status, path, notes),
             resources: ResourcesStatus::read(status, path, notes),
+            program: member::<Option<ProgramStatus>>(status, path, "program", notes).flatten(),
         }
     }
 }
@@ -807,6 +852,15 @@ mod tests {
         assert_eq!(
             dropped_outputs("output `b` now delivers elsewhere; rebase"),
             Vec::<&str>::new()
+        );
+        // Emits addressed to recipients that are gone are named by their recipients, as the program writes them.
+        let gone =
+            "the emits to [\"http://127.0.0.1:50001\"] are dropped until they are available again: the host has \
+                    no recipient `http://127.0.0.1:50001`";
+        assert_eq!(dropped_outputs(gone), ["to [\"http://127.0.0.1:50001\"]"]);
+        assert_eq!(
+            dropped_outputs(&[removed, gone].join("; ")),
+            ["resources_team_d", "to [\"http://127.0.0.1:50001\"]"]
         );
 
         let (status, notes) = AdpStatus::read(&json!({"config_states": [

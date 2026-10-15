@@ -160,22 +160,28 @@ Release notes, one per stage that changed what operators see:
   `nightly-2026-01-18`, for `check-fmt`, `fmt`, and `generate-api-docs`), `cargo-sort`, `cargo-machete`, `cargo-hack`,
   `cargo-deny`, and `dd-rust-license-tool` (the `Makefile` installs these as needed), and `vale`.
 - The demo needs no Datadog Agent. ADP runs in standalone mode, every listener is on 127.0.0.1, and nothing leaves the
-  machine. TCP ports 17080, 17100 to 17105, 17110, and 17111 and UDP port 17125 must be free (each plus 10000 for the
-  check).
+  machine. TCP ports 17080, 17100 to 17104, 17110, and 17111 and UDP port 17125 must be free (each plus 10000 for the
+  check); a destination added while the demo runs takes a port the system picks.
 
 ### The demo
 
 `make demo-programmable-metrics` builds ADP (`make build-adp`, profile `devel`) and the demo, then runs
 `target/devel/programmable-metrics-demo run --adp-bin target/devel/agent-data-plane $(DEMO_ARGS)`. Open
 `http://127.0.0.1:17080`. Ctrl-C, `SIGTERM`, or `SIGHUP` stops the demo and ADP (ADP gets `SIGTERM`, then `SIGKILL`
-after 10 s or on a second Ctrl-C). A `SIGKILL` of the demo leaves ADP running in its own process group; before starting
-ADP, the launcher names any port that is taken, which is usually such a leftover ADP.
+after 10 s or on a second Ctrl-C), and then every recording intake, those of added destinations included. A `SIGKILL`
+of the demo leaves ADP running in its own process group; before starting ADP, the launcher names any port that is
+taken, which is usually such a leftover ADP.
 
 - **Run directory**: `target/programmable-metrics-demo/run-<unix seconds>` by default. `DEMO_ARGS="--run-dir <dir>"`
-  reuses one, which keeps the published artifact across a restart (scenario S7). It holds `ipc_cert.pem` (self-signed,
-  owner-only), `datadog.yaml` (the whole ADP configuration: inherited `DD_*` variables are removed from ADP's
-  environment), `adp.log`, `adp.console.log`, and `channel/` (the stub's store, `store.json` and `history.jsonl`).
-- **Ports**, each with a flag (for example `DEMO_ARGS="--ui-port 18080"`):
+  reuses one, which keeps the published artifact across a restart (scenario S7), though not the destinations added:
+  the configuration file is written anew at every start. A kept program that names a destination added before the
+  restart therefore names a URL ADP no longer has: the restarted ADP receives it as a new artifact, which waits,
+  `pending` ("waiting for recipient ..."), while the default program runs, until a program without that URL is
+  published or the program is revoked. It holds `ipc_cert.pem` (self-signed, owner-only),
+  `datadog.yaml` (the whole ADP configuration: inherited `DD_*` variables are removed from ADP's environment),
+  `adp.log`, `adp.console.log`, and `channel/` (the stub's store, `store.json` and `history.jsonl`).
+- **Ports**, each with a flag (for example `DEMO_ARGS="--ui-port 18080"`). A destination added while the demo runs
+  listens on a port the system picks, shown in its column.
 
   | Listener | Port | Flag |
   |---|---|---|
@@ -185,7 +191,6 @@ ADP, the launcher names any port that is taken, which is usually such a leftover
   | Team B intake (additional endpoint) | 17102 | `--team-b-port` |
   | Team C intake (additional endpoint) | 17103 | `--team-c-port` |
   | Multi-Region Failover intake | 17104 | `--mrf-port` |
-  | Team D intake (declared only by a resources artifact) | 17105 | `--team-d-port` |
   | ADP unprivileged API | 17110 | `--api-port` |
   | ADP privileged API (mutual TLS) | 17111 | `--secure-api-port` |
   | ADP DogStatsD (UDP) | 17125 | `--dogstatsd-port` |
@@ -196,6 +201,30 @@ ADP, the launcher names any port that is taken, which is usually such a leftover
   `--traffic-paused`, `--contexts` (load contexts the traffic cycles through, ten per datagram as `demo.load` tagged
   `context:N`, so that many contexts spread over the state lanes; 0), and `--no-launch` (serves the demo for an ADP
   started separately and prints its command line).
+- **Configuration**: the launcher writes `datadog.yaml` with the primary endpoint, teams B and C as ordinary
+  `additional_endpoints`, the failover endpoint (`multi_region_failover.enabled: true`, `failover_metrics: false`),
+  the stub, and `experimental.standalone_config_reload` (`enabled: true`, `interval: 250ms`), so that ADP re-reads the
+  file and applies a change live; `launcher/config.rs` lists every key. There is no endpoint routing and no resources
+  artifact: natively an additional endpoint receives everything (dual shipping), so the default program sends the
+  primary endpoint and teams B and C every family, and the failover endpoint nothing. ADP names the recipients
+  `primary`, `mrf`, and each additional endpoint by its URL (`"http://127.0.0.1:17102"`); the demo keeps the labels
+  (`Team B`), which ADP never sees, and writes them beside the URLs in the editor's comments. The standalone reload
+  exists for this demo only (see the [configuration
+  reference](../agent-data-plane/configuration/configuration.md#experimentalstandalone_config_reload)).
+- **Destinations**: **Add destination** (`POST /api/destinations`) starts a recording intake on a free port, with an
+  API key of its own (`demo-dest-d`) and a label (`Destination D`, then `E`, and so on, at most eight at once), and
+  adds it to `additional_endpoints`, written atomically. ADP declares it within about a second; its column says "not
+  declared yet" until ADP's directory names it, and "declared, not addressed" while no `emit` of the running program
+  reaches it. **Remove** (`DELETE /api/destinations/{name}`, teams B and C included) takes it out of the file: ADP
+  drains its recipient and retires it, and the intake answers until a status ADP sent after it applied the file says
+  so (at most 60 s), then stops and its column goes. A new destination never takes a port an earlier one had in the
+  run. **Pause** on an added destination answers `503`, so that a removal meanwhile drains to its deadline.
+- **Native configuration**: the card of that name writes the failover signal (`failover on`,
+  `multi_region_failover.failover_metrics`) and `metric_filterlist` (`POST /api/native`). The default program applies
+  both. A published program reads the signal live and owns its policy, so a filterlist change reaches only the default
+  program: ADP lists the setting under `program.differs`, and the card and the header say so.
+- **The header** says what runs, from the `program` member of ADP's status, with how many native settings differ:
+  either `Running: the default program` or `Running: published revision N (native policy settings not applied)`.
 - **Lanes** (stage 9): ADP runs on its automatic lanes, which on this Mac's 18 cores are 16 producer lanes, 4 state
   lanes, and 8 post-aggregation lanes. `--decoders N` (written as `dogstatsd_workers_count`, so the producer lanes up to
   16), `--state-lanes N`, and `--post-lanes N` (the `lanes.*` keys; 0 is automatic) make them visible and few; any of
@@ -206,55 +235,97 @@ ADP, the launcher names any port that is taken, which is usually such a leftover
   `plan_lane_*` series ([the stub
   protocol](programmable-metrics-stub-protocol.md#3-control-surface-adp-privileged-api-mtls-with-the-ipc-certificate)).
   The Traffic card's **canary only** box sends nothing but the canary, one context, so a state lane goes empty.
-- **Configuration and traffic**: the [Demo](programmable-metrics-implementation.md#demo) section lists the generated ADP
-  configuration. Traffic carries `demo.checkout.requests` (a counter) and `demo.checkout.latency` (a distribution)
-  tagged `team:checkout`, `demo.catalog.views` (`team:catalog`), `demo.platform.queue_depth` (a gauge, `team:platform`),
-  the 20 counters `demo.debug.0` to `demo.debug.19`, and the canary counter `demo.canary`, once per datagram, in 16
-  contexts (`shard:<n>`, so that its balance covers every state lane). By default the primary column receives
-  everything, team B `demo.checkout.*`, team C `demo.catalog.*`, and the failover column nothing.
+- **Traffic** carries `demo.checkout.requests` (a counter) and `demo.checkout.latency` (a distribution) tagged
+  `team:checkout`, `demo.catalog.views` (`team:catalog`), `demo.platform.queue_depth` (a gauge, `team:platform`), the
+  20 counters `demo.debug.0` to `demo.debug.19`, and the canary counter `demo.canary`, once per datagram, in 16
+  contexts (`shard:<n>`, so that its balance covers every state lane).
 
 **A visible change in about 30 seconds:**
 
-1. The editor loads the default program once ADP serves its export (**Load default program** reloads it). It is the
-   whole metrics path, the one scope `metrics` (header `policy metrics {`): the input edges, one per source
-   (`input.dogstatsd -> dsd_enrich` in the demo, which runs DogStatsD alone), DogStatsD's processing, aggregation
-   (`dsd_agg`), the post-aggregation filter, enrichment, and the policy region (the policy `tee`, the routing `split`s,
-   and the Multi-Region Failover gateway's `split`), in that order. A `#` comment marks where each section begins;
-   comments are not part of the artifact.
-2. Insert a split ahead of the policy `tee`: in the block of the node that feeds it (`metrics_enrich` in the demo,
-   `metrics_enrich_host_tags` with host tags), change `-> metrics_policy` to `-> drop_debug`, and add, above the
-   `# Policy` comment:
+1. The editor loads the default program, detached, once ADP serves its export (**Load default program** reloads it):
+   the whole metrics path, the one scope `metrics`, from the input edge (`input.dogstatsd -> dsd_enrich`) through
+   DogStatsD's processing, aggregation (`dsd_agg`), and enrichment to the policy `tee`. Native policy settings are
+   written as literals; ADP's notes are `#` comments, with the recipients above the policy. The header reads "Running:
+   the default program", and teams B and C receive everything:
 
    ```text
-   node drop_debug = split(name starts_with "demo.debug.") {
-     true  -> drop
-     false -> metrics_policy
+   node metrics_policy = tee {
+     -> emit to [primary, "http://127.0.0.1:17102", "http://127.0.0.1:17103"]
+     -> mrf_metrics_gateway
    }
    ```
 
-3. Press **Compile** (Ctrl+Enter). The status reads that the artifact was composed and validated with no findings, and
-   the plan diff lists the added nodes, the changed edges of the feeding node and the `tee`, and the routing drops,
-   which now carry the artifact's provenance. Press **Publish** and approve.
-4. Within about 3 s, `demo.debug.*` fades out of the primary column, the outcome under Publish reads that ADP runs it
-   (with the generation), the acknowledgment timeline shows `active`, the per-node rates show `drop_debug`, and the
-   canary check stays balanced.
+2. Narrow team B to checkout: take team B's URL out of the main `emit`, add a branch, and define it above the
+   `# Recipients:` comment:
 
-Other edits: put `or tag("team") == "platform"` on its own line before the `) {` of the split that feeds team B (S2);
-replace the failover split's predicate with `true and name in ["demo.checkout.requests"]` (S4); add a second branch
-to the primary output in the `tee`, emit to `metrics_routing_encode_99`, add an `aggregate` node without parameters or
-a second, complete one, or move `dsd_agg` after enrichment to see ADP reject each one while the previous generation
-keeps running (S5); **Revoke** restores the default program (S6). Each scenario edits the default program, so each one
-undoes the one before; to narrate one change at a time, revoke between steps or keep editing the same program.
+   ```text
+   node to_team_b = split(name starts_with "demo.checkout.") {
+     true  -> emit to ["http://127.0.0.1:17102"]
+     false -> drop
+   }
 
-**Aggregation's window** is in the same program. To change it, set both `dsd_no_agg_split`'s and `dsd_agg`'s
-`window` to the same literal, such as `10s` (a `timestamp_split`'s window must equal its aggregation's, amendment 83).
-The change installs at a cut, the first shared boundary at least 1 s after arming; watch `plan_cuts_total{outcome}`.
-An artifact that also changes routing installs as one generation, at the cut: its routing takes effect at the cut's
-boundary too, for every source, not at publish. A width change also gives every lossy node fed by the timestamp split or
-aggregation the artifact's provenance (amendment 168), so the plan diff and `explain` list the post-aggregation
-filter's and the routing gateways' drops as changed. **Revoke** empties the snapshot, so it reverts the window and any routing
-together. The headless check covers a width change and its revocation in S13, in the second launch; ADP's lifecycle
-and cut tests cover the rest.
+   node metrics_policy = tee {
+     -> emit to [primary, "http://127.0.0.1:17103"]
+     -> to_team_b
+     -> mrf_metrics_gateway
+   }
+   ```
+
+3. Press **Compile** (Ctrl+Enter). Both `emit`s address recipient sets no output delivers to yet, so the editor notes
+   that ADP will add an output for each (for Primary and Team C, and for Team B), validates the program against
+   stand-ins for them (`adp_will_add_1`, `adp_will_add_2`), and shows a provisional plan diff with them marked "ADP
+   will add it". Press **Publish** and approve.
+4. Within a few seconds (ADP adds the outputs while the program waits), team B's column keeps `demo.checkout.*` only,
+   the primary endpoint and team C still receive everything, the outcome under Publish reads that ADP runs it, the
+   header reads `Running: published revision 1 (native policy settings not applied)`, **Outputs** lists the two
+   `implied_` outputs, and the canary check stays balanced. Compiled again, the program shows the plan ADP runs.
+
+Other edits, each on the default program as loaded (each one replaces the one before; revoke between them to show one
+change at a time):
+
+- **Drop debug metrics**: in `metrics_enrich`'s block, change `-> metrics_policy` to `-> drop_debug`, and define
+  `drop_debug` above the `# Recipients:` comment. `demo.debug.*` leaves every endpoint:
+
+  ```text
+  node drop_debug = split(name starts_with "demo.debug.") {
+    true  -> drop
+    false -> metrics_policy
+  }
+  ```
+
+- **Mirror only checkout on failover**: add `and name in ["demo.checkout.requests"]` on its own line before the `) {`
+  of `mrf_metrics_gateway`. Nothing changes until **failover on** in the Native configuration card: then the failover
+  endpoint receives `demo.checkout.requests` alone, without a new revision. The default program mirrors everything.
+- **Widen the window**: set `window` of both `dsd_no_agg_split` and `dsd_agg` to the same literal, such as `10s`
+  (amendment 83). It installs at a cut, the first shared boundary at least 1 s after arming (`plan_cuts_total`); routing
+  in the same program takes effect at that boundary too. **Revoke** reverts both.
+- **Rename the aggregation**: `node dsd_agg = ` to `node agg = `, and the edge into it. It composes to the plan
+  running, which it adopts with no new generation: a program's one aggregation is the aggregation, whatever its name
+  (amendment 182). With a routing change too, it makes a generation and no cut.
+- **Add a destination and route a family to it**: under the default program, **Add destination** sends it everything.
+  Under a published program its column, and a note beside the editor, read "declared, not addressed"; load the
+  default program again (the main `emit` now names it too), or add a branch to your program, `-> to_d`, and define it
+  with the URL its column shows. Publish: it receives `demo.platform.queue_depth`.
+
+  ```text
+  node to_d = split(tag("team") == "platform") {
+    true  -> emit to ["http://127.0.0.1:<its port>"]
+    false -> drop
+  }
+  ```
+
+- **Remove it**: **Remove** in its column. Its recipient drains and retires and its column goes. A program that routes
+  to it stays `active`, degraded: an `emit` that names it alone becomes a counted drop, and one that names it beside
+  other recipients (the recipe's main `emit`, if you remove team C) keeps delivering to them, what the removed one
+  would have received counted as policy loss at a drop beside the `emit` (amendment 189). The acknowledgment names
+  the recipients that are gone. A destination added again is a new one, on a new port with a new URL: a program
+  written for the old URL does not deliver to it until it names the new one.
+- **Guardrails**: a second `-> emit to [...]` branch with the main `emit`'s recipients (`duplicate_contribution`),
+  `emit to [primary, mrf]` (two delivery hosts), a second full `aggregate`, the one aggregation moved after enrichment
+  (refused by placement, which the editor does not run), `values: config("dogstatsd.metric_filter.values")` in the
+  filterlist split (a policy binding, refused in a published program), and `emit to [team_z]` (an unknown recipient,
+  held `pending`). ADP rejects or holds each while the previous generation keeps running. **Revoke** restores the
+  default program.
 
 **Headless check.** `make demo-programmable-metrics-check` builds the same binaries and runs
 `target/devel/programmable-metrics-demo check --adp-bin target/devel/agent-data-plane $(DEMO_CHECK_ARGS)`. Flags:
@@ -266,48 +337,53 @@ boot, so the check runs ADP twice: the first launch, S0 to S6 and S8 to S11, on 
 passed, a second launch in `<run-dir>/lanes/`, S12 to S14, on `{2, 2, 3}` lanes with 10 s windows and counters expiring
 after 1 s (an expiry of 0 keeps counters forever, so no state lane would go empty). It exits 1 on any failure,
 naming the run directory, and writes `check-report.json` there with compile, publish-to-acknowledgment, and
-publish-to-visible timings. Each step compiles, publishes, waits up to 20 s for the acknowledgment on the status route
-and in the next stub poll, checks that ADP's active plan hash equals the plan the editor composed, then waits up to
-30 s for every intake to receive exactly the expected families and hold them for 3 s. Throughout, the rolling canary
-range must balance, and at the end the whole run's canaries are checked, summed over ranges of a minute (both within
-an allowance of 6 at 20 per second: they catch an aggregated canary point lost or doubled, not a few datagrams ahead of
-aggregation, which ADP's continuous-input tests check exactly). A **loopback witness** sends a control datagram of the
-same size to a socket of the demo's own beside every datagram, and the check compares it with `dsd_in`'s received
-packets: a shortfall while the host dropped loopback datagrams, which ADP's source never received, is reported as
-"dropped by the host before ADP read them" and is no failure; any other shortfall fails the run and says where the
-canaries went. A UDP benchmark on the same machine floods loopback and makes macOS drop the demo's datagrams; do not
-run one beside the check. An event on the wrong state lane (`plan_lane_misrouted_total` above 0) fails the check.
+publish-to-visible timings. Each policy step compiles, publishes, waits up to 20 s for the acknowledgment on the status
+route and in the next stub poll, checks that ADP's active plan hash equals the plan the editor composed (compiling
+again once ADP runs it, when the program needed implied outputs or ADP lowered again to retire them), then waits up to
+30 s for every intake to receive exactly the expected families and hold them for 3 s; an intake the step does not name
+must receive nothing. Destination and configuration steps change the file through the demo's API and check the same
+way. Throughout, the rolling canary range at the primary endpoint must balance, no other endpoint may receive more
+canaries than were sent, and at the end the whole run's canaries are checked, summed over ranges of a minute, across
+every install, destination change, and reload (both within an allowance of 6 at 20 per second: they catch an
+aggregated canary point lost or doubled, not a few datagrams ahead of aggregation, which ADP's continuous-input tests
+check exactly). A **loopback witness** sends a control datagram of the same size to a socket of the demo's own beside
+every datagram, and the check compares it with `dsd_in`'s received packets: a shortfall while the host dropped
+loopback datagrams, which ADP's source never received, is reported as "dropped by the host before ADP read them" and is
+no failure; any other shortfall fails the run and says where the canaries went. A UDP benchmark on the same machine
+floods loopback and makes macOS drop the demo's datagrams; do not run one beside the check. An event on the wrong state
+lane (`plan_lane_misrouted_total` above 0) fails the check.
 
-| Step | Edit | What it proves |
+| Step | Edit or change | What it proves |
 |---|---|---|
-| S0 | The unmodified export. | Acknowledged `active` with no new generation and an empty diff; `/export` and `/default-program` hash as expected. |
-| S1 | `drop_debug` ahead of the policy `tee`. | `demo.debug.*` leaves the primary intake only; `/plan` and `/explain` describe it. |
-| S2 | Team B's route widened with `or tag("team") == "platform"`. | Team B also receives the platform family. |
-| S3 | `split(tag("team") == "checkout")` ahead of the `tee`, `true` to team B only. | Exclusive routing: checkout families reach team B and not the primary intake. |
-| S4 | Failover predicate `true and name in ["demo.checkout.requests"]`. | Mirroring: the failover intake receives only that family. |
-| S5a to S5e | A duplicate branch to the primary output; an emit to an undeclared output; an `aggregate` without parameters; a second, full `aggregate` ahead of the policy; the one `aggregate` moved after enrichment. | ADP rejects each one naming the problem (`duplicate_contribution`, the undeclared output, `valid_parameters`, `single_aggregation` for S5d, which the editor flags at the second aggregation's line, and placement's "runs only in an isolation slot" for S5e, which the editor cannot flag because it does not place), and S4 keeps running. |
-| S6 | Revoke (an empty snapshot). | The boot plan hash is active again and the default routing is back. |
-| S8a | Publish team D's resources (one recipient, `resources_team_d`). | The resources config is `active`, and ADP declares the output. |
-| S8b | Route `team:platform` to `resources_team_d`. | Team D's intake receives the platform family with team D's credential. |
-| S9a | Revoke the resources. | The policy stays `active`, degraded: its emits to team D are dropped and counted as policy loss at the route's node; team D's recipient retires with a drain report. |
-| S9b | Publish the resources again. | The emit returns, without a new policy revision. |
-| S10a to S10c | Revoke both; publish the route before the resources; then the resources. | The route waits, `pending` ("waiting for output `resources_team_d`"), and installs once the output is declared. |
-| S11 | Pause team D's intake, then revoke. | The recipient drains until its 30 s deadline and drops what it holds, and `dd_out`'s drop telemetry counts as many. |
+| S0 | The unmodified detached export. | Acknowledged `active`, adopting the running generation (no new one), with an empty diff; status says `program.runs: published`, `native_policy: not_applied`; `/export` and `/default-program` hash as expected. |
+| S1 | `drop_debug` ahead of the policy `tee`. | `demo.debug.*` leaves every endpoint; `/plan` and `/explain` describe it. |
+| S2 | The recipe: team B's URL out of the main `emit`, and `to_team_b` sending `demo.checkout.*` to it. | The editor says ADP adds implied outputs; ADP adds them (`implied_metrics_policy_0_...` for `[primary, team C]`, `implied_to_team_b_true_...` for team B) and installs; team B receives checkout only; compiled again, the editor composes the plan ADP runs. |
+| S3a, S3b | S2's route widened with `or tag("team") == "platform"`; then, on the default program as loaded, `split(tag("team") == "checkout")` ahead of the `tee`, `true` to team B only. | Team B also receives the platform family; then exclusive routing: checkout reaches team B and neither the primary endpoint nor team C. |
+| S4a to S4c | The failover gateway gains `and name in ["demo.checkout.requests"]`; then `failover_metrics: true` in the file; then `false`. | Nothing mirrored while failover is off; with it on, the failover endpoint receives that family alone, with no new revision (a signal read live); off again, nothing. |
+| S5a to S5f | A duplicate branch to the main `emit`'s recipients; `emit to [primary, mrf]`; a second, full `aggregate`; the aggregation moved after enrichment; a policy binding (`config("dogstatsd.metric_filter.values")`); `emit to [team_z]`. | Rejected, each naming the problem (`duplicate_contribution`; "more than one delivery host"; `single_aggregation`; placement's "runs only in an isolation slot"; "a native policy setting"), and the last held `pending` ("waiting for recipient `team_z`"), while S4's generation keeps running. The editor flags each, but S5d, which needs placement. |
+| S6 | Revoke (an empty snapshot). | The default program, the boot plan, again; it adopts the running generation when that one does what the default program does (S4's gateway with failover off does). |
+| S8a, S8b | Add destination D under the default program; remove it. | D receives every family, canaries included (dual shipping); removed, its recipient drains and retires, its intake stops, and the others are unchanged. |
+| S9a to S9c | Publish the recipe again; add destination E; route `team:platform` to E. | E is declared (in ADP's directory) and not addressed, and receives nothing, until the program routes to it; then it receives the platform family alone. |
+| S10 | Remove E while the program routes to it. | The program stays `active` without a new revision, degraded: the acknowledgment says the emits to E's URL are dropped, policy loss is counted at `to_destination_true`, E's recipient retires, and the others are unchanged. |
+| S10b | Remove team C, which the program's main `emit` names beside the primary endpoint. | The `emit` keeps delivering to the primary endpoint, whose canaries stay exact; what team C would have received is policy loss at `metrics_policy_0_missing`; the acknowledgment names team C's URL; team B is unchanged; team C's recipient retires and its intake stops. Team C stays out for the rest of the launch. |
+| S11a to S11c | `metric_filterlist: [demo.catalog.views]` in the file under the published program; revoke; clear the filterlist. | No new generation and nothing the program sends changes, while status lists `dogstatsd.metric_filter.values` under `program.differs`; revoked, the default program applies it and `demo.catalog.views` leaves every endpoint; cleared, it returns. |
 | S12a | (second launch, `--decoders 2 --state-lanes 2 --post-lanes 3`) | The frame runs on the lanes asked for, without R1's pipelining: keyed, affinity, and spread exits, key groups covering 0 to 255, events on every state and post-aggregation lane. |
 | S12b | Canary-only traffic until a state lane is empty for two windows, then probe counters one at a time. | A counter first seen in a state lane that was empty at ticks arrives as one point at its bucket, with no zero before it (fixture X1 end to end); every probe once. |
 | S13a | `window: 30s` on `dsd_no_agg_split` and `dsd_agg` in the default program. | Installs at a cut at a multiple of 30 s; every state lane crosses (`plan_lane_crossings_total{kind:cut}`); the last 10 s bucket and the first 30 s bucket each balance, whole. |
-| S13b | Revoke (an empty snapshot), before the routing steps, which a revoke would undo too. | The cut back to 10 s, with the same checks. |
-| S14a to S14c | S8's resources and route, on the post-aggregation lanes. | Team D receives through the post-aggregation lanes: every lane's input grows after the route installs, and the data points `dd_out` delivered to team D's domain equal what its intake received. |
+| S13b | Revoke (an empty snapshot). | The cut back to 10 s, with the same checks. |
+| S14a, S14b | `dsd_agg` renamed `agg`; then renamed with `demo.debug.*` dropped. | The rename adopts the running generation, with no cut; with the routing change, a new generation and still no cut (`plan_cuts_total` unchanged for every outcome), the state lanes counting events under `component_id:dsd_agg`. |
 
-A run took about 70 to 75 s through stage 6; with S8 to S11 it takes about 150 s (147.9 to 149.9 s in the four stage 7
-runs, S11's deadline included); since stage 9 the first launch takes 144 to 152 s and the second 270 to 300 s, which
-S13's two cuts (each waits for a 30 s boundary) and S12b's wait for an empty lane make long. About 18 s go to waiting at
-the start for a whole canary range behind ADP's start, and about 10 s at the end for the rolling range to cover the last
-change. The check was added in stage 5 and passed in every recorded run of stages 5 to 7, deliberate mutation runs
-aside; stage 7 ran it twice on one run directory, the second time with the first's `--run-dir`, before and again after
-its last code change. In stage 9 a part saw canaries lost in 2 of 18 first launches; the investigation found another
-agent's UDP benchmark flooding loopback at those times, on the committed stage 7 as well, which the loopback witness now
-tells apart. Since then every recorded run passed.
+Before this phase, S8 to S11 declared team D with a resources artifact and S14 routed to it on the post-aggregation
+lanes; the demo no longer uses resources artifacts, whose code and tests stay in the plan crate and ADP.
+
+Through stage 9 and the detached programs' phases 1 and 2 the first launch took 144 to 154 s and the second 270 to 300
+s. With this phase's steps the first launch takes 143 to 175 s and the second 269 to 293 s (see the
+[log](programmable-metrics-log.md#detached-programs-phase-3-the-demo) for the recorded runs), 7.5 to 8 minutes in all
+with the build;
+S13's two cuts (each waits for a 30 s boundary) and S12b's wait for an empty lane make the second launch long. About 18
+s go to waiting at the start for a whole canary range behind ADP's start, and about 10 s at the end for the rolling
+range to cover the last change. In stage 9 a part saw canaries lost in 2 of 18 first launches; the investigation found
+another agent's UDP benchmark flooding loopback at those times, which the loopback witness now tells apart.
 
 ### Running it with lanes
 
@@ -653,7 +729,7 @@ list those nodes as changed; composition now puts an artifact's edges in the def
 so the printed form of an export, which lists the edges from the scope's inputs first in input-name order, composes to
 the default program with its hash, though its artifact document, and so its artifact hash, differs from the export's.
 
-**Detached programs, phase 1** (not committed; **not release-noted** yet; see
+**Detached programs, phase 1** (`cfd4a28072`; **not release-noted** yet; see
 [phase 1 as built](programmable-metrics-detached-programs.md#105-phase-1-as-built)):
 
 - The default program binds the host's tags and their deadline to the facts `host.tags` and `host.tags_deadline`, and
@@ -672,7 +748,7 @@ the default program with its hash, though its artifact document, and so its arti
 - The demo's editor hides the `base` line and prints ADP's notes as comments, with the recipient directory above the
   policy `tee`, in place of its fixed section comments.
 
-**Detached programs, phase 2** (not committed; **not release-noted** yet; see
+**Detached programs, phase 2** (`7f9d67a033`; **not release-noted** yet; see
 [phase 2 as built](programmable-metrics-detached-programs.md#106-phase-2-as-built)):
 
 - `GET /programmable-metrics/export` serves the **detached** export by default: native policy settings written as
@@ -702,6 +778,23 @@ the default program with its hash, though its artifact document, and so its arti
   every plan hash changed once.
 - `experimental.standalone_config_reload.{enabled, interval}` (Saluki-only, demo-only): standalone mode re-reads its
   configuration file and applies a change live once two reads agree, at most every 100 milliseconds.
+
+**Detached programs, phase 3, the demo** (not committed; see
+[the demo as built](programmable-metrics-detached-programs.md#85-the-demo-as-built)):
+
+- A refused, rejected, or failed artifact revision stays its config's acknowledgment while the artifact in effect
+  before it moves to another generation, as ADP's next lowering makes it do once the implied outputs only the rejected
+  revision asked for retire, or after any configuration change. Before, the in-effect revision's acknowledgment
+  replaced the rejection, so the rejection of a program with implied outputs was never reported. A change of the
+  earlier installation's state (it fails or retires) is still reported.
+- An `emit` of the published program that names a recipient the configuration no longer has, beside others, keeps
+  delivering to the others, and counts what the gone one would have received as policy loss at a drop beside it; the
+  program runs degraded, its acknowledgment naming the gone recipients. Only an `emit` with none of its recipients
+  left is dropped whole (amendment 189). ADP adds the output for the remaining recipients in the same generation that
+  removes the gone one, so nothing they receive is lost.
+- The demo (a development tool, not shipped) configures teams B and C as ordinary additional endpoints, adds and
+  removes destinations live through the standalone configuration reload, no longer uses resources artifacts, and
+  validates programs that need implied outputs against stand-ins for them before publishing.
 
 **Telemetry** (all release-noted): the fused components' and gateways' component, health, and task series are gone;
 `metrics_enrich` and `dsd_agg` report sent counts per output instead of `_default`; accounting paths nest under the
@@ -829,7 +922,10 @@ the local `--test-threads 4` in the gate (see [Environment notes](#environment-n
 | **`make check-deny`** | Fails on `RUSTSEC-2024-0449` (`unsafe-libyaml` unmaintained, through `serde_yaml` in `agent-data-plane-config-system`, `datadog-agent-config-overlay-model`, and `antithesis-intake`): the advisory database has it now, and `main`'s `Cargo.lock` at the merge base already holds `unsafe-libyaml` 0.2.11. | An exception in `deny.toml`, or a move off `serde_yaml`. |
 | **One scope, one aggregation** (amendments 168 and 169) | The default program has one scope, `metrics`, over the whole metrics path, and a program at most one aggregation (`single_aggregation`, declared by ADP's catalog). After a width change, every lossy node fed by the timestamp split or aggregation (eight in the fixtures) carries the artifact's provenance, so its loss is attributed to the artifact. Composition puts an artifact's edges in the default program's order. | Accept both, or narrow the scope again; lift the one-aggregation rule once the demo and the operator surfaces handle several. |
 | **Programs replace native policy** (decided by the owner on 2026-10-14; amendment 170) | Decided: a published program owns its policy settings as literals and binds only facts and signals; native policy configuration only feeds the default program, which runs when no artifact is published; status says when native policy settings are not applied; machinery for native compatibility stays in lowering. See the [direction](programmable-metrics-next.md#direction-programs-replace-native-policy) and the [design](programmable-metrics-detached-programs.md), built in phases 1 and 2. | Nothing for the decision; the design's open questions were decided (no configuration-declared recipients; no node provenance). |
-| **Detached programs, phase 2** (owner’s decisions of 2026-10-14; amendments 183 to 188) | Built, not committed: no node provenance (a plan-level `native_components` annotation keeps the boot layout, a deviation), adoption on the unchanged generation ID, implied outputs on `dd_out` for native recipients only (Cluster Agent and declared recipients refused, a deviation), the detached export's base equal to the bound one, and `program` without `partly_applied`. See [phase 2 as built](programmable-metrics-detached-programs.md#106-phase-2-as-built). | Confirm the deviations, and the release notes, which are not written yet. |
+| **Detached programs, phase 2** (owner’s decisions of 2026-10-14; amendments 183 to 188) | Committed (`7f9d67a033`): no node provenance (a plan-level `native_components` annotation keeps the boot layout, a deviation), adoption on the unchanged generation ID, implied outputs on `dd_out` for native recipients only (Cluster Agent and declared recipients refused, a deviation), the detached export's base equal to the bound one, and `program` without `partly_applied`. See [phase 2 as built](programmable-metrics-detached-programs.md#106-phase-2-as-built). | Confirm the deviations, and the release notes, which are not written yet. |
+| **Detached programs, phase 3: the demo** (owner’s decisions of 2026-10-14) | Built, not committed: teams B and C as ordinary additional endpoints, **Add destination** and **Remove** through the standalone reload, no resources artifacts in the demo, the scenarios reworked (S2 is the recipe, S8 to S11 destinations and a native change, S14 the renamed aggregation), and one installer-core fix (a refused revision's acknowledgment is kept, amendment 190); after the review, an `emit` that
+loses some of its recipients keeps delivering to the others (amendment 189, decided on the owner's behalf), and the
+editor validates against stand-ins for the outputs ADP adds. No release note for `experimental.standalone_config_reload`: it changes only standalone mode, which is not for production, and it is documented in the configuration reference. The demo's export fixture stays a bound export, which the export reader's and editor's tests use; the demo's composition tests use a detached export with a directory. See [the demo as built](programmable-metrics-detached-programs.md#85-the-demo-as-built). | Confirm amendment 189, the release-note decision, and the acknowledgment fix. |
 | **The specification's Vale errors** | The specification, which only its author edits, adds 12 errors to `make check-docs`, a CI job (see [Environment notes](#environment-notes)). | Before CI runs: add the 11 flagged words to the Vale vocabulary, and edit or exempt the hyphenated `Exactly-once`. |
 
 ## Spec amendments index
@@ -940,11 +1036,12 @@ the shutdown row, the expiry row, and the timestamped row.
 
 Totals: kinds C 49, D 26, N 9, L 3; themes STA 20, ART 16, NAT 12, INS 9, IR 8, VER 8, FRM 7, TEL 4, EXE 3.
 
-Amendments 88 to 187 are in [the stages 7 and 9 plan's section
+Amendments 88 to 190 are in [the stages 7 and 9 plan's section
 10](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments): 88 to 107 from its stage 7 design, 108 to 128
 from its stage 9 design, 129 to 138 from stage 7's parts and integration, 139 and 140 from stage 9's foundations (P9.F),
 141 to 162 from stage 9's parts and integration, 163 to 167 from stage 9's review, 168 and 169 from the one-scope
-change after stage 9, 170 to 182 from the detached-programs design, and 183 to 188 from its phase 2; the next is 189.
+change after stage 9, 170 to 182 from the detached-programs design, 183 to 188 from its phase 2, and 189 and 190 from
+its phase 3; the next is 191.
 Stage 7's:
 
 | # | Short title | Theme | Kind | Owner |
@@ -1072,6 +1169,13 @@ After detached programs, phase 2 (built, not committed):
 | 187 | Duplicates are pairs of outputs that share a recipient | IR | C | no |
 | 188 | A program's limits rise to what the default program has | IR | C | no |
 
+After detached programs, phase 3, the demo (built, not committed):
+
+| # | Short title | Theme | Kind | Owner |
+|---|---|---|---|---|
+| 189 | An `emit` delivers to the recipients that remain | ART | D | decided on the owner's behalf (2026-10-15): confirm |
+| 190 | A refused newer delivery stays its config's acknowledgment | INS | C | no |
+
 Wording proposed for adoption: amendment 49 ("under the reference interpreter's delivery order"), 51 ("a maximal
 group of `split` and `tee` operators joined directly by edges within one region"), and 52 ("operator parameters,
 other than the order of a pure `all` or `any`'s operands"). Amendment 76 proposes withdrawing two statements. The
@@ -1186,7 +1290,8 @@ its reason in the plan's [Stage 7 as built](programmable-metrics-stages-7-and-9.
   restarts during transactions (the installer's tests with fake hosts), disk full during a retirement's persist (the
   recipient loop's flush tests), generation failures with and without a kept last-known-good across two scopes, and a
   cancelled cut whose generation adds an endpoint (the core's property test); the resources product end to end (the
-  demo's S8 to S11 against the real binary); and autoscaling failover's delivery, whose Cluster Agent host needs an
+  demo's S8 to S11 against the real binary, until the demo stopped using resources artifacts in the detached programs'
+  phase 3; ADP's delivery and resources tests still cover it); and autoscaling failover's delivery, whose Cluster Agent host needs an
   `https` endpoint the recording intakes do not serve (the delivery host's Cluster Agent tests). Since the stage 7
   review, the failed-prepare test checks events, logs, and traces too; not built: a routing-group add and remove in
   the reclamation cycle, and the non-metrics delivery of an `additional_endpoints` change while a cut is in flight.
@@ -1227,7 +1332,8 @@ built](programmable-metrics-stages-7-and-9.md#stage-9-as-built):
 - An M8 variant at light load and with one stream connection on several producer lanes, checking when flushes are
   emitted against their deadlines (the per-second heartbeats bound the lag by the progress throttle in the regression
   test).
-- A per-lane exit counter (`plan_lane_exit_events_total`) and a lease's encoded-event count, for S14's evidence.
+- A per-lane exit counter (`plan_lane_exit_events_total`) and a lease's encoded-event count, for evidence of what each
+  post-aggregation lane sends to one destination (the demo's former S14c).
 - `RegionBounds::without_state`, so that state lanes keep a bounds breakdown rather than fixed amounts.
 - Checking the shared budget bounds once per batch, if M4 on the gate host shows more than 5% at P = 8.
 - O5 at 16,384 slots, the decoders' per-metric `metrics_received` counter accumulated per decoder, and a decoder wake

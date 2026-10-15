@@ -2,11 +2,11 @@
 //! the default program, and the active plan current.
 //!
 //! The export is fetched again when the default program hash ADP's status reports changes from what it reported when
-//! the export in hand was fetched, when the resources artifact its active generation was lowered with changes (the
-//! catalog then declares other outputs, which leaves the default program hash as it is), and at least every
-//! [`EXPORT_MAX_AGE`] otherwise, so the editor's checks follow configuration changes. The watcher compares the
-//! reported values with their own earlier values, never with the export's `base.program_hash`, since the protocol does
-//! not say that the two are computed alike.
+//! the export in hand was fetched, when what its catalog declares may have changed while that hash stays as it is (the
+//! resources artifact the active generation was lowered with, the active generation, or the recipients the status
+//! [`EXPORT_MAX_AGE`] otherwise, so the editor's checks and the recipient directory follow configuration changes. The
+//! watcher compares the reported values with their own earlier values, never with the export's `base.program_hash`,
+//! since the protocol does not say that the two are computed alike.
 //!
 //! The recipients every status lists go into the Recipients panel's record ([`RecipientLog`]).
 //!
@@ -86,8 +86,9 @@ struct ControlState {
     export_fetched_ms: Option<u64>,
     /// The default program hash ADP's status reported when the export in hand was fetched.
     export_reported_hash: Option<String>,
-    /// The resources artifact ADP's status reported active when the export in hand was fetched.
-    export_reported_resources: Option<String>,
+    /// What ADP's status reported, when the export in hand was fetched, of what the export's catalog follows (see
+    /// [`ControlState::reported_catalog`]).
+    export_reported_catalog: Option<String>,
     /// The recipients ADP's statuses listed.
     recipients: RecipientLog,
     /// The default program the export in hand was taken from.
@@ -114,20 +115,37 @@ impl ControlState {
             .and_then(|status| status.status.default_program_hash.clone())
     }
 
-    /// Returns the resources artifact ADP's status reports active, as `<revision> <hash>`, or `None` when none is.
-    fn reported_resources(&self) -> Option<String> {
-        let artifact = self
-            .status
-            .as_ref()?
+    /// Returns what ADP's status reports of what the export's catalog follows, besides the default program hash: the
+    /// resources artifact active (`<revision> <hash>`), the active generation, and the recipients it lists, which
+    /// change when a destination is added or removed. `None` without a status.
+    fn reported_catalog(&self) -> Option<String> {
+        let status = self.status.as_ref()?;
+        let resources = status
             .status
             .resources
-            .as_ref()?
-            .active_artifact
-            .as_ref()?;
+            .as_ref()
+            .and_then(|resources| resources.active_artifact.as_ref())
+            .map(|artifact| {
+                format!(
+                    "{} {}",
+                    artifact.revision.unwrap_or_default(),
+                    artifact.artifact_hash.as_deref().unwrap_or_default()
+                )
+            })
+            .unwrap_or_default();
+        let mut recipients = status
+            .recipients
+            .iter()
+            .flatten()
+            .filter(|recipient| recipient.state != "retired")
+            .map(|recipient| recipient.id.as_str())
+            .collect::<Vec<_>>();
+        recipients.sort_unstable();
         Some(format!(
-            "{} {}",
-            artifact.revision.unwrap_or_default(),
-            artifact.artifact_hash.as_deref().unwrap_or_default()
+            "{} | generation {} | {}",
+            resources,
+            status.status.active_generation.unwrap_or_default(),
+            recipients.join(" ")
         ))
     }
 }
@@ -297,7 +315,7 @@ impl ControlSurface {
                 state.export = Some(Arc::clone(export));
                 state.export_fetched_ms = Some(at_ms);
                 state.export_reported_hash = state.reported_hash();
-                state.export_reported_resources = state.reported_resources();
+                state.export_reported_catalog = state.reported_catalog();
                 state.export_error = None;
             }
             Surface::NotExposed => {
@@ -389,7 +407,7 @@ impl ControlSurface {
             (true, Some(fetched), _) => {
                 let reported = state.reported_hash();
                 (reported.is_some() && reported != state.export_reported_hash)
-                    || state.reported_resources() != state.export_reported_resources
+                    || state.reported_catalog() != state.export_reported_catalog
                     || now_ms.saturating_sub(fetched) >= EXPORT_MAX_AGE
             }
             (_, _, Some(checked)) => now_ms.saturating_sub(checked) >= EXPORT_RETRY,
@@ -674,6 +692,45 @@ mod tests {
         // A revocation leaves no resources artifact active: fetch again.
         control.record_status(Surface::Available(with_resources(Value::Null)), 4_000);
         assert!(control.export_wanted(4_000));
+    }
+
+    #[test]
+    fn the_export_is_fetched_again_when_a_destination_comes_or_goes_or_a_generation_starts() {
+        // A destination added to the configuration file is a recipient ADP's status lists, and a directory entry of the
+        // export; the default program hash need not change with it.
+        let reported = format!("sha256:{}", "c".repeat(64));
+        let with = |generation: u64, recipients: &[(&str, &str)]| {
+            let mut status = status(&reported);
+            status["active_generation"] = generation.into();
+            status["recipients"] = recipients
+                .iter()
+                .map(|(id, state)| serde_json::json!({"host": "dd_out", "id": id, "state": state}))
+                .collect();
+            Surface::Available(status)
+        };
+        let export = || Surface::Available(serde_json::from_str(DEMO_EXPORT).unwrap());
+        let primary = ("dd_out/primary/0/http://127.0.0.1:17101", "live");
+        let added = ("dd_out/additional/0/http://127.0.0.1:50001", "live");
+        let control = ControlSurface::new();
+        control.record_status(with(1, &[primary]), 1_000);
+        control.record_export(export(), 1_000);
+        assert!(!control.export_wanted(1_100));
+
+        control.record_status(with(1, &[primary, added]), 2_000);
+        assert!(control.export_wanted(2_000));
+        control.record_export(export(), 2_100);
+        assert!(!control.export_wanted(2_200));
+
+        // Draining is still listed; retired is gone, as a removed destination is once drained.
+        control.record_status(with(1, &[primary, (added.0, "draining")]), 3_000);
+        assert!(!control.export_wanted(3_000));
+        control.record_status(with(1, &[primary, (added.0, "retired")]), 4_000);
+        assert!(control.export_wanted(4_000));
+        control.record_export(export(), 4_100);
+
+        // A new generation, such as one with an implied output a program asked for.
+        control.record_status(with(2, &[primary]), 5_000);
+        assert!(control.export_wanted(5_000));
     }
 
     #[test]

@@ -16,22 +16,15 @@
     <div class="badges" aria-live="polite">
       <span class="badge" id="badge-adp" title="ADP process">ADP</span>
       <span class="badge" id="badge-surface" title="Programmable-metrics control surface">Control surface</span>
-      <span class="badge badge-program" id="badge-program" title="What ADP runs">Program</span>
+      <span class="badge badge-program" id="badge-program" title="What ADP runs">Running: …</span>
     </div>
   </header>
 
   <div class="banner" id="banner" role="status" hidden></div>
 
   <main class="layout">
-    <section class="pane editor-pane" aria-label="Editors">
-      <div class="tabs" role="tablist">
-        <button type="button" class="tab active" id="tab-policy" role="tab" aria-selected="true"
-                aria-controls="policy-editor">Policy</button>
-        <button type="button" class="tab" id="tab-resources" role="tab" aria-selected="false"
-                aria-controls="resources-editor">Resources</button>
-      </div>
-
-      <div class="tab-panel" id="policy-editor" role="tabpanel" aria-labelledby="tab-policy">
+    <section class="pane editor-pane" aria-label="Editor">
+      <div class="editor-panel" id="policy-editor">
       <div class="pane-head">
         <h2 id="editor-title">Program</h2>
         <div class="actions">
@@ -39,6 +32,8 @@
           <button type="button" id="btn-compile" class="primary" title="Ctrl+Enter or Cmd+Enter">Compile</button>
         </div>
       </div>
+
+      <div class="editor-note" id="editor-note" role="status" hidden></div>
 
       <div class="editor" id="editor">
         <div class="gutter" id="gutter" aria-hidden="true"></div>
@@ -85,7 +80,7 @@
       <details class="bindings" id="outputs" hidden>
         <summary>Outputs <span class="hint" id="outputs-count"></span></summary>
         <table>
-          <thead><tr><th>Output</th><th>Declared by</th><th>Reaches</th><th>Fingerprint</th></tr></thead>
+          <thead><tr><th>Output</th><th>Kind</th><th>Reaches</th><th>Fingerprint</th></tr></thead>
           <tbody id="outputs-rows"></tbody>
         </table>
       </details>
@@ -98,65 +93,14 @@
         </table>
       </details>
       </div>
-
-      <div class="tab-panel" id="resources-editor" role="tabpanel" aria-labelledby="tab-resources" hidden>
-        <div class="pane-head">
-          <h2>Resources</h2>
-          <div class="actions">
-            <button type="button" id="btn-resources-template"
-                    title="Replace the text with the team D template">Load template</button>
-            <button type="button" id="btn-resources-served"
-                    title="Replace the text with the document the stub serves">Load served</button>
-            <button type="button" id="btn-resources-check" class="primary">Check</button>
-          </div>
-        </div>
-        <p class="hint">A resources artifact declares recipients and the outputs that deliver to them, with its own
-          revisions and approval. Policies emit to a declared output as <code>resources_&lt;name&gt;</code>; the policy
-          editor takes its fingerprint from this draft until ADP declares it.</p>
-        <textarea id="resources-source" class="json-editor" spellcheck="false" wrap="off" autocomplete="off"
-                  autocapitalize="off" aria-label="Resources document"></textarea>
-        <div class="compile-status" id="resources-status">Load the template, then check and publish it.</div>
-        <ul class="declared-outputs" id="resources-outputs" hidden></ul>
-
-        <div class="publish-row">
-          <button type="button" id="btn-resources-publish" class="approve" disabled>Publish resources</button>
-          <span class="spacer"></span>
-          <button type="button" id="btn-resources-revoke" class="danger" disabled>Revoke resources</button>
-        </div>
-        <div class="publish-outcome" id="resources-outcome" aria-live="polite" hidden></div>
-
-        <div class="confirm" id="resources-confirm" hidden>
-          <p>Approve and publish these resources as resources revision
-            <strong id="resources-confirm-revision">?</strong>?</p>
-          <p class="hash-line"><code id="resources-confirm-hash"></code></p>
-          <ul class="confirm-warnings" id="resources-confirm-warnings" hidden></ul>
-          <div class="confirm-actions">
-            <button type="button" id="btn-resources-confirm" class="approve">Approve and publish</button>
-            <button type="button" id="btn-resources-cancel" class="quiet">Cancel</button>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-head">
-            <h3>Resources acknowledgments</h3>
-            <span class="hint" id="resources-ack-summary"></span>
-          </div>
-          <div class="table-wrap">
-            <table class="acks">
-              <thead>
-                <tr><th>When</th><th>Rev</th><th>Hash</th><th>State</th><th>Gen</th></tr>
-              </thead>
-              <tbody id="resources-acks"></tbody>
-            </table>
-          </div>
-        </div>
-      </div>
     </section>
 
     <section class="pane viewer-pane" aria-label="Telemetry viewer">
       <div class="section-head">
-        <h2>What each endpoint receives</h2>
+        <h2>What each destination receives</h2>
         <span class="hint">families seen in the last 5 s · events per second (points for gauges), last 30 s</span>
+        <button type="button" id="btn-add-destination"
+                title="Start a recording intake on a free port and add it to additional_endpoints in ADP's configuration file, which ADP re-reads">Add destination</button>
       </div>
       <div class="intakes" id="intakes"></div>
 
@@ -174,6 +118,25 @@
               <tbody id="acks"></tbody>
             </table>
           </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>Native configuration</h3>
+            <span class="hint">written to datadog.yaml; ADP re-reads it</span>
+          </div>
+          <div class="native-controls">
+            <label class="mix" title="multi_region_failover.failover_metrics: a signal programs read live">
+              <input type="checkbox" id="native-failover"> failover on
+            </label>
+            <label class="filterlist" title="metric_filterlist: a native policy setting, applied by the default program only">
+              <span>metric_filterlist</span>
+              <input type="text" id="native-filterlist" placeholder="demo.catalog.views" spellcheck="false"
+                     aria-label="metric_filterlist, comma-separated">
+            </label>
+            <button type="button" id="btn-filterlist" class="quiet">Apply</button>
+          </div>
+          <div class="hint" id="native-note"></div>
         </div>
 
         <div class="card">

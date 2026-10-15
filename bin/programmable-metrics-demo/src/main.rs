@@ -5,18 +5,18 @@
 //! process:
 //!
 //! 1. **Launcher**: creates a run directory, generates a self-signed IPC certificate, writes an ADP configuration
-//!    (standalone mode, UDP DogStatsD, a primary endpoint, two additional endpoints routed by metric prefix, a
-//!    multi-region failover endpoint, all pointing at the demo, and the credential a resources artifact may use for
-//!    team D's endpoint, which the configuration does not name), starts ADP, and waits for it to report ready.
-//! 2. **Recording intakes**: one loopback HTTP listener per endpoint, team D's included, decoding and recording every
-//!    metric payload.
+//!    (standalone mode with its configuration reload on, UDP DogStatsD, a primary endpoint, teams B and C as additional
+//!    endpoints, and a multi-region failover endpoint, all pointing at the demo), starts ADP, and waits for it to
+//!    report ready.
+//! 2. **Destinations**: one recording intake, a loopback HTTP listener, per endpoint, decoding and recording every
+//!    metric payload; **Add destination** starts another and adds it to ADP's configuration file, which ADP re-reads,
+//!    and **Remove** takes one out (see [`destinations`]).
 //! 3. **Traffic generator**: DogStatsD over UDP at a steady rate, including a canary counter for conservation checks,
 //!    and control datagrams to the demo itself that show when the host drops loopback datagrams.
 //! 4. **Telemetry scraper**: reads ADP's `/metrics` every second and keeps rates of the series the UI shows.
-//! 5. **Artifact channel stub**: the server ADP polls for policy and resources artifacts, with a durable store in the
-//!    run directory.
+//! 5. **Artifact channel stub**: the server ADP polls for policy artifacts, with a durable store in the run directory.
 //! 6. **Control surface client**: ADP's privileged programmable-metrics routes, over mTLS with the IPC certificate.
-//! 7. **Compile and publish API** and the **UI**: an editor with diagnostics, a resources editor, and the telemetry
+//! 7. **Compile and publish API** and the **UI**: an editor with diagnostics, the destinations, and the telemetry
 //!    viewer.
 //!
 //! Open the URL it prints. Press Ctrl-C to stop the demo and ADP, and Ctrl-C again to kill ADP at once instead of
@@ -60,13 +60,13 @@ mod checks;
 mod clock;
 mod compile;
 mod control;
+mod destinations;
 mod export;
 mod intake;
 mod launcher;
 mod loopback;
 mod preview;
 mod recipients;
-mod resources;
 mod scenario;
 mod settings;
 mod stub;
@@ -78,7 +78,7 @@ use crate::{
     adp_api::AdpApi,
     app::{App, Components},
     control::ControlSurface,
-    intake::IntakeRecorder,
+    destinations::Destinations,
     launcher::{AdpProcess, Launch, Phase},
     loopback::LoopbackWitness,
     settings::{DemoPorts, LaneFlags, RunSettings},
@@ -104,8 +104,9 @@ enum CliCommand {
 /// Run the demo's scenarios S0 to S6 and S8 to S14 headless against ADP, and check what each endpoint receives.
 ///
 /// Launches ADP and the demo on the default ports moved up by --port-offset, drives the scenarios through the demo
-/// server's API (compile, publish, revoke, for policies and resources), checks every step's acknowledgment, the
-/// families each intake receives, and canary conservation across every install, then stops everything. Lane counts are
+/// server's API (compile, publish, revoke, destinations added and removed, native settings changed), checks every
+/// step's acknowledgment, the families each intake receives, and canary conservation across every install, then stops
+/// everything. Lane counts are
 /// fixed when ADP boots, so S12 to S14 run in a second launch, on lanes (--decoders, --state-lanes, --post-lanes) with
 /// 10-second windows, in the run directory's lanes/ subdirectory. Exits 1 if any check fails; the report, with
 /// timings, is written to check-report.json in the run directory.
@@ -217,10 +218,6 @@ struct RunCommand {
     /// port of the multi-region failover endpoint's intake (default 17104)
     #[argh(option, default = "DemoPorts::default().mrf")]
     mrf_port: u16,
-
-    /// port of team D's endpoint's intake, which only a resources artifact declares (default 17105)
-    #[argh(option, default = "DemoPorts::default().team_d")]
-    team_d_port: u16,
 
     /// port of ADP's unprivileged API (default 17110)
     #[argh(option, default = "DemoPorts::default().api")]
@@ -348,7 +345,6 @@ async fn run(command: RunCommand) -> Result<(), GenericError> {
             team_b: command.team_b_port,
             team_c: command.team_c_port,
             mrf: command.mrf_port,
-            team_d: command.team_d_port,
             api: command.api_port,
             secure_api: command.secure_api_port,
             dogstatsd: command.dogstatsd_port,
@@ -577,6 +573,7 @@ fn missing_adp_bin(path: &std::path::Path) -> GenericError {
 struct Demo {
     settings: Arc<RunSettings>,
     tasks: JoinSet<()>,
+    destinations: Destinations,
     adp: Option<AdpProcess>,
     /// Whether ADP reported ready, when the demo launched it.
     ready: Result<(), GenericError>,
@@ -607,24 +604,13 @@ impl Demo {
             "artifact channel stub",
         );
 
-        let mut intakes = Vec::new();
-        for recipient in settings.ports.recipients() {
-            let recorder = IntakeRecorder::new(recipient);
-            let listener = bind(recipient.port, "recording intake").await?;
-            serve(
-                &mut tasks,
-                listener,
-                intake::router(recorder.clone()),
-                "recording intake",
-            );
-            intakes.push(recorder);
-        }
+        let control = ControlSurface::new();
+        let destinations = Destinations::start(Arc::clone(&settings), control.clone())?;
 
         let api = AdpApi::new(settings.ports.api, settings.ports.secure_api, &settings.ipc_cert_path()).await?;
 
         let telemetry = TelemetryScraper::new();
         tasks.spawn(telemetry.clone().run(api.clone()));
-        let control = ControlSurface::new();
         tasks.spawn(control.clone().run(api.clone()));
 
         let dogstatsd: SocketAddr = DemoPorts::loopback(settings.ports.dogstatsd);
@@ -646,7 +632,7 @@ impl Demo {
         let record = Launch::new(phase, adp_bin, &settings);
         let app = App::new(Components {
             settings: Arc::clone(&settings),
-            intakes,
+            destinations: destinations.clone(),
             traffic: traffic.clone(),
             telemetry,
             channel,
@@ -665,6 +651,7 @@ impl Demo {
             return Ok(Some(Self {
                 settings,
                 tasks,
+                destinations,
                 adp: None,
                 ready: Ok(()),
             }));
@@ -677,7 +664,7 @@ impl Demo {
             ready = process.wait_ready(&api, &record, &console_log) => ready,
             signal = signals.next() => {
                 info!("Received {} while waiting for ADP to report ready.", signal);
-                let demo = Self { settings, tasks, adp: Some(process), ready: Ok(()) };
+                let demo = Self { settings, tasks, destinations, adp: Some(process), ready: Ok(()) };
                 demo.stop(signals).await;
                 return Ok(None);
             }
@@ -694,13 +681,14 @@ impl Demo {
         Ok(Some(Self {
             settings,
             tasks,
+            destinations,
             adp: Some(process),
             ready,
         }))
     }
 
-    /// Stops ADP, if the demo launched it, and then the demo's own tasks. Another stop signal meanwhile kills ADP at
-    /// once.
+    /// Stops ADP, if the demo launched it, and then the demo's own tasks and intakes. Another stop signal meanwhile
+    /// kills ADP at once.
     async fn stop(mut self, signals: &mut ShutdownSignals) {
         info!("Stopping...");
         if let Some(process) = self.adp.take() {
@@ -708,6 +696,7 @@ impl Demo {
             process.shutdown(signals.next()).await;
         }
         self.tasks.shutdown().await;
+        self.destinations.shutdown().await;
         info!("Stopped.");
     }
 }

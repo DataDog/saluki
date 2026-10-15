@@ -1932,6 +1932,9 @@ impl InstallerCore {
     ///
     /// The acknowledgment reported is the latest change: the latest delivery's installation is computed first, then the
     /// earlier one's, which is no longer followed once the latest delivery's artifact is active, or once it ended.
+    /// While a newer delivery stands refused, rejected, or failed, the earlier installation's moves to another
+    /// generation, such as after a lowering, are not changes of the config's acknowledgment: only a change of its state
+    /// is.
     fn refresh_acknowledgments(&mut self) {
         let computed = self
             .artifacts
@@ -1955,7 +1958,13 @@ impl InstallerCore {
                 }
             }
             if let (Some(followed), Some((ack, serving))) = (tracked.earlier.as_mut(), earlier) {
-                shown = followed.update(ack, serving).or(shown);
+                // The config's acknowledgment as it stands: a newer delivery refused, rejected, or failed stays it.
+                let current = shown.as_ref().unwrap_or(&tracked.ack);
+                let newer_ended = matches!(current.state, ApplyState::Rejected | ApplyState::Failed)
+                    && (current.revision, current.artifact_hash) != (followed.ack.revision, followed.ack.artifact_hash);
+                let state = followed.ack.state;
+                let changed = followed.update(ack, serving);
+                shown = changed.filter(|ack| !newer_ended || ack.state != state).or(shown);
                 if is_final(followed.ack.state) {
                     tracked.earlier = None;
                 }

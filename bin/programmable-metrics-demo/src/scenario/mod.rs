@@ -1,52 +1,60 @@
 //! The scripted check of the demo (`programmable-metrics-demo check`, `make demo-programmable-metrics-check`): the
-//! scenarios S0 to S6 of the implementation design's Demo section, and S8 to S11 of stage 7's (resources declared
-//! live), driven through the demo server's API against the ADP the demo launched, with what each endpoint receives
-//! checked after every step.
+//! scenarios of the detached programs design's demo section, driven through the demo server's API against the ADP the
+//! demo launched, with what each endpoint receives checked after every step.
 //!
-//! Every scenario edits the default program as ADP exports it, its one scope, the whole metrics path after the sources
-//! (see [`edits`]), compiles it (`POST /api/compile`, which
-//! composes it into ADP's default program, validates it, and diffs it against the active plan), publishes it (`POST
-//! /api/publish`), waits for ADP's acknowledgment (`GET /api/adp/status`, and the stub's record of ADP's polls), and
-//! then waits for the families each intake receives to be what the scenario says, and to stay so for [`STABLE`]:
+//! ADP boots with the primary endpoint, teams B and C as additional endpoints, and the failover endpoint. Natively an
+//! additional endpoint receives everything (dual shipping), so the default program, which ADP runs until a program is
+//! published, sends the primary endpoint and teams B and C every family, and the failover endpoint nothing, since
+//! failover mirroring is off. Every policy step edits the default program as ADP exports it, detached: its policy
+//! settings written as literals, its outputs as the recipients they deliver to (see [`edits`]). It compiles the program
+//! (`POST /api/compile`, which composes it into ADP's default program, validates it, and diffs it against the active
+//! plan), publishes it (`POST /api/publish`), waits for ADP's acknowledgment (`GET /api/adp/status`, and the stub's
+//! record of ADP's polls), and then waits for the families each intake receives to be what the scenario says, and to
+//! stay so for [`STABLE`]:
 //!
-//! - **S0**: the unmodified default program is acknowledged `active` without a new generation, its plan diff is empty,
-//!   and every endpoint receives what it does natively: the primary endpoint everything, team B `demo.checkout.*`,
-//!   team C `demo.catalog.*`, the failover endpoint nothing.
-//! - **S1**: `demo.debug.*` is dropped: it leaves the primary endpoint, and the other families continue.
-//! - **S2**: team B's route widened with `or tag("team") == "platform"`: team B also receives the platform family.
-//! - **S3**: exclusive tag routing: the metrics tagged `team:checkout` reach team B only, not the primary endpoint.
-//! - **S4**: mirroring with `true` and a literal allowlist: the failover endpoint receives the allowlisted family only.
-//! - **S5**: guardrails, each published anyway: a duplicate `tee` branch to the primary output, an emit to an output
-//!   ADP does not declare, an aggregation without its parameters, and a second, fully parameterized aggregation (a
-//!   program has at most one), each flagged by the editor, and the one aggregation moved after enrichment, which the
-//!   frame cannot run there (the editor does not place plans, so it may not flag it), are each rejected by ADP with an
-//!   error that says so, and S4's generation keeps running, endpoints unchanged.
-//! - **S6**: revoking (an empty snapshot) brings the default program back: the active plan is the boot plan again, and
-//!   the endpoints receive what they did in S0.
+//! - **S0**: the unmodified default program adopts the running generation (no new generation), its plan diff is empty,
+//!   ADP's status says a published program runs and native policy settings are not applied, and the endpoints receive
+//!   what they did.
+//! - **S1**: `demo.debug.*` is dropped ahead of the policy: it leaves every endpoint.
+//! - **S2**, the recipe: team B is narrowed to the checkout families: its URL leaves the main `emit`, and a branch
+//!   emits `demo.checkout.*` to it. Both `emit`s address recipient sets no output delivers to, so the editor says ADP
+//!   adds implied outputs, ADP adds them while the program waits, and the program then installs; the editor, compiling
+//!   the program again, composes the plan ADP runs.
+//! - **S3**: S2's route widened with `or tag("team") == "platform"` (S3a); then exclusive routing, `team:checkout` to
+//!   team B only, ahead of the policy (S3b).
+//! - **S4**: the failover gateway mirrors only `demo.checkout.requests` (S4a), which shows once failover turns on
+//!   (S4b, `multi_region_failover.failover_metrics` in the configuration file, a signal the program reads live) and
+//!   stops when it turns off (S4c).
+//! - **S5**: guardrails, each published anyway and refused while S4's generation keeps running: a duplicate branch to
+//!   the main `emit`'s recipients, an `emit` to recipients of two delivery hosts, a second aggregation, the aggregation
+//!   moved after enrichment (refused by placement, which the editor does not run), a policy binding in a published
+//!   program, each rejected; and an `emit` to a recipient ADP does not know, held `pending`.
+//! - **S6**: revoking (an empty snapshot) brings the default program back, the boot plan again.
 //!
-//! Team D's endpoint is in no configuration file; the steps after S6 declare it with a resources artifact (the team D
-//! template, [`team_d_template`]) and route to it with a policy that adds a `tee` branch, `split(tag("team") ==
-//! "platform") { true -> emit resources_team_d; false -> drop }`:
+//! Then destinations come and go while ADP runs ([`destinations`]): ADP re-reads its configuration file, which the demo
+//! rewrites, so an endpoint added to or removed from `additional_endpoints` becomes, or stops being, a recipient live.
 //!
-//! - **S8**: publishing the resources makes ADP declare `resources_team_d` (its export lists it), and then publishing
-//!   the routing policy sends the platform family to team D, with the primary, team B, and team C endpoints unchanged.
-//! - **S9**: revoking the resources keeps the policy `active`, degraded: its acknowledgment gives the reason, that its
-//!   emits to the output are dropped; its emit to team D is dropped and counted as policy loss of that node, the
-//!   primary endpoint is unchanged, and team D's recipient drains and retires. Publishing the resources again restores
-//!   the emit, without a new policy revision, and nothing names the output any more.
-//! - **S10**: with both revoked, publishing the routing policy first (its fingerprint of `resources_team_d` taken from
-//!   the resources draft) leaves it `pending`, waiting for the output, while the default program keeps running; then
-//!   publishing the resources installs the policy by itself.
-//! - **S11**: with team D's intake paused (it answers `503`), revoking the resources makes team D's recipient drain
-//!   until its deadline and drop what it still holds: its drain report says so, and its dropped count is what the
-//!   forwarder's telemetry (`component_items_dropped_total` of `dd_out`) counted meanwhile.
+//! - **S8**: under the default program, an added destination D receives everything (S8a); removed, its recipient
+//!   drains and retires and its intake stops, the others unchanged (S8b).
+//! - **S9**: under a published program (the recipe again, S9a), an added destination E is declared but not addressed,
+//!   and receives nothing (S9b), until the program routes `team:platform` to it (S9c).
+//! - **S10**: E removed while the program routes to it: the program stays `active`, degraded, its `emit` to E a
+//!   counted drop of policy loss at its node, E's recipient retires, and the other endpoints are unchanged. Then team
+//!   C removed (S10b), which the program's main `emit` names beside the primary endpoint: the `emit` keeps delivering
+//!   to the primary endpoint, whose canaries stay exact, what team C would have received is counted as policy loss at
+//!   the drop beside it (`metrics_policy_0_missing`), team B is unchanged, and team C's recipient retires. Team C stays
+//!   out of the configuration for the rest of the launch.
+//! - **S11**: a native policy change under the published program (`metric_filterlist` in the file) makes no new
+//!   generation and changes nothing it sends, and ADP's status lists the setting as differing (S11a); revoking then
+//!   applies it, and the filterlisted family leaves every endpoint (S11b); clearing the filterlist brings it back
+//!   (S11c).
 //!
-//! Each step after S0 also checks that the active plan hash ADP reports is the hash of the plan the editor composed, so
-//! the editor's preview is what ADP installs. Throughout, every sample of the demo's state checks the canary
-//! conservation of the moment (the canaries the primary endpoint received for a recent range of seconds, against those
-//! sent), that no other endpoint receives canaries, that no intake refused a request or saw an unexpected API key, and
-//! that no lane admitted an event another lane owns (`plan_lane_misrouted_total` stays 0); at the end, the canaries of
-//! the whole run, from the first balanced range to the last, are checked at once. The demo keeps five minutes of
+//! Each policy step after S0 also checks that the active plan hash ADP reports is the hash of the plan the editor
+//! composed, so the editor's preview is what ADP installs. Throughout, every sample of the demo's state checks the
+//! canary conservation of the moment (the canaries the primary endpoint received for a recent range of seconds, against
+//! an unexpected API key, and that no lane admitted an event another lane owns (`plan_lane_misrouted_total` stays 0);
+//! at the end, the canaries of the whole run, from the first balanced range to the last, are checked at once, across
+//! every install, every destination added and removed, and every configuration change. The demo keeps five minutes of
 //! canary counts, so the runner reads the whole run's counts a minute at a time as it goes ([`CanaryTotals`]) and
 //! checks their sum. Every install is in the ranges checked, but a check balances within an allowance for canaries
 //! counted in the second next to its range's edges (6 at the default 20 datagrams per second): an aggregated canary
@@ -62,11 +70,11 @@
 //! ([`canary::classify_run`]). A range of the whole run that the check cannot say yet, because no scrape of ADP's
 //! telemetry has covered its end while the host was dropping datagrams, is read again later, to a later end.
 //!
-//! Lane counts are fixed when ADP boots, so S12 to S14 of stage 9 run in a second launch of ADP, its metrics path on
-//! lanes, with 10-second windows ([`run_lanes`]; see [`lanes`]): the frame on the lanes asked for, a counter whose
-//! state lane is empty at a tick, a width change of aggregation with per-lane crossings, and S8's
-//! endpoint scenario on the post-aggregation lanes. With longer windows, a family counts as arriving for a window
-//! longer ([`present_ms`]), and the endpoints must hold what a step says for one window ([`Runner::stable`]).
+//! Lane counts are fixed when ADP boots, so S12 to S14 run in a second launch of ADP, its metrics path on lanes, with
+//! 10-second windows ([`run_lanes`]; see [`lanes`]): the frame on the lanes asked for, a counter whose state lane is
+//! empty at a tick, a width change of aggregation with per-lane crossings, and the aggregation renamed, which keeps its
+//! state. With longer windows, a family counts as arriving for a window longer ([`present_ms`]), and the endpoints must
+//! hold what a step says for one window ([`Runner::stable`]).
 //!
 //! The steps are timed: compile, publish to acknowledgment, and publish to the endpoints showing the change. The
 //! report ([`Report`]) is written to `check-report.json` in the run directory, the second launch's under
@@ -84,20 +92,19 @@ use serde_json::{json, Value};
 
 use self::{
     client::DemoClient,
-    edits::{Outputs, MIRRORED_METRIC, UNDECLARED_OUTPUT},
+    edits::{MIRRORED_METRIC, UNKNOWN_RECIPIENT},
 };
 use crate::{
     canary::{self, CanaryState},
     clock::unix_millis,
-    resources::{document_text, team_d_template},
-    settings::RunSettings,
+    settings::{DemoPorts, RunSettings},
     stub::protocol::POLICY_PRODUCT,
 };
 
 pub mod client;
+mod destinations;
 mod edits;
 mod lanes;
-mod resources;
 
 /// How often the runner samples the demo's state while it waits.
 const POLL: Duration = Duration::from_millis(250);
@@ -137,25 +144,33 @@ const FAMILIES: [&str; 6] = [
     "demo.platform.queue_depth",
 ];
 
-/// The checkout families, which team B's route matches by prefix.
+/// The checkout families, which the recipe's route to team B matches by prefix.
 const CHECKOUT: [&str; 2] = ["demo.checkout.latency", "demo.checkout.requests"];
 
-/// The intakes, as the demo names them.
-const INTAKES: [&str; 5] = ["primary", "team-b", "team-c", "mrf", "team-d"];
+/// The family the filterlist scenario lists.
+const FILTERLISTED: &str = "demo.catalog.views";
 
-/// The metric families each intake receives, by intake name.
+/// The metric families each intake receives, by intake name. An intake the routing does not name receives nothing.
 type Routing = BTreeMap<String, BTreeSet<String>>;
 
-/// Returns the routing of the default program: everything to the primary endpoint, the checkout families to team B,
-/// the catalog family to team C, nothing to the failover endpoint, and nothing to team D, which only a resources
-/// artifact declares.
+/// Returns the routing of the default program: everything to the primary endpoint and to teams B and C, which are
+/// additional endpoints and natively receive everything, and nothing to the failover endpoint while failover is off.
 fn default_routing() -> Routing {
     routing(&[
         ("primary", &FAMILIES),
-        ("team-b", &CHECKOUT),
-        ("team-c", &["demo.catalog.views"]),
+        ("team-b", &FAMILIES),
+        ("team-c", &FAMILIES),
         ("mrf", &[]),
-        ("team-d", &[]),
+    ])
+}
+
+/// Returns the routing of the recipe (S2): team B receives the checkout families only.
+fn narrowed_routing() -> Routing {
+    routing(&[
+        ("primary", &FAMILIES),
+        ("team-b", &CHECKOUT),
+        ("team-c", &FAMILIES),
+        ("mrf", &[]),
     ])
 }
 
@@ -206,14 +221,31 @@ fn present(state: &Value, present_ms: u64) -> Routing {
     found
 }
 
+/// Returns `true` if the intakes receive what `expected` says: those it names, its families, and every other intake,
+/// nothing.
+fn routing_holds(expected: &Routing, found: &Routing) -> bool {
+    let empty = BTreeSet::new();
+    intakes_of(expected, found)
+        .all(|intake| expected.get(intake).unwrap_or(&empty) == found.get(intake).unwrap_or(&empty))
+}
+
+/// Returns the intakes `expected` or `found` names, each once.
+fn intakes_of<'a>(expected: &'a Routing, found: &'a Routing) -> impl Iterator<Item = &'a str> {
+    expected
+        .keys()
+        .chain(found.keys())
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+}
+
 /// Describes how `found` differs from `expected`, intake by intake.
 fn routing_difference(expected: &Routing, found: &Routing) -> String {
     let empty = BTreeSet::new();
-    INTAKES
-        .iter()
+    intakes_of(expected, found)
         .filter_map(|intake| {
-            let want = expected.get(*intake).unwrap_or(&empty);
-            let have = found.get(*intake).unwrap_or(&empty);
+            let want = expected.get(intake).unwrap_or(&empty);
+            let have = found.get(intake).unwrap_or(&empty);
             (want != have).then(|| {
                 let missing = want.difference(have).cloned().collect::<Vec<_>>();
                 let extra = have.difference(want).cloned().collect::<Vec<_>>();
@@ -614,8 +646,6 @@ struct Status {
     generation: Option<u64>,
     plan_hash: Option<String>,
     artifact_revision: Option<u64>,
-    /// The revision of the resources artifact the active generation was lowered with.
-    resources_revision: Option<u64>,
     default_program_hash: Option<String>,
     document: Value,
 }
@@ -626,10 +656,30 @@ impl Status {
             generation: document["active_generation"].as_u64(),
             plan_hash: document["active_plan_hash"].as_str().map(ToString::to_string),
             artifact_revision: document["active_artifact"]["revision"].as_u64(),
-            resources_revision: document["resources"]["active_artifact"]["revision"].as_u64(),
             default_program_hash: document["default_program_hash"].as_str().map(ToString::to_string),
             document,
         }
+    }
+
+    /// Returns which program runs, as the status's `program` member says: `default` or `published`.
+    fn runs(&self) -> Option<&str> {
+        self.document["program"]["runs"].as_str()
+    }
+
+    /// Returns whether the status's `program` member says the native policy settings apply: `applied` or
+    /// `not_applied`.
+    fn native_policy(&self) -> Option<&str> {
+        self.document["program"]["native_policy"].as_str()
+    }
+
+    /// Returns the native policy settings the status's `program` member lists as differing from what runs.
+    fn differs(&self) -> Vec<&str> {
+        self.document["program"]["differs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect()
     }
 
     /// Returns ADP's acknowledgment of `revision` of `product`, if it reports one. A config state that names no
@@ -640,11 +690,6 @@ impl Status {
             .iter()
             .find(|state| state["revision"].as_u64() == Some(revision) && product_of(state) == product)
     }
-
-    /// Returns ADP's degraded reason, if it reports one.
-    fn degraded(&self) -> Option<&str> {
-        self.document["degraded"].as_str()
-    }
 }
 
 /// Returns `true` if an acknowledgment is final for the step that waits for it: `active`, `rejected`, or `failed`.
@@ -652,13 +697,13 @@ fn settled(acknowledgment: &Value) -> bool {
     matches!(acknowledgment["state"].as_str(), Some("active" | "rejected" | "failed"))
 }
 
-/// Returns `true` if an acknowledgment is `pending` with an error that names `output`: an artifact that waits for the
-/// output, rather than one being installed, which is `pending` too.
-fn waiting_for(acknowledgment: &Value, output: &str) -> bool {
+/// Returns `true` if an acknowledgment is `pending` with an error that names `what`: an artifact that waits for it,
+/// such as a recipient, rather than one being installed, which is `pending` too.
+fn waiting_for(acknowledgment: &Value, what: &str) -> bool {
     acknowledgment["state"] == "pending"
         && acknowledgment["error"]
             .as_str()
-            .is_some_and(|error| error.contains(output))
+            .is_some_and(|error| error.contains(what))
 }
 
 /// Returns the product of a config state: the one it names, or the policy product when it names none.
@@ -671,7 +716,10 @@ fn product_of(state: &Value) -> &str {
 
 /// What a scenario expects of a compile.
 enum Compiled {
-    /// No findings, and a plan diff: empty for an unmodified export, not empty otherwise.
+    /// No findings, and a plan diff: empty for an unmodified export, not empty otherwise. Or, for a program that emits
+    /// to recipients no output delivers to exactly, only the note that ADP adds an output for them (an implied output)
+    /// and no plan diff: the step then compiles the program again once ADP runs it, and checks that the editor composes
+    /// the plan ADP installed.
     Clean { unchanged: bool },
 
     /// An error whose message (or validation rule) has this fragment.
@@ -680,10 +728,20 @@ enum Compiled {
     /// An artifact, with findings or without: what refuses it is ADP's placement, which the editor does not run.
     Unplaced,
 
-    /// An artifact that emits to a declared output ADP does not declare yet: its fingerprint came from the resources
-    /// draft, and composition says the output is missing.
-    Pending { output: &'static str },
+    /// A warning whose message has this fragment, and no plan diff: ADP holds the program pending, as for a recipient
+    /// its directory does not name.
+    Waiting { fragment: &'static str },
 }
+
+/// How the editor starts what it says of a program that emits to recipients no output delivers to exactly yet: ADP
+/// adds an output for them.
+const IMPLIED_OUTPUT: &str = crate::preview::IMPLIED_OUTPUT_NOTE;
+
+/// The fragment of ADP's refusal of an `emit` to recipients of two delivery hosts.
+const TWO_HOSTS: &[&str] = &["more than one delivery host"];
+
+/// The fragment of ADP's refusal of a policy binding in a published program.
+const POLICY_BINDING: &[&str] = &["a native policy setting"];
 
 /// The fragment of ADP's refusal of a second aggregation: the validation rule that a program has at most one.
 const SECOND_AGGREGATION: &[&str] = &["single_aggregation"];
@@ -716,8 +774,8 @@ enum Installed {
     /// Reject it with an error that has one of these fragments, and keep the active generation running.
     Rejected { fragments: &'static [&'static str] },
 
-    /// Hold it `pending`, with an error that names the output it waits for, and keep the active generation running.
-    Pending { output: &'static str },
+    /// Hold it `pending`, with an error that names what it waits for, and keep the active generation running.
+    Pending { waits_for: &'static str },
 }
 
 struct Runner {
@@ -734,12 +792,10 @@ struct Runner {
     /// Whether the last sample's canary check found that the host dropped canaries, so that each stretch of such
     /// samples is logged once.
     host_dropping: bool,
-    /// The Resources tab's draft, sent with every compile once the resources steps start, as the UI sends it.
-    resources_draft: Option<String>,
-    /// The team D resources template, as the Resources tab starts from it.
-    template: String,
     /// ADP's aggregation window, in seconds, which sets how often each family reaches the intakes.
     window_s: u64,
+    /// The demo's ports, which give the URLs of teams B and C.
+    ports: DemoPorts,
 }
 
 impl Runner {
@@ -747,14 +803,8 @@ impl Runner {
     ///
     /// # Errors
     ///
-    /// Returns an error if the demo has no intake for team D, or its server's client cannot be built.
+    /// Returns an error if the demo server's client cannot be built.
     fn new(settings: &RunSettings) -> Result<Self, GenericError> {
-        let team_d = settings
-            .ports
-            .recipients()
-            .into_iter()
-            .find(|recipient| recipient.declared)
-            .ok_or_else(|| generic_error!("The demo has no intake for a declared recipient (team D)."))?;
         let client = DemoClient::new(settings.ports.ui)?;
         Ok(Self {
             client,
@@ -768,9 +818,8 @@ impl Runner {
             last_change_s: 0,
             alerted: BTreeSet::new(),
             host_dropping: false,
-            resources_draft: None,
-            template: document_text(&team_d_template(&team_d)),
             window_s: settings.aggregate_window_secs.max(1),
+            ports: settings.ports.clone(),
         })
     }
 
@@ -791,10 +840,15 @@ impl Runner {
         ROUTING_TIMEOUT.max(Duration::from_millis(2 * self.present_ms()) + Duration::from_secs(self.window_s))
     }
 
+    /// Returns team B's URL, which names its recipient.
+    fn team_b(&self) -> String {
+        DemoPorts::http_url(self.ports.team_b)
+    }
+
     /// Waits for ADP to serve its export and default program, and for the canary check to have a whole range of
     /// seconds behind it, and checks that the endpoints receive what the default program routes. Returns the policy
-    /// scope's default program as the editor shows it, the outputs that feed each intake, and ADP's status.
-    async fn baseline(&mut self) -> Result<(String, Outputs, Status), GenericError> {
+    /// scope's default program as the editor shows it, and ADP's status.
+    async fn baseline(&mut self) -> Result<(String, Status), GenericError> {
         let baseline = Instant::now();
         self.wait_for(
             "ADP's export and default program, and a balanced canary check",
@@ -826,15 +880,14 @@ impl Runner {
             .as_str()
             .ok_or_else(|| generic_error!("The default program is not available: {}", program))?
             .to_string();
-        let outputs = outputs(&program["legend"])?;
         let boot = self.status().await?;
         self.expect_routing("baseline", &default_routing(), Instant::now())
             .await?;
-        Ok((source, outputs, boot))
+        Ok((source, boot))
     }
 
     async fn scenarios(&mut self) -> Result<(), GenericError> {
-        let (source, outputs, boot) = self.baseline().await?;
+        let (source, boot) = self.baseline().await?;
 
         self.step(
             "S0",
@@ -848,8 +901,14 @@ impl Runner {
         )
         .await?;
         self.check_routes(&boot, None).await?;
+        self.check_program("S0", "published", "not_applied").await?;
 
         let s1 = edits::drop_debug(&source)?;
+        let no_debug = ["primary", "team-b", "team-c"]
+            .into_iter()
+            .fold(default_routing(), |routing, intake| {
+                changed(routing, intake, &["demo.debug.*"], true)
+            });
         self.step(
             "S1",
             "drop demo.debug.*",
@@ -857,22 +916,35 @@ impl Runner {
             Compiled::Clean { unchanged: false },
             Installed::Active {
                 new_generation: true,
-                routing: Some(changed(default_routing(), "primary", &["demo.debug.*"], true)),
+                routing: Some(no_debug),
             },
         )
         .await?;
         let s1_status = self.status().await?;
         self.check_routes(&boot, Some(&s1_status)).await?;
 
+        let recipe = edits::narrow_team_b(&source, &self.team_b())?;
         self.step(
             "S2",
+            "the recipe: narrow team B to checkout",
+            recipe.clone(),
+            Compiled::Clean { unchanged: false },
+            Installed::Active {
+                new_generation: true,
+                routing: Some(narrowed_routing()),
+            },
+        )
+        .await?;
+
+        self.step(
+            "S3a",
             "widen team B's route with team:platform",
-            edits::widen_team_b(&source, &outputs)?,
+            edits::widen_team_b(&recipe)?,
             Compiled::Clean { unchanged: false },
             Installed::Active {
                 new_generation: true,
                 routing: Some(changed(
-                    default_routing(),
+                    narrowed_routing(),
                     "team-b",
                     &["demo.platform.queue_depth"],
                     false,
@@ -880,85 +952,173 @@ impl Runner {
             },
         )
         .await?;
-
+        let exclusive = ["primary", "team-c"]
+            .into_iter()
+            .fold(default_routing(), |routing, intake| {
+                changed(routing, intake, &CHECKOUT, true)
+            });
         self.step(
-            "S3",
+            "S3b",
             "route team:checkout to team B only",
-            edits::exclusive_team_b(&source, &outputs)?,
+            edits::exclusive_team_b(&source, &self.team_b())?,
             Compiled::Clean { unchanged: false },
             Installed::Active {
                 new_generation: true,
-                routing: Some(changed(default_routing(), "primary", &CHECKOUT, true)),
+                routing: Some(exclusive),
             },
         )
         .await?;
 
-        let mirrored = changed(default_routing(), "mrf", &[MIRRORED_METRIC], false);
         self.step(
-            "S4",
-            "mirror one family to failover with true and a literal list",
-            edits::mirror_to_failover(&source, &outputs)?,
+            "S4a",
+            "mirror only checkout requests on failover",
+            edits::mirror_checkout_on_failover(&source)?,
             Compiled::Clean { unchanged: false },
             Installed::Active {
                 new_generation: true,
-                routing: Some(mirrored.clone()),
+                routing: Some(default_routing()),
             },
         )
         .await?;
+        let mirrored = changed(default_routing(), "mrf", &[MIRRORED_METRIC], false);
+        self.native_step(
+            "S4b",
+            "failover on (a signal): one family mirrored",
+            json!({ "failover_metrics": true }),
+            &mirrored,
+        )
+        .await?;
+        self.native_step(
+            "S4c",
+            "failover off: mirroring stops",
+            json!({ "failover_metrics": false }),
+            &default_routing(),
+        )
+        .await?;
 
-        let guardrails: [(_, _, _, &[&str]); 3] = [
+        let guardrails: [(_, _, _, &[&str]); 5] = [
             (
                 "S5a",
-                "guardrail: a duplicate branch to the primary output",
-                edits::duplicate_branch(&source, &outputs)?,
+                "guardrail: a duplicate branch to the main emit's recipients",
+                edits::duplicate_branch(&source)?,
                 &["duplicate_contribution"],
             ),
             (
                 "S5b",
-                "guardrail: an emit to an undeclared output",
-                edits::undeclared_output(&source, &outputs)?,
-                &[UNDECLARED_OUTPUT],
+                "guardrail: an emit to recipients of two hosts",
+                edits::two_hosts(&source)?,
+                TWO_HOSTS,
             ),
             (
                 "S5c",
-                "guardrail: an aggregation without its parameters",
-                edits::aggregation_without_parameters(&source)?,
-                &["valid_parameters"],
+                "guardrail: a second aggregation",
+                edits::second_aggregation(&source)?,
+                SECOND_AGGREGATION,
+            ),
+            (
+                "S5d",
+                "guardrail: the aggregation moved after enrichment",
+                edits::aggregation_after_enrichment(&source)?,
+                AGGREGATION_OUTSIDE_ITS_SLOT,
+            ),
+            (
+                "S5e",
+                "guardrail: a policy binding in a published program",
+                edits::policy_binding(&source)?,
+                POLICY_BINDING,
             ),
         ];
         for (id, title, source, fragments) in guardrails {
-            let compiled = Compiled::Flagged { fragment: fragments[0] };
+            // The editor does not place plans, so it may not flag the aggregation moved after enrichment.
+            let compiled = if fragments == AGGREGATION_OUTSIDE_ITS_SLOT {
+                Compiled::Unplaced
+            } else {
+                Compiled::Flagged { fragment: fragments[0] }
+            };
             self.step(id, title, source, compiled, Installed::Rejected { fragments })
                 .await?;
         }
         self.step(
-            "S5d",
-            "guardrail: a second aggregation",
-            edits::second_aggregation(&source)?,
-            Compiled::Flagged {
-                fragment: SECOND_AGGREGATION[0],
+            "S5f",
+            "guardrail: an emit to a recipient ADP does not know",
+            edits::unknown_recipient(&source)?,
+            Compiled::Waiting {
+                fragment: UNKNOWN_RECIPIENT,
             },
-            Installed::Rejected {
-                fragments: SECOND_AGGREGATION,
-            },
-        )
-        .await?;
-        self.step(
-            "S5e",
-            "guardrail: the aggregation moved after enrichment",
-            edits::aggregation_after_enrichment(&source)?,
-            Compiled::Unplaced,
-            Installed::Rejected {
-                fragments: AGGREGATION_OUTSIDE_ITS_SLOT,
+            Installed::Pending {
+                waits_for: UNKNOWN_RECIPIENT,
             },
         )
         .await?;
         // The previous generation keeps running: the endpoints still receive what S4 routes.
-        self.expect_routing("S5", &mirrored, Instant::now()).await?;
+        self.expect_routing("S5", &default_routing(), Instant::now()).await?;
 
-        self.revoke(&boot).await?;
-        self.resources_steps(&source, &outputs, &boot).await?;
+        self.revoke_step("S6", "revoke: an empty snapshot", Some(&boot), &default_routing())
+            .await?;
+        self.destination_steps(&recipe).await?;
         self.whole_run_canary().await
+    }
+
+    /// Checks that ADP's status says which program runs and whether native policy settings apply, as `runs` and
+    /// `native_policy` say, and records it on the step `id`.
+    async fn check_program(&mut self, id: &str, runs: &str, native_policy: &str) -> Result<(), GenericError> {
+        let status = self.status().await?;
+        if status.runs() != Some(runs) || status.native_policy() != Some(native_policy) {
+            return Err(generic_error!(
+                "{}: ADP's status says the program that runs is {:?}, with native policy {:?}, not {} and {}: {}",
+                id,
+                status.runs(),
+                status.native_policy(),
+                runs,
+                native_policy,
+                status.document["program"]
+            ));
+        }
+        if let Some(step) = self.report.steps.iter_mut().rev().find(|step| step.id == id) {
+            step.outcome = format!("{}; program {}, native policy {}", step.outcome, runs, native_policy);
+        }
+        Ok(())
+    }
+
+    /// Changes the native settings the demo writes in ADP's configuration file (`POST /api/native`), and checks that
+    /// the endpoints then receive what `expected` says, with the artifact in effect unchanged.
+    async fn native_step(
+        &mut self, id: &'static str, title: &'static str, change: Value, expected: &Routing,
+    ) -> Result<(), GenericError> {
+        let mut step = StepReport::new(id, title);
+        let result = async {
+            let before = self.status().await?;
+            let changed = Instant::now();
+            let (status, answer) = self.client.post_json("/api/native", &change).await?;
+            if !status.is_success() {
+                return Err(generic_error!("Changing the native settings was refused: {}", answer));
+            }
+            self.last_change_s = unix_millis() / 1000;
+            let visible = self.expect_routing(id, expected, changed).await?;
+            let after = self.status().await?;
+            if after.artifact_revision != before.artifact_revision {
+                return Err(generic_error!(
+                    "ADP runs artifact revision {:?} after the configuration change, not {:?}.",
+                    after.artifact_revision,
+                    before.artifact_revision
+                ));
+            }
+            step.visible_ms = Some(visible.as_millis() as u64);
+            step.generation = after.generation;
+            step.outcome = format!(
+                "configuration file: {}; {} still runs, generation {}",
+                change,
+                after.artifact_revision.map_or_else(
+                    || "the default program".to_string(),
+                    |revision| format!("revision {}", revision)
+                ),
+                after.generation.unwrap_or_default()
+            );
+            step.diff = "-".to_string();
+            Ok(())
+        }
+        .await;
+        self.finish(step, result)
     }
 
     /// Runs one scenario step that installs without a cut: compile, publish, acknowledgment, and what the endpoints
@@ -994,17 +1154,22 @@ impl Runner {
         let compile_started = Instant::now();
         let (status, outcome) = self
             .client
-            .post_json(
-                "/api/compile",
-                &json!({ "source": source, "resources": self.resources_draft }),
-            )
+            .post_json("/api/compile", &json!({ "source": source }))
             .await?;
         step.compile_ms = Some(compile_started.elapsed().as_millis() as u64);
         if !status.is_success() || outcome["ok"] != true {
             return Err(generic_error!("The program did not compile: {}", outcome));
         }
         step.diff = diff_summary(&outcome["preview"]);
-        let diagnostics = outcome["diagnostics"].as_array().cloned().unwrap_or_default();
+        // A program that no longer emits to a native output, such as the main output once a recipient leaves its
+        // `emit`, leaves that output unused: a warning that says so, not a finding against the program.
+        let diagnostics = outcome["diagnostics"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|diagnostic| !unused_output(diagnostic))
+            .cloned()
+            .collect::<Vec<_>>();
         let messages = || {
             diagnostics
                 .iter()
@@ -1018,7 +1183,17 @@ impl Runner {
                 outcome["checked_against"]
             ));
         }
+        // Whether the program emits to recipients no output delivers to yet, for which ADP adds an implied output: the
+        // editor then has no plan diff to show until ADP runs the program.
+        let implied = !diagnostics.is_empty()
+            && diagnostics.iter().all(|diagnostic| {
+                diagnostic["severity"] == "warning"
+                    && diagnostic["message"]
+                        .as_str()
+                        .is_some_and(|message| message.starts_with(IMPLIED_OUTPUT))
+            });
         match compiled {
+            Compiled::Clean { .. } if implied => {}
             Compiled::Clean { unchanged } => {
                 if !diagnostics.is_empty() {
                     return Err(generic_error!("The editor reported findings: {}", messages()));
@@ -1042,27 +1217,17 @@ impl Runner {
             }
             // The editor validates without placing the plan: what it finds does not decide the step.
             Compiled::Unplaced => {}
-            Compiled::Pending { output } => {
-                let from_draft = outcome["draft_fingerprints"]
-                    .as_array()
-                    .is_some_and(|outputs| outputs.iter().any(|from_draft| from_draft == output));
-                if !from_draft {
-                    return Err(generic_error!(
-                        "The editor did not take the fingerprint of `{}` from the resources draft: {} ({})",
-                        output,
-                        outcome["draft_fingerprints"],
-                        outcome["draft_note"]
-                    ));
-                }
-                let flagged = diagnostics.iter().any(|diagnostic| {
-                    diagnostic["message"]
-                        .as_str()
-                        .is_some_and(|message| message.contains(output))
+            Compiled::Waiting { fragment } => {
+                let waits = diagnostics.iter().any(|diagnostic| {
+                    diagnostic["severity"] == "warning"
+                        && diagnostic["message"]
+                            .as_str()
+                            .is_some_and(|message| message.contains(fragment))
                 });
-                if !flagged {
+                if !waits || outcome["preview"]["available"] == true {
                     return Err(generic_error!(
-                        "The editor did not say that ADP does not declare `{}` yet: {}",
-                        output,
+                        "The editor did not say that ADP holds the program pending for `{}`: {}",
+                        fragment,
                         messages()
                     ));
                 }
@@ -1101,11 +1266,11 @@ impl Runner {
         step.revision = Some(revision);
 
         let waits_for = match &installed {
-            Installed::Pending { output } => Some(*output),
+            Installed::Pending { waits_for } => Some(*waits_for),
             Installed::Active { .. } | Installed::Rejected { .. } => None,
         };
         let expected = |acknowledgment: &Value| match waits_for {
-            Some(output) => waiting_for(acknowledgment, output),
+            Some(what) => waiting_for(acknowledgment, what),
             None => settled(acknowledgment),
         };
         let (acknowledgment, after) = self
@@ -1136,15 +1301,24 @@ impl Runner {
                         revision
                     ));
                 }
-                let composed = outcome["preview"]["plan_hash"].as_str();
-                if after.plan_hash.as_deref() != composed {
-                    return Err(generic_error!(
-                        "ADP's active plan is {:?}, but the editor composed {:?}: the preview is not what ADP \
-                         installed.",
-                        after.plan_hash,
-                        composed
-                    ));
-                }
+                // Without a diff (implied outputs ADP adds), or when ADP lowered again once the program was in effect
+                // (retiring the implied outputs only the program it replaced asked for), the editor composes the
+                // program again against what ADP serves now, which must be the plan ADP runs.
+                let composed = outcome["preview"]["plan_hash"].as_str().filter(|_| !implied);
+                let implied_note = if implied || after.plan_hash.as_deref() != composed {
+                    Some(
+                        self.compose_again(&source, &after, implied)
+                            .await
+                            .with_error_context(|| {
+                                format!(
+                                    "ADP's active plan is {:?}, and the editor composed {:?}",
+                                    after.plan_hash, composed
+                                )
+                            })?,
+                    )
+                } else {
+                    None
+                };
                 match (new_generation, after.generation > before.generation) {
                     (false, true) => {
                         return Err(generic_error!(
@@ -1167,6 +1341,12 @@ impl Runner {
                     after.generation.unwrap_or_default(),
                     if new_generation { "" } else { " (no new generation)" }
                 );
+                if let Some(note) = implied_note {
+                    step.outcome = format!("{}; {}", step.outcome, note);
+                    if implied {
+                        step.diff = "none before ADP adds the implied outputs".to_string();
+                    }
+                }
                 if let Some(routing) = routing {
                     let visible = self.expect_routing(step.id, &routing, published).await?;
                     step.visible_ms = Some(visible.as_millis() as u64);
@@ -1227,13 +1407,89 @@ impl Runner {
         Ok(after)
     }
 
-    /// S6: revokes the artifact, and checks that the default program comes back, with what the endpoints receive.
-    async fn revoke(&mut self, boot: &Status) -> Result<(), GenericError> {
-        let mut step = StepReport {
-            id: "S6",
-            title: "revoke: an empty snapshot",
-            ..StepReport::default()
-        };
+    /// Compiles `source` again once ADP runs it (as the artifact revision `after` names), and checks that the editor
+    /// now composes it without findings to the plan ADP runs: with the implied outputs ADP added for it, if `implied`,
+    /// or without those that only the program it replaced asked for, which ADP retired, lowering again (a generation
+    /// after `after`'s). Returns what it found, in a few words.
+    async fn compose_again(&mut self, source: &str, after: &Status, implied: bool) -> Result<String, GenericError> {
+        let deadline = Instant::now() + ACK_TIMEOUT;
+        loop {
+            let running = self.status().await?;
+            if running.artifact_revision != after.artifact_revision {
+                return Err(generic_error!(
+                    "ADP runs artifact revision {:?}, not {:?}, while the program is compiled again.",
+                    running.artifact_revision,
+                    after.artifact_revision
+                ));
+            }
+            let (status, outcome) = self
+                .client
+                .post_json("/api/compile", &json!({ "source": source }))
+                .await?;
+            let preview = &outcome["preview"];
+            let composed = preview["plan_hash"].as_str();
+            let clean = status.is_success()
+                && outcome["diagnostics"]
+                    .as_array()
+                    .is_some_and(|diagnostics| diagnostics.iter().all(unused_output))
+                && preview["valid"] == true
+                && preview["unchanged"] == true;
+            if clean && composed.is_some() && composed == running.plan_hash.as_deref() {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(generic_error!(
+                    "Compiled again once ADP runs it, the program does not compose to ADP's active plan {:?} without \
+                     findings: {:?}, diagnostics {}, preview {}",
+                    running.plan_hash,
+                    composed,
+                    outcome["diagnostics"],
+                    preview
+                ));
+            }
+            tokio::time::sleep(POLL).await;
+        }
+        if !implied {
+            return Ok(
+                "ADP lowered again, retiring implied outputs; compiled again, it composes to the plan ADP runs"
+                    .to_string(),
+            );
+        }
+        let export = self.client.get_json("/api/adp/export").await?;
+        let implied = export["catalog"]["outputs"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter(|(id, _)| id.starts_with("implied_"))
+            .map(|(id, output)| {
+                format!(
+                    "{} ({} recipients)",
+                    id,
+                    output["recipients"].as_array().map_or(0, Vec::len)
+                )
+            })
+            .collect::<Vec<_>>();
+        if implied.is_empty() {
+            return Err(generic_error!(
+                "ADP's export declares no implied output, though the program emits to recipients no other output \
+                 delivers to exactly."
+            ));
+        }
+        Ok(format!(
+            "implied outputs {}; compiled again, it composes to the plan ADP runs",
+            implied.join(", ")
+        ))
+    }
+
+    /// Revokes the artifact (an empty snapshot), and checks that the default program comes back, the boot plan again if
+    /// `boot` is given, with what the endpoints then receive, `expected`. The default program runs in a new generation,
+    /// or adopts the one running when that one does what the default program does: plans are compared with their
+    /// bindings written as values, so a published program whose only change is a split that the signals' values decide
+    /// as the default program's does, such as a failover gateway while failover is off, is the same operation.
+    async fn revoke_step(
+        &mut self, id: &'static str, title: &'static str, boot: Option<&Status>, expected: &Routing,
+    ) -> Result<(), GenericError> {
+        let mut step = StepReport::new(id, title);
         let result = async {
             let before = self.status().await?;
             let revoked = Instant::now();
@@ -1242,52 +1498,67 @@ impl Runner {
                 return Err(generic_error!("Revoking was refused: {}", answer));
             }
             self.last_change_s = unix_millis() / 1000;
+            let boot_plan = boot.and_then(|boot| boot.plan_hash.clone());
             let deadline = revoked + ACK_TIMEOUT;
-            let after = loop {
+            loop {
                 let status = self.status().await?;
-                if status.artifact_revision.is_none() && status.plan_hash == boot.plan_hash {
-                    break status;
+                let default_program = status.artifact_revision.is_none() && status.runs() == Some("default");
+                if default_program && (boot_plan.is_none() || status.plan_hash == boot_plan) {
+                    break;
                 }
                 if Instant::now() >= deadline {
                     return Err(generic_error!(
-                        "ADP still runs artifact revision {:?} (plan {:?}) {} s after the revoke, not the default \
-                         program (plan {:?}).",
+                        "ADP still runs artifact revision {:?} (plan {:?}, generation {:?}, program {}) {} s after the \
+                         revoke, not the default program{}.",
                         status.artifact_revision,
                         status.plan_hash,
+                        status.generation,
+                        status.document["program"],
                         ACK_TIMEOUT.as_secs(),
-                        boot.plan_hash
+                        boot_plan
+                            .as_ref()
+                            .map(|plan| format!(" (plan {})", plan))
+                            .unwrap_or_default()
                     ));
                 }
                 tokio::time::sleep(POLL).await;
-            };
-            step.ack_ms = Some(revoked.elapsed().as_millis() as u64);
-            step.generation = after.generation;
-            if after.generation <= before.generation {
-                return Err(generic_error!(
-                    "ADP returned to the default program without a new generation (still {:?}).",
-                    after.generation
-                ));
             }
-            // The stub's record of ADP's polls says so too.
+            step.ack_ms = Some(revoked.elapsed().as_millis() as u64);
+            // The stub's record of ADP's polls says so too, with the plan the status route reports: ADP may lower once
+            // more, after the revoked program's implied outputs retire.
             self.wait_for("ADP's polls to report the default program", ACK_TIMEOUT, |state| {
-                let status = &state["channel"]["last_poll"]["status"];
-                let default_program = status["active_plan_hash"].as_str() == boot.plan_hash.as_deref();
-                if status["active_artifact"].is_null() && default_program {
+                let polled = &state["channel"]["last_poll"]["status"];
+                let reported = &state["control"]["status"];
+                if polled["active_artifact"].is_null()
+                    && polled["active_plan_hash"].is_string()
+                    && polled["active_plan_hash"] == reported["active_plan_hash"]
+                {
                     Ok(())
                 } else {
-                    Err(format!("the last poll reports {}", status))
+                    Err(format!("the last poll reports {}", polled))
                 }
             })
             .await?;
-            step.outcome = format!("default program in generation {}", after.generation.unwrap_or_default());
+            let after = self.status().await?;
+            step.generation = after.generation;
+            step.outcome = format!(
+                "default program {} generation {}{}; native policy {}",
+                if after.generation > before.generation {
+                    "in"
+                } else {
+                    "adopted the running"
+                },
+                after.generation.unwrap_or_default(),
+                if boot.is_some() { ", the boot plan" } else { "" },
+                after.native_policy().unwrap_or("not reported")
+            );
             step.diff = "-".to_string();
-            let visible = self.expect_routing("S6", &default_routing(), revoked).await?;
+            let visible = self.expect_routing(id, expected, revoked).await?;
             step.visible_ms = Some(visible.as_millis() as u64);
             Ok(())
         }
         .await;
-        self.report.steps.push(step);
-        result.error_context("S6 (revoke) failed")
+        self.finish(step, result)
     }
 
     /// Reads the control surface routes through the demo and checks them against ADP's status: the export and the
@@ -1523,7 +1794,7 @@ impl Runner {
         loop {
             let state = self.state().await?;
             let found = present(&state, self.present_ms());
-            let holds = INTAKES.iter().all(|intake| found.get(*intake) == expected.get(*intake));
+            let holds = routing_holds(expected, &found);
             match (holds, held_since) {
                 (true, None) => {
                     reached.get_or_insert_with(|| since.elapsed());
@@ -1643,11 +1914,20 @@ impl Runner {
             _ => {}
         }
         self.host_dropping = host_dropping;
+        // The other endpoints a program sends everything to receive the canaries too, from where their routing starts
+        // within the range: never more than were sent, which would be a canary delivered twice.
+        let most = canary["sent"].as_f64().unwrap_or_default() + canary["allowance"].as_f64().unwrap_or_default();
         for elsewhere in canary["elsewhere"].as_array().into_iter().flatten() {
-            self.alert(
-                format!("canary at {}", elsewhere["intake"]),
-                format!("canaries reached {}: {}", elsewhere["intake"], elsewhere["received"]),
-            );
+            let received = elsewhere["received"].as_f64().unwrap_or_default();
+            if received > most {
+                self.alert(
+                    format!("canary excess at {} {}-{}", elsewhere["intake"], range.0, range.1),
+                    format!(
+                        "{} received {} canaries for seconds {} to {}, more than the {} sent",
+                        elsewhere["intake"], received, range.0, range.1, canary["sent"]
+                    ),
+                );
+            }
         }
         for intake in state["intakes"].as_array().into_iter().flatten() {
             let name = intake["name"].as_str().unwrap_or_default();
@@ -1703,24 +1983,10 @@ impl Runner {
     }
 }
 
-/// Returns the outputs that feed each intake, from the export's legend.
-fn outputs(legend: &Value) -> Result<Outputs, GenericError> {
-    let feeding = |intake: &str| {
-        legend["outputs"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|output| output["intake"] == intake)
-            .and_then(|output| output["emit"].as_str())
-            .map(ToString::to_string)
-            .ok_or_else(|| generic_error!("No output of the export feeds the `{}` intake: {}", intake, legend))
-    };
-    Ok(Outputs {
-        primary: feeding("primary")?,
-        team_b: feeding("team-b")?,
-        team_c: feeding("team-c")?,
-        mrf: feeding("mrf")?,
-    })
+/// Returns `true` if a diagnostic of the editor is the warning that a native output is left unused: no `emit` of the
+/// composed plan delivers to it.
+fn unused_output(diagnostic: &Value) -> bool {
+    diagnostic["severity"] == "warning" && diagnostic["rule"] == "unused_output"
 }
 
 /// Returns the hash of a plan document, with resolved values.

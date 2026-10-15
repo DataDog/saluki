@@ -1747,16 +1747,26 @@ proptest! {
             }
             Ok(composed) => {
                 prop_assert!(!reserved_outside, "{:?}", edits);
-                // A node that aggregates is in the artifact's scope, the program's, unless a removed edge leaves it
-                // unreachable from the scope's inputs, which validation reports.
+                // A node that aggregates is in the artifact's scope, the program's, unless a removed or redirected
+                // edge leaves it unreachable from the scope's inputs, which validation reports at the node.
                 let program = crate::export::program_nodes(&composed.plan)
                     .into_iter()
                     .flat_map(|(_, nodes)| nodes)
                     .collect::<BTreeSet<_>>();
+                let unreachable = composed
+                    .report
+                    .findings()
+                    .iter()
+                    .filter(|finding| finding.rule == crate::validate::Rule::Reachable)
+                    .filter_map(|finding| match &finding.location {
+                        crate::validate::Location::Node { id, .. } => Some(id.clone()),
+                        _ => None,
+                    })
+                    .collect::<BTreeSet<_>>();
                 for node in composed.plan.nodes.iter().filter(|node| node.op.as_str() == names::AGGREGATE) {
                     let artifacts = fixture.is_scope_node(&node.id)
                         || !fixture.plan.nodes.iter().any(|kept| kept.id == node.id);
-                    if artifacts && !removed {
+                    if artifacts && !unreachable.contains(&node.id) {
                         prop_assert!(
                             program.contains(&node.id),
                             "{:?}: `{}` aggregates outside the program",
@@ -2421,6 +2431,116 @@ fn emits_to_recipients_wait_for_unknown_names_and_outputs_and_are_refused_across
         "Artifact node `metrics_policy_0` emits to [primary, mrf], recipients of more than one delivery host (`primary` \
          on `dd_out`, `mrf` on `mrf_dd_out`). An output is one encoder stream on one host: emit to each host's \
          recipients from a branch of its own."
+    );
+}
+
+#[test]
+fn an_emit_in_effect_delivers_to_its_recipients_that_remain_and_counts_what_the_others_would_have_received() {
+    let registry = OperatorRegistry::native();
+    let (_, plan, catalog) = one_scope_programs().remove(0);
+    let catalog = with_directory(catalog);
+    let detached = crate::export::export_as(
+        &plan,
+        &metrics_scope(),
+        &catalog,
+        &BTreeMap::new(),
+        ExportForm::Detached,
+    )
+    .unwrap();
+    let mut document = serde_json::to_value(&detached.artifact).unwrap();
+    // The main emit names the primary endpoint and an endpoint the configuration no longer has.
+    node(&mut document, "metrics_policy_0")["params"] = json!({"to": ["primary", "https://gone.example.com"]});
+    let artifact = received_directly(PolicyArtifact::from_value(document).unwrap());
+    let composing = |in_effect: bool| {
+        let approval = Approval {
+            in_effect,
+            ..approval(1)
+        };
+        compose(&plan, &artifact, &approval, &catalog, &registry)
+    };
+
+    // A new artifact waits for the recipient it names that the directory does not have.
+    let error = composing(false).unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            ComposeError::UnknownRecipient { recipient, .. } if recipient.as_str() == "https://gone.example.com"
+        ),
+        "{}",
+        error
+    );
+
+    // In effect, it goes on delivering to the primary endpoint, through the output with exactly its recipient, and
+    // counts what the other would have received at a drop beside it.
+    let composed = composing(true).unwrap();
+    let id = |id: &str| id.parse::<NodeId>().unwrap();
+    let op = |node: &str| composed.plan.node(&id(node)).unwrap().op.as_str().to_string();
+    assert_eq!(op("metrics_policy_0"), names::TEE);
+    assert_eq!(op("policy/metrics_policy_0_delivered"), names::EMIT);
+    assert_eq!(op("policy/metrics_policy_0_missing"), names::DROP);
+    assert_eq!(
+        composed
+            .plan
+            .node(&id("policy/metrics_policy_0_delivered"))
+            .unwrap()
+            .params
+            .get("output"),
+        Some(&json!("dd_metrics_encode"))
+    );
+    let edges = composed
+        .plan
+        .edges
+        .iter()
+        .map(|edge| format!("{} -> {}", edge.from, edge.to))
+        .collect::<Vec<_>>();
+    for edge in [
+        "metrics_policy_0.0 -> policy/metrics_policy_0_delivered.in",
+        "metrics_policy_0.1 -> policy/metrics_policy_0_missing.in",
+    ] {
+        assert!(edges.iter().any(|found| found == edge), "{} in {:?}", edge, edges);
+    }
+    assert!(composed.report.is_valid(), "{:?}", composed.report.findings());
+    let outcome = &composed.scopes[&metrics_scope()].outcome;
+    assert!(outcome.is_degraded());
+    let ComposeOutcome::Degraded(dropped) = outcome else {
+        unreachable!()
+    };
+    assert_eq!(
+        dropped.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        [
+            "the emits to [\"https://gone.example.com\"] are dropped until they are available again: the host has no \
+          recipient `https://gone.example.com`; the `emit` still delivers to [primary]"
+        ]
+    );
+    assert_eq!(dropped[0].nodes, [id("policy/metrics_policy_0_missing")]);
+    // The correspondence maps the artifact's emit to the `tee` that took its place.
+    assert_eq!(
+        composed
+            .correspondence
+            .get(&"metrics_policy_0".parse().unwrap())
+            .unwrap()
+            .node,
+        id("metrics_policy_0")
+    );
+
+    // Its demand is the set that remains, for which a host adds an output when none delivers to exactly it.
+    let demand = crate::compose::demanded_outputs(&artifact.artifact, &catalog).unwrap();
+    assert!(demand
+        .iter()
+        .any(|demand| demand.recipients == ["dd_out/primary/0".parse().unwrap()]));
+
+    // With none of its recipients left, the emit in effect is a counted drop, as before.
+    let mut document = serde_json::to_value(&detached.artifact).unwrap();
+    node(&mut document, "metrics_policy_0")["params"] = json!({"to": ["https://gone.example.com"]});
+    let gone = received_directly(PolicyArtifact::from_value(document).unwrap());
+    let approval = Approval {
+        in_effect: true,
+        ..approval(1)
+    };
+    let composed = compose(&plan, &gone, &approval, &catalog, &registry).unwrap();
+    assert_eq!(
+        composed.plan.node(&id("metrics_policy_0")).unwrap().op.as_str(),
+        names::DROP
     );
 }
 

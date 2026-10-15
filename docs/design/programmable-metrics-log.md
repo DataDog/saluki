@@ -1076,3 +1076,89 @@ the changes to the model.
   under the full run's load. The configuration crates pass 252. Clippy and the format check are clean. The demo
   check passed both launches in 7 minutes 14 seconds (`check-1792033049`: 153.7 s and 269.9 s), S0 adopting
   generation 1 with no new generation.
+
+## Detached programs, phase 3: the demo
+
+On 2026-10-14, after phase 2 was committed (`7f9d67a033`), phase 3, part G2, was built in the main checkout, not
+committed, with the owner's decisions for the demo: ordinary `additional_endpoints` as destinations, no reserved
+destination, no resources artifacts in the demo, and the standalone configuration reload on. [The demo as
+built](programmable-metrics-detached-programs.md#85-the-demo-as-built) has the details, and the status document's
+[demo section](programmable-metrics-status.md#the-demo) the recipe and the scenario table.
+
+- **Configuration.** The launcher writes the primary endpoint, teams B and C as additional endpoints (dual shipping,
+  no endpoint routing), the failover endpoint, and `experimental.standalone_config_reload` (`enabled: true`, `250ms`).
+  The team D port, intake, and credential are gone.
+- **Destinations.** A new module, `destinations.rs`, owns the intakes and the live part of the configuration file:
+  **Add destination** binds a free port, starts an intake with its own key and label, and rewrites `datadog.yaml`
+  atomically; **Remove** takes an additional endpoint out and stops its intake once ADP lists its recipient retired.
+  The native settings the new card of the UI changes (the failover signal and the filterlist) are written the same way.
+  The demo's status lists, for each intake, whether ADP's directory names it and whether the active plan addresses it.
+- **Editor.** The recipient comments carry the demo's labels beside URL names, and count recipients an `emit to [...]`
+  names as addressed (they counted output-addressed emits only, so a detached export marked every recipient "not
+  addressed"). The export reader keeps the catalog's `detached_programs`, so the editor flags a policy binding as ADP
+  does. Composition's waits (an implied output to add, an unknown recipient) are warnings, not errors, with no diff.
+- **UI.** The Resources tab and its routes are gone; the destination columns follow the destination list, with
+  **Remove** and, for added ones, **Pause**; the header names the program from `program` in status.
+- **Check.** S8 to S11 and S14 were rewritten (see the table): destinations under the default and a published program,
+  a removal that degrades the program routing to it, a native policy change under a program, and the renamed
+  aggregation in the second launch. Four things the first runs found: a revoke can adopt (S6), a step after a program
+  with implied outputs sees ADP lower twice, so the check compiles again against the plan ADP runs, the main output's
+  unused-output warning is no finding, and the canary rule for other endpoints became: never more than were sent.
+- **An installer core fix.** A program asking for implied outputs, rejected at validation, was never acknowledged
+  `rejected`: ADP lowered again once its demand was gone, the artifact in effect moved to a new generation, and the
+  core showed that move as the config's acknowledgment. The same held for a composition refusal followed by any
+  configuration change. `refresh_acknowledgments` now keeps a newer delivery's refusal, rejection, or failure as the
+  acknowledgment while the installation before it only changes generation; two lifecycle cases pin it.
+- **Kept, by decision.** The demo's export fixture stays a bound export (the reader's and editor's tests use it); the
+  composition tests of the scenario edits use the plan crate's default program with a detached export and a
+  directory. No release note for `experimental.standalone_config_reload`: it changes only standalone mode, which is
+  not for production, and the configuration reference documents it.
+- **A property test's oracle.** A full run of the plan crate's tests found a new input for
+  `property_test_edited_artifacts_compose_or_are_refused_cleanly`: an edge redirected away from `metrics_policy`, and
+  a node made an `aggregate`, left part of the plan unreachable, which the oracle exempted only for removed edges. It
+  now exempts any plan whose validation reports unreachable nodes; the seed is in the regressions file, and 20,000
+  cases pass.
+- **Results.** The demo, plan, and syntax crates pass 1,174 tests, ADP 586 of 586 (the disk at 71%, so the disk-ratio
+  drain test passes). Clippy (`-D warnings`) and the format check are clean on the changed crates. The demo check
+  passed twice, both launches each, after the code was final but for the acknowledgment fix's second form, which the
+  second run includes: `check-1792038037`, first launch 156.8 s and second 289.4 s, 7 minutes 42 seconds with the
+  build, canaries 2,792 and 4,999 sent and received; `check-1792038499`, 148.4 s and 285.4 s, 7 minutes 30 seconds,
+  canaries 2,810 sent and 2,808 received, 4,797 and 4,798, balanced within the allowance. An interactive run
+  (`make demo-programmable-metrics`) through the JSON API: a destination added under the default program received
+  everything; the recipe narrowed team B, and the destination then read "declared, not addressed"; removed, its
+  intake stopped; a rejected program with implied outputs stayed `rejected`; `SIGTERM` stopped the demo, ADP, and
+  every intake, and no process or port was left.
+
+### Phase 3 review fixes
+
+A review of phase 3 found no blockers; its fixes, on 2026-10-15, not committed:
+
+- **An `emit` delivers to the recipients that remain** (amendment 189, decided on the owner's behalf as least
+  surprising). Removing team C under the recipe made the whole `emit to [primary, "...17103"]` a counted drop, so the
+  primary endpoint went empty and the canary check turned red. Composition now makes such an `emit` of the artifact in
+  effect a two-port `tee` to an `emit` of the remaining recipients and a counted drop, which counts what the gone ones
+  would have received as policy loss; `demanded_outputs` asks for the remaining set. A first ADP test showed the
+  primary endpoint losing batches between two lowerings (the old directory's demand, then the new one's): ADP now
+  computes the demand through the new directory and lowers once more before proposing, so the remaining set's output
+  exists in the generation that removes the recipient. The new ADP delivery test fails without that second lowering.
+  The check's new S10b removes team C under the recipe: the primary endpoint's canaries stay exact.
+- **The editor validates programs that need implied outputs**, against stand-ins (`adp_will_add_<n>`, bound and
+  fingerprinted as ADP binds implied outputs), with a note per recipient set and a provisional diff: the recipe with a
+  duplicate branch now shows ADP's `duplicate_contribution` before publishing. Recompiling the program ADP runs
+  composes it in effect, so a degraded program reads degraded.
+- **Amendment 190** generalizes the acknowledgment fix to refusals at composition.
+- **The property test's oracle** now skips only the aggregations validation reports unreachable, for removed and
+  redirected edges alike (80,000 release cases pass).
+- **Nits and the video's UX:** the removal waits for a status sent after ADP applied the file; ports are not reused in
+  a run; an intake listens before the file names it; the recipient comment labels and aligns every row; an unused
+  native output replaced by implied outputs is a note; the waiting notes name labels, not node IDs; a note beside the
+  editor names destinations the published program does not address; the header shows the generation only on hover;
+  the canary line uses labels; the Remove confirmation says what happens. A restart with `--run-dir` leaves a kept
+  program that names an added destination `pending`, which the smoke test confirmed.
+- **Found and not fixed:** the duplicate analysis reports a duplicate for copies that reach, through two branches of a
+  `tee`, two outputs with no recipient in common when an output on the other side of a `split` shares one with each.
+- **Results.** The demo, plan, and syntax crates pass 1,175 tests (the demo's 152 again after the last change), ADP
+  587 of 587, clippy (`-D warnings`) and the format check are clean, and the demo check passed twice:
+  `p3r2-check-a`, 155.0 s and 292.6 s, 7 minutes 34 seconds, canaries 2,928 and 4,998 sent and received;
+  `p3r2-check-b`, 175.0 s and 269.7 s, 7 minutes 30 seconds, canaries 3,147 sent and 3,145 received, and 4,597 and
+  4,598, balanced within the allowance. In S10b team C's removal left the primary endpoint's rolling checks balanced.

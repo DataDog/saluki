@@ -33,9 +33,14 @@ fn closed_port() -> u16 {
 async fn harness() -> Harness {
     let _ = saluki_tls::initialize_default_crypto_provider();
     let dir = tempfile::tempdir().unwrap();
+    // The intakes listen, on ports nothing else holds, so that destinations can be added and removed.
     let ports = DemoPorts {
         api: closed_port(),
         secure_api: closed_port(),
+        primary: closed_port(),
+        team_b: closed_port(),
+        team_c: closed_port(),
+        mrf: closed_port(),
         ..DemoPorts::default()
     };
     let settings = Arc::new(RunSettings {
@@ -53,18 +58,14 @@ async fn harness() -> Harness {
     let api = AdpApi::new(settings.ports.api, settings.ports.secure_api, &settings.ipc_cert_path())
         .await
         .unwrap();
-    let intakes = settings
-        .ports
-        .recipients()
-        .into_iter()
-        .map(IntakeRecorder::new)
-        .collect();
+    let control = ControlSurface::new();
+    let destinations = Destinations::start(Arc::clone(&settings), control.clone()).unwrap();
     let app = App::new(Components {
-        intakes,
+        destinations,
         traffic: TrafficGenerator::new(SocketAddr::from(([127, 0, 0, 1], closed_port())), 20.0, false, 0),
         telemetry: TelemetryScraper::new(),
         channel: StubChannel::new(ArtifactStore::open(&settings.store_dir()).unwrap()),
-        control: ControlSurface::new(),
+        control,
         launch: Launch::new(Phase::External, std::path::Path::new("agent-data-plane"), &settings),
         api,
         settings,
@@ -95,7 +96,7 @@ async fn call(app: &App, method: &str, path: &str, body: Option<Value>) -> (Stat
 fn export_source() -> String {
     let export = ExportBundle::from_value(serde_json::from_str(DEMO_EXPORT).unwrap()).unwrap();
     let base = format!("policy metrics {{\n  base \"{}\"\n\n", export.program_hash());
-    default_program_source(&export).replacen("policy metrics {\n", &base, 1)
+    default_program_source(&export, &RecipientLabels::default()).replacen("policy metrics {\n", &base, 1)
 }
 
 /// Records a poll from ADP whose status carries the given active plan hash and revision high-water mark.
@@ -279,7 +280,7 @@ async fn the_compile_api_composes_into_the_default_program_adp_serves_as_the_rev
     let source = app
         .control
         .export()
-        .map(|export| default_program_source(&export))
+        .map(|export| default_program_source(&export, &RecipientLabels::default()))
         .unwrap()
         .replacen("\n    -> metrics_policy\n", "\n    -> drop_debug\n", 1)
         .replacen(
@@ -353,15 +354,23 @@ async fn the_state_says_plainly_when_adp_lacks_the_control_surface() {
         .iter()
         .map(|intake| intake["name"].as_str().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(names, ["primary", "team-b", "team-c", "mrf", "team-d"]);
+    assert_eq!(names, ["primary", "team-b", "team-c", "mrf"]);
     assert_eq!(intakes[1]["expected_api_key"], "demo-team-b");
-    // Team D's endpoint is declared by a resources artifact only, with the credential the launcher declares.
+    // Teams B and C are additional endpoints, which can be removed; without an export or an active plan, the demo
+    // cannot say whether ADP declares or addresses them.
     assert_eq!(
-        (&intakes[4]["declared"], &intakes[4]["expected_api_key"]),
-        (&json!(true), &json!("demo-team-d-key"))
+        (&intakes[1]["kind"], &intakes[1]["removable"], &intakes[0]["removable"]),
+        (&json!("additional"), &json!(true), &json!(false))
+    );
+    assert_eq!(
+        (&intakes[1]["in_directory"], &intakes[1]["addressed"]),
+        (&Value::Null, &Value::Null)
+    );
+    assert_eq!(
+        state["native"],
+        json!({"metric_filterlist": [], "failover_metrics": false})
     );
     assert_eq!(state["channel"]["next_revision"], 1);
-    assert_eq!(state["channel"]["resources"]["next_revision"], 1);
     assert_eq!(state["recipients"]["reported"], false);
     assert_eq!(state["telemetry"]["state"], "waiting");
     assert_eq!(state["traffic"]["running"], false);
@@ -377,8 +386,11 @@ async fn the_state_says_plainly_when_adp_lacks_the_control_surface() {
         unix_millis(),
     );
     let (_, state) = call(app, "GET", "/api/state", None).await;
-    assert_eq!(state["legend"]["outputs"][1]["intake"], "team-b");
+    assert_eq!(state["legend"]["outputs"][0]["intake"], "primary");
     assert_eq!(state["legend"]["bindings"][1]["value"], json!(["demo.checkout."]));
+    // The export's directory names teams B and C (as the fixture writes their ports); this harness's intakes listen
+    // elsewhere, so ADP's directory does not name them.
+    assert_eq!(state["intakes"][1]["in_directory"], false);
 
     // ADP is not listening at all: the default program cannot be loaded, and the reason says why.
     let (status, body) = call(app, "GET", "/api/default-program", None).await;
@@ -421,115 +433,99 @@ async fn the_ui_traffic_and_intake_routes_answer() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     // Pausing an intake shows in the state, and resuming it too.
-    let (status, body) = call(app, "POST", "/api/intakes/team-d/pause", Some(json!({"paused": true}))).await;
+    let (status, body) = call(app, "POST", "/api/intakes/team-c/pause", Some(json!({"paused": true}))).await;
     assert_eq!((status, &body["paused"]), (StatusCode::OK, &json!(true)));
     let (_, state) = call(app, "GET", "/api/state", None).await;
-    assert_eq!(state["intakes"][4]["paused"], true);
-    call(app, "POST", "/api/intakes/team-d/pause", Some(json!({"paused": false}))).await;
+    assert_eq!(state["intakes"][2]["paused"], true);
+    call(app, "POST", "/api/intakes/team-c/pause", Some(json!({"paused": false}))).await;
     let (_, state) = call(app, "GET", "/api/state", None).await;
-    assert_eq!(state["intakes"][4]["paused"], false);
+    assert_eq!(state["intakes"][2]["paused"], false);
     let (status, _) = call(app, "POST", "/api/intakes/nowhere/pause", Some(json!({"paused": true}))).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
-async fn publishing_resources_approves_exactly_the_last_checked_draft_once_and_counts_their_own_revisions() {
+async fn destinations_are_added_and_removed_in_adps_configuration_file_and_native_settings_written_there() {
     let harness = harness().await;
     let app = &harness.app;
-    let (status, template) = call(app, "GET", "/api/resources/template", None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(template["served"], Value::Null);
-    let draft = template["template"].as_str().unwrap().to_string();
-    let document = serde_json::from_str::<Value>(&draft).unwrap();
-    // The template declares the team D intake of this run, with the credential the launcher declares.
-    assert_eq!(document["recipients"][0]["endpoint"], "http://127.0.0.1:17105");
-    assert_eq!(document["recipients"][0]["credential"], "credentials/team_d");
-
-    let (status, body) = call(
-        app,
-        "POST",
-        "/api/resources/publish",
-        Some(json!({"artifact_hash": "sha256:00"})),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert!(body["error"].as_str().unwrap().contains("no checked resources draft"));
-
-    let (_, refused) = call(app, "POST", "/api/resources/check", Some(json!({"document": "{"}))).await;
-    assert_eq!(refused["ok"], false);
-    let (status, checked) = call(app, "POST", "/api/resources/check", Some(json!({"document": draft}))).await;
-    assert_eq!((status, &checked["ok"]), (StatusCode::OK, &json!(true)));
-    let hash = checked["artifact_hash"].as_str().unwrap().to_string();
-    assert_eq!(hash, PlanHash::of_value(&document).unwrap().to_string());
-    let (_, state) = call(app, "GET", "/api/state", None).await;
-    assert_eq!(state["resources_checked"]["artifact_hash"], hash.as_str());
-
-    let wrong = format!("sha256:{}", "cd".repeat(32));
-    let (status, body) = call(
-        app,
-        "POST",
-        "/api/resources/publish",
-        Some(json!({"artifact_hash": wrong})),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert!(body["error"]
-        .as_str()
-        .unwrap()
-        .contains("not the hash of the last checked"));
-
-    // ADP's policy mark is 6 and its resources mark is 2: the resources revision follows the resources mark.
-    let request = PollRequest {
-        protocol_version: Some(1),
-        status: Some(ChannelStatus {
-            revision_high_water: Some(6),
-            resources: Some(crate::stub::protocol::ResourcesStatus {
-                revision_high_water: Some(2),
-                active_artifact: None,
-            }),
-            ..ChannelStatus::default()
-        }),
-        ..PollRequest::default()
+    let config = || -> Value {
+        serde_yaml::from_str(&std::fs::read_to_string(app.settings.adp_config_path()).unwrap()).unwrap()
     };
-    app.channel.poll(request, Vec::new(), unix_millis()).unwrap();
-    let (status, body) = call(
-        app,
-        "POST",
-        "/api/resources/publish",
-        Some(json!({"artifact_hash": hash})),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{}", body);
-    assert_eq!((&body["revision"], &body["artifact_hash"]), (&json!(3), &json!(hash)));
-    let (status, body) = call(
-        app,
-        "POST",
-        "/api/resources/publish",
-        Some(json!({"artifact_hash": hash})),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert!(body["error"].as_str().unwrap().contains("already used"), "{}", body);
+    let team_b = DemoPorts::http_url(app.settings.ports.team_b);
 
-    // What the stub serves now, and the next revisions of each product.
-    let (_, template) = call(app, "GET", "/api/resources/template", None).await;
-    assert_eq!(template["served"]["revision"], 3);
+    // Added: an intake on a free port, with a key and a label of its own, in the file and the state.
+    let (status, added) = call(app, "POST", "/api/destinations", None).await;
+    assert_eq!(status, StatusCode::OK, "{}", added);
     assert_eq!(
-        serde_json::from_str::<Value>(template["served"]["document"].as_str().unwrap()).unwrap(),
-        document
+        (&added["name"], &added["label"]),
+        (&json!("dest-d"), &json!("Destination D"))
     );
+    let url = added["url"].as_str().unwrap().to_string();
+    assert_eq!(config()["additional_endpoints"][&url], json!(["demo-dest-d"]));
+    assert!(config()["additional_endpoints"][&team_b].is_array());
     let (_, state) = call(app, "GET", "/api/state", None).await;
-    assert_eq!(state["channel"]["resources"]["current"]["revision"], 3);
-    assert_eq!(state["channel"]["resources"]["next_revision"], 4);
-    assert_eq!(state["channel"]["next_revision"], 7);
-    assert_eq!(state["resources_checked"], Value::Null);
+    let names = state["intakes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|intake| intake["name"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["primary", "team-b", "team-c", "mrf", "dest-d"]);
+    // Its intake listens.
+    std::net::TcpStream::connect(added["url"].as_str().unwrap().trim_start_matches("http://")).unwrap();
+    let (status, second) = call(app, "POST", "/api/destinations", None).await;
+    assert_eq!((status, &second["label"]), (StatusCode::OK, &json!("Destination E")));
 
-    let (status, body) = call(app, "POST", "/api/resources/revoke", None).await;
-    assert_eq!((status, &body["revoked"]), (StatusCode::OK, &json!(true)));
-    let (_, body) = call(app, "POST", "/api/resources/revoke", None).await;
-    assert_eq!(body["revoked"], false);
-    let (_, state) = call(app, "GET", "/api/state", None).await;
-    assert_eq!(state["channel"]["resources"]["current"], Value::Null);
+    // Removed: out of the file at once; the intake answers until ADP retires the recipient, which, with no ADP
+    // listing it, it already has.
+    let (status, removed) = call(app, "DELETE", "/api/destinations/dest-d", None).await;
+    assert_eq!((status, &removed["removing"]), (StatusCode::OK, &json!(true)));
+    assert!(config()["additional_endpoints"][&url].is_null());
+    let (status, again) = call(app, "DELETE", "/api/destinations/dest-d", None).await;
+    assert!(
+        status == StatusCode::CONFLICT || status == StatusCode::NOT_FOUND,
+        "{} {}",
+        status,
+        again
+    );
+    // A status ADP sent once it applied the file lists no recipient for it.
+    app.control
+        .record_status(Surface::Available(json!({ "recipients": [] })), unix_millis() + 2_000);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while app.destinations.find("dest-d").is_some() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(app.destinations.find("dest-d").is_none());
+    let (status, body) = call(app, "DELETE", "/api/destinations/primary", None).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(
+        body["error"].as_str().unwrap().contains("Only additional endpoints"),
+        "{}",
+        body
+    );
+    let (status, _) = call(app, "DELETE", "/api/destinations/nowhere", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Native settings: the filterlist and the failover signal, written as given.
+    let (status, native) = call(
+        app,
+        "POST",
+        "/api/native",
+        Some(json!({"metric_filterlist": [" demo.catalog.views ", ""], "failover_metrics": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        native,
+        json!({"metric_filterlist": ["demo.catalog.views"], "failover_metrics": true})
+    );
+    assert_eq!(config()["metric_filterlist"], json!(["demo.catalog.views"]));
+    assert_eq!(config()["multi_region_failover"]["failover_metrics"], true);
+    let (_, native) = call(app, "POST", "/api/native", Some(json!({"metric_filterlist": []}))).await;
+    assert_eq!(native["failover_metrics"], true);
+    assert!(config()["metric_filterlist"].is_null());
+    // The destination added before is still there.
+    assert!(config()["additional_endpoints"][second["url"].as_str().unwrap()].is_array());
 }
 
 /// Returns the source of the default program with both of its windows set to `window`, with its base stated, since
@@ -537,7 +533,7 @@ async fn publishing_resources_approves_exactly_the_last_checked_draft_once_and_c
 fn width_source(window: &str) -> String {
     let (_, export) = crate::preview::tests::fixture();
     let base = format!("policy metrics {{\n  base \"{}\"\n\n", export.program_hash());
-    default_program_source(&export)
+    default_program_source(&export, &RecipientLabels::default())
         .replacen("policy metrics {\n", &base, 1)
         .replace(
             "window: config(\"dogstatsd.aggregation.window_duration_seconds\")",
@@ -557,6 +553,8 @@ fn width_artifact(window: &str) -> Value {
         active: None,
         others: &[],
         revision: 1,
+        labels: &RecipientLabels::default(),
+        in_effect: None,
     };
     let (_, compiled) = compile(&source, Some(&context));
     compiled.unwrap().document

@@ -1,21 +1,24 @@
-//! The ADP configuration file the launcher writes.
+//! The ADP configuration file the launcher writes, and writes again whenever the demo changes it live.
 //!
 //! Every key was checked against the configuration system: Datadog keys against the vendored schema
 //! (`lib/datadog-agent/config/schema`), Saluki-only keys against `SalukiOnly`
 //! (`lib/agent-data-plane-config-system/src/saluki_only.rs`).
 //!
-//! - Datadog: `api_key`, `hostname`, `dd_url`, and `additional_endpoints`, for the primary and two additional
-//!   recipients.
-//! - Saluki-only: `experimental.metrics_endpoint_routing.metric_prefix_allowlist`, routing `demo.checkout.` to team B
-//!   and `demo.catalog.` to team C.
-//! - Datadog: `multi_region_failover.{enabled, api_key, dd_url}`, the failover recipient. `failover_metrics` stays
-//!   `false`, so mirroring is off.
+//! - Datadog: `api_key`, `hostname`, and `dd_url`, the primary recipient.
+//! - Datadog: `additional_endpoints`, teams B and C at boot, and every destination added with **Add destination**,
+//!   each with its own API key. Natively an additional endpoint without a routing policy receives everything the
+//!   primary endpoint does (dual shipping), so the default program sends teams B and C everything; a published program
+//!   sends them only what it routes to them.
+//! - Datadog: `multi_region_failover.{enabled, api_key, dd_url}`, the failover recipient, and
+//!   `multi_region_failover.failover_metrics` (`false` at boot), the failover signal: while it is `true`, the default
+//!   program mirrors every metric to the failover endpoint, and a published program mirrors what its failover gateway
+//!   says.
+//! - Datadog: `metric_filterlist`, written only when the demo sets it: a native policy setting, which the default
+//!   program applies and a published program does not.
+//! - Saluki-only: `experimental.standalone_config_reload.{enabled, interval}` (`true`, 250 ms): ADP re-reads this file
+//!   and applies a change live, which is how destinations come and go. The setting exists only for this demo.
 //! - Saluki-only: `experimental.programmable_metrics.artifact_channel.{stub_url, poll_interval}`, the stub, which ADP
-//!   polls from stage 5 (earlier builds ignore these keys).
-//! - Saluki-only: `experimental.programmable_metrics.resources.credentials`, the credentials resources artifacts may
-//!   use, read from stage 7 (earlier builds ignore it): `team_d`, the API key team D's intake expects. Nothing uses it
-//!   until a resources artifact declares team D's endpoint with `credentials/team_d`; team D's endpoint is not in the
-//!   file otherwise.
+//!   polls.
 //! - Saluki-only: `data_plane.standalone_mode: true`.
 //! - Datadog: `data_plane.{api_listen_address, secure_api_listen_address, log_file}` (loopback ports and a run-local
 //!   log) and `ipc_cert_file_path` (the generated certificate).
@@ -27,59 +30,96 @@
 //! - Only with lane flags (`--decoders`, `--state-lanes`, `--post-lanes`): Saluki-only
 //!   `experimental.programmable_metrics.lanes.mode: auto`, with `lanes.state` and `lanes.post` for the counts given,
 //!   and Datadog `dogstatsd_workers_count` for the decoders, which are the producer lanes (up to 16). Without them the
-//!   file has none of these keys, and ADP lays its metrics path out as its defaults say. The lane keys are read from
-//!   stage 9 (earlier builds ignore them).
+//!   file has none of these keys, and ADP lays its metrics path out as its defaults say.
 //!
-//! Two keys are not in the design's list, and both serve the same purpose: making the intake columns follow what is
-//! sent within seconds. With the native 10-second aggregation window, each context reaches the intakes once every 10
-//! seconds, which is too slow for columns that list what arrived in the last 5 seconds; a 1-second window (an allowed
-//! bucket width) makes routing changes visible within about two seconds. And natively ADP keeps sending zeros for an
-//! idle counter for 300 seconds (`dogstatsd_expiry_seconds`), so pausing the traffic or routing a counter away would
-//! leave it listed for five minutes; `0` turns that off. Both are parameters of the aggregation, outside the policy
-//! scope, so the demo still runs the default program for its configuration.
+//! Two keys serve the same purpose: making the intake columns follow what is sent within seconds. With the native
+//! 10-second aggregation window, each context reaches the intakes once every 10 seconds, which is too slow for columns
+//! that list what arrived in the last 5 seconds; a 1-second window (an allowed bucket width) makes routing changes
+//! visible within about two seconds. And natively ADP keeps sending zeros for an idle counter for 300 seconds
+//! (`dogstatsd_expiry_seconds`), so pausing the traffic or routing a counter away would leave it listed for five
+//! minutes; `0` turns that off.
 
 use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use crate::settings::{DemoPorts, LaneFlags, RunSettings, TEAM_D_CREDENTIAL, TEAM_D_CREDENTIAL_VALUE};
+use crate::settings::{DemoPorts, LaneFlags, Recipient, RecipientKind, RunSettings};
+
+/// How often ADP re-reads its configuration file: a change takes effect within about two intervals.
+pub const RELOAD_INTERVAL: Duration = Duration::from_millis(250);
 
 /// The comment written at the top of the generated file.
 const HEADER: &str = "\
-# Generated by programmable-metrics-demo. Edits are overwritten on the next run.
-#
-# experimental.programmable_metrics.artifact_channel.* is read by ADP from stage 5 of the programmable metrics
-# implementation; earlier ADP builds ignore it, and the demo then reports that the control surface is not exposed.
-# experimental.programmable_metrics.resources.credentials is read from stage 7: only a resources artifact uses it.
+# Generated by programmable-metrics-demo, which rewrites it whenever a destination is added or removed or a native
+# setting changes; ADP re-reads it (experimental.standalone_config_reload). Edits are overwritten.
 ";
 
-/// Returns the ADP configuration for a run, as a JSON value with the configuration file's structure.
-pub fn adp_config(settings: &RunSettings) -> Value {
+/// What the demo changes in ADP's configuration while it runs.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct LiveSettings {
+    /// The additional endpoints, as `(URL, API key)`. The file lists them by URL.
+    pub additional_endpoints: Vec<(String, String)>,
+
+    /// `metric_filterlist`: metric names the default program drops. Not written while empty.
+    pub metric_filterlist: Vec<String>,
+
+    /// `multi_region_failover.failover_metrics`: whether failover mirroring is on, a signal programs read.
+    pub failover_metrics: bool,
+}
+
+impl LiveSettings {
+    /// Returns the settings ADP boots with: teams B and C as additional endpoints, no filterlist, and failover
+    /// mirroring off.
+    pub fn at_boot(ports: &DemoPorts) -> Self {
+        Self {
+            additional_endpoints: ports
+                .recipients()
+                .iter()
+                .filter(|recipient| recipient.removable())
+                .map(endpoint)
+                .collect(),
+            metric_filterlist: Vec::new(),
+            failover_metrics: false,
+        }
+    }
+}
+
+/// Returns an additional endpoint's entry: its URL and API key.
+pub fn endpoint(recipient: &Recipient) -> (String, String) {
+    (recipient.url(), recipient.api_key.clone())
+}
+
+/// Returns the ADP configuration for a run with the live settings `live`, as a JSON value with the configuration
+/// file's structure.
+pub fn adp_config(settings: &RunSettings, live: &LiveSettings) -> Value {
     let ports = &settings.ports;
     let recipients = ports.recipients();
-    let [primary, team_b, team_c, mrf] = [&recipients[0], &recipients[1], &recipients[2], &recipients[3]];
+    let kind = |kind: RecipientKind| {
+        recipients
+            .iter()
+            .find(|recipient| recipient.kind == kind)
+            .expect("the demo has a primary and a failover recipient")
+    };
+    let (primary, mrf) = (kind(RecipientKind::Primary), kind(RecipientKind::Failover));
+    let additional = live
+        .additional_endpoints
+        .iter()
+        .map(|(url, api_key)| (url.clone(), json!([api_key])))
+        .collect::<serde_json::Map<_, _>>();
     let mut config = json!({
         "api_key": primary.api_key,
         "hostname": "adp-demo",
         "dd_url": primary.url(),
-        "additional_endpoints": {
-            team_b.url(): [team_b.api_key],
-            team_c.url(): [team_c.api_key],
-        },
+        "additional_endpoints": additional,
         "experimental": {
-            "metrics_endpoint_routing": {
-                "metric_prefix_allowlist": {
-                    team_b.url(): ["demo.checkout."],
-                    team_c.url(): ["demo.catalog."],
-                },
+            "standalone_config_reload": {
+                "enabled": true,
+                "interval": duration_string(RELOAD_INTERVAL),
             },
             "programmable_metrics": {
                 "artifact_channel": {
                     "stub_url": DemoPorts::http_url(ports.stub),
                     "poll_interval": duration_string(settings.poll_interval),
-                },
-                "resources": {
-                    "credentials": { TEAM_D_CREDENTIAL: TEAM_D_CREDENTIAL_VALUE },
                 },
             },
         },
@@ -87,6 +127,7 @@ pub fn adp_config(settings: &RunSettings) -> Value {
             "enabled": true,
             "api_key": mrf.api_key,
             "dd_url": mrf.url(),
+            "failover_metrics": live.failover_metrics,
         },
         "data_plane": {
             "standalone_mode": true,
@@ -103,6 +144,9 @@ pub fn adp_config(settings: &RunSettings) -> Value {
         "aggregate_window_duration_seconds": settings.aggregate_window_secs,
         "flush_timeout_secs": 1,
     });
+    if !live.metric_filterlist.is_empty() {
+        config["metric_filterlist"] = json!(live.metric_filterlist);
+    }
     add_lanes(&mut config, &settings.lanes);
     config
 }
@@ -164,15 +208,16 @@ mod tests {
         }
     }
 
+    fn config(settings: &RunSettings) -> Value {
+        adp_config(settings, &LiveSettings::at_boot(&settings.ports))
+    }
+
     #[test]
     fn the_generated_configuration_has_exactly_the_demo_keys() {
-        let yaml = render(&adp_config(&settings())).unwrap();
+        let yaml = render(&config(&settings())).unwrap();
         let expected = "\
-# Generated by programmable-metrics-demo. Edits are overwritten on the next run.
-#
-# experimental.programmable_metrics.artifact_channel.* is read by ADP from stage 5 of the programmable metrics
-# implementation; earlier ADP builds ignore it, and the demo then reports that the control surface is not exposed.
-# experimental.programmable_metrics.resources.credentials is read from stage 7: only a resources artifact uses it.
+# Generated by programmable-metrics-demo, which rewrites it whenever a destination is added or removed or a native
+# setting changes; ADP re-reads it (experimental.standalone_config_reload). Edits are overwritten.
 additional_endpoints:
   http://127.0.0.1:17102:
   - demo-team-b
@@ -192,19 +237,13 @@ dogstatsd_port: 17125
 dogstatsd_socket: ''
 dogstatsd_stream_socket: ''
 experimental:
-  metrics_endpoint_routing:
-    metric_prefix_allowlist:
-      http://127.0.0.1:17102:
-      - demo.checkout.
-      http://127.0.0.1:17103:
-      - demo.catalog.
   programmable_metrics:
     artifact_channel:
       poll_interval: 1s
       stub_url: http://127.0.0.1:17100
-    resources:
-      credentials:
-        team_d: demo-team-d-key
+  standalone_config_reload:
+    enabled: true
+    interval: 250ms
 flush_timeout_secs: 1
 hostname: adp-demo
 ipc_cert_file_path: /tmp/pm-demo/run-1/ipc_cert.pem
@@ -212,12 +251,35 @@ multi_region_failover:
   api_key: demo-mrf
   dd_url: http://127.0.0.1:17104
   enabled: true
+  failover_metrics: false
 ";
         assert_eq!(yaml, expected);
 
         // The YAML reads back to the same structure.
         let read: Value = serde_yaml::from_str(&yaml).unwrap();
-        assert_eq!(read, adp_config(&settings()));
+        assert_eq!(read, config(&settings()));
+    }
+
+    #[test]
+    fn live_settings_write_the_destinations_the_filterlist_and_the_failover_signal() {
+        let settings = settings();
+        let mut live = LiveSettings::at_boot(&settings.ports);
+        live.additional_endpoints.remove(0);
+        live.additional_endpoints.push(endpoint(&Recipient::added('D', 54321)));
+        live.metric_filterlist = vec!["demo.catalog.views".to_string()];
+        live.failover_metrics = true;
+        let config = adp_config(&settings, &live);
+        assert_eq!(
+            config["additional_endpoints"],
+            json!({"http://127.0.0.1:17103": ["demo-team-c"], "http://127.0.0.1:54321": ["demo-dest-d"]})
+        );
+        assert_eq!(config["metric_filterlist"], json!(["demo.catalog.views"]));
+        assert_eq!(config["multi_region_failover"]["failover_metrics"], true);
+
+        // With every additional endpoint removed, the key stays, empty, so that the reload reads their removal.
+        live.additional_endpoints.clear();
+        let yaml = render(&adp_config(&settings, &live)).unwrap();
+        assert!(yaml.contains("\nadditional_endpoints: {}\n"), "{}", yaml);
     }
 
     #[test]
@@ -237,15 +299,11 @@ multi_region_failover:
         settings.aggregate_window_secs = 10;
         settings.counter_expiry_secs = 300;
         settings.poll_interval = Duration::from_millis(250);
-        let config = adp_config(&settings);
+        let config = config(&settings);
         assert_eq!(config["dd_url"], "http://127.0.0.1:27101");
         assert_eq!(
             config["additional_endpoints"]["http://127.0.0.1:27102"],
             json!(["demo-team-b"])
-        );
-        assert_eq!(
-            config["experimental"]["metrics_endpoint_routing"]["metric_prefix_allowlist"]["http://127.0.0.1:27103"],
-            json!(["demo.catalog."])
         );
         assert_eq!(config["multi_region_failover"]["dd_url"], "http://127.0.0.1:27104");
         assert_eq!(
@@ -265,7 +323,7 @@ multi_region_failover:
     #[test]
     fn lane_flags_turn_lanes_on_with_the_counts_given_and_without_them_no_lane_key_is_written() {
         let lanes_of = |lanes: LaneFlags| {
-            let config = adp_config(&RunSettings { lanes, ..settings() });
+            let config = config(&RunSettings { lanes, ..settings() });
             (
                 config["experimental"]["programmable_metrics"]["lanes"].clone(),
                 config["dogstatsd_workers_count"].clone(),
@@ -299,16 +357,13 @@ multi_region_failover:
         assert_eq!(lanes_of(decoders_only), (json!({"mode": "auto"}), json!(4)));
 
         // The other experimental keys are kept beside the lanes.
-        let config = adp_config(&RunSettings {
+        let config = config(&RunSettings {
             lanes: all,
             ..settings()
         });
         let programmable_metrics = &config["experimental"]["programmable_metrics"];
         assert_eq!(programmable_metrics["artifact_channel"]["poll_interval"], "1s");
-        assert_eq!(
-            programmable_metrics["resources"]["credentials"]["team_d"],
-            "demo-team-d-key"
-        );
+        assert_eq!(config["experimental"]["standalone_config_reload"]["enabled"], true);
         let yaml = render(&config).unwrap();
         assert!(
             yaml.contains("  programmable_metrics:\n    artifact_channel:"),

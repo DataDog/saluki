@@ -2,24 +2,23 @@
 //!
 //! - `GET /` (and `/app.js`, `/app.css`): the UI, embedded in the binary.
 //! - `GET /api/state`: everything the UI shows, polled about once per second, the Lanes panel's `lanes` included.
-//! - `POST /api/compile` `{source, resources?}`: parses a program, composes it into ADP's default program, with the
-//!   artifacts ADP runs for the other scopes, and validates the composed plan as ADP will, against the export of the
-//!   scope it replaces; returns diagnostics, the artifact, its hash, its canonical source, and the plan diff against
-//!   the active plan. `resources`, the Resources tab's draft as text, gives the fingerprints of declared outputs the
-//!   export does not declare yet.
+//! - `POST /api/compile` `{source}`: parses a program, composes it into ADP's default program, with the artifacts ADP
+//!   runs for the other scopes, and validates the composed plan as ADP will, against the export of the scope it
+//!   replaces; returns diagnostics, the artifact, its hash, its canonical source, and the plan diff against the active
+//!   plan.
 //! - `POST /api/publish` `{artifact_hash}`: publishes the last compiled artifact as the next revision, if
 //!   `artifact_hash` is its hash. An approval is used once: publishing again needs another compile.
 //! - `POST /api/revoke`: empties the policy snapshot, so that ADP goes back to the default program, aggregation and
 //!   routing both.
-//! - `GET /api/resources/template`: the team D resources template, and the resources document the stub serves, if
-//!   any, as the Resources tab's editor shows documents.
-//! - `POST /api/resources/check` `{document}`: checks a resources draft (its hash, validation as ADP does it, and the
-//!   fingerprints of the outputs it declares), and keeps it for approval.
-//! - `POST /api/resources/publish` `{artifact_hash}`: publishes the last checked resources draft as the next resources
-//!   revision, if `artifact_hash` is its hash: an approval of its own, used once.
-//! - `POST /api/resources/revoke`: empties the resources snapshot, revoking everything it declared.
+//! - `POST /api/destinations`: adds a destination (see [`Destinations::add`]): a recording intake on a free port, added
+//!   to `additional_endpoints` in ADP's configuration file, which ADP re-reads. Answers its name, label, URL, port, and
+//!   API key.
+//! - `DELETE /api/destinations/{name}`: removes an additional endpoint from the file; its intake answers until ADP
+//!   retires its recipient (see [`Destinations::remove`]).
+//! - `POST /api/native` `{metric_filterlist?, failover_metrics?}`: changes the native settings the demo writes in ADP's
+//!   configuration file: the metric filterlist, a native policy setting, and the failover signal.
 //! - `GET /api/default-program`: the export bundle's artifact, the default program's one scope, printed as source with
-//!   a comment where each section begins, with its legend, or why there is none.
+//!   ADP's notes as comments, with its legend, or why there is none.
 //! - `POST /api/traffic` `{running?, rate?, mix?}`: starts, pauses, or changes the rate of the traffic generator, or
 //!   the lines its datagrams carry (`mix`: `full`, or `canary_only`).
 //! - `POST /api/intakes/{name}/pause` `{paused}`: pauses an intake, which then answers `503 Service Unavailable`, or
@@ -41,10 +40,10 @@ use axum::{
     extract::{Path, Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
-use saluki_metric_plan::canonical::PlanHash;
+use saluki_metric_plan::{canonical::PlanHash, ir::Plan};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -52,15 +51,15 @@ use crate::{
     adp_api::{routes, AdpApi, Surface},
     canary::{self, CanaryCheck, CanaryElsewhere, CanaryState, Delivery},
     clock::unix_millis,
-    compile::{compile_with_resources, default_program_source, CompileOutcome, CompiledArtifact},
+    compile::{compile, default_program_source, CompileOutcome, CompiledArtifact, RecipientLabels},
     control::{ControlSurface, ControlView, EXPORT_NOT_EXPOSED_MESSAGE},
-    export::Legend,
-    intake::{IntakeRecorder, IntakeSummary},
+    destinations::{DestinationView, Destinations, NativeChange, NativeView, RemoveError},
+    export::{ExportBundle, Legend},
+    intake::IntakeSummary,
     launcher::{Launch, LaunchView, Phase},
     preview::{other_scope_artifacts, ActivePlan, CompileContext},
     recipients::RecipientsView,
-    resources::{self, document_text, team_d_template, DraftFingerprints, ResourcesCheck},
-    settings::{DemoPorts, Recipient, RunSettings},
+    settings::{DemoPorts, Recipient, RecipientKind, RunSettings},
     stub::{
         protocol::{ApprovedAgainst, ChannelStatus, POLICY_PRODUCT, POLICY_SCOPE},
         ChannelView, StubChannel,
@@ -87,19 +86,11 @@ struct Compiled {
     active_plan_hash: Option<String>,
 }
 
-/// The last resources draft checked that can be published, which a resources publish approves by its hash.
-#[derive(Clone, Debug)]
-struct CheckedResources {
-    document: Value,
-    hash: PlanHash,
-    checked_ms: u64,
-}
-
 /// Everything the demo server's handlers share.
 #[derive(Clone)]
 pub struct App {
     settings: Arc<RunSettings>,
-    intakes: Vec<IntakeRecorder>,
+    destinations: Destinations,
     traffic: TrafficGenerator,
     telemetry: TelemetryScraper,
     channel: StubChannel,
@@ -107,7 +98,6 @@ pub struct App {
     launch: Launch,
     api: AdpApi,
     compiled: Arc<Mutex<Option<Compiled>>>,
-    resources_checked: Arc<Mutex<Option<CheckedResources>>>,
     /// The bucket widths that the artifacts the stub served set, by revision (see
     /// [`App::canary_widths`]).
     served_widths: Arc<Mutex<BTreeMap<u64, ServedWidths>>>,
@@ -125,8 +115,8 @@ pub struct Components {
     /// The run's settings.
     pub settings: Arc<RunSettings>,
 
-    /// The recording intakes, in the order the UI shows them.
-    pub intakes: Vec<IntakeRecorder>,
+    /// The destinations: the recording intakes, and the live part of ADP's configuration.
+    pub destinations: Destinations,
 
     /// The traffic generator.
     pub traffic: TrafficGenerator,
@@ -152,7 +142,7 @@ impl App {
     pub fn new(components: Components) -> Self {
         Self {
             settings: components.settings,
-            intakes: components.intakes,
+            destinations: components.destinations,
             traffic: components.traffic,
             telemetry: components.telemetry,
             channel: components.channel,
@@ -160,7 +150,6 @@ impl App {
             launch: components.launch,
             api: components.api,
             compiled: Arc::new(Mutex::new(None)),
-            resources_checked: Arc::new(Mutex::new(None)),
             served_widths: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
@@ -181,21 +170,25 @@ impl App {
             .and_then(|(_, status)| status.status.revision_high_water)
     }
 
-    /// Returns the resources revision high-water mark the privileged status route reported, which publishing resources
-    /// counts.
+    /// Returns the resources revision high-water mark the privileged status route reported, which the stub's view
+    /// reports beside its own.
     fn reported_resources_high_water(&self) -> Option<u64> {
         self.control
             .status()
             .and_then(|(_, status)| status.status.resources?.revision_high_water)
     }
 
-    /// Returns the intake that stands in for team D's endpoint, which the resources template declares.
-    fn team_d(&self) -> Option<Recipient> {
-        self.recipients().into_iter().find(|recipient| recipient.declared)
+    fn recipients(&self) -> Vec<Recipient> {
+        self.destinations
+            .intakes()
+            .iter()
+            .map(|intake| intake.recipient().clone())
+            .collect()
     }
 
-    fn recipients(&self) -> Vec<Recipient> {
-        self.intakes.iter().map(|intake| *intake.recipient()).collect()
+    /// Returns the labels the editor writes beside recipients named by their URLs.
+    fn labels(&self) -> RecipientLabels {
+        RecipientLabels::new(self.destinations.labels())
     }
 
     /// Notes, as served at `now_ms`, the bucket widths that the artifacts the stub serves set (see
@@ -293,13 +286,13 @@ impl App {
         let (from_s, to_s) = range;
         let mut received = 0.0;
         let mut elsewhere = Vec::new();
-        for intake in &self.intakes {
+        for intake in self.destinations.intakes() {
             let count = intake.canaries_between(from_s, to_s);
-            if intake.recipient().name == "primary" {
+            if intake.recipient().kind == RecipientKind::Primary {
                 received = count;
             } else if count != 0.0 {
                 elsewhere.push(CanaryElsewhere {
-                    intake: intake.recipient().name,
+                    intake: intake.recipient().name.clone(),
                     received: count,
                 });
             }
@@ -359,10 +352,9 @@ pub fn router(app: App) -> Router {
         .route("/api/compile", post(compile_source))
         .route("/api/publish", post(publish))
         .route("/api/revoke", post(revoke))
-        .route("/api/resources/template", get(resources_template))
-        .route("/api/resources/check", post(check_resources))
-        .route("/api/resources/publish", post(publish_resources))
-        .route("/api/resources/revoke", post(revoke_resources))
+        .route("/api/destinations", post(add_destination))
+        .route("/api/destinations/{name}", delete(remove_destination))
+        .route("/api/native", post(native))
         .route("/api/default-program", get(default_program))
         .route("/api/traffic", post(traffic))
         .route("/api/intakes/{name}/pause", post(pause_intake))
@@ -388,7 +380,8 @@ struct StateResponse {
     control: ControlView,
     legend: Option<Legend>,
     channel: ChannelView,
-    intakes: Vec<IntakeSummary>,
+    intakes: Vec<IntakeView>,
+    native: NativeView,
     telemetry: TelemetrySnapshot,
     traffic: TrafficState,
     canary: CanaryCheck,
@@ -396,7 +389,6 @@ struct StateResponse {
     /// no boundary the check can wait for.
     canary_width_secs: Option<u64>,
     compiled: Option<CompiledView>,
-    resources_checked: Option<CompiledView>,
     recipients: RecipientsView,
     lanes: LanesView,
 }
@@ -405,6 +397,47 @@ struct StateResponse {
 struct CompiledView {
     artifact_hash: String,
     compiled_ms: u64,
+}
+
+/// One intake, as the UI shows it: what it received, and what ADP makes of its endpoint.
+#[derive(Serialize)]
+struct IntakeView {
+    #[serde(flatten)]
+    summary: IntakeSummary,
+
+    /// When its removal from ADP's configuration started, while its intake waits for ADP to retire its recipient.
+    removing_since_ms: Option<u64>,
+
+    /// Whether ADP's recipient directory, in the export in hand, names its endpoint: `false` for a destination ADP has
+    /// not read from its configuration yet, or no longer declares. `None` without an export.
+    in_directory: Option<bool>,
+
+    /// Whether the active plan in hand has an `emit` whose output delivers to its endpoint. `false` is a destination
+    /// that is declared but not addressed: under a published program, one added after the program was written. `None`
+    /// without an active plan.
+    addressed: Option<bool>,
+}
+
+/// Returns whether ADP's recipient directory in `export` names the endpoint at `url`.
+fn in_directory(export: &ExportBundle, url: &str) -> bool {
+    export.catalog.recipients().any(|(_, entry)| entry.endpoint == url)
+}
+
+/// Returns whether `plan` has an `emit` whose output delivers to the endpoint at `url`: one of the output's recipients
+/// is the endpoint's, whose identity ends with `/<url>` (`dd_out/additional/0/http://127.0.0.1:17102`).
+fn addressed(plan: &Plan, url: &str) -> bool {
+    let suffix = format!("/{}", url);
+    plan.nodes
+        .iter()
+        .filter(|node| node.op.as_str() == saluki_metric_plan::operators::names::EMIT)
+        .filter_map(|node| node.params.get("output")?.as_str())
+        .filter_map(|output| plan.outputs.iter().find(|declared| declared.id.as_str() == output))
+        .any(|output| {
+            output
+                .recipients
+                .iter()
+                .any(|recipient| recipient.as_str().ends_with(&suffix))
+        })
 }
 
 async fn state(State(app): State<App>) -> Json<StateResponse> {
@@ -418,19 +451,29 @@ async fn state(State(app): State<App>) -> Json<StateResponse> {
             artifact_hash: compiled.artifact.hash.to_string(),
             compiled_ms: compiled.compiled_ms,
         });
-    let resources_checked = app
-        .resources_checked
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .as_ref()
-        .map(|checked| CompiledView {
-            artifact_hash: checked.hash.to_string(),
-            compiled_ms: checked.checked_ms,
-        });
     let adp = app.launch.view();
     let telemetry = app.telemetry.snapshot(now_ms);
     let (layout, layout_error) = app.control.lane_layout();
     let lanes = lanes::view(layout.as_deref(), layout_error, &telemetry);
+    let export = app.control.export();
+    let active_plan = app
+        .control
+        .reported_active_plan_hash()
+        .and_then(|hash| app.control.active_plan(&hash));
+    let intakes = app
+        .destinations
+        .intakes_with_removal()
+        .into_iter()
+        .map(|(intake, removing_since_ms)| {
+            let url = intake.recipient().url();
+            IntakeView {
+                summary: intake.summary(now_ms),
+                removing_since_ms,
+                in_directory: export.as_deref().map(|export| in_directory(export, &url)),
+                addressed: active_plan.as_deref().map(|plan| addressed(plan, &url)),
+            }
+        })
+        .collect();
     Json(StateResponse {
         now_ms,
         run_dir: app.settings.run_dir.display().to_string(),
@@ -438,13 +481,14 @@ async fn state(State(app): State<App>) -> Json<StateResponse> {
         poll_interval_ms: app.settings.poll_interval.as_millis() as u64,
         aggregate_window_secs: app.settings.aggregate_window_secs,
         control: app.control.view(),
-        legend: app.control.export().map(|export| export.legend(&app.recipients())),
+        legend: export.map(|export| export.legend(&app.recipients())),
         channel: app.channel.view(
             TIMELINE_LIMIT,
             app.reported_high_water(),
             app.reported_resources_high_water(),
         ),
-        intakes: app.intakes.iter().map(|intake| intake.summary(now_ms)).collect(),
+        intakes,
+        native: app.destinations.native(),
         traffic: app.traffic.state(),
         canary: app.canary_check(now_ms, &adp, &telemetry),
         canary_width_secs: app.canary_width(now_ms),
@@ -453,17 +497,12 @@ async fn state(State(app): State<App>) -> Json<StateResponse> {
         adp,
         telemetry,
         compiled,
-        resources_checked,
     })
 }
 
 #[derive(Deserialize)]
 struct CompileRequest {
     source: String,
-
-    /// The Resources tab's draft, as text: the fingerprints of the outputs it declares stand in for those the export
-    /// does not declare yet.
-    resources: Option<String>,
 }
 
 async fn compile_source(State(app): State<App>, Json(request): Json<CompileRequest>) -> Json<CompileOutcome> {
@@ -499,6 +538,7 @@ async fn compile_source(State(app): State<App>, Json(request): Json<CompileReque
         .as_ref()
         .map(|status| other_scope_artifacts(status, &app.channel.envelopes(), &scope))
         .unwrap_or_default();
+    let labels = app.labels();
     let context = exported.as_ref().map(|(export, default_program)| CompileContext {
         export,
         default_program: default_program.as_deref(),
@@ -513,13 +553,14 @@ async fn compile_source(State(app): State<App>, Json(request): Json<CompileReque
                 .and_then(|artifact| artifact.revision),
         }),
         revision: app.channel.next_revision(app.reported_high_water()),
+        labels: &labels,
+        in_effect: status
+            .as_ref()
+            .and_then(|status| status.active_artifact.as_ref())
+            .and_then(|artifact| artifact.artifact_hash.as_deref())
+            .and_then(|hash| hash.parse().ok()),
     });
-    let draft = request
-        .resources
-        .as_deref()
-        .map(DraftFingerprints::of_draft)
-        .unwrap_or_default();
-    let (outcome, artifact) = compile_with_resources(&request.source, context.as_ref(), &draft);
+    let (outcome, artifact) = compile(&request.source, context.as_ref());
     *app.compiled.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = artifact.map(|artifact| Compiled {
         artifact,
         compiled_ms: unix_millis(),
@@ -618,102 +659,32 @@ async fn revoke(State(app): State<App>) -> Response {
     }
 }
 
-async fn resources_template(State(app): State<App>) -> Json<Value> {
-    let template = app.team_d().map(|team_d| document_text(&team_d_template(&team_d)));
-    let served = app.channel.resources().map(|(config, document)| {
-        json!({
-            "revision": config.revision,
-            "artifact_hash": config.artifact_hash,
-            "document": document_text(&document),
-        })
-    });
-    Json(json!({ "template": template, "served": served }))
-}
-
-#[derive(Deserialize)]
-struct CheckResourcesRequest {
-    /// The draft, as text.
-    document: String,
-}
-
-async fn check_resources(State(app): State<App>, Json(request): Json<CheckResourcesRequest>) -> Json<ResourcesCheck> {
-    let (check, checked) = resources::check(&request.document);
-    // The last check is the one a publish approves; a draft that cannot be published replaces it with nothing.
-    *app.resources_checked
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = checked.map(|(document, hash)| CheckedResources {
-        document,
-        hash,
-        checked_ms: unix_millis(),
-    });
-    Json(check)
-}
-
-async fn publish_resources(State(app): State<App>, Json(request): Json<PublishRequest>) -> Response {
-    // Used up under the lock, as a policy approval is, so that it publishes one revision.
-    let taken = {
-        let mut slot = app
-            .resources_checked
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        match slot.as_ref().map(|checked| checked.hash.to_string()) {
-            Some(hash) if hash == request.artifact_hash => slot.take(),
-            Some(hash) => {
-                return error_response(
-                    StatusCode::CONFLICT,
-                    format!(
-                        "The approved hash {} is not the hash of the last checked resources draft, {}. Check the \
-                         draft again and approve the new hash.",
-                        request.artifact_hash, hash
-                    ),
-                )
-            }
-            None => None,
-        }
-    };
-    let Some(checked) = taken else {
-        let message = match app.channel.resources() {
-            Some((served, _)) if served.artifact_hash == request.artifact_hash => format!(
-                "This approval was already used: the stub serves {} as resources revision {}. Check the draft again \
-                 to publish it as another revision.",
-                served.artifact_hash, served.revision
-            ),
-            _ => "There is no checked resources draft to publish. Check the draft, review its hash, and publish that \
-                  hash."
-                .to_string(),
-        };
-        return error_response(StatusCode::CONFLICT, message);
-    };
-    match app.channel.publish_resources(
-        checked.document.clone(),
-        app.reported_resources_high_water(),
-        unix_millis(),
-    ) {
-        Ok(config) => Json(json!({
-            "revision": config.revision,
-            "artifact_hash": config.artifact_hash,
-            "sha256": config.sha256,
-        }))
-        .into_response(),
-        Err(error) => {
-            // Nothing was published, so the approval still stands, unless another check replaced it meanwhile.
-            app.resources_checked
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .get_or_insert(checked);
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, format!("{:#}", error))
-        }
+async fn add_destination(State(app): State<App>) -> Response {
+    match app.destinations.add() {
+        Ok(recipient) => Json(DestinationView::from(&recipient)).into_response(),
+        Err(error) => error_response(StatusCode::CONFLICT, format!("{:#}", error)),
     }
 }
 
-async fn revoke_resources(State(app): State<App>) -> Response {
-    match app.channel.revoke_resources(unix_millis()) {
-        Ok(true) => Json(json!({ "revoked": true })).into_response(),
-        Ok(false) => Json(json!({
-            "revoked": false,
-            "message": "The resources snapshot is already empty: nothing to revoke.",
+async fn remove_destination(State(app): State<App>, Path(name): Path<String>) -> Response {
+    match app.destinations.remove(&name) {
+        Ok(recipient) => Json(json!({
+            "removing": true,
+            "destination": DestinationView::from(&recipient),
         }))
         .into_response(),
+        Err(RemoveError::NotFound) => error_response(
+            StatusCode::NOT_FOUND,
+            format!("There is no destination named `{}`.", name),
+        ),
+        Err(RemoveError::Write(error)) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        Err(error) => error_response(StatusCode::CONFLICT, error.to_string()),
+    }
+}
+
+async fn native(State(app): State<App>, Json(change): Json<NativeChange>) -> Response {
+    match app.destinations.set_native(change) {
+        Ok(native) => Json(native).into_response(),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, format!("{:#}", error)),
     }
 }
@@ -722,7 +693,7 @@ async fn default_program(State(app): State<App>) -> Json<Value> {
     Json(match app.control.refresh_export(&app.api).await {
         Surface::Available(export) => json!({
             "available": true,
-            "source": default_program_source(&export),
+            "source": default_program_source(&export, &app.labels()),
             "scope": export.scope,
             "program_hash": export.program_hash().to_string(),
             "legend": export.legend(&app.recipients()),
@@ -756,7 +727,7 @@ struct PauseRequest {
 }
 
 async fn pause_intake(State(app): State<App>, Path(name): Path<String>, Json(request): Json<PauseRequest>) -> Response {
-    match app.intakes.iter().find(|intake| intake.recipient().name == name) {
+    match app.destinations.find(&name) {
         Some(intake) => {
             intake.set_paused(request.paused);
             Json(json!({ "name": name, "paused": request.paused })).into_response()
@@ -766,7 +737,7 @@ async fn pause_intake(State(app): State<App>, Path(name): Path<String>, Json(req
 }
 
 async fn intake_recent(State(app): State<App>, Path(name): Path<String>) -> Response {
-    match app.intakes.iter().find(|intake| intake.recipient().name == name) {
+    match app.destinations.find(&name) {
         Some(intake) => Json(json!({
             "series": intake.recent_series(RECENT_LIMIT),
             "requests": intake.recent_requests(RECENT_LIMIT),
@@ -798,9 +769,10 @@ async fn canary_range(State(app): State<App>, Query(query): Query<CanaryQuery>) 
     let telemetry = app.telemetry.snapshot(now_ms);
     let check = app.canary_check_range((query.from_s, query.to_s), &app.launch.view(), &telemetry);
     let received_by_timestamp = app
-        .intakes
+        .destinations
+        .intakes()
         .iter()
-        .find(|intake| intake.recipient().name == "primary")
+        .find(|intake| intake.recipient().kind == RecipientKind::Primary)
         .map(|intake| intake.canaries_by_timestamp(query.from_s, query.to_s))
         .unwrap_or_default();
     Json(CanaryRange {

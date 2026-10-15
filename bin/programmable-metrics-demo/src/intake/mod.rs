@@ -1,10 +1,10 @@
 //! Recording intakes: loopback HTTP listeners that stand in for the endpoints ADP sends metrics to.
 //!
-//! Each recipient ADP is configured with (the primary endpoint, the additional endpoints, and the multi-region
-//! failover endpoint) gets its own listener, so the UI can show which metrics reach which endpoint. An intake decodes
-//! metric payloads with `stele` and `datadog-protos`, as the correctness intake does, after undoing any
-//! `Content-Encoding` (zstd, deflate, or gzip). It answers `GET /api/v1/validate` with `200 OK` and every other request
-//! with `202 Accepted`, since ADP also sends events, service checks, and metadata, which the demo does not decode.
+//! runs among them, and the multi-region failover endpoint) gets its own listener, so the UI can show which metrics
+//! reach which endpoint. An intake decodes metric payloads with `stele` and `datadog-protos`, as the correctness intake
+//! does, after undoing any `Content-Encoding` (zstd, deflate, or gzip). It answers `GET /api/v1/validate` with `200 OK`
+//! and every other request with `202 Accepted`, since ADP also sends events, service checks, and metadata, which the
+//! demo does not decode.
 //!
 //! Every request is recorded, including the ones an intake refuses, so that the UI shows when ADP's payloads are being
 //! refused: an unsupported content encoding (`415`), a body over [`MAX_BODY_SIZE`] once decompressed (`413`), and a
@@ -13,8 +13,8 @@
 //!
 //! An intake can be paused ([`IntakeRecorder::set_paused`]): it then answers every request with `503 Service
 //! Unavailable` without reading it, as an intake that is down for a while does, and counts those answers apart from
-//! refusals. ADP's forwarder retries such requests, so a recipient that retires while its intake is paused drains until
-//! its deadline.
+//! refusals. ADP's forwarder retries such requests, so a recipient that retires while its intake is paused (a
+//! destination removed meanwhile) drains until its deadline.
 
 use axum::{
     body::Body,
@@ -216,7 +216,7 @@ async fn handle(State(recorder): State<IntakeRecorder>, request: Request, max_bo
     let (status, metrics, error) = match outcome {
         Ok((status, metrics)) => (status, metrics, None),
         Err(Refusal(status, error)) => {
-            tracing::warn!(intake = recorder.recipient().name, %path, %status, %error, "Refused a request.");
+            tracing::warn!(intake = %recorder.recipient().name, %path, %status, %error, "Refused a request.");
             (status, Vec::new(), Some(error))
         }
     };

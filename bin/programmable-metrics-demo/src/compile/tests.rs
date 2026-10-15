@@ -13,8 +13,13 @@ fn structural(export: &ExportBundle) -> CompileContext<'_> {
         active: None,
         others: &[],
         revision: 1,
+        labels: &NO_LABELS,
+        in_effect: None,
     }
 }
+
+/// No labels: the editor writes none beside the recipients.
+static NO_LABELS: std::sync::LazyLock<RecipientLabels> = std::sync::LazyLock::new(RecipientLabels::default);
 
 /// The demo export's artifact, as the editor prints it: hand-written, so it also pins the printed form the editor
 /// starts from, without its base, and with the export's notes and recipient directory as comments. No line is longer
@@ -24,10 +29,10 @@ const DEFAULT_SOURCE: &str = r#"policy metrics {
   input.dogstatsd -> metrics_policy
 
   # Recipients:
-  #   http://127.0.0.1:17102
-  #   http://127.0.0.1:17103
-  #   mrf  http://127.0.0.1:17104
-  #   primary  http://127.0.0.1:17101
+  #   primary                   http://127.0.0.1:17101
+  #   mrf                       http://127.0.0.1:17104
+  #   "http://127.0.0.1:17102"
+  #   "http://127.0.0.1:17103"
   # Policy: one branch per output; route here
   node metrics_policy = tee {
     -> emit dd_metrics_encode
@@ -113,7 +118,7 @@ fn replaced_in(source: &str, from: &str, to: &str) -> String {
 #[test]
 fn the_default_program_prints_compiles_without_findings_and_keeps_its_hash() {
     let export = demo_export();
-    assert_eq!(default_program_source(&export), DEFAULT_SOURCE);
+    assert_eq!(default_program_source(&export, &NO_LABELS), DEFAULT_SOURCE);
     assert!(DEFAULT_SOURCE.lines().all(|line| line.chars().count() <= 80));
 
     let (outcome, compiled) = compile(DEFAULT_SOURCE, Some(&structural(&export)));
@@ -462,7 +467,7 @@ fn what_adp_installs_unchecked_is_not_reported() {
         edge["from"] = serde_json::json!("mrf_metrics_gateway.out");
     }
     let export = ExportBundle::from_value(document).unwrap();
-    let source = default_program_source(&export);
+    let source = default_program_source(&export, &NO_LABELS);
     assert!(source.contains("opaque_host"), "{}", source);
     let (outcome, _) = compile(&source, Some(&structural(&export)));
     assert!(outcome.diagnostics.is_empty(), "{:#?}", outcome.diagnostics);
@@ -500,4 +505,73 @@ fn columns_count_characters_and_offsets_past_the_end_are_clamped() {
         (range.line, range.column, range.end_line, range.end_column),
         (2, 1, 3, 3)
     );
+}
+
+#[test]
+fn the_recipient_directory_names_the_demos_labels_and_what_the_program_addresses_by_name() {
+    // The detached export addresses outputs by their recipients' names: `emit to [...]`.
+    let mut document = serde_json::from_str::<serde_json::Value>(DEMO_EXPORT).unwrap();
+    for node in document["artifact"]["nodes"].as_array_mut().unwrap() {
+        if node["id"] == "metrics_policy_0" {
+            node["params"] = serde_json::json!({"to": ["primary", "http://127.0.0.1:17103"]});
+        }
+    }
+    let export = ExportBundle::from_value(document).unwrap();
+    let labels = RecipientLabels::new(vec![
+        ("http://127.0.0.1:17101".to_string(), "Primary".to_string()),
+        ("http://127.0.0.1:17103".to_string(), "Team C".to_string()),
+    ]);
+    let source = default_program_source(&export, &labels);
+    let directory = source
+        .lines()
+        .skip_while(|line| *line != "  # Recipients:")
+        .take(5)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        directory,
+        [
+            "  # Recipients:",
+            "  #   primary                   Primary  http://127.0.0.1:17101",
+            "  #   mrf                                http://127.0.0.1:17104",
+            "  #   \"http://127.0.0.1:17102\"",
+            "  #   \"http://127.0.0.1:17103\"  Team C",
+        ],
+        "{}",
+        source
+    );
+    // Without the routing group's emit to it, team B's endpoint is not addressed.
+    let unrouted = source
+        .replace("    true  -> emit metrics_routing_encode_0\n", "    true  -> drop\n")
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .map(|line| format!("{}\n", line))
+        .collect::<String>();
+    let artifact = saluki_metric_plan_syntax::parse_with(
+        &unrouted,
+        &ParseOptions {
+            base: Some(export.artifact.artifact.base.clone()),
+        },
+    )
+    .unwrap()
+    .artifact;
+    let annotated = annotate(&unrouted, &artifact, Some(&export), &labels);
+    assert!(
+        annotated
+            .lines()
+            .any(|line| line.starts_with("  #   \"http://127.0.0.1:17102\"") && line.ends_with("  (not addressed)")),
+        "{}",
+        annotated
+    );
+    // The comments are not part of the artifact.
+    let parse = |text: &str| {
+        saluki_metric_plan_syntax::parse_with(
+            text,
+            &ParseOptions {
+                base: Some(export.artifact.artifact.base.clone()),
+            },
+        )
+        .unwrap()
+        .artifact
+    };
+    assert_eq!(parse(&source), parse(&default_program_source(&export, &NO_LABELS)));
 }

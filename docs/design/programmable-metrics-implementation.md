@@ -2301,6 +2301,12 @@ that a change to a `Startup` input changes nothing.
 
 ## Demo
 
+> [!NOTE]
+> This section describes the demo as built through stage 6. Since the detached programs' phase 3, its configuration,
+> destinations, and scenarios are those of
+> [the demo as built](programmable-metrics-detached-programs.md#85-the-demo-as-built), and the
+> [status document's demo section](programmable-metrics-status.md#the-demo) is how to run it.
+
 - **`saluki-metric-plan-syntax`** (built; depends only on `saluki-metric-plan` and `serde_json`, the type of IR
   parameter values; nothing in the runtime depends on it): `parse(&str) -> Result<Parsed { artifact, spans },
   Diagnostics>` and `print(&PolicyArtifact, &PrintOptions) -> String`. One generic form for every operator, `node <id>

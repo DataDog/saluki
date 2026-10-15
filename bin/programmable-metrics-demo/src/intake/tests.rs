@@ -15,7 +15,7 @@ use super::{
 use crate::settings::DemoPorts;
 
 fn primary() -> IntakeRecorder {
-    IntakeRecorder::new(DemoPorts::default().recipients()[0])
+    IntakeRecorder::new(DemoPorts::default().recipients().remove(0))
 }
 
 fn series(name: &str, kind: MetricType, tags: &[&str], points: &[(i64, f64)]) -> MetricSeries {
@@ -531,9 +531,9 @@ async fn refused_requests_are_answered_and_recorded_with_their_reason() {
 
 #[tokio::test]
 async fn a_paused_intake_answers_unavailable_records_nothing_it_was_sent_and_refuses_nothing() {
-    let team_d = DemoPorts::default().recipients()[4];
-    assert_eq!((team_d.name, team_d.declared), ("team-d", true));
-    let recorder = IntakeRecorder::new(team_d);
+    let added = crate::settings::Recipient::added('D', 50001);
+    assert_eq!((added.name.as_str(), added.removable()), ("dest-d", true));
+    let recorder = IntakeRecorder::new(added);
     let payload = {
         let mut payload = MetricPayload::new();
         payload.series.push(series(
@@ -544,7 +544,7 @@ async fn a_paused_intake_answers_unavailable_records_nothing_it_was_sent_and_ref
         ));
         payload.write_to_bytes().unwrap()
     };
-    let key = Some("demo-team-d-key");
+    let key = Some("demo-dest-d");
 
     recorder.set_paused(true);
     for _ in 0..2 {
@@ -552,7 +552,8 @@ async fn a_paused_intake_answers_unavailable_records_nothing_it_was_sent_and_ref
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     }
     let summary = recorder.summary(unix_millis());
-    assert!(summary.paused && summary.declared);
+    assert!(summary.paused && summary.added && summary.removable);
+    assert_eq!(summary.url, "http://127.0.0.1:50001");
     assert_eq!(
         (summary.requests_total, summary.unavailable, summary.refused),
         (2, 2, 0)

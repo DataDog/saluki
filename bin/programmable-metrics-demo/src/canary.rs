@@ -205,7 +205,7 @@ pub struct CanaryCheck {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct CanaryElsewhere {
     /// The intake's name.
-    pub intake: &'static str,
+    pub intake: String,
 
     /// The canaries it received with timestamps in the range.
     pub received: f64,

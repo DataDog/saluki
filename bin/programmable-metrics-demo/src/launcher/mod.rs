@@ -44,7 +44,8 @@ pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 /// How long the launcher waits for ADP to report ready.
 pub const READY_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Creates the run directory, makes sure it has a usable IPC certificate, and writes ADP's configuration.
+/// Creates the run directory, makes sure it has a usable IPC certificate, and writes ADP's configuration as it boots:
+/// teams B and C as additional endpoints, failover mirroring off, and no filterlist.
 ///
 /// A certificate file that is missing, or that does not hold a certificate and a private key (such as one cut short by
 /// a crash), is generated anew. One that is readable by others is made readable only by its owner.
@@ -76,7 +77,18 @@ pub fn prepare_run_dir(settings: &RunSettings) -> Result<(), GenericError> {
         }
     }
 
-    let config = config::render(&config::adp_config(settings)).error_context("Failed to write ADP's configuration.")?;
+    write_config(settings, &config::LiveSettings::at_boot(&settings.ports))
+}
+
+/// Writes ADP's configuration file for the run with the live settings `live`, atomically: ADP, which re-reads it, never
+/// sees a partly written file.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be written.
+pub fn write_config(settings: &RunSettings, live: &config::LiveSettings) -> Result<(), GenericError> {
+    let config =
+        config::render(&config::adp_config(settings, live)).error_context("Failed to write ADP's configuration.")?;
     let config_path = settings.adp_config_path();
     write_atomically(&config_path, config.as_bytes())
         .with_error_context(|| format!("Failed to write ADP's configuration to '{}'.", config_path.display()))
@@ -542,7 +554,8 @@ mod tests {
             .unwrap();
 
         let config = fs::read_to_string(settings.adp_config_path()).unwrap();
-        assert_eq!(config, config::render(&config::adp_config(&settings)).unwrap());
+        let live = config::LiveSettings::at_boot(&settings.ports);
+        assert_eq!(config, config::render(&config::adp_config(&settings, &live)).unwrap());
 
         // A second run in the same directory keeps the certificate.
         prepare_run_dir(&settings).unwrap();

@@ -1665,11 +1665,16 @@ impl Installer {
     /// Returns the demand of every program the core holds: one set of recipients per distinct set their `emit`s address
     /// ([`demanded_outputs`]), resolved through the recipient directory of the default program last lowered.
     fn demand(&self) -> Vec<Demand> {
+        self.demand_through(&self.default_program.catalog)
+    }
+
+    /// Returns the demand of every program the core holds, resolved through the recipient directory of `catalog`.
+    fn demand_through(&self, catalog: &AdpCatalog) -> Vec<Demand> {
         let mut demand = self
             .core
             .held_policy_artifacts()
             .into_iter()
-            .filter_map(|artifact| demanded_outputs(artifact, &self.default_program.catalog).ok())
+            .filter_map(|artifact| demanded_outputs(artifact, catalog).ok())
             .flatten()
             .collect::<Vec<_>>();
         // One per set: the first program's `emit`, in node ID order, names its output.
@@ -1704,14 +1709,32 @@ impl Installer {
         let declared = accepted
             .as_ref()
             .map(|(artifact, provenance)| Declared { artifact, provenance });
-        let demand = self.demand();
+        let mut demand = self.demand();
+        let mut lowered = self
+            .lowering
+            .lower_after(current, declared, &demand, &self.lowered_resources);
+        // The demand as the new directory resolves it: when a recipient leaves the configuration, an `emit` of the
+        // program in effect that also names others delivers to those that remain, through an output for exactly them,
+        // which the same lowering adds, so that nothing the others receive is lost between two lowerings.
+        if let Ok(first) = &lowered {
+            let anticipated = self.demand_through(&first.catalog);
+            let sets = |demand: &[Demand]| {
+                demand
+                    .iter()
+                    .map(|demand| (demand.host.clone(), demand.recipients.clone()))
+                    .collect::<Vec<_>>()
+            };
+            if sets(&anticipated) != sets(&demand) {
+                demand = anticipated;
+                lowered = self
+                    .lowering
+                    .lower_after(current, declared, &demand, &self.lowered_resources);
+            }
+        }
         // Recorded whether or not the lowering succeeds, so that a lowering that fails is tried again at the next
         // change of the demand or the configuration, not after every event.
         self.lowered_demand = demand.clone();
-        let lowered = match self
-            .lowering
-            .lower_after(current, declared, &demand, &self.lowered_resources)
-        {
+        let lowered = match lowered {
             Ok(lowered) => lowered,
             Err(error) => {
                 let error = format!("{:#}", error);

@@ -79,6 +79,7 @@ impl FakeAdp {
                 live_generations: Some(1),
                 scopes: Default::default(),
                 resources: None,
+                program: None,
             }),
         }
     }

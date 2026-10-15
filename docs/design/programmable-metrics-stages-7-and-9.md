@@ -3938,6 +3938,18 @@ After detached programs, phase 2 ([as built](programmable-metrics-detached-progr
      and work per input by entry node. A program may keep what native configuration sized the host for, such as a
      128 MiB interner or a tee with a port per routing group, but not grow past it, and is held to the limits
      wherever the default program is within them.
+189. **An `emit` delivers to the recipients that remain** (ART, D; refines amendment 179; decided on the owner's
+     behalf as least surprising, phase 3). When some recipients an `emit` of the artifact in effect names are no longer
+     in the host's directory, the `emit` keeps delivering to those that remain, through the output with exactly their
+     recipients (an existing one, else an implied one, which the host adds in the same lowering that removes the
+     others, so that nothing they receive is lost between two lowerings). The artifact runs degraded: its
+     acknowledgment names the missing recipients, and what they would have received is counted as policy loss at a
+     drop beside the `emit` (composition makes the `emit` a two-port `tee` to an `emit` of the remaining recipients,
+     `<emit>_delivered`, and a counted drop, `<emit>_missing`). Only when none of an `emit`'s recipients remain is the
+     `emit` itself a counted drop. A new artifact still waits for every recipient it names.
+190. **A refused newer delivery stays its config's acknowledgment** (INS, C; phase 3). While a config's newer delivery
+     stands refused, rejected, or failed, the installation it would have replaced moving to another generation (as a
+     lowering makes it) does not replace that acknowledgment; a change of that installation's state still does.
 
 ## 11. Risks
 

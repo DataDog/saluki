@@ -48,28 +48,18 @@
     diff: $("plan-diff"), diffHead: $("plan-diff-head"), diffNodes: $("plan-diff-nodes"),
     diffEdges: $("plan-diff-edges"), diffEdgesSummary: $("plan-diff-edges-summary"),
     diffEdgeList: $("plan-diff-edge-list"), confirmDiff: $("confirm-diff"),
-    tabPolicy: $("tab-policy"), tabResources: $("tab-resources"), policyEditor: $("policy-editor"),
-    resourcesEditor: $("resources-editor"), resourcesSource: $("resources-source"),
-    resourcesStatus: $("resources-status"), resourcesOutputs: $("resources-outputs"),
-    resourcesTemplate: $("btn-resources-template"), resourcesServed: $("btn-resources-served"),
-    resourcesCheck: $("btn-resources-check"), resourcesPublish: $("btn-resources-publish"),
-    resourcesRevoke: $("btn-resources-revoke"), resourcesOutcome: $("resources-outcome"),
-    resourcesConfirm: $("resources-confirm"), resourcesConfirmButton: $("btn-resources-confirm"),
-    resourcesConfirmHash: $("resources-confirm-hash"), resourcesConfirmRevision: $("resources-confirm-revision"),
-    resourcesConfirmWarnings: $("resources-confirm-warnings"), resourcesAcks: $("resources-acks"),
-    resourcesAckSummary: $("resources-ack-summary"), recipients: $("recipients"), recipientsHint: $("recipients-hint"),
+    recipients: $("recipients"), recipientsHint: $("recipients-hint"),
     outputs: $("outputs"), outputsCount: $("outputs-count"), outputsRows: $("outputs-rows"),
     lanes: $("lanes"), lanesHint: $("lanes-hint"), canaryOnly: $("traffic-canary-only"),
+    addDestination: $("btn-add-destination"), nativeFailover: $("native-failover"),
+    nativeFilterlist: $("native-filterlist"), filterlistButton: $("btn-filterlist"), nativeNote: $("native-note"),
+    editorNote: $("editor-note"),
   };
   const nodesTable = ui.nodes.closest("table");
-  const RESOURCES_PRODUCT = "resources";
-  const RESOURCES_DRAFT_KEY = "programmable-metrics-demo.resources-draft";
 
   let state = null; // the last /api/state answer
   let firstSeenMs = Infinity; // when the page first had a state: families arriving soon after are not news
   let compiled = null; // { source, outcome, published } of the last compile; `published` once its approval is used
-  // { text, outcome, published } of the last resources check; `published` once its approval is used.
-  let resourcesChecked = null;
   // Where the editor's text came from ("empty", "sample", "default", "draft", or "user" once edited), and the
   // default program hash it belongs to, which keys its draft.
   const editor = { origin: "empty", base: null, loading: false, loadFailed: false };
@@ -215,7 +205,6 @@
       if (label) button.textContent = text;
       button.disabled = false;
       renderPublish();
-      renderResourcesPublish();
     }
   }
 
@@ -353,9 +342,7 @@
     const source = ui.source.value;
     setStatus("", "Compiling…");
     try {
-      // The Resources tab's draft gives the fingerprints of declared outputs ADP does not declare yet.
-      const resources = ui.resourcesSource.value.trim() ? ui.resourcesSource.value : undefined;
-      const { ok, data } = await api("POST", "/api/compile", { source, resources });
+      const { ok, data } = await api("POST", "/api/compile", { source });
       if (!ok || !data) throw new Error("the demo server refused the compile request");
       compiled = { source, outcome: data, published: null };
     } catch (error) {
@@ -373,13 +360,15 @@
     renderPublish();
   }
 
-  // The declared outputs a compiled artifact waits for: their fingerprints came from the Resources draft, and every
-  // error is about one of them, so ADP holds the artifact pending rather than reject it.
-  function waitingOutputs(outcome) {
-    const fromDraft = outcome.draft_fingerprints || [];
-    const errors = outcome.diagnostics.filter((d) => d.severity === "error");
-    const waits = errors.length > 0 && errors.every((d) => fromDraft.some((output) => d.message.includes(output)));
-    return waits ? fromDraft : [];
+  // What a compiled program waits for, if composition says it waits rather than fails: an output to recipients no
+  // output delivers to exactly, which ADP adds when the program arrives (an implied output), or a recipient ADP's
+  // directory does not name, which ADP holds it pending for.
+  function waitsFor(outcome) {
+    if (outcome.preview && outcome.preview.provisional) return "implied";
+    const waiting = outcome.diagnostics.find((d) => d.origin === "composition" && d.severity === "warning"
+      && /^ADP (will add an output|does not know the recipient)/.test(d.message));
+    if (!waiting) return null;
+    return /^ADP will add an output/.test(waiting.message) ? "implied" : "recipient";
   }
 
   function renderCompileStatus() {
@@ -401,18 +390,21 @@
     if (outcome.errors) found.push(plural(outcome.errors, "error"));
     if (outcome.warnings) found.push(plural(outcome.warnings, "warning"));
     let tone = "", verdict;
-    const waitsFor = waitingOutputs(outcome);
+    const waits = waitsFor(outcome);
     if (!checked.available) {
       tone = "warn";
       verdict = "not checked: ADP's export is not available";
     } else if (checked.composed) {
-      if (waitsFor.length) {
-        tone = "warn";
-        verdict = `composed as ADP will: it emits to ${waitsFor.join(", ")}, which ADP does not declare yet, so ADP `
-          + "holds it pending until the resources declare it";
-      } else if (outcome.errors) {
+      if (outcome.errors) {
         tone = "err";
         verdict = `composed as ADP will: ${found.join(" and ")}, so ADP will reject it`;
+      } else if (waits === "implied") {
+        tone = "ok";
+        verdict = "composed and validated as ADP will, with stand-ins for the outputs ADP adds for its new recipient "
+          + "sets; compile again once it runs to see the exact plan";
+      } else if (waits === "recipient") {
+        tone = "warn";
+        verdict = "composed as ADP will: it emits to a recipient ADP does not know, so ADP holds it pending";
       } else if (outcome.warnings) {
         tone = "warn";
         verdict = `composed and validated as ADP will: ${found.join(" and ")}`;
@@ -433,11 +425,8 @@
     if (outcome.restored_fingerprints.length) {
       notes.push(`${plural(outcome.restored_fingerprints.length, "output fingerprint")} from ADP's export.`);
     }
-    if (outcome.draft_fingerprints.length) {
-      notes.push(`Fingerprint of ${outcome.draft_fingerprints.join(", ")} from the Resources draft.`);
-    }
-    if (outcome.draft_note) notes.push(outcome.draft_note);
     if (checked.reason) notes.push(checked.reason);
+    notes.push(...(outcome.preview.notes || []));
     ui.status.className = tone ? `compile-status ${tone}` : "compile-status";
     ui.status.append(
       "Compiled ",
@@ -558,9 +547,9 @@
     }
     for (const output of preview.outputs) {
       ui.diffNodes.append(el("li", { class: "changed" },
-        el("span", { class: "sign", text: "~" }),
+        el("span", { class: "sign", text: output.note ? "+" : "~" }),
         el("span", { class: "id", text: output.output }),
-        el("span", { class: "what", text: `output ${output.change}` })));
+        el("span", { class: "what", text: output.note || `output ${output.change}` })));
     }
     const edges = [
       ...preview.edges_added.map((edge) => `+ ${edge}`),
@@ -663,15 +652,18 @@
     ui.confirmDiff.textContent = diffText || "";
     ui.confirmDiff.hidden = !diffText;
     const warnings = [];
-    const waitsFor = waitingOutputs(outcome);
-    if (waitsFor.length) {
-      warnings.push(`It emits to ${waitsFor.join(", ")}, which ADP does not declare yet: ADP holds it pending, and `
-        + "installs it by itself once a resources artifact declares the output with the fingerprint it records.");
-    } else if (outcome.errors) {
+    const waits = waitsFor(outcome);
+    if (outcome.errors) {
       const first = outcome.diagnostics.find((d) => d.severity === "error");
       const how = outcome.checked_against.composed ? "Composed as ADP will" : "The structural checks";
       warnings.push(`${how}, it has ${plural(outcome.errors, "error")}: ADP will reject it and keep running its `
         + `active plan. ${first ? first.message : ""}`);
+    } else if (waits === "implied") {
+      warnings.push("It emits to recipients no output delivers to exactly yet: ADP adds an output for them (an implied "
+        + "output), and the program waits for it, pending, for a moment before it installs.");
+    } else if (waits === "recipient") {
+      warnings.push("It emits to a recipient ADP's directory does not name: ADP holds it pending, and installs it by "
+        + "itself once the recipient is declared, such as by adding the destination.");
     }
     if (!outcome.checked_against.available) {
       warnings.push("Not checked against ADP's catalog: ADP's export is not available.");
@@ -862,18 +854,27 @@
     const latest = latestStatus(s);
     const node = ui.badgeProgram;
     if (!latest) {
-      node.textContent = "Default program";
+      node.textContent = "Running: the default program";
       node.className = "badge badge-program";
       node.title = "ADP has not reported its status: with no artifact channel, it runs the default program.";
       return;
     }
     const status = latest.status;
     const generation = status.active_generation ?? "?";
+    // Which program runs, and whether native policy settings apply, as ADP's status says.
+    const program = status.program;
+    const differs = program && program.differs ? program.differs : [];
     let text, kind, title;
     if (status.active_artifact) {
-      text = `Artifact rev ${status.active_artifact.revision ?? "?"} · gen ${generation}`;
+      const policy = program && program.native_policy === "not_applied" ? " (native policy settings not applied)" : "";
+      text = `Running: published revision ${status.active_artifact.revision ?? "?"}${policy}`;
+      if (differs.length) text = `${text} · ${plural(differs.length, "native setting")} differ`;
       kind = "artifact";
-      title = `Active artifact ${status.active_artifact.artifact_hash || ""}`;
+      title = `Generation ${generation}. Active artifact ${status.active_artifact.artifact_hash || ""}. A published `
+        + "program owns its policy: a change of a native policy setting reaches the default program only, which runs again once the program is "
+        + "revoked."
+        + (differs.length ? ` Native settings the program does not run as the default program would: `
+          + `${differs.join(", ")}.` : "");
       // Flags that ADP installed the artifact although it changed since the approval: a stale base or review.
       const stale = [status.stale_base ? "stale base" : null, status.stale_review ? "stale review" : null]
         .filter(Boolean);
@@ -884,9 +885,10 @@
           + "default program. " : ""}ADP runs it anyway.`;
       }
     } else {
-      text = `Default program · gen ${generation}`;
+      text = "Running: the default program";
       kind = "ok";
-      title = `Default program ${status.default_program_hash || ""}`;
+      title = `Generation ${generation}. Default program ${status.default_program_hash || ""}: native policy settings `
+        + "apply.";
     }
     const age = s.now_ms - latest.at;
     if (age > staleAfterMs(s)) {
@@ -925,33 +927,24 @@
     ui.banner.hidden = !ui.banner.childNodes.length;
   }
 
-  // The outputs a policy can emit to: the native ones and those resources artifacts declare, from ADP's export, and
-  // those the Resources draft declares that ADP does not yet, whose fingerprints the compile takes from the draft.
+  // The outputs a program's emits resolve to, from ADP's export: the native ones, those ADP added for a program's
+  // recipient sets (implied), and any a resources artifact declares.
   function renderOutputs(s) {
     const exported = s.legend ? s.legend.outputs : [];
-    const drafted = (freshResourcesCheck() ? resourcesChecked.outcome.outputs : [])
-      .filter((output) => !exported.some((known) => known.id === output.id));
     const intakeLabel = (name) => {
       const intake = s.intakes.find((i) => i.name === name);
       return intake ? intake.label : "—";
     };
+    const kindOf = (output) => (output.declared ? "resources artifact"
+      : output.id.startsWith("implied_") ? "implied by a program" : "configuration");
     const rows = exported.map((output) => el("tr", {},
       el("td", { class: "mono", text: output.id, title: output.label || "" }),
-      el("td", { text: output.declared ? "resources artifact" : "configuration" }),
+      el("td", { text: kindOf(output) }),
       el("td", { text: output.intake ? intakeLabel(output.intake) : output.recipients.join(", ") }),
       el("td", { class: "mono", text: shortHash(output.fingerprint), title: output.fingerprint })));
-    for (const output of drafted) {
-      rows.push(el("tr", { class: "drafted" },
-        el("td", { class: "mono", text: output.id, title: output.label || "" }),
-        el("td", { text: "Resources draft (not published)" }),
-        el("td", { text: output.recipients.join(", ") }),
-        el("td", { class: "mono", text: shortHash(output.fingerprint), title: output.fingerprint })));
-    }
     ui.outputs.hidden = rows.length === 0;
-    const declared = exported.filter((output) => output.declared).length;
-    const counts = [`${exported.length - declared} native`, `${declared} declared`];
-    if (drafted.length) counts.push(`${drafted.length} only in the draft`);
-    ui.outputsCount.textContent = rows.length ? `(${counts.join(", ")})` : "";
+    const implied = exported.filter((output) => output.id.startsWith("implied_")).length;
+    ui.outputsCount.textContent = rows.length ? `(${exported.length - implied} native, ${implied} implied)` : "";
     ui.outputsRows.replaceChildren(...rows);
   }
 
@@ -967,74 +960,111 @@
       }))));
   }
 
-  // Intake columns are kept between renders, keyed by family, so that fading is a smooth transition.
+  // Intake columns are kept between renders, keyed by family, so that fading is a smooth transition. A destination
+  // that is gone loses its column.
   const intakeColumns = new Map();
 
   function intakeColumn(intake) {
     let column = intakeColumns.get(intake.name);
     if (!column) {
       const name = el("div", { class: "intake-name", text: intake.label });
+      const url = el("div", { class: "intake-url", text: intake.url });
       const declaration = el("div", { class: "intake-state" });
       const outputs = el("div", { class: "intake-outputs" });
       const alerts = el("div", {});
       const meta = el("div", { class: "intake-meta" });
       const list = el("ul", { class: "families" });
       const empty = el("div", { class: "empty", text: "Nothing in the last 5 s." });
-      // A declared endpoint's intake can be paused, so that its recipient's drain shows what it does at its deadline.
-      const pause = intake.declared ? el("button", { type: "button", class: "quiet intake-pause" }) : null;
+      const buttons = el("div", { class: "intake-buttons" });
+      // An additional endpoint can be removed from ADP's configuration; an added one's intake can be paused too, so
+      // that its recipient's drain shows what it does at its deadline when it is removed meanwhile.
+      const remove = intake.removable ? el("button", { type: "button", class: "quiet danger", text: "Remove" }) : null;
+      const pause = intake.added ? el("button", { type: "button", class: "quiet" }) : null;
+      if (remove) {
+        remove.title = "Take this endpoint out of additional_endpoints in ADP's configuration file: ADP drains its "
+          + "recipient, and the intake stops once ADP retires it";
+        remove.addEventListener("click", () => busy(remove, "Removing…", async () => {
+          const question = `Remove ${intake.label} (${intake.url}) from ADP's configuration? ADP drains its `
+            + "recipient. Under a published program, emits that name it keep delivering to their other recipients, "
+            + "and what it would have received is counted as dropped.";
+          if (!window.confirm(question)) return;
+          const { ok, data } = await api("DELETE", `/api/destinations/${intake.name}`);
+          if (ok) toast(`Removing ${intake.label}: ADP drains its recipient.`);
+          else toast(`Remove refused: ${(data && data.error) || "unknown error"}`, true);
+          await poll();
+        }));
+        buttons.append(remove);
+      }
       if (pause) {
         pause.addEventListener("click", () => busy(pause, null, async () => {
           const paused = state && state.intakes.find((i) => i.name === intake.name);
           await api("POST", `/api/intakes/${intake.name}/pause`, { paused: !(paused && paused.paused) });
           await poll();
         }));
+        buttons.append(pause);
       }
-      const head = el("div", { class: "intake-head" }, name, declaration, outputs, alerts, meta, pause);
-      const root = el("div", { class: "intake", "data-name": intake.name }, head, list, empty);
-      column = { root, declaration, pause, outputs, alerts, meta, list, empty, families: new Map() };
+      const head = el("div", { class: "intake-head" }, name, url, declaration, outputs, alerts, meta, buttons);
+      const root = el("div", { class: `intake${intake.added ? " added" : ""}`, "data-name": intake.name }, head, list,
+        empty);
+      column = { root, declaration, pause, remove, outputs, alerts, meta, list, empty, families: new Map() };
       intakeColumns.set(intake.name, column);
-      ui.intakes.append(root);
     }
     return column;
   }
 
-  // What a declared endpoint's column says about its declaration and its intake.
-  function renderDeclaration(column, intake, feeding) {
-    column.declaration.className = "intake-state";
-    if (!intake.declared) {
-      column.declaration.textContent = "";
-      return;
-    }
-    if (intake.paused) {
-      column.declaration.classList.add("paused");
-      column.declaration.textContent = `paused: answering 503 (${intake.unavailable} so far)`;
-    } else if (feeding.length) {
-      column.declaration.textContent = "declared by the resources artifact";
+  // What ADP makes of a destination: not declared yet (ADP has not read it from its configuration), declared but not
+  // addressed by the program that runs, being removed while its recipient drains, or paused.
+  function renderDeclaration(column, intake, s) {
+    const node = column.declaration;
+    node.className = "intake-state";
+    node.title = "";
+    const publishedRuns = Boolean(latestStatus(s) && latestStatus(s).status.active_artifact);
+    if (intake.removing_since_ms) {
+      node.classList.add("removing");
+      node.textContent = `removing: ADP drains its recipient (${ago(intake.removing_since_ms)})`;
+    } else if (intake.paused) {
+      node.classList.add("paused");
+      node.textContent = `paused: answering 503 (${intake.unavailable} so far)`;
+    } else if (intake.in_directory === false) {
+      node.classList.add("unaddressed");
+      node.textContent = "not declared yet: ADP reads its configuration file";
+    } else if (intake.addressed === false && intake.kind !== "failover") {
+      node.classList.add("unaddressed");
+      node.textContent = "declared, not addressed";
+      node.title = publishedRuns
+        ? "ADP declares this endpoint, but no emit of the published program reaches it: route to it, or revoke."
+        : "ADP declares this endpoint, but no emit of the program that runs reaches it.";
     } else {
-      column.declaration.classList.add("undeclared");
-      column.declaration.textContent = "not declared";
+      node.textContent = "";
     }
-    column.declaration.title = "A resources artifact declares this endpoint; ADP's configuration does not.";
-    if (!column.pause.dataset.busy) {
-      column.pause.textContent = intake.paused ? "Resume intake" : "Pause intake";
+    if (column.pause && !column.pause.dataset.busy) {
+      column.pause.textContent = intake.paused ? "Resume" : "Pause";
       column.pause.title = intake.paused ? "Answer requests again"
         : "Answer every request with 503 Service Unavailable, as an endpoint that is down";
     }
+    if (column.remove && !column.remove.dataset.busy) column.remove.disabled = Boolean(intake.removing_since_ms);
   }
 
   function renderIntakes(s) {
     const outputs = s.legend ? s.legend.outputs : [];
     const nowS = Math.floor(s.now_ms / 1000);
+    const listed = new Set(s.intakes.map((intake) => intake.name));
+    for (const [name, column] of intakeColumns) {
+      if (!listed.has(name)) {
+        column.root.remove();
+        intakeColumns.delete(name);
+      }
+    }
+    ui.intakes.style.setProperty("--columns", String(Math.min(Math.max(s.intakes.length, 1), 6)));
     for (const intake of s.intakes) {
       const column = intakeColumn(intake);
-      // The outputs of the default program that feed this endpoint, from ADP's export.
-      const feeding = outputs.filter((output) => output.intake === intake.name);
+      ui.intakes.append(column.root); // in the order the server lists them
+      column.root.classList.toggle("removing", Boolean(intake.removing_since_ms));
+      // The outputs that deliver to this endpoint, from ADP's export: those whose recipients are its.
+      const feeding = outputs.filter((output) => output.recipients.some((id) => id.endsWith(`/${intake.url}`)));
       column.outputs.replaceChildren(...feeding.map((output) => el("div", {}, "← ", ...breakable(output.id, "_"))));
-      column.outputs.title = feeding.map((output) => {
-        const declared = output.declared ? ", declared by the resources artifact" : "";
-        return `${output.id}: ${output.label || "no label"}${declared}`;
-      }).join("\n");
-      renderDeclaration(column, intake, feeding);
+      column.outputs.title = feeding.map((output) => `${output.id}: ${output.label || "no label"}`).join("\n");
+      renderDeclaration(column, intake, s);
 
       // Problems first, each on its own line, so that they are never cut off.
       const alerts = [];
@@ -1174,7 +1204,7 @@
     return cs.state === "active" && Array.isArray(cs.dropped_outputs) && cs.dropped_outputs.length > 0;
   }
 
-  // The rows of an acknowledgment timeline: of the policy product's configs, or of the resources product's.
+  // The rows of an acknowledgment timeline: of the configs of one product, the policy product in the demo.
   function ackRows(s, product) {
     const timeline = s.channel.timeline;
     const rows = [];
@@ -1190,17 +1220,13 @@
         rows.push([when, "—", null, "refused", "—", entry.error, "err"]);
         continue;
       }
-      const notes = (product === RESOURCES_PRODUCT
-        ? [restarted, unreadable]
-        : [restarted, status.degraded, status.stale_base ? "stale base" : null,
-          status.stale_review ? "stale review" : null, unreadable])
+      const notes = [restarted, status.degraded, status.stale_base ? "stale base" : null,
+        status.stale_review ? "stale review" : null, unreadable]
         .filter(Boolean).join(" · ");
       const tone = unreadable ? "warn" : "";
       const own = entry.config_states.filter((cs) => productOf(cs) === product);
       for (const cs of own.length ? own : [null]) {
-        if (!cs && product === RESOURCES_PRODUCT) {
-          rows.push([when, "—", null, "none", "—", notes || "no resources config", tone]);
-        } else if (!cs) {
+        if (!cs) {
           const generation = status.active_generation ?? "—";
           rows.push([when, "—", null, "default", generation, notes || "default program", tone]);
         } else {
@@ -1302,7 +1328,11 @@
       } else parts.push(el("span", { class: "warn", text: `${count(difference)} more than sent` }));
     }
     if (c.elsewhere.length) {
-      parts.push(` · also at ${c.elsewhere.map((e) => `${e.intake} ${count(e.received)}`).join(", ")}`);
+      const label = (name) => {
+        const intake = state && state.intakes.find((i) => i.name === name);
+        return intake ? intake.label : name;
+      };
+      parts.push(` · also at ${c.elsewhere.map((e) => `${label(e.intake)} ${count(e.received)}`).join(", ")}`);
     }
     ui.canary.replaceChildren(...parts);
     ui.canary.title = `Every datagram carries one demo.canary. Compares the canaries sent in ${range} with those the `
@@ -1585,250 +1615,66 @@
     }
   }
 
-  // ---- Resources ----------------------------------------------------------------------------------------------------
+  // ---- Destinations and native configuration -----------------------------------------------------------------------
 
-  function showTab(name) {
-    const resources = name === "resources";
-    ui.policyEditor.hidden = resources;
-    ui.resourcesEditor.hidden = !resources;
-    ui.tabPolicy.classList.toggle("active", !resources);
-    ui.tabResources.classList.toggle("active", resources);
-    ui.tabPolicy.setAttribute("aria-selected", String(!resources));
-    ui.tabResources.setAttribute("aria-selected", String(resources));
-  }
-
-  ui.tabPolicy.addEventListener("click", () => showTab("policy"));
-  ui.tabResources.addEventListener("click", () => showTab("resources"));
-
-  function saveResourcesDraft() {
-    try { localStorage.setItem(RESOURCES_DRAFT_KEY, ui.resourcesSource.value); } catch (_) { /* may be unavailable */ }
-  }
-
-  function loadResourcesDraft() {
-    try { return localStorage.getItem(RESOURCES_DRAFT_KEY); } catch (_) { return null; }
-  }
-
-  // Puts the team D template, or the document the stub serves, in the resources editor.
-  async function loadResources(which, initial) {
-    const { data } = await api("GET", "/api/resources/template");
-    const text = which === "served" ? data && data.served && data.served.document : data && data.template;
-    if (!text) {
-      if (!initial) {
-        toast(which === "served" ? "The stub serves no resources document." : "There is no template.", true);
-      }
-      return;
-    }
-    const current = ui.resourcesSource.value;
-    if (!initial && current.trim() && current !== text && !window.confirm("Replace the resources editor's text?")) {
-      return;
-    }
-    ui.resourcesSource.value = text;
-    saveResourcesDraft();
-    renderResources();
-  }
-
-  async function checkResources() {
-    const text = ui.resourcesSource.value;
-    const { ok, data } = await api("POST", "/api/resources/check", { document: text });
-    resourcesChecked = ok && data ? { text, outcome: data, published: null } : null;
-    if (!resourcesChecked) toast("The demo server refused the check request.", true);
-    renderResources();
-  }
-
-  function freshResourcesCheck() {
-    const checked = resourcesChecked;
-    return checked && checked.outcome.ok && checked.text === ui.resourcesSource.value ? checked : null;
-  }
-
-  function activeResourcesHash() {
-    const latest = state && latestStatus(state);
-    const resources = latest && latest.status.resources;
-    return resources && resources.active_artifact ? resources.active_artifact.artifact_hash : null;
-  }
-
-  function renderResourcesCheck() {
-    const node = ui.resourcesStatus;
-    ui.resourcesOutputs.replaceChildren();
-    ui.resourcesOutputs.hidden = true;
-    const checked = resourcesChecked;
-    if (!checked) return;
-    if (checked.text !== ui.resourcesSource.value) {
-      node.className = "compile-status";
-      node.textContent = "Edited since the last check. Check again to publish.";
-      return;
-    }
-    const outcome = checked.outcome;
-    if (!outcome.ok) {
-      node.className = "compile-status err";
-      node.textContent = outcome.error;
-      return;
-    }
-    node.className = outcome.valid ? "compile-status ok" : "compile-status err";
-    const hash = el("code", { text: shortHash(outcome.artifact_hash), title: outcome.artifact_hash });
-    node.replaceChildren("Checked ", hash,
-      outcome.valid ? " · valid, as ADP validates resources artifacts."
-        : ` · refused as ADP will refuse it: ${outcome.validation_error}`);
-    for (const output of outcome.outputs) {
-      ui.resourcesOutputs.append(el("li", {},
-        el("code", { text: output.id }), ` ${output.label ? `(${output.label}) ` : ""}`,
-        el("span", { class: "what", text: `→ ${output.recipients.join(", ")} · ` }),
-        el("code", { text: shortHash(output.fingerprint), title: output.fingerprint })));
-    }
-    ui.resourcesOutputs.hidden = !outcome.outputs.length;
-  }
-
-  function resourcesPublishable() {
-    const fresh = freshResourcesCheck();
-    return Boolean(fresh && !fresh.published && fresh.outcome.artifact_hash !== activeResourcesHash());
-  }
-
-  function renderResourcesPublish() {
-    const fresh = freshResourcesCheck();
-    if (!ui.resourcesPublish.dataset.busy) {
-      ui.resourcesPublish.disabled = !resourcesPublishable();
-      if (!fresh) {
-        ui.resourcesPublish.textContent = "Publish resources";
-        ui.resourcesPublish.title = "Check the resources first";
-      } else if (fresh.published) {
-        ui.resourcesPublish.textContent = `Published as resources revision ${fresh.published.revision}`;
-        ui.resourcesPublish.title = "This check's approval was used. Check again to publish it as another revision.";
-      } else if (fresh.outcome.artifact_hash === activeResourcesHash()) {
-        ui.resourcesPublish.textContent = "Already active";
-        ui.resourcesPublish.title = `ADP runs with ${fresh.outcome.artifact_hash}`;
-      } else {
-        ui.resourcesPublish.textContent = `Publish resources ${shortHash(fresh.outcome.artifact_hash)}`;
-        ui.resourcesPublish.title = `Approve and publish ${fresh.outcome.artifact_hash}`;
-      }
-    }
-    if (ui.resourcesPublish.disabled && !ui.resourcesConfirmButton.dataset.busy) ui.resourcesConfirm.hidden = true;
-    if (!ui.resourcesRevoke.dataset.busy) ui.resourcesRevoke.disabled = !(state && state.channel.resources.current);
-  }
-
-  function renderResourcesOutcome(s) {
-    const current = s.channel.resources.current;
-    const node = ui.resourcesOutcome;
-    node.replaceChildren();
-    if (!current) {
-      const lastChange = s.channel.resources.history[0];
-      node.hidden = !(lastChange && lastChange.action === "revoke");
-      node.className = "publish-outcome";
-      node.append("Revoked: the stub serves an empty resources snapshot, so ADP declares no resources.");
-      return;
-    }
-    const ack = latestAcks(s).find((cs) => productOf(cs) === RESOURCES_PRODUCT && cs.revision === current.revision);
-    let tone = "pending", text;
-    if (!s.channel.last_poll || s.channel.last_poll.received_ms < current.published_ms) {
-      text = "waiting for ADP's next poll";
-    } else if (ack && ack.state === "active") {
-      tone = "ok";
-      text = `active in generation ${ack.generation ?? "?"}`;
-    } else if (ack && ["rejected", "failed"].includes(ack.state)) {
-      tone = "err";
-      text = `${ack.state}: ${ack.error || "no reason given"}`;
-    } else if (ack) {
-      text = `${ack.state || "acknowledged"}${ack.error ? `: ${ack.error}` : ""}`;
+  ui.addDestination.addEventListener("click", () => busy(ui.addDestination, "Adding…", async () => {
+    const { ok, data } = await api("POST", "/api/destinations");
+    if (ok) {
+      toast(`Added ${data.label} at ${data.url}: ADP reads it from its configuration file within a second. Under the `
+        + "default program it receives everything; under a published program, only what the program routes to it.");
     } else {
-      text = "delivered; ADP has not acknowledged it (an ADP before stage 7 does not ask for resources)";
+      toast(`Adding a destination was refused: ${(data && data.error) || "unknown error"}`, true);
     }
-    node.className = `publish-outcome ${tone}`;
-    node.append(el("div", { class: "clamp two", title: text },
-      `Resources revision ${current.revision} (${tinyHash(current.artifact_hash)}): `,
-      el("span", { class: "state", text })));
-    node.hidden = false;
+    await poll();
+  }));
+
+  async function setNative(change) {
+    const { ok, data } = await api("POST", "/api/native", change);
+    if (!ok) toast(`Changing the configuration was refused: ${(data && data.error) || "unknown error"}`, true);
+    await poll();
   }
 
-  function renderResourcesAcks(s) {
-    renderAckRows(ui.resourcesAcks, ackRows(s, RESOURCES_PRODUCT), "ADP has not polled the artifact channel stub yet.");
-    const current = s.channel.resources.current;
+  ui.nativeFailover.addEventListener("change", () => {
+    setNative({ failover_metrics: ui.nativeFailover.checked }).catch(() => toast("The demo server is not answering.",
+      true));
+  });
+
+  ui.filterlistButton.addEventListener("click", () => busy(ui.filterlistButton, null, async () => {
+    const names = ui.nativeFilterlist.value.split(",").map((name) => name.trim()).filter(Boolean);
+    await setNative({ metric_filterlist: names });
+  }));
+
+  // Beside the editor: destinations ADP declares that the published program does not address, as those added after it
+  // was written, which receive nothing from it until a program routes to them.
+  function renderEditorNote(s) {
     const latest = latestStatus(s);
-    const mark = latest && latest.status.resources ? latest.status.resources.revision_high_water : null;
-    ui.resourcesAckSummary.textContent = [
-      current ? `serving rev ${current.revision}` : "serving an empty snapshot",
-      `next rev ${s.channel.resources.next_revision}`,
-      mark === null || mark === undefined ? null : `ADP's mark ${mark}`,
-    ].filter(Boolean).join(" · ");
+    const published = Boolean(latest && latest.status.active_artifact);
+    const unaddressed = s.intakes.filter((i) => i.kind === "additional" && i.in_directory && i.addressed === false
+      && !i.removing_since_ms);
+    ui.editorNote.hidden = !(published && unaddressed.length);
+    if (ui.editorNote.hidden) return;
+    const labels = unaddressed.map((i) => i.label).join(", ");
+    ui.editorNote.replaceChildren(
+      el("strong", { text: `Not addressed by the published program: ${labels}. ` }),
+      "It receives nothing from it. Add a branch that emits to its URL, or load the default program again, whose main "
+        + "emit names every destination, and publish.",
+    );
   }
 
-  function renderResources() {
-    renderResourcesCheck();
-    renderResourcesPublish();
-    if (state) {
-      renderResourcesOutcome(state);
-      renderResourcesAcks(state);
-      renderOutputs(state);
+  // The native settings as the demo wrote them, and what the program that runs makes of them.
+  function renderNative(s) {
+    ui.nativeFailover.checked = s.native.failover_metrics;
+    if (document.activeElement !== ui.nativeFilterlist) ui.nativeFilterlist.value = s.native.metric_filterlist.join(", ");
+    const latest = latestStatus(s);
+    const program = latest && latest.status.program;
+    let note = "The default program applies native policy settings, such as the filterlist.";
+    if (program && program.runs === "published") {
+      note = "A published program runs: it owns its policy, so a native policy setting changes the default program "
+        + "only, which runs again when the program is revoked. Failover is a signal, which the program reads live.";
+      if (program.differs && program.differs.length) note += ` Differing now: ${program.differs.join(", ")}.`;
     }
+    ui.nativeNote.textContent = note;
   }
-
-  ui.resourcesSource.addEventListener("input", () => {
-    saveResourcesDraft();
-    renderResources();
-  });
-  ui.resourcesSource.addEventListener("keydown", (event) => {
-    if (event.key === "Tab" && !event.shiftKey && !event.altKey) {
-      event.preventDefault();
-      ui.resourcesSource.setRangeText("  ", ui.resourcesSource.selectionStart, ui.resourcesSource.selectionEnd, "end");
-      saveResourcesDraft();
-      renderResources();
-    }
-  });
-  ui.resourcesTemplate.addEventListener("click", () => busy(ui.resourcesTemplate, null,
-    () => loadResources("template", false)));
-  ui.resourcesServed.addEventListener("click", () => busy(ui.resourcesServed, null,
-    () => loadResources("served", false)));
-  ui.resourcesCheck.addEventListener("click", () => busy(ui.resourcesCheck, "Checking…", checkResources));
-
-  ui.resourcesPublish.addEventListener("click", () => {
-    if (!resourcesPublishable()) return;
-    const outcome = resourcesChecked.outcome;
-    ui.resourcesConfirmHash.textContent = outcome.artifact_hash;
-    ui.resourcesConfirmRevision.textContent = state ? String(state.channel.resources.next_revision) : "next";
-    const warnings = [];
-    if (!outcome.valid) {
-      warnings.push(`Validated as ADP validates it, it is refused: ADP will reject it and keep what it declared `
-        + `before. ${outcome.validation_error}`);
-    }
-    if (state && !state.channel.polls_total) {
-      warnings.push("ADP has never polled the artifact channel stub: the resources wait in the snapshot until it "
-        + "does.");
-    }
-    const warning = (text) => el("li", {}, el("div", { class: "clamp", text, title: text }));
-    ui.resourcesConfirmWarnings.replaceChildren(...warnings.map(warning));
-    ui.resourcesConfirmWarnings.hidden = warnings.length === 0;
-    ui.resourcesConfirm.hidden = false;
-    ui.resourcesConfirm.scrollIntoView({ block: "nearest" });
-  });
-
-  $("btn-resources-cancel").addEventListener("click", () => { ui.resourcesConfirm.hidden = true; });
-
-  const confirmResources = ui.resourcesConfirmButton;
-  confirmResources.addEventListener("click", () => busy(confirmResources, "Publishing…", async () => {
-    try {
-      if (!resourcesPublishable()) return;
-      const approved = resourcesChecked;
-      const hash = approved.outcome.artifact_hash;
-      const { ok, data } = await api("POST", "/api/resources/publish", { artifact_hash: hash });
-      if (ok) {
-        approved.published = { revision: data.revision, hash: data.artifact_hash };
-        toast(`Published resources revision ${data.revision} (${shortHash(data.artifact_hash)}).`);
-      } else {
-        toast(`Publish refused: ${(data && data.error) || "unknown error"}`, true);
-      }
-    } finally {
-      ui.resourcesConfirm.hidden = true;
-      poll();
-    }
-  }));
-
-  ui.resourcesRevoke.addEventListener("click", () => busy(ui.resourcesRevoke, "Revoking…", async () => {
-    const question = "Revoke the resources? The stub serves an empty resources snapshot: ADP withdraws everything they "
-      + "declared, and policies that emit to their outputs drop those emits until they return.";
-    if (!window.confirm(question)) return;
-    const { ok, data } = await api("POST", "/api/resources/revoke");
-    if (ok && data && data.revoked) toast("Revoked the resources: the resources snapshot is empty.");
-    else if (ok) toast((data && data.message) || "Nothing to revoke.");
-    else toast(`Revoke failed: ${(data && data.error) || "unknown error"}`, true);
-    poll();
-  }));
 
   function renderFoot(s) {
     const parts = [
@@ -1853,9 +1699,10 @@
     renderRecipients(s);
     renderNodes(s);
     renderFoot(s);
+    renderNative(s);
+    renderEditorNote(s);
     renderPreview();
     renderPublish();
-    renderResources();
     followExport(s);
   }
 
@@ -1884,10 +1731,6 @@
 
   renderEditor();
   loadDefault(true);
-  // The resources editor starts from the draft kept in the browser, or from the team D template.
-  const resourcesDraft = loadResourcesDraft();
-  if (resourcesDraft && resourcesDraft.trim()) ui.resourcesSource.value = resourcesDraft;
-  else loadResources("template", true).catch(() => { /* the poll reports a demo server that does not answer */ });
   poll();
   setInterval(poll, POLL_MS);
 })();

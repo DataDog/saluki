@@ -411,6 +411,10 @@ impl StubChannel {
     }
 
     /// Returns the resources document the stub serves, with its config, if it serves one.
+    ///
+    /// The demo publishes no resources artifacts; the stub still serves the resources product, which ADP polls, and its
+    /// tests publish one through this and the next two methods.
+    #[cfg(test)]
     pub fn resources(&self) -> Option<(ResourcesConfig, Value)> {
         let store = self.lock_store();
         let config = store.resources()?;
@@ -427,6 +431,7 @@ impl StubChannel {
     /// # Errors
     ///
     /// Returns an error if the document cannot be hashed or the store cannot be written.
+    #[cfg(test)]
     pub fn publish_resources(
         &self, document: Value, reported_high_water: Option<u64>, now_ms: u64,
     ) -> Result<ResourcesConfig, GenericError> {
@@ -442,6 +447,7 @@ impl StubChannel {
     /// # Errors
     ///
     /// Returns an error if the store cannot be written.
+    #[cfg(test)]
     pub fn revoke_resources(&self, now_ms: u64) -> Result<bool, GenericError> {
         self.lock_store().revoke_resources(now_ms)
     }

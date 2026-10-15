@@ -11,24 +11,22 @@
 //! The editor shows programs printed with [`DISPLAY`]: narrow enough for the editor at 1280 pixels, and without the
 //! `base` statement, whose program hash and output fingerprints are digests a reader does not edit. A source without
 //! a base gets the export's program hash when it is compiled, and the fingerprints of the outputs it emits to, as the
-//! syntax crate's documentation asks of tools that elide them; an output a resources artifact declares that the export
-//! does not list yet gets its fingerprint from the Resources tab's draft instead, so that a policy can wait for it
-//! (see [`compile_with_resources`]).
+//! syntax crate's documentation asks of tools that elide them.
 //!
 //! The default program is the whole metrics path, so the editor prints it with ADP's notes as comments ([`annotate`]):
 //! the note of each node, from lowering, which says what the node stands for, a line where the sources' inputs begin,
-//! and the recipient directory above the policy. Comments are not part of the artifact. The printed form writes edges
-//! in the syntax's canonical order, the edges from the scope's inputs first, in input-name order, while the export
-//! lists them in the default program's order: the compiled document then differs from the export in the order of its
-//! edges, and its artifact hash with it, but composition puts edges in the default program's order, so an unmodified
-//! program composes to the default program, with its hash.
+//! which ADP does not know. Comments are not part of the artifact, so they change neither it nor its hash. The printed
+//! form writes edges in the syntax's canonical order, the edges from the scope's inputs first, in input-name order,
+//! while the export lists them in the default program's order: the compiled document then differs from the export in
+//! the order of its edges, and its artifact hash with it, but composition puts edges in the default program's order, so
+//! an unmodified program composes to the default program, with its hash.
 
 use saluki_metric_plan::{
     canonical::PlanHash,
     compose::receive_artifact,
     ir::{ArtifactBase, OutputId, PolicyArtifact, ReceivedArtifact},
     operators::names,
-    validate::{Catalog as _, RecipientSource},
+    validate::{Catalog as _, CatalogRecipient, RecipientSource},
 };
 use saluki_metric_plan_syntax::{parse_with, print, ParseOptions, PrintOptions, Span};
 use serde::Serialize;
@@ -38,7 +36,6 @@ use crate::{
     checks::{check_against_export, Severity},
     export::ExportBundle,
     preview::{compose_preview, CompileContext, Preview},
-    resources::DraftFingerprints,
 };
 
 /// How the editor prints programs: lines of up to about 64 characters where the syntax can break them, which the
@@ -168,14 +165,6 @@ pub struct CompileOutcome {
     /// The outputs whose fingerprints the source did not list and the export supplied.
     pub restored_fingerprints: Vec<String>,
 
-    /// The outputs whose fingerprints the source did not list, the export does not declare, and the resources draft
-    /// supplied: ADP holds the artifact `pending` until a resources artifact declares them.
-    pub draft_fingerprints: Vec<String>,
-
-    /// Why the resources draft supplied no fingerprints, when the source emits to an output only it could declare and
-    /// the draft cannot be read or does not validate.
-    pub draft_note: Option<String>,
-
     /// What the source was checked against.
     pub checked_against: CheckContext,
 
@@ -233,17 +222,23 @@ impl<'a> LineIndex<'a> {
     }
 }
 
-/// The outputs whose fingerprints [`restore_fingerprints`] gave an artifact, by where each came from.
-#[derive(Debug, Default)]
-struct Restored {
-    /// From the export: its base, or its catalog.
-    export: Vec<String>,
+/// The labels the demo gives endpoints, by URL, which the editor writes beside the recipients named by their URLs.
+#[derive(Clone, Debug, Default)]
+pub struct RecipientLabels(Vec<(String, String)>);
 
-    /// From the resources draft, for outputs the export does not declare.
-    draft: Vec<String>,
+impl RecipientLabels {
+    /// Returns the labels of `(URL, label)` pairs.
+    pub fn new(labels: Vec<(String, String)>) -> Self {
+        Self(labels)
+    }
 
-    /// Declared outputs (`resources_<name>`) the artifact emits to that neither gave.
-    missing_declared: Vec<String>,
+    /// Returns the label of the endpoint at `url`, if the demo records one.
+    pub fn of(&self, url: &str) -> Option<&str> {
+        self.0
+            .iter()
+            .find(|(endpoint, _)| endpoint == url)
+            .map(|(_, label)| label.as_str())
+    }
 }
 
 /// The comment that marks the scope's inputs, where each source's metrics enter the program.
@@ -254,12 +249,14 @@ const POLICY_NODE: &str = "metrics_policy";
 
 /// Returns a printed program with ADP's notes as comment lines: a line before the first edge from a scope input, each
 /// node's note from the export ([`ExportBundle::annotations`]) above its definition, and the recipient directory above
-/// the policy `tee`, each recipient with its endpoint, said to be not addressed when no `emit` of `artifact` reaches
-/// it.
+/// the policy `tee`, each recipient with its endpoint and the label `labels` gives it, said to be not addressed when no
+/// `emit` of `artifact` reaches it.
 ///
 /// A program whose nodes ADP did not write, such as one that renames them, gets fewer comments; without an export, only
 /// the inputs line. The comments change nothing in the artifact.
-pub fn annotate(printed: &str, artifact: &PolicyArtifact, export: Option<&ExportBundle>) -> String {
+pub fn annotate(
+    printed: &str, artifact: &PolicyArtifact, export: Option<&ExportBundle>, labels: &RecipientLabels,
+) -> String {
     let mut marks = Vec::new();
     if let Some(at) = printed.find("\n  input.") {
         marks.push((at + 1, 0, vec![INPUTS_SECTION.to_string()]));
@@ -272,7 +269,7 @@ pub fn annotate(printed: &str, artifact: &PolicyArtifact, export: Option<&Export
             }
         }
         if let Some(at) = definition(POLICY_NODE) {
-            let lines = recipient_lines(artifact, export);
+            let lines = recipient_lines(artifact, export, labels);
             if !lines.is_empty() {
                 marks.push((at, 0, lines));
             }
@@ -294,51 +291,98 @@ pub fn annotate(printed: &str, artifact: &PolicyArtifact, export: Option<&Export
     annotated
 }
 
-/// Returns the comment lines that list the export's recipient directory: a heading, then each recipient's name and
-/// endpoint, marked when no `emit` of `artifact` reaches it, or when a resources artifact declares it.
-fn recipient_lines(artifact: &PolicyArtifact, export: &ExportBundle) -> Vec<String> {
-    let reached = artifact
+/// Returns the comment lines that list the export's recipient directory: a heading, then one row per recipient, in
+/// aligned columns: its name as a program writes it (quoted when it is an endpoint's URL), the demo's label of its
+/// endpoint, its endpoint when the name is not the endpoint, and notes: whether no `emit` of `artifact` reaches it (by
+/// its name, or through an output that delivers to it), and whether a resources artifact declares it. The primary and
+/// failover recipients come first, then the others by label.
+fn recipient_lines(artifact: &PolicyArtifact, export: &ExportBundle, labels: &RecipientLabels) -> Vec<String> {
+    let emits = artifact
         .nodes
         .iter()
         .filter(|node| node.op.as_str() == names::EMIT)
+        .collect::<Vec<_>>();
+    let named = emits
+        .iter()
+        .filter_map(|node| node.params.get("to")?.as_array())
+        .flatten()
+        .filter_map(|name| name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let through_outputs = emits
+        .iter()
         .filter_map(|node| node.params.get("output")?.as_str()?.parse::<OutputId>().ok())
         .filter_map(|output| export.catalog.output(&output))
         .flat_map(|output| output.recipients.iter())
         .collect::<std::collections::BTreeSet<_>>();
-    let entries = export.catalog.recipients().collect::<Vec<_>>();
-    if entries.is_empty() {
+    let reached = |name: &str, entry: &CatalogRecipient| {
+        named.contains(name)
+            || entry
+                .recipients
+                .iter()
+                .any(|recipient| through_outputs.contains(recipient))
+    };
+    let mut rows = export
+        .catalog
+        .recipients()
+        .map(|(name, entry)| {
+            let written = if saluki_metric_plan::ir::is_identifier(name.as_str()) {
+                name.to_string()
+            } else {
+                serde_json::to_string(name.as_str()).unwrap_or_else(|_| format!("\"{}\"", name))
+            };
+            let label = labels.of(&entry.endpoint).unwrap_or("").to_string();
+            let endpoint = if name.as_str() == entry.endpoint {
+                String::new()
+            } else {
+                entry.endpoint.clone()
+            };
+            let mut notes = Vec::new();
+            if entry.source == RecipientSource::Resources {
+                notes.push("resources");
+            }
+            if !reached(name.as_str(), entry) {
+                notes.push("not addressed");
+            }
+            let rank = match name.as_str() {
+                "primary" => 0,
+                "mrf" => 1,
+                "cluster_agent" => 2,
+                _ => 3,
+            };
+            (rank, label, written, endpoint, notes)
+        })
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
         return Vec::new();
     }
+    rows.sort_by(|a, b| (a.0, &a.1, &a.2).cmp(&(b.0, &b.1, &b.2)));
+    let name_width = rows.iter().map(|row| row.2.chars().count()).max().unwrap_or(0);
+    let label_width = rows.iter().map(|row| row.1.chars().count()).max().unwrap_or(0);
     let mut lines = vec!["# Recipients:".to_string()];
-    for (name, entry) in entries {
-        let mut notes = Vec::new();
-        if entry.source == RecipientSource::Resources {
-            notes.push("resources");
+    for (_, label, written, endpoint, notes) in rows {
+        let mut line = format!("#   {:<name_width$}", written);
+        if label_width > 0 {
+            line.push_str(&format!("  {:<label_width$}", label));
         }
-        if !entry.recipients.iter().any(|recipient| reached.contains(recipient)) {
-            notes.push("not addressed");
+        if !endpoint.is_empty() {
+            line.push_str(&format!("  {}", endpoint));
         }
-        let mut line = if name.as_str() == entry.endpoint {
-            format!("#   {}", name)
-        } else {
-            format!("#   {}  {}", name, entry.endpoint)
-        };
         if !notes.is_empty() {
             line.push_str(&format!("  ({})", notes.join("; ")));
         }
-        lines.push(line);
+        lines.push(line.trim_end().to_string());
     }
     lines
 }
 
-/// Gives an artifact that lists no output fingerprints the fingerprint of every output it emits to, and returns those
-/// outputs, each once, in the order the artifact first emits to them.
+/// Gives an artifact that lists no output fingerprints the fingerprint of every output it emits to by ID, and returns
+/// those outputs, each once, in the order the artifact first emits to them.
 ///
 /// The base of the export lists each output's fingerprint as of the default program; an output it does not list takes
-/// the catalog's; a declared output (`resources_<name>`) the catalog does not declare yet takes the resources draft's.
-/// An output none knows stays out, and the checks report the emit.
-fn restore_fingerprints(artifact: &mut PolicyArtifact, export: &ExportBundle, draft: &DraftFingerprints) -> Restored {
-    let mut restored = Restored::default();
+/// the catalog's. An output neither knows stays out, and composition reports the emit. An `emit` addressed to
+/// recipients records no fingerprint: the names are the reference.
+fn restore_fingerprints(artifact: &mut PolicyArtifact, export: &ExportBundle) -> Vec<String> {
+    let mut restored = Vec::new();
     if !artifact.base.outputs.is_empty() {
         return restored;
     }
@@ -362,41 +406,24 @@ fn restore_fingerprints(artifact: &mut PolicyArtifact, export: &ExportBundle, dr
             .get(&output)
             .or_else(|| export.catalog.output(&output).map(|declared| &declared.fingerprint));
         if let Some(fingerprint) = exported {
-            restored.export.push(output.to_string());
+            restored.push(output.to_string());
             artifact.base.outputs.insert(output, *fingerprint);
-        } else if let Some(fingerprint) = draft.fingerprints.get(&output) {
-            restored.draft.push(output.to_string());
-            artifact.base.outputs.insert(output, *fingerprint);
-        } else if output.is_declared() {
-            restored.missing_declared.push(output.to_string());
         }
     }
     restored
 }
 
-/// Compiles a source without a resources draft, as [`compile_with_resources`] does with an empty one: the demo server
-/// always sends the Resources tab's draft, so only tests compile without one.
-#[cfg(test)]
-pub fn compile(source: &str, context: Option<&CompileContext<'_>>) -> (CompileOutcome, Option<CompiledArtifact>) {
-    compile_with_resources(source, context, &DraftFingerprints::default())
-}
-
 /// Compiles a source, checking it against what ADP serves when `context` gives it.
 ///
 /// A source that lists no output fingerprints, as the editor prints programs, gets the export's fingerprint of each
-/// output it emits to (see [`CompileOutcome::restored_fingerprints`]); without an export, it keeps none. A declared
-/// output the export does not declare takes its fingerprint from the resources draft's fingerprints (`draft`), so that
-/// an artifact can be published before the resources it emits to: ADP holds it `pending` until a resources artifact
-/// declares them (see [`CompileOutcome::draft_fingerprints`]). With the default program too, the artifact is composed
-/// into it, the composed plan validated, and the plan diff computed, as ADP will (see [`compose_preview`]); with the
-/// export alone, the structural checks run.
+/// output it emits to by ID (see [`CompileOutcome::restored_fingerprints`]); without an export, it keeps none. With
+/// the default program too, the artifact is composed into it, the composed plan validated, and the plan diff computed,
+/// as ADP will (see [`compose_preview`]); with the export alone, the structural checks run.
 ///
 /// Returns the outcome for the editor and, if the source produced an artifact, the artifact for publishing. Findings
 /// do not prevent publishing, not even those ADP is certain to reject: ADP is the authority, and publishing an artifact
 /// the editor flags is how the demo shows ADP's own rejection.
-pub fn compile_with_resources(
-    source: &str, context: Option<&CompileContext<'_>>, draft: &DraftFingerprints,
-) -> (CompileOutcome, Option<CompiledArtifact>) {
+pub fn compile(source: &str, context: Option<&CompileContext<'_>>) -> (CompileOutcome, Option<CompiledArtifact>) {
     let index = LineIndex::new(source);
     let export = context.map(|context| context.export);
     let default_program = context.and_then(|context| context.default_program);
@@ -441,8 +468,6 @@ pub fn compile_with_resources(
         artifact_hash: None,
         canonical_source: None,
         restored_fingerprints: Vec::new(),
-        draft_fingerprints: Vec::new(),
-        draft_note: None,
         checked_against,
         preview,
     };
@@ -474,27 +499,7 @@ pub fn compile_with_resources(
         }
     };
     if let Some(export) = export {
-        let restored = restore_fingerprints(&mut parsed.artifact, export, draft);
-        if !restored.missing_declared.is_empty() {
-            let outputs = restored
-                .missing_declared
-                .iter()
-                .map(|output| format!("`{}`", output))
-                .collect::<Vec<_>>()
-                .join(", ");
-            outcome.draft_note = Some(match &draft.error {
-                Some(error) => format!(
-                    "ADP does not declare {} yet, and the resources draft gives no fingerprint for it: {}",
-                    outputs, error
-                ),
-                None => format!(
-                    "ADP does not declare {} yet, and the resources draft does not declare it either.",
-                    outputs
-                ),
-            });
-        }
-        outcome.restored_fingerprints = restored.export;
-        outcome.draft_fingerprints = restored.draft;
+        outcome.restored_fingerprints = restore_fingerprints(&mut parsed.artifact, export);
     }
 
     let document = match serde_json::to_value(&parsed.artifact) {
@@ -584,7 +589,7 @@ pub fn compile_with_resources(
     outcome.artifact_hash = Some(hash.to_string());
     // Printed as it was written: without its base if the export gave it (it comes back on compiling), and with the base
     // the source states otherwise, its fingerprints too if it lists them.
-    let supplied = !outcome.restored_fingerprints.is_empty() || !outcome.draft_fingerprints.is_empty();
+    let supplied = !outcome.restored_fingerprints.is_empty();
     let options = if parsed.base_given {
         DISPLAY
     } else if !supplied && !parsed.artifact.base.outputs.is_empty() {
@@ -592,16 +597,22 @@ pub fn compile_with_resources(
     } else {
         DISPLAY_WITH_BASE
     };
-    outcome.canonical_source = Some(annotate(&print(&parsed.artifact, &options), &parsed.artifact, export));
+    let labels = context.map(|context| context.labels).cloned().unwrap_or_default();
+    outcome.canonical_source = Some(annotate(
+        &print(&parsed.artifact, &options),
+        &parsed.artifact,
+        export,
+        &labels,
+    ));
     outcome.artifact = Some(document.clone());
     (outcome, Some(CompiledArtifact { document, hash }))
 }
 
 /// Prints an export bundle's artifact as source, for the editor's starting point, as [`DISPLAY`] prints, with ADP's
-/// notes as comments ([`annotate`]).
-pub fn default_program_source(export: &ExportBundle) -> String {
+/// notes as comments and the demo's labels of the recipients ([`annotate`]).
+pub fn default_program_source(export: &ExportBundle, labels: &RecipientLabels) -> String {
     let artifact = &export.artifact.artifact;
-    annotate(&print(artifact, &DISPLAY), artifact, Some(export))
+    annotate(&print(artifact, &DISPLAY), artifact, Some(export), labels)
 }
 
 #[cfg(test)]

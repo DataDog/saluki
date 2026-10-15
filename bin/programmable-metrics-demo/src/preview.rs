@@ -14,21 +14,23 @@
 
 use saluki_metric_plan::{
     canonical::{PlanHash, ResolvedValues},
-    compose::{compose_all, receive_artifact, Approval, ComposeError},
+    compose::{compose_all, demanded_outputs, receive_artifact, Approval, ComposeError, ComposeOutcome},
     install::{
         diff::{NodeChange, OutputChange},
         diff_with_correspondence, Correspondence,
     },
-    ir::{OutputId, Plan, PortRef, ReceivedArtifact},
+    ir::{
+        ArtifactNodeId, OutputBinding, OutputDecl, OutputId, Plan, PortRef, ReceivedArtifact, RecipientName, Selector,
+    },
     operators::{names, ConfigureError, OperatorRegistry},
-    validate::{Finding, Location, Rule, Severity as ValidationSeverity},
+    validate::{Catalog as _, CatalogOutput, Finding, Location, Rule, Severity as ValidationSeverity},
 };
 use saluki_metric_plan_syntax::{Parsed, Span};
 use serde::Serialize;
 
 use crate::{
     checks::Severity,
-    compile::{LineIndex, Origin, Range},
+    compile::{LineIndex, Origin, Range, RecipientLabels},
     export::ExportBundle,
     stub::protocol::{ChannelStatus, Envelope},
 };
@@ -103,6 +105,13 @@ pub struct CompileContext<'a> {
 
     /// The revision a publish would give the artifact, which composition records in the plan's provenance.
     pub revision: u64,
+
+    /// The labels the demo gives endpoints, which the editor's comments write beside recipients named by URL.
+    pub labels: &'a RecipientLabels,
+
+    /// The hash of the artifact ADP runs, if one runs: compiling that artifact again composes it as ADP does, as the
+    /// artifact in effect, which delivers to the recipients that remain when some are gone.
+    pub in_effect: Option<PlanHash>,
 }
 
 /// What the plan diff compares against.
@@ -176,6 +185,9 @@ pub struct OutputChangeView {
 
     /// `rebound`, `added`, or `removed`.
     pub change: &'static str,
+
+    /// A note, for an output the editor stood in for: ADP adds it when the program arrives (an implied output).
+    pub note: Option<String>,
 }
 
 /// The plan diff preview of an artifact.
@@ -198,6 +210,13 @@ pub struct Preview {
 
     /// Whether the composed plan is the plan diffed against: installing it changes nothing.
     pub unchanged: bool,
+
+    /// Notes about the composed plan that are no findings, such as a native output the program leaves unused.
+    pub notes: Vec<String>,
+
+    /// Whether the preview stands in for outputs ADP adds when the program arrives (implied outputs): its findings and
+    /// diff are ADP's but for those outputs' settings, and its plan hash is not the one ADP installs.
+    pub provisional: bool,
 
     /// Whether the artifact's base is not the current default program.
     pub stale_base: bool,
@@ -261,9 +280,47 @@ pub fn compose_preview(
         // Approval binds to the active plan at compile time, as publishing records it.
         approved_against: context.active.map(|active| active.hash),
         active_plan_hash: context.active.map(|active| active.hash),
-        // The previewed artifact is new: an output it records that changed refuses it.
-        in_effect: false,
+        // A new artifact: an output it records that changed refuses it, and it waits for recipients it names that are
+        // gone. The artifact ADP runs is composed as ADP composes it again, in effect.
+        in_effect: context.in_effect == Some(received.hash),
     };
+    // Outputs ADP adds for the recipient sets the program emits to that no output delivers to exactly: the editor
+    // composes and validates against stand-ins for them, so that it finds what ADP will before publishing.
+    let standing_in = stand_ins(received, export, default_program);
+    let catalog = standing_in.iter().fold(export.catalog.clone(), |catalog, stand_in| {
+        catalog.with_output(stand_in.decl.id.clone(), stand_in.catalog_output())
+    });
+    let mut with_stand_ins;
+    // The default program as ADP serves it, which a diff without an active plan compares with.
+    let served_default_program = default_program;
+    let default_program = if standing_in.is_empty() {
+        default_program
+    } else {
+        with_stand_ins = default_program.clone();
+        with_stand_ins
+            .outputs
+            .extend(standing_in.iter().map(|stand_in| stand_in.decl.clone()));
+        &with_stand_ins
+    };
+    let mut adds = standing_in
+        .iter()
+        .map(|stand_in| PlacedFinding {
+            severity: Severity::Warning,
+            origin: Origin::Composition,
+            rule: None,
+            message: format!(
+                "{} {}: none delivers to exactly these recipients yet. It is checked here against a stand-in, `{}`; \
+                 the program waits for ADP's output a moment before it installs.",
+                IMPLIED_OUTPUT_NOTE,
+                describe_recipients(&stand_in.names, export, context.labels),
+                stand_in.decl.id
+            ),
+            span: parsed
+                .spans
+                .param(stand_in.emit.as_str(), "to")
+                .or_else(|| parsed.spans.node(stand_in.emit.as_str())),
+        })
+        .collect::<Vec<_>>();
     let scope = &received.artifact.scope;
     let others = context
         .others
@@ -282,21 +339,37 @@ pub fn compose_preview(
         .collect::<Vec<_>>();
     let mut artifacts = vec![(received, &approval)];
     artifacts.extend(others.iter().map(|(artifact, approval)| (*artifact, approval)));
-    let composed = match compose_all(default_program, &artifacts, &export.catalog, &registry) {
+    let composed = match compose_all(default_program, &artifacts, &catalog, &registry) {
         Ok(composed) => composed,
         Err(error) => {
+            // A program that waits is not refused: ADP holds it pending, and installs it once what it waits for exists.
+            let (severity, reason) = match &error {
+                ComposeError::PendingRecipients { .. } => (
+                    Severity::Warning,
+                    "No plan diff yet: the program emits to recipients no output delivers to exactly. When ADP \
+                     receives it, ADP adds an output for them (an implied output), and the program waits for it, \
+                     pending, for a moment before it installs. Compile again once ADP runs it to see the diff.",
+                ),
+                ComposeError::UnknownRecipient { .. } => (
+                    Severity::Warning,
+                    "No plan diff: the program emits to a recipient ADP's directory does not name. ADP holds it \
+                     pending until its configuration declares the recipient, and keeps running the active plan.",
+                ),
+                _ => (
+                    Severity::Error,
+                    "The artifact cannot be composed into ADP's default program, so ADP rejects it and keeps running \
+                     the active plan.",
+                ),
+            };
             let finding = PlacedFinding {
-                severity: Severity::Error,
+                severity,
                 origin: Origin::Composition,
                 rule: None,
-                message: error.to_string(),
+                message: waiting_message(&error, export, context.labels).unwrap_or_else(|| error.to_string()),
                 span: compose_error_span(&error, parsed, source),
             };
-            let preview = Preview::unavailable(
-                "The artifact cannot be composed into ADP's default program, so ADP rejects it and keeps running the \
-                 active plan.",
-            );
-            return (vec![finding], preview);
+            adds.push(finding);
+            return (adds, Preview::unavailable(reason));
         }
     };
 
@@ -305,7 +378,19 @@ pub fn compose_preview(
         Some(own) => (&own.correspondence, own.stale_base),
         None => (&composed.correspondence, composed.stale_base),
     };
-    let mut findings = Vec::new();
+    let mut findings = adds;
+    // The artifact ADP runs, composed again in effect, may run degraded: its emits to recipients that are gone dropped.
+    if let ComposeOutcome::Degraded(dropped) = &own_outcome(&composed, scope) {
+        for dropped in dropped {
+            findings.push(PlacedFinding {
+                severity: Severity::Warning,
+                origin: Origin::Composition,
+                rule: None,
+                message: format!("ADP runs this program degraded: {}.", dropped),
+                span: None,
+            });
+        }
+    }
     if stale_base {
         findings.push(PlacedFinding {
             severity: Severity::Warning,
@@ -321,7 +406,43 @@ pub fn compose_preview(
             span: find(source, &parsed.artifact.base.program_hash.to_string()),
         });
     }
+    // The recipients the composed plan delivers to, through any output an `emit` names.
+    let delivered = composed
+        .plan
+        .nodes
+        .iter()
+        .filter(|node| node.op.as_str() == names::EMIT)
+        .filter_map(|node| node.params.get("output")?.as_str())
+        .filter_map(|output| {
+            composed
+                .plan
+                .outputs
+                .iter()
+                .find(|declared| declared.id.as_str() == output)
+        })
+        .flat_map(|output| output.recipients.iter().cloned())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut notes = Vec::new();
     for finding in composed.report.findings() {
+        // A native output the program leaves unused while it delivers to the output's recipients through others, as
+        // it does through implied outputs, is no finding: a note says so.
+        if let (Rule::UnusedOutput, Location::Output(output)) = (finding.rule, &finding.location) {
+            let replaced = composed
+                .plan
+                .outputs
+                .iter()
+                .find(|declared| &declared.id == output)
+                .is_some_and(|declared| {
+                    !declared.recipients.is_empty() && declared.recipients.iter().all(|id| delivered.contains(id))
+                });
+            if replaced {
+                notes.push(format!(
+                    "The native output `{}` is unused: the program delivers to its recipients through other outputs.",
+                    output
+                ));
+                continue;
+            }
+        }
         let span = finding_span(finding, &composed.plan, correspondence, parsed, &registry);
         let message = if span.is_some() {
             finding.message.clone()
@@ -351,10 +472,10 @@ pub fn compose_preview(
             },
         ),
         None => (
-            default_program,
+            served_default_program,
             PreviewBase {
                 kind: BaseKind::DefaultProgram,
-                plan_hash: default_program
+                plan_hash: served_default_program
                     .hash(ResolvedValues::Include)
                     .map(|hash| hash.to_string())
                     .unwrap_or_default(),
@@ -414,19 +535,30 @@ pub fn compose_preview(
             format!(" with the artifacts ADP runs for {}", scopes.join(", "))
         }
     };
+    let provisional = if standing_in.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " With stand-ins for the {} ADP adds when the program arrives, which ADP builds with its own settings: the \
+             plan hash ADP installs differs, and compiling again once it runs shows the plan exactly.",
+            if standing_in.len() == 1 { "output" } else { "outputs" }
+        )
+    };
     let preview = Preview {
         available: true,
+        notes,
+        provisional: !standing_in.is_empty(),
         reason: match against.kind {
             BaseKind::Active => format!(
                 "Composed into ADP's default program{} and validated as ADP does when the artifact arrives; the diff \
-                 compares the composed plan with the active plan. The plan is not placed into ADP's regions here.",
-                with_others
+                 compares the composed plan with the active plan. The plan is not placed into ADP's regions here.{}",
+                with_others, provisional
             ),
             BaseKind::DefaultProgram => format!(
                 "Composed into ADP's default program{} and validated as ADP does when the artifact arrives; ADP's \
                  active plan was not available, so the diff compares the composed plan with the default program. The \
-                 plan is not placed into ADP's regions here.",
-                with_others
+                 plan is not placed into ADP's regions here.{}",
+                with_others, provisional
             ),
         },
         plan_hash: composed
@@ -451,15 +583,172 @@ pub fn compose_preview(
                     OutputChange::Added => "added",
                     OutputChange::Removed => "removed",
                 };
+                let note = standing_in
+                    .iter()
+                    .find(|stand_in| stand_in.decl.id == output.id)
+                    .map(|stand_in| {
+                        format!(
+                            "ADP will add it: an output for {}",
+                            describe_recipients(&stand_in.names, export, context.labels)
+                        )
+                    });
                 Some(OutputChangeView {
                     output: output.id.to_string(),
                     change,
+                    note,
                 })
             })
             .collect(),
         against: Some(against),
     };
     (findings, preview)
+}
+
+/// How the editor starts the note that ADP adds an output for a set of recipients.
+pub const IMPLIED_OUTPUT_NOTE: &str = "ADP will add an output for";
+
+/// An output the editor stands in for: ADP adds one when the program arrives, for a set of recipients its `emit`s
+/// name that no output delivers to exactly.
+struct StandIn {
+    /// The output, as the default program would declare it.
+    decl: OutputDecl,
+
+    /// The first artifact node that emits to the set.
+    emit: ArtifactNodeId,
+
+    /// The names the program writes for the set's recipients, in the directory's order.
+    names: Vec<RecipientName>,
+}
+
+impl StandIn {
+    fn catalog_output(&self) -> CatalogOutput {
+        CatalogOutput {
+            accepts: self.decl.accepts,
+            fingerprint: self.decl.fingerprint,
+            recipients: self.decl.recipients.clone(),
+        }
+    }
+}
+
+/// Returns the outputs ADP adds for `received`'s demand ([`demanded_outputs`]) that the export does not declare yet,
+/// as stand-ins: each a copy of the default program's output on the set's delivery host with the set's recipients.
+///
+/// ADP adds implied outputs on the primary endpoint's delivery host only, so a set elsewhere gets no stand-in, and
+/// composition says what it waits for.
+fn stand_ins(received: &ReceivedArtifact, export: &ExportBundle, default_program: &Plan) -> Vec<StandIn> {
+    let Ok(demand) = demanded_outputs(&received.artifact, &export.catalog) else {
+        return Vec::new();
+    };
+    let primary_host = export
+        .catalog
+        .recipient(&"primary".parse().expect("`primary` is a recipient name"))
+        .map(|entry| entry.host.clone());
+    demand
+        .into_iter()
+        .filter(|demand| Some(&demand.host) == primary_host.as_ref())
+        .filter(|demand| export.catalog.output_for(&demand.recipients).is_none())
+        .enumerate()
+        .filter_map(|(index, demand)| {
+            // An output on the set's host, or, in a plan that binds none, one that shares a recipient with the set.
+            let template = default_program
+                .outputs
+                .iter()
+                .find(|output| {
+                    output
+                        .binding
+                        .as_ref()
+                        .is_some_and(|binding| binding.host == demand.host)
+                })
+                .or_else(|| {
+                    default_program
+                        .outputs
+                        .iter()
+                        .find(|output| output.recipients.iter().any(|id| demand.recipients.contains(id)))
+                })?;
+            let id = format!("adp_will_add_{}", index + 1).parse::<OutputId>().ok()?;
+            // As ADP binds an implied output: its selector its recipients, its fingerprint version 2 over them.
+            let binding = template.binding.clone().map(|binding| OutputBinding {
+                selector: Selector::Recipients(demand.recipients.clone()),
+                ..binding
+            });
+            let fingerprint = match &binding {
+                Some(binding) => {
+                    saluki_metric_plan::resources::fingerprint(&binding.host, template.accepts, &binding.selector)
+                }
+                None => PlanHash::of_value(&serde_json::json!({
+                    "stand_in": id.as_str(),
+                    "recipients": demand.recipients
+                }))
+                .ok()?,
+            };
+            let names = export
+                .catalog
+                .recipients()
+                .filter(|(_, entry)| entry.recipients.iter().any(|id| demand.recipients.contains(id)))
+                .map(|(name, _)| name.clone())
+                .collect();
+            Some(StandIn {
+                decl: OutputDecl {
+                    id,
+                    fingerprint,
+                    recipients: demand.recipients.clone(),
+                    binding,
+                    ..template.clone()
+                },
+                emit: demand.emit,
+                names,
+            })
+        })
+        .collect()
+}
+
+/// Writes recipient names for a reader: the demo's label of each one's endpoint, through the export's directory, if it
+/// has one, else the name as a program writes it, as `Primary and Team C`.
+pub fn describe_recipients(names: &[RecipientName], export: &ExportBundle, labels: &RecipientLabels) -> String {
+    let named = names
+        .iter()
+        .map(|name| {
+            export
+                .catalog
+                .recipient(name)
+                .and_then(|entry| labels.of(&entry.endpoint))
+                .unwrap_or(name.as_str())
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    match named.as_slice() {
+        [] => "no recipient".to_string(),
+        [one] => one.clone(),
+        [init @ .., last] => format!("{} and {}", init.join(", "), last),
+    }
+}
+
+/// Returns what the editor says of a program that waits, for a viewer: the recipients by their labels, without the
+/// node IDs composition names.
+fn waiting_message(error: &ComposeError, export: &ExportBundle, labels: &RecipientLabels) -> Option<String> {
+    match error {
+        ComposeError::PendingRecipients { recipients, .. } => Some(format!(
+            "ADP will add an output for {}: none delivers to exactly these recipients yet, and the program waits for \
+             it before it installs.",
+            describe_recipients(recipients, export, labels)
+        )),
+        ComposeError::UnknownRecipient { recipient, .. } => Some(format!(
+            "ADP does not know the recipient `{}`: it holds the program pending until its configuration declares it.",
+            recipient
+        )),
+        _ => None,
+    }
+}
+
+/// Returns how the artifact of `scope` composed: as written, or degraded.
+fn own_outcome(
+    composed: &saluki_metric_plan::compose::Composed, scope: &saluki_metric_plan::ir::ScopeName,
+) -> ComposeOutcome {
+    composed
+        .scopes
+        .get(scope)
+        .map(|own| own.outcome.clone())
+        .unwrap_or(ComposeOutcome::Composed)
 }
 
 /// Returns the span of the first occurrence of `text` in `source`, if any.

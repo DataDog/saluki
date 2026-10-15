@@ -2,47 +2,48 @@
 //! types them.
 //!
 //! The default program is the whole metrics path, its one scope fed by every source; the policy region starts at its
-//! `tee`, [`POLICY_NODE`], which enrichment feeds. Each edit finds the lines it changes by what they say (the edge into
-//! the policy `tee`, an inline `emit` of an output, a `tee` branch, a node's definition), never by line number, and
-//! fails with a message naming what it looked for when the default program is printed otherwise, so that a change of
-//! the printed form shows up as a clear check failure.
+//! `tee`, [`POLICY_NODE`], which enrichment feeds, and whose first branch emits to the main output's recipients: `->
+//! emit to [primary, "http://127.0.0.1:17102", "http://127.0.0.1:17103"]`, the primary endpoint and every they say (the
+//! edge into the policy `tee`, the main `emit`, the failover gateway's `emit`, a node's definition), never by line
+//! number, and fails with a message naming what it looked for when the default program is printed otherwise, so that a
+//! change of the printed form shows up as a clear check failure.
 
 use saluki_error::{generic_error, GenericError};
 
-/// The family the mirroring scenario allowlists, which the failover endpoint then receives.
+/// The family the failover scenario mirrors, which the failover endpoint then receives while failover is on.
 pub const MIRRORED_METRIC: &str = "demo.checkout.requests";
 
-/// The output the undeclared-output guardrail emits to, which ADP does not declare.
-pub const UNDECLARED_OUTPUT: &str = "metrics_routing_encode_99";
+/// The recipient the unknown-recipient guardrail emits to, which ADP's directory does not name.
+pub const UNKNOWN_RECIPIENT: &str = "team_z";
 
-/// The node the team D routing scenarios add, which emits the platform family to team D's declared output.
-pub const TEAM_D_ROUTE: &str = "team_d_route";
+/// The family the routing to an added destination sends there: the metrics tagged `team:platform`.
+pub const PLATFORM_FAMILY: &str = "demo.platform.queue_depth";
 
-/// The family the team D routing scenarios route to team D.
-pub const TEAM_D_FAMILY: &str = "demo.platform.queue_depth";
-
-/// What the default program's source writes after `emit` to reach each intake, from the export's legend: the names of
-/// the output's recipients, as `to [<recipient>, ...]`, or the output's ID.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Outputs {
-    /// The output that feeds the primary endpoint.
-    pub primary: String,
-
-    /// The output that feeds team B's endpoint (the `demo.checkout.` route).
-    pub team_b: String,
-
-    /// The output that feeds team C's endpoint (the `demo.catalog.` route).
-    pub team_c: String,
-
-    /// The output that feeds the multi-region failover endpoint.
-    pub mrf: String,
-}
-
-/// The policy `tee`, where the policy region begins: enrichment feeds it, and it has one branch per output.
+/// The policy `tee`, where the policy region begins: enrichment feeds it, and it has one branch per destination.
 pub const POLICY_NODE: &str = "metrics_policy";
 
 /// DogStatsD aggregation, the program's one aggregation.
 const AGGREGATION_NODE: &str = "dsd_agg";
+
+/// The name the renaming scenario gives the aggregation.
+pub const RENAMED_AGGREGATION: &str = "agg";
+
+/// The node the recipe adds, which sends the checkout families to team B.
+pub const TEAM_B_ROUTE: &str = "to_team_b";
+
+/// The node that routes the platform family to an added destination.
+pub const DESTINATION_ROUTE: &str = "to_destination";
+
+/// How the start of the main `emit`, the policy `tee`'s branch to the primary endpoint and every additional one, reads.
+const MAIN_EMIT: &str = "\n    -> emit to [primary";
+
+/// The failover gateway's `emit`, on its `true` branch.
+const FAILOVER_EMIT: &str = "    true  -> emit to [mrf]\n";
+
+/// Returns a recipient name as a program writes an endpoint URL: quoted.
+pub fn quoted(url: &str) -> String {
+    format!("\"{}\"", url)
+}
 
 /// Returns where the definition of `node` starts in `source`: the start of its `node <id> = ` line, or of the comment
 /// lines right above it, which mark the section it begins.
@@ -76,6 +77,12 @@ fn definition(source: &str, node: &str) -> Result<std::ops::Range<usize>, Generi
     Ok(start..end)
 }
 
+/// Puts a node definition right above the policy section, before the `tee` that refers to it.
+fn define_above_policy(source: &str, node: &str) -> Result<String, GenericError> {
+    let at = definition_start(source, POLICY_NODE)?;
+    Ok(format!("{}{}\n{}", &source[..at], node, &source[at..]))
+}
+
 /// Puts `node` (a node definition, whose edges name `{next}` where the policy `tee` goes) between the node that feeds
 /// the policy `tee` and the `tee`: the feeding node's `-> metrics_policy` becomes `-> <id>`, `<id>` passes on to the
 /// `tee`, and the definition goes right above the policy section.
@@ -88,9 +95,7 @@ fn insert_before_policy(source: &str, id: &str, node: &str) -> Result<String, Ge
         ));
     }
     let edited = source.replacen(&edge, &format!("\n    -> {}\n", id), 1);
-    let at = definition_start(&edited, POLICY_NODE)?;
-    let node = node.replace("{next}", POLICY_NODE);
-    Ok(format!("{}{}\n{}", &edited[..at], node, &edited[at..]))
+    define_above_policy(&edited, &node.replace("{next}", POLICY_NODE))
 }
 
 /// Replaces the first occurrence of `from` in `source`, which must have it.
@@ -105,6 +110,40 @@ fn replace_once(source: &str, from: &str, to: &str, what: &str) -> Result<String
     Ok(source.replacen(from, to, 1))
 }
 
+/// Returns the span of the main `emit` line in `source`, from its first space to its newline.
+fn main_emit(source: &str) -> Result<std::ops::Range<usize>, GenericError> {
+    let start = source.find(MAIN_EMIT).map(|at| at + 1).ok_or_else(|| {
+        generic_error!(
+            "The default program's policy `tee` has no branch that emits to the primary endpoint (looked for {:?}).",
+            MAIN_EMIT
+        )
+    })?;
+    let end = source[start..]
+        .find('\n')
+        .map(|end| start + end)
+        .ok_or_else(|| generic_error!("The main `emit` has no end."))?;
+    Ok(start..end)
+}
+
+/// Adds a branch to the policy `tee`, right after the main `emit`.
+fn add_policy_branch(source: &str, branch: &str) -> Result<String, GenericError> {
+    let line = main_emit(source)?;
+    Ok(format!(
+        "{}\n    -> {}{}",
+        &source[..line.end],
+        branch,
+        &source[line.end..]
+    ))
+}
+
+/// Returns a `split` node that emits what `predicate` matches to `recipients` and drops the rest.
+fn route(id: &str, predicate: &str, recipients: &str) -> String {
+    format!(
+        "  node {} = split({}) {{\n    true  -> emit to [{}]\n    false -> drop\n  }}\n",
+        id, predicate, recipients
+    )
+}
+
 /// S1: drops every `demo.debug.*` metric ahead of the policy, after aggregation and enrichment.
 pub fn drop_debug(source: &str) -> Result<String, GenericError> {
     insert_before_policy(
@@ -114,102 +153,143 @@ pub fn drop_debug(source: &str) -> Result<String, GenericError> {
     )
 }
 
-/// S2: widens team B's route, `demo.checkout.` by prefix, to the metrics tagged `team:platform` as well.
-pub fn widen_team_b(source: &str, outputs: &Outputs) -> Result<String, GenericError> {
-    // The route's split ends its predicate on a line of its own, followed by the branch that emits to team B.
-    let end = format!("\n  ) {{\n    true  -> emit {}\n", outputs.team_b);
-    let widened = format!("\n    or tag(\"team\") == \"platform\"{}", end);
-    replace_once(
-        source,
-        &end,
-        &widened,
-        &format!("routing split whose `true` branch emits to `{}`", outputs.team_b),
+/// S2, the recipe: narrows team B to the checkout families. Team B's URL leaves the main `emit`, and a branch of the
+/// policy `tee`, [`TEAM_B_ROUTE`], sends `demo.checkout.*` to team B.
+pub fn narrow_team_b(source: &str, team_b: &str) -> Result<String, GenericError> {
+    let line = main_emit(source)?;
+    let name = format!(", {}", quoted(team_b));
+    if !source[line.clone()].contains(&name) {
+        return Err(generic_error!(
+            "The main `emit` does not name team B ({:?}): {}",
+            team_b,
+            &source[line]
+        ));
+    }
+    let narrowed = format!(
+        "{}{}{}",
+        &source[..line.start],
+        source[line.clone()].replacen(&name, "", 1),
+        &source[line.end..]
+    );
+    let branched = add_policy_branch(&narrowed, TEAM_B_ROUTE)?;
+    define_above_policy(
+        &branched,
+        &route(TEAM_B_ROUTE, "name starts_with \"demo.checkout.\"", &quoted(team_b)),
     )
 }
 
-/// S3: routes the metrics tagged `team:checkout` to team B only: they no longer reach the primary endpoint.
-pub fn exclusive_team_b(source: &str, outputs: &Outputs) -> Result<String, GenericError> {
+/// S3a: widens the recipe's route to team B to the metrics tagged `team:platform` as well.
+pub fn widen_team_b(narrowed: &str) -> Result<String, GenericError> {
+    replace_once(
+        narrowed,
+        "split(name starts_with \"demo.checkout.\") {",
+        "split(\n    name starts_with \"demo.checkout.\"\n    or tag(\"team\") == \"platform\"\n  ) {",
+        "route to team B by the checkout prefix",
+    )
+}
+
+/// S3b: routes the metrics tagged `team:checkout` to team B only, ahead of the policy `tee`: they no longer reach the
+/// primary endpoint or team C.
+pub fn exclusive_team_b(source: &str, team_b: &str) -> Result<String, GenericError> {
     insert_before_policy(
         source,
         "checkout_only",
         &format!(
-            "  node checkout_only = split(tag(\"team\") == \"checkout\") {{\n    true  -> emit {}\n    false -> \
+            "  node checkout_only = split(tag(\"team\") == \"checkout\") {{\n    true  -> emit to [{}]\n    false -> \
              {{next}}\n  }}\n",
-            outputs.team_b
+            quoted(team_b)
         ),
     )
 }
 
-/// S4: mirrors one family to the failover endpoint: its gateway's predicate becomes a constant `true` (mirroring on,
-/// whatever the configuration says) and a literal allowlist.
-pub fn mirror_to_failover(source: &str, outputs: &Outputs) -> Result<String, GenericError> {
-    let branch = format!("\n    true  -> emit {}\n", outputs.mrf);
-    let at = source.find(&branch).ok_or_else(|| {
-        generic_error!(
-            "The default program has no split whose `true` branch emits to `{}`.",
-            outputs.mrf
-        )
-    })?;
-    let node = source[..at]
-        .rfind("\n  node ")
-        .ok_or_else(|| generic_error!("The failover gateway's branch is not inside a node."))?;
-    const SPLIT: &str = "= split(";
-    let predicate = source[node..at]
-        .find(SPLIT)
-        .map(|offset| node + offset + SPLIT.len())
-        .ok_or_else(|| generic_error!("The node that emits to `{}` is not a split.", outputs.mrf))?;
+/// S4a: mirrors only one checkout family on failover: the failover gateway's predicate gains `and name in [...]`, so
+/// that, while failover is on (a signal), the failover endpoint receives [`MIRRORED_METRIC`] alone.
+pub fn mirror_checkout_on_failover(source: &str) -> Result<String, GenericError> {
+    let at = source
+        .find(FAILOVER_EMIT)
+        .ok_or_else(|| generic_error!("The default program has no failover gateway ({:?}).", FAILOVER_EMIT))?;
     let end = source[..at]
-        .rfind(") {")
-        .filter(|end| *end >= predicate)
-        .ok_or_else(|| generic_error!("The failover gateway's predicate has no end."))?;
+        .rfind("\n  ) {\n")
+        .ok_or_else(|| generic_error!("The failover gateway's predicate does not end on a line of its own."))?;
     Ok(format!(
-        "{}true and name in [\"{}\"]{}",
-        &source[..predicate],
+        "{}\n    and name in [\"{}\"]{}",
+        &source[..end],
         MIRRORED_METRIC,
         &source[end..]
     ))
 }
 
-/// S5, duplicate branch: a second branch of the policy `tee` to the primary output, so that every record reaches it
-/// twice.
-pub fn duplicate_branch(source: &str, outputs: &Outputs) -> Result<String, GenericError> {
-    let branch = format!("\n    -> emit {}\n", outputs.primary);
+/// S5, duplicate branch: a second branch of the policy `tee` to the main `emit`'s recipients, so that every record
+/// reaches them twice.
+pub fn duplicate_branch(source: &str) -> Result<String, GenericError> {
+    let line = main_emit(source)?;
+    let emit = source[line].trim_start().trim_start_matches("-> ").to_string();
+    add_policy_branch(source, &emit)
+}
+
+/// S5, two hosts: the failover gateway emits to the primary endpoint and the failover endpoint together, which are
+/// recipients of two delivery hosts.
+pub fn two_hosts(source: &str) -> Result<String, GenericError> {
     replace_once(
         source,
-        &branch,
-        &format!("{}    -> emit {}\n", branch, outputs.primary),
-        &format!("`tee` branch that emits to `{}`", outputs.primary),
+        FAILOVER_EMIT,
+        "    true  -> emit to [primary, mrf]\n",
+        "failover gateway",
     )
 }
 
-/// S5, undeclared output: team C's route emits to an output ADP does not declare.
-pub fn undeclared_output(source: &str, outputs: &Outputs) -> Result<String, GenericError> {
-    replace_once(
-        source,
-        &format!("emit {}\n", outputs.team_c),
-        &format!("emit {}\n", UNDECLARED_OUTPUT),
-        &format!("`emit {}`", outputs.team_c),
+/// S5, a policy binding: the metric filterlist's split binds the native setting again, `config(...)`, where the
+/// detached export writes its value. A published program owns its policy: it may bind facts and signals only.
+pub fn policy_binding(source: &str) -> Result<String, GenericError> {
+    const NODE: &str = "dsd_prefix_filter_blocklist";
+    let span = definition(source, NODE)?;
+    const VALUES: &str = "values: [";
+    let start = source[span.clone()]
+        .find(VALUES)
+        .map(|at| span.start + at + "values: ".len())
+        .ok_or_else(|| generic_error!("The metric filterlist's split `{}` writes no `values: [...]`.", NODE))?;
+    let end = source[start..span.end]
+        .find(']')
+        .map(|at| start + at + 1)
+        .ok_or_else(|| generic_error!("The metric filterlist's values have no end."))?;
+    Ok(format!(
+        "{}config(\"dogstatsd.metric_filter.values\"){}",
+        &source[..start],
+        &source[end..]
+    ))
+}
+
+/// S5, an unknown recipient: a branch of the policy `tee` emits everything to [`UNKNOWN_RECIPIENT`], which ADP's
+/// directory does not name: ADP holds the program pending until a recipient of that name is declared.
+pub fn unknown_recipient(source: &str) -> Result<String, GenericError> {
+    add_policy_branch(source, &format!("emit to [{}]", UNKNOWN_RECIPIENT))
+}
+
+/// S9c: a branch of the policy `tee`, [`DESTINATION_ROUTE`], that sends the metrics tagged `team:platform` to the
+/// destination at `url` as well.
+pub fn route_platform_to(source: &str, url: &str) -> Result<String, GenericError> {
+    let branched = add_policy_branch(source, DESTINATION_ROUTE)?;
+    define_above_policy(
+        &branched,
+        &route(DESTINATION_ROUTE, "tag(\"team\") == \"platform\"", &quoted(url)),
     )
 }
 
-/// S8 and S10: a branch of the policy `tee` that routes the metrics tagged `team:platform` to team D's declared output
-/// as well, `split(tag("team") == "platform") { true -> emit <output>; false -> drop }`, next to the branch that emits
-/// to the primary output, which keeps receiving everything.
-pub fn route_to_team_d(source: &str, outputs: &Outputs, team_d_output: &str) -> Result<String, GenericError> {
-    let branch = format!("\n    -> emit {}\n", outputs.primary);
-    let with_branch = replace_once(
+/// S14: renames the aggregation, [`AGGREGATION_NODE`], to [`RENAMED_AGGREGATION`]: its definition and the edge into
+/// it. A program's one aggregation is the aggregation whatever its name, so its state carries over.
+pub fn rename_aggregation(source: &str) -> Result<String, GenericError> {
+    let defined = replace_once(
         source,
-        &branch,
-        &format!("{}    -> {}\n", branch, TEAM_D_ROUTE),
-        &format!("`tee` branch that emits to `{}`", outputs.primary),
+        &format!("\n  node {} = ", AGGREGATION_NODE),
+        &format!("\n  node {} = ", RENAMED_AGGREGATION),
+        "aggregation",
     )?;
-    // The node goes right above the policy section, before the `tee` that refers to it.
-    let at = definition_start(&with_branch, POLICY_NODE)?;
-    let node = format!(
-        "  node {} = split(tag(\"team\") == \"platform\") {{\n    true  -> emit {}\n    false -> drop\n  }}\n\n",
-        TEAM_D_ROUTE, team_d_output
-    );
-    Ok(format!("{}{}{}", &with_branch[..at], node, &with_branch[at..]))
+    replace_once(
+        &defined,
+        &format!("\n    -> {}\n", AGGREGATION_NODE),
+        &format!("\n    -> {}\n", RENAMED_AGGREGATION),
+        "edge into the aggregation",
+    )
 }
 
 /// The nodes whose windows a width change sets: DogStatsD aggregation, and the timestamp split ahead of it, whose
@@ -268,16 +348,6 @@ pub fn width_change(source: &str, width: &str) -> Result<String, GenericError> {
     Ok(edited)
 }
 
-/// S5, aggregation without parameters: an aggregation in front of the policy that names only its window, while
-/// validation requires every parameter of an aggregation.
-pub fn aggregation_without_parameters(source: &str) -> Result<String, GenericError> {
-    insert_before_policy(
-        source,
-        "rollup",
-        "  node rollup = aggregate(window: 10s) {\n    -> {next}\n  }\n",
-    )
-}
-
 /// S5, a second aggregation: an aggregation with every parameter, in front of the policy. ADP runs at most one
 /// aggregation per program, so validation rejects it at its node, as the editor shows.
 pub fn second_aggregation(source: &str) -> Result<String, GenericError> {
@@ -325,295 +395,4 @@ pub fn aggregation_after_enrichment(source: &str) -> Result<String, GenericError
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{compile::annotate, export::tests::demo_export};
-
-    /// The default program of the demo's configuration, trimmed, as the editor prints it before its section comments.
-    const PRINTED: &str = r#"policy metrics {
-  base "sha256:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
-
-  input.dogstatsd -> dsd_enrich
-
-  node dsd_enrich = dogstatsd_mapper(profiles: []) {
-    -> dsd_no_agg_split
-  }
-
-  node dsd_no_agg_split = timestamp_split(
-    window: config("dogstatsd.aggregation.window_duration_seconds"),
-  ) {
-    default     -> dsd_tag_filterlist
-    passthrough -> dsd_post_agg_filter_in.1
-  }
-
-  node dsd_tag_filterlist = tag_projection(rules: []) {
-    -> dsd_agg
-  }
-
-  node dsd_agg = aggregate(
-    window: config("dogstatsd.aggregation.window_duration_seconds"),
-    context_limit: config("dogstatsd.aggregation.context_limit"),
-  ) {
-    -> dsd_post_agg_filter_in.0
-  }
-
-  node dsd_post_agg_filter_in = merge(inputs: 2) {
-    -> metrics_enrich_in.0
-  }
-
-  node metrics_enrich_in = merge(inputs: 1) {
-    -> metrics_enrich
-  }
-
-  node metrics_enrich = host_enrichment {
-    -> metrics_policy
-  }
-
-  node metrics_policy = tee {
-    -> emit dd_metrics_encode
-    -> metrics_routing_filter_0
-    -> mrf_metrics_gateway
-  }
-
-  node metrics_routing_filter_0 = split(
-    intake_name matches(
-      values: config("endpoint_routing.group.b0b0b0b0.prefixes"),
-      prefix: true,
-    )
-  ) {
-    true  -> emit metrics_routing_encode_0
-    false -> drop
-  }
-
-  node mrf_metrics_gateway = split(
-    flag(config("multi_region_failover.enabled"))
-    and is_empty(config("multi_region_failover.metric_mirroring.allowlist"))
-  ) {
-    true  -> emit mrf_metrics_encode
-    false -> drop
-  }
-}
-"#;
-
-    /// The trimmed default program as the editor shows it, with the notes of the demo's export as comments.
-    fn source() -> String {
-        let artifact = saluki_metric_plan_syntax::parse(PRINTED).unwrap().artifact;
-        annotate(PRINTED, &artifact, Some(&demo_export()))
-    }
-
-    fn outputs() -> Outputs {
-        Outputs {
-            primary: "dd_metrics_encode".to_string(),
-            team_b: "metrics_routing_encode_0".to_string(),
-            team_c: "metrics_routing_encode_0".to_string(),
-            mrf: "mrf_metrics_encode".to_string(),
-        }
-    }
-
-    /// Returns the lines `edited` has that `source` does not, and the lines it lost, in order.
-    fn changed_lines<'a>(source: &'a str, edited: &'a str) -> (Vec<&'a str>, Vec<&'a str>) {
-        let old = source.lines().collect::<Vec<_>>();
-        let new = edited.lines().collect::<Vec<_>>();
-        let added = new.iter().filter(|line| !old.contains(line)).copied().collect();
-        let removed = old.iter().filter(|line| !new.contains(line)).copied().collect();
-        (added, removed)
-    }
-
-    #[test]
-    fn the_editor_prints_adps_notes_and_the_recipient_directory_as_comments() {
-        let source = source();
-        let comments = source
-            .lines()
-            .filter(|line| line.starts_with("  #"))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            comments,
-            [
-                "  # Sources: where each one's metrics enter",
-                "  # DogStatsD mapper: renames and tags by `dogstatsd_mapper_profiles`",
-                "  # Aggregation; edits keep its state unless they change its window or lineage",
-                "  # Host enrichment: leaves metrics unchanged",
-                "  # Recipients:",
-                "  #   http://127.0.0.1:17102",
-                "  #   http://127.0.0.1:17103  (not addressed)",
-                "  #   mrf  http://127.0.0.1:17104",
-                "  #   primary  http://127.0.0.1:17101",
-                "  # Policy: one branch per output; route here",
-                "  # Endpoint routing to http://127.0.0.1:17102",
-                "  # Multi-Region Failover: mirrors listed, or all, metrics while failing over",
-            ]
-        );
-        assert!(source.contains(
-            "\n  # Aggregation; edits keep its state unless they change its window or lineage\n  node dsd_agg = "
-        ));
-        // The comments change nothing in the artifact.
-        let parsed = |text: &str| saluki_metric_plan_syntax::parse(text).unwrap().artifact;
-        assert_eq!(parsed(&source), parsed(PRINTED));
-    }
-
-    #[test]
-    fn each_edit_changes_the_lines_its_scenario_describes() {
-        let source = source();
-        let outputs = outputs();
-        type Edit = fn(&str, &Outputs) -> Result<String, GenericError>;
-        let cases: [(&str, Edit, &[&str], &[&str]); 9] = [
-            (
-                "S1",
-                |source, _| drop_debug(source),
-                &[
-                    "    -> drop_debug",
-                    "  node drop_debug = split(name starts_with \"demo.debug.\") {",
-                    "    true  -> drop",
-                    "    false -> metrics_policy",
-                ],
-                &["    -> metrics_policy"],
-            ),
-            ("S2", widen_team_b, &["    or tag(\"team\") == \"platform\""], &[]),
-            (
-                "S3",
-                exclusive_team_b,
-                // Its `true` branch emits to team B's output, a line the source already has.
-                &[
-                    "    -> checkout_only",
-                    "  node checkout_only = split(tag(\"team\") == \"checkout\") {",
-                    "    false -> metrics_policy",
-                ],
-                &["    -> metrics_policy"],
-            ),
-            (
-                "S4",
-                mirror_to_failover,
-                &["  node mrf_metrics_gateway = split(true and name in [\"demo.checkout.requests\"]) {"],
-                &[
-                    "  node mrf_metrics_gateway = split(",
-                    "    flag(config(\"multi_region_failover.enabled\"))",
-                    "    and is_empty(config(\"multi_region_failover.metric_mirroring.allowlist\"))",
-                ],
-            ),
-            // Line sets: the duplicated branch is a line the source already has.
-            ("S5a", duplicate_branch, &[], &[]),
-            (
-                "S5b",
-                undeclared_output,
-                &["    true  -> emit metrics_routing_encode_99"],
-                &["    true  -> emit metrics_routing_encode_0"],
-            ),
-            (
-                "S5c",
-                |source, _| aggregation_without_parameters(source),
-                // Its edge into the policy `tee` is a line the source already has.
-                &["    -> rollup", "  node rollup = aggregate(window: 10s) {"],
-                &[],
-            ),
-            (
-                "S5d",
-                |source, _| second_aggregation(source),
-                &[
-                    "    -> rollup",
-                    "  node rollup = aggregate(",
-                    "    window: 10s,",
-                    "    flush_interval: 10s,",
-                    "    context_limit: 1000,",
-                    "    counter_expiry: 5m,",
-                    "    flush_open_windows: false,",
-                    "    histogram_aggregates: [\"max\", \"count\"],",
-                    "    histogram_percentiles: [95],",
-                    "    copy_to_distribution: false,",
-                    "    copy_to_distribution_prefix: \"\",",
-                ],
-                &[],
-            ),
-            (
-                "S8 route to team D",
-                |source, outputs| route_to_team_d(source, outputs, "resources_team_d"),
-                // Its `false` branch drops, a line the source already has.
-                &[
-                    "  node team_d_route = split(tag(\"team\") == \"platform\") {",
-                    "    true  -> emit resources_team_d",
-                    "    -> team_d_route",
-                ],
-                &[],
-            ),
-        ];
-        for (case, edit, added, removed) in cases {
-            let edited = edit(&source, &outputs).unwrap();
-            let (found_added, found_removed) = changed_lines(&source, &edited);
-            assert_eq!(
-                (found_added.as_slice(), found_removed.as_slice()),
-                (added, removed),
-                "{}:\n{}",
-                case,
-                edited
-            );
-            saluki_metric_plan_syntax::parse(&edited)
-                .unwrap_or_else(|diagnostics| panic!("{}: {}\n{}", case, diagnostics, edited));
-            // A node inserted ahead of the policy goes above the policy section's comment.
-            if let Some(at) = edited.find("  # Policy:") {
-                for node in ["drop_debug", "checkout_only", "rollup", "team_d_route"] {
-                    if let Some(defined) = edited.find(&format!("\n  node {} = ", node)) {
-                        assert!(
-                            defined < at,
-                            "{}: `{}` is not above the policy section:\n{}",
-                            case,
-                            node,
-                            edited
-                        );
-                    }
-                }
-            }
-        }
-
-        let duplicated = duplicate_branch(&source, &outputs).unwrap();
-        assert_eq!(duplicated.matches("    -> emit dd_metrics_encode\n").count(), 2);
-        assert_eq!(duplicated.lines().count(), source.lines().count() + 1);
-    }
-
-    #[test]
-    fn the_aggregation_moves_after_enrichment_and_its_feeder_feeds_what_it_fed() {
-        let source = source();
-        let edited = aggregation_after_enrichment(&source).unwrap();
-        let parsed = saluki_metric_plan_syntax::parse(&edited)
-            .unwrap_or_else(|diagnostics| panic!("{}\n{}", diagnostics, edited))
-            .artifact;
-        let edges = parsed
-            .edges
-            .iter()
-            .map(|edge| format!("{} -> {}", edge.from, edge.to))
-            .collect::<Vec<_>>();
-        for edge in [
-            "dsd_tag_filterlist.out -> dsd_post_agg_filter_in.0",
-            "metrics_enrich.out -> dsd_agg.in",
-            "dsd_agg.out -> metrics_policy.in",
-        ] {
-            assert!(edges.iter().any(|found| found == edge), "{} in {:?}", edge, edges);
-        }
-        assert_eq!(
-            parsed.nodes.len(),
-            saluki_metric_plan_syntax::parse(&source).unwrap().artifact.nodes.len()
-        );
-        // The aggregation's section comment goes with it; it is defined right above the policy section.
-        assert!(!edited.contains("# Aggregation"), "{}", edited);
-        assert!(edited.find("\n  node dsd_agg = ").unwrap() > edited.find("\n  node metrics_enrich = ").unwrap());
-        assert!(edited.find("\n  node dsd_agg = ").unwrap() < edited.find("  # Policy:").unwrap());
-    }
-
-    #[test]
-    fn the_width_change_sets_both_windows_to_the_literal() {
-        let edited = width_change(&source(), "30s").unwrap();
-        assert_eq!(edited.matches("\n    window: 30s,\n").count(), 2, "{}", edited);
-        assert!(!edited.contains("window_duration_seconds"), "{}", edited);
-        saluki_metric_plan_syntax::parse(&edited).unwrap();
-    }
-
-    #[test]
-    fn an_edit_that_cannot_find_its_lines_says_what_it_looked_for() {
-        let outputs = Outputs {
-            team_b: "metrics_routing_encode_7".to_string(),
-            ..outputs()
-        };
-        let error = widen_team_b(&source(), &outputs).unwrap_err().to_string();
-        assert!(error.contains("emits to `metrics_routing_encode_7`"), "{}", error);
-        let error = drop_debug("policy metrics {\n}\n").unwrap_err().to_string();
-        assert!(error.contains("-> metrics_policy"), "{}", error);
-    }
-}
+mod tests;

@@ -4,8 +4,9 @@ The design that follows the owner's decision that programs replace native policy
 ([direction](programmable-metrics-next.md#direction-programs-replace-native-policy)). Its goal: simplify as much as we
 can, so that the demo and the default program read well, with less magic. Phase 1 (parts A, C, F, G1, and H) is
 committed (`cfd4a28072`): see [phase 1 as built](#105-phase-1-as-built). Phase 2 (parts B, D, and E, with the owner's
-later decisions: no node provenance, adoption, and a standalone configuration reload for the demo) is built, not
-committed: see [phase 2 as built](#106-phase-2-as-built). Part G2, the demo, is phase 3. Amendments 170 to 187 are in
+later decisions: no node provenance, adoption, and a standalone configuration reload for the demo) is committed
+(`7f9d67a033`): see [phase 2 as built](#106-phase-2-as-built). Phase 3, part G2, the demo, is built, not committed, with
+the owner's decisions for it: see [the demo as built](#85-the-demo-as-built). Amendments 170 to 190 are in
 [the stages 7 and 9 plan](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments).
 
 ## Contents
@@ -17,7 +18,7 @@ committed: see [phase 2 as built](#106-phase-2-as-built). Part G2, the demo, is 
 - [5. Step 2: emits addressed to recipients](#5-step-2-emits-addressed-to-recipients)
 - [6. Step 3: facts and signals only](#6-step-3-facts-and-signals-only)
 - [7. Step 4: one aggregation is the aggregation](#7-step-4-one-aggregation-is-the-aggregation)
-- [8. The editor and the demo](#8-the-editor-and-the-demo)
+- [8. The editor and the demo](#8-the-editor-and-the-demo), and [the demo as built](#85-the-demo-as-built)
 - [9. What this lets us remove](#9-what-this-lets-us-remove)
 - [10. Implementation plan](#10-implementation-plan), [phase 1 as built](#105-phase-1-as-built), and
   [phase 2 as built](#106-phase-2-as-built)
@@ -261,6 +262,11 @@ node to_team_b = split(name starts_with "demo.checkout.") {
 
 ### 5.2 From recipient sets to outputs
 
+> [!NOTE]
+> As built (phase 3, amendment 189): when some recipients an `emit` of the artifact in effect names are gone, it keeps
+> delivering to those that remain, and counts what the others would have received as dropped; only when none remain is
+> the `emit` a counted drop. See [the demo as built](#85-the-demo-as-built).
+
 Composition resolves `to` before comparing nodes, as it resolves bindings:
 
 1. Each name resolves through the directory to a recipient ID. A name the directory does not have makes a new artifact
@@ -483,6 +489,10 @@ fix), and `host_enrichment`.
 
 ### 8.3 A visible change in about 30 seconds
 
+> [!NOTE]
+> As built (phase 3), teams B and C are ordinary additional endpoints, which the default program dual-ships to, so the
+> recipe narrows team B rather than adding it: see [the demo as built](#85-the-demo-as-built).
+
 1. The editor shows the preceding program; the header reads "Running: the default program"; the team B and team C
    columns are empty, labelled `declared, not addressed`.
 2. Add a branch to the policy `tee` and its gateway:
@@ -511,6 +521,10 @@ gateway; rename `dsd_agg` to `agg`, or write the program from scratch, and see t
 
 ### 8.4 Scenarios and the headless check
 
+> [!NOTE]
+> As built (phase 3), without resources artifacts and with destinations added and removed live: see [the demo as
+> built](#85-the-demo-as-built).
+
 | Step | Change |
 |---|---|
 | S0 | Unchanged in what it proves, on the detached export: `active`, no new generation, an empty diff; `/export?form=detached` and `/default-program` hash as expected. |
@@ -527,6 +541,97 @@ gateway; rename `dsd_agg` to `agg`, or write the program from scratch, and see t
 The launcher's configuration loses `additional_endpoints` and `experimental.metrics_endpoint_routing`, and declares
 `team_b` and `team_c` under `experimental.programmable_metrics.resources.recipients` with credentials `team_b` and
 `team_c`. The demo's export fixture (`fixtures/export-metrics.json`) is regenerated from the new configuration.
+
+### 8.5 The demo as built
+
+Phase 3 built part G2 with the owner's decisions of 2026-10-14, which replace [4.3](#43-the-demos-teams-recommendation)
+and parts of [8.3](#83-a-visible-change-in-about-30-seconds) and [8.4](#84-scenarios-and-the-headless-check):
+
+- **Destinations are ordinary `additional_endpoints`.** The launcher writes the primary endpoint, teams B and C as
+  additional endpoints, and the failover endpoint, with no `experimental.metrics_endpoint_routing` and no resources
+  credentials, and turns `experimental.standalone_config_reload` on (250 ms). The default program dual-ships: its main
+  `emit` is `emit to [primary, "http://127.0.0.1:17102", "http://127.0.0.1:17103"]`, the URLs as ADP's directory
+  names the endpoints (scheme kept, no root path). The demo keeps a label per URL, which ADP never sees, and prints it
+  beside the URL in the editor's `# Recipients:` comments (display only: the artifact and its hash are unchanged).
+- **Add destination and Remove.** There is no reserved team D. **Add destination** starts a recording intake on a port
+  the system picks, with an API key of its own and a label (`Destination D`, `E`, and so on), and rewrites the run's
+  `datadog.yaml` atomically with it under `additional_endpoints`; ADP reads it within about a second. **Remove** takes
+  an additional endpoint out of the file: ADP drains its recipient, the intake answers until ADP lists the recipient
+  retired (at most 60 s), and the column goes. The demo's server, `destinations.rs`, owns the intakes and the live part
+  of the configuration (the destinations, `metric_filterlist`, and `multi_region_failover.failover_metrics`, which the
+  **Native configuration** card of the UI sets).
+- **Detached semantics, visible.** Under the default program a new destination receives everything; under a published
+  program its column reads "declared, not addressed" (ADP's directory names it, and no `emit` of the active plan
+  reaches it) until the program routes to it. The header names what runs from the status's `program` member, and a
+  native policy change under a published program shows in `program.differs`.
+- **The editor and implied outputs.** A program that emits to a recipient set no output delivers to yet cannot be
+  composed in the editor, which composes against ADP's current default program: the editor reports ADP's waiting
+  reason as a warning ("Waiting for an output to ..."), not an error, with no plan diff, and says that ADP adds the
+  output. Once ADP runs the program, compiling it again shows the plan ADP runs. An unknown recipient is a warning too:
+  ADP holds the program pending.
+- **No resources artifacts in the demo.** The Resources tab, its routes, and the team D template are gone; the stub
+  still serves the resources product, which ADP polls, and the plan crate's and ADP's resources code and tests stay.
+- **The scenarios** are those of [8.4](#84-scenarios-and-the-headless-check) without resources, and with destinations
+  and native changes: S0 adopt; S1 drop debug; S2 the recipe (implied outputs); S3a and S3b widen and make exclusive;
+  S4a to S4c the failover gateway narrowed, then the failover signal on and off in the file; S5a to S5f the guardrails
+  (duplicate, two hosts, second aggregation, aggregation after enrichment, policy binding, unknown recipient, the last
+  `pending`); S6 revoke; S8a and S8b a destination added and removed under the default program; S9a to S9c the recipe
+  again, a destination added under it (declared, not addressed), then routed to; S10 that destination removed while
+  routed to (the program stays `active`, degraded, with policy loss at the route); S11a to S11c the filterlist set
+  under the program (no new generation, `program.differs`), revoked (the default program applies it), and cleared;
+  the second launch's S12 and S13 as before, and S14a and S14b the aggregation renamed (adopted), then renamed with a
+  routing change (a generation, no cut). The status document's [demo section](programmable-metrics-status.md#the-demo)
+  has the table and the run times.
+- **After the review (amendments 189 and 190).**
+  - **An `emit` delivers to the recipients that remain** (amendment 189, decided on the owner's behalf as least
+    surprising). Before, removing team C under the recipe made the whole `emit to [primary, "...17103"]` a counted
+    drop: the primary endpoint went empty. Now the `emit` of the artifact in effect keeps delivering to the recipients
+    that remain, through the output with exactly them, and composition makes it a two-port `tee` to an `emit` of
+    those (`policy/<emit>_delivered`) and a counted drop (`policy/<emit>_missing`), which counts as policy loss what
+    the gone recipients would have received; the acknowledgment names them (`the emits to ["..."] are dropped until
+    they are available again: the host has no recipient ...; the emit still delivers to [primary]`). Only when none
+    remain is the `emit` a counted drop. A new artifact still waits for every name. `demanded_outputs` asks for the
+    set that remains, and ADP lowers twice when that changes: once with the demand as the old directory resolves it,
+    and, if the new directory resolves it otherwise, once more before proposing, so the output for the remaining set
+    exists in the same generation that removes the recipient, and nothing the primary endpoint receives is lost (an
+    ADP delivery test removes an endpoint under such a program and counts every batch at the primary endpoint; it fails
+    without the second lowering). Only the policy region changes. The headless check's S10b does the same live.
+  - **The editor validates programs that need implied outputs.** It composes against stand-ins, `adp_will_add_<n>`,
+    one per recipient set on the primary's host that no output delivers to exactly (from `demanded_outputs`), copies
+    of the host's output with those recipients, so it reports ADP's findings and a provisional diff before publishing,
+    marked as such, with a note per set ("ADP will add an output for Primary and Team C"). A program ADP will reject,
+    such as the recipe with a duplicate branch, now shows the error. The plan hash differs from ADP's, whose outputs
+    have ADP's own settings; compiling again once ADP runs the program shows the exact plan.
+  - **Recompiling the program ADP runs** composes it in effect, as ADP does, so a degraded program reads degraded, not
+    pending.
+  - **A refused newer delivery stays its config's acknowledgment** (amendment 190), whether refused at composition or
+    rejected at preparation, until the installation before it changes state.
+  - The editor's recipient comment lists every recipient with the demo's label, in aligned columns, primary and
+    failover first; an unused native output that a program replaces with implied outputs is a note, not a warning; a
+    note beside the editor names destinations ADP declares that the published program does not address.
+  - A removed destination's intake stops only after a status ADP sent two reload intervals after the file was
+    written; a new destination never takes a port an earlier one had in the run; the intake listens before the file
+    names it.
+  - Found and not fixed: the duplicate analysis still reports a duplicate contribution for copies that reach, through
+    two branches of a `tee`, two outputs with no recipient in common, when a third output on the other side of a
+    `split` shares a recipient with each (amendment 187 covers outputs reached from one place only). The demo's own
+    programs do not meet it.
+- **Found on the way.**
+  - A program that asks for implied outputs and is then rejected (a duplicate contribution, say) was never
+    acknowledged `rejected`: its demand gone, ADP lowered again, the artifact in effect before it moved to a new
+    generation, and the installer core reported that change as the config's acknowledgment in place of the rejection.
+    A composition refusal followed by any configuration change lost its acknowledgment the same way. The core now
+    keeps a newer delivery's refusal, rejection, or failure as the acknowledgment while the installation before it only
+    moves to another generation, and still reports a change of that installation's state (`refresh_acknowledgments`,
+    with two lifecycle cases in `install/artifact_tests.rs`).
+  - A step that replaces a program with implied outputs, or revokes one, makes ADP lower twice (once at once, and once
+    when the old demand retires), so the plan ADP reports at the acknowledgment can be the first of the two. The check
+    compiles the program again and compares with the plan ADP runs then.
+  - Revoking a published program whose only change is a split the signals decide as the default program's does (the
+    failover gateway narrowed, with failover off) adopts the running generation: plans are compared with their
+    bindings written as values. The check accepts adoption or a new generation on a revoke.
+  - Other endpoints than the primary one now receive canaries (dual shipping), so the check's rule changed: from no
+    canary elsewhere, to never more than were sent.
 
 ## 9. What this lets us remove
 
@@ -874,8 +979,7 @@ invalid file is reported and changes nothing (`standalone_reload_tests.rs`); the
 half-written file, a removed key returning to its default, a deleted and recreated file, and `BeforeFile` precedence,
 and prove each rejected file was read.
 
-**Left for phase 3:** the demo's configuration, scenarios, and "Add destination" (part G2), the headless check's new
-steps (S2's recipe, S15), and dropping resources artifacts from the demo.
+**Phase 3**, the demo, is [built](#85-the-demo-as-built): S15 became the second launch's S14.
 
 
 ## 11. Assumptions

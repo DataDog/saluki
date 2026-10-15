@@ -1850,3 +1850,105 @@ async fn a_program_routing_to_an_additional_endpoint_by_its_url_gets_an_implied_
     .await;
     topology.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_endpoint_removed_under_a_program_that_names_it_beside_the_primary_leaves_the_primary_receiving_every_batch()
+{
+    use saluki_metric_plan::channel::{ArtifactProduct, ArtifactSnapshot};
+
+    let intakes = [Intake::start().await, Intake::start().await, Intake::start().await];
+    let template = "dd_url: \"{P}\"\nadditional_endpoints: {\"{B}\": [key-b], \"{C}\": [key-c]}";
+    let config = configured(template, &["P", "B", "C"], &intakes);
+    let (system, updates, stream) = connected_configuration_system(&[FLUSH, ZSTD, &config].join("\n")).await;
+    let mut options = Options::new(MetricsPath::Plan, Aggregation::Native);
+    options.encoders = Encoders::Real;
+    options.recipients = Recipients::Sending;
+    let transport = std::sync::Arc::new(std::sync::Mutex::new(None));
+    options.before_install = Some(Box::new({
+        let transport = std::sync::Arc::clone(&transport);
+        move |metrics: &mut super::installer::ProgrammableMetrics| {
+            *transport.lock().unwrap() = Some(metrics.connect_artifact_channel());
+        }
+    }));
+    let topology = TestTopology::start(&system, options, |supervisor| {
+        supervisor.add_worker(ConfigUpdatesWorker::new(updates))
+    })
+    .await;
+    let transport = transport
+        .lock()
+        .unwrap()
+        .take()
+        .expect("the artifact channel is connected");
+    let status = topology.status().unwrap();
+    let names = ["kept.a"];
+    let next = feed_until(&topology, 0, &names, "C receives the dual-shipped metrics", 0, |_| {
+        !intakes[2].points().is_empty()
+    })
+    .await;
+
+    // The recipe's main emit: the primary endpoint and C, not B.
+    let scope = saluki_metric_plan::ir::ScopeName::new("metrics").unwrap();
+    let bundle = status.load().exports[&scope].clone().expect("the scope exports");
+    let c = intakes[2].url().trim_end_matches('/').to_string();
+    let c = bundle
+        .catalog
+        .recipients()
+        .map(|(name, _)| name.to_string())
+        .find(|name| *name == c || name.starts_with(&c))
+        .expect("the directory names C's endpoint by its URL");
+    let mut artifact = serde_json::to_value(&bundle.artifact).unwrap();
+    let main = artifact["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|node| node["id"] == "metrics_policy_0")
+        .unwrap();
+    main["params"] = json!({"to": ["primary", c.clone()]});
+    assert!(transport.publisher.publish(ArtifactSnapshot::new(
+        ArtifactProduct::Policy,
+        vec![policy_config(1, &artifact)]
+    )));
+    let next = feed_until(&topology, next, &names, "the program", 5, |status| {
+        status.apply_states.status.active_artifact.is_some()
+    })
+    .await;
+
+    // C leaves the configuration while batches flow: the program keeps delivering to the primary endpoint, degraded,
+    // and C's recipient drains and retires.
+    let b = intakes[1].url();
+    stream
+        .send(update("additional_endpoints", json!({ b: ["key-b"] })))
+        .await
+        .unwrap();
+    let degraded = |status: &PlanStatus| {
+        status.apply_states.config_states.iter().any(|state| {
+            state.revision == Some(1)
+                && state
+                    .error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("still delivers to [primary]"))
+        })
+    };
+    let next = feed_until(&topology, next, &names, "the program running degraded", 5, degraded).await;
+    let next = feed_until(&topology, next, &names, "C's retirement", 20, |status| {
+        status
+            .recipients
+            .iter()
+            .any(|entry| entry.host == "dd_out" && entry.last_drain.is_some())
+    })
+    .await;
+    let sent = next;
+
+    // Every batch reaches the primary endpoint once, before, during, and after the change.
+    intakes[0]
+        .wait_for("every batch", |primary| {
+            batches_received(primary, "kept.a", sent).len() == sent
+        })
+        .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    topology.stop().await;
+    assert_eq!(
+        contiguous_once("the primary endpoint", &batches_received(&intakes[0], "kept.a", sent)),
+        0..sent
+    );
+}

@@ -63,8 +63,9 @@ use crate::{
     },
     ir::{
         decode_params, ArtifactBase, ArtifactNodeId, ArtifactPortRef, BindingName, BlobError, Blobs, ComposedArtifact,
-        Edge, HostId, IrError, Node, NodeId, OperatorName, OutputId, Params, Plan, PlanProvenance, PolicyArtifact,
-        PortRef, ReceivedArtifact, RecipientId, RecipientName, ScopeDecl, ScopeName, Selector, BLOB_MEMBER,
+        Edge, HostId, IrError, LocalId, Node, NodeId, OperatorName, OutputId, Params, Plan, PlanProvenance,
+        PolicyArtifact, PortRef, ReceivedArtifact, RecipientId, RecipientName, ScopeDecl, ScopeName, Selector,
+        BLOB_MEMBER,
     },
     limits::values::{ARTIFACT_NODES, ARTIFACT_SIZE, BLOB_SIZE, PREDICATE_LEAVES},
     operators::{names, OperatorRegistry, StateContract, EMIT_TO},
@@ -698,7 +699,7 @@ fn compose_scope(
         .then(|| the_aggregation(default_plan, artifact, &inlined, &region, catalog, registry))
         .flatten();
     let ids = node_ids(default_plan, artifact, &region, aggregation)?;
-    let edges = artifact
+    let mut edges = artifact
         .edges
         .iter()
         .enumerate()
@@ -724,6 +725,15 @@ fn compose_scope(
     for (node, params) in artifact.nodes.iter().zip(inlined) {
         let id = &ids[&node.id];
         let (params, addressed) = address(&node.id, &node.op, params, catalog)?;
+        // A new artifact waits for every recipient it names; only the artifact in effect delivers to those that remain.
+        if let (Addressed::Partial { missing, .. }, false) = (&addressed, approval.in_effect) {
+            outputs
+                .pending_recipients
+                .get_or_insert(ComposeError::UnknownRecipient {
+                    node: node.id.clone(),
+                    recipient: missing[0].clone(),
+                });
+        }
         if let Addressed::Unavailable { recipients, reason } = &addressed {
             if !approval.in_effect {
                 // A new artifact is refused for recipients on two hosts, and waits for unknown recipients, and for an
@@ -763,8 +773,55 @@ fn compose_scope(
 
     let mut correspondence = Correspondence::new();
     let mut nodes = Vec::with_capacity(artifact.nodes.len());
+    // The plan IDs taken so far, which the nodes a partly available `emit` adds must not take.
+    let mut taken = ids.values().cloned().collect::<BTreeSet<_>>();
+    taken.extend(default_plan.nodes.iter().map(|node| node.id.clone()));
     for (node, id, params, addressed, same) in placed {
         let id = id.clone();
+        if let Addressed::Partial {
+            output,
+            available,
+            missing,
+        } = addressed
+        {
+            // The artifact in effect names recipients some of which are no longer available: the `emit` keeps
+            // delivering to those that remain, through the output with exactly their recipients, and what it would
+            // have sent the others is counted as dropped. The node becomes a `tee` whose first branch emits to the
+            // remaining recipients and whose second is a counted drop.
+            let (delivered, dropped) = partial_emit(&id, output, &mut taken);
+            let reason = format!(
+                "{}; the `emit` still delivers to {}",
+                Unavailable::Unknown(missing[0].clone()).describe(),
+                describe_names(&available)
+            );
+            let entry = outputs
+                .dropped
+                .entry(DropTarget::Recipients(missing))
+                .or_insert_with(|| (DropReason::Unavailable(reason), Vec::new()));
+            entry.1.push(dropped.id.clone());
+            for (port, target) in [("0", &delivered.id), ("1", &dropped.id)] {
+                edges.push(Edge {
+                    from: PortRef::new(id.clone(), port.parse().expect("a tee's port is a port name")),
+                    to: PortRef::new(target.clone(), "in".parse().expect("`in` is a port name")),
+                });
+            }
+            let kind = if region_nodes.contains_key(&id) {
+                CorrespondenceKind::Modified
+            } else {
+                CorrespondenceKind::Added
+            };
+            correspondence.insert(node.id.clone(), NodeCorrespondence { node: id.clone(), kind });
+            let mut ports = Params::new();
+            ports.insert("ports".parse().expect("`ports` is a parameter name"), Value::from(2));
+            nodes.push(Node {
+                id,
+                op: OperatorName::new(names::TEE).expect("`tee` is an operator name"),
+                params: ports,
+            });
+            nodes.push(delivered);
+            nodes.push(dropped);
+            continue;
+        }
         if let Addressed::Unavailable { recipients, reason } = addressed {
             // The artifact in effect keeps running, but nothing it emits reaches recipients that are no longer
             // available, or no longer on one host: the `emit` becomes a counted drop, under its ID.
@@ -932,6 +989,19 @@ enum Addressed {
     /// An `emit` addressed to recipients, resolved to the output whose recipients they are.
     Recipients,
 
+    /// An `emit` of recipients some of which the directory no longer names: the others, `available`, resolve to
+    /// `output`, which the artifact in effect goes on delivering to, while a new artifact waits for `missing`.
+    Partial {
+        /// The output with exactly the available recipients.
+        output: OutputId,
+
+        /// The names the directory has, as the artifact writes them.
+        available: Vec<RecipientName>,
+
+        /// The names it does not have.
+        missing: Vec<RecipientName>,
+    },
+
     /// An `emit` addressed to recipients that have no output now.
     Unavailable {
         /// The names, as the artifact writes them.
@@ -1015,14 +1085,79 @@ fn address(
                 ))
             }
         },
-        Err(reason) => Ok((
-            params,
-            Addressed::Unavailable {
-                recipients: names,
-                reason,
-            },
-        )),
+        Err(reason) => {
+            // Some names the directory no longer has: the others may still resolve to an output.
+            if let Unavailable::Unknown(_) = reason {
+                let (available, missing): (Vec<_>, Vec<_>) = names
+                    .iter()
+                    .cloned()
+                    .partition(|name| catalog.recipient(name).is_some());
+                let output = (!available.is_empty())
+                    .then(|| resolve_recipients(&available, catalog).ok())
+                    .flatten()
+                    .and_then(|recipients| catalog.output_for(&recipients));
+                if let Some(output) = output {
+                    return Ok((
+                        params,
+                        Addressed::Partial {
+                            output,
+                            available,
+                            missing,
+                        },
+                    ));
+                }
+            }
+            Ok((
+                params,
+                Addressed::Unavailable {
+                    recipients: names,
+                    reason,
+                },
+            ))
+        }
     }
+}
+
+/// Returns the two nodes a partly available `emit` with plan ID `id` adds after it, once it is a `tee`: an `emit` to
+/// `output`, the output of its remaining recipients, and a counted drop, which counts what it would have sent the
+/// recipients that are gone. Their IDs are `id`'s with `_delivered` and `_missing` after its local part, cut to fit an
+/// identifier and numbered when taken; each is added to `taken`.
+fn partial_emit(id: &NodeId, output: OutputId, taken: &mut BTreeSet<NodeId>) -> (Node, Node) {
+    let mut derive = |suffix: &str| {
+        let local = id.local().as_str();
+        let base = &local[..local.len().min(crate::ir::MAX_IDENTIFIER_LEN - suffix.len() - 3)];
+        let base = base.trim_end_matches('_');
+        let mut attempt = 1usize;
+        loop {
+            let candidate = if attempt == 1 {
+                format!("{}{}", base, suffix)
+            } else {
+                format!("{}{}_{}", base, suffix, attempt)
+            };
+            let node = LocalId::new(candidate)
+                .map(NodeId::policy)
+                .expect("a derived local ID is an identifier");
+            if taken.insert(node.clone()) {
+                return node;
+            }
+            attempt += 1;
+        }
+    };
+    let delivered = Node {
+        id: derive("_delivered"),
+        op: OperatorName::new(names::EMIT).expect("`emit` is an operator name"),
+        params: std::iter::once((
+            "output".parse().expect("`output` is a parameter name"),
+            Value::String(output.to_string()),
+        ))
+        .collect(),
+    };
+    let dropped = Node {
+        id: derive("_missing"),
+        op: OperatorName::new(names::DROP).expect("`drop` is an operator name"),
+        params: Params::new(),
+    };
+    (delivered, dropped)
 }
 
 /// Returns the recipient names of an `emit`'s `to` parameter, or `None` if it has none.
@@ -1108,9 +1243,17 @@ pub fn demanded_outputs(artifact: &PolicyArtifact, catalog: &dyn Catalog) -> Res
         let Some(names) = recipient_names(&node.id, &params)? else {
             continue;
         };
+        // An `emit` whose names the directory has only in part delivers, in effect, to those it has.
+        let names = names
+            .into_iter()
+            .filter(|name| catalog.recipient(name).is_some())
+            .collect::<Vec<_>>();
         let Ok(recipients) = resolve_recipients(&names, catalog) else {
             continue;
         };
+        if recipients.is_empty() {
+            continue;
+        }
         let Some(host) = names
             .first()
             .and_then(|name| catalog.recipient(name))

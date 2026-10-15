@@ -103,6 +103,8 @@ fn compile_against(source: &str, plan: &Plan, export: &ExportBundle) -> CompileO
         }),
         others: &[],
         revision: 7,
+        labels: &crate::compile::RecipientLabels::default(),
+        in_effect: None,
     };
     compile(source, Some(&context)).0
 }
@@ -137,7 +139,7 @@ fn with_node_before_policy(source: &str, id: &str, node: &str) -> String {
 #[test]
 fn an_unmodified_export_composes_to_the_active_default_program_with_an_empty_diff() {
     let (plan, export) = fixture();
-    let source = default_program_source(&export);
+    let source = default_program_source(&export, &crate::compile::RecipientLabels::default());
     let outcome = compile_against(&source, &plan, &export);
     assert!(outcome.ok);
     assert!(outcome.diagnostics.is_empty(), "{:#?}", outcome.diagnostics);
@@ -171,6 +173,8 @@ fn an_unmodified_export_composes_to_the_active_default_program_with_an_empty_dif
         active: None,
         others: &[],
         revision: 1,
+        labels: &crate::compile::RecipientLabels::default(),
+        in_effect: None,
     };
     let (outcome, _) = compile(&source, Some(&context));
     assert!(outcome.preview.unchanged);
@@ -183,7 +187,7 @@ fn a_change_diffs_node_by_node_in_the_artifacts_terms() {
     let (plan, export) = fixture();
     // S1: drop the debug metrics in front of the policy `tee`.
     let source = with_node_before_policy(
-        &default_program_source(&export),
+        &default_program_source(&export, &crate::compile::RecipientLabels::default()),
         "drop_debug",
         "  node drop_debug = split(name starts_with \"demo.debug.\") {\n    true  -> drop\n    false -> metrics_policy\n  \
          }\n",
@@ -273,7 +277,7 @@ fn a_change_diffs_node_by_node_in_the_artifacts_terms() {
 #[test]
 fn validation_findings_are_placed_at_the_artifact_nodes_they_are_about() {
     let (plan, export) = fixture();
-    let source = default_program_source(&export);
+    let source = default_program_source(&export, &crate::compile::RecipientLabels::default());
     // A second branch of the policy `tee` to the primary output: every record reaches it twice.
     let duplicate = source.replacen(
         "    -> emit dd_metrics_encode\n",
@@ -320,7 +324,7 @@ fn validation_findings_are_placed_at_the_artifact_nodes_they_are_about() {
 fn an_aggregation_composes_and_validation_places_its_findings_at_its_node() {
     // A state owner is no composition error: ADP composes it, and validation, then placement, judge it.
     let (plan, export) = fixture();
-    let source = default_program_source(&export);
+    let source = default_program_source(&export, &crate::compile::RecipientLabels::default());
     let source = with_node_before_policy(
         &source,
         "rollup",
@@ -379,7 +383,7 @@ fn an_artifact_composes_with_the_artifacts_adp_runs_for_the_other_scopes() {
         .unwrap()
         .plan;
     let hash = active.hash(ResolvedValues::Include).unwrap();
-    let source = default_program_source(&export);
+    let source = default_program_source(&export, &crate::compile::RecipientLabels::default());
     let context = CompileContext {
         export: &export,
         default_program: Some(&plan),
@@ -391,6 +395,8 @@ fn an_artifact_composes_with_the_artifacts_adp_runs_for_the_other_scopes() {
         }),
         others: std::slice::from_ref(&other),
         revision: 6,
+        labels: &crate::compile::RecipientLabels::default(),
+        in_effect: None,
     };
 
     // The unmodified policy scope export changes nothing: the pre-aggregation artifact stays, and the plan hash is the
@@ -476,7 +482,7 @@ fn the_artifacts_adp_runs_for_the_other_scopes_are_read_from_the_configs_the_stu
 #[test]
 fn composition_errors_are_one_finding_at_the_node_or_output_and_no_diff() {
     let (plan, export) = fixture();
-    let source = default_program_source(&export);
+    let source = default_program_source(&export, &crate::compile::RecipientLabels::default());
     let cases = [(
         "an emit to an output ADP does not declare",
         source.replacen("emit metrics_routing_encode_1\n", "emit metrics_routing_encode_99\n", 1),
@@ -510,7 +516,7 @@ fn composition_errors_are_one_finding_at_the_node_or_output_and_no_diff() {
 #[test]
 fn a_stale_base_is_a_warning_and_the_artifact_still_composes() {
     let (plan, export) = fixture();
-    let source = default_program_source(&export);
+    let source = default_program_source(&export, &crate::compile::RecipientLabels::default());
     // The editor leaves the base out; a source that states one records it.
     let stale = format!("policy metrics {{\n  base \"sha256:{}\"\n\n", "e".repeat(64));
     let stated = source.replacen("policy metrics {\n", &stale, 1);
@@ -534,11 +540,17 @@ fn a_stale_base_is_a_warning_and_the_artifact_still_composes() {
 
 /// The plan crate's default program, and its detached export, as ADP serves it by default.
 pub(crate) fn detached_fixture() -> (Plan, ExportBundle) {
+    detached_fixture_with(|catalog| catalog)
+}
+
+/// The plan crate's default program, and its detached export as the demo reads it, from the host's catalog as `host`
+/// changes it, such as with a recipient directory.
+pub(crate) fn detached_fixture_with(host: impl FnOnce(MemoryCatalog) -> MemoryCatalog) -> (Plan, ExportBundle) {
     let plan = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
     let bundle = saluki_metric_plan::export::export_as(
         &plan,
         &crate::stub::protocol::POLICY_SCOPE.parse().unwrap(),
-        &catalog_for(&plan).with_detached_programs(),
+        &host(catalog_for(&plan).with_detached_programs()),
         &BTreeMap::new(),
         saluki_metric_plan::export::ExportForm::Detached,
     )

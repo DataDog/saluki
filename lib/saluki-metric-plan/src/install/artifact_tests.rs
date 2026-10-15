@@ -1446,6 +1446,52 @@ fn cases() -> Vec<Case> {
             ],
         },
         Case {
+            name: "a rejected artifact stays its config's acknowledgment while the one in effect moves to a new \
+                   generation, as after a lowering that retires what only the rejected one asked for",
+            steps: vec![
+                (
+                    Deliver(vec![policy(7, "a")]),
+                    "g1 default hw7 preparing g2 | demo v7 r7 pending g2",
+                ),
+                (Acknowledge, "g2 demo@7 hw7 kept g1 | demo v7 r7 active g2"),
+                (
+                    Deliver(vec![policy(8, "invalid")]),
+                    "g2 demo@7 hw8 kept g1 | demo v8 r8 rejected g- (invalid)",
+                ),
+                (
+                    Configure("other"),
+                    "g2 demo@7 hw8 preparing g3 kept g1 | demo v8 r8 rejected g- (invalid)",
+                ),
+                (Acknowledge, "g3 demo@7 hw8 kept g1 | demo v8 r8 rejected g- (invalid)"),
+                // A newer delivery is acknowledged as before.
+                (
+                    Deliver(vec![policy(9, "b")]),
+                    "g3 demo@7 hw9 preparing g4 kept g1 | demo v9 r9 pending g4",
+                ),
+                (Acknowledge, "g4 demo@9 hw9 kept g3 | demo v9 r9 active g4"),
+            ],
+        },
+        Case {
+            name: "a refused artifact stays its config's acknowledgment while the one in effect moves to a new \
+                   generation",
+            steps: vec![
+                (
+                    Deliver(vec![policy(7, "a")]),
+                    "g1 default hw7 preparing g2 | demo v7 r7 pending g2",
+                ),
+                (Acknowledge, "g2 demo@7 hw7 kept g1 | demo v7 r7 active g2"),
+                (
+                    Deliver(vec![policy(8, "uncomposable")]),
+                    "g2 demo@7 hw8 kept g1 | demo v8 r8 rejected g- (compose)",
+                ),
+                (
+                    Configure("other"),
+                    "g2 demo@7 hw8 preparing g3 kept g1 | demo v8 r8 rejected g- (compose)",
+                ),
+                (Acknowledge, "g3 demo@7 hw8 kept g1 | demo v8 r8 rejected g- (compose)"),
+            ],
+        },
+        Case {
             name: "a released last-known-good artifact stays prepared until its generation retires",
             steps: vec![
                 (

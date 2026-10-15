@@ -73,11 +73,28 @@ impl DemoClient {
             .header(CONTENT_TYPE, "application/json")
             .body(Full::new(Bytes::from(body.to_string())))
             .error_context("Failed to build a request to the demo server.")?;
+        self.send_json(request).await
+    }
+
+    /// Sends `DELETE path` and returns the status and the JSON answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or the answer is not JSON.
+    pub async fn delete_json(&mut self, path: &str) -> Result<(StatusCode, Value), GenericError> {
+        let request = Request::delete(self.uri(path)?)
+            .body(Full::new(Bytes::new()))
+            .error_context("Failed to build a request to the demo server.")?;
+        self.send_json(request).await
+    }
+
+    async fn send_json(&mut self, request: Request<Full<Bytes>>) -> Result<(StatusCode, Value), GenericError> {
+        let what = format!("{} {}", request.method(), request.uri().path());
         let (status, body) = self.send(request).await?;
         let value = serde_json::from_slice(&body).with_error_context(|| {
             format!(
-                "POST {} answered {} with a body that is not JSON: {}",
-                path,
+                "{} answered {} with a body that is not JSON: {}",
+                what,
                 status,
                 String::from_utf8_lossy(&body[..body.len().min(512)])
             )

@@ -13,7 +13,7 @@ use std::{
 use serde::Serialize;
 use stele::{Metric, MetricValue};
 
-use crate::settings::Recipient;
+use crate::settings::{Recipient, RecipientKind};
 
 /// How many decoded series an intake keeps, most recent first out.
 pub const SERIES_CAPACITY: usize = 4096;
@@ -137,19 +137,28 @@ pub struct RequestRecord {
 #[derive(Clone, Debug, Serialize)]
 pub struct IntakeSummary {
     /// The recipient's short name.
-    pub name: &'static str,
+    pub name: String,
 
     /// The recipient's display label.
-    pub label: &'static str,
+    pub label: String,
 
     /// The intake's port.
     pub port: u16,
 
-    /// The API key ADP is configured to send to this endpoint.
-    pub expected_api_key: &'static str,
+    /// The endpoint's URL, as ADP's configuration writes it and its recipient directory names an additional endpoint.
+    pub url: String,
 
-    /// Whether a resources artifact declares the endpoint, rather than ADP's configuration file.
-    pub declared: bool,
+    /// What kind of endpoint it is in ADP's configuration.
+    pub kind: RecipientKind,
+
+    /// Whether it was added while the demo runs.
+    pub added: bool,
+
+    /// Whether the demo can remove it from ADP's configuration: an additional endpoint.
+    pub removable: bool,
+
+    /// The API key ADP is configured to send to this endpoint.
+    pub expected_api_key: String,
 
     /// Whether the intake is paused: it answers every request with `503 Service Unavailable`.
     pub paused: bool,
@@ -554,11 +563,14 @@ impl IntakeRecorder {
         let state = self.lock();
         let cutoff = now_ms.saturating_sub(FAMILY_RETENTION_MS);
         IntakeSummary {
-            name: self.recipient.name,
-            label: self.recipient.label,
+            name: self.recipient.name.clone(),
+            label: self.recipient.label.clone(),
             port: self.recipient.port,
-            expected_api_key: self.recipient.api_key,
-            declared: self.recipient.declared,
+            url: self.recipient.url(),
+            kind: self.recipient.kind,
+            added: self.recipient.added,
+            removable: self.recipient.removable(),
+            expected_api_key: self.recipient.api_key.clone(),
             paused: state.paused,
             requests_total: state.requests_total,
             unavailable: state.unavailable,
@@ -571,7 +583,7 @@ impl IntakeRecorder {
                 .map(|(key, requests)| ApiKeySeen {
                     key: key.clone(),
                     requests: *requests,
-                    expected: key == self.recipient.api_key,
+                    expected: *key == self.recipient.api_key,
                 })
                 .collect(),
             other_api_key_requests: state.other_api_key_requests,

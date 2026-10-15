@@ -255,7 +255,7 @@ pub struct LegendOutput {
     pub recipients: Vec<String>,
 
     /// The name of the intake the output most likely reaches, if it can be told.
-    pub intake: Option<&'static str>,
+    pub intake: Option<String>,
 
     /// What the program's source writes after `emit` to deliver to the output: `to [<recipient>, ...]`, the names of
     /// its recipients, where the export addresses it so, or else its ID.
@@ -280,7 +280,7 @@ pub struct LegendBinding {
 /// The export does not name endpoints in a fixed form, so this tries, in order: a label or recipient that contains the
 /// intake's port (`:17102`), a label equal to the intake's label or name (`Team B`), and a recipient whose identity
 /// names the multi-region failover forwarder or the primary endpoint.
-fn intake_of(label: Option<&str>, recipients: &[String], intakes: &[Recipient]) -> Option<&'static str> {
+fn intake_of(label: Option<&str>, recipients: &[String], intakes: &[Recipient]) -> Option<String> {
     let texts = label
         .into_iter()
         .chain(recipients.iter().map(String::as_str))
@@ -289,21 +289,21 @@ fn intake_of(label: Option<&str>, recipients: &[String], intakes: &[Recipient]) 
         let port = format!(":{}", intake.port);
         texts.iter().any(|text| text.contains(&port))
     }) {
-        return Some(intake.name);
+        return Some(intake.name.clone());
     }
     if let Some(label) = label {
         if let Some(intake) = intakes
             .iter()
-            .find(|intake| label.eq_ignore_ascii_case(intake.label) || label.eq_ignore_ascii_case(intake.name))
+            .find(|intake| label.eq_ignore_ascii_case(&intake.label) || label.eq_ignore_ascii_case(&intake.name))
         {
-            return Some(intake.name);
+            return Some(intake.name.clone());
         }
     }
     let named = |name: &str| {
         intakes
             .iter()
             .find(|intake| intake.name == name)
-            .map(|intake| intake.name)
+            .map(|intake| intake.name.clone())
     };
     if recipients.iter().any(|recipient| recipient.starts_with("mrf")) {
         return named("mrf");
@@ -355,8 +355,9 @@ fn known_catalog_members(catalog: Value, labels: &mut BTreeMap<OutputId, String>
                     .collect();
                 kept.insert(member, Value::Object(entries));
             }
-            // Whether ADP runs at most one aggregation per program, which validation then checks.
-            ("scopes", value) | ("single_aggregation", value) => {
+            // Whether ADP runs at most one aggregation per program, which validation then checks, and whether a
+            // published program may bind only facts and signals, which composition then checks.
+            ("scopes", value) | ("single_aggregation", value) | ("detached_programs", value) => {
                 kept.insert(member, value);
             }
             _ => {}
@@ -446,7 +447,7 @@ pub(crate) mod tests {
         let outputs = legend
             .outputs
             .iter()
-            .map(|output| (output.id.as_str(), output.label.as_deref(), output.intake))
+            .map(|output| (output.id.as_str(), output.label.as_deref(), output.intake.as_deref()))
             .collect::<Vec<_>>();
         assert_eq!(
             outputs,
@@ -476,7 +477,7 @@ pub(crate) mod tests {
             &["dd_out/primary/0".to_string()],
             &intakes,
         );
-        assert_eq!(by_url, Some("team-c"));
+        assert_eq!(by_url.as_deref(), Some("team-c"));
         assert_eq!(
             super::intake_of(Some("Somewhere"), &["x/y".to_string()], &intakes),
             None
@@ -493,11 +494,13 @@ pub(crate) mod tests {
         });
         bundle["labels"]["resources_team_d"] = "Team D".into();
         let export = ExportBundle::from_value(bundle).unwrap();
-        let legend = export.legend(&crate::settings::DemoPorts::default().recipients());
+        let mut intakes = crate::settings::DemoPorts::default().recipients();
+        intakes.push(Recipient::added('D', 17105));
+        let legend = export.legend(&intakes);
         let outputs = legend
             .outputs
             .iter()
-            .map(|output| (output.id.as_str(), output.declared, output.intake))
+            .map(|output| (output.id.as_str(), output.declared, output.intake.as_deref()))
             .collect::<Vec<_>>();
         assert_eq!(
             outputs,
@@ -506,7 +509,7 @@ pub(crate) mod tests {
                 ("metrics_routing_encode_0", false, Some("team-b")),
                 ("metrics_routing_encode_1", false, Some("team-c")),
                 ("mrf_metrics_encode", false, Some("mrf")),
-                ("resources_team_d", true, Some("team-d")),
+                ("resources_team_d", true, Some("dest-d")),
             ]
         );
         assert_eq!(

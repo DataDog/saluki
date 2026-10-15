@@ -30,9 +30,10 @@ use saluki_metric_plan::{canonical::PlanHash, ir::ReceivedArtifact};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[cfg(test)]
+use super::protocol::RESOURCES_CONFIG_ID;
 use super::protocol::{
-    config_id, transport_hash, ApprovedAgainst, ConfigEntry, Envelope, POLICY_SCOPE, RESOURCES_CONFIG_ID,
-    RESOURCES_PRODUCT,
+    config_id, transport_hash, ApprovedAgainst, ConfigEntry, Envelope, POLICY_SCOPE, RESOURCES_PRODUCT,
 };
 
 /// The format version of `store.json`.
@@ -398,6 +399,7 @@ impl ArtifactStore {
     ///
     /// Returns an error if the document has no canonical form, or if the store file cannot be written. A failed
     /// publish changes nothing.
+    #[cfg(test)]
     pub fn publish_resources(
         &mut self, document: Value, high_water: Option<u64>, now_ms: u64,
     ) -> Result<PublishedResources, GenericError> {

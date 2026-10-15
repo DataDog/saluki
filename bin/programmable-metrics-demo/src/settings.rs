@@ -32,9 +32,6 @@ pub struct DemoPorts {
     /// The recording intake for the multi-region failover endpoint.
     pub mrf: u16,
 
-    /// The recording intake for team D's endpoint, which only a resources artifact declares.
-    pub team_d: u16,
-
     /// ADP's unprivileged API (`/ready`, `/metrics`).
     pub api: u16,
 
@@ -54,7 +51,6 @@ impl Default for DemoPorts {
             team_b: 17102,
             team_c: 17103,
             mrf: 17104,
-            team_d: 17105,
             api: 17110,
             secure_api: 17111,
             dogstatsd: 17125,
@@ -74,7 +70,6 @@ impl DemoPorts {
             team_b: up(ports.team_b)?,
             team_c: up(ports.team_c)?,
             mrf: up(ports.mrf)?,
-            team_d: up(ports.team_d)?,
             api: up(ports.api)?,
             secure_api: up(ports.secure_api)?,
             dogstatsd: up(ports.dogstatsd)?,
@@ -91,65 +86,107 @@ impl DemoPorts {
         format!("http://127.0.0.1:{}", port)
     }
 
-    /// Returns the recipients the demo records, in the order the UI shows them: the four ADP's configuration names,
-    /// then team D, which only a resources artifact declares.
+    /// Returns the recipients ADP's configuration names at boot, in the order the UI shows them: the primary endpoint,
+    /// teams B and C, which are additional endpoints, and the multi-region failover endpoint. Destinations added while
+    /// the demo runs ([`Recipient::added`]) follow them.
     pub fn recipients(&self) -> Vec<Recipient> {
-        let configured = |name, label, port, api_key| Recipient {
-            name,
-            label,
+        let recipient = |name: &str, label: &str, port, api_key: &str, kind| Recipient {
+            name: name.to_string(),
+            label: label.to_string(),
             port,
-            api_key,
-            declared: false,
+            api_key: api_key.to_string(),
+            kind,
+            added: false,
         };
         vec![
-            configured("primary", "Primary", self.primary, "demo-primary"),
-            configured("team-b", "Team B", self.team_b, "demo-team-b"),
-            configured("team-c", "Team C", self.team_c, "demo-team-c"),
-            configured("mrf", "Failover (MRF)", self.mrf, "demo-mrf"),
-            Recipient {
-                name: "team-d",
-                label: "Team D",
-                port: self.team_d,
-                api_key: TEAM_D_CREDENTIAL_VALUE,
-                declared: true,
-            },
+            recipient(
+                "primary",
+                "Primary",
+                self.primary,
+                "demo-primary",
+                RecipientKind::Primary,
+            ),
+            recipient(
+                "team-b",
+                "Team B",
+                self.team_b,
+                "demo-team-b",
+                RecipientKind::Additional,
+            ),
+            recipient(
+                "team-c",
+                "Team C",
+                self.team_c,
+                "demo-team-c",
+                RecipientKind::Additional,
+            ),
+            recipient("mrf", "Failover (MRF)", self.mrf, "demo-mrf", RecipientKind::Failover),
         ]
     }
 }
 
-/// The name of the credential the launcher declares for resources artifacts, which the team D template refers to as
-/// `credentials/team_d`.
-pub const TEAM_D_CREDENTIAL: &str = "team_d";
+/// What kind of endpoint a recipient is in ADP's configuration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecipientKind {
+    /// The primary endpoint, `dd_url`.
+    Primary,
 
-/// The value of [`TEAM_D_CREDENTIAL`]: the API key ADP sends to team D's endpoint once a resources artifact declares
-/// it.
-pub const TEAM_D_CREDENTIAL_VALUE: &str = "demo-team-d-key";
+    /// An additional endpoint, under `additional_endpoints`: natively, it receives everything the primary endpoint
+    /// does (dual shipping).
+    Additional,
+
+    /// The multi-region failover endpoint, `multi_region_failover.dd_url`.
+    Failover,
+}
 
 /// One endpoint ADP sends metrics to, and the recording intake that stands in for it.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Recipient {
-    /// The short name the UI and API use.
-    pub name: &'static str,
+    /// The short name the UI and API use, such as `team-b` or `dest-d`.
+    pub name: String,
 
-    /// A display label.
-    pub label: &'static str,
+    /// A display label, such as `Team B` or `Destination D`. ADP never sees it: it knows an additional endpoint by its
+    /// URL only.
+    pub label: String,
 
     /// The loopback port the recording intake listens on.
     pub port: u16,
 
-    /// The API key ADP is configured to send to this endpoint: for a declared recipient, the value of the credential
-    /// its resources artifact names.
-    pub api_key: &'static str,
+    /// The API key ADP is configured to send to this endpoint.
+    pub api_key: String,
 
-    /// Whether a resources artifact declares the recipient, rather than ADP's configuration file: ADP sends it nothing
-    /// until one does.
-    pub declared: bool,
+    /// What kind of endpoint it is in ADP's configuration.
+    pub kind: RecipientKind,
+
+    /// Whether it was added while the demo runs, with **Add destination**.
+    pub added: bool,
 }
 
 impl Recipient {
-    /// Returns the endpoint URL as ADP's configuration writes it.
+    /// Returns a destination added while the demo runs, as an additional endpoint: its name, label, and API key follow
+    /// from `letter` (`dest-d`, `Destination D`, `demo-dest-d` for `D`).
+    pub fn added(letter: char, port: u16) -> Self {
+        let lower = letter.to_ascii_lowercase();
+        Self {
+            name: format!("dest-{}", lower),
+            label: format!("Destination {}", letter.to_ascii_uppercase()),
+            port,
+            api_key: format!("demo-dest-{}", lower),
+            kind: RecipientKind::Additional,
+            added: true,
+        }
+    }
+
+    /// Returns the endpoint URL as ADP's configuration writes it, which is also the name ADP's recipient directory
+    /// gives an additional endpoint: the forwarder resolves `http://127.0.0.1:<port>` to itself.
     pub fn url(&self) -> String {
         DemoPorts::http_url(self.port)
+    }
+
+    /// Returns `true` if the recipient is an additional endpoint, which the demo can remove from the configuration.
+    pub fn removable(&self) -> bool {
+        self.kind == RecipientKind::Additional
     }
 }
 

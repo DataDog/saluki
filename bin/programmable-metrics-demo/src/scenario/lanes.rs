@@ -22,13 +22,11 @@
 //!   after it balance, each bucket whole at its start.
 //! - **S13b**: revoking the artifact brings 10-second buckets back at the next cut, with the same checks. A revoke
 //!   undoes everything the artifact changed, routing included, so the routing steps come after it.
-//! - **S14a** and **S14b**: S8's endpoint scenario (team D's resources, then the route to team D) on the
-//!   post-aggregation lanes.
-//! - **S14c**: team D's delivered points equal its intake's: the data points ADP delivered to team D's endpoint
-//!   (`component_data_points_sent_total{component_id="dd_out"}` of its domain, which only the team D lease's payloads
-//!   reach) equal those team D's intake received, while every post-aggregation lane of the new generation receives
-//!   events. Whether each lane sends to team D is not verifiable: no series counts a lane's events by exit, so the step
-//!   says so rather than infer it from the lanes' input, which the other families keep up whatever reaches team D.
+//! - **S14a**: the default program with its aggregation renamed `agg`: a program's one aggregation is the aggregation
+//!   whatever its name, so it composes to the plan running, which it adopts, with no new generation and no cut.
+//! - **S14b**: the renamed aggregation with `demo.debug.*` dropped ahead of the policy: a new generation, which keeps
+//!   the aggregation's state on every state lane: no cut is armed, completed, or given up
+//!   (`plan_cuts_total`), and the state lanes go on counting events under `component_id:dsd_agg`.
 //!
 //! The second launch's counters expire one second after their last update (`dogstatsd_expiry_seconds: 1`), rather
 //! than never, as the first launch's do (`0`): an aggregation keeps a counter without expiry forever, so a state lane
@@ -47,15 +45,10 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde_json::{json, Value};
 use tokio::net::UdpSocket;
 
-use super::{
-    default_routing, edits,
-    resources::{component_total, routed_to_team_d},
-    Compiled, Installed, Runner, StepReport, Target, BASELINE_TIMEOUT, POLL,
-};
+use super::{changed, default_routing, edits, Compiled, Installed, Runner, StepReport, Target, BASELINE_TIMEOUT, POLL};
 use crate::{
     canary::{lcm, LAG_SECS},
     clock::unix_millis,
-    resources::TEAM_D_OUTPUT,
     settings::{DemoPorts, LaneFlags, RunSettings},
     traffic::TrafficMix,
 };
@@ -86,14 +79,8 @@ const MAX_PROBES: usize = 12;
 /// a second.
 const PROBE_SEEN: Duration = Duration::from_secs(5);
 
-/// How long the intake of team D's endpoint and ADP's count of what it delivered there may take to agree.
-const DELIVERY_TIMEOUT: Duration = Duration::from_secs(45);
-
-/// The intake that stands in for team D's declared endpoint.
-const TEAM_D_INTAKE: &str = "team-d";
-
-/// What S14c checks: what its series show.
-const S14C_TITLE: &str = "team D's delivered points equal its intake's";
+/// The outcomes `plan_cuts_total` counts: no cut may change any of them while the aggregation is renamed.
+const CUT_OUTCOMES: [&str; 3] = ["completed", "cancelled", "not_armed"];
 
 /// Returns the values of a `plan_lane_*` series by lane, for the lanes of `component`, from a sample of the demo's
 /// state; with `kind`, of the series with that `kind` label only.
@@ -156,16 +143,6 @@ fn asked_lanes(lanes: &LaneFlags) -> [(&'static str, Option<u16>); 3] {
         ("state_lanes", given(lanes.state)),
         ("post_lanes", given(lanes.post)),
     ]
-}
-
-/// Describes what S14c found: the events each post-aggregation lane received since S14b, and the data points
-/// delivered to team D's endpoint and received there.
-fn post_lanes_outcome(grown: &[f64], delivered: f64, received: f64, dropped: f64) -> String {
-    format!(
-        "{} data points delivered to team D's endpoint, {} received; dd_out dropped {}; events by post-aggregation \
-         lane since S14b {:?}; each lane's sends to team D not verifiable (no series counts a lane's events by exit)",
-        delivered, received, dropped, grown
-    )
 }
 
 /// Checks a keyed exit's key groups: every lane of `lanes` owns one contiguous range, in lane order, and the ranges
@@ -250,7 +227,7 @@ fn check_probe(points: &[(u64, f64)], sent_ms: u64, width_s: u64, edge: bool) ->
 impl Runner {
     /// Runs S12 to S14 against a demo whose ADP runs on the lanes `settings` asks for.
     pub(super) async fn lane_scenarios(&mut self, settings: &RunSettings) -> Result<(), GenericError> {
-        let (source, outputs, _) = self.baseline().await?;
+        let (source, _) = self.baseline().await?;
 
         let mut step = StepReport::new("S12a", "the frame runs on the lanes asked for");
         let result = self.lanes_step(&mut step, &settings.lanes).await;
@@ -273,28 +250,74 @@ impl Runner {
         let result = self.revoke_width_step(&mut step, state_lanes).await;
         self.finish(step, result)?;
 
-        // From here on, compiles carry the Resources tab's draft, as the UI sends it.
-        self.resources_draft = Some(self.template.clone());
-        let mut step = StepReport::new("S14a", "publish the team D resources");
-        let result = self.publish_resources_step(&mut step).await;
-        self.finish(step, result)?;
-        let before = self.state().await?;
+        self.rename_steps(&source).await?;
+        self.whole_run_canary().await
+    }
+
+    /// S14a and S14b: the aggregation renamed, alone and with a routing change, keeps its state: no cut.
+    async fn rename_steps(&mut self, source: &str) -> Result<(), GenericError> {
+        let cuts_of = |state: &Value| CUT_OUTCOMES.map(|outcome| cuts(state, outcome));
+        let state = self.state().await?;
+        let before = cuts_of(&state);
+        let events_before = lane_values(&state, "plan_lane_events_total", STATE_SLOT, None);
+        let renamed = edits::rename_aggregation(source)?;
         self.step(
-            "S14b",
-            "route team:platform to team D on the post-aggregation lanes",
-            edits::route_to_team_d(&source, &outputs, TEAM_D_OUTPUT)?,
-            Compiled::Clean { unchanged: false },
+            "S14a",
+            "rename the aggregation agg: the running generation is adopted",
+            renamed.clone(),
+            Compiled::Clean { unchanged: true },
             Installed::Active {
-                new_generation: true,
-                routing: Some(routed_to_team_d()),
+                new_generation: false,
+                routing: Some(default_routing()),
             },
         )
         .await?;
-        let mut step = StepReport::new("S14c", S14C_TITLE);
-        let result = self.every_post_lane_step(&mut step, &before, settings).await;
-        self.finish(step, result)?;
-
-        self.whole_run_canary().await
+        let no_debug = ["primary", "team-b", "team-c"]
+            .into_iter()
+            .fold(default_routing(), |routing, intake| {
+                changed(routing, intake, &["demo.debug.*"], true)
+            });
+        self.step(
+            "S14b",
+            "renamed, with demo.debug.* dropped: a new generation, no cut",
+            edits::drop_debug(&renamed)?,
+            Compiled::Clean { unchanged: false },
+            Installed::Active {
+                new_generation: true,
+                routing: Some(no_debug),
+            },
+        )
+        .await?;
+        let state = self.state().await?;
+        let after = cuts_of(&state);
+        if after != before {
+            return Err(generic_error!(
+                "S14b: renaming the aggregation changed plan_cuts_total (completed, cancelled, not_armed) from {:?} to \
+                 {:?}: its state was cut.",
+                before,
+                after
+            ));
+        }
+        let events = lane_values(&state, "plan_lane_events_total", STATE_SLOT, None);
+        let grown = events
+            .iter()
+            .filter(|(lane, events)| **events > events_before.get(lane).copied().unwrap_or_default())
+            .count();
+        if grown == 0 {
+            return Err(generic_error!(
+                "S14b: no state lane of `{}` counted events since the aggregation was renamed: {:?}, before {:?}.",
+                STATE_SLOT,
+                events,
+                events_before
+            ));
+        }
+        if let Some(step) = self.report.steps.last_mut() {
+            step.outcome = format!(
+                "{}; plan_cuts_total unchanged {:?}; {} state lanes counting under `{}`",
+                step.outcome, after, grown, STATE_SLOT
+            );
+        }
+        Ok(())
     }
 
     /// Sets the traffic generator's mix.
@@ -869,85 +892,6 @@ impl Runner {
         step.diff = "-".to_string();
         Ok(())
     }
-
-    /// S14c: the data points ADP delivered to team D's endpoint equal those its intake received, and every
-    /// post-aggregation lane's input grew since `before` (a sample taken before S14b): the lanes of the new generation
-    /// run. That says nothing of what each lane sent to team D, which no series counts.
-    async fn every_post_lane_step(
-        &mut self, step: &mut StepReport, before: &Value, settings: &RunSettings,
-    ) -> Result<(), GenericError> {
-        let started = Instant::now();
-        let lanes = lane_slot(before, POST_SLOT)
-            .and_then(|slot| slot["lanes"].as_u64())
-            .unwrap_or(1) as u16;
-        let before = lane_values(before, "plan_lane_events_total", POST_SLOT, None);
-        let timeout = Duration::from_secs(60).max(Duration::from_secs(6 * self.window_s));
-        let grown = self
-            .wait_for("every post-aggregation lane's input to grow", timeout, |state| {
-                let now = lane_values(state, "plan_lane_events_total", POST_SLOT, None);
-                let grown = (0..lanes)
-                    .map(|lane| now.get(&lane).unwrap_or(&0.0) - before.get(&lane).unwrap_or(&0.0))
-                    .collect::<Vec<_>>();
-                if grown.iter().all(|grown| *grown > 0.0) {
-                    Ok(grown)
-                } else {
-                    Err(format!("events by post-aggregation lane since S14b: {:?}", grown))
-                }
-            })
-            .await?;
-
-        let team_d = settings
-            .ports
-            .recipients()
-            .into_iter()
-            .find(|recipient| recipient.declared)
-            .ok_or_else(|| generic_error!("The demo has no intake for team D."))?;
-        let domain = team_d.url();
-        let delivered_points = |state: &Value| {
-            state["telemetry"]["components"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|entry| {
-                    entry["name"] == "component_data_points_sent_total"
-                        && entry["labels"]["component_id"] == "dd_out"
-                        && entry["labels"]["domain"] == domain.as_str()
-                })
-                .filter_map(|entry| entry["value"].as_f64())
-                .sum::<f64>()
-        };
-        let (delivered, received) = self
-            .wait_for(
-                "ADP's count of the data points delivered to team D's endpoint to equal its intake's",
-                DELIVERY_TIMEOUT,
-                |state| {
-                    let received = state["intakes"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .find(|intake| intake["name"] == TEAM_D_INTAKE)
-                        .and_then(|intake| intake["points_total"].as_f64())
-                        .unwrap_or_default();
-                    let delivered = delivered_points(state);
-                    if delivered > 0.0 && delivered == received {
-                        Ok((delivered, received))
-                    } else {
-                        Err(format!(
-                            "dd_out delivered {} data points to {}, and team D's intake received {}",
-                            delivered, domain, received
-                        ))
-                    }
-                },
-            )
-            .await?;
-        // `component_total` reads the forwarder's drops, which stay zero while team D answers.
-        let dropped =
-            component_total(&self.state().await?, "component_items_dropped_total", "dd_out").unwrap_or_default();
-        step.visible_ms = Some(started.elapsed().as_millis() as u64);
-        step.outcome = post_lanes_outcome(&grown, delivered, received, dropped);
-        step.diff = "-".to_string();
-        Ok(())
-    }
 }
 
 /// Describes the state lanes' cut crossings for an outcome, if there are lanes of their own.
@@ -1127,18 +1071,6 @@ mod tests {
         assert_eq!(
             crossings_text(&BTreeMap::from([(0, 1.0), (1, 1.0)])),
             ", crossed by lanes 0 and 1"
-        );
-    }
-
-    #[test]
-    fn s14c_claims_what_its_series_show_and_says_what_they_cannot() {
-        // The lanes' input grows with every family, whatever reaches team D: it is reported, not taken for team D's.
-        assert_eq!(S14C_TITLE, "team D's delivered points equal its intake's");
-        assert_eq!(
-            post_lanes_outcome(&[25.0, 25.0, 25.0], 2.0, 2.0, 0.0),
-            "2 data points delivered to team D's endpoint, 2 received; dd_out dropped 0; events by post-aggregation \
-             lane since S14b [25.0, 25.0, 25.0]; each lane's sends to team D not verifiable (no series counts a lane's \
-             events by exit)"
         );
     }
 }
