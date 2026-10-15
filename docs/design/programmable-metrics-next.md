@@ -107,28 +107,52 @@ In order. Each item has its goal, the approach, and the evidence that ends it.
   method requires. Linux is required; the dory VM is enough for these limits.
 - **Exit:** a results table in this document, and the gate thresholds for N2 to N4 stated at these limits.
 
-### N2: make the aggregation flush non-blocking
+### N2 and N3: one region from decode to encode, with an interleaved flush
 
-- **Goal:** admission continues during a flush, with no sharding and no fixed overhead at low load.
-- **Approach:** a flush drains only closed buckets, and admission writes only open ones: buckets close by watermark,
-  and admission time is at or past the watermark. So the host can keep reading input while a drain is pending, and
-  interleave admission with drain steps, under a policy for how much of each turn goes to each. What needs design: the
-  kernel contract (`consume` while a `process` or `advance_time` is yielded), the open and closed state kept apart so a
-  context touched by both stays correct (a counter admitted during its own bucket's flush, idle-counter zeros, context
-  expiry), memory in flight during a long drain, and the reference interpreter's and the transition traces' view of
-  interleaving. The stage 6 [time-driven output](programmable-metrics-implementation.md#time-driven-output) and drains
-  are the starting point.
+- **Goal:** at one core or less, run the whole metrics path between its I/O as one region, one task, with admission
+  that never stalls on a flush, no sharding, and no fixed overhead at low load.
+- **Why it is possible now.** Only I/O still needs a task of its own: the sources' sockets in, and delivery's HTTP,
+  retries, and disk out. Aggregation was the last hard case, and since stage 6 it is a kernel; it runs apart only by
+  design. The isolation slot gives one owner to its ticks, watermark, drains, and cuts, and the runtime allows state
+  steps only there (`runtime/code.rs`). The split between `dsd_pre_aggregation` and `metrics_enrich` follows from
+  that: the timestamp split's passthrough edge goes around aggregation, and with aggregation in its own task, one
+  region on both sides of it would be a loop over bounded channels. In one task, aggregation's output is the next step
+  of the same program, and the passthrough edge is a register. Today's boundaries and why each exists:
+
+  | Boundary | Needed |
+  |---|---|
+  | Sources (socket I/O; DogStatsD's decoder) | The I/O, yes; decoding is CPU work a region could run |
+  | Delivery hosts (HTTP, retries, persistence) | Yes |
+  | Encode hosts (payloads, a flush timeout, leases) | Partly: encoding could become a terminal kernel |
+  | The `dsd_agg` isolation slot | No longer: a design choice of stage 6 |
+  | `dsd_pre_aggregation` apart from `metrics_enrich` | Only while aggregation has its own task |
+  | Lanes | Only with cores to spare, which production does not have |
+
+- **Approach:**
+  1. **State steps in fused regions.** Generalize the region host's tick, watermark, and drain driving from the
+     isolation slot to any slot; fuse maximally between I/O fences whatever the costs, which deletes R1's cost model
+     (plan [P9.7](programmable-metrics-stages-7-and-9.md#p97-r1s-cost-model) lists what it touches). Make lanes opt-in
+     (`lanes.mode: off` by default, amendment 157 reversed) while keeping the code; with lanes, aggregation can still
+     run in a slot of its own.
+  2. **An interleaved flush**, which one task makes required rather than desirable: today a drain stalls only
+     aggregation's task while upstream keeps decoding into its queue; in one task it would stall everything. A flush
+     drains only closed buckets and admission writes only open ones (buckets close by watermark, and admission time is
+     at or past it), so drain steps can interleave with admission under a policy for how much of each turn goes to
+     each. What needs design: the kernel contract (`consume` while a `process` or `advance_time` is yielded), the open
+     and closed state kept apart so a context touched by both stays correct (a counter admitted during its own
+     bucket's flush, idle-counter zeros, context expiry), memory in flight during a long drain, and the reference
+     interpreter's and the transition traces' view of interleaving. The stage 6
+     [time-driven output](programmable-metrics-implementation.md#time-driven-output) and drains are the starting
+     point.
+  3. **Cuts and lineages keyed by node, not by slot.** The cut protocol arms over admission points, unchanged without
+     the slot boundary, but re-verified: the transition traces and the reference interpreter.
+  4. Later, if N1 says it pays: decoding inside the region, and encoding as a terminal kernel, leaving only sockets
+     and delivery as tasks.
+- **Payoff:** two channel hops, two times a task is woken per batch, and their queues gone, which are both fixed overhead and a
+  source of worst-case latency at 0.3 cores.
 - **Exit:** semantics unchanged (the interpreter, the compatibility matrix, transition traces 1 to 15); admission never
-  stalls on a flush; and at 0.05 and 0.3 CPUs, fewer drops and lower p99 than native during a flush, with CPU per metric
-  no worse.
-
-### N3: settle the layout for small CPU budgets
-
-- **Goal:** the simplest, cheapest layout at one core or less.
-- **Approach:** fuse maximally between fences whatever the costs, which means deleting R1's cost model (plan
-  [P9.7](programmable-metrics-stages-7-and-9.md#p97-r1s-cost-model) lists what it touches); make lanes opt-in
-  (`lanes.mode: off` by default, amendment 157 reversed) while keeping the code.
-- **Exit:** N1's measurements at the four limits show the fused layout at least as good as today's.
+  stalls on a flush; and at 0.05 and 0.3 CPUs, against native and against today's layout, fewer drops and lower p99
+  during a flush, with CPU per metric no worse.
 
 ### N4: efficiency per metric
 
