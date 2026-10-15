@@ -7,13 +7,12 @@
 use std::fmt;
 use std::sync::Arc;
 
-use datadog_agent_remote_config::{ApplyError, ConfigId, Subscription};
+use datadog_agent_remote_config::{ApplyError, ConfigId, RemoteConfigurationClient, Subscription};
 
 use super::registry::{Registry, EMBEDDED_REGISTRY};
+use super::remote_config::SemanticCoreDecoder;
 
 /// Identifies whether a [`SemanticCore`] registry is embedded or supplied by a remote configuration.
-// TODO: remove this guard when the semantic-core decoder constructs remote snapshots.
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Origin {
     /// The registry embedded in the binary, used when no configuration is assigned.
@@ -76,8 +75,6 @@ impl fmt::Debug for SemanticCore {
 ///
 /// The Remote Configuration client reports this error to the server. Error text must not include payload contents.
 /// A rejected update leaves the provider's last accepted registry unchanged.
-// TODO: remove this guard when the semantic-core decoder constructs rejections.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) enum SemanticCoreError {
     /// A configuration's payload is not a valid registry.
@@ -130,6 +127,18 @@ pub struct SemanticRegistryProvider {
 }
 
 impl SemanticRegistryProvider {
+    /// Subscribes to `APM_SEMANTIC_CORE_DD` on `client`.
+    ///
+    /// Clone the returned provider for every component that reads the registry; a second subscription to the product
+    /// on the same client fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `client` already has a live subscription to `APM_SEMANTIC_CORE_DD`.
+    pub fn subscribe(client: &RemoteConfigurationClient) -> Result<Self, datadog_agent_remote_config::Error> {
+        Ok(Self::from_subscription(client.subscribe::<SemanticCoreDecoder>()?))
+    }
+
     /// Wraps a registry subscription. An inert subscription keeps using the embedded registry.
     pub(crate) fn from_subscription(subscription: Subscription<SemanticCore, SemanticCoreError>) -> Self {
         Self { subscription }

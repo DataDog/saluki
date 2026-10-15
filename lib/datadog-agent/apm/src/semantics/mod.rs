@@ -4,6 +4,7 @@ mod accessor;
 mod lookup;
 mod provider;
 mod registry;
+mod remote_config;
 
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util;
