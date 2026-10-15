@@ -97,8 +97,7 @@ pub struct StatefulMetricsConfiguration {
     pub compression_level: i32,
     /// Maximum wait for a partial batch; zero uses the encoder's 10 millisecond fallback.
     pub flush_timeout: Duration,
-    /// Process-wide series-count threshold for automatic flushing, split evenly across `workers`; an input
-    /// buffer may exceed each worker's share.
+    /// Series-count threshold for automatic flushing; an input buffer may exceed this threshold.
     pub batch_capacity: usize,
     /// Dictionary entry cap for each worker; the process total is this times `workers`.
     ///
@@ -118,7 +117,7 @@ impl StatefulMetricsConfiguration {
     /// Builds the sans-I/O core configuration every worker uses.
     fn core_config(&self) -> CoreConfig {
         CoreConfig {
-            batch_capacity: self.batch_capacity.div_ceil(self.workers.get()),
+            batch_capacity: self.batch_capacity,
             sender: SenderConfig {
                 max_inflight_payloads: MAX_INFLIGHT_BATCHES,
                 ..SenderConfig::default()
