@@ -14,6 +14,7 @@ use agent_data_plane_config_system::{ConfigurationSystem, LoadedConfiguration};
 use argh::FromArgs;
 use bytesize::ByteSize;
 use datadog_agent_commons::{ipc::config::RemoteAgentClientConfiguration, platform::PlatformSettings};
+use datadog_agent_runtime::remote_agent::RemoteAgentBootstrap;
 use saluki_app::{
     accounting::{initialize_memory_bounds, MemoryBoundsConfiguration, MemoryMode as AppMemoryMode},
     bootstrap::BootstrapGuard,
@@ -52,7 +53,7 @@ use saluki_core::{
     accounting::{ComponentBounds, ComponentRegistry},
     data_model::origin::OriginTagCardinality,
     health::HealthRegistry,
-    runtime::{state::ResourceRegistry, RestartMode, RestartStrategy, Supervisor, SupervisorError},
+    runtime::{self, state::ResourceRegistry, RestartMode, RestartStrategy, Supervisor, SupervisorError},
     topology::TopologyBlueprint,
 };
 use saluki_env::{features, EnvironmentProvider as _, HostProvider as _};
@@ -72,8 +73,8 @@ use crate::{
     },
     dogstatsd_contexts::DogStatsDContextDumpAPIHandler,
     internal::{
-        create_internal_supervisor, logging::LoggingConfigurationTranslator, remote_agent::RemoteAgentBootstrap,
-        ConfigUpdatesWorker, DogStatsDControlSurface, TopologyControlSurfaces,
+        create_internal_supervisor, logging::LoggingConfigurationTranslator, ConfigUpdatesWorker,
+        DogStatsDControlSurface, TopologyControlSurfaces,
     },
 };
 use crate::{
@@ -122,9 +123,12 @@ pub async fn handle_run_command(
     } else {
         // Blocks until the Core Agent acknowledges registration.
         let client_config = remote_agent_client_configuration(local_config.local())?;
-        let ra_bootstrap = RemoteAgentBootstrap::new(&client_config, &bootstrap_dp_config)
-            .await
-            .error_context("Failed to bootstrap remote agent state.")?;
+        let ra_bootstrap = async {
+            let secure_api_listen_address = bootstrap_dp_config.secure_api_listen_address()?;
+            RemoteAgentBootstrap::new(&client_config, &secure_api_listen_address).await
+        }
+        .await
+        .error_context("Failed to bootstrap remote agent state.")?;
 
         // The configuration system owns the config stream: it reads `ConfigUpdate`s directly to
         // build the typed model. `create_config_stream` stays on `ra_bootstrap`, which we keep to
@@ -283,7 +287,7 @@ pub async fn handle_run_command(
         internal_supervisor.add_worker(env_supervisor);
     }
     root_supervisor.add_worker(internal_supervisor);
-    root_supervisor.add_worker(blueprint);
+    root_supervisor.add_worker(runtime::supervisable(blueprint).needed().build());
 
     // Once the topology is healthy, log readiness and emit our startup metrics.
     tokio::spawn(async move {
@@ -966,10 +970,7 @@ async fn add_dsd_pipeline_to_blueprint(
         hist_config: dsd_hist_config,
         context_snapshot_receiver: dsd_context_snapshot_receiver,
     };
-    let dsd_no_agg_split_config = DogStatsDNoAggSplitConfiguration::new(
-        aggregation.passthrough_idle_flush_timeout,
-        aggregation.window_duration_seconds,
-    );
+    let dsd_no_agg_split_config = DogStatsDNoAggSplitConfiguration::new(aggregation.passthrough_idle_flush_timeout);
     let dsd_post_agg_filter_config = DogStatsDPostAggregateFilterConfiguration::new(
         config_system.live(|config| &config.domains.dogstatsd.metric_filter),
         &histogram.aggregates,
@@ -1455,10 +1456,7 @@ mod tests {
     #[tokio::test]
     async fn no_agg_split_excludes_timestamped_metrics_from_tag_filterlist() {
         tokio::time::timeout(Duration::from_secs(5), async {
-            let no_agg_split = DogStatsDNoAggSplitConfiguration::new(
-                Duration::from_millis(50),
-                NonZeroU64::new(10).expect("not zero"),
-            );
+            let no_agg_split = DogStatsDNoAggSplitConfiguration::new(Duration::from_millis(50));
             let tag_filter = TagFilterlistConfiguration::new(
                 Live::new_fixed(vec![MetricTagFilterEntry {
                     metric_name: "app.requests".to_string(),

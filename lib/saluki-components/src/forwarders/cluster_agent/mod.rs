@@ -135,8 +135,8 @@ impl Forwarder for ClusterAgentForwarder {
         let Self { forwarder } = *self;
 
         let mut health = context.take_health_handle();
-        // Spawns supervised children of this component's supervisor, which is what stops them and bounds their drain
-        // once this run-future returns.
+        // This call spawns supervised children of this component. When this run-future returns, the children stop, and
+        // their drain has a time limit.
         let forwarder = forwarder.spawn();
 
         health.mark_ready();
@@ -161,7 +161,8 @@ impl Forwarder for ClusterAgentForwarder {
             }
         }
 
-        // Starts the drain; the component's supervisor waits for it, bounded by its shutdown budget.
+        // Starts the drain. This component does not finish until the drain is done. The deadline of the component
+        // bounds this wait.
         forwarder.shutdown();
 
         debug!("Cluster Agent forwarder stopped.");

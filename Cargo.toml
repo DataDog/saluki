@@ -8,12 +8,14 @@ members = [
   "bin/correctness/stele",
   "lib/agent-data-plane-config",
   "lib/agent-data-plane-config-system",
+  "lib/datadog-agent/apm",
   "lib/datadog-agent/commons",
   "lib/datadog-agent/config",
   "lib/datadog-agent/config-overlay-model",
   "lib/datadog-agent/config-testing",
   "lib/datadog-agent/metrics-v3",
   "lib/datadog-agent/remote-config",
+  "lib/datadog-agent/runtime",
   "lib/ddsketch",
   "lib/go-duration",
   "lib/ottl",
@@ -53,11 +55,14 @@ repository = "https://github.com/DataDog/saluki"
 [workspace.dependencies]
 agent-data-plane-config = { path = "lib/agent-data-plane-config" }
 agent-data-plane-config-system = { path = "lib/agent-data-plane-config-system" }
+datadog-agent-apm = { path = "lib/datadog-agent/apm" }
 datadog-agent-commons = { path = "lib/datadog-agent/commons" }
 datadog-agent-config = { path = "lib/datadog-agent/config" }
 datadog-agent-config-overlay-model = { path = "lib/datadog-agent/config-overlay-model" }
 datadog-agent-config-testing = { path = "lib/datadog-agent/config-testing" }
 datadog-agent-metrics-v3 = { path = "lib/datadog-agent/metrics-v3" }
+datadog-agent-remote-config = { path = "lib/datadog-agent/remote-config" }
+datadog-agent-runtime = { path = "lib/datadog-agent/runtime" }
 datadog-protos = { path = "lib/protos/datadog" }
 containerd-protos = { path = "lib/protos/containerd" }
 ddsketch = { path = "lib/ddsketch" }

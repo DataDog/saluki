@@ -5,8 +5,8 @@
 //! fixture -- `Supervisor::new("test").handle()` -- which looks right but silently drops every child the component
 //! under test spawns, or panics outright if the component spawns on the ambient supervisor.
 //!
-//! [`TestComponentSupervisor`] runs a supervisor configured the way the topology configures a component's supervisor.
-//! Pass its [`handle`][TestComponentSupervisor::handle] where a component wants one, and drive code that spawns
+//! [`TestComponentSupervisor`] runs a supervisor with a shutdown budget, like the supervisor that the topology
+//! components run under. Pass its [`handle`][TestComponentSupervisor::handle] where a component wants one, and drive code that spawns
 //! on the ambient supervisor inside [`scope`][TestComponentSupervisor::scope]. A component that spawns its own children
 //! into its scope must run as a supervised worker instead. To run it this way, use
 //! [`spawn_component`][TestComponentSupervisor::spawn_component].
@@ -19,7 +19,7 @@ use tokio::task::futures::TaskLocalFuture;
 use tokio::task::JoinHandle;
 
 use crate::runtime::{
-    state::DataspaceRegistry, AutoShutdown, ChildId, ChildSpecification, IntoWorkerResult, NodeSnapshot, NodeState,
+    state::DataspaceRegistry, ChildId, ChildSpecification, IntoWorkerResult, NodeSnapshot, NodeState,
     SupervisionTreeHandle, Supervisor, SupervisorError, SupervisorHandle,
 };
 
@@ -36,12 +36,13 @@ const POLL_INTERVAL: Duration = Duration::from_millis(5);
 /// Overall budget for readiness polling before panicking.
 const POLL_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// A running per-component supervisor for tests.
+/// A started supervisor for components under test.
 ///
-/// Configured like the supervisor the topology builds for each component ([`AutoShutdown::AnySignificant`],
-/// and a shutdown budget). Started on its own, it has no component worker -- the test drives the component directly.
-/// [`TestComponentDriver`][super::TestComponentDriver] starts one with the component's worker as its significant
-/// child, the way the topology does.
+/// The supervisor has a shutdown budget, as the topology supervisor does. Unlike the topology supervisor, it keeps the
+/// default restart limit, so it restarts a child that it must restart once in each period before it stops. The
+/// topology supervisor stops at the first restart instead. Started on its own, it does not include a component worker. The test drives the component directly, or runs it with
+/// [`spawn_component`][Self::spawn_component]. [`TestComponentDriver`][super::TestComponentDriver] starts one with the
+/// worker of the component as its needed child, the way the topology does.
 pub struct TestComponentSupervisor {
     handle: SupervisorHandle,
     tree: SupervisionTreeHandle,
@@ -92,7 +93,6 @@ impl TestComponentSupervisor {
     ) -> Self {
         let mut supervisor = Supervisor::new(id)
             .expect("test supervisor name should be valid")
-            .with_auto_shutdown(AutoShutdown::AnySignificant)
             .with_shutdown_budget(budget);
         if let Some(worker) = worker {
             supervisor.add_worker(worker);
@@ -150,8 +150,8 @@ impl TestComponentSupervisor {
     ///
     /// `f` receives the shutdown handle of the worker. In production, this handle is the shutdown handle of the
     /// component. Install it into the context of the component before you run the component. To make the component
-    /// ignore its supervisor, install a handle that the test owns instead. The worker is significant, as a component
-    /// is. Thus, if the worker terminates, the supervisor stops.
+    /// ignore its supervisor, install a handle that the test owns instead. The worker is needed, as a component is.
+    /// Thus, if the worker terminates, the supervisor stops.
     ///
     /// Unlike [`scope`][Self::scope], this function gives the component a scope of its own. A component that spawns
     /// its own children needs that scope.
@@ -161,10 +161,7 @@ impl TestComponentSupervisor {
         Fut: Future + Send + 'static,
         Fut::Output: IntoWorkerResult,
     {
-        self.handle
-            .worker_with_shutdown(name.to_string(), f)
-            .with_significant(true)
-            .spawn()
+        self.handle.worker_with_shutdown(name.to_string(), f).needed().spawn()
     }
 
     /// Returns a read-only handle to this supervisor's supervision tree.
@@ -175,7 +172,8 @@ impl TestComponentSupervisor {
     /// Returns the number of processes that run anywhere under this supervisor.
     ///
     /// The count also includes the children of children. These are all the children that a component spawns into its
-    /// scope when you run it with [`spawn_component`][Self::spawn_component], and the children of those children.
+    /// scope when you run it with [`spawn_component`][Self::spawn_component] or
+    /// [`TestComponentDriver`][super::TestComponentDriver], and the children of those children.
     /// [`active_children`][Self::active_children] does not count them.
     pub fn running_descendants(&self) -> usize {
         fn count(node: &NodeSnapshot) -> usize {
@@ -235,9 +233,9 @@ impl TestComponentSupervisor {
     ///
     /// Install this into the context of the component under test, in place of a coordinator the test owns outright.
     /// In production a component's shutdown handle *is* its supervisor's, which is what puts the supervisor into its
-    /// drain before the component starts stopping the children it spawned. A test driving the two separately inverts
-    /// that order, so a child marked significant terminates while the supervisor is still running normally --
-    /// tripping [`AutoShutdown`] over what is really an orderly shutdown.
+    /// drain before the component starts stopping the children it spawned. A test that drives the two separately
+    /// reverses that order. Thus, a needed child terminates while the supervisor still runs normally. This stops the
+    /// supervisor, although the actual cause is an orderly shutdown.
     ///
     /// The supervisor's `select!` is biased towards shutdown, so a signal is always observed here before any child
     /// exit it causes.

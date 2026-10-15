@@ -26,7 +26,7 @@ use crate::components::{
 };
 use crate::health::{Health, HealthRegistry};
 use crate::runtime::state::{DataspaceRegistry, ResourceRegistry, CURRENT_DATASPACE};
-use crate::runtime::{self, SupervisorFuture};
+use crate::runtime::{self, ExitObserver, SupervisorFuture};
 use crate::support::SubsystemIdentifier;
 use crate::topology::component_worker::{
     ComponentWorker, DecoderRunnable, DestinationRunnable, EncoderRunnable, ForwarderRunnable, RelayRunnable,
@@ -52,7 +52,7 @@ const DEFAULT_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Runs a single component in a test.
 ///
 /// Each method takes a component builder and builds the component the way a topology would. It then connects a channel
-/// to the component's input and to each of its outputs, and runs the component as the significant child of a
+/// to the component's input and to each of its outputs, and runs the component as the needed child of a
 /// [`TestComponentSupervisor`], which is also how a topology runs it. What comes back is a [`ComponentControl`] for the
 /// input and the shutdown, along with the component's outputs.
 ///
@@ -625,17 +625,21 @@ impl Harness {
 
     /// Starts the component's supervisor with the component running under it, returning the control for it.
     ///
-    /// The component runs the way a topology runs it: wrapped in a [`ComponentWorker`], as the one static, temporary,
-    /// significant child of a supervisor with [`AutoShutdown::AnySignificant`][crate::runtime::AutoShutdown]. So it
-    /// runs in a process of its own, in the component's span, with the supervisor's shutdown budget covering it, and
-    /// its `run` returning stops the supervisor along with every child the component spawned.
+    /// The component runs the way a topology runs it: wrapped in a [`ComponentWorker`], as the one static, one-shot,
+    /// needed child of the supervisor. So it runs in a process of its own, in the component's span, with the
+    /// supervisor's shutdown budget covering it, and its `run` returning stops the supervisor along with every child
+    /// the component spawned.
     async fn spawn<C, I>(self, runnable: C, input: Option<mpsc::Sender<I>>) -> ComponentControl<I>
     where
         C: RunnableComponent,
     {
         let (outcome_tx, outcome) = oneshot::channel();
+        let (exit_tx, exit) = oneshot::channel();
         let worker = ComponentWorker::new(self.component_context.clone(), Reporting { runnable, outcome_tx });
-        let worker = runtime::supervisable(worker).temporary().with_significant(true).build();
+        let worker = runtime::supervisable(worker)
+            .needed()
+            .observing_exit(ExitObserver::new(exit_tx))
+            .build();
         let supervisor = TestComponentSupervisor::start_with_worker(
             &self.identity.to_string(),
             self.options.shutdown_budget,
@@ -650,6 +654,7 @@ impl Harness {
             supervisor,
             input,
             outcome,
+            exit,
             wait_timeout: self.options.wait_timeout,
             shutdown_budget: self.options.shutdown_budget,
         }
