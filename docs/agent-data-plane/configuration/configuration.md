@@ -654,13 +654,16 @@ triggers when an intake rejects an API key: at most one refresh per interval, ex
 with `0` disabling those refreshes. Secret resolution and refresh both belong to the Agent; ADP
 defers to it and triggers nothing.
 
-ADP reads this key only as a second signal that secret resolution might replace a rejected API key. A
-positive value makes a `403 Forbidden` response retriable, exactly as a configured
-`secret_backend_command` does, and either signal alone is enough.
+ADP reads the value in two ways. A positive value makes a `403 Forbidden` response retriable on its
+own, exactly as a configured `secret_backend_command` does, because secret resolution might replace
+the rejected key. The value also paces the `InvalidApiKey` reports ADP sends the core Agent when a
+403 is retried: the first report is sent immediately, and any further reports are held to one per
+interval, which is all the core Agent's rate-limited refresh can consume. With `0`, those refreshes
+are disabled, so ADP sends no reports at all.
 
-ADP does not observe the interval itself: it does not pace, delay, or count retries by it, and retry
-timing continues to come from the forwarder's own `forwarder_backoff_*` settings. A negative value is
-clamped to `0` with a warning, matching the Agent's own tolerance of the value.
+Retry timing is unaffected by the interval: it continues to come from the forwarder's own
+`forwarder_backoff_*` settings. A negative value is clamped to `0` with a warning, matching the
+Agent's own tolerance of the value.
 
 ### `serializer_zstd_compressor_level`
 

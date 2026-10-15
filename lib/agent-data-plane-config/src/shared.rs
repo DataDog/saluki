@@ -617,8 +617,8 @@ pub struct ClusterAgent {
 /// Secrets management, as configured for the Core Agent.
 ///
 /// ADP resolves no secrets itself; the Core Agent does. These settings mirror the Agent's own configuration, and ADP
-/// reads them for one purpose: to decide whether a rejected API key might be replaced. See
-/// [`in_use`](Self::in_use).
+/// reads them to decide whether a rejected API key might be replaced—see [`in_use`](Self::in_use)—and to pace
+/// the `InvalidApiKey` reports it sends the Core Agent, which answers them by re-resolving the secrets.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Secrets {
     /// Path to the executable the Core Agent runs to fetch secrets.
@@ -632,7 +632,11 @@ pub struct Secrets {
     ///
     /// Defaults to `0`, which turns those refreshes off. A negative value from the source means the same thing and is
     /// clamped to `0`. A positive value makes [`in_use`](Self::in_use) true on its own, and `0` does not make it false
-    /// when [`backend_command`](Self::backend_command) is set. Set this only to match the Core Agent's own
+    /// when [`backend_command`](Self::backend_command) is set.
+    ///
+    /// The value also paces the `InvalidApiKey` reports ADP sends the Core Agent after a rejected API key: the first
+    /// report is sent immediately, further reports are held to one per interval, and a value of `0` sends none,
+    /// because the Core Agent performs no failure-triggered refresh then. Set this only to match the Core Agent's own
     /// configuration.
     pub refresh_on_api_key_failure_interval: u64,
 }
