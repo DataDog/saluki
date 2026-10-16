@@ -347,7 +347,7 @@ impl Repository {
         };
 
         match &evaluation.outcome {
-            Outcome::Accepted(()) => {
+            Outcome::Accepted(()) | Outcome::KeepsPrevious(()) => {
                 debug!(product, "Published a configuration snapshot.");
                 metrics.count_snapshot_published(product);
             }

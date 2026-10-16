@@ -27,8 +27,8 @@ impl TestSamplingPublisher {
     ///
     /// Each element is a configuration ID and its JSON payload bytes; see [`SamplerConfig`](super::SamplerConfig) for the payload format.
     ///
-    /// An empty assignment publishes [`RemoteSampling::Unassigned`]. A rejected assignment, such as one with more
-    /// than one configuration, leaves the last accepted update in place.
+    /// Empty assignments and rejected updates retain the last accepted configuration. Before any configuration has
+    /// been accepted, an empty assignment publishes [`RemoteSampling::Unassigned`].
     ///
     /// # Panics
     ///
