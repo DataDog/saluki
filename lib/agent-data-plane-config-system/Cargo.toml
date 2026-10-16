@@ -21,7 +21,11 @@ tokio = { workspace = true, features = ["rt", "sync"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
+datadog-agent-config-corpus = { workspace = true }
 datadog-agent-config-overlay-model = { workspace = true }
+datadog-agent-runtime = { workspace = true }
+datadog-protos = { workspace = true }
+prost-types = { workspace = true }
 saluki-config = { workspace = true, features = ["test-util"] }
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
 

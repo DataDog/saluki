@@ -9,7 +9,7 @@
 use std::path::Path;
 
 use agent_data_plane_config::SalukiConfiguration;
-use datadog_agent_config::apply_datadog_env;
+use datadog_agent_config::apply_datadog_env_vars;
 use saluki_config::dynamic::ConfigUpdate;
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -109,8 +109,30 @@ fn build_base(path: &Path, env: EnvPrecedence) -> Result<Value, Error> {
     let text = std::fs::read_to_string(path).map_err(|e| Error::Base {
         message: format!("read `{}`: {e}", path.display()),
     })?;
-    let mut base: Value = serde_yaml::from_str(&text).map_err(|e| Error::Base {
-        message: format!("parse `{}`: {e}", path.display()),
+    // `Disabled` never reads the process environment, so it is not captured either.
+    let vars: Vec<(String, String)> = match env {
+        EnvPrecedence::Disabled => Vec::new(),
+        EnvPrecedence::AfterFile | EnvPrecedence::BeforeFile => std::env::vars().collect(),
+    };
+    build_base_from(&text, path, &vars, env)
+}
+
+/// Builds the typed base from the configuration file's text and explicit environment variables.
+///
+/// The same composition as [`build_base`], without reading the filesystem or the process
+/// environment: `text` is the file's content, `origin` is the path named in a parse error, and
+/// `vars` are the environment variable name/value pairs. `vars` is ignored when `env` is
+/// `Disabled`.
+///
+/// # Errors
+///
+/// Returns [`Error::Base`] when `text` is not valid YAML or an environment value is malformed for
+/// its key's shape.
+pub(crate) fn build_base_from(
+    text: &str, origin: &Path, vars: &[(String, String)], env: EnvPrecedence,
+) -> Result<Value, Error> {
+    let mut base: Value = serde_yaml::from_str(text).map_err(|e| Error::Base {
+        message: format!("parse `{}`: {e}", origin.display()),
     })?;
     drop_nulls(&mut base);
     if base.is_null() {
@@ -122,8 +144,8 @@ fn build_base(path: &Path, env: EnvPrecedence) -> Result<Value, Error> {
         EnvPrecedence::AfterFile => true,
         EnvPrecedence::BeforeFile => false,
     };
-    apply_datadog_env(&mut base, overwrite).map_err(|message| Error::Base { message })?;
-    saluki_env_overlay::apply_env(&mut base, overwrite).map_err(|message| Error::Base { message })?;
+    apply_datadog_env_vars(&mut base, vars.iter().cloned(), overwrite).map_err(|message| Error::Base { message })?;
+    saluki_env_overlay::apply_env_vars(&mut base, vars, overwrite).map_err(|message| Error::Base { message })?;
     Ok(base)
 }
 
@@ -483,6 +505,68 @@ mod tests {
         std::env::remove_var("DD_DOGSTATSD_PORT");
         std::fs::remove_file(&path).ok();
         assert!(matches!(result, Err(Error::Base { .. })));
+    }
+
+    #[test]
+    fn build_base_from_reads_the_yaml_alone() {
+        let vars = [("DD_DOGSTATSD_PORT".to_string(), "9125".to_string())];
+        let yaml = "dogstatsd_port: 8125\nempty_key:\n";
+
+        let base =
+            build_base_from(yaml, Path::new("datadog.yaml"), &[], EnvPrecedence::AfterFile).expect("base builds");
+        assert_eq!(base.get("dogstatsd_port"), Some(&json!(8125)));
+        assert!(base.get("empty_key").is_none());
+
+        // `Disabled` ignores the given variables.
+        let base =
+            build_base_from(yaml, Path::new("datadog.yaml"), &vars, EnvPrecedence::Disabled).expect("base builds");
+        assert_eq!(base.get("dogstatsd_port"), Some(&json!(8125)));
+
+        // An empty file is an empty object.
+        let base = build_base_from("", Path::new("datadog.yaml"), &[], EnvPrecedence::AfterFile).expect("base builds");
+        assert_eq!(base, json!({}));
+    }
+
+    #[test]
+    fn build_base_from_lets_the_given_environment_override_the_yaml_after_the_file() {
+        let vars = [
+            ("DD_DOGSTATSD_PORT".to_string(), "9125".to_string()),
+            ("DD_OTTL_FILTER_CONFIG_ERROR_MODE".to_string(), "silent".to_string()),
+        ];
+        let yaml =
+            "dogstatsd_port: 8125\ndogstatsd_non_local_traffic: false\nottl_filter_config:\n  error_mode: strict\n";
+
+        let base =
+            build_base_from(yaml, Path::new("datadog.yaml"), &vars, EnvPrecedence::AfterFile).expect("base builds");
+        assert_eq!(base.get("dogstatsd_port"), Some(&json!(9125)));
+        assert_eq!(base.get("dogstatsd_non_local_traffic"), Some(&json!(false)));
+        // The Saluki-only reader takes the given variables too.
+        assert_eq!(base.pointer("/ottl_filter_config/error_mode"), Some(&json!("silent")));
+
+        let base =
+            build_base_from(yaml, Path::new("datadog.yaml"), &vars, EnvPrecedence::BeforeFile).expect("base builds");
+        assert_eq!(base.get("dogstatsd_port"), Some(&json!(8125)));
+    }
+
+    #[test]
+    fn build_base_from_rejects_a_malformed_environment_value_as_build_base_does() {
+        let _guard = test_env_lock();
+        let path = std::env::temp_dir().join(format!("adp_build_base_from_bad_{}.yaml", std::process::id()));
+        std::fs::write(&path, "dogstatsd_port: 8125\n").unwrap();
+        std::env::set_var("DD_DOGSTATSD_PORT", "not-a-number");
+        let from_process = build_base(&path, EnvPrecedence::AfterFile);
+        std::env::remove_var("DD_DOGSTATSD_PORT");
+        std::fs::remove_file(&path).ok();
+
+        let vars = [("DD_DOGSTATSD_PORT".to_string(), "not-a-number".to_string())];
+        let from_vars = build_base_from("dogstatsd_port: 8125\n", &path, &vars, EnvPrecedence::AfterFile);
+
+        let (Err(Error::Base { message: expected }), Err(Error::Base { message: actual })) = (from_process, from_vars)
+        else {
+            panic!("both builds must fail with a base error");
+        };
+        assert!(actual.contains("DD_DOGSTATSD_PORT"), "{actual}");
+        assert_eq!(actual, expected);
     }
 
     #[test]
