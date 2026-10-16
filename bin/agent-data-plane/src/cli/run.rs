@@ -13,7 +13,7 @@ use agent_data_plane_config::{
 use agent_data_plane_config_system::{ConfigurationSystem, LoadedConfiguration};
 use argh::FromArgs;
 use bytesize::ByteSize;
-use datadog_agent_apm::semantics::SemanticRegistryProvider;
+use datadog_agent_apm::{sampling::TraceSamplingSubscription, semantics::SemanticRegistryProvider};
 use datadog_agent_commons::{ipc::config::RemoteAgentClientConfiguration, platform::PlatformSettings};
 use datadog_agent_runtime::{
     control_plane::ConfigUpdatesWorker, env::RemoteAgentEnvironmentProvider, remote_agent::RemoteAgentBootstrap,
@@ -43,7 +43,6 @@ use saluki_components::{
         RoutingTargetCatalog,
     },
     relays::otlp::OtlpRelayConfiguration,
-    remote_config::TraceSamplingSubscription,
     sources::{
         ChecksIPCConfiguration, DogStatsDCaptureAPIHandler, DogStatsDCaptureControl, DogStatsDConfiguration,
         DogStatsDReplayAPIHandler, DogStatsDReplayControl, EnablePayloadsConfiguration, OriginEnrichmentConfiguration,
