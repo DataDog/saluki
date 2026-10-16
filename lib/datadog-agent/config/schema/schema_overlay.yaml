@@ -163,15 +163,11 @@ inventory:
     support: full
     pipelines: [traces]
     description: "Legacy per-service event extraction rates"
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.analyzed_spans:
     support: full
     pipelines: [traces]
     description: "Per service|operation APM event extraction rates"
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.compute_stats_by_span_kind:
     support: full
@@ -222,8 +218,6 @@ inventory:
     support: full
     pipelines: [traces]
     description: "Upper bound on sampled APM events per second"
-    test_support:
-      used_by: [NO_SMOKE]
 
   apm_config.max_traces_per_second:
     support: full

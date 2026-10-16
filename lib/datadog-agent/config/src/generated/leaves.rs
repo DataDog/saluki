@@ -79,12 +79,10 @@ pub static LEAVES: &[Leaf] = &[
     },
     Leaf {
         key: "apm_config.analyzed_rate_by_service",
-        aliases: &[],
         get: |config| LeafValue::F64Map(&config.apm_config.analyzed_rate_by_service),
     },
     Leaf {
         key: "apm_config.analyzed_spans",
-        aliases: &[],
         get: |config| LeafValue::JsonMap(&config.apm_config.analyzed_spans),
     },
     Leaf {
@@ -117,7 +115,6 @@ pub static LEAVES: &[Leaf] = &[
     },
     Leaf {
         key: "apm_config.max_events_per_second",
-        aliases: &[],
         get: |config| LeafValue::F64(config.apm_config.max_events_per_second),
     },
     Leaf {
