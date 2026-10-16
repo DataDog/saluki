@@ -4,7 +4,10 @@ use agent_data_plane_config::{domains::dogstatsd::MetricFilter, Live};
 use async_trait::async_trait;
 use metrics::{Counter, Gauge};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_core::data_model::event::{metric::Metric, EventType};
+use saluki_core::data_model::event::{
+    metric::{Metric, MetricValues},
+    EventType,
+};
 use saluki_core::{
     components::{
         transforms::{Transform, TransformBuilder, TransformContext},
@@ -16,10 +19,9 @@ use saluki_core::{
 use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
 use tokio::select;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
-use crate::components::dogstatsd_filterlist::Blocklist;
-
+use crate::components::dogstatsd_filterlist::{compile_metric_filter, Blocklist};
 const METRIC_FILTERLIST_SIZE_METRIC: &str = "metric_filterlist_size";
 const METRIC_FILTERLIST_UPDATES_METRIC: &str = "metric_filterlist_updates_total";
 const LISTENER_FILTERED_POINTS_METRIC: &str = "dogstatsd_listener_filtered_points_total";
@@ -134,13 +136,45 @@ struct DogStatsDPrefixFilter {
     telemetry: FilterlistTelemetry,
 }
 
+fn is_histogram_metric(metric: &Metric) -> bool {
+    matches!(metric.values(), MetricValues::Histogram(_))
+}
+
 impl DogStatsDPrefixFilter {
     fn sync_matcher(&mut self, count_update: bool) {
-        self.matcher = Blocklist::new(
-            self.metric_filter.values.iter().map(String::as_str),
-            self.metric_filter.match_prefix,
-        );
-        self.telemetry.set_filterlist_size(self.metric_filter.values.len());
+        let (matcher, report) = compile_metric_filter(&self.metric_filter);
+
+        for entry in &report.dropped_entries {
+            warn!(
+                entry = %entry,
+                "metric_filterlist: dropping entry that cannot match any metric name stored by Datadog"
+            );
+        }
+        for prefix in &report.dropped_rules {
+            warn!(
+                prefix = %prefix,
+                "metric_filterlist_prefix: dropping entry that cannot match any metric name stored by Datadog"
+            );
+        }
+        for exception in &report.dropped_exceptions {
+            warn!(
+                exception = %exception,
+                "metric_filterlist_prefix: dropping exception that cannot match any metric name stored by Datadog"
+            );
+        }
+        for prefix in &report.shadowed_rules {
+            warn!(
+                prefix = %prefix,
+                "metric_filterlist_prefix: dropping entry covered by an unconditional metric_filterlist prefix"
+            );
+        }
+
+        if matcher.matches_all() {
+            warn!("the metric filterlist matches every metric name: all storable metrics are dropped");
+        }
+
+        self.telemetry.set_filterlist_size(matcher.len());
+        self.matcher = matcher;
         if count_update {
             self.telemetry.increment_filterlist_updates();
         }
@@ -148,35 +182,28 @@ impl DogStatsDPrefixFilter {
 
     fn process_metric(&self, metric: &mut Metric) -> bool {
         let metric_name = metric.context().name().as_ref();
-
-        if self.metric_prefix.is_empty() {
-            if self.matcher.contains(metric_name) {
-                self.telemetry.increment_listener_filtered_points();
-                debug!("Metric {} excluded due to blocklist.", metric_name);
-                return false;
-            }
+        let new_metric_name = if self.metric_prefix.is_empty() || self.has_excluded_prefix(metric_name) {
+            metric.context().name().clone()
         } else {
-            // We don't want to prefix the metric if it has a prefix that is on our _prefix_ blocklist,
-            // which ensures we don't prefix metrics that are already prefixed.
-            let new_metric_name = if self.has_excluded_prefix(metric_name) {
-                metric.context().name().clone()
-            } else {
-                let mut prefixed_metric_name = self.metric_prefix.clone();
-                prefixed_metric_name.push_str(metric_name);
-                prefixed_metric_name.into()
-            };
+            let mut prefixed_metric_name = self.metric_prefix.clone();
+            prefixed_metric_name.push_str(metric_name);
+            prefixed_metric_name.into()
+        };
 
-            if self.matcher.contains(&new_metric_name) {
-                self.telemetry.increment_listener_filtered_points();
-                debug!("Metric {} excluded due to blocklist.", new_metric_name);
-                return false;
-            }
+        let blocked = self.matcher.contains(&new_metric_name);
+        let preserved_for_histogram_outputs =
+            blocked && is_histogram_metric(metric) && self.matcher.has_descendant_exception(&new_metric_name);
 
-            // Update metric with new name.
-            let new_context = metric.context().with_name(new_metric_name);
-            let existing_context = metric.context_mut();
-            *existing_context = new_context;
+        if blocked && !preserved_for_histogram_outputs {
+            self.telemetry.increment_listener_filtered_points();
+            debug!("Metric {} excluded due to blocklist.", new_metric_name);
+            return false;
         }
+
+        // Update metric with the computed name (which may be unchanged).
+        let new_context = metric.context().with_name(new_metric_name);
+        let existing_context = metric.context_mut();
+        *existing_context = new_context;
 
         true
     }
@@ -336,7 +363,7 @@ mod tests {
             .matcher(Blocklist::new(["foo.bar", "test"], false))
             .build();
 
-        // "bar" is prefixed to "foo.bar", which the blocklist matches.
+        // `bar` is prefixed to `foo.bar`, which the blocklist matches.
         let mut metric = Metric::gauge("bar", 1.0);
         assert!(!filter.process_metric(&mut metric));
 
@@ -354,11 +381,11 @@ mod tests {
             .matcher(Blocklist::new(["b", "test"], true))
             .build();
 
-        // match prefix is true, "bar" has prefix "b"
+        // Match-prefix mode is enabled, so `bar` matches prefix `b`.
         let mut metric = Metric::gauge("bar", 1.0);
         assert!(!filter.process_metric(&mut metric));
 
-        // match prefix is true, "test" has prefix "test"
+        // Match-prefix mode is enabled, so `test` matches prefix `test`.
         let mut metric = Metric::gauge("test", 1.0);
         assert!(!filter.process_metric(&mut metric));
     }
@@ -370,9 +397,102 @@ mod tests {
             .matcher(Blocklist::new(["fo", "test"], true))
             .build();
 
-        // new_metric is "foo.bar", match prefix is true, "foo.bar" has prefix "fo"
+        // The computed name is `foo.bar`; with match-prefix mode enabled, it matches prefix `fo`.
         let mut metric = Metric::gauge("bar", 1.0);
         assert!(!filter.process_metric(&mut metric));
+    }
+
+    #[test]
+    fn typed_filter_prefix_rules_with_exceptions_are_applied() {
+        let metric_filter = Live::new_fixed(MetricFilter {
+            values: vec!["exact.blocked".to_string()],
+            match_prefix: false,
+            prefix_rules: vec![agent_data_plane_config::domains::dogstatsd::MetricPrefixRule {
+                prefix: "prefixed.".to_string(),
+                except_prefix: vec!["prefixed.keep.".to_string()],
+                except_exact: vec!["prefixed.keep.exact".to_string()],
+            }],
+        });
+
+        let mut filter = FilterBuilder::new().metric_filter(metric_filter).build();
+        filter.sync_matcher(false);
+
+        let mut exact = Metric::gauge("exact.blocked", 1.0);
+        assert!(!filter.process_metric(&mut exact));
+
+        let mut prefixed = Metric::gauge("prefixed.anything", 1.0);
+        assert!(!filter.process_metric(&mut prefixed));
+
+        let mut except_exact = Metric::gauge("prefixed.keep.exact", 1.0);
+        assert!(filter.process_metric(&mut except_exact));
+
+        let mut except_prefix = Metric::gauge("prefixed.keep.waiting", 1.0);
+        assert!(filter.process_metric(&mut except_prefix));
+    }
+
+    #[test]
+    fn histogram_input_is_preserved_when_descendant_aggregate_output_is_excepted() {
+        let metric_filter = Live::new_fixed(MetricFilter {
+            values: Vec::new(),
+            match_prefix: false,
+            prefix_rules: vec![agent_data_plane_config::domains::dogstatsd::MetricPrefixRule {
+                prefix: "requests.".to_string(),
+                except_prefix: Vec::new(),
+                except_exact: vec!["requests.exact.keep.avg".to_string()],
+            }],
+        });
+
+        let mut filter = FilterBuilder::new().metric_filter(metric_filter).build();
+        filter.sync_matcher(false);
+
+        let mut histogram = Metric::histogram("requests.exact.keep", [1.0, 2.0, 3.0]);
+        assert!(filter.process_metric(&mut histogram));
+        assert_eq!(histogram.context().name(), "requests.exact.keep");
+
+        let mut scalar = Metric::gauge("requests.exact.keep", 1.0);
+        assert!(!filter.process_metric(&mut scalar));
+    }
+
+    #[test]
+    fn histogram_input_still_drops_when_metric_filterlist_exact_entry_matches() {
+        let metric_filter = Live::new_fixed(MetricFilter {
+            values: vec!["requests.exact.keep".to_string()],
+            match_prefix: false,
+            prefix_rules: vec![agent_data_plane_config::domains::dogstatsd::MetricPrefixRule {
+                prefix: "requests.".to_string(),
+                except_prefix: Vec::new(),
+                except_exact: vec!["requests.exact.keep.avg".to_string()],
+            }],
+        });
+
+        let mut filter = FilterBuilder::new().metric_filter(metric_filter).build();
+        filter.sync_matcher(false);
+
+        let mut histogram = Metric::histogram("requests.exact.keep", [1.0, 2.0, 3.0]);
+        assert!(!filter.process_metric(&mut histogram));
+    }
+
+    #[test]
+    fn preserved_histogram_input_still_gets_namespace_prefix_applied() {
+        let metric_filter = Live::new_fixed(MetricFilter {
+            values: Vec::new(),
+            match_prefix: false,
+            prefix_rules: vec![agent_data_plane_config::domains::dogstatsd::MetricPrefixRule {
+                prefix: "tenant.requests.".to_string(),
+                except_prefix: Vec::new(),
+                except_exact: vec!["tenant.requests.exact.keep.avg".to_string()],
+            }],
+        });
+
+        let mut filter = FilterBuilder::new()
+            .prefix("tenant.")
+            .metric_filter(metric_filter)
+            .build();
+        filter.sync_matcher(false);
+
+        let mut histogram = Metric::histogram("requests.exact.keep", [1.0, 2.0, 3.0]);
+        assert!(filter.process_metric(&mut histogram));
+        assert_eq!(histogram.context().name(), "tenant.requests.exact.keep");
     }
 
     #[tokio::test]
@@ -381,6 +501,7 @@ mod tests {
         initial.domains.dogstatsd.metric_filter = MetricFilter {
             values: vec!["foobar".to_string(), "test".to_string()],
             match_prefix: false,
+            prefix_rules: Vec::new(),
         };
         let cell = Arc::new(arc_swap::ArcSwap::from_pointee(initial));
         let (tick_tx, tick_rx) = tokio::sync::watch::channel(());
@@ -400,6 +521,7 @@ mod tests {
         updated.domains.dogstatsd.metric_filter = MetricFilter {
             values: vec!["foo".to_string()],
             match_prefix: true,
+            prefix_rules: Vec::new(),
         };
         cell.store(Arc::new(updated));
         tick_tx.send_replace(());
@@ -423,6 +545,7 @@ mod tests {
         let metric_filter = Live::new_fixed(MetricFilter {
             values: vec!["preferred".to_string()],
             match_prefix: false,
+            prefix_rules: Vec::new(),
         });
         let mut filter = FilterBuilder::new()
             .metric_filter(metric_filter)
@@ -436,11 +559,12 @@ mod tests {
         filter.metric_filter = Live::new_fixed(MetricFilter {
             values: vec!["foo".to_string(), "foobar".to_string()],
             match_prefix: true,
+            prefix_rules: Vec::new(),
         });
         filter.sync_matcher(true);
 
         assert_eq!(recorder.counter(METRIC_FILTERLIST_UPDATES_METRIC), Some(1));
-        assert_eq!(recorder.gauge(METRIC_FILTERLIST_SIZE_METRIC), Some(2.0));
+        assert_eq!(recorder.gauge(METRIC_FILTERLIST_SIZE_METRIC), Some(1.0));
 
         let mut metric = Metric::gauge("foobar.baz", 1.0);
         assert!(!filter.process_metric(&mut metric));
