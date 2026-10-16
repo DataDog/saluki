@@ -3697,7 +3697,7 @@ dependencies = [
 [[package]]
 name = "lading-payload"
 version = "0.1.0"
-source = "git+https://github.com/DataDog/lading?rev=c61c51c5fbb1d0ebcf1b12de847c042522c8c7a7#c61c51c5fbb1d0ebcf1b12de847c042522c8c7a7"
+source = "git+https://github.com/DataDog/lading?branch=oscarld%2Fv04-sampling-priority#1fdb3ed1c37e4afe9f83ef1b6ecee31b9b8d9cc7"
 dependencies = [
  "byte-unit",
  "bytes",
@@ -3706,6 +3706,7 @@ dependencies = [
  "opentelemetry-proto",
  "prost",
  "rand 0.10.3",
+ "rmp",
  "rmp-serde",
  "rustc-hash 2.1.2",
  "serde",

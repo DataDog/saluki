@@ -4,7 +4,8 @@ use base64::Engine as _;
 use bytes::{BufMut as _, Bytes, BytesMut};
 use bytesize::ByteSize;
 use lading_payload::{
-    opentelemetry::metric::OpentelemetryMetrics, trace_agent::v04::V04, DogStatsD, OpentelemetryTraces,
+    opentelemetry::metric::OpentelemetryMetrics, trace_agent::v04::V04, trace_agent::v1::V1, DogStatsD,
+    OpentelemetryTraces,
 };
 use rand::{rngs::StdRng, SeedableRng as _};
 use saluki_error::{generic_error, GenericError};
@@ -102,6 +103,16 @@ fn generate_payloads(mut rng: StdRng, blueprint: CorpusBlueprint) -> Result<(Vec
         }
         Payload::DatadogTraces(lading_payload::trace_agent::Config::V04(config)) => {
             let mut generator = V04::with_config(config, &mut rng)?;
+            generate_payloads_inner(
+                &mut generator,
+                rng,
+                &mut payloads,
+                blueprint.size,
+                DATADOG_TRACES_MAX_PAYLOAD_BYTES,
+            )?
+        }
+        Payload::DatadogTraces(lading_payload::trace_agent::Config::V1(config)) => {
+            let mut generator = V1::with_config(config, &mut rng)?;
             generate_payloads_inner(
                 &mut generator,
                 rng,
