@@ -3263,16 +3263,32 @@ inventory:
         config_registry_filename: otlp.rs
 
   otlp_config.traces.infra_attributes.container_tag_promotion:
-    support: none
-    severity: low
-    planned: true
-    issue: "#2338"
+    support: full
     pipelines: [traces]
     description: "OTLP trace container-tag promotion"
     documentation: |-
-      ADP does not currently honor this setting. Native trace processing does not enrich resources with
-      tagger-derived attributes, while proxy mode forwards traces directly to the Trace Agent without the core Agent's
-      infrastructure-attributes processor.
+      Controls how custom infrastructure tags are promoted into container tags on OTLP traces. The default
+      `off` writes tags as-is, so only convention keys reach container tags. Set this to `duplicate` to also
+      carry custom tags into container tags under a `datadog.container.tag.` prefixed copy, or `rename` to
+      carry only the prefixed copy. Convention keys and already-prefixed keys are exempt in every mode.
+    test_support:
+      used_by: [TypedConfigSystem]
+      test_json: '"duplicate"'
+      additional_attributes:
+        config_registry_filename: otlp.rs
+
+  otlp_config.traces.infra_attributes.enabled:
+    support: full
+    pipelines: [traces]
+    description: "OTLP trace infrastructure-attribute enrichment"
+    documentation: |-
+      Controls whether entity and global tags from the workload metadata store are enriched onto OTLP traces.
+      The default `true` attaches the tags the local metadata store holds for the resource's container. When
+      `false`, traces carry only the resource attributes the sender provided.
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.traces.internal_port:
     support: full
@@ -5223,7 +5239,6 @@ excluded:
   otlp_config.logs.batch.min_size: "ignored in initial audit 2026-04-23"
   otlp_config.logs.infra_attributes.tags_as_ddtags: "2026-09-08 ADP does not currently support OTLP logs."
   otlp_config.metrics.histograms.send_count_sum_metrics: "deprecated; ADP supports only send_aggregation_metrics"
-  otlp_config.traces.infra_attributes.enabled: "ignored in initial audit 2026-04-23"
   otlp_config.traces.span_name_as_resource_name: "ignored in initial audit 2026-04-23"
   otlp_config.traces.span_name_remappings: "ignored in initial audit 2026-04-23"
   patch_prometheus_client: "2026-09-08 ADP does not currently load Agent integrations or patch their Prometheus clients."
