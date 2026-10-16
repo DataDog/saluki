@@ -1,12 +1,12 @@
-//! Remote Configuration settings for trace sampling.
+//! Loads trace sampling settings from the `APM_SAMPLING` Remote Configuration product.
 //!
-//! The `APM_SAMPLING` product can change the priority and error samplers' target traces per second
-//! and turn rare sampling on or off. A configuration may set values for every environment or
-//! override individual fields for a specific environment. Unset fields use the local trace sampler
-//! settings. See the Datadog Agent's `pkg/trace/remoteconfighandler/remote_config_handler.go` for
-//! the behavior this module follows.
+//! The product can change the priority and error samplers' target traces per second and turn rare sampling on or off.
+//! A configuration may set values for every environment or override individual fields for a specific environment.
+//! Unset fields use the consumer's local settings. This follows the Datadog Agent's
+//! `pkg/trace/remoteconfighandler/remote_config_handler.go`.
 
 use std::fmt;
+use std::sync::Arc;
 
 use datadog_agent_remote_config::{
     decode_json, ApplyError, ConfigId, JsonError, ProductDecoder, RemoteConfigurationClient, Subscription,
@@ -17,49 +17,63 @@ use serde::{Deserialize, Deserializer};
 ///
 /// Missing and `null` fields leave that setting unset; `0` and `false` are explicit values.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-pub(crate) struct SamplerEnvConfig {
+struct SamplerEnvConfig {
     /// Target traces per second for the priority sampler.
     #[serde(
         default,
         rename = "priority_sampler_target_TPS",
         alias = "priority_sampler_target_tps"
     )]
-    pub(crate) priority_sampler_target_tps: Option<f64>,
+    priority_sampler_target_tps: Option<f64>,
 
     /// Target traces per second for the errors sampler.
     #[serde(default, rename = "errors_sampler_target_TPS", alias = "errors_sampler_target_tps")]
-    pub(crate) errors_sampler_target_tps: Option<f64>,
+    errors_sampler_target_tps: Option<f64>,
 
     /// Whether the rare sampler is enabled.
     #[serde(default)]
-    pub(crate) rare_sampler_enabled: Option<bool>,
+    rare_sampler_enabled: Option<bool>,
 }
 
 /// An environment name and its sampling overrides.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-pub(crate) struct EnvAndConfig {
+struct EnvAndConfig {
     /// Environment to match against the normalized local default; the payload name is used as given.
     #[serde(default, deserialize_with = "null_as_default")]
-    pub(crate) env: String,
+    env: String,
 
     /// The settings for `env`.
     #[serde(default, deserialize_with = "null_as_default")]
-    pub(crate) config: SamplerEnvConfig,
+    config: SamplerEnvConfig,
 }
 
 /// Settings supplied by one `APM_SAMPLING` configuration.
 ///
+/// Call [`resolve`](Self::resolve) to combine the configuration with local settings for one environment.
+///
+/// ```json
+/// {
+///   "all_envs": { "priority_sampler_target_TPS": 10, "errors_sampler_target_TPS": 5, "rare_sampler_enabled": true },
+///   "by_env": [{ "env": "prod", "config": { "rare_sampler_enabled": false } }]
+/// }
+/// ```
+///
+/// Missing and `null` fields fall back through `all_envs` to local settings; `0` and `false` are explicit values. A
+/// payload that sets nothing, such as `{}` or `null`, is still an assigned configuration
+/// ([`RemoteSampling::Remote`]) and resolves entirely to local settings. This differs from an empty assignment, which
+/// is [`RemoteSampling::Unassigned`].
+///
 /// The Datadog Agent sends the `*_TPS` field names. Lowercase `*_tps` names also work;
 /// unknown fields are ignored.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-pub(crate) struct SamplerConfig {
+pub struct SamplerConfig {
     /// Settings for every environment.
     #[serde(default, deserialize_with = "null_as_default")]
-    pub(crate) all_envs: SamplerEnvConfig,
+    all_envs: SamplerEnvConfig,
 
     /// Settings for individual environments.
     #[serde(default, deserialize_with = "null_entries_as_default")]
-    pub(crate) by_env: Vec<EnvAndConfig>,
+    by_env: Vec<EnvAndConfig>,
 }
 
 /// Treats `null` like a missing field, as the Datadog Agent's JSON decoder does.
@@ -83,24 +97,27 @@ where
 
 /// Effective sampling settings, either from local configuration or resolved remote overrides.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct SamplerSettings {
+pub struct SamplerSettings {
     /// Target traces per second for the priority sampler.
-    pub(crate) target_traces_per_second: f64,
+    pub target_traces_per_second: f64,
 
     /// Target traces per second for the errors sampler.
-    pub(crate) errors_per_second: f64,
+    pub errors_per_second: f64,
 
     /// Whether the rare sampler is enabled.
-    pub(crate) rare_sampler_enabled: bool,
+    pub rare_sampler_enabled: bool,
 }
 
 impl SamplerConfig {
     /// Chooses settings for the local default environment.
     ///
-    /// For each field, use the last matching `by_env` entry, then `all_envs`, then the local settings.
-    /// The caller normalizes `default_env` as a tag value; names in the remote payload are
-    /// compared as given. A payload name such as `Prod` will not match a normalized `prod`.
-    pub(crate) fn resolve(&self, default_env: &str, static_settings: &SamplerSettings) -> SamplerSettings {
+    /// For each field, uses the last matching `by_env` entry, then `all_envs`, then `static_settings`. Fields are
+    /// chosen independently, so one field can come from `by_env` while another comes from `all_envs`; earlier
+    /// matching `by_env` entries are ignored once a later one matches.
+    ///
+    /// The caller normalizes `default_env` as a tag value; names in the remote payload are compared as given. A
+    /// payload name such as `Prod` does not match a normalized `prod`.
+    pub fn resolve(&self, default_env: &str, static_settings: &SamplerSettings) -> SamplerSettings {
         let for_env = self
             .by_env
             .iter()
@@ -129,8 +146,8 @@ impl SamplerConfig {
 
 /// The result of an accepted `APM_SAMPLING` assignment.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum RemoteSampling {
-    /// No configuration is assigned; keep the last applied remote settings, if any.
+pub enum RemoteSampling {
+    /// No configuration is assigned; the consumer keeps its own last-applied settings.
     Unassigned,
 
     /// The one assigned configuration and its ID.
@@ -147,7 +164,7 @@ pub(crate) enum RemoteSampling {
 ///
 /// The client reports this error to the remote configuration service.
 #[derive(Debug)]
-pub(crate) enum SamplingError {
+pub(super) enum SamplingError {
     /// A configuration's payload is not a valid sampling configuration.
     InvalidPayload(JsonError),
 
@@ -182,18 +199,21 @@ impl ApplyError for SamplingError {
     }
 }
 
-/// Receives `APM_SAMPLING` updates for a trace sampler.
+/// Receives `APM_SAMPLING` updates for trace samplers.
 ///
-/// Create this from the remote configuration client and pass it to
-/// [`TraceSamplerConfiguration::with_remote_sampling`]. The sampler applies accepted updates
-/// before processing each buffer of traces. It keeps its current settings if an update is rejected
-/// or no configuration is assigned. Dropping the last subscription (including copies held by
-/// samplers) unsubscribes from the product.
+/// Create this from the Remote Configuration client and pass it to every trace sampler that applies the product.
+/// Clones share one subscription, and dropping the last clone unsubscribes from the product.
 ///
-/// [`TraceSamplerConfiguration::with_remote_sampling`]: super::TraceSamplerConfiguration::with_remote_sampling
-#[derive(Debug)]
+/// This is a latest-state snapshot, not an event queue: intermediate publications can be skipped. Call
+/// [`current`](Self::current) at a convenient boundary, such as before processing a batch of traces, and apply the
+/// update only when it differs from the one already applied.
+///
+/// The wrapper does not retain or apply previous sampler settings. On [`RemoteSampling::Unassigned`] the consumer
+/// keeps its own last-applied settings. A rejected update leaves the last accepted snapshot in place. The default
+/// subscription is inert: it never receives an update and does not contact the Remote Configuration service.
+#[derive(Clone, Debug)]
 pub struct TraceSamplingSubscription {
-    pub(super) subscription: Subscription<RemoteSampling, SamplingError>,
+    subscription: Subscription<RemoteSampling, SamplingError>,
 }
 
 impl TraceSamplingSubscription {
@@ -203,9 +223,27 @@ impl TraceSamplingSubscription {
     ///
     /// Returns an error if `client` already has a live subscription to `APM_SAMPLING`.
     pub fn new(client: &RemoteConfigurationClient) -> Result<Self, datadog_agent_remote_config::Error> {
-        Ok(Self {
-            subscription: client.subscribe::<SamplingDecoder>()?,
-        })
+        Ok(Self::from_subscription(client.subscribe::<SamplingDecoder>()?))
+    }
+
+    /// Wraps a subscription to the sampling decoder.
+    pub(super) fn from_subscription(subscription: Subscription<RemoteSampling, SamplingError>) -> Self {
+        Self { subscription }
+    }
+
+    /// Returns the latest accepted snapshot, or `None` if none has been accepted.
+    ///
+    /// Returns immediately, without waiting for an update. Each accepted update is a new allocation, so [`Arc::ptr_eq`]
+    /// distinguishes a new update from one already applied even when the settings are equal. An unassigned
+    /// configuration is reported as [`RemoteSampling::Unassigned`], not `None`.
+    pub fn current(&self) -> Option<Arc<RemoteSampling>> {
+        self.subscription.current()
+    }
+}
+
+impl Default for TraceSamplingSubscription {
+    fn default() -> Self {
+        Self::from_subscription(Subscription::inert())
     }
 }
 
@@ -214,7 +252,7 @@ impl TraceSamplingSubscription {
 /// No assignment produces [`RemoteSampling::Unassigned`]. An invalid or multiple-configuration
 /// assignment is rejected, leaving subscribers with the last accepted update.
 #[derive(Default)]
-pub(crate) struct SamplingDecoder {
+pub(super) struct SamplingDecoder {
     assigned: usize,
     chosen: Option<(ConfigId, SamplerConfig)>,
 }
@@ -256,6 +294,7 @@ mod tests {
     use datadog_agent_remote_config::TestPublisher;
 
     use super::*;
+    use crate::sampling::test_util::TestSamplingPublisher;
 
     const STATIC: SamplerSettings = SamplerSettings {
         target_traces_per_second: 41.0,
@@ -540,6 +579,76 @@ mod tests {
             snapshot,
             Err("APM_SAMPLING carries 2 configurations; expected at most one.".to_owned())
         );
+    }
+
+    #[test]
+    fn default_subscription_never_has_an_update() {
+        assert_eq!(TraceSamplingSubscription::default().current(), None);
+    }
+
+    #[test]
+    fn new_subscribes_to_apm_sampling_until_the_last_clone_drops() {
+        let client = RemoteConfigurationClient::without_agent();
+
+        let subscription = TraceSamplingSubscription::new(&client).expect("the product is not yet subscribed");
+        assert_eq!(client.subscribed_products(), ["APM_SAMPLING"]);
+        assert!(matches!(
+            TraceSamplingSubscription::new(&client),
+            Err(datadog_agent_remote_config::Error::AlreadySubscribed { product }) if product == "APM_SAMPLING"
+        ));
+
+        // A surviving clone keeps the registration alive.
+        let clone = subscription.clone();
+        drop(subscription);
+        assert!(TraceSamplingSubscription::new(&client).is_err());
+
+        drop(clone);
+        assert!(client.subscribed_products().is_empty());
+        let _resubscribed = TraceSamplingSubscription::new(&client).expect("the product is free again");
+        assert_eq!(client.subscribed_products(), ["APM_SAMPLING"]);
+    }
+
+    #[test]
+    fn subscription_has_no_update_before_one_is_accepted() {
+        let (_publisher, subscription) = TestSamplingPublisher::new();
+        assert_eq!(subscription.current(), None);
+    }
+
+    #[test]
+    fn clones_observe_accepted_updates() {
+        let (publisher, subscription) = TestSamplingPublisher::new();
+        let clone = subscription.clone();
+
+        publisher.assign([("a", r#"{"all_envs":{"rare_sampler_enabled":true}}"#)]);
+        let first = subscription.current().expect("a configuration is accepted");
+        assert!(matches!(&*first, RemoteSampling::Remote { id, .. } if id == &ConfigId::new("a")));
+        assert!(Arc::ptr_eq(
+            &first,
+            &clone.current().expect("clones see the same update")
+        ));
+
+        publisher.assign(std::iter::empty::<(&str, &str)>());
+        assert_eq!(
+            *clone.current().expect("an empty assignment is accepted"),
+            RemoteSampling::Unassigned
+        );
+        assert_eq!(
+            *subscription.current().expect("an empty assignment is accepted"),
+            RemoteSampling::Unassigned
+        );
+    }
+
+    #[test]
+    fn rejected_assignment_keeps_the_last_update() {
+        let (publisher, subscription) = TestSamplingPublisher::new();
+        publisher.assign([("a", "{}")]);
+        let accepted = subscription.current().expect("a configuration is accepted");
+
+        publisher.assign([("a", "{}"), ("b", "{}")]);
+        assert!(Arc::ptr_eq(
+            &accepted,
+            &subscription.current().expect("the earlier update is retained")
+        ));
     }
 
     #[tokio::test]
