@@ -503,8 +503,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
             })
             .collect();
 
-        // The trace-agent refuses to start when a rule lacks either field, which includes a null rule
-        // (read as an empty map). `repl` may be empty: that deletes the matched text.
+        // A rule lacking either field is invalid, which includes a null rule (read as an empty map). `repl`
+        // may be empty: that deletes the matched text. The trace-agent defines this recovery rather than
+        // failing: it logs the error, applies none of the rules, and keeps running. Recovering the same way
+        // keeps a bad rule from failing the strict startup gate on a configuration the Agent runs with.
         for rule in &rules {
             let message = if rule.name.is_empty() {
                 r#"all rules must have a "name" property (use "*" to target all)"#
@@ -513,7 +515,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
             } else {
                 continue;
             };
-            self.record_error(TranslateError::new_with_message("apm_config.replace_tags", message));
+            warn!(
+                config_key = "apm_config.replace_tags",
+                "Invalid replace rule: {message}. Ignoring all replace rules."
+            );
             return;
         }
 
@@ -1761,32 +1766,24 @@ mod tests {
     }
 
     #[test]
-    fn apm_config_replace_tags_rejects_rules_missing_a_name_or_pattern() {
-        // Matches the trace-agent, which fails to start on these. A null rule reads as an empty map, and
-        // the trace-agent compares the decoded string, so an explicit empty value fails like a missing one.
-        for (rules, expected) in [
-            (json!([null]), r#"all rules must have a "name" property"#),
-            (json!([{ "pattern": "p" }]), r#"all rules must have a "name" property"#),
-            (
-                json!([{ "name": "", "pattern": "p" }]),
-                r#"all rules must have a "name" property"#,
-            ),
-            (
-                json!([{ "name": "*", "pattern": "" }]),
-                r#"all rules must have a "pattern""#,
-            ),
-            (
-                json!([{ "name": "*", "repl": "x" }]),
-                r#"all rules must have a "pattern""#,
-            ),
+    fn apm_config_replace_tags_ignores_all_rules_when_one_lacks_a_name_or_pattern() {
+        // Matches the trace-agent, which logs these and runs with no replace rules. A null rule reads as an
+        // empty map, and the trace-agent compares the decoded string, so an explicit empty value fails like a
+        // missing one. The valid first rule shows that one bad rule discards them all.
+        for bad_rule in [
+            json!(null),
+            json!({ "pattern": "p" }),
+            json!({ "name": "", "pattern": "p" }),
+            json!({ "name": "*", "pattern": "" }),
+            json!({ "name": "*", "repl": "x" }),
         ] {
+            let rules = json!([{ "name": "http.url", "pattern": "p" }, bad_rule]);
             let (config, errors) = translate_explicit(json!({ "apm_config": { "replace_tags": rules } }));
-            let errors = errors
-                .unwrap_or_else(|| panic!("{rules} should be rejected"))
-                .to_string();
-            assert!(errors.contains("apm_config.replace_tags"), "{errors}");
-            assert!(errors.contains(expected), "{errors}");
-            assert!(config.domains.traces.replace_tags.is_empty());
+            assert!(errors.is_none(), "{rules} should not fail translation: {errors:?}");
+            assert!(
+                config.domains.traces.replace_tags.is_empty(),
+                "{rules} should apply no rules"
+            );
         }
     }
 
