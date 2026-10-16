@@ -5,6 +5,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
+use futures::stream::{self, Stream};
 use tokio::sync::watch;
 
 use crate::SalukiConfiguration;
@@ -103,6 +104,22 @@ impl<T: Clone + PartialEq + 'static> Live<T> {
                 }
             },
         }
+    }
+
+    /// Converts this view into a stream of its changes.
+    ///
+    /// Each item is the value that [`changed`](Self::changed) would have returned next: the stream
+    /// starts with the first change after this call, not with the current snapshot, and coalesces
+    /// updates the same way. The stream never ends: like `changed`, it parks forever when `Fixed`
+    /// or the channel is closed, so a consumer can poll it unconditionally.
+    pub fn into_stream(self) -> impl Stream<Item = T> + Send + 'static
+    where
+        T: Send,
+    {
+        stream::unfold(self, |mut live| async move {
+            let value = live.changed().await;
+            Some((value, live))
+        })
     }
 
     /// Creates a child view by composing this view's projection with `f`.

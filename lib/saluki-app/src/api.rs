@@ -23,7 +23,7 @@ use saluki_api::{APIHandler, DynamicRoute, EndpointType};
 use saluki_common::{collections::FastIndexMap, sync::shutdown::ShutdownHandle};
 use saluki_core::runtime::{
     state::{DataspaceRegistry, DataspaceUpdate, Identifier, IdentifierFilter, Subscription},
-    AutoShutdown, InitializationError, Supervisable, Supervisor, SupervisorFuture,
+    InitializationError, Supervisable, Supervisor, SupervisorFuture,
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::{
@@ -202,9 +202,7 @@ impl APIBuilder {
             EndpointType::Privileged => "privileged-api",
         };
 
-        let mut supervisor = Supervisor::new(name)
-            .expect("API supervisor name is a non-empty constant")
-            .with_auto_shutdown(AutoShutdown::AnySignificant);
+        let mut supervisor = Supervisor::new(name).expect("API supervisor name is a non-empty constant");
 
         supervisor.add_worker(http_server.into_supervisor());
         supervisor.add_worker(RouteUpdaterWorker {

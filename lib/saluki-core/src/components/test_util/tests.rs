@@ -149,9 +149,16 @@ enum ChildBehavior {
     /// Never finishes, and is aborted as soon as the supervisor stops. The destination returns after its first event,
     /// rather than once its input closes.
     AbortedOnStop,
+
+    /// Is needed, and fails at once while it holds the only sender of a channel. The destination returns cleanly when
+    /// it sees that channel close, so its `run` returns before its scope sees the failure.
+    NeededFailsBeforeRunReturns,
+
+    /// Is needed, and fails at once. The destination waits for its input to close, so the failure stops its `run`.
+    NeededFailsWhileRunWaits,
 }
 
-/// A destination that spawns one child on the ambient supervisor, then consumes its input until it closes.
+/// A destination that spawns one child into its scope, then consumes its input until it closes.
 struct SpawningDestination {
     child: ChildBehavior,
 }
@@ -176,6 +183,24 @@ impl Destination for SpawningDestination {
                     .spawn();
                 context.events().next().await;
                 return Ok(());
+            }
+            ChildBehavior::NeededFailsBeforeRunReturns => {
+                let (child_tx, mut child_rx) = tokio::sync::mpsc::channel::<()>(1);
+                runtime::worker("child", async move {
+                    let _child_tx = child_tx;
+                    Err::<(), _>(generic_error!("child failed on purpose"))
+                })
+                .needed()
+                .spawn();
+                let _ = child_rx.recv().await;
+                return Ok(());
+            }
+            ChildBehavior::NeededFailsWhileRunWaits => {
+                runtime::worker("child", async {
+                    Err::<(), _>(generic_error!("child failed on purpose"))
+                })
+                .needed()
+                .spawn();
             }
         }
 
@@ -289,7 +314,8 @@ async fn children_spawned_from_run_join_the_component_supervisor() {
     .await
     .expect("destination should build");
 
-    control.supervisor().wait_for_children(1).await;
+    // The destination's worker, and the child in its scope.
+    control.supervisor().wait_for_running_descendants(2).await;
 
     control
         .shutdown()
@@ -307,7 +333,8 @@ async fn child_ignoring_shutdown_surfaces_as_shutdown_timed_out() {
         .await
         .expect("destination should build");
 
-    control.supervisor().wait_for_children(1).await;
+    // The destination's worker, and the child in its scope.
+    control.supervisor().wait_for_running_descendants(2).await;
 
     let started = Instant::now();
     let error = control
@@ -364,17 +391,63 @@ async fn run_returning_on_its_own_stops_the_children_it_spawned() {
     })
     .await
     .expect("destination should build");
-    control.supervisor().wait_for_children(1).await;
+    // The destination's worker, and the child in its scope.
+    control.supervisor().wait_for_running_descendants(2).await;
 
     // The destination returns after its first event, without shutdown being signalled. Its supervisor stops with it,
     // and aborts the child on the way.
     control.send_event(Event::Metric(Metric::counter("stop", 1.0))).await;
-    control.supervisor().wait_for_children(0).await;
+    control.supervisor().wait_for_running_descendants(0).await;
 
     control
         .wait()
         .await
         .expect("the destination's run should return cleanly");
+}
+
+#[tokio::test]
+async fn needed_child_failing_before_run_returns_fails_the_component() {
+    // The destination returns cleanly when it sees the child's channel close, before its scope sees the child fail.
+    // The scope sees the failure as it closes, and fails the component with it, as in a topology.
+    let control = TestComponentDriver::destination(SpawningDestinationBuilder {
+        child: ChildBehavior::NeededFailsBeforeRunReturns,
+    })
+    .await
+    .expect("destination should build");
+
+    let error = control
+        .wait()
+        .await
+        .expect_err("the child's failure should fail the component");
+    assert!(
+        format!("{error:#}").contains("child failed on purpose"),
+        "the error should come from the child: {error:#}"
+    );
+}
+
+#[tokio::test]
+async fn needed_child_failing_while_run_waits_fails_the_component() {
+    // The child fails while the destination still waits for its input, so the scope stops `run` before it returns. That
+    // is the child's failure, not an abort at the end of the shutdown budget.
+    let control = TestComponentDriver::destination(SpawningDestinationBuilder {
+        child: ChildBehavior::NeededFailsWhileRunWaits,
+    })
+    .await
+    .expect("destination should build");
+
+    let error = control
+        .wait()
+        .await
+        .expect_err("the child's failure should fail the component");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("child failed on purpose"),
+        "the error should come from the child: {message}"
+    );
+    assert!(
+        !message.contains("shutdown budget"),
+        "the failure is not an abort: {message}"
+    );
 }
 
 #[tokio::test]

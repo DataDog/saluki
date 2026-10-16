@@ -1,0 +1,6 @@
+fixes:
+  - |
+    Fix ``dogstatsd_flush_incomplete_buckets`` having no effect on DogStatsD
+    aggregation windows that were still open when Agent Data Plane stopped.
+    Their values were discarded; they are now flushed as partial windows,
+    matching the Datadog Agent.
