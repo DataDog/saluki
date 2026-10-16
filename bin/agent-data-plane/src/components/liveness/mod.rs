@@ -4,6 +4,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use datadog_agent_runtime::env::RemoteAgentEnvironmentProvider;
 use saluki_common::time::get_unix_timestamp;
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
@@ -27,8 +28,6 @@ use tokio::{
 };
 use tracing::{debug, warn};
 
-use crate::internal::env::ADPEnvironmentProvider;
-
 const LIVENESS_INTERVAL: Duration = Duration::from_secs(15);
 const RUNNING_METRIC_NAME: &str = "datadog.agent_data_plane.running";
 const UP_SERVICE_CHECK_NAME: &str = "datadog.agent_data_plane.up";
@@ -44,7 +43,7 @@ pub struct LivenessConfiguration {
 impl LivenessConfiguration {
     /// Creates a liveness source configuration using the configured environment.
     pub async fn from_environment_provider(
-        env_provider: &ADPEnvironmentProvider, add_container_tags: bool,
+        env_provider: &RemoteAgentEnvironmentProvider, add_container_tags: bool,
     ) -> Result<Self, GenericError> {
         let hostname = env_provider
             .host()

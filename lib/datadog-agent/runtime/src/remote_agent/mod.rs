@@ -67,7 +67,7 @@ const SESSION_ID_METADATA_KEY: &str = "session_id";
 /// Remote agent initialization.
 ///
 /// This helper type is used to coordinate the initialization of remote agent state by registering to the Core Agent and
-/// acquiring the necessary information to allow initialization of the subagent itself to proceed.
+/// acquiring the necessary information to allow initialization of the remote agent itself to proceed.
 pub struct RemoteAgentBootstrap {
     client: RemoteAgentClient,
     session_id: SessionIdHandle,

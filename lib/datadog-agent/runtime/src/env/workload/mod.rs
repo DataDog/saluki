@@ -2,7 +2,6 @@
 
 use std::{future::Future, num::NonZeroUsize, time::Duration};
 
-use agent_data_plane_config::shared::Environment;
 use datadog_agent_commons::ipc::config::RemoteAgentClientConfiguration;
 use saluki_core::{
     accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder},
@@ -37,7 +36,7 @@ use stringtheory::interning::GenericMapInterner;
 
 mod api;
 use self::api::RemoteAgentWorkloadAPIWorker;
-use crate::internal::env::root_provider_id;
+use crate::env::{root_provider_id, WorkloadSettings};
 
 mod collectors;
 use self::collectors::{RemoteAgentTaggerMetadataCollector, RemoteAgentWorkloadMetadataCollector};
@@ -78,10 +77,10 @@ impl RemoteAgentWorkloadProvider {
     ///
     /// If there is an issue creating the underlying metadata collectors, an error is returned.
     pub async fn new(
-        string_interner_size_bytes: NonZeroUsize, environment: &Environment,
-        client_config: &RemoteAgentClientConfiguration, component_registry: &ComponentRegistry,
-        health_registry: &HealthRegistry,
+        settings: &WorkloadSettings, client_config: &RemoteAgentClientConfiguration,
+        component_registry: &ComponentRegistry, health_registry: &HealthRegistry,
     ) -> Result<(Self, Supervisor), GenericError> {
+        let string_interner_size_bytes = settings.string_interner_size_bytes;
         let workload_provider_id = root_provider_id().child("workload").child("remote_agent");
         let mut provider_bounds = component_registry.bounds_builder(&workload_provider_id);
 
@@ -104,21 +103,9 @@ impl RemoteAgentWorkloadProvider {
         let mut collector_bounds = provider_bounds.subcomponent("collectors");
         let mut collector_workers: Vec<MetadataCollectorWorker> = Vec::new();
 
-        let containerd_socket_path = environment
-            .containerd
-            .socket_path
-            .is_explicit()
-            .then(|| environment.containerd.socket_path.value.clone());
-        let container_proc_root = environment
-            .container_roots
-            .proc_root
-            .is_explicit()
-            .then(|| environment.container_roots.proc_root.value.clone());
-        let container_cgroup_root = environment
-            .container_roots
-            .cgroup_root
-            .is_explicit()
-            .then(|| environment.container_roots.cgroup_root.value.clone());
+        let containerd_socket_path = settings.containerd_socket_path.clone();
+        let container_proc_root = settings.proc_root.clone();
+        let container_cgroup_root = settings.cgroup_root.clone();
 
         let feature_detector = FeatureDetector::automatic(containerd_socket_path.clone());
 
@@ -126,8 +113,8 @@ impl RemoteAgentWorkloadProvider {
         #[cfg(unix)]
         if feature_detector.is_feature_available(Feature::Containerd) {
             let containerd_config = ContainerdConfiguration {
-                connection_timeout: environment.containerd.connection_timeout,
-                query_timeout: environment.containerd.query_timeout,
+                connection_timeout: settings.containerd_connection_timeout,
+                query_timeout: settings.containerd_query_timeout,
             };
             let cri_collector = build_collector(
                 &collectors_root,

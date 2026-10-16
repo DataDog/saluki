@@ -1,9 +1,9 @@
-//! Shared runtime infrastructure for a process that runs as a subagent of the Datadog Agent.
+//! Shared runtime infrastructure for a process that acts as a remote agent for the Datadog Agent.
 //!
-//! A subagent is a process that runs alongside the Datadog Agent and attaches to it over the Remote Agent Registry
+//! A remote agent is a process that runs alongside the Datadog Agent and attaches to it over the Remote Agent Registry
 //! (RAR): it registers itself, receives its configuration from the Agent, and serves the status, flare, and telemetry
-//! services that the Agent queries. This crate provides those pieces, so that each subagent only supplies what is truly
-//! its own.
+//! services that the Agent queries. This crate provides those pieces, so that each remote agent only supplies what is
+//! truly its own.
 //!
 //! # Conventions
 //!
@@ -27,6 +27,8 @@
 //!   `aarch64`, `x86`, `x86_64`, and `s390x`, so the feature does nothing on any other target. On those targets, the
 //!   build also requires `--cfg tokio_unstable`.
 #![deny(missing_docs)]
+
+pub mod env;
 
 pub mod logging;
 

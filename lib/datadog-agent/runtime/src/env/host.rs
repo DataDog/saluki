@@ -5,7 +5,7 @@ use saluki_env::HostProvider;
 use saluki_error::GenericError;
 use tokio::sync::OnceCell;
 
-use crate::internal::env::root_provider_id;
+use crate::env::root_provider_id;
 
 /// Datadog Agent-based host provider.
 ///

@@ -1,18 +1,18 @@
-# Subagent runtime extraction plan
+# Remote agent runtime extraction plan
 
-This document tracks the extraction of the subagent infrastructure in `bin/agent-data-plane/src/internal/` into
+This document tracks the extraction of the remote agent infrastructure in `bin/agent-data-plane/src/internal/` into
 `datadog-agent-runtime`. It lives next to the code so that the remaining work stays visible after the extraction
 stack merges. Each pull request in the stack updates this file in the same commit as its code.
 
 ## Goal
 
-Agent Check Runner (ACR) runs as a subagent of the Datadog Agent, just like Agent Data Plane (ADP). To do that, ACR
+Agent Check Runner (ACR) runs as a remote agent of the Datadog Agent, just like Agent Data Plane (ADP). To do that, ACR
 copied large parts of ADP's `internal/` module: the remote agent workload provider, the dynamic log level worker, the
 remote agent services, the control plane, the host and autodiscovery providers, the internal telemetry worker, the vsock
 mapping, and most of the `run` command. The copies were taken from Saluki 1.5.0, 1.6.1, and 1.6.2, and they have
 already drifted.
 
-This crate replaces those copies. A subagent uses it to:
+This crate replaces those copies. A remote agent uses it to:
 
 - register with the Datadog Agent over the Remote Agent Registry (RAR)
 - receive its configuration over the configuration stream
@@ -28,7 +28,7 @@ telemetry remapping rules, and any extra API handlers.
 1. **The configuration scope stops at the stream.** The runtime yields `mpsc::Receiver<ConfigUpdate>`. Each binary
    keeps its own configuration system and plugs it in through traits. Making `agent-data-plane-config-system` generic
    gets its own plan.
-2. **The runtime provides a full facade.** A staged `Subagent` type drives the whole startup sequence. It's built on
+2. **The runtime provides a full facade.** A staged facade type drives the whole startup sequence. It's built on
    public building blocks that a binary can also use one at a time.
 3. **Each extraction is a pure move.** Every pull request in the stack preserves ADP's behavior and migrates ADP onto
    the extracted code in the same pull request. Known bugs are fixed in follow-up pull requests, listed under
@@ -54,17 +54,17 @@ to the pull request), or merged.
   - Moves `DynamicLogLevelWorker` into `saluki-app`, where it applies a stream of already translated `LogLevel`s.
     `LoggingTranslator::translate_log_levels` produces that stream, and ADP feeds it from `Live::into_stream`, which
     this pull request adds to `agent-data-plane-config`.
-- [ ] **3. Environment and workload.** Status: not started.
+- [ ] **3. Environment and workload.** Status: in review (pull request not opened yet).
   - Moves `internal/env/**` and the tagger prefix fixture, and adds `WorkloadSettings` and
-    `SubagentEnvironmentProvider`.
+    `RemoteAgentEnvironmentProvider`.
   - Updates `.github/workflows/update-agent-tagger-prefixes.yml` for the new paths.
 - [ ] **4. Control plane.** Status: not started.
   - Moves the telemetry, runtime configuration, configuration updates, and control plane modules, and adds
     `ControlPlaneBuilder`.
 - [ ] **5. Facade.** Status: not started.
-  - Adds the `subagent` module and rewrites ADP's `run` command on top of it.
+  - Adds the facade module and rewrites ADP's `run` command on top of it.
 - [ ] **6. Documentation and example.** Status: not started.
-  - Adds the crate documentation, `examples/minimal_subagent.rs`, and the `AGENTS.md` entry.
+  - Adds the crate documentation, `examples/minimal_remote_agent.rs`, and the `AGENTS.md` entry.
 
 ## Invariants
 
@@ -96,10 +96,10 @@ Every pull request in the stack checks its changes against these.
 
 Code moved into this crate logs under the `datadog_agent_runtime` target, and `DynamicLogLevelWorker` logs under
 `saluki_app`. A plain `log_level` only applies to first-party targets, so both targets must stay covered by
-`FIRST_PARTY_LOG_TARGETS` in `lib/datadog-agent/runtime/src/logging.rs`, which every subagent's `LoggingTranslator`
-starts from. Its entries are target prefixes, so the `datadog_agent` and `saluki` entries cover them. The
-`adp-rar-registration`, `adp-rar-disabled`, and `adp-cmd-port` integration tests look for registration
-log lines, so they catch a missing `datadog_agent_runtime` target.
+`FIRST_PARTY_LOG_TARGETS` in `lib/datadog-agent/runtime/src/logging.rs`, which every remote agent's
+`LoggingTranslator` starts from. Its entries are target prefixes, so the `datadog_agent` and `saluki` entries cover
+them. The `adp-rar-registration`, `adp-rar-disabled`, and `adp-cmd-port` integration tests look for registration log
+lines, so they catch a missing `datadog_agent_runtime` target.
 
 ## Follow-ups
 
@@ -120,7 +120,7 @@ its item when it merges.
    different `data_plane.secure_api_listen_address`, the two disagree. Deferred because fixing it changes which value
    wins.
 3. **Gate autodiscovery on its first subscriber.** The autodiscovery broadcaster in
-   `bin/agent-data-plane/src/internal/env/autodiscovery.rs` starts streaming as soon as its worker starts, and drops
+   `lib/datadog-agent/runtime/src/env/autodiscovery.rs` starts streaming as soon as its worker starts, and drops
    events while nothing has subscribed, so a late subscriber can miss the initial snapshot. ACR found this. Deferred
    because it changes when events are delivered.
 4. **Make the default log file per binary.** `PlatformSettings::get_default_log_file_path` in
@@ -132,7 +132,7 @@ its item when it merges.
    - a `LocalAutodiscoveryProvider` in standalone mode
    - workload provider toggles for a tagger-only setup, without the containerd and cgroups collectors
    - configurable tag store and external data store entity limits, which are hard-coded to 2000 in
-     `bin/agent-data-plane/src/internal/env/workload/mod.rs`
+     `lib/datadog-agent/runtime/src/env/workload/mod.rs`
    - a process start time for the status `Started` field, which today records when the status service was created
    - extra workers in the `ctrl-pln` supervisor
 6. **Make the configuration system generic.** This gets its own plan.

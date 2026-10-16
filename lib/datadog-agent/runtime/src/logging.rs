@@ -1,8 +1,8 @@
-//! Translation between a subagent's logging settings and the logging stack's own configuration.
+//! Translation between a remote agent's logging settings and the logging stack's own configuration.
 //!
-//! Subagent logging must follow the Datadog Agent's logging configuration for the settings that are sensibly shared
-//! (level, format, console output, rotation), but each subagent must use its own destination so it doesn't collide with
-//! the Core Agent's own log file. This module owns those rules in one place.
+//! Remote agent logging must follow the Datadog Agent's logging configuration for the settings that are sensibly
+//! shared (level, format, console output, rotation), but each remote agent must use its own destination so it doesn't
+//! collide with the Core Agent's own log file. This module owns those rules in one place.
 
 use std::{future, path::PathBuf};
 
@@ -13,10 +13,10 @@ use saluki_app::logging::{LogLevel, LoggingConfiguration};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tracing::warn;
 
-/// Log targets that a plain log level applies to, regardless of which subagent is running.
+/// Log targets that a plain log level applies to, regardless of which remote agent is running.
 ///
-/// These cover the Saluki and Datadog crates that subagents are built from. `tracing` targets use Rust crate and module
-/// names, so Cargo package names with hyphens appear with underscores. A subagent adds its own crates with
+/// These cover the Saluki and Datadog crates that remote agents are built from. `tracing` targets use Rust crate and
+/// module names, so Cargo package names with hyphens appear with underscores. A remote agent adds its own crates with
 /// [`LoggingTranslator::with_first_party_targets`].
 ///
 /// Each entry is a target prefix, so `saluki` covers every `saluki_*` crate and `datadog_agent` covers every
@@ -26,8 +26,8 @@ pub const FIRST_PARTY_LOG_TARGETS: &[&str] = &["datadog_agent", "saluki"];
 
 /// Logging settings shared with the Datadog Agent.
 ///
-/// These mirror the Datadog Agent's own logging settings. A subagent fills them in from its configuration system and
-/// hands them to a [`LoggingTranslator`].
+/// These mirror the Datadog Agent's own logging settings. A remote agent fills them in from its configuration system
+/// and hands them to a [`LoggingTranslator`].
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct LoggingSettings {
@@ -60,8 +60,8 @@ pub struct LoggingSettings {
 
     /// Path to the log file, if one was configured explicitly.
     ///
-    /// Defaults to `None`, which selects the subagent's default log file. An explicitly empty path also selects the
-    /// default log file.
+    /// Defaults to `None`, which selects the remote agent's default log file. An explicitly empty path also selects
+    /// the default log file.
     pub file: Option<String>,
 
     /// Whether to disable logging to a file entirely. Takes precedence over `file`. Defaults to `false`.
@@ -98,11 +98,11 @@ impl Default for LoggingSettings {
 ///
 /// In the Datadog Agent, all processes generally follow the same logging configuration, paying attention to the same
 /// settings for determining log level, log format, and so on. They differ in some ways, such as determining what file
-/// to write to when logging to file is enabled. Subagents follow the same pattern.
+/// to write to when logging to file is enabled. Remote agents follow the same pattern.
 ///
 /// `LoggingTranslator` takes [`LoggingSettings`] and generates a Saluki-oriented [`LoggingConfiguration`] from it,
-/// applying the subagent's own default log file and first-party log targets. This ensures that a subagent obeys all
-/// the logging configuration rules set by the Datadog Agent but logs to the right location for its own process.
+/// applying the remote agent's own default log file and first-party log targets. This ensures that a remote agent obeys
+/// all the logging configuration rules set by the Datadog Agent but logs to the right location for its own process.
 #[derive(Clone, Debug)]
 pub struct LoggingTranslator {
     default_log_file: PathBuf,
@@ -112,7 +112,7 @@ pub struct LoggingTranslator {
 impl LoggingTranslator {
     /// Creates a new `LoggingTranslator` that logs to `default_log_file` unless a log file is configured explicitly.
     ///
-    /// A plain log level applies to [`FIRST_PARTY_LOG_TARGETS`]. Add the subagent's own crates with
+    /// A plain log level applies to [`FIRST_PARTY_LOG_TARGETS`]. Add the remote agent's own crates with
     /// [`with_first_party_targets`](Self::with_first_party_targets).
     pub fn new(default_log_file: impl Into<PathBuf>) -> Self {
         Self {
@@ -123,14 +123,14 @@ impl LoggingTranslator {
 
     /// Adds the given log targets to the ones that a plain log level applies to.
     ///
-    /// Like the entries in [`FIRST_PARTY_LOG_TARGETS`], each target is a prefix, so `my_subagent` also covers a
-    /// `my_subagent_config` crate.
+    /// Like the entries in [`FIRST_PARTY_LOG_TARGETS`], each target is a prefix, so `my_remote_agent` also covers a
+    /// `my_remote_agent_config` crate.
     pub fn with_first_party_targets(mut self, targets: &[&'static str]) -> Self {
         self.first_party_targets.extend_from_slice(targets);
         self
     }
 
-    /// Builds a [`LoggingConfiguration`] from the given settings, applying this subagent's rules.
+    /// Builds a [`LoggingConfiguration`] from the given settings, applying this remote agent's rules.
     ///
     /// # Errors
     ///
@@ -159,7 +159,7 @@ impl LoggingTranslator {
         }
         config.log_file_max_rolls = settings.file_max_rolls;
 
-        // Use the subagent's default unless its log file was set explicitly.
+        // Use the remote agent's default unless its log file was set explicitly.
         config.log_file = if settings.disable_file_logging {
             String::new()
         } else {
@@ -242,10 +242,10 @@ mod tests {
 
     use super::*;
 
-    const DEFAULT_LOG_FILE: &str = "/var/log/datadog/example-subagent.log";
+    const DEFAULT_LOG_FILE: &str = "/var/log/datadog/example-remote-agent.log";
 
     fn translator() -> LoggingTranslator {
-        LoggingTranslator::new(DEFAULT_LOG_FILE).with_first_party_targets(&["example_subagent"])
+        LoggingTranslator::new(DEFAULT_LOG_FILE).with_first_party_targets(&["example_remote_agent"])
     }
 
     fn translate(settings: LoggingSettings) -> LoggingConfiguration {
@@ -276,14 +276,14 @@ mod tests {
     fn default_log_level_becomes_first_party_info() {
         let directives = translate_level("info").expect("translate logging config");
 
-        assert!(directives.contains(&"example_subagent=info".to_string()));
+        assert!(directives.contains(&"example_remote_agent=info".to_string()));
     }
 
     #[test]
     fn plain_log_level_becomes_first_party_filter() {
         let targets = translate_log_level("warn").as_targets();
 
-        assert!(targets.would_enable("example_subagent", &Level::WARN));
+        assert!(targets.would_enable("example_remote_agent", &Level::WARN));
         assert!(targets.would_enable("saluki_components", &Level::WARN));
         assert!(!targets.would_enable("saluki_components", &Level::INFO));
 
@@ -296,10 +296,10 @@ mod tests {
     }
 
     #[test]
-    fn plain_log_level_covers_the_subagent_runtime() {
+    fn plain_log_level_covers_the_remote_agent_runtime() {
         // Registration, the configuration stream, and the status, flare, and telemetry services live in this crate, and
-        // `DynamicLogLevelWorker` lives in `saluki_app`, so a plain level must reach their logs no matter which subagent
-        // is running.
+        // `DynamicLogLevelWorker` lives in `saluki_app`, so a plain level must reach their logs no matter which remote
+        // agent is running.
         let targets = translate_log_level("debug").as_targets();
 
         assert!(targets.would_enable("datadog_agent_runtime", &Level::DEBUG));
@@ -315,7 +315,7 @@ mod tests {
             "saluki_io::net",
             "datadog_agent_commons",
             "datadog_agent_remote_config",
-            "example_subagent_config",
+            "example_remote_agent_config",
         ] {
             assert!(
                 targets.would_enable(target, &Level::DEBUG),
@@ -328,21 +328,22 @@ mod tests {
     fn plain_log_level_is_case_insensitive() {
         let directives = translate_level("WaRn").expect("translate logging config");
 
-        assert!(directives.contains(&"example_subagent=warn".to_string()));
+        assert!(directives.contains(&"example_remote_agent=warn".to_string()));
     }
 
     #[test]
     fn advanced_log_level_directives_are_preserved() {
-        let directives = translate_level("warn,example_subagent=debug,hyper=warn").expect("translate logging config");
+        let directives =
+            translate_level("warn,example_remote_agent=debug,hyper=warn").expect("translate logging config");
 
         assert!(directives.contains(&"warn".to_string()));
-        assert!(directives.contains(&"example_subagent=debug".to_string()));
+        assert!(directives.contains(&"example_remote_agent=debug".to_string()));
         assert!(directives.contains(&"hyper=warn".to_string()));
     }
 
     #[test]
     fn unparseable_log_level_returns_error() {
-        for level in ["fakelevel", "example_subagent=verbose", ""] {
+        for level in ["fakelevel", "example_remote_agent=verbose", ""] {
             assert!(
                 translate_level(level).is_err(),
                 "log level `{level}` should be rejected"
@@ -368,20 +369,20 @@ mod tests {
 
     #[tokio::test]
     async fn translated_log_levels_match_the_startup_translation() {
-        let translated = translate_levels(&["debug", "warn,example_subagent=trace"]).await;
+        let translated = translate_levels(&["debug", "warn,example_remote_agent=trace"]).await;
 
         assert_eq!(
             translated,
             vec![
                 translate_level("debug").expect("translate logging config"),
-                translate_level("warn,example_subagent=trace").expect("translate logging config"),
+                translate_level("warn,example_remote_agent=trace").expect("translate logging config"),
             ]
         );
     }
 
     #[tokio::test]
     async fn unparseable_log_levels_are_skipped() {
-        let translated = translate_levels(&["example_subagent=verbose", "", "info"]).await;
+        let translated = translate_levels(&["example_remote_agent=verbose", "", "info"]).await;
 
         assert_eq!(
             translated,
@@ -462,11 +463,11 @@ mod tests {
     #[test]
     fn explicitly_configured_log_file_is_used() {
         let config = translate(LoggingSettings {
-            file: Some("/tmp/subagent.log".to_string()),
+            file: Some("/tmp/remote-agent.log".to_string()),
             ..LoggingSettings::default()
         });
 
-        assert_eq!(config.log_file, "/tmp/subagent.log");
+        assert_eq!(config.log_file, "/tmp/remote-agent.log");
     }
 
     #[test]
@@ -483,7 +484,7 @@ mod tests {
     fn disabled_file_logging_overrides_a_configured_log_file() {
         let config = translate(LoggingSettings {
             disable_file_logging: true,
-            file: Some("/tmp/subagent.log".to_string()),
+            file: Some("/tmp/remote-agent.log".to_string()),
             to_syslog: true,
             ..LoggingSettings::default()
         });
