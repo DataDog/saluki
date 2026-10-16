@@ -163,9 +163,6 @@ mod diagnostic;
 mod format;
 mod graph;
 mod ids;
-// The node-and-edge syntax, kept only to convert the sources in tests until they are converted.
-#[allow(dead_code)]
-mod legacy;
 mod lexer;
 mod lower;
 mod parser;
@@ -331,31 +328,6 @@ pub fn print(artifact: &PolicyArtifact, options: &PrintOptions) -> String {
         return text;
     }
     format::format(&program, usize::MAX)
-}
-
-/// Converts a source in the node-and-edge syntax that preceded this one into this syntax, keeping its `base` statement
-/// if it has one, for converting the sources in tests. Removed once they are converted.
-#[doc(hidden)]
-pub fn legacy_to_pipeline(source: &str) -> Result<String, String> {
-    let placeholder = ArtifactBase {
-        program_hash: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-            .parse()
-            .expect("the placeholder is a hash"),
-        outputs: Default::default(),
-    };
-    let tokens = lexer::lex(source).map_err(|error| diagnostic::diagnostics(source, vec![error]).to_string())?;
-    let policy = legacy::parser::parse_policy(source, &tokens)
-        .map_err(|errors| diagnostic::diagnostics(source, errors).to_string())?;
-    let elide_base = policy.base.is_none();
-    let (artifact, _) = legacy::build::build(source, policy, Some(&placeholder))
-        .map_err(|errors| diagnostic::diagnostics(source, errors).to_string())?;
-    Ok(print(
-        &artifact,
-        &PrintOptions {
-            elide_base,
-            ..PrintOptions::default()
-        },
-    ))
 }
 
 #[cfg(test)]

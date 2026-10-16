@@ -291,12 +291,24 @@ fn assert_well_formed(artifact: &PolicyArtifact) {
     for edge in &artifact.edges {
         if let ArtifactPortRef::Node { node, port } = &edge.from {
             let shape = &shapes[node.as_str()];
-            assert_ne!(shape.has_output(port), Some(false), "{} -> {}", edge.from, edge.to);
+            assert_ne!(
+                shape.outputs().map(|ports| ports.contains(port)),
+                Some(false),
+                "{} -> {}",
+                edge.from,
+                edge.to
+            );
             *outputs.entry((node.to_string(), port.to_string())).or_default() += 1;
         }
         if let ArtifactPortRef::Node { node, port } = &edge.to {
             let shape = &shapes[node.as_str()];
-            assert_ne!(shape.has_input(port), Some(false), "{} -> {}", edge.from, edge.to);
+            assert_ne!(
+                shape.inputs().map(|ports| ports.contains(port)),
+                Some(false),
+                "{} -> {}",
+                edge.from,
+                edge.to
+            );
             *inputs.entry((node.to_string(), port.to_string())).or_default() += 1;
             if let ArtifactPortRef::Node { node: from, .. } = &edge.from {
                 successors.entry(from.to_string()).or_default().push(node.to_string());

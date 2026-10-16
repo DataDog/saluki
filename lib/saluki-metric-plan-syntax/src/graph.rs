@@ -1,13 +1,10 @@
-//! What the parser and the printer both need to know about an artifact's graph: each node's ports, the names of
-//! inline terminals, and the order nodes and edges are written in.
+//! What lowering and resugaring both need to know about an artifact's graph: each node's ports, each operator's
+//! parameter schema, and the order nodes and edges are written in.
 
 use std::collections::HashMap;
 
 use saluki_metric_plan::{
-    ir::{
-        derived_terminal_id, ArtifactEdge, ArtifactNode, ArtifactNodeId, ArtifactPortRef, LocalId, NodeId,
-        OperatorName, ParamSpec, ParamType, Params, PortName, SCOPE_INPUT_NODE,
-    },
+    ir::{ArtifactEdge, ArtifactNode, ArtifactPortRef, OperatorName, ParamSpec, Params, PortName},
     operators::{OperatorRegistry, IN, OUT},
 };
 
@@ -21,13 +18,12 @@ pub(crate) struct NodeShape {
     ports: Option<Ports>,
 }
 
-/// The declared ports of a node, with the position of each, so that looking a port up takes the same time however many
-/// ports the node has.
+/// The declared ports of a node, with the position of each output port, so that ranking a port takes the same time
+/// however many ports the node has.
 #[derive(Clone, Debug)]
 struct Ports {
     inputs: Vec<PortName>,
     outputs: Vec<PortName>,
-    input_positions: HashMap<PortName, usize>,
     output_positions: HashMap<PortName, usize>,
 }
 
@@ -42,7 +38,6 @@ impl NodeShape {
         let outputs = ports.outputs.iter().map(|port| port.name.clone()).collect::<Vec<_>>();
         Self {
             ports: Some(Ports {
-                input_positions: positions(&inputs),
                 output_positions: positions(&outputs),
                 inputs,
                 outputs,
@@ -58,20 +53,6 @@ impl NodeShape {
     /// Returns the declared output ports, if they are known.
     pub(crate) fn outputs(&self) -> Option<&[PortName]> {
         self.ports.as_ref().map(|ports| &ports.outputs[..])
-    }
-
-    /// Returns whether `port` is a declared input port, if the ports are known.
-    pub(crate) fn has_input(&self, port: &PortName) -> Option<bool> {
-        self.ports
-            .as_ref()
-            .map(|ports| ports.input_positions.contains_key(port))
-    }
-
-    /// Returns whether `port` is a declared output port, if the ports are known.
-    pub(crate) fn has_output(&self, port: &PortName) -> Option<bool> {
-        self.ports
-            .as_ref()
-            .map(|ports| ports.output_positions.contains_key(port))
     }
 
     /// Returns the position of `port` among the declared output ports, if the ports are known and it is one of them.
@@ -111,28 +92,9 @@ fn sole_port(ports: Option<&[PortName]>, conventional: &str) -> Option<PortName>
     }
 }
 
-/// Returns the ID of the inline terminal at `port` of the node `parent`, or of the scope input `port` when `parent`
-/// is `input`, as [`derived_terminal_id`] names it.
-pub(crate) fn terminal_id(parent: &str, port: &PortName) -> Option<ArtifactNodeId> {
-    let parent = NodeId::reserved(LocalId::new(parent).ok()?);
-    ArtifactNodeId::new(derived_terminal_id(&parent, port).local().as_str()).ok()
-}
-
-/// The parent name of edges that leave a scope input, which names their inline terminals with [`terminal_id`].
-pub(crate) const INPUT_PARENT: &str = SCOPE_INPUT_NODE;
-
 /// Returns the parameter schema of the operator `op`, if it is registered.
 pub(crate) fn param_specs(op: &str) -> Option<&'static [ParamSpec]> {
     OperatorRegistry::native().get(op).map(|def| def.params())
-}
-
-/// Returns the name of the operator's sole parameter when it is a predicate, which the syntax lets an author pass
-/// without its name, as in `split(<predicate>)`.
-pub(crate) fn positional_predicate(op: &str) -> Option<&'static str> {
-    match param_specs(op)? {
-        [spec] if spec.ty == ParamType::Predicate => Some(spec.name),
-        _ => None,
-    }
 }
 
 /// The order in which an artifact's nodes and edges are written, as permutations of their positions.
