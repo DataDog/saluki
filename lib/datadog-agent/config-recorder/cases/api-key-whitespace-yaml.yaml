@@ -1,0 +1,8 @@
+# Sets a space-padded api_key in YAML.
+# Shows that the Agent trims it at load time and reports an Agent write, not a file value.
+name: api-key-whitespace-yaml
+group: behavior
+why: [api-key-trimmed-at-load-not-fleet]
+yaml: |
+  api_key: " cr-key "
+keys: [api_key]

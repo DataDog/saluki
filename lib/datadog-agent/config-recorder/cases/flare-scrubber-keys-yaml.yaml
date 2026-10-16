@@ -1,0 +1,10 @@
+# Sets flare_stripped_keys and scrubber.additional_keys in YAML.
+# Shows that the effective scrubbing list is held outside config after being read at load.
+name: flare-scrubber-keys-yaml
+group: behavior
+why: [flare-stripped-keys-scrubber-sidechannel]
+yaml: |
+  flare_stripped_keys: [secret_a]
+  scrubber:
+    additional_keys: [secret_b]
+keys: [flare_stripped_keys, scrubber.additional_keys]

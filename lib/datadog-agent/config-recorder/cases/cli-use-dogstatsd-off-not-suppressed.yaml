@@ -1,0 +1,8 @@
+# Overrides use_dogstatsd to false through the CLI after load.
+# Shows that this does not trigger the related data_plane.dogstatsd.enabled adjustment.
+name: cli-use-dogstatsd-off-not-suppressed
+group: behavior
+why: [cli-override-skips-fixups]
+cli:
+  - {key: use_dogstatsd, value: "false"}
+keys: [use_dogstatsd, data_plane.dogstatsd.enabled]
