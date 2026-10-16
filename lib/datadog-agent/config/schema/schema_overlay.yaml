@@ -3345,39 +3345,27 @@ inventory:
         config_registry_filename: proxy.rs
 
   remote_configuration.apm_sampling.enabled:
-    support: partial
+    support: full
     pipelines: [traces]
     description: "Apply APM_SAMPLING remote configurations"
-    documentation: >-
-      ADP applies `APM_SAMPLING` only while it runs the trace pipeline, and only when
-      `remote_configuration.enabled` is also set; see that key for how ADP reads it differently.
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: remote_config.rs
 
   remote_configuration.apm_semantics.enabled:
-    support: partial
+    support: full
     pipelines: [traces]
     description: "Apply APM_SEMANTIC_CORE_DD remote configurations"
-    documentation: >-
-      ADP applies `APM_SEMANTIC_CORE_DD` only while it runs the trace pipeline, and only when
-      `remote_configuration.enabled` is also set; see that key for how ADP reads it differently.
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: remote_config.rs
 
   remote_configuration.enabled:
-    support: partial
+    support: full
     pipelines: [traces]
     description: "Enable Remote Configuration"
-    documentation: |-
-      ADP uses Remote Configuration only while it runs the trace pipeline and at least one of
-      `remote_configuration.apm_sampling.enabled` or `remote_configuration.apm_semantics.enabled` is set.
-
-      The core Agent turns Remote Configuration off by default on government sites and when FIPS mode is
-      enabled. ADP reads `remote_configuration.enabled` as given, with no such default.
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:
