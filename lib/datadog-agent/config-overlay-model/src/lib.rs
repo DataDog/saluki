@@ -4,33 +4,30 @@
 //! configuration. It is designed to be used during build processes by `build.rs` and, for
 //! simplicity, should not depend on any other crates from our workspace.
 //!
-//! The overlay is validated in two passes. First, standard serde deserialization enforces its
-//! type integrity, then custom validation logic runs. This file is the source of truth on what
-//! can and can-not be present in the overlay.
+//! Loading checks section and key ordering, deserializes with unknown fields rejected, then
+//! validates schema coverage and entry constraints.
 
 pub mod saluki_keys;
 pub mod schema_gen;
-pub mod smoke_test_support;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexMap;
 use serde::Deserialize;
-
-use crate::smoke_test_support::ConfigurationStruct;
 
 /// Top-level overlay structure.
 ///
-/// `known` covers every key the team has reviewed and classified. `ignored` covers keys irrelevant
-/// to ADP's domain. Together they must account for every key in `core_schema.yaml`.
+/// `inventory` classifies keys by support level; `excluded` gives reasons for ignoring other keys.
+/// Together they must cover every key in the composed Datadog and OTel schema exactly once.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SchemaOverlay {
     pub inventory: IndexMap<String, KnownEntry>,
     pub excluded: IndexMap<String, String>,
 }
 
-/// Classification of a known (non-ignored) config key.
+/// Support classification for a key in the overlay's `inventory`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "support", rename_all = "snake_case")]
 pub enum KnownEntry {
@@ -47,11 +44,11 @@ pub enum KnownEntry {
 
 /// Metadata for a fully supported configuration key.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct FullSupport {
     /// Which pipelines depend on this key (non-empty).
     pub pipelines: PipelineAffinity,
-    /// Short description for documentation tables (<= 50 chars).
+    /// Short description for documentation tables, limited by UTF-8 byte length.
     pub description: String,
     /// Extended documentation (appears in generated docs).
     #[serde(default)]
@@ -59,37 +56,33 @@ pub struct FullSupport {
     /// GitHub issue tracking number.
     #[serde(default)]
     pub issue: Option<String>,
-    /// Fields to support the `config_registry` and configuration smoke tests.
-    pub test_support: TestSupport,
 }
 
 /// Metadata for a partially supported configuration key.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct PartialSupport {
     /// Which pipelines depend on this key (non-empty).
     pub pipelines: PipelineAffinity,
-    /// Short description for documentation tables (<= 50 chars).
+    /// Short description for documentation tables, limited by UTF-8 byte length.
     pub description: String,
     /// Extended documentation explaining the behavioral divergence. Required for partial keys.
     pub documentation: String,
-    /// When true, the runtime classifier emits a warning for non-default values of this key.
+    /// Whether non-default values can trigger compatibility warnings. Defaults to false.
     #[serde(default)]
     pub warn: bool,
     /// GitHub issue tracking number.
     #[serde(default)]
     pub issue: Option<String>,
-    /// Fields to support the `config_registry` and configuration smoke tests.
-    pub test_support: TestSupport,
 }
 
 /// Metadata for an unsupported configuration key.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Unsupported {
     /// Pipelines affected by the lack of support.
     pub pipelines: PipelineAffinity,
-    /// Short description for documentation tables (<= 50 chars).
+    /// Short description for documentation tables, limited by UTF-8 byte length.
     pub description: String,
     /// Longer explanation of why it is unsupported and future plans.
     #[serde(default)]
@@ -105,9 +98,9 @@ pub struct Unsupported {
 
 /// Metadata for a key whose support level has not yet been determined.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct UnknownSupport {
-    /// Short description for documentation tables (<= 50 chars), if known.
+    /// Optional description for documentation tables, limited by UTF-8 byte length.
     #[serde(default)]
     pub description: Option<String>,
     /// Severity estimate, if there is intuition about the impact.
@@ -116,33 +109,6 @@ pub struct UnknownSupport {
     /// GitHub issue tracking the investigation.
     #[serde(default)]
     pub issue: Option<String>,
-}
-
-/// Metadata to support config smoke tests.
-///
-/// These fields support logic in the configuration smoke tests and are tightly bound to the
-/// behavior of the test logic. They may change if the test methodology changes.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct TestSupport {
-    /// Environment variable overrides for this key. Checked by configuration smoke tests.
-    #[serde(default)]
-    pub env_var_override: Option<Vec<String>>,
-    /// Alias YAML paths that map to the same config key. Checked by configuration smoke tests.
-    #[serde(default)]
-    pub additional_yaml_paths: Vec<String>,
-    /// Override the type inferred from the schema.
-    #[serde(default)]
-    pub value_type_override: Option<ValueType>,
-    /// Configuration consumers that incorporate this key (non-empty).
-    pub used_by: IndexSet<ConfigurationStruct>,
-    /// Literal JSON value for smoke test injection.
-    #[serde(default)]
-    pub test_json: Option<String>,
-    /// TRANSITIONAL BANDAID. Carries metadata needed only to reproduce the hand-written
-    /// registry (filename partitioning, Saluki-only schema source/default). Delete with it.
-    #[serde(default)]
-    pub additional_attributes: IndexMap<String, String>,
 }
 
 /// Impact severity of an unsupported or unknown key.
@@ -224,20 +190,9 @@ impl<'de> serde::Deserialize<'de> for PipelineAffinity {
     }
 }
 
-/// Override type for when the schema under-specifies a key's value type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ValueType {
-    Boolean,
-    Integer,
-    Float,
-    String,
-    StringList,
-}
-
-/// File paths to the two YAML files required as input by this library.
+/// Paths to the core schema, OTel schema directory, and overlay.
 ///
-/// Defaults to the canonical location of the required schema files in this library.
+/// Defaults to their locations in the sibling `config` crate.
 pub struct Files {
     /// The Datadog Agent core schema file (`schema/core/core_schema.yaml`).
     pub datadog_schema: PathBuf,
@@ -400,20 +355,11 @@ impl SchemaOverlay {
         }
     }
 
-    /// Validate per-entry constraints: description length, `used_by` non-empty, no duplicate
-    /// `additional_yaml_paths`, and planned+issue consistency for unsupported entries.
+    /// Checks description lengths and requires an issue for planned support.
     fn validate_entries(&self) -> Result<(), Error> {
-        let canonical_keys: HashSet<&str> = self.inventory.keys().map(String::as_str).collect();
-
         for (key, entry) in &self.inventory {
             match entry {
                 KnownEntry::Full(f) => {
-                    if f.test_support.used_by.is_empty() {
-                        return Err(Error::Validation(format!(
-                            "full key '{}': used_by must be non-empty",
-                            key
-                        )));
-                    }
                     if f.description.len() > 50 {
                         return Err(Error::Validation(format!(
                             "full key '{}': description exceeds 50 chars ({} chars)",
@@ -421,15 +367,8 @@ impl SchemaOverlay {
                             f.description.len()
                         )));
                     }
-                    Self::validate_additional_yaml_paths(key, &f.test_support.additional_yaml_paths, &canonical_keys)?;
                 }
                 KnownEntry::Partial(p) => {
-                    if p.test_support.used_by.is_empty() {
-                        return Err(Error::Validation(format!(
-                            "partial key '{}': used_by must be non-empty",
-                            key
-                        )));
-                    }
                     if p.description.len() > 50 {
                         return Err(Error::Validation(format!(
                             "partial key '{}': description exceeds 50 chars ({} chars)",
@@ -437,7 +376,6 @@ impl SchemaOverlay {
                             p.description.len()
                         )));
                     }
-                    Self::validate_additional_yaml_paths(key, &p.test_support.additional_yaml_paths, &canonical_keys)?;
                 }
                 KnownEntry::Unsupported(u) => {
                     if u.description.len() > 50 {
@@ -465,38 +403,6 @@ impl SchemaOverlay {
                         }
                     }
                 }
-            }
-        }
-        Ok(())
-    }
-
-    fn validate_additional_yaml_paths(
-        key: &str, paths: &[String], canonical_keys: &HashSet<&str>,
-    ) -> Result<(), Error> {
-        let mut seen: HashSet<&str> = HashSet::new();
-        for path in paths {
-            if !seen.insert(path.as_str()) {
-                return Err(Error::Validation(format!(
-                    "key '{}': duplicate additional_yaml_path '{}'",
-                    key, path
-                )));
-            }
-            if path.contains('.') {
-                return Err(Error::Validation(format!(
-                    "key '{}': additional_yaml_path '{}' contains a dot. \
-                     Dotted aliases land at a different nesting depth in the YAML tree, \
-                     which cannot be represented as a serde field alias on the generated \
-                     struct. Supporting dotted aliases requires a post-deserialization \
-                     merge step or custom Deserialize impl.",
-                    key, path
-                )));
-            }
-            if canonical_keys.contains(path.as_str()) {
-                return Err(Error::Validation(format!(
-                    "key '{}': additional_yaml_path '{}' collides with a canonical \
-                     overlay key. Two fields would deserialize from the same YAML key.",
-                    key, path
-                )));
             }
         }
         Ok(())
@@ -900,11 +806,10 @@ const VALIDATION_RULES: &str = "\n\
     - No key appears in more than one section.\n\
     - Sections appear in order: known, ignored.\n\
     - Keys within each section are sorted alphabetically.\n\
-    - full entries: pipelines non-empty, used_by non-empty, description <= 50 chars.\n\
-    - partial entries: pipelines non-empty, used_by non-empty, description <= 50 chars, documentation required.\n\
+    - full entries: pipelines non-empty, description <= 50 chars.\n\
+    - partial entries: pipelines non-empty, description <= 50 chars, documentation required.\n\
     - unsupported entries: pipelines non-empty, description <= 50 chars, planned+issue consistent.\n\
     - unknown entries: description <= 50 chars (when present).\n\
-    - additional_yaml_paths: no duplicates within a single entry, no dots, no collisions with canonical keys.\n\
     Fix: edit lib/datadog-agent/config/schema/schema_overlay.yaml.";
 
 /// Errors that can occur when loading a schema overlay.
@@ -1031,8 +936,6 @@ inventory:
     support: full
     pipelines: [cross_cutting]
     description: \"Key A\"
-    test_support:
-      used_by: [TypedConfigSystem]
 excluded: {}
 ";
         let err = load_from_strs(schema, overlay).unwrap_err();
@@ -1055,8 +958,6 @@ inventory:
     support: full
     pipelines: [cross_cutting]
     description: \"Key A\"
-    test_support:
-      used_by: [TypedConfigSystem]
 excluded:
   key_b: \"not in schema\"
 ";
@@ -1082,8 +983,6 @@ inventory:
     support: full
     pipelines: [cross_cutting]
     description: \"Key A\"
-    test_support:
-      used_by: [TypedConfigSystem]
 excluded:
   key_a: \"duplicate\"
   key_b: \"ok\"
@@ -1147,14 +1046,10 @@ inventory:
     support: full
     pipelines: [cross_cutting]
     description: \"Key B\"
-    test_support:
-      used_by: [TypedConfigSystem]
   key_a:
     support: full
     pipelines: [cross_cutting]
     description: \"Key A\"
-    test_support:
-      used_by: [TypedConfigSystem]
 excluded: {}
 ";
         let err = load_from_strs(schema, overlay).unwrap_err();
@@ -1174,25 +1069,53 @@ excluded: {}
     }
 
     #[test]
+    fn deserialization_rejects_unknown_fields() {
+        let cases: &[(&str, &str)] = &[
+            (
+                "full",
+                "inventory:\n  key_a:\n    support: full\n    pipelines: [dogstatsd]\n    description: \"A\"\n    \
+                 misspelled_field: true\nexcluded: {}\n",
+            ),
+            (
+                "partial",
+                "inventory:\n  key_a:\n    support: partial\n    pipelines: [dogstatsd]\n    description: \"A\"\n    \
+                 documentation: \"diverges\"\n    misspelled_field: true\nexcluded: {}\n",
+            ),
+            (
+                "unsupported",
+                "inventory:\n  key_a:\n    support: none\n    pipelines: [dogstatsd]\n    description: \"A\"\n    \
+                 severity: low\n    planned: false\n    misspelled_field: true\nexcluded: {}\n",
+            ),
+            (
+                "unknown",
+                "inventory:\n  key_a:\n    support: unknown\n    misspelled_field: true\nexcluded: {}\n",
+            ),
+            ("top level", "inventory: {}\nexcluded: {}\nignored: {}\n"),
+        ];
+
+        for (kind, overlay) in cases {
+            let err =
+                SchemaOverlay::from_yaml(overlay).expect_err(&format!("{kind}: unknown field should be rejected"));
+            assert!(
+                err.to_string().contains("unknown field"),
+                "{kind}: unexpected error: {err}"
+            );
+        }
+    }
+
+    #[test]
     fn per_entry_validation_accepts_a_well_formed_entry_of_every_kind() {
-        // Keys are alphabetically ordered (full < partial < unknown < unsupported) so the YAML lint
-        // pass is satisfied and only per-entry validation is under test.
         let overlay = "\
 inventory:
   full_key:
     support: full
     pipelines: [dogstatsd]
     description: \"Fully supported key\"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_yaml_paths: [full_alias]
   partial_key:
     support: partial
     pipelines: [traces]
     description: \"Partially supported key\"
     documentation: \"Behaves differently from the core agent.\"
-    test_support:
-      used_by: [TypedConfigSystem]
   unknown_key:
     support: unknown
     description: \"Not yet classified\"
@@ -1210,23 +1133,20 @@ excluded: {}
 
     #[test]
     fn per_entry_validation_rejects_over_long_description_for_every_entry_kind() {
-        // A 60-character description exceeds the documented 50-char cap. Each entry kind that carries a
-        // description enforces the same limit, so this walks all four.
         let long = "x".repeat(60);
         let cases: &[(&str, String)] = &[
             (
                 "full",
                 format!(
                     "inventory:\n  key_a:\n    support: full\n    pipelines: [dogstatsd]\n    \
-                     description: \"{long}\"\n    test_support:\n      used_by: [TypedConfigSystem]\nexcluded: {{}}\n"
+                     description: \"{long}\"\nexcluded: {{}}\n"
                 ),
             ),
             (
                 "partial",
                 format!(
                     "inventory:\n  key_a:\n    support: partial\n    pipelines: [dogstatsd]\n    \
-                     description: \"{long}\"\n    documentation: \"diverges\"\n    test_support:\n      \
-                     used_by: [TypedConfigSystem]\nexcluded: {{}}\n"
+                     description: \"{long}\"\n    documentation: \"diverges\"\nexcluded: {{}}\n"
                 ),
             ),
             (
@@ -1252,43 +1172,6 @@ excluded: {}
     }
 
     #[test]
-    fn per_entry_validation_rejects_empty_used_by_for_full_and_partial_entries() {
-        let full = "\
-inventory:
-  key_a:
-    support: full
-    pipelines: [dogstatsd]
-    description: \"Key A\"
-    test_support:
-      used_by: []
-excluded: {}
-";
-        let err = validate_entries_of(full).expect_err("full entry with empty used_by should be rejected");
-        assert!(
-            err.to_string().contains("full key 'key_a': used_by must be non-empty"),
-            "unexpected error: {err}"
-        );
-
-        let partial = "\
-inventory:
-  key_a:
-    support: partial
-    pipelines: [dogstatsd]
-    description: \"Key A\"
-    documentation: \"diverges\"
-    test_support:
-      used_by: []
-excluded: {}
-";
-        let err = validate_entries_of(partial).expect_err("partial entry with empty used_by should be rejected");
-        assert!(
-            err.to_string()
-                .contains("partial key 'key_a': used_by must be non-empty"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
     fn per_entry_validation_rejects_planned_unsupported_entry_without_issue() {
         let overlay = "\
 inventory:
@@ -1304,79 +1187,6 @@ excluded: {}
         assert!(
             err.to_string()
                 .contains("unsupported key 'key_a': planned requires an issue"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn per_entry_validation_rejects_duplicate_additional_yaml_path() {
-        let overlay = "\
-inventory:
-  key_a:
-    support: full
-    pipelines: [dogstatsd]
-    description: \"Key A\"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_yaml_paths: [dup_alias, dup_alias]
-excluded: {}
-";
-        let err = validate_entries_of(overlay).expect_err("duplicate additional_yaml_path should be rejected");
-        assert!(
-            err.to_string()
-                .contains("key 'key_a': duplicate additional_yaml_path 'dup_alias'"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn per_entry_validation_rejects_dotted_additional_yaml_path() {
-        // Dotted aliases can't be represented as a serde field alias on the generated struct, so they're
-        // rejected outright.
-        let overlay = "\
-inventory:
-  key_a:
-    support: full
-    pipelines: [dogstatsd]
-    description: \"Key A\"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_yaml_paths: [\"nested.alias\"]
-excluded: {}
-";
-        let err = validate_entries_of(overlay).expect_err("dotted additional_yaml_path should be rejected");
-        assert!(
-            err.to_string()
-                .contains("additional_yaml_path 'nested.alias' contains a dot"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn per_entry_validation_rejects_additional_yaml_path_colliding_with_canonical_key() {
-        // `alpha`'s alias `beta` collides with the canonical key `beta`; two fields would deserialize
-        // from the same YAML key. Keys are alphabetically ordered so the YAML lint pass is satisfied.
-        let overlay = "\
-inventory:
-  alpha:
-    support: full
-    pipelines: [dogstatsd]
-    description: \"Alpha\"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_yaml_paths: [beta]
-  beta:
-    support: full
-    pipelines: [dogstatsd]
-    description: \"Beta\"
-    test_support:
-      used_by: [TypedConfigSystem]
-excluded: {}
-";
-        let err = validate_entries_of(overlay).expect_err("aliasing a canonical key should be rejected");
-        assert!(
-            err.to_string()
-                .contains("additional_yaml_path 'beta' collides with a canonical"),
             "unexpected error: {err}"
         );
     }

@@ -1,14 +1,8 @@
 //! Builds the typed configuration base from environment variables.
 //!
-//! The Datadog Agent reads configuration by iterating its table of known keys
-//! and, for each, looking up that key's exact environment variable names, never by scanning the
-//! environment or splitting on a separator. This module mirrors that: [`DATADOG_ENV_KEYS`] is
-//! generated from the vendored schema, and [`apply_datadog_env`] looks up each key's real names,
-//! decodes the first non-empty value into the JSON shape the schema declares (see
-//! [`crate::env_decode`]), and writes it at the key's nested path.
-//!
-//! Each value is decoded and written directly to the nested path the typed deserializer reads.
-//! Precedence relative to the config file is controlled by the caller through `overwrite`.
+//! [`DATADOG_ENV_KEYS`] maps the Agent's declared variable names to nested configuration paths;
+//! paths are not inferred by splitting names. [`apply_datadog_env_vars`] decodes each key's first
+//! non-empty environment value using [`crate::env_decode`]. Callers choose precedence with `overwrite`.
 
 use std::collections::HashMap;
 
@@ -23,35 +17,21 @@ pub struct EnvKey {
     /// The environment variable names bound to this key, highest priority first. The first one
     /// set to a non-empty value supplies the key's value, matching the Agent's per-key lookup.
     pub env_vars: &'static [&'static str],
-    /// The nested path the typed deserializer reads (`["dogstatsd", "port"]`).
+    /// The nested path the typed deserializer reads (for example, `["proxy", "http"]`).
     pub path: &'static [&'static str],
     /// How to decode the raw string into the schema-declared JSON shape.
     pub decode: EnvDecode,
 }
 
-/// Reads every modeled Datadog key from the environment and writes decoded values into `base`.
+/// Decodes supplied environment variables into modeled Datadog paths in `base`.
 ///
-/// Applies the canonical proxy variables (`HTTP_PROXY`/`HTTPS_PROXY`) as well. When `overwrite` is
-/// true an environment value replaces whatever is already at its path (environment wins over the
-/// file); when false it fills only an absent path (the file wins).
+/// Also applies `HTTP_PROXY`/`HTTPS_PROXY` as fallbacks for their `DD_` forms. When `overwrite` is
+/// true, environment values replace existing values; otherwise, only absent paths are filled.
 ///
 /// # Errors
 ///
 /// Returns a message naming the environment variable when its value is malformed for the key's
 /// declared shape. At startup this aborts the boot rather than silently dropping the value.
-pub fn apply_datadog_env(base: &mut Value, overwrite: bool) -> Result<(), String> {
-    apply_env_snapshot(base, EnvSnapshot::capture(), overwrite)
-}
-
-/// Reads every modeled Datadog key from explicitly provided environment variable name/value pairs.
-///
-/// Identical to [`apply_datadog_env`] except for where the variables come from. Tests use this to
-/// avoid depending on the ambient process environment.
-///
-/// # Errors
-///
-/// Returns a message naming the environment variable when its value is malformed for the key's
-/// declared shape.
 pub fn apply_datadog_env_vars(
     base: &mut Value, vars: impl IntoIterator<Item = (String, String)>, overwrite: bool,
 ) -> Result<(), String> {
@@ -78,10 +58,10 @@ pub fn datadog_leaf_paths() -> impl Iterator<Item = &'static [&'static str]> {
     DATADOG_ENV_KEYS.iter().map(|key| key.path)
 }
 
-/// Reads one key from the environment and writes it into `root`.
+/// Decodes one key from the process environment into `base` at the supplied path.
 ///
-/// The public entry for callers with a runtime-built key set (the Saluki-only model), which cannot
-/// use the `'static` [`EnvKey`] table. Same semantics as [`apply_datadog_env`] for a single key.
+/// Reads the first non-empty variable named in `env_vars`. When `overwrite` is false, existing values
+/// win.
 ///
 /// # Errors
 ///
@@ -96,8 +76,7 @@ pub fn apply_env_at_path(
     apply_one(root, &env, env_vars, path, decode, overwrite)
 }
 
-/// Reads one key from explicitly provided environment variable name/value pairs and writes it into
-/// `root`.
+/// Decodes one key from supplied environment variables into `base` at the supplied path.
 ///
 /// Identical to [`apply_env_at_path`] except for where the variables come from. Callers that read
 /// the process environment once and reuse it pass it here, and tests pass their own variables so
@@ -159,12 +138,7 @@ fn apply_one(
     Ok(())
 }
 
-/// A case-insensitive snapshot of the process environment.
-///
-/// The figment loader reads environment variables case-insensitively (via `uncased`). Because
-/// `std::env::var` is case-sensitive, this reader captures the environment with lowercase names to
-/// preserve parity. `DD_DOGSTATSD_PORT`, `dd_dogstatsd_port`, and `Dd_Dogstatsd_Port` all resolve to
-/// the same key.
+/// A case-insensitive environment snapshot: uppercase and lowercase variable names resolve to the same key.
 struct EnvSnapshot {
     /// Environment values keyed by lowercase variable name. Only non-empty values are kept.
     vars: HashMap<String, String>,
@@ -251,9 +225,9 @@ mod tests {
 
     use super::*;
 
-    // Process environment is global; serialize the tests that mutate it. Each test removes the
-    // variables it sets so they do not leak into sibling tests.
-    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn vars(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
 
     fn at<'a>(base: &'a Value, path: &[&str]) -> Option<&'a Value> {
         let mut cur = base;
@@ -265,20 +239,16 @@ mod tests {
 
     #[test]
     fn decodes_scalars_and_lists_to_shape() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        std::env::set_var("DD_DOGSTATSD_PORT", "9125");
-        std::env::set_var("DD_API_KEY", "00000");
-        std::env::set_var("DD_DOGSTATSD_TAGS", "env:prod team:core");
+        let env = vars(&[
+            ("DD_DOGSTATSD_PORT", "9125"),
+            ("DD_API_KEY", "00000"),
+            ("DD_DOGSTATSD_TAGS", "env:prod team:core"),
+        ]);
 
         let mut base = json!({});
-        apply_datadog_env(&mut base, true).unwrap();
+        apply_datadog_env_vars(&mut base, env, true).unwrap();
 
-        std::env::remove_var("DD_DOGSTATSD_PORT");
-        std::env::remove_var("DD_API_KEY");
-        std::env::remove_var("DD_DOGSTATSD_TAGS");
-
-        // Integer decodes to a JSON number; a numeric-looking API key stays a string (the schema
-        // says `api_key` is a string); a string list splits into a real array.
+        // Numeric-looking API keys must remain strings.
         assert_eq!(at(&base, &["dogstatsd_port"]), Some(&json!(9125)));
         assert_eq!(at(&base, &["api_key"]), Some(&json!("00000")));
         assert_eq!(at(&base, &["dogstatsd_tags"]), Some(&json!(["env:prod", "team:core"])));
@@ -286,30 +256,23 @@ mod tests {
 
     #[test]
     fn writes_at_nested_path() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        std::env::set_var("DD_APM_ERROR_TPS", "12.5");
-
         let mut base = json!({});
-        apply_datadog_env(&mut base, true).unwrap();
-        std::env::remove_var("DD_APM_ERROR_TPS");
+        apply_datadog_env_vars(&mut base, vars(&[("DD_APM_ERROR_TPS", "12.5")]), true).unwrap();
 
         assert_eq!(at(&base, &["apm_config", "errors_per_second"]), Some(&json!(12.5)));
     }
 
     #[test]
     fn precedence_overwrite_versus_fill() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        std::env::set_var("DD_DOGSTATSD_PORT", "9125");
+        let env = vars(&[("DD_DOGSTATSD_PORT", "9125")]);
 
         let mut env_wins = json!({ "dogstatsd_port": 8125 });
-        apply_datadog_env(&mut env_wins, true).unwrap();
+        apply_datadog_env_vars(&mut env_wins, env.clone(), true).unwrap();
         assert_eq!(at(&env_wins, &["dogstatsd_port"]), Some(&json!(9125)));
 
         let mut file_wins = json!({ "dogstatsd_port": 8125 });
-        apply_datadog_env(&mut file_wins, false).unwrap();
+        apply_datadog_env_vars(&mut file_wins, env, false).unwrap();
         assert_eq!(at(&file_wins, &["dogstatsd_port"]), Some(&json!(8125)));
-
-        std::env::remove_var("DD_DOGSTATSD_PORT");
     }
 
     #[test]
@@ -325,22 +288,15 @@ mod tests {
 
     #[test]
     fn canonical_proxy_is_a_fallback_below_dd_form() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-
-        // Canonical form alone fills the slot.
-        std::env::set_var("HTTP_PROXY", "http://canonical:3128");
+        let canonical = ("HTTP_PROXY", "http://canonical:3128");
         let mut base = json!({});
-        apply_datadog_env(&mut base, true).unwrap();
+        apply_datadog_env_vars(&mut base, vars(&[canonical]), true).unwrap();
         assert_eq!(at(&base, &["proxy", "http"]), Some(&json!("http://canonical:3128")));
 
-        // The DD_ form wins when both are set.
-        std::env::set_var("DD_PROXY_HTTP", "http://prefixed:3128");
+        let both = vars(&[canonical, ("DD_PROXY_HTTP", "http://prefixed:3128")]);
         let mut base = json!({});
-        apply_datadog_env(&mut base, true).unwrap();
+        apply_datadog_env_vars(&mut base, both, true).unwrap();
         assert_eq!(at(&base, &["proxy", "http"]), Some(&json!("http://prefixed:3128")));
-
-        std::env::remove_var("HTTP_PROXY");
-        std::env::remove_var("DD_PROXY_HTTP");
     }
 
     #[test]
@@ -354,11 +310,8 @@ mod tests {
 
     #[test]
     fn malformed_value_propagates() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        std::env::set_var("DD_DOGSTATSD_PORT", "not-a-number");
         let mut base = json!({});
-        let result = apply_datadog_env(&mut base, true);
-        std::env::remove_var("DD_DOGSTATSD_PORT");
+        let result = apply_datadog_env_vars(&mut base, vars(&[("DD_DOGSTATSD_PORT", "not-a-number")]), true);
         assert!(result.is_err());
     }
 }

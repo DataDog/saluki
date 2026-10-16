@@ -2759,7 +2759,7 @@ mod tests {
     }
 
     #[test]
-    fn metric_namespace_translates_schema_default_and_blocklist_alias() {
+    fn metric_namespace_translates_schema_default_and_blacklist() {
         let (default_config, errors) = translate_explicit(json!({}));
         assert!(errors.is_none());
         assert_eq!(
@@ -2773,7 +2773,9 @@ mod tests {
 
         let (config, errors) = translate_explicit(json!({
             "statsd_metric_namespace": "tenant",
-            "statsd_metric_namespace_blocklist": ["custom"],
+            "statsd_metric_namespace_blacklist": ["custom"],
+            // The Agent has no such key, so it is ignored rather than read as the blacklist.
+            "statsd_metric_namespace_blocklist": ["ignored"],
         }));
         assert!(errors.is_none());
         assert_eq!(config.domains.dogstatsd.prefix_filter.metric_namespace, "tenant");

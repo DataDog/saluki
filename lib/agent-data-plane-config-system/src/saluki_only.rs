@@ -3,7 +3,7 @@
 //! # What this is
 //!
 //! Saluki-only keys are values ADP consumes that the Datadog Agent schema does not publish, so they
-//! cannot be witnessed and driven like Datadog keys. Today they arrive through the same source as
+//! cannot be witnessed and driven like Datadog keys. They arrive through the same source as
 //! Datadog config (a `datadog.yaml`-shaped map / `DD_*` env), so [`SalukiOnly`] is the ADP-only
 //! sibling of the generated Datadog source model: a hand-written `Deserialize` view over that same
 //! merged map. [`seed`] then copies each present value into its home in [`SalukiConfiguration`].
@@ -16,26 +16,18 @@
 //! either kind of key.
 //!
 //! - A key present in the Datadog schema is witnessed by `DatadogConfiguration` and driven into
-//!   the model. It must not also have a `SalukiOnly` field, serde alias, or `seed` path.
+//!   the model. It must not also have a `SalukiOnly` field or `seed` path.
 //! - A key absent from the Datadog schema is seeded here and copied into the model by [`seed`].
 //!
-//! A second SalukiOnly spelling for a Datadog key is not a compatibility feature. It is a duplicate
-//! source of truth and a bug; remove it. Removing that duplicate cannot affect customers because
-//! the Datadog-schema path remains authoritative.
+//! Environment names use `DD_` followed by the uppercase path with dots replaced by underscores:
+//! `data_plane.standalone_mode` is reached by `DD_DATA_PLANE_STANDALONE_MODE`.
 //!
-//! A dotted SalukiOnly key is reached from the environment by an algorithmic transform, never a
-//! lookup table or alias: `foo.bar` is reached by `DD_FOO_BAR`. For example,
-//! `data_plane.standalone_mode` is reached by `DD_DATA_PLANE_STANDALONE_MODE` and by no other name.
-//!
-//! The canonical inventory of these keys (with exact `yaml_path`, type, and default) is
-//! `SALUKI_KEYS` in the `datadog-agent-config-overlay-model` crate. Keep this struct in sync with
-//! it.
+//! `SALUKI_KEYS` in `datadog-agent-config-overlay-model` supplies the documentation's key paths,
+//! descriptions, and displayed defaults. Keep those entries consistent with this source model.
 //!
 //! # The one invariant (read before adding or debugging a value)
 //!
-//! This struct mirrors the source key hierarchy exactly. Each field is populated by plain
-//! serde from the merged map, so its path here must equal the real config-key path, with no
-//! `rename` and (aside from a documented multi-key `alias`) nothing papering over a mismatch:
+//! Serde reads this struct from the merged map. Field names and nesting must match the source keys:
 //!
 //! - a top-level key (`dogstatsd_tcp_port`, `aggregate_window_duration_seconds`) is a top-level
 //!   field of the same name;
