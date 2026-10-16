@@ -10,8 +10,7 @@ use serde::Serialize;
 pub struct Domain {
     /// Controls Remote Configuration (`remote_configuration.enabled`).
     ///
-    /// Defaults to `true`. The data plane reads this value as given; unlike the Agent, it does not default it off on
-    /// government sites or in FIPS mode.
+    /// Defaults to `true`.
     pub enabled: bool,
 
     /// Controls remote trace sampling updates (`remote_configuration.apm_sampling.enabled`).
