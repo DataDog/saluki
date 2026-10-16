@@ -151,7 +151,7 @@ mod tests {
     fn dynamic_substitution_changes_execution_steps_not_file_data() {
         // Substitution formerly mutated IntegrationConfig::procedure. Reusing the loaded data
         // must not inherit values from another execution.
-        let config: IntegrationConfig = serde_yaml::from_str(
+        let config: IntegrationConfig = serde_saphyr::from_str(
             r#"
 name: dynamic
 timeout: 1s
@@ -211,7 +211,7 @@ procedure:
 
         use crate::assertions::{run_assertion_steps, AssertionContext, LogBuffer, TargetCommand};
 
-        let config = serde_yaml::from_str(
+        let config = serde_saphyr::from_str(
             r#"
 name: prepared
 timeout: 1s
@@ -267,7 +267,7 @@ procedure:
         ];
         let settings = IntegrationSettings::new(LINUX_RUNTIME, &ImageOverrides::new(&entries));
         for enabled in [false, true] {
-            let config = serde_yaml::from_str(&format!(
+            let config = serde_saphyr::from_str(&format!(
                 "name: images\ntimeout: 1s\nprocedure: []\nintake: {{enabled: {enabled}}}\n"
             ))
             .unwrap();

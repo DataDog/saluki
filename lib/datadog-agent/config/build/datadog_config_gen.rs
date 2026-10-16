@@ -46,14 +46,11 @@ const LEAF_KEYWORDS: &[&str] = &[
 ];
 
 pub fn generate(
-    overlay: &SchemaOverlay, composed_schema: &serde_yaml::Value, schema_map: &IndexMap<String, FieldInfo>,
-    manifest_dir: &Path,
+    overlay: &SchemaOverlay, composed_schema: &Value, schema_map: &IndexMap<String, FieldInfo>, manifest_dir: &Path,
 ) {
     let supported = supported_keys(overlay);
 
-    let schema: Value =
-        serde_json::to_value(composed_schema).unwrap_or_else(|e| panic!("failed to convert schema to JSON: {e}"));
-    let properties = schema
+    let properties = composed_schema
         .get("properties")
         .and_then(Value::as_object)
         .expect("schema root must have a 'properties' mapping");
