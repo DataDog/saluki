@@ -15,7 +15,7 @@ use saluki_core::{
     components::{transforms::*, BuildContext},
     data_model::{
         event::{
-            trace::{AttributeValue, Trace},
+            trace::{AttributeValue, AttributeValueExt as _, Trace},
             trace_stats::{ClientStatsPayload, TraceStats},
             Event, EventType,
         },

@@ -1,6 +1,6 @@
 //! Span weight calculation for APM stats.
 
-use saluki_core::data_model::event::trace::{AttributeValue, Span};
+use saluki_core::data_model::event::trace::{AttributeValue, AttributeValueExt as _, Span};
 
 const KEY_SAMPLING_RATE_GLOBAL: &str = "_sample_rate";
 

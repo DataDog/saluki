@@ -937,6 +937,13 @@ impl fmt::Display for MetaString {
     }
 }
 
+#[cfg(feature = "trace-model")]
+impl libdd_trace_model::TraceText for MetaString {
+    fn from_static(s: &'static str) -> Self {
+        MetaString::from_static(s)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{num::NonZeroUsize, sync::Arc};

@@ -4,7 +4,7 @@
 //! - a small FNV-1a 32-bit helper (used by probabilistic sampling)
 //! - a signature newtype + compute helper (for score/TPS samplers)
 
-use saluki_core::data_model::event::trace::{AttributeValue, Span, Trace};
+use saluki_core::data_model::event::trace::{AttributeValue, AttributeValueExt as _, Span, Trace};
 use stringtheory::MetaString;
 
 use crate::common::datadog::get_trace_env;

@@ -231,7 +231,7 @@ fn compile_rules(rules: &[ReplaceRule]) -> Result<Vec<CompiledRule>, GenericErro
 #[cfg(test)]
 mod tests {
     use saluki_common::collections::FastHashMap;
-    use saluki_core::data_model::event::trace::SpanEvent;
+    use saluki_core::data_model::event::trace::{AttributeValueExt as _, SpanEvent};
 
     use super::*;
 
