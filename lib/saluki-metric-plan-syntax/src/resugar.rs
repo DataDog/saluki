@@ -168,6 +168,10 @@ struct Graph<'a> {
     leaving: HashMap<Stream, Vec<usize>>,
     /// The names of the scope inputs that edges leave.
     input_names: HashSet<&'a str>,
+    /// The name of the `let` each node ends, if it ends one: its ID, or for a node whose ID is the name of a scope input
+    /// that edges leave, which no `let` can take since references to the input would name it, a name of its own,
+    /// `<id>_let`, numbered if another name has it. The `let`'s last stage then has an `as` with the node's ID.
+    let_names: Vec<ArtifactNodeId>,
 }
 
 impl<'a> Graph<'a> {
@@ -217,6 +221,30 @@ impl<'a> Graph<'a> {
                 ArtifactPortRef::Exit(_) => {}
             }
         }
+        let mut taken = nodes
+            .iter()
+            .map(|node| node.id.to_string())
+            .chain(input_names.iter().map(|name| name.to_string()))
+            .collect::<HashSet<_>>();
+        let let_names = nodes
+            .iter()
+            .map(|node| {
+                if !input_names.contains(node.id.as_str()) {
+                    return node.id.clone();
+                }
+                let first = ids::join(node.id.as_str(), "let");
+                (1..)
+                    .map(|k| {
+                        if k == 1 {
+                            first.clone()
+                        } else {
+                            ids::join(first.as_str(), &k.to_string())
+                        }
+                    })
+                    .find(|name| taken.insert(name.to_string()))
+                    .expect("the names are endless")
+            })
+            .collect();
         let outputs = shapes
             .iter()
             .zip(used)
@@ -241,11 +269,21 @@ impl<'a> Graph<'a> {
             entering,
             leaving,
             input_names,
+            let_names,
         }
     }
 
     fn id(&self, node: usize) -> &ArtifactNodeId {
         &self.nodes[node].id
+    }
+
+    /// Returns the name a reference to a stream writes: the name of the `let` that ends at its node, or of the scope
+    /// input.
+    fn spelled(&self, head: &HeadRef) -> ArtifactNodeId {
+        match &head.stream {
+            Some(Stream::Port(node, _)) => self.let_names[*node].clone(),
+            _ => head.name.clone(),
+        }
     }
 
     fn leaving(&self, stream: &Stream) -> &[usize] {
@@ -315,7 +353,14 @@ impl<'a> Graph<'a> {
         }
         match self.outputs[node].as_slice() {
             [] => Role::Final,
-            [port] => Role::Plain(port.clone()),
+            // A pipeline continues from a node whose ports are unknown at its conventional output port, `out`, so
+            // only that port continues it; any other port it has is written as a reference to the port.
+            [port]
+                if self.shapes[node].outputs().is_some()
+                    || self.shapes[node].default_output().as_ref() == Some(port) =>
+            {
+                Role::Plain(port.clone())
+            }
             _ => Role::Multi,
         }
     }
@@ -544,7 +589,8 @@ impl<'a> Graph<'a> {
 
         // Arcs between chains: (before, after, the implicit tee whose port order requires it).
         let mut arcs: Vec<(usize, usize, Option<usize>)> = Vec::new();
-        let mut tee_uses: BTreeMap<usize, Vec<(usize, usize, usize)>> = BTreeMap::new();
+        // By the tee's canonical position, so that the arcs, and the cycle found among them, depend only on the graph.
+        let mut tee_uses: BTreeMap<(usize, usize), Vec<TeeUse>> = BTreeMap::new();
         for (c, chain) in chains.iter().enumerate() {
             for (item, head) in chain.head.refs().iter().enumerate() {
                 if let Some(Stream::Port(node, _)) = &head.stream {
@@ -555,12 +601,15 @@ impl<'a> Graph<'a> {
                     }
                 }
                 if let Some((tee, port)) = head.via {
-                    tee_uses.entry(tee).or_default().push((port, c, item));
+                    tee_uses
+                        .entry((self.node_rank[tee], tee))
+                        .or_default()
+                        .push((port, c, item));
                 }
             }
         }
         let mut infeasible: Option<usize> = None;
-        for (&tee, uses) in &mut tee_uses {
+        for (&(_, tee), uses) in &mut tee_uses {
             uses.sort_unstable();
             for pair in uses.windows(2) {
                 let ((_, c1, k1), (_, c2, k2)) = (pair[0], pair[1]);
@@ -649,6 +698,9 @@ impl<'a> Graph<'a> {
         }
     }
 }
+
+/// One use of an implicit tee: the tee's port, and the chain and item of its head that use it.
+type TeeUse = (usize, usize, usize);
 
 /// Returns positions in `order`, with any position it lacks appended, and the rank of each position.
 fn ranks(mut order: Vec<usize>, len: usize) -> (Vec<usize>, Vec<usize>) {
@@ -1214,8 +1266,8 @@ impl Emitter<'_, '_, '_> {
         let m = stages.len();
         let ctx = match (chain.is_let, stages.last(), &chain.head) {
             (false, _, _) => Ctx::Bare,
-            (true, Some(&last), _) => Ctx::Let(graph.id(last).clone()),
-            (true, None, ChainHead::Tuple { merge, .. }) => Ctx::Let(graph.id(*merge).clone()),
+            (true, Some(&last), _) => Ctx::Let(graph.let_names[last].clone()),
+            (true, None, ChainHead::Tuple { merge, .. }) => Ctx::Let(graph.let_names[*merge].clone()),
             // A reference alone names nothing new.
             (true, None, ChainHead::Ref(_)) => return Vec::new(),
         };
@@ -1308,7 +1360,13 @@ impl Emitter<'_, '_, '_> {
         let mut aliased = HashSet::new();
         let (anchor, let_name) = match (ctx, head) {
             (Ctx::Let(name), SegHead::Chain(ChainHead::Tuple { merge, .. })) => {
-                if !stages.is_empty() && &ids::merge(name.as_str()) != graph.id(*merge) {
+                // The merge is `<name>_in`, or the `let`'s own node when the `let` has no stages.
+                let derived = if stages.is_empty() {
+                    name.clone()
+                } else {
+                    ids::merge(name.as_str())
+                };
+                if &derived != graph.id(*merge) {
                     aliased.insert(*merge);
                 }
                 (name.clone(), Some(name))
@@ -1332,7 +1390,7 @@ impl Emitter<'_, '_, '_> {
     }
 
     /// Adds the stages whose IDs are not derived from `anchor` and their ordinal to `aliased`. The last stage of a
-    /// `let` is the `let`'s node, and is never aliased.
+    /// `let` is the `let`'s node, aliased only when the `let` has a name of its own.
     fn decide_stages(
         &self, anchor: &ArtifactNodeId, stages: &[usize], let_name: Option<&ArtifactNodeId>,
         aliased: &mut HashSet<usize>,
@@ -1341,7 +1399,10 @@ impl Emitter<'_, '_, '_> {
         for (k, &stage) in stages.iter().enumerate() {
             let node = &self.graph.nodes[stage];
             let ordinal = ordinals.next(node.op.as_str());
-            if let_name.is_some() && k + 1 == stages.len() {
+            if let Some(name) = let_name.filter(|_| k + 1 == stages.len()) {
+                if name != &node.id {
+                    aliased.insert(stage);
+                }
                 continue;
             }
             if stage_id(anchor.as_str(), node.op.as_str(), ordinal).as_ref() != Some(&node.id) {
@@ -1381,16 +1442,16 @@ impl Emitter<'_, '_, '_> {
     ) -> Statement {
         let graph = self.graph;
         let head = match head {
-            SegHead::Chain(ChainHead::Ref(head)) => Head::Ref(reference(&head.name, head.port.as_ref())),
+            SegHead::Chain(ChainHead::Ref(head)) => Head::Ref(reference(&graph.spelled(head), head.port.as_ref())),
             SegHead::Chain(ChainHead::Tuple { merge, items }) => Head::Tuple(Tuple {
                 items: items
                     .iter()
-                    .map(|item| reference(&item.name, item.port.as_ref()))
+                    .map(|item| reference(&graph.spelled(item), item.port.as_ref()))
                     .collect(),
                 id: self.alias(*merge, aliased),
                 span: Span::default(),
             }),
-            SegHead::After(node) => Head::Ref(reference(graph.id(node), None)),
+            SegHead::After(node) => Head::Ref(reference(&graph.let_names[node], None)),
         };
         let stages = stages.iter().map(|&stage| self.stage(stage, aliased)).collect();
         match ctx {

@@ -441,6 +441,19 @@ fn statements_need_no_separators() {
     let statements = statements("  let a = dogstatsd | host_enrichment\n  (a, otlp) | drop\n  otlp | drop");
     assert_eq!(statements.len(), 3);
     assert!(matches!(pipeline_of(&statements[1]).head, Head::Tuple(_)));
+
+    // A stream named `and` or `or` after a `where` starts the next statement, rather than continuing the predicate.
+    let parsed = self::statements(
+        "  let and = dogstatsd | timestamp_split(10s)\n  let or = and.default | where true\n  \
+         and.passthrough | where false | drop\n  or | drop",
+    );
+    assert_eq!(parsed.len(), 4);
+    assert_eq!(
+        where_(&pipeline_of(&parsed[1]).stages[0]).predicate,
+        json!({"const": true})
+    );
+    assert_eq!(reference(&pipeline_of(&parsed[2]).head).name.id.as_str(), "and");
+    assert_eq!(reference(&pipeline_of(&parsed[3]).head).name.id.as_str(), "or");
 }
 
 // Stages and arguments.
@@ -714,6 +727,33 @@ fn sinks_end_pipelines() {
 }
 
 #[test]
+fn a_word_with_arguments_right_after_it_is_an_operator() {
+    // The core form of an `emit` whose parameters no sink writes, in a `let`, and operators named like the other
+    // stages, or like `as`, which after a sink would otherwise name it.
+    let body = "  let e = dogstatsd | emit(output: \"o\", to: []) | drop() | where() as w | fork() | exit()\n  \
+                e | fork {\n    drop\n    as() as a\n      | drop\n  }";
+    let statements = statements(body);
+    let ops = pipeline_of(&statements[0])
+        .stages
+        .iter()
+        .map(|stage| op(stage).op.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(ops, ["emit", "drop", "where", "fork", "exit"]);
+    assert_eq!(
+        op(&pipeline_of(&statements[0]).stages[0]).params,
+        serde_json::from_value::<Params>(json!({"output": "o", "to": []})).unwrap()
+    );
+    let branches = &fork(pipeline_of(&statements[1]).end.as_ref().unwrap()).branches;
+    assert_eq!(branches.len(), 2);
+    assert_eq!(id_text(&sink(&branches[0].end).id), None);
+    assert_eq!(op(&branches[1].stages[0]).op.as_str(), "as");
+    assert_eq!(id_text(&op(&branches[1].stages[0]).id).as_deref(), Some("a"));
+
+    // With a space, the word is what it is otherwise.
+    assert_error("  dogstatsd | emit (x)", "(", "Expected what `emit` sends to");
+}
+
+#[test]
 fn a_let_does_not_end() {
     assert_error(
         "  let a = dogstatsd | host_enrichment | emit primary",
@@ -803,7 +843,7 @@ fn structural_errors() {
     assert_error("  let a a", "a", "Expected `=` and the stream's pipeline");
     assert_error("  dogstatsd | ", "}", "Expected a stage after `|`");
     assert_error("  dogstatsd | 5", "5", "Expected a stage after `|`");
-    assert_error("  dogstatsd | drop as", "}", "Expected a node ID after `as`");
+    assert_error("  dogstatsd | drop as", "}", "Expected a node name after `as`");
     assert_error("  dogstatsd | emit", "}", "Expected what `emit` sends to");
     assert_error(
         "  dogstatsd | emit output",

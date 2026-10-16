@@ -460,6 +460,45 @@ fn an_implicit_tee_whose_uses_cannot_be_in_port_order_is_the_core_form() {
 }
 
 #[test]
+fn the_implicit_tee_written_in_the_core_form_depends_only_on_the_graph() {
+    // The uses of `dogstatsd` cannot come in port order: port 0 and port 2 feed one tuple, and port 1 another. The tee
+    // written in the core form to break that is the same whatever order the artifact lists its nodes and edges in, and
+    // `otlp` stays reused.
+    let nodes = [
+        ("input_dogstatsd_fanout", "tee", json!({"ports": 3})),
+        ("input_otlp_fanout", "tee", json!({"ports": 2})),
+        ("m1", "merge", json!({"inputs": 3})),
+        ("m1_out", "drop", none()),
+        ("m2", "merge", json!({"inputs": 3})),
+        ("m2_out", "drop", none()),
+    ];
+    let edges = [
+        ("input.dogstatsd", "input_dogstatsd_fanout.in"),
+        ("input.otlp", "input_otlp_fanout.in"),
+        ("input_dogstatsd_fanout.0", "m1.0"),
+        ("input_otlp_fanout.0", "m1.1"),
+        ("input_dogstatsd_fanout.2", "m1.2"),
+        ("input.checks", "m2.0"),
+        ("input_otlp_fanout.1", "m2.1"),
+        ("input_dogstatsd_fanout.1", "m2.2"),
+        ("m1.out", "m1_out.in"),
+        ("m2.out", "m2_out.in"),
+    ];
+    let a = artifact(&nodes, &edges);
+    let expected = [
+        "let input_dogstatsd_fanout = dogstatsd | tee(ports: 3)",
+        "(input_dogstatsd_fanout.0, otlp, input_dogstatsd_fanout.2) as m1 | drop",
+        "(checks, otlp, input_dogstatsd_fanout.1) as m2 | drop",
+    ];
+    assert_eq!(statements(&a), expected);
+    let mut reversed = a.clone();
+    reversed.nodes.reverse();
+    reversed.edges.reverse();
+    assert_eq!(statements(&reversed), expected);
+    assert_lowers_back(&a);
+}
+
+#[test]
 fn a_tee_without_the_derived_id_is_the_core_form() {
     let a = artifact(
         &[
@@ -648,6 +687,94 @@ fn a_node_with_several_output_ports_is_a_let_with_port_references() {
             "m.right | alpha | drop"
         ]
     );
+}
+
+#[test]
+fn a_let_whose_node_has_the_name_of_a_scope_input_takes_a_name_of_its_own() {
+    // `let checks = ...` would make the reference to the scope input `checks` refer to the `let`, so the `let` is
+    // named `checks_let` (and `checks_let_2` when that is taken), and its last stage has the node's ID.
+    let a = artifact(
+        &[
+            ("checks", "gamma", none()),
+            ("checks_let", "alpha", none()),
+            ("checks_left", "drop", none()),
+            ("checks_right", "drop", none()),
+            ("input_checks", "drop", none()),
+        ],
+        &[
+            ("input.dogstatsd", "checks_let.in"),
+            ("checks_let.out", "checks.in"),
+            ("checks.left", "checks_left.in"),
+            ("checks.right", "checks_right.in"),
+            ("input.checks", "input_checks.in"),
+        ],
+    );
+    assert_eq!(
+        statements(&a),
+        [
+            "checks | drop",
+            "let checks_let_2 = dogstatsd | alpha as checks_let | gamma as checks",
+            "checks_let_2.left | drop",
+            "checks_let_2.right | drop",
+        ]
+    );
+
+    assert_lowers_back(&a);
+
+    // A tuple that is the whole `let`.
+    let a = artifact(
+        &[
+            ("otlp", "merge", json!({"inputs": 2})),
+            ("m", "merge", json!({"inputs": 2})),
+            ("m_out", "drop", none()),
+        ],
+        &[
+            ("input.otlp", "otlp.0"),
+            ("input.checks", "otlp.1"),
+            ("otlp.out", "m.0"),
+            ("input.liveness", "m.1"),
+            ("m.out", "m_out.in"),
+        ],
+    );
+    assert_eq!(
+        statements(&a),
+        [
+            "let otlp_let = (otlp, checks) as otlp",
+            "(otlp_let, liveness) as m | drop"
+        ]
+    );
+    assert_lowers_back(&a);
+}
+
+/// Asserts that lowering what `artifact` resugars to gives it back, in canonical order.
+#[track_caller]
+fn assert_lowers_back(artifact: &PolicyArtifact) {
+    let program = resugar(artifact, &PrintOptions::default());
+    let (lowered, _) = crate::lower::lower("", program, None).expect("the tree lowers");
+    assert_eq!(lowered, canonical(artifact.clone()));
+}
+
+#[test]
+fn a_node_whose_ports_are_unknown_continues_only_from_out() {
+    // A pipeline continues from such a node at `out`, as lowering assumes, so its only port, when another, is written
+    // as a reference to the port. A `timestamp_split` with a zero window does not configure.
+    let a = artifact(
+        &[
+            ("t", "timestamp_split", json!({"window": "0s"})),
+            ("t_default", "drop", none()),
+        ],
+        &[("input.dogstatsd", "t.in"), ("t.default", "t_default.in")],
+    );
+    assert_eq!(
+        statements(&a),
+        [r#"let t = dogstatsd | timestamp_split("0s")"#, "t.default | drop"]
+    );
+
+    let a = artifact(
+        &[("t", "gamma", none()), ("t_out", "drop", none())],
+        &[("input.dogstatsd", "t.in"), ("t.out", "t_out.in")],
+    );
+    assert_eq!(statements(&a), ["dogstatsd | gamma as t | drop"]);
 }
 
 #[test]
@@ -844,7 +971,7 @@ fn a_long_chain_resugars_without_deep_recursion() {
         .unwrap();
 }
 
-/// The default program's export, in its native form: before normalization, its splits drop on `true`.
+/// The default program's export, in normal form: its splits drop on `false`.
 fn default_export() -> PolicyArtifact {
     PolicyArtifact::from_json(include_str!(
         "../../../saluki-metric-plan/fixtures/export/default-program-metrics.json"
@@ -862,12 +989,16 @@ fn outline(artifact: &PolicyArtifact) -> Vec<String> {
 
 #[test]
 fn the_default_program_resugars_into_lets_named_for_its_streams() {
-    // Before normalization, the splits drop on `true`, so they are written in the core form, and the tee after
+    // In the native polarity, the splits drop on `true`, so they are written in the core form, and the tee after
     // `dsd_post_agg_filter.false` does not have that port's fanout ID, so it is explicit. The tuple and the enrichment
     // after it are a `let` named `metrics_enrich`, which derives the merge's native ID, `metrics_enrich_in`, and the
     // host tags stage's, `metrics_enrich_host_tags`.
     assert_eq!(
-        outline(&default_export()),
+        outline(&with_drops_on(
+            &default_export(),
+            "true",
+            Some(&["dsd_prefix_filter_blocklist", "dsd_post_agg_filter"])
+        )),
         [
             "let dsd_prefix_filter_blocklist = dogstatsd | dogstatsd_mapper(...) as dsd_enrich \
              | namespace_prefix(...) as dsd_prefix_filter | split(...)",
@@ -889,9 +1020,11 @@ fn the_default_program_resugars_into_lets_named_for_its_streams() {
     );
 }
 
-/// Returns `artifact` with every split that drops on `true` and not on `false` swapped, as normalization does: the
-/// predicate negated, the ports exchanged, and the drop renamed to `<split>_false`, in canonical order.
-fn swap_polarity(artifact: &PolicyArtifact) -> PolicyArtifact {
+/// Returns `artifact` with every split that drops on its other port and not on `port` swapped, as normalization does
+/// for `false`, or only those of `only`: the predicate negated, the ports exchanged, and the drop renamed to
+/// `<split>_<port>`, in canonical order.
+fn with_drops_on(artifact: &PolicyArtifact, port: &str, only: Option<&[&str]>) -> PolicyArtifact {
+    let other = if port == "true" { "false" } else { "true" };
     let mut value = serde_json::to_value(artifact).unwrap();
     let nodes = value["nodes"].as_array().unwrap().clone();
     let edges = value["edges"].as_array().unwrap().clone();
@@ -906,9 +1039,10 @@ fn swap_polarity(artifact: &PolicyArtifact) -> PolicyArtifact {
         .iter()
         .filter(|node| node["op"] == "split")
         .map(|node| node["id"].as_str().unwrap().to_string())
+        .filter(|id| only.is_none_or(|only| only.contains(&id.as_str())))
         .filter(|id| {
-            op_after(format!("{}.true", id)).as_deref() == Some("drop")
-                && op_after(format!("{}.false", id)).as_deref() != Some("drop")
+            op_after(format!("{}.{}", id, other)).as_deref() == Some("drop")
+                && op_after(format!("{}.{}", id, port)).as_deref() != Some("drop")
         })
         .collect::<Vec<_>>();
     for id in &swapped {
@@ -917,18 +1051,18 @@ fn swap_polarity(artifact: &PolicyArtifact) -> PolicyArtifact {
                 let predicate = node["params"]["predicate"].clone();
                 node["params"]["predicate"] = json!({"not": predicate});
             }
-            if node["id"] == format!("{}_true", id).as_str() {
-                node["id"] = json!(format!("{}_false", id));
+            if node["id"] == format!("{}_{}", id, other).as_str() {
+                node["id"] = json!(format!("{}_{}", id, port));
             }
         }
         for edge in value["edges"].as_array_mut().unwrap() {
             let from = edge["from"].as_str().unwrap().to_string();
             let to = edge["to"].as_str().unwrap().to_string();
-            if from == format!("{}.true", id) {
-                edge["from"] = json!(format!("{}.false", id));
-                edge["to"] = json!(to.replace(&format!("{}_true.", id), &format!("{}_false.", id)));
-            } else if from == format!("{}.false", id) {
-                edge["from"] = json!(format!("{}.true", id));
+            if from == format!("{}.{}", id, other) {
+                edge["from"] = json!(format!("{}.{}", id, port));
+                edge["to"] = json!(to.replace(&format!("{}_{}.", id, other), &format!("{}_{}.", id, port)));
+            } else if from == format!("{}.{}", id, port) {
+                edge["from"] = json!(format!("{}.{}", id, other));
             }
         }
     }
@@ -955,7 +1089,11 @@ fn the_normalized_default_program_has_the_designed_shape() {
     // With normalization's polarity, the splits are `where`s and `dsd_post_agg_filter` is reused through its native
     // fanout, as the design's example shows.
     assert_eq!(
-        outline(&swap_polarity(&default_export())),
+        with_drops_on(&default_export(), "false", None),
+        canonical(default_export())
+    );
+    assert_eq!(
+        outline(&default_export()),
         [
             "let dsd_no_agg_split = dogstatsd | dogstatsd_mapper(...) as dsd_enrich \
              | namespace_prefix(...) as dsd_prefix_filter | where ... as dsd_prefix_filter_blocklist \

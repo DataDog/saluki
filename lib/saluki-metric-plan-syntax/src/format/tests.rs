@@ -216,7 +216,7 @@ fn an_empty_program_is_an_empty_block() {
 }
 
 #[test]
-fn the_header_and_blobs_surround_the_statements() {
+fn the_headers_and_blobs_come_before_the_statements() {
     let mut program = program(vec![run(pipeline(head("x"), vec![], Some(drop_sink(None))))]);
     program.ir_version = Some(2);
     program.base = Some(Base {
@@ -242,11 +242,11 @@ fn the_header_and_blobs_surround_the_statements() {
     b_out = "sha256:{three}",
   }}
 
-  x | drop
-
   blobs {{
     "{blob}" = {{ rules: ["a", "b"] }},
   }}
+
+  x | drop
 }}
 "#,
         one = "1".repeat(64),
@@ -284,6 +284,19 @@ fn statements_are_separated_by_blank_lines() {
 }
 
 // Statements.
+
+#[test]
+fn an_operator_named_like_another_stage_or_as_takes_parentheses() {
+    let stages = ["where", "fork", "emit", "drop", "exit", "as", "alpha"]
+        .iter()
+        .map(|name| op(name, json!({}), None, None))
+        .collect();
+    let statement = let_("x", pipeline(head("dogstatsd"), stages, None));
+    assert_eq!(
+        statement_text(statement, usize::MAX),
+        "  let x = dogstatsd\n    | where()\n    | fork()\n    | emit()\n    | drop()\n    | exit()\n    | as()\n    | alpha"
+    );
+}
 
 #[test]
 fn a_short_pipeline_is_one_line() {
@@ -527,6 +540,63 @@ fn a_where_stage_is_written_with_its_predicate_and_as() {
 }
 
 #[test]
+fn a_lone_positional_argument_takes_no_comma_when_broken() {
+    let predicate = json!({"any": [
+        {"intake_name": {"eq": "checkout.requests"}},
+        {"intake_name": {"prefix": "checkout."}},
+    ]});
+    let statement = let_(
+        "x",
+        pipeline(
+            head("a"),
+            vec![op("split", json!({"predicate": predicate}), Some("predicate"), None)],
+            None,
+        ),
+    );
+    assert_eq!(
+        statement_text(statement, 50),
+        r#"  let x = a
+    | split(
+        intake_name == "checkout.requests"
+        or intake_name starts_with "checkout."
+      )"#
+    );
+}
+
+#[test]
+fn a_broken_where_in_a_branch_continues_deeper_than_the_branchs_pipes() {
+    let predicate = json!({"all": [
+        {"intake_name": {"eq": "checkout.requests"}},
+        {"any": [{"host": {"eq": "web-1"}}, {"host": {"eq": "web-2"}}]},
+    ]});
+    let first = branch(
+        vec![where_stage(predicate.clone(), Some("routed"))],
+        emit_output("a_out", None),
+    );
+    let later = branch(
+        vec![
+            op("host_enrichment", json!({}), None, None),
+            where_stage(predicate, None),
+        ],
+        drop_sink(None),
+    );
+    let statement = run(pipeline(head("x"), vec![], Some(fork(None, vec![first, later]))));
+    assert_eq!(
+        statement_text(statement, 50),
+        r#"  x | fork {
+    where intake_name == "checkout.requests"
+        and (host == "web-1" or host == "web-2")
+        as routed
+      | emit output a_out
+    host_enrichment
+      | where intake_name == "checkout.requests"
+          and (host == "web-1" or host == "web-2")
+      | drop
+  }"#
+    );
+}
+
+#[test]
 fn a_long_where_breaks_at_its_junction_under_the_stage() {
     let predicate = json!({"any": [
         {"intake_name": {"eq": "checkout.requests"}},
@@ -542,7 +612,8 @@ fn a_long_where_breaks_at_its_junction_under_the_stage() {
         r#"  let x = a
     | where intake_name == "checkout.requests"
         or intake_name starts_with "checkout."
-        or host == "web-1" as routed"#
+        or host == "web-1"
+        as routed"#
     );
 }
 
@@ -685,7 +756,7 @@ fn a_fork_has_a_branch_per_line() {
 }
 
 #[test]
-fn a_fork_without_an_id_or_stages_starts_its_own_line() {
+fn a_fork_that_is_the_only_stage_follows_the_head_on_its_line() {
     let statement = run(pipeline(
         head("x"),
         vec![],
@@ -699,7 +770,7 @@ fn a_fork_without_an_id_or_stages_starts_its_own_line() {
     ));
     assert_eq!(
         statement_text(statement, 120),
-        "  x\n    | fork {\n      drop\n      emit primary\n    }"
+        "  x | fork {\n    drop\n    emit primary\n  }"
     );
 }
 
@@ -724,13 +795,12 @@ fn a_branch_that_does_not_fit_continues_on_pipe_lines() {
     ));
     assert_eq!(
         statement_text(statement, 50),
-        r#"  x
-    | fork {
-      where name == "first"
-        | host_enrichment as enrich
-        | emit output a_out
-      drop
-    }"#
+        r#"  x | fork {
+    where name == "first"
+      | host_enrichment as enrich
+      | emit output a_out
+    drop
+  }"#
     );
 }
 
@@ -758,18 +828,17 @@ fn a_nested_fork_is_aligned_with_its_pipe() {
     ));
     assert_eq!(
         statement_text(statement, 120),
-        r#"  x
-    | fork as outer {
-      fork as inner {
+        r#"  x | fork as outer {
+    fork as inner {
+      emit output a_out
+      drop
+    }
+    where name == "a"
+      | fork as inner {
         emit output a_out
         drop
       }
-      where name == "a"
-        | fork as inner {
-          emit output a_out
-          drop
-        }
-    }"#
+  }"#
     );
 }
 
@@ -989,14 +1058,14 @@ fn junctions_are_infix_with_parentheses_where_precedence_needs_them() {
     let cases = [
         (all(&[&a, &b, &c]), r#"name == "a" and name == "b" and name == "c""#),
         (any(&[&a, &b, &c]), r#"name == "a" or name == "b" or name == "c""#),
-        // `and` binds tighter than `or`, so it needs none under an `or`.
+        // `and` binds tighter than `or`, so it needs none under an `or`, but has them for the reader.
         (
             any(&[&all(&[&a, &b]), &c]),
-            r#"name == "a" and name == "b" or name == "c""#,
+            r#"(name == "a" and name == "b") or name == "c""#,
         ),
         (
             any(&[&a, &all(&[&b, &c])]),
-            r#"name == "a" or name == "b" and name == "c""#,
+            r#"name == "a" or (name == "b" and name == "c")"#,
         ),
         // An `or` under an `and` does.
         (
@@ -1014,7 +1083,7 @@ fn junctions_are_infix_with_parentheses_where_precedence_needs_them() {
         ),
         (
             any(&[&all(&[&a, &b]), &all(&[&c, &d])]),
-            r#"name == "a" and name == "b" or name == "c" and name == "d""#,
+            r#"(name == "a" and name == "b") or (name == "c" and name == "d")"#,
         ),
         // `not` binds tightest.
         (not(&all(&[&a, &b])), r#"not (name == "a" and name == "b")"#),
@@ -1044,6 +1113,13 @@ fn predicates_with_no_text_of_their_own_are_written_raw() {
             r#"{ all: [true, { name: { eq: "a" } }] }"#,
         ),
         (json!({"not": true}), "{ not: true }"),
+        // A binding is a value, not a predicate: written `config.x`, it would be the flag leaf, so it is a record, at
+        // the top and as an operand.
+        (json!({"config": "a.b"}), r#"{ config: "a.b" }"#),
+        (
+            json!({"any": [{"config": "a.b"}, {"name": {"eq": "a"}}]}),
+            r#"{ config: "a.b" } or name == "a""#,
+        ),
         // A literal flag is not the constant leaf.
         (json!({"flag": true}), "{ flag: true }"),
         // Leaves that carry resolved values are never written as leaves.
@@ -1109,8 +1185,7 @@ fn default_program() -> Program {
             .clone()
     };
     let predicate = |id: &str| node_params(id)["predicate"].clone();
-    // The export's `split` nodes drop their `true` port, which `where` states as the opposite predicate.
-    let negated = |predicate: Value| json!({ "not": predicate });
+    // The export is in normal form, so its `split` nodes drop their `false` port, as `where` does.
 
     let base = &fixture["base"];
     let mut program = program(vec![
@@ -1127,7 +1202,7 @@ fn default_program() -> Program {
                         Some("dsd_prefix_filter"),
                     ),
                     where_stage(
-                        negated(predicate("dsd_prefix_filter_blocklist")),
+                        predicate("dsd_prefix_filter_blocklist"),
                         Some("dsd_prefix_filter_blocklist"),
                     ),
                     op("timestamp_split", node_params("dsd_no_agg_split"), Some("window"), None),
@@ -1158,7 +1233,7 @@ fn default_program() -> Program {
                     vec![reference("dsd_agg"), port_ref("dsd_no_agg_split", "passthrough")],
                     None,
                 ),
-                vec![where_stage(negated(predicate("dsd_post_agg_filter")), None)],
+                vec![where_stage(predicate("dsd_post_agg_filter"), None)],
                 None,
             ),
         ),
@@ -1240,7 +1315,7 @@ fn default_program() -> Program {
 #[test]
 fn the_default_program_reads_like_the_design_document() {
     let expected = r#"policy metrics {
-  base "sha256:4029566ae9cc3d0f84757f0e918039d5de70dd133f897ffbb0ed1457b75b77a3"
+  base "sha256:e007ebd04f3f0e4403a6b10acf82ccd2721b3447f17a94decff0091c1f149d4c"
   outputs {
     af_metrics_encode = "sha256:6666666666666666666666666666666666666666666666666666666666666666",
     dd_metrics_encode = "sha256:2222222222222222222222222222222222222222222222222222222222222222",
@@ -1301,21 +1376,25 @@ fn the_default_program_reads_like_the_design_document() {
     | fork as metrics_policy {
       emit output dd_metrics_encode
       where intake_name in config.metrics_endpoint_routing.group.0123456789abcdef.names
-        or intake_name starts_with config.metrics_endpoint_routing.group.0123456789abcdef.prefixes as metrics_routing_filter_0
+          or intake_name starts_with config.metrics_endpoint_routing.group.0123456789abcdef.prefixes
+          as metrics_routing_filter_0
         | emit output metrics_routing_encode_0
       where intake_name in config.metrics_endpoint_routing.group.fedcba9876543210.names
-        or intake_name starts_with config.metrics_endpoint_routing.group.fedcba9876543210.prefixes as metrics_routing_filter_1
+          or intake_name starts_with config.metrics_endpoint_routing.group.fedcba9876543210.prefixes
+          as metrics_routing_filter_1
         | emit output metrics_routing_encode_1
       where config.multi_region_failover.enabled
-        and config.multi_region_failover.metric_mirroring.enabled
-        and (
-          is_empty(config.multi_region_failover.metric_mirroring.allowlist)
-          or name in config.multi_region_failover.metric_mirroring.allowlist
-        ) as mrf_metrics_gateway
+          and config.multi_region_failover.metric_mirroring.enabled
+          and (
+            is_empty(config.multi_region_failover.metric_mirroring.allowlist)
+            or name in config.multi_region_failover.metric_mirroring.allowlist
+          )
+          as mrf_metrics_gateway
         | emit output mrf_metrics_encode
       where kind in [counter, rate, gauge, set]
-        and config.autoscaling_failover.enabled
-        and name in config.autoscaling_failover.metrics as af_metrics_gateway
+          and config.autoscaling_failover.enabled
+          and name in config.autoscaling_failover.metrics
+          as af_metrics_gateway
         | emit output af_metrics_encode
     }
 }

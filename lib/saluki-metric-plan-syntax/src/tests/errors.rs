@@ -1,4 +1,7 @@
 //! Diagnostics for common mistakes, and the bounds on what a source may contain.
+//!
+//! The passes' own tests cover each syntax error and each name and port rule in detail; these go through the public
+//! `parse` and `print` and read the rendered diagnostics: where each is, what text it underlines, and what it says.
 
 use saluki_metric_plan::limits::values::ARTIFACT_SIZE;
 use serde_json::{json, Value};
@@ -33,96 +36,324 @@ fn case(source: String, line: usize, column: usize, offending: &'static str, mes
 #[test]
 fn common_mistakes_are_reported_at_the_offending_text() {
     let cases = vec![
+        // Habits from the node-and-edge syntax.
         case(
-            lines("  input.metrics -> s\n  node s = split(true) {\n    maybe -> drop\n  }"),
-            5,
-            5,
-            "maybe",
-            "Node `s` (`split`) has no output port `maybe`; its output ports are `true`, `false`.",
+            lines("  dogstatsd -> drop"),
+            3,
+            13,
+            "->",
+            "`->` is retired: join a pipeline's stages with `|`, as in `dogstatsd | emit primary`.",
         ),
         case(
-            lines("  input.metrics -> a\n  node a = tee {\n    -> drop\n  node b = drop"),
-            6,
+            lines("  node x = drop"),
+            3,
             3,
             "node",
-            "Expected `}` to close the block of node `a` opened at line 4, column 16, found `node`.",
+            "`node <id> = ...` is retired: write the operator as a stage of a pipeline, as in `dogstatsd | \
+             aggregate(window: 10s) as <id>`.",
         ),
         case(
-            format!("policy p {{\n  base \"{}\"\n  node a = tee {{\n    -> drop\n", BASE),
-            5,
-            1,
-            "",
-            "Expected `}` to close the block of node `a` opened at line 3, column 16, found the end of the input.",
-        ),
-        case(
-            lines(r#"  node n = frobnicate(v: "a\qb")"#),
+            lines("  input.dogstatsd | drop"),
             3,
-            28,
+            3,
+            "input.dogstatsd",
+            "`input.` is retired: a pipeline names a scope input alone, as in `dogstatsd | ...`.",
+        ),
+        case(
+            lines(r#"  dogstatsd | host_tags(tags: config("host.tags")) | drop"#),
+            3,
+            31,
+            r#"config("host.tags")"#,
+            "`config(\"...\")` is retired: a configuration binding is written `config.` and the binding's name, as in \
+             `config.host.tags`.",
+        ),
+        case(
+            lines(r#"  dogstatsd | where name prefix_in ["a."] | drop"#),
+            3,
+            26,
+            "prefix_in",
+            "`prefix_in` is retired: write `starts_with` and the list, as in `name starts_with [\"a.\", \"b.\"]`.",
+        ),
+        case(
+            lines("  dogstatsd | where all(true, false) | drop"),
+            3,
+            21,
+            "all",
+            "`all(...)` is retired: join the predicates with `and`, as in `a and b and c`.",
+        ),
+        // Writing a pipeline.
+        case(
+            lines("  dogstatsd host_tags | drop"),
+            3,
+            13,
+            "host_tags",
+            "Expected `|` after `dogstatsd`, found `host_tags`.",
+        ),
+        case(
+            lines("  dogstatsd | host_enrichment as | drop"),
+            3,
+            34,
+            "|",
+            "Expected a node name after `as`, found `|`.",
+        ),
+        case(
+            lines("  dogstatsd | fork { drop } as"),
+            4,
+            1,
+            "}",
+            "Expected a node name after `as`, found `}`.",
+        ),
+        case(
+            lines("  dogstatsd | host_enrichment as x as y | drop"),
+            3,
+            36,
+            "as",
+            "A node takes one `as`, and this one already has `as x`.",
+        ),
+        case(
+            lines("  exit.aggregated -> drop"),
+            3,
+            19,
+            "->",
+            "`->` is retired: join a pipeline's stages with `|`",
+        ),
+        case(
+            lines("  dogstatsd | drop | host_enrichment | drop"),
+            3,
+            15,
+            "drop",
+            "`drop` ends a pipeline; to send a copy and keep going, name the stream with `let` and use it twice.",
+        ),
+        case(
+            lines("  dogstatsd | emit primary | drop"),
+            3,
+            15,
+            "emit",
+            "`emit` ends a pipeline; to send a copy and keep going, name the stream with `let` and use it twice.",
+        ),
+        case(
+            lines("  let a = dogstatsd | drop\n  a | drop"),
+            3,
+            23,
+            "drop",
+            "`drop` ends a pipeline, but `let a` names a stream, which later statements continue",
+        ),
+        case(
+            lines("  dogstatsd | host_enrichment"),
+            3,
+            3,
+            "dogstatsd | host_enrichment",
+            "This pipeline does not end: a statement without `let` ends in a sink",
+        ),
+        case(
+            lines("  dogstatsd | host_enrichment (tags: [])| drop"),
+            3,
+            31,
+            "(",
+            "Write the arguments of `host_enrichment` right after its name, without a space, as in \
+             `host_enrichment(...)`: a `(` after a space starts a tuple, the head of the next statement.",
+        ),
+        case(
+            lines("  dogstatsd | fork drop"),
+            3,
+            20,
+            "drop",
+            "Expected `{` and the fork's branches, one per copy of the stream, found `drop`.",
+        ),
+        case(
+            lines("  dogstatsd | fork { drop drop } | drop"),
+            3,
+            15,
+            "fork",
+            "`fork` ends a pipeline, since each of its branches ends in a sink or another `fork`",
+        ),
+        case(
+            lines("  dogstatsd | where | drop"),
+            3,
+            21,
+            "|",
+            "Expected a predicate, such as `name == \"requests\"`",
+        ),
+        case(lines("  dogstatsd | | drop"), 3, 15, "|", "Expected a stage after `|`"),
+        case(
+            lines("  let = dogstatsd | host_enrichment"),
+            3,
+            7,
+            "=",
+            "Expected a name for the stream after `let`, found `=`.",
+        ),
+        case(
+            lines("  (dogstatsd otlp) | drop"),
+            3,
+            14,
+            "otlp",
+            "Expected `,` or `)` after the stream, to continue or close the tuple opened at line 3, column 3, found \
+             `otlp`.",
+        ),
+        // Names and ports.
+        case(
+            lines("  let a = dogstatsd | host_enrichment\n  dogstatsd | drop"),
+            3,
+            7,
+            "a",
+            "`a` is never used; use it, write `a | drop` to discard it, or remove the `let`.",
+        ),
+        case(
+            lines("  let s = dogstatsd | split(true)\n  s.true | drop"),
+            3,
+            7,
+            "s",
+            "`s.false` is never used; write `s.false | drop`.",
+        ),
+        case(
+            lines("  let t = dogstatsd | split(true)\n  t | drop"),
+            4,
+            3,
+            "t",
+            "`t` is a `split`, which has several output ports, so pick a port: `t.true` or `t.false`.",
+        ),
+        case(
+            lines("  dogstatsd | split(true) | drop"),
+            3,
+            29,
+            "drop",
+            "`split` has two output ports, `true` and `false`; name it with `let s = dogstatsd | split(true)` and use \
+             `s.true` and `s.false`.",
+        ),
+        case(
+            lines("  dogstatsd | tee(ports: 3) | drop"),
+            3,
+            31,
+            "drop",
+            "`tee` has three output ports, `0`, `1`, and `2`; name it with `let s = dogstatsd | tee(ports: 3)` and use \
+             `s.0`, `s.1`, and `s.2`.",
+        ),
+        // A name taken twice is reported once, not again for the node it would name.
+        case(
+            lines("  let x = dogstatsd | host_enrichment\n  let x = otlp | host_enrichment\n  x | drop"),
+            4,
+            7,
+            "x",
+            "`x` is defined twice; it is first defined at line 3, column 7.",
+        ),
+        case(
+            lines(
+                "  dogstatsd | host_enrichment | drop\n  let input_dogstatsd_host_enrichment = otlp | host_enrichment\n  \
+                 input_dogstatsd_host_enrichment | drop",
+            ),
+            3,
+            15,
+            "host_enrichment",
+            "This `host_enrichment` would be the node `input_dogstatsd_host_enrichment`, which is already the name of \
+             the `let` at line 4, column 7.",
+        ),
+        case(
+            lines("  a | drop\n  let a = dogstatsd | host_enrichment\n  a | drop"),
+            3,
+            3,
+            "a",
+            "`a` is used before it is defined, at line 4, column 7; programs cannot loop, so define it first.",
+        ),
+        case(
+            lines("  let s = dogstatsd | split(true)\n  s.true | drop\n  s.false | drop\n  s.maybe | drop"),
+            6,
+            5,
+            "maybe",
+            "`s` is a `split`, which has no output port `maybe`; pick one of `s.true` or `s.false`.",
+        ),
+        case(
+            lines("  dogstatsd.x | drop"),
+            3,
+            13,
+            "x",
+            "`dogstatsd` is a scope input, which has no ports; write `dogstatsd`.",
+        ),
+        case(
+            lines("  dogstatsd | merge(inputs: 2) | drop"),
+            3,
+            15,
+            "merge(inputs: 2)",
+            "`merge` has 2 input ports, so a pipeline cannot enter it; combine streams with a tuple, as in `(a, b)`.",
+        ),
+        case(
+            lines("  dogstatsd | host_enrichment as Bad | drop"),
+            3,
+            34,
+            "Bad",
+            "Invalid artifact node ID `Bad`: identifiers start with a lowercase ASCII letter",
+        ),
+        // Values, predicates, and the header.
+        case(
+            lines(r#"  dogstatsd | frobnicate(v: "a\qb") | drop"#),
+            3,
+            31,
             r"\q",
             "Unknown escape sequence `\\q` in a string.",
         ),
         case(
-            lines(r#"  node n = host_tags(tags: ["a", "b")"#),
+            lines(r#"  dogstatsd | host_tags(tags: ["a", "b") | drop"#),
             3,
-            37,
+            40,
             ")",
-            "Expected `,` or `]` after the list element, to continue or close the list opened at line 3, column 28, \
+            "Expected `,` or `]` after the list element, to continue or close the list opened at line 3, column 31, \
              found `)`.",
         ),
         case(
-            lines(r#"  node n = frobnicate(v: "abc)"#),
+            lines("  dogstatsd | frobnicate(v: \"abc) | drop"),
             3,
-            26,
-            "\"abc)",
+            29,
+            "\"abc) | drop",
             "Unterminated string: a string cannot span lines",
         ),
         case(
-            lines("  input.metrics -> s\n  node s = split(true) {\n    -> drop\n  }"),
-            5,
-            5,
-            "-> drop",
-            "Node `s` (`split`) has 2 output ports (`true`, `false`); name the port this edge leaves, as in \
-             `true -> ...`.",
-        ),
-        case(
-            lines("  input.metrics -> nowhere"),
+            lines("  dogstatsd | host_tags(deadline: 1s, deadline: 2s) | drop"),
             3,
-            20,
-            "nowhere",
-            "There is no node `nowhere`; define it with `node nowhere = ...`.",
+            39,
+            "deadline",
+            "The parameter `deadline` is given twice.",
         ),
         case(
-            lines("  node a = drop\n  node a = drop"),
-            4,
+            lines("  dogstatsd | host_tags(tags: [], deadline: 1.5s) | drop"),
+            3,
+            45,
+            "1.5s",
+            "Invalid duration `1.5s`: a duration is a whole number followed by a unit, such as `1500ms`.",
+        ),
+        case(
+            lines("  dogstatsd | split(kind in [countr]) | drop"),
+            3,
+            30,
+            "countr",
+            "Unknown metric kind `countr`; the kinds are counter, rate, gauge, set, histogram, distribution.",
+        ),
+        case(
+            lines("  dogstatsd | where tags.env | drop"),
+            3,
+            30,
+            "|",
+            "Expected `is set`, `is unset`, or a string match after `tags.<key>`: `== \"<s>\"`",
+        ),
+        case(
+            lines("  dogstatsd | where name == | drop"),
+            3,
+            29,
+            "|",
+            "Expected a string after `==`, found `|`.",
+        ),
+        case(
+            lines("  dogstatsd | where (true or false | drop"),
+            3,
+            36,
+            "|",
+            "Expected `and`, `or`, or `)` to close the parenthesis opened at line 3, column 21, found `|`.",
+        ),
+        case(
+            lines("  dogstatsd | fork {\n    drop\n    drop\n"),
             8,
-            "a",
-            "The node `a` is defined twice; it is first defined at line 3, column 3.",
-        ),
-        case(
-            lines(concat!(
-                "  input.metrics -> s\n",
-                "  node s = split(true) {\n    true  -> drop\n    false -> drop\n  }\n",
-                "  node s_true = drop",
-            )),
-            5,
-            14,
-            "drop",
-            "This inline `drop` is the node `s_true` (named after port `true` of `s`), but `s_true` is already \
-             defined at line 8, column 3. Rename that node, or define this terminal as a node of its own.",
-        ),
-        case(
-            lines("  input.metrics -> m\n  node m = merge(inputs: 2) {\n    -> drop\n  }"),
-            3,
-            20,
-            "m",
-            "Node `m` (`merge`) has 2 input ports (`0`, `1`); name the port this edge enters, as in `m.0`.",
-        ),
-        case(
-            lines("  input.metrics -> m.7\n  node m = merge(inputs: 2) {\n    -> drop\n  }"),
-            3,
-            20,
-            "m.7",
-            "Node `m` (`merge`) has no input port `7`; its input ports are `0`, `1`.",
+            1,
+            "",
+            "Expected `}` to close the policy opened at line 1, column 10, found the end of the input. If a fork is \
+             missing its `}`, the policy's `}` closed it instead: check the fork opened at line 3, column 20.",
         ),
         case(
             "policy p {\n}\n".to_string(),
@@ -132,55 +363,6 @@ fn common_mistakes_are_reported_at_the_offending_text() {
             "Expected `base \"<program hash>\"` in the policy",
         ),
         case(
-            lines("  node Bad = drop"),
-            3,
-            8,
-            "Bad",
-            "Invalid artifact node ID `Bad`: identifiers start with a lowercase ASCII letter",
-        ),
-        case(
-            lines("  node input = drop"),
-            3,
-            8,
-            "input",
-            "Invalid artifact node ID `input`: `input` is reserved for the scope's inputs",
-        ),
-        case(
-            lines("  node s = split(kind in [countr])"),
-            3,
-            27,
-            "countr",
-            "Unknown metric kind `countr`; the kinds are counter, rate, gauge, set, histogram, distribution.",
-        ),
-        case(
-            lines(r#"  node n = namespace_prefix(namespace: config("Not A Binding"))"#),
-            3,
-            47,
-            "\"Not A Binding\"",
-            "Invalid binding name `Not A Binding`",
-        ),
-        case(
-            lines("  node n = namespace_prefix(namespace: dogstatsd)"),
-            3,
-            40,
-            "dogstatsd",
-            "Expected a value, found `dogstatsd`. Strings are written in double quotes, as \"dogstatsd\".",
-        ),
-        case(
-            lines("  node n = host_tags(deadline: 1s, deadline: 2s)"),
-            3,
-            36,
-            "deadline",
-            "The parameter `deadline` is given twice.",
-        ),
-        case(
-            lines("  input.metrics -> t\n  node t = tee {\n    0 -> drop\n  }"),
-            5,
-            5,
-            "0",
-            "A `tee` written without parameters numbers its ports in order",
-        ),
-        case(
             "policy p {\n  base \"sha256:xyz\"\n}\n".to_string(),
             2,
             8,
@@ -188,11 +370,11 @@ fn common_mistakes_are_reported_at_the_offending_text() {
             "Invalid hash `sha256:xyz`",
         ),
         case(
-            "node a = drop".to_string(),
+            "dogstatsd | drop".to_string(),
             1,
             1,
-            "node",
-            "Expected `policy`, which starts a policy artifact, found `node`.",
+            "dogstatsd",
+            "Expected `policy`, which starts a policy artifact, found `dogstatsd`.",
         ),
         case(
             format!("policy p {{\n  base \"{}\"\n}}\nextra\n", BASE),
@@ -200,172 +382,6 @@ fn common_mistakes_are_reported_at_the_offending_text() {
             1,
             "extra",
             "Expected the end of the input after the policy's closing `}`, found `extra`.",
-        ),
-        case(
-            lines("  input.metrics -> s\n  node s = split(true) {\n    true -> emit\n  }"),
-            6,
-            3,
-            "}",
-            "Expected an output ID, or `to [<recipient>, ...]`, after `emit`, found `}`.",
-        ),
-        case(
-            lines("  node s = split(name ==)"),
-            3,
-            25,
-            ")",
-            "Expected a string after `==`, found `)`.",
-        ),
-        case(
-            lines("  node s = split((true or false {"),
-            3,
-            33,
-            "{",
-            "Expected `and`, `or`, or `)` to close the parenthesis opened at line 3, column 18, found `{`.",
-        ),
-        case(
-            lines("  frob"),
-            3,
-            3,
-            "frob",
-            "Expected `base \"<program hash>\"`, `node <id> = ...`, an edge such as `input.metrics -> <target>`, or \
-             `}` to close the policy, found `frob`.",
-        ),
-        case(
-            lines("  node t = tee(2)"),
-            3,
-            16,
-            "2",
-            "Expected a parameter, written `<name>: <value>`, or `)`; `tee` takes: ports, found the number `2`.",
-        ),
-        case(
-            lines("  node x drop"),
-            3,
-            10,
-            "drop",
-            "Expected `=` and the node's operator, found `drop`.",
-        ),
-        case(
-            lines("  ir_version one"),
-            3,
-            14,
-            "one",
-            "Expected an IR version, a whole number such as `1`, found `one`.",
-        ),
-        case(
-            lines("  blobs [1]"),
-            3,
-            9,
-            "[",
-            "Expected `{` to open the blob table, found `[`.",
-        ),
-        case(
-            lines("  node x = 3"),
-            3,
-            12,
-            "3",
-            "Expected an operator name, such as `split` or `tee`, found the number `3`.",
-        ),
-        // `emit` without its output takes the port of the next line as its output.
-        case(
-            lines("  input.metrics -> s\n  node s = split(true) {\n    true -> emit false -> drop\n  }"),
-            5,
-            18,
-            "false",
-            "Expected an output ID after `emit`, found `false`, which is a port of node `s` (`split`) and starts the \
-             next edge.",
-        ),
-        // A node's block missing its `}` takes the policy's.
-        case(
-            format!(
-                "policy p {{\n  base \"{}\"\n  input.metrics -> s\n  node s = split(true) {{\n    true -> drop\n    \
-                 false -> drop\n}}\n",
-                BASE
-            ),
-            8,
-            1,
-            "",
-            "Expected `}` to close the policy opened at line 1, column 10, found the end of the input. If a node's \
-             block is missing its `}`, the policy's `}` closed it instead: check the block of node `s` opened at line \
-             4, column 24.",
-        ),
-        case(
-            lines(r#"  node s = split(has_tag "env")"#),
-            3,
-            26,
-            "\"env\"",
-            "Expected `(` after `has_tag`, as in `has_tag(\"env\")`, found a string.",
-        ),
-        case(
-            lines(r#"  node s = split(name matches ["a"])"#),
-            3,
-            31,
-            "[",
-            "Expected `(` after `matches`, as in `matches(values: [\"a\"], prefix: false)`, found `[`.",
-        ),
-        case(
-            lines(r#"  node s = split(name == "a" has_tag("b"))"#),
-            3,
-            30,
-            "has_tag",
-            "Expected `and`, `or`, or `)` after the predicate, found `has_tag`.",
-        ),
-        case(
-            lines(r#"  node s = split(predicate: name == "a" has_tag("b"))"#),
-            3,
-            41,
-            "has_tag",
-            "Expected `and`, `or`, `,`, or `)` after the predicate, found `has_tag`.",
-        ),
-        case(
-            lines("  node h = host_enrichment\n  h -> drop"),
-            4,
-            5,
-            "->",
-            "Expected `.` and a port after `h`, found `->`: an edge outside a node's block names the port it leaves, \
-             as in `h.<port> -> <target>`. Or write the edge in the block of node `h`.",
-        ),
-        case(
-            lines("  input -> drop"),
-            3,
-            9,
-            "->",
-            "Expected `.` and the input's name after `input`, as in `input.metrics -> <target>`, found `->`.",
-        ),
-        case(
-            lines("  input.metrics -> s\n  node s = split(true) {\n    true = drop\n  }"),
-            5,
-            10,
-            "=",
-            "Expected `->` after the port `true`: edges are written `<port> -> <target>`, found `=`.",
-        ),
-        case(
-            lines("  node h = host_tags(tags: [], deadline: 1.5s)"),
-            3,
-            42,
-            "1.5s",
-            "Invalid duration `1.5s`: a duration is a whole number followed by a unit, such as `1500ms`.",
-        ),
-        case(
-            lines(r#"  node s = split(name != "a")"#),
-            3,
-            23,
-            "!",
-            "Unexpected character `!`. Negate a predicate with `not`, as in `not name == \"a\"`; there is no `!=`.",
-        ),
-        case(
-            lines("  exit.aggregated -> drop"),
-            3,
-            3,
-            "exit.aggregated",
-            "An edge cannot leave `exit.aggregated`, a scope exit: exits are where edges leave the scope, so an exit \
-             is only ever an edge's target, as in `<node>.<port> -> exit.aggregated`.",
-        ),
-        case(
-            lines("  input.metrics -> exit.0"),
-            3,
-            25,
-            "0",
-            "Expected a scope exit name after `exit.`",
         ),
     ];
 
@@ -396,55 +412,72 @@ fn common_mistakes_are_reported_at_the_offending_text() {
 
 #[test]
 fn every_reference_problem_is_reported_in_source_order() {
-    let source = lines("  input.metrics -> s\n  node s = split(true) {\n    yes -> drop\n    false -> nowhere\n  }");
+    // Lowering finds the name and port problems of the whole program, whatever kind each is, and reports them in the
+    // order of the text they underline.
+    let source = lines(concat!(
+        "  later | drop\n",
+        "  let s = dogstatsd | split(true)\n",
+        "  s.true | drop\n",
+        "  s.maybe | drop\n",
+        "  let unused = otlp | host_enrichment\n",
+        "  let t = checks | split(true)\n",
+        "  t | drop\n",
+        "  nowhere.out | drop\n",
+        "  let later = liveness | host_enrichment\n",
+        "  later | drop",
+    ));
     let diagnostics = parse_err(&source);
     let found = diagnostics
         .iter()
         .map(|diagnostic| (diagnostic.line, diagnostic.column, text(&source, diagnostic.span)))
         .collect::<Vec<_>>();
-    assert_eq!(found, [(5, 5, "yes"), (6, 14, "nowhere")]);
+    assert!(
+        found
+            .windows(2)
+            .all(|pair| (pair[0].0, pair[0].1) <= (pair[1].0, pair[1].1)),
+        "{:?}",
+        found
+    );
     let rendered = crate::Diagnostics::to_string(&parse(&source).unwrap_err());
     assert_eq!(
         rendered,
-        "5:5: Node `s` (`split`) has no output port `yes`; its output ports are `true`, `false`.\n\
-         6:14: There is no node `nowhere`; define it with `node nowhere = ...`."
+        "3:3: `later` is used before it is defined, at line 11, column 7; programs cannot loop, so define it first.\n\
+         4:7: `s.false` is never used; write `s.false | drop`.\n\
+         6:5: `s` is a `split`, which has no output port `maybe`; pick one of `s.true` or `s.false`.\n\
+         7:7: `unused` is never used; use it, write `unused | drop` to discard it, or remove the `let`.\n\
+         9:3: `t` is a `split`, which has several output ports, so pick a port: `t.true` or `t.false`.\n\
+         10:11: `nowhere` is a scope input, which has no ports; write `nowhere`."
     );
 }
 
 #[test]
 fn misspelled_operators_are_named_when_their_arguments_do_not_parse() {
     // Without a registered operator's schema, a predicate cannot be read, so the error in its arguments comes with a
-    // note on the operator, which is the mistake. (source line, offending text of the error, its column, message)
+    // note on the operator, which is the mistake. (stage, offending text of the error, its column, message)
     let cases = [
         (
-            r#"  node s = splt(name == "x") {"#,
+            r#"splt(name == "x")"#,
             "name",
-            17,
             "Expected a parameter, written `<name>: <value>`, or `)`, found `name`.",
         ),
         (
-            r#"  node s = splt(predicate: name == "x") {"#,
+            r#"splt(predicate: name == "x")"#,
             "name",
-            28,
             "Expected a value, found `name`.",
         ),
         (
-            r#"  node s = splt(has_tag("a")) {"#,
-            "has_tag",
-            17,
-            "Expected a parameter, written `<name>: <value>`, or `)`, found `has_tag`.",
+            r#"splt(tags.team is set)"#,
+            "tags",
+            "Expected a parameter, written `<name>: <value>`, or `)`, found `tags`.",
         ),
     ];
-    for (line, offending, column, message) in cases {
-        let source = lines(&format!(
-            "  input.metrics -> s\n{}\n    true  -> drop\n    false -> drop\n  }}",
-            line
-        ));
+    for (stage, offending, message) in cases {
+        let source = lines(&format!("  dogstatsd | {} | drop", stage));
         let diagnostics = parse_err(&source);
         assert_eq!(diagnostics.len(), 2, "{:?}", diagnostics);
 
         let note = &diagnostics[0];
-        assert_eq!((note.line, note.column, text(&source, note.span)), (4, 12, "splt"));
+        assert_eq!((note.line, note.column, text(&source, note.span)), (3, 15, "splt"));
         assert!(
             note.message.starts_with(
                 "`splt` is not a registered operator, so its arguments can only be plain values, written \
@@ -460,19 +493,21 @@ fn misspelled_operators_are_named_when_their_arguments_do_not_parse() {
         );
 
         let error = &diagnostics[1];
-        assert_eq!(
-            (error.line, error.column, text(&source, error.span)),
-            (4, column, offending)
-        );
+        assert_eq!(text(&source, error.span), offending);
+        assert_eq!(error.line, 3);
         assert!(error.message.starts_with(message), "{}", error.message);
     }
 
     // A registered operator's arguments get no note, and neither does an unknown operator whose arguments parse.
-    assert_eq!(parse_err(&lines("  node s = split(name ==)")).len(), 1);
-    let unknown = parse_ok(&lines("  node s = frobnicate(predicate: true)"));
+    assert_eq!(parse_err(&lines("  dogstatsd | split(name ==) | drop")).len(), 1);
+    let unknown = parse_ok(&lines("  dogstatsd | frobnicate(predicate: true) | drop"));
     assert_eq!(unknown.artifact.nodes[0].op.as_str(), "frobnicate");
+    // A misspelled operator with no arguments is an unknown operator, which parsing accepts: validation of the plan it
+    // is composed into is what finds it.
+    let typo = parse_ok(&lines("  dogstatsd | host_enrichmnt | drop"));
+    assert_eq!(typo.artifact.nodes[0].op.as_str(), "host_enrichmnt");
     // A name far from every operator gets no suggestion.
-    let diagnostics = parse_err(&lines("  node s = qqqqqqqq(name)"));
+    let diagnostics = parse_err(&lines("  dogstatsd | qqqqqqqq(name) | drop"));
     assert!(
         !diagnostics[0].message.contains("Did you mean"),
         "{}",
@@ -512,7 +547,7 @@ fn artifacts_over_the_artifact_size_limit_are_rejected() {
     // A list of tags whose artifact is exactly at the limit as JSON, and one byte over it.
     let source_with = |tag: &str| {
         lines(&format!(
-            "  input.metrics -> h\n  node h = host_tags(tags: [\"{}\"], deadline: 0s) {{\n    -> drop\n  }}",
+            "  dogstatsd | host_tags(tags: [\"{}\"], deadline: 0s) | drop",
             tag
         ))
     };
@@ -542,7 +577,7 @@ fn sources_near_the_limits_parse_in_linear_time() {
     // whole source each time, so a long list took time quadratic in its length (minutes at this size).
     let elements = 40_000;
     let list = vec!["\"a\""; elements].join(", ");
-    let source = policy(&format!("  node n = frobnicate(v: [{}])", list));
+    let source = policy(&format!("  dogstatsd | frobnicate(v: [{}]) | drop", list));
     assert!(source.len() < ARTIFACT_SIZE as usize);
 
     let started = std::time::Instant::now();
@@ -560,63 +595,132 @@ fn sources_near_the_limits_parse_in_linear_time() {
     assert_eq!(value.as_array().map(Vec::len), Some(elements));
 }
 
+/// Returns a policy with the width of a wide node in each form: a fork, a tuple, and a stream used many times (in one tuple).
+fn wide_sources(width: usize) -> [(&'static str, String); 3] {
+    // Scrambled orders: 7919 is prime, so multiplying by it permutes the indexes.
+    let scrambled = |i: usize| i * 7919 % width;
+    let fork = format!("  dogstatsd\n    | fork {{\n{}    }}", "      drop\n".repeat(width));
+    let tuple = format!(
+        "  ({}) | drop",
+        (0..width)
+            .map(|i| format!("i{}", scrambled(i)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let uses = format!(
+        "  let x = dogstatsd | host_enrichment\n  ({}) | drop",
+        vec!["x"; width].join(", ")
+    );
+    [
+        ("fork", policy(&fork)),
+        ("tuple", policy(&tuple)),
+        ("uses", policy(&uses)),
+    ]
+}
+
+#[test]
+fn wide_nodes_within_the_size_limit_parse_and_print_back() {
+    // As wide as the artifact size limit lets each form be.
+    for (form, source) in wide_sources(400) {
+        let parsed = parse_ok(&source);
+        let printed = print_default(&parsed.artifact);
+        let reparsed = parse_ok(&printed);
+        assert_eq!(reparsed.artifact, parsed.artifact, "{} prints and parses back", form);
+        assert_eq!(
+            print_default(&reparsed.artifact),
+            printed,
+            "{} prints to a fixed point",
+            form
+        );
+    }
+}
+
 #[test]
 fn wide_nodes_parse_and_print_in_time_proportional_to_their_edges() {
     // Regression guard: ordering a node's edges, and checking their ports, once scanned the node's ports for each
     // edge, so two such tees took seconds to parse and to print.
-    let ports = 10_000;
-    let tee = |name: &str, input: &str| {
-        // Edge lines in a scrambled order: 7919 is prime, so multiplying by it permutes the ports.
-        let lines = (0..ports)
-            .map(|i| format!("    {} -> drop\n", i * 7919 % ports))
-            .collect::<String>();
-        format!(
-            "  input.{} -> {}\n  node {} = tee(ports: {}) {{\n{}  }}\n",
-            input, name, name, ports, lines
-        )
+    let width = 10_000;
+
+    // Each form's artifact, built by hand with its edges in reverse order, as a tool writing JSON might give them. A
+    // fork's tee, a tuple's merge, and the tee after a reused stream.
+    let artifact_of = |nodes: Vec<Value>, mut edges: Vec<Value>| {
+        edges.reverse();
+        raw_artifact(json!({
+            "ir_version": 1, "scope": "p", "base": {"program_hash": BASE}, "nodes": nodes, "edges": edges,
+        }))
     };
-    let source = policy(&format!("{}{}", tee("t0", "i0"), tee("t1", "i1")));
-
-    // The same graph as an artifact, with its edges in reverse order, as a tool writing JSON might give them.
-    let mut nodes = Vec::new();
-    let mut edges = Vec::new();
-    for (tee, input) in [("t0", "i0"), ("t1", "i1")] {
-        nodes.push(json!({"id": tee, "op": "tee", "params": {"ports": ports}}));
-        edges.push(json!({"from": format!("input.{}", input), "to": format!("{}.in", tee)}));
-        for port in 0..ports {
-            nodes.push(json!({"id": format!("{}_{}", tee, port), "op": "drop"}));
-            edges.push(json!({"from": format!("{}.{}", tee, port), "to": format!("{}_{}.in", tee, port)}));
-        }
+    let mut nodes = vec![json!({"id": "input_dogstatsd_fork", "op": "tee", "params": {"ports": width}})];
+    let mut edges = vec![json!({"from": "input.dogstatsd", "to": "input_dogstatsd_fork.in"})];
+    for port in 0..width {
+        nodes.push(json!({"id": format!("input_dogstatsd_fork_{}", port), "op": "drop"}));
+        edges.push(json!({
+            "from": format!("input_dogstatsd_fork.{}", port), "to": format!("input_dogstatsd_fork_{}.in", port),
+        }));
     }
-    let in_order = raw_artifact(json!({
-        "ir_version": 1, "scope": "post_enrich", "base": {"program_hash": BASE}, "nodes": nodes, "edges": edges,
-    }));
-    let mut reversed = in_order.clone();
-    reversed.edges.reverse();
+    let fork = artifact_of(nodes, edges);
 
-    let started = std::time::Instant::now();
-    // Each inline `drop` is a node of its own, so the artifact's JSON is over the size limit, which parsing finds
-    // once it has built the artifact.
-    let diagnostics = parse_err(&source);
-    let printed = print_default(&reversed);
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(10),
-        "took {:?}",
-        started.elapsed()
-    );
-    assert!(
-        diagnostics[0].message.starts_with("The artifact is "),
-        "{}",
-        diagnostics[0].message
-    );
-    // Edges follow the port order whatever order they are given in, so the tees print with their sugar.
-    assert_eq!(printed, print_default(&in_order));
-    assert!(
-        printed.contains("  node t0 = tee {\n    -> drop\n    -> drop\n"),
-        "{}",
-        &printed[..400]
-    );
-    assert_eq!(printed.matches("-> drop\n").count(), 2 * ports);
+    let mut nodes = vec![json!({"id": "input_i0_in", "op": "merge", "params": {"inputs": width}})];
+    let mut edges = Vec::new();
+    for port in 0..width {
+        edges.push(json!({"from": format!("input.i{}", port), "to": format!("input_i0_in.{}", port)}));
+    }
+    nodes.push(json!({"id": "input_i0_in_out", "op": "drop"}));
+    edges.push(json!({"from": "input_i0_in.out", "to": "input_i0_in_out.in"}));
+    let tuple = artifact_of(nodes, edges);
+
+    let mut nodes = vec![
+        json!({"id": "x", "op": "host_enrichment"}),
+        json!({"id": "x_fanout", "op": "tee", "params": {"ports": width}}),
+    ];
+    let mut edges = vec![
+        json!({"from": "input.dogstatsd", "to": "x.in"}),
+        json!({"from": "x.out", "to": "x_fanout.in"}),
+    ];
+    for port in 0..width {
+        edges.push(json!({"from": format!("x_fanout.{}", port), "to": format!("x_fanout_0_in.{}", port)}));
+    }
+    nodes.push(json!({"id": "x_fanout_0_in", "op": "merge", "params": {"inputs": width}}));
+    nodes.push(json!({"id": "x_fanout_0_in_out", "op": "drop"}));
+    edges.push(json!({"from": "x_fanout_0_in.out", "to": "x_fanout_0_in_out.in"}));
+    let uses = artifact_of(nodes, edges);
+
+    for (form, source) in wide_sources(width) {
+        // Each source is over the artifact size limit, which parsing finds once it has built the artifact.
+        let started = std::time::Instant::now();
+        let diagnostics = parse_err(&source);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "parsing {} took {:?}",
+            form,
+            started.elapsed()
+        );
+        assert!(
+            diagnostics[0].message.starts_with("The artifact is "),
+            "{}: {}",
+            form,
+            diagnostics[0].message
+        );
+    }
+
+    for (form, wide, sugar) in [
+        ("fork", &fork, "| fork {\n"),
+        ("tuple", &tuple, "(\n    i0,\n    i1,\n    i2,\n"),
+        ("uses", &uses, "(\n    x,\n    x,\n    x,\n"),
+    ] {
+        let started = std::time::Instant::now();
+        let printed = print_default(wide);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "printing {} took {:?}",
+            form,
+            started.elapsed()
+        );
+        // Edges follow the port order whatever order they are given in, so each prints with its sugar.
+        let mut in_order = wide.clone();
+        in_order.edges.reverse();
+        assert_eq!(printed, print_default(&in_order), "{}", form);
+        assert!(printed.contains(sugar), "{}: {}", form, &printed[..400]);
+    }
 }
 
 /// Returns a split with `predicate`, whose ports both lead to inline drops, as an artifact.
@@ -685,11 +789,11 @@ fn artifacts_within_the_size_limit_print_to_text_that_parses_back() {
         "{}",
         printed.len()
     );
-    assert!(printed.contains("\n      \"00001\",\n"));
+    assert!(printed.contains("\n        \"00001\",\n"));
 
-    // The same kind of list nested in alternating junctions almost as deep as JSON allows: one element per line, at
-    // the depth of its nesting, would be far longer than parsing accepts, so it is printed on one line.
-    let mut deep = json!({"name": {"in": names(20_000, 7)}});
+    // The same kind of list nested in alternating junctions as deep as JSON allows, with one element per line, at the
+    // depth of its nesting, which the source size limit still has room for.
+    let mut deep = json!({"name": {"in": names(10_000, 7)}});
     for level in 0..58 {
         let junction = if level % 2 == 0 { "all" } else { "any" };
         deep = json!({junction: [{"has_tag": format!("k{}", level)}, deep]});
@@ -697,8 +801,8 @@ fn artifacts_within_the_size_limit_print_to_text_that_parses_back() {
     let deep = split_artifact(deep);
     configures(&deep);
     let printed = assert_large_round_trip(&deep, &PrintOptions::default());
-    assert!(printed.contains(r#"node s = split(has_tag("k57") or (has_tag("k56") and (has_tag("k55") or"#));
-    assert!(printed.lines().count() < 20, "{} lines", printed.lines().count());
+    assert!(printed.contains("| where tags.k57 is set\n        or (\n          tags.k56 is set\n          and (\n"));
+    assert!(printed.lines().count() > 10_000, "{} lines", printed.lines().count());
 
     // A string of characters written as escapes takes six times its JSON.
     let length = ARTIFACT_SIZE as usize - 1000;
@@ -713,22 +817,31 @@ fn artifacts_within_the_size_limit_print_to_text_that_parses_back() {
         "ir_version": 1,
         "scope": "post_enrich",
         "base": {"program_hash": BASE},
-        "nodes": [{"id": "n", "op": "frobnicate", "params": {"v": vec![[0]; 60_000]}}],
-        "edges": [],
+        "nodes": [
+            {"id": "input_dogstatsd_frobnicate", "op": "frobnicate", "params": {"v": vec![[0]; 60_000]}},
+            {"id": "input_dogstatsd_frobnicate_out", "op": "drop"},
+        ],
+        "edges": [
+            {"from": "input.dogstatsd", "to": "input_dogstatsd_frobnicate.in"},
+            {"from": "input_dogstatsd_frobnicate.out", "to": "input_dogstatsd_frobnicate_out.in"},
+        ],
     }));
     let narrow = PrintOptions {
         width: 0,
         ..PrintOptions::default()
     };
     let printed = assert_large_round_trip(&dense, &narrow);
-    assert!(printed.contains("node n = frobnicate(v: [[0], [0], "));
+    assert!(printed.contains("| frobnicate(v: [[0], [0], "));
 }
 
 #[test]
 fn sources_with_too_many_tokens_are_rejected() {
     // Every element is two tokens, `1` and `,`, of one byte each.
     let elements = MAX_TOKENS / 2 + 1;
-    let source = policy(&format!("  node n = frobnicate(v: [{}])", "1,".repeat(elements)));
+    let source = policy(&format!(
+        "  dogstatsd | frobnicate(v: [{}]) | drop",
+        "1,".repeat(elements)
+    ));
     assert!(source.len() < MAX_SOURCE_SIZE);
     let diagnostics = parse_err(&source);
     assert_eq!(diagnostics.len(), 1);
@@ -746,10 +859,13 @@ fn nest(levels: usize, open: &str, inner: &str, close: &str) -> String {
     format!("{}{}{}", open.repeat(levels), inner, close.repeat(levels))
 }
 
-/// Returns a policy whose `split` predicate nests `levels` deep: the predicate is one level, and each of the
+/// Returns a policy whose `where` predicate nests `levels` deep: the predicate is one level, and each of the
 /// repetitions of `open` in it one more.
 fn nested_predicate(levels: usize, open: &str, inner: &str, close: &str) -> String {
-    policy(&format!("  node s = split({})", nest(levels - 1, open, inner, close)))
+    policy(&format!(
+        "  dogstatsd | where {} | drop",
+        nest(levels - 1, open, inner, close)
+    ))
 }
 
 /// A form of nesting, with a policy that nests it a given number of levels deep, as the depth limit counts them.
@@ -758,16 +874,22 @@ type NestingForm = (&'static str, fn(usize) -> String);
 /// Every form of nesting.
 const NESTING_FORMS: &[NestingForm] = &[
     ("lists", |levels| {
-        policy(&format!("  node n = host_tags(tags: {})", nest(levels, "[", "", "]")))
+        policy(&format!(
+            "  dogstatsd | host_tags(tags: {}) | drop",
+            nest(levels, "[", "", "]")
+        ))
     }),
     ("records", |levels| {
         policy(&format!(
-            "  node n = host_tags(tags: {})",
+            "  dogstatsd | host_tags(tags: {}) | drop",
             nest(levels, "{ a: ", "1", " }")
         ))
     }),
     ("an unregistered operator's parameter", |levels| {
-        policy(&format!("  node n = frobnicate(v: {})", nest(levels, "[", "", "]")))
+        policy(&format!(
+            "  dogstatsd | frobnicate(v: {}) | drop",
+            nest(levels, "[", "", "]")
+        ))
     }),
     ("a blob", |levels| {
         policy(&format!("  blobs {{ \"{}\" = {} }}", BASE, nest(levels, "[", "", "]")))
@@ -776,29 +898,32 @@ const NESTING_FORMS: &[NestingForm] = &[
     ("`not`", |levels| nested_predicate(levels, "not ", "true", "")),
     ("`and`", |levels| nested_predicate(levels, "(true and ", "true", ")")),
     ("`or`", |levels| nested_predicate(levels, "(true or ", "true", ")")),
-    ("`all`", |levels| nested_predicate(levels, "all(", "true", ")")),
-    ("`any` of several operands", |levels| {
-        nested_predicate(levels, "any(true, ", "false", ")")
-    }),
     ("`not` of `and`", |levels| {
         // Each repetition is two levels, `not` and the parenthesis; a leading `not` makes up an odd remainder.
         let not = "not ".repeat((levels - 1) % 2);
         policy(&format!(
-            "  node s = split({}{})",
+            "  dogstatsd | where {}{} | drop",
             not,
             nest((levels - 1) / 2, "not (true and ", "true", ")")
         ))
     }),
-    ("raw records in a predicate", |levels| {
-        nested_predicate(levels, "{ not: ", "true", " }")
-    }),
-    ("raw lists in a predicate", |levels| {
-        nested_predicate(levels, "[", "", "]")
+    ("a `split` operator's predicate", |levels| {
+        policy(&format!(
+            "  let s = dogstatsd | split({})\n  s.true | drop\n  s.false | drop",
+            nest(levels - 1, "(", "true", ")")
+        ))
     }),
     ("a named predicate parameter", |levels| {
         policy(&format!(
-            "  node s = split(predicate: {})",
+            "  let s = dogstatsd | split(predicate: {})\n  s.true | drop\n  s.false | drop",
             nest(levels - 1, "(", "true", ")")
+        ))
+    }),
+    ("forks", |levels| {
+        policy(&format!(
+            "  dogstatsd | {}drop{}",
+            "fork { ".repeat(levels),
+            " }".repeat(levels)
         ))
     }),
 ];
@@ -829,18 +954,18 @@ fn nesting_is_bounded_without_exhausting_the_stack() {
 
         // The error is reported at the bracket that goes too deep.
         let diagnostics = parse_err(&NESTING_FORMS[0].1(MAX_DEPTH + 1));
-        assert_eq!(diagnostics[0].column, 28 + MAX_DEPTH);
+        assert_eq!(diagnostics[0].column, 31 + MAX_DEPTH);
 
         // Far deeper inputs of every nesting form are rejected the same way.
         let depth = 30_000;
         let deep_inputs = [
-            format!("  node n = host_tags(tags: {})", "[".repeat(depth)),
-            format!("  node n = host_tags(tags: {})", "{ a: ".repeat(depth)),
-            format!("  node s = split({}true)", "not ".repeat(depth)),
-            format!("  node s = split({}true)", "(".repeat(depth)),
-            format!("  node s = split({}true)", "all(".repeat(depth)),
-            format!("  node s = split({}true)", "not (".repeat(depth)),
-            format!("  node s = split({{ a: {})", "[".repeat(depth)),
+            format!("  dogstatsd | host_tags(tags: {}) | drop", "[".repeat(depth)),
+            format!("  dogstatsd | host_tags(tags: {}) | drop", "{ a: ".repeat(depth)),
+            format!("  dogstatsd | where {}true | drop", "not ".repeat(depth)),
+            format!("  dogstatsd | where {}true | drop", "(".repeat(depth)),
+            format!("  dogstatsd | where {}true | drop", "not (".repeat(depth)),
+            format!("  dogstatsd | {}drop", "fork { ".repeat(depth)),
+            format!("  dogstatsd | {}", "fork { drop ".repeat(depth)),
         ];
         for items in deep_inputs {
             let diagnostics = parse_err(&policy(&items));

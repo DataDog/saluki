@@ -58,8 +58,7 @@ fn export_post_enrich() -> PolicyArtifact {
 }
 
 /// Exports the region of the default program's DogStatsD pipeline between its source and the shared enrichment, the
-/// scope the design's later stages add, as an artifact. The edge that leaves the region is left out, since artifacts
-/// cannot name exits yet.
+/// scope the design's later stages add, as an artifact, with one exit, `enrichment`, for the edge that leaves the region.
 fn export_dogstatsd_chain() -> PolicyArtifact {
     let plan = default_program();
     let source = plan
@@ -75,7 +74,21 @@ fn export_dogstatsd_chain() -> PolicyArtifact {
         .map(|node| node.id.clone())
         .filter(|id| id.local().as_str().starts_with("dsd_") && id.local().as_str() != "dsd_in")
         .collect::<BTreeSet<_>>();
-    export_region(&plan, "dogstatsd_pre_aggregation", &source, &region)
+    let mut export = export_region(&plan, "dogstatsd_pre_aggregation", &source, &region);
+    // The edge that leaves the region leaves the scope, by an exit.
+    let leaving = plan
+        .edges
+        .iter()
+        .find(|edge| region.contains(&edge.from.node) && !region.contains(&edge.to.node))
+        .expect("an edge leaves the DogStatsD chain");
+    export.edges.push(ArtifactEdge {
+        from: ArtifactPortRef::Node {
+            node: ArtifactNodeId::new(leaving.from.node.local().as_str()).unwrap(),
+            port: leaving.from.port.clone(),
+        },
+        to: ArtifactPortRef::Exit("enrichment".parse().unwrap()),
+    });
+    export
 }
 
 /// Exports a region of the default program that is not one of its declared scopes, which the host does not export, as
@@ -159,51 +172,29 @@ fn expected_text(program_hash: &str) -> String {
     mrf_metrics_encode = "sha256:5555555555555555555555555555555555555555555555555555555555555555",
   }}
 
-  input.metrics -> metrics_policy
-
-  node metrics_policy = tee {{
-    -> emit dd_metrics_encode
-    -> metrics_routing_filter_0
-    -> metrics_routing_filter_1
-    -> mrf_metrics_gateway
-    -> af_metrics_gateway
-  }}
-
-  node metrics_routing_filter_0 = split(
-    intake_name matches(values: config("metrics_endpoint_routing.group.0123456789abcdef.names"), prefix: false)
-    or intake_name matches(values: config("metrics_endpoint_routing.group.0123456789abcdef.prefixes"), prefix: true)
-  ) {{
-    true  -> emit metrics_routing_encode_0
-    false -> drop
-  }}
-
-  node metrics_routing_filter_1 = split(
-    intake_name matches(values: config("metrics_endpoint_routing.group.fedcba9876543210.names"), prefix: false)
-    or intake_name matches(values: config("metrics_endpoint_routing.group.fedcba9876543210.prefixes"), prefix: true)
-  ) {{
-    true  -> emit metrics_routing_encode_1
-    false -> drop
-  }}
-
-  node mrf_metrics_gateway = split(
-    flag(config("multi_region_failover.enabled"))
-    and flag(config("multi_region_failover.metric_mirroring.enabled"))
-    and (
-      is_empty(config("multi_region_failover.metric_mirroring.allowlist"))
-      or name matches(values: config("multi_region_failover.metric_mirroring.allowlist"), prefix: false)
-    )
-  ) {{
-    true  -> emit mrf_metrics_encode
-    false -> drop
-  }}
-
-  node af_metrics_gateway = split(
-    kind in [counter, rate, gauge, set]
-    and flag(config("autoscaling_failover.enabled"))
-    and name matches(values: config("autoscaling_failover.metrics"), prefix: false)
-  ) {{
-    true  -> emit af_metrics_encode
-    false -> drop
+  metrics | fork as metrics_policy {{
+    emit output dd_metrics_encode
+    where intake_name in config.metrics_endpoint_routing.group.0123456789abcdef.names
+        or intake_name starts_with config.metrics_endpoint_routing.group.0123456789abcdef.prefixes
+        as metrics_routing_filter_0
+      | emit output metrics_routing_encode_0
+    where intake_name in config.metrics_endpoint_routing.group.fedcba9876543210.names
+        or intake_name starts_with config.metrics_endpoint_routing.group.fedcba9876543210.prefixes
+        as metrics_routing_filter_1
+      | emit output metrics_routing_encode_1
+    where config.multi_region_failover.enabled
+        and config.multi_region_failover.metric_mirroring.enabled
+        and (
+          is_empty(config.multi_region_failover.metric_mirroring.allowlist)
+          or name in config.multi_region_failover.metric_mirroring.allowlist
+        )
+        as mrf_metrics_gateway
+      | emit output mrf_metrics_encode
+    where kind in [counter, rate, gauge, set]
+        and config.autoscaling_failover.enabled
+        and name in config.autoscaling_failover.metrics
+        as af_metrics_gateway
+      | emit output af_metrics_encode
   }}
 }}
 "#
@@ -221,7 +212,8 @@ fn the_default_programs_policy_scope_prints_and_parses_back() {
     let expected = expected_text(&export.base.program_hash.to_string());
     let printed = print_default(&export);
     assert_eq!(printed, expected);
-    assert!(printed.lines().all(|line| line.chars().count() <= 120));
+    // A broken `where` writes its `as` on a line of its own, so every line fits the width.
+    assert!(printed.lines().all(|line| line.chars().count() <= 120), "{}", printed);
 
     // Lowering writes nodes and edges in the order parsing does, so the export comes back exactly.
     let parsed = parse_ok(&expected);
@@ -234,20 +226,10 @@ fn the_default_programs_policy_scope_prints_and_parses_back() {
     assert!((0..export.edges.len()).all(|i| parsed.spans.edge(i).is_some()));
     assert_eq!(
         text(&expected, parsed.spans.node("mrf_metrics_gateway_true").unwrap()),
-        "emit mrf_metrics_encode"
+        "emit output mrf_metrics_encode"
     );
     let flag = parsed.spans.param("mrf_metrics_gateway", "predicate").unwrap();
-    assert!(text(&expected, flag).starts_with("flag(config(\"multi_region_failover.enabled\"))\n    and"));
-}
-
-/// Returns `artifact` with its edges sorted by their ends, so that artifacts that differ only in the order of their
-/// edges compare equal.
-fn edges_sorted(artifact: &PolicyArtifact) -> PolicyArtifact {
-    let mut artifact = artifact.clone();
-    artifact
-        .edges
-        .sort_by_key(|edge| (edge.from.to_string(), edge.to.to_string()));
-    artifact
+    assert!(text(&expected, flag).starts_with("config.multi_region_failover.enabled\n        and"));
 }
 
 #[test]
@@ -267,22 +249,17 @@ fn every_default_programs_export_prints_and_parses_back_to_the_same_document() {
             Plan::from_value(with_opaque_gateways(NO_AGGREGATION_PIPELINE_OFF_JSON)).unwrap(),
         ),
     ];
-    // The one scope, and the policy scope of stage 9. The one scope's export lists its edges in the plan's order, and
-    // parsing in the printed order, which writes the edges from the inputs first, in name order, and each node's edges
-    // in its block: it parses back to the same artifact with its edges reordered, which composes to the default
-    // program, with its hash, since composition puts an artifact's edges in the default program's order. The policy
-    // scope of stage 9 has one input and no edge out of order, so its export comes back exactly, with its hash.
+    // The one scope, and the policy scope of stage 9. The one scope's export is in normal form, with every default
+    // written, and lists its nodes and edges in the plan's order. Its text leaves out the defaults and parses in
+    // canonical order, so it parses back to the same program once normalized and in canonical order, which composes to
+    // the default program, with its hash, since composition normalizes an artifact and puts its nodes and edges in the
+    // default program's order. The policy scope of stage 9 has no defaults to leave out and is already in canonical
+    // order, so its export comes back exactly, with its hash.
     for (what, plan) in plans {
         for (export, exact) in [(metrics_export(&plan), false), (host_export(&plan), true)] {
             let printed = print_default(&export);
             let parsed = parse_ok(&printed);
-            assert_eq!(
-                edges_sorted(&parsed.artifact),
-                edges_sorted(&export),
-                "{}:\n{}",
-                what,
-                printed
-            );
+            assert_same_program(&parsed.artifact, &export, &format!("{}:\n{}", what, printed));
             if exact {
                 assert_eq!(parsed.artifact, export, "{}:\n{}", what, printed);
                 let hash = |artifact: &PolicyArtifact| {
@@ -412,13 +389,19 @@ fn the_default_programs_pre_aggregation_scope_prints_and_parses_back_through_its
             "default program",
             two_scopes(&default_program()),
             (7, 9),
-            &["    -> exit.aggregated\n  }\n", "    passthrough -> exit.passthrough\n"][..],
+            &[
+                // In normal form, the prefix filter's blocklist is a `where`, so the chain is one `let` up to the
+                // split by timestamp.
+                "\n  let dsd_no_agg_split = metrics\n    | dogstatsd_mapper(",
+                "\n    | exit aggregated\n",
+                "\n  dsd_no_agg_split.passthrough | exit passthrough\n",
+            ][..],
         ),
         (
             "no-aggregation pipeline off",
             two_scopes(&Plan::from_json(NO_AGGREGATION_PIPELINE_OFF_JSON).unwrap()),
             (6, 7),
-            &["    -> exit.aggregated\n  }\n"][..],
+            &["\n    | exit aggregated\n"][..],
         ),
     ];
     for (what, plan, (nodes, edges), fragments) in cases {
@@ -434,26 +417,43 @@ fn the_default_programs_pre_aggregation_scope_prints_and_parses_back_through_its
             "{}",
             printed
         );
-        assert!(printed.contains("\n  input.metrics -> dsd_enrich\n"), "{}", printed);
+        assert!(
+            printed.contains("\n    | where not intake_name matches("),
+            "{}",
+            printed
+        );
         for fragment in fragments {
             assert!(printed.contains(fragment), "{}: {:?} in\n{}", what, fragment, printed);
         }
         assert!(printed.lines().all(|line| line.chars().count() <= 120), "{}", printed);
 
-        // Lowering writes the scope's nodes and edges in the order parsing does, its exits included, so it comes
-        // back exactly, with its hash.
+        // It comes back as the same program, its exits included.
         let parsed = parse_ok(&printed);
-        assert_eq!(parsed.artifact, export, "{}:\n{}", what, printed);
+        assert_same_program(&parsed.artifact, &export, &format!("{}:\n{}", what, printed));
         assert_eq!(print_default(&parsed.artifact), printed, "{}", what);
     }
 }
 
 #[test]
 fn the_default_programs_one_scope_prints_from_its_sources_through_aggregation_and_enrichment_to_its_policy() {
-    for plan in [
-        default_program(),
-        Plan::from_json(NO_AGGREGATION_PIPELINE_OFF_JSON).unwrap(),
-    ] {
+    // (plan, how its DogStatsD chain starts and reaches the post-aggregation filter)
+    let cases = [
+        (
+            default_program(),
+            &[
+                "\n  let dsd_no_agg_split = dogstatsd\n",
+                "\n  let dsd_post_agg_filter = (dsd_agg, dsd_no_agg_split.passthrough)\n    | where not (\n",
+            ][..],
+        ),
+        (
+            Plan::from_json(NO_AGGREGATION_PIPELINE_OFF_JSON).unwrap(),
+            &[
+                "\n  let dsd_post_agg_filter = dogstatsd\n",
+                "\n      ) as dsd_agg\n    | where not (\n",
+            ][..],
+        ),
+    ];
+    for (plan, chain) in cases {
         let export = metrics_export(&plan);
         // Every node but the five sources, and every edge.
         assert_eq!(export.nodes.len(), plan.nodes.len() - 5);
@@ -462,35 +462,26 @@ fn the_default_programs_one_scope_prints_from_its_sources_through_aggregation_an
         assert!(printed.starts_with("policy metrics {\n"), "{}", printed);
         assert!(printed.lines().all(|line| line.chars().count() <= 120), "{}", printed);
 
-        // The canonical order follows the path: the edges from the inputs first, in name order, then DogStatsD's chain
-        // from its input through aggregation and the post-aggregation filter, then enrichment, which the other sources'
-        // inputs complete, and the policy region.
+        // The statements follow the path: DogStatsD's chain from its input through aggregation and the
+        // post-aggregation filter, whose stream is reused by the client telemetry and by enrichment, which the other
+        // sources complete, then the policy fork.
         let at = |line: &str| {
             printed
                 .find(line)
                 .unwrap_or_else(|| panic!("{:?} is not in\n{}", line, printed))
         };
-        let order = [
-            "\n  input.checks -> metrics_enrich_in.2\n",
-            "\n  input.dogstatsd -> dsd_enrich\n",
-            "\n  input.liveness -> metrics_enrich_in.3\n",
-            "\n  input.otlp -> metrics_enrich_in.1\n",
-            "\n  input.trace_sampler -> metrics_enrich_in.4\n",
-            "\n  node dsd_enrich = ",
-            "\n  node dsd_agg = ",
-            "\n  node dsd_post_agg_filter = ",
-            "\n  node metrics_enrich_in = ",
-            "\n  node metrics_enrich = ",
-            "\n  node metrics_policy = ",
-            "\n  node af_metrics_gateway = ",
-        ];
-        let positions = order.iter().map(|line| at(line)).collect::<Vec<_>>();
+        let order = chain.iter().copied().chain([
+            "\n  dsd_post_agg_filter | emit output dsd_client_telemetry\n",
+            "\n  let metrics_enrich = (dsd_post_agg_filter, otlp, checks, liveness, trace_sampler) | host_enrichment\n",
+            "\n    | fork as metrics_policy {\n",
+            "\n        | emit output af_metrics_encode\n",
+        ]);
+        let positions = order.map(at).collect::<Vec<_>>();
         assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "{}", printed);
 
-        // It parses back to the export, with its edges in the printed order rather than in the plan's, and composes to
-        // the default program, with its hash.
+        // It parses back to the same program, and composes to the default program, with its hash.
         let parsed = parse_ok(&printed).artifact;
-        assert_eq!(edges_sorted(&parsed), edges_sorted(&export));
+        assert_same_program(&parsed, &export, &printed);
         assert_eq!(print_default(&parsed), printed);
         assert_eq!(
             composed_hash(&plan, &parsed),
@@ -502,7 +493,7 @@ fn the_default_programs_one_scope_prints_from_its_sources_through_aggregation_an
 #[test]
 fn the_default_programs_dogstatsd_chain_prints_within_the_line_width() {
     let export = export_dogstatsd_chain();
-    assert_eq!((export.nodes.len(), export.edges.len()), (12, 13));
+    assert_eq!((export.nodes.len(), export.edges.len()), (12, 14));
     let printed = print_default(&export);
     let long = printed
         .lines()
@@ -510,33 +501,31 @@ fn the_default_programs_dogstatsd_chain_prints_within_the_line_width() {
         .collect::<Vec<_>>();
     assert!(long.is_empty(), "lines over 120 columns: {:#?}", long);
 
-    // Set matches whose bindings do not fit on the line put each argument on its own line.
+    // Set matches whose bindings do not fit on the line put each argument on its own line. In normal form, both
+    // filters keep what does not match, as `where not`.
     let blocklist = r#"
-  node dsd_prefix_filter_blocklist = split(
-    intake_name matches(
-      values: config("dogstatsd.metric_filter.values"),
-      prefix: config("dogstatsd.metric_filter.match_prefix"),
-    )
-  ) {
-    true  -> drop
-    false -> dsd_no_agg_split
-  }
+    | where not intake_name matches(
+        values: config.dogstatsd.metric_filter.values,
+        prefix: config.dogstatsd.metric_filter.match_prefix,
+      ) as dsd_prefix_filter_blocklist
+    | timestamp_split(config.dogstatsd.aggregation.window_duration_seconds)
 "#;
     let post_aggregation = r#"
-  node dsd_post_agg_filter = split(
-    kind in [counter, rate, gauge, set]
-    and intake_name matches(
-      values: config("dogstatsd.post_aggregate_filter.values"),
-      prefix: config("dogstatsd.metric_filter.match_prefix"),
-    )
-  ) {
-    true  -> drop
-    false -> dsd_post_agg_filter_fanout
+    | where not (
+        kind in [counter, rate, gauge, set]
+        and intake_name matches(
+          values: config.dogstatsd.post_aggregate_filter.values,
+          prefix: config.dogstatsd.metric_filter.match_prefix,
+        )
+      )
+
+  dsd_post_agg_filter | fork as dsd_post_agg_filter_fanout {
+    emit output dsd_client_telemetry
+    exit enrichment
   }
 "#;
     assert!(printed.contains(blocklist), "{}", printed);
     assert!(printed.contains(post_aggregation), "{}", printed);
 
-    // Lowering writes this region in the order parsing does too, so it comes back exactly.
-    assert_eq!(parse_ok(&printed).artifact, export);
+    assert_same_program(&parse_ok(&printed).artifact, &export, &printed);
 }

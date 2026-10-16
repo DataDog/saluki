@@ -33,6 +33,11 @@ const DURATION_UNITS: [&str; 6] = ["h", "m", "s", "ms", "us", "ns"];
 /// The words the grammar reserves where it expects them, which a bare recipient name cannot be.
 const KEYWORDS: [&str; 8] = ["let", "as", "where", "fork", "emit", "output", "drop", "exit"];
 
+/// The words that an operator of the same name is written with parentheses to be told apart from: those that start a
+/// stage other than an operator, and `as`, which after a sink would otherwise name it rather than start the next
+/// branch of a fork.
+const STAGE_WORDS: [&str; 6] = ["where", "fork", "emit", "drop", "exit", "as"];
+
 /// Writes `program` as text, breaking lines beyond `width` columns. `usize::MAX` writes every value on one line.
 ///
 /// The text depends only on the tree, never on its spans.
@@ -59,10 +64,7 @@ pub(crate) fn format(program: &Program, width: usize) -> String {
         sections.push(header.join("\n"));
     }
 
-    for statement in &program.statements {
-        sections.push(printer.statement(statement));
-    }
-
+    // The blob table is a header, as the grammar has it, so it comes before the statements.
     if let Some(blobs) = &program.blobs {
         let mut text = format!("{}blobs {{\n", pad(INDENT));
         for (hash, value) in blobs {
@@ -77,6 +79,10 @@ pub(crate) fn format(program: &Program, width: usize) -> String {
         }
         text.push_str(&format!("{}}}", pad(INDENT)));
         sections.push(text);
+    }
+
+    for statement in &program.statements {
+        sections.push(printer.statement(statement));
     }
 
     if sections.is_empty() {
@@ -156,9 +162,14 @@ impl Printer {
     }
 
     /// Prints a statement's pipeline after `prefix`, on one line if it has at most two stages and fits, and otherwise
-    /// with the head on the first line and each stage on a line of its own.
+    /// with the head on the first line and each stage on a line of its own. A pipeline whose only stage is a fork
+    /// writes the fork on the head's line, its branches one level deeper than the statement.
     fn pipeline(&self, prefix: &str, pipeline: &Pipeline) -> String {
         let indent = INDENT;
+        if let (true, Some(End::Fork(fork))) = (pipeline.stages.is_empty(), &pipeline.end) {
+            let head = self.head(&pipeline.head, At::line(indent, 0).right(prefix.len()));
+            return format!("{}{}{} | {}", pad(indent), prefix, head, self.fork(fork, indent));
+        }
         let stages = pipeline.stages.len() + usize::from(matches!(pipeline.end, Some(End::Sink(_))));
         if stages <= 2 && !matches!(pipeline.end, Some(End::Fork(_))) {
             let mut flat = format!("{}{}{}", pad(indent), prefix, self.flat_head(&pipeline.head));
@@ -181,7 +192,11 @@ impl Printer {
         );
         let bar = indent + INDENT;
         for stage in &pipeline.stages {
-            text.push_str(&format!("\n{}| {}", pad(bar), self.stage(stage, bar + INDENT)));
+            text.push_str(&format!(
+                "\n{}| {}",
+                pad(bar),
+                self.stage(stage, bar + INDENT, bar + 2 * INDENT)
+            ));
         }
         match &pipeline.end {
             Some(End::Sink(sink)) => text.push_str(&format!("\n{}| {}", pad(bar), sink_text(sink))),
@@ -230,7 +245,13 @@ impl Printer {
                 let args = self.arguments(op);
                 let as_ = as_clause(&op.id);
                 if args.is_empty() {
-                    return format!("{}{}", op.op, as_);
+                    // An operator named like a sink or `where` takes parentheses, which make it an operator.
+                    let parens = if STAGE_WORDS.contains(&op.op.as_str()) {
+                        "()"
+                    } else {
+                        ""
+                    };
+                    return format!("{}{}{}", op.op, parens, as_);
                 }
                 let args = args.iter().map(|arg| self.flat_argument(arg)).collect::<Vec<_>>();
                 format!("{}({}){}", op.op, args.join(", "), as_)
@@ -243,8 +264,9 @@ impl Printer {
         }
     }
 
-    /// Prints a stage whose text starts at column `lead`, on one line if it fits.
-    fn stage(&self, stage: &Stage, lead: usize) -> String {
+    /// Prints a stage whose text starts at column `lead`, on one line if it fits. A broken `where` continues its
+    /// junction's lines at `junction`.
+    fn stage(&self, stage: &Stage, lead: usize, junction: usize) -> String {
         let flat = self.flat_stage(stage);
         if self.fits(At::line(lead, 0), &flat) {
             return flat;
@@ -253,7 +275,7 @@ impl Printer {
             // Without arguments there is nothing to break.
             Stage::Op(op) if op.params.is_empty() => flat,
             Stage::Op(op) => self.broken_op(op, lead),
-            Stage::Where(stage) => self.broken_where(stage, lead),
+            Stage::Where(stage) => self.broken_where(stage, lead, junction),
         }
     }
 
@@ -261,7 +283,14 @@ impl Printer {
     fn broken_op(&self, op: &OpStage, lead: usize) -> String {
         let inner = lead + INDENT;
         let mut text = format!("{}(\n", op.op);
-        for arg in self.arguments(op) {
+        let args = self.arguments(op);
+        // A lone positional argument, such as a `split`'s predicate, takes no comma after it.
+        let comma = if matches!(args.as_slice(), [Argument { name: None, .. }]) {
+            ""
+        } else {
+            ","
+        };
+        for arg in args {
             match arg.name {
                 Some(name) => {
                     let at = At::line(inner, 1).right(name.len() + 2);
@@ -273,10 +302,12 @@ impl Printer {
                     ));
                 }
                 None => {
+                    let trail = comma.len();
                     text.push_str(&format!(
-                        "{}{},\n",
+                        "{}{}{}\n",
                         pad(inner),
-                        self.value(arg.value, arg.ty, At::line(inner, 1))
+                        self.value(arg.value, arg.ty, At::line(inner, trail)),
+                        comma
                     ));
                 }
             }
@@ -286,17 +317,25 @@ impl Printer {
     }
 
     /// Prints a `where` stage with its predicate broken, its continuation lines indented under the stage.
-    fn broken_where(&self, stage: &WhereStage, lead: usize) -> String {
+    fn broken_where(&self, stage: &WhereStage, lead: usize, junction: usize) -> String {
         let as_ = as_clause(&stage.id);
-        // The lines of a junction continue under the predicate's first operand, and the closing bracket of a list or
-        // record aligns with the stage.
-        let continuation = if matches!(classify(&stage.predicate), Shape::Junction(..)) {
-            lead + INDENT
-        } else {
-            lead
-        };
+        if matches!(classify(&stage.predicate), Shape::Junction(..)) {
+            // The lines of a junction continue at `junction`, deeper than the stage, and an `as` takes a line of its
+            // own after them, so that it names the stage rather than the last operand.
+            let at = At {
+                indent: junction,
+                col: lead + "where ".len(),
+                trail: 0,
+            };
+            let predicate = self.predicate(&stage.predicate, at);
+            return match &stage.id {
+                Some(id) => format!("where {}\n{}as {}", predicate, pad(junction), id.id),
+                None => format!("where {}", predicate),
+            };
+        }
+        // The closing bracket of a list, a record, or a set match aligns with the stage.
         let at = At {
-            indent: continuation,
+            indent: lead,
             col: lead + "where ".len(),
             trail: as_.len(),
         };
@@ -397,14 +436,15 @@ impl Printer {
 
         let mut text = pad(indent);
         for (i, item) in items.iter().enumerate() {
-            let (bar, lead) = if i == 0 {
-                (indent, indent)
+            // A broken `where` that starts the branch continues deeper than the `|` lines after it.
+            let (bar, lead, junction) = if i == 0 {
+                (indent, indent, indent + 2 * INDENT)
             } else {
                 text.push_str(&format!("\n{}| ", pad(indent + INDENT)));
-                (indent + INDENT, indent + 2 * INDENT)
+                (indent + INDENT, indent + 2 * INDENT, indent + 3 * INDENT)
             };
             match item {
-                Item::Stage(stage) => text.push_str(&self.stage(stage, lead)),
+                Item::Stage(stage) => text.push_str(&self.stage(stage, lead, junction)),
                 Item::Sink(sink) => text.push_str(&sink_text(sink)),
                 Item::Fork(fork) => text.push_str(&self.fork(fork, bar)),
             }
@@ -514,28 +554,23 @@ impl Printer {
                 for (i, operand) in operands.iter().enumerate() {
                     let trail = if i == last { at.trail } else { 0 };
                     if i == 0 {
-                        text.push_str(&self.operand(Context::Junction(junction), operand, at.trail(trail)));
+                        text.push_str(&self.operand(operand, at.trail(trail)));
                     } else {
                         let at = At::line(at.indent, trail).right(word.len() + 1);
-                        text.push_str(&format!(
-                            "\n{}{} {}",
-                            pad(at.indent),
-                            word,
-                            self.operand(Context::Junction(junction), operand, at)
-                        ));
+                        text.push_str(&format!("\n{}{} {}", pad(at.indent), word, self.operand(operand, at)));
                     }
                 }
                 text
             }
-            Shape::Not(operand) => format!("not {}", self.operand(Context::Not, operand, at.right(4))),
+            Shape::Not(operand) => format!("not {}", self.operand(operand, at.right(4))),
             Shape::Leaf(leaf) => self.leaf(&leaf, Some(at)),
-            Shape::Raw => self.value(value, None, at),
+            Shape::Raw => raw_binding(value).unwrap_or_else(|| self.value(value, None, at)),
         }
     }
 
     /// Prints an operand of `and`, `or`, or `not`, in parentheses if precedence or the tree's shape needs them.
-    fn operand(&self, context: Context, value: &Value, at: At) -> String {
-        if !context.parenthesizes(value) {
+    fn operand(&self, value: &Value, at: At) -> String {
+        if !parenthesizes(value) {
             return self.predicate(value, at);
         }
         let flat = format!("({})", self.flat_predicate(value));
@@ -555,17 +590,17 @@ impl Printer {
         match classify(value) {
             Shape::Junction(junction, operands) => operands
                 .iter()
-                .map(|operand| self.flat_operand(Context::Junction(junction), operand))
+                .map(|operand| self.flat_operand(operand))
                 .collect::<Vec<_>>()
                 .join(&format!(" {} ", junction.word())),
-            Shape::Not(operand) => format!("not {}", self.flat_operand(Context::Not, operand)),
+            Shape::Not(operand) => format!("not {}", self.flat_operand(operand)),
             Shape::Leaf(leaf) => self.leaf(&leaf, None),
-            Shape::Raw => self.flat_value(value, None),
+            Shape::Raw => raw_binding(value).unwrap_or_else(|| self.flat_value(value, None)),
         }
     }
 
-    fn flat_operand(&self, context: Context, value: &Value) -> String {
-        if context.parenthesizes(value) {
+    fn flat_operand(&self, value: &Value) -> String {
+        if parenthesizes(value) {
             format!("({})", self.flat_predicate(value))
         } else {
             self.flat_predicate(value)
@@ -737,26 +772,11 @@ impl Junction {
     }
 }
 
-/// What a predicate is an operand of, which decides whether it needs parentheses.
-#[derive(Clone, Copy)]
-enum Context {
-    Not,
-    Junction(Junction),
-}
-
-impl Context {
-    /// Returns `true` if `value` needs parentheses as an operand here: it is an `and` or `or` that precedence would
-    /// split (an `or` under an `and`), or that would merge with its parent when parsed back (an `and` under an `and`,
-    /// an `or` under an `or`), or it is under a `not`.
-    fn parenthesizes(self, value: &Value) -> bool {
-        let Shape::Junction(inner, _) = classify(value) else {
-            return false;
-        };
-        match self {
-            Self::Not => true,
-            Self::Junction(outer) => outer == Junction::All || inner == Junction::Any,
-        }
-    }
+/// Returns `true` if `value` needs parentheses as an operand of `and`, `or`, or `not`: it is a junction. Under `not`
+/// one always does, as does an `or` under an `and`; an `and` under an `and`, or an `or` under an `or`, would merge with
+/// its parent when parsed back; and an `and` under an `or`, which precedence keeps apart, is clearer to read with them.
+fn parenthesizes(value: &Value) -> bool {
+    matches!(classify(value), Shape::Junction(..))
 }
 
 /// The form a predicate value is printed in.
@@ -937,6 +957,18 @@ fn call_form(members: &Map<String, Value>) -> Option<String> {
             .ok()
             .map(|binding| config_ref(&binding)),
         BLOB_MEMBER => PlanHash::from_str(value).ok().map(|hash| format!("blob(\"{}\")", hash)),
+        _ => None,
+    }
+}
+
+/// Returns the record form of a binding written raw where a predicate is expected, `{ config: "<binding>" }`: there,
+/// `config.<binding>` is a flag, which parses to a different value.
+fn raw_binding(value: &Value) -> Option<String> {
+    let members = value.as_object()?;
+    match (members.get(BINDING_MEMBER), members.len()) {
+        (Some(Value::String(binding)), 1) if call_form(members).is_some() => {
+            Some(format!("{{ {}: {} }}", key_text(BINDING_MEMBER), quote(binding)))
+        }
         _ => None,
     }
 }

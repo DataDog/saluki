@@ -1,56 +1,69 @@
-//! A readable surface syntax for policy artifacts.
+//! A readable surface syntax for policy artifacts: programs written as streaming queries.
 //!
-//! A [policy artifact](saluki_metric_plan::ir::PolicyArtifact) replaces one scope of a metrics plan. Its native form is
-//! JSON, which is precise but hard to read and edit. This crate gives it a text form for people: [`parse`] turns text
-//! into an artifact, with the [spans](SpanMap) of its parts, and [`print`](fn@print) turns an artifact back into text.
-//! The syntax only builds the artifact: whether it is valid is decided by the plan crate's validator, whose findings
-//! the span map points back to in the text.
+//! A [policy artifact](saluki_metric_plan::ir::PolicyArtifact) is a program for the metrics path. Its native form is
+//! JSON, which is precise but hard to read and edit. This crate gives it a text form for people, in the style of Unix
+//! pipes and PRQL: [`parse`] turns text into an artifact, with the [spans](SpanMap) of its parts, and
+//! [`print`](fn@print) turns an artifact back into the text a person would write for it. The syntax only builds the
+//! artifact: whether it is valid is decided by the plan crate's validator, whose findings the span map points back to in
+//! the text. The [design document](../../../docs/design/programmable-metrics-pipeline-syntax.md) gives the reasoning.
 //!
-//! The syntax is a thin, easily changed layer. Its grammar has one generic form for every operator, driven by the
-//! operator registry's parameter schemas, so a new operator or parameter needs no change here. It is for tools, such
-//! as an editor or a demo server, and depends only on the plan crate: no crate that runs plans may depend on it, so
-//! that changing it never changes how a plan runs.
+//! The syntax is a thin, easily changed layer. Every operator is written the same way, driven by the operator
+//! registry's parameter schemas, so a new operator or parameter needs no change here. It is for tools, such as an editor
+//! or a demo server, and depends only on the plan crate: no crate that runs plans may depend on it, so that changing it
+//! never changes how a plan runs.
 //!
 //! # A complete example
 //!
 // The example is kept in Markdown so that documentation checks read it as a code block, not as prose.
 #![doc = include_str!("example.md")]
 //!
-//! # The grammar
+//! # The language
 //!
-//! A source is one `policy` block. Whitespace and line breaks are insignificant, and `#` starts a comment that runs to
-//! the end of the line.
+//! A source is one `policy` block. Whitespace and line breaks are insignificant, except that an operator's arguments
+//! follow its name directly, as `op(...)`, `#` starts a comment that runs to the end of the line, and a stream named
+//! `as` starts a statement only at the start of a line (elsewhere, `as |` is an `as` missing its name).
 //!
 //! ```text
 //! policy <scope> {
-//!   base "<program hash>" [outputs { <output> = "<fingerprint>", ... }]
-//!   input.<name> -> <target>
-//!   node <id> = <operator>(<parameter>: <value>, ...) { <port> -> <target> ... }
+//!   [base "<program hash>" [outputs { <output> = "<fingerprint>", ... }]]
+//!   let <name> = <head> | <stage> | ...           # a named stream
+//!   <head> | <stage> | ... | <sink>               # a pipeline that ends in a sink, or in a fork
 //! }
 //! ```
 //!
-//! - **`base`** records the hash of the program the artifact was derived from and, under `outputs`, the fingerprint
-//!   of every output it refers to. It is required, unless the tool that parses the text gives the base instead
-//!   ([`ParseOptions::base`]).
-//! - **Edges** leave a scope input, as `input.dogstatsd -> <target>`, or an output port of a node: inside the node's
-//!   block, as `<port> -> <target>`, or as a statement of its own, `<node>.<port> -> <target>`. A node with exactly one
-//!   output port may leave the port out: `-> <target>`.
-//! - **Targets** are a node, as `<node>` or `<node>.<port>` (the port may be left out when the node has exactly one
-//!   input port; a `merge` names its ports, as `joined.0`), one of the scope's exits, as `exit.aggregated`, where the
-//!   edge leaves a scope that ends before its paths do (an exit is never an edge's source), or an inline terminal:
-//!   `emit <output>`, `emit to [<recipient>, ...]`, or `drop`. A recipient is a name of the host's recipient directory,
-//!   such as `primary`, or an endpoint's URL as a string: `emit to [primary, "https://b.example.com"]`. An inline
-//!   terminal is a node of its own, with the ID [`derived_terminal_id`](saluki_metric_plan::ir::derived_terminal_id)
-//!   gives it, `<parent>_<port>`: `split` port `true` leading to `drop` is the node `<split>_true`. For an edge from a
-//!   scope input, the parent is `input`.
-//! - **Nodes** are `node <id> = <operator>(<parameter>: <value>, ...)`, for any registered operator, followed by a
-//!   block of edges if the node has any. An operator without parameters takes no parentheses. Two forms are shorter:
-//!   - an operator whose only parameter is a predicate takes it without its name: `split(<predicate>) { true -> ...
-//!     false -> ... }`;
-//!   - `tee` without parentheses numbers its ports in the order of its edges: `tee { -> a -> b }` is
-//!     `tee(ports: 2) { 0 -> a 1 -> b }`.
-//! - **Optional statements**: `ir_version <n>` when the artifact is not written in the current IR version, and
-//!   `blobs { "<hash>" = <value>, ... }` for an artifact's blob table.
+//! - A **head** is a stream: a scope input (`dogstatsd`), a `let` (`checkout`), one output port of a node with several
+//!   (`ts.passthrough`), or a tuple of streams, which merges them (`(a, b, c)`).
+//! - A **stage** is any registered operator, `op` or `op(<positional>, <parameter>: <value>, ...)`, or `where
+//!   <predicate>`, which keeps what matches. An operator's positional parameter may be written first without its name,
+//!   and a parameter with a default may be left out. A word with arguments right after it is always an operator, so an
+//!   `emit` whose parameters no sink writes is `emit(output: "o", to: [...])`, and an operator named like a sink,
+//!   `where`, `fork`, or `as` is written with parentheses even without arguments, as in `drop()`.
+//! - A **sink** ends a pipeline: `emit primary`, `emit [primary, "https://b.example.com"]`, `emit output <output>`,
+//!   `drop`, or `exit <name>` where the pipeline leaves a scope that ends early. `fork { <branch> ... }` also ends a
+//!   pipeline: it copies the stream to each branch, which is stages then a sink or another fork.
+//! - A **stream used more than once** is copied to each use. Copying is how a stream reaches several places, so a sink
+//!   in the middle of a pipeline is an error: name the stream with `let` and use it twice.
+//! - **`as <id>`** after any stage, tuple, fork, or sink gives its node an ID of its own instead of the one derived from
+//!   where it is written ([the derived IDs](../../../docs/design/programmable-metrics-pipeline-syntax.md#node-ids)).
+//!   State carries over a change by node ID, so an aggregation's ID is worth keeping.
+//! - **`base`** records the hash of the program the artifact was derived from and, under `outputs`, the fingerprint of
+//!   every output it refers to. It is required, unless the tool that parses the text gives the base instead
+//!   ([`ParseOptions::base`]). `ir_version <n>` and `blobs { "<hash>" = <value>, ... }` are optional headers.
+//!
+//! The syntax enforces what can be checked where it is written: a `let` is used only after it is defined, so a program
+//! cannot loop; every stream and every output port is used; a node with several output ports is always used through one
+//! of them; and node IDs are unique.
+//!
+//! ## The core, and the sugar
+//!
+//! | Form | What it builds |
+//! |---|---|
+//! | `e \| op(args)` | a node running `op`, fed by `e` |
+//! | `(a, b, ...)` | a `merge`, with `a` at port `0`, `b` at port `1`, and so on |
+//! | a stream used `n > 1` times | a `tee(ports: n)`, whose port `i` feeds the `i`th use in the text |
+//! | `emit ...`, `drop` | an inline `emit` or `drop` node |
+//! | `e \| where p` | `split(p)`, whose `false` port leads to `drop` and whose `true` port continues |
+//! | `e \| fork { t1 ... tn }` | `tee(ports: n)`, whose port `i` leads to branch `i` |
 //!
 //! ## Values
 //!
@@ -62,53 +75,63 @@
 //! | `true`, `false`, `null` | the same |
 //! | `[<value>, ...]` | an array |
 //! | `{ <name>: <value>, ... }`, with names bare or quoted | an object |
-//! | `config("dogstatsd.metric_filter.values")` | a configuration binding, `{"config": "..."}` |
+//! | `config.dogstatsd.metric_filter.values` | a configuration binding, `{"config": "..."}` |
 //! | `blob("sha256:...")` | a blob reference, `{"blob": "..."}` |
 //!
-//! Values are converted as written; the operator's parameter schema is used only to know where a predicate is
-//! expected, and, when printing, to write durations bare and record members in their declared order. Strings cannot
-//! contain line breaks, control characters, or invisible formatting characters as they are, only as escapes, and
-//! comments cannot contain invisible formatting characters, so the text always shows what it says.
+//! Values are converted as written; the operator's parameter schema is used only to know where a predicate or the
+//! positional parameter is expected, and, when printing, to leave out defaults and write record members in their
+//! declared order. Strings cannot contain line breaks, control characters, or invisible formatting characters as they
+//! are, only as escapes, and comments cannot contain invisible formatting characters, so the text always shows what it
+//! says.
 //!
 //! ## Predicates
 //!
 //! Predicates combine leaves with `and`, `or`, `not`, and parentheses; `not` binds tightest and `or` loosest.
-//! `all(<predicate>, ...)` and `any(<predicate>, ...)` write junctions of any number of operands.
 //!
 //! | Leaf | Example |
 //! |---|---|
-//! | Name, intake name, or host | `name == "s"`, `host starts_with "s"`, `name in ["a"]`, `name prefix_in ["a."]` |
-//! | Set match | `intake_name matches(values: config("dogstatsd.metric_filter.values"), prefix: false)` |
-//! | Unset host | `host is unset` |
-//! | Tag key | `has_tag("env")`, `has_origin_tag("pod")` |
-//! | Tag value | `tag("team") == "platform"`, `origin_tag("pod") starts_with "web-"`, and the other string matches |
+//! | Name, intake name, or host | `name == "s"`, `name != "s"`, `host starts_with "s"`, `name in ["a"]`, `name starts_with ["a.", "b."]` |
+//! | A bound set of names or prefixes | `intake_name in config.dogstatsd.metric_filter.values`, `name starts_with config.x` |
+//! | Host | `host is unset`, `host is set` |
+//! | Tag key | `tags.env is set`, `tags["app.kubernetes.io/name"] is unset`, `origin_tags.pod is set` |
+//! | Tag value | `tags.team == "platform"`, `origin_tags.pod starts_with "web-"`, and the other string matches |
 //! | Kind | `kind in [counter, rate, gauge, set, histogram, distribution]` |
 //! | Constant | `true`, `false` |
-//! | Flag and empty list | `flag(config("multi_region_failover.enabled"))`, `is_empty(config("..."))`, `is_empty([])` |
+//! | Flag and empty list | `config.multi_region_failover.enabled`, `is_empty(config.x)`, `is_empty([])` |
+//!
+//! Every predicate has exactly one printed spelling. A few shapes of the IR have none of their own, such as a junction
+//! of one operand, and print as their JSON, which parses back the same. So does a predicate parameter whose value is not
+//! a predicate at all, except a bare `true` or `false`, which can only be read as the constant.
 //!
 //! # Printing
 //!
-//! [`print`](fn@print) writes nodes in topological order from the scope inputs, each with the edges that leave it, and
-//! writes a terminal inline wherever its ID is the derived one. A node whose header is longer than the line width (120
-//! columns by default) puts each parameter on its own line, and long predicates, set matches, and lists break the same
-//! way. Output is deterministic: it depends only on the artifact's graph.
+//! [`print`](fn@print) recognizes sugar in the artifact's graph and writes it wherever parsing it back gives exactly the
+//! same graph, and the core form anywhere else. Output is deterministic: it depends only on the graph. Parsing writes
+//! nodes and edges in a canonical order, a depth-first traversal from the scope inputs in which a node comes right after
+//! the edge that completes its inputs and a node's edges follow its operator's port order, whatever order the text gives
+//! them in, so the artifact, and its hash, change only when its graph does. As a result:
 //!
-//! Parsing writes nodes and edges in the same canonical order, whatever order the text gives them in, so the
-//! artifact, and its hash, change only when its graph does. The order is a depth-first traversal from the scope
-//! inputs, in which a node comes right after the edge that completes its inputs and a node's edges follow its
-//! operator's port order: the order lowering writes a plan's nodes in. As a result:
-//!
-//! - `parse(print(a))` is `a` for every valid artifact in canonical order, such as every artifact parsed from text. For
-//!   a valid artifact in another order, as a tool writing JSON might give it, it is `a` with its nodes and edges
-//!   reordered, which is a different document with a different hash. An export of a scope with several inputs is in
-//!   another order: it lists its edges in the plan's order, and the canonical order writes the edges from the scope's
-//!   inputs first, in input-name order, and each node's edges with the node. Its printed form parses to a document that
-//!   differs in the order of its edges, but composes to the same plan, with the same hash, since composition puts an
-//!   artifact's edges in the default program's order. Invalid artifacts print too, and parse back
-//!   the same way unless they define a node twice, refer to a node or port they do not have, or have a bare boolean as
-//!   a whole predicate, which has no text of its own (where a predicate is expected, `true` is the constant leaf;
-//!   inside a junction, a bare boolean is written raw); parsing reports the first two.
+//! - `parse(print(a))` is `a` for every well-formed artifact in canonical order, apart from its parameters equal to
+//!   their registry default, which printing leaves out. A well-formed artifact is one whose node IDs are unique and
+//!   whose edges name nodes and ports that exist, with one edge into each input port and at most one out of each output
+//!   port and each scope input, no cycles, every node reached from a scope input, and every output port used (a node
+//!   whose operator is not registered, or whose parameters do not configure it, takes the input `in` and whatever output
+//!   ports its edges leave, at least one). An artifact in another order, as a tool writing JSON might give it, parses
+//!   back with its nodes and edges reordered.
+//! - Any other artifact still prints, as well as it can, and its text never parses back to it, since parsing makes only
+//!   well-formed artifacts. Parsing reports most problems; the text cannot write an edge into an input port other than
+//!   a node's only one (or a merge's numbered ones), out of an exit, into a scope input, or between nodes the artifact
+//!   does not have, so printing moves such an edge or leaves it out, and a node that no edge enters reads from the scope
+//!   input of its name.
 //! - `print(parse(s))` is a fixed point: printing what it parses to gives it back.
+//!
+//! A `let` is named for the node it ends, except where the node's ID is the name of a scope input the artifact reads,
+//! which a reference to the input would then name: such a `let` is named `<id>_let`, and its last stage has `as <id>`.
+//!
+//! The plan crate's [normalization](saluki_metric_plan::normalize) puts equivalent programs into one form, such as a
+//! filter that drops on `true` into one that drops on `false`, so that they print the same way. It also fills in every
+//! default, so the text of an artifact in normal form, as the default program and its export are, parses to the same
+//! artifact once normalized again.
 //!
 //! With [`PrintOptions::elide_fingerprints`], the `outputs` of `base` are left out, for display; the text then parses
 //! to the artifact without them. With [`PrintOptions::elide_base`], the whole `base` statement is left out, as a tool
@@ -135,25 +158,19 @@ use saluki_metric_plan::{
     limits::values::ARTIFACT_SIZE,
 };
 
+mod ast;
 mod diagnostic;
+mod format;
 mod graph;
+mod ids;
+// The node-and-edge syntax, kept only to convert the sources in tests until they are converted.
+#[allow(dead_code)]
 mod legacy;
 mod lexer;
-mod spans;
-
-// The pipeline syntax's passes, which integration wires to the public API in place of `legacy`.
-#[allow(dead_code)]
-mod ast;
-#[allow(dead_code)]
-mod format;
-#[allow(dead_code)]
-mod ids;
-#[allow(dead_code)]
 mod lower;
-#[allow(dead_code)]
 mod parser;
-#[allow(dead_code)]
 mod resugar;
+mod spans;
 
 pub use self::{
     diagnostic::{Diagnostic, Diagnostics, Span},
@@ -173,7 +190,7 @@ pub const MAX_TOKENS: usize = lexer::MAX_TOKENS;
 ///
 /// Parsing and printing a source nested this deeply uses about 700 KB of stack in a debug build, and about 220 KB in an
 /// optimized one, well within the 2 MiB that spawned threads get by default.
-pub const MAX_DEPTH: usize = legacy::parser::MAX_DEPTH;
+pub const MAX_DEPTH: usize = parser::MAX_DEPTH;
 
 /// A parsed artifact, with the source spans of its parts.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -257,11 +274,11 @@ pub struct ParseOptions {
 /// # Errors
 ///
 /// Returns diagnostics if the source is over the size or token limits, nests too deeply, does not follow the grammar,
-/// refers to something it does not define (an undefined node, a port the node's operator does not have, an edge line
-/// without a port on a node with several output ports, or an inline terminal whose derived ID another node already
-/// has), or describes an artifact over the artifact size limit. A syntax error ends parsing, so it is reported alone,
-/// after a note naming the operator when it is in the arguments of an operator that is not registered, which are read
-/// without a schema; reference problems are all reported together.
+/// breaks one of the rules the syntax enforces (a name used before it is defined or defined twice, a stream or output
+/// port never used, a node with several output ports used without a port, a port a node does not have, or a derived
+/// node ID another node already has), or describes an artifact over the artifact size limit. A syntax error ends
+/// parsing, so it is reported alone, after a note naming the operator when it is in the arguments of an operator that
+/// is not registered, which are read without a schema; the other problems are all reported together.
 pub fn parse(source: &str) -> Result<Parsed, Diagnostics> {
     parse_with(source, &ParseOptions::default())
 }
@@ -289,10 +306,9 @@ pub fn parse_with(source: &str, options: &ParseOptions) -> Result<Parsed, Diagno
         return Err(diagnostic::diagnostics(source, vec![error]));
     }
     let tokens = lexer::lex(source).map_err(|error| diagnostic::diagnostics(source, vec![error]))?;
-    let policy =
-        legacy::parser::parse_policy(source, &tokens).map_err(|errors| diagnostic::diagnostics(source, errors))?;
-    let base_given = policy.base.is_none() && options.base.is_some();
-    let (artifact, spans) = legacy::build::build(source, policy, options.base.as_ref())
+    let program = parser::parse_program(source, &tokens).map_err(|errors| diagnostic::diagnostics(source, errors))?;
+    let base_given = program.base.is_none() && options.base.is_some();
+    let (artifact, spans) = lower::lower(source, program, options.base.as_ref())
         .map_err(|errors| diagnostic::diagnostics(source, errors))?;
     Ok(Parsed {
         artifact,
@@ -303,12 +319,43 @@ pub fn parse_with(source: &str, options: &ParseOptions) -> Result<Parsed, Diagno
 
 /// Prints a policy artifact in its surface syntax.
 ///
-/// The output parses back to the same artifact, with its nodes and edges in canonical order (see
-/// [Printing](crate#printing)), unless `options` elides fingerprints or the base. Printing never fails: an invalid
-/// artifact, such as one with an edge to a node it does not have, prints as well as it can, and parsing the text
-/// reports the problem.
+/// The output of a well-formed artifact parses back to the same artifact, with its nodes and edges in canonical order
+/// and without the parameters equal to their default (see [Printing](crate#printing)), unless `options` elides
+/// fingerprints or the base. Printing never fails: an artifact that is not well-formed, such as one with an edge to a
+/// node it does not have, prints as well as it can, and its text never parses back to it.
 pub fn print(artifact: &PolicyArtifact, options: &PrintOptions) -> String {
-    legacy::printer::print(artifact, options)
+    let program = resugar::resugar(artifact, options);
+    let text = format::format(&program, options.width);
+    // Every token takes at least one byte, so only a long text can have too many.
+    if text.len() <= MAX_SOURCE_SIZE && (text.len() <= MAX_TOKENS || lexer::lex(&text).is_ok()) {
+        return text;
+    }
+    format::format(&program, usize::MAX)
+}
+
+/// Converts a source in the node-and-edge syntax that preceded this one into this syntax, keeping its `base` statement
+/// if it has one, for converting the sources in tests. Removed once they are converted.
+#[doc(hidden)]
+pub fn legacy_to_pipeline(source: &str) -> Result<String, String> {
+    let placeholder = ArtifactBase {
+        program_hash: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+            .parse()
+            .expect("the placeholder is a hash"),
+        outputs: Default::default(),
+    };
+    let tokens = lexer::lex(source).map_err(|error| diagnostic::diagnostics(source, vec![error]).to_string())?;
+    let policy = legacy::parser::parse_policy(source, &tokens)
+        .map_err(|errors| diagnostic::diagnostics(source, errors).to_string())?;
+    let elide_base = policy.base.is_none();
+    let (artifact, _) = legacy::build::build(source, policy, Some(&placeholder))
+        .map_err(|errors| diagnostic::diagnostics(source, errors).to_string())?;
+    Ok(print(
+        &artifact,
+        &PrintOptions {
+            elide_base,
+            ..PrintOptions::default()
+        },
+    ))
 }
 
 #[cfg(test)]

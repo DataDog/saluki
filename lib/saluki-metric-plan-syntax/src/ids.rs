@@ -39,11 +39,15 @@ pub(crate) fn join(parent: &str, suffix: &str) -> ArtifactNodeId {
 
 /// The ID of the `ordinal`th stage running `operator` under `anchor`, counting from 1: `<anchor>_<operator>`, then
 /// `<anchor>_<operator>_2`, and so on.
+///
+/// The ordinal is joined to the stage's first ID rather than to the operator's name, so that a long operator name, which
+/// would not be a valid suffix with an ordinal appended, is shortened like any other long ID.
 pub(crate) fn stage(anchor: &str, operator: &str, ordinal: usize) -> ArtifactNodeId {
+    let first = join(anchor, operator);
     if ordinal <= 1 {
-        join(anchor, operator)
+        first
     } else {
-        join(anchor, &format!("{}_{}", operator, ordinal))
+        join(first.as_str(), &ordinal.to_string())
     }
 }
 
@@ -137,6 +141,8 @@ mod tests {
         let long = "a".repeat(60);
         assert_eq!(stage(&long, "aggregate", 1).as_str().len(), 63);
         assert_ne!(stage(&long, "aggregate", 1), stage(&long, "aggregate", 2));
+        let long_operator = format!("op{}", "x".repeat(60));
+        assert_eq!(stage("a", &long_operator, 2).as_str().len(), 63);
     }
 
     #[test]

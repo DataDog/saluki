@@ -1041,7 +1041,8 @@ fn a_pipeline_cannot_continue_from_a_node_with_several_output_ports_or_enter_one
     assert_error(
         &errors,
         after_span,
-        "`timestamp_split` has several output ports, so the pipeline cannot continue",
+        "`timestamp_split` has two output ports, `default` and `passthrough`; name it with a `let` and use \
+         `s.default` and `s.passthrough`.",
     );
     assert_error(
         &errors,
@@ -1082,20 +1083,27 @@ fn the_size_limit_is_checked() {
 
 const DEFAULT_EXPORT: &str = include_str!("../../../saluki-metric-plan/fixtures/export/default-program-metrics.json");
 
-/// Returns the default program's export with every split whose `true` port is dropped turned around, as
-/// normalization's split polarity rule does: its predicate negated, its ports swapped, and its drop terminal renamed.
+/// Returns the default program's export, which is in normal form: its splits drop their `false` port.
 fn normalized_export() -> PolicyArtifact {
+    PolicyArtifact::from_json(DEFAULT_EXPORT).unwrap()
+}
+
+/// Returns the default program's export as native lowering writes it, before normalization's split polarity rule:
+/// the two splits that drop their `false` port turned around, their predicates' `not` removed, their ports swapped,
+/// and their drop terminals renamed, in canonical order.
+fn native_export() -> PolicyArtifact {
     let mut document: Value = serde_json::from_str(DEFAULT_EXPORT).unwrap();
     let flipped = ["dsd_prefix_filter_blocklist", "dsd_post_agg_filter"];
     for node in document["nodes"].as_array_mut().unwrap() {
         let id = node["id"].as_str().unwrap().to_string();
         if flipped.contains(&id.as_str()) {
-            let predicate = node["params"]["predicate"].take();
-            node["params"]["predicate"] = json!({"not": predicate});
+            let predicate = node["params"]["predicate"]["not"].take();
+            assert!(!predicate.is_null(), "the normalized predicate of `{}` is a `not`", id);
+            node["params"]["predicate"] = predicate;
         }
-        if let Some(parent) = id.strip_suffix("_true") {
+        if let Some(parent) = id.strip_suffix("_false") {
             if flipped.contains(&parent) {
-                node["id"] = json!(format!("{}_false", parent));
+                node["id"] = json!(format!("{}_true", parent));
             }
         }
     }
@@ -1108,14 +1116,25 @@ fn normalized_export() -> PolicyArtifact {
                     text = format!("{}.false", parent);
                 } else if swap && text == format!("{}.false", parent) {
                     text = format!("{}.true", parent);
-                } else if text == format!("{}_true.in", parent) {
-                    text = format!("{}_false.in", parent);
+                } else if text == format!("{}_false.in", parent) {
+                    text = format!("{}_true.in", parent);
                 }
             }
             edge[end] = json!(text);
         }
     }
-    PolicyArtifact::from_value(document).unwrap()
+    let artifact = PolicyArtifact::from_value(document).unwrap();
+    let shapes = artifact
+        .nodes
+        .iter()
+        .map(|node| NodeShape::of(&node.op, &node.params))
+        .collect::<Vec<_>>();
+    let order = canonical_order(&artifact.nodes, &artifact.edges, &shapes);
+    PolicyArtifact {
+        nodes: order.nodes.iter().map(|&i| artifact.nodes[i].clone()).collect(),
+        edges: order.edges.iter().map(|&i| artifact.edges[i].clone()).collect(),
+        ..artifact
+    }
 }
 
 /// Returns the parameters of the export's node `id`, written as an operator stage's arguments.
@@ -1348,7 +1367,7 @@ fn the_default_programs_core_form_lowers_to_its_export_exactly_and_composes_into
         testing::{default_program_catalog, DEFAULT_PROGRAM_JSON},
     };
 
-    let export = PolicyArtifact::from_json(DEFAULT_EXPORT).unwrap();
+    let export = native_export();
     let (artifact, _) = lower(&source(), default_program_core_tree(&export), Some(&export.base)).unwrap();
     assert_well_formed(&artifact);
     // The same nodes, in the same order, and the same edges. Canonical order takes the edges from scope inputs by

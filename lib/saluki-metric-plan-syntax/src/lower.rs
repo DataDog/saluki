@@ -102,6 +102,8 @@ pub(crate) fn lower(
         ranks: Vec::new(),
         tees: HashMap::new(),
         seq: 0,
+        pipeline_start: None,
+        reported: HashSet::new(),
         errors: Vec::new(),
     };
 
@@ -284,6 +286,11 @@ struct Lowering<'s> {
     tees: HashMap<UseKey, Option<ArtifactNodeId>>,
     /// The position of the next reference, as lowering meets them in the order the scan did.
     seq: usize,
+    /// Where the pipeline of the statement being lowered starts, which a suggestion to name part of it quotes, or
+    /// `None` in a fork's branch.
+    pipeline_start: Option<usize>,
+    /// The names and node IDs already reported as taken twice, which are not reported again.
+    reported: HashSet<String>,
     errors: Vec<Error>,
 }
 
@@ -427,6 +434,7 @@ impl Lowering<'_> {
                 name.id, at
             ),
         };
+        self.reported.insert(name.id.to_string());
         self.error(name.span, message);
         false
     }
@@ -469,6 +477,7 @@ impl Lowering<'_> {
 
     /// Lowers `let x = <pipeline>`.
     fn lower_let(&mut self, name: &Name, pipeline: &Pipeline, span: Span) {
+        self.pipeline_start = Some(pipeline.span.start);
         let x = name.id.as_str();
         if let Some(end) = &pipeline.end {
             self.error(
@@ -532,6 +541,7 @@ impl Lowering<'_> {
 
     /// Lowers a pipeline that ends in a sink or a fork.
     fn lower_run(&mut self, pipeline: &Pipeline, span: Span) {
+        self.pipeline_start = Some(pipeline.span.start);
         let (mut flow, anchor) = match &pipeline.head {
             Head::Ref(reference) => {
                 let (source, anchor) = self.reference(reference);
@@ -619,6 +629,7 @@ impl Lowering<'_> {
     }
 
     fn branch(&mut self, branch: &Branch, anchor: ArtifactNodeId, source: Option<Source>) {
+        self.pipeline_start = None;
         let mut flow = Flow::Source(source);
         let mut ordinals = Ordinals::default();
         for stage in &branch.stages {
@@ -988,11 +999,26 @@ impl Lowering<'_> {
                             entry.node.op
                         )
                     } else {
+                        let ports = outputs.iter().map(|port| format!("`{}`", port)).collect::<Vec<_>>();
+                        let uses = outputs.iter().map(|port| format!("`s.{}`", port)).collect::<Vec<_>>();
+                        let written = self
+                            .pipeline_start
+                            .and_then(|start| self.source.get(start..entry.span.end))
+                            .filter(|written| !written.trim().is_empty());
+                        let named = match written {
+                            Some(written) => format!(
+                                "name it with `let s = {}`",
+                                written.split_whitespace().collect::<Vec<_>>().join(" ")
+                            ),
+                            None => "name it with a `let`".to_string(),
+                        };
                         format!(
-                            "`{}` has several output ports, so the pipeline cannot continue after it: end a `let` with \
-                             it, and pick a port, as in {}.",
+                            "`{}` has {} output ports, {}; {} and use {}.",
                             entry.node.op,
-                            alternatives("x", &outputs)
+                            count_word(outputs.len()),
+                            and_list(&ports),
+                            named,
+                            and_list(&uses)
                         )
                     };
                     self.error(span, message);
@@ -1063,6 +1089,10 @@ impl Lowering<'_> {
             }),
         };
         if let Some(taken) = taken {
+            // A name taken twice is reported once, where it is first found taken.
+            if !self.reported.insert(id.to_string()) {
+                return None;
+            }
             let message = format!(
                 "This `{}` would be the node `{}`, which is already {}. Name one of them with `as`.",
                 op, id, taken
@@ -1221,6 +1251,26 @@ fn predicate_path(path: &str) -> String {
         format!("predicate{}", path)
     } else {
         format!("predicate.{}", path)
+    }
+}
+
+/// Returns a count in words: "two", "three", and so on up to ten, and digits beyond.
+fn count_word(count: usize) -> String {
+    const WORDS: [&str; 11] = [
+        "no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+    ];
+    WORDS
+        .get(count)
+        .map_or_else(|| count.to_string(), |word| word.to_string())
+}
+
+/// Joins items with `and`: "a and b", or "a, b, and c".
+fn and_list(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [first, second] => format!("{} and {}", first, second),
+        [rest @ .., last] => format!("{}, and {}", rest.join(", "), last),
     }
 }
 

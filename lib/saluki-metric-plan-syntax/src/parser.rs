@@ -148,6 +148,26 @@ impl<'s> Parser<'s> {
         matches!(self.peek_at(offset + 1).kind, TokenKind::Pipe | TokenKind::Dot)
     }
 
+    /// Returns `true` if a line break comes before the token at `offset`.
+    fn starts_line(&self, offset: usize) -> bool {
+        let at = self.pos + offset;
+        let start = self.peek_at(offset).span.start;
+        let previous = match at.checked_sub(1).and_then(|previous| self.tokens.get(previous)) {
+            Some(previous) => previous.span.end,
+            None => 0,
+        };
+        self.source
+            .get(previous.min(start)..start)
+            .is_some_and(|gap| gap.contains('\n'))
+    }
+
+    /// Returns `true` if the token at `offset` is followed right away, without a space, by `(`: an operator and its
+    /// arguments.
+    fn is_call(&self, offset: usize) -> bool {
+        let next = self.peek_at(offset + 1);
+        next.kind == TokenKind::LParen && next.span.start == self.peek_at(offset).span.end
+    }
+
     // Errors.
 
     fn describe(&self, token: &Token) -> String {
@@ -421,12 +441,14 @@ impl<'s> Parser<'s> {
             let name = self.name("a name for the stream after `let`")?;
             self.expect(TokenKind::Eq, "`=` and the stream's pipeline after the name")?;
             let pipeline = self.pipeline(Some(&name))?;
+            self.missing_pipe(&pipeline)?;
             let span = start.to(pipeline.span);
             return Ok(Statement::Let { name, pipeline, span });
         }
 
         let pipeline = self.pipeline(None)?;
         if pipeline.end.is_none() {
+            self.missing_pipe(&pipeline)?;
             return Err(Error::new(
                 pipeline.span,
                 "This pipeline does not end: a statement without `let` ends in a sink (`emit`, `drop`, or `exit`) or a \
@@ -485,6 +507,40 @@ impl<'s> Parser<'s> {
         })
     }
 
+    /// Returns an error if an operator follows a pipeline that has not ended, on the same line: the `|` before it is
+    /// missing. Any other word, and a word on a line of its own, starts the next statement.
+    fn missing_pipe(&self, pipeline: &Pipeline) -> Result<(), Error> {
+        let next = self.peek();
+        if pipeline.end.is_some() || next.kind != TokenKind::Ident || self.starts_line(0) {
+            return Ok(());
+        }
+        if param_specs(self.text(next)).is_none() && !self.is_call(0) {
+            return Ok(());
+        }
+        let last = match pipeline.stages.last() {
+            None => match &pipeline.head {
+                Head::Ref(reference) => reference.span,
+                Head::Tuple(tuple) => tuple.span,
+            },
+            Some(Stage::Op(stage)) => stage.span,
+            Some(Stage::Where(stage)) => stage.span,
+        };
+        let written = &self.source[last.range()];
+        let written = if written.len() <= 40 && !written.contains('\n') {
+            format!("`{}`", written)
+        } else {
+            match pipeline.stages.last() {
+                Some(Stage::Op(stage)) => format!("`{}`", stage.op),
+                Some(Stage::Where(_)) => "the `where`".to_string(),
+                None => "the tuple".to_string(),
+            }
+        };
+        Err(Error::new(
+            next.span,
+            format!("Expected `|` after {}, found `{}`.", written, self.text(next)),
+        ))
+    }
+
     /// Returns the error for a sink or fork that a `|` follows.
     #[cold]
     fn end_in_middle(&self, end: &End, in_branch: bool) -> Error {
@@ -537,6 +593,14 @@ impl<'s> Parser<'s> {
                         "`node <id> = ...` is retired: write the operator as a stage of a pipeline, as in \
                          `dogstatsd | aggregate(window: 10s) as <id>`.",
                     ));
+                }
+                if word == "as" && !self.names_stream(0) {
+                    // What follows a node's `as`, which ended a statement, without the node's name.
+                    self.advance();
+                    return Err(self.expected("a node name after `as`"));
+                }
+                if self.peek_is(1, &TokenKind::Dot) && self.peek_is(3, &TokenKind::Arrow) {
+                    return Err(arrow(self.peek_at(3).span));
                 }
                 if word == "input" && self.peek_is(1, &TokenKind::Dot) {
                     return Err(Error::new(
@@ -604,13 +668,24 @@ impl<'s> Parser<'s> {
         })
     }
 
-    /// Parses `as <id>`, if it comes next.
+    /// Parses `as <id>`, if it comes next. An `as` with arguments right after it is an operator, which starts the next
+    /// branch of a fork.
+    ///
+    /// An `as` that `|` or `.` follows names the stream the next statement starts from when it starts a line, as the
+    /// printer writes statements; on the line of what it follows, it is an `as` missing its name.
     fn as_clause(&mut self) -> Result<Option<Name>, Error> {
-        if !self.is_word(self.peek(), "as") || self.names_stream(0) {
+        if !self.is_word(self.peek(), "as") || self.is_call(0) || (self.names_stream(0) && self.starts_line(0)) {
             return Ok(None);
         }
         self.advance();
-        self.name("a node ID after `as`").map(Some)
+        let name = self.name("a node name after `as`")?;
+        if self.is_word(self.peek(), "as") && self.peek_is(1, &TokenKind::Ident) && !self.names_stream(0) {
+            return Err(Error::new(
+                self.peek().span,
+                format!("A node takes one `as`, and this one already has `as {}`.", name.id),
+            ));
+        }
+        Ok(Some(name))
     }
 
     /// Parses what follows a `|`: a stage, or a sink or fork that ends the pipeline. In a `let`, `name` is the
@@ -623,6 +698,11 @@ impl<'s> Parser<'s> {
                  `emit`, `drop`, or `exit`",
                 what
             )));
+        }
+        // A word with arguments right after it is an operator, even a word that is otherwise a sink or `where`: the
+        // core form of a node such as an `emit` whose parameters no sink writes, `emit(output: "o", to: [])`.
+        if self.is_call(0) {
+            return self.op_stage().map(|stage| Item::Stage(Stage::Op(stage)));
         }
         match self.text(token) {
             word @ ("emit" | "drop" | "exit" | "fork") => {
@@ -1165,10 +1245,13 @@ impl<'s> Parser<'s> {
     // Predicates.
 
     /// Parses a predicate: `or` of `and` of possibly negated primaries.
+    ///
+    /// An `and` or `or` that `|` or `.` follows is not a junction but the name of the stream the next statement starts
+    /// from, as after a `where` that ends a statement.
     fn predicate(&mut self) -> Result<Value, Error> {
         self.enter(self.peek().span)?;
         let mut operands = vec![self.conjunction()?];
-        while self.is_word(self.peek(), "or") {
+        while self.is_word(self.peek(), "or") && !self.names_stream(0) {
             self.advance();
             operands.push(self.conjunction()?);
         }
@@ -1178,7 +1261,7 @@ impl<'s> Parser<'s> {
 
     fn conjunction(&mut self) -> Result<Value, Error> {
         let mut operands = vec![self.negation()?];
-        while self.is_word(self.peek(), "and") {
+        while self.is_word(self.peek(), "and") && !self.names_stream(0) {
             self.advance();
             operands.push(self.negation()?);
         }
@@ -1278,6 +1361,18 @@ impl<'s> Parser<'s> {
                             "`is set`, `is unset`, or a string match after the tag key: a key that is not an \
                              identifier, such as one with a `.` in it, is quoted, as in \
                              `{}[\"app.kubernetes.io/name\"]`",
+                            word
+                        )));
+                    }
+                    let next = self.peek();
+                    let matches_next = matches!(next.kind, TokenKind::EqEq | TokenKind::NotEq)
+                        || (next.kind == TokenKind::Ident
+                            && matches!(self.text(next), "starts_with" | "in" | "prefix_in" | "matches"));
+                    if !matches_next {
+                        return Err(self.expected(&format!(
+                            "`is set`, `is unset`, or a string match after `{}.<key>`: `== \"<s>\"`, `!= \"<s>\"`, \
+                             `starts_with \"<s>\"`, `starts_with [...]`, `in [...]`, `in config.<binding>`, or \
+                             `matches(values: ..., prefix: ...)`",
                             word
                         )));
                     }
