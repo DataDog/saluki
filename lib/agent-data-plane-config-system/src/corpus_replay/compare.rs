@@ -58,8 +58,10 @@ pub(crate) enum LeafKind {
     Bool,
     Duration,
     F64,
+    F64Map,
     I64,
     JsonList,
+    JsonMap,
     OptionI64,
     OptionStr,
     Str,
@@ -76,8 +78,10 @@ impl LeafKind {
         LeafKind::Bool,
         LeafKind::Duration,
         LeafKind::F64,
+        LeafKind::F64Map,
         LeafKind::I64,
         LeafKind::JsonList,
+        LeafKind::JsonMap,
         LeafKind::OptionI64,
         LeafKind::OptionStr,
         LeafKind::Str,
@@ -92,8 +96,10 @@ impl LeafKind {
             LeafValue::Bool(_) => LeafKind::Bool,
             LeafValue::Duration(_) => LeafKind::Duration,
             LeafValue::F64(_) => LeafKind::F64,
+            LeafValue::F64Map(_) => LeafKind::F64Map,
             LeafValue::I64(_) => LeafKind::I64,
             LeafValue::JsonList(_) => LeafKind::JsonList,
+            LeafValue::JsonMap(_) => LeafKind::JsonMap,
             LeafValue::OptionI64(_) => LeafKind::OptionI64,
             LeafValue::OptionStr(_) => LeafKind::OptionStr,
             LeafValue::Str(_) => LeafKind::Str,
@@ -111,6 +117,7 @@ impl LeafKind {
             LeafKind::Bool => &[Getter::GetBool],
             LeafKind::Duration => &[Getter::GetDuration],
             LeafKind::F64 => &[Getter::GetFloat64],
+            LeafKind::F64Map | LeafKind::JsonMap => &[Getter::GetStringMap],
             LeafKind::I64 => &[Getter::GetInt, Getter::GetInt64],
             LeafKind::JsonList => &[Getter::Get],
             LeafKind::OptionI64 => &[Getter::GetInt],
@@ -154,8 +161,10 @@ fn rule(leaf: LeafValue<'_>, result: &GetterResult) -> Option<Verdict> {
         (LeafValue::Bool(a), GetterResult::Bool(b)) => bool_get_bool(a, *b),
         (LeafValue::Duration(a), GetterResult::Duration(b)) => duration_get_duration(a, b.value),
         (LeafValue::F64(a), GetterResult::Float64(b)) => f64_get_float64(a, b),
+        (LeafValue::F64Map(a), GetterResult::StringMap(b)) => f64_map_get_string_map(a, b.as_ref()),
         (LeafValue::I64(a), GetterResult::Int(b)) => i64_get_int(a, b.value),
         (LeafValue::JsonList(a), GetterResult::Get(b)) => json_list_get(a, b),
+        (LeafValue::JsonMap(a), GetterResult::StringMap(b)) => json_map_get_string_map(a, b.as_ref()),
         (LeafValue::OptionI64(a), GetterResult::Int(b)) => option_i64_get_int(a, b.value),
         (LeafValue::OptionStr(a), GetterResult::String(b)) => option_str_get_string(a, b),
         (LeafValue::Str(a), GetterResult::String(b)) => str_get_string(a, b),
@@ -290,6 +299,42 @@ fn string_map_get_string_map_string(
         equal,
         || format!("{:?}", adp.iter().collect::<BTreeMap<_, _>>()),
         || render_option(agent),
+    )
+}
+
+/// Map values must be floats, compared bit for bit; a nil map matches an empty map.
+fn f64_map_get_string_map(adp: &HashMap<String, f64>, agent: Option<&BTreeMap<String, GoValue>>) -> Verdict {
+    let equal = match agent {
+        None => adp.is_empty(),
+        Some(values) => {
+            values.len() == adp.len()
+                && adp.iter().all(|(key, value)| {
+                    matches!(values.get(key), Some(GoValue::Float(other)) if f64_get_float64(*value, other) == Verdict::Match)
+                })
+        }
+    };
+    verdict(
+        equal,
+        || format!("{:?}", adp.iter().collect::<BTreeMap<_, _>>()),
+        || agent.map_or_else(|| "null".to_string(), |values| render_go(&GoValue::Map(values.clone()))),
+    )
+}
+
+/// Map values follow the generic rule; a nil map matches an empty map.
+fn json_map_get_string_map(adp: &serde_json::Map<String, Value>, agent: Option<&BTreeMap<String, GoValue>>) -> Verdict {
+    let equal = match agent {
+        None => adp.is_empty(),
+        Some(values) => {
+            values.len() == adp.len()
+                && adp
+                    .iter()
+                    .all(|(key, value)| values.get(key).is_some_and(|other| json_eq(value, other)))
+        }
+    };
+    verdict(
+        equal,
+        || Value::Object(adp.clone()).to_string(),
+        || agent.map_or_else(|| "null".to_string(), |values| render_go(&GoValue::Map(values.clone()))),
     )
 }
 
@@ -430,12 +475,16 @@ mod tests {
     fn sample(kind: LeafKind) -> LeafValue<'static> {
         static EMPTY_LIST_MAP: std::sync::OnceLock<HashMap<String, Vec<String>>> = std::sync::OnceLock::new();
         static EMPTY_MAP: std::sync::OnceLock<HashMap<String, String>> = std::sync::OnceLock::new();
+        static EMPTY_F64_MAP: std::sync::OnceLock<HashMap<String, f64>> = std::sync::OnceLock::new();
+        static EMPTY_JSON_MAP: std::sync::OnceLock<serde_json::Map<String, Value>> = std::sync::OnceLock::new();
         match kind {
             LeafKind::Bool => LeafValue::Bool(false),
             LeafKind::Duration => LeafValue::Duration(Duration::ZERO),
             LeafKind::F64 => LeafValue::F64(0.0),
+            LeafKind::F64Map => LeafValue::F64Map(EMPTY_F64_MAP.get_or_init(HashMap::new)),
             LeafKind::I64 => LeafValue::I64(0),
             LeafKind::JsonList => LeafValue::JsonList(&[]),
+            LeafKind::JsonMap => LeafValue::JsonMap(EMPTY_JSON_MAP.get_or_init(serde_json::Map::new)),
             LeafKind::OptionI64 => LeafValue::OptionI64(None),
             LeafKind::OptionStr => LeafValue::OptionStr(None),
             LeafKind::Str => LeafValue::Str(""),
@@ -698,6 +747,72 @@ mod tests {
         assert!(differs(&string_map_get_string_map_string(&adp, Some(&missing))));
         assert_eq!(string_map_get_string_map_string(&HashMap::new(), None), Verdict::Match);
         assert!(differs(&string_map_get_string_map_string(&adp, None)));
+    }
+
+    #[test]
+    fn f64_map_rule_keeps_float_bits_and_types() {
+        let adp = HashMap::from([("rate".to_string(), 0.0)]);
+        for (value, equal) in [
+            (GoValue::Float(finite(0.0, "0.0")), true),
+            (GoValue::Float(finite(-0.0, "-0.0")), false),
+            (GoValue::Float(finite(0.5, "0.5")), false),
+            (go_int(0), false),
+            (GoValue::String("0".into()), false),
+        ] {
+            let result = GetterResult::StringMap(Some(BTreeMap::from([("rate".to_string(), value)])));
+            let verdict = compare_result(LeafValue::F64Map(&adp), Getter::GetStringMap, &result);
+            assert_eq!(verdict == Verdict::Match, equal, "{verdict:?}");
+            if !equal {
+                assert!(differs(&verdict));
+            }
+        }
+        assert!(differs(&f64_map_get_string_map(&adp, None)));
+        assert!(differs(&f64_map_get_string_map(&adp, Some(&BTreeMap::new()))));
+        assert_eq!(f64_map_get_string_map(&HashMap::new(), None), Verdict::Match);
+        assert_eq!(
+            compare_result(
+                LeafValue::F64Map(&adp),
+                Getter::GetStringMap,
+                &GetterResult::Bool(false)
+            ),
+            Verdict::NotCompared {
+                reason: Reason::ResultShape
+            }
+        );
+    }
+
+    #[test]
+    fn json_map_rule_compares_nested_values_without_coercion() {
+        let adp = serde_json::Map::from_iter([("rates".to_string(), serde_json::json!([1, null]))]);
+        for (value, equal) in [
+            (GoValue::List(vec![go_int(1), GoValue::Null]), true),
+            (
+                GoValue::List(vec![GoValue::Float(finite(1.0, "1.0")), GoValue::Null]),
+                false,
+            ),
+            (GoValue::List(vec![go_int(1)]), false),
+            (GoValue::List(vec![GoValue::Null, go_int(1)]), false),
+        ] {
+            let result = GetterResult::StringMap(Some(BTreeMap::from([("rates".to_string(), value)])));
+            let verdict = compare_result(LeafValue::JsonMap(&adp), Getter::GetStringMap, &result);
+            assert_eq!(verdict == Verdict::Match, equal, "{verdict:?}");
+            if !equal {
+                assert!(differs(&verdict));
+            }
+        }
+        assert!(differs(&json_map_get_string_map(&adp, None)));
+        assert!(differs(&json_map_get_string_map(&adp, Some(&BTreeMap::new()))));
+        assert_eq!(json_map_get_string_map(&serde_json::Map::new(), None), Verdict::Match);
+        assert_eq!(
+            compare_result(
+                LeafValue::JsonMap(&adp),
+                Getter::GetStringMap,
+                &GetterResult::Bool(false)
+            ),
+            Verdict::NotCompared {
+                reason: Reason::ResultShape
+            }
+        );
     }
 
     #[test]
