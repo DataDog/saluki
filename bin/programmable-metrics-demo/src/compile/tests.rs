@@ -3,6 +3,7 @@ use crate::export::{
     tests::{demo_export, DEMO_EXPORT},
     ExportBundle,
 };
+use crate::scenario::edits::insert_before_policy;
 
 /// Compiles against the export alone, as for an ADP that does not serve its default program: the structural checks
 /// run instead of composition. (Composition is tested in `preview::tests`, against a real default program.)
@@ -23,10 +24,9 @@ static NO_LABELS: std::sync::LazyLock<RecipientLabels> = std::sync::LazyLock::ne
 
 /// The demo export's artifact, as the editor prints it: hand-written, so it also pins the printed form the editor
 /// starts from, without its base, and with the export's notes and recipient directory as comments. No line is longer
-/// than 80 characters, and the lines an author edits (routing predicates, binding names, emits) are at most 74.
+/// than the editor's width.
 const DEFAULT_SOURCE: &str = r#"policy metrics {
-  # Sources: where each one's metrics enter
-  input.dogstatsd -> metrics_policy
+  # Sources: each one's metrics enter at an input of the scope: dogstatsd.
 
   # Recipients:
   #   primary                   http://127.0.0.1:17101
@@ -34,60 +34,42 @@ const DEFAULT_SOURCE: &str = r#"policy metrics {
   #   "http://127.0.0.1:17102"
   #   "http://127.0.0.1:17103"
   # Policy: one branch per output; route here
-  node metrics_policy = tee {
-    -> emit dd_metrics_encode
-    -> metrics_routing_filter_0
-    -> metrics_routing_filter_1
-    -> mrf_metrics_gateway
-  }
-
-  # Endpoint routing to http://127.0.0.1:17102
-  node metrics_routing_filter_0 = split(
-    intake_name matches(
-      values: config("endpoint_routing.group.b0b0b0b0.names"),
-      prefix: false,
-    )
-    or intake_name matches(
-      values: config("endpoint_routing.group.b0b0b0b0.prefixes"),
-      prefix: true,
-    )
-  ) {
-    true  -> emit metrics_routing_encode_0
-    false -> drop
-  }
-
-  # Endpoint routing to http://127.0.0.1:17103
-  node metrics_routing_filter_1 = split(
-    intake_name matches(
-      values: config("endpoint_routing.group.c0c0c0c0.names"),
-      prefix: false,
-    )
-    or intake_name matches(
-      values: config("endpoint_routing.group.c0c0c0c0.prefixes"),
-      prefix: true,
-    )
-  ) {
-    true  -> emit metrics_routing_encode_1
-    false -> drop
-  }
-
-  # Multi-Region Failover: mirrors listed, or all, metrics while failing over
-  node mrf_metrics_gateway = split(
-    flag(config("multi_region_failover.enabled"))
-    and flag(config("multi_region_failover.metric_mirroring.enabled"))
-    and (
-      is_empty(config("multi_region_failover.metric_mirroring.allowlist"))
-      or name matches(
-        values: config("multi_region_failover.metric_mirroring.allowlist"),
-        prefix: false,
-      )
-    )
-  ) {
-    true  -> emit mrf_metrics_encode
-    false -> drop
+  dogstatsd | fork as metrics_policy {
+    emit output dd_metrics_encode
+    # Endpoint routing to http://127.0.0.1:17102
+    where intake_name in config.endpoint_routing.group.b0b0b0b0.names
+        or intake_name starts_with config.endpoint_routing.group.b0b0b0b0.prefixes
+        as metrics_routing_filter_0
+      | emit output metrics_routing_encode_0
+    # Endpoint routing to http://127.0.0.1:17103
+    where intake_name in config.endpoint_routing.group.c0c0c0c0.names
+        or intake_name starts_with config.endpoint_routing.group.c0c0c0c0.prefixes
+        as metrics_routing_filter_1
+      | emit output metrics_routing_encode_1
+    # Multi-Region Failover: mirrors listed, or all, metrics while failing over
+    where config.multi_region_failover.enabled
+        and config.multi_region_failover.metric_mirroring.enabled
+        and (
+          is_empty(config.multi_region_failover.metric_mirroring.allowlist)
+          or name in config.multi_region_failover.metric_mirroring.allowlist
+        )
+        as mrf_metrics_gateway
+      | emit output mrf_metrics_encode
   }
 }
 "#;
+
+/// The failover gateway's branch of the policy `fork`, with the comment above it.
+const MRF_BRANCH: &str = "    # Multi-Region Failover: mirrors listed, or all, metrics while failing over\n    where \
+                          config.multi_region_failover.enabled\n";
+
+/// Returns `source` without the failover gateway's branch.
+fn without_mrf(source: &str) -> String {
+    let start = source.find(MRF_BRANCH).expect("the source has the failover gateway");
+    let end_text = "      | emit output mrf_metrics_encode\n";
+    let end = start + source[start..].find(end_text).unwrap() + end_text.len();
+    format!("{}{}", &source[..start], &source[end..])
+}
 
 /// The demo export's base, with its `outputs` block, which the editor leaves out.
 const BASE: &str = r#"  base "sha256:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
@@ -119,7 +101,7 @@ fn replaced_in(source: &str, from: &str, to: &str) -> String {
 fn the_default_program_prints_compiles_without_findings_and_keeps_its_hash() {
     let export = demo_export();
     assert_eq!(default_program_source(&export, &NO_LABELS), DEFAULT_SOURCE);
-    assert!(DEFAULT_SOURCE.lines().all(|line| line.chars().count() <= 80));
+    assert!(DEFAULT_SOURCE.lines().all(|line| line.chars().count() <= 120));
 
     let (outcome, compiled) = compile(DEFAULT_SOURCE, Some(&structural(&export)));
     assert!(outcome.ok);
@@ -170,16 +152,14 @@ fn the_default_program_prints_compiles_without_findings_and_keeps_its_hash() {
 #[test]
 fn edits_change_the_hash_and_reformatting_does_not() {
     let export = demo_export();
-    let reformatted = DEFAULT_SOURCE.replace("\n\n", "\n").replace("true  ->", "true ->");
+    let reformatted = DEFAULT_SOURCE
+        .replace("\n\n", "\n")
+        .replace("\n      | emit", " | emit");
     let (outcome, _) = compile(&reformatted, Some(&structural(&export)));
     assert_eq!(outcome.artifact_hash, Some(export.artifact.hash.to_string()));
     assert_eq!(outcome.canonical_source.as_deref(), Some(DEFAULT_SOURCE));
 
-    let edited = replaced(
-        "  input.dogstatsd -> metrics_policy\n",
-        "  input.dogstatsd -> drop_debug\n\n  node drop_debug = split(name starts_with \"demo.debug.\") {\n    true  -> \
-         drop\n    false -> metrics_policy\n  }\n",
-    );
+    let edited = crate::scenario::edits::drop_debug(DEFAULT_SOURCE).unwrap();
     let (outcome, compiled) = compile(&edited, Some(&structural(&export)));
     assert!(outcome.diagnostics.is_empty(), "{:#?}", outcome.diagnostics);
     let hash = compiled.unwrap().hash;
@@ -187,9 +167,7 @@ fn edits_change_the_hash_and_reformatting_does_not() {
     assert_eq!(outcome.artifact_hash, Some(hash.to_string()));
 
     // Removing a route removes its output from the restored fingerprints: an artifact lists what it refers to.
-    let without_mrf = replaced("    -> mrf_metrics_gateway\n", "");
-    let without_mrf = without_mrf.replace(&DEFAULT_SOURCE[DEFAULT_SOURCE.find("\n  node mrf").unwrap()..], "\n}\n");
-    let (outcome, _) = compile(&without_mrf, Some(&structural(&export)));
+    let (outcome, _) = compile(&without_mrf(DEFAULT_SOURCE), Some(&structural(&export)));
     assert!(outcome.diagnostics.is_empty(), "{:#?}", outcome.diagnostics);
     assert!(!outcome
         .restored_fingerprints
@@ -198,12 +176,8 @@ fn edits_change_the_hash_and_reformatting_does_not() {
 
     // An output emitted to twice is restored once.
     let twice = replaced(
-        "  input.dogstatsd -> metrics_policy
-",
-        "  input.dogstatsd -> copy_main
-
-  node copy_main = split(name starts_with \"demo.copy.\") {\n    true  -> \
-         emit dd_metrics_encode\n    false -> metrics_policy\n  }\n",
+        "    emit output dd_metrics_encode\n",
+        "    emit output dd_metrics_encode\n    where name starts_with \"demo.copy.\" | emit output dd_metrics_encode\n",
     );
     let (outcome, _) = compile(&twice, Some(&structural(&export)));
     assert_eq!(
@@ -224,10 +198,9 @@ fn the_examples_of_the_demo_scenarios_compile_without_findings() {
     // S2 of the design's scenarios: widen the checkout route to the platform team's metrics, written as the
     // implementation design writes it.
     let widened = replaced(
-        "    or intake_name matches(\n      values: config(\"endpoint_routing.group.b0b0b0b0.prefixes\"),\n      \
-         prefix: true,\n    )\n",
-        "    or intake_name matches(\n      values: config(\"endpoint_routing.group.b0b0b0b0.prefixes\"),\n      \
-         prefix: true,\n    )\n    or tag(\"team\") == \"platform\"\n",
+        "        or intake_name starts_with config.endpoint_routing.group.b0b0b0b0.prefixes\n",
+        "        or intake_name starts_with config.endpoint_routing.group.b0b0b0b0.prefixes\n        or tags.team == \
+         \"platform\"\n",
     );
     let (outcome, compiled) = compile(&widened, Some(&structural(&demo_export())));
     assert!(outcome.ok && compiled.is_some());
@@ -236,8 +209,8 @@ fn the_examples_of_the_demo_scenarios_compile_without_findings() {
 
 #[test]
 fn syntax_errors_are_placed_by_line_and_column() {
-    // `=>` instead of `->` on line 12: `=` is a token, and the `>` after it, at column 6, is not.
-    let source = replaced("    -> emit dd_metrics_encode", "    => emit dd_metrics_encode");
+    // `=>` instead of `|` on line 10: `=` is a token, and the `>` after it, at column 14, is not.
+    let source = replaced("  dogstatsd | fork", "  dogstatsd => fork");
     let (outcome, compiled) = compile(&source, Some(&structural(&demo_export())));
     assert!(!outcome.ok);
     assert!(compiled.is_none());
@@ -245,10 +218,10 @@ fn syntax_errors_are_placed_by_line_and_column() {
     let diagnostic = &outcome.diagnostics[0];
     assert_eq!(diagnostic.origin, Origin::Syntax);
     assert_eq!(diagnostic.severity, Severity::Error);
-    assert_eq!((diagnostic.range.line, diagnostic.range.column), (12, 6));
-    assert_eq!((diagnostic.range.end_line, diagnostic.range.end_column), (12, 7));
+    assert_eq!((diagnostic.range.line, diagnostic.range.column), (10, 14));
+    assert_eq!((diagnostic.range.end_line, diagnostic.range.end_column), (10, 15));
     assert_eq!(&source[diagnostic.range.start..diagnostic.range.end], ">");
-    assert!(diagnostic.message.contains("->"), "{}", diagnostic.message);
+    assert!(diagnostic.message.contains("`|`"), "{}", diagnostic.message);
     assert_eq!(outcome.errors, 1);
     assert!(outcome.artifact.is_none() && outcome.artifact_hash.is_none());
 }
@@ -282,10 +255,13 @@ fn structural_findings_are_placed_where_the_problem_is() {
     let cases: Vec<(&str, String, Vec<Expected<'_>>)> = vec![
         (
             "an emit to an output ADP does not declare",
-            replaced("emit metrics_routing_encode_1", "emit metrics_routing_encode_9"),
+            replaced(
+                "emit output metrics_routing_encode_1",
+                "emit output metrics_routing_encode_9",
+            ),
             vec![(
                 Severity::Error,
-                44,
+                21,
                 "`metrics_routing_encode_9`, which ADP does not declare",
             )],
         ),
@@ -294,7 +270,7 @@ fn structural_findings_are_placed_where_the_problem_is() {
         (
             "an emit to an output the artifact does not list",
             replaced_in(&with_fingerprints(), &mrf_output_line, ""),
-            vec![(Severity::Error, 67, mrf_output_fix.as_str())],
+            vec![(Severity::Error, 37, mrf_output_fix.as_str())],
         ),
         (
             "an output whose fingerprint changed",
@@ -313,7 +289,7 @@ fn structural_findings_are_placed_where_the_problem_is() {
             ),
             vec![(
                 Severity::Error,
-                35,
+                18,
                 "`endpoint_routing.group.ffffffff.names`, which ADP does not declare",
             )],
         ),
@@ -324,23 +300,24 @@ fn structural_findings_are_placed_where_the_problem_is() {
         ),
         (
             "a parameter the operator does not have",
-            replaced(
-                "\n}\n",
-                "\n\n  node extra = tee(ports: 1, colour: \"red\") {\n    0 -> drop\n  }\n}\n",
-            ),
-            vec![(Severity::Error, 64, "parameter `colour`")],
+            insert_before_policy(
+                DEFAULT_SOURCE,
+                "namespace_prefix(\"x\", exclusions: [], colour: \"red\") as extra",
+            )
+            .unwrap(),
+            vec![(Severity::Error, 10, "parameter `colour`")],
         ),
         (
             "an operator that is not registered",
-            replaced("\n}\n", "\n\n  node extra = frobnicate(x: 1)\n}\n"),
-            vec![(Severity::Error, 64, "`frobnicate` is not a registered operator")],
+            insert_before_policy(DEFAULT_SOURCE, "frobnicate(x: 1) as extra").unwrap(),
+            vec![(Severity::Error, 10, "`frobnicate` is not a registered operator")],
         ),
         (
             "another scope",
             replaced("policy metrics {", "policy dogstatsd {"),
             vec![
                 (Severity::Error, 1, "ADP exports the scope `metrics`"),
-                (Severity::Error, 3, "has no input `dogstatsd`"),
+                (Severity::Error, 10, "has no input `dogstatsd`"),
             ],
         ),
     ];
@@ -399,8 +376,8 @@ fn without_an_export_sources_are_parsed_but_not_checked() {
     );
     let source = replaced_in(
         &with_base,
-        "emit metrics_routing_encode_1",
-        "emit metrics_routing_encode_9",
+        "emit output metrics_routing_encode_1",
+        "emit output metrics_routing_encode_9",
     );
     let (outcome, compiled) = compile(&source, None);
     assert!(outcome.ok);
@@ -418,16 +395,13 @@ fn state_owners_are_checked_for_their_parameters_only() {
     let export = demo_export();
     // Aggregation with its parameters missing: each missing parameter is reported, at the node. That it keeps state is
     // no finding: ADP composes state owners, and placement decides where they run.
-    let source = replaced(
-        "  input.dogstatsd -> metrics_policy\n",
-        "  input.dogstatsd -> rollup\n\n  node rollup = aggregate {\n    -> metrics_policy\n  }\n",
-    );
+    let source = insert_before_policy(DEFAULT_SOURCE, "aggregate as rollup").unwrap();
     let (outcome, compiled) = compile(&source, Some(&structural(&export)));
     assert!(outcome.ok && compiled.is_some(), "{:#?}", outcome.diagnostics);
     assert!(!outcome.diagnostics.is_empty());
     for diagnostic in &outcome.diagnostics {
         assert_eq!(diagnostic.severity, Severity::Error);
-        assert_eq!(diagnostic.range.line, 5);
+        assert_eq!(diagnostic.range.line, 10);
         assert!(
             diagnostic
                 .message
@@ -480,8 +454,7 @@ fn what_adp_installs_unchecked_is_not_reported() {
         "sha256:5555555555555555555555555555555555555555555555555555555555555555",
         stale,
     );
-    let source = replaced_in(&source, "    -> mrf_metrics_gateway\n", "");
-    let source = source.replace(&source[source.find("\n  node mrf").unwrap()..], "\n}\n");
+    let source = without_mrf(&source);
     assert!(source.contains(stale));
     let (outcome, _) = compile(&source, Some(&structural(&demo_export())));
     assert!(outcome.diagnostics.is_empty(), "{:#?}", outcome.diagnostics);
@@ -509,7 +482,7 @@ fn columns_count_characters_and_offsets_past_the_end_are_clamped() {
 
 #[test]
 fn the_recipient_directory_names_the_demos_labels_and_what_the_program_addresses_by_name() {
-    // The detached export addresses outputs by their recipients' names: `emit to [...]`.
+    // The detached export addresses outputs by their recipients' names: `emit [...]`.
     let mut document = serde_json::from_str::<serde_json::Value>(DEMO_EXPORT).unwrap();
     for node in document["artifact"]["nodes"].as_array_mut().unwrap() {
         if node["id"] == "metrics_policy_0" {
@@ -541,7 +514,7 @@ fn the_recipient_directory_names_the_demos_labels_and_what_the_program_addresses
     );
     // Without the routing group's emit to it, team B's endpoint is not addressed.
     let unrouted = source
-        .replace("    true  -> emit metrics_routing_encode_0\n", "    true  -> drop\n")
+        .replace("      | emit output metrics_routing_encode_0\n", "      | drop\n")
         .lines()
         .filter(|line| !line.trim_start().starts_with('#'))
         .map(|line| format!("{}\n", line))
@@ -595,19 +568,18 @@ fn what_the_export_leaves_out_is_one_comment_at_the_top_wrapped_to_the_editors_w
     assert_eq!(
         comment,
         [
-            "  # Not shown, because they do nothing as configured: mapper (no",
-            "  #   profiles), namespace prefix (none), metric filterlist (empty), tag",
-            "  #   filterlist (empty), post-aggregation filter (empty), enrichment",
+            "  # Not shown, because they do nothing as configured: mapper (no profiles), namespace prefix (none),",
+            "  #   metric filterlist (empty), tag filterlist (empty), post-aggregation filter (empty), enrichment",
             "  #   merge (one input), host enrichment (changes no metric)",
         ],
         "{}",
         source
     );
-    assert!(comment.iter().all(|line| line.chars().count() <= 72), "{}", source);
-    // A blank line, then the inputs' line.
+    assert!(comment.iter().all(|line| line.chars().count() <= 100), "{}", source);
+    // A blank line, then the line that names the inputs.
     assert_eq!(
         lines[1 + comment.len() + 1],
-        "  # Sources: where each one's metrics enter",
+        "  # Sources: each one's metrics enter at an input of the scope: dogstatsd.",
         "{}",
         source
     );

@@ -8,14 +8,14 @@
 //! serve it), the structural [checks](crate::checks) run against the export's catalog instead. Every problem is a
 //! diagnostic with a line, a column, and the span of the source it is about, so the editor can mark it.
 //!
-//! The editor shows programs printed with [`DISPLAY`]: narrow enough for the editor at 1280 pixels, and without the
-//! `base` statement, whose program hash and output fingerprints are digests a reader does not edit. A source without
+//! The editor shows programs printed with [`DISPLAY`]: at the syntax's own width, so a pipeline's stages and their `as`
+//! clauses stay on one line each, and without the `base` statement, whose program hash and output fingerprints are digests a reader does not edit. A source without
 //! a base gets the export's program hash when it is compiled, and the fingerprints of the outputs it emits to, as the
 //! syntax crate's documentation asks of tools that elide them.
 //!
 //! The default program is the whole metrics path, so the editor prints it with ADP's notes as comments ([`annotate`]):
-//! the note of each node, from lowering, which says what the node stands for, a line where the sources' inputs begin,
-//! which ADP does not know. Comments are not part of the artifact, so they change neither it nor its hash. The printed
+//! the note of each node, from lowering, which says what the node stands for, above the stage that runs it, and a line
+//! that names the sources' inputs, which ADP does not know. Comments are not part of the artifact, so they change neither it nor its hash. The printed
 //! form writes edges in the syntax's canonical order, the edges from the scope's inputs first, in input-name order,
 //! while the export lists them in the default program's order: the compiled document then differs from the export in
 //! the order of its edges, and its artifact hash with it, but composition puts edges in the default program's order, so
@@ -24,7 +24,7 @@
 use saluki_metric_plan::{
     canonical::PlanHash,
     compose::receive_artifact,
-    ir::{ArtifactBase, OutputId, PolicyArtifact, ReceivedArtifact},
+    ir::{ArtifactBase, ArtifactPortRef, OutputId, PolicyArtifact, ReceivedArtifact},
     operators::names,
     validate::{Catalog as _, CatalogRecipient},
 };
@@ -38,26 +38,30 @@ use crate::{
     preview::{compose_preview, CompileContext, Preview},
 };
 
-/// How the editor prints programs: lines of up to about 64 characters where the syntax can break them, which the
-/// editor shows whole at 1280 pixels, and no `base` statement, which the export gives back.
+/// How the editor prints programs: lines of up to the syntax's default width, 120 characters, where the syntax can
+/// break them, and no `base` statement, which the export gives back. A narrower width would break most stages of the
+/// default program, whose `as` clauses keep its native node IDs, across lines.
 pub const DISPLAY: PrintOptions = PrintOptions {
     elide_fingerprints: true,
     elide_base: true,
-    width: 64,
+    width: DISPLAY_WIDTH,
 };
+
+/// The width the editor prints programs at.
+const DISPLAY_WIDTH: usize = 120;
 
 /// How the editor prints a program that lists its output fingerprints, which are kept with its base.
 const DISPLAY_WITH_FINGERPRINTS: PrintOptions = PrintOptions {
     elide_fingerprints: false,
     elide_base: false,
-    width: 64,
+    width: DISPLAY_WIDTH,
 };
 
 /// How the editor prints a program whose source states its base, which is kept.
 const DISPLAY_WITH_BASE: PrintOptions = PrintOptions {
     elide_fingerprints: true,
     elide_base: false,
-    width: 64,
+    width: DISPLAY_WIDTH,
 };
 
 /// Where a diagnostic comes from.
@@ -241,58 +245,88 @@ impl RecipientLabels {
     }
 }
 
-/// The comment that marks the scope's inputs, where each source's metrics enter the program.
-const INPUTS_SECTION: &str = "# Sources: where each one's metrics enter";
+/// How the comment that names the scope's inputs, where each source's metrics enter the program, starts.
+const INPUTS_SECTION: &str = "Sources: each one's metrics enter at an input of the scope:";
 
-/// The node above which the recipient directory is listed: the policy `tee`, where a program routes.
+/// The node above which the recipient directory is listed: the policy `tee`, the `fork` where a program routes.
 const POLICY_NODE: &str = "metrics_policy";
 
 /// Returns a printed program with ADP's notes as comment lines: what the export leaves out because it does nothing as
-/// configured, at the top of the program, wrapped to the editor's width, a line before the first edge from a scope
-/// input, each node's note from the export ([`ExportBundle::annotations`]) above its definition, and the recipient
-/// directory above the policy `tee`, each recipient with its endpoint and the label `labels` gives it, said to be not
-/// addressed when no `emit` of `artifact` reaches it.
+/// configured, and the scope inputs the program reads, at the top of the program, wrapped; each node's note from the
+/// export ([`ExportBundle::annotations`]) above the line its stage starts on; and the recipient directory above the
+/// policy `fork`, each recipient with its endpoint and the label `labels` gives it, said to be not addressed when no
+/// `emit` of `artifact` reaches it.
 ///
-/// A program whose nodes ADP did not write, such as one that renames them, gets fewer comments; without an export, only
-/// the inputs line. The comments change nothing in the artifact.
+/// The stages are found by parsing `printed` back, through the span of each node, so the comments follow the printed
+/// form whatever its layout; a comment is indented as the line it is above. A program whose nodes ADP did not write,
+/// such as one that renames them, gets fewer comments; without an export, only the inputs line. The comments change
+/// nothing in the artifact.
 pub fn annotate(
     printed: &str, artifact: &PolicyArtifact, export: Option<&ExportBundle>, labels: &RecipientLabels,
 ) -> String {
-    let mut marks = Vec::new();
-    if let (Some(omitted), Some(at)) = (
-        export.and_then(|export| export.annotations.omitted.as_deref()),
-        printed.find(" {\n").map(|at| at + " {\n".len()),
-    ) {
-        let mut lines = wrapped(omitted, OMITTED_WIDTH);
-        lines.push(String::new());
-        // Before anything else at the top, the inputs' line included.
-        marks.push((at, -1, lines));
+    // Each mark is an offset, its order among the marks at that offset, its indentation, and its lines.
+    let mut marks: Vec<(usize, i32, String, Vec<String>)> = Vec::new();
+    if let Some(at) = printed.find(" {\n").map(|at| at + " {\n".len()) {
+        if let Some(omitted) = export.and_then(|export| export.annotations.omitted.as_deref()) {
+            let mut lines = wrapped(omitted, COMMENT_WIDTH);
+            lines.push(String::new());
+            // Before anything else at the top.
+            marks.push((at, -2, "  ".to_string(), lines));
+        }
+        let mut lines = Vec::new();
+        let inputs = artifact
+            .edges
+            .iter()
+            .filter_map(|edge| match &edge.from {
+                ArtifactPortRef::Input(input) => Some(input.as_str()),
+                _ => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        if !inputs.is_empty() {
+            let names = inputs.into_iter().collect::<Vec<_>>().join(", ");
+            lines.extend(wrapped(&format!("{} {}.", INPUTS_SECTION, names), COMMENT_WIDTH));
+            lines.push(String::new());
+        }
+        // Before the first statement, after the `base` statement and the other headers.
+        marks.push((statements_start(printed, at), -1, "  ".to_string(), lines));
     }
-    if let Some(at) = printed.find("\n  input.") {
-        marks.push((at + 1, 0, vec![INPUTS_SECTION.to_string()]));
-    }
-    let definition = |node: &str| printed.find(&format!("\n  node {} = ", node)).map(|at| at + 1);
+    // The line each node's stage starts on, from the spans of the printed text parsed back.
+    let reparsed = parse_with(
+        printed,
+        &ParseOptions {
+            base: Some(artifact.base.clone()),
+        },
+    )
+    .ok();
+    let line_of = |node: &str| {
+        let span = reparsed.as_ref()?.spans.node(node)?;
+        let start = printed[..span.start.min(printed.len())]
+            .rfind('\n')
+            .map_or(0, |at| at + 1);
+        let indent = printed[start..].chars().take_while(|c| *c == ' ').collect::<String>();
+        Some((start, indent))
+    };
     if let Some(export) = export {
         for (node, note) in &export.annotations.nodes {
-            if let Some(at) = definition(node.as_str()) {
-                marks.push((at, 1, vec![format!("# {}", note)]));
+            if let Some((at, indent)) = line_of(node.as_str()) {
+                marks.push((at, 1, indent, vec![format!("# {}", note)]));
             }
         }
-        if let Some(at) = definition(POLICY_NODE) {
+        if let Some((at, indent)) = line_of(POLICY_NODE) {
             let lines = recipient_lines(artifact, export, labels);
             if !lines.is_empty() {
-                marks.push((at, 0, lines));
+                marks.push((at, 0, indent, lines));
             }
         }
     }
     marks.sort();
     let mut annotated = String::with_capacity(printed.len() + 64 * marks.len());
     let mut copied = 0;
-    for (at, _, lines) in marks {
+    for (at, _, indent, lines) in marks {
         annotated.push_str(&printed[copied..at]);
         for line in lines {
             if !line.is_empty() {
-                annotated.push_str("  ");
+                annotated.push_str(&indent);
                 annotated.push_str(&line);
             }
             annotated.push('\n');
@@ -303,9 +337,33 @@ pub fn annotate(
     annotated
 }
 
-/// The widest comment line the note of what the export leaves out wraps to, its indentation and `# ` included: the
-/// printed program's width, [`DISPLAY`]'s, and a little more, since a comment is not code.
-const OMITTED_WIDTH: usize = 72;
+/// Returns where the statements of a printed program start: the first line from `at`, just past the program's opening
+/// brace, that is neither blank nor part of a header (`base`, its `outputs` block, `ir_version`, or `blobs`).
+fn statements_start(printed: &str, at: usize) -> usize {
+    let mut offset = at;
+    let mut in_block = false;
+    for line in printed[at..].split_inclusive('\n') {
+        let code = line.trim();
+        let header = if in_block {
+            in_block = code != "}";
+            true
+        } else if code.starts_with("outputs {") || code.starts_with("blobs {") {
+            in_block = !code.ends_with('}');
+            true
+        } else {
+            code.is_empty() || code.starts_with("base ") || code.starts_with("ir_version ")
+        };
+        if !header {
+            break;
+        }
+        offset += line.len();
+    }
+    offset
+}
+
+/// The widest comment line the notes at the top of a program wrap to, their indentation and `# ` included: narrower
+/// than the printed program's width, [`DISPLAY`]'s, since prose reads better in shorter lines than code.
+const COMMENT_WIDTH: usize = 100;
 
 /// Returns `note` as comment lines of at most `width` characters once [`annotate`] indents them, broken at spaces, the
 /// lines after the first indented a little further.

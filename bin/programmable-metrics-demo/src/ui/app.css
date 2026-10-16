@@ -22,6 +22,17 @@
   --intake-team-c: #7a3fb0;
   --intake-mrf: #b5541a;
   --intake-added: #a3306e;
+  /* Syntax highlighting of programs (syntax.js), in the editor and the reference. */
+  --tk-kw: #8a2fb0;
+  --tk-pipe: #2f4fb8;
+  --tk-fn: #0b6e8a;
+  --tk-param: #4f5866;
+  --tk-string: #a2471a;
+  --tk-number: #17803a;
+  --tk-logic: #9c3a5e;
+  --tk-config: #7a5a00;
+  --tk-comment: #6d7684;
+  --tk-as: #8d96a4;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --radius: 8px;
@@ -52,6 +63,16 @@
     --intake-team-c: #c49bf2;
     --intake-mrf: #f29b5c;
     --intake-added: #f08cc0;
+    --tk-kw: #d29bf5;
+    --tk-pipe: #8fa6ff;
+    --tk-fn: #6fd0e6;
+    --tk-param: #aab2bd;
+    --tk-string: #f2a77a;
+    --tk-number: #79d593;
+    --tk-logic: #f08cb4;
+    --tk-config: #e6c46a;
+    --tk-comment: #7f8896;
+    --tk-as: #6b7482;
   }
 }
 
@@ -168,11 +189,11 @@ a.link-button:hover { border-color: var(--accent); }
 .banner details p { margin: 4px 0 0; }
 
 /* Layout: on wide screens the page fits the window and each pane scrolls on its own, so the editor and what each
-   endpoint receives are on screen together. The editor's pane is a little wider, so that at 1280 pixels it shows the
-   default program's longest lines (about 81 columns: the routing groups' binding names) whole. */
+   endpoint receives are on screen together. The editor's pane is wider, since programs print at 120 columns: at 1440
+   pixels it shows about 110 of them, and a longer line scrolls. */
 .layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
   gap: 16px;
   padding: 14px 20px 16px;
 }
@@ -257,6 +278,24 @@ a.link-button:hover { border-color: var(--accent); }
 .highlights div { height: var(--line); }
 .highlights .err { background: var(--line-err); }
 .highlights .warn { background: var(--line-warn); }
+/* The highlighted text lies under the textarea, whose own text is transparent: what shows is the highlighting, with the
+   textarea's caret and selection over it. Both scroll together (app.js moves the highlighting). */
+.syntax {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.syntax code {
+  display: block;
+  padding: 10px 10px;
+  font: inherit;
+  white-space: pre;
+  tab-size: 2;
+  color: var(--text);
+  will-change: transform;
+}
 textarea#source {
   position: absolute;
   inset: 0;
@@ -267,14 +306,31 @@ textarea#source {
   border: 0;
   resize: none;
   background: transparent;
-  color: var(--text);
+  color: transparent;
+  -webkit-text-fill-color: transparent;
   font: inherit;
   white-space: pre;
   overflow: auto;
   tab-size: 2;
   caret-color: var(--accent);
 }
+textarea#source::selection { background: var(--accent-soft); }
+textarea#source::placeholder { -webkit-text-fill-color: var(--faint); }
 textarea#source:focus-visible { outline: none; }
+
+/* Tokens, as syntax.js names them. `as <id>` clauses only keep node IDs: they are dimmed. */
+.tk-kw { color: var(--tk-kw); font-weight: 600; }
+.tk-pipe { color: var(--tk-pipe); font-weight: 700; }
+.tk-fn { color: var(--tk-fn); }
+.tk-param { color: var(--tk-param); }
+.tk-string { color: var(--tk-string); }
+.tk-number { color: var(--tk-number); }
+.tk-logic { color: var(--tk-logic); }
+.tk-op { color: var(--tk-logic); }
+.tk-const { color: var(--tk-number); }
+.tk-config { color: var(--tk-config); }
+.tk-comment { color: var(--tk-comment); font-style: italic; }
+.tk-as { color: var(--tk-as); }
 
 .compile-status { font-size: 14px; color: var(--muted); min-height: 1.4em; }
 .compile-status.ok { color: var(--ok); }
@@ -340,6 +396,9 @@ textarea#source:focus-visible { outline: none; }
 .plan-diff.invalid { border-left-color: var(--err); }
 .plan-diff.none { border-left-color: var(--faint); color: var(--muted); }
 .plan-diff-head strong { font-weight: 650; }
+.plan-diff-state { list-style: none; margin: 6px 0 0; padding: 6px 10px; border-radius: 6px; background: var(--warn-soft);
+                   color: var(--warn); font-size: 13.5px; display: flex; flex-direction: column; gap: 2px; }
+.plan-diff-state code { color: var(--text); }
 .plan-diff-head .against { color: var(--muted); }
 .plan-diff-head .since { color: var(--muted); font-style: italic; }
 .plan-diff-head .since.ok { color: var(--ok); font-style: normal; font-weight: 600; }

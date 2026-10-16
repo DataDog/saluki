@@ -89,25 +89,8 @@ fn the_width_change_composes_into_the_default_program_as_the_check_expects() {
     let (plan, export) = fixture();
     let source = default_program_source(&export, &RecipientLabels::default());
     let edited = edits::width_change(&source, "30s").unwrap();
-    // Both windows, and nothing else, change.
-    let changed = source
-        .lines()
-        .zip(edited.lines())
-        .filter(|(old, new)| old != new)
-        .collect::<Vec<_>>();
-    assert_eq!(
-        changed,
-        [
-            (
-                "    window: config(\"dogstatsd.aggregation.window_duration_seconds\"),",
-                "    window: 30s,"
-            ),
-            (
-                "    window: config(\"dogstatsd.aggregation.window_duration_seconds\"),",
-                "    window: 30s,"
-            ),
-        ]
-    );
+    // Both windows, and nothing else, change: the timestamp split's, its positional parameter, and the aggregation's.
+    assert_windows_changed(&source, &edited, "config.dogstatsd.aggregation.window_duration_seconds");
     assert_eq!(source.lines().count(), edited.lines().count());
 
     let context = CompileContext {
@@ -138,9 +121,28 @@ fn the_width_change_composes_into_the_default_program_as_the_check_expects() {
         outcome
     );
 
-    // A source without one of the nodes says which.
+    // A source without one of the stages says which.
     let error = edits::width_change("policy metrics {\n}\n", "30s").unwrap_err();
-    assert!(error.to_string().contains("dsd_no_agg_split"), "{}", error);
+    assert!(error.to_string().contains("timestamp_split"), "{}", error);
+}
+
+/// Asserts that `edited` changes exactly two lines of `source`, each by writing `30s` where it wrote `old` (the value
+/// of a window): the timestamp split's and the aggregation's, wherever the printed form puts them.
+fn assert_windows_changed(source: &str, edited: &str, old: &str) {
+    let changed = source
+        .lines()
+        .zip(edited.lines())
+        .filter(|(old, new)| old != new)
+        .collect::<Vec<_>>();
+    assert_eq!(changed.len(), 2, "{:#?}", changed);
+    assert!(
+        changed[0].0.contains("timestamp_split(") || changed[0].0.contains("window"),
+        "{:#?}",
+        changed
+    );
+    for (before, after) in &changed {
+        assert_eq!(&before.replacen(old, "30s", 1), after, "{:#?}", changed);
+    }
 }
 
 #[test]
@@ -150,26 +152,12 @@ fn the_width_change_sets_the_inline_window_of_a_detached_export() {
         preview::{tests::detached_fixture, CompileContext},
     };
 
-    // A detached export holds the window as a literal, and prints the split's only parameter inline.
+    // A detached export holds the window as a literal, and prints the split's only parameter positionally.
     let (plan, export) = detached_fixture();
     let source = default_program_source(&export, &RecipientLabels::default());
-    assert!(source.contains("timestamp_split(window: 10s)"), "{}", source);
+    assert!(source.contains("timestamp_split(10s)"), "{}", source);
     let edited = edits::width_change(&source, "30s").unwrap();
-    let changed = source
-        .lines()
-        .zip(edited.lines())
-        .filter(|(old, new)| old != new)
-        .collect::<Vec<_>>();
-    assert_eq!(
-        changed,
-        [
-            (
-                "  node dsd_no_agg_split = timestamp_split(window: 10s) {",
-                "  node dsd_no_agg_split = timestamp_split(window: 30s) {"
-            ),
-            ("    window: 10s,", "    window: 30s,"),
-        ]
-    );
+    assert_windows_changed(&source, &edited, "10s");
     let context = CompileContext {
         export: &export,
         default_program: Some(&plan),
@@ -281,19 +269,24 @@ pub(crate) fn named_fixture() -> (saluki_metric_plan::ir::Plan, crate::export::E
     (plan, export)
 }
 
-/// Returns `source` without the fixture's endpoint routing groups: their branches of the policy `tee` and their nodes.
+/// Returns `source` without the fixture's endpoint routing groups: their branches of the policy `fork`.
 fn without_routing_groups(source: &str) -> String {
     let mut edited = source.to_string();
     for group in ["metrics_routing_filter_0", "metrics_routing_filter_1"] {
-        edited = edited.replacen(&format!("    -> {}\n", group), "", 1);
-        let header = format!("\n  node {} = ", group);
-        let Some(start) = edited.find(&header) else { continue };
-        let end = start + edited[start + 1..].find("\n  }\n").unwrap() + "\n  }\n".len() + 1;
-        // The comment above the node goes with it.
-        let start = edited[..start]
-            .rfind("\n  #")
-            .filter(|at| !edited[*at + 1..start].contains("\n  node"))
-            .unwrap_or(start);
+        // The branch: from the line its `where` starts, through the line of its `emit`, and the comments above it.
+        let Some(clause) = edited.find(&format!(" as {}", group)) else {
+            continue;
+        };
+        let keyword = edited[..clause].rfind("where ").unwrap();
+        let mut start = edited[..keyword].rfind('\n').unwrap() + 1;
+        while let Some(previous) = edited[..start - 1].rfind('\n').map(|at| at + 1) {
+            if !edited[previous..start].trim_start().starts_with('#') {
+                break;
+            }
+            start = previous;
+        }
+        let emit = clause + edited[clause..].find("emit ").unwrap();
+        let end = emit + edited[emit..].find('\n').unwrap() + 1;
         edited.replace_range(start..end, "");
     }
     edited
@@ -305,8 +298,8 @@ fn the_scenario_edits_compose_as_the_check_expects() {
 
     let (plan, export) = named_fixture();
     let source = default_program_source(&export, &RecipientLabels::default());
-    assert!(source.contains("    -> emit to [primary]\n"), "{}", source);
-    assert!(source.contains("    true  -> emit to [mrf]\n"), "{}", source);
+    assert!(source.contains("emit primary\n"), "{}", source);
+    assert!(source.contains("emit mrf\n"), "{}", source);
     let context = CompileContext {
         export: &export,
         default_program: Some(&plan),
@@ -356,10 +349,7 @@ fn the_scenario_edits_compose_as_the_check_expects() {
     // S5c's finding is at the second aggregation's line.
     let edited = edits::second_aggregation(&source).unwrap();
     let (outcome, _) = compile(&edited, Some(&context));
-    let line = edited[..edited.find("  node rollup = aggregate(").unwrap()]
-        .matches('\n')
-        .count()
-        + 1;
+    let line = edited[..edited.find(" as rollup").unwrap()].matches('\n').count() + 1;
     let at = outcome
         .diagnostics
         .iter()
@@ -401,8 +391,8 @@ fn the_scenario_edits_compose_as_the_check_expects() {
     // Without the fixture's routing groups, whose outputs would share recipients with the new set.
     let without_groups = without_routing_groups(&source);
     let routed = edits::exclusive_team_b(&without_groups, team_b).unwrap().replace(
-        &format!("emit to [{}]", edits::quoted(team_b)),
-        &format!("emit to [primary, {}]", edits::quoted(team_b)),
+        &format!("emit {}", edits::quoted(team_b)),
+        &format!("emit [primary, {}]", edits::quoted(team_b)),
     );
     let (outcome, _) = compile(&routed, Some(&context));
     assert_eq!(outcome.errors, 0, "{:#?}", outcome.diagnostics);

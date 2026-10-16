@@ -22,9 +22,10 @@ use saluki_metric_plan::{
         diff_operations, Correspondence,
     },
     ir::{
-        ArtifactNodeId, OutputBinding, OutputDecl, OutputId, Plan, PortRef, ReceivedArtifact, RecipientName, Selector,
+        ArtifactNodeId, NodeId, OutputBinding, OutputDecl, OutputId, Plan, PortRef, ReceivedArtifact, RecipientName,
+        Selector,
     },
-    operators::{names, ConfigureError, OperatorRegistry},
+    operators::{names, ConfigureError, OperatorRegistry, StateContract},
     validate::{Catalog as _, CatalogOutput, Finding, Location, Rule, Severity as ValidationSeverity},
 };
 use saluki_metric_plan_syntax::{Parsed, Span};
@@ -503,6 +504,11 @@ pub fn compose_preview(
             if dropped == 1 { "does" } else { "do" }
         ));
     }
+    // A state owner the edit names differently from the plan in effect starts over with empty state: a note says so,
+    // and how to keep the ID.
+    notes.extend(renamed_state_owners(base, &composed.plan, &registry, |node| {
+        correspondence.artifact_node(node).map(ToString::to_string)
+    }));
     let nodes = diff
         .diff
         .changes()
@@ -620,6 +626,54 @@ pub fn compose_preview(
         against: Some(against),
     };
     (findings, preview)
+}
+
+/// Returns a note for each state owner that `after` names differently from `before`: a node with keyed state, such as
+/// an aggregation, that `before` has and `after` does not, paired, in plan order, with one of the same operator that
+/// `after` has and `before` does not.
+///
+/// Kernel reuse and state retention match nodes by plan ID, so such a node's state does not carry over. The plans are
+/// compared rather than the artifacts, since composition decides the plan IDs: an artifact's one aggregation takes the
+/// default program's ID whatever the artifact calls it, on a host that runs one aggregation per program, so renaming
+/// it there loses nothing and gets no note. `artifact_node` names a plan node of `after` as the artifact writes it; a
+/// node of `before` is named by its local ID, which is the ID its artifact, or the default program, gives it.
+pub(crate) fn renamed_state_owners(
+    before: &Plan, after: &Plan, registry: &OperatorRegistry, artifact_node: impl Fn(&NodeId) -> Option<String>,
+) -> Vec<String> {
+    let owns_state = |node: &saluki_metric_plan::ir::Node| {
+        registry
+            .configure(node.op.as_str(), &node.params)
+            .is_ok_and(|configured| matches!(configured.contract().state, StateContract::Keyed(_)))
+    };
+    // The state owners of `plan` that `other` has no node of the same ID and operator for.
+    let unmatched = |plan: &'_ Plan, other: &Plan| {
+        plan.nodes
+            .iter()
+            .filter(|node| owns_state(node))
+            .filter(|node| other.node(&node.id).is_none_or(|same| same.op != node.op))
+            .map(|node| (node.id.clone(), node.op.clone()))
+            .collect::<Vec<_>>()
+    };
+    let mut added = unmatched(after, before);
+    let mut notes = Vec::new();
+    for (from, op) in unmatched(before, after) {
+        let Some(at) = added.iter().position(|(_, added_op)| *added_op == op) else {
+            continue;
+        };
+        let (to, _) = added.remove(at);
+        let from = from.local().to_string();
+        let to = artifact_node(&to).unwrap_or_else(|| to.local().to_string());
+        let what = if op.as_str() == names::AGGREGATE {
+            "the aggregation".to_string()
+        } else {
+            format!("the `{}` node", op)
+        };
+        notes.push(format!(
+            "This edit renames {} from `{}` to `{}`, so its state will not carry over; keep its ID with `as {}`.",
+            what, from, to, from
+        ));
+    }
+    notes
 }
 
 /// How the editor starts the note that ADP adds an output for a set of recipients.
@@ -774,6 +828,21 @@ fn find(source: &str, text: &str) -> Option<Span> {
     source.find(text).map(|start| Span::new(start, start + text.len()))
 }
 
+/// Returns the span of the first occurrence of the binding reference `text`, such as `config.host.tags`, in `source`
+/// that is not the start of a longer binding name, such as `config.host.tags_deadline`.
+fn find_binding(source: &str, text: &str) -> Option<Span> {
+    source
+        .match_indices(text)
+        .map(|(start, _)| start)
+        .find(|start| {
+            !source[start + text.len()..]
+                .chars()
+                .next()
+                .is_some_and(|next| next.is_ascii_alphanumeric() || next == '_' || next == '.')
+        })
+        .map(|start| Span::new(start, start + text.len()))
+}
+
 /// Returns the span of the `output` parameter of the first `emit` of the artifact that delivers to `output`.
 fn emit_span(parsed: &Parsed, output: &OutputId) -> Option<Span> {
     let node = parsed.artifact.nodes.iter().find(|node| {
@@ -796,12 +865,12 @@ fn compose_error_span(error: &ComposeError, parsed: &Parsed, source: &str) -> Op
         ComposeError::ReservedOutsideScope { node, .. } | ComposeError::UnresolvedBinding { node, .. } => {
             parsed.spans.node(node.as_str())
         }
-        // A policy binding is placed where the node writes it, as `config("<binding>")`, or at the node.
+        // A policy binding is placed where the node writes it, as `config.<binding>`, or at the node.
         ComposeError::PolicyBinding { node, binding, .. } => {
             let within = parsed.spans.node(node.as_str())?;
             source
                 .get(within.start..within.end)
-                .and_then(|text| find(text, &format!("config(\"{}\")", binding)))
+                .and_then(|text| find_binding(text, &format!("config.{}", binding)))
                 .map(|found| Span::new(within.start + found.start, within.start + found.end))
                 .or(Some(within))
         }

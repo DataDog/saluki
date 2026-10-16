@@ -1,10 +1,13 @@
 //! The language reference the page links to: what a program may say, built from what decides it.
 //!
-//! The operators, their parameters and ports, the rules an author meets, and the limits come from the plan crate's
-//! registry, validator, and limits table, so they are always the ones validation applies. The scope's inputs, the
-//! recipient directory, and the bindings come from ADP's export, when it is at hand, so they are the ones this ADP
-//! accepts. The examples and recipes are written here, and the tests parse each one and compile the recipes into the
-//! default program, so none of them shows something that does not compile. The grammar's prose is in the page.
+//! The operators, their parameters (with their defaults, and which one may be passed first without its name) and ports,
+//! the rules an author meets, and the limits come from the plan crate's registry, validator, and limits table, so they
+//! are always the ones validation applies. The scope's inputs, the recipient directory, and the bindings come from
+//! ADP's export, when it is at hand, so they are the ones this ADP accepts. The node IDs the example program's stages
+//! get come from parsing it, so they are the ones the syntax derives. The examples, the shorthand and what each stands
+//! for, and the recipes are written here, and the tests parse each one, lower each shorthand and its long form to the
+//! same graph, and compile the recipes into the default program, so none of them shows something that does not
+//! compile. The grammar's prose is in the page.
 
 use saluki_metric_plan::{
     ir::{format_duration, ParamType, ValueType},
@@ -28,8 +31,15 @@ pub struct Reference {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host_missing: Option<String>,
 
-    /// A whole program, small, that shows every statement.
+    /// A whole program, small, that shows each part of the language.
     pub example_program: &'static str,
+
+    /// The nodes the example program describes, in the order parsing writes them, with the IDs the syntax gives them;
+    /// empty if it does not parse.
+    pub example_nodes: Vec<ExampleNode>,
+
+    /// Each piece of shorthand, beside the longer form it stands for.
+    pub sugar: Vec<SugarEntry>,
 
     /// Every operator a program may use, in the registry's order, then the ones only native configuration places.
     pub operators: Vec<OperatorEntry>,
@@ -37,7 +47,7 @@ pub struct Reference {
     /// The predicate forms, each with an example.
     pub predicates: Vec<PredicateEntry>,
 
-    /// Edits to the default program for common needs.
+    /// One-line edits to the default program for common needs.
     pub recipes: Vec<RecipeEntry>,
 
     /// The validation rules an author is most likely to meet.
@@ -53,10 +63,10 @@ pub struct HostReference {
     /// The scope a program replaces.
     pub scope: String,
 
-    /// The scope's inputs, in name order: where each source's metrics enter.
+    /// The scope's inputs, in name order: where each source's metrics enter, the streams a pipeline may start from.
     pub inputs: Vec<String>,
 
-    /// The recipient directory, in name order: the names `emit to [...]` takes.
+    /// The recipient directory, in name order: the names `emit` takes.
     pub recipients: Vec<RecipientEntry>,
 
     /// The configuration bindings a program may read, in name order.
@@ -72,7 +82,7 @@ pub struct HostReference {
 /// An entry of the recipient directory.
 #[derive(Debug, Serialize)]
 pub struct RecipientEntry {
-    /// The name, as `emit to [...]` writes it: bare, or a quoted URL.
+    /// The name, as `emit` writes it: bare, or a quoted URL.
     pub name: String,
 
     /// The endpoint it delivers to.
@@ -83,7 +93,7 @@ pub struct RecipientEntry {
     pub label: Option<String>,
 }
 
-/// A configuration binding: `config("<name>")`.
+/// A configuration binding: `config.<name>`.
 #[derive(Debug, Serialize)]
 pub struct BindingEntry {
     /// The binding's name.
@@ -107,10 +117,36 @@ pub struct BindingEntry {
     pub value: Option<Value>,
 }
 
+/// A node of the example program.
+#[derive(Debug, Serialize)]
+pub struct ExampleNode {
+    /// Its ID: the one its `as` clause gives, or the one the syntax derives.
+    pub id: String,
+
+    /// Its operator.
+    pub op: String,
+}
+
+/// A piece of shorthand, and the longer form it is one rewrite into.
+#[derive(Debug, Serialize)]
+pub struct SugarEntry {
+    /// The shorthand, as it is usually written.
+    pub form: &'static str,
+
+    /// An example of it.
+    pub sugar: &'static str,
+
+    /// The same, in the longer form.
+    pub core: &'static str,
+
+    /// What the rewrite does.
+    pub means: &'static str,
+}
+
 /// An operator.
 #[derive(Debug, Serialize)]
 pub struct OperatorEntry {
-    /// Its name, as `node <id> = <name>(...)` writes it.
+    /// Its name, as a stage writes it.
     pub name: &'static str,
 
     /// What it does, in one sentence.
@@ -122,17 +158,17 @@ pub struct OperatorEntry {
     /// Its parameters, in declared order.
     pub params: Vec<ParamEntry>,
 
-    /// An example node, if the operator may be written.
+    /// An example pipeline that uses it, if the operator may be written.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub example: Option<&'static str>,
 
-    /// The example's input ports, in order: what `<node>.<port>` names as a target.
+    /// The example's input ports, in order.
     pub inputs: Vec<String>,
 
-    /// The example's output ports, in order: what the node's block names as `<port> -> ...`.
+    /// The example's output ports, in order: what `<name>.<port>` picks when there are several.
     pub outputs: Vec<String>,
 
-    /// How the ports depend on the parameters, where they do.
+    /// How the operator is usually written, and how its ports depend on its parameters, where they do.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ports_note: Option<&'static str>,
 }
@@ -150,8 +186,15 @@ pub struct ParamEntry {
     /// Whether it must be given.
     pub required: bool,
 
-    /// Whether it may be bound to configuration with `config("<name>")`.
+    /// Whether it may be bound to configuration with `config.<name>`.
     pub bindable: bool,
+
+    /// Whether it may be passed first, without its name.
+    pub positional: bool,
+
+    /// The value it takes when it is left out, as the syntax writes it, if it has a default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
 }
 
 /// A predicate form.
@@ -164,17 +207,23 @@ pub struct PredicateEntry {
     pub example: &'static str,
 }
 
-/// An edit for a common need.
+/// A one-line edit for a common need.
 #[derive(Debug, Serialize)]
 pub struct RecipeEntry {
     /// The need.
     pub title: &'static str,
 
-    /// Where the text goes, and what it does.
+    /// What the line does.
     pub how: &'static str,
 
-    /// The text, with the policy `tee`'s node as what it feeds.
-    pub source: String,
+    /// The stage the line adds.
+    pub stage: &'static str,
+
+    /// The line, as it goes into the default program: a stage on its own line, just before the policy `fork`.
+    pub line: String,
+
+    /// The line it goes before.
+    pub before: String,
 }
 
 /// A validation rule.
@@ -188,6 +237,9 @@ pub struct RuleEntry {
 
     /// What it asks of a program, in an author's terms.
     pub means: &'static str,
+
+    /// Whether text that parses already meets it, so that only an artifact written as JSON can break it.
+    pub met_by_syntax: bool,
 }
 
 /// A limit on a program.
@@ -203,266 +255,292 @@ pub struct LimitEntry {
     pub description: &'static str,
 }
 
-/// The node a recipe's text feeds, as the default program names its policy `tee`.
-const NEXT: &str = "metrics_policy";
+/// The default program's policy `fork`, which a recipe's line goes before.
+pub(crate) const POLICY_FORK: &str = "| fork as metrics_policy {";
 
-/// A whole program that uses every statement: a scope input, a node with a block of edges, inline terminals, `emit to`
-/// a recipient, and a comment.
+/// A whole program that shows each part of the language: scope inputs, a `let`, stages, `where`, a stream used twice,
+/// a tuple, a `fork`, sinks, and comments.
 pub const EXAMPLE_PROGRAM: &str = r#"policy metrics {
-  # Each source's metrics enter at an input of the scope.
-  input.dogstatsd -> drop_debug
+  # A `let` names a stream: here, DogStatsD's metrics, filtered, then aggregated.
+  let dsd = dogstatsd
+    | where not (name starts_with "demo.debug.")
+    | aggregate(window: 10s, flush_interval: 10s)
 
-  # A node: an ID, an operator, its parameters, then a block of edges.
-  node drop_debug = split(name starts_with "demo.debug.") {
-    true  -> drop
-    false -> fanout
-  }
+  # A stream used twice is copied: `dsd` feeds this pipeline and the tuple below.
+  dsd | emit output dsd_client_telemetry
 
-  # A tee copies each metric to every branch.
-  node fanout = tee {
-    -> emit to [primary]
-    -> checkout_only
-  }
-
-  node checkout_only = split(
-    name starts_with "demo.checkout." and tag("env") == "prod"
-  ) {
-    true  -> emit to ["http://127.0.0.1:17102"]
-    false -> drop
-  }
+  # A tuple merges streams. A `fork` copies each metric to every branch, and each branch ends in a sink.
+  (dsd, otlp)
+    | host_tags(["env:demo"], deadline: 30s)
+    | fork {
+        emit primary
+        where name starts_with "demo.checkout." and tags.env == "prod" | emit "http://127.0.0.1:17102"
+      }
 }
 "#;
 
-/// An example node of each operator a program may write, in the registry's order. Edges lead to `next`, a node the
-/// reader's program has.
+/// Each piece of shorthand: its name, an example, the same in the longer form it stands for, and what the rewrite does.
+/// Each example and its longer form describe the same graph, with the same node IDs; the `as` clauses make the IDs
+/// line up.
+const SUGAR: &[(&str, &str, &str, &str)] = &[
+    (
+        "`e | where p`",
+        "dogstatsd\n  | where name starts_with \"demo.\" as keep\n  | emit primary",
+        "let keep = dogstatsd | split(name starts_with \"demo.\")\nkeep.false | drop\nkeep.true | emit primary",
+        "A `split` on `p` whose `false` port leads to `drop`: the pipeline carries on from its `true` port.",
+    ),
+    (
+        "`e | fork { ... }`",
+        "dogstatsd\n  | fork as copies {\n      emit primary\n      drop\n    }",
+        "let copies = dogstatsd | tee(ports: 2)\ncopies.0 | emit primary\ncopies.1 | drop",
+        "A `tee` with one port per branch, branch `i` reading port `i`. Each branch is stages, then a sink or \
+         another `fork`.",
+    ),
+    (
+        "`a != b`",
+        "dogstatsd\n  | where tags.env != \"dev\" as kept\n  | emit primary",
+        "dogstatsd\n  | where not (tags.env == \"dev\") as kept\n  | emit primary",
+        "`not (a == b)`, inside a predicate.",
+    ),
+    (
+        "`tags.k is unset`",
+        "dogstatsd\n  | where tags.env is unset as untagged\n  | emit primary",
+        "dogstatsd\n  | where not (tags.env is set) as untagged\n  | emit primary",
+        "`not (tags.k is set)`, inside a predicate. `host is unset`, `origin_tags.k is unset` likewise.",
+    ),
+];
+
+/// An example pipeline of each operator a program may write, in the registry's order, starting from the scope's
+/// inputs and ending in sinks.
 const OPERATOR_EXAMPLES: &[(&str, &str)] = &[
     (
         names::DOGSTATSD_MAPPER,
-        r#"node mapper = dogstatsd_mapper(
-  profiles: [{
-    name: "app",
-    prefix: "app.",
-    mappings: [{
-      match: "app.*.requests",
-      match_type: "wildcard",
-      name: "app.requests",
-      tags: [{ name: "service", value: "$1" }],
-    }],
-  }],
-  cache_size: 1000,
-  string_interner_bytes: 65536,
-) {
-  -> next
-}"#,
+        r#"dogstatsd
+  | dogstatsd_mapper(profiles: [{
+      name: "app",
+      prefix: "app.",
+      mappings: [{ match: "app.*.requests", match_type: "wildcard", name: "app.requests", tags: [{ name: "service", value: "$1" }] }],
+    }])
+  | emit primary"#,
     ),
     (
         names::NAMESPACE_PREFIX,
-        r#"node prefix = namespace_prefix(namespace: "demo", exclusions: ["datadog."]) {
-  -> next
-}"#,
+        r#"dogstatsd
+  | namespace_prefix("demo", exclusions: ["datadog."])
+  | emit primary"#,
     ),
     (
         names::TIMESTAMP_SPLIT,
-        r#"node by_timestamp = timestamp_split(window: 10s) {
-  default     -> next
-  passthrough -> drop
-}"#,
+        r#"let by_time = dogstatsd | timestamp_split(10s)
+let aggregated = by_time.default | aggregate(window: 10s, flush_interval: 10s)
+(aggregated, by_time.passthrough) | emit primary"#,
     ),
     (
         names::TAG_PROJECTION,
-        r#"node tags = tag_projection(
-  rules: [{ metric_name: "demo.checkout.requests", action: "exclude", tags: ["pod"] }],
-  value_rules: [],
-  cache_capacity: 1000,
-) {
-  -> next
-}"#,
+        r#"dogstatsd
+  | tag_projection(rules: [{ metric_name: "demo.checkout.requests", action: "exclude", tags: ["pod"] }])
+  | emit primary"#,
     ),
     (
         names::AGGREGATE,
-        r#"node agg = aggregate(
-  window: 10s,
-  flush_interval: 10s,
-  context_limit: 100000,
-  counter_expiry: 5m,
-  flush_open_windows: false,
-  histogram_aggregates: ["max", "median", "avg", "count"],
-  histogram_percentiles: [95],
-  copy_to_distribution: false,
-  copy_to_distribution_prefix: "",
-) {
-  -> next
-}"#,
+        r#"dogstatsd
+  | aggregate(window: 10s, flush_interval: 10s)
+  | emit primary"#,
     ),
-    (names::HOST_ENRICHMENT, "node enrich = host_enrichment {\n  -> next\n}"),
+    (names::HOST_ENRICHMENT, "otlp | host_enrichment | emit primary"),
     (
         names::HOST_TAGS,
-        r#"node host_tags = host_tags(tags: ["env:demo"], deadline: 30s) {
-  -> next
-}"#,
+        r#"otlp
+  | host_tags(["env:demo"], deadline: 30s)
+  | emit primary"#,
     ),
     (
         names::SPLIT,
-        r#"node checkout = split(name starts_with "demo.checkout.") {
-  true  -> next
-  false -> drop
-}"#,
+        r#"let checkout = dogstatsd | split(name starts_with "demo.checkout.")
+checkout.true | emit primary
+checkout.false | emit mrf"#,
     ),
-    (names::TEE, "node copies = tee {\n  -> next\n  -> emit to [primary]\n}"),
-    (names::MERGE, "node joined = merge(inputs: 2) {\n  -> next\n}"),
-    (names::EMIT, "node to_primary = emit(to: [\"primary\"])"),
-    (names::DROP, "node discard = drop"),
-];
-
-/// How an operator's ports depend on its parameters.
-const PORTS_NOTES: &[(&str, &str)] = &[
     (
         names::TEE,
-        "One output port per branch, numbered from 0. Without parentheses, `tee { -> a -> b }` numbers them in order.",
+        r#"let copies = dogstatsd | tee(ports: 2)
+copies.0 | emit primary
+copies.1 | emit mrf"#,
+    ),
+    (names::MERGE, "(dogstatsd, otlp) | emit primary"),
+    (names::EMIT, "dogstatsd | emit [primary, \"http://127.0.0.1:17102\"]"),
+    (names::DROP, "dogstatsd | drop"),
+];
+
+/// How an operator is usually written, and how its ports depend on its parameters.
+const PORTS_NOTES: &[(&str, &str)] = &[
+    (
+        names::TIMESTAMP_SPLIT,
+        "Two output ports: name the stream with `let`, then read `<name>.default` and `<name>.passthrough`.",
+    ),
+    (
+        names::SPLIT,
+        "Usually written as `where p`, which drops what does not match. With both ports used, name the stream with \
+         `let`, then read `<name>.true` and `<name>.false`.",
+    ),
+    (
+        names::TEE,
+        "Usually written as `fork { ... }`, or implied by using a stream more than once. Written as a stage, it has \
+         one output port per copy, numbered from 0: `<name>.0`, `<name>.1`.",
     ),
     (
         names::MERGE,
-        "One input port per input, named 0 to `inputs` − 1: an edge names one as `joined.0`.",
+        "Written as a tuple: `(a, b, ...)` merges the streams, `a` into port 0, `b` into port 1, and so on.",
     ),
     (
         names::EMIT,
-        "Usually written inline as a target: `-> emit to [primary]`, where directory names may be bare, or `-> emit \
-         <output>` for an output by ID. Written as a node, its `to` is a list of strings: `emit(to: [\"primary\"])`.",
+        "Written as a sink: `emit <recipient>` or `emit [<recipient>, ...]` for names of the recipient directory, \
+         bare or a quoted URL, or `emit output <output>` for an output ADP declares, by its ID.",
     ),
-    (names::DROP, "Usually written inline as a target: `-> drop`."),
+    (names::DROP, "Written as a sink: `| drop`."),
 ];
 
 /// Each predicate form, with an example.
 const PREDICATES: &[(&str, &str)] = &[
     ("The metric's name", r#"name == "demo.checkout.requests""#),
+    ("Not that name", r#"name != "demo.checkout.requests""#),
     ("A prefix of the name", r#"name starts_with "demo.debug.""#),
     ("The name, among several", r#"name in ["demo.a", "demo.b"]"#),
     (
         "The name, among several prefixes",
-        r#"name prefix_in ["demo.a.", "demo.b."]"#,
+        r#"name starts_with ["demo.a.", "demo.b."]"#,
+    ),
+    (
+        "The name, among a list a binding holds (`starts_with` takes one too)",
+        "name in config.host.tags",
     ),
     (
         "The name as the client sent it, before mapping and prefixing",
         r#"intake_name starts_with "app.""#,
     ),
     ("The host", r#"host == "web-1""#),
-    ("No host", "host is unset"),
-    ("A tag is present", r#"has_tag("env")"#),
-    ("A tag's value", r#"tag("team") == "platform""#),
+    ("No host, or a host", "host is unset"),
+    ("A tag is present (`is unset`: absent)", "tags.env is set"),
     (
-        "A tag's value, by prefix or among several",
-        r#"tag("env") in ["prod", "staging"]"#,
+        "A tag whose key is not an identifier",
+        r#"tags["app.kubernetes.io/name"] is set"#,
     ),
-    ("An origin tag is present", r#"has_origin_tag("pod")"#),
-    ("An origin tag's value", r#"origin_tag("pod") starts_with "web-""#),
+    ("A tag's value", r#"tags.team == "platform""#),
+    ("A tag's value, among several", r#"tags.env in ["prod", "staging"]"#),
+    ("An origin tag is present", "origin_tags.pod is set"),
+    ("An origin tag's value", r#"origin_tags.pod starts_with "web-""#),
     ("The metric's kind", "kind in [counter, gauge]"),
     (
-        "A set of names or prefixes, as one parameter",
-        r#"name matches(values: ["demo.a", "demo.b."], prefix: true)"#,
+        "A boolean signal or fact, by its binding",
+        "config.multi_region_failover.metric_mirroring.enabled",
     ),
-    (
-        "A boolean signal or fact",
-        r#"flag(config("multi_region_failover.metric_mirroring.enabled"))"#,
-    ),
-    ("An empty list", "is_empty([])"),
+    ("An empty list", "is_empty(config.host.tags)"),
     ("Always, or never", "true"),
     (
         "Combinations: `not` binds tightest, then `and`, then `or`",
-        r#"not has_tag("env") or (tag("env") == "prod" and name starts_with "demo.")"#,
+        r#"tags.env is unset or (tags.env == "prod" and name starts_with "demo.")"#,
     ),
     (
-        "Any number of operands",
-        r#"any(name starts_with "a.", name starts_with "b.", has_tag("keep"))"#,
+        "A set of names or prefixes, in the long form (prints as `in` or `starts_with`)",
+        r#"name matches(values: ["demo.a", "demo.b"], prefix: false)"#,
     ),
 ];
 
-/// Edits to the default program for common needs, each a node to put between enrichment and the policy `tee`; `{next}`
-/// stands for the `tee`.
+/// One-line edits to the default program for common needs: a title, what the line does, and the stage it adds just
+/// before the policy `fork`.
 const RECIPES: &[(&str, &str, &str)] = &[
     (
         "Drop metrics by name",
-        "Put the node above the policy `tee`, and point the edge that fed `metrics_policy` at it.",
-        r#"node drop_debug = split(name starts_with "demo.debug.") {
-  true  -> drop
-  false -> {next}
-}"#,
+        "Keeps what does not match, so the `demo.debug.*` metrics reach no destination.",
+        r#"where not (name starts_with "demo.debug.")"#,
     ),
     (
         "Drop metrics by tag",
-        "As above: what matches goes nowhere, everything else carries on to the policy.",
-        r#"node drop_dev = split(tag("env") == "dev") {
-  true  -> drop
-  false -> {next}
-}"#,
+        "Keeps every metric but those tagged `env:dev`, including the ones without an `env` tag.",
+        r#"where tags.env != "dev""#,
     ),
     (
-        "Send some metrics only to the primary endpoint",
-        "As above: what matches leaves for the recipient named here alone and skips the policy `tee`, so it \
-         reaches no other destination. Any name of the recipient directory, or several, works the same way.",
-        r#"node checkout_only = split(tag("team") == "checkout") {
-  true  -> emit to [primary]
-  false -> {next}
-}"#,
+        "Drop metrics without a host",
+        "Keeps only the metrics that carry a host.",
+        "where host is set",
     ),
     (
         "Remove a tag from one metric",
-        "As above: a tag projection rule excludes the listed tags from the metric it names.",
-        r#"node strip_pod = tag_projection(
-  rules: [{ metric_name: "demo.checkout.requests", action: "exclude", tags: ["pod"] }],
-  value_rules: [],
-  cache_capacity: 1000,
-) {
-  -> {next}
-}"#,
+        "A tag projection rule removes the listed tags from the metric it names, before every destination.",
+        r#"tag_projection(rules: [{ metric_name: "demo.checkout.requests", action: "exclude", tags: ["pod"] }])"#,
     ),
 ];
 
-/// The rules an author is most likely to meet, in the validator's order, with what each asks of a program.
-const RULES: &[(Rule, &str)] = &[
-    (Rule::KnownOperator, "Every node names an operator listed here."),
+/// The rules an author is most likely to meet, in the validator's order, with what each asks of a program and whether
+/// the syntax already meets it for any text that parses.
+const RULES: &[(Rule, &str, bool)] = &[
+    (Rule::KnownOperator, "Every stage names an operator listed here.", false),
     (
         Rule::ValidParameters,
         "Every parameter has its operator's type; required ones are given and no others.",
+        false,
     ),
-    (Rule::EdgeReferences, "Every edge names a node and port that exist."),
+    (
+        Rule::EdgeReferences,
+        "Every edge names a node and port that exist.",
+        false,
+    ),
     (
         Rule::OneEdgePerPort,
-        "Each input port has one edge in, each output port at most one out: use `tee` to copy and `merge` to join.",
+        "Each input port has one edge in, each output port at most one out. A pipeline joins one stage to the next, a \
+         tuple merges, and using a stream twice copies it, so text always does.",
+        true,
     ),
     (
         Rule::PathsEndInEmitOrDrop,
-        "Every output port has an edge, so every path ends in `emit` or `drop`.",
+        "Every path ends in `emit` or `drop`. Every pipeline that is no `let` ends in a sink, and every stream and \
+         port is used, so text always does.",
+        true,
     ),
-    (Rule::Acyclic, "No path leads back to a node it came from."),
-    (Rule::Reachable, "Every node is reached from an input."),
+    (
+        Rule::Acyclic,
+        "No path leads back to a node it came from. A name is defined before it is used, so text cannot loop.",
+        true,
+    ),
+    (Rule::Reachable, "Every node is reached from an input.", false),
     (
         Rule::PortTypes,
         "Each node accepts what reaches it, such as an aggregation only metrics that can be aggregated.",
+        false,
     ),
     (
         Rule::DeclaredOutput,
-        "Every `emit` names an output ADP declares, or recipients in the directory.",
+        "Every `emit output` names an output ADP declares, and every `emit` recipients of the directory.",
+        false,
     ),
     (
         Rule::KnownBinding,
-        "Every `config(\"...\")` names a binding listed here.",
+        "Every `config.<name>` names a binding listed here.",
+        false,
     ),
     (
         Rule::DuplicateContribution,
-        "No metric reaches one recipient twice, as by two branches of a `tee` that both emit to it.",
+        "No metric reaches one recipient twice, as by two branches of a `fork` that both emit to it.",
+        false,
     ),
-    (Rule::SingleAggregation, "A program holds at most one `aggregate`."),
+    (
+        Rule::SingleAggregation,
+        "A program holds at most one `aggregate`.",
+        false,
+    ),
     (
         Rule::SplitWindow,
         "A `timestamp_split`'s window equals that of the aggregation it feeds.",
+        false,
     ),
     (
         Rule::TrustedHost,
         "A program holds no operator that only native configuration places, such as `source`.",
+        false,
     ),
     (
         Rule::PredicateCanMatch,
-        "A `split`'s predicate can match something that reaches it.",
+        "A `where`'s or `split`'s predicate can match something that reaches it.",
+        false,
     ),
 ];
 
@@ -478,12 +556,27 @@ const LIMITS: &[LimitSpec] = &[
     limits::BUCKET_WIDTHS,
 ];
 
+/// Returns a recipe's stage as a line of the default program, at the indentation of the policy `fork`'s stage.
+pub(crate) fn recipe_line(stage: &str) -> String {
+    format!("    | {}", stage)
+}
+
 /// Builds the reference, with the host's side from `export` when it is at hand.
 pub fn reference(export: Option<&ExportBundle>, labels: &RecipientLabels, host_missing: Option<String>) -> Reference {
     Reference {
         host: export.map(|export| host_reference(export, labels)),
         host_missing: if export.is_some() { None } else { host_missing },
         example_program: EXAMPLE_PROGRAM,
+        example_nodes: example_nodes(),
+        sugar: SUGAR
+            .iter()
+            .map(|&(form, sugar, core, means)| SugarEntry {
+                form,
+                sugar,
+                core,
+                means,
+            })
+            .collect(),
         operators: operators(),
         predicates: PREDICATES
             .iter()
@@ -491,21 +584,24 @@ pub fn reference(export: Option<&ExportBundle>, labels: &RecipientLabels, host_m
             .collect(),
         recipes: RECIPES
             .iter()
-            .map(|&(title, how, source)| RecipeEntry {
+            .map(|&(title, how, stage)| RecipeEntry {
                 title,
                 how,
-                source: source.replace("{next}", NEXT),
+                stage,
+                line: recipe_line(stage),
+                before: format!("    {}", POLICY_FORK),
             })
             .collect(),
         rules: RULES
             .iter()
-            .map(|&(rule, means)| RuleEntry {
+            .map(|&(rule, means, met_by_syntax)| RuleEntry {
                 name: rule.as_str(),
                 severity: match rule.severity() {
                     Severity::Error => "error",
                     Severity::Warning => "warning",
                 },
                 means,
+                met_by_syntax,
             })
             .collect(),
         limits: LIMITS
@@ -561,6 +657,33 @@ fn host_reference(export: &ExportBundle, labels: &RecipientLabels) -> HostRefere
     }
 }
 
+/// Returns the example program's nodes, as parsing it names them, or none if it does not parse.
+fn example_nodes() -> Vec<ExampleNode> {
+    parse_with(EXAMPLE_PROGRAM, &any_base())
+        .map(|parsed| {
+            parsed
+                .artifact
+                .nodes
+                .iter()
+                .map(|node| ExampleNode {
+                    id: node.id.to_string(),
+                    op: node.op.to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Parse options that give a source without a `base` statement a base, for parsing examples alone.
+fn any_base() -> ParseOptions {
+    ParseOptions {
+        base: Some(saluki_metric_plan::ir::ArtifactBase {
+            program_hash: saluki_metric_plan::canonical::PlanHash::from_digest([0; 32]),
+            outputs: Default::default(),
+        }),
+    }
+}
+
 fn operators() -> Vec<OperatorEntry> {
     let registry = OperatorRegistry::native();
     let mut entries = registry
@@ -570,7 +693,9 @@ fn operators() -> Vec<OperatorEntry> {
                 .iter()
                 .find(|(name, _)| *name == def.name())
                 .map(|(_, example)| *example);
-            let (inputs, outputs) = example.and_then(example_ports).unwrap_or_default();
+            let (inputs, outputs) = example
+                .and_then(|example| example_ports(def.name(), example))
+                .unwrap_or_default();
             OperatorEntry {
                 name: def.name(),
                 summary: def.summary(),
@@ -583,11 +708,17 @@ fn operators() -> Vec<OperatorEntry> {
                             ParamType::Bindable(inner) => (*inner, true),
                             ty => (ty, false),
                         };
+                        let ty = ValueType::from(ty);
                         ParamEntry {
                             name: param.name,
-                            ty: value_type(&ValueType::from(ty)),
+                            ty: value_type(&ty),
                             required: param.required,
                             bindable,
+                            positional: param.positional,
+                            default: param
+                                .default
+                                .and_then(|json| serde_json::from_str::<Value>(json).ok())
+                                .map(|value| syntax_value(&value, &ty)),
                         }
                     })
                     .collect(),
@@ -606,31 +737,20 @@ fn operators() -> Vec<OperatorEntry> {
     entries
 }
 
-/// Wraps an operator's example node in a program that feeds it from an input and gives it the `next` node it leads to:
-/// the program the tests parse and the ports are read from.
+/// Wraps an example (statements, as they appear in a program's body) in a program with a base, for parsing alone.
 pub(crate) fn example_wrapper(example: &str) -> String {
-    let id = example
-        .strip_prefix("node ")
-        .and_then(|rest| rest.split_whitespace().next())
-        .unwrap_or_default();
-    let input = if example.contains("= merge(") {
-        format!("  input.dogstatsd -> {id}.0\n  input.otlp -> {id}.1\n")
-    } else {
-        format!("  input.dogstatsd -> {id}\n")
-    };
     let body = example.replace('\n', "\n  ");
     format!(
-        "policy metrics {{\n  base \"sha256:{zeros}\"\n{input}\n  {body}\n\n  node next = tee {{\n    -> drop\n  }}\n}}\n",
+        "policy metrics {{\n  base \"sha256:{zeros}\"\n\n  {body}\n}}\n",
         zeros = "0".repeat(64),
     )
 }
 
-/// Returns the input and output ports of the node an example defines, as its operator gives them for the example's
-/// parameters.
-pub(crate) fn example_ports(example: &str) -> Option<(Vec<String>, Vec<String>)> {
+/// Returns the input and output ports of the first node of operator `op` that an example describes, as the operator
+/// gives them for the example's parameters.
+pub(crate) fn example_ports(op: &str, example: &str) -> Option<(Vec<String>, Vec<String>)> {
     let parsed = parse_with(&example_wrapper(example), &ParseOptions::default()).ok()?;
-    let id = example.strip_prefix("node ")?.split_whitespace().next()?;
-    let node = parsed.artifact.nodes.iter().find(|node| node.id.as_str() == id)?;
+    let node = parsed.artifact.nodes.iter().find(|node| node.op.as_str() == op)?;
     let configured = OperatorRegistry::native()
         .configure(node.op.as_str(), &node.params)
         .ok()?;
@@ -639,6 +759,56 @@ pub(crate) fn example_ports(example: &str) -> Option<(Vec<String>, Vec<String>)>
         ports.inputs.iter().map(|port| port.name.to_string()).collect(),
         ports.outputs.iter().map(|port| port.name.to_string()).collect(),
     ))
+}
+
+/// Writes a parameter's default value, given as JSON, as the syntax writes values of its type: durations bare, lists
+/// and records with spaces after their commas.
+fn syntax_value(value: &Value, ty: &ValueType) -> String {
+    let element = |ty: &ValueType| match ty {
+        ValueType::List { element } | ValueType::Set { element } | ValueType::StringMap { element } => {
+            Some((**element).clone())
+        }
+        ValueType::Bindable { inner } => Some((**inner).clone()),
+        _ => None,
+    };
+    match (value, ty) {
+        (_, ValueType::Bindable { inner }) => syntax_value(value, inner),
+        (Value::String(duration), ValueType::Duration) => duration.clone(),
+        (Value::Array(values), _) => {
+            let element = element(ty).unwrap_or(ValueType::String);
+            format!(
+                "[{}]",
+                values
+                    .iter()
+                    .map(|value| syntax_value(value, &element))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+        (Value::Object(members), _) if members.is_empty() => "{}".to_string(),
+        (Value::Object(members), _) => format!(
+            "{{ {} }}",
+            members
+                .iter()
+                .map(|(name, value)| {
+                    let member = match ty {
+                        ValueType::Record { members } => members
+                            .iter()
+                            .find(|member| member.name == name.as_str())
+                            .map(|member| member.ty.clone()),
+                        _ => element(ty),
+                    };
+                    format!(
+                        "{}: {}",
+                        name,
+                        syntax_value(value, &member.unwrap_or(ValueType::String))
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        (value, _) => value.to_string(),
+    }
 }
 
 /// Writes a type as the syntax writes its values.
@@ -662,7 +832,7 @@ fn value_type(ty: &ValueType) -> String {
         ValueType::Predicate => "predicate".to_string(),
         ValueType::OutputRef => "output ID".to_string(),
         ValueType::CredentialRef => "credential name".to_string(),
-        ValueType::Bindable { inner } => format!("{}, or config(\"...\")", value_type(inner)),
+        ValueType::Bindable { inner } => format!("{}, or config.<name>", value_type(inner)),
         ValueType::Record { members } => format!(
             "{{ {} }}",
             members

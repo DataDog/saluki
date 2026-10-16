@@ -342,6 +342,7 @@ pub fn router(app: App) -> Router {
         .route("/app.css", get(ui::stylesheet))
         .route("/reference", get(ui::reference))
         .route("/reference.js", get(ui::reference_script))
+        .route("/syntax.js", get(ui::syntax_script))
         .route("/api/reference", get(reference))
         .route("/api/state", get(state))
         .route("/api/compile", post(compile_source))

@@ -103,7 +103,7 @@ use crate::{
 
 pub mod client;
 mod destinations;
-mod edits;
+pub(crate) mod edits;
 mod lanes;
 
 /// How often the runner samples the demo's state while it waits.

@@ -29,7 +29,7 @@
         <h2 id="editor-title">Program</h2>
         <div class="actions">
           <a class="link-button" href="reference" target="_blank" rel="noopener"
-             title="What a program may say: statements, operators, predicates, recipients, and rules">Reference</a>
+             title="What a program may say: the pipeline syntax, operators, predicates, recipients, and rules">Reference</a>
           <button type="button" id="btn-load">Load default program</button>
           <button type="button" id="btn-compile" class="primary" title="Ctrl+Enter or Cmd+Enter">Compile</button>
         </div>
@@ -41,6 +41,7 @@
         <div class="gutter" id="gutter" aria-hidden="true"></div>
         <div class="code">
           <div class="highlights" id="highlights" aria-hidden="true"></div>
+          <pre class="syntax" aria-hidden="true"><code id="syntax"></code></pre>
           <textarea id="source" spellcheck="false" wrap="off" autocomplete="off" autocapitalize="off"
                     aria-label="Program source"></textarea>
         </div>
@@ -52,6 +53,7 @@
 
       <section class="plan-diff" id="plan-diff" aria-label="Plan diff" hidden>
         <div class="plan-diff-head" id="plan-diff-head"></div>
+        <ul class="plan-diff-state" id="plan-diff-state" hidden></ul>
         <ul class="plan-diff-nodes" id="plan-diff-nodes"></ul>
         <details class="plan-diff-edges" id="plan-diff-edges" hidden>
           <summary id="plan-diff-edges-summary"></summary>
@@ -205,6 +207,7 @@
   </main>
 
   <div class="toast" id="toast" role="status" hidden></div>
+  <script src="syntax.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

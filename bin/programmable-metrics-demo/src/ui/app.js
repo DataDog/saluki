@@ -22,19 +22,20 @@
     "policy metrics {",
     '  base "sha256:0000000000000000000000000000000000000000000000000000000000000000"',
     "",
-    "  input.dogstatsd -> drop_debug",
-    "",
-    '  node drop_debug = split(name starts_with "demo.debug.") {',
-    "    true  -> drop",
-    "    false -> emit dd_metrics_encode",
-    "  }",
+    "  dogstatsd",
+    '    | where not (name starts_with "demo.debug.") as drop_debug',
+    "    | emit output dd_metrics_encode",
     "}",
     "",
   ].join("\n");
+  // The preview notes that say an edit renames a state owner, whose state then starts over: shown as warnings with
+  // the plan diff, not among the compile status's notes.
+  const STATE_NOTE = "state will not carry over";
 
   const $ = (id) => document.getElementById(id);
   const ui = {
-    source: $("source"), gutter: $("gutter"), highlights: $("highlights"), status: $("compile-status"),
+    source: $("source"), gutter: $("gutter"), highlights: $("highlights"), syntax: $("syntax"),
+    status: $("compile-status"), diffState: $("plan-diff-state"),
     diagnostics: $("diagnostics"), publish: $("btn-publish"), format: $("btn-format"), revoke: $("btn-revoke"),
     outcome: $("publish-outcome"), confirm: $("confirm"), confirmButton: $("btn-confirm"),
     confirmHash: $("confirm-hash"), confirmRevision: $("confirm-revision"), confirmWarnings: $("confirm-warnings"),
@@ -79,6 +80,11 @@
       if (child !== null && child !== undefined) node.append(child);
     }
     return node;
+  }
+
+  // Returns text that marks code with backticks, as Rust documentation does, as text and `code` elements.
+  function codeSpans(text) {
+    return String(text).split("`").map((part, i) => (i % 2 ? el("code", { text: part }) : part));
   }
 
   function shortHash(hash) {
@@ -263,12 +269,15 @@
     const rows = [];
     for (let n = 1; n <= last; n++) rows.push(`<div class="${severities.get(n) || ""}"></div>`);
     ui.highlights.innerHTML = rows.join("");
+    // A last line that ends in a newline still has its height.
+    ui.syntax.innerHTML = window.PipelineSyntax.highlight(ui.source.value) + "\n";
     syncScroll();
   }
 
   function syncScroll() {
     ui.gutter.scrollTop = ui.source.scrollTop;
     ui.highlights.style.transform = `translateY(${-ui.source.scrollTop}px)`;
+    ui.syntax.style.transform = `translate(${-ui.source.scrollLeft}px, ${-ui.source.scrollTop}px)`;
   }
 
   // Converts a line and a column (both from 1, the column in Unicode scalar values) to an index into the text.
@@ -426,7 +435,7 @@
       notes.push(`${plural(outcome.restored_fingerprints.length, "output fingerprint")} from ADP's export.`);
     }
     if (checked.reason) notes.push(checked.reason);
-    notes.push(...(outcome.preview.notes || []));
+    notes.push(...(outcome.preview.notes || []).filter((note) => !note.includes(STATE_NOTE)));
     ui.status.className = tone ? `compile-status ${tone}` : "compile-status";
     ui.status.append(
       "Compiled ",
@@ -487,6 +496,8 @@
     ui.diffNodes.replaceChildren();
     ui.diffEdgeList.replaceChildren();
     ui.diffEdges.hidden = true;
+    ui.diffState.replaceChildren();
+    ui.diffState.hidden = true;
     if (!fresh) {
       // No verdict of an earlier compile may describe what the editor holds now.
       ui.diff.hidden = true;
@@ -520,6 +531,13 @@
       ui.diffHead.replaceChildren(el("strong", { text: "✓ No change" }), base,
         `: ADP keeps running it${stale}.`, since || "");
       return;
+    }
+    // An edit that renames a state owner, such as the aggregation, loses its state: said beside the diff, with how
+    // to keep the ID.
+    const stateNotes = (preview.notes || []).filter((note) => note.includes(STATE_NOTE));
+    if (stateNotes.length) {
+      ui.diffState.hidden = false;
+      ui.diffState.replaceChildren(...stateNotes.map((note) => el("li", {}, ...codeSpans(note))));
     }
     ui.diff.className = preview.valid ? "plan-diff" : "plan-diff invalid";
     const verdict = preview.valid ? "" : " · does not validate: ADP will reject it";

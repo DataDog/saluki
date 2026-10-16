@@ -117,23 +117,9 @@ fn line_of(source: &str, text: &str) -> usize {
     source[..at].matches('\n').count() + 1
 }
 
-/// Puts the node `id`, defined by `node`, between enrichment and the policy `tee`, as the S1 scenario does: the node
-/// that fed the `tee` feeds `id`, and the definition goes above the policy `tee` and the comments right above it.
-fn with_node_before_policy(source: &str, id: &str, node: &str) -> String {
-    let edge = "\n    -> metrics_policy\n";
-    assert!(source.contains(edge), "{}", source);
-    let source = source.replacen(edge, &format!("\n    -> {}\n", id), 1);
-    let mut policy = source
-        .find("\n  node metrics_policy = ")
-        .expect("the policy `tee` is defined")
-        + 1;
-    while let Some(previous) = source[..policy - 1].rfind('\n').map(|at| at + 1) {
-        if !source[previous..policy].starts_with("  #") {
-            break;
-        }
-        policy = previous;
-    }
-    format!("{}{}\n{}", &source[..policy], node, &source[policy..])
+/// Puts `stage` between enrichment and the policy `fork`, as the S1 scenario does.
+fn with_stage_before_policy(source: &str, stage: &str) -> String {
+    crate::scenario::edits::insert_before_policy(source, stage).unwrap()
 }
 
 #[test]
@@ -185,12 +171,10 @@ fn an_unmodified_export_composes_to_the_active_default_program_with_an_empty_dif
 #[test]
 fn a_change_diffs_node_by_node_in_the_artifacts_terms() {
     let (plan, export) = fixture();
-    // S1: drop the debug metrics in front of the policy `tee`.
-    let source = with_node_before_policy(
+    // S1: drop the debug metrics in front of the policy `fork`.
+    let source = with_stage_before_policy(
         &default_program_source(&export, &crate::compile::RecipientLabels::default()),
-        "drop_debug",
-        "  node drop_debug = split(name starts_with \"demo.debug.\") {\n    true  -> drop\n    false -> metrics_policy\n  \
-         }\n",
+        "where not (name starts_with \"demo.debug.\") as drop_debug",
     );
     let outcome = compile_against(&source, &plan, &export);
     assert!(outcome.diagnostics.is_empty(), "{:#?}", outcome.diagnostics);
@@ -214,7 +198,9 @@ fn a_change_diffs_node_by_node_in_the_artifacts_terms() {
             )
         })
         .collect::<Vec<_>>();
-    // The new split and its inline drop are the artifact's (`policy/` IDs). The host tags node, which fed the `tee`,
+    // The new split and its inline drop are the artifact's (`policy/` IDs): a `where` drops what its `false` port
+    // leads to, which normalization keeps whichever way the predicate is written. The host tags node, which fed the
+    // `tee`,
     // now feeds the split, and the `tee` is fed by it: both are the default program's nodes, with other edges. Nothing
     // else changes: a node is what it does, whatever feeds it, so the routing drops behind the `tee` are unchanged.
     let expected = vec![
@@ -233,18 +219,18 @@ fn a_change_diffs_node_by_node_in_the_artifacts_terms() {
             vec![],
         ),
         (
-            "policy/drop_debug_true",
-            Some("drop_debug_true"),
-            "drop",
-            ChangeKind::Added,
-            vec![],
-        ),
-        (
             "metrics_policy",
             Some("metrics_policy"),
             "tee",
             ChangeKind::Changed,
             vec!["edges"],
+        ),
+        (
+            "policy/drop_debug_false",
+            Some("drop_debug_false"),
+            "drop",
+            ChangeKind::Added,
+            vec![],
         ),
     ];
     assert_eq!(found, expected);
@@ -252,8 +238,8 @@ fn a_change_diffs_node_by_node_in_the_artifacts_terms() {
         preview.edges_added,
         [
             "metrics_enrich_host_tags.out -> policy/drop_debug.in",
-            "policy/drop_debug.true -> policy/drop_debug_true.in",
-            "policy/drop_debug.false -> metrics_policy.in",
+            "policy/drop_debug.true -> metrics_policy.in",
+            "policy/drop_debug.false -> policy/drop_debug_false.in",
         ]
     );
     assert_eq!(
@@ -262,26 +248,23 @@ fn a_change_diffs_node_by_node_in_the_artifacts_terms() {
     );
     assert!(preview.outputs.is_empty());
 
-    // Artifact nodes are placed in the source: the new split at its definition, the inline drop at its `drop`.
+    // Artifact nodes are placed in the source: the new split and the drop it implies at its `where`.
     let split = &preview.nodes[1];
-    assert_eq!(split.range.unwrap().line, line_of(&source, "  node drop_debug"));
-    let drop = &preview.nodes[2];
-    assert_eq!(drop.range.unwrap().line, line_of(&source, "  node drop_debug") + 1);
-    // So is a node of the default program that the artifact keeps: the host tags node, at its definition.
-    assert_eq!(
-        preview.nodes[0].range.unwrap().line,
-        line_of(&source, "  node metrics_enrich_host_tags")
-    );
+    assert_eq!(split.range.unwrap().line, line_of(&source, "as drop_debug"));
+    let drop = &preview.nodes[3];
+    assert_eq!(drop.range.unwrap().line, line_of(&source, "as drop_debug"));
+    // So is a node of the default program that the artifact keeps: the host tags node, at its stage.
+    assert_eq!(preview.nodes[0].range.unwrap().line, line_of(&source, "| host_tags("));
 }
 
 #[test]
 fn validation_findings_are_placed_at_the_artifact_nodes_they_are_about() {
     let (plan, export) = fixture();
     let source = default_program_source(&export, &crate::compile::RecipientLabels::default());
-    // A second branch of the policy `tee` to the primary output: every record reaches it twice.
+    // A second branch of the policy `fork` to the primary output: every record reaches it twice.
     let duplicate = source.replacen(
-        "    -> emit dd_metrics_encode\n",
-        "    -> emit dd_metrics_encode\n    -> emit dd_metrics_encode\n",
+        "      emit output dd_metrics_encode\n",
+        "      emit output dd_metrics_encode\n      emit output dd_metrics_encode\n",
         1,
     );
     let outcome = compile_against(&duplicate, &plan, &export);
@@ -295,17 +278,15 @@ fn validation_findings_are_placed_at_the_artifact_nodes_they_are_about() {
     assert_eq!(errors.len(), 1, "{:#?}", outcome.diagnostics);
     assert_eq!(errors[0].origin, Origin::Validation);
     assert_eq!(errors[0].rule, Some("duplicate_contribution"));
-    assert_eq!(errors[0].range.line, line_of(&duplicate, "  node metrics_policy = tee"));
+    assert_eq!(errors[0].range.line, line_of(&duplicate, "| fork as metrics_policy"));
     // The plan diff is still shown, of a plan that does not validate.
     assert!(outcome.preview.available && !outcome.preview.valid);
     assert_eq!(outcome.errors, 1);
 
     // A parameter the operator does not have is placed at the parameter.
-    let unknown_parameter = with_node_before_policy(
+    let unknown_parameter = with_stage_before_policy(
         &source,
-        "drop_debug",
-        "  node drop_debug = split(predicate: name starts_with \"demo.debug.\", colour: \"red\") {\n    true  -> \
-         drop\n    false -> metrics_policy\n  }\n",
+        "namespace_prefix(\"demo\", exclusions: [], colour: \"red\") as extra",
     );
     let outcome = compile_against(&unknown_parameter, &plan, &export);
     let parameter = outcome
@@ -322,31 +303,32 @@ fn validation_findings_are_placed_at_the_artifact_nodes_they_are_about() {
 
 #[test]
 fn an_aggregation_composes_and_validation_places_its_findings_at_its_node() {
-    // A state owner is no composition error: ADP composes it, and validation, then placement, judge it.
+    // A state owner is no composition error: ADP composes it, and validation, then placement, judge it. The default
+    // program already has its one aggregation, so a second is refused, at its stage.
     let (plan, export) = fixture();
     let source = default_program_source(&export, &crate::compile::RecipientLabels::default());
-    let source = with_node_before_policy(
-        &source,
-        "rollup",
-        "  node rollup = aggregate(window: 10s) {\n    -> metrics_policy\n  }\n",
-    );
+    let source = with_stage_before_policy(&source, "aggregate(window: 10s) as rollup");
     let outcome = compile_against(&source, &plan, &export);
     assert!(outcome.ok);
     assert!(!outcome.diagnostics.is_empty());
     for diagnostic in &outcome.diagnostics {
         assert_eq!(
-            (diagnostic.severity, diagnostic.origin, diagnostic.rule),
-            (Severity::Error, Origin::Validation, Some("valid_parameters")),
+            (diagnostic.severity, diagnostic.origin),
+            (Severity::Error, Origin::Validation),
             "{:#?}",
             diagnostic
         );
-        assert!(
-            diagnostic.message.contains("missing required parameter"),
-            "{}",
-            diagnostic.message
+        assert_eq!(
+            diagnostic.range.line,
+            line_of(&source, "as rollup"),
+            "{:#?}",
+            diagnostic
         );
-        assert_eq!(diagnostic.range.line, line_of(&source, "  node rollup"));
     }
+    assert!(outcome
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.rule == Some("single_aggregation")));
     assert!(outcome.preview.available && !outcome.preview.valid);
 }
 
@@ -485,8 +467,12 @@ fn composition_errors_are_one_finding_at_the_node_or_output_and_no_diff() {
     let source = default_program_source(&export, &crate::compile::RecipientLabels::default());
     let cases = [(
         "an emit to an output ADP does not declare",
-        source.replacen("emit metrics_routing_encode_1\n", "emit metrics_routing_encode_99\n", 1),
-        "emit metrics_routing_encode_99",
+        source.replacen(
+            "emit output metrics_routing_encode_1\n",
+            "emit output metrics_routing_encode_99\n",
+            1,
+        ),
+        "metrics_routing_encode_99",
         "emits to output `metrics_routing_encode_99`, which the host does not declare. Emit to one of the outputs \
              it declares: `",
     )];
@@ -564,21 +550,15 @@ pub(crate) fn detached_fixture_with(host: impl FnOnce(MemoryCatalog) -> MemoryCa
 
 #[test]
 fn a_policy_binding_is_underlined_in_the_node_that_binds_it() {
-    // Two nodes bind the same setting; composition names the second, so the underline is its `config(...)`, not the
-    // first one in the source.
+    // Two nodes bind the same setting; composition names the second, so the underline is its `config.<binding>`, not
+    // the first one in the source.
     let source = r#"policy metrics {
   base "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-  input.dogstatsd -> first
 
-  node first = split(name matches(values: config("dogstatsd.metric_filter.values"), prefix: true)) {
-    true  -> drop
-    false -> second
-  }
-
-  node second = split(name matches(values: config("dogstatsd.metric_filter.values"), prefix: false)) {
-    true  -> drop
-    false -> emit dd_metrics_encode
-  }
+  dogstatsd
+    | where not (name starts_with config.dogstatsd.metric_filter.values) as first
+    | where not (name in config.dogstatsd.metric_filter.values) as second
+    | emit output dd_metrics_encode
 }
 "#;
     let parsed = saluki_metric_plan_syntax::parse(source).unwrap();
@@ -589,7 +569,7 @@ fn a_policy_binding_is_underlined_in_the_node_that_binds_it() {
         allowed: Vec::new(),
     };
     let span = compose_error_span(&error, &parsed, source).unwrap();
-    let written = "config(\"dogstatsd.metric_filter.values\")";
+    let written = "config.dogstatsd.metric_filter.values";
     assert_eq!(&source[span.start..span.end], written);
     assert_eq!(span.start, source.rfind(written).unwrap());
 }
@@ -612,5 +592,114 @@ fn the_detached_export_shows_no_change_in_what_it_does_and_a_note_that_adp_drops
                 kernel."),
         "{:?}",
         outcome.preview.notes
+    );
+}
+
+/// Returns `plan` with the node `from` called `to`, and its edges with it.
+fn with_node_renamed(plan: &Plan, from: &str, to: NodeId) -> Plan {
+    let from = from.parse::<NodeId>().unwrap();
+    assert!(plan.node(&from).is_some(), "the plan has no node `{}`", from);
+    let mut plan = plan.clone();
+    for node in plan.nodes.iter_mut().filter(|node| node.id == from) {
+        node.id = to.clone();
+    }
+    for edge in &mut plan.edges {
+        for end in [&mut edge.from, &mut edge.to] {
+            if end.node == from {
+                end.node = to.clone();
+            }
+        }
+    }
+    plan
+}
+
+/// Returns the plan ID of an artifact node that no node of the default program has.
+fn policy_id(local: &str) -> NodeId {
+    NodeId::policy(saluki_metric_plan::ir::LocalId::new(local).unwrap())
+}
+
+#[test]
+fn renaming_a_state_owner_is_a_note_that_says_how_to_keep_its_id() {
+    let (plan, _) = fixture();
+    let registry = OperatorRegistry::native();
+    let renamed = with_node_renamed(&plan, "dsd_agg", policy_id("agg"));
+    assert_eq!(
+        renamed_state_owners(&plan, &renamed, &registry, |_| None),
+        [
+            "This edit renames the aggregation from `dsd_agg` to `agg`, so its state will not carry over; keep its ID \
+          with `as dsd_agg`."
+        ]
+    );
+    // The new node is named as the artifact writes it, when the correspondence knows it.
+    let named = renamed_state_owners(&plan, &renamed, &registry, |node| {
+        (node == &policy_id("agg")).then(|| "rollup".to_string())
+    });
+    assert_eq!(
+        named,
+        [
+            "This edit renames the aggregation from `dsd_agg` to `rollup`, so its state will not carry over; keep its \
+          ID with `as dsd_agg`."
+        ]
+    );
+}
+
+#[test]
+fn no_note_without_a_renamed_state_owner() {
+    let (plan, _) = fixture();
+    let registry = OperatorRegistry::native();
+    // Unchanged.
+    assert!(renamed_state_owners(&plan, &plan, &registry, |_| None).is_empty());
+    // A node without state renamed: there is nothing to carry over.
+    let renamed = with_node_renamed(&plan, "metrics_policy", policy_id("policy_copies"));
+    assert!(renamed_state_owners(&plan, &renamed, &registry, |_| None).is_empty());
+    // The aggregation removed, with none in its place.
+    let mut removed = plan.clone();
+    removed.nodes.retain(|node| node.id.to_string() != "dsd_agg");
+    assert!(renamed_state_owners(&plan, &removed, &registry, |_| None).is_empty());
+    // A second aggregation beside the first.
+    let mut added = plan.clone();
+    let mut second = plan.node(&"dsd_agg".parse().unwrap()).unwrap().clone();
+    second.id = policy_id("rollup");
+    added.nodes.push(second);
+    assert!(renamed_state_owners(&plan, &added, &registry, |_| None).is_empty());
+}
+
+#[test]
+fn renaming_the_one_aggregation_of_a_program_keeps_its_id_and_gets_no_note() {
+    // Composition gives a program's one aggregation the default program's ID whatever the artifact calls it, so its
+    // state carries over. The artifact is the export's, renamed directly, without the syntax.
+    let (plan, export) = detached_fixture();
+    let document = serde_json::to_string(&export.artifact.artifact).unwrap();
+    let renamed = document
+        .replace("\"dsd_agg\"", "\"agg\"")
+        .replace("\"dsd_agg.", "\"agg.");
+    assert_ne!(renamed, document);
+    let received = receive_artifact(serde_json::from_str(&renamed).unwrap()).unwrap();
+    let parsed = Parsed {
+        artifact: received.artifact.clone(),
+        spans: Default::default(),
+        base_given: true,
+    };
+    let labels = crate::compile::RecipientLabels::default();
+    let context = CompileContext {
+        export: &export,
+        default_program: Some(&plan),
+        active: Some(ActivePlan {
+            plan: &plan,
+            hash: plan.hash(ResolvedValues::Include).unwrap(),
+            generation: Some(3),
+            artifact_revision: None,
+        }),
+        others: &[],
+        revision: 7,
+        labels: &labels,
+        in_effect: None,
+    };
+    let (findings, preview) = compose_preview("", &parsed, &received, &context, &plan, &LineIndex::new(""));
+    assert!(preview.available, "{:?}\n{:?}", preview, findings);
+    assert!(
+        !preview.notes.iter().any(|note| note.contains("renames")),
+        "{:?}",
+        preview.notes
     );
 }

@@ -223,7 +223,11 @@ async fn the_compile_api_returns_placed_diagnostics_and_checks_against_the_expor
         unix_millis(),
     );
 
-    let source = export_source().replacen("emit metrics_routing_encode_1", "emit metrics_routing_encode_9", 1);
+    let source = export_source().replacen(
+        "emit output metrics_routing_encode_1",
+        "emit output metrics_routing_encode_9",
+        1,
+    );
     let (status, body) = call(app, "POST", "/api/compile", Some(json!({ "source": source }))).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["ok"], true);
@@ -232,7 +236,7 @@ async fn the_compile_api_returns_placed_diagnostics_and_checks_against_the_expor
     let diagnostic = &body["diagnostics"][0];
     assert_eq!(diagnostic["severity"], "error");
     assert_eq!(diagnostic["origin"], "check");
-    assert_eq!(diagnostic["range"]["line"], 46);
+    assert_eq!(diagnostic["range"]["line"], 23);
     assert!(diagnostic["message"]
         .as_str()
         .unwrap()
@@ -281,14 +285,8 @@ async fn the_compile_api_composes_into_the_default_program_adp_serves_as_the_rev
         .control
         .export()
         .map(|export| default_program_source(&export, &RecipientLabels::default()))
-        .unwrap()
-        .replacen("\n    -> metrics_policy\n", "\n    -> drop_debug\n", 1)
-        .replacen(
-            "\n  node metrics_policy = ",
-            "\n  node drop_debug = split(name starts_with \"demo.debug.\") {\n    true  -> drop\n    false -> \
-             metrics_policy\n  }\n\n  node metrics_policy = ",
-            1,
-        );
+        .unwrap();
+    let source = crate::scenario::edits::drop_debug(&source).unwrap();
     let (status, body) = call(app, "POST", "/api/compile", Some(json!({ "source": source }))).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["checked_against"]["composed"], true);
@@ -533,12 +531,8 @@ async fn destinations_are_added_and_removed_in_adps_configuration_file_and_nativ
 fn width_source(window: &str) -> String {
     let (_, export) = crate::preview::tests::fixture();
     let base = format!("policy metrics {{\n  base \"{}\"\n\n", export.program_hash());
-    default_program_source(&export, &RecipientLabels::default())
-        .replacen("policy metrics {\n", &base, 1)
-        .replace(
-            "window: config(\"dogstatsd.aggregation.window_duration_seconds\")",
-            &format!("window: {}", window),
-        )
+    let source = default_program_source(&export, &RecipientLabels::default()).replacen("policy metrics {\n", &base, 1);
+    crate::scenario::edits::width_change(&source, window).unwrap()
 }
 
 /// Returns the default program with both of its windows set to `window`, compiled.

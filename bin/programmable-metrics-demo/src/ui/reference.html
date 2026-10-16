@@ -7,41 +7,112 @@
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="app.css">
   <style>
-    .ref { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; max-width: 1180px;
+    .ref { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 28px; max-width: 1200px;
            margin: 0 auto; padding: 20px 16px 64px; }
-    .ref-nav { position: sticky; top: 72px; align-self: start; font-size: 14px; }
-    .ref-nav a { display: block; padding: 3px 0; color: var(--muted); text-decoration: none; }
-    .ref-nav a:hover { color: var(--accent); }
+    .ref-nav { position: sticky; top: 20px; align-self: start; font-size: 14px; display: flex; flex-direction: column; }
+    .ref-nav a { display: block; padding: 4px 10px; border-left: 2px solid var(--border); color: var(--muted);
+                 text-decoration: none; }
+    .ref-nav a:hover { color: var(--accent); border-left-color: var(--accent); }
+    .ref-nav .sub { padding-left: 22px; font-size: 13px; }
     .ref-main { min-width: 0; }
-    .ref-main section { scroll-margin-top: 64px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
-                        padding: 16px 20px; margin-bottom: 16px; }
-    .ref-main h2 { margin-bottom: 8px; }
-    .ref-main h3 { margin: 16px 0 6px; }
-    .ref-main p { margin: 6px 0; max-width: 78ch; }
-    .ref-main ul { margin: 6px 0; padding-left: 20px; max-width: 78ch; }
+    .ref-main section { scroll-margin-top: 16px; background: var(--panel); border: 1px solid var(--border);
+                        border-radius: var(--radius); padding: 18px 22px 20px; margin-bottom: 18px; }
+    .ref-main h2 { font-size: 18px; margin-bottom: 8px; }
+    .ref-main h3 { margin: 20px 0 8px; }
+    .ref-main p { margin: 6px 0; max-width: 80ch; }
+    .ref-main ul { margin: 6px 0; padding-left: 20px; max-width: 80ch; }
+    .ref-main li { margin: 3px 0; }
     .ref-main pre { background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
-                    padding: 10px 12px; overflow-x: auto; font: 13px/1.5 var(--mono); margin: 8px 0; }
+                    padding: 10px 12px; overflow-x: auto; font: 13px/1.55 var(--mono); margin: 8px 0; }
+    .ref-main pre code { font-size: inherit; }
     .ref-main table { border-collapse: collapse; width: 100%; font-size: 14px; margin: 6px 0; }
-    .ref-main th, .ref-main td { text-align: left; vertical-align: top; padding: 5px 8px;
+    .ref-main th, .ref-main td { text-align: left; vertical-align: top; padding: 6px 8px;
                                  border-bottom: 1px solid var(--border); }
     .ref-main th { color: var(--muted); font-weight: 600; font-size: 13px; }
     .ref-main td code { white-space: pre-wrap; word-break: break-word; }
     .ref-main td:first-child > code { white-space: nowrap; word-break: normal; }
-    .op { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 12px; }
-    .op:first-of-type { border-top: 0; margin-top: 0; padding-top: 0; }
+    .ref-main td pre { margin: 0; }
+    .lede { font-size: 15.5px; color: var(--text); }
+    .muted { color: var(--muted); }
+
+    /* The model: one card per idea. */
+    .concepts { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; margin: 12px 0; }
+    .concept { border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; background: var(--panel-2);
+               display: flex; flex-direction: column; gap: 6px; }
+    .concept strong { font-size: 14px; }
+    .concept code.sample { display: block; white-space: pre; overflow-x: auto; font-size: 12.5px;
+                           background: var(--panel); border: 1px solid var(--border); border-radius: 4px;
+                           padding: 5px 8px; }
+    .concept p { margin: 0; font-size: 13.5px; color: var(--muted); }
+
+    /* Shorthand beside the long form. */
+    .sugar td { width: 37%; }
+    .sugar td:first-child { width: 26%; }
+    .sugar .form code { font-size: 13.5px; font-weight: 650; }
+    .sugar p.means { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+    .sugar pre { font-size: 12.5px; }
+    @media (max-width: 900px) {
+      .sugar thead { display: none; }
+      .sugar tr, .sugar td { display: block; width: auto !important; }
+      .sugar td { border-bottom: 0; padding: 4px 0; }
+      .sugar tr { border-bottom: 1px solid var(--border); padding: 8px 0; }
+    }
+
+    /* Operators. */
+    .op-index { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
+    .op-index a { font: 12.5px var(--mono); padding: 2px 8px; border-radius: 10px; border: 1px solid var(--border);
+                  color: var(--text); text-decoration: none; background: var(--panel-2); }
+    .op-index a:hover { border-color: var(--accent); color: var(--accent); }
+    .op-index a.host { color: var(--muted); }
+    .op { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 14px; scroll-margin-top: 16px; }
     .op-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
     .op-head code { font-size: 15px; font-weight: 650; }
-    .tag { font-size: 12px; padding: 1px 7px; border-radius: 10px; background: var(--accent-soft);
-           color: var(--accent); white-space: nowrap; }
+    .op-body { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 4px 18px; }
+    .op-body > .full { grid-column: 1 / -1; }
+    @media (max-width: 1000px) { .op-body { grid-template-columns: minmax(0, 1fr); } }
+    .ports { font-size: 13.5px; color: var(--muted); }
+    .ports code { color: var(--text); }
+    .flags { display: inline-flex; gap: 4px; margin-left: 6px; }
+
+    .tag { font-size: 11.5px; padding: 1px 7px; border-radius: 10px; background: var(--accent-soft);
+           color: var(--accent); white-space: nowrap; font-family: var(--sans); font-weight: 560; }
     .tag.warn { background: var(--warn-soft); color: var(--warn); }
     .tag.err { background: var(--err-soft); color: var(--err); }
     .tag.ok { background: var(--ok-soft); color: var(--ok); }
-    .muted { color: var(--muted); }
+    .tag.plain { background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); }
     .host-note { padding: 8px 12px; border-radius: 6px; background: var(--warn-soft); color: var(--warn); }
+    .callout { padding: 10px 14px; border-radius: 6px; background: var(--accent-soft); border-left: 3px solid var(--accent);
+               margin: 10px 0; max-width: 84ch; }
+    .callout p { margin: 4px 0; }
+
+    /* Recipes: the line, in its place in the default program. */
+    .recipes { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 12px; margin-top: 10px; }
+    @media (max-width: 560px) { .recipes { grid-template-columns: minmax(0, 1fr); } }
+    .recipe { border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; min-width: 0; }
+    .recipe h3 { margin: 0 0 4px; text-transform: none; letter-spacing: 0; font-size: 14.5px; color: var(--text); }
+    .recipe p { font-size: 13.5px; color: var(--muted); }
+    .insert { font: 12.5px/1.6 var(--mono); background: var(--panel-2); border: 1px solid var(--border);
+              border-radius: 6px; padding: 6px 0; margin-top: 8px; overflow-x: auto; }
+    .insert div { white-space: pre; padding: 0 12px 0 8px; }
+    .insert .ctx { color: var(--faint); }
+    .insert .ctx::before { content: "  "; }
+    .insert .add { background: var(--ok-soft); }
+    .insert .add::before { content: "+ "; color: var(--ok); font-weight: 700; }
+
+    /* Rules. */
+    .rule-met td { color: var(--muted); }
+    .ids td:first-child { width: 34%; }
+    .example-nodes { columns: 2 220px; font: 12.5px/1.7 var(--mono); margin: 6px 0; padding: 0; list-style: none; }
+    .example-nodes .op-name { color: var(--muted); }
+
     .top a.back { color: var(--accent); text-decoration: none; font-size: 14px; }
+    details.grammar summary { cursor: pointer; color: var(--accent); font-size: 14px; margin-top: 10px; }
     @media (max-width: 760px) {
       .ref { grid-template-columns: minmax(0, 1fr); }
-      .ref-nav { position: static; }
+      .ref-nav { position: static; flex-direction: row; flex-wrap: wrap; gap: 4px; }
+      .ref-nav a { border-left: 0; padding: 2px 6px; }
+      .ref-nav .sub { display: none; }
+      .ref-main section { padding: 14px 14px 16px; }
     }
   </style>
 </head>
@@ -56,75 +127,53 @@
 
   <div class="ref">
     <nav class="ref-nav" aria-label="Contents">
-      <a href="#shape">A program</a>
-      <a href="#statements">Statements</a>
+      <a href="#model">The model</a>
+      <a class="sub" href="#example">A whole program</a>
+      <a class="sub" href="#grammar">Grammar</a>
+      <a href="#sugar">Shorthand</a>
       <a href="#host">What this ADP accepts</a>
       <a href="#values">Values</a>
       <a href="#predicates">Predicates</a>
       <a href="#operators">Operators</a>
-      <a href="#recipes">Recipes</a>
+      <a href="#ids">Node IDs and <code>as</code></a>
       <a href="#rules">Rules</a>
+      <a href="#recipes">Recipes</a>
       <a href="#limits">Limits</a>
     </nav>
 
     <main class="ref-main">
-      <section id="shape">
-        <h2>A program</h2>
-        <p>A program is the whole metrics path after the sources: what happens to every metric between where it enters
-          and where it is delivered. It is one <code>policy metrics { ... }</code> block of edges and nodes. Metrics
-          enter at the scope's inputs, flow along edges through nodes, and every path ends by delivering
-          (<code>emit</code>) or discarding (<code>drop</code>).</p>
-        <p>The quickest start is the editor's <strong>Load default program</strong>, which shows what ADP runs now, with
-          comments, and changing it. Compiling shows every problem at its place in the text, and what would change.</p>
+      <section id="model">
+        <h2>The model</h2>
+        <p class="lede">A program is the whole metrics path after the sources, written as streaming queries in the
+          style of Unix pipes: metrics enter as <strong>streams</strong>, flow through <strong>stages</strong> joined
+          by <code>|</code>, and every path ends in a <strong>sink</strong> that delivers them or discards them.</p>
+        <p>It is one <code>policy metrics { ... }</code> block of statements. Statements are equations over streams,
+          not steps in time: their order matters only in that a name is defined before it is used. Whitespace and line
+          breaks do not matter, and <code>#</code> starts a comment that runs to the end of the line.</p>
+        <div class="concepts" id="concepts"></div>
+        <p>The quickest start is the editor's <strong>Load default program</strong>, which shows what ADP runs now,
+          with comments, and changing it. Compiling shows every problem at its place in the text, and what would
+          change.</p>
+
+        <h3 id="example">A whole program</h3>
         <pre id="example-program"></pre>
+
+        <details class="grammar" id="grammar">
+          <summary>The grammar</summary>
+          <pre id="grammar-text"></pre>
+        </details>
       </section>
 
-      <section id="statements">
-        <h2>Statements</h2>
-        <p>Whitespace and line breaks do not matter. <code>#</code> starts a comment that runs to the end of the line.
-          The order of statements does not matter either: the program is a graph.</p>
-        <table>
-          <thead><tr><th>Statement</th><th>Meaning</th></tr></thead>
-          <tbody>
-            <tr><td><code>input.&lt;name&gt; -&gt; &lt;target&gt;</code></td>
-              <td>Where one source's metrics enter. The inputs this ADP has are listed <a href="#host">below</a>.</td></tr>
-            <tr><td><code>node &lt;id&gt; = &lt;operator&gt;(&lt;param&gt;: &lt;value&gt;, ...) { &lt;edges&gt; }</code></td>
-              <td>A step. The ID is yours: a lowercase letter, then up to 62 lowercase letters, digits, and single
-                underscores between them (<code>drop_debug</code>, not <code>dropDebug</code> or
-                <code>drop__debug</code>). An operator without parameters takes no parentheses, and a node without
-                edges no block.</td></tr>
-            <tr><td><code>&lt;port&gt; -&gt; &lt;target&gt;</code>, inside a node's block</td>
-              <td>An edge from one of the node's output ports. A node with one output port may leave it out:
-                <code>-&gt; &lt;target&gt;</code>.</td></tr>
-            <tr><td><code>&lt;node&gt;.&lt;port&gt; -&gt; &lt;target&gt;</code></td>
-              <td>The same edge, as a statement of its own.</td></tr>
-          </tbody>
+      <section id="sugar">
+        <h2>Shorthand</h2>
+        <p>The language has a small core that maps one to one onto the plan, and a little shorthand. Each piece of
+          shorthand is one local rewrite into the core: the two forms below describe the same graph, node for node,
+          and the editor prints the shorthand wherever it gives back exactly that graph. Each pair is checked by the
+          demo's tests.</p>
+        <table class="sugar">
+          <thead><tr><th>Shorthand</th><th>Written</th><th>Stands for</th></tr></thead>
+          <tbody id="sugar-body"></tbody>
         </table>
-        <h3>Targets</h3>
-        <table>
-          <tbody>
-            <tr><td><code>&lt;node&gt;</code>, <code>&lt;node&gt;.&lt;port&gt;</code></td>
-              <td>Another node. The port may be left out when the node has one input port; a <code>merge</code>'s
-                are numbered: <code>joined.0</code>.</td></tr>
-            <tr><td><code>emit to [&lt;recipient&gt;, ...]</code></td>
-              <td>Deliver to recipients of the <a href="#host">directory</a>: a bare name such as
-                <code>primary</code>, or an endpoint's URL in quotes. ADP adds the output that delivers to exactly
-                those recipients.</td></tr>
-            <tr><td><code>emit &lt;output&gt;</code></td>
-              <td>Deliver to an output ADP declares, by its ID.</td></tr>
-            <tr><td><code>drop</code></td><td>Discard.</td></tr>
-          </tbody>
-        </table>
-        <p>An inline <code>emit</code> or <code>drop</code> is a node of its own, named after its parent and port:
-          <code>split</code> port <code>true</code> leading to <code>drop</code> is the node
-          <code>&lt;split&gt;_true</code>. Diagnostics and the plan diff use those names.</p>
-        <h3>Short forms</h3>
-        <ul>
-          <li>An operator whose only parameter is a predicate takes it bare:
-            <code>split(name starts_with "a.") { true -&gt; ... false -&gt; ... }</code>.</li>
-          <li><code>tee</code> without parentheses numbers its branches in order:
-            <code>tee { -&gt; a -&gt; b }</code> is <code>tee(ports: 2) { 0 -&gt; a 1 -&gt; b }</code>.</li>
-        </ul>
       </section>
 
       <section id="host">
@@ -148,19 +197,33 @@
             <tr><td><code>[a, b]</code></td><td>A list. A trailing comma is fine.</td></tr>
             <tr><td><code>{ name: "x", limit: 3 }</code></td><td>A record, such as one rule of a list of rules. Member
               names may be bare or quoted.</td></tr>
-            <tr><td><code>config("&lt;binding&gt;")</code></td>
+            <tr><td><code>config.&lt;binding&gt;</code></td>
               <td>A value read from ADP's configuration as it runs: one of the <a href="#host">bindings</a> a
-                program may read, where the parameter allows it.</td></tr>
+                program may read, where the parameter allows it, written with the binding name's segments after
+                <code>config.</code>, as <code>config.host.tags</code>.</td></tr>
             <tr><td><code>blob("sha256:...")</code></td><td>A value kept in the program's blob table.</td></tr>
           </tbody>
         </table>
+        <h3>Arguments</h3>
+        <ul>
+          <li>Parameters are passed by name: <code>aggregate(window: 10s, flush_interval: 15s)</code>.</li>
+          <li>An operator's <span class="tag plain">positional</span> parameter may be passed first, without its name:
+            <code>timestamp_split(10s)</code>, <code>namespace_prefix("tenant", exclusions: [])</code>.</li>
+          <li>A parameter with a <span class="tag plain">default</span> may be left out; the editor leaves out every
+            parameter equal to its default.</li>
+          <li>An operator without parameters, or with all of them left out, takes no parentheses:
+            <code>host_enrichment</code>.</li>
+        </ul>
       </section>
 
       <section id="predicates">
         <h2>Predicates</h2>
-        <p>What a <code>split</code> tests. String tests are <code>==</code>, <code>starts_with</code>,
-          <code>in [...]</code>, and <code>prefix_in [...]</code>; they apply to <code>name</code>,
-          <code>intake_name</code>, <code>host</code>, <code>tag("k")</code>, and <code>origin_tag("k")</code>.</p>
+        <p>What a <code>where</code> (or a <code>split</code>) tests. The string tests are <code>==</code>,
+          <code>!=</code>, <code>starts_with</code>, and <code>in [...]</code>, with <code>starts_with [...]</code> for
+          several prefixes; they apply to <code>name</code>, <code>intake_name</code>, <code>host</code>,
+          <code>tags.&lt;key&gt;</code>, and <code>origin_tags.&lt;key&gt;</code>. <code>not</code> binds tightest,
+          then <code>and</code>, then <code>or</code>, and a junction of any length is written with <code>and</code>
+          and <code>or</code>. Each predicate has one printed spelling.</p>
         <table>
           <thead><tr><th>Tests</th><th>Example</th></tr></thead>
           <tbody id="predicates-body"></tbody>
@@ -169,27 +232,92 @@
 
       <section id="operators">
         <h2>Operators</h2>
-        <p>Every node names one of these. A parameter marked <span class="tag">config</span> may also read one of
-          the <a href="#host">bindings a program may read</a> with <code>config("...")</code>; <code>?</code> marks one
-          that may be left out.</p>
+        <p>Every stage names one of these. A parameter marked <span class="tag">config</span> may also read one of the
+          <a href="#host">bindings a program may read</a> with <code>config.&lt;name&gt;</code>;
+          <span class="tag plain">positional</span> marks the one that may be passed first without its name, and
+          <span class="tag plain">optional</span> one that may be left out, its default shown where it has one.</p>
+        <div class="op-index" id="op-index"></div>
         <div id="operators-body"></div>
       </section>
 
-      <section id="recipes">
-        <h2>Recipes</h2>
-        <p>Edits to the default program for common needs. Each one is a node between enrichment and the policy
-          <code>tee</code>, <code>metrics_policy</code>, where the default program's comment says to route.</p>
-        <div id="recipes-body"></div>
+      <section id="ids">
+        <h2>Node IDs and <code>as</code></h2>
+        <p>Every stage and sink is a node of the plan, and every node has an ID: the one an <code>as</code> clause
+          gives it, or one the syntax derives from where it is written.</p>
+        <div class="callout">
+          <p><strong>Why IDs matter.</strong> ADP keeps a node's state, such as an aggregation's open buckets, and
+            reuses its kernel from one program to the next by its ID. An edit that changes the ID of a node with state
+            starts that state over. The editor warns when an edit renames one, and says how to keep its ID with
+            <code>as</code>.</p>
+        </div>
+        <h3>The derived scheme</h3>
+        <table class="ids">
+          <thead><tr><th>Where</th><th>ID</th></tr></thead>
+          <tbody>
+            <tr><td><code>let x = s1 | ... | sn</code></td><td>The last stage is <code>x</code>. Each earlier stage is
+              <code>x_&lt;operator&gt;</code> (a <code>where</code> is <code>x_split</code>; a tuple head is
+              <code>x_in</code>); a repeated operator takes <code>_2</code>, <code>_3</code>, ... in order.</td></tr>
+            <tr><td>A statement without <code>let</code></td><td>Each stage is <code>&lt;anchor&gt;_&lt;operator&gt;</code>,
+              where the anchor is the port the pipeline starts from: a node's ID; <code>x_&lt;port&gt;</code> for
+              <code>x.port</code>; <code>input_&lt;name&gt;</code> for a scope input; for a tuple head, its merge,
+              <code>&lt;anchor of its first element&gt;_in</code>.</td></tr>
+            <tr><td><code>fork { ... }</code></td><td>The fork's tee is <code>&lt;anchor&gt;_fork</code>, and branch
+              <code>i</code> starts from the anchor <code>&lt;fork&gt;_&lt;i&gt;</code>.</td></tr>
+            <tr><td>A stream used more than once</td><td>The tee that copies it is <code>x_fanout</code>, or
+              <code>x_&lt;port&gt;_fanout</code> after <code>x.port</code>; use <code>i</code> starts from
+              <code>&lt;tee&gt;_&lt;i&gt;</code>.</td></tr>
+            <tr><td>A sink</td><td><code>&lt;node&gt;_&lt;port&gt;</code>, after the node and port it ends:
+              <code>where</code>'s drop is <code>&lt;split&gt;_false</code>.</td></tr>
+          </tbody>
+        </table>
+        <p>An ID longer than 63 bytes is shortened, and an ID that equals another node's is an error that asks for an
+          <code>as</code>.</p>
+        <div id="example-ids"></div>
+        <h3>Why the default program shows <code>as</code></h3>
+        <p>ADP's telemetry, topology, and correspondence of plan nodes to native components know the default program's
+          nodes by their native IDs, such as <code>dsd_agg</code> and <code>metrics_policy</code>, which do not all
+          follow the derived scheme. So the editor prints an <code>as</code> clause wherever a node's ID is not the one
+          the syntax would derive, and dims it: it keeps the ID, and changes nothing else. A later step renames the
+          native IDs to the derived scheme, and the clauses go away. Leave them as they are, and write none of your
+          own unless you want to name a node.</p>
       </section>
 
       <section id="rules">
         <h2>Rules</h2>
-        <p>What compiling checks, beyond the grammar. An <span class="tag err">error</span> refuses the program; a
-          <span class="tag warn">warning</span> lets it through. These are the ones you are most likely to meet.</p>
+        <h3>The syntax enforces</h3>
+        <p>Each of these is checked as the text is parsed, at the point where it is written:</p>
+        <ul>
+          <li><strong>Define before use.</strong> A <code>let</code> is visible only after its statement, and cannot
+            refer to itself, so a cycle cannot be written.</li>
+          <li><strong>Every stream and port is used.</strong> An unused <code>let</code>, or an unused port of a node
+            with several, is an error, not a silent drop: write <code>x.passthrough | drop</code> to drop one.</li>
+          <li><strong>A node with several output ports is never used bare</strong>: pick a port, as
+            <code>x.default</code>.</li>
+          <li><strong>Sinks end pipelines.</strong> To copy a stream, name it with <code>let</code> and use it twice.</li>
+          <li><strong>A statement without <code>let</code> ends in a sink, and a <code>let</code> does not.</strong></li>
+          <li><strong>Names are unique.</strong> A <code>let</code> cannot reuse a scope input's name, another
+            <code>let</code>'s, or a node ID.</li>
+        </ul>
+        <h3>Compiling checks</h3>
+        <p>Beyond the grammar. An <span class="tag err">error</span> refuses the program; a
+          <span class="tag warn">warning</span> lets it through. The rules marked
+          <span class="tag ok">met by the syntax</span> hold for any text that parses; validation still checks them,
+          for artifacts written as JSON.</p>
         <table>
           <thead><tr><th>Rule</th><th></th><th>Asks</th></tr></thead>
           <tbody id="rules-body"></tbody>
         </table>
+      </section>
+
+      <section id="recipes">
+        <h2>Recipes</h2>
+        <p>Common needs, each one line added to the default program: a stage just before the policy
+          <code>fork</code>, <code>metrics_policy</code>, so that what every destination receives passes through it.
+          Load the default program, add the line, and compile. Where the policy <code>fork</code> starts a branch of
+          another <code>fork</code>, as it does when nothing else enriches metrics, the stage starts that branch
+          instead, and the <code>fork</code> follows it after a <code>|</code>:
+          <code>where tags.env != "dev" | fork as metrics_policy { ... }</code>.</p>
+        <div class="recipes" id="recipes-body"></div>
       </section>
 
       <section id="limits">
@@ -201,6 +329,7 @@
       </section>
     </main>
   </div>
+  <script src="syntax.js"></script>
   <script src="reference.js"></script>
 </body>
 </html>

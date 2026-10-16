@@ -1,6 +1,6 @@
-// The language reference: renders what the demo server builds from the operator registry, the validator, and ADP's
-// export (see `reference.rs`). The grammar's prose is in the page; everything that can be generated is generated, so
-// the page shows what this ADP accepts.
+// The language reference: renders what the demo server builds from the operator registry, the validator, the parser,
+// and ADP's export (see `reference.rs`). The model's and the grammar's prose is here and in the page; everything that
+// can be generated is generated, so the page shows what this ADP accepts.
 "use strict";
 
 const $ = (id) => document.getElementById(id);
@@ -13,11 +13,59 @@ function esc(text) {
     .replace(/"/g, "&quot;");
 }
 
+// Program text, highlighted as the editor highlights it.
+const highlighted = (text) => window.PipelineSyntax.highlight(String(text));
 // Text from the server marks code with backticks, as Rust documentation does.
 const prose = (text) => esc(text).replace(/`([^`]+)`/g, "<code>$1</code>");
 const code = (text) => `<code>${esc(text)}</code>`;
-const pre = (text) => `<pre>${esc(text)}</pre>`;
+const program = (text) => `<code>${highlighted(text)}</code>`;
+const pre = (text) => `<pre><code>${highlighted(text)}</code></pre>`;
 const tag = (text, kind = "") => `<span class="tag ${kind}">${esc(text)}</span>`;
+
+// The ideas of the language, each with a line of it.
+const CONCEPTS = [
+  ["Streams", "dogstatsd", "Each source's metrics enter as an input of the scope: a stream a pipeline starts from."],
+  ["Stages", "dogstatsd | namespace_prefix(\"demo\", exclusions: [])",
+    "`|` feeds a stream to an operator. Each stage is a node of the plan, and its output a new stream."],
+  ["Sinks", "... | emit primary\n... | emit output dsd_client_telemetry\n... | drop",
+    "End a pipeline: deliver to recipients of the directory or to an output, or discard."],
+  ["let", "let dsd = dogstatsd\n  | aggregate(window: 10s, flush_interval: 10s)",
+    "Names a stream, for later statements to use. A `let` never ends in a sink; a statement without one always does."],
+  ["Ports", "let by_time = dogstatsd | timestamp_split(10s)\nby_time.passthrough | drop",
+    "A node with several output ports is read one port at a time, as `<name>.<port>`, and every port is used."],
+  ["Reuse", "dsd | emit output dsd_client_telemetry\n(dsd, otlp) | emit primary",
+    "Using a stream more than once copies each metric to every use."],
+  ["Tuples", "(dsd, otlp) | host_tags([\"env:demo\"], deadline: 30s)",
+    "Merge streams: the first into the merge's port 0, the next into port 1, and so on."],
+  ["Forks", "... | fork {\n    emit primary\n    where tags.team == \"b\" | emit mrf\n  }",
+    "Copy each metric to every branch. A branch is stages, then a sink, and the `fork` ends its pipeline."],
+];
+
+const GRAMMAR = `program    = "policy" scope "{" header* statement* "}"
+header     = "ir_version" int | "base" hash [ "outputs" "{" (output "=" hash ","?)* "}" ] | "blobs" "{" ... "}"
+statement  = "let" ident "=" pipeline                   # a named stream
+           | pipeline                                   # must end in a sink
+pipeline   = head ("|" stage)* ["|" sink]
+head       = ref | tuple
+ref        = ident ["." port]                           # a let, or a scope input; ".port" picks an output port
+tuple      = "(" ref ("," ref)* ","? ")" ["as" ident]   # a merge, its input ports in order
+stage      = operator ["(" args ")"] ["as" ident]       # any registered operator
+           | "where" predicate ["as" ident]             # shorthand
+           | "fork" ["as" ident] "{" branch+ "}"        # shorthand; ends the pipeline
+branch     = (stage "|")* sink | (stage "|")* fork-stage
+sink       = "emit" recipients ["as" ident]             # emit primary, emit [primary, "https://b.example.com"]
+           | "emit" "output" output ["as" ident]
+           | "drop" ["as" ident]
+           | "exit" exit-name ["as" ident]              # leaves a scope that ends early
+args       = [positional ","] (param ":" value ","?)*`;
+
+function renderConcepts() {
+  $("concepts").innerHTML = CONCEPTS
+    .map(([name, sample, means]) => `<div class="concept"><strong>${esc(name)}</strong>
+      <code class="sample">${highlighted(sample)}</code><p>${prose(means)}</p></div>`)
+    .join("");
+  $("grammar-text").textContent = GRAMMAR;
+}
 
 function renderHost(host, missing) {
   if (!host) {
@@ -25,20 +73,21 @@ function renderHost(host, missing) {
       bindings below appear once it is; the rest of this page does not depend on it.</p>`;
   }
   const inputs = host.inputs.length
-    ? host.inputs.map((name) => code(`input.${name}`)).join(", ")
+    ? host.inputs.map(code).join(", ")
     : '<span class="muted">none</span>';
   const recipients = host.recipients.length
-    ? `<table><thead><tr><th>Name in <code>emit to [...]</code></th><th>Endpoint</th><th></th></tr></thead><tbody>
+    ? `<table><thead><tr><th>Name in <code>emit</code></th><th>Endpoint</th><th></th></tr></thead><tbody>
         ${host.recipients
-          .map((r) => `<tr><td>${code(r.name)}</td><td>${code(r.endpoint)}</td>
+          .map((r) => `<tr><td>${program(r.name)}</td><td>${code(r.endpoint)}</td>
             <td>${r.label ? esc(r.label) : ""}</td></tr>`)
           .join("")}
       </tbody></table>`
-    : '<p class="muted">The directory is empty: name outputs with <code>emit &lt;output&gt;</code>.</p>';
+    : '<p class="muted">The directory is empty: name outputs with <code>emit output &lt;output&gt;</code>.</p>';
   const bindable = host.bindings.filter((b) => b.bindable);
   const policy = host.bindings.filter((b) => !b.bindable);
   const bindingRows = (rows) => rows
-    .map((b) => `<tr><td>${code(`config("${b.name}")`)}</td><td>${tag(b.class)}${b.live ? " " + tag("live", "ok") : ""}</td>
+    .map((b) => `<tr><td>${program(`config.${b.name}`)}</td>
+      <td>${tag(b.class)}${b.live ? " " + tag("live", "ok") : ""}</td>
       <td>${code(b.type)}</td><td>${b.value === undefined ? "" : code(JSON.stringify(b.value))}</td></tr>`)
     .join("");
   const head = "<thead><tr><th>Binding</th><th>Kind</th><th>Type</th><th>Now</th></tr></thead>";
@@ -46,9 +95,11 @@ function renderHost(host, missing) {
     <p>The program replaces the scope ${code(host.scope)}.
       ${host.single_aggregation ? "It may hold at most one <code>aggregate</code>." : ""}</p>
     <h3>Inputs</h3>
-    <p>${inputs}. An input with no edge receives nothing.</p>
+    <p>${inputs}. Each is a stream a pipeline may start from, as <code>dogstatsd | ...</code>; an input no pipeline
+      reads receives nothing.</p>
     <h3>Recipients</h3>
-    <p>The names <code>emit to [...]</code> takes. Adding a destination in the demo adds one here, by its URL.</p>
+    <p>The names <code>emit</code> takes: one bare, as <code>emit primary</code>, or several in brackets, as
+      <code>emit [primary, "http://..."]</code>. Adding a destination in the demo adds one here, by its URL.</p>
     ${recipients}
     <h3>Bindings a program may read</h3>
     <p>Facts about the host and signals that change as ADP runs. A <span class="tag ok">live</span> one changes
@@ -58,50 +109,94 @@ function renderHost(host, missing) {
     ${policy.length && host.detached ? `
       <details><summary>Policy settings (${policy.length}): written as literals, not bound</summary>
         <p>These native settings feed only the default program. A published program owns its policy, so it writes
-          the value it wants instead of <code>config("...")</code>; compiling refuses a program that binds one.</p>
+          the value it wants instead of <code>config.&lt;name&gt;</code>; compiling refuses a program that binds
+          one.</p>
         <table>${head}<tbody>${bindingRows(policy)}</tbody></table>
       </details>` : ""}`;
 }
 
+function renderSugar(sugar) {
+  $("sugar-body").innerHTML = sugar
+    .map((s) => `<tr><td><div class="form">${prose(s.form)}</div><p class="means">${prose(s.means)}</p></td>
+      <td>${pre(s.sugar)}</td><td>${pre(s.core)}</td></tr>`)
+    .join("");
+}
+
+function renderParam(p) {
+  const flags = [
+    p.positional ? tag("positional", "plain") : "",
+    p.required ? "" : tag("optional", "plain"),
+    p.bindable ? tag("config") : "",
+  ].filter(Boolean).join(" ");
+  return `<tr><td>${code(p.name)}${flags ? `<span class="flags">${flags}</span>` : ""}</td>
+    <td>${code(p.type)}</td><td>${p.default === undefined ? "" : program(p.default)}</td></tr>`;
+}
+
 function renderOperator(op) {
   const params = op.params.length
-    ? `<table><thead><tr><th>Parameter</th><th>Type</th></tr></thead><tbody>
-        ${op.params
-          .map((p) => `<tr><td>${code(p.name + (p.required ? "" : "?"))}${p.bindable ? " " + tag("config") : ""}</td>
-            <td>${code(p.type)}</td></tr>`)
-          .join("")}
+    ? `<table><thead><tr><th>Parameter</th><th>Type</th><th>Default</th></tr></thead><tbody>
+        ${op.params.map(renderParam).join("")}
       </tbody></table>`
-    : '<p class="muted">No parameters.</p>';
+    : '<p class="muted">No parameters: written without parentheses.</p>';
   const ports = op.inputs.length || op.outputs.length
-    ? `<p>Ports in: ${op.inputs.map(code).join(", ") || "none"}; out: ${op.outputs.map(code).join(", ") || "none"}.
-        ${op.ports_note ? prose(op.ports_note) : ""}</p>`
-    : op.ports_note ? `<p>${prose(op.ports_note)}</p>` : "";
+    ? `<p class="ports">Ports in: ${op.inputs.map(code).join(", ") || "none"}; out:
+        ${op.outputs.map(code).join(", ") || "none"}.</p>`
+    : "";
+  const note = op.ports_note ? `<p>${prose(op.ports_note)}</p>` : "";
   return `<div class="op" id="op-${esc(op.name)}">
     <div class="op-head">${code(op.name)}${op.authorable ? "" : " " + tag("native configuration only", "warn")}</div>
     <p>${prose(op.summary)}</p>
-    ${params}
-    ${ports}
-    ${op.example ? pre(op.example) : ""}
+    <div class="op-body">
+      <div>${params}</div>
+      <div>${op.example ? pre(op.example) : ""}${ports}${note}</div>
+    </div>
   </div>`;
 }
 
+function renderExampleIds(nodes) {
+  if (!nodes.length) {
+    $("example-ids").innerHTML = `<p class="muted">The node IDs of the <a href="#example">whole program</a> above
+      are listed here once the demo's parser reads it.</p>`;
+    return;
+  }
+  $("example-ids").innerHTML = `<h3>In the whole program above</h3>
+    <p>The nodes the <a href="#example">example</a> describes, with the IDs the syntax gives them:</p>
+    <ul class="example-nodes">${nodes
+      .map((n) => `<li>${esc(n.id)} <span class="op-name">${esc(n.op)}</span></li>`)
+      .join("")}</ul>`;
+}
+
+function renderRecipe(r) {
+  return `<div class="recipe"><h3>${esc(r.title)}</h3><p>${prose(r.how)}</p>
+    <div class="insert" aria-label="The line, in its place">
+      <div class="ctx">    ...</div>
+      <div class="add">${highlighted(r.line)}</div>
+      <div class="ctx">${highlighted(r.before)}</div>
+    </div></div>`;
+}
+
 function render(reference) {
-  $("example-program").textContent = reference.example_program;
+  $("example-program").innerHTML = `<code>${highlighted(reference.example_program)}</code>`;
   $("host-body").innerHTML = renderHost(reference.host, reference.host_missing);
+  renderSugar(reference.sugar);
   $("predicates-body").innerHTML = reference.predicates
-    .map((p) => `<tr><td>${prose(p.tests)}</td><td>${code(p.example)}</td></tr>`)
+    .map((p) => `<tr><td>${prose(p.tests)}</td><td>${program(p.example)}</td></tr>`)
     .join("");
   const authorable = reference.operators.filter((op) => op.authorable);
   const host = reference.operators.filter((op) => !op.authorable);
+  $("op-index").innerHTML = reference.operators
+    .map((op) => `<a href="#op-${esc(op.name)}" class="${op.authorable ? "" : "host"}">${esc(op.name)}</a>`)
+    .join("");
   $("operators-body").innerHTML = authorable.map(renderOperator).join("")
     + (host.length ? `<h3>Placed by native configuration only</h3>
         <p>A program cannot add, change, or remove these: ADP builds them at boot.</p>
         ${host.map(renderOperator).join("")}` : "");
-  $("recipes-body").innerHTML = reference.recipes
-    .map((r) => `<h3>${esc(r.title)}</h3><p>${prose(r.how)}</p>${pre(r.source)}`)
-    .join("");
+  renderExampleIds(reference.example_nodes || []);
+  $("recipes-body").innerHTML = reference.recipes.map(renderRecipe).join("");
   $("rules-body").innerHTML = reference.rules
-    .map((r) => `<tr><td>${code(r.name)}</td><td>${tag(r.severity, r.severity === "error" ? "err" : "warn")}</td>
+    .map((r) => `<tr class="${r.met_by_syntax ? "rule-met" : ""}"><td>${code(r.name)}</td>
+      <td>${tag(r.severity, r.severity === "error" ? "err" : "warn")}
+        ${r.met_by_syntax ? tag("met by the syntax", "ok") : ""}</td>
       <td>${prose(r.means)}</td></tr>`)
     .join("");
   $("limits-body").innerHTML = reference.limits
@@ -112,6 +207,7 @@ function render(reference) {
   }
 }
 
+renderConcepts();
 fetch("api/reference")
   .then((response) => {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
