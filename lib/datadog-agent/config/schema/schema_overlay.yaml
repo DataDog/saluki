@@ -3271,6 +3271,9 @@ inventory:
       `off` writes tags as-is, so only convention keys reach container tags. Set this to `duplicate` to also
       carry custom tags into container tags under a `datadog.container.tag.` prefixed copy, or `rename` to
       carry only the prefixed copy. Convention keys and already-prefixed keys are exempt in every mode.
+
+      This setting applies when ADP handles OTLP traces itself. In OTLP proxy mode with trace proxying
+      enabled, forwarded traces bypass local enrichment, so this setting has no effect on them.
     test_support:
       used_by: [TypedConfigSystem]
       test_json: '"duplicate"'

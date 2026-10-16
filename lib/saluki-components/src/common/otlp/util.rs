@@ -132,31 +132,35 @@ pub fn get_string_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &s
 }
 
 /// Extracts container tags from OTLP resource attributes and inserts them into the provided TagSet.
-/// This function is based on the agent implementation here
-/// https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/attributes/attributes.go#L277
+///
+/// Tags come from semantic-convention mappings and `datadog.container.tag.` prefixed attributes,
+/// ranked by the `TAG_SOURCE_*` precedences; empty values produce no tag.
 pub fn extract_container_tags_from_resource_attributes(attributes: &[otlp_common::KeyValue], tags: &mut TagSet) {
-    let mut extracted_tags = FastHashSet::default();
+    let mut resolved: FastHashMap<String, (u8, String)> = FastHashMap::default();
 
     for kv in attributes {
-        if let Some(Value::StringValue(s_val)) = kv.value.as_ref().and_then(|v| v.value.as_ref()) {
-            // Semantic Conventions
-            if let Some(datadog_key) = CONTAINER_MAPPINGS.get(kv.key.as_str()) {
-                tags.insert_tag(format!("{}:{}", datadog_key, s_val));
-                extracted_tags.insert(*datadog_key);
-            }
+        let Some(Value::StringValue(s_val)) = kv.value.as_ref().and_then(|v| v.value.as_ref()) else {
+            continue;
+        };
+        if s_val.is_empty() {
+            continue;
+        }
 
-            // Custom (datadog.container.tag namespace)
-            if kv.key.starts_with(CUSTOM_CONTAINER_TAG_PREFIX) {
-                if let Some(custom_key) = kv.key.get(CUSTOM_CONTAINER_TAG_PREFIX.len()..) {
-                    if !custom_key.is_empty() {
-                        // Do not replace if set via semantic conventions mappings.
-                        if extracted_tags.insert(custom_key) {
-                            tags.insert_tag(format!("{}:{}", custom_key, s_val));
-                        }
-                    }
-                }
+        // Semantic Conventions
+        if let Some(datadog_key) = CONTAINER_MAPPINGS.get(kv.key.as_str()) {
+            insert_winning_tag(&mut resolved, datadog_key, TAG_SOURCE_SEMANTIC_CONVENTION, s_val);
+        }
+
+        // Custom (datadog.container.tag namespace)
+        if let Some(custom_key) = kv.key.strip_prefix(CUSTOM_CONTAINER_TAG_PREFIX) {
+            if !custom_key.is_empty() {
+                insert_winning_tag(&mut resolved, custom_key, TAG_SOURCE_CUSTOM, s_val);
             }
         }
+    }
+
+    for (tag_key, (_, value)) in resolved {
+        tags.insert_tag(format!("{}:{}", tag_key, value));
     }
 }
 
@@ -222,7 +226,8 @@ fn insert_winning_tag(resolved: &mut FastHashMap<String, (u8, String)>, tag_key:
 /// Writes resolved infrastructure tags into a resource attribute map as string attributes.
 ///
 /// Keys already recognized by container-tag extraction are written as-is; every other key follows
-/// `promotion`. Writes replace existing entries with the same key, and valueless tags are skipped.
+/// `promotion`. Writes replace existing entries with the same key, except for generated prefixed
+/// copies, which never replace a value the sender provided. Valueless tags are skipped.
 pub fn write_infra_tag_attributes<I: Interner>(
     tags: SharedTagSet, promotion: ContainerTagPromotion, interner: &I,
     attributes: &mut FastHashMap<MetaString, AttributeValue>,
@@ -247,13 +252,25 @@ pub fn write_infra_tag_attributes<I: Interner>(
             ContainerTagPromotion::Off => write_attribute(attributes, key),
             ContainerTagPromotion::Duplicate => {
                 write_attribute(attributes, key);
-                write_attribute(attributes, &format!("{CUSTOM_CONTAINER_TAG_PREFIX}{key}"));
+                write_prefixed_if_absent(attributes, key, value, interner);
             }
             ContainerTagPromotion::Rename => {
-                write_attribute(attributes, &format!("{CUSTOM_CONTAINER_TAG_PREFIX}{key}"));
+                write_prefixed_if_absent(attributes, key, value, interner);
             }
         }
     }
+}
+
+/// Writes the prefixed copy of a custom tag without replacing an entry the sender provided.
+fn write_prefixed_if_absent<I: Interner>(
+    attributes: &mut FastHashMap<MetaString, AttributeValue>, key: &str, value: &str, interner: &I,
+) {
+    attributes
+        .entry(MetaString::from_interner(
+            &format!("{CUSTOM_CONTAINER_TAG_PREFIX}{key}"),
+            interner,
+        ))
+        .or_insert_with(|| AttributeValue::String(MetaString::from_interner(value, interner)));
 }
 
 fn is_recognized_tag_key(key: &str) -> bool {
@@ -575,6 +592,13 @@ mod tests {
         set.into_shared()
     }
 
+    fn attr_str(attributes: &FastHashMap<MetaString, AttributeValue>, key: &str) -> Option<String> {
+        attributes
+            .get(key)
+            .and_then(|value| value.as_string())
+            .map(|value| value.as_ref().to_string())
+    }
+
     fn written_attributes(attributes: &FastHashMap<MetaString, AttributeValue>) -> Vec<String> {
         let mut keys: Vec<String> = attributes
             .iter()
@@ -648,6 +672,63 @@ mod tests {
         write_infra_tag_attributes(tags, ContainerTagPromotion::Rename, &test_interner(), &mut attributes);
 
         assert_eq!(written_attributes(&attributes), vec!["datadog.container.tag.env=prod"]);
+    }
+
+    #[test]
+    fn resource_extraction_prefers_semantic_conventions_regardless_of_order() {
+        let attributes = vec![
+            string_attribute("datadog.container.tag.container_id", "from-custom"),
+            string_attribute("container.id", "from-semconv"),
+        ];
+
+        let mut tags = TagSet::default();
+        extract_container_tags_from_resource_attributes(&attributes, &mut tags);
+
+        let mut got: Vec<String> = tags.into_iter().map(|tag| tag.as_str().to_string()).collect();
+        got.sort();
+        assert_eq!(got, vec!["container_id:from-semconv"]);
+    }
+
+    #[test]
+    fn write_infra_tag_attributes_preserves_sender_provided_prefixed_values() {
+        // The sender pinned the prefixed form, so the generated copy must not replace it.
+        let mut attributes = FastHashMap::default();
+        attributes.insert(
+            MetaString::from("datadog.container.tag.team"),
+            AttributeValue::String(MetaString::from("sender-value")),
+        );
+
+        let tags = shared_tags(&["team:tagger-value"]);
+        write_infra_tag_attributes(
+            tags,
+            ContainerTagPromotion::Duplicate,
+            &test_interner(),
+            &mut attributes,
+        );
+
+        // The unprefixed form is written with replace semantics; the prefixed copy is not.
+        assert_eq!(attr_str(&attributes, "team"), Some("tagger-value".to_string()));
+        assert_eq!(
+            attr_str(&attributes, "datadog.container.tag.team"),
+            Some("sender-value".to_string())
+        );
+    }
+
+    #[test]
+    fn write_infra_tag_attributes_rename_preserves_sender_provided_prefixed_values() {
+        let mut attributes = FastHashMap::default();
+        attributes.insert(
+            MetaString::from("datadog.container.tag.team"),
+            AttributeValue::String(MetaString::from("sender-value")),
+        );
+
+        let tags = shared_tags(&["team:tagger-value"]);
+        write_infra_tag_attributes(tags, ContainerTagPromotion::Rename, &test_interner(), &mut attributes);
+
+        assert_eq!(
+            attr_str(&attributes, "datadog.container.tag.team"),
+            Some("sender-value".to_string())
+        );
     }
 
     #[test]

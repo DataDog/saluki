@@ -1371,6 +1371,9 @@ Controls how custom infrastructure tags are promoted into container tags on OTLP
 carry custom tags into container tags under a `datadog.container.tag.` prefixed copy, or `rename` to
 carry only the prefixed copy. Convention keys and already-prefixed keys are exempt in every mode.
 
+This setting applies when ADP handles OTLP traces itself. In OTLP proxy mode with trace proxying
+enabled, forwarded traces bypass local enrichment, so this setting has no effect on them.
+
 ### `otlp_config.traces.infra_attributes.enabled`
 
 Controls whether entity and global tags from the workload metadata store are enriched onto OTLP traces.
