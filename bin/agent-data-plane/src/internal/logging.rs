@@ -20,7 +20,9 @@ const FIRST_PARTY_LOG_TARGETS: &[&str] = &[
     "agent_data_plane",
     "containerd_protos",
     "datadog_protos",
+    "datadog_agent_apm",
     "datadog_agent_commons",
+    "datadog_agent_remote_config",
     "datadog_agent_runtime",
     "ddsketch",
     "otlp_protos",
@@ -223,6 +225,26 @@ mod tests {
         let directives = translate_level("info").expect("translate logging config");
 
         assert!(directives.contains(&"agent_data_plane=info".to_string()));
+    }
+
+    #[test]
+    fn semantic_registry_logs_use_the_first_party_level() {
+        // Moving the decoder out of saluki-components must not hide its warnings or debug selection logs.
+        let logging = defaulted_logging();
+        let config = LoggingConfigurationTranslator::translate(&logging).expect("translate default logging config");
+        let target = "datadog_agent_apm::semantics::remote_config";
+        let filter = config.log_level.as_targets();
+        assert!(filter.would_enable(target, &tracing::Level::WARN));
+        assert!(!filter.would_enable(target, &tracing::Level::DEBUG));
+
+        let logging = Logging {
+            level: "debug".to_string(),
+            ..logging
+        };
+        let config = LoggingConfigurationTranslator::translate(&logging).expect("translate debug logging config");
+        let filter = config.log_level.as_targets();
+        assert!(filter.would_enable(target, &tracing::Level::WARN));
+        assert!(filter.would_enable(target, &tracing::Level::DEBUG));
     }
 
     #[test]

@@ -1,0 +1,9 @@
+features:
+  - |
+    Agent Data Plane now applies trace sampling updates received through Remote Configuration (``APM_SAMPLING``)
+    when it runs the trace pipeline. The updates change the target traces per second of the priority and errors
+    samplers, and whether the rare sampler is enabled. Both ``remote_configuration.enabled`` and
+    ``remote_configuration.apm_sampling.enabled`` default to ``true``. When
+    ``remote_configuration.apm_semantics.enabled`` is also set (default ``false``), OTLP trace translation and APM
+    stats use the semantic registry received through Remote Configuration (``APM_SEMANTIC_CORE_DD``) instead of the
+    embedded one.

@@ -3344,6 +3344,33 @@ inventory:
       additional_attributes:
         config_registry_filename: proxy.rs
 
+  remote_configuration.apm_sampling.enabled:
+    support: full
+    pipelines: [traces]
+    description: "Apply APM_SAMPLING remote configurations"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: remote_config.rs
+
+  remote_configuration.apm_semantics.enabled:
+    support: full
+    pipelines: [traces]
+    description: "Apply APM_SEMANTIC_CORE_DD remote configurations"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: remote_config.rs
+
+  remote_configuration.enabled:
+    support: full
+    pipelines: [traces]
+    description: "Enable Remote Configuration"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: remote_config.rs
+
   run_path:
     support: full
     pipelines: [cross_cutting]
@@ -5329,8 +5356,6 @@ excluded:
   remote_configuration.agent_integrations.block_list: "ignored in initial audit 2026-04-23"
   remote_configuration.agent_integrations.enabled: "ignored in initial audit 2026-04-23"
   remote_configuration.api_key: "ignored in initial audit 2026-04-23"
-  remote_configuration.apm_sampling.enabled: "ignored in initial audit 2026-04-23"
-  remote_configuration.apm_semantics.enabled: "2026-06-10 Trace-agent APM_SEMANTIC_CORE_DD RC subscription; APM/trace concern outside ADP scope."
   remote_configuration.clients.cache_bypass_limit: "ignored in initial audit 2026-04-23"
   remote_configuration.clients.ttl_seconds: "ignored in initial audit 2026-04-23"
   remote_configuration.config_root: "ignored in initial audit 2026-04-23"
@@ -5339,7 +5364,6 @@ excluded:
   remote_configuration.delegated_auth.provider: "ignored in initial audit 2026-04-23"
   remote_configuration.delegated_auth.refresh_interval_mins: "ignored in initial audit 2026-04-23"
   remote_configuration.director_root: "ignored in initial audit 2026-04-23"
-  remote_configuration.enabled: "ignored in initial audit 2026-04-23"
   remote_configuration.key: "ignored in initial audit 2026-04-23"
   remote_configuration.max_backoff_interval: "ignored in initial audit 2026-04-23"
   remote_configuration.no_tls: "ignored in initial audit 2026-04-23"
