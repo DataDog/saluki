@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use axum::extract::{Request as AxumRequest, State};
 use axum::response::IntoResponse;
 use axum::Router;
+use metrics::Counter;
 use saluki_api::APIHandler;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::components::relays::{Relay, RelayBuilder, RelayContext};
@@ -20,6 +21,7 @@ use saluki_core::topology::OutputDefinition;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::server::http::HttpServer;
 use saluki_io::net::ListenAddress;
+use saluki_metrics::static_metrics;
 use tokio::{pin, select};
 use tracing::debug;
 
@@ -47,9 +49,15 @@ pub struct ApmRelayConfiguration {
     /// Empty disables the Unix domain socket listener.
     pub receiver_socket: String,
 
-    /// URL of the trace-agent that every request other than `POST /v1.0/traces` is proxied to: `http://host:port` or
+    /// URL of the trace-agent that every request not handled by ADP is proxied to: `http://host:port` or
     /// `unix:///path/to/socket`.
     pub proxy_destination: String,
+}
+
+#[static_metrics(prefix = component, labels(component_id, component_type))]
+#[derive(Clone)]
+struct Metrics {
+    requests_relayed_total: Counter,
 }
 
 impl ApmRelayConfiguration {
@@ -122,7 +130,7 @@ impl RelayBuilder for ApmRelayConfiguration {
         &OUTPUTS
     }
 
-    async fn build(&self, _context: BuildContext) -> Result<Box<dyn Relay + Send>, GenericError> {
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Relay + Send>, GenericError> {
         let tcp_endpoint = self.tcp_listen_address()?;
         let uds_endpoint = self.uds_listen_address()?;
 
@@ -138,6 +146,7 @@ impl RelayBuilder for ApmRelayConfiguration {
             tcp_endpoint,
             uds_endpoint,
             proxy,
+            metrics: Metrics::new(context.component_id(), context.component_type().as_category_str()),
         }))
     }
 }
@@ -149,6 +158,7 @@ pub struct ApmRelay {
     tcp_endpoint: Option<ListenAddress>,
     uds_endpoint: Option<ListenAddress>,
     proxy: TraceAgentProxy,
+    metrics: Metrics,
 }
 
 #[async_trait]
@@ -158,6 +168,7 @@ impl Relay for ApmRelay {
             tcp_endpoint,
             uds_endpoint,
             proxy,
+            metrics,
         } = *self;
 
         let global_shutdown = context.take_shutdown_handle();
@@ -165,7 +176,7 @@ impl Relay for ApmRelay {
 
         let mut health = context.take_health_handle();
         let worker_pool = context.topology_context().global_thread_pool().clone();
-        let api_handler = ApmRelayAPIHandler::new(RelayState { proxy });
+        let api_handler = ApmRelayAPIHandler::new(RelayState { metrics, proxy });
         let router = api_handler
             .generate_routes()
             .with_state(api_handler.generate_initial_state());
@@ -208,6 +219,7 @@ impl Relay for ApmRelay {
 #[derive(Clone)]
 struct RelayState {
     proxy: TraceAgentProxy,
+    metrics: Metrics,
 }
 
 struct ApmRelayAPIHandler {
@@ -219,8 +231,11 @@ impl ApmRelayAPIHandler {
         Self { state }
     }
 
-    async fn proxy_request(State(state): State<RelayState>, request: AxumRequest) -> impl IntoResponse {
-        state.proxy.forward(request).await
+    async fn proxy_request(
+        State(RelayState { proxy, metrics }): State<RelayState>, request: AxumRequest,
+    ) -> impl IntoResponse {
+        metrics.requests_relayed_total().increment(1);
+        proxy.forward(request).await
     }
 }
 
@@ -271,6 +286,7 @@ mod tests {
     fn test_router() -> Router {
         build_router(RelayState {
             proxy: unreachable_proxy(),
+            metrics: Metrics::new("dd_traces_relay", "relays"),
         })
     }
 
