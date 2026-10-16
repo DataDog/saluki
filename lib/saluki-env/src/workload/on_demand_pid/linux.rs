@@ -1,10 +1,12 @@
 use std::{num::NonZeroUsize, time::Duration};
 
+use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_core::cache::{Cache, CacheBuilder};
+use saluki_core::runtime::{self, ScopeGuard};
 use saluki_error::GenericError;
 use saluki_metrics::{static_metrics, Gauge};
 use stringtheory::interning::{GenericMapInterner, Interner as _};
-use tokio::time::sleep;
+use tokio::{pin, select, time::sleep};
 use tracing::{debug, trace};
 
 use crate::workload::helpers::cgroups::{
@@ -28,6 +30,11 @@ pub struct ResolverImpl {
     cgroups_reader: CgroupsReader,
     interner: GenericMapInterner,
     pid_mappings_cache: PIDCache,
+
+    /// The background tasks of the resolver and of its cache.
+    ///
+    /// The tasks stop when the resolver is dropped. They stop earlier if the process that owns them stops first.
+    _drivers: ScopeGuard,
 }
 
 impl ResolverImpl {
@@ -53,12 +60,26 @@ impl ResolverImpl {
             .with_capacity(NonZeroUsize::new(DEFAULT_PID_CACHE_CACHED_PIDS_LIMIT).unwrap())
             .with_time_to_idle(Some(DEFAULT_PID_CACHE_IDLE_PID_EXPIRATION));
 
-        tokio::spawn(drive_telemetry(interner.clone(), telemetry.clone()));
+        // The background tasks of this resolver run in a scope that the resolver owns, and its cache starts its own tasks
+        // inside that scope. Thus, all of these tasks appear below the resolver, and they stop when the resolver is
+        // dropped. If the resolver is built outside supervision, its tasks run detached.
+        let mut drivers = runtime::scope::nested_or_detached("pid_resolver");
+        let pid_mappings_cache = drivers.enter_sync(|| cache_builder.build());
+
+        // Report the usage of the interner while the resolver exists.
+        let (telemetry_interner, telemetry) = (interner.clone(), telemetry.clone());
+        drivers.spawn(
+            runtime::worker_with_shutdown("telemetry", move |shutdown| {
+                drive_telemetry(telemetry_interner, telemetry, shutdown)
+            })
+            .build(),
+        );
 
         Ok(Self {
             cgroups_reader,
             interner,
-            pid_mappings_cache: cache_builder.build(),
+            pid_mappings_cache,
+            _drivers: drivers,
         })
     }
 
@@ -139,9 +160,14 @@ impl ResolverImpl {
     }
 }
 
-async fn drive_telemetry(interner: GenericMapInterner, telemetry: Telemetry) {
+async fn drive_telemetry(interner: GenericMapInterner, telemetry: Telemetry, shutdown: ShutdownHandle) {
+    pin!(shutdown);
+
     loop {
-        sleep(Duration::from_secs(1)).await;
+        select! {
+            _ = &mut shutdown => break,
+            _ = sleep(Duration::from_secs(1)) => {}
+        }
 
         telemetry.interner_entries().set(interner.len() as f64);
         telemetry

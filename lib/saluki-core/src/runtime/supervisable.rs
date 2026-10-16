@@ -73,6 +73,22 @@ pub trait Supervisable: Send + Sync {
         true
     }
 
+    /// Returns whether the process can be started again after it has started once.
+    ///
+    /// [`initialize`][Self::initialize] builds the future of the process each time the process starts. Most processes
+    /// can build it again, so their owner can restart them. A process that consumes something when it starts cannot
+    /// build its future a second time. Examples are a connection, or a value that the process received before it ran.
+    /// Such a process returns `false` here.
+    ///
+    /// The owner of a process that returns `false` never restarts it, whatever restart policy the process has. When the
+    /// process stops, its owner reaps it, or fails if it needs the process. See the
+    /// [runtime documentation][crate::runtime#restart-policy] for how this decides the restart policy.
+    ///
+    /// Defaults to `true`.
+    fn can_restart(&self) -> bool {
+        true
+    }
+
     /// Initializes the process asynchronously.
     ///
     /// During initialization, any resources or configuration for the process can be created asynchronously, and the
@@ -119,6 +135,7 @@ mod tests {
 
         assert_eq!(worker.name(), "noop");
         assert!(worker.wants_shutdown_signal());
+        assert!(worker.can_restart());
         assert!(matches!(
             worker.shutdown_strategy(),
             ShutdownStrategy::Graceful(timeout) if timeout == Duration::from_secs(5)

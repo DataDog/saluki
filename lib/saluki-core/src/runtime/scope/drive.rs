@@ -175,7 +175,15 @@ impl Driver {
             Stop::Body(Ok(result)) => {
                 // A body that returned an error failed, so the children that it spawned but that did not start yet do
                 // not start.
-                let aborted = self.close(result.is_ok()).await;
+                let (aborted, child_failure) = self.close(result.is_ok()).await;
+
+                // A body can return because a child failed, for example when it sees the output channel of that child
+                // close. Then the scope sees the failure only as it closes, and the failure is the result of the worker.
+                // An error of the body itself has priority, because it is the first failure that the worker saw.
+                let result = match (result, child_failure) {
+                    (Ok(()), Some(failure)) => Err(failure),
+                    (result, _) => result,
+                };
                 self.finish(result, aborted)
             }
             Stop::Body(Err(panic)) => {
@@ -289,12 +297,13 @@ impl Driver {
     /// Each child is stopped according to its own shutdown strategy, the same as a supervisor stops its children. The
     /// scope sets no deadline of its own.
     ///
-    /// Returns the number of processes that were forcefully aborted. This includes the processes that children reported
-    /// as forcefully stopped when they exited while the scope was open.
-    async fn close(&mut self, start_queued: bool) -> usize {
+    /// Returns the number of processes that were forcefully aborted, and the first failure of a child that fails the
+    /// worker. The count includes the processes that children reported as forcefully stopped when they exited while the
+    /// scope was open. See [`ScopeRuntime::on_close_exit`] for when a child fails the worker as the scope closes.
+    async fn close(&mut self, start_queued: bool) -> (usize, Option<WorkerError>) {
         self.adopt_if_created();
         let Some(mut scope) = self.scope.take() else {
-            return 0;
+            return (0, None);
         };
 
         scope.rx.close();
@@ -313,8 +322,26 @@ impl Driver {
             );
         }
 
+        // Check whether a stop was requested when each child exits, not once for the whole close, because a stop can be
+        // requested while the scope closes.
+        let mut exits = Vec::new();
+        let (owner_signal, ancestors) = (&self.owner_signal, self.ancestors.as_deref());
+        let aborted = scope
+            .worker_state
+            .shutdown_workers_reporting(|child_id, result| {
+                exits.push((child_id, result, requested_stop(owner_signal, ancestors)));
+            })
+            .await;
+
+        let mut child_failure = None;
+        for (child_id, result, requested) in exits {
+            if let Some(failure) = scope.on_close_exit(child_id, result, requested) {
+                child_failure.get_or_insert(failure);
+            }
+        }
+
         // The scope is dropped after this call, and that detaches it from the supervision tree.
-        scope.aborted + scope.worker_state.shutdown_workers().await
+        (scope.aborted + aborted, child_failure)
     }
 
     /// Reports how the worker finished, and counts the children that were forcefully aborted.
@@ -384,7 +411,7 @@ impl ScopeRuntime {
                     name: spec.name().into(),
                     node: spec.node(),
                     restart: config.restart(),
-                    significant: config.edge() == Edge::Needed,
+                    significant: config.stops_owner(),
                 };
                 self.roster.insert(id, ScopeEntry { spec, config }, facts, started);
             }
@@ -494,6 +521,54 @@ impl ScopeRuntime {
         }
 
         (needed || (abnormal && forwards_failures)).then(|| child_terminated(child_name, describe_exit(&result)))
+    }
+
+    /// Handles a child exit while the scope closes, and returns an error if the owner must fail.
+    ///
+    /// `requested` is set if the owner, or a process above it, was told to stop before the child exited.
+    ///
+    /// The scope never restarts a child as it closes. A clean exit is how a child normally stops when its scope closes,
+    /// so it never fails the owner. Neither does an exit after which processes were forcefully aborted, because the
+    /// scope counts those processes instead. The scope logs every other error.
+    ///
+    /// If nothing told the owner to stop, the error also fails the owner if the child is needed or forwards failures,
+    /// the same as when the scope is open. This case is common: the body of an owner can return because a child failed,
+    /// for example because it sees the output channel of that child close. The body returns before the scope can see
+    /// the exit of the child, so the scope sees the error only now.
+    fn on_close_exit(&self, child_id: u64, result: Result<(), WorkerError>, requested: bool) -> Option<WorkerError> {
+        if result.is_ok() || reported_abort_count(&result) > 0 {
+            return None;
+        }
+
+        let entry = self
+            .roster
+            .get(child_id)
+            .expect("exited child must be present in the roster");
+        let child_name = entry.spec.name().to_string();
+
+        if requested {
+            warn!(scope = self.scope.name(), child_name = %child_name, ?result, "Scope child exited with an error while its owner was stopping.");
+            return None;
+        }
+
+        warn!(scope = self.scope.name(), child_name = %child_name, ?result, "Scope child exited with an error as its scope closed.");
+        if entry.config.edge() != Edge::Needed && !entry.config.forwards_failures() {
+            return None;
+        }
+
+        Some(match result {
+            Err(WorkerError::Initialization {
+                child_name: inner,
+                source,
+            }) => WorkerError::Initialization {
+                child_name: Some(match inner {
+                    Some(inner) => format!("{}/{}", child_name, inner),
+                    None => child_name,
+                }),
+                source,
+            },
+            result => child_terminated(child_name, describe_exit(&result)),
+        })
     }
 }
 

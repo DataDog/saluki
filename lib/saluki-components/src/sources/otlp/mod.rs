@@ -46,6 +46,8 @@ use crate::common::otlp::{
 mod logs;
 mod metrics;
 mod resolver;
+use datadog_agent_apm::semantics::SemanticRegistryProvider;
+
 use self::logs::translator::OtlpLogsTranslator;
 use self::metrics::translator::OtlpMetricsTranslator;
 use self::resolver::build_context_resolver;
@@ -134,6 +136,9 @@ pub struct OtlpConfiguration {
     /// Defaults to `usize::MAX`, meaning resource names are not truncated.
     max_resource_len: usize,
 
+    /// Supplies attribute mappings for trace translation. Defaults to embedded mappings without remote updates.
+    semantic_registry: SemanticRegistryProvider,
+
     /// Workload provider to utilize for origin detection/enrichment.
     workload_provider: Arc<dyn WorkloadProvider + Send + Sync>,
 }
@@ -149,6 +154,7 @@ impl OtlpConfiguration {
             default_hostname: MetaString::default(),
             otlp: otlp.clone(),
             max_resource_len: usize::MAX,
+            semantic_registry: SemanticRegistryProvider::default(),
             workload_provider: Arc::new(workload_provider),
         }
     }
@@ -157,6 +163,14 @@ impl OtlpConfiguration {
     pub fn with_static_metric_tags(mut self, static_tags: Vec<String>) -> Self {
         apply_static_metric_tags(&mut self.otlp, static_tags);
         self
+    }
+
+    fn traces_translator(&self) -> OtlpTracesTranslator {
+        OtlpTracesTranslator::new(
+            self.otlp.traces.clone(),
+            self.max_resource_len,
+            self.semantic_registry.clone(),
+        )
     }
 
     fn metrics_translator_config(&self) -> metrics::config::OtlpMetricsTranslatorConfig {
@@ -188,6 +202,18 @@ impl OtlpConfiguration {
     /// unmodified, including `0`, so the configured behavior is always honored.
     pub fn with_max_resource_len(mut self, max_resource_len: usize) -> Self {
         self.max_resource_len = max_resource_len;
+        self
+    }
+
+    /// Sets the provider of attribute mappings used by registry-based trace lookups.
+    ///
+    /// Pass a subscribed provider to receive remote mapping updates. The translator reads one registry snapshot per
+    /// `ResourceSpans` batch, so an update cannot change mappings midway through that batch. Metrics and logs are
+    /// unaffected.
+    ///
+    /// Defaults to embedded mappings without remote updates.
+    pub fn with_semantic_registry(mut self, semantic_registry: SemanticRegistryProvider) -> Self {
+        self.semantic_registry = semantic_registry;
         self
     }
 }
@@ -236,7 +262,7 @@ impl SourceBuilder for OtlpConfiguration {
         let metrics_translator_config = self.metrics_translator_config();
 
         let metric_tags = parse_configured_metric_tags(&self.otlp.metrics.tags);
-        let traces_translator = OtlpTracesTranslator::new(self.otlp.traces.clone(), self.max_resource_len);
+        let traces_translator = self.traces_translator();
         let grpc_max_recv_msg_size_bytes = self.otlp.receiver.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
         let grpc_http2_config = resolve_grpc_http2_config(
             &self.otlp.receiver.grpc.keepalive,
@@ -382,6 +408,7 @@ impl Source for Otlp {
             ),
         )
         .on_runtime(context.topology_context().global_thread_pool().clone())
+        .needed()
         .spawn();
 
         health.mark_ready();
@@ -615,12 +642,14 @@ mod tests {
     use agent_data_plane_config::domains::otlp::{
         CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
     };
+    use datadog_agent_apm::semantics::test_util::TestRegistryPublisher;
     use prost::Message;
     use saluki_core::components::ComponentContext;
     use saluki_metrics::test::TestRecorder;
 
     use super::{apply_static_metric_tags, parse_configured_metric_tags, OtlpConfiguration};
-    use crate::common::otlp::{build_metrics, OtlpHandler};
+    use crate::common::otlp::traces::translator::{custom_status_code_registry, translate_custom_status_code};
+    use crate::common::otlp::{build_metrics, Metrics, OtlpHandler};
 
     fn tags(raw: &str) -> Vec<String> {
         parse_configured_metric_tags(raw)
@@ -635,6 +664,22 @@ mod tests {
             ..Default::default()
         };
         OtlpConfiguration::from_configuration(&otlp, saluki_env::workload::providers::NoopWorkloadProvider)
+    }
+
+    #[test]
+    fn injected_provider_reaches_the_traces_translator() {
+        let (publisher, provider) = TestRegistryPublisher::new();
+        let mut otlp = domains::otlp::Domain::default();
+        otlp.traces.string_interner_size = std::num::NonZeroUsize::new(64 * 1024).unwrap();
+        let mut translator =
+            OtlpConfiguration::from_configuration(&otlp, saluki_env::workload::providers::NoopWorkloadProvider)
+                .with_semantic_registry(provider)
+                .traces_translator();
+        let metrics = Metrics::for_tests();
+        assert_eq!(translate_custom_status_code(&mut translator, &metrics), None);
+
+        publisher.assign([("a", custom_status_code_registry())]);
+        assert_eq!(translate_custom_status_code(&mut translator, &metrics), Some(418.0));
     }
 
     #[test]

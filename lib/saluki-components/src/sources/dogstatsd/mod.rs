@@ -7,7 +7,6 @@
 //! - Track dispatch failures without depending on whether all events were already iterated.
 
 use std::{
-    collections::VecDeque,
     future::Future,
     io, mem,
     num::NonZeroUsize,
@@ -47,7 +46,7 @@ use saluki_io::{
     buf::{BytesBuffer, ClearableIoBuffer as _, CollapsibleReadWriteIoBuffer as _, FixedSizeVec, ReadIoBuffer as _},
     deser::{
         codec::dogstatsd::*,
-        framing::{Framer as _, FramingError, LengthDelimitedFramer},
+        framing::{Framer as _, FramingError},
     },
     net::{
         listener::Listener, ConnectionAddress, ListenAddress, ProcessCredentialsError, ProcessIdentity,
@@ -849,7 +848,6 @@ pub struct DogStatsD {
 }
 
 struct ListenerContext {
-    shutdown_handle: ShutdownHandle,
     listener: ResourceLease<Listener>,
     datagram_sender: mpsc::Sender<QueuedDatagram>,
     io_buffer_pool: ElasticObjectPool<BytesBuffer>,
@@ -974,6 +972,9 @@ impl Source for DogStatsD {
 
         let mut health = context.take_health_handle();
 
+        // This source spawns everything below as its own children. Thus, the source does not finish until they finish.
+        // When the body of the source returns, the children receive the shutdown signal.
+        //
         // Brutal: the shrinker loops forever with no terminal condition of its own, so waiting for it would hold
         // every shutdown open until the component's budget elapsed.
         runtime::worker("io_buffer_pool_shrinker", self.io_buffer_pool_shrinker)
@@ -996,24 +997,27 @@ impl Source for DogStatsD {
 
         // Decoders must drain their queue to completion, so they deliberately ignore the shutdown signal and stop only
         // once the datagram channel closes -- which happens when every listener and stream handler has dropped its
-        // sender. The coordinator here is only used for its handle-drop accounting, so we can wait for that draining
-        // to finish; see `shutdown_listeners_and_drain_datagram_decoders`.
-        let mut decoder_shutdown_coordinator = ShutdownCoordinator::default();
+        // sender. This makes shutdown lossless. The listeners stop when the body of this source returns. The decoders
+        // can see the close only after the listeners and their stream handlers stop. Then the decoders drain the
+        // datagrams that remain.
+        //
+        // When dispatch is backpressured, the drain can take longer than five seconds, the default timeout of a
+        // closure-based child. Thus, the decoders have no timeout of their own. The shutdown budget of the component
+        // bounds the source, and the decoders stop with the source if that budget elapses.
         for worker_id in 0..self.decoder_worker_count.get() {
-            let decoder_shutdown = decoder_shutdown_coordinator.register();
             let datagram_receiver = datagram_receiver.clone();
             let decoder_source_context = context.clone();
             let decoder_context = decoder_context.clone();
 
-            runtime::worker(format!("datagram_decoder_{worker_id}"), async move {
-                let _decoder_shutdown = decoder_shutdown;
-                process_datagram_decoder(datagram_receiver, decoder_source_context, decoder_context).await;
-            })
+            runtime::worker(
+                format!("datagram_decoder_{worker_id}"),
+                process_datagram_decoder(datagram_receiver, decoder_source_context, decoder_context),
+            )
+            .with_shutdown_timeout(Duration::MAX)
             .spawn();
         }
         drop(datagram_receiver);
 
-        let mut listener_shutdown_coordinator = ShutdownCoordinator::default();
         // For each listener, spawn a dedicated task to run it.
         for listener in self.listeners {
             let task_name = format!("listener_{}", listener.listen_address().listener_type());
@@ -1026,7 +1030,6 @@ impl Source for DogStatsD {
             // `uds-stream`, or try and hardcode the full component name, which we will inevitably forget to update if
             // we tweak the topology configuration, etc.
             let listener_context = ListenerContext {
-                shutdown_handle: listener_shutdown_coordinator.register(),
                 listener,
                 datagram_sender: datagram_sender.clone(),
                 io_buffer_pool: self.io_buffer_pool.clone(),
@@ -1037,13 +1040,14 @@ impl Source for DogStatsD {
                 packet_forwarder_target: self.packet_forwarder_target.clone(),
             };
 
+            // Each listener is needed. A fatal accept error stops a listener without a request to stop. Then the source
+            // has nothing to listen on, so the listener stops the source. The source does not continue to run.
             runtime::supervisable(ListenerWorker::new(
                 task_name,
                 listener_source_context,
                 listener_context,
             ))
-            .temporary()
-            .with_significant(true)
+            .needed()
             .spawn();
         }
         drop(datagram_sender);
@@ -1065,12 +1069,9 @@ impl Source for DogStatsD {
             }
         }
 
+        // This return stops the listeners, and after they stop, the decoders drain. The source finishes when all of its
+        // children finish.
         debug!("Stopping DogStatsD source...");
-
-        shutdown_listeners_and_drain_datagram_decoders(listener_shutdown_coordinator, decoder_shutdown_coordinator)
-            .await;
-
-        debug!("DogStatsD source stopped.");
 
         Ok(())
     }
@@ -1126,9 +1127,14 @@ impl Supervisable for ListenerWorker {
     }
 
     fn shutdown_strategy(&self) -> ShutdownStrategy {
-        // No deadline of its own: the component's supervisor holds a single budget covering the source and everything
-        // it spawned.
+        // The listener has no shutdown timeout of its own. The topology shutdown timeout applies to the source and to
+        // everything that the source spawned.
         ShutdownStrategy::Graceful(Duration::MAX)
+    }
+
+    fn can_restart(&self) -> bool {
+        // The first start takes the listener, so there is nothing left to listen on a second time.
+        false
     }
 
     async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
@@ -1150,7 +1156,6 @@ async fn process_listener(
     source_context: SourceContext, listener_context: ListenerContext, process_shutdown: ShutdownHandle,
 ) {
     let ListenerContext {
-        shutdown_handle,
         mut listener,
         datagram_sender,
         io_buffer_pool,
@@ -1161,7 +1166,7 @@ async fn process_listener(
         packet_forwarder_target,
     } = listener_context;
 
-    pin!(shutdown_handle, process_shutdown);
+    pin!(process_shutdown);
 
     let listen_addr = listener.listen_address().clone();
     let metrics = build_metrics(
@@ -1184,22 +1189,14 @@ async fn process_listener(
         })
     });
 
-    let mut stream_shutdown_coordinator = ShutdownCoordinator::default();
-
     info!(%listen_addr, "DogStatsD listener started.");
 
     loop {
         select! {
-            _ = &mut shutdown_handle => {
-                debug!(%listen_addr, "Received shutdown signal. Waiting for existing stream handlers to finish...");
-                break;
-            }
-            // The other way in: the supervisor tearing the component down while the source's own `run` is still going
-            // and so isn't driving the coordinator above. Without this the accept loop would keep going -- and keep
-            // holding a datagram sender, keeping the decoders waiting on a queue that never closes -- until the
-            // shutdown budget elapsed and aborted the lot.
+            // This signal fires when the body of the source returns. That return closes the scope that this listener
+            // belongs to.
             _ = &mut process_shutdown => {
-                debug!(%listen_addr, "Supervisor signalled shutdown. Waiting for existing stream handlers to finish...");
+                debug!(%listen_addr, "Received shutdown signal. Waiting for existing stream handlers to finish...");
                 break;
             }
             result = listener.accept() => match result {
@@ -1220,14 +1217,14 @@ async fn process_listener(
 
                     let task_name = format!("conn_{}", listen_addr.listener_type());
 
-                    // The coordinator handle stays even though this is now a supervised child. Supervision makes the
-                    // handler a sibling of the listener, not a descendant, so it alone wouldn't keep "the listener
-                    // waits for its own streams" true -- the handle-drop accounting below is what does.
-                    let stream_shutdown = stream_shutdown_coordinator.register();
+                    // Each handler is a child of the listener. Thus, the listener does not finish until its stream
+                    // handlers finish. The handlers receive the shutdown signal when the listener no longer accepts
+                    // connections.
                     let handler_source_context = source_context.clone();
-                    let handler = process_stream(stream, handler_source_context, handler_context, stream_shutdown);
-
-                    runtime::worker(task_name, handler).spawn();
+                    runtime::worker_with_shutdown(task_name, move |shutdown| {
+                        process_stream(stream, handler_source_context, handler_context, shutdown)
+                    })
+                    .spawn();
                 }
                 Err(e) => {
                     error!(%listen_addr, error = %e, "Failed to accept connection. Stopping listener.");
@@ -1237,9 +1234,7 @@ async fn process_listener(
         }
     }
 
-    stream_shutdown_coordinator.shutdown_and_wait().await;
-
-    info!(%listen_addr, "DogStatsD listener stopped.");
+    info!(%listen_addr, "DogStatsD listener stopped accepting connections.");
 }
 
 async fn process_stream(
@@ -1503,18 +1498,6 @@ async fn process_datagram_decoder(
     debug!("Datagram decoder drained its queue.");
 }
 
-/// Stops the listeners and then waits for the datagram decoders to finish draining.
-///
-/// The order matters and is what makes shutdown lossless: the listeners (and, transitively, their stream handlers) are
-/// the only holders of a datagram sender, so waiting for them first is what closes the decoders' queue. Only then can
-/// the decoders observe the close, drain what's left, and drop their handles.
-async fn shutdown_listeners_and_drain_datagram_decoders(
-    listener_shutdown_coordinator: ShutdownCoordinator, decoder_shutdown_coordinator: ShutdownCoordinator,
-) {
-    listener_shutdown_coordinator.shutdown_and_wait().await;
-    decoder_shutdown_coordinator.shutdown_and_wait().await;
-}
-
 impl DogStatsDDecoder {
     fn new(source_context: SourceContext, decoder_context: DecoderContext) -> Self {
         let DecoderContext {
@@ -1562,14 +1545,13 @@ impl DogStatsDDecoder {
         let mode = context.mode;
 
         let payload = received_payload(io_buffer, bytes_read);
-        capture_uds_traffic(
-            listen_addr,
-            &self.traffic_capture,
-            peer_addr,
-            process_origin,
-            payload,
-            &mut context.stream_capture,
-        );
+        capture_unixgram_traffic(listen_addr, &self.traffic_capture, peer_addr, process_origin, payload);
+
+        let capture_stream_frames = matches!(listen_addr, ListenAddress::Unix(_)) && self.traffic_capture.is_ongoing();
+        if capture_stream_frames {
+            context.stream_capture.update_peer_metadata(peer_addr);
+        }
+        context.framer.set_retain_outer_frames(capture_stream_frames);
 
         metrics.bytes_received().increment(bytes_read as u64);
         metrics.bytes_received_size().record(bytes_read as f64);
@@ -1604,6 +1586,13 @@ impl DogStatsDDecoder {
 
         loop {
             let frame_result = context.framer.next_frame(io_buffer, eof);
+            for outer_frame in context.framer.drain_outer_frames() {
+                let _ = self.traffic_capture.enqueue(build_capture_record(
+                    context.stream_capture.last_pid,
+                    process_origin,
+                    &outer_frame,
+                ));
+            }
             let completed_outer_frames = context.framer.take_completed_outer_frames();
             if completed_outer_frames > 0 {
                 metrics
@@ -1894,54 +1883,29 @@ fn capture_named_pipe_frame(traffic_capture: &TrafficCapture, frame: &[u8]) {
     }
 }
 
-fn capture_uds_traffic(
+fn capture_unixgram_traffic(
     listen_addr: &ListenAddress, traffic_capture: &TrafficCapture, peer_addr: &ConnectionAddress,
-    process_origin: Option<&ProcessOrigin>, payload: &[u8], stream_capture: &mut StreamCaptureState,
+    process_origin: Option<&ProcessOrigin>, payload: &[u8],
 ) {
-    if payload.is_empty() || !traffic_capture.is_ongoing() {
+    if payload.is_empty() || !matches!(listen_addr, ListenAddress::Unixgram(_)) || !traffic_capture.is_ongoing() {
         return;
     }
 
-    match listen_addr {
-        ListenAddress::Unixgram(_) => {
-            let _ = traffic_capture.enqueue(build_capture_record(
-                process_id_from_peer_addr(peer_addr),
-                process_origin,
-                payload,
-            ));
-        }
-        ListenAddress::Unix(_) => {
-            stream_capture.update_peer_metadata(peer_addr);
-            stream_capture.pending.extend(payload);
-
-            while let Ok(Some(outer_payload)) = stream_capture
-                .outer_framer
-                .next_frame(&mut stream_capture.pending, false)
-            {
-                let _ = traffic_capture.enqueue(build_capture_record(
-                    stream_capture.last_pid,
-                    process_origin,
-                    &outer_payload,
-                ));
-            }
-        }
-        _ => {}
-    }
+    let _ = traffic_capture.enqueue(build_capture_record(
+        process_id_from_peer_addr(peer_addr),
+        process_origin,
+        payload,
+    ));
 }
 
+/// Per-connection metadata used when capturing Unix stream traffic.
 struct StreamCaptureState {
-    outer_framer: LengthDelimitedFramer,
-    pending: VecDeque<u8>,
     last_pid: Option<i32>,
 }
 
 impl StreamCaptureState {
     fn new() -> Self {
-        Self {
-            outer_framer: LengthDelimitedFramer,
-            pending: VecDeque::new(),
-            last_pid: None,
-        }
+        Self { last_pid: None }
     }
 
     fn update_peer_metadata(&mut self, peer_addr: &ConnectionAddress) {
@@ -2338,7 +2302,6 @@ mod tests {
     use bytes::{Buf as _, BufMut as _};
     use bytesize::ByteSize;
     use metrics::{Key, Label};
-    use saluki_common::sync::shutdown::ShutdownCoordinator;
     use saluki_core::{
         accounting::{ComponentRegistry, MemoryLimiter},
         components::{sources::SourceContext, ComponentContext},
@@ -2376,10 +2339,10 @@ mod tests {
     use super::{
         build_io_buffer_pool, capture_named_pipe_frame, default_decoder_worker_count, filters::EnablePayloadsFilter,
         handle_frame, handle_metric_packet, metrics::build_metrics, origin_detection_error_for_telemetry,
-        resolve_process_origin, resolve_process_origin_if_needed, shutdown_listeners_and_drain_datagram_decoders,
-        BufferDecodeContext, BufferDecodeMode, ContextResolvers, DatagramSocketContext, DecodeOutcome, DecoderContext,
-        DogStatsDConfiguration, DogStatsDDecoder, OriginEnrichmentConfiguration, ProcessOrigin, QueuedDatagram,
-        ReceivedBuffer, TrafficCapture, TrafficCaptureReader,
+        resolve_process_origin, resolve_process_origin_if_needed, BufferDecodeContext, BufferDecodeMode,
+        ContextResolvers, DatagramSocketContext, DecodeOutcome, DecoderContext, DogStatsDConfiguration,
+        DogStatsDDecoder, OriginEnrichmentConfiguration, ProcessOrigin, QueuedDatagram, ReceivedBuffer, TrafficCapture,
+        TrafficCaptureReader,
     };
     #[cfg(unix)]
     use super::{receive_connected_stream, receive_connectionless_stream, received_payload};
@@ -2767,6 +2730,147 @@ mod tests {
             Some(1)
         );
         assert_eq!(recorder.counter(processed_metric_key("unix", None)), Some(1));
+    }
+
+    fn length_delimited(payload: &[u8]) -> Vec<u8> {
+        let mut frame = (payload.len() as u32).to_le_bytes().to_vec();
+        frame.extend_from_slice(payload);
+        frame
+    }
+
+    /// Feeds `data` through the decoder the same way the connected stream reader does: each read fills whatever
+    /// space is left in the I/O buffer after collapsing any partial frame retained from the previous read.
+    async fn feed_connected_stream(
+        decoder: &mut DogStatsDDecoder, context: &mut BufferDecodeContext<'_>, mut io_buffer: BytesBuffer,
+        mut data: &[u8], peer_addr: &ConnectionAddress,
+    ) -> BytesBuffer {
+        use saluki_io::buf::CollapsibleReadWriteIoBuffer as _;
+
+        while !data.is_empty() {
+            io_buffer.collapse();
+            let bytes_read = io_buffer.remaining_mut().min(data.len());
+            io_buffer.put_slice(&data[..bytes_read]);
+            data = &data[bytes_read..];
+
+            let (received, returned_buffer) =
+                ReceivedBuffer::with_return(io_buffer, bytes_read, peer_addr.clone(), None);
+            let outcome = decoder.decode_buffer(context, received).await;
+            assert_eq!(outcome, DecodeOutcome::Continue);
+            io_buffer = returned_buffer.await.expect("decoder should return the I/O buffer");
+        }
+        io_buffer
+    }
+
+    async fn finish_capture(capture: &TrafficCapture, capture_path: &std::path::Path) -> Vec<(Vec<u8>, i32)> {
+        capture.stop_capture();
+        timeout(Duration::from_secs(2), async {
+            while capture.is_ongoing() {
+                yield_now().await;
+            }
+        })
+        .await
+        .expect("capture should stop");
+
+        let mut reader = TrafficCaptureReader::from_path(capture_path).expect("capture should be readable");
+        let mut records = Vec::new();
+        while let Some(record) = reader.read_next().expect("capture record should decode") {
+            records.push((record.payload, record.pid));
+        }
+        records
+    }
+
+    fn stream_test_payloads(count: usize) -> Vec<Vec<u8>> {
+        // 57 lines of 26 bytes gives 1,486-byte frames, which never align with the 8,192-byte I/O buffer.
+        (0..count).map(|_| b"capture.stream.metric:1|c\n".repeat(57)).collect()
+    }
+
+    #[tokio::test]
+    async fn uds_stream_capture_records_every_outer_frame_across_reads() {
+        let listen_addr = ListenAddress::Unix("/tmp/dsd.socket".into());
+        let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Credentials(ProcessCredentials {
+            pid: 42,
+            uid: 0,
+            gid: 0,
+        }));
+        let capture_directory = tempfile::tempdir().expect("temporary capture directory should be created");
+        let capture = TrafficCapture::new(capture_directory.path().to_path_buf(), 1);
+        let metrics = build_metrics(&listen_addr, &test_component_context(), false);
+        let (source_context, mut metrics_rx) = test_source_context();
+        tokio::spawn(async move { while metrics_rx.recv().await.is_some() {} });
+        let decoder_context = DecoderContext {
+            traffic_capture: capture.clone(),
+            ..test_decoder_context(false)
+        };
+        let mut decoder = DogStatsDDecoder::new(source_context, decoder_context);
+        let mut context = BufferDecodeContext::new(&listen_addr, false, &metrics, None, BufferDecodeMode::Connected);
+
+        let capture_path = capture
+            .start_capture(None, Duration::from_secs(30), false)
+            .expect("capture should start");
+        let payloads = stream_test_payloads(40);
+        let stream = payloads
+            .iter()
+            .flat_map(|payload| length_delimited(payload))
+            .collect::<Vec<_>>();
+        let io_buffer = test_io_buffer(&[], TEST_BUFFER_SIZE);
+        let io_buffer = feed_connected_stream(&mut decoder, &mut context, io_buffer, &stream, &peer_addr).await;
+        assert_eq!(io_buffer.remaining(), 0);
+
+        let records = finish_capture(&capture, &capture_path).await;
+        assert_eq!(records.len(), payloads.len());
+        for ((payload, pid), expected) in records.iter().zip(&payloads) {
+            assert_eq!(payload, expected);
+            assert_eq!(*pid, 42);
+        }
+    }
+
+    #[tokio::test]
+    async fn uds_stream_capture_starting_mid_frame_captures_from_next_whole_frame_and_stops_cleanly() {
+        let listen_addr = ListenAddress::Unix("/tmp/dsd.socket".into());
+        let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable);
+        let capture_directory = tempfile::tempdir().expect("temporary capture directory should be created");
+        let capture = TrafficCapture::new(capture_directory.path().to_path_buf(), 1);
+        let metrics = build_metrics(&listen_addr, &test_component_context(), false);
+        let (source_context, mut metrics_rx) = test_source_context();
+        tokio::spawn(async move { while metrics_rx.recv().await.is_some() {} });
+        let decoder_context = DecoderContext {
+            traffic_capture: capture.clone(),
+            ..test_decoder_context(false)
+        };
+        let mut decoder = DogStatsDDecoder::new(source_context, decoder_context);
+        let mut context = BufferDecodeContext::new(&listen_addr, false, &metrics, None, BufferDecodeMode::Connected);
+
+        let payloads = stream_test_payloads(20);
+        let stream = payloads
+            .iter()
+            .flat_map(|payload| length_delimited(payload))
+            .collect::<Vec<_>>();
+        let frame_len = stream.len() / payloads.len();
+
+        // Before capture starts, deliver the first frame plus half of the second.
+        let split = frame_len + frame_len / 2;
+        let io_buffer = test_io_buffer(&[], TEST_BUFFER_SIZE);
+        let io_buffer =
+            feed_connected_stream(&mut decoder, &mut context, io_buffer, &stream[..split], &peer_addr).await;
+        assert_eq!(io_buffer.remaining(), frame_len / 2);
+
+        let capture_path = capture
+            .start_capture(None, Duration::from_secs(30), false)
+            .expect("capture should start");
+        let io_buffer =
+            feed_connected_stream(&mut decoder, &mut context, io_buffer, &stream[split..], &peer_addr).await;
+        let records = finish_capture(&capture, &capture_path).await;
+
+        assert_eq!(records.len(), payloads.len() - 1);
+        for ((payload, _), expected) in records.iter().zip(&payloads[1..]) {
+            assert_eq!(payload, expected);
+        }
+
+        // Once capture has stopped, the connection keeps decoding without retaining any frames for capture.
+        let more = length_delimited(&payloads[0]);
+        let io_buffer = feed_connected_stream(&mut decoder, &mut context, io_buffer, &more, &peer_addr).await;
+        assert_eq!(io_buffer.remaining(), 0);
+        assert_eq!(context.framer.drain_outer_frames().count(), 0);
     }
 
     #[tokio::test]
@@ -3327,39 +3431,6 @@ mod tests {
 
         assert!(first.expect("first worker should receive a packet").result.is_err());
         assert!(second.expect("second worker should receive a packet").result.is_err());
-    }
-
-    #[tokio::test]
-    async fn shutdown_drains_queued_datagrams_after_listeners_stop() {
-        let mut listener_shutdown_coordinator = ShutdownCoordinator::default();
-        let listener_shutdown = listener_shutdown_coordinator.register();
-        let (sender, mut receiver) = mpsc::channel(2);
-        sender.send(()).await.expect("first datagram should be queued");
-        sender.send(()).await.expect("second datagram should be queued");
-
-        let listener_task = tokio::spawn(async move {
-            listener_shutdown.await;
-            drop(sender);
-        });
-        let decoded = Arc::new(AtomicUsize::new(0));
-        let decoder_count = decoded.clone();
-
-        // The decoder reports completion by dropping its handle, exactly as the supervised children do.
-        let mut decoder_shutdown_coordinator = ShutdownCoordinator::default();
-        let decoder_shutdown = decoder_shutdown_coordinator.register();
-        let decoder_task = tokio::spawn(async move {
-            let _decoder_shutdown = decoder_shutdown;
-            while receiver.recv().await.is_some() {
-                decoder_count.fetch_add(1, Ordering::Relaxed);
-            }
-        });
-
-        shutdown_listeners_and_drain_datagram_decoders(listener_shutdown_coordinator, decoder_shutdown_coordinator)
-            .await;
-        listener_task.await.expect("listener task should stop cleanly");
-        decoder_task.await.expect("decoder task should stop cleanly");
-
-        assert_eq!(decoded.load(Ordering::Relaxed), 2);
     }
 
     #[tokio::test]
@@ -4265,9 +4336,9 @@ mod tests {
 
 /// Tests covering the source's background work running as supervised children.
 ///
-/// The `tests` module above exercises the decode path in isolation. What matters here is the wiring: that `run` puts
-/// the pool shrinker, datagram decoders, listeners, and per-connection handlers under the component's supervisor, and
-/// that the whole subtree comes down cleanly and without dropping queued work.
+/// The `tests` module above exercises the decode path in isolation. Here, the wiring is the important part. These tests
+/// check that `run` puts the pool shrinker, datagram decoders, listeners, and per-connection handlers below the source
+/// as its own children. They also check that the whole subtree stops cleanly and does not drop queued work.
 #[cfg(test)]
 mod supervision {
     use std::net::SocketAddr;
@@ -4291,7 +4362,7 @@ mod supervision {
         health::HealthRegistry,
         runtime::{
             state::{DataspaceRegistry, ResourceRegistry},
-            SupervisorError,
+            NodeSnapshot, NodeState, SupervisorError,
         },
         support::SubsystemIdentifier,
         topology::{EventsBuffer, EventsDispatcher, OutputName, TopologyContext},
@@ -4317,13 +4388,65 @@ mod supervision {
     /// How long to let datagrams make their way through to the (single-slot) output before asserting on backpressure.
     const BACKPRESSURE_SETTLE: Duration = Duration::from_millis(250);
 
+    /// How long a drain test holds a decoder mid-dispatch after shutdown.
+    ///
+    /// This is longer than five seconds, the default timeout of a closure-based child. Thus, the drain survives the hold
+    /// only if the decoders have no timeout of their own.
+    const DRAIN_HOLD: Duration = Duration::from_secs(6);
+
+    /// Shutdown budget of the component in a drain test. It must be longer than [`DRAIN_HOLD`].
+    const DRAIN_SHUTDOWN_BUDGET: Duration = Duration::from_secs(30);
+
     /// Children a running source with one UDP listener should have.
     ///
-    /// The pool shrinker, one child per decoder worker, the listener itself, and one stream handler: a connectionless
-    /// listener's `accept` yields its socket straight away, so its handler exists from the start rather than only once
-    /// a peer shows up.
+    /// These children are:
+    ///
+    /// - the pool shrinker
+    /// - one child for each decoder worker
+    /// - the listener
+    /// - one stream handler, below the listener
+    ///
+    /// For a connectionless listener, `accept` returns its socket immediately. Thus, its handler exists from the start,
+    /// and not only after a peer appears.
     const fn udp_child_count() -> usize {
         1 + DECODER_WORKERS + 1 + 1
+    }
+
+    /// Processes that run below the test supervisor while a source with one UDP listener runs.
+    ///
+    /// These processes are the source itself and its children.
+    const fn udp_descendant_count() -> usize {
+        1 + udp_child_count()
+    }
+
+    /// Runs `source` as the worker of its component, and installs the shutdown handle of the worker as the handle of
+    /// the source.
+    ///
+    /// The topology does the same thing. This step also gives the source a scope for the children that it spawns.
+    fn run_source(supervisor: &TestComponentSupervisor, source: Box<DogStatsD>, mut context: SourceContext) {
+        supervisor.spawn_component("source", move |shutdown| async move {
+            context.set_shutdown_handle_for_test(shutdown);
+            source.run(context).await
+        });
+    }
+
+    /// Counts the running processes below `node`.
+    fn running_beneath(node: &NodeSnapshot) -> usize {
+        node.children
+            .iter()
+            .map(|child| usize::from(child.state == NodeState::Running) + running_beneath(child))
+            .sum()
+    }
+
+    /// Finds the first node with the name `name` below `node`, in depth-first order.
+    fn find_node<'a>(node: &'a NodeSnapshot, name: &str) -> Option<&'a NodeSnapshot> {
+        node.children.iter().find_map(|child| {
+            if child.name == name {
+                Some(child)
+            } else {
+                find_node(child, name)
+            }
+        })
     }
 
     /// Everything a test needs to drive `DogStatsD::run` and observe the result.
@@ -4457,55 +4580,51 @@ mod supervision {
     }
 
     #[tokio::test]
-    async fn background_work_runs_as_supervised_children() {
-        // The pool shrinker, each datagram decoder, and each listener are supervised children rather than detached
-        // tasks, so they are all accounted for while the source runs and all gone once it stops.
-        let mut supervisor = TestComponentSupervisor::start("dogstatsd").await;
+    async fn background_work_runs_as_the_sources_own_children() {
+        // The pool shrinker, each datagram decoder, and each listener are children of the source. They are not detached
+        // tasks or siblings. Thus, all of them appear below the source while it runs, and none of them remain after it
+        // stops.
+        let supervisor = TestComponentSupervisor::start("dogstatsd").await;
         let health_registry = HealthRegistry::new();
-        let harness = build_source(&health_registry, supervisor.component_shutdown_handle()).await;
-        let Harness { source, context, .. } = harness;
+        let Harness { source, context, .. } = build_source(&health_registry, ShutdownHandle::noop()).await;
 
-        let run = tokio::spawn(supervisor.handle().scope(async move { source.run(context).await }));
+        run_source(&supervisor, source, context);
+        supervisor.wait_for_running_descendants(udp_descendant_count()).await;
 
-        supervisor.wait_for_children(udp_child_count()).await;
+        let root = supervisor.tree_handle().snapshot().root;
+        let source_node = find_node(&root, "source").expect("the source is running");
+        assert_eq!(running_beneath(source_node), udp_child_count());
 
-        supervisor.signal_shutdown();
-        timeout(RUN_TIMEOUT, run)
+        // If the result is `ShutdownTimedOut`, a child ignored shutdown and was aborted. The pool shrinker is a
+        // deliberate exception. It stops brutally, and a brutal stop does not count as forced.
+        let result = timeout(RUN_TIMEOUT, supervisor.shutdown())
             .await
-            .expect("source should stop on shutdown")
-            .expect("source task should not panic")
-            .expect("source should stop cleanly");
-
-        // The supervisor is draining by now -- its shutdown and the source's are one signal, as in production -- and a
-        // drain freezes the child roster rather than emptying it, so there is no count left to sample here. What the
-        // drain does still show is that nothing had to be forced: `ShutdownTimedOut` would mean a child ignored
-        // shutdown and was aborted, which is the same "everything stopped on its own" property the count stood in for.
-        // The brutally-stopped pool shrinker is the deliberate exception, and doesn't count as forced.
-        let result = supervisor.wait().await;
+            .expect("the source and its children should stop on shutdown");
         assert!(result.is_ok(), "every child should have stopped on its own: {result:?}");
     }
 
     #[tokio::test]
-    async fn run_does_not_return_until_the_decoders_have_drained() {
+    async fn source_does_not_finish_until_the_decoders_have_drained() {
         // The drain guarantee that matters: work already queued when shutdown is signalled must still be decoded and
-        // dispatched. The decoders deliberately ignore shutdown for exactly this reason, exiting only once the
-        // listeners have dropped their senders and the queue is empty -- and `run` waits for that.
+        // dispatched. The decoders deliberately ignore shutdown for exactly this reason. They exit only after the
+        // listeners drop their senders and the queue is empty. The source owns the decoders, and it does not finish
+        // until they exit.
         //
         // Rather than race a datagram against shutdown, this pins a decoder open: the metrics output holds a single
-        // buffer, so one dispatched buffer fills it and the next blocks a decoder mid-dispatch. `run` must not return
-        // while that is true, no matter that shutdown has been signalled.
-        let mut supervisor = TestComponentSupervisor::start("dogstatsd").await;
+        // buffer, so one dispatched buffer fills it and the next blocks a decoder mid-dispatch. The source must not
+        // finish while that is true, even after the test signals shutdown. The test holds the decoder there for longer
+        // than the default timeout of a closure-based child, but for less than the budget of the component.
+        let mut supervisor = TestComponentSupervisor::start_with_budget("dogstatsd", DRAIN_SHUTDOWN_BUDGET).await;
         let health_registry = HealthRegistry::new();
-        let harness = build_source(&health_registry, supervisor.component_shutdown_handle()).await;
         let Harness {
             source,
             context,
             mut metrics_rx,
             listen_addr,
-        } = harness;
+        } = build_source(&health_registry, ShutdownHandle::noop()).await;
 
-        let mut run = tokio::spawn(supervisor.handle().scope(async move { source.run(context).await }));
-        supervisor.wait_for_children(udp_child_count()).await;
+        run_source(&supervisor, source, context);
+        supervisor.wait_for_running_descendants(udp_descendant_count()).await;
 
         let client = UdpSocket::bind("127.0.0.1:0").await.expect("client should bind");
 
@@ -4526,40 +4645,37 @@ mod supervision {
         }
         tokio::time::sleep(BACKPRESSURE_SETTLE).await;
 
+        // From here on, the test does not wait on the socket. Thus, it can pause the clock, and the hold below then
+        // takes no real time.
+        tokio::time::pause();
         supervisor.signal_shutdown();
 
-        // `run` must still be waiting on the blocked decoder. Without the drain it would return here.
-        tokio::time::sleep(BACKPRESSURE_SETTLE).await;
+        // The body of the source already returned. But the source still waits for its blocked decoder, and the
+        // supervisor also waits. Without the drain, the source and the supervisor finish at this point. If the decoders
+        // had the default timeout of a closure-based child, the scope of the source aborts them during the hold.
+        tokio::time::sleep(DRAIN_HOLD).await;
         assert!(
-            !run.is_finished(),
-            "`run` returned while a decoder was still mid-dispatch"
+            !supervisor.is_finished(),
+            "the source finished while a decoder was still mid-dispatch"
         );
 
-        // Draining the output unblocks the decoder, which lets the drain -- and so `run` -- complete.
+        // The test drains the output, and this unblocks the decoder. Then the drain completes, and the source also
+        // completes. The output closes after the source and all of its decoders stop.
         let mut drained = 1;
-        let result = loop {
-            select! {
-                run_result = &mut run => break run_result,
-                maybe_buffer = metrics_rx.recv() => match maybe_buffer {
-                    Some(buffer) => drained += buffer.len(),
-                    None => break (&mut run).await,
-                },
+        timeout(RUN_TIMEOUT, async {
+            while let Some(buffer) = metrics_rx.recv().await {
+                drained += buffer.len();
             }
-        };
-        result
-            .expect("source task should not panic")
-            .expect("source should stop cleanly");
-
-        // `run` returning and the last buffer arriving are concurrent, so collect whatever is still queued. The
-        // source's dispatcher is gone by now, so this terminates as soon as the channel is empty.
-        while let Some(buffer) = metrics_rx.recv().await {
-            drained += buffer.len();
-        }
+        })
+        .await
+        .expect("the output should close once the source has drained");
 
         // Nothing accepted before shutdown should have been dropped on the way out.
         assert_eq!(drained, 3, "every queued datagram should have been dispatched");
 
-        let supervisor_result = supervisor.wait().await;
+        let supervisor_result = timeout(RUN_TIMEOUT, supervisor.wait())
+            .await
+            .expect("the supervisor should stop once the source has");
         assert!(
             supervisor_result.is_ok(),
             "every child should have stopped on its own: {supervisor_result:?}"
@@ -4567,38 +4683,42 @@ mod supervision {
     }
 
     #[tokio::test]
-    async fn supervisor_shutdown_stops_the_subtree_without_the_source_driving_it() {
-        // The orderly path is the source's own `run` signalling its coordinators. This is the other one: the
-        // supervisor tears the component down while `run` is still going, so nothing is driving those coordinators.
-        //
-        // The listener has to observe the supervisor's own signal for this to terminate. If it only watched the
-        // source's coordinator it would keep accepting, keep holding a datagram sender, and so keep the decoders
-        // waiting on a queue that never closes -- until the shutdown budget elapsed and aborted the lot.
-        let supervisor = TestComponentSupervisor::start("dogstatsd").await;
+    async fn a_source_ignoring_shutdown_is_cut_off_with_its_children() {
+        // In the orderly path, the body of the source returns when it receives the shutdown signal, and this stops its
+        // children. This test covers the other path: a source that never sees the signal. The supervisor aborts the
+        // source when the budget elapses. Its children then stop with it, and the result does not count them.
+        let supervisor = TestComponentSupervisor::start_with_budget("dogstatsd", Duration::from_millis(500)).await;
         let health_registry = HealthRegistry::new();
 
-        // A signal of the test's own, deliberately never fired, so `run` stays in its loop for the whole test. This is
-        // the one case production can't produce -- there a source's shutdown signal *is* its supervisor's -- and
-        // separating them is what isolates the listener's own `process_shutdown` arm.
+        // This signal belongs to the test, and the test deliberately never fires it. Thus, the body of the source stays
+        // in its loop for the whole test. This condition cannot occur in production, because there the shutdown signal
+        // of a source *is* the signal of its worker. For this reason, the test runs the source with this signal
+        // directly, not through `run_source`.
         let mut source_shutdown = ShutdownCoordinator::default();
-        let harness = build_source(&health_registry, source_shutdown.register()).await;
-        let Harness { source, context, .. } = harness;
+        let Harness { source, context, .. } = build_source(&health_registry, source_shutdown.register()).await;
 
-        let _run = tokio::spawn(supervisor.handle().scope(async move { source.run(context).await }));
-        supervisor.wait_for_children(udp_child_count()).await;
+        supervisor.spawn_component("source", move |_shutdown| source.run(context));
+        supervisor.wait_for_running_descendants(udp_descendant_count()).await;
 
-        let result = supervisor.shutdown().await;
-        assert!(
-            result.is_ok(),
-            "the subtree should have stopped on the supervisor's signal alone: {result:?}"
-        );
+        let result = timeout(RUN_TIMEOUT, supervisor.shutdown())
+            .await
+            .expect("the source should be cut off within its budget");
+        match result {
+            // The count includes at least the source itself. It does not include children that stop on their own
+            // immediately before the forced stop. Thus, the number of counted children depends on timing.
+            Err(SupervisorError::ShutdownTimedOut { aborted }) => assert!(aborted >= 1),
+            other => panic!("expected the source to be cut off and counted, got {other:?}"),
+        }
+
+        drop(source_shutdown);
     }
 
     #[tokio::test]
-    async fn stream_handlers_are_supervised_children() {
-        // Per-connection handlers are supervised too, under one fixed name per listener type. Accepting a connection
-        // adds children, and tearing the source down takes them with everything else.
-        let mut supervisor = TestComponentSupervisor::start("dogstatsd").await;
+    async fn stream_handlers_are_the_listeners_own_children() {
+        // Per-connection handlers are also supervised, with one fixed name for each listener type. Each handler belongs
+        // to the listener that accepted its connection. When the listener accepts a connection, it adds a handler. When
+        // the source stops, its handlers stop with everything else.
+        let supervisor = TestComponentSupervisor::start("dogstatsd").await;
         let health_registry = HealthRegistry::new();
 
         // A TCP listener, so there are real connections to accept.
@@ -4608,34 +4728,35 @@ mod supervision {
             other => panic!("expected a bound TCP address, got {other:?}"),
         };
 
-        let mut harness = build_source(&health_registry, supervisor.component_shutdown_handle()).await;
+        let mut harness = build_source(&health_registry, ShutdownHandle::noop()).await;
         harness.source.listeners = vec![tcp_listener];
-
         let Harness { source, context, .. } = harness;
 
-        let run = tokio::spawn(supervisor.handle().scope(async move { source.run(context).await }));
+        run_source(&supervisor, source, context);
 
-        let baseline = 1 + DECODER_WORKERS + 1;
-        supervisor.wait_for_children(baseline).await;
+        // The baseline is the source, the pool shrinker, the decoders, and the listener.
+        let baseline = 1 + 1 + DECODER_WORKERS + 1;
+        supervisor.wait_for_running_descendants(baseline).await;
 
         let _client = tokio::net::TcpStream::connect(listen_addr)
             .await
             .expect("client should connect");
 
-        // Two children per connection, not one: the handler, and the stream reader it starts. Spawning on the
-        // ambient supervisor makes the reader the handler's *sibling* rather than its descendant, which is why it
-        // shows up in the supervisor's own child count.
-        supervisor.wait_for_children(baseline + 2).await;
+        // Each connection adds two processes. One is the handler, below the listener. The other is the stream reader
+        // that the handler starts below itself.
+        supervisor.wait_for_running_descendants(baseline + 2).await;
+        let root = supervisor.tree_handle().snapshot().root;
+        let listener_node = find_node(&root, "listener_tcp").expect("the listener is running");
+        let handler_node = find_node(listener_node, "conn_tcp")
+            .expect("the handler should hang beneath the listener that accepted its connection");
+        assert!(
+            find_node(handler_node, "stream_reader").is_some(),
+            "the stream reader should hang beneath the handler that started it"
+        );
 
-        supervisor.signal_shutdown();
-        timeout(RUN_TIMEOUT, run)
+        let result = timeout(RUN_TIMEOUT, supervisor.shutdown())
             .await
-            .expect("source should stop on shutdown")
-            .expect("source task should not panic")
-            .expect("source should stop cleanly");
-
-        // As above, the drain is what attests that the handler stopped on its own rather than being aborted.
-        let result = supervisor.wait().await;
+            .expect("the source and its children should stop on shutdown");
         assert!(result.is_ok(), "every child should have stopped on its own: {result:?}");
     }
 
@@ -4644,7 +4765,7 @@ mod supervision {
         // The property the whole migration is for. The source only ever borrows its listener, so stopping it hands the
         // socket back to the registry still bound, rather than releasing the port to the operating system and leaving
         // a rebuilt source to race whatever else wants it.
-        let mut supervisor = TestComponentSupervisor::start("dogstatsd").await;
+        let supervisor = TestComponentSupervisor::start("dogstatsd").await;
         let health_registry = HealthRegistry::new();
 
         // A registry the test keeps, so it can ask for the same address once the source is gone.
@@ -4655,7 +4776,7 @@ mod supervision {
         let registry = ResourceRegistry::new();
         let address = ListenAddress::udp_loopback(0);
 
-        let mut harness = build_source(&health_registry, supervisor.component_shutdown_handle()).await;
+        let mut harness = build_source(&health_registry, ShutdownHandle::noop()).await;
         harness.source.listeners = vec![leased_listener_from(&registry, address.clone()).await];
         let bound = harness.source.listeners[0].bound_listen_address();
         let listen_addr = match bound {
@@ -4664,16 +4785,13 @@ mod supervision {
         };
 
         let Harness { source, context, .. } = harness;
-        let run = tokio::spawn(supervisor.handle().scope(async move { source.run(context).await }));
-        supervisor.wait_for_children(udp_child_count()).await;
+        run_source(&supervisor, source, context);
+        supervisor.wait_for_running_descendants(udp_descendant_count()).await;
 
-        supervisor.signal_shutdown();
-        timeout(RUN_TIMEOUT, run)
+        timeout(RUN_TIMEOUT, supervisor.shutdown())
             .await
-            .expect("source should stop on shutdown")
-            .expect("source task should not panic")
-            .expect("source should stop cleanly");
-        supervisor.wait().await.expect("supervisor should drain cleanly");
+            .expect("the source should stop on shutdown")
+            .expect("supervisor should drain cleanly");
 
         // The same socket, not a lucky re-bind: the registry never let go of it.
         let mut listener = leased_listener_from(&registry, address).await;
@@ -4729,41 +4847,5 @@ mod supervision {
         };
         let error = error.to_string();
         assert!(error.contains("already leased"), "unexpected error: {error}");
-    }
-
-    #[tokio::test]
-    async fn a_listener_stopping_takes_the_component_down() {
-        // The listener is a significant child, so it stopping is a component-level event rather than a source that
-        // carries on with nothing left to listen on.
-        //
-        // A fatal accept error is what causes this in production, which a test can't readily provoke. Signalling only
-        // the source's own shutdown produces the same shape: the listener exits while the supervisor around it is
-        // still running normally, which is exactly the case significance exists to catch.
-        let supervisor = TestComponentSupervisor::start("dogstatsd").await;
-        let health_registry = HealthRegistry::new();
-
-        let mut source_shutdown = ShutdownCoordinator::default();
-        let harness = build_source(&health_registry, source_shutdown.register()).await;
-        let Harness { source, context, .. } = harness;
-
-        let run = tokio::spawn(supervisor.handle().scope(async move { source.run(context).await }));
-        supervisor.wait_for_children(udp_child_count()).await;
-
-        source_shutdown.shutdown();
-        timeout(RUN_TIMEOUT, run)
-            .await
-            .expect("source should stop on shutdown")
-            .expect("source task should not panic")
-            .expect("source should stop cleanly");
-
-        // The supervisor was never told to stop, so it stopping at all is the assertion. The timeout is what turns a
-        // listener that was left non-significant into a failure rather than a hang.
-        let result = timeout(RUN_TIMEOUT, supervisor.wait())
-            .await
-            .expect("the supervisor should have stopped on its own");
-        assert!(
-            matches!(result, Err(SupervisorError::SignificantChildExited)),
-            "a stopped listener should have brought the component down, got {result:?}"
-        );
     }
 }

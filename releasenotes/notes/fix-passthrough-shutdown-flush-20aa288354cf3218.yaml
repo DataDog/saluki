@@ -1,0 +1,5 @@
+fixes:
+  - |
+    Fix timestamped DogStatsD metrics being dropped when Agent Data Plane stops
+    shortly after receiving them. The no-aggregation pipeline now forwards all
+    buffered metrics during shutdown, matching the Datadog Agent.
