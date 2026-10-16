@@ -12,7 +12,7 @@ use std::sync::{Arc, LazyLock};
 
 use agent_data_plane_config::domains;
 use async_trait::async_trait;
-use datadog_agent_remote_config::Subscription;
+use datadog_agent_apm::sampling::{RemoteSampling, SamplerSettings, TraceSamplingSubscription};
 use saluki_common::strings::StringBuilder;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
@@ -35,15 +35,12 @@ mod event_processor;
 mod priority_sampler;
 mod probabilistic;
 mod rare_sampler;
-mod remote_config;
 mod score_sampler;
 mod signature;
 mod telemetry;
 
 use self::event_processor::EventProcessor;
 use self::probabilistic::PROB_RATE_KEY;
-pub use self::remote_config::TraceSamplingSubscription;
-use self::remote_config::{RemoteSampling, SamplerSettings, SamplingError};
 use self::telemetry::{DecisionWindow, WINDOW};
 use crate::common::datadog::{
     compute_top_level, get_root_span_index, get_trace_env, sample_by_rate, DECISION_MAKER_MANUAL,
@@ -94,7 +91,7 @@ pub struct TraceSamplerConfiguration {
     max_events_per_second: f64,
 
     /// Remote updates, or an inert subscription when remote sampling is not configured.
-    remote_sampling: Subscription<RemoteSampling, SamplingError>,
+    remote_sampling: TraceSamplingSubscription,
 }
 
 impl TraceSamplerConfiguration {
@@ -130,7 +127,7 @@ impl TraceSamplerConfiguration {
             analyzed_spans_by_service: traces.analyzed_spans_by_service.clone(),
             analyzed_rate_by_service: traces.analyzed_rate_by_service.clone(),
             max_events_per_second: traces.max_events_per_second,
-            remote_sampling: Subscription::inert(),
+            remote_sampling: TraceSamplingSubscription::default(),
         }
     }
 
@@ -139,7 +136,7 @@ impl TraceSamplerConfiguration {
     /// Only priority and error sampling targets and rare sampling can change. For each field
     /// left unset by the remote configuration, the sampler uses its local setting.
     pub fn with_remote_sampling(mut self, remote_sampling: TraceSamplingSubscription) -> Self {
-        self.remote_sampling = remote_sampling.subscription;
+        self.remote_sampling = remote_sampling;
         self
     }
 
@@ -275,7 +272,7 @@ pub struct TraceSampler {
     static_settings: SamplerSettings,
     /// Normalized default environment used to select a remote `by_env` entry.
     remote_env: MetaString,
-    remote_sampling: Subscription<RemoteSampling, SamplingError>,
+    remote_sampling: TraceSamplingSubscription,
     /// Last update handled, so each buffer does not reapply the same settings.
     applied_sampling: Option<Arc<RemoteSampling>>,
 }
@@ -892,10 +889,10 @@ impl Transform for TraceSampler {
 mod tests {
     use std::collections::HashMap;
 
-    use datadog_agent_remote_config::TestPublisher;
+    use datadog_agent_apm::sampling::test_util::TestSamplingPublisher;
+    use saluki_core::components::test_util::TestComponentDriver;
     use saluki_core::data_model::event::trace::{AttributeValue, Span as DdSpan, Trace};
 
-    use super::remote_config::SamplingDecoder;
     use super::*;
     const PRIORITY_USER_DROP: i32 = -1;
 
@@ -926,7 +923,7 @@ mod tests {
                 rare_sampler_enabled: false,
             },
             remote_env: MetaString::from("agent-env"),
-            remote_sampling: Subscription::inert(),
+            remote_sampling: TraceSamplingSubscription::default(),
             applied_sampling: None,
         }
     }
@@ -2449,8 +2446,8 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/17ecddf4e3e/pkg/trace/remoteconfighandler/remote_config_handler_test.go
 
     // With probabilistic sampling set to 0, only the rare sampler can keep test traces.
-    fn create_remote_sampler(errors_per_second: f64) -> (TestPublisher<RemoteSampling, SamplingError>, TraceSampler) {
-        let (publisher, remote_sampling) = TestPublisher::new();
+    fn create_remote_sampler(errors_per_second: f64) -> (TestSamplingPublisher, TraceSampler) {
+        let (publisher, remote_sampling) = TestSamplingPublisher::new();
         let sampler = TraceSampler {
             sampling_rate: 0.0,
             error_sampler: errors::ErrorsSampler::new(errors_per_second, 1.0),
@@ -2470,6 +2467,22 @@ mod tests {
             ..create_test_sampler()
         };
         (publisher, sampler)
+    }
+
+    /// Traces settings where probabilistic sampling drops every trace, so only the rare sampler keeps one.
+    fn rare_only_traces() -> domains::traces::Domain {
+        domains::traces::Domain {
+            target_traces_per_second: 7.0,
+            errors_per_second: 9.0,
+            enable_rare_sampler: true,
+            default_env: "Prod".to_owned(),
+            probabilistic_sampler: domains::traces::ProbabilisticSampler {
+                enabled: true,
+                sampling_percentage: 0.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
     }
 
     fn transform_empty_buffer(sampler: &mut TraceSampler) {
@@ -2494,7 +2507,7 @@ mod tests {
     #[test]
     fn remote_configuration_changes_live_sampler_settings() {
         let (publisher, mut sampler) = create_remote_sampler(10.0);
-        publisher.assign::<SamplingDecoder>([(
+        publisher.assign([(
             "sampling",
             r#"{"all_envs":{"priority_sampler_target_TPS":41,"errors_sampler_target_TPS":42,
                 "rare_sampler_enabled":true}}"#,
@@ -2512,7 +2525,7 @@ mod tests {
     #[test]
     fn more_than_one_remote_configuration_changes_nothing() {
         let (publisher, mut sampler) = create_remote_sampler(10.0);
-        publisher.assign::<SamplingDecoder>([
+        publisher.assign([
             (
                 "a",
                 r#"{"all_envs":{"priority_sampler_target_TPS":41,"rare_sampler_enabled":true}}"#,
@@ -2527,7 +2540,7 @@ mod tests {
     #[test]
     fn more_than_one_remote_configuration_after_one_keeps_remote_settings() {
         let (publisher, mut sampler) = create_remote_sampler(10.0);
-        publisher.assign::<SamplingDecoder>([(
+        publisher.assign([(
             "a",
             r#"{"all_envs":{"priority_sampler_target_TPS":41,"errors_sampler_target_TPS":42,
                 "rare_sampler_enabled":true}}"#,
@@ -2535,7 +2548,7 @@ mod tests {
         transform_empty_buffer(&mut sampler);
         assert_eq!(live_tps(&sampler), (41.0, 42.0));
 
-        publisher.assign::<SamplingDecoder>([
+        publisher.assign([
             ("a", r#"{"all_envs":{"priority_sampler_target_TPS":7}}"#),
             ("b", r#"{"all_envs":{"errors_sampler_target_TPS":8}}"#),
         ]);
@@ -2550,28 +2563,16 @@ mod tests {
 
     #[test]
     fn remote_sampling_subscription_reaches_the_built_sampler() {
-        let (publisher, subscription) = TestPublisher::new();
-        let traces = domains::traces::Domain {
-            target_traces_per_second: 7.0,
-            errors_per_second: 9.0,
-            enable_rare_sampler: true,
-            default_env: "Prod".to_owned(),
-            // Probabilistic sampling drops every trace, so only the rare sampler keeps one.
-            probabilistic_sampler: domains::traces::ProbabilisticSampler {
-                enabled: true,
-                sampling_percentage: 0.0,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let config = TraceSamplerConfiguration::from_configuration(&traces, &domains::otlp::Traces::default())
-            .with_remote_sampling(TraceSamplingSubscription { subscription });
+        let (publisher, subscription) = TestSamplingPublisher::new();
+        let config =
+            TraceSamplerConfiguration::from_configuration(&rare_only_traces(), &domains::otlp::Traces::default())
+                .with_remote_sampling(subscription);
         let mut sampler = config.build_sampler();
         assert_eq!(live_tps(&sampler), (7.0, 9.0));
         assert!(rare_keeps_new_trace(&mut sampler, 1));
 
         // The Datadog Agent's tests send unset fields as `null`.
-        publisher.assign::<SamplingDecoder>([(
+        publisher.assign([(
             "sampling",
             r#"{"all_envs":{"priority_sampler_target_TPS":null,"errors_sampler_target_TPS":null,
                 "rare_sampler_enabled":null},
@@ -2586,7 +2587,7 @@ mod tests {
         );
         assert!(!rare_keeps_new_trace(&mut sampler, 2));
 
-        publisher.assign::<SamplingDecoder>([(
+        publisher.assign([(
             "sampling",
             r#"{"all_envs":{"priority_sampler_target_TPS":null,"errors_sampler_target_TPS":null,
                 "rare_sampler_enabled":null},"by_env":null}"#,
@@ -2600,17 +2601,52 @@ mod tests {
         assert!(rare_keeps_new_trace(&mut sampler, 3));
     }
 
+    /// The run loop applies a published update before sampling the next buffer.
+    #[tokio::test]
+    async fn run_loop_samples_with_the_published_remote_settings() {
+        let (publisher, subscription) = TestSamplingPublisher::new();
+        let config =
+            TraceSamplerConfiguration::from_configuration(&rare_only_traces(), &domains::otlp::Traces::default())
+                .with_remote_sampling(subscription);
+        let (control, mut outputs) = TestComponentDriver::transform(config)
+            .await
+            .expect("the sampler should start");
+        let new_service_trace = |span_id: u64| {
+            Event::Trace(create_test_trace(vec![
+                create_top_level_span(span_id).with_service(MetaString::from(format!("rare-probe-{span_id}")))
+            ]))
+        };
+
+        // The rare sampler keeps the first trace. Waiting for it makes sure the update is published after it.
+        control.send_event(new_service_trace(1)).await;
+        outputs
+            .default_output()
+            .next()
+            .await
+            .expect("the rare sampler should keep the first trace");
+
+        publisher.assign([("sampling", r#"{"all_envs":{"rare_sampler_enabled":false}}"#)]);
+        control.send_event(new_service_trace(2)).await;
+        control.shutdown().await.expect("the sampler should stop cleanly");
+
+        let kept = outputs.default_output().collect_events().await;
+        assert!(
+            kept.is_empty(),
+            "the second trace should be dropped now that remote settings disable the rare sampler: {kept:?}"
+        );
+    }
+
     #[test]
     fn remote_field_removed_later_falls_back_to_static() {
         let (publisher, mut sampler) = create_remote_sampler(10.0);
-        publisher.assign::<SamplingDecoder>([(
+        publisher.assign([(
             "sampling",
             r#"{"all_envs":{"priority_sampler_target_TPS":41,"rare_sampler_enabled":true}}"#,
         )]);
         transform_empty_buffer(&mut sampler);
         assert_eq!(live_tps(&sampler), (41.0, 10.0));
 
-        publisher.assign::<SamplingDecoder>([("sampling", r#"{"all_envs":{"errors_sampler_target_TPS":42}}"#)]);
+        publisher.assign([("sampling", r#"{"all_envs":{"errors_sampler_target_TPS":42}}"#)]);
         transform_empty_buffer(&mut sampler);
         assert_eq!(
             live_tps(&sampler),
@@ -2627,7 +2663,7 @@ mod tests {
     #[test]
     fn static_zero_errors_tps_stays_disabled_under_remote_configuration() {
         let (publisher, mut sampler) = create_remote_sampler(0.0);
-        publisher.assign::<SamplingDecoder>([("sampling", r#"{"all_envs":{"errors_sampler_target_TPS":5}}"#)]);
+        publisher.assign([("sampling", r#"{"all_envs":{"errors_sampler_target_TPS":5}}"#)]);
         transform_empty_buffer(&mut sampler);
         assert_eq!(sampler.error_sampler.get_target_tps(), 5.0);
 
@@ -2640,7 +2676,7 @@ mod tests {
     #[test]
     fn inert_remote_sampling_changes_nothing() {
         let mut sampler = TraceSampler {
-            remote_sampling: Subscription::inert(),
+            remote_sampling: TraceSamplingSubscription::default(),
             ..create_remote_sampler(10.0).1
         };
         // An inert subscription must not reset these overrides.
@@ -2657,14 +2693,14 @@ mod tests {
     #[test]
     fn unassigned_after_remote_configuration_keeps_remote_settings() {
         let (publisher, mut sampler) = create_remote_sampler(10.0);
-        publisher.assign::<SamplingDecoder>([(
+        publisher.assign([(
             "sampling",
             r#"{"all_envs":{"priority_sampler_target_TPS":41,"errors_sampler_target_TPS":42,
                 "rare_sampler_enabled":true}}"#,
         )]);
         transform_empty_buffer(&mut sampler);
 
-        publisher.assign::<SamplingDecoder>(std::iter::empty::<(&str, &str)>());
+        publisher.assign(std::iter::empty::<(&str, &str)>());
         assert_eq!(
             *sampler
                 .remote_sampling
@@ -2711,7 +2747,7 @@ mod tests {
         };
         assert_eq!(learned_rates(&sampler), (vec![0.5], vec![0.5]));
 
-        publisher.assign::<SamplingDecoder>([(
+        publisher.assign([(
             "sampling",
             r#"{"all_envs":{"priority_sampler_target_TPS":5,"errors_sampler_target_TPS":2}}"#,
         )]);
@@ -2731,7 +2767,7 @@ mod tests {
         let (publisher, mut sampler) = create_remote_sampler(10.0);
         let payload = r#"{"all_envs":{"priority_sampler_target_TPS":5,"errors_sampler_target_TPS":4,
             "rare_sampler_enabled":true}}"#;
-        publisher.assign::<SamplingDecoder>([("sampling", payload)]);
+        publisher.assign([("sampling", payload)]);
         transform_empty_buffer(&mut sampler);
 
         // Learn a rate for one signature in each sampler: counts in one bucket become rates when the next begins.
@@ -2771,7 +2807,7 @@ mod tests {
         assert_eq!(before.errors_rates.0.len(), 1, "the errors sampler has learned a rate");
 
         let applied = sampler.remote_sampling.current().expect("a configuration is accepted");
-        publisher.assign::<SamplingDecoder>([("sampling", payload)]);
+        publisher.assign([("sampling", payload)]);
         let republished = sampler.remote_sampling.current().expect("a configuration is accepted");
         assert!(
             !Arc::ptr_eq(&applied, &republished),

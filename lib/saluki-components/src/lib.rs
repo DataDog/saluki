@@ -13,6 +13,5 @@ pub mod destinations;
 pub mod encoders;
 pub mod forwarders;
 pub mod relays;
-pub mod remote_config;
 pub mod sources;
 pub mod transforms;
