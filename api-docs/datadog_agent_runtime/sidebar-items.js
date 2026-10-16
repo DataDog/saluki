@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["logging","remote_agent"]};
+window.SIDEBAR_ITEMS = {"mod":["env","logging","remote_agent"]};
