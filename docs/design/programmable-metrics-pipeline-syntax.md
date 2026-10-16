@@ -1,0 +1,314 @@
+# Programmable metric processing: the pipeline syntax
+
+A new surface syntax for programs, written as streaming queries in the style of Unix pipes and PRQL, and a printer that
+turns any program, including the default program lowered from native configuration, into the form a person would
+write. Read the [index](programmable-metrics-index.md) first. This replaces the node-and-edge syntax of
+`saluki-metric-plan-syntax` wholesale; the IR does not change.
+
+## Contents
+
+- [Why](#why)
+- [Principles](#principles)
+- [The language](#the-language)
+- [Node IDs](#node-ids)
+- [Printing: from a graph to the form a person writes](#printing-from-a-graph-to-the-form-a-person-writes)
+- [Normalization](#normalization)
+- [Operator registry additions](#operator-registry-additions)
+- [The demo](#the-demo)
+- [Work breakdown](#work-breakdown)
+- [Testing](#testing)
+- [Deferred](#deferred)
+
+## Why
+
+The node-and-edge syntax is a wiring diagram: every node is named, every edge is drawn, merges have numbered ports, a
+filter is a `split` with an explicit `false -> drop`, and inserting a step means rewiring two edges. A program is a
+streaming query over metrics, and people know that shape from shells, `jq`, PRQL, Kusto, and streaming SQL.
+
+## Principles
+
+1. **One IR, a thin syntax.** The syntax only builds a graph and prints one. It adds no meaning of its own: the
+   reference interpreter and the equivalence oracle stay the definition of what a program does.
+2. **A small core, with sugar defined by rewrites.** The core maps one to one onto the IR. Each piece of sugar is one
+   local rewrite into the core, so proving the syntax correct is proving the core's lowering once and each rewrite
+   once.
+3. **Declarative.** Statements are equations over streams, not steps in time. Statement order matters only for
+   scoping; the order of stages inside a pipeline is the graph's order, as it is in the IR.
+4. **A canonical printed form.** Printing is a function of the graph, like `gofmt`. Each sugar form is printed only
+   where parsing it back gives exactly the same graph; anywhere else the core form is printed.
+5. **Separate passes.** The parser makes a tree; lowering turns the tree into an artifact; normalization (a plan crate
+   pass, not a syntax concern) puts equivalent programs into one form; the printer recognizes sugar in a graph and
+   lays the tree out as text. No pass does another's job.
+
+## The language
+
+### An example
+
+The default program, printed:
+
+```text
+policy metrics {
+  let dsd_no_agg_split = dogstatsd
+    | dogstatsd_mapper(profiles: [ ... ]) as dsd_enrich
+    | namespace_prefix("tenant", exclusions: ["internal.", "system."]) as dsd_prefix_filter
+    | where intake_name != "tenant.raw.blocked" as dsd_prefix_filter_blocklist
+    | timestamp_split(10s)
+
+  let dsd_agg = dsd_no_agg_split.default
+    | tag_projection(rules: [ ... ], value_rules: [ ... ]) as dsd_tag_filterlist
+    | aggregate(window: 10s, flush_interval: 15s)
+
+  let dsd_post_agg_filter = (dsd_agg, dsd_no_agg_split.passthrough)
+    | where not (kind in [counter, rate, gauge, set] and intake_name == "tenant.checkout.latency.max")
+
+  dsd_post_agg_filter | emit output dsd_client_telemetry
+
+  (dsd_post_agg_filter, otlp, checks, liveness, trace_sampler) as metrics_enrich_in
+    | host_tags(config.host.tags, deadline: config.host.tags_deadline) as metrics_enrich_host_tags
+    | fork as metrics_policy {
+        emit output dd_metrics_encode
+        where intake_name == "checkout.requests" or intake_name starts_with "checkout." as metrics_routing_filter_0
+          | emit output metrics_routing_encode_0
+        ...
+      }
+}
+```
+
+The `as` clauses keep the native node IDs that ADP's telemetry, topology, and correspondence depend on (the owner's
+decision of 2026-10-16). A later step, with V10, renames native IDs to the derived scheme, and they disappear.
+
+### Lexical structure
+
+As today: whitespace and line breaks are insignificant, `#` starts a comment to the end of the line, and strings,
+numbers, durations, and identifiers are unchanged. New tokens: `|`, `!=`. New keywords, reserved only where the grammar
+expects them: `let`, `as`, `where`, `fork`, `emit`, `output`, `drop`, `exit`. Retired: `node`, `->`, `input.`, and
+`prefix_in`.
+
+### Grammar
+
+```text
+program    = "policy" scope "{" header* statement* "}"
+header     = "ir_version" int | "base" hash [ "outputs" "{" (output "=" hash ","?)* "}" ] | "blobs" "{" ... "}"
+statement  = "let" ident "=" pipeline                   # a named stream
+           | pipeline                                   # must end in a sink
+pipeline   = head ("|" stage)* ["|" sink]
+head       = ref | tuple
+ref        = ident ["." port]                           # a let, or a scope input; `.port` picks an output port
+tuple      = "(" ref ("," ref)* ","? ")" ["as" ident]   # a merge, its input ports in order
+stage      = operator ["(" args ")"] ["as" ident]       # any registered operator
+           | "where" predicate ["as" ident]             # sugar
+           | "fork" ["as" ident] "{" branch+ "}"        # sugar; ends the pipeline
+branch     = (stage "|")* sink | (stage "|")* fork-stage
+sink       = "emit" recipients ["as" ident]             # `emit primary`, `emit [primary, "https://b.example.com"]`
+           | "emit" "output" output ["as" ident]
+           | "drop" ["as" ident]
+           | "exit" exit-name ["as" ident]              # leaves a scope that ends early (until V4)
+args       = [positional ","] (param ":" value ","?)*
+```
+
+A `fork` is always the last stage of its pipeline (every branch ends in a sink), and a pipeline in a `let` never ends in
+a sink. A branch is stages then a sink, so branches need no separators.
+
+### The core and what each form becomes
+
+| Form | IR |
+|---|---|
+| a scope input, `dogstatsd` | edges from `input.dogstatsd` |
+| `e \| op(args)` | a node running `op`, with an edge into its only input port from `e` |
+| `x.port` | output port `port` of the last node of `x`, which must have several output ports |
+| `(a, b, ...)` | a `merge(inputs: n)`, with `a` at port `0`, `b` at port `1`, and so on |
+| `let x = e` | names the stream `e`; `x` is used by each later reference to it |
+| a stream used `n > 1` times | a `tee(ports: n)` after it, port `i` feeding the `i`th use in source order |
+| `e \| emit recipients`, `e \| emit output o`, `e \| drop`, `e \| exit name` | an inline terminal node |
+
+**Sugar**, each one rewrite into the core:
+
+- `e | where p` is `let s = e | split(p); s.false | drop; s.true`.
+- `e | fork { t1 ... tn }` is `let s = e | tee(ports: n); s.0 | t1; ...; s.(n-1) | tn`, with the tee named by the fork.
+- Inside predicates, `a != b` is `not (a == b)`, and `tags.k is unset` is `not has_tag("k")` (see
+  [predicates](#predicates)).
+
+### Rules the syntax enforces
+
+Each replaces a validator rule with a syntax rule, so the author meets it at the point of writing:
+
+- **Define before use.** A `let` is visible only after its statement, and a `let` cannot refer to itself. A cycle
+  cannot be written (validation's `Acyclic` rule stays, for artifacts from JSON).
+- **Every stream and port is used.** An unused `let`, or an unused output port of a node with several, is an error, not
+  a silent drop: "`dsd_no_agg_split.passthrough` is never used; write `dsd_no_agg_split.passthrough | drop`".
+- **A node with several output ports is never used bare**: pick a port.
+- **Sinks end pipelines**: a sink in the middle of a pipeline is an error that says how to copy a stream instead (name
+  it with `let` and use it twice).
+- **A bare statement ends in a sink, a `let` does not.**
+- **Names are unique**: a `let` cannot reuse a scope input's name, another `let`'s, or a node ID.
+
+### Arguments and defaults
+
+- An operator's **positional parameter**, when its registry entry declares one, may be passed first without its name:
+  `namespace_prefix("tenant", exclusions: [...])`, `timestamp_split(10s)`, `split(<predicate>)`.
+- A parameter with a **registry default** may be left out. The printer leaves out every parameter equal to its default
+  (normalization fills them in; see below).
+- An operator without parameters, or whose parameters are all left out, takes no parentheses: `host_enrichment`.
+
+### Values
+
+Unchanged, except that a configuration binding is written `config.host.tags` (the binding name's segments, after
+`config.`); `config("...")` is retired.
+
+### Predicates
+
+`not` binds tightest, then `and`, then `or`. `all(...)` and `any(...)` are retired: a junction of any length is written
+with `and` and `or`.
+
+| IR leaf | Syntax |
+|---|---|
+| `Name`, `IntakeName`, `Host` with `Eq` | `name == "a"` |
+| ... with `Prefix` | `name starts_with "a."` |
+| ... with `In` | `name in ["a", "b"]` |
+| ... with `PrefixIn` | `name starts_with ["a.", "b."]` |
+| ... with `Matches { values: config.x, prefix: false }` | `name in config.x` |
+| ... with `Matches { values: config.x, prefix: true }` | `name starts_with config.x` |
+| ... with `Matches { values: [literals], ... }` | the core spelling `name matches(values: [...], prefix: false)`; normalization turns it into `in` or `starts_with` |
+| `HostUnset` | `host is unset` (and `not` of it, `host is set`) |
+| `HasTag("k")` | `tags.k is set`; a key that is not an identifier is quoted, `tags["app.kubernetes.io/name"] is set` |
+| `Tag` | `tags.team == "platform"`, and the other string matches |
+| `HasOriginTag`, `OriginTag` | `origin_tags.pod is set`, `origin_tags.pod starts_with "web-"` |
+| `KindIn` | `kind in [counter, gauge]` |
+| `Const` | `true`, `false` |
+| `Flag(config.x)` | `config.x` |
+| `Flag(literal)` | `true`, `false` written where a flag is expected: printed as the constant leaf only when the IR leaf is `Const` |
+| `IsEmpty` | `is_empty(config.x)`, `is_empty([])` |
+| `Not(p)` | `not p`; `Not(<leaf> == s)` prints as `<leaf> != s`; `Not(HasTag)` prints as `is unset` |
+
+Every IR predicate has exactly one printed spelling, so printing and parsing back gives the same predicate. Where two
+spellings parse to the same IR (`not name == "a"` and `name != "a"`), the printer uses one.
+
+## Node IDs
+
+Kernel reuse and state retention match nodes by ID (`KernelKey.node`, `LineageKey.node`), so derived IDs must stay put
+when someone edits elsewhere. Every node has an ID: the one its `as` clause gives, or a derived one.
+
+- **In `let x = s1 | ... | sn`**, the last stage's node is `x`. Each earlier stage is `x_<operator>` (`where` is
+  `x_split`; a tuple head is `x_in`). A repeated operator takes `_2`, `_3`, ... in pipeline order.
+- **In a bare statement**, the **anchor** is the port the pipeline starts from: for a reference to a node with one
+  output port, that node's ID; for `x.port`, `x_<port>`; for a scope input, `input_<name>`; for a stream used several
+  times, its tee's port, `<tee>_<i>`; for a tuple head, its merge is `<anchor of its first element>_in` and the anchor
+  is that merge. Each stage is `<anchor>_<operator>`, repeats numbered as above.
+- **A fork's branches** start from the fork's tee: branch `i` has the anchor `<fork>_<i>`. A fork's tee is
+  `<anchor>_fork` unless named.
+- **An implicit tee** after a stream `x` with one output port is `x_fanout`; after a port `x.p` it is `x_p_fanout`.
+- **A sink** is the inline terminal [`derived_terminal_id`] names, `<parent>_<port>`, as today.
+- A derived ID longer than 63 bytes is shortened as `derived_terminal_id` shortens. A derived ID that equals another
+  node's ID is an error that asks for an `as`.
+- Merges (`_in`) and tees (`_fanout`) follow the conventions native lowering already uses, so the default program needs
+  no `as` on those.
+
+The editor warns when an edit would change the ID of a stateful node (an `aggregate`), since its state would not carry
+over.
+
+## Printing: from a graph to the form a person writes
+
+Printing is `format(resugar(artifact))`:
+
+- **Resugar** (artifact to tree) recognizes sugar in the graph. It is total: any artifact prints. It is exact for every
+  **well-formed** artifact, one whose edges name nodes and ports that exist, with one edge per input port and at most
+  one per output port, no cycles, every node reachable from an input, and every output port used. For other artifacts it
+  prints as well as it can, and parsing the text reports the problem, as today.
+- **Format** (tree to text) lays the tree out at the line width, breaking values and predicates as today's printer
+  does.
+
+Resugar works from the graph alone, in the [canonical order](../../lib/saluki-metric-plan-syntax/src/graph.rs) parsing
+writes:
+
+1. **Chains.** A node continues the pipeline of the node before it when it is that node's only consumer and has one
+   input. Nodes start a new statement where a chain cannot continue: after a node with several output ports, after a
+   stream used several times, at a merge, and where a node's ID does not follow the derived scheme for the current
+   statement but its successor's does (so a person's choice to name an intermediate stream survives).
+2. **`let` or bare.** A chain whose last node is used by another statement is a `let` named for that node; a chain that
+   ends in a sink or fork is a bare statement.
+3. **Sugar, in priority order.** A `split` whose `false` port leads to a `drop` terminal with the derived ID is
+   `where`. A `tee` whose consumers all end in sinks, with nothing else using its ports, is `fork`. A `tee` named
+   `x_fanout` after a stream `x`, whose port order matches the order its uses are printed in, is an implicit tee
+   (reuse of `x`). A `merge` is a tuple. Anything else is the core form.
+4. **`as`.** Every node whose ID is not the derived one gets an `as`.
+5. **Defaults and positionals.** Parameters equal to their registry default are left out; a positional parameter is
+   written first, without its name.
+
+Each sugar form's recognizer is the exact image of its rewrite: desugaring what resugar recognized gives back the same
+nodes, edges, and IDs. Where two forms could describe the same graph, the priority order picks one, and a test pins
+each such pair.
+
+## Normalization
+
+A plan crate pass, `saluki_metric_plan::normalize`, that puts equivalent programs into one form. It runs at the end of
+native lowering and on every artifact before composition, so that the running default program, its export, and an
+unchanged program parsed back from the export are the same document with the same hash. It never adds or removes a node
+and never changes a node ID, apart from renaming a derived terminal whose port it moves; V6 later folds it into
+elaboration. The rules, each checked against the oracle and for idempotence:
+
+1. **Fill in defaults.** Every parameter left out that has a registry default is written with it.
+2. **Literal set matches.** `Matches { values: [literals], prefix }` becomes `Eq`/`Prefix` for one value, `In`/`PrefixIn`
+   for several, and `Const(false)` for none. `In([x])` and `PrefixIn([x])` become `Eq(x)` and `Prefix(x)`. Bound
+   values are left alone.
+3. **Predicate simplification, keeping the order the author wrote.** Junctions of one kind are flattened, constants are
+   folded (`false or p` is `p`, `true and p` is `p`), `not not p` is `p`, and `IsEmpty` of a literal list is a constant.
+   Operands are not sorted: the printed form keeps their order.
+4. **Split polarity.** A `split(p)` whose `true` port leads to a `drop` and whose `false` port does not becomes
+   `split(not p)` with the ports swapped (removing a double negation), so it prints as `where not p`. The drop terminal
+   moves from `<split>_true` to `<split>_false`, and the other edge's port changes from `false` to `true`.
+
+## Operator registry additions
+
+`ParamSpec` gains two declarations, both `const` builder methods so specs stay `Copy` and `'static`:
+
+- `.with_default(json)`: the default value as JSON text. Decoding treats a missing parameter as its default, validation
+  accepts its absence, and normalization fills it in. Defaults are the native configuration defaults, cited at each.
+- `.positional()`: at most one parameter per operator. A sole predicate parameter is positional, as today.
+
+## The demo
+
+The editor, the language reference page, the recipes, and the scenario edits move to the new syntax, and the reference
+page is reworked for it:
+
+- **Reference page.** Leads with the model (streams, stages, sinks, `let`, reuse, tuples), then a table of each sugar
+  form beside the core form it rewrites to, then predicates, operators with an example of each in pipeline form,
+  node IDs and `as`, the rules the syntax and the validator enforce, and the limits. Every example parses and every
+  recipe compiles into the default program, as today.
+- **Recipes** become one-line inserts: "add `| where not (name starts_with "demo.debug.")` before `| fork`".
+- **Editor.** Highlights the new keywords, dims `as` clauses, warns when an edit changes a stateful node's ID, and keeps
+  underlining validator findings through the span map.
+- **Annotations** (`compile.rs`'s `annotate`) attach their comments to the new statements.
+
+## Work breakdown
+
+Interfaces first (`ast.rs`, module stubs, the registry declarations, the `normalize` signature), then in parallel:
+
+| Part | Owns | Depends on |
+|---|---|---|
+| **A. Parser** | `lexer.rs`, `parser.rs` (the new one; the old is kept as `legacy/` until integration) | `ast.rs` |
+| **B. Lowering** | `lower.rs`: tree to artifact and spans, derived IDs, syntax rules | `ast.rs` |
+| **C. Resugar** | `resugar.rs`: artifact to tree | `ast.rs` |
+| **D. Format** | `format.rs`: tree to text, line breaking, predicates and values | `ast.rs` |
+| **E. Normalization and registry** | plan crate `normalize`, `ParamSpec` defaults and positionals, wiring into lowering and composition, fixtures | registry declarations |
+| **F. Demo** | `bin/programmable-metrics-demo`: UI, reference page, recipes, scenario edits, annotations | the language as specified here |
+
+Then integration: wire the public API (`parse`, `parse_with`, `print`, `Parsed`, `SpanMap`, unchanged in shape) to the
+new passes, convert every source text in tests and fixtures with the old parser and the new printer, retire `legacy/`,
+and run everything.
+
+## Testing
+
+- **Round trip on graphs**: for every well-formed artifact in canonical order, `parse(print(a)) == a`, by property test
+  over generated graphs, extending today's generator.
+- **Fixed point on text**: `print(parse(s))` printed again is unchanged, sugared input included.
+- **Normalization**: idempotent, oracle-equivalent, never changes a stateful node's ID.
+- **Overlaps**: a test for each pair of sugar forms that could describe the same graph.
+- **Errors**: every syntax rule has a test of its message and span.
+- **The default program** prints in the form shown above, and an unchanged print of the export publishes as no change.
+
+## Deferred
+
+- Renaming native node IDs to the derived scheme, so the default program needs no `as` (with V10).
+- `emit <name>` resolving to a recipient or an output by the host's directory (needs the catalog at parse time).
+- A general expression language for rewrites (needs effect contracts for arbitrary rewrites).
+- A `route` block for first-match routing tables.

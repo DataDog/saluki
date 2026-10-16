@@ -15,7 +15,7 @@ use serde_json::Value;
 use crate::{
     diagnostic::{Error, LineIndex, Span},
     graph::{canonical_order, terminal_id, NodeShape, INPUT_PARENT},
-    parser::{EmitTo, Policy, Target},
+    legacy::parser::{EmitTo, Policy, Target},
     spans::SpanMap,
 };
 

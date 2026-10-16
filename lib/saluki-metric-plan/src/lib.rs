@@ -46,6 +46,7 @@ pub mod interpret;
 pub mod ir;
 pub mod limits;
 pub mod model;
+pub mod normalize;
 pub mod operators;
 pub mod predicate;
 pub mod resources;

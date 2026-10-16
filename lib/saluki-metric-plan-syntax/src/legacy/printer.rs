@@ -21,8 +21,8 @@ use serde_json::{Map, Value};
 
 use crate::{
     graph::{canonical_order, param_specs, positional_predicate, terminal_id, NodeShape, INPUT_PARENT},
+    legacy::parser::literal_type,
     lexer::{self, is_invisible, DURATION_UNITS},
-    parser::literal_type,
     PrintOptions, MAX_SOURCE_SIZE, MAX_TOKENS,
 };
 

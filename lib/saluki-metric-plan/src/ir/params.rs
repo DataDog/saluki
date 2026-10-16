@@ -628,6 +628,16 @@ pub struct ParamSpec {
 
     /// Whether the parameter must be present.
     pub required: bool,
+
+    /// The value a parameter that is left out takes, as JSON text, if it has a default.
+    ///
+    /// Decoding treats a missing parameter as its default, validation accepts its absence, and
+    /// [normalization](crate::normalize) writes it in. Defaults are the native configuration's defaults.
+    pub default: Option<&'static str>,
+
+    /// Whether the surface syntax lets an author pass this parameter first, without its name. At most one parameter of
+    /// an operator is positional.
+    pub positional: bool,
 }
 
 impl ParamSpec {
@@ -637,6 +647,8 @@ impl ParamSpec {
             name,
             ty,
             required: true,
+            default: None,
+            positional: false,
         }
     }
 
@@ -646,7 +658,21 @@ impl ParamSpec {
             name,
             ty,
             required: false,
+            default: None,
+            positional: false,
         }
+    }
+
+    /// Gives the parameter a default, as JSON text, which it takes when it is left out.
+    pub const fn with_default(mut self, json: &'static str) -> Self {
+        self.default = Some(json);
+        self
+    }
+
+    /// Lets the surface syntax pass the parameter first, without its name.
+    pub const fn positional(mut self) -> Self {
+        self.positional = true;
+        self
     }
 }
 
@@ -1066,11 +1092,15 @@ mod tests {
                 name: "values",
                 ty: ParamType::Bindable(&STRINGS),
                 required: true,
+                default: None,
+                positional: false,
             },
             ParamSpec {
                 name: "prefix",
                 ty: ParamType::Bool,
                 required: false,
+                default: None,
+                positional: false,
             },
         ];
         let params = |value: Value| serde_json::from_value::<Params>(value).unwrap();

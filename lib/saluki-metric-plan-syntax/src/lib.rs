@@ -135,13 +135,25 @@ use saluki_metric_plan::{
     limits::values::ARTIFACT_SIZE,
 };
 
-mod build;
 mod diagnostic;
 mod graph;
+mod legacy;
 mod lexer;
-mod parser;
-mod printer;
 mod spans;
+
+// The pipeline syntax's passes, which integration wires to the public API in place of `legacy`.
+#[allow(dead_code)]
+mod ast;
+#[allow(dead_code)]
+mod format;
+#[allow(dead_code)]
+mod ids;
+#[allow(dead_code)]
+mod lower;
+#[allow(dead_code)]
+mod parser;
+#[allow(dead_code)]
+mod resugar;
 
 pub use self::{
     diagnostic::{Diagnostic, Diagnostics, Span},
@@ -161,7 +173,7 @@ pub const MAX_TOKENS: usize = lexer::MAX_TOKENS;
 ///
 /// Parsing and printing a source nested this deeply uses about 700 KB of stack in a debug build, and about 220 KB in an
 /// optimized one, well within the 2 MiB that spawned threads get by default.
-pub const MAX_DEPTH: usize = parser::MAX_DEPTH;
+pub const MAX_DEPTH: usize = legacy::parser::MAX_DEPTH;
 
 /// A parsed artifact, with the source spans of its parts.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -277,9 +289,10 @@ pub fn parse_with(source: &str, options: &ParseOptions) -> Result<Parsed, Diagno
         return Err(diagnostic::diagnostics(source, vec![error]));
     }
     let tokens = lexer::lex(source).map_err(|error| diagnostic::diagnostics(source, vec![error]))?;
-    let policy = parser::parse_policy(source, &tokens).map_err(|errors| diagnostic::diagnostics(source, errors))?;
+    let policy =
+        legacy::parser::parse_policy(source, &tokens).map_err(|errors| diagnostic::diagnostics(source, errors))?;
     let base_given = policy.base.is_none() && options.base.is_some();
-    let (artifact, spans) = build::build(source, policy, options.base.as_ref())
+    let (artifact, spans) = legacy::build::build(source, policy, options.base.as_ref())
         .map_err(|errors| diagnostic::diagnostics(source, errors))?;
     Ok(Parsed {
         artifact,
@@ -295,7 +308,7 @@ pub fn parse_with(source: &str, options: &ParseOptions) -> Result<Parsed, Diagno
 /// artifact, such as one with an edge to a node it does not have, prints as well as it can, and parsing the text
 /// reports the problem.
 pub fn print(artifact: &PolicyArtifact, options: &PrintOptions) -> String {
-    printer::print(artifact, options)
+    legacy::printer::print(artifact, options)
 }
 
 #[cfg(test)]
