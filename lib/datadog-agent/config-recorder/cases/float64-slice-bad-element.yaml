@@ -1,0 +1,9 @@
+# Sets histogram_percentiles to a list with one nonnumeric element.
+# Shows that its float-list getter discards the whole list if any element fails to parse.
+name: float64-slice-bad-element
+group: behavior
+why: [getter-float64slice-drops-all]
+yaml: |
+  histogram_percentiles: ["0.5", "bad", "0.99"]
+keys:
+  - {key: histogram_percentiles, getters: [GetFloat64Slice]}
