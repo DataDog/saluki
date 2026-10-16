@@ -38,26 +38,84 @@
 //!
 //! # Spawning children
 //!
-//! Children are usually declared up front with [`Supervisor::add_worker`], but a supervisor can also take on new
-//! children while it runs. There are exactly two ways to do that, and they differ only in how the supervisor is
-//! identified:
+//! Usually, you declare children in advance with [`Supervisor::add_worker`]. A process can also start new children
+//! while it runs. There are three ways to do this. They differ in the owner of the new child:
 //!
-//! - [`spawn`], which targets the _ambient_ supervisor: the one supervising the currently running process. This is the
-//!   [`tokio::spawn`] of supervision, and is what code running under supervision should reach for.
+//! - [`spawn`], which makes the new child a child of the current process. It is the equivalent of [`tokio::spawn`] for
+//!   supervision. It is the recommended way to spawn for code that runs under supervision.
+//! - [`spawn_sibling`], which gives the new child to the nearest supervisor above the current process. The child is a
+//!   sibling of the current process only if that supervisor runs the process directly, and not in a scope.
 //! - [`SupervisorHandle`], which names a supervisor explicitly.
 //!
-//! Either way, a child is described with [`ChildBuilder`] -- reached through [`worker`] and [`supervisable`] for the
-//! ambient supervisor, or the identically named methods on [`SupervisorHandle`] for a named one. The builder is the
-//! only way to configure a child: [`ChildSpecification`] is the description it produces and carries no settings of its
-//! own, so a combination the builder declines to offer can't be assembled around it.
+//! For all three ways, a [`ChildBuilder`] describes the child. To get a builder, use [`worker`] or [`supervisable`].
+//! For a named supervisor, use the methods with the same names on [`SupervisorHandle`]. The builder is the only way to
+//! configure a child. It produces a [`ChildSpecification`], which has no settings of its own. Because of this, you
+//! cannot use the specification to make a combination of settings that the builder does not offer.
 //!
 //! A child that is itself a [`Supervisor`] can be handed to any of the above directly, which is all most callers need.
-//! [`nested_supervisor`] (and [`SupervisorHandle::nested_supervisor`]) exists for the two settings that aren't
-//! reachable that way -- the restart policy and significance. It matters most for a dynamically spawned subtree, which
-//! would otherwise be [`temporary`][RestartType::Temporary] and so quietly stay dead once it terminated.
+//! [`nested_supervisor`] and [`SupervisorHandle::nested_supervisor`] give access to the one setting that is not
+//! available that way: whether the subtree is needed or hosted.
 //!
-//! Both are synchronous and infallible. As with [`tokio::spawn`], a child being accepted doesn't mean it will run: a
-//! supervisor that shuts down before it reaches the child never starts it at all.
+//! All three ways to spawn are synchronous and cannot fail. As with [`tokio::spawn`], an accepted child does not always
+//! run. If its owner stops before it reaches the child, the owner never starts the child.
+//!
+//! # Restart policy
+//!
+//! You do not select the restart policy of a child directly. Two properties of the child decide it:
+//!
+//! - Whether it can start again. A child reports this through [`Supervisable::can_restart`]. A [`Supervisable`] builds
+//!   its work each time it starts, so it can usually start again. A child that consumes something when it starts is
+//!   _one-shot_. Examples are a child built from a closure, which consumes its body, and a [`Supervisable`] that takes
+//!   a connection.
+//! - Whether its owner can work without it. The owner of a _needed_ child cannot work without it. The owner of a
+//!   _hosted_ child only runs it. See [`ChildBuilder::needed`] and [`ChildBuilder::hosted`].
+//!
+//! Together, these two properties decide what occurs when a child stops without a stop request:
+//!
+//! | | Needed | Hosted |
+//! | --- | --- | --- |
+//! | Can start again | always restarted ([`Permanent`]) | restarted if it failed ([`Transient`]) |
+//! | One-shot | its owner fails | removed, and its owner continues |
+//!
+//! [`Permanent`]: RestartType::Permanent
+//! [`Transient`]: RestartType::Transient
+//!
+//! A child that stops because of a stop request is never restarted. A child of a scope that stops after the owner of
+//! the scope is told to stop counts as stopped by request. If a child stops more often than the restart limit of its
+//! owner allows, the owner fails. This applies to needed and hosted children. The next level of the supervision tree
+//! then handles the failure.
+//!
+//! A child that can start again, and that you declare in advance with [`Supervisor::add_worker`], is needed by default.
+//! This is because it is part of the purpose of its supervisor. Every other child is hosted by default.
+//!
+//! # Scopes
+//!
+//! A supervisor owns its children. Every supervised worker also owns the children that it spawns, and keeps them in its
+//! [scope].
+//!
+//! Each of these children runs as a separate task. The worker does not finish until all of these children finish. When
+//! the body of the worker returns, the scope stops them, each according to its own shutdown strategy, as a supervisor
+//! does.
+//!
+//! A value can also own a scope, so that the background tasks of a primitive stop when the primitive stops. See
+//! [`scope::nested`]. You can also create a scope before the process that will own it exists, with [`UnadoptedScope`].
+//! This lets work spawned during the construction of something belong to the process that later runs that thing.
+//!
+//! # Where to spawn a child
+//!
+//! Spawn most children into the scope of the current process with [`spawn`]. Use a different way only when one of these
+//! conditions is true:
+//!
+//! - A value, not a process, must own the child. Spawn the child into a [`scope::nested`] guard.
+//! - A process other than the one that spawns the child must own it. Get the scope of the owner with
+//!   [`scope::current`], and spawn the child with [`ChildBuilder::spawn_in`].
+//! - The child must continue to run after restarts of the process that spawns it. Make both of them children of a
+//!   [`Supervisor`], and spawn the child through its [`SupervisorHandle`].
+//! - Children need their own restart strategy, shutdown budget, resource group, or runtime. A scope restarts its
+//!   children at most once in each five-second period, for all of its children together. Put these children under a
+//!   [`Supervisor`].
+//!
+//! If a worker body only waits for a stop request while its children do the work, use a [`Supervisor`] instead.
 //!
 //! # Supervision trees
 //!
@@ -104,6 +162,8 @@ mod supervisable;
 pub use self::supervisable::{InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture};
 
 mod supervisor;
+#[cfg(any(test, feature = "test-util"))]
+pub(crate) use self::supervisor::ExitObserver;
 pub use self::supervisor::{
     AutoShutdown, ChildId, ChildSpecification, ChildState, LoweredChild, Supervisor, SupervisorError, SupervisorHandle,
     SupervisorSpec, WorkerSpec,
@@ -117,12 +177,15 @@ pub use self::tree::{
 };
 
 mod spawn;
-pub use self::spawn::spawn;
+pub use self::spawn::{spawn, spawn_sibling};
+
+pub mod scope;
+pub use self::scope::{Scope, ScopeError, ScopeGuard, UnadoptedScope};
 
 mod builder;
 pub use self::builder::{
-    nested_supervisor, supervisable, worker, BuilderState, CanTerminate, ChildBuilder, NestedSupervisorBuilder,
-    OneShot, Restartable, Terminable,
+    nested_supervisor, supervisable, worker, worker_with_shutdown, BuilderState, ChildBuilder, NestedSupervisorBuilder,
+    OneShot, Restartable,
 };
 
 mod workers;

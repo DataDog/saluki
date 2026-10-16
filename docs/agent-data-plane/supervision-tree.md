@@ -10,28 +10,34 @@ nest to form the tree. That structure is the most complete description of what A
 questions that logs answer only indirectly: whether a subsystem is running, whether it has been restarting in a loop,
 and which part of the tree is accumulating memory.
 
+A worker can also have children. If a process starts work as its own, the tree shows that work under the process,
+not next to it. For example, a listener starts a handler for each connection that it accepts. A process does not stop
+until all of its children stop.
+
 Each node reports:
 
 | Field | Meaning |
 | --- | --- |
 | `name` | The process's name, as registered with its supervisor. |
-| `kind` | Whether the node is a supervisor or a leaf worker. |
+| `kind` | Whether the node is a supervisor or a worker. |
 | `state` | `running`, `exited` (ran and was not restarted), or `registered` (declared but not currently running). |
 | `process_id` | The identifier of the node's most recent process. A restart produces a new one. |
 | `process_name` | The fully qualified, dot-scoped process name. |
-| `restart` | The node's restart policy: `permanent`, `transient`, or `temporary`. |
+| `restart` | The restart policy of the node: `permanent` (restarted after any stop that nobody requested), `transient` (restarted only after a failure), or `temporary` (never restarted). Two facts set the policy: whether the node can start again, and whether its owner can work without it. |
+| `significant` | Whether the owner of the node also stops when the node stops and is not restarted. |
 | `created_at` | When the node first became part of the tree. Constant across restarts. |
 | `started_at`, `uptime_ms` | When the node's most recent process started, and how long it has been running. |
 | `restart_count` | Restarts since the node was created, including those caused by its supervisor restarting. |
-| `resources` | Allocation and CPU accounting, for supervisors. |
+| `resources` | Allocation and CPU accounting, for supervisors and topology components. |
 | `supervision` | Restart strategy, shutdown budget, and runtime placement, for supervisors. |
 
 Two details are worth knowing before reading the numbers.
 
 > [!NOTE]
-> Resource figures are reported per supervisor, not per worker. A worker inherits its supervisor's resource group
-> rather than owning one, so its allocations are already counted against the supervisor named in its `resource_group`
-> field. Worker nodes therefore name a group but carry no figures of their own.
+> The tree reports resource figures for each resource group, not for each worker. Most workers do not own a resource
+> group. They use the resource group of the supervisor or component above them. Thus, the figures of the node named in
+> their `resource_group` field already include their allocations, and these workers show no figures of their own. Each
+> supervisor and each topology component owns a resource group and shows its figures.
 
 > [!NOTE]
 > Allocation figures require the tracking allocator, and CPU figures require per-thread CPU accounting. When either is
@@ -54,8 +60,8 @@ only while a node is running. These three fields are absent only for a node that
 ```console
 $ agent-data-plane debug runtime show-processes
 Supervision tree for 'adp-root', captured 2026-09-03T12:00:00Z
-  54 processes (14 supervisors, 40 workers): 53 running, 1 exited, 0 registered
-  3 restarts across the tree, max depth 5
+  54 processes (8 supervisors, 46 workers): 53 running, 1 exited, 0 registered
+  3 restarts across the tree, max depth 6
   resource tracking on: 24.1 MiB live, 12.3s CPU
 
 adp-root  [sup] running  pid=1  up=2h15m  one_for_one(0/5s)  live=1.2 MiB
@@ -67,12 +73,19 @@ adp-root  [sup] running  pid=1  up=2h15m  one_for_one(0/5s)  live=1.2 MiB
 |       `-- reflector  [worker] running  pid=8  up=2h15m
 |-- internal-sup  [sup] running  pid=10  up=2h15m  one_for_one(1/5s)  live=890.0 KiB
 |   `-- ctrl-pln  [sup] running  pid=11  up=2h15m  restarts=1  one_for_one(1/5s)  rt=1thr  live=612.0 KiB
-`-- primary  [worker] running  pid=20  up=2h15m
-    `-- topology.primary  [sup] running  pid=21  up=2h15m  one_for_one(0/5s)  live=18.4 MiB
+`-- primary  [worker] running  pid=20  up=2h15m  significant
+    `-- topology.primary  [sup] running  pid=21  up=2h15m  one_for_one(0/5s)  live=2.1 MiB
+        |-- sources.dsd_in  [worker] running  pid=22  up=2h15m  significant  live=9.8 MiB
+        |   |-- datagram_decoder_0  [worker] running  pid=24  up=2h15m
+        |   `-- listener_udp  [worker] running  pid=25  up=2h15m  significant
+        |       `-- conn_udp  [worker] running  pid=26  up=2h15m
+        `-- forwarders.dd_out  [worker] running  pid=23  up=2h15m  significant  live=6.5 MiB
 ```
 
 Indentation and branch glyphs show the nesting. A supervisor's line also carries its restart strategy as
-`mode(intensity/period)`, and `rt=Nthr` when it runs on its own runtime rather than its parent's.
+`mode(intensity/period)`, and `rt=Nthr` when it runs on its own runtime rather than its parent's. `significant` marks a
+node that stops its owner if it stops and is not restarted. For example, each topology component is significant,
+because the topology cannot run without it.
 
 Nodes that need attention stand out without needing color: `restarts=` appears only when a node has actually
 restarted, and a stopped process is marked `EXITED` in capitals.

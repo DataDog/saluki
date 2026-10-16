@@ -1,6 +1,7 @@
-use std::{sync::Arc, time::Duration};
+use std::{pin::Pin, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
+use futures::{Stream, StreamExt as _};
 use saluki_api::{
     extract::{Query, State},
     response::IntoResponse,
@@ -16,8 +17,10 @@ use tokio::{
     sync::{mpsc, Mutex},
     time::sleep,
 };
-use tracing::{error, info};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::{filter::Targets, reload::Handle, Registry};
+
+use super::LogLevel;
 
 #[derive(Deserialize)]
 struct OverrideQueryParams {
@@ -312,6 +315,76 @@ async fn process_override_actions(state: &mut LoggingOverrideWorkerState, proces
     }
 }
 
+type LogLevelStream = Pin<Box<dyn Stream<Item = LogLevel> + Send>>;
+
+/// A worker that applies log level changes as they arrive.
+///
+/// Each [`LogLevel`] from the stream replaces the base filter through a [`LoggingOverrideController`], so an active
+/// override stays in place until it expires or is reset. The stream carries levels that are already translated: the
+/// application turns its own configuration changes into `LogLevel`s, and decides what to do with values that it can't
+/// translate.
+///
+/// The worker keeps the stream across restarts, so a restarted worker picks up where the previous run left off. If the
+/// stream ends, the worker waits for shutdown rather than returning, so that it doesn't drive the supervisor into an
+/// infinite restart loop.
+pub struct DynamicLogLevelWorker {
+    levels: Arc<Mutex<LogLevelStream>>,
+    controller: LoggingOverrideController,
+}
+
+impl DynamicLogLevelWorker {
+    /// Creates a new `DynamicLogLevelWorker` that applies each log level from `levels` through `controller`.
+    pub fn new<S>(levels: S, controller: LoggingOverrideController) -> Self
+    where
+        S: Stream<Item = LogLevel> + Send + 'static,
+    {
+        Self {
+            levels: Arc::new(Mutex::new(Box::pin(levels))),
+            controller,
+        }
+    }
+}
+
+#[async_trait]
+impl Supervisable for DynamicLogLevelWorker {
+    fn name(&self) -> &str {
+        "dynamic-log-level"
+    }
+
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
+        let mut levels = self.levels.clone().lock_owned().await;
+        let controller = self.controller.clone();
+
+        Ok(Box::pin(async move {
+            pin!(process_shutdown);
+
+            debug!("Dynamic log level worker started.");
+
+            loop {
+                select! {
+                    _ = &mut process_shutdown => break,
+                    maybe_level = levels.next() => match maybe_level {
+                        Some(log_level) => {
+                            if let Err(e) = controller.update_base(log_level.as_targets()).await {
+                                warn!(error = %e, %log_level, "Failed to apply updated log level.");
+                            }
+                        }
+                        None => {
+                            debug!("Log level stream ended. No further log level changes will be applied.");
+                            (&mut process_shutdown).await;
+                            break;
+                        }
+                    },
+                }
+            }
+
+            debug!("Dynamic log level worker stopped.");
+
+            Ok(())
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -372,6 +445,83 @@ mod tests {
         // The reload layer must outlive the handles -- callers should bind it (e.g., `let _layer = ...`) to keep
         // the handle alive for the duration of the test.
         (controller, reload_handle, processor, filter_layer)
+    }
+
+    fn log_level(directives: &str) -> LogLevel {
+        LogLevel::try_from(directives.to_string()).expect("valid log level")
+    }
+
+    /// Returns a stream that yields each log level sent on the returned sender.
+    fn log_level_stream() -> (mpsc::Sender<LogLevel>, impl Stream<Item = LogLevel> + Send + 'static) {
+        let (tx, rx) = mpsc::channel(4);
+        let levels = futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|level| (level, rx)) });
+        (tx, levels)
+    }
+
+    async fn next_base_update(actions: &mut mpsc::Receiver<LoggingOverrideAction>) -> String {
+        let action = tokio::time::timeout(Duration::from_secs(2), actions.recv())
+            .await
+            .expect("worker should send an action")
+            .expect("worker should still be running");
+        match action {
+            LoggingOverrideAction::UpdateBase(filter) => filter.to_string(),
+            _ => panic!("worker should only update the base filter"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dynamic_log_level_worker_applies_each_level_as_the_base_filter() {
+        let (tx, mut actions) = mpsc::channel(1);
+        let (levels_tx, levels) = log_level_stream();
+        let worker = DynamicLogLevelWorker::new(levels, LoggingOverrideController { tx });
+
+        let (coordinator, shutdown) = ShutdownHandle::paired();
+        let run = tokio::spawn(worker.initialize(shutdown).await.expect("worker initializes"));
+
+        for directives in ["saluki=debug", "saluki=warn"] {
+            levels_tx.send(log_level(directives)).await.unwrap();
+            assert_eq!(next_base_update(&mut actions).await, directives);
+        }
+
+        coordinator.shutdown();
+        run.await.expect("worker task completes").expect("worker exits cleanly");
+    }
+
+    #[tokio::test]
+    async fn dynamic_log_level_worker_waits_for_shutdown_after_the_stream_ends() {
+        let (tx, _actions) = mpsc::channel(1);
+        let worker = DynamicLogLevelWorker::new(futures::stream::empty(), LoggingOverrideController { tx });
+
+        let (coordinator, shutdown) = ShutdownHandle::paired();
+        let mut run = tokio::spawn(worker.initialize(shutdown).await.expect("worker initializes"));
+
+        // Returning early would get the worker restarted, so it has to keep running until shutdown. Nothing else can
+        // wake it, so this bound is deterministic rather than timing-dependent.
+        assert!(tokio::time::timeout(Duration::from_millis(100), &mut run)
+            .await
+            .is_err());
+
+        coordinator.shutdown();
+        run.await.expect("worker task completes").expect("worker exits cleanly");
+    }
+
+    #[tokio::test]
+    async fn dynamic_log_level_worker_keeps_the_stream_across_restarts() {
+        let (tx, mut actions) = mpsc::channel(1);
+        let (levels_tx, levels) = log_level_stream();
+        let worker = DynamicLogLevelWorker::new(levels, LoggingOverrideController { tx });
+
+        // Each pass is a separate run of the same worker, as the supervisor would start after a restart.
+        for directives in ["saluki=debug", "saluki=warn"] {
+            let (coordinator, shutdown) = ShutdownHandle::paired();
+            let run = tokio::spawn(worker.initialize(shutdown).await.expect("worker initializes"));
+
+            levels_tx.send(log_level(directives)).await.unwrap();
+            assert_eq!(next_base_update(&mut actions).await, directives);
+
+            coordinator.shutdown();
+            run.await.expect("worker task completes").expect("worker exits cleanly");
+        }
     }
 
     #[tokio::test]

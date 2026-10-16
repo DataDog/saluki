@@ -1,0 +1,4 @@
+fixes:
+  - |
+    Fix DogStatsD aggregation emitting zero-value points for windows before a
+    counter was first received, after a period with no aggregated metrics.

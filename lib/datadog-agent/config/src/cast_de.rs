@@ -20,7 +20,6 @@
 use std::{collections::HashMap, fmt, marker::PhantomData};
 
 use serde::de::{self, DeserializeOwned, Deserializer, MapAccess, Unexpected, Visitor};
-use serde::Deserialize;
 
 /// `cast.ToBoolE` for a string: Go's `strconv.ParseBool` grammar, exactly.
 ///
@@ -124,19 +123,21 @@ where
 /// The Agent stores a map-typed environment variable as its raw string and decodes the JSON when the
 /// key is read, so its configuration stream carries the string.
 ///
+/// A null is an empty map: the Agent's configuration stream can carry `null` for an empty or
+/// cleared map, and its map accessors read it as empty.
 /// # Errors
 ///
-/// Returns an error when the value is neither a map nor a string that decodes to one, or when a map
-/// value does not deserialize as `V`.
-pub(crate) fn deserialize_map_or_json_string<'de, D, V>(deserializer: D) -> Result<HashMap<String, V>, D::Error>
+/// Returns an error when the value is neither a map, a null, nor a string that decodes to a map, or
+/// when a map value does not deserialize as `T`.
+pub(crate) fn deserialize_map_or_json_string<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: Deserializer<'de>,
-    V: DeserializeOwned,
+    T: DeserializeOwned,
 {
-    struct MapOrJsonString<V>(PhantomData<V>);
+    struct MapOrJsonString<T>(PhantomData<T>);
 
-    impl<'de, V: DeserializeOwned> Visitor<'de> for MapOrJsonString<V> {
-        type Value = HashMap<String, V>;
+    impl<'de, T: DeserializeOwned> Visitor<'de> for MapOrJsonString<T> {
+        type Value = T;
 
         fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             f.write_str("a map or a JSON-encoded map string")
@@ -147,7 +148,15 @@ where
         }
 
         fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
-            HashMap::deserialize(de::value::MapAccessDeserializer::new(map))
+            T::deserialize(de::value::MapAccessDeserializer::new(map))
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            serde_json::from_value(serde_json::Value::Object(serde_json::Map::new())).map_err(E::custom)
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            serde_json::from_value(serde_json::Value::Object(serde_json::Map::new())).map_err(E::custom)
         }
     }
 
@@ -164,7 +173,7 @@ pub(crate) fn deserialize_string_map<'de, D>(deserializer: D) -> Result<HashMap<
 where
     D: Deserializer<'de>,
 {
-    let values = deserialize_map_or_json_string::<_, serde_json::Value>(deserializer)?;
+    let values = deserialize_map_or_json_string::<_, HashMap<String, serde_json::Value>>(deserializer)?;
     values
         .into_iter()
         .map(|(key, value)| {
@@ -173,6 +182,36 @@ where
                 .map_err(de::Error::custom)
         })
         .collect()
+}
+
+/// Deserializes a number map, coercing each value as the Agent does.
+///
+/// # Errors
+///
+/// Returns an error when a value cannot be cast to a number.
+pub(crate) fn deserialize_number_map<'de, D>(deserializer: D) -> Result<HashMap<String, f64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let values = deserialize_map_or_json_string::<_, HashMap<String, serde_json::Value>>(deserializer)?;
+    values
+        .into_iter()
+        .map(|(key, value)| cast_to_f64(&value).map(|value| (key, value)).map_err(de::Error::custom))
+        .collect()
+}
+
+/// Renders a JSON value as a `number` leaf (`cast.ToFloat64E`).
+///
+/// A witness method that receives a leaf as raw JSON, rather than as a generated field, renders
+/// it through this so that `1` and `"1.5"` read as the Agent reads them (`1.0` and `1.5`) instead
+/// of rejecting their JSON spelling.
+///
+/// # Errors
+///
+/// Returns an error for a value the Agent cannot cast to a number: a non-numeric string or a
+/// compound value.
+pub fn cast_to_f64(value: &::serde_json::Value) -> Result<f64, String> {
+    value.deserialize_any(F64Visitor).map_err(|e| e.to_string())
 }
 
 /// Renders a JSON value as a `string` leaf (`cast.ToStringE`).
@@ -429,6 +468,14 @@ mod tests {
     #[derive(Deserialize)]
     struct StringMap(#[serde(deserialize_with = "deserialize_string_map")] HashMap<String, String>);
 
+    #[derive(Deserialize)]
+    struct NumberMap(#[serde(deserialize_with = "deserialize_number_map")] HashMap<String, f64>);
+
+    #[derive(Deserialize)]
+    struct FreeFormMap(
+        #[serde(deserialize_with = "deserialize_map_or_json_string")] ::serde_json::Map<String, ::serde_json::Value>,
+    );
+
     fn as_bool(value: Value) -> Result<bool, String> {
         serde_json::from_value::<Bool>(value)
             .map(|b| b.0)
@@ -587,6 +634,69 @@ mod tests {
         for rejected in [json!("not json"), json!(r#"["a"]"#), json!(r#"{"compound": []}"#)] {
             assert!(
                 serde_json::from_value::<StringMap>(rejected.clone()).is_err(),
+                "{rejected}"
+            );
+        }
+    }
+
+    #[test]
+    fn string_map_reads_null_as_empty() {
+        for empty in [json!(null), json!({})] {
+            let values = serde_json::from_value::<StringMap>(empty.clone())
+                .expect("empty map deserializes")
+                .0;
+            assert!(values.is_empty(), "{empty}");
+        }
+    }
+
+    #[test]
+    fn number_map_coerces_numeric_values() {
+        let values = serde_json::from_value::<NumberMap>(json!({
+            "integer": 3,
+            "float": 0.8,
+            "string": "0.25"
+        }))
+        .expect("numeric values deserialize")
+        .0;
+
+        assert_eq!(values["integer"], 3.0);
+        assert_eq!(values["float"], 0.8);
+        assert_eq!(values["string"], 0.25);
+        assert!(serde_json::from_value::<NumberMap>(json!({ "compound": [] })).is_err());
+        assert!(serde_json::from_value::<NumberMap>(json!({ "text": "datadog_only" })).is_err());
+    }
+
+    #[test]
+    fn number_map_accepts_a_json_encoded_string() {
+        let values = serde_json::from_value::<NumberMap>(json!(r#"{"one": 0.5, "two": 2}"#))
+            .expect("JSON-encoded map deserializes")
+            .0;
+
+        assert_eq!(values["one"], 0.5);
+        assert_eq!(values["two"], 2.0);
+        for rejected in [json!("not json"), json!(r#"["a"]"#), json!(r#"{"compound": []}"#)] {
+            assert!(
+                serde_json::from_value::<NumberMap>(rejected.clone()).is_err(),
+                "{rejected}"
+            );
+        }
+    }
+
+    #[test]
+    fn free_form_map_accepts_a_json_encoded_string() {
+        let values = serde_json::from_value::<FreeFormMap>(json!(r#"{"svc|op": 0.75}"#))
+            .expect("JSON-encoded map deserializes")
+            .0;
+
+        assert_eq!(values["svc|op"], json!(0.75));
+        // The parsed form arrives from YAML-sourced settings and must keep working.
+        let parsed = serde_json::from_value::<FreeFormMap>(json!({ "svc|op": 0.75 }))
+            .expect("parsed map deserializes")
+            .0;
+        assert_eq!(parsed["svc|op"], json!(0.75));
+        for rejected in [json!("not json"), json!(r#"["a"]"#), json!(5)] {
+            assert!(
+                serde_json::from_value::<FreeFormMap>(rejected.clone()).is_err(),
                 "{rejected}"
             );
         }

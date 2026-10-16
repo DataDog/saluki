@@ -14,7 +14,7 @@ import requests
 import toml
 
 DEFAULT_FUZZING_SLACK_CHANNEL = "fuzzing-ops"
-DEFAULT_RUST_NIGHTLY_VERSION = "nightly-2026-01-18"
+DEFAULT_RUST_NIGHTLY_VERSION = "nightly-2026-04-11"
 
 # Lets reuse the token for all requests to avoid issues with rate limiting.
 # The process should be short lived enough that the token should be valid for the duration (it's only the uploading step)

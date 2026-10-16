@@ -7,7 +7,7 @@ This directory contains fuzzing targets for the `saluki-io` crate.
 This requires the pinned Rust nightly version and `cargo-fuzz`.
 
 ```bash
-rustup toolchain install nightly-2026-01-18
+rustup toolchain install nightly-2026-04-11
 cargo install cargo-fuzz
 ```
 
@@ -17,10 +17,10 @@ cargo install cargo-fuzz
 # cargo-fuzz requires us to be in the specific folder
 cd lib/saluki-io
 
-cargo +nightly-2026-01-18 fuzz run dogstatsd_decode_packet
+cargo +nightly-2026-04-11 fuzz run dogstatsd_decode_packet
 
 # or, with coverage enabled
-cargo +nightly-2026-01-18 fuzz coverage dogstatsd_decode_packet
+cargo +nightly-2026-04-11 fuzz coverage dogstatsd_decode_packet
 ```
 
 ## Corpus and Artifacts
@@ -33,6 +33,6 @@ cargo +nightly-2026-01-18 fuzz coverage dogstatsd_decode_packet
 After running with coverage:
 
 ```bash
-cargo +nightly-2026-01-18 fuzz coverage dogstatsd_decode_packet
+cargo +nightly-2026-04-11 fuzz coverage dogstatsd_decode_packet
 # Coverage report will be generated in fuzz/coverage/dogstatsd_decode_packet/
 ```

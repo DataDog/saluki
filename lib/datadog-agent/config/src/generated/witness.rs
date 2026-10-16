@@ -18,6 +18,8 @@ pub trait DatadogConfigWitness {
     fn consume_aggregator_stop_timeout(&mut self, value: i64);
     fn consume_allow_arbitrary_tags(&mut self, value: bool);
     fn consume_api_key(&mut self, value: String);
+    fn consume_apm_config_analyzed_rate_by_service(&mut self, value: HashMap<String, f64>);
+    fn consume_apm_config_analyzed_spans(&mut self, value: ::serde_json::Map<String, ::serde_json::Value>);
     fn consume_apm_config_compute_stats_by_span_kind(&mut self, value: bool);
     fn consume_apm_config_enable_rare_sampler(&mut self, value: bool);
     fn consume_apm_config_error_tracking_standalone_enabled(&mut self, value: bool);
@@ -25,6 +27,7 @@ pub trait DatadogConfigWitness {
     fn consume_apm_config_extra_sample_rate(&mut self, value: f64);
     fn consume_apm_config_features(&mut self, value: Vec<String>);
     fn consume_apm_config_max_catalog_entries(&mut self, value: i64);
+    fn consume_apm_config_max_events_per_second(&mut self, value: f64);
     fn consume_apm_config_max_traces_per_second(&mut self, value: f64);
     fn consume_apm_config_obfuscation_credit_cards_enabled(&mut self, value: bool);
     fn consume_apm_config_obfuscation_credit_cards_keep_values(&mut self, value: Vec<String>);
@@ -278,6 +281,8 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_aggregator_stop_timeout(config.aggregator_stop_timeout.clone());
     consumer.consume_allow_arbitrary_tags(config.allow_arbitrary_tags.clone());
     consumer.consume_api_key(config.api_key.clone());
+    consumer.consume_apm_config_analyzed_rate_by_service(config.apm_config.analyzed_rate_by_service.clone());
+    consumer.consume_apm_config_analyzed_spans(config.apm_config.analyzed_spans.clone());
     consumer.consume_apm_config_compute_stats_by_span_kind(config.apm_config.compute_stats_by_span_kind.clone());
     consumer.consume_apm_config_enable_rare_sampler(config.apm_config.enable_rare_sampler.clone());
     consumer.consume_apm_config_error_tracking_standalone_enabled(
@@ -287,6 +292,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_apm_config_extra_sample_rate(config.apm_config.extra_sample_rate.clone());
     consumer.consume_apm_config_features(config.apm_config.features.clone());
     consumer.consume_apm_config_max_catalog_entries(config.apm_config.max_catalog_entries.clone());
+    consumer.consume_apm_config_max_events_per_second(config.apm_config.max_events_per_second.clone());
     consumer.consume_apm_config_max_traces_per_second(config.apm_config.max_traces_per_second.clone());
     consumer.consume_apm_config_obfuscation_credit_cards_enabled(
         config.apm_config.obfuscation.credit_cards.enabled.clone(),

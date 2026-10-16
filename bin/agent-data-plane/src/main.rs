@@ -15,15 +15,19 @@ use agent_data_plane_config_system::{EnvPrecedence, LoadedConfiguration};
 use antithesis_instrumentation as _;
 use datadog_agent_commons::platform::PlatformSettings;
 use metrics::Level;
-use saluki_app::bootstrap::{AppBootstrapper, Bootstrap, BootstrapGuard};
+use saluki_app::{
+    bootstrap::{AppBootstrapper, Bootstrap, BootstrapGuard},
+    util::get_async_runtime_parallelism,
+};
 use saluki_core::runtime::Supervisor;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_metadata::AppDetails;
 use tracing::{error, info, warn};
 
+use crate::internal::logging::get_translated_logging_config;
+
 mod cli;
 use self::cli::*;
-use crate::internal::logging::LoggingConfigurationTranslator;
 
 mod components;
 mod config;
@@ -51,8 +55,7 @@ const APP_DETAILS: AppDetails = saluki_metadata::declare_app_details!(
     identifier = "adp",
 );
 
-#[tokio::main]
-async fn main() -> Result<(), GenericError> {
+fn main() -> Result<(), GenericError> {
     let started = Instant::now();
 
     // Register who we are before anything else, so that everything from here on -- including code that runs before
@@ -62,6 +65,19 @@ async fn main() -> Result<(), GenericError> {
     #[cfg(feature = "antithesis")]
     initialize_antithesis();
 
+    // We build the primary runtime by hand, rather than with `#[tokio::main]`, so that we can enforce a minimum number
+    // of worker threads.
+    let worker_threads = get_async_runtime_parallelism()?;
+
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(worker_threads)
+        .enable_all()
+        .build()
+        .error_context("Failed to build the primary runtime.")?
+        .block_on(async_main(started))
+}
+
+async fn async_main(started: Instant) -> Result<(), GenericError> {
     let cli: Cli = argh::from_env();
 
     // Print version and exit early without requiring config.
@@ -75,9 +91,9 @@ async fn main() -> Result<(), GenericError> {
     let bootstrap_config_path = cli.config_file.unwrap_or_else(PlatformSettings::get_config_file_path);
     let local_config = load_bootstrap_config(&bootstrap_config_path).await?;
 
-    // Translate the bootstrap configuration into ADP's logging configuration, applying ADP-specific rules
-    // (per-subagent log file key, never sharing a file with the Core Agent).
-    let mut bootstrap_logging_config = LoggingConfigurationTranslator::translate(&local_config.local().control.logging)
+    // Translate the bootstrap configuration into ADP's logging configuration, applying ADP-specific rules (ADP's own
+    // log file key, never sharing a file with the Core Agent).
+    let mut bootstrap_logging_config = get_translated_logging_config(&local_config.local().control.logging)
         .error_context("Failed to translate logging configuration during bootstrap phase.")?;
     if matches!(&cli.action, Action::Config(command) if command.json) {
         bootstrap_logging_config.log_to_console = false;

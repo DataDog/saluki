@@ -145,6 +145,7 @@ pub fn get_dogstatsd_remappings() -> Vec<RemapperRule> {
             &["component_id:dsd_in", "error_type:origin_detection"],
             "dogstatsd.uds_origin_detection_error",
         )
+        .with_original_tags(["reason"])
         .with_help_text("Dogstatsd UDS origin detection error count"),
         // DogStatsD client byte telemetry. These counters mirror the post-aggregation metric stream and retain the
         // client library and transport dimensions supplied by the DogStatsD client.

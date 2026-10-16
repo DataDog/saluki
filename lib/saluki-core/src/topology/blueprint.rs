@@ -24,7 +24,7 @@ use crate::{
     health::HealthRegistry,
     runtime::{
         state::{DataspaceRegistry, ResourceRegistry},
-        InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture,
+        InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture, UnadoptedScope,
     },
     support::SubsystemIdentifier,
     topology::{ids::AsComponentIds, topology_identifier, EventsBuffer, DEFAULT_EVENTS_BUFFER_CAPACITY},
@@ -677,18 +677,26 @@ impl TopologyBuildState {
     async fn build(self, name: String, resource_registry: &ResourceRegistry) -> Result<BuiltTopology, GenericError> {
         self.graph.validate().error_context("Failed to build topology graph.")?;
 
+        let mut component_scopes = HashMap::new();
+
         let mut sources = HashMap::new();
         for (id, builder) in self.sources {
             let component_context = ComponentContext::source(&self.topology_id, id.clone());
             let allocation_token = self
                 .component_registry
                 .get_resource_group_token(&component_context.identity());
-            let source = builder
-                .build(BuildContext::new(component_context.clone(), resource_registry.clone()))
+            // While the component is built, it can spawn tasks into the current scope, for example the background tasks
+            // of a cache. This scope holds these tasks until the component runs. Then the tasks belong to the
+            // component.
+            let scope = UnadoptedScope::new(component_context.identity().to_string());
+            let source = scope
+                .scope()
+                .enter(builder.build(BuildContext::new(component_context.clone(), resource_registry.clone())))
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build source '{}'.", id))?;
 
+            component_scopes.insert(component_context.clone(), scope);
             sources.insert(component_context, (source, self.component_registry.clone()));
         }
 
@@ -698,12 +706,18 @@ impl TopologyBuildState {
             let allocation_token = self
                 .component_registry
                 .get_resource_group_token(&component_context.identity());
-            let relay = builder
-                .build(BuildContext::new(component_context.clone(), resource_registry.clone()))
+            // While the component is built, it can spawn tasks into the current scope, for example the background tasks
+            // of a cache. This scope holds these tasks until the component runs. Then the tasks belong to the
+            // component.
+            let scope = UnadoptedScope::new(component_context.identity().to_string());
+            let relay = scope
+                .scope()
+                .enter(builder.build(BuildContext::new(component_context.clone(), resource_registry.clone())))
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build relay '{}'.", id))?;
 
+            component_scopes.insert(component_context.clone(), scope);
             relays.insert(component_context, (relay, self.component_registry.clone()));
         }
 
@@ -713,12 +727,18 @@ impl TopologyBuildState {
             let allocation_token = self
                 .component_registry
                 .get_resource_group_token(&component_context.identity());
-            let decoder = builder
-                .build(BuildContext::new(component_context.clone(), resource_registry.clone()))
+            // While the component is built, it can spawn tasks into the current scope, for example the background tasks
+            // of a cache. This scope holds these tasks until the component runs. Then the tasks belong to the
+            // component.
+            let scope = UnadoptedScope::new(component_context.identity().to_string());
+            let decoder = scope
+                .scope()
+                .enter(builder.build(BuildContext::new(component_context.clone(), resource_registry.clone())))
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build decoder '{}'.", id))?;
 
+            component_scopes.insert(component_context.clone(), scope);
             decoders.insert(component_context, (decoder, self.component_registry.clone()));
         }
 
@@ -728,12 +748,18 @@ impl TopologyBuildState {
             let allocation_token = self
                 .component_registry
                 .get_resource_group_token(&component_context.identity());
-            let transform = builder
-                .build(BuildContext::new(component_context.clone(), resource_registry.clone()))
+            // While the component is built, it can spawn tasks into the current scope, for example the background tasks
+            // of a cache. This scope holds these tasks until the component runs. Then the tasks belong to the
+            // component.
+            let scope = UnadoptedScope::new(component_context.identity().to_string());
+            let transform = scope
+                .scope()
+                .enter(builder.build(BuildContext::new(component_context.clone(), resource_registry.clone())))
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build transform '{}'.", id))?;
 
+            component_scopes.insert(component_context.clone(), scope);
             transforms.insert(component_context, (transform, self.component_registry.clone()));
         }
 
@@ -743,12 +769,18 @@ impl TopologyBuildState {
             let allocation_token = self
                 .component_registry
                 .get_resource_group_token(&component_context.identity());
-            let destination = builder
-                .build(BuildContext::new(component_context.clone(), resource_registry.clone()))
+            // While the component is built, it can spawn tasks into the current scope, for example the background tasks
+            // of a cache. This scope holds these tasks until the component runs. Then the tasks belong to the
+            // component.
+            let scope = UnadoptedScope::new(component_context.identity().to_string());
+            let destination = scope
+                .scope()
+                .enter(builder.build(BuildContext::new(component_context.clone(), resource_registry.clone())))
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build destination '{}'.", id))?;
 
+            component_scopes.insert(component_context.clone(), scope);
             destinations.insert(component_context, (destination, self.component_registry.clone()));
         }
 
@@ -758,12 +790,18 @@ impl TopologyBuildState {
             let allocation_token = self
                 .component_registry
                 .get_resource_group_token(&component_context.identity());
-            let encoder = builder
-                .build(BuildContext::new(component_context.clone(), resource_registry.clone()))
+            // While the component is built, it can spawn tasks into the current scope, for example the background tasks
+            // of a cache. This scope holds these tasks until the component runs. Then the tasks belong to the
+            // component.
+            let scope = UnadoptedScope::new(component_context.identity().to_string());
+            let encoder = scope
+                .scope()
+                .enter(builder.build(BuildContext::new(component_context.clone(), resource_registry.clone())))
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build encoder '{}'.", id))?;
 
+            component_scopes.insert(component_context.clone(), scope);
             encoders.insert(component_context, (encoder, self.component_registry.clone()));
         }
 
@@ -773,12 +811,18 @@ impl TopologyBuildState {
             let allocation_token = self
                 .component_registry
                 .get_resource_group_token(&component_context.identity());
-            let forwarder = builder
-                .build(BuildContext::new(component_context.clone(), resource_registry.clone()))
+            // While the component is built, it can spawn tasks into the current scope, for example the background tasks
+            // of a cache. This scope holds these tasks until the component runs. Then the tasks belong to the
+            // component.
+            let scope = UnadoptedScope::new(component_context.identity().to_string());
+            let forwarder = scope
+                .scope()
+                .enter(builder.build(BuildContext::new(component_context.clone(), resource_registry.clone())))
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build forwarder '{}'.", id))?;
 
+            component_scopes.insert(component_context.clone(), scope);
             forwarders.insert(component_context, (forwarder, self.component_registry.clone()));
         }
 
@@ -795,6 +839,7 @@ impl TopologyBuildState {
             destinations,
             encoders,
             forwarders,
+            component_scopes,
             topology_token,
             self.interconnect_capacity,
             self.worker_pool_config,
@@ -812,6 +857,11 @@ impl Supervisable for TopologyBlueprint {
         // Set an infinitely long (effectively) graceful shutdown timeout because we enforce our _own_ realistic graceful
         // shutdown as part of the supervisor future we generate.
         ShutdownStrategy::Graceful(Duration::MAX)
+    }
+
+    fn can_restart(&self) -> bool {
+        // The first start consumes the build state, so a topology can only be run once.
+        false
     }
 
     async fn initialize(&self, shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
@@ -866,8 +916,8 @@ impl Supervisable for TopologyBlueprint {
                 }
             }
 
-            // Build the topology supervisor: one dedicated supervisor per component, parented under a single topology
-            // supervisor that owns failure detection and graceful shutdown.
+            // Build the topology supervisor. It is a single supervisor that owns failure detection and graceful
+            // shutdown, with one worker for each component. Each worker owns everything that it spawns.
             let mut topology_sup = built
                 .spawn_inner(&health_registry, memory_limiter, dataspace.clone(), shutdown_timeout)
                 .await?;
@@ -879,9 +929,11 @@ impl Supervisable for TopologyBlueprint {
                 let _ = ready_signal.send(());
             }
 
-            // Run the topology supervisor, forwarding our own shutdown signal into it. We use the internal variant so we
-            // can pass down the inherited dataspace (the public `run_with_shutdown` would create a fresh, empty one). The
-            // topology supervisor returns `Ok(())` on an intentional shutdown that drained cleanly, and an error if any
+            // Run the topology supervisor, forwarding our own shutdown signal into it. We run it here, and not as our
+            // own child, so that its process name stays rooted at the identifier of the topology. This makes the
+            // process name of each component its canonical identity. We use the internal variant so we can pass down
+            // the inherited dataspace (the public `run_with_shutdown` would create a fresh, empty one). The topology
+            // supervisor returns `Ok(())` on an intentional shutdown that drained cleanly, and an error if any
             // component exits on its own (how a component failure fails the topology) or if a component had to be
             // forcefully aborted after ignoring graceful shutdown (`SupervisorError::ShutdownTimedOut`). That error is
             // preserved here as a `GenericError` so the root supervisor can still recover the aborted-worker count.
@@ -931,10 +983,7 @@ mod tests {
         },
         data_model::event::EventType,
         health::HealthRegistry,
-        runtime::{
-            InitializationError, RestartMode, RestartStrategy, Supervisable, Supervisor, SupervisorError,
-            SupervisorFuture,
-        },
+        runtime::{InitializationError, RestartStrategy, Supervisable, Supervisor, SupervisorError, SupervisorFuture},
         support::SubsystemIdentifier,
         topology::{
             test_util::{TestDestinationBuilder, TestSourceBuilder, TestTransformBuilder},
@@ -1020,6 +1069,42 @@ mod tests {
     }
 
     impl MemoryBounds for ControlSourceBuilder {
+        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    }
+
+    /// A source whose builder spawns a child into the current scope while it builds the source.
+    ///
+    /// The child records when it starts and when it stops. It runs until something tells it to stop.
+    struct BuildSpawningSourceBuilder {
+        outputs: Vec<OutputDefinition<EventType>>,
+        source_started: Arc<AtomicUsize>,
+        child_started: Arc<AtomicUsize>,
+        child_stopped: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl SourceBuilder for BuildSpawningSourceBuilder {
+        fn outputs(&self) -> &[OutputDefinition<EventType>] {
+            &self.outputs
+        }
+
+        async fn build(&self, _: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
+            let (started, stopped) = (Arc::clone(&self.child_started), Arc::clone(&self.child_stopped));
+            runtime::worker_with_shutdown("built_child", move |shutdown| async move {
+                started.fetch_add(1, Ordering::SeqCst);
+                shutdown.await;
+                stopped.fetch_add(1, Ordering::SeqCst);
+            })
+            .spawn_or_detached();
+
+            Ok(Box::new(ControlSource {
+                started: Arc::clone(&self.source_started),
+                spawned_child: None,
+            }))
+        }
+    }
+
+    impl MemoryBounds for BuildSpawningSourceBuilder {
         fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
     }
 
@@ -1127,9 +1212,9 @@ mod tests {
 
     /// Builds a connected `source` -> `destination` blueprint whose destination must be forcefully aborted on shutdown.
     ///
-    /// The source stops cleanly when shutdown is signalled; the destination ignores shutdown and runs forever, so its
-    /// per-component supervisor aborts it after `shutdown_timeout`. Exactly one component (the destination) is
-    /// force-aborted, which lets a test assert a precise abort count.
+    /// The source stops cleanly when it gets the shutdown signal. The destination ignores shutdown and runs forever, so
+    /// the topology supervisor aborts it after `shutdown_timeout`. Thus, exactly one component is aborted: the
+    /// destination. This lets a test assert an exact abort count.
     ///
     /// Returns the blueprint together with the destination's "started" counter, so a test can wait until the stuck
     /// destination is actually running before triggering shutdown.
@@ -1183,10 +1268,11 @@ mod tests {
     async fn run_blueprint_until_exit(
         blueprint: TopologyBlueprint, strategy: RestartStrategy,
     ) -> Result<(), SupervisorError> {
+        // The supervisor needs the topology, as the root supervisor of the real binary does.
         let mut supervisor = Supervisor::new("test-topology")
             .expect("should not fail to create supervisor")
             .with_restart_strategy(strategy);
-        supervisor.add_worker(blueprint);
+        supervisor.add_worker(runtime::supervisable(blueprint).needed().build());
 
         // Hold the sender so shutdown is never triggered; the supervisor exits only when the topology does.
         let (_tx, rx) = oneshot::channel::<()>();
@@ -1380,40 +1466,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn topology_failure_shuts_down_supervisor() {
+    async fn topology_failure_shuts_down_supervisor_without_a_restart() {
         // The test components all finish immediately, which the topology worker treats as an unexpected component
-        // finish -- a topology failure. With a restart intensity of zero, that must fail the supervisor (and, in the
-        // real binary, exit the process).
+        // finish -- a topology failure. The supervisor needs the topology, so the failure must stop the supervisor (and,
+        // in the real binary, exit the process).
+        //
+        // The default restart strategy allows a restart. But the first start of a topology consumes the build state of
+        // the blueprint, and the blueprint reports that it cannot start again. Thus, the supervisor stops because of
+        // the failure of the topology, and not because a second start failed to initialize.
         let mut blueprint = connected_blueprint();
         blueprint
             .with_health_registry(HealthRegistry::new())
             .with_memory_limiter(MemoryLimiter::noop())
             .with_resource_registry(ResourceRegistry::new());
-
-        let result = run_blueprint_until_exit(
-            blueprint,
-            RestartStrategy::new(RestartMode::OneForOne, 0, Duration::from_secs(5)),
-        )
-        .await;
-
-        assert!(matches!(result, Err(SupervisorError::Shutdown)));
-    }
-
-    #[tokio::test]
-    async fn topology_cannot_be_initialized_more_than_once() {
-        // A topology can only be initialized once. Under the default restart strategy (which allows one restart), the
-        // topology fails at runtime (components finish immediately), the supervisor attempts to restart it, and the
-        // second initialization fails because the blueprint's build state was already consumed. That surfaces as a
-        // non-restartable initialization failure.
-        let mut blueprint = connected_blueprint();
-        blueprint
-            .with_health_registry(HealthRegistry::new())
-            .with_memory_limiter(MemoryLimiter::noop())
-            .with_resource_registry(ResourceRegistry::new());
+        assert!(!blueprint.can_restart());
 
         let result = run_blueprint_until_exit(blueprint, RestartStrategy::default()).await;
 
-        assert!(matches!(result, Err(SupervisorError::FailedToInitialize { .. })));
+        assert!(
+            matches!(result, Err(SupervisorError::SignificantChildExited)),
+            "the topology failure should stop the supervisor: {result:?}"
+        );
     }
 
     #[tokio::test]
@@ -1534,9 +1607,9 @@ mod tests {
     #[tokio::test]
     async fn component_can_spawn_dynamic_child_via_spawn_handle() {
         // The source spawns a dynamic child through its context's spawn handle. The child records that it started and
-        // then runs until torn down. We verify the child actually ran, then shut the topology down cleanly. The clean
-        // shutdown also tears the (still-running) dynamic child down with its component's supervisor -- if it didn't,
-        // draining would hang and the test would time out.
+        // then runs until torn down. We verify the child actually ran, then shut the topology down cleanly. The dynamic
+        // child still runs at that time, and the clean shutdown stops it together with its component. Otherwise, the
+        // drain does not complete, and the test times out.
         let child_started = Arc::new(AtomicUsize::new(0));
         let (blueprint, _source_started) = long_running_blueprint(Some(Arc::clone(&child_started)));
         let (tx, handle) = spawn_supervised_blueprint(blueprint);
@@ -1555,6 +1628,124 @@ mod tests {
         tx.send(()).expect("should send shutdown signal");
         let result = join_topology(handle).await;
         assert!(result.is_ok(), "topology should shut down cleanly, got: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn each_component_runs_as_a_worker_named_by_its_canonical_identity() {
+        // Components run directly under the topology supervisor, with no supervisor of their own. The process name of
+        // each worker must be the canonical identity of its component. The health registry and resource accounting also
+        // use this identity. The worker must also own that resource group, so that the component still has its own
+        // figures.
+        let (blueprint, source_started) = long_running_blueprint(None);
+
+        let mut supervisor = Supervisor::new("test-topology").expect("should not fail to create supervisor");
+        let tree = supervisor.tree_handle();
+        supervisor.add_worker(blueprint);
+        let (tx, rx) = oneshot::channel::<()>();
+        let handle = tokio::spawn(async move { supervisor.run_with_shutdown(rx).await });
+
+        wait_until("the source has started", || source_started.load(Ordering::SeqCst) == 1).await;
+
+        fn find<'a>(node: &'a runtime::NodeSnapshot, name: &str) -> Option<&'a runtime::NodeSnapshot> {
+            if node.name == name {
+                return Some(node);
+            }
+            node.children.iter().find_map(|child| find(child, name))
+        }
+
+        let root = tree.snapshot().root;
+        let topology = find(&root, "topology.test").expect("the topology supervisor is in the tree");
+        for (name, identity) in [
+            ("sources.source", "topology.test.sources.source"),
+            ("destinations.destination", "topology.test.destinations.destination"),
+        ] {
+            let component = topology
+                .children
+                .iter()
+                .find(|child| child.name == name)
+                .unwrap_or_else(|| panic!("{name} should run directly under the topology supervisor"));
+            assert_eq!(component.kind, runtime::NodeKind::Worker);
+            assert_eq!(component.process_name.as_deref(), Some(identity));
+            assert_eq!(
+                component.resource_group.as_deref(),
+                Some(identity),
+                "{name} should own its resource group"
+            );
+        }
+
+        tx.send(()).expect("should send shutdown signal");
+        let result = join_topology(handle).await;
+        assert!(result.is_ok(), "topology should shut down cleanly, got: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn work_spawned_while_a_component_is_built_belongs_to_the_component() {
+        // The builder of a component runs inside the blueprint, before the process of the component exists. At that
+        // time, the builder can spawn tasks into the current scope, for example the background tasks of a cache. The
+        // scope holds these tasks until the component runs. Then the tasks belong to the component: they run beneath
+        // the component, and stop with it.
+        let source_started = Arc::new(AtomicUsize::new(0));
+        let child_started = Arc::new(AtomicUsize::new(0));
+        let child_stopped = Arc::new(AtomicUsize::new(0));
+
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+        blueprint
+            .add_source(
+                "spawner",
+                BuildSpawningSourceBuilder {
+                    outputs: vec![OutputDefinition::default_output(EventType::EventD)],
+                    source_started: Arc::clone(&source_started),
+                    child_started: Arc::clone(&child_started),
+                    child_stopped: Arc::clone(&child_stopped),
+                },
+            )
+            .expect("should not fail to add source")
+            .add_destination(
+                "destination",
+                DrainingDestinationBuilder {
+                    input_event_ty: EventType::EventD,
+                },
+            )
+            .expect("should not fail to add destination");
+        blueprint
+            .connect_components_in_order(["spawner", "destination"])
+            .expect("should not fail to connect components");
+        blueprint
+            .with_health_registry(HealthRegistry::new())
+            .with_memory_limiter(MemoryLimiter::noop())
+            .with_resource_registry(ResourceRegistry::new());
+
+        let mut supervisor = Supervisor::new("test-topology").expect("should not fail to create supervisor");
+        let tree = supervisor.tree_handle();
+        supervisor.add_worker(blueprint);
+        let (tx, rx) = oneshot::channel::<()>();
+        let handle = tokio::spawn(async move { supervisor.run_with_shutdown(rx).await });
+
+        fn find<'a>(node: &'a runtime::NodeSnapshot, name: &str) -> Option<&'a runtime::NodeSnapshot> {
+            if node.name == name {
+                return Some(node);
+            }
+            node.children.iter().find_map(|child| find(child, name))
+        }
+
+        // The source worker gets its name from the component.
+        wait_until("the child spawned while building runs beneath its component", || {
+            let root = tree.snapshot().root;
+            find(&root, "sources.spawner").is_some_and(|source| find(source, "built_child").is_some())
+        })
+        .await;
+        assert_eq!(source_started.load(Ordering::SeqCst), 1);
+        assert_eq!(child_started.load(Ordering::SeqCst), 1);
+
+        tx.send(()).expect("should send shutdown signal");
+        let result = join_topology(handle).await;
+        assert!(result.is_ok(), "topology should shut down cleanly, got: {:?}", result);
+        assert_eq!(
+            child_stopped.load(Ordering::SeqCst),
+            1,
+            "the child should have been stopped with its component"
+        );
     }
 
     #[tokio::test]
@@ -1636,7 +1827,7 @@ mod tests {
             assert_eq!(
                 &*process_name,
                 component_canonical_id.as_str(),
-                "per-component supervisor process name must match the canonical identity"
+                "component worker process name must match the canonical identity"
             );
         }
     }

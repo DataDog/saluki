@@ -300,6 +300,40 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.endpoints.api_key = value;
     }
 
+    fn consume_apm_config_analyzed_rate_by_service(&mut self, value: HashMap<String, f64>) {
+        self.config.domains.traces.analyzed_rate_by_service = value;
+    }
+
+    fn consume_apm_config_analyzed_spans(&mut self, value: serde_json::Map<String, serde_json::Value>) {
+        // Malformed entries recover at translation: each bad key or rate is dropped with a
+        // warning so one entry does not reject the whole configuration.
+        let mut rates_by_service: HashMap<String, HashMap<String, f64>> = HashMap::with_capacity(value.len());
+        for (key, rate) in value {
+            let rate = match datadog_agent_config::cast_to_f64(&rate) {
+                Ok(rate) => rate,
+                Err(error) => {
+                    warn!("invalid rate for `apm_config.analyzed_spans` key `{key}`: {error}; skipping");
+                    continue;
+                }
+            };
+            let mut parts = key.split('|');
+            let (service, operation) = match (parts.next(), parts.next(), parts.next()) {
+                (Some(service), Some(operation), None) => (service, operation),
+                _ => {
+                    warn!(
+                        "`apm_config.analyzed_spans` key `{key}` is malformed; expected `service|operation`; skipping"
+                    );
+                    continue;
+                }
+            };
+            rates_by_service
+                .entry(service.to_owned())
+                .or_default()
+                .insert(operation.to_owned(), rate);
+        }
+        self.config.domains.traces.analyzed_spans_by_service = rates_by_service;
+    }
+
     fn consume_apm_config_compute_stats_by_span_kind(&mut self, value: bool) {
         self.config.domains.traces.compute_stats_by_span_kind = value;
     }
@@ -337,6 +371,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
             Ok(entries) => self.config.domains.traces.max_catalog_entries = entries,
             Err(error) => self.record_error(TranslateError::new("apm_config.max_catalog_entries", error)),
         }
+    }
+
+    fn consume_apm_config_max_events_per_second(&mut self, value: f64) {
+        self.config.domains.traces.max_events_per_second = value;
     }
 
     fn consume_apm_config_max_traces_per_second(&mut self, value: f64) {
@@ -456,7 +494,7 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     fn consume_apm_config_replace_tags(&mut self, value: Vec<HashMap<String, String>>) {
         // The schema models each rule as a free string map; this gives it the typed
         // `name`/`pattern`/`repl` shape the replacer consumes.
-        self.config.domains.traces.replace_tags = value
+        let rules: Vec<ReplaceRule> = value
             .into_iter()
             .map(|rule| ReplaceRule {
                 name: rule.get("name").cloned().unwrap_or_default(),
@@ -464,6 +502,27 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
                 repl: rule.get("repl").cloned().unwrap_or_default(),
             })
             .collect();
+
+        // A rule lacking either field is invalid, which includes a null rule (read as an empty map). `repl`
+        // may be empty: that deletes the matched text. The trace-agent defines this recovery rather than
+        // failing: it logs the error, applies none of the rules, and keeps running. Recovering the same way
+        // keeps a bad rule from failing the strict startup gate on a configuration the Agent runs with.
+        for rule in &rules {
+            let message = if rule.name.is_empty() {
+                r#"all rules must have a "name" property (use "*" to target all)"#
+            } else if rule.pattern.is_empty() {
+                r#"all rules must have a "pattern""#
+            } else {
+                continue;
+            };
+            warn!(
+                config_key = "apm_config.replace_tags",
+                "Invalid replace rule: {message}. Ignoring all replace rules."
+            );
+            return;
+        }
+
+        self.config.domains.traces.replace_tags = rules;
     }
 
     fn consume_apm_config_target_traces_per_second(&mut self, value: f64) {
@@ -1704,6 +1763,28 @@ mod tests {
         assert_eq!(traces.replace_tags[0].name, "http.url");
         assert_eq!(traces.replace_tags[0].pattern, "p");
         assert_eq!(traces.replace_tags[0].repl, "");
+    }
+
+    #[test]
+    fn apm_config_replace_tags_ignores_all_rules_when_one_lacks_a_name_or_pattern() {
+        // Matches the trace-agent, which logs these and runs with no replace rules. A null rule reads as an
+        // empty map, and the trace-agent compares the decoded string, so an explicit empty value fails like a
+        // missing one. The valid first rule shows that one bad rule discards them all.
+        for bad_rule in [
+            json!(null),
+            json!({ "pattern": "p" }),
+            json!({ "name": "", "pattern": "p" }),
+            json!({ "name": "*", "pattern": "" }),
+            json!({ "name": "*", "repl": "x" }),
+        ] {
+            let rules = json!([{ "name": "http.url", "pattern": "p" }, bad_rule]);
+            let (config, errors) = translate_explicit(json!({ "apm_config": { "replace_tags": rules } }));
+            assert!(errors.is_none(), "{rules} should not fail translation: {errors:?}");
+            assert!(
+                config.domains.traces.replace_tags.is_empty(),
+                "{rules} should apply no rules"
+            );
+        }
     }
 
     #[test]

@@ -232,20 +232,15 @@ mod tests {
 
     use agent_data_plane_config::{Live, SalukiConfiguration};
     use saluki_core::{
-        accounting::{ComponentRegistry, MemoryLimiter},
-        components::{destinations::DestinationContext, ComponentContext},
+        components::test_util::TestComponentDriver,
         data_model::event::{
             metric::{context::Context, Metric},
             Event,
         },
-        health::HealthRegistry,
-        runtime::state::DataspaceRegistry,
-        topology::{interconnect::Consumer, EventsBuffer, TopologyContext},
     };
     use tempfile::tempdir;
-    use tokio::{runtime::Handle, sync::mpsc};
 
-    use super::{Destination, DogStatsDDebugLog, DogStatsDDebugLogConfiguration};
+    use super::{DogStatsDDebugLog, DogStatsDDebugLogConfiguration};
 
     fn test_config(log_file: PathBuf, max_size: u64, max_rolls: usize) -> DogStatsDDebugLogConfiguration {
         DogStatsDDebugLogConfiguration {
@@ -319,43 +314,13 @@ mod tests {
         config.metrics_stats_enabled = Live::new_dynamic(Arc::clone(&cell), tick_rx, |config| {
             &config.domains.dogstatsd.debug_log.metrics_stats_enable
         });
-        let destination = DogStatsDDebugLog::new(&config).expect("debug log destination should be built");
-
-        let component_context = ComponentContext::test_destination("test");
-        let (events_tx, events_rx) = mpsc::channel::<EventsBuffer>(4);
-        let consumer = Consumer::new(component_context.clone(), events_rx);
-        let topology_context = TopologyContext::new(
-            Arc::from("test"),
-            MemoryLimiter::noop(),
-            HealthRegistry::new(),
-            Handle::current(),
-            DataspaceRegistry::new(),
-        );
-        let health = HealthRegistry::new()
-            .register_component(&saluki_core::support::SubsystemIdentifier::from_dotted("test"))
-            .expect("component was not previously registered");
-        let context = DestinationContext::new(
-            &topology_context,
-            &component_context,
-            ComponentRegistry::default(),
-            health,
-            consumer,
-        );
-        let run_handle = tokio::spawn(async move { Box::new(destination).run(context).await });
-
-        let mut events = EventsBuffer::default();
-        assert!(events.try_push(Event::Metric(tagged_metric())).is_none());
-        events_tx
-            .send(events)
+        let log_file_max_rolls = config.log_file_max_rolls;
+        let control = TestComponentDriver::destination(config)
             .await
-            .expect("disabled metric should be accepted");
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while events_tx.capacity() != 4 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("disabled metric should be consumed");
+            .expect("debug log destination should be built");
+
+        control.send_event(Event::Metric(tagged_metric())).await;
+        control.wait_until_input_drained().await;
         assert!(!log_file.exists());
 
         let mut updated = (*cell.load_full()).clone();
@@ -365,9 +330,7 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
-                let mut events = EventsBuffer::default();
-                assert!(events.try_push(Event::Metric(tagged_metric())).is_none());
-                events_tx.send(events).await.expect("enabled metric should be accepted");
+                control.send_event(Event::Metric(tagged_metric())).await;
                 tokio::time::sleep(Duration::from_millis(10)).await;
                 if fs::read_to_string(&log_file).is_ok_and(|output| output.contains("Metric Name: custom.metric")) {
                     break;
@@ -383,22 +346,15 @@ mod tests {
         tick_tx.send_replace(());
 
         let line_count_after_disable = tokio::time::timeout(Duration::from_secs(2), async {
-            let mut previous_line_count = read_log_files(&log_file, config.log_file_max_rolls).lines().count();
+            let mut previous_line_count = read_log_files(&log_file, log_file_max_rolls).lines().count();
             let mut unchanged_samples = 0;
 
             loop {
-                let mut events = EventsBuffer::default();
-                assert!(events.try_push(Event::Metric(tagged_metric())).is_none());
-                events_tx
-                    .send(events)
-                    .await
-                    .expect("metric should be accepted while disabling");
-                while events_tx.capacity() != 4 {
-                    tokio::task::yield_now().await;
-                }
+                control.send_event(Event::Metric(tagged_metric())).await;
+                control.wait_until_input_drained().await;
                 tokio::time::sleep(Duration::from_millis(20)).await;
 
-                let current_line_count = read_log_files(&log_file, config.log_file_max_rolls).lines().count();
+                let current_line_count = read_log_files(&log_file, log_file_max_rolls).lines().count();
                 if current_line_count == previous_line_count {
                     unchanged_samples += 1;
                     if unchanged_samples == 5 {
@@ -414,26 +370,15 @@ mod tests {
         .expect("metrics should stop being logged after the runtime setting is disabled");
 
         for _ in 0..3 {
-            let mut events = EventsBuffer::default();
-            assert!(events.try_push(Event::Metric(tagged_metric())).is_none());
-            events_tx
-                .send(events)
-                .await
-                .expect("disabled metric should be accepted");
+            control.send_event(Event::Metric(tagged_metric())).await;
         }
-        while events_tx.capacity() != 4 {
-            tokio::task::yield_now().await;
-        }
+        control.wait_until_input_drained().await;
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let output = read_log_files(&log_file, config.log_file_max_rolls);
+        let output = read_log_files(&log_file, log_file_max_rolls);
         assert_eq!(output.lines().count(), line_count_after_disable);
 
-        drop(events_tx);
-        run_handle
-            .await
-            .expect("destination task should not panic")
-            .expect("destination should stop cleanly");
+        control.shutdown().await.expect("destination should stop cleanly");
     }
 
     #[tokio::test]

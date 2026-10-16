@@ -588,7 +588,7 @@ fn is_socket_target(template: &str) -> bool {
 /// check) or if parsing fails. Used to add a `nc -z` port-readiness check to the millstone
 /// pod's startup script for TCP/gRPC/UDP targets.
 fn extract_target_port(template: &str) -> Option<u16> {
-    let doc: serde_yaml::Value = serde_yaml::from_str(template).ok()?;
+    let doc: serde_json::Value = serde_saphyr::from_str(template).ok()?;
     let target = doc.get("target")?.as_str()?;
     // Targets look like "scheme://$GROUP:port" or "scheme://$GROUP:port/path".
     // Socket targets (unixgram://, unix://) have no port and return None.

@@ -79,7 +79,10 @@ pub enum NodeKind {
     /// A supervisor, which manages other nodes.
     Supervisor,
 
-    /// A worker, which performs work and has no children of its own.
+    /// A worker, which performs work itself.
+    ///
+    /// The children of a worker, if any, are the children that it spawned into its own scope. The children can also
+    /// include a supervisor that the worker drives inside its own future.
     Worker,
 }
 
@@ -168,7 +171,10 @@ pub struct NodeSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supervision: Option<SupervisionSettings>,
 
-    /// The node's children. Empty for a worker.
+    /// The node's children.
+    ///
+    /// For a worker, this holds the children that it spawned into its own scope, and any supervisor that it drives.
+    /// For most workers, it is empty.
     pub children: Vec<NodeSnapshot>,
 }
 

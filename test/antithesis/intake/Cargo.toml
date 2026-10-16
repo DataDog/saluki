@@ -27,8 +27,8 @@ protobuf = { workspace = true }
 rand = { workspace = true }
 saluki-common = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+serde-saphyr = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml = { workspace = true }
 tokio = { workspace = true, features = [
   "io-util",
   "macros",

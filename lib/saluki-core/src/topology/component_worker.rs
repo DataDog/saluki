@@ -1,17 +1,18 @@
 //! Adapts a built topology component into a [`Supervisable`] worker.
 //!
-//! Each component in a topology runs as the sole, _significant_ child of its own dedicated supervisor (see
-//! [`BuiltTopology::spawn_inner`][super::built::BuiltTopology::spawn_inner]). To be supervised, a component must be
-//! presented as a [`Supervisable`]: [`ComponentWorker`] wraps an already-built component together with its context and
-//! bridges the two.
+//! Each component in a topology runs as a needed, one-shot worker of the topology supervisor (see
+//! [`BuiltTopology::spawn_inner`][super::built::BuiltTopology::spawn_inner]). Everything that the component spawns runs
+//! in its [scope][crate::runtime::scope]. To be supervised, a component must be presented as a [`Supervisable`]:
+//! [`ComponentWorker`] wraps an already-built component together with its context and bridges the two.
 //!
 //! A component is built once (during topology initialization) and run once, so the wrapped component is held behind a
 //! take-once [`Mutex`] and consumed by [`Supervisable::initialize`]. Sources and relays drive their own shutdown, so
 //! the supervisor-provided shutdown handle is installed into their context; the remaining component kinds stop when
 //! their upstream channels close and ignore it.
 //!
-//! A component carries no shutdown deadline of its own. Its supervisor holds one budget covering the component and
-//! every task it spawned, so the subtree is bounded by a single number rather than a guess per worker. See
+//! A component carries no shutdown deadline of its own. The topology supervisor holds one budget. That budget applies
+//! to each component and to every task that the component spawned. Thus, a single number bounds the subtree of a
+//! component, instead of a guess for each worker. See
 //! [`Supervisor::with_shutdown_budget`][crate::runtime::Supervisor::with_shutdown_budget].
 //!
 //! The one exception is a child spawned from a hand-written [`Supervisable`][crate::runtime::Supervisable], which
@@ -36,13 +37,14 @@ use crate::components::{
     ComponentContext,
 };
 use crate::runtime::{InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture};
+use crate::topology::ids::get_component_relative_identifier;
 
 /// A built component paired with its context, runnable exactly once.
 ///
 /// Implemented for each of the seven component kinds. Producing the run-future is where the per-kind
 /// differences live: which context type is used, and whether the supervisor-provided shutdown handle is
 /// installed into the context (sources and relays) or ignored (everything else).
-pub(super) trait RunnableComponent: Send + 'static {
+pub(crate) trait RunnableComponent: Send + 'static {
     /// Whether this component kind observes the shutdown signal it is handed.
     ///
     /// True for the kinds that install it into their context (sources and relays), false for the kinds that stop when
@@ -66,7 +68,13 @@ pub(super) trait RunnableComponent: Send + 'static {
 ///
 /// Holds the component behind a take-once [`Mutex`] -- a component is built and run exactly once -- and
 /// exposes it to a supervisor via [`Supervisable`].
-pub(super) struct ComponentWorker<C> {
+pub(crate) struct ComponentWorker<C> {
+    /// The name of the worker: the identifier of the component relative to its topology, such as `sources.dsd_in`.
+    ///
+    /// The worker runs under the topology supervisor, so this name makes the process name of the worker the canonical
+    /// identity of the component. This identity also names the resource group of the component and its entry in the
+    /// health registry.
+    name: String,
     component_context: ComponentContext,
     inner: Mutex<Option<C>>,
 }
@@ -75,8 +83,12 @@ impl<C: RunnableComponent> ComponentWorker<C> {
     /// Creates a new `ComponentWorker` for the given runnable component.
     ///
     /// `component_context` identifies the component (its kind and id).
-    pub(super) fn new(component_context: ComponentContext, runnable: C) -> Self {
+    pub(crate) fn new(component_context: ComponentContext, runnable: C) -> Self {
+        let name =
+            get_component_relative_identifier(component_context.component_type(), component_context.component_id())
+                .to_string();
         Self {
+            name,
             component_context,
             inner: Mutex::new(Some(runnable)),
         }
@@ -86,17 +98,23 @@ impl<C: RunnableComponent> ComponentWorker<C> {
 #[async_trait]
 impl<C: RunnableComponent> Supervisable for ComponentWorker<C> {
     fn name(&self) -> &str {
-        self.component_context.component_type().as_str()
+        &self.name
     }
 
     fn shutdown_strategy(&self) -> ShutdownStrategy {
-        // No deadline of its own: the component's supervisor holds a single budget covering the component
-        // and everything it spawned, and aborts whatever is still running when that budget elapses.
+        // The component has no deadline of its own. The topology supervisor holds a single budget for the component and
+        // everything that it spawned. If the budget expires, the supervisor aborts the component together with all work
+        // that still runs in its scope.
         ShutdownStrategy::Graceful(Duration::MAX)
     }
 
     fn wants_shutdown_signal(&self) -> bool {
         C::WANTS_SHUTDOWN_SIGNAL
+    }
+
+    fn can_restart(&self) -> bool {
+        // A component is built once and runs once. Its first start consumes it.
+        false
     }
 
     async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
@@ -132,9 +150,9 @@ impl<C: RunnableComponent> Supervisable for ComponentWorker<C> {
 macro_rules! runnable_component {
     ($name:ident, $component:path, $context:ty, inject_shutdown) => {
         /// Pairs a built component with its context for supervised execution.
-        pub(super) struct $name {
-            pub(super) component: Box<dyn $component + Send>,
-            pub(super) context: $context,
+        pub(crate) struct $name {
+            pub(crate) component: Box<dyn $component + Send>,
+            pub(crate) context: $context,
         }
 
         impl RunnableComponent for $name {
@@ -152,9 +170,9 @@ macro_rules! runnable_component {
     };
     ($name:ident, $component:path, $context:ty) => {
         /// Pairs a built component with its context for supervised execution.
-        pub(super) struct $name {
-            pub(super) component: Box<dyn $component + Send>,
-            pub(super) context: $context,
+        pub(crate) struct $name {
+            pub(crate) component: Box<dyn $component + Send>,
+            pub(crate) context: $context,
         }
 
         impl RunnableComponent for $name {
