@@ -291,6 +291,9 @@ impl From<ProtoConfig> for Config {
 ///
 /// The default limits on the number of parsed nodes and events are lifted, as check configurations can legitimately
 /// hold very large lists. Nesting depth, alias expansion, and total scalar size are still bounded.
+///
+/// Errors report only a message and location, never the surrounding source lines, as check configurations can hold
+/// credentials. Comments are not retained, so runs of comments don't count against the comment limits.
 pub(crate) fn yaml_from_str<T>(input: &str) -> Result<T, serde_saphyr::Error>
 where
     T: serde::de::DeserializeOwned,
@@ -301,8 +304,10 @@ where
 
     let options = serde_saphyr::options! {
         budget: Some(budget),
+        emit_comments: false,
         legacy_octal_numbers: true,
         reject_non_finite_typeless_float: false,
+        with_snippet: false,
     };
     serde_saphyr::from_str_with_options(input, options)
 }
@@ -716,5 +721,33 @@ mod tests {
             AutodiscoveryEvent::CheckUnscheduled { config: _config } => {}
             _ => panic!("Expected an CheckUnscheduled event"),
         }
+    }
+
+    #[test]
+    fn test_yaml_errors_do_not_include_source_lines() {
+        let input = "password: hunter2hunter2\nhost: [unclosed\n";
+
+        let error = yaml_from_str::<BTreeMap<String, serde_json::Value>>(input)
+            .unwrap_err()
+            .to_string();
+
+        assert!(!error.contains("hunter2hunter2"), "error leaks source: {error}");
+    }
+
+    #[test]
+    fn test_yaml_parses_long_runs_of_comments() {
+        let mut input = String::from("username: # optional\n");
+        for i in 0..100 {
+            input.push_str(&format!("# documentation line {i}\n"));
+        }
+        input.push_str("host: localhost\n");
+
+        let data = bytes_to_data(input.into_bytes()).unwrap();
+
+        assert_eq!(data.get("username"), Some(&serde_json::Value::Null));
+        assert_eq!(
+            data.get("host"),
+            Some(&serde_json::Value::String("localhost".to_string()))
+        );
     }
 }

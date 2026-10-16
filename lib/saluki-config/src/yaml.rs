@@ -17,6 +17,9 @@ use serde::de::DeserializeOwned;
 /// The default limits on the number of parsed nodes and events are lifted, as configuration files can legitimately
 /// hold very large lists. Nesting depth, alias expansion, and total scalar size are still bounded.
 ///
+/// Errors report only a message and location, never the surrounding source lines, as configuration files can hold
+/// credentials. Comments are not retained, so runs of comments don't count against the comment limits.
+///
 /// # Errors
 ///
 /// If the document isn't valid YAML, or doesn't deserialize as `T`, an error is returned.
@@ -30,8 +33,10 @@ where
 
     let options = serde_saphyr::options! {
         budget: Some(budget),
+        emit_comments: false,
         legacy_octal_numbers: true,
         reject_non_finite_typeless_float: false,
+        with_snippet: false,
     };
     serde_saphyr::from_str_with_options(input, options)
 }
@@ -93,5 +98,28 @@ mod tests {
     #[test]
     fn rejects_duplicate_keys() {
         assert!(from_str::<Value>("a: 1\na: 2\n").is_err());
+    }
+
+    #[test]
+    fn errors_do_not_include_source_lines() {
+        let input = "api_key: 0123456789abcdef0123456789abcdef\nlog_level: [unclosed\n";
+
+        let error = from_str::<Value>(input).unwrap_err().to_string();
+
+        assert!(!error.contains("0123456789abcdef"), "error leaks source: {error}");
+        assert!(error.contains("line 2"), "error lacks location: {error}");
+    }
+
+    #[test]
+    fn parses_long_runs_of_comments() {
+        let mut input = String::from("proxy: # optional\n");
+        for i in 0..100 {
+            input.push_str(&format!("# documentation line {i}\n"));
+        }
+        input.push_str("log_level: info\n");
+
+        let value: Value = from_str(&input).unwrap();
+
+        assert_eq!(value, json!({"proxy": null, "log_level": "info"}));
     }
 }
