@@ -374,13 +374,13 @@ mod tests {
 
     #[test]
     fn agent_entity_id_prefixes_are_all_classified() {
-        // Note that we deliberately don't assert the other direction. ADP runs alongside a range of Agent versions, so
-        // a prefix that the Agent has since removed may still need handling for older Agents.
+        // Note that we deliberately don't assert the other direction. Remote agents run alongside a range of Agent
+        // versions, so a prefix that the Agent has since removed may still need handling for older Agents.
         for prefix in agent_entity_id_prefixes() {
             assert!(
                 HANDLED_ENTITY_ID_PREFIXES.contains(&prefix) || IGNORED_ENTITY_ID_PREFIXES.contains(&prefix),
-                "the Agent's tagger publishes `{prefix}://` entities but ADP neither handles nor ignores them. Either \
-                 add `{prefix}` to `HANDLED_ENTITY_ID_PREFIXES` along with an arm in \
+                "the Agent's tagger publishes `{prefix}://` entities but the runtime neither handles nor ignores them. \
+                 Either add `{prefix}` to `HANDLED_ENTITY_ID_PREFIXES` along with an arm in \
                  `remote_entity_id_to_entity_id` that converts it, or add it to `IGNORED_ENTITY_ID_PREFIXES` with a \
                  comment explaining why we don't need it."
             );

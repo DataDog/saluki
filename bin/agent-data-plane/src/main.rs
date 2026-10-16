@@ -91,7 +91,7 @@ async fn async_main(started: Instant) -> Result<(), GenericError> {
     let bootstrap_config_path = cli.config_file.unwrap_or_else(PlatformSettings::get_config_file_path);
     let local_config = load_bootstrap_config(&bootstrap_config_path).await?;
 
-    // Translate the bootstrap configuration into ADP's logging configuration, applying ADP-specific rules (per-subagent
+    // Translate the bootstrap configuration into ADP's logging configuration, applying ADP-specific rules (ADP's own
     // log file key, never sharing a file with the Core Agent).
     let mut bootstrap_logging_config = get_translated_logging_config(&local_config.local().control.logging)
         .error_context("Failed to translate logging configuration during bootstrap phase.")?;

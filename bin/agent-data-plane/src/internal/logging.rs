@@ -1,4 +1,4 @@
-//! ADP's logging rules on top of the shared subagent logging support.
+//! ADP's logging rules on top of the shared remote agent logging support.
 //!
 //! ADP logs to its own default log file and treats its own crates as first-party log targets. Everything else about
 //! translating the Datadog Agent's logging settings lives in [`datadog_agent_runtime::logging`].
@@ -38,7 +38,7 @@ fn get_logging_translator() -> &'static LoggingTranslator {
 /// If any of the logging configuration is invalid, or cannot be parsed, an error is returned.
 pub fn get_translated_logging_config(adp_log_config: &Logging) -> Result<LoggingConfiguration, GenericError> {
     // We need to first go from the Agent Data Plane-specific logging configuration shape to the Datadog Agent-specific
-    // logging configuration, which gets all of the settings and subagent-specific defaults lined up and in place.
+    // logging configuration, which gets all of the settings and remote agent-specific defaults lined up and in place.
     let mut agent_log_settings = LoggingSettings::default();
     agent_log_settings.level = adp_log_config.level.clone();
     agent_log_settings.format_json = adp_log_config.format_json;
@@ -98,7 +98,7 @@ mod tests {
     }
 
     #[test]
-    fn plain_log_level_covers_adp_and_the_subagent_runtime() {
+    fn plain_log_level_covers_adp_and_the_remote_agent_runtime() {
         let logging = Logging {
             level: "debug".to_string(),
             ..defaulted_logging()

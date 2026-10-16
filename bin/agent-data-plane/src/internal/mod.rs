@@ -21,8 +21,6 @@ pub use self::control_plane::create_control_plane_supervisor;
 mod control_surfaces;
 pub use self::control_surfaces::{DogStatsDControlSurface, TopologyControlSurfaces};
 
-pub mod env;
-
 pub mod logging;
 
 mod status;

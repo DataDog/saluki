@@ -97,7 +97,7 @@ jobs:
         env:
           PREFIXES: "${{ steps.fetch-prefixes.outputs.prefixes }}"
         run: |
-          FIXTURE=bin/agent-data-plane/tests/fixtures/agent_tagger_entity_id_prefixes.txt
+          FIXTURE=lib/datadog-agent/runtime/tests/fixtures/agent_tagger_entity_id_prefixes.txt
 
           # Preserve the leading comment block, then replace the prefix list below it.
           {
@@ -176,7 +176,7 @@ jobs:
         id: commit
         if: steps.update.outputs.needs_update == 'true' && steps.reported.outputs.already_reported == 'false'
         run: |
-          git add bin/agent-data-plane/tests/fixtures/agent_tagger_entity_id_prefixes.txt
+          git add lib/datadog-agent/runtime/tests/fixtures/agent_tagger_entity_id_prefixes.txt
           git commit -m "chore(ci): update Agent tagger entity ID prefixes"
           echo "update_commit_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
 
@@ -210,7 +210,7 @@ jobs:
             failure names the prefix. To resolve it, push a commit to this branch that either:
 
             - adds the prefix to \`HANDLED_ENTITY_ID_PREFIXES\` in
-              \`bin/agent-data-plane/src/internal/env/workload/collectors/tagger.rs\`, along with an arm in
+              \`lib/datadog-agent/runtime/src/env/workload/collectors/tagger.rs\`, along with an arm in
               \`remote_entity_id_to_entity_id\` converting it to an \`EntityId\`, or
             - adds it to \`IGNORED_ENTITY_ID_PREFIXES\` with a comment explaining why ADP doesn't need it.
 
