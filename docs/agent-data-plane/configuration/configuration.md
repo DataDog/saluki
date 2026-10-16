@@ -44,7 +44,6 @@ tracking.
 | `metric_lookback.monitor.range_epsilon`                          | Lookback monitor range threshold          | [#2558] |
 | `metric_lookback.shard_count`                                    | Metric lookback ring shards               | [#2558] |
 | `otlp_config.metrics.infra_attributes.as_tags`                   | Promote infrastructure attributes to tags | [#2559] |
-| `otlp_config.traces.infra_attributes.container_tag_promotion`    | OTLP trace container-tag promotion        | [#2338] |
 | `serializer_experimental_use_v3_api.sketches.beta_route`         | V3 sketches beta intake route             | [#2555] |
 | `serializer_experimental_use_v3_api.sketches.shadow_sample_rate` | V3 sketches shadow sample rate            | [#2555] |
 | `serializer_experimental_use_v3_api.sketches.shadow_sites`       | V3 sketches shadow sites                  | [#2555] |
@@ -1091,6 +1090,8 @@ The following settings work in ADP with the same behavior as the core agent.
 | `otlp_config.receiver.protocols.http.tls.cert_file`                                        | HTTP TLS cert file path                            |
 | `otlp_config.receiver.protocols.http.tls.key_file`                                         | HTTP TLS key file path                             |
 | `otlp_config.traces.enabled`                                                               | otlp_config.traces.enabled                         |
+| `otlp_config.traces.infra_attributes.container_tag_promotion`                              | OTLP trace container-tag promotion                 |
+| `otlp_config.traces.infra_attributes.enabled`                                              | OTLP trace infrastructure-attribute enrichment     |
 | `otlp_config.traces.internal_port`                                                         | otlp_config.traces.internal_port                   |
 | `otlp_config.traces.probabilistic_sampler.sampling_percentage`                             | OTLP trace sampling percentage                     |
 | `provider_kind`                                                                            | Provider kind static tag                           |
@@ -1363,6 +1364,22 @@ Path to the PEM-encoded certificate chain file for the OTLP HTTP receiver. When 
 Path to the PEM-encoded private key file for the OTLP HTTP receiver. The key must correspond to the leaf
 certificate in `cert_file`. Defaults to empty (TLS disabled).
 
+### `otlp_config.traces.infra_attributes.container_tag_promotion`
+
+Controls how custom infrastructure tags are promoted into container tags on OTLP traces. The default
+`off` writes tags as-is, so only convention keys reach container tags. Set this to `duplicate` to also
+carry custom tags into container tags under a `datadog.container.tag.` prefixed copy, or `rename` to
+carry only the prefixed copy. Convention keys and already-prefixed keys are exempt in every mode.
+
+This setting applies when ADP handles OTLP traces itself. In OTLP proxy mode with trace proxying
+enabled, forwarded traces bypass local enrichment, so this setting has no effect on them.
+
+### `otlp_config.traces.infra_attributes.enabled`
+
+Controls whether entity and global tags from the workload metadata store are enriched onto OTLP traces.
+The default `true` attaches the tags the local metadata store holds for the resource's container. When
+`false`, traces carry only the resource attributes the sender provided.
+
 ### `sslkeylogfile`
 
 To write TLS session secrets in NSS key log format, set `sslkeylogfile` to a file path or
@@ -1407,7 +1424,6 @@ Both commands scrub recognized secret values before writing JSON to standard out
 [#1754]: https://github.com/DataDog/saluki/issues/1754
 [#1755]: https://github.com/DataDog/saluki/issues/1755
 [#2079]: https://github.com/DataDog/saluki/issues/2079
-[#2338]: https://github.com/DataDog/saluki/issues/2338
 [#2555]: https://github.com/DataDog/saluki/issues/2555
 [#2556]: https://github.com/DataDog/saluki/issues/2556
 [#2557]: https://github.com/DataDog/saluki/issues/2557
