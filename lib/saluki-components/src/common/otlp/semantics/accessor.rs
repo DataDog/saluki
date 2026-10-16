@@ -5,15 +5,9 @@
 //! requested type exactly; string-to-numeric conversion is the lookup layer's
 //! responsibility.
 
+use datadog_agent_apm::semantics::Accessor;
 use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common, any_value::Value};
 use saluki_core::data_model::event::trace::{AttributeValue, Span as DdSpan};
-
-/// An abstract view over a bag of typed attributes.
-pub trait Accessor {
-    fn get_string(&self, key: &str) -> Option<&str>;
-    fn get_int64(&self, key: &str) -> Option<i64>;
-    fn get_float64(&self, key: &str) -> Option<f64>;
-}
 
 /// Accessor over a slice of OTLP [`KeyValue`](otlp_common::KeyValue) attributes.
 #[derive(Clone, Copy)]
@@ -155,6 +149,7 @@ impl<'a> Accessor for OtelSpanAccessor<'a> {
 
 #[cfg(test)]
 mod tests {
+    use datadog_agent_apm::semantics::{lookup_int64, Concept, EMBEDDED_REGISTRY};
     use otlp_protos::opentelemetry::proto::common::v1::{AnyValue, KeyValue};
     use saluki_core::data_model::event::trace::Span as DdSpan;
     use stringtheory::MetaString;
@@ -294,7 +289,7 @@ mod tests {
 
     #[test]
     fn dd_span_accessor_resolves_concepts_via_lookup() {
-        use crate::common::otlp::semantics::{lookup_int64, lookup_string, Concept};
+        use datadog_agent_apm::semantics::lookup_string;
 
         // End-to-end: registry lookups work against a converted span, including
         // a `when`-gated fallback.
@@ -306,16 +301,28 @@ mod tests {
         let a = DdSpanAccessor::new(&span);
 
         assert_eq!(
-            lookup_string(&crate::common::otlp::semantics::REGISTRY, &a, Concept::DdEnv).as_deref(),
+            lookup_string(&EMBEDDED_REGISTRY, &a, Concept::DdEnv).as_deref(),
             Some("prod"),
         );
         assert_eq!(
-            lookup_int64(
-                &crate::common::otlp::semantics::REGISTRY,
-                &a,
-                Concept::RpcGrpcStatusCode
-            ),
+            lookup_int64(&EMBEDDED_REGISTRY, &a, Concept::RpcGrpcStatusCode),
             Some(14),
         );
+    }
+
+    #[test]
+    fn int64_span_precedence_over_resource() {
+        let span = vec![kv("http.status_code", Value::IntValue(201))];
+        let resource = vec![kv("http.status_code", Value::IntValue(500))];
+        let a = OtelSpanAccessor::new(&span, &resource);
+        assert_eq!(lookup_int64(&EMBEDDED_REGISTRY, &a, Concept::HttpStatusCode), Some(201));
+    }
+
+    #[test]
+    fn int64_falls_back_to_resource() {
+        let span: Vec<KeyValue> = vec![];
+        let resource = vec![kv("http.response.status_code", Value::StringValue("418".into()))];
+        let a = OtelSpanAccessor::new(&span, &resource);
+        assert_eq!(lookup_int64(&EMBEDDED_REGISTRY, &a, Concept::HttpStatusCode), Some(418));
     }
 }

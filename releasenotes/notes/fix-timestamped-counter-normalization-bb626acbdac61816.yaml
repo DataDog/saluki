@@ -1,0 +1,6 @@
+fixes:
+  - |
+    Fix rate normalization for timestamped DogStatsD counters when the
+    no-aggregation pipeline is enabled. These counters now use a fixed 10-second
+    interval, matching the Datadog Agent, regardless of the configured aggregation
+    window.

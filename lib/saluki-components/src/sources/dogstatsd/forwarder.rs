@@ -6,7 +6,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use saluki_core::runtime::{self, ShutdownStrategy};
+use saluki_core::runtime::{self, Scope, ShutdownStrategy};
 use stringtheory::MetaString;
 use tokio::{net::UdpSocket, sync::mpsc, time::timeout};
 use tracing::{debug, info, warn};
@@ -76,17 +76,32 @@ impl PacketForwarder {
     pub(super) fn spawn(&self) {
         let forwarder = self.clone();
 
+        // The connection phase starts the forwarding loop, but the loop is not a child of the connection phase. The
+        // loop is a child of the process that starts the forwarder, beside the connection phase. The connection phase
+        // stops brutally. If the loop is a child of the connection phase, the loop stops with it and drops the packets
+        // that are still in its queue.
+        let owner = runtime::scope::current();
+
         // Spawn the initial connection phase and set the shutdown strategy to brutal.
         //
-        // This ensures the supervisor doesn't wait during shutdown if the connect happens to be timing out.
+        // This makes sure that shutdown does not wait for a slow connect attempt to time out.
         runtime::worker("packet_forwarder_connect", async move {
-            forwarder.connect().await;
+            forwarder.connect_into(owner).await;
         })
         .with_shutdown_strategy(ShutdownStrategy::Brutal)
         .spawn();
     }
 
+    /// Connects, and if the connection succeeds, starts the forwarding loop as a child of the current process.
+    #[cfg(test)]
     async fn connect(self) {
+        self.connect_into(None).await;
+    }
+
+    /// Connects, and if the connection succeeds, starts the forwarding loop as a child of `owner`.
+    ///
+    /// If there is no owner, the forwarding loop is a child of the current process.
+    async fn connect_into(self, owner: Option<Scope>) {
         let Self {
             target_host: host,
             target_port: port,
@@ -111,7 +126,7 @@ impl PacketForwarder {
         // We'll fallibly try to install our packet channel, which signals to the source that the packet forwarder is
         // available and ready to forward packets. If another invocation has beat us to this point, we just quietly
         // return.
-        runtime::worker("packet_forwarder", async move {
+        let forwarding = runtime::worker("packet_forwarder", async move {
             let (packets_tx, mut packets_rx) = mpsc::channel(FORWARDER_QUEUE_CAPACITY);
 
             if connected.set(packets_tx).is_err() {
@@ -137,8 +152,11 @@ impl PacketForwarder {
                     }
                 }
             }
-        })
-        .spawn();
+        });
+        match owner {
+            Some(owner) => forwarding.spawn_in(&owner),
+            None => forwarding.spawn(),
+        };
     }
 
     pub(super) async fn forward(&self, packet: Bytes) {

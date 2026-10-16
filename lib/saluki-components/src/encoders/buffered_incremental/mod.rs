@@ -150,6 +150,7 @@ where
             run_incremental_encoder(context, encoder, telemetry, flush_timeout).await
         })
         .on_runtime(worker_pool)
+        .needed()
         .spawn();
 
         debug!("Buffered Incremental encoder started.");

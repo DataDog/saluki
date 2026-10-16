@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use agent_data_plane_config::domains;
 use async_trait::async_trait;
+use datadog_agent_apm::semantics::SemanticRegistryProvider;
 use otlp_protos::opentelemetry::proto::collector::trace::v1::ExportTraceServiceRequest;
 use prost::Message;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -34,6 +35,9 @@ pub struct OtlpDecoderConfiguration {
     ///
     /// Defaults to `usize::MAX`, meaning resource names are not truncated.
     max_resource_len: usize,
+
+    /// Supplies attribute mappings for trace translation. Defaults to embedded mappings without remote updates.
+    semantic_registry: SemanticRegistryProvider,
 }
 
 impl OtlpDecoderConfiguration {
@@ -42,6 +46,7 @@ impl OtlpDecoderConfiguration {
         Self {
             traces: traces.clone(),
             max_resource_len: usize::MAX,
+            semantic_registry: SemanticRegistryProvider::default(),
         }
     }
 
@@ -54,6 +59,17 @@ impl OtlpDecoderConfiguration {
     /// unmodified, including `0`, so the configured behavior is always honored.
     pub fn with_max_resource_len(mut self, max_resource_len: usize) -> Self {
         self.max_resource_len = max_resource_len;
+        self
+    }
+
+    /// Sets the provider of attribute mappings used by registry-based trace lookups.
+    ///
+    /// Pass a subscribed provider to receive remote mapping updates. The translator reads one registry snapshot per
+    /// `ResourceSpans` batch, so an update cannot change mappings midway through that batch.
+    ///
+    /// Defaults to embedded mappings without remote updates.
+    pub fn with_semantic_registry(mut self, semantic_registry: SemanticRegistryProvider) -> Self {
+        self.semantic_registry = semantic_registry;
         self
     }
 }
@@ -70,12 +86,20 @@ impl DecoderBuilder for OtlpDecoderConfiguration {
 
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Decoder + Send>, GenericError> {
         let metrics = build_metrics(context.component_context());
-        let traces_translator = OtlpTracesTranslator::new(self.traces.clone(), self.max_resource_len);
-
         Ok(Box::new(OtlpDecoder {
-            traces_translator,
+            traces_translator: self.traces_translator(),
             metrics,
         }))
+    }
+}
+
+impl OtlpDecoderConfiguration {
+    fn traces_translator(&self) -> OtlpTracesTranslator {
+        OtlpTracesTranslator::new(
+            self.traces.clone(),
+            self.max_resource_len,
+            self.semantic_registry.clone(),
+        )
     }
 }
 
@@ -180,5 +204,30 @@ impl Decoder for OtlpDecoder {
         debug!("OTLP decoder stopped.");
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use datadog_agent_apm::semantics::test_util::TestRegistryPublisher;
+
+    use super::*;
+    use crate::common::otlp::traces::translator::{custom_status_code_registry, translate_custom_status_code};
+
+    #[test]
+    fn injected_provider_reaches_the_traces_translator() {
+        let (publisher, provider) = TestRegistryPublisher::new();
+        let traces = domains::otlp::Traces {
+            string_interner_size: std::num::NonZeroUsize::new(64 * 1024).unwrap(),
+            ..Default::default()
+        };
+        let mut translator = OtlpDecoderConfiguration::from_configuration(&traces)
+            .with_semantic_registry(provider)
+            .traces_translator();
+        let metrics = Metrics::for_tests();
+        assert_eq!(translate_custom_status_code(&mut translator, &metrics), None);
+
+        publisher.assign([("a", custom_status_code_registry())]);
+        assert_eq!(translate_custom_status_code(&mut translator, &metrics), Some(418.0));
     }
 }

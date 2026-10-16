@@ -1,13 +1,13 @@
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
-use saluki_common::{collections::PrehashedHashSet, hash::NoopU64BuildHasher};
+use saluki_common::{collections::PrehashedHashSet, hash::NoopU64BuildHasher, sync::shutdown::ShutdownHandle};
 use saluki_error::{generic_error, GenericError};
 use saluki_metrics::{static_metrics, Counter, Gauge};
 use stringtheory::{
     interning::{GenericMapInterner, Interner as _},
     CheapMetaString, MetaString,
 };
-use tokio::time::sleep;
+use tokio::{pin, select, time::sleep};
 use tracing::debug;
 
 use super::{
@@ -20,6 +20,7 @@ use crate::{
         origin::{OriginTagsResolver, RawOrigin},
         tags::{SharedTagSet, TagSet},
     },
+    runtime::{self, ScopeGuard},
 };
 
 // SAFETY: We know, unquestionably, that this value is not zero.
@@ -263,29 +264,59 @@ impl ContextResolverBuilder {
             .interner_capacity_bytes()
             .set(interner.capacity_bytes() as f64);
 
-        // NOTE: We should switch to using a size-based weighter so that we can do more firm bounding of what we cache.
-        let context_cache = CacheBuilder::from_identifier(format!("{}/contexts", self.name))
-            .expect("cache identifier cannot possibly be empty")
-            .with_capacity(cached_context_limit)
-            .with_time_to_idle(self.idle_context_expiration)
-            .with_hasher::<NoopU64BuildHasher>()
-            .with_telemetry(self.telemetry_enabled)
-            .build();
+        // The background tasks of this resolver run in a scope that the resolver owns. The caches that the resolver
+        // builds start their own tasks inside that scope. Thus, all of these tasks appear below the resolver, and they
+        // stop when the last copy of the resolver is dropped. A supplied tags resolver can be shared with other
+        // resolvers, so it keeps its tasks where it was built.
+        //
+        // The resolver needs the scope only if something runs in it: the telemetry task of the resolver, or a driver of
+        // a cache that it builds. The context cache has drivers if it expires idle contexts or reports telemetry. A tags
+        // resolver that this resolver builds always expires idle tagsets. If the resolver is built outside supervision,
+        // its tasks run detached.
+        let needs_scope =
+            self.telemetry_enabled || self.idle_context_expiration.is_some() || self.tags_resolver.is_none();
+        let mut drivers =
+            needs_scope.then(|| runtime::scope::nested_or_detached(format!("context_resolver_{}", self.name)));
 
-        // If no tags resolver is provided, we need to create one using the same interner used for the context resolver.
-        let tags_resolver = match self.tags_resolver {
-            Some(tags_resolver) => tags_resolver,
-            None => TagsResolverBuilder::new(format!("{}/tags", self.name), interner.clone())
-                .expect("tags resolver name not empty")
-                .with_cached_tagsets_limit(cached_context_limit.get())
-                .with_idle_tagsets_expiration(self.idle_context_expiration.unwrap_or_default())
-                .with_heap_allocations(allow_heap_allocations)
-                .with_origin_tags_resolver(self.origin_tags_resolver.clone())
-                .build(),
+        let build_caches = || {
+            // NOTE: We should switch to using a size-based weighter so that we can do more firm bounding of what we
+            // cache.
+            let context_cache = CacheBuilder::from_identifier(format!("{}/contexts", self.name))
+                .expect("cache identifier cannot possibly be empty")
+                .with_capacity(cached_context_limit)
+                .with_time_to_idle(self.idle_context_expiration)
+                .with_hasher::<NoopU64BuildHasher>()
+                .with_telemetry(self.telemetry_enabled)
+                .build();
+
+            // If no tags resolver is provided, we need to create one using the same interner used for the context
+            // resolver.
+            let tags_resolver = match self.tags_resolver {
+                Some(tags_resolver) => tags_resolver,
+                None => TagsResolverBuilder::new(format!("{}/tags", self.name), interner.clone())
+                    .expect("tags resolver name not empty")
+                    .with_cached_tagsets_limit(cached_context_limit.get())
+                    .with_idle_tagsets_expiration(self.idle_context_expiration.unwrap_or_default())
+                    .with_heap_allocations(allow_heap_allocations)
+                    .with_origin_tags_resolver(self.origin_tags_resolver.clone())
+                    .build(),
+            };
+
+            (context_cache, tags_resolver)
+        };
+        let (context_cache, tags_resolver) = match &drivers {
+            Some(drivers) => drivers.enter_sync(build_caches),
+            None => build_caches(),
         };
 
-        if self.telemetry_enabled {
-            tokio::spawn(drive_telemetry(interner.clone(), telemetry.clone()));
+        if let (Some(drivers), true) = (drivers.as_mut(), self.telemetry_enabled) {
+            let (interner, telemetry) = (interner.clone(), telemetry.clone());
+            drivers.spawn(
+                runtime::worker_with_shutdown("telemetry", move |shutdown| {
+                    drive_telemetry(interner, telemetry, shutdown)
+                })
+                .build(),
+            );
         }
 
         ContextResolver {
@@ -299,6 +330,7 @@ impl ContextResolverBuilder {
             ),
             allow_heap_allocations,
             tags_resolver,
+            _drivers: drivers.map(Arc::new),
         }
     }
 }
@@ -334,6 +366,12 @@ pub struct ContextResolver {
     hash_seen_buffer: PrehashedHashSet<u64>,
     allow_heap_allocations: bool,
     tags_resolver: TagsResolver,
+
+    /// The background tasks of the resolver and of the caches that it built, if it has any.
+    ///
+    /// Every copy of the resolver shares this guard. Thus, the tasks stop when the last copy is dropped. They stop
+    /// earlier if the process that owns them stops first.
+    _drivers: Option<Arc<ScopeGuard>>,
 }
 
 impl ContextResolver {
@@ -588,13 +626,19 @@ impl Clone for ContextResolver {
             ),
             allow_heap_allocations: self.allow_heap_allocations,
             tags_resolver: self.tags_resolver.clone(),
+            _drivers: self._drivers.clone(),
         }
     }
 }
 
-async fn drive_telemetry(interner: GenericMapInterner, telemetry: Telemetry) {
+async fn drive_telemetry(interner: GenericMapInterner, telemetry: Telemetry, shutdown: ShutdownHandle) {
+    pin!(shutdown);
+
     loop {
-        sleep(Duration::from_secs(1)).await;
+        select! {
+            _ = &mut shutdown => break,
+            _ = sleep(Duration::from_secs(1)) => {}
+        }
 
         telemetry.interner_entries().set(interner.len() as f64);
         telemetry
@@ -907,6 +951,140 @@ mod tests {
                 other => panic!("expected a gauge, got: {:?}", other),
             })
             .unwrap_or_else(|| panic!("no metric found with key: {}", key))
+    }
+
+    /// Finds the first node named `name` with a depth-first search.
+    fn find<'a>(node: &'a runtime::NodeSnapshot, name: &str) -> Option<&'a runtime::NodeSnapshot> {
+        if node.name == name {
+            return Some(node);
+        }
+        node.children.iter().find_map(|child| find(child, name))
+    }
+
+    /// Returns the direct child of `node` named `name`.
+    fn child<'a>(node: &'a runtime::NodeSnapshot, name: &str) -> Option<&'a runtime::NodeSnapshot> {
+        node.children.iter().find(|child| child.name == name)
+    }
+
+    /// Runs `owner` as the only worker of a test supervisor.
+    ///
+    /// Returns a handle to the supervision tree, the sender that stops the supervisor, and the task of the supervisor.
+    fn run_owner(
+        owner: runtime::ChildSpecification<runtime::WorkerSpec>,
+    ) -> (
+        runtime::SupervisionTreeHandle,
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<Result<(), runtime::SupervisorError>>,
+    ) {
+        let mut supervisor = runtime::Supervisor::new("resolver-test").expect("valid name");
+        let tree = supervisor.tree_handle();
+        supervisor.add_worker(owner);
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let run = tokio::spawn(async move { supervisor.run_with_shutdown(shutdown_rx).await });
+        (tree, shutdown_tx, run)
+    }
+
+    async fn stop(
+        shutdown_tx: tokio::sync::oneshot::Sender<()>,
+        run: tokio::task::JoinHandle<Result<(), runtime::SupervisorError>>,
+    ) {
+        shutdown_tx.send(()).expect("supervisor should be running");
+        let result = tokio::time::timeout(Duration::from_secs(5), run)
+            .await
+            .expect("supervisor should stop")
+            .expect("supervisor task should not panic");
+        assert!(result.is_ok(), "every task should have stopped on its own: {result:?}");
+    }
+
+    #[tokio::test]
+    async fn background_tasks_run_beneath_the_resolver_and_stop_with_its_last_copy() {
+        use crate::test_support::wait_until;
+
+        let (drop_first_tx, drop_first_rx) = tokio::sync::oneshot::channel::<()>();
+        let (drop_last_tx, drop_last_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let (tree, shutdown_tx, run) = run_owner(
+            runtime::worker_with_shutdown("owner", move |shutdown| async move {
+                // The resolver builds its own tags resolver, because none is supplied.
+                let resolver = ContextResolverBuilder::from_name("test")
+                    .expect("valid name")
+                    .with_idle_context_expiration(Duration::from_secs(60))
+                    .build();
+                let copy = resolver.clone();
+
+                let _ = drop_first_rx.await;
+                drop(resolver);
+                let _ = drop_last_rx.await;
+                drop(copy);
+                shutdown.await;
+            })
+            .build(),
+        );
+
+        // The telemetry task of the resolver runs in the scope of the resolver, and so do the scopes of the two caches
+        // that the resolver built.
+        wait_until("the tasks of the resolver run beneath it", || {
+            let root = tree.snapshot().root;
+            find(&root, "context_resolver_test").is_some_and(|resolver| {
+                child(resolver, "telemetry").is_some()
+                    && child(resolver, "cache_test/contexts").is_some_and(|cache| child(cache, "expiration").is_some())
+                    && child(resolver, "cache_test/tags/tagsets").is_some()
+            })
+        })
+        .await;
+
+        // Every copy of the resolver shares its scope. Thus, the scope stays while one copy remains.
+        drop_first_tx.send(()).expect("owner should be waiting");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            find(&tree.snapshot().root, "context_resolver_test").is_some(),
+            "the scope of the resolver must stay while a copy of the resolver exists"
+        );
+
+        drop_last_tx.send(()).expect("owner should be waiting");
+        wait_until("dropping the last copy stops the tasks of the resolver", || {
+            find(&tree.snapshot().root, "context_resolver_test").is_none()
+        })
+        .await;
+
+        stop(shutdown_tx, run).await;
+    }
+
+    #[tokio::test]
+    async fn a_supplied_tags_resolver_keeps_its_tasks_where_it_was_built() {
+        use crate::test_support::wait_until;
+
+        let (tree, shutdown_tx, run) = run_owner(
+            runtime::worker_with_shutdown("owner", |shutdown| async move {
+                let interner = GenericMapInterner::new(NonZeroUsize::new(1024).unwrap());
+                let tags_resolver = TagsResolverBuilder::new("shared", interner)
+                    .expect("valid name")
+                    .build();
+                let _resolver = ContextResolverBuilder::from_name("test")
+                    .expect("valid name")
+                    .with_tags_resolver(Some(tags_resolver))
+                    .build();
+                shutdown.await;
+            })
+            .build(),
+        );
+
+        // The owner built the tags resolver, and other resolvers can share it. Thus, its cache stays below the owner, and
+        // the context resolver holds only its own cache.
+        wait_until("each cache runs below the value that built it", || {
+            let root = tree.snapshot().root;
+            let Some(owner) = find(&root, "owner") else {
+                return false;
+            };
+            child(owner, "cache_shared/tagsets").is_some()
+                && child(owner, "context_resolver_test").is_some_and(|resolver| {
+                    child(resolver, "cache_test/contexts").is_some() && find(resolver, "cache_shared/tagsets").is_none()
+                })
+        })
+        .await;
+
+        stop(shutdown_tx, run).await;
     }
 
     struct DummyOriginTagsResolver;

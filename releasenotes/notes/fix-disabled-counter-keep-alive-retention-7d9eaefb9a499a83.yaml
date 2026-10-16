@@ -1,0 +1,6 @@
+fixes:
+  - |
+    Fix DogStatsD aggregation keeping counter contexts indefinitely when
+    ``dogstatsd_expiry_seconds`` is ``0``. These counters counted toward
+    ``aggregate_context_limit`` and could eventually cause new metrics to be
+    dropped.
