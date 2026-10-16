@@ -6,11 +6,14 @@
 //! `pkg/trace/remoteconfighandler/remote_config_handler.go`.
 
 use std::fmt;
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use datadog_agent_remote_config::{
     decode_json, ApplyError, ConfigId, JsonError, ProductDecoder, RemoteConfigurationClient, Subscription,
 };
+use serde::de::value::MapAccessDeserializer;
+use serde::de::{self, IgnoredAny, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 
 /// Optional sampling settings for all environments or one named environment.
@@ -43,11 +46,14 @@ struct EnvAndConfig {
     env: String,
 
     /// The settings for `env`.
-    #[serde(default, deserialize_with = "null_as_default")]
+    #[serde(default, deserialize_with = "null_or_object")]
     config: SamplerEnvConfig,
 }
 
 /// Settings supplied by one `APM_SAMPLING` configuration.
+///
+/// The payload and each settings value in it must be a JSON object or `null`, as the Datadog Agent's JSON decoder
+/// requires; serde's derived visitors would also accept an array of field values, such as `[]`.
 ///
 /// Call [`resolve`](Self::resolve) to combine the configuration with local settings for one environment.
 ///
@@ -60,20 +66,107 @@ struct EnvAndConfig {
 ///
 /// Missing and `null` fields fall back through `all_envs` to local settings; `0` and `false` are explicit values. A
 /// payload that sets nothing, such as `{}` or `null`, is still an assigned configuration
-/// ([`RemoteSampling::Remote`]) and resolves entirely to local settings. This differs from an empty assignment, which
-/// is [`RemoteSampling::Unassigned`].
+/// ([`RemoteSampling::Remote`]) and resolves entirely to local settings, not to previous remote values. This differs
+/// from an empty assignment, which leaves the last accepted configuration in place.
 ///
 /// The Datadog Agent sends the `*_TPS` field names. Lowercase `*_tps` names also work;
 /// unknown fields are ignored.
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct SamplerConfig {
     /// Settings for every environment.
-    #[serde(default, deserialize_with = "null_as_default")]
     all_envs: SamplerEnvConfig,
 
     /// Settings for individual environments.
-    #[serde(default, deserialize_with = "null_entries_as_default")]
     by_env: Vec<EnvAndConfig>,
+}
+
+impl<'de> Deserialize<'de> for SamplerConfig {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_map(SamplerConfigVisitor)
+    }
+}
+
+/// Reads [`SamplerConfig`] from a JSON object only.
+struct SamplerConfigVisitor;
+
+impl<'de> Visitor<'de> for SamplerConfigVisitor {
+    type Value = SamplerConfig;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a sampling configuration object")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        #[derive(Deserialize)]
+        #[serde(field_identifier, rename_all = "snake_case")]
+        enum Field {
+            AllEnvs,
+            ByEnv,
+            #[serde(other)]
+            Unknown,
+        }
+
+        let mut all_envs = None;
+        let mut by_env = None;
+        while let Some(field) = map.next_key()? {
+            match field {
+                Field::AllEnvs if all_envs.is_some() => return Err(de::Error::duplicate_field("all_envs")),
+                Field::AllEnvs => {
+                    all_envs = Some(
+                        map.next_value::<Option<Object<SamplerEnvConfig>>>()?
+                            .unwrap_or_default()
+                            .0,
+                    )
+                }
+                Field::ByEnv if by_env.is_some() => return Err(de::Error::duplicate_field("by_env")),
+                Field::ByEnv => {
+                    // A `null` list is empty and a `null` entry is an empty entry, as in the Datadog Agent.
+                    let entries = map.next_value::<Option<Vec<Option<Object<EnvAndConfig>>>>>()?;
+                    by_env = Some(
+                        entries
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|entry| entry.unwrap_or_default().0)
+                            .collect(),
+                    );
+                }
+                Field::Unknown => {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+        }
+        Ok(SamplerConfig {
+            all_envs: all_envs.unwrap_or_default(),
+            by_env: by_env.unwrap_or_default(),
+        })
+    }
+}
+
+/// Deserializes `T` from a JSON object only, rejecting the array form that serde's derived visitors also accept.
+///
+/// `T`'s own `Deserialize` implementation reads the object's fields, so field names, aliases, and defaults still come
+/// from its derive.
+#[derive(Default)]
+struct Object<T>(T);
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Object<T> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct ObjectVisitor<T>(PhantomData<T>);
+
+        impl<'de, T: Deserialize<'de>> Visitor<'de> for ObjectVisitor<T> {
+            type Value = T;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("an object")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+                T::deserialize(MapAccessDeserializer::new(map))
+            }
+        }
+
+        deserializer.deserialize_map(ObjectVisitor(PhantomData)).map(Self)
+    }
 }
 
 /// Treats `null` like a missing field, as the Datadog Agent's JSON decoder does.
@@ -85,14 +178,13 @@ where
     Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
-/// Treats a `null` list as empty and a `null` entry as an empty value.
-fn null_entries_as_default<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+/// Treats `null` like a missing field and requires any other value to be an object.
+fn null_or_object<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: Deserializer<'de>,
     T: Default + Deserialize<'de>,
 {
-    let entries = Option::<Vec<Option<T>>>::deserialize(deserializer)?.unwrap_or_default();
-    Ok(entries.into_iter().map(Option::unwrap_or_default).collect())
+    Ok(null_as_default::<D, Object<T>>(deserializer)?.0)
 }
 
 /// Effective sampling settings, either from local configuration or resolved remote overrides.
@@ -144,13 +236,18 @@ impl SamplerConfig {
     }
 }
 
-/// The result of an accepted `APM_SAMPLING` assignment.
+/// The latest accepted `APM_SAMPLING` state.
 #[derive(Clone, Debug, PartialEq)]
 pub enum RemoteSampling {
-    /// No configuration is assigned; the consumer keeps its own last-applied settings.
+    /// An empty assignment accepted before any concrete configuration; use local sampling settings.
+    ///
+    /// After accepting a concrete configuration, the subscription retains it on withdrawal rather than publishing
+    /// this marker.
     Unassigned,
 
-    /// The one assigned configuration and its ID.
+    /// The last accepted concrete sampling configuration and its ID.
+    ///
+    /// Retained after withdrawal, it may no longer be remotely assigned.
     Remote {
         /// The configuration's ID.
         id: ConfigId,
@@ -199,18 +296,18 @@ impl ApplyError for SamplingError {
     }
 }
 
-/// Receives `APM_SAMPLING` updates for trace samplers.
+/// Watches the latest accepted remote trace sampling configuration.
 ///
-/// Create this from the Remote Configuration client and pass it to every trace sampler that applies the product.
-/// Clones share one subscription, and dropping the last clone unsubscribes from the product.
+/// Create with [`new`](Self::new) and read [`current`](Self::current) before processing a batch of traces. This is a
+/// latest-state watch, not a queue: successive concrete configurations can coalesce before you read them.
 ///
-/// This is a latest-state snapshot, not an event queue: intermediate publications can be skipped. Call
-/// [`current`](Self::current) at a convenient boundary, such as before processing a batch of traces, and apply the
-/// update only when it differs from the one already applied.
+/// Once accepted, a concrete configuration remains available across withdrawal, cache expiry, polling-worker restart,
+/// and rejected updates. An initially accepted empty assignment publishes [`RemoteSampling::Unassigned`], for which
+/// the consumer uses local settings. Later withdrawals never replace an accepted concrete configuration with that
+/// marker.
 ///
-/// The wrapper does not retain or apply previous sampler settings. On [`RemoteSampling::Unassigned`] the consumer
-/// keeps its own last-applied settings. A rejected update leaves the last accepted snapshot in place. The default
-/// subscription is inert: it never receives an update and does not contact the Remote Configuration service.
+/// The default subscription is inert: it receives no updates and contacts no service. Clones share a registration;
+/// dropping the last clone unsubscribes.
 #[derive(Clone, Debug)]
 pub struct TraceSamplingSubscription {
     subscription: Subscription<RemoteSampling, SamplingError>,
@@ -231,11 +328,13 @@ impl TraceSamplingSubscription {
         Self { subscription }
     }
 
-    /// Returns the latest accepted snapshot, or `None` if none has been accepted.
+    /// Returns the current accepted snapshot immediately.
     ///
-    /// Returns immediately, without waiting for an update. Each accepted update is a new allocation, so [`Arc::ptr_eq`]
-    /// distinguishes a new update from one already applied even when the settings are equal. An unassigned
-    /// configuration is reported as [`RemoteSampling::Unassigned`], not `None`.
+    /// Returns `None` until the first accepted snapshot, not merely the first poll: polling may fail or reject an
+    /// update. An initially accepted empty assignment publishes [`RemoteSampling::Unassigned`].
+    ///
+    /// Each newly accepted concrete configuration gets a new `Arc`, even if its values are unchanged. Later withdrawals
+    /// and rejected updates preserve the current `Arc`; use [`Arc::ptr_eq`] to compare snapshot identity.
     pub fn current(&self) -> Option<Arc<RemoteSampling>> {
         self.subscription.current()
     }
@@ -249,8 +348,9 @@ impl Default for TraceSamplingSubscription {
 
 /// Accepts at most one `APM_SAMPLING` configuration per update.
 ///
-/// No assignment produces [`RemoteSampling::Unassigned`]. An invalid or multiple-configuration
-/// assignment is rejected, leaving subscribers with the last accepted update.
+/// No assignment produces [`RemoteSampling::Unassigned`], which the client publishes only if nothing was accepted
+/// before; see [`keeps_previous`](ProductDecoder::keeps_previous). An invalid or multiple-configuration assignment is
+/// rejected, leaving subscribers with the last accepted update.
 #[derive(Default)]
 pub(super) struct SamplingDecoder {
     assigned: usize,
@@ -286,6 +386,10 @@ impl ProductDecoder for SamplingDecoder {
             None if self.assigned == 0 => Ok(RemoteSampling::Unassigned),
             None => Err(SamplingError::NoValidConfiguration),
         }
+    }
+
+    fn keeps_previous(snapshot: &Self::Snapshot) -> bool {
+        matches!(snapshot, RemoteSampling::Unassigned)
     }
 }
 
@@ -626,15 +730,105 @@ mod tests {
             &first,
             &clone.current().expect("clones see the same update")
         ));
+    }
 
-        publisher.assign(std::iter::empty::<(&str, &str)>());
+    // The Datadog Agent decodes into structs with `json.Unmarshal`, which rejects an array where an object belongs:
+    // https://github.com/DataDog/datadog-agent/blob/17ecddf4e3e83ccbb0e68aeb99461d1a1d902927/pkg/remoteconfig/state/products/apmsampling/sampler_config.go
+    // Serde's derived visitors accept one, so `[]` would decode as a configuration with nothing set and
+    // `{"all_envs":[0,0,false]}` would set both targets to zero and turn off the rare sampler.
+    #[test]
+    fn payload_rejects_non_objects_where_the_agent_requires_an_object() {
+        let invalid = [
+            "[]",
+            "[null,null]",
+            "5",
+            r#""text""#,
+            "true",
+            r#"{"all_envs":[0,0,false]}"#,
+            r#"{"all_envs":[]}"#,
+            r#"{"all_envs":5}"#,
+            r#"{"by_env":{}}"#,
+            r#"{"by_env":[[]]}"#,
+            r#"{"by_env":[["prod",{}]]}"#,
+            r#"{"by_env":[5]}"#,
+            r#"{"by_env":[{"env":"prod","config":[0,0,false]}]}"#,
+            r#"{"by_env":[{"env":"prod","config":"x"}]}"#,
+            r#"{"by_env":[{"env":5}]}"#,
+        ];
+        for payload in invalid {
+            let (verdicts, snapshot) = decode_all(&[("a", payload)]);
+            assert!(
+                matches!(&verdicts[..], [Err(reason)] if reason.starts_with("Payload is malformed JSON at line 1")),
+                "{payload}: {verdicts:?}"
+            );
+            assert!(snapshot.is_err(), "{payload}: {snapshot:?}");
+        }
+
+        let valid = [
+            "null",
+            "{}",
+            r#"{"all_envs":null,"by_env":null}"#,
+            r#"{"all_envs":{}}"#,
+            r#"{"by_env":[]}"#,
+            r#"{"by_env":[null,{},{"env":null,"config":null},{"env":"other","config":{}}]}"#,
+        ];
+        for payload in valid {
+            let (verdicts, snapshot) = decode_all(&[("a", payload)]);
+            assert_eq!(verdicts, [Ok(())], "{payload}");
+            let Ok(RemoteSampling::Remote { config, .. }) = snapshot else {
+                panic!("{payload} should be chosen: {snapshot:?}");
+            };
+            assert_eq!(
+                config.resolve("prod", &STATIC),
+                STATIC,
+                "{payload} sets nothing for `prod`"
+            );
+        }
+    }
+
+    #[test]
+    fn payload_rejects_a_duplicate_field() {
+        let (verdicts, _) = decode_all(&[("a", r#"{"by_env":[],"by_env":[]}"#)]);
+        assert!(matches!(&verdicts[..], [Err(_)]), "{verdicts:?}");
+    }
+
+    // A latest-state subscription coalesces publications, so an empty assignment published before the consumer reads
+    // must not replace a configuration it has not applied. The Datadog Agent applies each update as it arrives and
+    // ignores an empty one:
+    // https://github.com/DataDog/datadog-agent/blob/17ecddf4e3e83ccbb0e68aeb99461d1a1d902927/pkg/trace/remoteconfighandler/remote_config_handler.go#L234-L295
+    #[test]
+    fn withdrawal_and_rejection_keep_the_last_accepted_configuration() {
+        let empty = std::iter::empty::<(&str, &str)>;
+        let current_id = |subscription: &TraceSamplingSubscription| match &*subscription.current().expect("accepted") {
+            RemoteSampling::Remote { id, .. } => Some(id.clone()),
+            RemoteSampling::Unassigned => None,
+        };
+        let (publisher, subscription) = TestSamplingPublisher::new();
+
+        publisher.assign(empty());
+        assert_eq!(current_id(&subscription), None, "nothing has been assigned yet");
+
+        publisher.assign([("a", "{}")]);
+        let accepted = subscription.current().expect("a configuration is accepted");
+        for (name, assignment) in [
+            ("an empty assignment", vec![]),
+            ("an array payload", vec![("b", "[]")]),
+            ("an array settings value", vec![("b", r#"{"all_envs":[0,0,false]}"#)]),
+            ("more than one configuration", vec![("b", "{}"), ("c", "{}")]),
+        ] {
+            publisher.assign(assignment);
+            assert!(
+                Arc::ptr_eq(&accepted, &subscription.current().expect("still accepted")),
+                "{name} keeps the last accepted configuration"
+            );
+        }
+
+        publisher.assign([("b", "{}")]);
+        publisher.assign(empty());
         assert_eq!(
-            *clone.current().expect("an empty assignment is accepted"),
-            RemoteSampling::Unassigned
-        );
-        assert_eq!(
-            *subscription.current().expect("an empty assignment is accepted"),
-            RemoteSampling::Unassigned
+            current_id(&subscription),
+            Some(ConfigId::new("b")),
+            "the newest configuration is kept"
         );
     }
 
@@ -652,24 +846,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn assign_publishes_unassigned_after_a_remote_configuration() {
+    async fn an_empty_assignment_after_a_rejection_clears_it_and_notifies_with_the_last_configuration() {
         let (publisher, mut subscription) = TestPublisher::<RemoteSampling, SamplingError>::new();
         publisher.assign::<SamplingDecoder>([("a", "{}")]);
-        assert!(matches!(
-            *subscription
-                .changed()
-                .await
-                .expect("one configuration should be accepted"),
-            RemoteSampling::Remote { .. }
-        ));
+        let accepted = subscription
+            .changed()
+            .await
+            .expect("one configuration should be accepted");
+
+        publisher.assign::<SamplingDecoder>([("a", "[]")]);
+        assert!(subscription.changed().await.is_err(), "the array payload is rejected");
 
         publisher.assign::<SamplingDecoder>(std::iter::empty::<(&str, &str)>());
-        assert_eq!(
-            *subscription
-                .changed()
-                .await
-                .expect("an empty assignment should be accepted"),
-            RemoteSampling::Unassigned
-        );
+        let kept = subscription.changed().await.expect("the empty assignment is accepted");
+        assert!(Arc::ptr_eq(&accepted, &kept));
     }
 }

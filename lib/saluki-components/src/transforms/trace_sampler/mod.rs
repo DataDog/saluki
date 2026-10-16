@@ -313,7 +313,7 @@ impl TraceSampler {
     /// Applies the latest accepted remote sampling configuration, if it has changed.
     ///
     /// Unset fields use local settings, not previous remote values. When the assignment becomes
-    /// empty, the sampler keeps its last settings, as the Datadog Agent does. A newly published
+    /// empty, the subscription keeps reporting the last configuration, as the Datadog Agent does. A newly published
     /// configuration can have the same values after a worker restart; applying it again preserves
     /// learned sampling rates and the rare sampler's record of seen span signatures.
     fn apply_remote_sampling(&mut self) {
@@ -2699,18 +2699,118 @@ mod tests {
                 "rare_sampler_enabled":true}}"#,
         )]);
         transform_empty_buffer(&mut sampler);
+        let applied = sampler.remote_sampling.current().expect("a configuration is accepted");
 
         publisher.assign(std::iter::empty::<(&str, &str)>());
-        assert_eq!(
-            *sampler
-                .remote_sampling
-                .current()
-                .expect("an empty assignment is accepted"),
-            RemoteSampling::Unassigned
-        );
+        assert!(Arc::ptr_eq(
+            &applied,
+            &sampler.remote_sampling.current().expect("the configuration is kept")
+        ));
         transform_empty_buffer(&mut sampler);
         assert_eq!(live_tps(&sampler), (41.0, 42.0));
         assert!(rare_keeps_new_trace(&mut sampler, 1));
+    }
+
+    // The subscription keeps only the latest state, and the sampler reads it once per buffer. Publications the sampler
+    // has not yet read must not erase the newest accepted configuration, since the Datadog Agent applies each update
+    // as it arrives, ignores an empty one, and rejects arrays where its JSON decoder expects an object:
+    // https://github.com/DataDog/datadog-agent/blob/17ecddf4e3e83ccbb0e68aeb99461d1a1d902927/pkg/trace/remoteconfighandler/remote_config_handler.go#L234-L295
+    #[test]
+    fn unread_publications_keep_the_newest_accepted_configuration() {
+        const A: &str = r#"{"all_envs":{"priority_sampler_target_TPS":41,"errors_sampler_target_TPS":42,
+            "rare_sampler_enabled":true}}"#;
+        const B: &str = r#"{"all_envs":{"priority_sampler_target_TPS":43,"errors_sampler_target_TPS":44}}"#;
+        // Each case is a name, the payload applied before the publications under test, those publications (`None`
+        // for an empty assignment), and the expected targets and rare sampler state.
+        type Case<'a> = (&'a str, Option<&'a str>, &'a [Option<&'a str>], (f64, f64), bool);
+        let cases: [Case; 7] = [
+            ("initial empty assignment", None, &[None], (10.0, 10.0), false),
+            (
+                "A then empty before the first buffer",
+                None,
+                &[Some(A), None],
+                (41.0, 42.0),
+                true,
+            ),
+            (
+                "B then empty after A is applied",
+                Some(A),
+                &[Some(B), None],
+                (43.0, 44.0),
+                false,
+            ),
+            (
+                "malformed after A is applied",
+                Some(A),
+                &[Some("not json")],
+                (41.0, 42.0),
+                true,
+            ),
+            (
+                "array payload after A is applied",
+                Some(A),
+                &[Some("[]")],
+                (41.0, 42.0),
+                true,
+            ),
+            (
+                "array settings after A is applied",
+                Some(A),
+                &[Some(r#"{"all_envs":[0,0,false]}"#)],
+                (41.0, 42.0),
+                true,
+            ),
+            (
+                "accepted {} after A is applied",
+                Some(A),
+                &[Some("{}")],
+                (10.0, 10.0),
+                false,
+            ),
+        ];
+
+        for (name, applied, pending, tps, rare) in cases {
+            let (publisher, mut sampler) = create_remote_sampler(10.0);
+            let publish = |payload: &Option<&str>| match payload {
+                Some(payload) => publisher.assign([("sampling", *payload)]),
+                None => publisher.assign(std::iter::empty::<(&str, &str)>()),
+            };
+            if let Some(applied) = applied {
+                publish(&Some(applied));
+                transform_empty_buffer(&mut sampler);
+            }
+            pending.iter().for_each(publish);
+            transform_empty_buffer(&mut sampler);
+            assert_eq!(live_tps(&sampler), tps, "{name}");
+            assert_eq!(rare_keeps_new_trace(&mut sampler, 1), rare, "{name}");
+        }
+    }
+
+    /// The run loop applies a configuration whose withdrawal was published before the sampler's first buffer.
+    #[tokio::test]
+    async fn run_loop_applies_a_configuration_withdrawn_before_the_first_buffer() {
+        let (publisher, subscription) = TestSamplingPublisher::new();
+        let config =
+            TraceSamplerConfiguration::from_configuration(&rare_only_traces(), &domains::otlp::Traces::default())
+                .with_remote_sampling(subscription);
+        publisher.assign([("sampling", r#"{"all_envs":{"rare_sampler_enabled":false}}"#)]);
+        publisher.assign(std::iter::empty::<(&str, &str)>());
+
+        let (control, mut outputs) = TestComponentDriver::transform(config)
+            .await
+            .expect("the sampler should start");
+        control
+            .send_event(Event::Trace(create_test_trace(vec![
+                create_top_level_span(1).with_service(MetaString::from("rare-probe-1"))
+            ])))
+            .await;
+        control.shutdown().await.expect("the sampler should stop cleanly");
+
+        let kept = outputs.default_output().collect_events().await;
+        assert!(
+            kept.is_empty(),
+            "the remote configuration disables the rare sampler, which would otherwise keep the trace: {kept:?}"
+        );
     }
 
     /// Changing the target scales rates already learned for trace signatures.

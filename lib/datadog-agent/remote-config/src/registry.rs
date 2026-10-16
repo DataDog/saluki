@@ -174,6 +174,7 @@ impl<P: ProductDecoder> Product for Decoded<P> {
         let Evaluation { outcome, verdicts } = evaluate::<P>(assignment);
         let reduced = match &outcome {
             Outcome::Accepted(_) => Outcome::Accepted(()),
+            Outcome::KeepsPrevious(_) => Outcome::KeepsPrevious(()),
             Outcome::Rejected { reason, .. } => Outcome::Rejected {
                 error: (),
                 reason: reason.clone(),
