@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["LogLevel","LoggingAPIHandler","LoggingConfiguration","LoggingGuard","LoggingOverrideController","LoggingOverrideWorker"]};
+window.SIDEBAR_ITEMS = {"struct":["DynamicLogLevelWorker","LogLevel","LoggingAPIHandler","LoggingConfiguration","LoggingGuard","LoggingOverrideController","LoggingOverrideWorker"]};
