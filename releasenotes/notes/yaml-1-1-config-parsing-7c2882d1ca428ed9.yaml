@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    Configuration files and check configurations are now parsed with YAML 1.1 scalar rules, matching the Datadog
+    Agent: unquoted ``yes``/``no``, ``on``/``off``, and ``y``/``n`` are booleans, integers with a leading zero such as
+    ``012`` are octal, and ``<<`` merge keys are expanded. Quote any value that must stay a string. For example,
+    ``log_level: off`` now reads as ``false``, as it does in the Datadog Agent; write ``log_level: "off"`` instead.

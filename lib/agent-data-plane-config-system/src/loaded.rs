@@ -109,7 +109,7 @@ fn build_base(path: &Path, env: EnvPrecedence) -> Result<Value, Error> {
     let text = std::fs::read_to_string(path).map_err(|e| Error::Base {
         message: format!("read `{}`: {e}", path.display()),
     })?;
-    let mut base: Value = serde_yaml::from_str(&text).map_err(|e| Error::Base {
+    let mut base: Value = saluki_config::yaml::from_str(&text).map_err(|e| Error::Base {
         message: format!("parse `{}`: {e}", path.display()),
     })?;
     drop_nulls(&mut base);

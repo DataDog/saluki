@@ -244,12 +244,12 @@ mod tests {
             expected_struct == roundtrip_json,
             "{msg}, expected json roundrip to produce {expected_struct:?}, but got {roundtrip_json:?}"
         );
-        let deserialized_from_yaml: SerdeTest = serde_yaml::from_str(&yaml).context(msg.clone())?;
+        let deserialized_from_yaml: SerdeTest = crate::yaml::from_str(&yaml).context(msg.clone())?;
         anyhow::ensure!(
             expected_struct == deserialized_from_yaml,
             "{msg}, expected: {expected_struct:?}, got {deserialized_from_yaml:?}"
         );
-        let roundtrip_yaml = serde_yaml::from_str(&serde_yaml::to_string(&expected_struct)?)?;
+        let roundtrip_yaml = crate::yaml::from_str(&serde_saphyr::to_string(&expected_struct)?)?;
         anyhow::ensure!(
             expected_struct == roundtrip_yaml,
             "{msg}, expected json roundrip to produce {expected_struct:?}, but got {roundtrip_yaml:?}"
