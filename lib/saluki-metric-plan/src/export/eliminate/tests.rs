@@ -64,7 +64,7 @@ fn unconfigured() -> Value {
     resolve(
         &mut plan,
         "dsd_prefix_filter_blocklist",
-        &["predicate", "intake_name", "matches", "values"],
+        &["predicate", "not", "intake_name", "matches", "values"],
         json!([]),
     );
     resolve(&mut plan, "dsd_tag_filterlist", &["rules"], json!([]));
@@ -72,7 +72,7 @@ fn unconfigured() -> Value {
     resolve(
         &mut plan,
         "dsd_post_agg_filter",
-        &["predicate", "all", "1", "intake_name", "matches", "values"],
+        &["predicate", "not", "all", "1", "intake_name", "matches", "values"],
         json!([]),
     );
     for list in ["0", "1"] {
@@ -112,9 +112,9 @@ fn an_unconfigured_default_program_loses_every_native_feature_that_does_nothing_
         [
             // Constant splits first, with what only their dead ports reach, in plan order.
             ("dsd_prefix_filter_blocklist", Omission::ConstantSplit),
-            ("dsd_prefix_filter_blocklist_true", Omission::Unreachable),
+            ("dsd_prefix_filter_blocklist_false", Omission::Unreachable),
             ("dsd_post_agg_filter", Omission::ConstantSplit),
-            ("dsd_post_agg_filter_true", Omission::Unreachable),
+            ("dsd_post_agg_filter_false", Omission::Unreachable),
             // An endpoint routing group with neither names nor prefixes forwards nothing: its `emit` goes, and its
             // output stays declared.
             ("metrics_routing_filter_0", Omission::ConstantSplit),
@@ -196,8 +196,9 @@ fn an_unconfigured_default_program_loses_every_native_feature_that_does_nothing_
 
 #[test]
 fn a_constant_split_whose_dead_port_reaches_a_state_owner_stays() {
-    // The filterlist written to drop everything: what it no longer forwards includes aggregation, which R3's
-    // obligations never remove, so the split stays, and so does everything after it.
+    // The filterlist written to drop everything, a split that keeps nothing on its `true` port: what it no longer
+    // forwards includes aggregation, which R3's obligations never remove, so the split stays, and so does everything
+    // after it.
     let mut plan = unconfigured();
     let blocklist = plan["nodes"]
         .as_array_mut()
@@ -205,7 +206,7 @@ fn a_constant_split_whose_dead_port_reaches_a_state_owner_stays() {
         .iter_mut()
         .find(|node| node["id"] == "dsd_prefix_filter_blocklist")
         .unwrap();
-    blocklist["params"]["predicate"] = json!({"const": true});
+    blocklist["params"]["predicate"] = json!({"const": false});
     let plan = Plan::from_value(plan).unwrap();
     let eliminated = without_facts(&plan);
     for node in ["dsd_prefix_filter_blocklist", "dsd_no_agg_split", "dsd_agg"] {

@@ -993,14 +993,14 @@ fn a_width_and_routing_edit_installs_as_one_generation_through_one_cut_with_the_
     );
     assert_eq!(host.core.status().live, vec![GenerationId::new(2)]);
 
-    // The one generation has both changes.
+    // The one generation has both changes, the filter in normal form, keeping its `true` port.
     let plan = host.active_plan();
     assert_eq!(window(&plan, "dsd_agg"), Some(json!("30s")));
     assert!(plan.node(&id("policy/drop_debug")).is_some());
     assert!(plan
         .edges
         .iter()
-        .any(|edge| edge.from.to_string() == "policy/drop_debug.false" && edge.to.to_string() == "metrics_policy.in"));
+        .any(|edge| edge.from.to_string() == "policy/drop_debug.true" && edge.to.to_string() == "metrics_policy.in"));
     assert_eq!(host.demo().1, Some(2));
 }
 
@@ -1441,14 +1441,14 @@ fn unconfigured_plan() -> Plan {
         resolve("dsd_prefix_filter", &["namespace"], json!(""));
         resolve(
             "dsd_prefix_filter_blocklist",
-            &["predicate", "intake_name", "matches", "values"],
+            &["predicate", "not", "intake_name", "matches", "values"],
             json!([]),
         );
         resolve("dsd_tag_filterlist", &["rules"], json!([]));
         resolve("dsd_tag_filterlist", &["value_rules"], json!([]));
         resolve(
             "dsd_post_agg_filter",
-            &["predicate", "all", "1", "intake_name", "matches", "values"],
+            &["predicate", "not", "all", "1", "intake_name", "matches", "values"],
             json!([]),
         );
     })
@@ -1476,8 +1476,9 @@ fn with_filterlist(document: &mut Value, values: &[&str]) {
         document,
         &[
             json!({"id": "dsd_prefix_filter_blocklist", "op": "split",
-                   "params": {"predicate": {"intake_name": {"matches": {"values": values, "prefix": false}}}}}),
-            json!({"id": "dsd_prefix_filter_blocklist_true", "op": "drop"}),
+                   "params": {"predicate": {"not": {"intake_name": {"matches": {
+                       "values": values, "prefix": false}}}}}}),
+            json!({"id": "dsd_prefix_filter_blocklist_false", "op": "drop"}),
         ],
     );
     replace_edge(
@@ -1487,10 +1488,10 @@ fn with_filterlist(document: &mut Value, values: &[&str]) {
         &[
             ("input.dogstatsd", "dsd_prefix_filter_blocklist.in"),
             (
-                "dsd_prefix_filter_blocklist.true",
-                "dsd_prefix_filter_blocklist_true.in",
+                "dsd_prefix_filter_blocklist.false",
+                "dsd_prefix_filter_blocklist_false.in",
             ),
-            ("dsd_prefix_filter_blocklist.false", "dsd_no_agg_split.in"),
+            ("dsd_prefix_filter_blocklist.true", "dsd_no_agg_split.in"),
         ],
     );
 }
@@ -1505,10 +1506,10 @@ fn the_shorter_detached_export_over_the_default_program_is_a_commit_that_builds_
         [
             "dsd_enrich",
             "dsd_post_agg_filter",
-            "dsd_post_agg_filter_true",
+            "dsd_post_agg_filter_false",
             "dsd_prefix_filter",
             "dsd_prefix_filter_blocklist",
-            "dsd_prefix_filter_blocklist_true",
+            "dsd_prefix_filter_blocklist_false",
             "dsd_tag_filterlist",
             "metrics_enrich",
         ]
@@ -1638,8 +1639,8 @@ fn a_published_program_without_a_node_that_does_nothing_follows_no_setting_until
     // its entries differ, not its match mode, which alone would not make it do nothing again.
     let changed = unified_with(|value| {
         *value = serde_json::to_value(&plan).unwrap();
-        node_mut(value, "dsd_prefix_filter_blocklist")["params"]["predicate"]["intake_name"]["matches"]["values"]
-            ["resolved"] = json!(["tenant.raw.blocked"]);
+        node_mut(value, "dsd_prefix_filter_blocklist")["params"]["predicate"]["not"]["intake_name"]["matches"]
+            ["values"]["resolved"] = json!(["tenant.raw.blocked"]);
     });
     let changed_catalog = unified_catalog(&changed);
     let recomposed = compose_all(

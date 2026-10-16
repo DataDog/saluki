@@ -1261,3 +1261,108 @@ async fn aggregation_windows_that_are_not_allowed_bucket_widths_never_reach_lowe
         );
     }
 }
+
+/// The default program is lowered in normal form, as composition reads every artifact: normalizing it changes nothing,
+/// in every configuration of the matrix. Its filters are `where`-shaped, a `split` on the negation of what the native
+/// filter matches whose `false` port drops, through the drop named for that port; and in its detached export, whose
+/// policy settings are literals, a routing group without names matches by its prefixes alone.
+#[tokio::test]
+async fn the_default_program_is_lowered_in_normal_form() {
+    for (name, yaml) in MATRIX {
+        let lowered = lowered(yaml).await;
+        assert_eq!(normalize_plan(&lowered.plan), lowered.plan, "{}", name);
+    }
+
+    let lowered = lowered(EVERY_BRANCH).await;
+    let plan = &lowered.plan;
+    let target = |from: &str| {
+        plan.edges
+            .iter()
+            .find(|edge| edge.from.to_string() == from)
+            .map(|edge| edge.to.to_string())
+            .unwrap_or_else(|| panic!("an edge leaves `{}`", from))
+    };
+    for filter in [ids::DSD_PREFIX_FILTER_BLOCKLIST, ids::DSD_POST_AGG_FILTER] {
+        let drop = format!("{}_false", filter);
+        assert_eq!(target(&format!("{}.false", filter)), format!("{}.in", drop));
+        assert_eq!(plan.node(&node_id(&drop)).unwrap().op.as_str(), names::DROP);
+        assert!(plan.node(&node_id(&format!("{}_true", filter))).is_none());
+        let predicate = plan.node(&node_id(filter)).unwrap().params.get("predicate").unwrap();
+        assert!(predicate.get("not").is_some(), "{}: {}", filter, predicate);
+    }
+    // The native filter components still answer for their drops.
+    let components = &plan.provenance.as_ref().unwrap().native_components;
+    assert_eq!(
+        components[&node_id("dsd_prefix_filter_blocklist_false")].as_str(),
+        ids::DSD_PREFIX_FILTER
+    );
+    assert_eq!(
+        components[&node_id("dsd_post_agg_filter_false")].as_str(),
+        ids::DSD_POST_AGG_FILTER
+    );
+
+    let scope = saluki_metric_plan::ir::ScopeName::new(METRICS_SCOPE).unwrap();
+    let detached = saluki_metric_plan::export::export_as(
+        plan,
+        &scope,
+        &lowered.catalog.to_document(),
+        &BTreeMap::new(),
+        saluki_metric_plan::export::ExportForm::Detached,
+        &OperatorRegistry::native(),
+    )
+    .unwrap();
+    let predicates = detached
+        .artifact
+        .nodes
+        .iter()
+        .filter(|node| node.id.as_str().starts_with("metrics_routing_filter_") && node.op.as_str() == names::SPLIT)
+        .map(|node| node.params.get("predicate").unwrap().clone())
+        .collect::<Vec<_>>();
+    assert!(
+        predicates.contains(&json!({"intake_name": {"prefix": "catalog."}})),
+        "{:?}",
+        predicates
+    );
+    assert_eq!(
+        saluki_metric_plan::normalize::normalize_artifact(&detached.artifact),
+        detached.artifact
+    );
+}
+
+/// Every parameter default the operator registry declares is the default of the native setting lowering binds the
+/// parameter to: a configuration that sets none of them lowers each to its registry default.
+#[tokio::test]
+async fn registry_defaults_are_the_native_settings_defaults() {
+    let lowered = lowered("").await;
+    let registry = OperatorRegistry::native();
+    let mut checked = Vec::new();
+    for node in &lowered.plan.nodes {
+        let def = registry.get(node.op.as_str()).unwrap();
+        for spec in def.params() {
+            let Some(default) = spec.default_value() else { continue };
+            let default = default.unwrap();
+            let value = node.params.get(spec.name).unwrap();
+            let resolved = value.get("resolved").unwrap_or(value);
+            assert_eq!(resolved, &default, "{}.{}", node.id, spec.name);
+            checked.push(format!("{}.{}", node.op, spec.name));
+        }
+    }
+    checked.sort();
+    assert_eq!(
+        checked,
+        [
+            "aggregate.context_limit",
+            "aggregate.copy_to_distribution",
+            "aggregate.copy_to_distribution_prefix",
+            "aggregate.counter_expiry",
+            "aggregate.flush_interval",
+            "aggregate.flush_open_windows",
+            "aggregate.histogram_aggregates",
+            "aggregate.histogram_percentiles",
+            "dogstatsd_mapper.cache_size",
+            "dogstatsd_mapper.string_interner_bytes",
+            "tag_projection.cache_capacity",
+            "tag_projection.value_rules",
+        ]
+    );
+}

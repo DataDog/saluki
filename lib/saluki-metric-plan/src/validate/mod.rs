@@ -46,7 +46,10 @@
 //! carry different points. If its ports are copies, as for a `tee`, the pair is rejected, unless after the divergence
 //! one path passes the `true` port of a `split` and the other the `false` port of a `split` whose predicate has the
 //! same canonical form, and no operator from the divergence up to either `split` writes a field the predicate reads.
-//! Each rejection names both paths and the divergence.
+//! A `split` whose canonical predicate is `not p` counts as a `split` on `p` with its ports swapped, and one on
+//! `const(true)` as one on `const(false)` with its ports swapped, so a filter written in [normal
+//! form](crate::normalize), keeping its `true` port, pairs with one on `p` keeping its `true` port. Each
+//! rejection names both paths and the divergence.
 //!
 //! This analysis is conservative: it treats every series reaching an output as potentially overlapping, so it rejects
 //! some plans that never deliver a contribution twice, such as a `tee` into two aggregations whose names differ.

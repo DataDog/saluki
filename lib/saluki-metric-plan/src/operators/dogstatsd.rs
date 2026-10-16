@@ -68,16 +68,20 @@ const PROFILE: &[ParamSpec] = &[
 /// [{"name": .., "value": ..}]}]}`.
 pub const MAPPER_PROFILES: ParamType = ParamType::List(&ParamType::Record(PROFILE));
 
+// The profiles are policy, with no default. The caches are tuning knobs, whose defaults are their native settings'.
 const MAPPER_PARAMS: &[ParamSpec] = &[
     ParamSpec::required("profiles", ParamType::Bindable(&MAPPER_PROFILES)),
-    ParamSpec::required("cache_size", ParamType::Bindable(&COUNT)),
-    ParamSpec::required(
+    // `dogstatsd_mapper_cache_size`: 1000 entries.
+    ParamSpec::optional("cache_size", ParamType::Bindable(&COUNT)).with_default("1000"),
+    // `dogstatsd_mapper_string_interner_size`: 64 KiB.
+    ParamSpec::optional(
         "string_interner_bytes",
         ParamType::Bindable(&ParamType::Integer {
             min: 1,
             max: MAX_SAFE_INTEGER,
         }),
-    ),
+    )
+    .with_default("65536"),
 ];
 
 fn record(value: &ParamValue) -> Option<&DecodedParams> {
@@ -177,9 +181,10 @@ pub fn decode_mapper_profiles(value: &ParamValue) -> Option<Vec<MapperProfile>> 
 /// The `dogstatsd_mapper` operator: renames metrics and adds tags by mapping profile.
 ///
 /// Parameters: `profiles` (bindable; see [`MAPPER_PROFILES`]), `cache_size` (the number of mapping results cached by
-/// name; `0` disables the cache), and `string_interner_bytes` (the capacity of the interner for mapped names and tags).
-/// The caches are unobservable. A metric that no mapping matches passes unchanged. Known profiles are validated as the
-/// kernel compiles them, patterns included (see [`saluki_metric_kernels::mapper`]).
+/// name; `0` disables the cache; `1000` when left out), and `string_interner_bytes` (the capacity of the interner for
+/// mapped names and tags; `65536` when left out). The caches are unobservable. A metric that no mapping matches passes
+/// unchanged. Known profiles are validated as the kernel compiles them, patterns included (see
+/// [`saluki_metric_kernels::mapper`]).
 ///
 /// Its kernel is [`MetricMapper`], which maps each batch in place and names its caches after the component it is
 /// built for.
@@ -473,10 +478,14 @@ const TAG_VALUE_RULE: &[ParamSpec] = &[
 /// `on_miss` is `replace`.
 pub const TAG_VALUE_RULES: ParamType = ParamType::List(&ParamType::Record(TAG_VALUE_RULE));
 
+// The tag filterlist is policy, with no default. The value rules default to none, as `metric_tag_value_allowlist`
+// does, and the cache to the native setting's default.
 const TAG_PROJECTION_PARAMS: &[ParamSpec] = &[
     ParamSpec::required("rules", ParamType::Bindable(&TAG_FILTER_RULES)),
-    ParamSpec::required("value_rules", ParamType::Bindable(&TAG_VALUE_RULES)),
-    ParamSpec::required("cache_capacity", ParamType::Bindable(&COUNT)),
+    // `metric_tag_value_allowlist`: empty.
+    ParamSpec::optional("value_rules", ParamType::Bindable(&TAG_VALUE_RULES)).with_default("[]"),
+    // `data_plane.dogstatsd.aggregator_tag_filter_cache_capacity`: 100000 entries.
+    ParamSpec::optional("cache_capacity", ParamType::Bindable(&COUNT)).with_default("100000"),
 ];
 
 /// Encodes tag projection rules as the value of the `rules` parameter.
@@ -570,8 +579,9 @@ const PROJECTED: KindSet = KindSet::of(&[Kind::Counter, Kind::Distribution]);
 /// The `tag_projection` operator: removes tags and restricts tag values of counters and distributions.
 ///
 /// Parameters: `rules` (bindable; see [`TAG_FILTER_RULES`]), which keep or remove tags of metrics by exact raw name;
-/// `value_rules` (bindable; see [`TAG_VALUE_RULES`]), which restrict the values of one tag of metrics by raw name
-/// prefix; and `cache_capacity` (the number of contexts whose result is cached; unobservable).
+/// `value_rules` (bindable; see [`TAG_VALUE_RULES`]; none when left out), which restrict the values of one tag of
+/// metrics by raw name prefix; and `cache_capacity` (the number of contexts whose result is cached; unobservable;
+/// `100000` when left out).
 ///
 /// Only counters and distributions are rewritten; every other kind passes unchanged, even when a rule names it. Rules
 /// apply to tags and origin tags alike.

@@ -233,7 +233,7 @@ impl Host {
         let listener = plan
             .node(&"dsd_prefix_filter_blocklist".parse().unwrap())
             .and_then(|node| node.params.get("predicate"))
-            .and_then(|predicate| predicate.pointer("/intake_name/matches/values/resolved/0"))
+            .and_then(|predicate| predicate.pointer("/not/intake_name/matches/values/resolved/0"))
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();

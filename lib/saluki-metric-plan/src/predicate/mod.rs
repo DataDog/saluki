@@ -380,8 +380,9 @@ impl Predicate {
     ///
     /// Nothing else changes: an operand bound to configuration stays bound, a string match over an empty list stays
     /// (`name in []` is where an author adds names), and a junction none of whose operands folded keeps its form. The
-    /// result matches exactly the metrics the predicate matches. A detached export writes predicates so, after writing
-    /// policy bindings as literals, and composition compares predicates so, after writing every binding as its value.
+    /// result matches exactly the metrics the predicate matches. [Normalization](crate::normalize::normalize_predicate)
+    /// folds literals as this does, and also writes literal set matches as the string matches they are, folding away a
+    /// match of no values.
     pub fn fold_literals(&self) -> Self {
         match self {
             Self::Flag(Operand::Literal(value)) => Self::Const(*value),

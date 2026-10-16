@@ -123,7 +123,7 @@ const PRE_AGGREGATION: [(&str, &[&str]); 3] = [
         &[
             "dsd_prefix_filter",
             "dsd_prefix_filter_blocklist",
-            "dsd_prefix_filter_blocklist_true",
+            "dsd_prefix_filter_blocklist_false",
         ],
     ),
     ("dsd_no_agg_split_region", &["dsd_no_agg_split", "dsd_tag_filterlist"]),
@@ -139,7 +139,7 @@ const POST_AGGREGATION: [(&str, &[&str]); 2] = [
         &[
             "dsd_post_agg_filter_in",
             "dsd_post_agg_filter",
-            "dsd_post_agg_filter_true",
+            "dsd_post_agg_filter_false",
             "dsd_post_agg_filter_fanout",
             "dsd_post_agg_filter_fanout_0",
         ],
@@ -506,13 +506,13 @@ fn the_default_programs_fusion_decisions_name_each_edges_fence_or_slot() {
     assert_eq!(verdict("dsd_enrich.out", "dsd_prefix_filter.in"), pipelined(0, 1));
     assert_eq!(
         verdict(
-            "dsd_prefix_filter_blocklist.true",
-            "dsd_prefix_filter_blocklist_true.in"
+            "dsd_prefix_filter_blocklist.false",
+            "dsd_prefix_filter_blocklist_false.in"
         ),
         fused(1)
     );
     assert_eq!(
-        verdict("dsd_prefix_filter_blocklist.false", "dsd_no_agg_split.in"),
+        verdict("dsd_prefix_filter_blocklist.true", "dsd_no_agg_split.in"),
         pipelined(1, 2)
     );
     assert_eq!(verdict("dsd_no_agg_split.default", "dsd_tag_filterlist.in"), fused(2));
@@ -1196,7 +1196,7 @@ fn the_default_programs_entries_and_exits_follow_its_edges() {
         vec![from_region(
             1,
             0,
-            "dsd_prefix_filter_blocklist.false",
+            "dsd_prefix_filter_blocklist.true",
             "dsd_no_agg_split.in"
         )]
     );
@@ -1328,8 +1328,8 @@ fn live_parameter_changes_place_like_the_boot_plan() {
     let boot = stage3_default_program();
     let frame = frame_of(&boot);
     let plan = edited(|value| {
-        node_mut(value, "dsd_prefix_filter_blocklist")["params"]["predicate"]["intake_name"]["matches"]["values"]
-            ["resolved"] = json!(["tenant.raw.blocked", "tenant.raw.other"]);
+        node_mut(value, "dsd_prefix_filter_blocklist")["params"]["predicate"]["not"]["intake_name"]["matches"]
+            ["values"]["resolved"] = json!(["tenant.raw.blocked", "tenant.raw.other"]);
     });
     assert_eq!(placed(&plan, &frame).unwrap(), placed(&boot, &frame).unwrap());
 }
@@ -1652,13 +1652,13 @@ fn the_pre_aggregation_programs_map_split_and_hand_each_batch_to_the_next_region
                 vec![map(0, 0), to_next(0, 0)],
                 1
             ),
-            // The listener filterlist drops in place: its `true` port leads to the `drop`.
+            // The listener filterlist drops in place: its `false` port leads to the `drop`.
             (
                 EntryKey::Region(EntryId::new(0)),
                 "dsd_prefix_filter.in".to_string(),
                 vec![
                     map(0, 0),
-                    decide(0, 0, vec![Route::Drop(id("dsd_prefix_filter_blocklist_true")), to(1)]),
+                    decide(0, 0, vec![to(1), Route::Drop(id("dsd_prefix_filter_blocklist_false"))]),
                     to_next(1, 0),
                 ],
                 2
@@ -1733,8 +1733,8 @@ fn aggregations_program_hands_each_batch_to_its_kernel_and_its_flushes_to_the_po
         ]
     );
 
-    // R5b pushes the post-aggregation filter into it: its `true` port drops into `dsd_post_agg_filter_true`, and it
-    // judges every kind it emits but histograms' statistics.
+    // R5b pushes the post-aggregation filter into it: its `false` port drops into `dsd_post_agg_filter_false`, so it
+    // drops what its predicate does not match, and it judges every kind it emits but histograms' statistics.
     let [state] = program.state_params() else {
         panic!("one state parameter entry")
     };
@@ -1744,11 +1744,11 @@ fn aggregations_program_hands_each_batch_to_its_kernel_and_its_flushes_to_the_po
         (
             &id("dsd_agg"),
             &id("dsd_post_agg_filter"),
-            "true",
-            &id("dsd_post_agg_filter_true")
+            "false",
+            &id("dsd_post_agg_filter_false")
         )
     );
-    assert!(site.drops_matching && !site.histograms);
+    assert!(!site.drops_matching && !site.histograms);
     assert_eq!(compiled.pushed_filters, vec![site.clone()]);
 }
 
@@ -1789,13 +1789,13 @@ fn the_enrichment_program_has_one_entry_per_logical_input() {
             .map(|exit| format!("{}.{}", exit.node, exit.port))
             .collect::<Vec<_>>(),
         vec![
-            "dsd_post_agg_filter.true",
+            "dsd_post_agg_filter.false",
             "dsd_post_agg_filter_fanout.0",
             "dsd_post_agg_filter_fanout.1"
         ]
     );
     let filtered = vec![
-        decide(0, 0, vec![Route::Drop(id("dsd_post_agg_filter_true")), to(1), to(2)]),
+        decide(0, 0, vec![Route::Drop(id("dsd_post_agg_filter_false")), to(1), to(2)]),
         to_next(2, 1),
         to_destination(1, 0), // dsd_client_telemetry
     ];
@@ -1976,8 +1976,8 @@ fn fingerprints_and_kernel_keys_change_only_with_what_they_cover() {
 
     // A live change of the listener filterlist changes only the program of the region running it, and no kernel.
     let filtered = edited(|value| {
-        node_mut(value, "dsd_prefix_filter_blocklist")["params"]["predicate"]["intake_name"]["matches"]["values"]
-            ["resolved"] = json!(["tenant.raw.blocked", "tenant.raw.other"]);
+        node_mut(value, "dsd_prefix_filter_blocklist")["params"]["predicate"]["not"]["intake_name"]["matches"]
+            ["values"]["resolved"] = json!(["tenant.raw.blocked", "tenant.raw.other"]);
     });
     let after = compiled(&filtered, &frame);
     let changed_programs = |after: &CompiledPlan| {

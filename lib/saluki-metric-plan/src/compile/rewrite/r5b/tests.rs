@@ -137,8 +137,9 @@ fn the_default_programs_post_aggregation_filter_is_pushed_into_aggregation_for_e
         let site = &analysis.sites[0];
         assert_eq!(site.owner.to_string(), "dsd_agg", "{}", what);
         assert_eq!(site.filter.to_string(), "dsd_post_agg_filter", "{}", what);
-        assert_eq!(site.drop_port.as_str(), "true", "{}", what);
-        assert!(site.drops_matching, "{}", what);
+        // In normal form, the filter keeps what its predicate matches, the negation of what it drops.
+        assert_eq!(site.drop_port.as_str(), "false", "{}", what);
+        assert!(!site.drops_matching, "{}", what);
         assert_eq!(site.emitted, EMITTED_BUT_HISTOGRAMS, "{}", what);
         assert!(!site.histograms, "{}", what);
         let filter = plan.nodes.iter().find(|node| node.id == site.filter).unwrap();

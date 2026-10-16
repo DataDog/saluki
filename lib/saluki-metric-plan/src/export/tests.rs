@@ -678,7 +678,7 @@ fn without_the_no_aggregation_pipeline_the_pre_aggregation_scope_ends_at_one_exi
             "dsd_enrich",
             "dsd_prefix_filter",
             "dsd_prefix_filter_blocklist",
-            "dsd_prefix_filter_blocklist_true",
+            "dsd_prefix_filter_blocklist_false",
             "dsd_tag_filterlist",
             "dsd_agg",
         ]
@@ -689,8 +689,8 @@ fn without_the_no_aggregation_pipeline_the_pre_aggregation_scope_ends_at_one_exi
             "input.metrics -> dsd_enrich.in",
             "dsd_enrich.out -> dsd_prefix_filter.in",
             "dsd_prefix_filter.out -> dsd_prefix_filter_blocklist.in",
-            "dsd_prefix_filter_blocklist.true -> dsd_prefix_filter_blocklist_true.in",
-            "dsd_prefix_filter_blocklist.false -> dsd_tag_filterlist.in",
+            "dsd_prefix_filter_blocklist.false -> dsd_prefix_filter_blocklist_false.in",
+            "dsd_prefix_filter_blocklist.true -> dsd_tag_filterlist.in",
             "dsd_tag_filterlist.out -> dsd_agg.in",
             "dsd_agg.out -> exit.aggregated",
         ]

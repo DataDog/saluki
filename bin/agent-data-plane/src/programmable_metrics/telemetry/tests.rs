@@ -1275,7 +1275,7 @@ async fn aggregated_metrics_a_live_filterlist_update_filters_count_in_the_post_a
     assert_eq!(filtered(&plan), 2);
 
     // Aggregation emitted only `kept`: it suppressed the two records the filter drops (R5b), under the live binding's
-    // new value, and counted them as the filter's: what its `true` port sent, and its drop's policy loss.
+    // new value, and counted them as the filter's: what its `false` port sent, and its drop's policy loss.
     assert_eq!(
         counter(&plan, "plan_node_events_total", &["component_id:dsd_agg", "port:out"]),
         1
@@ -1284,7 +1284,7 @@ async fn aggregated_metrics_a_live_filterlist_update_filters_count_in_the_post_a
         counter(
             &plan,
             "plan_node_events_total",
-            &["component_id:dsd_post_agg_filter", "port:true"]
+            &["component_id:dsd_post_agg_filter", "port:false"]
         ),
         2
     );
@@ -1292,7 +1292,7 @@ async fn aggregated_metrics_a_live_filterlist_update_filters_count_in_the_post_a
         counter(
             &plan,
             "plan_loss_total",
-            &["class:policy", "component_id:dsd_post_agg_filter_true"]
+            &["class:policy", "component_id:dsd_post_agg_filter_false"]
         ),
         2
     );

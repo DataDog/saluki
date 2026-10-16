@@ -2,8 +2,8 @@ explain_version 2
 
 plan
   ir_version 1
-  hash sha256:6f59c87a4abaffc60438d0f75c0bbc32c5f6a8ce092cb62b863216f7a95efd29
-  structural_hash sha256:14c133963b3fda5735133eea852b4936bfa5a8d82ad03c3dbc742bebdc48d7d1
+  hash sha256:a548b8e1b4638801b3bd495b5b3e9f386a1a2309b8bb2e1fc46dcf39567c7e8e
+  structural_hash sha256:b75867a95f2b639a91f271b7d276dbac90a2b10b9de882c3f2891a8edbea7450
   valid: 0 errors, 0 warnings
 
 nodes (34)
@@ -28,19 +28,19 @@ nodes (34)
     in in <- dsd_enrich.out, accepts every kind (mixed timestamps)
     out out -> dsd_prefix_filter_blocklist.in, carries counter, gauge, set, histogram, distribution (mixed timestamps)
   dsd_prefix_filter_blocklist: split [synchronous, state none]
-    param predicate = {"intake_name":{"matches":{"prefix":{"config":"dogstatsd.metric_filter.match_prefix","resolved":false},"values":{"config":"dogstatsd.metric_filter.values","resolved":["tenant.raw.blocked"]}}}}
-    binding predicate.intake_name.values <- dogstatsd.metric_filter.values = ["tenant.raw.blocked"]
-    binding predicate.intake_name.prefix <- dogstatsd.metric_filter.match_prefix = false
+    param predicate = {"not":{"intake_name":{"matches":{"prefix":{"config":"dogstatsd.metric_filter.match_prefix","resolved":false},"values":{"config":"dogstatsd.metric_filter.values","resolved":["tenant.raw.blocked"]}}}}}
+    binding predicate.not.intake_name.values <- dogstatsd.metric_filter.values = ["tenant.raw.blocked"]
+    binding predicate.not.intake_name.prefix <- dogstatsd.metric_filter.match_prefix = false
     in in <- dsd_prefix_filter.out, accepts every kind (mixed timestamps)
-    out true -> dsd_prefix_filter_blocklist_true.in, carries counter, gauge, set, histogram, distribution (mixed timestamps)
-    out false -> dsd_no_agg_split.in, carries counter, gauge, set, histogram, distribution (mixed timestamps)
-  dsd_prefix_filter_blocklist_true: drop [synchronous, state none]
+    out true -> dsd_no_agg_split.in, carries counter, gauge, set, histogram, distribution (mixed timestamps)
+    out false -> dsd_prefix_filter_blocklist_false.in, carries counter, gauge, set, histogram, distribution (mixed timestamps)
+  dsd_prefix_filter_blocklist_false: drop [synchronous, state none]
     loss policy
-    in in <- dsd_prefix_filter_blocklist.true, accepts every kind (mixed timestamps)
+    in in <- dsd_prefix_filter_blocklist.false, accepts every kind (mixed timestamps)
   dsd_no_agg_split: timestamp_split [synchronous, state none]
     param window = {"config":"dogstatsd.aggregation.window_duration_seconds","resolved":"10s"}
     binding window <- dogstatsd.aggregation.window_duration_seconds = "10s"
-    in in <- dsd_prefix_filter_blocklist.false, accepts every kind (mixed timestamps)
+    in in <- dsd_prefix_filter_blocklist.true, accepts every kind (mixed timestamps)
     out default -> dsd_tag_filterlist.in, carries counter, gauge, set, histogram, distribution (untimestamped)
     out passthrough -> dsd_post_agg_filter_in.1, carries rate, gauge, set, histogram, distribution (timestamped)
   dsd_tag_filterlist: tag_projection [synchronous, state none]
@@ -81,18 +81,18 @@ nodes (34)
     in 1 <- dsd_no_agg_split.passthrough, accepts every kind (mixed timestamps)
     out out -> dsd_post_agg_filter.in, carries rate, gauge, set, histogram, distribution (timestamped)
   dsd_post_agg_filter: split [synchronous, state none]
-    param predicate = {"all":[{"kind_in":["counter","rate","gauge","set"]},{"intake_name":{"matches":{"prefix":{"config":"dogstatsd.metric_filter.match_prefix","resolved":false},"values":{"config":"dogstatsd.post_aggregate_filter.values","resolved":["tenant.checkout.latency.max"]}}}}]}
-    binding predicate.all[1].intake_name.values <- dogstatsd.post_aggregate_filter.values = ["tenant.checkout.latency.max"]
-    binding predicate.all[1].intake_name.prefix <- dogstatsd.metric_filter.match_prefix = false
+    param predicate = {"not":{"all":[{"kind_in":["counter","rate","gauge","set"]},{"intake_name":{"matches":{"prefix":{"config":"dogstatsd.metric_filter.match_prefix","resolved":false},"values":{"config":"dogstatsd.post_aggregate_filter.values","resolved":["tenant.checkout.latency.max"]}}}}]}}
+    binding predicate.not.all[1].intake_name.values <- dogstatsd.post_aggregate_filter.values = ["tenant.checkout.latency.max"]
+    binding predicate.not.all[1].intake_name.prefix <- dogstatsd.metric_filter.match_prefix = false
     in in <- dsd_post_agg_filter_in.out, accepts every kind (mixed timestamps)
-    out true -> dsd_post_agg_filter_true.in, carries rate, gauge, set (timestamped)
-    out false -> dsd_post_agg_filter_fanout.in, carries rate, gauge, set, histogram, distribution (timestamped)
-  dsd_post_agg_filter_true: drop [synchronous, state none]
+    out true -> dsd_post_agg_filter_fanout.in, carries rate, gauge, set, histogram, distribution (timestamped)
+    out false -> dsd_post_agg_filter_false.in, carries rate, gauge, set (timestamped)
+  dsd_post_agg_filter_false: drop [synchronous, state none]
     loss policy
-    in in <- dsd_post_agg_filter.true, accepts every kind (mixed timestamps)
+    in in <- dsd_post_agg_filter.false, accepts every kind (mixed timestamps)
   dsd_post_agg_filter_fanout: tee [synchronous, state none]
     param ports = 2
-    in in <- dsd_post_agg_filter.false, accepts every kind (mixed timestamps)
+    in in <- dsd_post_agg_filter.true, accepts every kind (mixed timestamps)
     out 0 -> dsd_post_agg_filter_fanout_0.in, carries rate, gauge, set, histogram, distribution (timestamped)
     out 1 -> metrics_enrich_in.0, carries rate, gauge, set, histogram, distribution (timestamped)
   dsd_post_agg_filter_fanout_0: emit [synchronous, state none]
@@ -198,15 +198,15 @@ edges (34)
   dsd_in.metrics -> dsd_enrich.in: counter, gauge, set, histogram, distribution (mixed timestamps)
   dsd_enrich.out -> dsd_prefix_filter.in: counter, gauge, set, histogram, distribution (mixed timestamps)
   dsd_prefix_filter.out -> dsd_prefix_filter_blocklist.in: counter, gauge, set, histogram, distribution (mixed timestamps)
-  dsd_prefix_filter_blocklist.true -> dsd_prefix_filter_blocklist_true.in: counter, gauge, set, histogram, distribution (mixed timestamps)
-  dsd_prefix_filter_blocklist.false -> dsd_no_agg_split.in: counter, gauge, set, histogram, distribution (mixed timestamps)
+  dsd_prefix_filter_blocklist.false -> dsd_prefix_filter_blocklist_false.in: counter, gauge, set, histogram, distribution (mixed timestamps)
+  dsd_prefix_filter_blocklist.true -> dsd_no_agg_split.in: counter, gauge, set, histogram, distribution (mixed timestamps)
   dsd_no_agg_split.default -> dsd_tag_filterlist.in: counter, gauge, set, histogram, distribution (untimestamped)
   dsd_tag_filterlist.out -> dsd_agg.in: counter, gauge, set, histogram, distribution (untimestamped)
   dsd_agg.out -> dsd_post_agg_filter_in.0: rate, gauge, set, distribution (timestamped)
   dsd_no_agg_split.passthrough -> dsd_post_agg_filter_in.1: rate, gauge, set, histogram, distribution (timestamped)
   dsd_post_agg_filter_in.out -> dsd_post_agg_filter.in: rate, gauge, set, histogram, distribution (timestamped)
-  dsd_post_agg_filter.true -> dsd_post_agg_filter_true.in: rate, gauge, set (timestamped)
-  dsd_post_agg_filter.false -> dsd_post_agg_filter_fanout.in: rate, gauge, set, histogram, distribution (timestamped)
+  dsd_post_agg_filter.false -> dsd_post_agg_filter_false.in: rate, gauge, set (timestamped)
+  dsd_post_agg_filter.true -> dsd_post_agg_filter_fanout.in: rate, gauge, set, histogram, distribution (timestamped)
   dsd_post_agg_filter_fanout.0 -> dsd_post_agg_filter_fanout_0.in: rate, gauge, set, histogram, distribution (timestamped)
   dsd_post_agg_filter_fanout.1 -> metrics_enrich_in.0: rate, gauge, set, histogram, distribution (timestamped)
   otlp_in.metrics -> metrics_enrich_in.1: counter, rate, gauge, distribution (mixed timestamps)

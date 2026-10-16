@@ -7,10 +7,11 @@
 //!    supported IR version and migrated to the current one, and refused if any node or blob carries a resolved
 //!    configuration value or its blob table is inconsistent. The result is a [`ReceivedArtifact`], with the hash of the
 //!    document as received, which approval binds to.
-//! 2. **Composition** ([`compose`], or [`compose_all`] for one artifact per scope): each artifact replaces its scope in
-//!    the current default program, reaching the scope's inputs as `input.<name>` and its exits as `exit.<name>`. Each
-//!    artifact node gets its plan ID by correspondence (see [`Correspondence`]): a reserved node the artifact keeps
-//!    unmodified is the default program's node exactly, and every other node is the artifact's as written. Bindings
+//! 2. **Composition** ([`compose`], or [`compose_all`] for one artifact per scope): each artifact, in [normal
+//!    form](crate::normalize), replaces its scope in the current default program, reaching the scope's inputs as
+//!    `input.<name>` and its exits as `exit.<name>`. Each artifact node gets its plan ID by correspondence (see
+//!    [`Correspondence`]): a reserved node the artifact keeps unmodified is the default program's node exactly, and
+//!    every other node is the artifact's as written. Bindings
 //!    resolve from the catalog, and the composed plan is validated, with the artifact limits applied to the program's
 //!    nodes, every node of the scope the artifact replaces. The plan's provenance names each artifact and its scope:
 //!    what a plan runs is a property of the plan, not of its nodes. Composition also reports whether each artifact's
@@ -68,6 +69,7 @@ use crate::{
         BLOB_MEMBER,
     },
     limits::values::{ARTIFACT_NODES, ARTIFACT_SIZE, BLOB_SIZE, PREDICATE_LEAVES},
+    normalize::normalize_artifact,
     operators::{names, OperatorRegistry, StateContract, EMIT_TO},
     validate::{predicate_leaves, BindingClass, Catalog, ValidationReport, Validator},
 };
@@ -522,6 +524,11 @@ pub fn compose(
 /// and base check; scopes never share a node, so the order does not matter, and they are composed in scope order. Then
 /// the plan is validated once.
 ///
+/// - Each artifact composes in [normal form](crate::normalize), as native lowering writes the default program: its
+///   parameters left out written with their defaults, its predicates normalized, and its filters turned to keep what
+///   leaves their `true` port, with their derived terminals renamed. So an artifact that differs from the default
+///   program only in how it is written composes as one that writes it as the default program does. Everything below
+///   reads the normal form, except the check of policy bindings, which judges what the author wrote.
 /// - An artifact must replace a scope the default program declares, and reach its inputs as `input.<name>` and its
 ///   exits as `exit.<name>` (only as an edge's target). Its nodes replace the scope's region (every node reachable from
 ///   the scope's inputs without entering one of its exits' ports), and its edges replace the edges that enter the
@@ -549,10 +556,10 @@ pub fn compose(
 ///   the artifact puts them, and validation rejects host components in artifacts.
 /// - The composed plan's provenance lists every artifact's revision and scope, in scope order, and its nodes and edges
 ///   are in the default program's order, each artifact's taking the places of its region's in order (any left over
-///   follow the last of them). An artifact's edges are first put in the default program's order: an edge the region has
-///   takes that edge's place, and a new edge follows the region's edge the artifact lists before it. So composing an
-///   unmodified export gives the default program again, with the same hash, whatever order its edges are written in, as
-///   a printed and parsed export writes them.
+///   follow the last of them). An artifact's nodes and edges are first put in the default program's order: a node or
+///   an edge the region has takes its place, and a new one follows the region's node or edge the artifact lists before
+///   it. So composing an unmodified export gives the default program again, with the same hash, whatever order its
+///   nodes and edges are written in, as a printed and parsed export writes them.
 /// - The composed plan is validated with `registry` and `catalog`; the report is returned, not judged, so the caller
 ///   rejects an artifact with errors as it does any candidate.
 ///
@@ -590,8 +597,21 @@ pub fn compose_all(
         let part = compose_scope(default_plan, artifact, approval, catalog, registry)?;
         let members = &part.members;
         let in_region = |edge: &Edge| members.contains(&edge.to.node) || members.contains(&edge.from.node);
-        nodes = splice(&nodes, |node| members.contains(&node.id), part.nodes);
-        let ordered = in_default_order(edges.iter().filter(|edge| in_region(edge)), part.edges);
+        let in_scope = |node: &Node| members.contains(&node.id);
+        let ordered = in_default_order(
+            nodes.iter().filter(|node| in_scope(node)).map(|node| node.id.clone()),
+            part.nodes,
+            |node| node.id.clone(),
+        );
+        nodes = splice(&nodes, in_scope, ordered);
+        let ordered = in_default_order(
+            edges
+                .iter()
+                .filter(|edge| in_region(edge))
+                .map(|edge| (edge.from.clone(), edge.to.clone())),
+            part.edges,
+            |edge| (edge.from.clone(), edge.to.clone()),
+        );
         edges = splice(&edges, in_region, ordered);
         revisions.push(part.revision);
         scopes.insert(scope.clone(), part.composition);
@@ -656,7 +676,20 @@ fn compose_scope(
     default_plan: &Plan, received: &ReceivedArtifact, approval: &Approval, catalog: &dyn Catalog,
     registry: &OperatorRegistry,
 ) -> Result<ScopePart, ComposeError> {
-    let artifact = &received.artifact;
+    // A published program owns its policy: it binds facts and signals only. The rule judges what the author wrote, so
+    // it covers every node, kept from the default program or not, before anything is resolved or normalized.
+    if catalog.detached_programs() {
+        for node in &received.artifact.nodes {
+            let params =
+                inline_blobs(&node.params, &received.artifact.blobs).map_err(|error| ComposeError::Malformed {
+                    message: format!("node `{}`: {}", node.id, error),
+                })?;
+            check_policy_bindings(&node.id, &params, catalog)?;
+        }
+    }
+    // The artifact composes in normal form, as the default program is lowered in it, so that a program that differs
+    // from the default program only in how it is written composes to the default program.
+    let artifact = &normalize_artifact(&received.artifact);
     let scope = &artifact.scope;
     let declaration = default_plan
         .scopes
@@ -687,13 +720,6 @@ fn compose_scope(
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    // A published program owns its policy: it binds facts and signals only. The rule judges what the author wrote, so
-    // it covers every node, kept from the default program or not, before anything is resolved.
-    if catalog.detached_programs() {
-        for (node, params) in artifact.nodes.iter().zip(&inlined) {
-            check_policy_bindings(&node.id, params, catalog)?;
-        }
-    }
     let aggregation = catalog
         .single_aggregation()
         .then(|| the_aggregation(default_plan, artifact, &inlined, &region, catalog, registry))
@@ -1428,16 +1454,15 @@ fn inline_blobs(params: &Params, blobs: &Blobs) -> Result<Params, BlobError> {
 /// program's node `default` does: the same operator, and the same parameters, compared by the values they have.
 ///
 /// Parameters written as the default program writes them are the same. Otherwise both sides are compared with every
-/// configuration binding written as the value it has now (the artifact's resolved from `catalog`), and every literal
-/// `flag` and `is_empty` folded, as the detached export writes them ([`Predicate::fold_literals`]), as written or, when
-/// both decode, as their operator decodes them, so that a set written in another order is the same set. So a literal
+/// configuration binding written as the value it has now (the artifact's resolved from `catalog`), and in [normal
+/// form](crate::normalize::normalize_params), as the detached export writes them (every default written, and every
+/// predicate's literals folded), as written or, when both decode, as their operator decodes them, so that a set written
+/// in another order is the same set. So a literal
 /// equal to a binding's value is the same operation, and the detached export composes to what the default program
 /// does, without the nodes it leaves out because they do nothing ([`eliminate`](crate::export::eliminate)): an
 /// operation is what it does with the values it has, not where they come from. Such a node composes as the artifact
 /// writes it, so a later change of the binding's value leaves it as it is: the next composition, which follows every
 /// configuration change, finds it modified, still with the artifact's value.
-///
-/// [`Predicate::fold_literals`]: crate::predicate::Predicate::fold_literals
 fn same_operation(
     default: &Node, op: &OperatorName, params: &Params, node: &ArtifactNodeId, catalog: &dyn Catalog,
     registry: &OperatorRegistry,
@@ -1638,30 +1663,27 @@ fn check_output(
     OutputCheck::Changed { output, reason }
 }
 
-/// Replaces the items of `default` for which `in_region` holds with `replacement`, keeping the default's order.
+/// Returns an artifact's nodes or edges, with plan IDs and ports, in the default program's order: each item that the
+/// default program's region has (`region`, the keys of its items in plan order) takes that item's position, and each
+/// other item follows the item of the region that the artifact lists before it (or comes first, if the artifact lists
+/// none before it), in artifact order. `key` is what identifies an item: a node's ID, or an edge's ends.
 ///
-/// The replacement's items take the places of the region's items in order, and any left over follow the last of them;
-/// with no region item, they follow everything. Replacing a region with its own items, in its own order, gives the
-/// default back.
-/// Returns an artifact's edges, with plan ports, in the default program's order: each edge that the default program's
-/// region has (`region`, in plan order) takes that edge's position, and each other edge follows the edge of the region
-/// that the artifact lists before it (or comes first, if the artifact lists none before it), in artifact order.
-///
-/// The order of a plan's edges means nothing to how it runs, but the plan's hash covers it. A tool may write an
-/// artifact's edges in another order than the export, as the surface syntax's printed form does with the edges from
-/// several scope inputs; ordered so, an artifact that is the export but for the order of its edges composes to the
-/// default program, with its hash. Edges the artifact lists in the export's order keep the order they have.
-fn in_default_order<'a>(region: impl Iterator<Item = &'a Edge>, edges: Vec<Edge>) -> Vec<Edge> {
+/// The order of a plan's nodes and edges means nothing to how it runs, but the plan's hash covers it. A tool may write
+/// an artifact's nodes and edges in another order than the export, as the surface syntax's printed form does with the
+/// edges from several scope inputs, and with the drop of a filter that keeps its `true` port; ordered so, an artifact
+/// that is the export but for the order of its nodes and edges composes to the default program, with its hash. Items
+/// the artifact lists in the export's order keep the order they have.
+fn in_default_order<T, K: Ord>(region: impl Iterator<Item = K>, items: Vec<T>, key: impl Fn(&T) -> K) -> Vec<T> {
     let positions = region
         .enumerate()
-        .map(|(position, edge)| ((&edge.from, &edge.to), position))
+        .map(|(position, key)| (key, position))
         .collect::<BTreeMap<_, _>>();
-    // (the position of the region's edge it is or follows, whether it is new, its position in the artifact)
+    // (the position of the region's item it is or follows, whether it is new, its position in the artifact)
     let mut anchor = None;
-    let keys = edges
+    let keys = items
         .iter()
         .enumerate()
-        .map(|(index, edge)| match positions.get(&(&edge.from, &edge.to)) {
+        .map(|(index, item)| match positions.get(&key(item)) {
             Some(&position) => {
                 anchor = Some(position);
                 (Some(position), false, index)
@@ -1669,11 +1691,16 @@ fn in_default_order<'a>(region: impl Iterator<Item = &'a Edge>, edges: Vec<Edge>
             None => (anchor, true, index),
         })
         .collect::<Vec<_>>();
-    let mut keyed = keys.into_iter().zip(edges).collect::<Vec<_>>();
+    let mut keyed = keys.into_iter().zip(items).collect::<Vec<_>>();
     keyed.sort_by_key(|(key, _)| *key);
-    keyed.into_iter().map(|(_, edge)| edge).collect()
+    keyed.into_iter().map(|(_, item)| item).collect()
 }
 
+/// Replaces the items of `default` for which `in_region` holds with `replacement`, keeping the default's order.
+///
+/// The replacement's items take the places of the region's items in order, and any left over follow the last of them;
+/// with no region item, they follow everything. Replacing a region with its own items, in its own order, gives the
+/// default back.
 fn splice<T: Clone>(default: &[T], in_region: impl Fn(&T) -> bool, replacement: Vec<T>) -> Vec<T> {
     let places = default.iter().filter(|item| in_region(item)).count();
     let mut replacement = replacement.into_iter();

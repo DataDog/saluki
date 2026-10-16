@@ -155,8 +155,9 @@ const LISTENER_FILTERLIST_METRICS: &[NativeMetric] = {
             "metric_filterlist_updates_total",
             BindingChanges(&["dogstatsd.metric_filter.values", "dogstatsd.metric_filter.match_prefix"]),
         ),
-        // One per metric the filterlist drops, whatever its number of points.
-        counter("dogstatsd_listener_filtered_points_total", PortEvents("true")),
+        // One per metric the filterlist drops, whatever its number of points. In normal form, the split keeps what
+        // the filterlist does not match on its `true` port, so what it drops leaves on `false`.
+        counter("dogstatsd_listener_filtered_points_total", PortEvents("false")),
     ]
 };
 
@@ -231,9 +232,11 @@ const AGGREGATION_METRICS: &[NativeMetric] = {
     ]
 };
 
+// In normal form, the split keeps what the filter does not match on its `true` port, so what it drops leaves on
+// `false`.
 const POST_AGGREGATE_FILTER_METRICS: &[NativeMetric] = &[counter(
     "dogstatsd_post_aggregate_filtered_metrics_total",
-    MetricSource::PortEvents("true"),
+    MetricSource::PortEvents("false"),
 )];
 
 const ENDPOINT_ALLOWLIST_METRICS: &[NativeMetric] = {
@@ -348,7 +351,7 @@ static PROFILES: &[ProfileEntry] = {
             ListenerFilterlist,
         ),
         entry(
-            "dsd_prefix_filter_blocklist_true",
+            "dsd_prefix_filter_blocklist_false",
             names::DROP,
             "dsd_prefix_filter",
             Transform,
@@ -384,7 +387,7 @@ static PROFILES: &[ProfileEntry] = {
             PostAggregateFilter,
         ),
         entry(
-            "dsd_post_agg_filter_true",
+            "dsd_post_agg_filter_false",
             names::DROP,
             "dsd_post_agg_filter",
             Transform,

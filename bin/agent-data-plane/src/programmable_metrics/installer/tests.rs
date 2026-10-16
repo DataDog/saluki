@@ -462,7 +462,7 @@ async fn a_configuration_change_installs_a_new_generation_and_the_old_one_retire
         counter(
             &recorder,
             "plan_node_events_total",
-            &[("component_id", "dsd_prefix_filter_blocklist"), ("port", "true")]
+            &[("component_id", "dsd_prefix_filter_blocklist"), ("port", "false")]
         ),
         Some(1)
     );
@@ -471,7 +471,7 @@ async fn a_configuration_change_installs_a_new_generation_and_the_old_one_retire
             &recorder,
             "plan_loss_total",
             &[
-                ("component_id", "dsd_prefix_filter_blocklist_true"),
+                ("component_id", "dsd_prefix_filter_blocklist_false"),
                 ("class", "policy")
             ]
         ),

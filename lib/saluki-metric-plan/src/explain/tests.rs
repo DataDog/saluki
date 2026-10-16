@@ -129,19 +129,19 @@ fn the_default_programs_explain_describes_its_graph() {
         bindings,
         vec![
             (
-                "predicate.intake_name.values",
+                "predicate.not.intake_name.values",
                 "dogstatsd.metric_filter.values".to_string(),
                 Some(json!(["tenant.raw.blocked"]))
             ),
             (
-                "predicate.intake_name.prefix",
+                "predicate.not.intake_name.prefix",
                 "dogstatsd.metric_filter.match_prefix".to_string(),
                 Some(json!(false))
             ),
         ]
     );
     assert_eq!(blocklist.loss, Vec::<String>::new());
-    assert_eq!(node(&explain, "dsd_prefix_filter_blocklist_true").loss, vec!["policy"]);
+    assert_eq!(node(&explain, "dsd_prefix_filter_blocklist_false").loss, vec!["policy"]);
 
     // Port types per edge, derived by hand: aggregation turns counters into rates and histograms into rates, gauges,
     // and distributions, all timestamped; the timestamp split's passthrough port carries timestamped points, with
@@ -220,7 +220,7 @@ fn the_default_programs_explain_summarizes_every_nodes_contract() {
         ("dsd_enrich", "dogstatsd_mapper", SYNC, "none", NONE),
         ("dsd_prefix_filter", "namespace_prefix", SYNC, "none", NONE),
         ("dsd_prefix_filter_blocklist", "split", SYNC, "none", NONE),
-        ("dsd_prefix_filter_blocklist_true", "drop", SYNC, "none", POLICY),
+        ("dsd_prefix_filter_blocklist_false", "drop", SYNC, "none", POLICY),
         ("dsd_no_agg_split", "timestamp_split", SYNC, "none", NONE),
         ("dsd_tag_filterlist", "tag_projection", SYNC, "none", POLICY),
         (
@@ -232,7 +232,7 @@ fn the_default_programs_explain_summarizes_every_nodes_contract() {
         ),
         ("dsd_post_agg_filter_in", "merge", SYNC, "none", NONE),
         ("dsd_post_agg_filter", "split", SYNC, "none", NONE),
-        ("dsd_post_agg_filter_true", "drop", SYNC, "none", POLICY),
+        ("dsd_post_agg_filter_false", "drop", SYNC, "none", POLICY),
         ("dsd_post_agg_filter_fanout", "tee", SYNC, "none", NONE),
         ("dsd_post_agg_filter_fanout_0", "emit", SYNC, "none", NONE),
         ("otlp_in", "source", "io_host", "none", NONE),
@@ -898,7 +898,7 @@ mod physical {
             pipelined,
             strings(&[
                 "dsd_enrich.out",
-                "dsd_prefix_filter_blocklist.false",
+                "dsd_prefix_filter_blocklist.true",
                 "dsd_post_agg_filter_fanout.1"
             ])
         );
@@ -947,7 +947,7 @@ mod physical {
         let enrich = [
             "dsd_post_agg_filter_in",
             "dsd_post_agg_filter",
-            "dsd_post_agg_filter_true",
+            "dsd_post_agg_filter_false",
             "dsd_post_agg_filter_fanout",
             "dsd_post_agg_filter_fanout_0",
             "metrics_enrich_in",
@@ -976,7 +976,7 @@ mod physical {
             "dsd_enrich",
             "dsd_prefix_filter",
             "dsd_prefix_filter_blocklist",
-            "dsd_prefix_filter_blocklist_true",
+            "dsd_prefix_filter_blocklist_false",
             "dsd_no_agg_split",
             "dsd_tag_filterlist",
         ]);

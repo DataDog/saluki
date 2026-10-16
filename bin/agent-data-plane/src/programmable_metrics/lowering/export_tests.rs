@@ -1,8 +1,9 @@
 //! Exports of lowered default programs: every configuration of the matrix exports its one scope, the export prints
-//! and parses back as the same document but for the order of its edges, and composing the detached export, or its
-//! printed form, back gives a plan that does what the default program does, with its operation hash. The detached
-//! export leaves out exactly the nodes the comparison of what plans do leaves out. The bound export, which binds native
-//! policy settings, is refused: ADP's programs bind facts and signals only.
+//! and parses back as the same document but for the order of its nodes and edges, and composing the detached export,
+//! or its printed form, back gives a plan that does what the default program does, with its operation hash, and the
+//! printed form the same plan as the export itself. The detached export leaves out exactly the nodes the comparison of
+//! what plans do leaves out. The bound export, which binds native policy settings, is refused: ADP's programs bind
+//! facts and signals only.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -83,9 +84,10 @@ async fn every_lowered_default_program_exports_and_composes_back_unchanged() {
             );
         }
 
-        // Lowering writes nodes in the syntax's canonical order, so the export prints and parses back as itself, but
-        // for the order of its edges: the printed form writes the edges from the scope's inputs first, in input-name
-        // order, and each node's edges in its block, and the export lists them in the plan's order.
+        // The export prints and parses back as itself, but for the order of its nodes and edges: the printed form
+        // writes the edges from the scope's inputs first, in input-name order, and each node's edges in its block, and
+        // the drop of a filter in normal form, which keeps its `true` port, after what it keeps, while the export lists
+        // them in the plan's order. Composition puts them in the default program's order.
         let printed = print(&bundle.artifact, &PrintOptions::default());
         let parsed = parse(&printed).unwrap_or_else(|diagnostics| panic!("{}:\n{}\n{}", name, diagnostics, printed));
         let sorted = |edges: &[saluki_metric_plan::ir::ArtifactEdge]| {
@@ -96,7 +98,18 @@ async fn every_lowered_default_program_exports_and_composes_back_unchanged() {
             edges.sort();
             edges
         };
-        assert_eq!(parsed.artifact.nodes, bundle.artifact.nodes, "{}:\n{}", name, printed);
+        let by_id = |nodes: &[saluki_metric_plan::ir::ArtifactNode]| {
+            let mut nodes = nodes.to_vec();
+            nodes.sort_by(|a, b| a.id.cmp(&b.id));
+            nodes
+        };
+        assert_eq!(
+            by_id(&parsed.artifact.nodes),
+            by_id(&bundle.artifact.nodes),
+            "{}:\n{}",
+            name,
+            printed
+        );
         assert_eq!(
             sorted(&parsed.artifact.edges),
             sorted(&bundle.artifact.edges),
@@ -152,11 +165,21 @@ async fn every_lowered_default_program_exports_and_composes_back_unchanged() {
         assert!(diff.diff.is_empty(), "{}: {:?}", name, diff.diff);
         assert_eq!(diff.artifact_nodes.len(), detached.artifact.nodes.len(), "{}", name);
 
-        // Composing the printed detached export, whose edges are in another order, gives the same: composition puts an
-        // artifact's edges in the default program's order.
+        // Composing the printed detached export, whose nodes and edges are in another order, gives the same: the same
+        // nodes in the same order, since composition puts an artifact's nodes in the default program's order, and the
+        // same edges. (An edge the default program does not have, such as one that takes the place of a node the
+        // export leaves out, follows the artifact's order.)
         let printed = print(&detached.artifact, &PrintOptions::default());
         let parsed = parse(&printed).unwrap_or_else(|diagnostics| panic!("{}:\n{}\n{}", name, diagnostics, printed));
+        let unprinted = composed.plan;
         let composed = compose_document(&parsed.artifact);
+        assert_eq!(composed.plan.nodes, unprinted.nodes, "{}", name);
+        let edges = |plan: &Plan| {
+            let mut edges = plan.edges.clone();
+            edges.sort_by(|a, b| (&a.from, &a.to).cmp(&(&b.from, &b.to)));
+            edges
+        };
+        assert_eq!(edges(&composed.plan), edges(&unprinted), "{}", name);
         assert!(composed.report.findings().is_empty(), "{}:\n{}", name, composed.report);
         assert_does_the_same(&composed.plan, plan, &registry, catalog, name);
         let diff = diff_operations(plan, &composed.plan, &composed.correspondence, &registry, catalog);
@@ -460,10 +483,10 @@ async fn the_detached_export_names_what_it_leaves_out_in_one_note_in_program_ord
         [
             ("dsd_enrich", Identity),
             ("dsd_post_agg_filter", ConstantSplit),
-            ("dsd_post_agg_filter_true", Unreachable),
+            ("dsd_post_agg_filter_false", Unreachable),
             ("dsd_prefix_filter", Identity),
             ("dsd_prefix_filter_blocklist", ConstantSplit),
-            ("dsd_prefix_filter_blocklist_true", Unreachable),
+            ("dsd_prefix_filter_blocklist_false", Unreachable),
             ("dsd_tag_filterlist", Identity),
             ("metrics_enrich", Identity),
             ("metrics_enrich_in", Identity),
@@ -493,7 +516,7 @@ async fn the_detached_export_names_what_it_leaves_out_in_one_note_in_program_ord
     let omitted = bundle.omitted.keys().map(|node| node.as_str()).collect::<Vec<_>>();
     assert_eq!(
         omitted,
-        ["dsd_post_agg_filter", "dsd_post_agg_filter_true", "metrics_enrich"],
+        ["dsd_post_agg_filter", "dsd_post_agg_filter_false", "metrics_enrich"],
         "{:?}",
         bundle.annotations.omitted
     );

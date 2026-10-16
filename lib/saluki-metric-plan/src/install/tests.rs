@@ -49,8 +49,8 @@ pub(super) fn node_mut<'a>(value: &'a mut Value, id: &str) -> &'a mut Value {
 /// The default program with the listener filterlist set to `values`, a live change.
 fn filtered(values: &[&str]) -> Plan {
     edited(|value| {
-        node_mut(value, "dsd_prefix_filter_blocklist")["params"]["predicate"]["intake_name"]["matches"]["values"]
-            ["resolved"] = json!(values);
+        node_mut(value, "dsd_prefix_filter_blocklist")["params"]["predicate"]["not"]["intake_name"]["matches"]
+            ["values"]["resolved"] = json!(values);
     })
 }
 

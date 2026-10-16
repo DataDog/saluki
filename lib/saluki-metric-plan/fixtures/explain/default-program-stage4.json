@@ -2,18 +2,18 @@
   "explain_version": 2,
   "plan": {
     "ir_version": 1,
-    "hash": "sha256:6f59c87a4abaffc60438d0f75c0bbc32c5f6a8ce092cb62b863216f7a95efd29",
-    "structural_hash": "sha256:14c133963b3fda5735133eea852b4936bfa5a8d82ad03c3dbc742bebdc48d7d1",
+    "hash": "sha256:a548b8e1b4638801b3bd495b5b3e9f386a1a2309b8bb2e1fc46dcf39567c7e8e",
+    "structural_hash": "sha256:b75867a95f2b639a91f271b7d276dbac90a2b10b9de882c3f2891a8edbea7450",
     "provenance": {
       "native_components": {
         "af_metrics_gateway_false": "af_metrics_gateway",
         "af_metrics_gateway_true": "af_metrics_encode",
+        "dsd_post_agg_filter_false": "dsd_post_agg_filter",
         "dsd_post_agg_filter_fanout": "dsd_client_telemetry_out",
         "dsd_post_agg_filter_fanout_0": "dsd_client_telemetry_out",
         "dsd_post_agg_filter_in": "dsd_post_agg_filter",
-        "dsd_post_agg_filter_true": "dsd_post_agg_filter",
         "dsd_prefix_filter_blocklist": "dsd_prefix_filter",
-        "dsd_prefix_filter_blocklist_true": "dsd_prefix_filter",
+        "dsd_prefix_filter_blocklist_false": "dsd_prefix_filter",
         "metrics_enrich_host_tags": "metrics_enrich",
         "metrics_enrich_in": "metrics_enrich",
         "metrics_policy": "metrics_enrich",
@@ -228,17 +228,19 @@
         "loss": [],
         "params": {
           "predicate": {
-            "intake_name": {
-              "matches": {
-                "prefix": {
-                  "config": "dogstatsd.metric_filter.match_prefix",
-                  "resolved": false
-                },
-                "values": {
-                  "config": "dogstatsd.metric_filter.values",
-                  "resolved": [
-                    "tenant.raw.blocked"
-                  ]
+            "not": {
+              "intake_name": {
+                "matches": {
+                  "prefix": {
+                    "config": "dogstatsd.metric_filter.match_prefix",
+                    "resolved": false
+                  },
+                  "values": {
+                    "config": "dogstatsd.metric_filter.values",
+                    "resolved": [
+                      "tenant.raw.blocked"
+                    ]
+                  }
                 }
               }
             }
@@ -246,14 +248,14 @@
         },
         "bindings": [
           {
-            "param": "predicate.intake_name.values",
+            "param": "predicate.not.intake_name.values",
             "binding": "dogstatsd.metric_filter.values",
             "resolved": [
               "tenant.raw.blocked"
             ]
           },
           {
-            "param": "predicate.intake_name.prefix",
+            "param": "predicate.not.intake_name.prefix",
             "binding": "dogstatsd.metric_filter.match_prefix",
             "resolved": false
           }
@@ -281,7 +283,7 @@
               ],
               "timestamps": "mixed"
             },
-            "to": "dsd_prefix_filter_blocklist_true.in"
+            "to": "dsd_no_agg_split.in"
           },
           {
             "name": "false",
@@ -295,12 +297,12 @@
               ],
               "timestamps": "mixed"
             },
-            "to": "dsd_no_agg_split.in"
+            "to": "dsd_prefix_filter_blocklist_false.in"
           }
         ]
       },
       {
-        "id": "dsd_prefix_filter_blocklist_true",
+        "id": "dsd_prefix_filter_blocklist_false",
         "op": "drop",
         "boundary": "synchronous",
         "state": "none",
@@ -316,7 +318,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "from": "dsd_prefix_filter_blocklist.true"
+            "from": "dsd_prefix_filter_blocklist.false"
           }
         ],
         "outputs": []
@@ -347,7 +349,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "from": "dsd_prefix_filter_blocklist.false"
+            "from": "dsd_prefix_filter_blocklist.true"
           }
         ],
         "outputs": [
@@ -673,44 +675,46 @@
         "loss": [],
         "params": {
           "predicate": {
-            "all": [
-              {
-                "kind_in": [
-                  "counter",
-                  "rate",
-                  "gauge",
-                  "set"
-                ]
-              },
-              {
-                "intake_name": {
-                  "matches": {
-                    "prefix": {
-                      "config": "dogstatsd.metric_filter.match_prefix",
-                      "resolved": false
-                    },
-                    "values": {
-                      "config": "dogstatsd.post_aggregate_filter.values",
-                      "resolved": [
-                        "tenant.checkout.latency.max"
-                      ]
+            "not": {
+              "all": [
+                {
+                  "kind_in": [
+                    "counter",
+                    "rate",
+                    "gauge",
+                    "set"
+                  ]
+                },
+                {
+                  "intake_name": {
+                    "matches": {
+                      "prefix": {
+                        "config": "dogstatsd.metric_filter.match_prefix",
+                        "resolved": false
+                      },
+                      "values": {
+                        "config": "dogstatsd.post_aggregate_filter.values",
+                        "resolved": [
+                          "tenant.checkout.latency.max"
+                        ]
+                      }
                     }
                   }
                 }
-              }
-            ]
+              ]
+            }
           }
         },
         "bindings": [
           {
-            "param": "predicate.all[1].intake_name.values",
+            "param": "predicate.not.all[1].intake_name.values",
             "binding": "dogstatsd.post_aggregate_filter.values",
             "resolved": [
               "tenant.checkout.latency.max"
             ]
           },
           {
-            "param": "predicate.all[1].intake_name.prefix",
+            "param": "predicate.not.all[1].intake_name.prefix",
             "binding": "dogstatsd.metric_filter.match_prefix",
             "resolved": false
           }
@@ -732,18 +736,6 @@
               "kinds": [
                 "rate",
                 "gauge",
-                "set"
-              ],
-              "timestamps": "timestamped"
-            },
-            "to": "dsd_post_agg_filter_true.in"
-          },
-          {
-            "name": "false",
-            "port_type": {
-              "kinds": [
-                "rate",
-                "gauge",
                 "set",
                 "histogram",
                 "distribution"
@@ -751,11 +743,23 @@
               "timestamps": "timestamped"
             },
             "to": "dsd_post_agg_filter_fanout.in"
+          },
+          {
+            "name": "false",
+            "port_type": {
+              "kinds": [
+                "rate",
+                "gauge",
+                "set"
+              ],
+              "timestamps": "timestamped"
+            },
+            "to": "dsd_post_agg_filter_false.in"
           }
         ]
       },
       {
-        "id": "dsd_post_agg_filter_true",
+        "id": "dsd_post_agg_filter_false",
         "op": "drop",
         "boundary": "synchronous",
         "state": "none",
@@ -771,7 +775,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "from": "dsd_post_agg_filter.true"
+            "from": "dsd_post_agg_filter.false"
           }
         ],
         "outputs": []
@@ -793,7 +797,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "from": "dsd_post_agg_filter.false"
+            "from": "dsd_post_agg_filter.true"
           }
         ],
         "outputs": [
@@ -1750,8 +1754,8 @@
         }
       },
       {
-        "from": "dsd_prefix_filter_blocklist.true",
-        "to": "dsd_prefix_filter_blocklist_true.in",
+        "from": "dsd_prefix_filter_blocklist.false",
+        "to": "dsd_prefix_filter_blocklist_false.in",
         "port_type": {
           "kinds": [
             "counter",
@@ -1764,7 +1768,7 @@
         }
       },
       {
-        "from": "dsd_prefix_filter_blocklist.false",
+        "from": "dsd_prefix_filter_blocklist.true",
         "to": "dsd_no_agg_split.in",
         "port_type": {
           "kinds": [
@@ -1847,8 +1851,8 @@
         }
       },
       {
-        "from": "dsd_post_agg_filter.true",
-        "to": "dsd_post_agg_filter_true.in",
+        "from": "dsd_post_agg_filter.false",
+        "to": "dsd_post_agg_filter_false.in",
         "port_type": {
           "kinds": [
             "rate",
@@ -1859,7 +1863,7 @@
         }
       },
       {
-        "from": "dsd_post_agg_filter.false",
+        "from": "dsd_post_agg_filter.true",
         "to": "dsd_post_agg_filter_fanout.in",
         "port_type": {
           "kinds": [
@@ -2233,13 +2237,13 @@
         "dsd_agg",
         "dsd_post_agg_filter"
       ],
-      "justification": "path: `dsd_agg` feeds the filter `dsd_post_agg_filter` through `dsd_post_agg_filter_in`, which neither copies nor changes what it reads; reads: the filter reads {name, kind}, all known when a record is built; kinds: `dsd_agg` judges the records it emits of {rate, gauge, set, distribution} with the filter's predicate, as the filter receives them, and skips those its `true` port would drop; the filter stays for every other record, and state is unchanged, so every output is the same on every trace",
+      "justification": "path: `dsd_agg` feeds the filter `dsd_post_agg_filter` through `dsd_post_agg_filter_in`, which neither copies nor changes what it reads; reads: the filter reads {name, kind}, all known when a record is built; kinds: `dsd_agg` judges the records it emits of {rate, gauge, set, distribution} with the filter's predicate, as the filter receives them, and skips those its `false` port would drop; the filter stays for every other record, and state is unchanged, so every output is the same on every trace",
       "capacity_rule": false,
       "telemetry": [
         {
           "node": "dsd_agg",
           "change": "changed",
-          "detail": "it sends fewer records downstream: none that `dsd_post_agg_filter` drops, which count in `dsd_post_agg_filter`'s own series of its `true` port and its policy loss, as if it had received them"
+          "detail": "it sends fewer records downstream: none that `dsd_post_agg_filter` drops, which count in `dsd_post_agg_filter`'s own series of its `false` port and its policy loss, as if it had received them"
         },
         {
           "node": "dsd_post_agg_filter_in",
@@ -2425,7 +2429,7 @@
         "nodes": [
           "dsd_prefix_filter",
           "dsd_prefix_filter_blocklist",
-          "dsd_prefix_filter_blocklist_true"
+          "dsd_prefix_filter_blocklist_false"
         ],
         "entries": [
           {
@@ -2492,7 +2496,7 @@
         "entries": [
           {
             "key": "entry 0",
-            "from": "dsd_prefix_filter_blocklist.false",
+            "from": "dsd_prefix_filter_blocklist.true",
             "input": "dsd_no_agg_split.in"
           }
         ],
@@ -2584,7 +2588,7 @@
         "nodes": [
           "dsd_post_agg_filter_in",
           "dsd_post_agg_filter",
-          "dsd_post_agg_filter_true",
+          "dsd_post_agg_filter_false",
           "dsd_post_agg_filter_fanout",
           "dsd_post_agg_filter_fanout_0"
         ],
@@ -2950,13 +2954,13 @@
         "reason": "both nodes are synchronous and nothing separates them: slot `dsd_prefix_filter_region`"
       },
       {
-        "from": "dsd_prefix_filter_blocklist.true",
-        "to": "dsd_prefix_filter_blocklist_true.in",
+        "from": "dsd_prefix_filter_blocklist.false",
+        "to": "dsd_prefix_filter_blocklist_false.in",
         "decision": "fused",
         "reason": "both nodes are synchronous and nothing separates them: slot `dsd_prefix_filter_region`"
       },
       {
-        "from": "dsd_prefix_filter_blocklist.false",
+        "from": "dsd_prefix_filter_blocklist.true",
         "to": "dsd_no_agg_split.in",
         "decision": "pipelined",
         "reason": "fusing would make one region cost more than 110 ns per event, the cost model's budget: slots `dsd_prefix_filter_region` and `dsd_no_agg_split_region` pipeline"
@@ -2992,13 +2996,13 @@
         "reason": "both nodes are synchronous and nothing separates them: slot `dsd_post_agg_filter_region`"
       },
       {
-        "from": "dsd_post_agg_filter.true",
-        "to": "dsd_post_agg_filter_true.in",
+        "from": "dsd_post_agg_filter.false",
+        "to": "dsd_post_agg_filter_false.in",
         "decision": "fused",
         "reason": "both nodes are synchronous and nothing separates them: slot `dsd_post_agg_filter_region`"
       },
       {
-        "from": "dsd_post_agg_filter.false",
+        "from": "dsd_post_agg_filter.true",
         "to": "dsd_post_agg_filter_fanout.in",
         "decision": "fused",
         "reason": "both nodes are synchronous and nothing separates them: slot `dsd_post_agg_filter_region`"
@@ -3145,12 +3149,12 @@
           "dsd_enrich",
           "dsd_prefix_filter",
           "dsd_prefix_filter_blocklist",
-          "dsd_prefix_filter_blocklist_true",
+          "dsd_prefix_filter_blocklist_false",
           "dsd_no_agg_split",
           "dsd_tag_filterlist",
           "dsd_post_agg_filter_in",
           "dsd_post_agg_filter",
-          "dsd_post_agg_filter_true",
+          "dsd_post_agg_filter_false",
           "dsd_post_agg_filter_fanout",
           "dsd_post_agg_filter_fanout_0",
           "metrics_enrich_in",
@@ -3331,7 +3335,7 @@
         "nodes": [
           "dsd_post_agg_filter_in",
           "dsd_post_agg_filter",
-          "dsd_post_agg_filter_true",
+          "dsd_post_agg_filter_false",
           "dsd_post_agg_filter_fanout",
           "dsd_post_agg_filter_fanout_0",
           "metrics_enrich_in",

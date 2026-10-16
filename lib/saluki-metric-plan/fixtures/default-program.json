@@ -2,9 +2,9 @@
   "ir_version": 1,
   "provenance": {"native_components": {
     "dsd_prefix_filter_blocklist": "dsd_prefix_filter",
-    "dsd_prefix_filter_blocklist_true": "dsd_prefix_filter",
+    "dsd_prefix_filter_blocklist_false": "dsd_prefix_filter",
     "dsd_post_agg_filter_in": "dsd_post_agg_filter",
-    "dsd_post_agg_filter_true": "dsd_post_agg_filter",
+    "dsd_post_agg_filter_false": "dsd_post_agg_filter",
     "dsd_post_agg_filter_fanout": "dsd_client_telemetry_out",
     "dsd_post_agg_filter_fanout_0": "dsd_client_telemetry_out",
     "metrics_enrich_in": "metrics_enrich",
@@ -35,10 +35,10 @@
        "namespace": {"config": "dogstatsd.prefix_filter.metric_namespace", "resolved": "tenant"},
        "exclusions": {"config": "dogstatsd.prefix_filter.metric_namespace_blocklist",
                       "resolved": ["internal.", "system."]}}},
-    {"id": "dsd_prefix_filter_blocklist", "op": "split", "params": {"predicate": {"intake_name": {"matches": {
+    {"id": "dsd_prefix_filter_blocklist", "op": "split", "params": {"predicate": {"not": {"intake_name": {"matches": {
        "values": {"config": "dogstatsd.metric_filter.values", "resolved": ["tenant.raw.blocked"]},
-       "prefix": {"config": "dogstatsd.metric_filter.match_prefix", "resolved": false}}}}}},
-    {"id": "dsd_prefix_filter_blocklist_true", "op": "drop"},
+       "prefix": {"config": "dogstatsd.metric_filter.match_prefix", "resolved": false}}}}}}},
+    {"id": "dsd_prefix_filter_blocklist_false", "op": "drop"},
     {"id": "dsd_no_agg_split", "op": "timestamp_split", "params": {
        "window": {"config": "dogstatsd.aggregation.window_duration_seconds", "resolved": "10s"}}},
     {"id": "dsd_tag_filterlist", "op": "tag_projection", "params": {
@@ -63,13 +63,13 @@
        "copy_to_distribution_prefix": {"config": "metrics_encoding.histogram.copy_to_distribution_prefix",
                                        "resolved": ""}}},
     {"id": "dsd_post_agg_filter_in", "op": "merge", "params": {"inputs": 2}},
-    {"id": "dsd_post_agg_filter", "op": "split", "params": {"predicate": {"all": [
+    {"id": "dsd_post_agg_filter", "op": "split", "params": {"predicate": {"not": {"all": [
        {"kind_in": ["counter", "rate", "gauge", "set"]},
        {"intake_name": {"matches": {
          "values": {"config": "dogstatsd.post_aggregate_filter.values", "resolved": ["tenant.checkout.latency.max"]},
          "prefix": {"config": "dogstatsd.metric_filter.match_prefix", "resolved": false}}}}
-     ]}}},
-    {"id": "dsd_post_agg_filter_true", "op": "drop"},
+     ]}}}},
+    {"id": "dsd_post_agg_filter_false", "op": "drop"},
     {"id": "dsd_post_agg_filter_fanout", "op": "tee", "params": {"ports": 2}},
     {"id": "dsd_post_agg_filter_fanout_0", "op": "emit", "params": {"output": "dsd_client_telemetry"}},
     {"id": "otlp_in", "op": "source", "params": {"binding": "otlp"}},
@@ -129,15 +129,15 @@
     {"from": "dsd_in.metrics", "to": "dsd_enrich.in"},
     {"from": "dsd_enrich.out", "to": "dsd_prefix_filter.in"},
     {"from": "dsd_prefix_filter.out", "to": "dsd_prefix_filter_blocklist.in"},
-    {"from": "dsd_prefix_filter_blocklist.true", "to": "dsd_prefix_filter_blocklist_true.in"},
-    {"from": "dsd_prefix_filter_blocklist.false", "to": "dsd_no_agg_split.in"},
+    {"from": "dsd_prefix_filter_blocklist.false", "to": "dsd_prefix_filter_blocklist_false.in"},
+    {"from": "dsd_prefix_filter_blocklist.true", "to": "dsd_no_agg_split.in"},
     {"from": "dsd_no_agg_split.default", "to": "dsd_tag_filterlist.in"},
     {"from": "dsd_tag_filterlist.out", "to": "dsd_agg.in"},
     {"from": "dsd_agg.out", "to": "dsd_post_agg_filter_in.0"},
     {"from": "dsd_no_agg_split.passthrough", "to": "dsd_post_agg_filter_in.1"},
     {"from": "dsd_post_agg_filter_in.out", "to": "dsd_post_agg_filter.in"},
-    {"from": "dsd_post_agg_filter.true", "to": "dsd_post_agg_filter_true.in"},
-    {"from": "dsd_post_agg_filter.false", "to": "dsd_post_agg_filter_fanout.in"},
+    {"from": "dsd_post_agg_filter.false", "to": "dsd_post_agg_filter_false.in"},
+    {"from": "dsd_post_agg_filter.true", "to": "dsd_post_agg_filter_fanout.in"},
     {"from": "dsd_post_agg_filter_fanout.0", "to": "dsd_post_agg_filter_fanout_0.in"},
     {"from": "dsd_post_agg_filter_fanout.1", "to": "metrics_enrich_in.0"},
     {"from": "otlp_in.metrics", "to": "metrics_enrich_in.1"},

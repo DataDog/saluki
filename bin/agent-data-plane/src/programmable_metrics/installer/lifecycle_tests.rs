@@ -1309,7 +1309,8 @@ fn refused() -> Vec<Refused> {
             authentic: true,
         },
         Refused {
-            // A state owner composes like any node; its parameters are validation's to judge.
+            // A state owner composes like any node; its parameters are validation's to judge. Every parameter but the
+            // window has a default, which composition writes in, so only the window is missing.
             what: "a state owner without its parameters",
             configs: |export, revision| {
                 let mut artifact = export.clone();
@@ -1317,25 +1318,9 @@ fn refused() -> Vec<Refused> {
                 vec![config(revision, &artifact)]
             },
             error: |_, _| {
-                let missing = [
-                    "window",
-                    "flush_interval",
-                    "context_limit",
-                    "counter_expiry",
-                    "flush_open_windows",
-                    "histogram_aggregates",
-                    "histogram_percentiles",
-                    "copy_to_distribution",
-                    "copy_to_distribution_prefix",
-                ]
-                .map(|param| {
-                    format!(
-                        "error[valid_parameters] node `policy/agg`: `aggregate` parameter `{}`: missing required \
-                         parameter",
-                        param
-                    )
-                });
-                format!("the plan is not valid: {}", missing.join("; "))
+                "the plan is not valid: error[valid_parameters] node `policy/agg`: `aggregate` parameter `window`: \
+                 missing required parameter"
+                    .to_string()
             },
             read: true,
             authentic: true,

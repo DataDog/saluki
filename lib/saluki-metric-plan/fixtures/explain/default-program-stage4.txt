@@ -2,8 +2,8 @@ explain_version 2
 
 plan
   ir_version 1
-  hash sha256:6f59c87a4abaffc60438d0f75c0bbc32c5f6a8ce092cb62b863216f7a95efd29
-  structural_hash sha256:14c133963b3fda5735133eea852b4936bfa5a8d82ad03c3dbc742bebdc48d7d1
+  hash sha256:a548b8e1b4638801b3bd495b5b3e9f386a1a2309b8bb2e1fc46dcf39567c7e8e
+  structural_hash sha256:b75867a95f2b639a91f271b7d276dbac90a2b10b9de882c3f2891a8edbea7450
   valid: 0 errors, 0 warnings
 
 nodes (34)
@@ -28,19 +28,19 @@ nodes (34)
     in in <- dsd_enrich.out, accepts every kind (mixed timestamps)
     out out -> dsd_prefix_filter_blocklist.in, carries counter, gauge, set, histogram, distribution (mixed timestamps)
   dsd_prefix_filter_blocklist: split [synchronous, state none]
-    param predicate = {"intake_name":{"matches":{"prefix":{"config":"dogstatsd.metric_filter.match_prefix","resolved":false},"values":{"config":"dogstatsd.metric_filter.values","resolved":["tenant.raw.blocked"]}}}}
-    binding predicate.intake_name.values <- dogstatsd.metric_filter.values = ["tenant.raw.blocked"]
-    binding predicate.intake_name.prefix <- dogstatsd.metric_filter.match_prefix = false
+    param predicate = {"not":{"intake_name":{"matches":{"prefix":{"config":"dogstatsd.metric_filter.match_prefix","resolved":false},"values":{"config":"dogstatsd.metric_filter.values","resolved":["tenant.raw.blocked"]}}}}}
+    binding predicate.not.intake_name.values <- dogstatsd.metric_filter.values = ["tenant.raw.blocked"]
+    binding predicate.not.intake_name.prefix <- dogstatsd.metric_filter.match_prefix = false
     in in <- dsd_prefix_filter.out, accepts every kind (mixed timestamps)
-    out true -> dsd_prefix_filter_blocklist_true.in, carries counter, gauge, set, histogram, distribution (mixed timestamps)
-    out false -> dsd_no_agg_split.in, carries counter, gauge, set, histogram, distribution (mixed timestamps)
-  dsd_prefix_filter_blocklist_true: drop [synchronous, state none]
+    out true -> dsd_no_agg_split.in, carries counter, gauge, set, histogram, distribution (mixed timestamps)
+    out false -> dsd_prefix_filter_blocklist_false.in, carries counter, gauge, set, histogram, distribution (mixed timestamps)
+  dsd_prefix_filter_blocklist_false: drop [synchronous, state none]
     loss policy
-    in in <- dsd_prefix_filter_blocklist.true, accepts every kind (mixed timestamps)
+    in in <- dsd_prefix_filter_blocklist.false, accepts every kind (mixed timestamps)
   dsd_no_agg_split: timestamp_split [synchronous, state none]
     param window = {"config":"dogstatsd.aggregation.window_duration_seconds","resolved":"10s"}
     binding window <- dogstatsd.aggregation.window_duration_seconds = "10s"
-    in in <- dsd_prefix_filter_blocklist.false, accepts every kind (mixed timestamps)
+    in in <- dsd_prefix_filter_blocklist.true, accepts every kind (mixed timestamps)
     out default -> dsd_tag_filterlist.in, carries counter, gauge, set, histogram, distribution (untimestamped)
     out passthrough -> dsd_post_agg_filter_in.1, carries rate, gauge, set, histogram, distribution (timestamped)
   dsd_tag_filterlist: tag_projection [synchronous, state none]
@@ -81,18 +81,18 @@ nodes (34)
     in 1 <- dsd_no_agg_split.passthrough, accepts every kind (mixed timestamps)
     out out -> dsd_post_agg_filter.in, carries rate, gauge, set, histogram, distribution (timestamped)
   dsd_post_agg_filter: split [synchronous, state none]
-    param predicate = {"all":[{"kind_in":["counter","rate","gauge","set"]},{"intake_name":{"matches":{"prefix":{"config":"dogstatsd.metric_filter.match_prefix","resolved":false},"values":{"config":"dogstatsd.post_aggregate_filter.values","resolved":["tenant.checkout.latency.max"]}}}}]}
-    binding predicate.all[1].intake_name.values <- dogstatsd.post_aggregate_filter.values = ["tenant.checkout.latency.max"]
-    binding predicate.all[1].intake_name.prefix <- dogstatsd.metric_filter.match_prefix = false
+    param predicate = {"not":{"all":[{"kind_in":["counter","rate","gauge","set"]},{"intake_name":{"matches":{"prefix":{"config":"dogstatsd.metric_filter.match_prefix","resolved":false},"values":{"config":"dogstatsd.post_aggregate_filter.values","resolved":["tenant.checkout.latency.max"]}}}}]}}
+    binding predicate.not.all[1].intake_name.values <- dogstatsd.post_aggregate_filter.values = ["tenant.checkout.latency.max"]
+    binding predicate.not.all[1].intake_name.prefix <- dogstatsd.metric_filter.match_prefix = false
     in in <- dsd_post_agg_filter_in.out, accepts every kind (mixed timestamps)
-    out true -> dsd_post_agg_filter_true.in, carries rate, gauge, set (timestamped)
-    out false -> dsd_post_agg_filter_fanout.in, carries rate, gauge, set, histogram, distribution (timestamped)
-  dsd_post_agg_filter_true: drop [synchronous, state none]
+    out true -> dsd_post_agg_filter_fanout.in, carries rate, gauge, set, histogram, distribution (timestamped)
+    out false -> dsd_post_agg_filter_false.in, carries rate, gauge, set (timestamped)
+  dsd_post_agg_filter_false: drop [synchronous, state none]
     loss policy
-    in in <- dsd_post_agg_filter.true, accepts every kind (mixed timestamps)
+    in in <- dsd_post_agg_filter.false, accepts every kind (mixed timestamps)
   dsd_post_agg_filter_fanout: tee [synchronous, state none]
     param ports = 2
-    in in <- dsd_post_agg_filter.false, accepts every kind (mixed timestamps)
+    in in <- dsd_post_agg_filter.true, accepts every kind (mixed timestamps)
     out 0 -> dsd_post_agg_filter_fanout_0.in, carries rate, gauge, set, histogram, distribution (timestamped)
     out 1 -> metrics_enrich_in.0, carries rate, gauge, set, histogram, distribution (timestamped)
   dsd_post_agg_filter_fanout_0: emit [synchronous, state none]
@@ -198,15 +198,15 @@ edges (34)
   dsd_in.metrics -> dsd_enrich.in: counter, gauge, set, histogram, distribution (mixed timestamps)
   dsd_enrich.out -> dsd_prefix_filter.in: counter, gauge, set, histogram, distribution (mixed timestamps)
   dsd_prefix_filter.out -> dsd_prefix_filter_blocklist.in: counter, gauge, set, histogram, distribution (mixed timestamps)
-  dsd_prefix_filter_blocklist.true -> dsd_prefix_filter_blocklist_true.in: counter, gauge, set, histogram, distribution (mixed timestamps)
-  dsd_prefix_filter_blocklist.false -> dsd_no_agg_split.in: counter, gauge, set, histogram, distribution (mixed timestamps)
+  dsd_prefix_filter_blocklist.false -> dsd_prefix_filter_blocklist_false.in: counter, gauge, set, histogram, distribution (mixed timestamps)
+  dsd_prefix_filter_blocklist.true -> dsd_no_agg_split.in: counter, gauge, set, histogram, distribution (mixed timestamps)
   dsd_no_agg_split.default -> dsd_tag_filterlist.in: counter, gauge, set, histogram, distribution (untimestamped)
   dsd_tag_filterlist.out -> dsd_agg.in: counter, gauge, set, histogram, distribution (untimestamped)
   dsd_agg.out -> dsd_post_agg_filter_in.0: rate, gauge, set, distribution (timestamped)
   dsd_no_agg_split.passthrough -> dsd_post_agg_filter_in.1: rate, gauge, set, histogram, distribution (timestamped)
   dsd_post_agg_filter_in.out -> dsd_post_agg_filter.in: rate, gauge, set, histogram, distribution (timestamped)
-  dsd_post_agg_filter.true -> dsd_post_agg_filter_true.in: rate, gauge, set (timestamped)
-  dsd_post_agg_filter.false -> dsd_post_agg_filter_fanout.in: rate, gauge, set, histogram, distribution (timestamped)
+  dsd_post_agg_filter.false -> dsd_post_agg_filter_false.in: rate, gauge, set (timestamped)
+  dsd_post_agg_filter.true -> dsd_post_agg_filter_fanout.in: rate, gauge, set, histogram, distribution (timestamped)
   dsd_post_agg_filter_fanout.0 -> dsd_post_agg_filter_fanout_0.in: rate, gauge, set, histogram, distribution (timestamped)
   dsd_post_agg_filter_fanout.1 -> metrics_enrich_in.0: rate, gauge, set, histogram, distribution (timestamped)
   otlp_in.metrics -> metrics_enrich_in.1: counter, rate, gauge, distribution (mixed timestamps)
@@ -281,8 +281,8 @@ findings (0)
 
 rewrites (3)
   R5b applied: dsd_agg, dsd_post_agg_filter
-    justification path: `dsd_agg` feeds the filter `dsd_post_agg_filter` through `dsd_post_agg_filter_in`, which neither copies nor changes what it reads; reads: the filter reads {name, kind}, all known when a record is built; kinds: `dsd_agg` judges the records it emits of {rate, gauge, set, distribution} with the filter's predicate, as the filter receives them, and skips those its `true` port would drop; the filter stays for every other record, and state is unchanged, so every output is the same on every trace
-    telemetry changed dsd_agg: it sends fewer records downstream: none that `dsd_post_agg_filter` drops, which count in `dsd_post_agg_filter`'s own series of its `true` port and its policy loss, as if it had received them
+    justification path: `dsd_agg` feeds the filter `dsd_post_agg_filter` through `dsd_post_agg_filter_in`, which neither copies nor changes what it reads; reads: the filter reads {name, kind}, all known when a record is built; kinds: `dsd_agg` judges the records it emits of {rate, gauge, set, distribution} with the filter's predicate, as the filter receives them, and skips those its `false` port would drop; the filter stays for every other record, and state is unchanged, so every output is the same on every trace
+    telemetry changed dsd_agg: it sends fewer records downstream: none that `dsd_post_agg_filter` drops, which count in `dsd_post_agg_filter`'s own series of its `false` port and its policy loss, as if it had received them
     telemetry changed dsd_post_agg_filter_in: `plan_node_events_total{component_id:dsd_post_agg_filter_in}` of its input counts fewer records: those `dsd_agg` suppresses
     telemetry changed dsd_post_agg_filter: `plan_node_events_total{component_id:dsd_post_agg_filter}` of its input counts fewer records: those `dsd_agg` suppresses
   R3 applied: mrf_metrics_gateway
@@ -314,7 +314,7 @@ frame
       exit 5 mrf_metrics_encode -> output mrf_metrics_encode, idle
       exit 6 af_metrics_encode -> output af_metrics_encode, idle
     dsd_prefix_filter_region (estimated 110 ns per event)
-      nodes dsd_prefix_filter, dsd_prefix_filter_blocklist, dsd_prefix_filter_blocklist_true
+      nodes dsd_prefix_filter, dsd_prefix_filter_blocklist, dsd_prefix_filter_blocklist_false
       entry 0: dsd_enrich.out -> dsd_prefix_filter.in
       exit 0 dsd_no_agg_split_region -> dsd_no_agg_split_region, progress of admission points 0
       exit 1 dsd_client_telemetry -> output dsd_client_telemetry, idle
@@ -325,7 +325,7 @@ frame
       exit 6 af_metrics_encode -> output af_metrics_encode, idle
     dsd_no_agg_split_region (estimated 25 ns per event)
       nodes dsd_no_agg_split, dsd_tag_filterlist
-      entry 0: dsd_prefix_filter_blocklist.false -> dsd_no_agg_split.in
+      entry 0: dsd_prefix_filter_blocklist.true -> dsd_no_agg_split.in
       exit 0 dsd_agg -> dsd_agg, progress of admission points 0
       exit 1 dsd_post_agg_filter_region -> dsd_post_agg_filter_region
       exit 2 dsd_client_telemetry -> output dsd_client_telemetry, idle
@@ -340,7 +340,7 @@ frame
       entry 0: dsd_tag_filterlist.out -> dsd_agg.in
       exit 0 dsd_post_agg_filter_region -> dsd_post_agg_filter_region
     dsd_post_agg_filter_region (estimated 36 ns per event)
-      nodes dsd_post_agg_filter_in, dsd_post_agg_filter, dsd_post_agg_filter_true, dsd_post_agg_filter_fanout, dsd_post_agg_filter_fanout_0
+      nodes dsd_post_agg_filter_in, dsd_post_agg_filter, dsd_post_agg_filter_false, dsd_post_agg_filter_fanout, dsd_post_agg_filter_fanout_0
       entry 0: dsd_agg.out -> dsd_post_agg_filter_in.0
       entry 1: dsd_no_agg_split.passthrough -> dsd_post_agg_filter_in.1
       exit 0 dsd_client_telemetry -> output dsd_client_telemetry
@@ -408,15 +408,15 @@ fusion (34)
   dsd_in.metrics -> dsd_enrich.in: fence (`dsd_in` is an io_host, a fence that fusion never crosses)
   dsd_enrich.out -> dsd_prefix_filter.in: pipelined (fusing would make one region cost more than 110 ns per event, the cost model's budget: slots `dsd_pre_aggregation` and `dsd_prefix_filter_region` pipeline)
   dsd_prefix_filter.out -> dsd_prefix_filter_blocklist.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_prefix_filter_region`)
-  dsd_prefix_filter_blocklist.true -> dsd_prefix_filter_blocklist_true.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_prefix_filter_region`)
-  dsd_prefix_filter_blocklist.false -> dsd_no_agg_split.in: pipelined (fusing would make one region cost more than 110 ns per event, the cost model's budget: slots `dsd_prefix_filter_region` and `dsd_no_agg_split_region` pipeline)
+  dsd_prefix_filter_blocklist.false -> dsd_prefix_filter_blocklist_false.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_prefix_filter_region`)
+  dsd_prefix_filter_blocklist.true -> dsd_no_agg_split.in: pipelined (fusing would make one region cost more than 110 ns per event, the cost model's budget: slots `dsd_prefix_filter_region` and `dsd_no_agg_split_region` pipeline)
   dsd_no_agg_split.default -> dsd_tag_filterlist.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_no_agg_split_region`)
   dsd_tag_filterlist.out -> dsd_agg.in: isolation (the edge enters or leaves the isolation slot `dsd_agg`, which runs its state owner alone)
   dsd_agg.out -> dsd_post_agg_filter_in.0: isolation (the edge enters or leaves the isolation slot `dsd_agg`, which runs its state owner alone)
   dsd_no_agg_split.passthrough -> dsd_post_agg_filter_in.1: separated (fusing would form a cycle through `dsd_agg`: slots `dsd_no_agg_split_region` and `dsd_post_agg_filter_region` stay apart)
   dsd_post_agg_filter_in.out -> dsd_post_agg_filter.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_post_agg_filter_region`)
-  dsd_post_agg_filter.true -> dsd_post_agg_filter_true.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_post_agg_filter_region`)
-  dsd_post_agg_filter.false -> dsd_post_agg_filter_fanout.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_post_agg_filter_region`)
+  dsd_post_agg_filter.false -> dsd_post_agg_filter_false.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_post_agg_filter_region`)
+  dsd_post_agg_filter.true -> dsd_post_agg_filter_fanout.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_post_agg_filter_region`)
   dsd_post_agg_filter_fanout.0 -> dsd_post_agg_filter_fanout_0.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_post_agg_filter_region`)
   dsd_post_agg_filter_fanout.1 -> metrics_enrich_in.0: pipelined (fusing would make one region cost more than 110 ns per event, the cost model's budget: slots `dsd_post_agg_filter_region` and `metrics_enrich` pipeline)
   otlp_in.metrics -> metrics_enrich_in.1: fence (`otlp_in` is an io_host, a fence that fusion never crosses)
@@ -443,7 +443,7 @@ fusion (34)
 segments (6)
   admission point 0 dsd_in.metrics (admit)
     slots dsd_pre_aggregation, dsd_prefix_filter_region, dsd_no_agg_split_region, dsd_post_agg_filter_region, metrics_enrich
-    nodes dsd_enrich, dsd_prefix_filter, dsd_prefix_filter_blocklist, dsd_prefix_filter_blocklist_true, dsd_no_agg_split, dsd_tag_filterlist, dsd_post_agg_filter_in, dsd_post_agg_filter, dsd_post_agg_filter_true, dsd_post_agg_filter_fanout, dsd_post_agg_filter_fanout_0, metrics_enrich_in, metrics_enrich, metrics_enrich_host_tags, metrics_policy, metrics_policy_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false
+    nodes dsd_enrich, dsd_prefix_filter, dsd_prefix_filter_blocklist, dsd_prefix_filter_blocklist_false, dsd_no_agg_split, dsd_tag_filterlist, dsd_post_agg_filter_in, dsd_post_agg_filter, dsd_post_agg_filter_false, dsd_post_agg_filter_fanout, dsd_post_agg_filter_fanout_0, metrics_enrich_in, metrics_enrich, metrics_enrich_host_tags, metrics_policy, metrics_policy_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false
     ends dsd_agg, output af_metrics_encode, output dd_metrics_encode, output dsd_client_telemetry, output metrics_routing_encode_0, output metrics_routing_encode_1, output mrf_metrics_encode
   admission point 1 otlp_in.metrics (admit)
     slots metrics_enrich
@@ -463,7 +463,7 @@ segments (6)
     ends output af_metrics_encode, output dd_metrics_encode, output metrics_routing_encode_0, output metrics_routing_encode_1, output mrf_metrics_encode
   output point 5 dsd_agg.out (time-driven)
     slots dsd_post_agg_filter_region, metrics_enrich
-    nodes dsd_post_agg_filter_in, dsd_post_agg_filter, dsd_post_agg_filter_true, dsd_post_agg_filter_fanout, dsd_post_agg_filter_fanout_0, metrics_enrich_in, metrics_enrich, metrics_enrich_host_tags, metrics_policy, metrics_policy_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false
+    nodes dsd_post_agg_filter_in, dsd_post_agg_filter, dsd_post_agg_filter_false, dsd_post_agg_filter_fanout, dsd_post_agg_filter_fanout_0, metrics_enrich_in, metrics_enrich, metrics_enrich_host_tags, metrics_policy, metrics_policy_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false
     ends output af_metrics_encode, output dd_metrics_encode, output dsd_client_telemetry, output metrics_routing_encode_0, output metrics_routing_encode_1, output mrf_metrics_encode
 
 output bindings (6)

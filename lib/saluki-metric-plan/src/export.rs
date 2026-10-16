@@ -53,9 +53,11 @@
 //! signals, which describe the host and its state rather than choose anything. The detached form is the export such a
 //! program starts from ([`export_as`] with [`ExportForm::Detached`]): every parameter bound to a binding whose catalog
 //! class is [`policy`](BindingClass::Policy) is written as the value it resolves to now, fact and signal bindings stay
-//! bound, and every predicate is written with its literal `flag` and `is_empty` folded
-//! ([`Predicate::fold_literals`]), so that a list the default program reads twice, such as a mirroring allowlist
-//! tested for emptiness and then matched, is not written twice. A binding the catalog does not declare stays bound.
+//! bound, and the artifact is written in [normal form](crate::normalize): every predicate with its literal `flag` and
+//! `is_empty` folded and its literal set matches written as the string matches they are, so that a list the default
+//! program reads twice, such as a mirroring allowlist tested for emptiness and then matched, is not written twice, and
+//! every filter whose kept records leave by its `false` port turned to keep them by its `true` port. A binding the
+//! catalog does not declare stays bound.
 //! Every `emit` to an output whose recipients the catalog's recipient directory names exactly is written as an `emit`
 //! to those names, such as `emit to [primary]`, as a published program addresses destinations: by the recipients it
 //! sends to, never by the native output that encodes for them.
@@ -86,8 +88,8 @@ use crate::{
         ComposedArtifact, ExitName, InputName, NodeId, OperatorName, OutputId, ParamType, Params, Plan, PolicyArtifact,
         PortRef, ScopeName, ACCEPTED_IR_VERSIONS, IR_VERSION,
     },
+    normalize::{normalize_artifact, normalize_params},
     operators::{names, OperatorRegistry, EMIT_TO},
-    predicate::Predicate,
     validate::{Catalog, MemoryCatalog},
 };
 
@@ -351,9 +353,10 @@ pub fn export(
 /// Exports one scope of a lowered plan as an artifact in the form `form`, with the host's catalog and output labels.
 ///
 /// This is [`export`] for [`ExportForm::Bound`]. For [`ExportForm::Detached`], every parameter bound to a policy
-/// setting of `catalog` is written as the value it resolves to in `plan`, every predicate's literal `flag` and
-/// `is_empty` are folded, and the nodes that do nothing with those values are left out and listed in
-/// [`ExportBundle::omitted`] (see [the detached form](self#the-detached-form)); the base is the bound export's.
+/// setting of `catalog` is written as the value it resolves to in `plan`, the nodes that do nothing with those values
+/// are left out and listed in [`ExportBundle::omitted`], and the artifact is written in [normal
+/// form](crate::normalize) (see [the detached form](self#the-detached-form)); the base is the bound export's. The bound
+/// form is the plan's scope as the plan writes it, which is in normal form for a lowered default program.
 /// `registry` is the host's operator registry, which says which nodes do nothing.
 ///
 /// # Errors
@@ -401,23 +404,29 @@ pub fn export_as(
                     (name.clone(), value)
                 })
                 .collect();
-            node.params = fold_predicates(&node.op, params);
+            node.params = normalize_params(&node.op, &params);
             if let Some(to) = recipients_of_output(plan, catalog, &node.params) {
                 node.params = to;
             }
         }
     }
+    let mut artifact = PolicyArtifact {
+        ir_version: plan.ir_version,
+        scope: scope.clone(),
+        base,
+        nodes,
+        edges,
+        blobs: Blobs::default(),
+    };
+    // Leaving nodes out can leave a filter that keeps what leaves its `false` port, which normal form turns. The bound
+    // form is written as the plan writes it, so that its document hashes to its base program hash.
+    if eliminated.is_some() {
+        artifact = normalize_artifact(&artifact);
+    }
     Ok(ExportBundle {
         export_version: EXPORT_VERSION,
         scope: scope.clone(),
-        artifact: PolicyArtifact {
-            ir_version: plan.ir_version,
-            scope: scope.clone(),
-            base,
-            nodes,
-            edges,
-            blobs: Blobs::default(),
-        },
+        artifact,
         ir_versions: IrVersions::supported(),
         catalog: catalog.clone(),
         labels: labels.clone(),
@@ -470,12 +479,13 @@ fn recipients_of_output(plan: &Plan, catalog: &MemoryCatalog, params: &Params) -
 /// published, or that the program changes. A node of `running` that does what the default program's does, as its
 /// [operation form](operation_params) says, lists nothing, whether it binds the settings or writes their values. A node
 /// that does something else and wrote its parameters in another structure, such as a predicate folded otherwise, lists
-/// each setting whose place it no longer has. A node of `default` that does nothing as configured ([`eliminate`]), such
-/// as a filterlist with nothing in it, lists nothing when `running` leaves it out, as the detached export does, or has
-/// it doing nothing too. Set natively later, it does something that `running`, without the node, does not: it lists
-/// the settings that make it do something, those that, turned off alone (an empty list or string, the other flag,
-/// zero), would make it do nothing again, such as a filterlist's entries but not its match mode, or every policy setting
-/// it binds when none would.
+/// each setting whose place it no longer has; a literal string match in [normal form](crate::normalize), such as
+/// `eq`, is read as the set match it is, so that a setting keeps its place in it. A node of `default` that does nothing
+/// as configured ([`eliminate`]), such as a filterlist with nothing in it, lists nothing when `running` leaves it out,
+/// as the detached export does, or has it doing nothing too. Set natively later, it does something that `running`,
+/// without the node, does not: it lists the settings that make it do something, those that, turned off alone (an empty
+/// list or string, the other flag, zero), would make it do nothing again, such as a filterlist's entries but not its
+/// match mode, or every policy setting it binds when none would.
 ///
 /// `registry` is the host's operator registry, which says which nodes do nothing.
 pub fn policy_differences(
@@ -604,16 +614,28 @@ pub fn policy_differences(
         for (name, value) in node.params.iter() {
             let mut found = Vec::new();
             walk(value, &mut Vec::new(), &policy, &mut found);
+            // A predicate in normal form writes a literal set match as the string match it is; read it as the set
+            // match the default program binds, so that its operands keep their places.
+            let running_param = counterpart
+                .and_then(|other| other.params.get(name.as_str()))
+                .map(|value| {
+                    if is_predicate_param(&node.op, name.as_str()) {
+                        set_match_spelling(value)
+                    } else {
+                        value.clone()
+                    }
+                });
             for (path, binding, current) in found {
-                let running_value = counterpart
-                    .and_then(|other| other.params.get(name.as_str()))
-                    .and_then(|value| at(value, &path))
-                    .map(|value| match value {
-                        Value::Object(members) if members.contains_key(BINDING_MEMBER) => {
-                            members.get(RESOLVED_MEMBER).cloned()
-                        }
-                        literal => Some(literal.clone()),
-                    });
+                let running_value =
+                    running_param
+                        .as_ref()
+                        .and_then(|value| at(value, &path))
+                        .map(|value| match value {
+                            Value::Object(members) if members.contains_key(BINDING_MEMBER) => {
+                                members.get(RESOLVED_MEMBER).cloned()
+                            }
+                            literal => Some(literal.clone()),
+                        });
                 if running_value.flatten().as_ref() != Some(&current) {
                     differs.insert(binding);
                 }
@@ -621,6 +643,49 @@ pub fn policy_differences(
         }
     }
     differs.into_iter().collect()
+}
+
+/// Returns `true` if the parameter `name` of operator `op` is a predicate.
+fn is_predicate_param(op: &OperatorName, name: &str) -> bool {
+    OperatorRegistry::native().get(op.as_str()).is_some_and(|def| {
+        def.params()
+            .iter()
+            .any(|spec| spec.name == name && spec.ty == ParamType::Predicate)
+    })
+}
+
+/// Returns a predicate's JSON with every literal string match written as the set match it is: `eq` and `in` as
+/// `matches` by value, `prefix` and `prefix_in` as `matches` by prefix.
+///
+/// This is the inverse of normalization's rule for literal set matches, but for a set match of no values, which
+/// normalization folds away.
+fn set_match_spelling(value: &Value) -> Value {
+    let set_match = |values: Value, prefix: bool| serde_json::json!({"matches": {"values": values, "prefix": prefix}});
+    match value {
+        Value::Object(members) if members.len() == 1 => {
+            let (name, member) = members.iter().next().expect("the object has one member");
+            match (name.as_str(), member) {
+                ("eq", Value::String(_)) => set_match(Value::Array(vec![member.clone()]), false),
+                ("prefix", Value::String(_)) => set_match(Value::Array(vec![member.clone()]), true),
+                ("in", Value::Array(_)) => set_match(member.clone(), false),
+                ("prefix_in", Value::Array(_)) => set_match(member.clone(), true),
+                _ => Value::Object(
+                    members
+                        .iter()
+                        .map(|(name, member)| (name.clone(), set_match_spelling(member)))
+                        .collect(),
+                ),
+            }
+        }
+        Value::Object(members) => Value::Object(
+            members
+                .iter()
+                .map(|(name, member)| (name.clone(), set_match_spelling(member)))
+                .collect(),
+        ),
+        Value::Array(values) => Value::Array(values.iter().map(set_match_spelling).collect()),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => value.clone(),
+    }
 }
 
 /// One step into a JSON value: a member of an object, or an element of an array.
@@ -658,11 +723,12 @@ pub(crate) fn write_bindings_as_values(value: &mut Value, literal: &dyn Fn(&Bind
 }
 
 /// Returns what a node of operator `op` with parameters `params` does: its parameters with every configuration binding
-/// written as the value it has ([`write_bindings_as_values`]) and every predicate's literal `flag` and `is_empty`
-/// folded ([`fold_predicates`]), as the detached export writes them.
+/// written as the value it has ([`write_bindings_as_values`]), then in normal form ([`normalize_params`]): every
+/// default written, and every predicate normalized, as the detached export writes them.
 ///
-/// A parameter bound to a value and the same literal do the same thing: kernels are keyed by this form, the plan diff
-/// compares it, and the installer decides by it whether a candidate changes anything.
+/// A parameter bound to a value and the same literal do the same thing, and so do a parameter left out and its
+/// default: kernels are keyed by this form, the plan diff compares it, and the installer decides by it whether a
+/// candidate changes anything.
 pub fn operation_params(op: &OperatorName, params: &Params) -> Params {
     let literal = params
         .iter()
@@ -672,7 +738,7 @@ pub fn operation_params(op: &OperatorName, params: &Params) -> Params {
             (name.clone(), value)
         })
         .collect();
-    fold_predicates(op, literal)
+    normalize_params(op, &literal)
 }
 
 /// Returns the hash of what `plan` does: the plan, without provenance, its nodes and edges in order, with each node's
@@ -700,37 +766,6 @@ pub fn operation_hash(plan: &Plan, registry: &OperatorRegistry) -> Result<PlanHa
         };
     }
     plan.hash(crate::canonical::ResolvedValues::Include)
-}
-
-/// Returns `params`, parameters of a node of operator `op`, with every predicate parameter's literal `flag` and
-/// `is_empty` folded ([`Predicate::fold_literals`]). A predicate that does not read, or that folding leaves as it is,
-/// is kept as written.
-pub(crate) fn fold_predicates(op: &OperatorName, params: Params) -> Params {
-    let Some(def) = OperatorRegistry::native().get(op.as_str()) else {
-        return params;
-    };
-    let predicates = def
-        .params()
-        .iter()
-        .filter(|spec| spec.ty == ParamType::Predicate)
-        .map(|spec| spec.name)
-        .collect::<Vec<_>>();
-    params
-        .iter()
-        .map(|(name, value)| {
-            let folded = predicates
-                .contains(&name.as_str())
-                .then(|| serde_json::from_value::<Predicate>(value.clone()).ok())
-                .flatten()
-                .and_then(|predicate| {
-                    let folded = predicate.fold_literals();
-                    (folded != predicate)
-                        .then(|| serde_json::to_value(folded).ok())
-                        .flatten()
-                });
-            (name.clone(), folded.unwrap_or_else(|| value.clone()))
-        })
-        .collect()
 }
 
 /// Returns the base an artifact derived from one scope of a plan records: the base program hash, and the fingerprint

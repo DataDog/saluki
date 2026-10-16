@@ -12,9 +12,10 @@
 //!
 //! The program is the one the implementation design draws in "Default program shape"
 //! (`docs/design/programmable-metrics-implementation.md`). The DogStatsD source feeds the mapper, the namespace prefix,
-//! and the listener filterlist (a `split` whose `true` port drops); with the no-aggregation pipeline, a timestamp split
-//! sends timestamped points past the tag filterlist and aggregation to a merge in front of the post-aggregation filter
-//! (another `split` and `drop`), whose output a `tee` sends to the client telemetry output and to metrics enrichment.
+//! and the listener filterlist (a `split` whose `false` port drops); with the no-aggregation pipeline, a timestamp
+//! split sends timestamped points past the tag filterlist and aggregation to a merge in front of the post-aggregation
+//! filter (another `split` and `drop`), whose output a `tee` sends to the client telemetry output and to metrics
+//! enrichment.
 //! Metrics enrichment merges that with the OTLP, checks, liveness, and trace sampler sources, runs host enrichment and
 //! host tags, and feeds the policy region: a `tee` with one branch per output. The main output
 //! is emitted directly; every other output sits behind its gateway, a `split` whose `true` port is emitted to the
@@ -51,6 +52,14 @@
 //! literals. A flag or an emptiness test over a bound value stays in the program as written; only
 //! compiled programs fold it.
 //!
+//! # Normal form
+//!
+//! The program is written in [normal form](saluki_metric_plan::normalize), as composition reads every artifact.
+//! Lowering builds each filter as its native component decides, a `split` on what the filterlist matches whose `true`
+//! port drops, and normalization turns it into a `split` on the negation whose `false` port drops, renaming the drop
+//! from `<split>_true` to `<split>_false`: the listener filterlist's drop is `dsd_prefix_filter_blocklist_false`, and
+//! the post-aggregation filter's `dsd_post_agg_filter_false`. Every parameter is written, defaults included.
+//!
 //! # Errors
 //!
 //! [`Lowering::new`] fails where `run.rs` would fail to build the native metrics path for the same configuration,
@@ -85,6 +94,7 @@ use saluki_metric_plan::{
         ParamName, Params, Plan, PlanProvenance, PortName, PortRef, ScopeDecl, IR_VERSION,
     },
     model::{PortType, TimestampForm},
+    normalize::normalize_plan,
     operators::{names, SourceBinding, METRICS_PORT},
 };
 use serde_json::{json, Value};
@@ -440,6 +450,9 @@ impl Lowering {
                 exits: Default::default(),
             },
         );
+        // The default program is written in normal form, as composition reads every artifact, so that its export, and
+        // a program parsed back from that export unchanged, are the same document.
+        let plan = normalize_plan(&plan);
         let declared = scope_inputs
             .into_iter()
             .map(|(binding, _, timestamps)| (scope_input_name(binding), binding.port_type(timestamps)))

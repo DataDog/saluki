@@ -32,31 +32,44 @@ use crate::{
 /// The names of the histogram aggregates the `histogram_aggregates` parameter accepts.
 pub const HISTOGRAM_AGGREGATES: &[&str] = &["count", "sum", "min", "max", "avg", "median"];
 
+// Every parameter but `window` is a tuning knob, whose default is its native setting's default, named beside it. The
+// window has none: the bucket width is what the program aggregates over, which it chooses.
 const AGGREGATE_PARAMS: &[ParamSpec] = &[
     ParamSpec::required("window", ParamType::Bindable(&ParamType::Duration)),
-    ParamSpec::required("flush_interval", ParamType::Bindable(&ParamType::Duration)),
-    ParamSpec::required(
+    // `aggregate_flush_interval`: 15 seconds.
+    ParamSpec::optional("flush_interval", ParamType::Bindable(&ParamType::Duration)).with_default("\"15s\""),
+    // `aggregate_context_limit`: one million contexts.
+    ParamSpec::optional(
         "context_limit",
         ParamType::Bindable(&ParamType::Integer {
             min: 0,
             max: MAX_SAFE_INTEGER,
         }),
-    ),
-    ParamSpec::required("counter_expiry", ParamType::Bindable(&ParamType::Duration)),
-    ParamSpec::required("flush_open_windows", ParamType::Bindable(&ParamType::Bool)),
-    ParamSpec::required(
+    )
+    .with_default("1000000"),
+    // `dogstatsd_expiry_seconds`: 300 seconds.
+    ParamSpec::optional("counter_expiry", ParamType::Bindable(&ParamType::Duration)).with_default("\"5m\""),
+    // `dogstatsd_flush_incomplete_buckets`: off.
+    ParamSpec::optional("flush_open_windows", ParamType::Bindable(&ParamType::Bool)).with_default("false"),
+    // `histogram_aggregates`: `max`, `median`, `avg`, and `count`, in that order.
+    ParamSpec::optional(
         "histogram_aggregates",
         ParamType::Bindable(&ParamType::List(&ParamType::Enum(HISTOGRAM_AGGREGATES))),
-    ),
-    ParamSpec::required(
+    )
+    .with_default(r#"["max", "median", "avg", "count"]"#),
+    // `histogram_percentiles`: `0.95`, the 95th percentile.
+    ParamSpec::optional(
         "histogram_percentiles",
         ParamType::Bindable(&ParamType::List(&ParamType::Integer {
             min: 0,
             max: MAX_PERCENTILE as i64,
         })),
-    ),
-    ParamSpec::required("copy_to_distribution", ParamType::Bindable(&ParamType::Bool)),
-    ParamSpec::required("copy_to_distribution_prefix", ParamType::Bindable(&ParamType::String)),
+    )
+    .with_default("[95]"),
+    // `histogram_copy_to_distribution`: off.
+    ParamSpec::optional("copy_to_distribution", ParamType::Bindable(&ParamType::Bool)).with_default("false"),
+    // `histogram_copy_to_distribution_prefix`: empty.
+    ParamSpec::optional("copy_to_distribution_prefix", ParamType::Bindable(&ParamType::String)).with_default("\"\""),
 ];
 
 /// The most series one histogram can expand into per bucket: every aggregate, every percentile, and the distribution
@@ -129,6 +142,10 @@ fn context_limit(params: &DecodedParams) -> Option<usize> {
 ///   order (see [`HistogramParams`]), each at most once;
 /// - `copy_to_distribution` and `copy_to_distribution_prefix`: whether each histogram is also emitted as a
 ///   distribution, and the prefix of its name.
+///
+/// Every parameter but `window` may be left out, for the default of its native setting: a flush interval of `15s`, a
+/// context limit of one million, a counter expiry of `5m`, open windows not flushed, the aggregates `max`, `median`,
+/// `avg`, and `count` and the 95th percentile, and no distribution copy, with an empty prefix.
 ///
 /// The window must be an allowed bucket width ([`ALLOWED_BUCKET_WIDTHS`][crate::limits::ALLOWED_BUCKET_WIDTHS]), so
 /// that a change of width can take effect at a boundary both widths share.

@@ -668,7 +668,7 @@ fn without_pipelining_aggregation_fed_straight_by_dogstatsd_places_through_the_o
         "dsd_enrich",
         "dsd_prefix_filter",
         "dsd_prefix_filter_blocklist",
-        "dsd_prefix_filter_blocklist_true",
+        "dsd_prefix_filter_blocklist_false",
         "dsd_no_agg_split",
         "dsd_tag_filterlist",
     ];

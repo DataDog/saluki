@@ -98,7 +98,7 @@
         "dsd_enrich",
         "dsd_prefix_filter",
         "dsd_prefix_filter_blocklist",
-        "dsd_prefix_filter_blocklist_true",
+        "dsd_prefix_filter_blocklist_false",
         "dsd_no_agg_split",
         "dsd_tag_filterlist"
       ],
@@ -213,7 +213,7 @@
       "nodes": [
         "dsd_post_agg_filter_in",
         "dsd_post_agg_filter",
-        "dsd_post_agg_filter_true",
+        "dsd_post_agg_filter_false",
         "dsd_post_agg_filter_fanout",
         "dsd_post_agg_filter_fanout_0",
         "metrics_enrich_in",
@@ -404,13 +404,13 @@
       "reason": "both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`"
     },
     {
-      "from": "dsd_prefix_filter_blocklist.true",
-      "to": "dsd_prefix_filter_blocklist_true.in",
+      "from": "dsd_prefix_filter_blocklist.false",
+      "to": "dsd_prefix_filter_blocklist_false.in",
       "decision": "fused",
       "reason": "both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`"
     },
     {
-      "from": "dsd_prefix_filter_blocklist.false",
+      "from": "dsd_prefix_filter_blocklist.true",
       "to": "dsd_no_agg_split.in",
       "decision": "fused",
       "reason": "both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`"
@@ -446,13 +446,13 @@
       "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
     },
     {
-      "from": "dsd_post_agg_filter.true",
-      "to": "dsd_post_agg_filter_true.in",
+      "from": "dsd_post_agg_filter.false",
+      "to": "dsd_post_agg_filter_false.in",
       "decision": "fused",
       "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
     },
     {
-      "from": "dsd_post_agg_filter.false",
+      "from": "dsd_post_agg_filter.true",
       "to": "dsd_post_agg_filter_fanout.in",
       "decision": "fused",
       "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
@@ -600,12 +600,12 @@
         "dsd_enrich",
         "dsd_prefix_filter",
         "dsd_prefix_filter_blocklist",
-        "dsd_prefix_filter_blocklist_true",
+        "dsd_prefix_filter_blocklist_false",
         "dsd_no_agg_split",
         "dsd_tag_filterlist",
         "dsd_post_agg_filter_in",
         "dsd_post_agg_filter",
-        "dsd_post_agg_filter_true",
+        "dsd_post_agg_filter_false",
         "dsd_post_agg_filter_fanout",
         "dsd_post_agg_filter_fanout_0",
         "metrics_enrich_in",
@@ -784,7 +784,7 @@
       "nodes": [
         "dsd_post_agg_filter_in",
         "dsd_post_agg_filter",
-        "dsd_post_agg_filter_true",
+        "dsd_post_agg_filter_false",
         "dsd_post_agg_filter_fanout",
         "dsd_post_agg_filter_fanout_0",
         "metrics_enrich_in",

@@ -244,8 +244,8 @@ fn the_lowered_default_program_delivers_what_native_processing_does() {
     // The policy loss: the listener filterlist's drop, the post-aggregation filter's, and what each gateway does not
     // select, of the 15 records reaching the policy region. Every record dropped here has one point.
     for (node, events) in [
-        ("dsd_prefix_filter_blocklist_true", 1),
-        ("dsd_post_agg_filter_true", 1),
+        ("dsd_prefix_filter_blocklist_false", 1),
+        ("dsd_post_agg_filter_false", 1),
         ("metrics_routing_filter_0_false", 14),
         ("metrics_routing_filter_1_false", 13),
         ("mrf_metrics_gateway_false", 0),

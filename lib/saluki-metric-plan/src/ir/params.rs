@@ -664,6 +664,9 @@ impl ParamSpec {
     }
 
     /// Gives the parameter a default, as JSON text, which it takes when it is left out.
+    ///
+    /// A parameter with a default is declared [`optional`][Self::optional]: it may be left out. A test of every native
+    /// operator checks that each default is JSON of the parameter's type.
     pub const fn with_default(mut self, json: &'static str) -> Self {
         self.default = Some(json);
         self
@@ -673,6 +676,17 @@ impl ParamSpec {
     pub const fn positional(mut self) -> Self {
         self.positional = true;
         self
+    }
+
+    /// Returns the parameter's default as a JSON value, if it has one.
+    ///
+    /// Returns an error if the default's JSON text does not parse, which is a bug in the operator's declaration that a
+    /// test of every registered operator catches.
+    pub fn default_value(&self) -> Option<Result<Value, String>> {
+        self.default.map(|json| {
+            serde_json::from_str(json)
+                .map_err(|error| format!("the declared default `{}` is not JSON: {}", json, error))
+        })
     }
 }
 
@@ -806,17 +820,29 @@ where
                 }
                 Err(error) => errors.push(error),
             },
-            None if spec.required => {
-                let what = if prefix.is_some() { "member" } else { "parameter" };
-                errors.push(ParamError::new(&path(spec.name), format!("missing required {}", what)));
-            }
-            None => {}
+            None => match spec.default_value() {
+                Some(Ok(default)) => match ParamValue::decode(&spec.ty, &default, &path(spec.name)) {
+                    Ok(value) => {
+                        decoded.insert(spec.name, value);
+                    }
+                    Err(error) => errors.push(error),
+                },
+                Some(Err(error)) => errors.push(ParamError::new(&path(spec.name), error)),
+                None if spec.required => {
+                    let what = if prefix.is_some() { "member" } else { "parameter" };
+                    errors.push(ParamError::new(&path(spec.name), format!("missing required {}", what)));
+                }
+                None => {}
+            },
         }
     }
     DecodedParams(decoded)
 }
 
 /// Decodes `params` against an operator's parameter schema.
+///
+/// A parameter left out that has a [default](ParamSpec::default) decodes as its default, so a node that writes the
+/// default and one that leaves it out decode alike.
 ///
 /// # Errors
 ///

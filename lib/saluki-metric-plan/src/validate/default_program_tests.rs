@@ -117,7 +117,7 @@ fn the_default_program_has_the_native_port_types() {
     let fixture = Fixture::load(DEFAULT_PROGRAM_JSON);
     let expected = [
         ("dsd_in.metrics", port_type(&dogstatsd, Mixed)),
-        ("dsd_prefix_filter_blocklist.false", port_type(&dogstatsd, Mixed)),
+        ("dsd_prefix_filter_blocklist.true", port_type(&dogstatsd, Mixed)),
         ("dsd_no_agg_split.default", port_type(&dogstatsd, Untimestamped)),
         // Timestamped counters bypass aggregation as rates.
         (
@@ -132,7 +132,7 @@ fn the_default_program_has_the_native_port_types() {
             port_type(&[Rate, Gauge, Set, Histogram, Distribution], Timestamped),
         ),
         // The post-aggregation filter drops only scalar series.
-        ("dsd_post_agg_filter.true", port_type(&[Rate, Gauge, Set], Timestamped)),
+        ("dsd_post_agg_filter.false", port_type(&[Rate, Gauge, Set], Timestamped)),
         (
             "otlp_in.metrics",
             port_type(&[Counter, Rate, Gauge, Distribution], Mixed),
@@ -160,7 +160,7 @@ fn the_default_program_has_the_native_port_types() {
     let expected = [
         ("dsd_in.metrics", port_type(&dogstatsd, Untimestamped)),
         ("dsd_agg.out", port_type(&aggregated, Timestamped)),
-        ("dsd_post_agg_filter.false", port_type(&aggregated, Timestamped)),
+        ("dsd_post_agg_filter.true", port_type(&aggregated, Timestamped)),
         ("metrics_enrich_host_tags.out", PortType::ANY),
     ];
     for (port, expected) in expected {
@@ -278,13 +278,14 @@ const COVERAGE: &[CoverageCheck] = &[
             assert_eq!(f.op("dsd_enrich").name(), names::DOGSTATSD_MAPPER);
             assert_eq!(f.target("dsd_enrich.out"), "dsd_prefix_filter.in");
             assert_eq!(f.op("dsd_prefix_filter").name(), names::NAMESPACE_PREFIX);
-            // The listener filterlist matches the intake name after prefixing, and drops what matches.
+            // The listener filterlist matches the intake name after prefixing, and drops what matches: in normal
+            // form, its split keeps what does not match.
             assert_eq!(f.target("dsd_prefix_filter.out"), "dsd_prefix_filter_blocklist.in");
-            assert!(matches!(
-                f.predicate("dsd_prefix_filter_blocklist"),
-                Predicate::IntakeName(_)
-            ));
-            assert_eq!(f.op("dsd_prefix_filter_blocklist_true").name(), names::DROP);
+            let Predicate::Not(matched) = f.predicate("dsd_prefix_filter_blocklist") else {
+                panic!("the listener filterlist keeps what it does not match");
+            };
+            assert!(matches!(*matched, Predicate::IntakeName(_)));
+            assert_eq!(f.op("dsd_prefix_filter_blocklist_false").name(), names::DROP);
             let tags = f.op("dsd_tag_filterlist");
             assert_eq!(tags.name(), names::TAG_PROJECTION);
             assert!(tags.contract().writes.get(Kind::Gauge).is_empty());
@@ -333,7 +334,11 @@ const COVERAGE: &[CoverageCheck] = &[
         );
     }),
     ("Post-aggregation filter", |f| {
-        let Predicate::All(operands) = f.predicate("dsd_post_agg_filter") else {
+        // In normal form, the split keeps what the filter does not match.
+        let Predicate::Not(matched) = f.predicate("dsd_post_agg_filter") else {
+            panic!("the post-aggregation filter keeps what it does not match");
+        };
+        let Predicate::All(operands) = *matched else {
             panic!("the post-aggregation filter is a conjunction");
         };
         assert!(operands.contains(&Predicate::KindIn(KindSet::of(&[
@@ -345,7 +350,7 @@ const COVERAGE: &[CoverageCheck] = &[
         assert!(operands
             .iter()
             .any(|operand| matches!(operand, Predicate::IntakeName(_))));
-        assert_eq!(f.op("dsd_post_agg_filter_true").name(), names::DROP);
+        assert_eq!(f.op("dsd_post_agg_filter_false").name(), names::DROP);
     }),
     (
         "OTLP metrics receiver and translation; checks IPC; `liveness_in`; `trace_sampler.metrics`",
@@ -484,7 +489,7 @@ const COVERAGE: &[CoverageCheck] = &[
         |f| {
             // The client telemetry tap is a tee after the post-aggregation filter to an internal output without
             // recipients. The source taps are host edges, outside the plan: the source's only edge enters the mapper.
-            assert_eq!(f.target("dsd_post_agg_filter.false"), "dsd_post_agg_filter_fanout.in");
+            assert_eq!(f.target("dsd_post_agg_filter.true"), "dsd_post_agg_filter_fanout.in");
             assert_eq!(
                 f.target("dsd_post_agg_filter_fanout.0"),
                 "dsd_post_agg_filter_fanout_0.in"

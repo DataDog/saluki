@@ -45,11 +45,12 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use super::{fold_predicates, write_bindings_as_values};
+use super::write_bindings_as_values;
 use crate::{
     canonical::strip_resolved_values,
     compile::rewrite::r3::fold_split,
     ir::{BindingName, Edge, NodeId, Plan, PortRef},
+    normalize::normalize_params,
     operators::{names, Cardinality, OperatorRegistry, StateContract},
     validate::{graph::Graph, BindingClass, Catalog, ValidationReport},
 };
@@ -129,8 +130,8 @@ pub fn eliminate(plan: &Plan, registry: &OperatorRegistry, literal: &dyn Fn(&Bin
 }
 
 /// Returns `plan` as the decisions read it: every binding for which `literal` holds written as its resolved value,
-/// every other binding without its resolved value, so not known, and every predicate's literal `flag` and `is_empty`
-/// folded.
+/// every other binding without its resolved value, so not known, and every node's parameters in normal form
+/// ([`normalize_params`]), with every predicate's literal `flag` and `is_empty` folded.
 fn literal_form(plan: &Plan, literal: &dyn Fn(&BindingName) -> bool) -> Plan {
     let mut plan = plan.clone();
     for node in &mut plan.nodes {
@@ -144,7 +145,7 @@ fn literal_form(plan: &Plan, literal: &dyn Fn(&BindingName) -> bool) -> Plan {
                 (name.clone(), value)
             })
             .collect();
-        node.params = fold_predicates(&node.op, params);
+        node.params = normalize_params(&node.op, &params);
     }
     plan
 }

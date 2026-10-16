@@ -123,10 +123,10 @@ fn legacy(node: &Node, outputs: &NativeOutputs) -> Legacy {
     }
     match id.as_str() {
         "dsd_enrich" | "dsd_no_agg_split" | "dsd_tag_filterlist" | "dsd_agg" => component(&id, Transform),
-        "dsd_prefix_filter" | "dsd_prefix_filter_blocklist" | "dsd_prefix_filter_blocklist_true" => {
+        "dsd_prefix_filter" | "dsd_prefix_filter_blocklist" | "dsd_prefix_filter_blocklist_false" => {
             component("dsd_prefix_filter", Transform)
         }
-        "dsd_post_agg_filter" | "dsd_post_agg_filter_true" => component("dsd_post_agg_filter", Transform),
+        "dsd_post_agg_filter" | "dsd_post_agg_filter_false" => component("dsd_post_agg_filter", Transform),
         "metrics_enrich" | "metrics_enrich_host_tags" => component("metrics_enrich", Transform),
         _ => panic!("node `{}` ({}) is not in the mapping table", id, op),
     }

@@ -13,6 +13,7 @@ use crate::{
     limits::values,
     model::FieldSet,
     operators::{Cardinality, PortRelation, TRUE_PORT},
+    predicate::Predicate,
 };
 
 /// A path from a source to an `emit`: the output port it leaves each node by, and the `emit` it ends at.
@@ -122,8 +123,9 @@ fn output_groups(plan: &Plan) -> (HashMap<&OutputId, usize>, Vec<Vec<&OutputId>>
 struct Analysis<'g, 'p> {
     graph: &'g Graph<'p>,
     types: &'g Types,
-    /// For each `split` node, the number of its predicate's canonical form and the fields the predicate reads.
-    splits: Vec<Option<(usize, FieldSet)>>,
+    /// For each `split` node, the number of its predicate's canonical form, without a negation it starts with, the
+    /// fields the predicate reads, and whether the canonical form starts with a negation.
+    splits: Vec<Option<(usize, FieldSet, bool)>>,
     /// The number of distinct canonical predicates.
     predicates: usize,
     /// Each divergence already reported, as (group, node, first port, second port).
@@ -164,9 +166,13 @@ impl Analysis<'_, '_> {
         let mut crossings = Crossings::new(self.predicates);
         let mut written = self.writes(path.hops[depth].0);
         for &(node, port) in &path.hops[depth + 1..] {
-            if let Some((predicate, reads)) = self.splits[node] {
+            if let Some((predicate, reads, negated)) = self.splits[node] {
                 if !reads.intersects(written) {
-                    crossings.insert(predicate, self.graph.output_name((node, port)) == TRUE_PORT);
+                    // The `true` port of a `split` on `not p` is the `false` port of one on `p`.
+                    crossings.insert(
+                        predicate,
+                        (self.graph.output_name((node, port)) == TRUE_PORT) != negated,
+                    );
                 }
             }
             written = written.union(self.writes(node));
@@ -315,6 +321,20 @@ impl Analysis<'_, '_> {
     }
 }
 
+/// Returns a predicate without the negations it starts with, and whether it was negated: `not p` is `p`, negated, and
+/// `const(true)` is `const(false)`, negated.
+fn without_negation(mut predicate: Predicate) -> (Predicate, bool) {
+    let mut negated = false;
+    loop {
+        predicate = match predicate {
+            Predicate::Not(operand) => *operand,
+            Predicate::Const(true) => Predicate::Const(false),
+            predicate => return (predicate, negated),
+        };
+        negated = !negated;
+    }
+}
+
 /// Runs the duplicate analysis.
 ///
 /// The analysis is bounded twice by the [work limit][crate::limits::WORK_PER_INPUT] `w`: it enumerates at most `w`
@@ -369,15 +389,18 @@ pub(super) fn check_within(
         })
         .collect::<Vec<_>>();
 
-    // Number each distinct canonical predicate once, so that comparing two crossings never compares predicate text.
+    // Number each distinct canonical predicate once, so that comparing two crossings never compares predicate text. A
+    // predicate that starts with a negation is numbered as its operand, crossed by the opposite port, and `const(true)`
+    // as the negation of `const(false)`: a filter written as `split(not p)` keeping its `true` port, as normalization
+    // writes one, and one written as `split(p)` keeping its `false` port send the copies the same way.
     let mut numbers: HashMap<String, usize> = HashMap::new();
     let splits = (0..graph.nodes.len())
         .map(|node| {
             let predicate = graph.op(node).and_then(split_predicate)?;
-            let canonical = serde_json::to_value(predicate.canonical()).ok()?;
-            let key = to_canonical_string(&canonical).ok()?;
+            let (canonical, negated) = without_negation(predicate.canonical());
+            let key = to_canonical_string(&serde_json::to_value(canonical).ok()?).ok()?;
             let next = numbers.len();
-            Some((*numbers.entry(key).or_insert(next), predicate.reads()))
+            Some((*numbers.entry(key).or_insert(next), predicate.reads(), negated))
         })
         .collect();
     let recipients = plan

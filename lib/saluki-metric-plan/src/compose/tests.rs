@@ -426,17 +426,18 @@ fn edits_of_the_export_compose_with_their_correspondence() {
             },
             Accepted {
                 // Every drop of the scope now drops what is left after the new filter, but does what it did: only
-                // the new nodes change.
+                // the new nodes change. The filter composes in normal form, `split(not p)` keeping its `true` port,
+                // so its drop, named for its `true` port, is renamed for its `false` port.
                 changed: &[
                     ("drop_debug", "policy/drop_debug", Added),
-                    ("drop_debug_true", "policy/drop_debug_true", Added),
+                    ("drop_debug_false", "policy/drop_debug_false", Added),
                 ],
                 removed: &[],
                 // The node feeding the scope's input is outside the scope, but the edge at its output port changes.
                 diff: &[
                     ("metrics_enrich_host_tags", "changed edges"),
                     ("policy/drop_debug", "added"),
-                    ("policy/drop_debug_true", "added"),
+                    ("policy/drop_debug_false", "added"),
                     ("metrics_policy", "changed edges"),
                 ],
                 stale_base: false,
@@ -698,7 +699,8 @@ fn artifact_nodes_take_the_place_of_the_scope_in_the_default_programs_order() {
     let composed = fixture.compose(document, &approval(1)).unwrap();
 
     // The scope is the end of the default program, so the artifact's nodes follow everything before it, in the
-    // artifact's order, and so do its edges.
+    // artifact's order, and so do its edges, in normal form: the filter keeps its `true` port, and its drop is named
+    // for its `false` port.
     let ids = composed
         .plan
         .nodes
@@ -711,7 +713,7 @@ fn artifact_nodes_take_the_place_of_the_scope_in_the_default_programs_order() {
         ids[before..before + 4],
         [
             "policy/drop_debug",
-            "policy/drop_debug_true",
+            "policy/drop_debug_false",
             "metrics_policy",
             "metrics_policy_0"
         ]
@@ -728,12 +730,12 @@ fn artifact_nodes_take_the_place_of_the_scope_in_the_default_programs_order() {
         [
             "af_metrics_gateway.false -> af_metrics_gateway_false.in",
             "metrics_enrich_host_tags.out -> policy/drop_debug.in",
-            "policy/drop_debug.true -> policy/drop_debug_true.in",
+            "policy/drop_debug.false -> policy/drop_debug_false.in",
         ]
     );
     let first = edges
         .iter()
-        .position(|edge| edge == "policy/drop_debug.false -> metrics_policy.in")
+        .position(|edge| edge == "policy/drop_debug.true -> metrics_policy.in")
         .unwrap();
     assert_eq!(edges[first - 1], "metrics_enrich.out -> metrics_enrich_host_tags.in");
     assert_eq!(edges.len() - first, 16);
@@ -2212,15 +2214,16 @@ fn a_native_policy_change_after_publishing_leaves_the_program_its_own_value() {
     let mut changed = serde_json::to_value(&plan).unwrap();
     for node in changed["nodes"].as_array_mut().unwrap() {
         if node["id"] == "dsd_prefix_filter_blocklist" {
-            node["params"]["predicate"]["intake_name"]["matches"]["values"]["resolved"] = json!(["tenant.raw.other"]);
+            node["params"]["predicate"]["not"]["intake_name"]["matches"]["values"]["resolved"] =
+                json!(["tenant.raw.other"]);
         }
     }
     let changed = Plan::from_value(changed).unwrap();
     let changed_catalog = catalog_for(&changed);
     let composed = compose(&changed, &received, &approval(1), &changed_catalog, &registry).unwrap();
 
-    // The program owns its filterlist: the node is the program's, with the value it was published with, and every
-    // other node is still the default program's.
+    // The program owns its filterlist: the node is the program's, with the value it was published with, as the
+    // detached export writes it in normal form, and every other node is still the default program's.
     let filter = composed
         .correspondence
         .get(&"dsd_prefix_filter_blocklist".parse().unwrap())
@@ -2228,8 +2231,8 @@ fn a_native_policy_change_after_publishing_leaves_the_program_its_own_value() {
     assert_eq!(filter.kind, CorrespondenceKind::Modified);
     let node = composed.plan.node(&filter.node).unwrap();
     assert_eq!(
-        node.params.get("predicate").unwrap()["intake_name"]["matches"]["values"],
-        json!(["tenant.raw.blocked"])
+        node.params.get("predicate").unwrap(),
+        &json!({"not": {"intake_name": {"eq": "tenant.raw.blocked"}}})
     );
     let modified = composed
         .correspondence

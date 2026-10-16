@@ -165,16 +165,19 @@ fn the_default_program_runs_through_a_frame_of_region_drivers_as_the_interpreter
             "the trace delivers"
         );
         assert_matches_interpreter(&mut harness, &plan, &run);
-        // The blocklist drops exactly `tenant.raw.blocked`, so its split counts one event on `true` and the rest of
-        // the first batch, after the mapper and prefix, on `false`.
+        // The blocklist drops exactly `tenant.raw.blocked`, so its split, which keeps what it does not match on
+        // `true`, counts one event on `false` and the rest of the first batch, after the mapper and prefix, on `true`.
         let telemetry = harness.telemetry();
-        assert_eq!(telemetry.port_events("dsd_prefix_filter_blocklist", "true"), 1);
+        assert_eq!(telemetry.port_events("dsd_prefix_filter_blocklist", "false"), 1);
         assert_eq!(
-            telemetry.port_events("dsd_prefix_filter_blocklist", "false"),
+            telemetry.port_events("dsd_prefix_filter_blocklist", "true"),
             if timestamped { 6 + 1 } else { 5 },
             "every other DogStatsD event passes the blocklist"
         );
-        assert_eq!(telemetry.loss("dsd_prefix_filter_blocklist_true", LossClass::Policy), 1);
+        assert_eq!(
+            telemetry.loss("dsd_prefix_filter_blocklist_false", LossClass::Policy),
+            1
+        );
     }
 }
 
