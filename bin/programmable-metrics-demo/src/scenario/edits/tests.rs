@@ -385,3 +385,19 @@ fn an_edit_that_cannot_find_its_lines_says_what_it_looked_for() {
     let error = width_change("policy metrics {\n}\n", "30s").unwrap_err().to_string();
     assert!(error.contains("timestamp_split"), "{}", error);
 }
+
+#[test]
+fn a_where_edit_refuses_an_id_that_names_another_stage() {
+    // The last `where` before `as tags` belongs to another stage, so the edit refuses rather than rewrite both.
+    let source = "  dogstatsd | where name == \"a|b\" | tag_projection(rules: []) as tags | drop\n";
+    let error = edit_where(source, "tags", "tag stage", |predicate| Ok(predicate.to_string())).unwrap_err();
+    assert!(error.to_string().contains("is not a `where` stage"), "{}", error);
+
+    // A `|` inside a string is not a stage boundary.
+    let source = "  dogstatsd | where name == \"a|b\" as named | drop\n";
+    let edited = edit_where(source, "named", "filter", |predicate| {
+        Ok(format!("not ({})", predicate))
+    })
+    .unwrap();
+    assert_eq!(edited, "  dogstatsd | where not (name == \"a|b\") as named | drop\n");
+}

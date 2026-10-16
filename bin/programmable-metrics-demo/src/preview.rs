@@ -13,6 +13,8 @@
 //! owner the frame cannot run where it is placed, such as the aggregation moved after enrichment. The preview does
 //! not place the plan.
 
+use std::collections::BTreeMap;
+
 use saluki_metric_plan::{
     canonical::{PlanHash, ResolvedValues},
     compose::{compose_all, demanded_outputs, receive_artifact, Approval, ComposeError, ComposeOutcome},
@@ -25,6 +27,7 @@ use saluki_metric_plan::{
         ArtifactNodeId, NodeId, OutputBinding, OutputDecl, OutputId, Plan, PortRef, ReceivedArtifact, RecipientName,
         Selector,
     },
+    normalize::normalize_artifact_with_renames,
     operators::{names, ConfigureError, OperatorRegistry, StateContract},
     validate::{Catalog as _, CatalogOutput, Finding, Location, Rule, Severity as ValidationSeverity},
 };
@@ -305,6 +308,7 @@ pub fn compose_preview(
             .extend(standing_in.iter().map(|stand_in| stand_in.decl.clone()));
         &with_stand_ins
     };
+    let written = WrittenIds::of(parsed);
     let mut adds = standing_in
         .iter()
         .map(|stand_in| PlacedFinding {
@@ -318,10 +322,9 @@ pub fn compose_preview(
                 describe_recipients(&stand_in.names, export, context.labels),
                 stand_in.decl.id
             ),
-            span: parsed
-                .spans
-                .param(stand_in.emit.as_str(), "to")
-                .or_else(|| parsed.spans.node(stand_in.emit.as_str())),
+            span: written
+                .param(parsed, stand_in.emit.as_str(), "to")
+                .or_else(|| written.node(parsed, stand_in.emit.as_str())),
         })
         .collect::<Vec<_>>();
     let scope = &received.artifact.scope;
@@ -509,6 +512,7 @@ pub fn compose_preview(
     notes.extend(renamed_state_owners(base, &composed.plan, &registry, |node| {
         correspondence.artifact_node(node).map(ToString::to_string)
     }));
+    let written = WrittenIds::of(parsed);
     let nodes = diff
         .diff
         .changes()
@@ -543,7 +547,7 @@ pub fn compose_preview(
                 change: kind,
                 aspects,
                 range: artifact_node
-                    .and_then(|node| parsed.spans.node(node.as_str()))
+                    .and_then(|node| written.node(parsed, node.as_str()))
                     .map(|span| index.range(Some(span))),
             })
         })
@@ -861,13 +865,14 @@ fn emit_span(parsed: &Parsed, output: &OutputId) -> Option<Span> {
 
 /// Places a composition error in the source: at the node it names, or the output or scope it is about.
 fn compose_error_span(error: &ComposeError, parsed: &Parsed, source: &str) -> Option<Span> {
+    let written = WrittenIds::of(parsed);
     match error {
         ComposeError::ReservedOutsideScope { node, .. } | ComposeError::UnresolvedBinding { node, .. } => {
-            parsed.spans.node(node.as_str())
+            written.node(parsed, node.as_str())
         }
         // A policy binding is placed where the node writes it, as `config.<binding>`, or at the node.
         ComposeError::PolicyBinding { node, binding, .. } => {
-            let within = parsed.spans.node(node.as_str())?;
+            let within = written.node(parsed, node.as_str())?;
             source
                 .get(within.start..within.end)
                 .and_then(|text| find_binding(text, &format!("config.{}", binding)))
@@ -877,19 +882,51 @@ fn compose_error_span(error: &ComposeError, parsed: &Parsed, source: &str) -> Op
         ComposeError::UnknownRecipient { node, .. }
         | ComposeError::PendingRecipients { node, .. }
         | ComposeError::NoOutputFor { node, .. }
-        | ComposeError::RecipientsOnTwoHosts { node, .. } => parsed
-            .spans
-            .param(node.as_str(), "to")
-            .or_else(|| parsed.spans.node(node.as_str())),
-        ComposeError::UnrecordedOutput { node, .. } | ComposeError::UndeclaredOutput { node, .. } => parsed
-            .spans
-            .param(node.as_str(), "output")
-            .or_else(|| parsed.spans.node(node.as_str())),
+        | ComposeError::RecipientsOnTwoHosts { node, .. } => written
+            .param(parsed, node.as_str(), "to")
+            .or_else(|| written.node(parsed, node.as_str())),
+        ComposeError::UnrecordedOutput { node, .. } | ComposeError::UndeclaredOutput { node, .. } => written
+            .param(parsed, node.as_str(), "output")
+            .or_else(|| written.node(parsed, node.as_str())),
         ComposeError::PendingOutput { output } | ComposeError::ReboundOutput { output, .. } => {
             emit_span(parsed, output)
         }
         ComposeError::UnknownScope { scope } => find(source, scope.as_str()),
         ComposeError::DefaultProgram { .. } | ComposeError::Malformed { .. } => None,
+    }
+}
+
+/// The IDs an edited program's nodes have as written, by the IDs normalization gives them.
+///
+/// Composition normalizes an artifact, so it, and the plans and findings it makes, name a terminal whose port
+/// normalization moved (a `split` that drops on `true` becomes one that drops on `false`) by its new ID, while the span
+/// map knows the node by the ID the author wrote.
+struct WrittenIds(BTreeMap<String, String>);
+
+impl WrittenIds {
+    fn of(parsed: &Parsed) -> Self {
+        let (_, renames) = normalize_artifact_with_renames(&parsed.artifact);
+        Self(
+            renames
+                .into_iter()
+                .map(|(written, normal)| (normal.to_string(), written.to_string()))
+                .collect(),
+        )
+    }
+
+    /// Returns the ID the author wrote for the node normalization calls `id`.
+    fn get<'a>(&'a self, id: &'a str) -> &'a str {
+        self.0.get(id).map_or(id, String::as_str)
+    }
+
+    /// Returns the span of the node normalization calls `id`.
+    fn node(&self, parsed: &Parsed, id: &str) -> Option<Span> {
+        parsed.spans.node(self.get(id))
+    }
+
+    /// Returns the span of the parameter at `path` of the node normalization calls `id`.
+    fn param(&self, parsed: &Parsed, id: &str, path: &str) -> Option<Span> {
+        parsed.spans.param(self.get(id), path)
     }
 }
 
@@ -899,17 +936,24 @@ fn compose_error_span(error: &ComposeError, parsed: &Parsed, source: &str) -> Op
 fn finding_span(
     finding: &Finding, plan: &Plan, correspondence: &Correspondence, parsed: &Parsed, registry: &OperatorRegistry,
 ) -> Option<Span> {
+    let written = WrittenIds::of(parsed);
     let node_span = |node: &saluki_metric_plan::ir::NodeId| {
         correspondence
             .artifact_node(node)
-            .and_then(|artifact_node| parsed.spans.node(artifact_node.as_str()))
+            .and_then(|artifact_node| written.node(parsed, artifact_node.as_str()))
     };
     match &finding.location {
         Location::Node { id, .. } => {
-            let artifact_node = correspondence.artifact_node(id)?;
+            let artifact_node = written.get(correspondence.artifact_node(id)?.as_str());
             // A parameter the operator refuses is placed at the parameter, as the operator names it.
             let parameter = (finding.rule == Rule::ValidParameters)
-                .then(|| parsed.artifact.nodes.iter().find(|node| &node.id == artifact_node))
+                .then(|| {
+                    parsed
+                        .artifact
+                        .nodes
+                        .iter()
+                        .find(|node| node.id.as_str() == artifact_node)
+                })
                 .flatten()
                 .and_then(|node| match registry.configure(node.op.as_str(), &node.params) {
                     Err(ConfigureError::InvalidParams { errors, .. }) => errors
@@ -917,7 +961,7 @@ fn finding_span(
                         .and_then(|error| parsed.spans.param(node.id.as_str(), &error.path)),
                     _ => None,
                 });
-            parameter.or_else(|| parsed.spans.node(artifact_node.as_str()))
+            parameter.or_else(|| parsed.spans.node(artifact_node))
         }
         Location::Edge { index } => {
             let edge = plan.edges.get(*index)?;

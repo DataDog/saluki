@@ -124,6 +124,11 @@ pub(crate) fn lower(
     };
 
     lowering.scan(&program.statements);
+    // Every port index a stream's copies, a fork's branches, or a tuple's items take must be a valid port name, so a
+    // program wider than that stops here, before any node is made.
+    if !lowering.check_widths(&program.statements) {
+        return Err(lowering.errors);
+    }
     for statement in &program.statements {
         lowering.statement(statement);
     }
@@ -359,6 +364,40 @@ impl Lowering<'_> {
             .enumerate()
             .map(|(seq, key)| key.map(|key| (key, rank_of[&seq].0, rank_of[&seq].1)))
             .collect();
+    }
+
+    /// Reports every stream used, fork branched, or tuple merged more than [`MAX_PORTS`] ways, which would need port
+    /// indices beyond the largest a port name may have. Returns whether there were none.
+    fn check_widths(&mut self, statements: &[Statement]) -> bool {
+        let before = self.errors.len();
+        let mut too_wide = Vec::new();
+        for statement in statements {
+            let pipeline = statement_pipeline(statement);
+            if let Head::Tuple(tuple) = &pipeline.head {
+                if let Some(item) = tuple.items.get(MAX_PORTS) {
+                    too_wide.push((item.span, format!("A tuple merges at most {} streams.", MAX_PORTS)));
+                }
+            }
+            if let Some(end) = &pipeline.end {
+                fork_widths(end, &mut too_wide);
+            }
+        }
+        for uses in self.uses.values() {
+            if let Some(extra) = uses.get(MAX_PORTS) {
+                too_wide.push((
+                    extra.span,
+                    format!(
+                        "A stream is used at most {} times; copy it fewer ways, or join the uses with a `fork`.",
+                        MAX_PORTS
+                    ),
+                ));
+            }
+        }
+        too_wide.sort_by_key(|(span, _)| span.start);
+        for (span, message) in too_wide {
+            self.error(span, message);
+        }
+        self.errors.len() == before
     }
 
     /// Records every `as` clause of a pipeline. `own` is the name of the pipeline's `let`, which the `as` of its last
@@ -1193,6 +1232,21 @@ fn fanout_id(target: &Target, node: Option<&str>, port: Option<&PortName>) -> Ar
 fn statement_pipeline(statement: &Statement) -> &Pipeline {
     match statement {
         Statement::Let { pipeline, .. } | Statement::Run { pipeline, .. } => pipeline,
+    }
+}
+
+/// The most ports a node may have: one per port index a port name may take.
+const MAX_PORTS: usize = PortName::MAX_INDEX as usize + 1;
+
+/// Collects every fork under `end` with more than [`MAX_PORTS`] branches.
+fn fork_widths(end: &End, too_wide: &mut Vec<(Span, String)>) {
+    if let End::Fork(fork) = end {
+        if let Some(branch) = fork.branches.get(MAX_PORTS) {
+            too_wide.push((branch.span, format!("A fork has at most {} branches.", MAX_PORTS)));
+        }
+        for branch in &fork.branches {
+            fork_widths(&branch.end, too_wide);
+        }
     }
 }
 

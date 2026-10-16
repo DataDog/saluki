@@ -284,6 +284,15 @@ fn edit_where(
         .copied()
         .ok_or_else(|| generic_error!("The {} `{}` is not a `where` stage.", what, id))?;
     let written = &source[keyword + "where".len()..at];
+    // The `where` must be the stage the `as` names: a `|` in code between them means another stage, or another
+    // statement, comes first.
+    let mask = code_mask(source);
+    let crosses_a_stage = written
+        .char_indices()
+        .any(|(offset, c)| c == '|' && mask[keyword + "where".len() + offset]);
+    if crosses_a_stage {
+        return Err(generic_error!("The {} `{}` is not a `where` stage.", what, id));
+    }
     let predicate = written.trim();
     if predicate.is_empty() {
         return Err(generic_error!("The {} `{}` has no predicate.", what, id));

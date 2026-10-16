@@ -52,6 +52,16 @@ const PREDICATE: &str = "predicate";
 ///
 /// See the [module documentation](self) for the rules.
 pub fn normalize_artifact(artifact: &PolicyArtifact) -> PolicyArtifact {
+    normalize_artifact_with_renames(artifact).0
+}
+
+/// Returns the normal form of an artifact, with the terminals rule 4 renamed, each with its new ID.
+///
+/// A tool that knows where each node of the artifact as written came from, such as an editor holding the spans of the
+/// text it parsed, maps a node of the normal form back through the renames.
+pub fn normalize_artifact_with_renames(
+    artifact: &PolicyArtifact,
+) -> (PolicyArtifact, BTreeMap<ArtifactNodeId, ArtifactNodeId>) {
     let mut normalized = artifact.clone();
     for node in &mut normalized.nodes {
         node.params = normalize_params_with(&node.op, &node.params, Some(&artifact.blobs));
@@ -104,8 +114,10 @@ pub fn normalize_artifact(artifact: &PolicyArtifact) -> PolicyArtifact {
             }
         }
     }
+    let mut renames = BTreeMap::new();
     for node in &mut normalized.nodes {
         if let Some(new) = renamed(&node.id) {
+            renames.insert(node.id.clone(), new.clone());
             node.id = new;
         }
     }
@@ -118,7 +130,7 @@ pub fn normalize_artifact(artifact: &PolicyArtifact) -> PolicyArtifact {
             }
         }
     }
-    normalized
+    (normalized, renames)
 }
 
 /// Returns the normal form of a plan.

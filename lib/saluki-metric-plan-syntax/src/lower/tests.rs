@@ -1551,3 +1551,48 @@ proptest::proptest! {
         }
     }
 }
+
+#[test]
+fn programs_wider_than_a_node_can_be_are_reported_not_lowered() {
+    // A node has at most 10000 ports, numbered 0 to 9999, so the 10001st copy of a stream, branch of a fork, or item of
+    // a tuple is reported at its text, where it used to make lowering panic.
+    const BASE: &str = "  base \"sha256:1111111111111111111111111111111111111111111111111111111111111111\"\n";
+    let tuple = |n: usize| {
+        format!(
+            "policy metrics {{\n{}  ({}) | drop\n}}\n",
+            BASE,
+            vec!["a"; n].join(", ")
+        )
+    };
+    let fork = |n: usize| {
+        format!(
+            "policy metrics {{\n{}  a | fork {{ {} }}\n}}\n",
+            BASE,
+            vec!["drop"; n].join(" ")
+        )
+    };
+    let statements = |n: usize| format!("policy metrics {{\n{}{}}}\n", BASE, "  a | drop\n".repeat(n));
+
+    for (what, source) in [
+        ("tuple", tuple as fn(usize) -> String),
+        ("fork", fork),
+        ("statements", statements),
+    ] {
+        // 10000 is within the width, though the artifact may be over the size limit, which is reported instead.
+        if let Err(diagnostics) = crate::parse(&source(10_000)) {
+            assert!(
+                diagnostics.into_iter().all(|d| !d.message.contains("at most 10000")),
+                "{} of 10000",
+                what
+            );
+        }
+        let diagnostics = crate::parse(&source(10_001)).expect_err(what);
+        let messages = diagnostics.into_iter().map(|d| d.message).collect::<Vec<_>>();
+        assert!(
+            messages.iter().any(|m| m.contains("at most 10000")),
+            "{}: {:?}",
+            what,
+            messages
+        );
+    }
+}

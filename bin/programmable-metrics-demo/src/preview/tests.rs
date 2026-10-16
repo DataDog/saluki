@@ -703,3 +703,28 @@ fn renaming_the_one_aggregation_of_a_program_keeps_its_id_and_gets_no_note() {
         preview.notes
     );
 }
+
+#[test]
+fn nodes_normalization_renames_are_placed_where_they_are_written() {
+    // A `split` that drops on `true` is normalized to one that drops on `false`, which swaps its terminals' derived
+    // IDs: what composition calls `s_true` is the `emit` written on `s.false`, and `s_false` is the `drop`.
+    let source = r#"policy metrics {
+  base "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+
+  let s = dogstatsd | split(name == "a")
+
+  s.true | drop
+
+  s.false | emit primary
+}
+"#;
+    let parsed = saluki_metric_plan_syntax::parse(source).unwrap();
+    let written = super::WrittenIds::of(&parsed);
+    let line = |id: &str| {
+        let span = written.node(&parsed, id).unwrap();
+        source[..span.start].matches('\n').count() + 1
+    };
+    assert_eq!(line("s_true"), line_of(source, "s.false | emit primary"));
+    assert_eq!(line("s_false"), line_of(source, "s.true | drop"));
+    assert_eq!(line("s"), line_of(source, "let s"));
+}
