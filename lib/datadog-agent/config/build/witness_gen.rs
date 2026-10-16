@@ -366,6 +366,16 @@ fn leaf_kind(type_text: &str, dotted: &str) -> LeafKind {
             payload: "&'a [HashMap<String, String>]",
             wrap: |a| format!("{a}.as_slice()"),
         },
+        "HashMap<String, f64>" => LeafKind {
+            variant: "F64Map",
+            payload: "&'a HashMap<String, f64>",
+            wrap: |a| format!("&{a}"),
+        },
+        "::serde_json::Map<String, ::serde_json::Value>" => LeafKind {
+            variant: "JsonMap",
+            payload: "&'a ::serde_json::Map<String, ::serde_json::Value>",
+            wrap: |a| format!("&{a}"),
+        },
         "HashMap<String, String>" => LeafKind {
             variant: "StringMap",
             payload: "&'a HashMap<String, String>",

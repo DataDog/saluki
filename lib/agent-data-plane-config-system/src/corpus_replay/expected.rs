@@ -4,12 +4,12 @@
 //! see `expectations.rs` for the rules. A fix in ADP makes its entry fail with "remove this
 //! check's expectation". Entries are written as [`Entry`] data and sorted by check identity:
 //! origin, tier, checkpoint, getter, key. Entries whose [`Cause`] is `agent-load-write`,
-//! `translator-rejects-value`, `wire-number-loss`, `raw-json-representation` or `nil-map-element`
-//! are `intentional`: the Agent writes the value only while starting up, ADP deliberately rejects an
-//! invalid enum or size string, the Agent's wire format loses the number, the compared getter reads
-//! a raw string where ADP decodes structure (see `RAW_JSON_REPRESENTATION`), or ADP cannot hold the
-//! nil map the Agent keeps. Every other entry is a `known_bug`. Causes link tracking issues without
-//! changing which individual checks they explain.
+//! `translator-rejects-value`, `wire-number-loss`, `raw-json-representation`, `nil-map-element`
+//! or `numeric-map-representation` are `intentional`: the Agent writes the value only while
+//! starting up, ADP rejects an invalid enum or size string, the wire format loses the number,
+//! ADP decodes structure from a raw string, ADP cannot hold nil maps, or ADP reads numeric map
+//! values as floats where the getter keeps integers. Every other entry is a `known_bug`. Causes link
+//! tracking issues without changing which individual checks they explain.
 
 use super::expectations::Tier::{Bootstrap, Derived, Deserialize, Leaf, Translate};
 use super::expectations::{intentional, known_bug, Adp, Cause, Entry, Expectation};
@@ -728,6 +728,15 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             origin: "depth-env-not-json",
             tier: Leaf,
             at: "snapshot",
+            getter: "GetStringMap",
+            key: "apm_config.analyzed_rate_by_service",
+            adp: Adp::error("invalid JSON-encoded map: expected value at line 1 column 1"),
+            cause: MALFORMED_JSON_STRING,
+        }),
+        known_bug(Entry {
+            origin: "depth-env-not-json",
+            tier: Leaf,
+            at: "snapshot",
             getter: "GetStringMapString",
             key: "use_v3_api.series.endpoints",
             adp: Adp::error("invalid JSON-encoded map: expected value at line 1 column 1"),
@@ -762,6 +771,15 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             adp: Adp::error(
                 "invalid JSON-encoded map: expected value at line 1 column 1",
             ),
+            cause: MALFORMED_JSON_STRING,
+        }),
+        known_bug(Entry {
+            origin: "depth-env-not-json",
+            tier: Deserialize,
+            at: "snapshot",
+            getter: "-",
+            key: "apm_config.analyzed_rate_by_service",
+            adp: Adp::error("invalid JSON-encoded map: expected value at line 1 column 1"),
             cause: MALFORMED_JSON_STRING,
         }),
         known_bug(Entry {
@@ -810,6 +828,24 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             origin: "depth-set-empty-list",
             tier: Leaf,
             at: "final",
+            getter: "GetStringMap",
+            key: "apm_config.analyzed_rate_by_service",
+            adp: Adp::error("invalid type: sequence, expected a map or a JSON-encoded map string"),
+            cause: COLLECTION_SHAPE_MISMATCH,
+        }),
+        known_bug(Entry {
+            origin: "depth-set-empty-list",
+            tier: Leaf,
+            at: "final",
+            getter: "GetStringMap",
+            key: "apm_config.analyzed_spans",
+            adp: Adp::error("invalid type: sequence, expected a map or a JSON-encoded map string"),
+            cause: COLLECTION_SHAPE_MISMATCH,
+        }),
+        known_bug(Entry {
+            origin: "depth-set-empty-list",
+            tier: Leaf,
+            at: "final",
             getter: "GetStringMapString",
             key: "use_v3_api.series.endpoints",
             adp: Adp::error("invalid type: sequence, expected a map or a JSON-encoded map string"),
@@ -833,6 +869,24 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             adp: Adp::error(
                 "invalid type: sequence, expected a map or a JSON-encoded map string",
             ),
+            cause: COLLECTION_SHAPE_MISMATCH,
+        }),
+        known_bug(Entry {
+            origin: "depth-set-empty-list",
+            tier: Deserialize,
+            at: "update apm_config.analyzed_rate_by_service #1",
+            getter: "-",
+            key: "apm_config.analyzed_rate_by_service",
+            adp: Adp::error("invalid type: sequence, expected a map or a JSON-encoded map string"),
+            cause: COLLECTION_SHAPE_MISMATCH,
+        }),
+        known_bug(Entry {
+            origin: "depth-set-empty-list",
+            tier: Deserialize,
+            at: "update apm_config.analyzed_spans #1",
+            getter: "-",
+            key: "apm_config.analyzed_spans",
+            adp: Adp::error("invalid type: sequence, expected a map or a JSON-encoded map string"),
             cause: COLLECTION_SHAPE_MISMATCH,
         }),
         known_bug(Entry {
@@ -1002,6 +1056,24 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             origin: "depth-yaml-empty-list",
             tier: Leaf,
             at: "snapshot",
+            getter: "GetStringMap",
+            key: "apm_config.analyzed_rate_by_service",
+            adp: Adp::error("invalid type: sequence, expected a map or a JSON-encoded map string"),
+            cause: COLLECTION_SHAPE_MISMATCH,
+        }),
+        known_bug(Entry {
+            origin: "depth-yaml-empty-list",
+            tier: Leaf,
+            at: "snapshot",
+            getter: "GetStringMap",
+            key: "apm_config.analyzed_spans",
+            adp: Adp::error("invalid type: sequence, expected a map or a JSON-encoded map string"),
+            cause: COLLECTION_SHAPE_MISMATCH,
+        }),
+        known_bug(Entry {
+            origin: "depth-yaml-empty-list",
+            tier: Leaf,
+            at: "snapshot",
             getter: "GetStringMapString",
             key: "use_v3_api.series.endpoints",
             adp: Adp::error("invalid type: sequence, expected a map or a JSON-encoded map string"),
@@ -1076,6 +1148,24 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             origin: "depth-yaml-empty-list",
             tier: Bootstrap,
             at: "snapshot",
+            getter: "GetStringMap",
+            key: "apm_config.analyzed_rate_by_service",
+            adp: Adp::error("invalid type: sequence, expected a map or a JSON-encoded map string"),
+            cause: COLLECTION_SHAPE_MISMATCH,
+        }),
+        known_bug(Entry {
+            origin: "depth-yaml-empty-list",
+            tier: Bootstrap,
+            at: "snapshot",
+            getter: "GetStringMap",
+            key: "apm_config.analyzed_spans",
+            adp: Adp::error("invalid type: sequence, expected a map or a JSON-encoded map string"),
+            cause: COLLECTION_SHAPE_MISMATCH,
+        }),
+        known_bug(Entry {
+            origin: "depth-yaml-empty-list",
+            tier: Bootstrap,
+            at: "snapshot",
             getter: "GetStringMapString",
             key: "use_v3_api.series.endpoints",
             adp: Adp::error("invalid type: sequence, expected a map or a JSON-encoded map string"),
@@ -1133,6 +1223,24 @@ pub(crate) fn expectations() -> Vec<Expectation> {
                 "invalid type: sequence, expected a string, a boolean, or a number",
             ),
             cause: SCALAR_GIVEN_COLLECTION,
+        }),
+        known_bug(Entry {
+            origin: "depth-yaml-empty-list",
+            tier: Deserialize,
+            at: "snapshot",
+            getter: "-",
+            key: "apm_config.analyzed_rate_by_service",
+            adp: Adp::error("invalid type: sequence, expected a map or a JSON-encoded map string"),
+            cause: COLLECTION_SHAPE_MISMATCH,
+        }),
+        known_bug(Entry {
+            origin: "depth-yaml-empty-list",
+            tier: Deserialize,
+            at: "snapshot",
+            getter: "-",
+            key: "apm_config.analyzed_spans",
+            adp: Adp::error("invalid type: sequence, expected a map or a JSON-encoded map string"),
+            cause: COLLECTION_SHAPE_MISMATCH,
         }),
         known_bug(Entry {
             origin: "depth-yaml-empty-list",
@@ -1443,6 +1551,15 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             ),
             cause: SCALAR_GIVEN_COLLECTION,
         }),
+        intentional(Entry {
+            origin: "depth-yaml-map-int-values",
+            tier: Leaf,
+            at: "snapshot",
+            getter: "GetStringMap",
+            key: "apm_config.analyzed_rate_by_service",
+            adp: Adp::value("{\"cr_a\": 1.0}"),
+            cause: NUMERIC_MAP_REPRESENTATION,
+        }),
         known_bug(Entry {
             origin: "depth-yaml-map-int-values",
             tier: Leaf,
@@ -1451,6 +1568,15 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             key: "additional_endpoints",
             adp: Adp::error("data did not match any variant of untagged enum ScalarOrSeq"),
             cause: NON_STRING_MAP_VALUE,
+        }),
+        intentional(Entry {
+            origin: "depth-yaml-map-int-values",
+            tier: Bootstrap,
+            at: "snapshot",
+            getter: "GetStringMap",
+            key: "apm_config.analyzed_rate_by_service",
+            adp: Adp::value("{\"cr_a\": 1.0}"),
+            cause: NUMERIC_MAP_REPRESENTATION,
         }),
         known_bug(Entry {
             origin: "depth-yaml-map-int-values",
@@ -1494,6 +1620,24 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             origin: "depth-yaml-mixed-string",
             tier: Leaf,
             at: "snapshot",
+            getter: "GetStringMap",
+            key: "apm_config.analyzed_rate_by_service",
+            adp: Adp::error("invalid JSON-encoded map: expected value at line 1 column 1"),
+            cause: MALFORMED_JSON_STRING,
+        }),
+        known_bug(Entry {
+            origin: "depth-yaml-mixed-string",
+            tier: Leaf,
+            at: "snapshot",
+            getter: "GetStringMap",
+            key: "apm_config.analyzed_spans",
+            adp: Adp::error("invalid JSON-encoded map: expected value at line 1 column 1"),
+            cause: MALFORMED_JSON_STRING,
+        }),
+        known_bug(Entry {
+            origin: "depth-yaml-mixed-string",
+            tier: Leaf,
+            at: "snapshot",
             getter: "GetStringMapString",
             key: "use_v3_api.series.endpoints",
             adp: Adp::error("invalid JSON-encoded map: expected value at line 1 column 1"),
@@ -1530,6 +1674,24 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             origin: "depth-yaml-mixed-string",
             tier: Bootstrap,
             at: "snapshot",
+            getter: "GetStringMap",
+            key: "apm_config.analyzed_rate_by_service",
+            adp: Adp::error("invalid JSON-encoded map: expected value at line 1 column 1"),
+            cause: MALFORMED_JSON_STRING,
+        }),
+        known_bug(Entry {
+            origin: "depth-yaml-mixed-string",
+            tier: Bootstrap,
+            at: "snapshot",
+            getter: "GetStringMap",
+            key: "apm_config.analyzed_spans",
+            adp: Adp::error("invalid JSON-encoded map: expected value at line 1 column 1"),
+            cause: MALFORMED_JSON_STRING,
+        }),
+        known_bug(Entry {
+            origin: "depth-yaml-mixed-string",
+            tier: Bootstrap,
+            at: "snapshot",
             getter: "GetStringMapString",
             key: "use_v3_api.series.endpoints",
             adp: Adp::error("invalid JSON-encoded map: expected value at line 1 column 1"),
@@ -1553,6 +1715,24 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             adp: Adp::error(
                 "invalid JSON-encoded map: expected value at line 1 column 1",
             ),
+            cause: MALFORMED_JSON_STRING,
+        }),
+        known_bug(Entry {
+            origin: "depth-yaml-mixed-string",
+            tier: Deserialize,
+            at: "snapshot",
+            getter: "-",
+            key: "apm_config.analyzed_rate_by_service",
+            adp: Adp::error("invalid JSON-encoded map: expected value at line 1 column 1"),
+            cause: MALFORMED_JSON_STRING,
+        }),
+        known_bug(Entry {
+            origin: "depth-yaml-mixed-string",
+            tier: Deserialize,
+            at: "snapshot",
+            getter: "-",
+            key: "apm_config.analyzed_spans",
+            adp: Adp::error("invalid JSON-encoded map: expected value at line 1 column 1"),
             cause: MALFORMED_JSON_STRING,
         }),
         known_bug(Entry {
@@ -1644,6 +1824,24 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             origin: "depth-yaml-one-item-list",
             tier: Leaf,
             at: "snapshot",
+            getter: "GetStringMap",
+            key: "apm_config.analyzed_rate_by_service",
+            adp: Adp::error("invalid type: sequence, expected a map or a JSON-encoded map string"),
+            cause: COLLECTION_SHAPE_MISMATCH,
+        }),
+        known_bug(Entry {
+            origin: "depth-yaml-one-item-list",
+            tier: Leaf,
+            at: "snapshot",
+            getter: "GetStringMap",
+            key: "apm_config.analyzed_spans",
+            adp: Adp::error("invalid type: sequence, expected a map or a JSON-encoded map string"),
+            cause: COLLECTION_SHAPE_MISMATCH,
+        }),
+        known_bug(Entry {
+            origin: "depth-yaml-one-item-list",
+            tier: Leaf,
+            at: "snapshot",
             getter: "GetStringMapString",
             key: "use_v3_api.series.endpoints",
             adp: Adp::error("invalid type: sequence, expected a map or a JSON-encoded map string"),
@@ -1713,6 +1911,24 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             key: "api_key",
             adp: Adp::error("invalid type: sequence, expected a string, a boolean, or a number"),
             cause: SCALAR_GIVEN_COLLECTION,
+        }),
+        known_bug(Entry {
+            origin: "depth-yaml-one-item-list",
+            tier: Bootstrap,
+            at: "snapshot",
+            getter: "GetStringMap",
+            key: "apm_config.analyzed_rate_by_service",
+            adp: Adp::error("invalid type: sequence, expected a map or a JSON-encoded map string"),
+            cause: COLLECTION_SHAPE_MISMATCH,
+        }),
+        known_bug(Entry {
+            origin: "depth-yaml-one-item-list",
+            tier: Bootstrap,
+            at: "snapshot",
+            getter: "GetStringMap",
+            key: "apm_config.analyzed_spans",
+            adp: Adp::error("invalid type: sequence, expected a map or a JSON-encoded map string"),
+            cause: COLLECTION_SHAPE_MISMATCH,
         }),
         known_bug(Entry {
             origin: "depth-yaml-one-item-list",
@@ -1775,6 +1991,24 @@ pub(crate) fn expectations() -> Vec<Expectation> {
                 "invalid type: sequence, expected a string, a boolean, or a number",
             ),
             cause: SCALAR_GIVEN_COLLECTION,
+        }),
+        known_bug(Entry {
+            origin: "depth-yaml-one-item-list",
+            tier: Deserialize,
+            at: "snapshot",
+            getter: "-",
+            key: "apm_config.analyzed_rate_by_service",
+            adp: Adp::error("invalid type: sequence, expected a map or a JSON-encoded map string"),
+            cause: COLLECTION_SHAPE_MISMATCH,
+        }),
+        known_bug(Entry {
+            origin: "depth-yaml-one-item-list",
+            tier: Deserialize,
+            at: "snapshot",
+            getter: "-",
+            key: "apm_config.analyzed_spans",
+            adp: Adp::error("invalid type: sequence, expected a map or a JSON-encoded map string"),
+            cause: COLLECTION_SHAPE_MISMATCH,
         }),
         known_bug(Entry {
             origin: "depth-yaml-one-item-list",
@@ -2301,5 +2535,11 @@ const RUN_PATH_DEFAULT: Cause = Cause {
 const WIRE_NUMBER_LOSS: Cause = Cause {
     name: "wire-number-loss",
     why: "NaN and integers above 2^53 do not survive the protobuf stream; ADP cannot recover them",
+    issue: None,
+};
+
+const NUMERIC_MAP_REPRESENTATION: Cause = Cause {
+    name: "numeric-map-representation",
+    why: "GetStringMap keeps integer values; ADP decodes them as f64, as the Agent's trace consumer does through structure.UnmarshalKey (comp/trace/config/impl/setup.go)",
     issue: None,
 };

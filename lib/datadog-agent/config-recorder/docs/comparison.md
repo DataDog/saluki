@@ -27,8 +27,10 @@ per key. The implementation is `lib/agent-data-plane-config-system/src/corpus_re
 | `Bool`          | `bool`                              |
 | `Duration`      | `std::time::Duration`               |
 | `F64`           | `f64`                               |
+| `F64Map`        | `&HashMap<String, f64>`              |
 | `I64`           | `i64`                               |
 | `JsonList`      | `&[serde_json::Value]`              |
+| `JsonMap`       | `&serde_json::Map<String, serde_json::Value>` |
 | `OptionI64`     | `Option<i64>`                       |
 | `OptionStr`     | `Option<&str>`                      |
 | `Str`           | `&str`                              |
@@ -48,8 +50,10 @@ emulated getter is compared, and each other getter must give `NotCompared`.
 | `Bool`          | `GetBool`                  | row 1                                                          |
 | `Duration`      | `GetDuration`              | row 8; for row 9 the `GetString` read is not compared          |
 | `F64`           | `GetFloat64`               | row 5; for row 6 the `GetDuration` read is not compared        |
+| `F64Map`        | `GetStringMap`             | row 19                                                        |
 | `I64`           | `GetInt`, `GetInt64`       | rows 2 and 3; for row 4 the `GetDuration` read is not compared |
 | `JsonList`      | `Get`                      | rows 14 and 15: `Get` is the only getter                       |
+| `JsonMap`       | `GetStringMap`             | row 16                                                        |
 | `OptionI64`     | `GetInt`                   | row 2 and §1.1 `integer`: the typed read                       |
 | `OptionStr`     | `GetString`                | row 7 and §1.1 `string`: the typed read                        |
 | `Str`           | `GetString`                | row 7                                                          |
@@ -71,8 +75,10 @@ round, trim, fold case, reorder a list, or coerce between integer and float.
 | `Bool`          | `GetBool`                 | equal booleans                                                                          |
 | `Duration`      | `GetDuration`             | the leaf's whole nanoseconds equal the integer; a negative result never matches         |
 | `F64`           | `GetFloat64`              | finite: equal bits, so `-0.0` differs from `0.0`; NaN matches NaN; each infinity itself |
+| `F64Map`        | `GetStringMap`            | equal key sets, each value a Go float equal under the `F64` rule; `null` matches `{}` |
 | `I64`           | `GetInt`, `GetInt64`      | equal integers                                                                          |
 | `JsonList`      | `Get`                     | a list of equal length, elements equal in order by the generic rule below; a top-level `null` matches `[]` (decision 6) |
+| `JsonMap`       | `GetStringMap`            | equal key sets, values equal by the generic rule below; `null` matches `{}` (decision 6) |
 | `OptionI64`     | `GetInt`                  | `Some(n)` matches `n`; `None` matches `0` (decision 5)                                  |
 | `OptionStr`     | `GetString`               | `Some(s)` matches `s`; `None` matches `""` (decision 5)                                 |
 | `Str`           | `GetString`               | equal strings, byte for byte                                                            |
@@ -122,7 +128,7 @@ Both belong to a provenance tier, not to this one. This work is tracked in
 |-------------------|----------------------------------------------|---------------------------------------------------------------------|
 | `GetSizeInBytes`  | byte-size keys such as `log_file_max_size`   | the derived tier, against the byte count ADP translates             |
 | `GetFloat64Slice` | `histogram_percentiles`                      | no comparison yet: ADP parses the string list later; [#2759](https://github.com/DataDog/saluki/issues/2759) tracks the consumer comparison |
-| `GetStringMap`    | map keys, with `GetStringMapString`          | nothing: `StringMap` emulates `GetStringMapString` (decision 2)     |
+| `GetStringMap`    | string-valued map keys, with `GetStringMapString` | not compared for `StringMap`, which emulates `GetStringMapString` (decision 2); compared for `F64Map` and `JsonMap` |
 | `ReadConfigSection`, `IsConfigured` | section and source probes  | nothing: explicit-only (§6)                                          |
 
 A case that records only these getters has no leaf comparison. These are coverage limitations,

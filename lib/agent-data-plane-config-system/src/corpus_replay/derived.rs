@@ -106,6 +106,11 @@ pub(crate) const NOT_REPLAYED: &[(&str, &str)] = &[
          (comp/trace/config/impl/setup.go), so the getter returns the schema's 0",
     ),
     (
+        "analyzed-spans-by-service",
+        "splits service|operation keys and drops malformed names or rates; GetStringMap returns the raw map, \
+         not the trace consumer's parsed map (comp/trace/config/impl/setup.go)",
+    ),
+    (
         "max-tps-alias",
         "`apm_config.max_traces_per_second` supplies the target rate unless `target_traces_per_second` is set; the \
          Agent chooses in comp/trace/config/impl/setup.go, and each getter returns only its own key",
