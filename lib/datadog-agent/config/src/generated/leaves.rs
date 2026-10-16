@@ -18,10 +18,14 @@ pub enum LeafValue<'a> {
     Duration(std::time::Duration),
     /// A `f64` leaf.
     F64(f64),
+    /// A `&'a HashMap<String, f64>` leaf.
+    F64Map(&'a HashMap<String, f64>),
     /// A `i64` leaf.
     I64(i64),
     /// A `&'a [::serde_json::Value]` leaf.
     JsonList(&'a [::serde_json::Value]),
+    /// A `&'a ::serde_json::Map<String, ::serde_json::Value>` leaf.
+    JsonMap(&'a ::serde_json::Map<String, ::serde_json::Value>),
     /// A `Option<i64>` leaf.
     OptionI64(Option<i64>),
     /// A `Option<&'a str>` leaf.
@@ -81,6 +85,16 @@ pub static LEAVES: &[Leaf] = &[
         get: |config| LeafValue::Str(config.api_key.as_str()),
     },
     Leaf {
+        key: "apm_config.analyzed_rate_by_service",
+        aliases: &[],
+        get: |config| LeafValue::F64Map(&config.apm_config.analyzed_rate_by_service),
+    },
+    Leaf {
+        key: "apm_config.analyzed_spans",
+        aliases: &[],
+        get: |config| LeafValue::JsonMap(&config.apm_config.analyzed_spans),
+    },
+    Leaf {
         key: "apm_config.compute_stats_by_span_kind",
         aliases: &[],
         get: |config| LeafValue::Bool(config.apm_config.compute_stats_by_span_kind),
@@ -114,6 +128,11 @@ pub static LEAVES: &[Leaf] = &[
         key: "apm_config.max_catalog_entries",
         aliases: &[],
         get: |config| LeafValue::I64(config.apm_config.max_catalog_entries),
+    },
+    Leaf {
+        key: "apm_config.max_events_per_second",
+        aliases: &[],
+        get: |config| LeafValue::F64(config.apm_config.max_events_per_second),
     },
     Leaf {
         key: "apm_config.max_traces_per_second",

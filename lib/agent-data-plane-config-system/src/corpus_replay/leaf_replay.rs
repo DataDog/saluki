@@ -205,8 +205,10 @@ pub(crate) fn kind_name(leaf: &LeafValue<'_>) -> &'static str {
         LeafValue::Bool(_) => "Bool",
         LeafValue::Duration(_) => "Duration",
         LeafValue::F64(_) => "F64",
+        LeafValue::F64Map(_) => "F64Map",
         LeafValue::I64(_) => "I64",
         LeafValue::JsonList(_) => "JsonList",
+        LeafValue::JsonMap(_) => "JsonMap",
         LeafValue::OptionI64(_) => "OptionI64",
         LeafValue::OptionStr(_) => "OptionStr",
         LeafValue::Str(_) => "Str",
@@ -447,6 +449,7 @@ mod tests {
             format!("{:?}", map.iter().collect::<BTreeMap<_, _>>())
         }
         match leaf {
+            LeafValue::F64Map(map) => format!("F64Map({})", sorted(map)),
             LeafValue::StringListMap(map) => format!("StringListMap({})", sorted(map)),
             LeafValue::StringMap(map) => format!("StringMap({})", sorted(map)),
             LeafValue::StringMapList(maps) => {
