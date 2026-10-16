@@ -21,7 +21,8 @@ pub(crate) const DURATION_UNITS: [&str; 6] = ["h", "m", "s", "ms", "us", "ns"];
 /// What a token is.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum TokenKind {
-    /// A word of ASCII letters, digits, and underscores, starting with a letter or underscore.
+    /// A word of ASCII letters, digits, and underscores, starting with a letter or underscore, or, right after a `.`,
+    /// where it is a segment of a dotted name, any such word that is not a plain integer.
     Ident,
     /// A string literal, with its escapes decoded.
     Str(String),
@@ -29,10 +30,14 @@ pub(crate) enum TokenKind {
     Number(Number),
     /// A duration literal, such as `10s`, kept as written.
     Duration,
-    /// `->`
+    /// `->`, which only the node-and-edge syntax uses.
     Arrow,
+    /// `|`
+    Pipe,
     /// `==`
     EqEq,
+    /// `!=`
+    NotEq,
     /// `=`
     Eq,
     /// `:`
@@ -71,7 +76,11 @@ pub(crate) struct Token {
 /// Returns an error at the first character that does not start a token, the first malformed literal, or the first
 /// token past [`MAX_TOKENS`].
 pub(crate) fn lex(source: &str) -> Result<Vec<Token>, Error> {
-    let mut lexer = Lexer { source, pos: 0 };
+    let mut lexer = Lexer {
+        source,
+        pos: 0,
+        dot_end: None,
+    };
     let mut tokens = Vec::new();
     loop {
         let token = lexer.next_token()?;
@@ -96,6 +105,8 @@ pub(crate) fn lex(source: &str) -> Result<Vec<Token>, Error> {
 struct Lexer<'s> {
     source: &'s str,
     pos: usize,
+    /// The end of the last token, if it was a `.`.
+    dot_end: Option<usize>,
 }
 
 impl Lexer<'_> {
@@ -148,6 +159,7 @@ impl Lexer<'_> {
     fn next_token(&mut self) -> Result<Token, Error> {
         self.skip_trivia()?;
         let start = self.pos;
+        let after_dot = self.dot_end.take() == Some(start);
         let Some(c) = self.peek() else {
             return Ok(self.token(TokenKind::Eof, start));
         };
@@ -162,11 +174,23 @@ impl Lexer<'_> {
             ']' => single(TokenKind::RBracket),
             ',' => single(TokenKind::Comma),
             ':' => single(TokenKind::Colon),
-            '.' => single(TokenKind::Dot),
+            '.' => {
+                self.dot_end = Some(start + 1);
+                single(TokenKind::Dot)
+            }
             '=' if self.peek_byte_at(1) == Some(b'=') => (TokenKind::EqEq, 2),
             '=' => single(TokenKind::Eq),
+            '!' if self.peek_byte_at(1) == Some(b'=') => (TokenKind::NotEq, 2),
+            '|' => single(TokenKind::Pipe),
             '-' if self.peek_byte_at(1) == Some(b'>') => (TokenKind::Arrow, 2),
             '"' => return self.string(start),
+            // Right after a `.`, a run of word characters is one segment of a dotted name, even when it starts with a
+            // digit, as in the binding `config.group.0123abc.names`. A run that is a plain integer, as in the port
+            // `t.0`, stays a number.
+            '0'..='9' if after_dot && !self.plain_integer_follows() => {
+                self.pos += self.word_len();
+                return Ok(self.token(TokenKind::Ident, start));
+            }
             '-' | '0'..='9' if c != '-' || self.peek_byte_at(1).is_some_and(|b| b.is_ascii_digit()) => {
                 return self.number(start)
             }
@@ -176,12 +200,11 @@ impl Lexer<'_> {
             }
             c => {
                 let hint = match c {
-                    '-' => " Identifiers use underscores, not hyphens; `->` is the only operator that starts with `-`.",
+                    '-' => " Identifiers use underscores, not hyphens.",
                     '\'' => " Strings are written in double quotes.",
-                    '!' => " Negate a predicate with `not`, as in `not name == \"a\"`; there is no `!=`.",
+                    '!' => " Negate a predicate with `not`, as in `not name == \"a\"`, or compare with `!=`.",
                     '&' => " Combine predicates with `and`.",
-                    '|' => " Combine predicates with `or`.",
-                    '>' => " Edges are written `->`.",
+                    '>' => " Stages of a pipeline are joined with `|`.",
                     _ => "",
                 };
                 return Err(Error::new(
@@ -192,6 +215,13 @@ impl Lexer<'_> {
         };
         self.pos += len;
         Ok(self.token(kind, start))
+    }
+
+    /// Returns `true` if the run of identifier characters at the current position is a decimal integer without
+    /// leading zeros.
+    fn plain_integer_follows(&self) -> bool {
+        let run = &self.source.as_bytes()[self.pos..self.pos + self.word_len()];
+        run.iter().all(u8::is_ascii_digit) && (run.len() == 1 || run[0] != b'0')
     }
 
     /// Returns the length of the run of identifier characters at the current position.
@@ -479,6 +509,69 @@ mod tests {
     }
 
     #[test]
+    fn pipes_and_inequality_are_tokens() {
+        let source = "a|b | where name!=\"x\" or host != \"y\" || c";
+        let tokens = lex(source).unwrap();
+        let found = tokens
+            .iter()
+            .filter(|token| matches!(token.kind, TokenKind::Pipe | TokenKind::NotEq))
+            .map(|token| (token.kind.clone(), &source[token.span.range()]))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            found,
+            [
+                (TokenKind::Pipe, "|"),
+                (TokenKind::Pipe, "|"),
+                (TokenKind::NotEq, "!="),
+                (TokenKind::NotEq, "!="),
+                (TokenKind::Pipe, "|"),
+                (TokenKind::Pipe, "|"),
+            ]
+        );
+
+        // `!` and `=` apart are not an inequality.
+        let error = lex("c ! = d").unwrap_err();
+        assert_eq!(error.span, Span::new(2, 3));
+    }
+
+    #[test]
+    fn segments_after_a_dot_are_words() {
+        let source = "config.group.0123456789abcdef.names t.0 x.10s z.007 y. 5 1.5";
+        let tokens = lex(source).unwrap();
+        let found = tokens
+            .iter()
+            .map(|token| (token.kind.clone(), &source[token.span.range()]))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            found,
+            [
+                (TokenKind::Ident, "config"),
+                (TokenKind::Dot, "."),
+                (TokenKind::Ident, "group"),
+                (TokenKind::Dot, "."),
+                (TokenKind::Ident, "0123456789abcdef"),
+                (TokenKind::Dot, "."),
+                (TokenKind::Ident, "names"),
+                (TokenKind::Ident, "t"),
+                (TokenKind::Dot, "."),
+                (TokenKind::Number(Number::from(0)), "0"),
+                (TokenKind::Ident, "x"),
+                (TokenKind::Dot, "."),
+                (TokenKind::Ident, "10s"),
+                (TokenKind::Ident, "z"),
+                (TokenKind::Dot, "."),
+                (TokenKind::Ident, "007"),
+                (TokenKind::Ident, "y"),
+                (TokenKind::Dot, "."),
+                // Not right after the `.`, a number is a number.
+                (TokenKind::Number(Number::from(5)), "5"),
+                (TokenKind::Number(Number::from_f64(1.5).unwrap()), "1.5"),
+                (TokenKind::Eof, ""),
+            ]
+        );
+    }
+
+    #[test]
     fn string_escapes_decode() {
         let tokens = lex(r#""q\" b\\ n\n r\r t\t u\u{e9}\u{1F600}""#).unwrap();
         assert_eq!(
@@ -522,22 +615,22 @@ mod tests {
                 "Invalid duration `1.5s`: a duration is a whole number followed by a unit",
             ),
             (
-                "name != \"a\"",
+                "!host is unset",
                 "!",
-                "Unexpected character `!`. Negate a predicate with `not`",
+                "Unexpected character `!`. Negate a predicate with `not`, as in `not name == \"a\"`, or compare with \
+                 `!=`.",
             ),
             ("a && b", "&", "Combine predicates with `and`."),
-            ("a || b", "|", "Combine predicates with `or`."),
             (
-                "input.metrics => s",
+                "dogstatsd => drop",
                 ">",
-                "Unexpected character `>`. Edges are written `->`.",
+                "Unexpected character `>`. Stages of a pipeline are joined with `|`.",
             ),
             ("99999999999999999999", "99999999999999999999", "out of range"),
             ("-9223372036854775809", "-9223372036854775809", "out of range"),
             ("1e999", "1e999", "out of range"),
             ("a @ b", "@", "Unexpected character `@`"),
-            ("my-node", "-", "underscores"),
+            ("my-node", "-", "Identifiers use underscores, not hyphens."),
             ("'s'", "'", "double quotes"),
             ("x\u{202E}", "\u{202E}", "U+202E"),
         ];
