@@ -2,6 +2,8 @@
 #![allow(dead_code)]
 use std::time::SystemTime;
 
+#[cfg(test)]
+use saluki_common::collections::FastHashMap;
 use saluki_core::data_model::event::trace::{AttributeValue, Trace};
 use stringtheory::MetaString;
 
@@ -111,6 +113,17 @@ fn to_sampler_env(tracer_env: &str, agent_env: &MetaString) -> MetaString {
         agent_env.clone()
     } else {
         MetaString::from(tracer_env)
+    }
+}
+
+#[cfg(test)]
+impl PrioritySampler {
+    pub(super) fn test_signature_sample_rates(&self) -> (FastHashMap<Signature, f64>, f64) {
+        self.sampler.get_all_signature_sample_rates()
+    }
+
+    pub(super) fn test_size(&self) -> i64 {
+        self.sampler.size()
     }
 }
 

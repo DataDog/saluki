@@ -4,9 +4,15 @@
 
 use std::fmt;
 
+use async_trait::async_trait;
+use datadog_protos::remote_config::{ClientGetConfigsRequest, ClientGetConfigsResponse};
+
 use crate::decoder::evaluate;
+use crate::source::{FetchError, RcAgent};
 use crate::subscription::Publisher;
-use crate::{ConfigId, ProductDecoder, Subscription};
+use crate::{
+    AgentIdentity, ClientKind, ConfigId, ProductDecoder, RcClientConfiguration, RemoteConfigurationClient, Subscription,
+};
 
 /// Publishes into a [`Subscription`] by hand, so a subscriber can test its component without an Agent.
 ///
@@ -139,5 +145,36 @@ impl<T, E> fmt::Debug for TestPublisher<T, E> {
         f.debug_struct("TestPublisher")
             .field("subscribed", &self.publisher.is_subscribed())
             .finish_non_exhaustive()
+    }
+}
+
+/// Stands in for the Agent of a client whose worker never runs.
+struct NoAgent;
+
+#[async_trait]
+impl RcAgent for NoAgent {
+    async fn get_configs(&mut self, _request: ClientGetConfigsRequest) -> Result<ClientGetConfigsResponse, FetchError> {
+        unreachable!("the worker of a client without an agent is dropped, so it never polls")
+    }
+}
+
+impl RemoteConfigurationClient {
+    /// Creates a client that has no Agent behind it, for testing code that subscribes through the client.
+    ///
+    /// The worker is dropped, so nothing is ever polled or published. Subscribing registers products as it does on a
+    /// production client, and [`subscribed_products`](Self::subscribed_products) shows what is registered.
+    ///
+    /// Available in this crate's tests and when the `test-util` feature is enabled.
+    pub fn without_agent() -> Self {
+        let settings = RcClientConfiguration::new(ClientKind::Agent(AgentIdentity::new("test-client", "0.0.0")));
+        let (client, _worker) = Self::with_agent(Box::new(NoAgent), settings);
+        client
+    }
+
+    /// Returns the products that currently have a live subscription, in ascending order.
+    ///
+    /// Available in this crate's tests and when the `test-util` feature is enabled.
+    pub fn subscribed_products(&self) -> Vec<String> {
+        self.shared.live_products().into_keys().collect()
     }
 }
