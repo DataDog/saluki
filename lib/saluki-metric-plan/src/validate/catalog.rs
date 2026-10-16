@@ -465,6 +465,14 @@ impl MemoryCatalog {
         self.recipients.iter()
     }
 
+    /// Returns every input the catalog declares for `scope`, with its port type, in name order.
+    pub fn scope_inputs(&self, scope: &ScopeName) -> impl Iterator<Item = (&InputName, PortType)> {
+        self.scopes
+            .get(scope)
+            .into_iter()
+            .flat_map(|scope| scope.inputs.iter().map(|(name, port_type)| (name, *port_type)))
+    }
+
     /// Declares an entry of the recipient directory.
     pub fn with_recipient(mut self, name: RecipientName, recipient: CatalogRecipient) -> Self {
         self.recipients.insert(name, recipient);

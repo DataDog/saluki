@@ -98,6 +98,18 @@ button.approve { background: var(--ok); border-color: var(--ok); color: var(--pa
 button.danger { color: var(--err); border-color: var(--err); background: transparent; }
 button.quiet { background: transparent; }
 
+/* A link that reads as a quiet button, such as the editor's link to the language reference. */
+a.link-button {
+  font-size: 14px;
+  font-weight: 560;
+  padding: 7px 14px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  color: var(--accent);
+  text-decoration: none;
+}
+a.link-button:hover { border-color: var(--accent); }
+
 /* Header: always on screen, with the badges that say what ADP runs. */
 .top {
   position: sticky;

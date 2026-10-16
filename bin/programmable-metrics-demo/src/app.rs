@@ -340,6 +340,9 @@ pub fn router(app: App) -> Router {
         .route("/", get(ui::index))
         .route("/app.js", get(ui::script))
         .route("/app.css", get(ui::stylesheet))
+        .route("/reference", get(ui::reference))
+        .route("/reference.js", get(ui::reference_script))
+        .route("/api/reference", get(reference))
         .route("/api/state", get(state))
         .route("/api/compile", post(compile_source))
         .route("/api/publish", post(publish))
@@ -675,6 +678,20 @@ async fn native(State(app): State<App>, Json(change): Json<NativeChange>) -> Res
         Ok(native) => Json(native).into_response(),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, format!("{:#}", error)),
     }
+}
+
+/// The language reference, with what this ADP accepts when its export is at hand.
+async fn reference(State(app): State<App>) -> Json<crate::reference::Reference> {
+    let labels = app.labels();
+    Json(match app.control.refresh_export(&app.api).await {
+        Surface::Available(export) => crate::reference::reference(Some(&export), &labels, None),
+        Surface::NotExposed => crate::reference::reference(None, &labels, Some(EXPORT_NOT_EXPOSED_MESSAGE.to_string())),
+        Surface::Failed(error) => crate::reference::reference(
+            None,
+            &labels,
+            Some(format!("The export could not be loaded from ADP: {}", error)),
+        ),
+    })
 }
 
 async fn default_program(State(app): State<App>) -> Json<Value> {

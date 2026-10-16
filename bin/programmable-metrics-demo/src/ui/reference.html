@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Program language reference</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="app.css">
+  <style>
+    .ref { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; max-width: 1180px;
+           margin: 0 auto; padding: 20px 16px 64px; }
+    .ref-nav { position: sticky; top: 16px; align-self: start; font-size: 14px; }
+    .ref-nav a { display: block; padding: 3px 0; color: var(--muted); text-decoration: none; }
+    .ref-nav a:hover { color: var(--accent); }
+    .ref-main { min-width: 0; }
+    .ref-main section { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+                        padding: 16px 20px; margin-bottom: 16px; }
+    .ref-main h2 { margin-bottom: 8px; }
+    .ref-main h3 { margin: 16px 0 6px; }
+    .ref-main p { margin: 6px 0; max-width: 78ch; }
+    .ref-main ul { margin: 6px 0; padding-left: 20px; max-width: 78ch; }
+    .ref-main pre { background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
+                    padding: 10px 12px; overflow-x: auto; font: 13px/1.5 var(--mono); margin: 8px 0; }
+    .ref-main table { border-collapse: collapse; width: 100%; font-size: 14px; margin: 6px 0; }
+    .ref-main th, .ref-main td { text-align: left; vertical-align: top; padding: 5px 8px;
+                                 border-bottom: 1px solid var(--border); }
+    .ref-main th { color: var(--muted); font-weight: 600; font-size: 13px; }
+    .ref-main td code { white-space: pre-wrap; word-break: break-word; }
+    .ref-main td:first-child > code { white-space: nowrap; word-break: normal; }
+    .op { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 12px; }
+    .op:first-of-type { border-top: 0; margin-top: 0; padding-top: 0; }
+    .op-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+    .op-head code { font-size: 15px; font-weight: 650; }
+    .tag { font-size: 12px; padding: 1px 7px; border-radius: 10px; background: var(--accent-soft);
+           color: var(--accent); white-space: nowrap; }
+    .tag.warn { background: var(--warn-soft); color: var(--warn); }
+    .tag.err { background: var(--err-soft); color: var(--err); }
+    .tag.ok { background: var(--ok-soft); color: var(--ok); }
+    .muted { color: var(--muted); }
+    .host-note { padding: 8px 12px; border-radius: 6px; background: var(--warn-soft); color: var(--warn); }
+    .top a.back { color: var(--accent); text-decoration: none; font-size: 14px; }
+    @media (max-width: 760px) {
+      .ref { grid-template-columns: minmax(0, 1fr); }
+      .ref-nav { position: static; }
+    }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <h1>Program language reference</h1>
+      <span class="brand-sub">what a metrics program may say</span>
+    </div>
+    <a class="back" href="./">Back to the demo</a>
+  </header>
+
+  <div class="ref">
+    <nav class="ref-nav" aria-label="Contents">
+      <a href="#shape">A program</a>
+      <a href="#statements">Statements</a>
+      <a href="#host">What this ADP accepts</a>
+      <a href="#values">Values</a>
+      <a href="#predicates">Predicates</a>
+      <a href="#operators">Operators</a>
+      <a href="#recipes">Recipes</a>
+      <a href="#rules">Rules</a>
+      <a href="#limits">Limits</a>
+    </nav>
+
+    <main class="ref-main">
+      <section id="shape">
+        <h2>A program</h2>
+        <p>A program is the whole metrics path after the sources: what happens to every metric between where it enters
+          and where it is delivered. It is one <code>policy metrics { ... }</code> block of edges and nodes. Metrics
+          enter at the scope's inputs, flow along edges through nodes, and every path ends by delivering
+          (<code>emit</code>) or discarding (<code>drop</code>).</p>
+        <p>The quickest start is the editor's <strong>Load default program</strong>, which shows what ADP runs now, with
+          comments, and changing it. Compiling shows every problem at its place in the text, and what would change.</p>
+        <pre id="example-program"></pre>
+      </section>
+
+      <section id="statements">
+        <h2>Statements</h2>
+        <p>Whitespace and line breaks do not matter. <code>#</code> starts a comment that runs to the end of the line.
+          The order of statements does not matter either: the program is a graph.</p>
+        <table>
+          <thead><tr><th>Statement</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td><code>input.&lt;name&gt; -&gt; &lt;target&gt;</code></td>
+              <td>Where one source's metrics enter. The inputs this ADP has are listed <a href="#host">below</a>.</td></tr>
+            <tr><td><code>node &lt;id&gt; = &lt;operator&gt;(&lt;param&gt;: &lt;value&gt;, ...) { &lt;edges&gt; }</code></td>
+              <td>A step. The ID is yours: a lowercase letter, then up to 62 lowercase letters, digits, and single
+                underscores between them (<code>drop_debug</code>, not <code>dropDebug</code> or
+                <code>drop__debug</code>). An operator without parameters takes no parentheses, and a node without
+                edges no block.</td></tr>
+            <tr><td><code>&lt;port&gt; -&gt; &lt;target&gt;</code>, inside a node's block</td>
+              <td>An edge from one of the node's output ports. A node with one output port may leave it out:
+                <code>-&gt; &lt;target&gt;</code>.</td></tr>
+            <tr><td><code>&lt;node&gt;.&lt;port&gt; -&gt; &lt;target&gt;</code></td>
+              <td>The same edge, as a statement of its own.</td></tr>
+          </tbody>
+        </table>
+        <h3>Targets</h3>
+        <table>
+          <tbody>
+            <tr><td><code>&lt;node&gt;</code>, <code>&lt;node&gt;.&lt;port&gt;</code></td>
+              <td>Another node. The port may be left out when the node has one input port; a <code>merge</code>'s
+                are numbered: <code>joined.0</code>.</td></tr>
+            <tr><td><code>emit to [&lt;recipient&gt;, ...]</code></td>
+              <td>Deliver to recipients of the <a href="#host">directory</a>: a bare name such as
+                <code>primary</code>, or an endpoint's URL in quotes. ADP adds the output that delivers to exactly
+                those recipients.</td></tr>
+            <tr><td><code>emit &lt;output&gt;</code></td>
+              <td>Deliver to an output ADP declares, by its ID.</td></tr>
+            <tr><td><code>drop</code></td><td>Discard.</td></tr>
+          </tbody>
+        </table>
+        <p>An inline <code>emit</code> or <code>drop</code> is a node of its own, named after its parent and port:
+          <code>split</code> port <code>true</code> leading to <code>drop</code> is the node
+          <code>&lt;split&gt;_true</code>. Diagnostics and the plan diff use those names.</p>
+        <h3>Short forms</h3>
+        <ul>
+          <li>An operator whose only parameter is a predicate takes it bare:
+            <code>split(name starts_with "a.") { true -&gt; ... false -&gt; ... }</code>.</li>
+          <li><code>tee</code> without parentheses numbers its branches in order:
+            <code>tee { -&gt; a -&gt; b }</code> is <code>tee(ports: 2) { 0 -&gt; a 1 -&gt; b }</code>.</li>
+        </ul>
+      </section>
+
+      <section id="host">
+        <h2>What this ADP accepts</h2>
+        <div id="host-body"><p class="muted">Loading…</p></div>
+      </section>
+
+      <section id="values">
+        <h2>Values</h2>
+        <table>
+          <thead><tr><th>Write</th><th>For</th></tr></thead>
+          <tbody>
+            <tr><td><code>"text"</code>, with <code>\"</code> <code>\\</code> <code>\n</code> <code>\t</code>
+              <code>\u{1f600}</code></td><td>A string. Always in double quotes, even where a name would do.</td></tr>
+            <tr><td><code>42</code>, <code>-7</code>, <code>1.5</code></td><td>A number.</td></tr>
+            <tr><td><code>500ms</code>, <code>10s</code>, <code>5m</code>, <code>1h</code> (also <code>us</code>,
+              <code>ns</code>)</td>
+              <td>A duration, in <strong>canonical form</strong>: the largest unit that writes it exactly, so
+                <code>5m</code>, never <code>300s</code>.</td></tr>
+            <tr><td><code>true</code>, <code>false</code>, <code>null</code></td><td>The same.</td></tr>
+            <tr><td><code>[a, b]</code></td><td>A list. A trailing comma is fine.</td></tr>
+            <tr><td><code>{ name: "x", limit: 3 }</code></td><td>A record, such as one rule of a list of rules. Member
+              names may be bare or quoted.</td></tr>
+            <tr><td><code>config("&lt;binding&gt;")</code></td>
+              <td>A value read from ADP's configuration as it runs: one of the <a href="#host">bindings</a> a
+                program may read, where the parameter allows it.</td></tr>
+            <tr><td><code>blob("sha256:...")</code></td><td>A value kept in the program's blob table.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="predicates">
+        <h2>Predicates</h2>
+        <p>What a <code>split</code> tests. String tests are <code>==</code>, <code>starts_with</code>,
+          <code>in [...]</code>, and <code>prefix_in [...]</code>; they apply to <code>name</code>,
+          <code>intake_name</code>, <code>host</code>, <code>tag("k")</code>, and <code>origin_tag("k")</code>.</p>
+        <table>
+          <thead><tr><th>Tests</th><th>Example</th></tr></thead>
+          <tbody id="predicates-body"></tbody>
+        </table>
+      </section>
+
+      <section id="operators">
+        <h2>Operators</h2>
+        <p>Every node names one of these. A parameter marked <span class="tag">config</span> may also read one of
+          the <a href="#host">bindings a program may read</a> with <code>config("...")</code>; <code>?</code> marks one
+          that may be left out.</p>
+        <div id="operators-body"></div>
+      </section>
+
+      <section id="recipes">
+        <h2>Recipes</h2>
+        <p>Edits to the default program for common needs. Each one is a node between enrichment and the policy
+          <code>tee</code>, <code>metrics_policy</code>, where the default program's comment says to route.</p>
+        <div id="recipes-body"></div>
+      </section>
+
+      <section id="rules">
+        <h2>Rules</h2>
+        <p>What compiling checks, beyond the grammar. An <span class="tag err">error</span> refuses the program; a
+          <span class="tag warn">warning</span> lets it through. These are the ones you are most likely to meet.</p>
+        <table>
+          <thead><tr><th>Rule</th><th></th><th>Asks</th></tr></thead>
+          <tbody id="rules-body"></tbody>
+        </table>
+      </section>
+
+      <section id="limits">
+        <h2>Limits</h2>
+        <table>
+          <thead><tr><th>Limit</th><th>Value</th><th>Bounds</th></tr></thead>
+          <tbody id="limits-body"></tbody>
+        </table>
+      </section>
+    </main>
+  </div>
+  <script src="reference.js"></script>
+</body>
+</html>

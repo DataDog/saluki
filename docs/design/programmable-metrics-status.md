@@ -257,6 +257,13 @@ taken, which is usually such a leftover ADP.
   20 counters `demo.debug.0` to `demo.debug.19`, and the canary counter `demo.canary`, once per datagram, in 16
   contexts (`shard:<n>`, so that its balance covers every state lane).
 
+**The language reference.** The editor's **Reference** link opens `/reference`: the statements, values, and
+predicates of the syntax; every operator with its parameters, types, and ports; what this ADP accepts (the scope's
+inputs, the recipient directory, and the bindings a program may read, from ADP's export); recipes; the rules an author
+is most likely to meet; and the limits. The operators, rules, and limits come from the plan crate's registry,
+validator, and limits table, and the demo's tests parse every example and compile every recipe into the default
+program (`bin/programmable-metrics-demo/src/reference.rs`), so the page cannot show something that does not compile.
+
 **A visible change in about 30 seconds:**
 
 1. The editor loads the default program, detached, once ADP serves its export (**Load default program** reloads it):

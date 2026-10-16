@@ -244,7 +244,7 @@ fn the_default_routing_is_what_the_demo_configuration_routes_natively() {
 /// The plan crate's default program and its detached export, with a recipient directory: `primary` names the main
 /// output's recipient, `mrf` the failover output's, and each routing group's endpoint its URL, as ADP's directory names
 /// them. The detached export then addresses those outputs by name, as ADP's does.
-fn named_fixture() -> (saluki_metric_plan::ir::Plan, crate::export::ExportBundle) {
+pub(crate) fn named_fixture() -> (saluki_metric_plan::ir::Plan, crate::export::ExportBundle) {
     let (plan, export) = crate::preview::tests::detached_fixture_with(|catalog| {
         let named = |recipients: &[&str], endpoint: &str| saluki_metric_plan::validate::CatalogRecipient {
             recipients: recipients.iter().map(|id| id.parse().unwrap()).collect(),

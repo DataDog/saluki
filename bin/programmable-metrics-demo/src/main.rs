@@ -67,6 +67,7 @@ mod launcher;
 mod loopback;
 mod preview;
 mod recipients;
+mod reference;
 mod scenario;
 mod settings;
 mod stub;

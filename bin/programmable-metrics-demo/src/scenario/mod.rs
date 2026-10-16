@@ -2043,4 +2043,4 @@ fn shorten(message: &str, limit: usize) -> String {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
