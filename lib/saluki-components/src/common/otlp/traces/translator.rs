@@ -20,7 +20,7 @@ use crate::common::otlp::traces::transform::{
     bytes_to_hex_lowercase, get_otel_container_id, get_otel_env, get_otel_version, normalize_peer_service_tags,
     otel_span_to_dd_span, otlp_value_to_string,
 };
-use crate::common::otlp::util::{get_string_attribute, write_infra_tag_attributes};
+use crate::common::otlp::util::{get_string_attribute, set_resource_attributes, write_infra_tag_attributes};
 use crate::common::otlp::Metrics;
 
 const DATADOG_HOSTNAME_ATTR: &str = "datadog.host.name";
@@ -70,6 +70,8 @@ struct OtlpResourceMeta {
     tracer_version: MetaString,
     /// All resource attributes as a typed map (for `Trace::attributes`).
     attributes: Arc<FastHashMap<MetaString, AttributeValue>>,
+    /// Enriched tags that span conversion must see as resource attributes, so they reach every span's meta.
+    span_attributes: Vec<otlp_common::KeyValue>,
 }
 
 /// Extracts unified trace-level fields from OTLP resource attributes.
@@ -150,9 +152,10 @@ fn extract_resource_meta(
 
     // Entity and global tags resolve at low cardinality: higher tiers multiply the tags on every
     // span's stats buckets, and no setting raises the tier yet.
+    let mut span_attributes = Vec::new();
     if let Some((resolver, promotion)) = infra_attributes {
         let infra_tags = resolver.resolve_resource_tags(attributes, OriginTagCardinality::Low);
-        write_infra_tag_attributes(infra_tags, promotion, interner, &mut attr_map);
+        span_attributes = write_infra_tag_attributes(infra_tags, promotion, interner, &mut attr_map);
     }
 
     OtlpResourceMeta {
@@ -163,6 +166,7 @@ fn extract_resource_meta(
         language_name,
         tracer_version,
         attributes: Arc::new(attr_map),
+        span_attributes,
     }
 }
 
@@ -271,7 +275,7 @@ impl OtlpTracesTranslator {
     }
 
     pub fn translate_spans(&mut self, resource_spans: ResourceSpans, metrics: &Metrics) -> impl Iterator<Item = Event> {
-        let resource: OtlpResource = resource_spans.resource.unwrap_or_default();
+        let mut resource: OtlpResource = resource_spans.resource.unwrap_or_default();
         let ignore_missing_fields = self.config.ignore_missing_datadog_fields;
         let compute_top_level = self.config.enable_compute_top_level_by_span_kind;
         let interner = &self.interner;
@@ -284,12 +288,18 @@ impl OtlpTracesTranslator {
             .config
             .infra_attributes_enabled
             .then_some((&self.origin_tag_resolver, self.config.container_tag_promotion));
-        let resource_meta = extract_resource_meta(
+        let mut resource_meta = extract_resource_meta(
             &resource.attributes,
             ignore_missing_fields,
             infra_attributes,
             interner,
             string_builder,
+        );
+
+        // Span conversion maps resource attributes onto every span, so it must see the enriched custom tags too.
+        set_resource_attributes(
+            &mut resource.attributes,
+            std::mem::take(&mut resource_meta.span_attributes),
         );
 
         let mut traces_by_id: FastHashMap<u64, TraceEntry> = FastHashMap::default();
@@ -905,6 +915,15 @@ mod tests {
         )
     }
 
+    /// Returns the string value of the first span's attribute, or `None` when the key is absent or non-string.
+    fn span_attr(trace: &Trace, key: &str) -> Option<String> {
+        trace.spans()[0]
+            .attributes
+            .get(key)
+            .and_then(|value| value.as_string())
+            .map(|value| value.as_ref().to_string())
+    }
+
     #[test]
     fn translate_spans_enriches_resource_attributes_with_workload_tags() {
         let rs = build_resource_spans(
@@ -916,6 +935,11 @@ mod tests {
         assert_eq!(traces.len(), 1);
         assert_eq!(attr(&traces[0], "kube_namespace").as_deref(), Some("payments"));
         assert_eq!(attr(&traces[0], "team").as_deref(), Some("checkout"));
+
+        // The custom tag stays a plain resource attribute, so span conversion maps it onto the span. The recognized
+        // convention key is consumed as a container tag and must not be duplicated onto spans.
+        assert_eq!(span_attr(&traces[0], "team").as_deref(), Some("checkout"));
+        assert_eq!(span_attr(&traces[0], "kube_namespace"), None);
     }
 
     #[test]
@@ -939,6 +963,10 @@ mod tests {
             attr(&traces[0], "datadog.container.tag.team").as_deref(),
             Some("checkout")
         );
+
+        // The unprefixed form reaches span meta; the prefixed copy is consumed as a container tag.
+        assert_eq!(span_attr(&traces[0], "team").as_deref(), Some("checkout"));
+        assert_eq!(span_attr(&traces[0], "datadog.container.tag.team"), None);
     }
 
     #[test]
@@ -957,6 +985,10 @@ mod tests {
             Some("checkout")
         );
         assert!(traces[0].attributes.get("team").is_none());
+
+        // Only the prefixed form exists, and it is consumed as a container tag, so nothing reaches span meta.
+        assert_eq!(span_attr(&traces[0], "team"), None);
+        assert_eq!(span_attr(&traces[0], "datadog.container.tag.team"), None);
     }
 
     #[test]
