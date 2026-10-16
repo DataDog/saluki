@@ -1420,7 +1420,6 @@ dependencies = [
  "datadog-agent-commons",
  "datadog-protos",
  "futures",
- "process-memory",
  "prost-types",
  "saluki-app",
  "saluki-common",
@@ -5566,6 +5565,7 @@ dependencies = [
  "metrics",
  "papaya",
  "pin-project",
+ "process-memory",
  "proptest",
  "regex",
  "saluki-antithesis",
@@ -5581,6 +5581,7 @@ dependencies = [
  "tokio-test",
  "tracing",
  "tracing-subscriber",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
