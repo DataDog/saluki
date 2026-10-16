@@ -1,4 +1,9 @@
-use std::{future::pending, num::NonZeroU64, sync::Mutex, time::Duration};
+use std::{
+    future::pending,
+    num::NonZeroU64,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 
 use async_trait::async_trait;
 use ddsketch::DDSketch;
@@ -26,7 +31,7 @@ use tokio::{
 use tracing::{debug, error, info, trace, warn};
 
 mod telemetry;
-use self::telemetry::Telemetry;
+use self::telemetry::{FlushCounts, Telemetry};
 
 mod config;
 pub use self::config::HistogramConfiguration;
@@ -476,6 +481,8 @@ impl Transform for Aggregate {
 
                         let mut dispatcher = context.dispatcher().buffered().expect("default output should always exist");
                         let flush = async {
+                            let flush_start = Instant::now();
+
                             if let Err(e) = self.state.flush(get_unix_timestamp(), should_flush_open_windows, &mut dispatcher).await {
                                 error!(error = %e, "Failed to flush aggregation state.");
                             }
@@ -491,6 +498,8 @@ impl Transform for Aggregate {
                                 Ok(aggregated_events) => debug!(aggregated_events, "Dispatched events."),
                                 Err(e) => error!(error = %e, "Failed to flush aggregated events."),
                             }
+
+                            self.telemetry.record_last_flush_duration(flush_start.elapsed());
                         };
                         tokio::pin!(flush);
 
@@ -736,6 +745,8 @@ impl AggregationState {
         // Iterate over each context we're tracking, and flush any values that are in buckets which are now closed.
         debug!(timestamp = current_time, "Flushing buckets.");
 
+        let mut flush_counts = FlushCounts::default();
+
         for (context, am) in self.contexts.iter_mut() {
             // Figure out if we should remove this metric or not if it has no values in open buckets.
             //
@@ -785,7 +796,8 @@ impl AggregationState {
             // This means we'll always remove all-closed/empty non-counter metrics, and we _may_ remove all-closed/empty
             // counters.
             if let Some(closed_bucket_values) = am.values.split_at_timestamp(split_timestamp) {
-                self.telemetry.increment_flushed(&closed_bucket_values);
+                self.telemetry
+                    .increment_flushed(&closed_bucket_values, &mut flush_counts);
 
                 // We got some closed bucket values, so flush those out.
                 transform_and_push_metric(
@@ -821,6 +833,7 @@ impl AggregationState {
         }
 
         self.last_flush = current_time;
+        self.telemetry.record_last_flush_counts(&flush_counts);
 
         Ok(())
     }
@@ -1228,6 +1241,48 @@ mod tests {
         for (values, expected) in cases {
             assert_eq!(AggregateMetricType::from(&values), expected);
         }
+    }
+
+    #[tokio::test]
+    async fn flush_records_last_flush_counts() {
+        let recorder = TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+
+        let builder = MetricsBuilder::default();
+        let mut state = AggregationState::new(
+            BUCKET_WIDTH_SECS,
+            10,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            Telemetry::new(&builder),
+        );
+
+        assert!(state.insert(insert_ts(1), Metric::counter("metric1", 1.0)));
+        assert!(state.insert(insert_ts(1), Metric::gauge("metric2", 2.0)));
+        assert!(state.insert(insert_ts(1), Metric::distribution("metric3", 3.0)));
+
+        let _ = get_flushed_metrics(flush_ts(1), &mut state).await;
+
+        assert_eq!(
+            recorder.gauge(("aggregate_last_flush_count", &[("data_type", "series")])),
+            Some(2.0)
+        );
+        assert_eq!(
+            recorder.gauge(("aggregate_last_flush_count", &[("data_type", "sketches")])),
+            Some(1.0)
+        );
+
+        // The next flush only has the idle counter's zero value, so the gauges reflect just that flush.
+        let _ = get_flushed_metrics(flush_ts(2), &mut state).await;
+
+        assert_eq!(
+            recorder.gauge(("aggregate_last_flush_count", &[("data_type", "series")])),
+            Some(1.0)
+        );
+        assert_eq!(
+            recorder.gauge(("aggregate_last_flush_count", &[("data_type", "sketches")])),
+            Some(0.0)
+        );
     }
 
     #[test]

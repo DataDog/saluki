@@ -571,6 +571,14 @@ mod tests {
             find("aggregator.number_of_flush"),
             Some("Number of flushes done by the aggregator")
         );
+        assert_eq!(
+            find("aggregator.flush_count"),
+            Some("Number of items handled by the last flush, by flush type")
+        );
+        assert_eq!(
+            find("aggregator.flush_time"),
+            Some("Duration in nanoseconds of the last flush, by flush type")
+        );
         assert_eq!(find("filterlist.size"), Some("Metric filter list size"));
         assert_eq!(
             find("filterlist.updates"),
@@ -691,6 +699,89 @@ mod tests {
         assert!(output.contains("aggregator__processed{data_type=\"service_checks\"} 4"));
         assert!(output.contains("aggregator__number_of_flush 7"));
         assert!(output.contains("# TYPE aggregator__number_of_flush counter"));
+    }
+
+    #[test]
+    fn render_rar_telemetry_remaps_aggregator_flush_telemetry() {
+        let metrics = vec![
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts(
+                    "adp.aggregate_last_flush_count",
+                    &["component_id:dsd_agg", "data_type:series"],
+                ),
+                11.0,
+            )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts(
+                    "adp.aggregate_last_flush_count",
+                    &["component_id:dsd_agg", "data_type:sketches"],
+                ),
+                12.0,
+            )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts(
+                    "adp.aggregate_last_flush_duration_nanoseconds",
+                    &["component_id:dsd_agg"],
+                ),
+                1000.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts("adp.encoder_flushed_events_total", &["component_id:dd_events_encode"]),
+                5.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.encoder_flushed_events_total",
+                    &["component_id:dd_service_checks_encode"],
+                ),
+                6.0,
+            )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts("adp.encoder_last_flush_events", &["component_id:dd_events_encode"]),
+                2.0,
+            )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts(
+                    "adp.encoder_last_flush_events",
+                    &["component_id:dd_service_checks_encode"],
+                ),
+                3.0,
+            )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts(
+                    "adp.encoder_last_flush_duration_nanoseconds",
+                    &["component_id:dd_events_encode"],
+                ),
+                2000.0,
+            )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts(
+                    "adp.encoder_last_flush_duration_nanoseconds",
+                    &["component_id:dd_service_checks_encode"],
+                ),
+                3000.0,
+            )),
+            // The logs encoder shares the same encoder telemetry, but has no Core Agent aggregator counterpart.
+            Event::Metric(Metric::counter(
+                Context::from_static_parts("adp.encoder_flushed_events_total", &["component_id:dd_logs_encode"]),
+                99.0,
+            )),
+        ];
+
+        let output = render_with(get_datadog_agent_remappings(), metrics);
+
+        assert!(output.contains("aggregator__flush_count{flush_type=\"series\"} 11"));
+        assert!(output.contains("aggregator__flush_count{flush_type=\"sketches\"} 12"));
+        assert!(output.contains("aggregator__flush_count{flush_type=\"events\"} 2"));
+        assert!(output.contains("aggregator__flush_count{flush_type=\"service_checks\"} 3"));
+        assert!(output.contains("aggregator__flush_time{flush_type=\"main\"} 1000"));
+        assert!(output.contains("aggregator__flush_time{flush_type=\"event\"} 2000"));
+        assert!(output.contains("aggregator__flush_time{flush_type=\"service_check\"} 3000"));
+        assert!(output.contains("aggregator__flush{data_type=\"events\"} 5"));
+        assert!(output.contains("aggregator__flush{data_type=\"service_checks\"} 6"));
+        assert!(!output.contains(" 99"));
+        assert!(output.contains("# TYPE aggregator__flush_count gauge"));
+        assert!(output.contains("# TYPE aggregator__flush_time gauge"));
     }
 
     #[test]
