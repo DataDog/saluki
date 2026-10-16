@@ -2,9 +2,9 @@
 
 use agent_data_plane_config::domains::otlp;
 use saluki_components::sources::{
-    CorsConfiguration, CumulativeMonotonicMode, GrpcTransport, HistogramMode, InitialCumulativeMonotonicValue,
-    OtlpContextSettings, OtlpGrpcReceiver, OtlpHttpReceiver, OtlpKeepalive, OtlpMetricsSettings, OtlpReceiver,
-    OtlpReceiverTls, OtlpTracesSettings, SummaryMode,
+    ContainerTagPromotion, CorsConfiguration, CumulativeMonotonicMode, GrpcTransport, HistogramMode,
+    InitialCumulativeMonotonicValue, OtlpContextSettings, OtlpGrpcReceiver, OtlpHttpReceiver, OtlpKeepalive,
+    OtlpMetricsSettings, OtlpReceiver, OtlpReceiverTls, OtlpTracesSettings, SummaryMode,
 };
 
 use super::origin_tag_cardinality;
@@ -55,6 +55,12 @@ pub(crate) fn otlp_traces_settings(traces: &otlp::Traces) -> OtlpTracesSettings 
         probabilistic_sampler_sampling_percentage: traces.probabilistic_sampler_sampling_percentage,
         enable_compute_top_level_by_span_kind: traces.enable_compute_top_level_by_span_kind,
         ignore_missing_datadog_fields: traces.ignore_missing_datadog_fields,
+        infra_attributes_enabled: traces.infra_attributes_enabled,
+        container_tag_promotion: match traces.container_tag_promotion {
+            otlp::ContainerTagPromotion::Off => ContainerTagPromotion::Off,
+            otlp::ContainerTagPromotion::Duplicate => ContainerTagPromotion::Duplicate,
+            otlp::ContainerTagPromotion::Rename => ContainerTagPromotion::Rename,
+        },
     }
 }
 
@@ -219,6 +225,8 @@ mod tests {
             string_interner_size: NonZeroUsize::new(4096).unwrap(),
             enable_compute_top_level_by_span_kind: false,
             ignore_missing_datadog_fields: true,
+            infra_attributes_enabled: false,
+            container_tag_promotion: otlp::ContainerTagPromotion::Duplicate,
         };
 
         assert_eq!(
@@ -227,6 +235,8 @@ mod tests {
                 probabilistic_sampler_sampling_percentage: 25.0,
                 enable_compute_top_level_by_span_kind: false,
                 ignore_missing_datadog_fields: true,
+                infra_attributes_enabled: false,
+                container_tag_promotion: ContainerTagPromotion::Duplicate,
             },
             otlp_traces_settings(&traces)
         );

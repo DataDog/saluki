@@ -121,11 +121,12 @@ impl OtlpConfiguration {
         self
     }
 
-    fn traces_translator(&self) -> OtlpTracesTranslator {
+    fn traces_translator(&self, origin_tag_resolver: OtlpOriginTagResolver) -> OtlpTracesTranslator {
         OtlpTracesTranslator::new(
             self.traces.clone(),
             self.max_resource_len,
             self.semantic_registry.clone(),
+            origin_tag_resolver,
         )
     }
 
@@ -178,7 +179,7 @@ impl SourceBuilder for OtlpConfiguration {
         let metrics_translator_config = self.metrics_translator_config();
 
         let metric_tags = parse_configured_metric_tags(&self.metrics.tags);
-        let traces_translator = self.traces_translator();
+        let traces_translator = self.traces_translator(origin_tag_resolver.clone());
         let grpc_max_recv_msg_size_bytes = self.receiver.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
         let grpc_http2_config = self.receiver.grpc.http2_config();
         let http_max_request_body_size = self.receiver.http.max_request_body_size;
@@ -565,6 +566,7 @@ mod tests {
         HistogramMode, InitialCumulativeMonotonicValue, OtlpConfiguration, OtlpContextSettings, OtlpMetricsSettings,
         SummaryMode,
     };
+    use crate::common::otlp::origin::OtlpOriginTagResolver;
     use crate::common::otlp::receiver::receiver;
     use crate::common::otlp::traces::translator::{
         custom_status_code_registry, traces_settings, translate_custom_status_code,
@@ -627,7 +629,8 @@ mod tests {
         let mut config = source_configuration();
         config.traces.string_interner_size = NonZeroUsize::new(64 * 1024).unwrap();
         config.semantic_registry = provider;
-        let mut translator = config.traces_translator();
+        let mut translator =
+            config.traces_translator(OtlpOriginTagResolver::new(Arc::clone(&config.workload_provider)));
         let metrics = Metrics::for_tests();
         assert_eq!(translate_custom_status_code(&mut translator, &metrics), None);
 

@@ -563,12 +563,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: DefaultValue::Missing,
     },
     ClassifierEntry {
-        yaml_path: "otlp_config.traces.infra_attributes.container_tag_promotion",
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
-        default: DefaultValue::Json("\"off\""),
-    },
-    ClassifierEntry {
         yaml_path: "serializer_experimental_use_v3_api.sketches.beta_route",
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
