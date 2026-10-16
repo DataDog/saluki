@@ -194,7 +194,7 @@ prost-types = { version = "0.14", default-features = false }
 serde_json = { version = "1.0.149", default-features = false, features = [
   "std",
 ] }
-faster-hex = { version = "0.10", default-features = false }
+faster-hex = { version = "1.0", default-features = false }
 rustls-pki-types = { version = "1.14", default-features = false, features = [
   "alloc",
 ] }

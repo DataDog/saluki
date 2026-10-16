@@ -52,7 +52,7 @@ export PANORAMIC_LOG_DIR ?= $(SALUKI_TEST_OUTPUT_DIR)/panoramic
 # Pinned nightly toolchain shared by the Miri tests and API-doc generation, both of which rely on
 # nightly-only features. Keeping it in one variable ensures the two stay in lockstep; bump here to
 # move both at once.
-export RUST_NIGHTLY_VERSION ?= nightly-2026-01-18
+export RUST_NIGHTLY_VERSION ?= nightly-2026-04-11
 
 # Pinned nightly toolchain for the AIX cross-check. AIX has no prebuilt standard library, so the check builds it from
 # source, which doesn't work on RUST_NIGHTLY_VERSION or our stable toolchain. Fold this into RUST_NIGHTLY_VERSION once

@@ -1391,7 +1391,7 @@ dependencies = [
  "datadog-agent-commons",
  "datadog-agent-remote-config",
  "datadog-protos",
- "faster-hex",
+ "faster-hex 1.0.0",
  "metrics",
  "metrics-util",
  "saluki-common",
@@ -1759,6 +1759,15 @@ dependencies = [
  "defmt 0.3.100",
  "heapless",
  "serde",
+]
+
+[[package]]
+name = "faster-hex"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d8d873f78e1d3e1998ed2084da9147e3cd2bb34b67814cd49a3902b970eb124"
+dependencies = [
+ "defmt 0.3.100",
 ]
 
 [[package]]
@@ -2370,7 +2379,7 @@ version = "0.26.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "380b9c423a54f0821064b954b5a5ab25c660812f6a91da03c3f1cb4b10762aa5"
 dependencies = [
- "faster-hex",
+ "faster-hex 0.10.1",
  "gix-features",
  "sha1-checked",
  "thiserror 2.0.18",
@@ -2558,7 +2567,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "792bd92bea390087e6223b18d4d023decc36467de31e6b066b69b94beea1b9e2"
 dependencies = [
  "bstr",
- "faster-hex",
+ "faster-hex 0.10.1",
  "gix-trace",
  "thiserror 2.0.18",
 ]
@@ -5615,7 +5624,7 @@ dependencies = [
  "datadog-agent-metrics-v3",
  "datadog-protos",
  "ddsketch",
- "faster-hex",
+ "faster-hex 1.0.0",
  "float-cmp",
  "fnv",
  "foldhash 0.2.0",
