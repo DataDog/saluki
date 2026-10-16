@@ -291,3 +291,4 @@ subresource(s?)
 multiset
 target_traces_per_second
 [Mm]atcher('s|s)?
+(?i)subagent(s|'s)?

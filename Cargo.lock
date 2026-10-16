@@ -76,6 +76,7 @@ name = "agent-data-plane-config"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "futures",
  "serde",
  "tokio",
 ]
@@ -89,6 +90,7 @@ dependencies = [
  "bytesize",
  "datadog-agent-config",
  "datadog-agent-config-overlay-model",
+ "futures",
  "saluki-antithesis",
  "saluki-config",
  "saluki-error",
@@ -1413,12 +1415,14 @@ name = "datadog-agent-runtime"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bytesize",
  "chrono",
  "datadog-agent-commons",
  "datadog-protos",
  "futures",
  "process-memory",
  "prost-types",
+ "saluki-app",
  "saluki-common",
  "saluki-config",
  "saluki-core",

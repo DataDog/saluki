@@ -18,6 +18,7 @@ axum = { workspace = true }
 bytesize = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
+futures = { workspace = true }
 http = { workspace = true }
 hyper = { workspace = true }
 iana-time-zone = { workspace = true }
@@ -61,7 +62,6 @@ rcgen = { workspace = true, features = ["aws_lc_rs"] }
 rcgen = { workspace = true, features = ["ring"] }
 
 [dev-dependencies]
-futures = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true, features = ["client", "client-legacy", "http1", "tokio"] }

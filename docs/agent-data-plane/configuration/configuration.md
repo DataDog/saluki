@@ -582,18 +582,6 @@ under it. ADP applies those directive strings as configured:
 log_level: warn,agent_data_plane=debug,hyper=warn
 ```
 
-ADP registers with the Agent, receives its configuration, and serves its status, flare,
-and telemetry services through the shared subagent runtime, which logs under the
-`datadog_agent_runtime` target. A plain level covers that target. To raise its
-verbosity with advanced directives, name it alongside `agent_data_plane`:
-
-```yaml
-log_level: warn,agent_data_plane=debug,datadog_agent_runtime=debug
-```
-
-Span and field filters, such as `agent_data_plane[span{field=value}]=debug`, are not
-supported. ADP fails to start if `log_level` contains one.
-
 ### `min_tls_version`
 
 ADP supports `min_tls_version` for Datadog intake forwarding through the shared Datadog
