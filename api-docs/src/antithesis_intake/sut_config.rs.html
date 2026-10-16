@@ -36,7 +36,7 @@
 <a href=#36 id=36 data-nosnippet>36</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>load(dir: <span class="kw-2">&amp;</span>Path) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="self">Self</span>&gt; {
 <a href=#37 id=37 data-nosnippet>37</a>        <span class="kw">let </span>path = dir.join(<span class="string">"datadog.yaml"</span>);
 <a href=#38 id=38 data-nosnippet>38</a>        <span class="kw">let </span>yaml = fs::read_to_string(<span class="kw-2">&amp;</span>path).ok()<span class="question-mark">?</span>;
-<a href=#39 id=39 data-nosnippet>39</a>        <span class="kw">match </span>serde_yaml::from_str(<span class="kw-2">&amp;</span>yaml) {
+<a href=#39 id=39 data-nosnippet>39</a>        <span class="kw">match </span>serde_saphyr::from_str(<span class="kw-2">&amp;</span>yaml) {
 <a href=#40 id=40 data-nosnippet>40</a>            <span class="prelude-val">Ok</span>(config) =&gt; <span class="prelude-val">Some</span>(config),
 <a href=#41 id=41 data-nosnippet>41</a>            <span class="prelude-val">Err</span>(e) =&gt; {
 <a href=#42 id=42 data-nosnippet>42</a>                <span class="macro">warn!</span>(path = %path.display(), error = %e, <span class="string">"Cannot read the sampled config, skipping Pyld60."</span>);
@@ -68,7 +68,7 @@
 <a href=#68 id=68 data-nosnippet>68</a>        <span class="kw">let </span>yaml = <span class="macro">format!</span>(
 <a href=#69 id=69 data-nosnippet>69</a>            <span class="string">"hostname: h\nuse_v3_api:\n  series:\n    enabled: \"{series_v3}\"\nserializer_compressor_kind: {compressor}\ndogstatsd_buffer_size: 8192\n"
 <a href=#70 id=70 data-nosnippet>70</a>        </span>);
-<a href=#71 id=71 data-nosnippet>71</a>        serde_yaml::from_str(<span class="kw-2">&amp;</span>yaml).expect(<span class="string">"parse config"</span>)
+<a href=#71 id=71 data-nosnippet>71</a>        serde_saphyr::from_str(<span class="kw-2">&amp;</span>yaml).expect(<span class="string">"parse config"</span>)
 <a href=#72 id=72 data-nosnippet>72</a>    }
 <a href=#73 id=73 data-nosnippet>73</a>
 <a href=#74 id=74 data-nosnippet>74</a>    <span class="attr">#[test]
@@ -80,7 +80,7 @@
 <a href=#80 id=80 data-nosnippet>80</a>        <span class="macro">assert!</span>(config(<span class="bool-val">true</span>, <span class="string">"snappy"</span>).expected_series_v3());
 <a href=#81 id=81 data-nosnippet>81</a>        <span class="macro">assert!</span>(!config(<span class="bool-val">false</span>, <span class="string">"zstd"</span>).expected_series_v3());
 <a href=#82 id=82 data-nosnippet>82</a>        <span class="comment">// datadog_only resolves against the rig's non-Datadog dd_url, so it means v2.
-<a href=#83 id=83 data-nosnippet>83</a>        </span><span class="kw">let </span>datadog_only: SutConfig = serde_yaml::from_str(
+<a href=#83 id=83 data-nosnippet>83</a>        </span><span class="kw">let </span>datadog_only: SutConfig = serde_saphyr::from_str(
 <a href=#84 id=84 data-nosnippet>84</a>            <span class="string">"use_v3_api:\n  series:\n    enabled: \"datadog_only\"\nserializer_compressor_kind: zstd\n"</span>,
 <a href=#85 id=85 data-nosnippet>85</a>        )
 <a href=#86 id=86 data-nosnippet>86</a>        .expect(<span class="string">"parse"</span>);

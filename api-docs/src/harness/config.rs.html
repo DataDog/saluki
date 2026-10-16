@@ -22,9 +22,9 @@
 <a href=#22 id=22 data-nosnippet>22</a>///
 <a href=#23 id=23 data-nosnippet>23</a>/// Pinned to `error`: the quietest level that still logs and a value both
 <a href=#24 id=24 data-nosnippet>24</a>/// targets parse identically. Louder levels blow Antithesis's per-hour
-<a href=#25 id=25 data-nosnippet>25</a>/// log-output budget. `off` is intentionally absent — `serde_yaml` renders it as
-<a href=#26 id=26 data-nosnippet>26</a>/// the bare scalar `off`, which a YAML 1.1 reader decodes as the boolean
-<a href=#27 id=27 data-nosnippet>27</a>/// `false`, and the Datadog Agent then rejects the level and refuses to boot.
+<a href=#25 id=25 data-nosnippet>25</a>/// log-output budget. `off` is intentionally absent — rendered as the bare scalar
+<a href=#26 id=26 data-nosnippet>26</a>/// `off`, a YAML 1.1 reader decodes it as the boolean `false`, and the Datadog
+<a href=#27 id=27 data-nosnippet>27</a>/// Agent then rejects the level and refuses to boot.
 <a href=#28 id=28 data-nosnippet>28</a></span><span class="attr">#[derive(Debug, Clone, Copy, Serialize)]
 <a href=#29 id=29 data-nosnippet>29</a>#[serde(rename_all = <span class="string">"lowercase"</span>)]
 <a href=#30 id=30 data-nosnippet>30</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">enum </span>LogLevel {
@@ -221,7 +221,7 @@
 <a href=#221 id=221 data-nosnippet>221</a>    ///
 <a href=#222 id=222 data-nosnippet>222</a>    /// Returns an error if serialization fails.
 <a href=#223 id=223 data-nosnippet>223</a>    </span><span class="kw">pub fn </span>to_yaml(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; anyhow::Result&lt;String&gt; {
-<a href=#224 id=224 data-nosnippet>224</a>        <span class="kw">let </span><span class="kw-2">mut </span>yaml = serde_yaml::to_string(<span class="self">self</span>).context(<span class="string">"serialize datadog.yaml"</span>)<span class="question-mark">?</span>;
+<a href=#224 id=224 data-nosnippet>224</a>        <span class="kw">let </span><span class="kw-2">mut </span>yaml = serde_saphyr::to_string(<span class="self">self</span>).context(<span class="string">"serialize datadog.yaml"</span>)<span class="question-mark">?</span>;
 <a href=#225 id=225 data-nosnippet>225</a>        yaml.push_str(STATIC_YAML_TAIL);
 <a href=#226 id=226 data-nosnippet>226</a>        <span class="prelude-val">Ok</span>(yaml)
 <a href=#227 id=227 data-nosnippet>227</a>    }
@@ -296,7 +296,7 @@
 <a href=#296 id=296 data-nosnippet>296</a>    ///
 <a href=#297 id=297 data-nosnippet>297</a>    /// Returns an error if serialization fails.
 <a href=#298 id=298 data-nosnippet>298</a>    </span><span class="kw">pub fn </span>to_yaml(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; anyhow::Result&lt;String&gt; {
-<a href=#299 id=299 data-nosnippet>299</a>        serde_yaml::to_string(<span class="self">self</span>).context(<span class="string">"serialize driver.yaml"</span>)
+<a href=#299 id=299 data-nosnippet>299</a>        serde_saphyr::to_string(<span class="self">self</span>).context(<span class="string">"serialize driver.yaml"</span>)
 <a href=#300 id=300 data-nosnippet>300</a>    }
 <a href=#301 id=301 data-nosnippet>301</a>
 <a href=#302 id=302 data-nosnippet>302</a>    <span class="doccomment">/// Read the driver config from the `driver.yaml` that `first_sample_config`
@@ -310,7 +310,7 @@
 <a href=#310 id=310 data-nosnippet>310</a>        <span class="kw">let </span>path = config_dir.join(<span class="string">"driver.yaml"</span>);
 <a href=#311 id=311 data-nosnippet>311</a>        <span class="kw">let </span>yaml = fs::read_to_string(<span class="kw-2">&amp;</span>path).with_context(|| <span class="macro">format!</span>(<span class="string">"read {}"</span>, path.display()))<span class="question-mark">?</span>;
 <a href=#312 id=312 data-nosnippet>312</a>        <span class="kw">let </span>config: <span class="self">Self </span>=
-<a href=#313 id=313 data-nosnippet>313</a>            serde_yaml::from_str(<span class="kw-2">&amp;</span>yaml).with_context(|| <span class="macro">format!</span>(<span class="string">"parse driver config from {}"</span>, path.display()))<span class="question-mark">?</span>;
+<a href=#313 id=313 data-nosnippet>313</a>            serde_saphyr::from_str(<span class="kw-2">&amp;</span>yaml).with_context(|| <span class="macro">format!</span>(<span class="string">"parse driver config from {}"</span>, path.display()))<span class="question-mark">?</span>;
 <a href=#314 id=314 data-nosnippet>314</a>        <span class="macro">anyhow::ensure!</span>(
 <a href=#315 id=315 data-nosnippet>315</a>            (<span class="number">1</span>..=MAX_CONTEXTS_PER_REQUEST).contains(<span class="kw-2">&amp;</span>config.context_count),
 <a href=#316 id=316 data-nosnippet>316</a>            <span class="string">"context_count {} outside 1..={} in {}, the intake would reject every fetch and the driver would ship nothing"</span>,
@@ -379,7 +379,7 @@
 <a href=#379 id=379 data-nosnippet>379</a>    ///
 <a href=#380 id=380 data-nosnippet>380</a>    /// Returns an error if serialization fails.
 <a href=#381 id=381 data-nosnippet>381</a>    </span><span class="kw">pub fn </span>to_yaml(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; anyhow::Result&lt;String&gt; {
-<a href=#382 id=382 data-nosnippet>382</a>        serde_yaml::to_string(<span class="self">self</span>).context(<span class="string">"serialize context_source.yaml"</span>)
+<a href=#382 id=382 data-nosnippet>382</a>        serde_saphyr::to_string(<span class="self">self</span>).context(<span class="string">"serialize context_source.yaml"</span>)
 <a href=#383 id=383 data-nosnippet>383</a>    }
 <a href=#384 id=384 data-nosnippet>384</a>
 <a href=#385 id=385 data-nosnippet>385</a>    <span class="doccomment">/// Read the context-source config from the `context_source.yaml` that `first_sample_config` wrote
@@ -395,7 +395,7 @@
 <a href=#395 id=395 data-nosnippet>395</a>    </span><span class="kw">pub fn </span>read(config_dir: <span class="kw-2">&amp;</span>Path) -&gt; anyhow::Result&lt;<span class="self">Self</span>&gt; {
 <a href=#396 id=396 data-nosnippet>396</a>        <span class="kw">let </span>path = config_dir.join(<span class="string">"context_source.yaml"</span>);
 <a href=#397 id=397 data-nosnippet>397</a>        <span class="kw">let </span>yaml = fs::read_to_string(<span class="kw-2">&amp;</span>path).with_context(|| <span class="macro">format!</span>(<span class="string">"read {}"</span>, path.display()))<span class="question-mark">?</span>;
-<a href=#398 id=398 data-nosnippet>398</a>        <span class="kw">let </span>config: <span class="self">Self </span>= serde_yaml::from_str(<span class="kw-2">&amp;</span>yaml)
+<a href=#398 id=398 data-nosnippet>398</a>        <span class="kw">let </span>config: <span class="self">Self </span>= serde_saphyr::from_str(<span class="kw-2">&amp;</span>yaml)
 <a href=#399 id=399 data-nosnippet>399</a>            .with_context(|| <span class="macro">format!</span>(<span class="string">"parse context source config from {}"</span>, path.display()))<span class="question-mark">?</span>;
 <a href=#400 id=400 data-nosnippet>400</a>        <span class="kw">for </span>(kind, cap) <span class="kw">in </span>[
 <a href=#401 id=401 data-nosnippet>401</a>            (<span class="string">"metric_contexts"</span>, config.metric_contexts),
@@ -507,7 +507,7 @@
 <a href=#507 id=507 data-nosnippet>507</a>    <span class="doccomment">/// The Agent's nested switch and ADP's safety gate, as a timeline renders them.
 <a href=#508 id=508 data-nosnippet>508</a>    </span><span class="kw">fn </span>series_api(seed: u64) -&gt; (bool, bool) {
 <a href=#509 id=509 data-nosnippet>509</a>        <span class="kw">let </span>yaml = render(seed);
-<a href=#510 id=510 data-nosnippet>510</a>        <span class="kw">let </span>parsed: serde_yaml::Value = serde_yaml::from_str(<span class="kw-2">&amp;</span>yaml).expect(<span class="string">"parse rendered yaml"</span>);
+<a href=#510 id=510 data-nosnippet>510</a>        <span class="kw">let </span>parsed: serde_json::Value = serde_saphyr::from_str(<span class="kw-2">&amp;</span>yaml).expect(<span class="string">"parse rendered yaml"</span>);
 <a href=#511 id=511 data-nosnippet>511</a>        <span class="comment">// A string, not a YAML boolean: ADP's typed model reads this leaf as `String`, so an unquoted
 <a href=#512 id=512 data-nosnippet>512</a>        // boolean fails deserialization and the target never boots.
 <a href=#513 id=513 data-nosnippet>513</a>        </span><span class="kw">let </span>agent = <span class="kw">match </span>parsed[<span class="string">"use_v3_api"</span>][<span class="string">"series"</span>][<span class="string">"enabled"</span>]
