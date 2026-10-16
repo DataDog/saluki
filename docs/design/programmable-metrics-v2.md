@@ -12,6 +12,7 @@ premise needed. Read the [index](programmable-metrics-index.md) and the
 - [The simplifications, in order](#the-simplifications-in-order)
 - [How each step is validated](#how-each-step-is-validated)
 - [Progress](#progress)
+- [Handing off](#handing-off)
 
 ## The premise, then and now
 
@@ -104,3 +105,82 @@ for N5's shedding.
 | V8 | not started | |
 | V9 | not started | |
 | V10 | not started | |
+
+## Handing off
+
+How a new session continues this work. The state is the branch's last commit; the working tree is clean apart from
+`.claude/launch.json`, which is not committed and stays so.
+
+### Working rules from the owner
+
+- Work in the foreground, where the owner can follow it; hand work to other agents only when it runs in parallel and
+  cannot conflict.
+- Commit locally with `git commit --no-gpg-sign`, one commit per step (code), then one for documents if needed. Do not
+  push unless the owner asks for that push.
+- Do not edit the [specification](programmable-metrics.md); propose changes as numbered amendments. The next amendment
+  is **193**: add it to the [stages 7 and 9
+  amendments](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments) and to the [status amendments
+  index](programmable-metrics-status.md#spec-amendments-index).
+- Do not touch `architecture-experiment/` or `.claude/`, and add no CI jobs.
+- Run no UDP benchmarks or load tests apart from `make demo-programmable-metrics-check`. Give interactive demo runs a
+  directory of their own under `target/programmable-metrics-demo/` (macOS cleans `/tmp`).
+- Keep the demo the same shape, ideally simpler as concepts go. Keep program mode compatible with native mode and
+  differentially testable ([two modes](#two-modes-not-coexistence)).
+- For a Saluki-only configuration key, follow the repository's configuration-system workflow (source model, seed,
+  model destination, `SALUKI_KEYS`, the generated reference); format with `make fmt`, not `cargo fmt`.
+
+### Validation, and what it costs
+
+Targeted while iterating, full suites once per step ([how each step is validated](#how-each-step-is-validated)). On
+this Mac, as of V2:
+
+| Command | Tests | Time |
+|---|---|---|
+| `cargo nextest run -p saluki-metric-plan -E 'not test(/property_test_/)'` | 904 | about 1 minute |
+| `cargo nextest run -p saluki-metric-plan --release -E 'test(/property_test_/)'` | 50 | a few minutes, with the release build |
+| `cargo nextest run -p agent-data-plane -E 'test(/programmable_metrics::/)'` | 323 | the slowest suite; filter while iterating |
+| `cargo nextest run -p agent-data-plane-config -p agent-data-plane-config-system` | 250 | quick |
+| `cargo nextest run -p programmable-metrics-demo` | 146 | quick |
+| `make demo-programmable-metrics-check` | two launches | about 7.5 minutes with the build (154 s and 281 s) |
+
+Then `cargo clippy` with `-D warnings` on the changed crates, `cargo check --workspace --tests`, `make check-fmt`, and
+`vale --minAlertLevel=error` on changed documents. Golden files: `SALUKI_METRIC_PLAN_UPDATE_EXPLAIN=1` and
+`SALUKI_METRIC_PLAN_UPDATE_SCHEMA=1` rewrite them; review the diff. More commands are in
+[status: focused tests and golden files](programmable-metrics-status.md#focused-tests-and-golden-files).
+
+### Documents each step updates
+
+The progress table above, with the commit; an amendment if the step changes what the specification says; the status
+document's [changes users can see](programmable-metrics-status.md#changes-users-can-see) for anything a user notices;
+and a section of the [log](programmable-metrics-log.md) saying what went, what replaced it, how the tests moved, and
+the results.
+
+### The next step: V3
+
+**Native configuration lowers to literals.** Today the default program reads native policy settings (filterlists,
+endpoint routing, failover) through live policy bindings, so a Remote Config change reaches the running program with no
+new generation, and the detached export converts those bindings into literals. After V3 the default program holds the
+literals itself; a native policy change lowers a new default program, which installs as a generation. Bindings remain
+for facts and signals only.
+
+The one behavior to keep is **precise updates**: a filterlist change must give a generation that rebuilds only the
+kernels whose settings changed, with no cut and no rebuild where nothing changed. Prove that with a test before
+removing the live path; the installer's semantic diff and kernel reuse should already give it.
+
+Where to start:
+
+- `bin/agent-data-plane/src/programmable_metrics/bindings.rs`: the policy bindings (`BindingClass::Policy`) and the
+  keyed bindings per routing group (`metrics_endpoint_routing.group.<key>.*`).
+- `bin/agent-data-plane/src/programmable_metrics/lowering/mod.rs`: `lower` and `lower_after`, which would write the
+  values; and the code that reacts to a native configuration change, which would lower again and install.
+- `lib/saluki-metric-plan/src/export.rs` and `export/eliminate.rs`: the detached conversion, which should shrink to
+  nothing once the default program is already detached.
+- `lib/saluki-metric-plan/src/compose.rs` (refusing policy bindings in an artifact), `validate/catalog.rs`
+  (`detached_programs`, the binding classes), `validate/references.rs` (`LiveBindingOnHost`), and the keyed bindings
+  in `testing/fixtures.rs`.
+- The demo: its default program and editor should show the same program, with nothing to convert.
+
+### Also deferred by the owner
+
+- V1 (opaque hosts), until V7 and V8 rework the frame tests that use them.
+- A scripted video of the demo (a tour mode in the page, recorded with Playwright).

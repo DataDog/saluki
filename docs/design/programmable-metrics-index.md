@@ -2,18 +2,19 @@
 
 Start here. This page says what the programmable metrics work is, where it stands, and which document holds what, so
 that the whole can be understood at a high level before reading any of the longer documents. Branch
-`luke/programmable-metrics`; local commits only.
+`luke/programmable-metrics`; pushed once up to `eb1c4ee134`, local commits since.
 
 ## In one paragraph
 
 ADP's metrics path runs from a single logical plan instead of hard-wired components. Native configuration lowers to a
-**default program**: a validated graph of operators with effect contracts, which a reference interpreter defines and
-an equivalence oracle checks. The program is compiled onto a physical frame fixed at boot, where synchronous operators
-fuse into **regions** run by a generic driver. Changes install live as **generations**, with no loss or duplication.
-An operator, or a demo standing in for Remote Config, can replace the policy part of the program with an **artifact**
-and roll it back. Aggregation is a stateful kernel that carries its state across changes, cutting over when a change
-requires it, such as a new bucket width. Outputs and recipients are live resources (stage 7). The path runs on
-partitioned **lanes** across cores (stage 9).
+**default program**: a validated graph of operators with effect contracts, which a reference interpreter defines and an
+equivalence oracle checks. The program is compiled onto a physical frame fixed at boot, where synchronous operators fuse
+into **regions** run by a generic driver. Changes install live as **generations**, with no loss or duplication. An
+operator, or a demo standing in for Remote Config, can replace the program for the whole metrics path with an
+**artifact**, a detached program that owns its policy as literals, and roll it back. Aggregation is a stateful kernel
+that carries its state across changes, cutting over when a change requires it, such as a new bucket width. Outputs and
+recipients are live resources (stage 7), declared by configuration. The path runs on partitioned **lanes** across cores
+(stage 9).
 
 ## Where it stands
 
@@ -33,10 +34,15 @@ partitioned **lanes** across cores (stage 9).
 | After 9 | One editable scope, `metrics`, over the whole metrics path; at most one aggregation per program (amendments 168, 169) | `e9fd618187` |
 | Detached programs, phase 1 | Binding classes and host facts, the recipient directory, one aggregation's identity, editor annotations, version 1 fingerprints removed | `cfd4a28072` |
 | Detached programs, phase 2 | The detached export, composition by value, `program` in status, emits addressed to recipients with implied outputs, facts and signals only, no node provenance, adoption, the standalone configuration reload | `7f9d67a033` |
-| Detached programs, phase 3 | The demo: teams B and C as additional endpoints, destinations added and removed live, no resources artifacts, the scenarios reworked | not committed |
+| Detached programs, phase 3 | The demo: teams B and C as additional endpoints, destinations added and removed live, no resources artifacts, the scenarios reworked | `c9e27cea81` |
+| What does nothing | Detached programs leave out identity nodes and constant splits (amendment 191) | `b1be5f7b72` |
+| Version 2 plan | The premise shift (the program is the system), two modes not coexistence, ten simplification steps | `79555ebcb4` |
+| V2 | Resources artifacts removed (amendment 192) | `06e7301501` |
 
 Stage 8 (the production Remote Config channel) was skipped on purpose, and stage 10 (measured extensions) is not
-started. Current state, in detail: [status: where things stand](programmable-metrics-status.md#where-things-stand).
+started. **Current work is version 2**, from step V3; a new session starts at its
+[handoff](programmable-metrics-v2.md#handing-off). Current state, in detail: [status: where things
+stand](programmable-metrics-status.md#where-things-stand).
 
 ## Reading order
 
@@ -73,7 +79,7 @@ started. Current state, in detail: [status: where things stand](programmable-met
 | What changed for users against native ADP? | [Status: changes users can see](programmable-metrics-status.md#changes-users-can-see) |
 | What did we change outside the new code, and is it permanent? | [Status: changes outside the new code](programmable-metrics-status.md#changes-outside-the-new-code) |
 | What is waiting on a decision? | [Status: decisions awaiting the owner](programmable-metrics-status.md#decisions-awaiting-the-owner); [stages 7 and 9 open questions](programmable-metrics-stages-7-and-9.md#12-open-questions) |
-| Which spec amendments are proposed? | [Status: amendments index](programmable-metrics-status.md#spec-amendments-index) (1 to 87); [stages 7 and 9 amendments](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments) (88 to 182) |
+| Which spec amendments are proposed? | [Status: amendments index](programmable-metrics-status.md#spec-amendments-index) (1 to 87); [stages 7 and 9 amendments](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments) (88 to 192) |
 | What are the risks and limitations? | [Status](programmable-metrics-status.md#known-limitations-and-risks); [implementation risks](programmable-metrics-implementation.md#risks); [stages 7 and 9 risks](programmable-metrics-stages-7-and-9.md#11-risks) |
 | What should we work on next? | [Next steps](programmable-metrics-next.md#the-next-chunk-of-work) |
 | Do programs replace native policy, and how? | [Direction](programmable-metrics-next.md#direction-programs-replace-native-policy); [detached programs](programmable-metrics-detached-programs.md) |

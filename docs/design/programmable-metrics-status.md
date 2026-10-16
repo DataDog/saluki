@@ -46,11 +46,20 @@ ADP's artifact channel and given its headless check in stage 5, and extended in 
   its endpoint resolves at boot. Each output runs as a lease of its encode host and each recipient as an I/O loop of
   its delivery host; the installer prepares them, publishes each host's native set and settings, withdraws what the
   configuration no longer declares, and drains and releases what no generation uses. So endpoints, routing groups,
-  failover, keys, proxies, and delivery settings change live, logs, events, and traces with them, and a resources
-  artifact (the stub channel's `resources` product) can declare recipients and outputs that policy artifacts route
-  to. The privileged API serves the resources and every recipient incarnation. See
-  [the stages 7 and 9 plan](programmable-metrics-stages-7-and-9.md), its "Stage 7 as built," and the
+  failover, keys, proxies, and delivery settings change live, logs, events, and traces with them. Recipients come only
+  from configuration: resources artifacts were removed by version 2's step V2 (amendment 192), and in standalone mode
+  `experimental.standalone_config_reload` (demo only) rereads the configuration file so that endpoints can be added and
+  removed live. See [the stages 7 and 9 plan](programmable-metrics-stages-7-and-9.md), its "Stage 7 as built," and the
   [implementation design's summary](programmable-metrics-implementation.md#stage-7-resource-generations-as-built).
+- **Published programs are detached** from native policy ([detached
+  programs](programmable-metrics-detached-programs.md), phases 1 to 3, and what does nothing left out): a published
+  program writes its policy settings as literals, binds only facts and signals, addresses recipients by name from a
+  recipient directory (`primary`, `mrf`, `cluster_agent`, and each additional endpoint by its URL), and carries no node
+  provenance; native policy configuration feeds only the default program. Its export leaves out nodes that do nothing.
+- **Version 2 is under way** ([version 2 simplifications](programmable-metrics-v2.md)): the premise is now that native
+  configuration is a front end and the program is the system, and the machinery of coexistence is being removed step
+  by step. V2 (resources artifacts) is done; V3 (native configuration lowers to literals) is next. The plan's
+  [handoff](programmable-metrics-v2.md#handing-off) says how to continue.
 - DogStatsD processing runs on **lanes** (stage 9), tasks inside one component, fixed at boot: `dsd_pre_aggregation`
   runs a producer lane per decoder, each the only stamper of its own admission point; `dsd_agg` runs state lanes, each
   holding the contexts whose key groups it owns, routed to it at the exit into aggregation and coalesced into buffers
@@ -81,10 +90,10 @@ ADP's artifact channel and given its headless check in stage 5, and extended in 
 - Stages 8 and 10 are not built. Their extension-point types exist, only native defaults are accepted, and each
   unsupported case is a capability error that names a stage (see [Deferred work by stage](#deferred-work-by-stage)).
 
-**Branch.** Eleven commits on top of `main` (`b940bf1f8b`, the merge base) before the stage 7 commit, then the stage 7,
-P9.F, and stage 9 commits. They are local only: the branch has no upstream and nothing is pushed. The spec commit is
-signed; the implementation and document commits are unsigned (made with `--no-gpg-sign`, since the repository sets
-`commit.gpgsign=true`). No CI pipeline has run on the branch.
+**Branch.** `luke/programmable-metrics`, on top of `main` (`b940bf1f8b`, the merge base). It was pushed once, at the
+owner's request, up to `eb1c4ee134`; every commit after that is local, and nothing is pushed unless the owner asks
+again. The spec commit is signed; the implementation and document commits are unsigned (made with `--no-gpg-sign`,
+since the repository sets `commit.gpgsign=true`). No CI pipeline has run on the branch.
 
 | Commit | Stage | What it delivered |
 |---|---|---|
@@ -101,8 +110,16 @@ signed; the implementation and document commits are unsigned (made with `--no-gp
 | `b7e63f147b` | 7 | Resource generations: the encode host and the delivery host, recipient loops with drains, reopens, and live settings, the resource table and resource transactions, credentials, the resource budget, fingerprints version 2, pending and degraded artifacts, the `resources` product, the status and resources routes; stage 9's measurement harness (P9.0); the demo's scenarios S8 to S11. |
 | `b523d9002b` | 9 | Stage 9's foundations, neutral at one lane: the bounded node acquire and the budget recording, `last_seen` as a maximum in the aggregation kernel, accumulated aggregation, cache, resolver, mapper, and tag projection telemetry with the telemetry audit, sampled CPU-time accounting, the tap gate, `Observation::EpochSwitched` without the tracker clone, and `KernelSpec::with_shared`. |
 | (the stage 9 commit) | 9 | Partitioned execution: lanes in the topology and the region host (the coordinator, owned admission, the shared source clock), the frame with lanes, keyed exits with coalescing, state lanes with shared lineage records and the reset window, budget reservations (O1), the datagram queue and the decoders' front caches (O4, O5), the semantics oracles, harness, and arrival replay, ADP's lane counts, keys, `Strict` fit, and `plan_lane_*` telemetry, the debug-log tap gate, `lanes.mode: auto` by default, R1's cost model kept for the layout without lanes, and the demo's lane flags, Lanes panel, second launch (S12 to S14), and loopback witness; with the stage 9 review's fixes. |
+| `b26e05912e`, `eb1c4ee134` | docs | The index, the implementation log, the measurement runbook, and the deployment context with the next chunk of work. |
+| `e9fd618187` | after 9 | One editable scope, `metrics`, over the whole metrics path; at most one aggregation per program (amendments 168, 169). |
+| `2ae2541eb1` | docs | Programs replace native policy (amendment 170), and the detached programs design. |
+| `cfd4a28072`, `7f9d67a033`, `c9e27cea81` | detached | Detached programs, phases 1 to 3: binding classes and the recipient directory, the detached export and adoption, and the demo's live destinations. |
+| `b1be5f7b72` | detached | What does nothing, left out of detached programs (amendment 191). |
+| `771bd7e320`, `79555ebcb4` | docs | N2 and N3 (one region from decode to encode) in the next steps, and the version 2 plan. |
+| `06e7301501`, `6973a3e8d8` | V2 | Resources artifacts removed (amendment 192). |
 
-**Next.** The stage 9 gate on a Linux host with at least 20 homogeneous cores (plan 8.5,
+**Next.** The [version 2 simplifications](programmable-metrics-v2.md), from V3, come first. Beside them, the stage 9
+gate on a Linux host with at least 20 homogeneous cores (plan 8.5,
 [Q2](programmable-metrics-stages-7-and-9.md#12-open-questions)): its items 1 to 4, with the per-buffer cost of lanes as
 the risk to watch (plan 8.6), M2's rerun for O4's choice, M4 at P = 8, and the allocator setting measured beside it
 ([decisions](#decisions-awaiting-the-owner)); then O6 (builder shards, triggered by M8), and the measured options the
@@ -944,10 +961,10 @@ the local `--test-threads 4` in the gate (see [Environment notes](#environment-n
 | **One scope, one aggregation** (amendments 168 and 169) | The default program has one scope, `metrics`, over the whole metrics path, and a program at most one aggregation (`single_aggregation`, declared by ADP's catalog). After a width change, every lossy node fed by the timestamp split or aggregation (eight in the fixtures) carries the artifact's provenance, so its loss is attributed to the artifact. Composition puts an artifact's edges in the default program's order. | Accept both, or narrow the scope again; lift the one-aggregation rule once the demo and the operator surfaces handle several. |
 | **Programs replace native policy** (decided by the owner on 2026-10-14; amendment 170) | Decided: a published program owns its policy settings as literals and binds only facts and signals; native policy configuration only feeds the default program, which runs when no artifact is published; status says when native policy settings are not applied; machinery for native compatibility stays in lowering. See the [direction](programmable-metrics-next.md#direction-programs-replace-native-policy) and the [design](programmable-metrics-detached-programs.md), built in phases 1 and 2. | Nothing for the decision; the design's open questions were decided (no configuration-declared recipients; no node provenance). |
 | **Detached programs, phase 2** (owner’s decisions of 2026-10-14; amendments 183 to 188) | Committed (`7f9d67a033`): no node provenance (a plan-level `native_components` annotation keeps the boot layout, a deviation), adoption on the unchanged generation ID, implied outputs on `dd_out` for native recipients only (Cluster Agent and declared recipients refused, a deviation), the detached export's base equal to the bound one, and `program` without `partly_applied`. See [phase 2 as built](programmable-metrics-detached-programs.md#106-phase-2-as-built). | Confirm the deviations, and the release notes, which are not written yet. |
-| **Detached programs, phase 3: the demo** (owner’s decisions of 2026-10-14) | Built, not committed: teams B and C as ordinary additional endpoints, **Add destination** and **Remove** through the standalone reload, no resources artifacts in the demo, the scenarios reworked (S2 is the recipe, S8 to S11 destinations and a native change, S14 the renamed aggregation), and one installer-core fix (a refused revision's acknowledgment is kept, amendment 190); after the review, an `emit` that
+| **Detached programs, phase 3: the demo** (owner’s decisions of 2026-10-14) | Committed (`c9e27cea81`): teams B and C as ordinary additional endpoints, **Add destination** and **Remove** through the standalone reload, no resources artifacts in the demo, the scenarios reworked (S2 is the recipe, S8 to S11 destinations and a native change, S14 the renamed aggregation), and one installer-core fix (a refused revision's acknowledgment is kept, amendment 190); after the review, an `emit` that
 loses some of its recipients keeps delivering to the others (amendment 189, decided on the owner's behalf), and the
 editor validates against stand-ins for the outputs ADP adds. No release note for `experimental.standalone_config_reload`: it changes only standalone mode, which is not for production, and it is documented in the configuration reference. The demo's export fixture stays a bound export, which the export reader's and editor's tests use; the demo's composition tests use a detached export with a directory. See [the demo as built](programmable-metrics-detached-programs.md#85-the-demo-as-built). | Confirm amendment 189, the release-note decision, and the acknowledgment fix. |
-| **What does nothing, left out** (requested by the owner on 2026-10-15; amendment 191; installation as written decided after review) | Built, not committed: the detached export leaves out identity nodes and constant splits, by one pass the editor's diff and `program.differs` share, and notes them; the bound default program is unchanged. The installer compares plans as written, so publishing the shorter export over the default program is a generation that builds no kernel and makes no cut, and the plan running is the program as published. Under it the left-out nodes' telemetry is absent: the Agent's `aggregator.filtered_tags_cache_miss` stops counting the tag filterlist memo's lookups (with no rules), the only change the Agent sees; installer-set size gauges read zero. See [what does nothing, as built](programmable-metrics-detached-programs.md#107-what-does-nothing-as-built). | Accept the `aggregator.filtered_tags_cache_miss` change, or keep a tag filterlist with no rules in the export. |
+| **What does nothing, left out** (requested by the owner on 2026-10-15; amendment 191; installation as written decided after review) | Committed (`b1be5f7b72`): the detached export leaves out identity nodes and constant splits, by one pass the editor's diff and `program.differs` share, and notes them; the bound default program is unchanged. The installer compares plans as written, so publishing the shorter export over the default program is a generation that builds no kernel and makes no cut, and the plan running is the program as published. Under it the left-out nodes' telemetry is absent: the Agent's `aggregator.filtered_tags_cache_miss` stops counting the tag filterlist memo's lookups (with no rules), the only change the Agent sees; installer-set size gauges read zero. See [what does nothing, as built](programmable-metrics-detached-programs.md#107-what-does-nothing-as-built). | Accept the `aggregator.filtered_tags_cache_miss` change, or keep a tag filterlist with no rules in the export. |
 | **The specification's Vale errors** | The specification, which only its author edits, adds 12 errors to `make check-docs`, a CI job (see [Environment notes](#environment-notes)). | Before CI runs: add the 11 flagged words to the Vale vocabulary, and edit or exempt the hyphenated `Exactly-once`. |
 
 ## Spec amendments index
