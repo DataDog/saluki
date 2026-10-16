@@ -8,13 +8,12 @@
 use std::time::Duration;
 
 use agent_data_plane_config::SalukiConfiguration;
-use datadog_agent_apm::semantics::SemanticRegistryProvider;
+use datadog_agent_apm::{sampling::TraceSamplingSubscription, semantics::SemanticRegistryProvider};
 use datadog_agent_commons::ipc::{
     client::{client_name, RemoteAgentClient},
     config::RemoteAgentClientConfiguration,
 };
 use datadog_agent_remote_config::{AgentIdentity, ClientKind, RcClientConfiguration, RemoteConfigurationClient};
-use saluki_components::remote_config::TraceSamplingSubscription;
 use saluki_core::runtime::{
     nested_supervisor, ChildSpecification, RestartStrategy, Supervisable, Supervisor, SupervisorError, SupervisorSpec,
 };
@@ -133,7 +132,11 @@ fn remote_config_child(
     let mut supervisor = Supervisor::new("remote-config")?
         .with_restart_strategy(RestartStrategy::one_to_one().with_intensity_and_period(5, Duration::from_secs(60)));
     supervisor.add_worker(worker);
-    Ok(nested_supervisor(supervisor).temporary().build())
+    // `hosted()` would propagate this subtree's restart exhaustion to the root, which would stop ADP. `temporary()`
+    // keeps the finite RC-only restart budget isolated.
+    #[allow(deprecated)]
+    let child = nested_supervisor(supervisor).temporary().build();
+    Ok(child)
 }
 
 #[cfg(test)]
