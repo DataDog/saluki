@@ -179,8 +179,9 @@ a.link-button:hover { border-color: var(--accent); }
 .pane { min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 /* Only the editor gives up height when the pane is full; everything else keeps its own. */
 .pane > :not(.editor) { flex-shrink: 0; }
+/* The demo page fits the window and scrolls within its panes; other pages, such as the reference, scroll whole. */
 @media (min-width: 1101px) {
-  body { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+  body.demo { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
   .layout { flex: 1; min-height: 0; }
   .pane { min-height: 0; overflow-y: auto; padding-right: 4px; }
 }
