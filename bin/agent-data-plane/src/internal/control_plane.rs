@@ -74,7 +74,7 @@ pub async fn create_control_plane_supervisor(
         let status_sections: Vec<Arc<dyn StatusSectionProvider>> = vec![Arc::new(DogStatsDStatusSection::new())];
 
         supervisor.add_worker(ra_bootstrap.create_dataspace_anchor());
-        supervisor.add_worker(ra_bootstrap.create_event_reporter(config_system.live(|config| &config.shared.secrets)));
+        supervisor.add_worker(ra_bootstrap.create_event_reporter());
         privileged_api = privileged_api
             .with_grpc_service(ra_bootstrap.create_status_service(status_sections))
             .with_grpc_service(ra_bootstrap.create_flare_service())

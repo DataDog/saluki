@@ -15,7 +15,6 @@ default = []
 taskdump = ["dep:tokio"]
 
 [dependencies]
-agent-data-plane-config = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 datadog-agent-commons = { workspace = true }

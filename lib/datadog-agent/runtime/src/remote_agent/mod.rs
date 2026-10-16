@@ -8,7 +8,6 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::{sync::Arc, time::Duration};
 
-use agent_data_plane_config::{shared::Secrets, Live};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use datadog_agent_commons::ipc::{
@@ -154,15 +153,10 @@ impl RemoteAgentBootstrap {
     }
 
     /// Creates a worker that reports diagnostic events to the Core Agent as remote agent events.
-    ///
-    /// `secrets` is the live secrets configuration. The reporter reads it to throttle `InvalidApiKey` reports: the
-    /// Core Agent answers each one by refreshing the secrets at most once per
-    /// `secret_refresh_on_api_key_failure_interval`, so one report per interval is all the refresh can consume.
-    pub fn create_event_reporter(&self, secrets: Live<Secrets>) -> RemoteAgentEventReporter {
+    pub fn create_event_reporter(&self) -> RemoteAgentEventReporter {
         RemoteAgentEventReporter {
             client: self.client.clone(),
             session_id: self.session_id.clone(),
-            secrets,
         }
     }
 
@@ -734,14 +728,10 @@ impl Supervisable for DataspaceAnchorWorker {
 ///
 /// It subscribes to [`DiagnosticEvent`]s emitted anywhere in the process converts the ones it recognizes into the
 /// Datadog Agent's remote agent event representation, and reports them to the Core Agent over the remote agent gRPC
-/// API. `InvalidApiKey` events are throttled to the secrets refresh interval, because the Core Agent answers them by
-/// re-resolving the API key from the secrets backend no faster than that.
+/// API. `InvalidApiKey` events are rate limited, so a sustained stream of them cannot flood the Core Agent.
 pub struct RemoteAgentEventReporter {
     client: RemoteAgentClient,
     session_id: SessionIdHandle,
-
-    /// The secrets configuration the reporter reads to throttle `InvalidApiKey` reports.
-    secrets: Live<Secrets>,
 }
 
 #[async_trait]
@@ -753,7 +743,6 @@ impl Supervisable for RemoteAgentEventReporter {
     async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         let client = self.client.clone();
         let session_id = self.session_id.clone();
-        let secrets = self.secrets.clone();
 
         Ok(Box::pin(async move {
             let subscription = subscribe_events(IdentifierFilter::all())
@@ -761,31 +750,20 @@ impl Supervisable for RemoteAgentEventReporter {
 
             select! {
                 _ = process_shutdown => Ok(()),
-                result = run_event_reporter(client, session_id, secrets, subscription) => result,
+                result = run_event_reporter(client, session_id, subscription) => result,
             }
         }))
     }
 }
 
 async fn run_event_reporter(
-    mut client: RemoteAgentClient, session_id: SessionIdHandle, mut secrets: Live<Secrets>,
-    mut subscription: Subscription<DiagnosticEvent>,
+    mut client: RemoteAgentClient, session_id: SessionIdHandle, mut subscription: Subscription<DiagnosticEvent>,
 ) -> Result<(), GenericError> {
     debug!("Remote Agent event reporter started.");
 
     let mut invalid_api_key_reports = InvalidApiKeyReportThrottle::default();
 
-    loop {
-        // The secrets arm only advances the view's snapshot: `Deref` returns the last value `changed` processed, so a
-        // view nobody awaits keeps reporting the interval it was built with.
-        let update = select! {
-            update = subscription.recv() => match update {
-                Some(update) => update,
-                None => break,
-            },
-            _ = secrets.changed() => continue,
-        };
-
+    while let Some(update) = subscription.recv().await {
         let DataspaceUpdate::Message(_, event) = update else {
             continue;
         };
@@ -801,7 +779,7 @@ async fn run_event_reporter(
         };
 
         let invalid_api_key = matches!(event.details(), &DiagnosticDetails::InvalidApiKey);
-        if invalid_api_key && !invalid_api_key_reports.is_allowed(&secrets) {
+        if invalid_api_key && !invalid_api_key_reports.is_allowed() {
             debug!("Throttling an InvalidApiKey event report.");
             continue;
         }
@@ -813,16 +791,12 @@ async fn run_event_reporter(
 
         match client.report_remote_agent_event(request).await {
             Ok(_) => {
-                // The interval opens only now that the report was delivered: a report that failed to reach the Core
-                // Agent would otherwise consume the window, holding back the next report for an interval nothing
-                // was delivered through.
+                // The window opens only on delivery, so a failed report never holds back the next one.
                 if invalid_api_key {
                     invalid_api_key_reports.record();
                 }
             }
             Err(e) => {
-                // The Core Agent received nothing, so the next `InvalidApiKey` event reports immediately once the
-                // connection recovers.
                 warn!(error = %e, "Failed to report remote agent event to the Datadog Agent.");
             }
         }
@@ -832,43 +806,24 @@ async fn run_event_reporter(
     Ok(())
 }
 
-/// Decides when an `InvalidApiKey` event is worth reporting to the Core Agent.
+/// Minimum time between `InvalidApiKey` reports.
+const INVALID_API_KEY_REPORT_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Rate limits `InvalidApiKey` reports.
 ///
-/// A sustained 403 produces one diagnostic per second per endpoint, and the Core Agent answers each report by
-/// re-resolving the secrets at most once per `secret_refresh_on_api_key_failure_interval`, so reporting more often
-/// than that is traffic the refresh mostly drops.
-///
-/// Checking and recording are separate, and only a delivered report is recorded: a report that fails to reach the
-/// Core Agent does not consume the interval, so the next event after connectivity recovers is sent immediately
-/// instead of after a window nothing was delivered through.
+/// Checking and recording are separate so that only a delivered report opens the window: a report that never
+/// reaches the Core Agent leaves the next one free to send immediately.
 #[derive(Debug, Default)]
 struct InvalidApiKeyReportThrottle {
-    /// When the last `InvalidApiKey` event was reported.
     last_reported: Option<Instant>,
 }
 
 impl InvalidApiKeyReportThrottle {
-    /// Returns whether an `InvalidApiKey` event may be reported now.
-    ///
-    /// The first event is reported immediately, so a key rotation heals as fast as the Core Agent can re-resolve
-    /// it. An interval of zero turns the Core Agent's failure-triggered refresh off, so an event reported with
-    /// nothing configured has no consumer and is never sent.
-    fn is_allowed(&self, secrets: &Secrets) -> bool {
-        // Saturating rather than plain multiplication: the schema places no upper bound on the interval,
-        // and a plain product of a large one would overflow, panicking in debug builds and wrapping to
-        // an arbitrary window in release builds. Saturation degrades an absurd configuration to one
-        // report per process lifetime instead.
-        let interval = Duration::from_secs(secrets.refresh_on_api_key_failure_interval.saturating_mul(60));
-        if interval.is_zero() {
-            return false;
-        }
-
-        self.last_reported.is_none_or(|last| last.elapsed() >= interval)
+    fn is_allowed(&self) -> bool {
+        self.last_reported
+            .is_none_or(|last| last.elapsed() >= INVALID_API_KEY_REPORT_INTERVAL)
     }
 
-    /// Holds further reports until the interval elapses.
-    ///
-    /// Called only after a report was delivered, so a failed report leaves the next one free to send.
     fn record(&mut self) {
         self.last_reported = Some(Instant::now());
     }
@@ -1101,67 +1056,38 @@ mod tests {
         ));
     }
 
-    /// Returns secrets configuration with the given failure-triggered refresh interval, in minutes.
-    fn secrets_with_refresh_interval(minutes: u64) -> Secrets {
-        Secrets {
-            backend_command: None,
-            refresh_on_api_key_failure_interval: minutes,
-        }
+    #[tokio::test(start_paused = true)]
+    async fn invalid_api_key_reports_are_throttled_to_thirty_seconds() {
+        let mut throttle = InvalidApiKeyReportThrottle::default();
+
+        assert!(throttle.is_allowed());
+        throttle.record();
+        assert!(!throttle.is_allowed());
+
+        tokio::time::advance(Duration::from_secs(30)).await;
+        assert!(throttle.is_allowed());
+        throttle.record();
+        assert!(!throttle.is_allowed());
     }
 
     #[tokio::test(start_paused = true)]
-    async fn invalid_api_key_reports_are_throttled_to_the_configured_interval() {
+    async fn a_report_slightly_before_the_window_elapses_is_held() {
         let mut throttle = InvalidApiKeyReportThrottle::default();
-        let secrets = secrets_with_refresh_interval(5);
 
-        // The first report is sent immediately, so a key rotation heals as fast as the Core Agent can re-resolve it.
-        assert!(throttle.is_allowed(&secrets));
         throttle.record();
-        assert!(!throttle.is_allowed(&secrets));
-
-        // A report after the interval elapses is sent, and opens a new window.
-        tokio::time::advance(Duration::from_secs(5 * 60)).await;
-        assert!(throttle.is_allowed(&secrets));
-        throttle.record();
-        assert!(!throttle.is_allowed(&secrets));
-    }
-
-    #[test]
-    fn invalid_api_key_reports_are_never_sent_when_the_refresh_interval_is_zero() {
-        // The Core Agent performs no failure-triggered refresh when the interval is zero, so the report has no
-        // consumer.
-        let throttle = InvalidApiKeyReportThrottle::default();
-
-        assert!(!throttle.is_allowed(&secrets_with_refresh_interval(0)));
-    }
-
-    #[test]
-    fn an_interval_too_large_to_multiply_does_not_overflow() {
-        // The schema places no upper bound on the interval. A saturating product keeps an absurd
-        // configuration from panicking in debug builds or wrapping to an arbitrary window in release
-        // builds: it reports once and then never again, which is the closest thing to "every 584 billion
-        // years" a `Duration` can say.
-        let mut throttle = InvalidApiKeyReportThrottle::default();
-        let secrets = secrets_with_refresh_interval(u64::MAX);
-
-        assert!(throttle.is_allowed(&secrets));
-        throttle.record();
-        assert!(!throttle.is_allowed(&secrets));
+        tokio::time::advance(Duration::from_secs(29)).await;
+        assert!(!throttle.is_allowed());
     }
 
     #[test]
     fn a_report_that_was_never_delivered_does_not_open_the_throttle_window() {
-        // A failed delivery must not consume the interval: the next event after connectivity recovers is
-        // reported immediately, rather than waiting out a window nothing was delivered through.
         let mut throttle = InvalidApiKeyReportThrottle::default();
-        let secrets = secrets_with_refresh_interval(5);
 
-        assert!(throttle.is_allowed(&secrets));
-        assert!(throttle.is_allowed(&secrets));
-        assert!(throttle.is_allowed(&secrets));
+        assert!(throttle.is_allowed());
+        assert!(throttle.is_allowed());
+        assert!(throttle.is_allowed());
 
-        // Only a delivered report holds the next one back.
         throttle.record();
-        assert!(!throttle.is_allowed(&secrets));
+        assert!(!throttle.is_allowed());
     }
 }
