@@ -289,7 +289,7 @@ impl From<ProtoConfig> for Config {
 /// Check configurations are written against YAML 1.1 parsers, so `yes`/`no`/`on`/`off` are booleans, leading-zero
 /// integers are octal, and `<<` merge keys are expanded. Non-finite floats are kept as their string spelling.
 ///
-/// The parser's default limits on the number of nodes and events are lifted, as check configurations can legitimately
+/// The default limits on the number of parsed nodes and events are lifted, as check configurations can legitimately
 /// hold very large lists. Nesting depth, alias expansion, and total scalar size are still bounded.
 pub(crate) fn yaml_from_str<T>(input: &str) -> Result<T, serde_saphyr::Error>
 where

@@ -14,7 +14,7 @@ use serde::de::DeserializeOwned;
 /// Non-finite floats (`.inf`, `.nan`) in untyped positions are kept as their string spelling rather than rejecting
 /// the whole document, leaving it to the consumer of that value to decide whether it's valid.
 ///
-/// The parser's default limits on the number of nodes and events are lifted, as configuration files can legitimately
+/// The default limits on the number of parsed nodes and events are lifted, as configuration files can legitimately
 /// hold very large lists. Nesting depth, alias expansion, and total scalar size are still bounded.
 ///
 /// # Errors
