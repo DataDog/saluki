@@ -102,17 +102,17 @@ impl From<ProtoAdvancedAdIdentifier> for AdvancedADIdentifier {
 /// Raw data trait for configuration data
 pub trait RawData {
     /// Get the value of the data
-    fn get_value(&self) -> &BTreeMap<MetaString, serde_yaml::Value>;
+    fn get_value(&self) -> &BTreeMap<MetaString, serde_json::Value>;
 
     /// Get a value from the data
-    fn get(&self, key: &str) -> Option<&serde_yaml::Value> {
+    fn get(&self, key: &str) -> Option<&serde_json::Value> {
         self.get_value().get(key)
     }
 
     /// Convert the data to bytes
     fn to_bytes(&self) -> Result<Vec<u8>, GenericError> {
         let mut buffer = Vec::new();
-        serde_yaml::to_writer(&mut buffer, &self.get_value())?;
+        serde_saphyr::to_io_writer(&mut buffer, &self.get_value())?;
         Ok(buffer)
     }
 }
@@ -120,11 +120,11 @@ pub trait RawData {
 /// Generic map of key-value pairs
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Data {
-    value: BTreeMap<MetaString, serde_yaml::Value>,
+    value: BTreeMap<MetaString, serde_json::Value>,
 }
 
 impl RawData for Data {
-    fn get_value(&self) -> &BTreeMap<MetaString, serde_yaml::Value> {
+    fn get_value(&self) -> &BTreeMap<MetaString, serde_json::Value> {
         &self.value
     }
 }
@@ -135,7 +135,7 @@ pub struct Instance {
     /// Instance ID
     id: String,
     /// Instance value
-    value: BTreeMap<MetaString, serde_yaml::Value>,
+    value: BTreeMap<MetaString, serde_json::Value>,
 }
 
 impl Instance {
@@ -146,7 +146,7 @@ impl Instance {
 }
 
 impl RawData for Instance {
-    fn get_value(&self) -> &BTreeMap<MetaString, serde_yaml::Value> {
+    fn get_value(&self) -> &BTreeMap<MetaString, serde_json::Value> {
         &self.value
     }
 }
@@ -284,12 +284,35 @@ impl From<ProtoConfig> for Config {
     }
 }
 
+/// Deserializes a YAML check configuration using YAML 1.1 scalar resolution.
+///
+/// Check configurations are written against YAML 1.1 parsers, so `yes`/`no`/`on`/`off` are booleans, leading-zero
+/// integers are octal, and `<<` merge keys are expanded. Non-finite floats are kept as their string spelling.
+///
+/// The parser's default limits on the number of nodes and events are lifted, as check configurations can legitimately
+/// hold very large lists. Nesting depth, alias expansion, and total scalar size are still bounded.
+pub(crate) fn yaml_from_str<T>(input: &str) -> Result<T, serde_saphyr::Error>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let mut budget = serde_saphyr::Budget::default();
+    budget.max_nodes = usize::MAX;
+    budget.max_events = usize::MAX;
+
+    let options = serde_saphyr::options! {
+        budget: Some(budget),
+        legacy_octal_numbers: true,
+        reject_non_finite_typeless_float: false,
+    };
+    serde_saphyr::from_str_with_options(input, options)
+}
+
 fn bytes_to_data(bytes: Vec<u8>) -> Result<Data, GenericError> {
     let parse_bytes = String::from_utf8(bytes)?;
 
-    let map: BTreeMap<String, serde_yaml::Value> = serde_yaml::from_str(&parse_bytes)?;
+    let map: BTreeMap<String, serde_json::Value> = yaml_from_str(&parse_bytes)?;
 
-    let mut result = BTreeMap::<MetaString, serde_yaml::Value>::new();
+    let mut result = BTreeMap::<MetaString, serde_json::Value>::new();
 
     for (key, value) in map {
         result.insert(key.into(), value);
@@ -564,24 +587,24 @@ mod tests {
         assert!(!config.logs_excluded);
         assert_eq!(
             config.init_config.get("key"),
-            Some(&serde_yaml::Value::String("value".to_string()))
+            Some(&serde_json::Value::String("value".to_string()))
         );
         assert_eq!(config.instances.len(), 2);
         assert_eq!(
             config.instances[0].get("instance_key"),
-            Some(&serde_yaml::Value::String("instance_value".to_string()))
+            Some(&serde_json::Value::String("instance_value".to_string()))
         );
         assert_eq!(
             config.instances[1].get("another_key"),
-            Some(&serde_yaml::Value::String("another_value".to_string()))
+            Some(&serde_json::Value::String("another_value".to_string()))
         );
         assert_eq!(
             config.metric_config.get("metric_key"),
-            Some(&serde_yaml::Value::String("metric_value".to_string()))
+            Some(&serde_json::Value::String("metric_value".to_string()))
         );
         assert_eq!(
             config.logs_config.get("log_key"),
-            Some(&serde_yaml::Value::String("log_value".to_string()))
+            Some(&serde_json::Value::String("log_value".to_string()))
         );
 
         assert_eq!(config.advanced_ad_identifiers.len(), 1);

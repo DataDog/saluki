@@ -8,7 +8,6 @@ use figment::{
 use saluki_error::{ErrorContext as _, GenericError};
 use serde::Serialize;
 use serde_json::{Map as JsonMap, Value as JsonValue};
-use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 
 pub struct ResolvedProvider {
     data: Map<Profile, Dict>,
@@ -31,7 +30,7 @@ impl ResolvedProvider {
     {
         let (file_data, metadata) = read_serialized_config_file(path.as_ref(), "YAML")?;
 
-        let mut raw_yaml_value: YamlValue = serde_yaml::from_str(&file_data).with_error_context(|| {
+        let mut raw_yaml_value: JsonValue = crate::yaml::from_str(&file_data).with_error_context(|| {
             format!(
                 "Failed to deserialize YAML configuration file '{}'.",
                 path.as_ref().display()
@@ -41,10 +40,10 @@ impl ResolvedProvider {
         // Normalize the raw YAML data we got back.
         //
         // If the file is empty, we'll get a null value which we just normalize as an empty map to make `Serialized` happy.
-        drop_nested_nulls_yaml(&mut raw_yaml_value);
+        drop_nested_nulls_json(&mut raw_yaml_value);
 
         if raw_yaml_value.is_null() {
-            raw_yaml_value = YamlValue::Mapping(YamlMapping::new());
+            raw_yaml_value = JsonValue::Object(JsonMap::new());
         }
 
         Self::from_serialized(raw_yaml_value, metadata)
@@ -101,34 +100,6 @@ where
     let metadata = Metadata::from(format!("{} file", name), path.as_ref());
 
     Ok((file_data, metadata))
-}
-
-fn drop_nested_nulls_yaml(value: &mut YamlValue) {
-    match value {
-        YamlValue::Sequence(items) => {
-            for item in items {
-                drop_nested_nulls_yaml(item);
-            }
-        }
-        YamlValue::Mapping(mapping) => {
-            let mut to_drop = Vec::new();
-
-            for (entry_key, entry_value) in mapping.iter_mut() {
-                if entry_value.is_null() {
-                    to_drop.push(entry_key.clone());
-                } else {
-                    drop_nested_nulls_yaml(entry_value);
-                }
-            }
-
-            for key in to_drop {
-                mapping.remove(key);
-            }
-        }
-
-        // This isn't a type we need to interact with so just ignore it.
-        _ => {}
-    }
 }
 
 fn drop_nested_nulls_json(value: &mut JsonValue) {
@@ -195,17 +166,6 @@ mod tests {
                 "list": [ { "keep": true } ],
             })
         );
-    }
-
-    #[test]
-    fn drop_nested_nulls_yaml_removes_null_leaves_recursively() {
-        let mut value: YamlValue =
-            serde_yaml::from_str("keep: kept\ndrop: null\nnested:\n  keep: 1\n  drop: null\n").unwrap();
-
-        drop_nested_nulls_yaml(&mut value);
-
-        let expected: YamlValue = serde_yaml::from_str("keep: kept\nnested:\n  keep: 1\n").unwrap();
-        assert_eq!(value, expected);
     }
 
     #[test]
