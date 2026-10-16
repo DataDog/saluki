@@ -51,7 +51,7 @@ pub(crate) fn stage(anchor: &str, operator: &str, ordinal: usize) -> ArtifactNod
     }
 }
 
-/// The ID of a tuple's merge under `anchor`: `<anchor>_in`.
+/// The ID of the merge of a tuple under `anchor`: `<anchor>_in`.
 pub(crate) fn merge(anchor: &str) -> ArtifactNodeId {
     join(anchor, "in")
 }

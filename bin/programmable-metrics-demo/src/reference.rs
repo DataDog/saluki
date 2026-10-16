@@ -88,7 +88,7 @@ pub struct RecipientEntry {
     /// The endpoint it delivers to.
     pub endpoint: String,
 
-    /// The demo's label for the endpoint, such as "Team B", if it has one.
+    /// The demo's label for the endpoint, such as `Team B`, if it has one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
 }

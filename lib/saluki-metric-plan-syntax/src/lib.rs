@@ -36,7 +36,7 @@
 //! - A **stage** is any registered operator, `op` or `op(<positional>, <parameter>: <value>, ...)`, or `where
 //!   <predicate>`, which keeps what matches. An operator's positional parameter may be written first without its name,
 //!   and a parameter with a default may be left out. A word with arguments right after it is always an operator, so an
-//!   `emit` whose parameters no sink writes is `emit(output: "o", to: [...])`, and an operator named like a sink,
+//!   `emit` whose parameters no sink writes is `emit(to: [...], output: "o")`; an operator named like a sink,
 //!   `where`, `fork`, or `as` is written with parentheses even without arguments, as in `drop()`.
 //! - A **sink** ends a pipeline: `emit primary`, `emit [primary, "https://b.example.com"]`, `emit output <output>`,
 //!   `drop`, or `exit <name>` where the pipeline leaves a scope that ends early. `fork { <branch> ... }` also ends a
@@ -120,7 +120,7 @@
 //!   back with its nodes and edges reordered.
 //! - Any other artifact still prints, as well as it can, and its text never parses back to it, since parsing makes only
 //!   well-formed artifacts. Parsing reports most problems; the text cannot write an edge into an input port other than
-//!   a node's only one (or a merge's numbered ones), out of an exit, into a scope input, or between nodes the artifact
+//!   a node's only one (or the numbered ones of a merge), out of an exit, into a scope input, or between nodes the artifact
 //!   does not have, so printing moves such an edge or leaves it out, and a node that no edge enters reads from the scope
 //!   input of its name.
 //! - `print(parse(s))` is a fixed point: printing what it parses to gives it back.

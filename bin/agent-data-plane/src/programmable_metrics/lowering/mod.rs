@@ -248,8 +248,8 @@ const OMITTED: &[(&str, &str)] = &[
 ];
 
 /// Returns how a reader knows the node `local` of the default program, left out of the detached export because it does
-/// nothing as configured, and its rank in program order; `note` is lowering's note of it, if it has one. `None` for a
-/// node no reader needs named: one a left-out `split` alone reached.
+/// nothing as configured, and its rank in program order; `note` is the note from lowering about it, if it has one.
+/// `None` for a node no reader needs named: one a left-out `split` alone reached.
 pub fn omitted_name(local: &str, note: Option<&str>) -> Option<(usize, String)> {
     if let Some(rank) = OMITTED.iter().position(|(id, _)| *id == local) {
         return Some((rank, OMITTED[rank].1.to_string()));

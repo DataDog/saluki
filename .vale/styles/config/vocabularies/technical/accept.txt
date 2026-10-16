@@ -323,3 +323,11 @@ millicores?
 shard(s|ing|ed)?
 CPUs
 bursty
+[Rr]esugar(s|ed|ing)?
+Kusto
+idempotence
+positionals
+filterlisted
+finalizations
+unconfigured
+unplaceable

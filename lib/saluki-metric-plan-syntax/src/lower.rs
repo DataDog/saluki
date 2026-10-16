@@ -29,7 +29,7 @@
 //! - In a statement without `let`, the anchor is the port the pipeline starts from: [`ids::input_anchor`] for a scope
 //!   input, [`ids::port_anchor`] for a `let` (with its port, if written), or [`ids::tee_port`] of the implicit tee and
 //!   the use's port when the stream is used more than once. A tuple head's merge is [`ids::merge`]`(<anchor of its
-//!   first item>)`, and the merge's ID, written or derived, is then the anchor. Each stage is
+//!   first item>)`, and the ID of the merge, written or derived, is then the anchor. Each stage is
 //!   [`ids::stage`]`(anchor, <operator>, <ordinal>)`.
 //! - A fork's tee is [`ids::fork`]`(anchor)`, and its branch `i` has the anchor [`ids::tee_port`]`(<fork's ID>, i)`.
 //! - The implicit tee after a stream used more than once is [`ids::fanout`]`(<node>, <port>)`, where the node is the
@@ -40,7 +40,7 @@
 //!
 //! Ordinals count the stages of one pipeline (or of one fork branch) by operator, from 1, in pipeline order. Every
 //! stage counts, including those named with `as` and the last stage of a `let`, so naming one stage never changes
-//! another's ID. A `where` counts as its operator, [`ids::WHERE_OPERATOR`].
+//! the ID of another. A `where` counts as its operator, [`ids::WHERE_OPERATOR`].
 //!
 //! # Rules
 //!
@@ -797,7 +797,7 @@ impl Lowering<'_> {
         }
     }
 
-    /// Lowers a tuple's merge with the ID `id`, and the edges into it.
+    /// Lowers the merge of a tuple with the ID `id`, and the edges into it.
     fn tuple(&mut self, tuple: &Tuple, id: ArtifactNodeId, own: Option<&str>) -> Option<usize> {
         let sources = tuple
             .items
@@ -1308,7 +1308,7 @@ fn predicate_path(path: &str) -> String {
     }
 }
 
-/// Returns a count in words: "two", "three", and so on up to ten, and digits beyond.
+/// Returns a count in words: `two`, `three`, and so on up to ten, and digits beyond.
 fn count_word(count: usize) -> String {
     const WORDS: [&str; 11] = [
         "no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
@@ -1318,7 +1318,7 @@ fn count_word(count: usize) -> String {
         .map_or_else(|| count.to_string(), |word| word.to_string())
 }
 
-/// Joins items with `and`: "a and b", or "a, b, and c".
+/// Joins items with `and`: `a and b`, or `a, b, and c`.
 fn and_list(items: &[String]) -> String {
     match items {
         [] => String::new(),
@@ -1328,7 +1328,7 @@ fn and_list(items: &[String]) -> String {
     }
 }
 
-/// Lists the ports of `name` to pick from: "`x.a` or `x.b`", or "`x.a`, `x.b`, or `x.c`".
+/// Lists the ports of `name` to pick from: `x.a` or `x.b`, or `x.a`, `x.b`, or `x.c`.
 fn alternatives(name: &str, ports: &[PortName]) -> String {
     let choices = ports
         .iter()

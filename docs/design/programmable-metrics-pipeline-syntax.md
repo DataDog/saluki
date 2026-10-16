@@ -38,49 +38,61 @@ streaming query over metrics, and people know that shape from shells, `jq`, PRQL
    where parsing it back gives exactly the same graph; anywhere else the core form is printed.
 5. **Separate passes.** The parser makes a tree; lowering turns the tree into an artifact; normalization (a plan crate
    pass, not a syntax concern) puts equivalent programs into one form; the printer recognizes sugar in a graph and
-   lays the tree out as text. No pass does another's job.
+   lays the tree out as text. No pass does the job of another.
 
 ## The language
 
 ### An example
 
-The default program, printed:
+The default program's export, as the printer writes it once normalized (parameters bound to native configuration are
+abbreviated `...`):
 
 ```text
 policy metrics {
   let dsd_no_agg_split = dogstatsd
-    | dogstatsd_mapper(profiles: [ ... ]) as dsd_enrich
-    | namespace_prefix("tenant", exclusions: ["internal.", "system."]) as dsd_prefix_filter
-    | where intake_name != "tenant.raw.blocked" as dsd_prefix_filter_blocklist
-    | timestamp_split(10s)
+    | dogstatsd_mapper(profiles: ..., cache_size: ..., string_interner_bytes: ...) as dsd_enrich
+    | namespace_prefix(config.dogstatsd.prefix_filter.metric_namespace, exclusions: ...) as dsd_prefix_filter
+    | where not intake_name matches(values: ..., prefix: ...) as dsd_prefix_filter_blocklist
+    | timestamp_split(config.dogstatsd.aggregation.window_duration_seconds)
 
   let dsd_agg = dsd_no_agg_split.default
-    | tag_projection(rules: [ ... ], value_rules: [ ... ]) as dsd_tag_filterlist
-    | aggregate(window: 10s, flush_interval: 15s)
+    | tag_projection(rules: ..., value_rules: ..., cache_capacity: ...) as dsd_tag_filterlist
+    | aggregate(window: ..., flush_interval: ..., context_limit: ..., ...)
 
   let dsd_post_agg_filter = (dsd_agg, dsd_no_agg_split.passthrough)
-    | where not (kind in [counter, rate, gauge, set] and intake_name == "tenant.checkout.latency.max")
+    | where not (kind in [counter, rate, gauge, set] and intake_name matches(values: ..., prefix: ...))
 
   dsd_post_agg_filter | emit output dsd_client_telemetry
 
-  (dsd_post_agg_filter, otlp, checks, liveness, trace_sampler) as metrics_enrich_in
-    | host_tags(config.host.tags, deadline: config.host.tags_deadline) as metrics_enrich_host_tags
+  let metrics_enrich = (dsd_post_agg_filter, otlp, checks, liveness, trace_sampler) | host_enrichment
+
+  metrics_enrich
+    | host_tags(config.host.tags, deadline: config.host.tags_deadline)
     | fork as metrics_policy {
-        emit output dd_metrics_encode
-        where intake_name == "checkout.requests" or intake_name starts_with "checkout." as metrics_routing_filter_0
-          | emit output metrics_routing_encode_0
-        ...
-      }
+      emit output dd_metrics_encode
+      where intake_name in config.metrics_endpoint_routing.group.0123456789abcdef.names
+          or intake_name starts_with config.metrics_endpoint_routing.group.0123456789abcdef.prefixes
+          as metrics_routing_filter_0
+        | emit output metrics_routing_encode_0
+      ...
+    }
 }
 ```
 
 The `as` clauses keep the native node IDs that ADP's telemetry, topology, and correspondence depend on (the owner's
-decision of 2026-10-16). A later step, with V10, renames native IDs to the derived scheme, and they disappear.
+decision of 2026-10-16). A later step, with V10, renames native IDs to the derived scheme, and they disappear. Merges
+(`_in`), tees (`_fanout`), and terminals already follow native naming, so `dsd_post_agg_filter`'s tuple and its reuse
+need none.
 
 ### Lexical structure
 
-As today: whitespace and line breaks are insignificant, `#` starts a comment to the end of the line, and strings,
-numbers, durations, and identifiers are unchanged. New tokens: `|`, `!=`. New keywords, reserved only where the grammar
+As today, `#` starts a comment to the end of the line, and strings, numbers, durations, and identifiers are
+unchanged. Whitespace and line breaks are insignificant, with two exceptions that statements without separators need:
+an operator's arguments follow its name directly, as `op(...)` (after a space, `(` starts the next statement's tuple),
+and a word that could continue a stage or start a new statement (`as` followed by `|` or `.`, naming a stream) starts a
+statement only at the start of a line. The printer always writes `op(` and starts statements on new lines. A word right
+after an adjacent `.` is an identifier even if it starts with a digit, so binding segments such as
+`config.metrics_endpoint_routing.group.0123456789abcdef.names` read as written. New tokens: `|`, `!=`. New keywords, reserved only where the grammar
 expects them: `let`, `as`, `where`, `fork`, `emit`, `output`, `drop`, `exit`. Retired: `node`, `->`, `input.`, and
 `prefix_in`.
 
@@ -140,7 +152,9 @@ Each replaces a validator rule with a syntax rule, so the author meets it at the
 - **Sinks end pipelines**: a sink in the middle of a pipeline is an error that says how to copy a stream instead (name
   it with `let` and use it twice).
 - **A bare statement ends in a sink, a `let` does not.**
-- **Names are unique**: a `let` cannot reuse a scope input's name, another `let`'s, or a node ID.
+- **Names are unique**: a `let` cannot reuse another `let`'s name or a node ID, and a name a later `let` defines
+  cannot be used before it as a scope input. The scope's inputs are not known when parsing, so a name no `let` defines
+  is a scope input, and validation reports one the scope does not have, at its span.
 
 ### Arguments and defaults
 
@@ -212,8 +226,11 @@ Printing is `format(resugar(artifact))`:
 
 - **Resugar** (artifact to tree) recognizes sugar in the graph. It is total: any artifact prints. It is exact for every
   **well-formed** artifact, one whose edges name nodes and ports that exist, with one edge per input port and at most
-  one per output port, no cycles, every node reachable from an input, and every output port used. For other artifacts it
-  prints as well as it can, and parsing the text reports the problem, as today.
+  one per output port, unique IDs, no cycles, every node reachable from an input, and every output port used, apart
+  from parameters equal to their registry default, which printing leaves out and normalization writes back in (so a
+  normalized artifact's text parses to the same artifact once normalized, which composition always does). Some
+  artifacts that are not well-formed cannot be written at all, such as an edge into a scope input or between nodes
+  that do not exist; they print as well as they can, and their text never parses back to them.
 - **Format** (tree to text) lays the tree out at the line width, breaking values and predicates as today's printer
   does.
 
@@ -234,7 +251,7 @@ writes:
 5. **Defaults and positionals.** Parameters equal to their registry default are left out; a positional parameter is
    written first, without its name.
 
-Each sugar form's recognizer is the exact image of its rewrite: desugaring what resugar recognized gives back the same
+Each sugar form's recognizer is the exact image of its rewrite: expanding what resugar recognized gives back the same
 nodes, edges, and IDs. Where two forms could describe the same graph, the priority order picks one, and a test pins
 each such pair.
 
@@ -274,7 +291,7 @@ page is reworked for it:
   form beside the core form it rewrites to, then predicates, operators with an example of each in pipeline form,
   node IDs and `as`, the rules the syntax and the validator enforce, and the limits. Every example parses and every
   recipe compiles into the default program, as today.
-- **Recipes** become one-line inserts: "add `| where not (name starts_with "demo.debug.")` before `| fork`".
+- **Recipes** become one-line inserts: add `| where not (name starts_with "demo.debug.")` before `| fork`.
 - **Editor.** Highlights the new keywords, dims `as` clauses, warns when an edit changes a stateful node's ID, and keeps
   underlining validator findings through the span map.
 - **Annotations** (`compile.rs`'s `annotate`) attach their comments to the new statements.
@@ -305,6 +322,30 @@ and run everything.
 - **Overlaps**: a test for each pair of sugar forms that could describe the same graph.
 - **Errors**: every syntax rule has a test of its message and span.
 - **The default program** prints in the form shown above, and an unchanged print of the export publishes as no change.
+
+## Progress
+
+Built on 2026-10-16, in this order:
+
+| Commit | What |
+|---|---|
+| `0cbc6677d3`, `2bc6434f2f` | This design; the shared tree, the derived ID rules, stubs, and the registry declarations |
+| `1b9aabf293`, `0293323fb6`, `df55d09bc7`, `0a36132f35` | The four passes, each with its own unit tests, built in parallel |
+| `9f1962f5d2` | Normalization and the registry defaults, wired into native lowering and composition |
+| `95c8d545b0` | The public API on the new passes, the rewritten end-to-end and property tests, and the fixes they found |
+| `d35c5f8453`, then the legacy removal | The editor, the reference page, the recipes, the scenario edits, and the stateful-ID warning; then the old syntax removed |
+
+What changed from the plan:
+
+- **Telemetry.** Normalization moves the two DogStatsD filters' drops from `true` to `false`, so their derived
+  terminals are now `dsd_prefix_filter_blocklist_false` and `dsd_post_agg_filter_false`. Native series still report
+  under the native component (`dsd_prefix_filter`, through the telemetry profiles), and the profiles count drops on
+  `false`; only the program-mode `plan_*` series, keyed by node ID, see the new names.
+- **Composition** puts an artifact's nodes in the default program's order, as it already did for edges, so a printed
+  and parsed export composes to the default program's hash.
+- **The duplicate analysis** reads `split(not p)` as `split(p)` with its ports swapped, which the oracle's random plans
+  found was needed once normalization flips filters.
+- **Every nested junction is parenthesized** when printed, `(a and b) or c` included, for readers.
 
 ## Deferred
 

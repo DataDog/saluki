@@ -1164,6 +1164,7 @@ fn export_where(export: &PolicyArtifact, value: &str, as_id: Option<&str>) -> St
 
 /// The default program as the design document prints it, with the export's parameters:
 ///
+/// <!-- vale off -->
 /// ```text
 /// let dsd_no_agg_split = dogstatsd
 ///   | dogstatsd_mapper(...) as dsd_enrich
@@ -1178,6 +1179,7 @@ fn export_where(export: &PolicyArtifact, value: &str, as_id: Option<&str>) -> St
 ///   | host_tags(...) as metrics_enrich_host_tags
 ///   | fork as metrics_policy { emit output dd_metrics_encode; where ... as metrics_routing_filter_0 | emit ...; ... }
 /// ```
+/// <!-- vale on -->
 fn default_program_tree(export: &PolicyArtifact) -> Program {
     let routed =
         |filter: &str, output: &str| branch(vec![export_where(export, filter, Some(filter))], emit_output(output));

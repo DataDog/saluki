@@ -145,7 +145,7 @@ fn context_limit(params: &DecodedParams) -> Option<usize> {
 ///
 /// Every parameter but `window` may be left out, for the default of its native setting: a flush interval of `15s`, a
 /// context limit of one million, a counter expiry of `5m`, open windows not flushed, the aggregates `max`, `median`,
-/// `avg`, and `count` and the 95th percentile, and no distribution copy, with an empty prefix.
+/// `avg`, and `count` and percentile 95, and no distribution copy, with an empty prefix.
 ///
 /// The window must be an allowed bucket width ([`ALLOWED_BUCKET_WIDTHS`][crate::limits::ALLOWED_BUCKET_WIDTHS]), so
 /// that a change of width can take effect at a boundary both widths share.

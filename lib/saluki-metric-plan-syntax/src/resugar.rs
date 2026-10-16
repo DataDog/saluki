@@ -8,7 +8,7 @@
 //! # The algorithm
 //!
 //! 1. **Roles.** Every node gets a role from its operator, its parameters, and its neighbors, in priority order:
-//!    - a `merge` is a **tuple**, always, since a tuple is the merge's core form;
+//!    - a `merge` is a **tuple**, always, since a tuple is the core form of a merge;
 //!    - an `emit` or `drop` whose parameters a sink can write is a **sink**;
 //!    - a `split` whose `false` port leads to a `drop` with the derived ID [`ids::terminal`]`(split, "false")` is a
 //!      **`where`**;
@@ -28,12 +28,12 @@
 //!    last node). Nodes that no scope input reaches start pipelines of their own, from a reference to whatever feeds
 //!    them, so that lowering reports the problem.
 //! 4. **Intermediate names.** A pipeline is split into several `let`s where a person evidently named an intermediate
-//!    stream: where a run of two or more nodes (a tuple's merge counts) would all have their derived IDs as a `let`
+//!    stream: where a run of two or more nodes (the merge of a tuple counts) would all have their derived IDs as a `let`
 //!    named for the run's last node. Among the ways to split it, the one with the fewest `as` clauses wins, then the
 //!    one with the fewest statements.
 //! 5. **`as`.** Every node whose ID differs from the one lowering derives at its position gets an `as`: stages from
 //!    the statement's anchor and their ordinal (every stage of a pipeline or fork branch counts, a `where` as `split`,
-//!    and each branch counts afresh), a bare tuple's merge from its first item's anchor, a fork's tee from the
+//!    and each branch counts afresh), the merge of a bare tuple from the anchor of its first item, a fork's tee from the
 //!    statement's anchor, and a sink from the node and port that feed it.
 //! 6. **Order.** Statements are ordered by the canonical position of the edge each starts from, subject to every
 //!    `let` coming before its uses, and to the uses of each implicit tee coming in port order (lowering numbers them
@@ -845,7 +845,7 @@ struct Chain {
     /// The nodes of its stages, in order.
     stages: Vec<usize>,
     end: Option<ChainEnd>,
-    /// Whether its last node (or its tuple's merge, if it has no stages) is a `let`.
+    /// Whether its last node (or the merge of its tuple, if it has no stages) is a `let`.
     is_let: bool,
     /// The canonical position of the edge it starts from, which orders statements.
     key: usize,

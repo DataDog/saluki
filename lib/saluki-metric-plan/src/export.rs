@@ -180,7 +180,7 @@ pub enum ExportForm {
 }
 
 /// Notes for tools about an exported program: what each of its nodes and each binding is, and where it comes from, in
-/// one line each, such as "Metric filterlist, from `metric_filterlist`".
+/// one line each, such as `Metric filterlist, from metric_filterlist`.
 ///
 /// The host writes them, since it knows what its default program stands for; an editor prints a node's note as a
 /// comment above the node. They are not part of the artifact, so they change neither its hash nor its base. Readers
@@ -196,8 +196,8 @@ pub struct Annotations {
     pub bindings: BTreeMap<BindingName, String>,
 
     /// One line saying what the exported artifact leaves out because it does nothing as configured
-    /// ([`ExportBundle::omitted`]), in words a reader knows, such as "Not shown, because they do nothing as configured:
-    /// metric filterlist (empty), mapper (no profiles)", which an editor prints near the top of the program.
+    /// ([`ExportBundle::omitted`]), in words a reader knows, such as `Not shown, because they do nothing as configured:
+    /// metric filterlist (empty), mapper (no profiles)`, which an editor prints near the top of the program.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub omitted: Option<String>,
 }

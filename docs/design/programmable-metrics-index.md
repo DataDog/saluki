@@ -38,6 +38,7 @@ recipients are live resources (stage 7), declared by configuration. The path run
 | What does nothing | Detached programs leave out identity nodes and constant splits (amendment 191) | `b1be5f7b72` |
 | Version 2 plan | The premise shift (the program is the system), two modes not coexistence, ten simplification steps | `79555ebcb4` |
 | V2 | Resources artifacts removed (amendment 192) | `06e7301501` |
+| Pipeline syntax | Programs written as streaming queries, a printer that writes any program as a person would, normalization and registry defaults (amendments 193, 194), and the demo moved to it | `0cbc6677d3` to `d35c5f8453` |
 
 Stage 8 (the production Remote Config channel) was skipped on purpose, and stage 10 (measured extensions) is not
 started. **Current work is version 2**, from step V3; a new session starts at its
