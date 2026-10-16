@@ -57,7 +57,7 @@ impl OperatorDef for HostEnrichment {
 }
 
 const HOST_TAGS_PARAMS: &[ParamSpec] = &[
-    ParamSpec::required("tags", ParamType::Bindable(&ParamType::List(&ParamType::String))),
+    ParamSpec::required("tags", ParamType::Bindable(&ParamType::List(&ParamType::String))).positional(),
     ParamSpec::required("deadline", ParamType::Bindable(&ParamType::Duration)),
 ];
 

@@ -35,7 +35,7 @@ pub const TRUE_PORT: &str = "true";
 /// The output port a `split` sends other records to.
 pub const FALSE_PORT: &str = "false";
 
-const SPLIT_PARAMS: &[ParamSpec] = &[ParamSpec::required("predicate", ParamType::Predicate)];
+const SPLIT_PARAMS: &[ParamSpec] = &[ParamSpec::required("predicate", ParamType::Predicate).positional()];
 
 impl OperatorDef for Split {
     fn name(&self) -> &'static str {

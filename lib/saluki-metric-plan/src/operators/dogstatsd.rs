@@ -277,7 +277,7 @@ impl OperatorDef for DogstatsdMapper {
 }
 
 const NAMESPACE_PREFIX_PARAMS: &[ParamSpec] = &[
-    ParamSpec::required("namespace", ParamType::Bindable(&ParamType::String)),
+    ParamSpec::required("namespace", ParamType::Bindable(&ParamType::String)).positional(),
     ParamSpec::required("exclusions", ParamType::Bindable(&STRINGS)),
 ];
 
@@ -360,7 +360,7 @@ pub const DEFAULT_PORT: &str = "default";
 pub const PASSTHROUGH_PORT: &str = "passthrough";
 
 const TIMESTAMP_SPLIT_PARAMS: &[ParamSpec] =
-    &[ParamSpec::required("window", ParamType::Bindable(&ParamType::Duration))];
+    &[ParamSpec::required("window", ParamType::Bindable(&ParamType::Duration)).positional()];
 
 const RATE: KindSet = KindSet::of(&[Kind::Rate]);
 
