@@ -76,6 +76,7 @@ name = "agent-data-plane-config"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "futures",
  "serde",
  "tokio",
 ]
@@ -89,6 +90,7 @@ dependencies = [
  "bytesize",
  "datadog-agent-config",
  "datadog-agent-config-overlay-model",
+ "futures",
  "saluki-antithesis",
  "saluki-config",
  "saluki-error",
@@ -1292,6 +1294,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 
 [[package]]
+name = "datadog-agent-apm"
+version = "0.1.0"
+dependencies = [
+ "datadog-agent-apm",
+ "datadog-agent-remote-config",
+ "saluki-common",
+ "saluki-error",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "datadog-agent-commons"
 version = "0.1.0"
 dependencies = [
@@ -1398,12 +1415,14 @@ name = "datadog-agent-runtime"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bytesize",
  "chrono",
  "datadog-agent-commons",
  "datadog-protos",
  "futures",
  "process-memory",
  "prost-types",
+ "saluki-app",
  "saluki-common",
  "saluki-config",
  "saluki-core",
@@ -5576,6 +5595,7 @@ dependencies = [
  "bytes",
  "bytesize",
  "chrono",
+ "datadog-agent-apm",
  "datadog-agent-commons",
  "datadog-agent-metrics-v3",
  "datadog-protos",

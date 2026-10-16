@@ -7,8 +7,15 @@
 //!
 //! # Conventions
 //!
-//! Constructors never spawn tasks. Long-running work is returned as a [`Supervisable`][saluki_core::runtime::Supervisable]
-//! worker or [`Supervisor`][saluki_core::runtime::Supervisor] for the caller to place in its supervision tree.
+//! Constructors don't spawn tasks. Long-running work is returned as a
+//! [`Supervisable`][saluki_core::runtime::Supervisable] worker or [`Supervisor`][saluki_core::runtime::Supervisor] for
+//! the caller to place in its supervision tree.
+//!
+//! [`RemoteAgentBootstrap`][remote_agent::RemoteAgentBootstrap] is the one exception for now. Registration has to
+//! finish before the supervision tree exists, so [`RemoteAgentBootstrap::new`][remote_agent::RemoteAgentBootstrap::new]
+//! spawns the registration loop, and
+//! [`RemoteAgentBootstrap::create_config_stream`][remote_agent::RemoteAgentBootstrap::create_config_stream] spawns the
+//! configuration stream loop. Neither task is supervised, and neither stops on shutdown.
 //!
 //! Each subsystem that talks to the Datadog Agent opens its own connection with
 //! [`RemoteAgentClient::connect`][datadog_agent_commons::ipc::client::RemoteAgentClient::connect], rather than sharing a
@@ -20,5 +27,7 @@
 //!   `aarch64`, `x86`, `x86_64`, and `s390x`, so the feature does nothing on any other target. On those targets, the
 //!   build also requires `--cfg tokio_unstable`.
 #![deny(missing_docs)]
+
+pub mod logging;
 
 pub mod remote_agent;

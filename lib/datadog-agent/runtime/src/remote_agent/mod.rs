@@ -80,11 +80,21 @@ impl RemoteAgentBootstrap {
     ///
     /// A remote agent client is created and immediately attempts to register with the Core Agent, advertising
     /// `secure_api_listen_address` as the address where the Core Agent reaches the status, flare, and telemetry
-    /// services. This function does not return until registration finishes, whether successful or not.
+    /// services. This function does not return until the first registration attempt finishes, whether successful or
+    /// not.
+    ///
+    /// Registration runs in a background task that this function spawns outside of any supervision tree. The task
+    /// refreshes the registration periodically, and registers again whenever a refresh fails, for the rest of the
+    /// process's lifetime: it doesn't stop on shutdown, or when the returned `RemoteAgentBootstrap` is dropped.
     ///
     /// # Errors
     ///
-    /// If the configuration is invalid, an error is returned.
+    /// Returns an error if `secure_api_listen_address` isn't a valid gRPC target address, if the client can't connect
+    /// to the Core Agent, or if the first registration attempt fails.
+    ///
+    /// If the first registration attempt fails, the background task keeps running and retries registration
+    /// periodically, so it may still register with the Core Agent later. Treat this error as fatal rather than calling
+    /// this function again: each call starts another background task, and each task registers its own session.
     pub async fn new(
         client_config: &RemoteAgentClientConfiguration, secure_api_listen_address: &ListenAddress,
     ) -> Result<Self, GenericError> {
@@ -188,6 +198,10 @@ impl RemoteAgentBootstrap {
     }
 
     /// Creates a config stream that receives configuration events from the Core Agent.
+    ///
+    /// The stream is fed by a background task that this method spawns outside of any supervision tree. The task
+    /// reconnects whenever the stream from the Core Agent ends, and doesn't stop on shutdown. It only stops when it
+    /// tries to deliver an update after the returned receiver is dropped.
     pub fn create_config_stream(&self) -> mpsc::Receiver<ConfigUpdate> {
         let (sender, receiver) = mpsc::channel(100);
 

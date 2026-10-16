@@ -55,9 +55,9 @@ pub(crate) async fn initialize_metrics(
     supervisor.add_worker(runtime);
     supervisor.add_worker(override_processor);
 
-    // Transient rather than permanent: the reflector worker treats an exhausted source as terminal and returns
-    // normally, so restarting it would only hand it the same dead source again.
-    supervisor.add_worker(runtime::supervisable(reflector).transient().build());
+    // Hosted rather than needed: the reflector worker treats an exhausted source as terminal and returns normally, so
+    // restarting it would only hand it the same dead source again.
+    supervisor.add_worker(runtime::supervisable(reflector).hosted().build());
 
     Ok(supervisor)
 }

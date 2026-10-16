@@ -120,6 +120,22 @@ impl Process {
         Some(Self::from_parts(Id::new(), name, resource_group_token, dataspace))
     }
 
+    /// Creates a worker process that has its own resource group, with the same name as the process.
+    ///
+    /// The process does not inherit the resource group of its parent. Registration is idempotent by name. Thus, if the
+    /// name of a worker matches a group registered elsewhere, the worker shares that group. An example is the group of
+    /// a topology component, which its registry registers under the same name.
+    pub(crate) fn worker_with_own_resource_group<N: AsRef<str>>(name: N, parent: &Process) -> Option<Self> {
+        let name = Name::scoped(&parent.name, name)?;
+        let resource_group_token = ResourceGroupRegistry::global().register_resource_group(&*name);
+        Some(Self::from_parts(
+            Id::new(),
+            name,
+            resource_group_token,
+            parent.dataspace.clone(),
+        ))
+    }
+
     pub(crate) fn worker<N: AsRef<str>>(name: N, parent: &Process) -> Option<Self> {
         let name = Name::scoped(&parent.name, name)?;
         Some(Self::from_parts(
@@ -145,7 +161,7 @@ impl Process {
     }
 
     /// Returns the fully qualified process name (scoped under its parent, for example
-    /// `topology.primary.sources.dsd_in.source`).
+    /// `topology.primary.sources.dsd_in.listener_udp`).
     pub(crate) fn name(&self) -> &str {
         &self.name
     }

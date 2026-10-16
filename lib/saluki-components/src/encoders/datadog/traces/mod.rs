@@ -286,6 +286,7 @@ impl Encoder for DatadogTrace {
         let request_builder_fut = run_request_builder(trace_rb, telemetry, events_rx, payloads_tx, flush_timeout);
         runtime::worker("request_builder", request_builder_fut)
             .on_runtime(context.topology_context().global_thread_pool().clone())
+            .needed()
             .spawn();
 
         health.mark_ready();

@@ -1,0 +1,7 @@
+fixes:
+  - |
+    Fix unbounded memory growth during DogStatsD traffic capture when clients send over the Unix stream
+    socket. Previously, most stream traffic was left out of the capture file and instead accumulated in
+    memory for as long as the capture ran, which could exhaust the container memory limit. That memory
+    was also kept until each client disconnected, even after the capture finished. Captures now include
+    every complete stream frame and hold no extra per-connection memory.

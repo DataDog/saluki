@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use saluki_error::GenericError;
+use saluki_error::{generic_error, GenericError};
 use tokio::sync::{mpsc, oneshot};
 
 use super::driver::RunOutcome;
@@ -33,6 +33,10 @@ pub struct ComponentControl<I> {
     pub(super) supervisor: TestComponentSupervisor,
     pub(super) input: Option<mpsc::Sender<I>>,
     pub(super) outcome: oneshot::Receiver<RunOutcome>,
+
+    /// How the worker of the component ended, after its scope closed. This differs from `outcome` when a child that the
+    /// component needs fails.
+    pub(super) exit: oneshot::Receiver<Result<(), String>>,
     pub(super) wait_timeout: Duration,
     pub(super) shutdown_budget: Duration,
 }
@@ -52,10 +56,10 @@ impl<I> ComponentControl<I> {
 
     /// Returns the component's supervisor.
     ///
-    /// Children the component spawns land here. Use it to wait for them with
-    /// [`wait_for_children`][TestComponentSupervisor::wait_for_children], to count them, or to reach the dataspace they
-    /// share with the component. The component itself runs under the supervisor too, but isn't counted as one of its
-    /// children.
+    /// Children the component spawns run in its scope, below the component. Use the supervisor to wait for them with
+    /// [`wait_for_running_descendants`][TestComponentSupervisor::wait_for_running_descendants], to count them, or to
+    /// reach the dataspace they share with the component. The component itself runs under the supervisor too, so it is
+    /// one of those descendants.
     pub fn supervisor(&self) -> &TestComponentSupervisor {
         &self.supervisor
     }
@@ -128,6 +132,11 @@ impl<I> ComponentControl<I> {
     /// reported, the same as in a topology: the supervisor reports that the component exited instead, and the driver
     /// returns the run's own result.
     ///
+    /// A child that the component marked [needed][crate::runtime::ChildBuilder::needed] can fail without a shutdown
+    /// signal. Its failure is then the failure of the component, as in a topology, and its error is returned. This is
+    /// also true if the `run` of the component returned cleanly, or if the failure stopped `run` before it returned.
+    /// If `run` itself failed, the error of `run` is returned instead.
+    ///
     /// # Panics
     ///
     /// If the component's `run` panics, the panic is resumed here, once its supervisor has stopped.
@@ -145,6 +154,7 @@ impl<I> ComponentControl<I> {
             supervisor,
             input: _input,
             mut outcome,
+            mut exit,
             wait_timeout,
             shutdown_budget,
             ..
@@ -175,19 +185,32 @@ impl<I> ComponentControl<I> {
             Err(_) => None,
         };
 
-        match (run_result, supervisor_result) {
-            // A component stopping on its own stops its supervisor, which reports that its significant child exited.
+        // The scope of the component can fail the worker, even if `run` returned cleanly or never finished: a child that
+        // the component needs failed without a shutdown signal. The supervisor reports only that its needed child
+        // terminated, so the error comes from the exit of the worker. The worker reports its exit before the supervisor
+        // can see it, so the exit is settled by now too. Nothing is sent if the worker was aborted.
+        let child_failure = match exit.try_recv() {
+            Ok(Err(failure)) => Some(failure),
+            Ok(Ok(())) | Err(_) => None,
+        };
+
+        match (run_result, supervisor_result, child_failure) {
+            // The child failure is the root cause. If `run` failed by itself, its own error comes first instead.
+            (Some(Ok(())) | None, Ok(()) | Err(SupervisorError::SignificantChildExited), Some(failure)) => Err(
+                generic_error!("a child of component '{}' failed: {}", component_context, failure),
+            ),
+            // A component stopping on its own stops its supervisor, which reports that its needed child terminated.
             // That is the expected consequence rather than a failure, so the run's own result is what counts.
-            (Some(run_result), Ok(()) | Err(SupervisorError::SignificantChildExited)) => run_result,
-            (Some(Ok(())), Err(supervisor_error)) => Err(supervisor_error.into()),
-            (Some(Err(run_error)), Err(supervisor_error)) => Err(run_error.context(supervisor_error)),
-            (None, Err(supervisor_error)) => Err(GenericError::from(supervisor_error).context(format!(
+            (Some(run_result), Ok(()) | Err(SupervisorError::SignificantChildExited), _) => run_result,
+            (Some(Ok(())), Err(supervisor_error), _) => Err(supervisor_error.into()),
+            (Some(Err(run_error)), Err(supervisor_error), _) => Err(run_error.context(supervisor_error)),
+            (None, Err(supervisor_error), _) => Err(GenericError::from(supervisor_error).context(format!(
                 "component '{}' didn't stop within the shutdown budget of {:?} and was aborted. If it dispatches more \
                  than an output can hold, drain the output concurrently, for example with \
                  `tokio::join!(control.shutdown(), output.collect())`.",
                 component_context, shutdown_budget
             ))),
-            (None, Ok(())) => panic!(
+            (None, Ok(()), None) => panic!(
                 "the supervisor of component '{}' stopped cleanly, but the component's `run` never finished",
                 component_context
             ),
