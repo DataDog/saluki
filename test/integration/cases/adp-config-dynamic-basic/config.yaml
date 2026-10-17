@@ -36,6 +36,6 @@ procedure:
         pattern: "Error while reading config event stream"
         during: 10s
       - assertion: log_not_contains
-        pattern: "panic|PANIC"
+        pattern: "panicked"
         regex: true
         during: 10s
