@@ -19,7 +19,7 @@
 //! | `dsd_post_agg_filter` (split) with its `drop` | `dsd_post_agg_filter` |
 //! | `dsd_post_agg_filter_fanout` (tee) | fan-out of `dsd_post_agg_filter`'s output |
 //! | `metrics_in` (merge) | fan-in at the input of `metrics_enrich` |
-//! | `metrics_host_enrichment` (host enrichment) and `metrics` (host tags) | the `metrics_enrich` chain |
+//! | host enrichment and host tags: `metrics_host_enrichment` and `metrics`, or `metrics` alone | the `metrics_enrich` chain |
 //! | `metrics_fanout` (tee) | fan-out of `metrics_enrich`'s output |
 //! | `metrics_routing_filter_{i}` (split) and its `false` drop | the transform `metrics_routing_filter_{i}` |
 //! | `mrf_metrics_gateway` (split) and its `false` drop | the transform `mrf_metrics_gateway` |

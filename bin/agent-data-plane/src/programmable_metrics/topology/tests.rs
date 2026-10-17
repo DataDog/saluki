@@ -875,7 +875,7 @@ async fn region_bounds_are_their_kernels_native_bounds_and_their_buffers_and_the
             4,
             (2, 3),
             0,
-            &[("metrics_host_enrichment", "metrics_enrich")],
+            &[("metrics", "metrics_enrich")],
             &["dsd_post_agg_filter"],
         ),
     ];

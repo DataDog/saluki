@@ -206,12 +206,13 @@ fn assert_leaves_out_what_the_comparison_does(
         .collect::<BTreeMap<_, _>>();
     assert_eq!(exported, compared, "{}", name);
     // Host enrichment changes no metric in any configuration, and the nodes the export keeps are all it has.
-    assert_eq!(
-        exported.get("metrics_host_enrichment"),
-        Some(&Omission::Identity),
-        "{}",
-        name
-    );
+    let enrichment = plan
+        .nodes
+        .iter()
+        .find(|node| node.op.as_str() == names::HOST_ENRICHMENT)
+        .map(|node| node.id.local().to_string())
+        .expect("the default program has host enrichment");
+    assert_eq!(exported.get(&enrichment), Some(&Omission::Identity), "{}", name);
     for node in &detached.artifact.nodes {
         assert!(!exported.contains_key(node.id.as_str()), "{}: {}", name, node.id);
     }
@@ -493,7 +494,7 @@ async fn the_detached_export_names_what_it_leaves_out_in_one_note_in_program_ord
             ("dsd_prefix_filter_blocklist_false", Unreachable),
             ("dsd_prefix_filter_blocklist_namespace_prefix", Identity),
             ("dsd_tag_filterlist", Identity),
-            ("metrics_host_enrichment", Identity),
+            ("metrics", Identity),
             ("metrics_in", Identity),
         ]
     );
@@ -521,11 +522,7 @@ async fn the_detached_export_names_what_it_leaves_out_in_one_note_in_program_ord
     let omitted = bundle.omitted.keys().map(|node| node.as_str()).collect::<Vec<_>>();
     assert_eq!(
         omitted,
-        [
-            "dsd_post_agg_filter",
-            "dsd_post_agg_filter_false",
-            "metrics_host_enrichment"
-        ],
+        ["dsd_post_agg_filter", "dsd_post_agg_filter_false", "metrics"],
         "{:?}",
         bundle.annotations.omitted
     );

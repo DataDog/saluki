@@ -705,7 +705,7 @@ async fn each_fused_kernel_is_accounted_in_a_resource_group_of_its_own_under_its
         ),
         ("dsd_prefix_filter_region", "dsd_no_agg_split"),
         ("dsd_prefix_filter_region", "dsd_tag_filterlist"),
-        ("metrics_enrich", "metrics_host_enrichment"),
+        ("metrics_enrich", "metrics"),
     ];
     for (region, node) in kernels {
         assert!(
@@ -778,7 +778,7 @@ async fn on_lanes_each_lanes_kernels_are_accounted_in_resource_groups_of_their_o
     }
     for lane in 0..2 {
         assert!(
-            status.contains_key(&group("metrics_enrich", lane, "metrics_host_enrichment")),
+            status.contains_key(&group("metrics_enrich", lane, "metrics")),
             "no group for enrichment on lane {}",
             lane
         );
@@ -805,15 +805,15 @@ async fn a_kernel_of_an_isolation_slot_named_after_its_node_is_accounted_in_its_
         .expect("the frame has the `metrics_enrich` slot")
         .id;
     let program = Arc::clone(&boot.programs[slot.get()]);
-    let node = "metrics_host_enrichment".parse::<NodeId>().unwrap();
+    let node = "metrics".parse::<NodeId>().unwrap();
     let region = "topology.primary.transforms.metrics_enrich".to_string();
-    let own = format!("{}.metrics_host_enrichment", region);
+    let own = format!("{}.metrics", region);
 
     // (the name of the isolation slot the program runs in, if it runs in one; the group its kernel is accounted in;
     // whether the kernel draws on the budgets of state)
     let cases = [
         (None, &own, false),
-        (Some("metrics_host_enrichment"), &region, true),
+        (Some("metrics"), &region, true),
         (Some("metrics_enrich"), &own, true),
     ];
     for (isolation, group, stateful) in cases {

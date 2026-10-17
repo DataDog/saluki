@@ -89,8 +89,8 @@ pub fn default_program_resources_catalog() -> MemoryCatalog {
 
 /// Names the region host of a slot of a default-program fixture's frame, as the host names them.
 ///
-/// The slot holding the DogStatsD mapper is `dsd_pre_aggregation`, the slot holding host enrichment is
-/// `metrics_enrich`, and the isolation slot holding DogStatsD aggregation is `dsd_agg`. Any other slot, one that R1's
+/// The slot holding the DogStatsD mapper is `dsd_pre_aggregation`, the slot holding the enriched metrics (the reserved
+/// node `metrics`, the last node of the enrichment chain, whichever operator it is) is `metrics_enrich`, and the isolation slot holding DogStatsD aggregation is `dsd_agg`. Any other slot, one that R1's
 /// cost model cut from a pipeline, is named after its first node, without the `_in` of a merge that starts it, as
 /// `<node>_region`, except that a slot the namespace prefix or the enrichment merge starts is named for the native
 /// component that node stands for: `dsd_prefix_filter_region` or `metrics_enrich_region`.
@@ -104,7 +104,7 @@ pub fn default_program_slot_name(nodes: &[NodeId]) -> Result<NativeComponentId, 
         "dsd_agg".to_string()
     } else if has("dsd_enrich") {
         "dsd_pre_aggregation".to_string()
-    } else if has("metrics_host_enrichment") {
+    } else if nodes.iter().any(|node| node.to_string() == "metrics") {
         "metrics_enrich".to_string()
     } else {
         let first = match nodes.first().map_or("slot", |node| node.local().as_str()) {

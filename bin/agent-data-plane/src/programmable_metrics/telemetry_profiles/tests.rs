@@ -203,6 +203,22 @@ async fn renamed_nodes_keep_the_native_telemetry_identity_of_their_former_ids() 
         );
     }
 
+    // `metrics` is the enrichment chain's last node, whichever operator that is: host tags when enabled, host
+    // enrichment otherwise (and the merge, were there no stage). Each reports as metrics enrichment.
+    for operator in [names::HOST_TAGS, names::HOST_ENRICHMENT, names::MERGE] {
+        assert_eq!(
+            lookup("metrics", operator),
+            Some(NativeTelemetry {
+                component_id: "metrics_enrich".to_string(),
+                component_type: ComponentType::Transform,
+                profile: TelemetryProfile::Silent,
+            }),
+            "`metrics` running `{}`",
+            operator
+        );
+    }
+    assert_eq!(lookup("metrics", names::TEE), None);
+
     // The default program's nodes are these, and each reports as its native component, as its provenance records.
     let config = configuration(EVERY_BRANCH).await;
     let lowered = Lowering::new(Arc::new(config.clone()), facts(&config))

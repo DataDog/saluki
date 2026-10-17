@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use saluki_core::accounting::ComponentRegistry;
+use saluki_core::{accounting::ComponentRegistry, components::ComponentType};
 use saluki_metric_plan::{
     canonical::{PlanHash, ResolvedValues},
     compile::{compile, Frame, RewriteId},
@@ -23,7 +23,7 @@ use crate::{
     config::remote_agent_client_configuration,
     programmable_metrics::{
         bindings,
-        telemetry_profiles::native_telemetry,
+        telemetry_profiles::{native_telemetry, NativeTelemetry, TelemetryProfile},
         test_support::{
             configuration, configuration_error, environment_provider, facts, layered_configuration,
             layered_configuration_system,
@@ -296,7 +296,7 @@ async fn branches_exist_only_when_native_wiring_builds_them() {
         "checks_ipc_in",
         "liveness_in",
         "trace_sampler",
-        "metrics",
+        "metrics_host_enrichment",
         "metrics_routing_filter_0",
         "metrics_routing_filter_1",
         "metrics_routing_filter_2",
@@ -319,7 +319,7 @@ async fn branches_exist_only_when_native_wiring_builds_them() {
         ("connected without host tags", [&dsd[..], &["liveness_in"]].concat()),
         (
             "connected with host tags",
-            [&dsd[..], &["liveness_in", "metrics"]].concat(),
+            [&dsd[..], &["liveness_in", "metrics_host_enrichment"]].concat(),
         ),
         ("one routing group", [&dsd[..], &["metrics_routing_filter_0"]].concat()),
         // b and c share a group; d has empty lists and gets none.
@@ -358,7 +358,7 @@ async fn branches_exist_only_when_native_wiring_builds_them() {
                     "checks_ipc_in",
                     "liveness_in",
                     "trace_sampler",
-                    "metrics",
+                    "metrics_host_enrichment",
                     "metrics_routing_filter_0",
                     "metrics_routing_filter_1",
                     "mrf_metrics_gateway",
@@ -396,12 +396,7 @@ async fn branches_exist_only_when_native_wiring_builds_them() {
         ] {
             assert_eq!(has(id), dogstatsd, "{}: `{}`", name, id);
         }
-        for id in [
-            "metrics_in",
-            "metrics_host_enrichment",
-            "metrics_fanout",
-            "metrics_fanout_0",
-        ] {
+        for id in ["metrics_in", "metrics", "metrics_fanout", "metrics_fanout_0"] {
             assert!(has(id), "{}: `{}`", name, id);
         }
     }
@@ -1365,4 +1360,121 @@ async fn registry_defaults_are_the_native_settings_defaults() {
             "tag_projection.value_rules",
         ]
     );
+}
+
+/// The enrichment chain is named as the pipeline syntax derives `let metrics = (<inputs>) | <stages>` in every
+/// configuration of the matrix, keeps the native identity of metrics enrichment whichever operator holds each ID, and
+/// runs in the `metrics_enrich` slot.
+#[tokio::test]
+async fn the_enrichment_chain_is_named_as_the_syntax_derives_it_in_every_configuration() {
+    let registry = OperatorRegistry::native();
+    let mut variants = BTreeSet::new();
+    for (name, yaml) in MATRIX {
+        let lowered = lowered(yaml).await;
+        let plan = &lowered.plan;
+        let op = |id: &str| plan.node(&id.parse().unwrap()).map(|node| node.op.as_str().to_string());
+        let target = |from: &str| {
+            plan.edges
+                .iter()
+                .find(|edge| edge.from.to_string() == from)
+                .map(|edge| edge.to.to_string())
+        };
+
+        // Host enrichment always follows the merge; host tags, when enabled, come last.
+        let host_tags = op("metrics").as_deref() == Some(names::HOST_TAGS);
+        variants.insert(host_tags);
+        let stages: &[(&str, &str)] = if host_tags {
+            &[
+                ("metrics_host_enrichment", names::HOST_ENRICHMENT),
+                ("metrics", names::HOST_TAGS),
+            ]
+        } else {
+            &[("metrics", names::HOST_ENRICHMENT)]
+        };
+        assert_eq!(op("metrics_in").as_deref(), Some(names::MERGE), "{}", name);
+        assert_eq!(op("metrics_host_enrichment").is_some(), host_tags, "{}", name);
+        let mut previous = "metrics_in".to_string();
+        for (id, operator) in stages {
+            assert_eq!(op(id).as_deref(), Some(*operator), "{}: `{}`", name, id);
+            assert_eq!(
+                target(&format!("{}.out", previous)),
+                Some(format!("{}.in", id)),
+                "{}",
+                name
+            );
+            previous = id.to_string();
+        }
+        assert_eq!(target("metrics.out").as_deref(), Some("metrics_fanout.in"), "{}", name);
+
+        // Every node of the chain reports as metrics enrichment, as its provenance records.
+        let native_components = &plan.provenance.as_ref().unwrap().native_components;
+        for id in ["metrics_in", "metrics_host_enrichment", "metrics", "metrics_fanout"] {
+            let Some(node) = plan.node(&id.parse().unwrap()) else {
+                continue;
+            };
+            let telemetry = native_telemetry(&node.id, node.op.as_str())
+                .unwrap_or_else(|| panic!("{}: `{}` has a native identity", name, id));
+            assert_eq!(
+                telemetry,
+                NativeTelemetry {
+                    component_id: components::METRICS_ENRICH.to_string(),
+                    component_type: ComponentType::Transform,
+                    profile: TelemetryProfile::Silent,
+                },
+                "{}: `{}`",
+                name,
+                id
+            );
+            assert_eq!(
+                native_components.get(&node.id).map(|native| native.as_str()),
+                Some(components::METRICS_ENRICH),
+                "{}: `{}`",
+                name,
+                id
+            );
+        }
+
+        // The slot that holds the enriched metrics is `metrics_enrich`, with host tags or without, as both slot namers
+        // name it.
+        let frame = Frame::compute_with_hosts(
+            plan,
+            &registry,
+            &crate::programmable_metrics::topology::slot_name,
+            &crate::programmable_metrics::test_support::frame_hosts(),
+        )
+        .unwrap_or_else(|error| panic!("{}: {}", name, error));
+        let enrichment = frame
+            .slots()
+            .iter()
+            .find(|slot| slot.nodes.iter().any(|node| node.to_string() == "metrics"))
+            .unwrap_or_else(|| panic!("{}: a slot holds `metrics`", name));
+        assert_eq!(enrichment.name.as_str(), components::METRICS_ENRICH, "{}", name);
+        let fixture_name = saluki_metric_plan::testing::default_program_slot_name(&enrichment.nodes).unwrap();
+        assert_eq!(fixture_name.as_str(), components::METRICS_ENRICH, "{}", name);
+    }
+    // The matrix has both: host tags on and off.
+    assert_eq!(variants, BTreeSet::from([false, true]));
+}
+
+/// Whether host tags are enabled is read only at startup, as natively: a live change to it re-lowers to the same plan,
+/// so the enrichment chain's IDs, which follow it, never change while the process runs.
+#[tokio::test]
+async fn a_live_change_to_host_tags_leaves_the_enrichment_chain_as_it_started() {
+    let without = configuration("data_plane: {standalone_mode: false}").await;
+    let with = configuration("data_plane: {standalone_mode: false}\nexpected_tags_duration: 5m").await;
+    for (startup, current) in [(&without, &with), (&with, &without)] {
+        let lowering = lowering(startup);
+        let started = lowering.lower(startup).expect("the configuration lowers");
+        let changed = lowering.lower(current).expect("the configuration lowers");
+        assert_eq!(changed.plan, started.plan);
+    }
+    let op = |plan: &Plan| {
+        plan.node(&"metrics".parse().unwrap())
+            .map(|node| node.op.as_str().to_string())
+    };
+    assert_eq!(
+        op(&lower_with(&without, &with).plan).as_deref(),
+        Some(names::HOST_ENRICHMENT)
+    );
+    assert_eq!(op(&lower_with(&with, &without).plan).as_deref(), Some(names::HOST_TAGS));
 }

@@ -106,8 +106,9 @@ use crate::cli::run::{autoscaling_failover_wired, mrf_metrics_endpoint};
 
 /// Names the region host of a slot of the default program's frame, after the native components it replaces.
 ///
-/// The slot holding the DogStatsD mapper is `dsd_pre_aggregation`, and the slot holding host enrichment is
-/// `metrics_enrich`, which keeps the native ID that the components feeding metrics enrichment have always been
+/// The slot holding the DogStatsD mapper is `dsd_pre_aggregation`, and the slot holding the enriched metrics (`metrics`,
+/// the last node of the enrichment chain: host tags when enabled, host enrichment otherwise) is `metrics_enrich`, so
+/// that its name does not depend on whether host tags are enabled. It keeps the native ID that the components feeding metrics enrichment have always been
 /// connected to. The isolation slot of DogStatsD aggregation is `dsd_agg`, the native aggregation transform's ID. A
 /// slot that R1's cost model cuts from one of them, so that a costly chain pipelines across regions, is named after the
 /// native component it starts with: `<first node>_region`, without the `_in` of a merge that starts it, such as
@@ -123,7 +124,7 @@ pub fn slot_name(nodes: &[NodeId]) -> Result<NativeComponentId, String> {
         ids::DSD_AGG.to_string()
     } else if has(ids::DSD_ENRICH) {
         "dsd_pre_aggregation".to_string()
-    } else if has(ids::METRICS_HOST_ENRICHMENT) {
+    } else if has(ids::METRICS) {
         components::METRICS_ENRICH.to_string()
     } else {
         let first = nodes

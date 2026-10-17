@@ -90,8 +90,8 @@ use saluki_metric_plan::{
     canonical::MAX_SAFE_INTEGER,
     compose::Demand,
     ir::{
-        derived_terminal_id, format_duration, BindingName, Edge, NativeComponentId, Node, NodeId, OperatorName,
-        ParamName, Params, Plan, PlanProvenance, PortName, PortRef, ScopeDecl, IR_VERSION,
+        derived_terminal_id, format_duration, BindingName, Edge, Namespace, NativeComponentId, Node, NodeId,
+        OperatorName, ParamName, Params, Plan, PlanProvenance, PortName, PortRef, ScopeDecl, IR_VERSION,
     },
     model::{PortType, TimestampForm},
     normalize::normalize_plan,
@@ -118,7 +118,7 @@ use crate::{
 /// `dsd_prefix_filter_blocklist` and `dsd_agg`. The others have the IDs the pipeline syntax derives for their place in
 /// the program (`let dsd_prefix_filter_blocklist = dsd_enrich | namespace_prefix(...) | where ...`, and
 /// `let metrics = (...) | host_enrichment | host_tags`, used once per output branch), so that the program prints
-/// without naming them. The telemetry profiles map each node to the native component it stands for
+/// without naming them; so which enrichment node is `metrics` follows the startup configuration. The telemetry profiles map each node to the native component it stands for
 /// ([`components`](super::components) where no node has that component's ID).
 pub mod ids {
     /// The DogStatsD source.
@@ -151,9 +151,10 @@ pub mod ids {
     pub const TRACE_SAMPLER: &str = "trace_sampler";
     /// The fan-in of metrics enrichment.
     pub const METRICS_IN: &str = "metrics_in";
-    /// Host enrichment.
+    /// Host enrichment, when host tags follow it.
     pub const METRICS_HOST_ENRICHMENT: &str = "metrics_host_enrichment";
-    /// Host tags: the enriched metrics.
+    /// The enriched metrics: the last node of the enrichment chain, host tags when enabled and host enrichment
+    /// otherwise.
     pub const METRICS: &str = "metrics";
     /// The fan-out of the enriched metrics to every output branch.
     pub const METRICS_FANOUT: &str = "metrics_fanout";
@@ -190,60 +191,94 @@ pub struct LoweringNote {
 /// layer, knows which native component and setting each node comes from.
 ///
 /// Endpoint routing groups' filters are noted with their endpoints when lowered ([`Program::policy`]); a node not
-/// listed has no note.
-const ANNOTATIONS: &[(&str, &str)] = &[
+/// listed has no note. Each is keyed by node and operator: the enrichment chain's last node, `metrics`, is host tags or
+/// host enrichment.
+const ANNOTATIONS: &[(&str, &str, &str)] = &[
     (
         ids::DSD_ENRICH,
+        names::DOGSTATSD_MAPPER,
         "DogStatsD mapper: renames and tags by `dogstatsd_mapper_profiles`",
     ),
     (
         ids::DSD_PREFIX_FILTER_BLOCKLIST_NAMESPACE_PREFIX,
+        names::NAMESPACE_PREFIX,
         "Namespace prefix, from `statsd_metric_namespace`, except blocklisted names",
     ),
     (
         ids::DSD_PREFIX_FILTER_BLOCKLIST,
+        names::SPLIT,
         "Metric filterlist, from `metric_filterlist`: matches drop",
     ),
     (
         ids::DSD_NO_AGG_SPLIT,
+        names::TIMESTAMP_SPLIT,
         "Timestamped points skip aggregation (no-aggregation pipeline)",
     ),
     (
         ids::DSD_TAG_FILTERLIST,
+        names::TAG_PROJECTION,
         "Tag filterlist and value rules: `metric_tag_filterlist`, `metric_tag_value_allowlist`",
     ),
     (
         ids::DSD_AGG,
+        names::AGGREGATE,
         "Aggregation; edits keep its state unless they change its window or lineage",
     ),
-    (ids::DSD_POST_AGG_FILTER_IN, "Aggregated and timestamped points rejoin"),
+    (
+        ids::DSD_POST_AGG_FILTER_IN,
+        names::MERGE,
+        "Aggregated and timestamped points rejoin",
+    ),
     (
         ids::DSD_POST_AGG_FILTER,
+        names::SPLIT,
         "Drops filterlisted histogram statistics, after aggregation",
     ),
     (
         ids::DSD_POST_AGG_FILTER_FANOUT,
+        names::TEE,
         "Copies every metric to the client telemetry tap and to enrichment",
     ),
-    (ids::METRICS_IN, "Every source's metrics, to enrichment"),
+    (ids::METRICS_IN, names::MERGE, "Every source's metrics, to enrichment"),
     (
         ids::METRICS_HOST_ENRICHMENT,
-        "Host enrichment: leaves metrics unchanged",
+        names::HOST_ENRICHMENT,
+        HOST_ENRICHMENT_NOTE,
     ),
+    (ids::METRICS, names::HOST_ENRICHMENT, HOST_ENRICHMENT_NOTE),
     (
         ids::METRICS,
+        names::HOST_TAGS,
         "Adds the host's tags (a fact) until `expected_tags_duration` passes",
     ),
-    (ids::METRICS_FANOUT, "Policy: one branch per output; route here"),
+    (ids::METRICS, names::MERGE, "Every source's metrics, to enrichment"),
+    (
+        ids::METRICS_FANOUT,
+        names::TEE,
+        "Policy: one branch per output; route here",
+    ),
     (
         ids::MRF_METRICS_GATEWAY,
+        names::SPLIT,
         "Multi-Region Failover: mirrors listed, or all, metrics while failing over",
     ),
     (
         ids::AF_METRICS_GATEWAY,
+        names::SPLIT,
         "Autoscaling failover: listed scalar series to the Cluster Agent",
     ),
 ];
+
+/// The note of host enrichment, whichever node of the enrichment chain it is.
+const HOST_ENRICHMENT_NOTE: &str = "Host enrichment: leaves metrics unchanged";
+
+/// Returns lowering's note of the node `local` running `operator`, if it has one.
+fn annotation(local: &str, operator: &str) -> Option<&'static str> {
+    ANNOTATIONS
+        .iter()
+        .find(|(id, op, _)| *id == local && *op == operator)
+        .map(|(_, _, note)| *note)
+}
 
 /// How a reader knows each node of the default program that the detached export can leave out because it does nothing
 /// as configured, with why it does nothing then, in program order: the note the export carries
@@ -251,29 +286,71 @@ const ANNOTATIONS: &[(&str, &str)] = &[
 ///
 /// An endpoint routing group's filter is named from its note ([`omitted_name`]). The nodes a left-out `split` alone
 /// reached, such as its `drop`, go with it and are not named. The failover gateways' flags are a fact and signals, which
-/// a published program keeps bound, so the export never leaves those gateways out for their values.
-const OMITTED: &[(&str, &str)] = &[
-    (ids::DSD_ENRICH, "mapper (no profiles)"),
+/// a published program keeps bound, so the export never leaves those gateways out for their values. Each is keyed by
+/// node and operator, as [`ANNOTATIONS`] is.
+const OMITTED: &[(&str, &str, &str)] = &[
+    (ids::DSD_ENRICH, names::DOGSTATSD_MAPPER, "mapper (no profiles)"),
     (
         ids::DSD_PREFIX_FILTER_BLOCKLIST_NAMESPACE_PREFIX,
+        names::NAMESPACE_PREFIX,
         "namespace prefix (none)",
     ),
-    (ids::DSD_PREFIX_FILTER_BLOCKLIST, "metric filterlist (empty)"),
-    (ids::DSD_TAG_FILTERLIST, "tag filterlist (empty)"),
-    (ids::DSD_POST_AGG_FILTER_IN, "post-aggregation merge (one input)"),
-    (ids::DSD_POST_AGG_FILTER, "post-aggregation filter (empty)"),
-    (ids::METRICS_IN, "enrichment merge (one input)"),
-    (ids::METRICS_HOST_ENRICHMENT, "host enrichment (changes no metric)"),
-    (ids::METRICS, "host tags (none)"),
-    (ids::AF_METRICS_GATEWAY, "autoscaling failover (no metrics listed)"),
+    (
+        ids::DSD_PREFIX_FILTER_BLOCKLIST,
+        names::SPLIT,
+        "metric filterlist (empty)",
+    ),
+    (ids::DSD_TAG_FILTERLIST, names::TAG_PROJECTION, "tag filterlist (empty)"),
+    (
+        ids::DSD_POST_AGG_FILTER_IN,
+        names::MERGE,
+        "post-aggregation merge (one input)",
+    ),
+    (
+        ids::DSD_POST_AGG_FILTER,
+        names::SPLIT,
+        "post-aggregation filter (empty)",
+    ),
+    (ids::METRICS_IN, names::MERGE, "enrichment merge (one input)"),
+    (ids::METRICS, names::MERGE, "enrichment merge (one input)"),
+    (
+        ids::METRICS_HOST_ENRICHMENT,
+        names::HOST_ENRICHMENT,
+        "host enrichment (changes no metric)",
+    ),
+    (
+        ids::METRICS,
+        names::HOST_ENRICHMENT,
+        "host enrichment (changes no metric)",
+    ),
+    (ids::METRICS, names::HOST_TAGS, "host tags (none)"),
+    (
+        ids::AF_METRICS_GATEWAY,
+        names::SPLIT,
+        "autoscaling failover (no metrics listed)",
+    ),
 ];
 
 /// Returns how a reader knows the node `local` of the default program, left out of the detached export because it does
 /// nothing as configured, and its rank in program order; `note` is the note from lowering about it, if it has one.
 /// `None` for a node no reader needs named: one a left-out `split` alone reached.
+///
+/// Where several operators can hold the ID, as `metrics` can, the note tells them apart.
 pub fn omitted_name(local: &str, note: Option<&str>) -> Option<(usize, String)> {
-    if let Some(rank) = OMITTED.iter().position(|(id, _)| *id == local) {
-        return Some((rank, OMITTED[rank].1.to_string()));
+    let rows = OMITTED
+        .iter()
+        .enumerate()
+        .filter(|(_, (id, _, _))| *id == local)
+        .collect::<Vec<_>>();
+    let row = match rows.as_slice() {
+        [row] => Some(*row),
+        rows => rows
+            .iter()
+            .find(|(_, (id, op, _))| note.is_some() && annotation(id, op) == note)
+            .copied(),
+    };
+    if let Some((rank, (_, _, name))) = row {
+        return Some((rank, name.to_string()));
     }
     // Endpoint routing groups come after enrichment, in the policy, with neither names nor prefixes.
     let routed = note.and_then(|note| note.strip_prefix("Endpoint routing to "))?;
@@ -481,10 +558,11 @@ impl Lowering {
 
         let catalog = AdpCatalog::new(&resolved, snapshots, self.hosts).with_scope_inputs(declared);
         let mut annotations = program.annotations;
-        for (id, note) in ANNOTATIONS {
-            let id = node_id(id);
-            if plan.node(&id).is_some() {
-                annotations.insert(id, note.to_string());
+        for node in &plan.nodes {
+            if let Some(note) = annotation(node.id.local().as_str(), node.op.as_str()) {
+                if node.id.namespace() == Namespace::Reserved {
+                    annotations.insert(node.id.clone(), note.to_string());
+                }
             }
         }
         Ok(Lowered {
@@ -835,24 +913,8 @@ impl<'a> Program<'a> {
     fn enrichment(
         &mut self, startup: &SalukiConfiguration, facts: &HostFacts, inputs: Vec<PortRef>,
     ) -> Result<PortRef, GenericError> {
-        let merge = self.node(
-            ids::METRICS_IN,
-            names::MERGE,
-            json!({"inputs": inputs.len()}),
-            components::METRICS_ENRICH,
-        );
-        for (index, input) in inputs.into_iter().enumerate() {
-            self.edge(input, &merge, &index.to_string());
-        }
-        let enrichment = self.node(
-            ids::METRICS_HOST_ENRICHMENT,
-            names::HOST_ENRICHMENT,
-            Value::Null,
-            components::METRICS_ENRICH,
-        );
-        self.edge(PortRef::new(merge, port("out")), &enrichment, "in");
-        let mut enriched = PortRef::new(enrichment, port("out"));
-
+        // The enrichment stages after the merge, in order: host enrichment, then host tags when enabled.
+        let mut stages = vec![(names::HOST_ENRICHMENT, Value::Null)];
         if host_tags_enabled(startup) {
             if facts.host_tags.is_none() {
                 return Err(generic_error!(
@@ -865,9 +927,36 @@ impl<'a> Program<'a> {
                 "tags": self.bound("host.tags")?,
                 "deadline": self.bound("host.tags_deadline")?,
             });
-            let host_tags = self.node(ids::METRICS, names::HOST_TAGS, params, components::METRICS_ENRICH);
-            self.edge(enriched, &host_tags, "in");
-            enriched = PortRef::new(host_tags, port("out"));
+            stages.push((names::HOST_TAGS, params));
+        }
+
+        // Named as the pipeline syntax derives `let metrics = (<inputs>) | <stages>`: the last node is `metrics`, an
+        // earlier stage `metrics_<operator>`, and the merge `metrics_in`, or `metrics` itself without stages.
+        let merge_id = if stages.is_empty() {
+            ids::METRICS
+        } else {
+            ids::METRICS_IN
+        };
+        let merge = self.node(
+            merge_id,
+            names::MERGE,
+            json!({"inputs": inputs.len()}),
+            components::METRICS_ENRICH,
+        );
+        for (index, input) in inputs.into_iter().enumerate() {
+            self.edge(input, &merge, &index.to_string());
+        }
+        let mut enriched = PortRef::new(merge, port("out"));
+        let last = stages.len().saturating_sub(1);
+        for (index, (op, params)) in stages.into_iter().enumerate() {
+            let id = if index == last {
+                ids::METRICS.to_string()
+            } else {
+                format!("{}_{}", ids::METRICS, op)
+            };
+            let stage = self.node(&id, op, params, components::METRICS_ENRICH);
+            self.edge(enriched, &stage, "in");
+            enriched = PortRef::new(stage, port("out"));
         }
         Ok(enriched)
     }
