@@ -29,31 +29,31 @@ const DEFAULT_SOURCE: &str = r#"policy metrics {
   # Sources: each one's metrics enter at an input of the scope: dogstatsd.
 
   # Policy: one branch per output; route here
-  let metrics_fanout = dogstatsd | tee(ports: 4)
+  let metrics = dogstatsd
 
   # Recipients:
   #   primary                   http://127.0.0.1:17101
   #   mrf                       http://127.0.0.1:17104
   #   "http://127.0.0.1:17102"
   #   "http://127.0.0.1:17103"
-  metrics_fanout.0 | emit output dd_metrics_encode
+  metrics | emit output dd_metrics_encode
 
   # Endpoint routing to http://127.0.0.1:17102
-  let metrics_routing_filter_0 = metrics_fanout.1
+  let metrics_routing_filter_0 = metrics
     | where intake_name in config.endpoint_routing.group.b0b0b0b0.names
         or intake_name starts_with config.endpoint_routing.group.b0b0b0b0.prefixes
 
   metrics_routing_filter_0 | emit output metrics_routing_encode_0
 
   # Endpoint routing to http://127.0.0.1:17103
-  let metrics_routing_filter_1 = metrics_fanout.2
+  let metrics_routing_filter_1 = metrics
     | where intake_name in config.endpoint_routing.group.c0c0c0c0.names
         or intake_name starts_with config.endpoint_routing.group.c0c0c0c0.prefixes
 
   metrics_routing_filter_1 | emit output metrics_routing_encode_1
 
   # Multi-Region Failover: mirrors listed, or all, metrics while failing over
-  let mrf_metrics_gateway = metrics_fanout.3
+  let mrf_metrics_gateway = metrics
     | where config.multi_region_failover.enabled
         and config.multi_region_failover.metric_mirroring.enabled
         and (
@@ -68,14 +68,14 @@ const DEFAULT_SOURCE: &str = r#"policy metrics {
 /// The failover gateway's branch of the policy, with the comment above it and the blank line before.
 const MRF_BRANCH: &str =
     "\n  # Multi-Region Failover: mirrors listed, or all, metrics while failing over\n  let mrf_metrics_gateway = \
-                          metrics_fanout.3\n";
+                          metrics\n";
 
-/// Returns `source` without the failover gateway's branch, and without the port of the policy's tee it read.
+/// Returns `source` without the failover gateway's branch.
 fn without_mrf(source: &str) -> String {
     let start = source.find(MRF_BRANCH).expect("the source has the failover gateway");
     let end_text = "  mrf_metrics_gateway | emit output mrf_metrics_encode\n";
     let end = start + source[start..].find(end_text).unwrap() + end_text.len();
-    format!("{}{}", &source[..start], &source[end..]).replacen("tee(ports: 4)", "tee(ports: 3)", 1)
+    format!("{}{}", &source[..start], &source[end..])
 }
 
 /// The demo export's base, with its `outputs` block, which the editor leaves out.
@@ -161,7 +161,7 @@ fn edits_change_the_hash_and_reformatting_does_not() {
     let export = demo_export();
     let reformatted = DEFAULT_SOURCE
         .replace("\n\n", "\n")
-        .replace("metrics_fanout.0 | emit", "metrics_fanout.0\n    | emit");
+        .replace("  metrics | emit", "  metrics\n    | emit");
     let (outcome, _) = compile(&reformatted, Some(&structural(&export)));
     assert_eq!(outcome.artifact_hash, Some(export.artifact.hash.to_string()));
     assert_eq!(outcome.canonical_source.as_deref(), Some(DEFAULT_SOURCE));
@@ -182,11 +182,10 @@ fn edits_change_the_hash_and_reformatting_does_not() {
     assert_eq!(outcome.restored_fingerprints.len(), 3);
 
     // An output emitted to twice is restored once.
-    let twice = replaced_in(
-        &replaced("tee(ports: 4)", "tee(ports: 5)"),
-        "  metrics_fanout.0 | emit output dd_metrics_encode\n",
-        "  metrics_fanout.0 | emit output dd_metrics_encode\n\n  metrics_fanout.4 | where name starts_with \"demo.copy.\" \
-         | emit output dd_metrics_encode\n",
+    let twice = replaced(
+        "  metrics | emit output dd_metrics_encode\n",
+        "  metrics | emit output dd_metrics_encode\n\n  metrics | where name starts_with \"demo.copy.\" | emit output \
+         dd_metrics_encode\n",
     );
     let (outcome, _) = compile(&twice, Some(&structural(&export)));
     assert_eq!(
@@ -218,8 +217,8 @@ fn the_examples_of_the_demo_scenarios_compile_without_findings() {
 
 #[test]
 fn syntax_errors_are_placed_by_line_and_column() {
-    // `=>` instead of `|` on line 5: `=` is a token, and the `>` after it, at column 35, is not.
-    let source = replaced("= dogstatsd | tee", "= dogstatsd => tee");
+    // `=>` instead of `|` on line 5: `=` is a token, and the `>` after it, at column 28, is not.
+    let source = replaced("  let metrics = dogstatsd\n", "  let metrics = dogstatsd => tee\n");
     let (outcome, compiled) = compile(&source, Some(&structural(&demo_export())));
     assert!(!outcome.ok);
     assert!(compiled.is_none());
@@ -227,8 +226,8 @@ fn syntax_errors_are_placed_by_line_and_column() {
     let diagnostic = &outcome.diagnostics[0];
     assert_eq!(diagnostic.origin, Origin::Syntax);
     assert_eq!(diagnostic.severity, Severity::Error);
-    assert_eq!((diagnostic.range.line, diagnostic.range.column), (5, 35));
-    assert_eq!((diagnostic.range.end_line, diagnostic.range.end_column), (5, 36));
+    assert_eq!((diagnostic.range.line, diagnostic.range.column), (5, 28));
+    assert_eq!((diagnostic.range.end_line, diagnostic.range.end_column), (5, 29));
     assert_eq!(&source[diagnostic.range.start..diagnostic.range.end], ">");
     assert!(diagnostic.message.contains("`|`"), "{}", diagnostic.message);
     assert_eq!(outcome.errors, 1);

@@ -31,6 +31,9 @@ const CONCEPTS = [
     "End a pipeline: deliver to recipients of the directory or to an output, or discard."],
   ["let", "let dsd = dogstatsd\n  | aggregate(window: 10s, flush_interval: 10s)",
     "Names a stream, for later statements to use. A `let` never ends in a sink; a statement without one always does."],
+  ["Naming a stream", "let metrics = dsd\nmetrics | emit primary\nmetrics | emit mrf",
+    "`let x = y`, with no stages, gives the stream `y` another name and adds no node. Like any stream, `x` used " +
+    "more than once is copied to each use."],
   ["Ports", "let by_time = dogstatsd | timestamp_split(10s)\nby_time.passthrough | drop",
     "A node with several output ports is read one port at a time, as `<name>.<port>`, and every port is used."],
   ["Reuse", "metrics | emit primary\nmetrics | where tags.team == \"b\" | emit mrf",

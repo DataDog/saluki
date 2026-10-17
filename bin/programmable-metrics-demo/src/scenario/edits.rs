@@ -4,14 +4,12 @@
 //! The default program is the whole metrics path, its one scope fed by every source. Enrichment ends in the stream
 //! every destination reads, `let metrics = ...`, and each use of it, `metrics | ...`, is a branch of the policy: the
 //! first emits to the main output's recipients, `metrics | emit [primary, "http://127.0.0.1:17102",
-//! "http://127.0.0.1:17103"]`, the primary endpoint and every additional one. Where enrichment ends in no node of its
-//! own, as when the export leaves out host enrichment and there are no host tags, the stream is the policy's tee
-//! instead, `let metrics_fanout = ... | tee(ports: n)`, and each branch reads a port of it, `metrics_fanout.<i> | ...`;
-//! every edit works on both.
+//! "http://127.0.0.1:17103"]`, the primary endpoint and every additional one. Where the export leaves enrichment out,
+//! as in the demo, `let metrics` names the stream enrichment would have read, `let metrics = dsd_post_agg_filter`.
 //!
 //! Each edit finds the text it changes by what it says, never by line number or exact layout: a stage by its operator
-//! (`timestamp_split(`), a node by the `let` that names it, the policy by `let metrics` or `let metrics_fanout`, the
-//! main `emit` as the first branch of the policy that emits to `primary`. Strings and comments are never matched. An
+//! (`timestamp_split(`), a node by the `let` that names it, the policy by `let metrics`, the main `emit` as the first
+//! branch of the policy that emits to `primary`. Strings and comments are never matched. An
 //! edit fails with a message naming what it looked for when the default program is printed otherwise, so that a change
 //! of the printed form shows up as a clear check failure.
 
@@ -218,171 +216,51 @@ fn head_offset(statement: &str) -> usize {
 }
 
 /// The stream that every destination's branch reads, which the default program names `metrics`: what enrichment ends
-/// in, each of its uses a branch of the policy.
+/// in, or, where the export leaves enrichment out, the stream it would have read (`let metrics =
+/// dsd_post_agg_filter`). Each of its uses, `metrics | ...`, is a branch of the policy.
 pub const METRICS: &str = "metrics";
 
-/// The policy's tee: the copy of [`METRICS`] for each branch, as native lowering names it. The default program prints
-/// it as a `let` of its own, `let metrics_fanout = ... | tee(ports: n)`, read as `metrics_fanout.<i>`, when nothing in
-/// enrichment ends in a node named [`METRICS`], as when the export leaves out host enrichment and there are no host
-/// tags.
-pub const POLICY_TEE: &str = "metrics_fanout";
-
-/// How the default program writes the stream every destination's branch reads.
-enum PolicyForm {
-    /// `let metrics = ...`, used once per branch: `metrics | ...`.
-    Reuse,
-
-    /// `let metrics_fanout = ... | tee(ports: <ports>)`, its ports read once each: `metrics_fanout.<i> | ...`. `tee`
-    /// is the offset of the operator's name.
-    Tee { tee: usize, ports: usize },
+/// Returns the `let metrics = ...` statement, the stream every destination's branch reads.
+fn policy(source: &str) -> Result<std::ops::Range<usize>, GenericError> {
+    statements(source)
+        .into_iter()
+        .find(|statement| let_name(&source[statement.clone()]) == Some(METRICS))
+        .ok_or_else(|| {
+            generic_error!(
+                "The default program has no stream that every destination reads (looked for `let {} = ...`).",
+                METRICS
+            )
+        })
 }
 
-/// The stream every destination's branch reads, in a source.
-struct Policy {
-    /// The `let` statement that names it.
-    statement: std::ops::Range<usize>,
-
-    /// How it is written.
-    form: PolicyForm,
-}
-
-impl Policy {
-    /// Returns whether the head of a statement, `head`, reads this stream: `metrics`, or a port of the policy's tee.
-    fn read_by(&self, head: &str) -> bool {
-        let name = match self.form {
-            PolicyForm::Reuse => METRICS,
-            PolicyForm::Tee { .. } => POLICY_TEE,
-        };
-        let Some(rest) = head.strip_prefix(name) else {
-            return false;
-        };
-        match self.form {
-            PolicyForm::Reuse => !rest.starts_with(|c: char| is_ident(c) || c == '.'),
-            PolicyForm::Tee { .. } => rest
-                .strip_prefix('.')
-                .is_some_and(|port| port.starts_with(|c: char| c.is_ascii_digit())),
-        }
-    }
-
-    /// Returns the statements after this one that read the stream: the branches of the policy, in order.
-    fn uses(&self, source: &str) -> Vec<std::ops::Range<usize>> {
-        statements(source)
-            .into_iter()
-            .filter(|statement| statement.start > self.statement.start)
-            .filter(|statement| {
-                let text = &source[statement.clone()];
-                self.read_by(&text[head_offset(text)..])
-            })
-            .collect()
-    }
-}
-
-/// Returns the stream every destination's branch reads: `let metrics = ...`, or, where the default program has no
-/// such `let`, `let metrics_fanout = ... | tee(ports: n)`.
-fn policy(source: &str) -> Result<Policy, GenericError> {
-    let statements = statements(source);
-    if let Some(statement) = statements
-        .iter()
-        .find(|statement| let_name(&source[(*statement).clone()]) == Some(METRICS))
-    {
-        return Ok(Policy {
-            statement: statement.clone(),
-            form: PolicyForm::Reuse,
-        });
-    }
-    let not_found = || {
-        generic_error!(
-            "The default program has no stream that every destination reads (looked for `let {} = ...`, or `let {} = \
-             ... | tee(ports: n)`).",
-            METRICS,
-            POLICY_TEE
-        )
-    };
-    let statement = statements
-        .iter()
-        .find(|statement| let_name(&source[(*statement).clone()]) == Some(POLICY_TEE))
-        .ok_or_else(not_found)?
-        .clone();
-    let text = &source[statement.clone()];
-    let tee = stage(text, "tee").ok_or_else(not_found)?;
-    // The tee is the `let`'s last stage: nothing but its parameters follows it.
-    let after = &text[tee + "tee".len()..];
-    let close = after
-        .starts_with('(')
-        .then(|| matching_close(text, tee + "tee".len()))
-        .flatten()
-        .ok_or_else(not_found)?;
-    if !text[close + 1..].trim().is_empty() {
-        return Err(not_found());
-    }
-    let ports = text[tee + "tee".len() + 1..close]
-        .trim()
-        .strip_prefix("ports")
-        .and_then(|rest| rest.trim_start().strip_prefix(':'))
-        .and_then(|value| value.trim().trim_end_matches(',').trim().parse::<usize>().ok())
-        .ok_or_else(not_found)?;
-    Ok(Policy {
-        form: PolicyForm::Tee {
-            tee: statement.start + tee,
-            ports,
-        },
-        statement,
-    })
-}
-
-/// Appends `stage` (a stage, such as `where <predicate>`) to the stream every destination reads, on a line of its own,
-/// so that every destination's branch reads what it passes: at the end of `let metrics`'s pipeline, whichever operator
-/// ends it, or, where the default program writes the policy's tee as `let metrics_fanout = ... | tee(ports: n)`, just
-/// before the tee.
-pub(crate) fn append_to_metrics(source: &str, stage: &str) -> Result<String, GenericError> {
+/// Returns the statements after `let metrics` that read it, `metrics | ...` or `let <x> = metrics | ...`: the branches
+/// of the policy, in order.
+fn uses(source: &str) -> Result<Vec<std::ops::Range<usize>>, GenericError> {
     let policy = policy(source)?;
-    match policy.form {
-        PolicyForm::Reuse => {
-            let end = policy.statement.end;
-            Ok(format!("{}\n    | {}{}", &source[..end], stage, &source[end..]))
-        }
-        PolicyForm::Tee { tee, .. } => {
-            let mask = code_mask(source);
-            let bar = source[policy.statement.start..tee]
-                .char_indices()
-                .rev()
-                .map(|(offset, c)| (policy.statement.start + offset, c))
-                .find(|(at, c)| mask[*at] && *c == '|')
-                .map(|(at, _)| at)
-                .ok_or_else(|| generic_error!("The policy's tee does not follow a `|`."))?;
-            let start = line_start(source, bar);
-            if source[start..bar].trim().is_empty() {
-                // `| tee(ports: n)` on a line of its own: the stage goes on the line above it.
-                Ok(format!(
-                    "{}{}| {}\n{}",
-                    &source[..start],
-                    &source[start..bar],
-                    stage,
-                    &source[start..]
-                ))
-            } else {
-                // `let metrics_fanout = <head> | tee(ports: n)` on one line: the stage and the tee each take a line.
-                let end = source[..bar].trim_end().len();
-                Ok(format!("{}\n    | {}\n    {}", &source[..end], stage, &source[bar..]))
-            }
-        }
-    }
+    Ok(statements(source)
+        .into_iter()
+        .filter(|statement| statement.start > policy.start)
+        .filter(|statement| {
+            let text = &source[statement.clone()];
+            text[head_offset(text)..]
+                .strip_prefix(METRICS)
+                .is_some_and(|rest| !rest.starts_with(|c: char| is_ident(c) || c == '.'))
+        })
+        .collect())
+}
+
+/// Appends `stage` (a stage, such as `where <predicate>`) to the end of `let metrics`'s pipeline, on a line of its own,
+/// whichever operator ends it, so that every destination's branch reads what it passes. The stage then ends the `let`,
+/// so it is the node `metrics`, and the policy's tee keeps its ID, `metrics_fanout`.
+pub(crate) fn append_to_metrics(source: &str, stage: &str) -> Result<String, GenericError> {
+    let end = policy(source)?.end;
+    Ok(format!("{}\n    | {}{}", &source[..end], stage, &source[end..]))
 }
 
 /// Returns the span of the main `emit` in `source`, from `emit` to the end of its statement: the first branch of the
 /// policy that emits to the primary endpoint, `metrics | emit primary` or `metrics | emit [primary, ...]`.
 fn main_emit(source: &str) -> Result<std::ops::Range<usize>, GenericError> {
-    let not_found = || {
-        generic_error!(
-            "The default program has no branch that emits to the primary endpoint (looked for a statement `{} | emit \
-             primary` or `{} | emit [primary, ...]`, or the same from a port of `{}`).",
-            METRICS,
-            METRICS,
-            POLICY_TEE
-        )
-    };
-    let policy = policy(source)?;
-    for statement in policy.uses(source) {
+    for statement in uses(source)? {
         let text = &source[statement.clone()];
         let Some(emit) = words(text, "emit").first().copied() else {
             continue;
@@ -398,44 +276,23 @@ fn main_emit(source: &str) -> Result<std::ops::Range<usize>, GenericError> {
             return Ok(statement.start + emit..statement.start + text.trim_end().len());
         }
     }
-    Err(not_found())
+    Err(generic_error!(
+        "The default program has no branch that emits to the primary endpoint (looked for a statement `{} | emit \
+         primary` or `{} | emit [primary, ...]`).",
+        METRICS,
+        METRICS
+    ))
 }
 
-/// Adds a branch to the policy, right after the main `emit`'s statement: `branch` makes its statements from the stream
-/// they read, `metrics`, or, where the default program writes the policy's tee, a new port of it, whose `ports` the
-/// edit raises by one.
+/// Adds a branch to the policy, a statement of its own right after the main `emit`'s: `branch` makes it from the
+/// stream it reads, `metrics`.
 pub(crate) fn add_policy_branch(source: &str, branch: impl FnOnce(&str) -> String) -> Result<String, GenericError> {
-    let policy = policy(source)?;
     let main = main_emit(source)?;
-    let main_end = policy
-        .uses(source)
+    let end = uses(source)?
         .into_iter()
         .find(|statement| statement.contains(&main.start))
         .map_or(main.end, |statement| statement.end);
-    let stream = match policy.form {
-        PolicyForm::Reuse => METRICS.to_string(),
-        PolicyForm::Tee { ports, .. } => format!("{}.{}", POLICY_TEE, ports),
-    };
-    let added = format!(
-        "{}\n\n  {}{}",
-        &source[..main_end],
-        branch(&stream),
-        &source[main_end..]
-    );
-    match policy.form {
-        PolicyForm::Reuse => Ok(added),
-        PolicyForm::Tee { ports, .. } => {
-            // The tee comes before the main `emit`, so its offsets still hold.
-            let statement = &added[policy.statement.clone()];
-            let raised = set_param(statement, "tee", "ports", false, &(ports + 1).to_string())?;
-            Ok(format!(
-                "{}{}{}",
-                &added[..policy.statement.start],
-                raised,
-                &added[policy.statement.end..]
-            ))
-        }
-    }
+    Ok(format!("{}\n\n  {}{}", &source[..end], branch(METRICS), &source[end..]))
 }
 
 /// Returns a branch, from `stream`, that emits what `predicate` matches to `recipients` (as `emit` writes them: one
@@ -694,10 +551,9 @@ const CHECKOUT: &str = "tags.team == \"checkout\"";
 /// exclusion and the route split on the same predicate and send the metrics opposite ways, which is how validation
 /// knows that no metric reaches team B twice, and the policy's tee and its branches keep their IDs.
 pub fn exclusive_team_b(source: &str, team_b: &str) -> Result<String, GenericError> {
-    let policy = policy(source)?;
     let mut edited = source.to_string();
     // From the last branch, so that the offsets of the others hold.
-    for statement in policy.uses(source).into_iter().rev() {
+    for statement in uses(source)?.into_iter().rev() {
         let head = statement.start + head_offset(&source[statement.clone()]);
         let end = source[head..]
             .find(|c: char| !(is_ident(c) || c == '.'))
@@ -819,8 +675,9 @@ pub fn second_aggregation(source: &str) -> Result<String, GenericError> {
     )
 }
 
-/// S5, the aggregation moved after enrichment: DogStatsD aggregation's stage moves in front of the policy, keeping its
-/// ID with `as dsd_agg`, and what fed it feeds what it fed. The aggregation ends the `let` [`AGGREGATION_NODE`]; once
+/// S5, the aggregation moved after enrichment: DogStatsD aggregation's stage moves to the end of `let metrics`, and
+/// what fed it feeds what it fed. It ends `let metrics` there, so it is the node `metrics` and the policy's tee keeps
+/// its ID; a program's one aggregation takes the default program's ID whatever the program calls it. The aggregation ends the `let` [`AGGREGATION_NODE`]; once
 /// it is gone, the stage before it ends the `let`, which takes that stage's ID as its name so that the stage keeps it,
 /// or, when the `let` has no other stage, the `let` goes and its uses read what it read. The program still has one
 /// aggregation, but the frame runs it only in its isolation slot, which enrichment has no exit to, so ADP refuses it
@@ -928,7 +785,7 @@ pub fn aggregation_after_enrichment(source: &str) -> Result<String, GenericError
             rename(&removed, AGGREGATION_NODE, &feeder)?
         }
     };
-    append_to_metrics(&edited, &format!("{} as {}", moved, AGGREGATION_NODE))
+    append_to_metrics(&edited, &moved)
 }
 
 #[cfg(test)]

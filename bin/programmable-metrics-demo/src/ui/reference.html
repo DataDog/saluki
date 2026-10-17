@@ -310,8 +310,8 @@
         <p>Common needs, each one line added to the default program: a stage at the end of the stream every
           destination reads, <code>let metrics = ...</code>, so that every use of <code>metrics</code>, one per
           destination, reads what it passes. Load the default program, add the line, and compile. Where enrichment
-          does nothing, as in this demo, the default program writes that stream as the policy's tee,
-          <code>let metrics_fanout = ... | tee(ports: n)</code>, and the line goes just before the tee.</p>
+          does nothing, as in this demo, <code>let metrics</code> only names the stream it would have read,
+          <code>let metrics = dsd_post_agg_filter</code>, and the line goes after it all the same.</p>
         <div class="recipes" id="recipes-body"></div>
       </section>
 

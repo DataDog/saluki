@@ -5,8 +5,8 @@ const TEAM_B: &str = "http://127.0.0.1:17102";
 
 /// The default program of the demo's configuration, detached, as the editor prints it, with its base: what does
 /// nothing as configured left out and noted at the top, the aggregation's window and the demo's short flush and expiry,
-/// the policy's tee written as a `let` of its own (enrichment does nothing, so nothing ends in `metrics`), the main
-/// `emit` naming the primary endpoint and teams B and C, and the failover gateway reading its two signals.
+/// `let metrics` naming the stream enrichment would read (enrichment does nothing, so it is left out), the main `emit`
+/// naming the primary endpoint and teams B and C, and the failover gateway reading its two signals.
 const PRINTED: &str = r#"policy metrics {
   # Not shown, because they do nothing as configured: mapper (no profiles), namespace prefix (none),
   #   metric filterlist (empty), tag filterlist (empty), post-aggregation filter (empty), enrichment
@@ -26,45 +26,40 @@ const PRINTED: &str = r#"policy metrics {
   let dsd_post_agg_filter_in = (dsd_agg, dsd_no_agg_split.passthrough)
 
   # Copies every metric to the client telemetry tap and to enrichment
-  let dsd_post_agg_filter_fanout = dsd_post_agg_filter_in | tee(ports: 2)
+  let dsd_post_agg_filter = dsd_post_agg_filter_in
 
-  dsd_post_agg_filter_fanout.0 | emit output dsd_client_telemetry
+  dsd_post_agg_filter | emit output dsd_client_telemetry
 
   # Policy: one branch per output; route here
-  let metrics_fanout = dsd_post_agg_filter_fanout.1 | tee(ports: 2)
+  let metrics = dsd_post_agg_filter
 
   # Recipients:
   #   primary                   Primary         http://127.0.0.1:17101
   #   mrf                       Failover (MRF)  http://127.0.0.1:17104
   #   "http://127.0.0.1:17102"  Team B
   #   "http://127.0.0.1:17103"  Team C
-  metrics_fanout.0 | emit [primary, "http://127.0.0.1:17102", "http://127.0.0.1:17103"]
+  metrics | emit [primary, "http://127.0.0.1:17102", "http://127.0.0.1:17103"]
 
   # Multi-Region Failover: mirrors listed, or all, metrics while failing over
-  let mrf_metrics_gateway = metrics_fanout.1
+  let mrf_metrics_gateway = metrics
     | where config.multi_region_failover.enabled and config.multi_region_failover.metric_mirroring.enabled
 
   mrf_metrics_gateway | emit mrf
 }
 "#;
 
-/// The statement that names the policy's tee in [`PRINTED`].
-const POLICY_LET: &str = "  let metrics_fanout = dsd_post_agg_filter_fanout.1 | tee(ports: 2)";
+/// The `let` that names the stream every destination reads in [`PRINTED`].
+const POLICY_LET: &str = "  let metrics = dsd_post_agg_filter";
 
 /// The statement of the main `emit` in [`PRINTED`].
-const MAIN_EMIT: &str = "  metrics_fanout.0 | emit [primary, \"http://127.0.0.1:17102\", \"http://127.0.0.1:17103\"]";
+const MAIN_EMIT: &str = "  metrics | emit [primary, \"http://127.0.0.1:17102\", \"http://127.0.0.1:17103\"]";
 
-/// Returns [`PRINTED`] as the default program prints with host tags: enrichment ends in `let metrics = ...`, and each
-/// branch of the policy reads `metrics`.
+/// Returns [`PRINTED`] as the default program prints with host tags: `let metrics` ends in them.
 fn printed_with_host_tags() -> String {
-    PRINTED
-        .replace(
-            POLICY_LET,
-            "  let metrics = dsd_post_agg_filter_fanout.1\n    | host_tags(config.host.tags, deadline: \
-             config.host.tags_deadline)",
-        )
-        .replace("metrics_fanout.0 |", "metrics |")
-        .replace("= metrics_fanout.1", "= metrics")
+    PRINTED.replace(
+        &format!("{}\n", POLICY_LET),
+        "  let metrics = dsd_post_agg_filter\n    | host_tags(config.host.tags, deadline: config.host.tags_deadline)\n",
+    )
 }
 
 /// Returns the lines `edited` has that `source` does not, and the lines it lost, in order.
@@ -106,32 +101,26 @@ fn each_edit_changes_the_lines_its_scenario_describes() {
             "S1",
             PRINTED,
             Box::new(drop_debug),
-            &[
-                "  let metrics_fanout = dsd_post_agg_filter_fanout.1",
-                "    | where not (name starts_with \"demo.debug.\")",
-                "    | tee(ports: 2)",
-            ],
-            &[POLICY_LET],
+            &["    | where not (name starts_with \"demo.debug.\")"],
+            &[],
         ),
         (
             "S2, the recipe",
             PRINTED,
             Box::new(|source| narrow_team_b(source, TEAM_B)),
             &[
-                "  let metrics_fanout = dsd_post_agg_filter_fanout.1 | tee(ports: 3)",
-                "  metrics_fanout.0 | emit [primary, \"http://127.0.0.1:17103\"]",
-                "  let to_team_b = metrics_fanout.2 | where name starts_with \"demo.checkout.\"",
+                "  metrics | emit [primary, \"http://127.0.0.1:17103\"]",
+                "  let to_team_b = metrics | where name starts_with \"demo.checkout.\"",
                 "  to_team_b | emit \"http://127.0.0.1:17102\"",
             ],
-            &[POLICY_LET, MAIN_EMIT],
+            &[MAIN_EMIT],
         ),
         (
             "S3a",
             &recipe,
             Box::new(widen_team_b),
-            &["  let to_team_b = metrics_fanout.2 | where name starts_with \"demo.checkout.\" or tags.team == \
-               \"platform\""],
-            &["  let to_team_b = metrics_fanout.2 | where name starts_with \"demo.checkout.\""],
+            &["  let to_team_b = metrics | where name starts_with \"demo.checkout.\" or tags.team == \"platform\""],
+            &["  let to_team_b = metrics | where name starts_with \"demo.checkout.\""],
         ),
         (
             "S4a",
@@ -142,16 +131,8 @@ fn each_edit_changes_the_lines_its_scenario_describes() {
             &["    | where config.multi_region_failover.enabled and \
                config.multi_region_failover.metric_mirroring.enabled"],
         ),
-        (
-            "S5a",
-            PRINTED,
-            Box::new(duplicate_branch),
-            &[
-                "  let metrics_fanout = dsd_post_agg_filter_fanout.1 | tee(ports: 3)",
-                "  metrics_fanout.2 | emit [primary, \"http://127.0.0.1:17102\", \"http://127.0.0.1:17103\"]",
-            ],
-            &[POLICY_LET],
-        ),
+        // The duplicated branch is a statement the source already has.
+        ("S5a", PRINTED, Box::new(duplicate_branch), &[], &[]),
         (
             "S5b",
             PRINTED,
@@ -171,22 +152,18 @@ fn each_edit_changes_the_lines_its_scenario_describes() {
             "S5f",
             PRINTED,
             Box::new(unknown_recipient),
-            &[
-                "  let metrics_fanout = dsd_post_agg_filter_fanout.1 | tee(ports: 3)",
-                "  metrics_fanout.2 | emit team_z",
-            ],
-            &[POLICY_LET],
+            &["  metrics | emit team_z"],
+            &[],
         ),
         (
             "S9c",
             &recipe,
             Box::new(|source| route_platform_to(source, "http://127.0.0.1:50001")),
             &[
-                "  let metrics_fanout = dsd_post_agg_filter_fanout.1 | tee(ports: 4)",
-                "  let to_destination = metrics_fanout.3 | where tags.team == \"platform\"",
+                "  let to_destination = metrics | where tags.team == \"platform\"",
                 "  to_destination | emit \"http://127.0.0.1:50001\"",
             ],
-            &["  let metrics_fanout = dsd_post_agg_filter_fanout.1 | tee(ports: 3)"],
+            &[],
         ),
         (
             "S13a",
@@ -239,14 +216,9 @@ fn each_edit_changes_the_lines_its_scenario_describes() {
         edited_texts.push((case, edited));
     }
 
-    // The duplicated branch emits what the main `emit` does.
+    // The duplicated branch is the main `emit` again.
     let duplicated = duplicate_branch(PRINTED).unwrap();
-    assert_eq!(
-        duplicated
-            .matches("| emit [primary, \"http://127.0.0.1:17102\", \"http://127.0.0.1:17103\"]\n")
-            .count(),
-        2
-    );
+    assert_eq!(duplicated.matches(&format!("{}\n", MAIN_EMIT)).count(), 2);
 
     for (case, edited) in edited_texts {
         parses(case, &edited);
@@ -254,14 +226,25 @@ fn each_edit_changes_the_lines_its_scenario_describes() {
 }
 
 #[test]
-fn the_edits_work_where_enrichment_ends_in_metrics() {
-    let source = printed_with_host_tags();
-    let default = parses("default, with host tags", &source);
-    assert!(default.nodes.iter().any(|node| node.id.as_str() == "metrics_fanout"));
+fn a_stage_ends_let_metrics_and_the_policy_tee_keeps_its_id() {
+    for (case, source) in [
+        ("without host tags", PRINTED.to_string()),
+        ("with host tags", printed_with_host_tags()),
+    ] {
+        let default = parses(case, &source);
+        let edited = drop_debug(&source).unwrap();
+        let artifact = parses(case, &edited);
+        let node = |id: &str| artifact.nodes.iter().find(|node| node.id.as_str() == id);
+        // The `where` ends `let metrics`, so it is the node `metrics`, and the tee its uses read keeps its ID.
+        let split = node("metrics").unwrap_or_else(|| panic!("{}: no `metrics`\n{}", case, edited));
+        assert_eq!(split.op.as_str(), "split", "{}", case);
+        assert!(is_drop_debug(&serde_json::to_value(split).unwrap()), "{}", case);
+        assert_eq!(node("metrics_fanout").unwrap().op.as_str(), "tee", "{}", case);
+        assert!(default.nodes.iter().any(|node| node.id.as_str() == "metrics_fanout"));
+    }
 
-    // S1 goes at the end of `let metrics`, which it now ends: the `where` is `metrics`, and host tags
-    // `metrics_host_tags`.
-    let edited = drop_debug(&source).unwrap();
+    // With host tags, they are the stage before the `where` now: `metrics_host_tags`.
+    let edited = drop_debug(&printed_with_host_tags()).unwrap();
     assert!(
         edited.contains(
             "    | host_tags(config.host.tags, deadline: config.host.tags_deadline)\n    | where not (name starts_with \
@@ -271,22 +254,14 @@ fn the_edits_work_where_enrichment_ends_in_metrics() {
         edited
     );
     let artifact = parses("S1, with host tags", &edited);
-    let node = |id: &str| artifact.nodes.iter().find(|node| node.id.as_str() == id).unwrap();
-    assert_eq!(node("metrics").op.as_str(), "split");
-    assert_eq!(node("metrics_host_tags").op.as_str(), "host_tags");
-    assert!(is_drop_debug(&serde_json::to_value(node("metrics")).unwrap()));
+    assert!(artifact
+        .nodes
+        .iter()
+        .any(|node| node.id.as_str() == "metrics_host_tags" && node.op.as_str() == "host_tags"));
 
-    // A branch is a statement of its own that reads `metrics`.
-    let edited = narrow_team_b(&source, TEAM_B).unwrap();
-    assert!(
-        edited.contains(
-            "  metrics | emit [primary, \"http://127.0.0.1:17103\"]\n\n  let to_team_b = metrics | where name \
-             starts_with \"demo.checkout.\"\n\n  to_team_b | emit \"http://127.0.0.1:17102\"\n"
-        ),
-        "{}",
-        edited
-    );
-    let artifact = parses("S2, with host tags", &edited);
+    // A branch is a statement of its own that reads `metrics`, and adds only its own nodes.
+    let default = parses("default", PRINTED);
+    let artifact = parses("S2", &narrow_team_b(PRINTED, TEAM_B).unwrap());
     let mut expected = ids(&default);
     expected.extend([
         "to_team_b".to_string(),
@@ -295,16 +270,6 @@ fn the_edits_work_where_enrichment_ends_in_metrics() {
     ]);
     expected.sort();
     assert_eq!(ids(&artifact), expected);
-
-    for (case, edited) in [
-        ("S4a", mirror_checkout_on_failover(&source).unwrap()),
-        ("S5a", duplicate_branch(&source).unwrap()),
-        ("S5b", two_hosts(&source).unwrap()),
-        ("S5f", unknown_recipient(&source).unwrap()),
-        ("S9c", route_platform_to(&source, "http://127.0.0.1:50001").unwrap()),
-    ] {
-        parses(case, &edited);
-    }
 }
 
 #[test]
@@ -315,20 +280,16 @@ fn the_exclusive_route_excludes_checkout_from_every_other_branch() {
     assert_eq!(
         added,
         [
-            "  let metrics_fanout = dsd_post_agg_filter_fanout.1 | tee(ports: 3)",
-            "  metrics_fanout.0 | where tags.team != \"checkout\" | emit [primary, \"http://127.0.0.1:17102\", \
+            "  metrics | where tags.team != \"checkout\" | emit [primary, \"http://127.0.0.1:17102\", \
              \"http://127.0.0.1:17103\"]",
-            "  let checkout_only = metrics_fanout.2 | where tags.team == \"checkout\"",
+            "  let checkout_only = metrics | where tags.team == \"checkout\"",
             "  checkout_only | emit \"http://127.0.0.1:17102\"",
-            "  let mrf_metrics_gateway = metrics_fanout.1 | where tags.team != \"checkout\"",
+            "  let mrf_metrics_gateway = metrics | where tags.team != \"checkout\"",
         ],
         "{}",
         edited
     );
-    assert_eq!(
-        removed,
-        [POLICY_LET, MAIN_EMIT, "  let mrf_metrics_gateway = metrics_fanout.1"]
-    );
+    assert_eq!(removed, [MAIN_EMIT, "  let mrf_metrics_gateway = metrics"]);
     // The policy's tee and the gateway keep their IDs.
     let after = ids(&parses("S3b", &edited));
     for id in [
@@ -339,24 +300,21 @@ fn the_exclusive_route_excludes_checkout_from_every_other_branch() {
     ] {
         assert!(after.contains(&id.to_string()), "{} in {:?}", id, after);
     }
-
-    // The same with `let metrics`.
-    let edited = exclusive_team_b(&printed_with_host_tags(), TEAM_B).unwrap();
-    for expected in [
-        "  metrics | where tags.team != \"checkout\" | emit [primary, \"http://127.0.0.1:17102\", \
-         \"http://127.0.0.1:17103\"]\n\n  let checkout_only = metrics | where tags.team == \"checkout\"\n\n  \
-         checkout_only | emit \"http://127.0.0.1:17102\"\n",
-        "  let mrf_metrics_gateway = metrics | where tags.team != \"checkout\"\n",
-    ] {
-        assert!(edited.contains(expected), "{}\n{}", expected, edited);
-    }
-    parses("S3b, with host tags", &edited);
+    parses(
+        "S3b, with host tags",
+        &exclusive_team_b(&printed_with_host_tags(), TEAM_B).unwrap(),
+    );
 }
 
 #[test]
-fn a_stage_goes_at_the_end_of_the_stream_every_destination_reads() {
+fn a_stage_goes_at_the_end_of_let_metrics() {
     let stage = "where tags.env != \"dev\"";
-    // At the end of `let metrics`, whichever operator ends it, on a line of its own.
+    // At the end of `let metrics`, whichever operator ends it, or none, on a line of its own.
+    let named = "  let metrics = x\n\n  metrics | emit primary\n\n  metrics | drop\n";
+    assert_eq!(
+        append_to_metrics(named, stage).unwrap(),
+        "  let metrics = x\n    | where tags.env != \"dev\"\n\n  metrics | emit primary\n\n  metrics | drop\n"
+    );
     let reuse = "  let metrics = (a, b) | host_enrichment\n\n  metrics | emit primary\n\n  metrics | drop\n";
     assert_eq!(
         append_to_metrics(reuse, stage).unwrap(),
@@ -367,19 +325,6 @@ fn a_stage_goes_at_the_end_of_the_stream_every_destination_reads() {
     assert_eq!(
         append_to_metrics(broken, stage).unwrap(),
         "  let metrics = (a, b)\n    | host_tags([])\n    | where tags.env != \"dev\"\n\n  metrics | emit primary\n"
-    );
-    // Just before the policy's tee, written as a `let`: on the tee's line, the stage and the tee each take a line.
-    let tee = "  let metrics_fanout = x.1 | tee(ports: 2)\n\n  metrics_fanout.0 | emit primary\n";
-    assert_eq!(
-        append_to_metrics(tee, stage).unwrap(),
-        "  let metrics_fanout = x.1\n    | where tags.env != \"dev\"\n    | tee(ports: 2)\n\n  metrics_fanout.0 | emit \
-         primary\n"
-    );
-    let own_line = "  let metrics_fanout = x.1\n    | tee(ports: 2)\n\n  metrics_fanout.0 | emit primary\n";
-    assert_eq!(
-        append_to_metrics(own_line, stage).unwrap(),
-        "  let metrics_fanout = x.1\n    | where tags.env != \"dev\"\n    | tee(ports: 2)\n\n  metrics_fanout.0 | emit \
-         primary\n"
     );
     // A name in a string or a comment is not the stream.
     let error = append_to_metrics("  # let metrics = x\n  x | emit \"let metrics = x\"\n", stage)
@@ -411,13 +356,10 @@ fn an_endpoint_the_main_emit_does_not_name_cannot_be_narrowed() {
         .to_string();
     assert!(error.contains("does not name team B"), "{}", error);
     // Narrowed to one recipient, the main `emit` names it bare.
-    let one = PRINTED.replace(
-        MAIN_EMIT,
-        "  metrics_fanout.0 | emit [primary, \"http://127.0.0.1:17102\"]",
-    );
+    let one = PRINTED.replace(MAIN_EMIT, "  metrics | emit [primary, \"http://127.0.0.1:17102\"]");
     assert!(narrow_team_b(&one, TEAM_B)
         .unwrap()
-        .contains("\n  metrics_fanout.0 | emit primary\n"));
+        .contains("\n  metrics | emit primary\n"));
 }
 
 #[test]
@@ -431,9 +373,9 @@ fn the_aggregation_moves_after_enrichment_and_its_feeder_feeds_what_it_fed() {
         "{}",
         edited
     );
-    let moved = "    | aggregate(window: 1s, flush_interval: 1s, counter_expiry: 0s) as dsd_agg\n";
+    let moved =
+        "  let metrics = dsd_post_agg_filter\n    | aggregate(window: 1s, flush_interval: 1s, counter_expiry: 0s)\n";
     assert!(edited.contains(moved), "{}", edited);
-    assert!(edited.find(moved).unwrap() < edited.find("  # Recipients:").unwrap());
 
     // A `let` with a stage before the aggregation keeps that stage, which names the `let` instead.
     let filtered = PRINTED.replace(
@@ -454,6 +396,7 @@ fn the_aggregation_moves_after_enrichment_and_its_feeder_feeds_what_it_fed() {
     );
     parses("S5d, with a feeder", &edited_filtered);
 
+    // The aggregation ends `let metrics`, so it is `metrics`, and the policy's tee reads it.
     let parsed = parses("S5d", &edited);
     let edges = parsed
         .edges
@@ -462,11 +405,14 @@ fn the_aggregation_moves_after_enrichment_and_its_feeder_feeds_what_it_fed() {
         .collect::<Vec<_>>();
     for edge in [
         "dsd_no_agg_split.default -> dsd_post_agg_filter_in.0",
-        "dsd_post_agg_filter_fanout.1 -> dsd_agg.in",
-        "dsd_agg.out -> metrics_fanout.in",
+        "metrics.out -> metrics_fanout.in",
     ] {
         assert!(edges.iter().any(|found| found == edge), "{} in {:?}", edge, edges);
     }
+    assert!(parsed
+        .nodes
+        .iter()
+        .any(|node| node.id.as_str() == "metrics" && node.op.as_str() == "aggregate"));
     assert_eq!(parsed.nodes.len(), parses("default", PRINTED).nodes.len());
 }
 
