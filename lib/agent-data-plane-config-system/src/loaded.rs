@@ -327,6 +327,7 @@ mod tests {
     // `#[tokio::test]`, so the blocking environment guard is never held across an await point.
     fn block_on<F: std::future::Future>(future: F) -> F::Output {
         tokio::runtime::Builder::new_current_thread()
+            .enable_time()
             .build()
             .expect("runtime builds")
             .block_on(future)
@@ -501,5 +502,49 @@ mod tests {
             config.domains.dogstatsd.contexts.string_interner_size_bytes,
             Some(ByteSize::mib(12).as_u64())
         );
+    }
+
+    #[test]
+    fn go_literal_environment_values_reach_connected_startup() {
+        // The Agent reads these spellings, so ADP must too: a value that fails to decode locally aborts
+        // the boot before the Agent's configuration stream can supply anything. The IPC message size is
+        // also used to connect to that stream, so it must decode to the same value, not just decode.
+        let _guard = test_env_lock();
+        let path = std::env::temp_dir().join(format!("adp_go_literals_{}.yaml", std::process::id()));
+        std::fs::write(&path, "api_key: test-api-key\n").unwrap();
+        let vars = [
+            ("DD_DOGSTATSD_PORT", "0x2000"),
+            ("DD_AGENT_IPC_GRPC_MAX_MESSAGE_SIZE", "0x8000000"),
+            ("DD_APM_OBFUSCATION_ELASTICSEARCH_KEEP_VALUES", r#"["cr-a","cr-b"]"#),
+        ];
+        for (name, value) in vars {
+            std::env::set_var(name, value);
+        }
+
+        let loaded = block_on(LoadedConfiguration::load(&path, EnvPrecedence::AfterFile));
+
+        for (name, _) in vars {
+            std::env::remove_var(name);
+        }
+        std::fs::remove_file(&path).ok();
+        let loaded = loaded.expect("local sources load");
+
+        let assert_decoded = |config: &SalukiConfiguration| {
+            assert_eq!(config.domains.dogstatsd.listeners.port, 0x2000);
+            assert_eq!(config.control.ipc.grpc_max_message_size, 128 * 1024 * 1024);
+            assert_eq!(
+                config.domains.traces.obfuscation.elasticsearch.keep_values,
+                ["cr-a", "cr-b"]
+            );
+        };
+        assert_decoded(loaded.local());
+
+        let system = block_on(async {
+            let (agent_tx, agent_rx) = mpsc::channel(1);
+            agent_tx.send(ConfigUpdate::snapshot([])).await.unwrap();
+            let (system, _updates) = loaded.run(agent_rx).await.expect("the initial snapshot is accepted");
+            system
+        });
+        assert_decoded(&system.config());
     }
 }

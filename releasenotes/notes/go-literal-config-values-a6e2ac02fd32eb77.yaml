@@ -1,0 +1,12 @@
+fixes:
+  - |
+    Agent Data Plane now reads numeric configuration values written as strings the same way the
+    Datadog Agent does, in environment variables and quoted YAML values alike. Integers accept
+    hexadecimal (``0x10``), octal (``0o20``, or a leading zero such as ``010``), and binary
+    (``0b10000``) forms and ``_`` digit separators, and floats accept hexadecimal forms such as
+    ``0x1p4``. Previously these values stopped Agent Data Plane from starting, except for a
+    leading-zero integer, which was read as decimal: ``010`` now reads as 8, not 10.
+  - |
+    A string-list setting given as a JSON list, such as
+    ``DD_APM_OBFUSCATION_ELASTICSEARCH_KEEP_VALUES='["a","b"]'``, is now read as that list, as the
+    Datadog Agent reads it, instead of as a single element.
