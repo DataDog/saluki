@@ -1026,8 +1026,7 @@ fn the_size_limit_is_checked() {
 
 // The default program.
 
-/// Returns the default program's export, with the IDs native lowering derives (see
-/// [`NATIVE_RENAMES`](crate::tests::NATIVE_RENAMES)), which is in normal form: its splits drop their `false` port.
+/// Returns the default program's export, which is in normal form: its splits drop their `false` port.
 fn normalized_export() -> PolicyArtifact {
     crate::tests::default_export()
 }
@@ -1363,7 +1362,6 @@ fn the_default_programs_core_form_lowers_to_its_export_exactly_and_composes_into
 
     let plan = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
     // Composition takes the resolved values of bindings from the plan's node with the same ID.
-    let artifact = crate::tests::with_plan_ids(&artifact, &plan);
     let received = receive_artifact(serde_json::to_value(&artifact).unwrap()).unwrap();
     let approval = Approval {
         revision: 1,

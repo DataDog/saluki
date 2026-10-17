@@ -212,8 +212,8 @@ fn expected_text(program_hash: &str, policy: &str) -> String {
 
 #[test]
 fn the_default_programs_export_prints_with_a_let_for_each_named_stream_and_no_as() {
-    // The normalized export of the one scope, with the IDs native lowering derives (see `NATIVE_RENAMES`): every node
-    // whose ID is not the one its position derives ends a `let` named for it, so no `as` is needed.
+    // The normalized export of the one scope: every node whose ID is not the one its position derives ends a `let`
+    // named for it, so no `as` is needed.
     let export = default_export();
     let printed = print_default(&export);
     assert!(

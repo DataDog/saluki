@@ -93,70 +93,17 @@ fn assert_same_program(parsed: &PolicyArtifact, export: &PolicyArtifact, printed
     assert_eq!(canonical(normalize(parsed)), canonical(export.clone()), "{}", printed);
 }
 
-/// The node IDs of the default program that native lowering renames to the IDs the syntax derives, so that it prints
-/// without `as`: `(native, derived)`.
-pub(crate) const NATIVE_RENAMES: [(&str, &str); 6] = [
-    ("dsd_prefix_filter", "dsd_prefix_filter_blocklist_namespace_prefix"),
-    ("metrics_enrich_in", "metrics_in"),
-    ("metrics_enrich", "metrics_host_enrichment"),
-    ("metrics_enrich_host_tags", "metrics"),
-    ("metrics_policy", "metrics_fanout"),
-    ("metrics_policy_0", "metrics_fanout_0"),
-];
-
-/// Renames the nodes of an artifact document, in its nodes and its edges, by `renames`: `(from, to)`.
-fn rename_nodes(document: &mut Value, renames: &[&(&str, &str)]) {
-    let rename = |id: &str| {
-        renames
-            .iter()
-            .find(|(from, _)| *from == id)
-            .map_or(id, |(_, to)| to)
-            .to_string()
-    };
-    for node in document["nodes"].as_array_mut().expect("an artifact has nodes") {
-        node["id"] = Value::String(rename(node["id"].as_str().expect("node IDs are strings")));
-    }
-    for edge in document["edges"].as_array_mut().expect("an artifact has edges") {
-        for end in ["from", "to"] {
-            let (node, port) = edge[end]
-                .as_str()
-                .and_then(|text| text.split_once('.'))
-                .expect("edge ends are `<node>.<port>`");
-            edge[end] = Value::String(format!("{}.{}", rename(node), port));
-        }
-    }
-}
-
-/// Returns the default program's export, normalized, as a JSON document, with [`NATIVE_RENAMES`] applied to its node
-/// IDs and edges, in the export's order.
-///
-/// An export that already has the derived IDs has none of the native ones, so the renames leave it as it is.
+/// Returns the default program's export, normalized, as a JSON document, in the export's order.
 pub(crate) fn default_export_document() -> Value {
-    let mut document: Value = serde_json::from_str(include_str!(
+    serde_json::from_str(include_str!(
         "../../../saluki-metric-plan/fixtures/export/default-program-metrics.json"
     ))
-    .expect("the default program's export reads");
-    rename_nodes(&mut document, &NATIVE_RENAMES.iter().collect::<Vec<_>>());
-    document
+    .expect("the default program's export reads")
 }
 
-/// Returns the default program's export, normalized, with [`NATIVE_RENAMES`] applied (see
-/// [`default_export_document`]).
+/// Returns the default program's export, normalized (see [`default_export_document`]).
 pub(crate) fn default_export() -> PolicyArtifact {
-    PolicyArtifact::from_value(default_export_document()).expect("the renamed export is an artifact document")
-}
-
-/// Returns `artifact` with each of [`NATIVE_RENAMES`] undone where `plan` still has the native ID, so that it composes
-/// into `plan`, which takes the resolved values of bindings from its node with the same ID.
-pub(crate) fn with_plan_ids(artifact: &PolicyArtifact, plan: &saluki_metric_plan::ir::Plan) -> PolicyArtifact {
-    let undone = NATIVE_RENAMES
-        .iter()
-        .filter(|(native, _)| plan.nodes.iter().any(|node| node.id.local().as_str() == *native))
-        .map(|(native, derived)| (*derived, *native))
-        .collect::<Vec<_>>();
-    let mut document = serde_json::to_value(artifact).expect("artifacts serialize");
-    rename_nodes(&mut document, &undone.iter().collect::<Vec<_>>());
-    PolicyArtifact::from_value(document).expect("the renamed artifact is an artifact document")
+    PolicyArtifact::from_value(default_export_document()).expect("the export is an artifact document")
 }
 
 /// Returns the source text a span covers.

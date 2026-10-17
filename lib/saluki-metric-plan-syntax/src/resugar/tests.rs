@@ -992,8 +992,7 @@ fn a_long_chain_resugars_without_deep_recursion() {
         .unwrap();
 }
 
-/// The default program's export, in normal form (its splits drop on `false`), with the IDs native lowering derives
-/// (see [`NATIVE_RENAMES`](crate::tests::NATIVE_RENAMES)).
+/// The default program's export, in normal form (its splits drop on `false`), with the IDs native lowering gives it.
 fn default_export() -> PolicyArtifact {
     crate::tests::default_export()
 }
