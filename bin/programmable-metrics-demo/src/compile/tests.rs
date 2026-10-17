@@ -612,3 +612,52 @@ fn what_the_export_leaves_out_is_one_comment_at_the_top_wrapped_to_the_editors_w
         .collect::<String>();
     assert_eq!(parse(&source), parse(&plain));
 }
+
+#[test]
+fn the_recipient_directory_goes_above_the_first_use_whole_when_it_runs_over_several_lines() {
+    let export = demo_export();
+    let source = default_program_source(&export, &NO_LABELS);
+    let bare = "  metrics | emit output dd_metrics_encode\n";
+    assert!(source.contains(bare), "{}", source);
+    // The first use is a multi-line bare pipeline, so its stages are not at the start of a line of their own.
+    let plain = source
+        .replace(
+            bare,
+            "  metrics\n    | where true\n    | emit output dd_metrics_encode\n",
+        )
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .map(|line| format!("{}\n", line))
+        .collect::<String>();
+    let artifact = saluki_metric_plan_syntax::parse_with(
+        &plain,
+        &ParseOptions {
+            base: Some(export.artifact.artifact.base.clone()),
+        },
+    )
+    .unwrap()
+    .artifact;
+    let annotated = annotate(&plain, &artifact, Some(&export), &NO_LABELS);
+    let lines = annotated.lines().collect::<Vec<_>>();
+    let statement = lines
+        .iter()
+        .position(|line| *line == "  metrics")
+        .expect("the statement");
+    assert_eq!(lines[statement + 1], "    | where true", "{}", annotated);
+    assert_eq!(
+        lines[statement + 2],
+        "    | emit output dd_metrics_encode",
+        "{}",
+        annotated
+    );
+    let heading = lines
+        .iter()
+        .position(|line| *line == "  # Recipients:")
+        .expect("the directory");
+    assert!(heading < statement, "{}", annotated);
+    assert!(
+        lines[heading..statement].iter().all(|line| line.starts_with("  #")),
+        "the directory sits directly above the statement: {}",
+        annotated
+    );
+}

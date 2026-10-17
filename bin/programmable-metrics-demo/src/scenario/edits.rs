@@ -671,7 +671,7 @@ pub fn second_aggregation(source: &str) -> Result<String, GenericError> {
         source,
         "aggregate(window: 10s, flush_interval: 10s, context_limit: 1000, counter_expiry: 5m, flush_open_windows: \
          false, histogram_aggregates: [\"max\", \"count\"], histogram_percentiles: [95], copy_to_distribution: false, \
-         copy_to_distribution_prefix: \"\") as rollup",
+         copy_to_distribution_prefix: \"\")",
     )
 }
 

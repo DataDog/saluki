@@ -1639,18 +1639,31 @@ impl Runner {
                 active.plan_hash
             ));
         }
+        // The node is named `metrics`, a word every plan's text has, so the document must show the `split` itself.
+        if !explain["graph"]["nodes"].as_array().is_some_and(|nodes| {
+            nodes
+                .iter()
+                .any(|node| node["id"] == drop_debug && edits::is_drop_debug(node))
+        }) {
+            return Err(generic_error!(
+                "The explain document has no `split` node `{}` on `demo.debug.`.",
+                drop_debug
+            ));
+        }
         let (status, text) = self.client.get("/api/adp/explain-text").await?;
         let text = String::from_utf8_lossy(&text);
-        if !status.is_success() || !text.contains(&drop_debug) {
+        if !status.is_success() || !text.contains("demo.debug.") {
             return Err(generic_error!(
-                "The explain text ({}) does not describe `{}`.",
-                status,
-                drop_debug
+                "The explain text ({}) does not describe S1's `split` on `demo.debug.`.",
+                status
             ));
         }
         self.report.routes.push(RouteReport {
             route: "/api/adp/explain, /api/adp/explain-text",
-            checked: format!("both describe the active plan, with `{}`", drop_debug),
+            checked: format!(
+                "both describe the active plan, with S1's `split` node `{}` on `demo.debug.`",
+                drop_debug
+            ),
         });
         Ok(())
     }

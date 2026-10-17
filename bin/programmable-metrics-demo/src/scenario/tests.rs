@@ -347,10 +347,13 @@ fn the_scenario_edits_compose_as_the_check_expects() {
         );
     }
 
-    // S5c's finding is at the second aggregation's line.
+    // S5c's finding is at the second aggregation's line: the last `aggregate`, as the default program has its own.
     let edited = edits::second_aggregation(&source).unwrap();
     let (outcome, _) = compile(&edited, Some(&context));
-    let line = edited[..edited.find(" as rollup").unwrap()].matches('\n').count() + 1;
+    let line = edited[..edited.rfind("aggregate(window: 10s").unwrap()]
+        .matches('\n')
+        .count()
+        + 1;
     let at = outcome
         .diagnostics
         .iter()

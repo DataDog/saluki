@@ -251,7 +251,6 @@ const ANNOTATIONS: &[(&str, &str, &str)] = &[
         names::HOST_TAGS,
         "Adds the host's tags (a fact) until `expected_tags_duration` passes",
     ),
-    (ids::METRICS, names::MERGE, "Every source's metrics, to enrichment"),
     (
         ids::METRICS_FANOUT,
         names::TEE,
@@ -272,7 +271,7 @@ const ANNOTATIONS: &[(&str, &str, &str)] = &[
 /// The note of host enrichment, whichever node of the enrichment chain it is.
 const HOST_ENRICHMENT_NOTE: &str = "Host enrichment: leaves metrics unchanged";
 
-/// Returns lowering's note of the node `local` running `operator`, if it has one.
+/// Returns the note that lowering gives the node `local` running `operator`, if it has one.
 fn annotation(local: &str, operator: &str) -> Option<&'static str> {
     ANNOTATIONS
         .iter()
@@ -312,7 +311,6 @@ const OMITTED: &[(&str, &str, &str)] = &[
         "post-aggregation filter (empty)",
     ),
     (ids::METRICS_IN, names::MERGE, "enrichment merge (one input)"),
-    (ids::METRICS, names::MERGE, "enrichment merge (one input)"),
     (
         ids::METRICS_HOST_ENRICHMENT,
         names::HOST_ENRICHMENT,
@@ -931,14 +929,11 @@ impl<'a> Program<'a> {
         }
 
         // Named as the pipeline syntax derives `let metrics = (<inputs>) | <stages>`: the last node is `metrics`, an
-        // earlier stage `metrics_<operator>`, and the merge `metrics_in`, or `metrics` itself without stages.
-        let merge_id = if stages.is_empty() {
-            ids::METRICS
-        } else {
-            ids::METRICS_IN
-        };
+        // earlier stage `metrics_<operator>`, and the merge `metrics_in`. Host enrichment is always a stage, so the chain
+        // is never empty and no merge is named `metrics`.
+        debug_assert!(!stages.is_empty(), "host enrichment is always a stage of the chain");
         let merge = self.node(
-            merge_id,
+            ids::METRICS_IN,
             names::MERGE,
             json!({"inputs": inputs.len()}),
             components::METRICS_ENRICH,

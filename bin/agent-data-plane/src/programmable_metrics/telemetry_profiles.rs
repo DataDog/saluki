@@ -416,9 +416,7 @@ static PROFILES: &[ProfileEntry] = {
             Transform,
             Silent,
         ),
-        // The enrichment chain's last node, `metrics`, is host tags when enabled and host enrichment otherwise, and the
-        // merge if the chain had no stage.
-        entry("metrics", names::MERGE, "metrics_enrich", Transform, Silent),
+        // The enrichment chain's last node, `metrics`, is host tags when enabled and host enrichment otherwise.
         entry("metrics", names::HOST_ENRICHMENT, "metrics_enrich", Transform, Silent),
         entry("metrics", names::HOST_TAGS, "metrics_enrich", Transform, Silent),
         entry("metrics_fanout", names::TEE, "metrics_enrich", Transform, Silent),

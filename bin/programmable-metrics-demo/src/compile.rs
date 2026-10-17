@@ -255,8 +255,9 @@ const POLICY_TEE: &str = "metrics_fanout";
 /// Returns a printed program with ADP's notes as comment lines: what the export leaves out because it does nothing as
 /// configured, and the scope inputs the program reads, at the top of the program, wrapped; each node's note from the
 /// export ([`ExportBundle::annotations`]) above the line its stage starts on; and the recipient directory above the
-/// first branch of the policy, the first use of `metrics` (what port `0` of the policy's tee feeds), each recipient with its endpoint and the label `labels` gives it, said to be not addressed when no
-/// `emit` of `artifact` reaches it.
+/// first branch of the policy, the first use of `metrics` (what port `0` of the policy's tee feeds), above its whole
+/// statement, each recipient with its endpoint and the label `labels` gives it, said to be not addressed when no `emit`
+/// of `artifact` reaches it.
 ///
 /// The stages are found by parsing `printed` back, through the span of each node, so the comments follow the printed
 /// form whatever its layout; a comment is indented as the line it is above. A program whose nodes ADP did not write,
@@ -334,7 +335,9 @@ pub fn annotate(
                 ArtifactPortRef::Node { node, .. } => line_of(node.as_str()),
                 _ => None,
             })
-            .or_else(|| line_of(POLICY_TEE));
+            .or_else(|| line_of(POLICY_TEE))
+            // A bare use can run over several lines, so the directory goes above its statement, not its stage.
+            .map(|(at, _)| statement_line(printed, at));
         if let Some((at, indent)) = first_branch {
             let lines = recipient_lines(artifact, export, labels);
             if !lines.is_empty() {
@@ -362,6 +365,22 @@ pub fn annotate(
 
 /// Returns where the statements of a printed program start: the first line from `at`, just past the program's opening
 /// brace, that is neither blank nor part of a header (`base`, its `outputs` block, `ir_version`, or `blobs`).
+/// Returns the offset and indentation of the line the statement containing the line at `at` starts on: the nearest
+/// line at or above it indented as a statement of the scope, two spaces, and not a continuation (`| ...` or a closing
+/// bracket).
+fn statement_line(printed: &str, at: usize) -> (usize, String) {
+    let mut start = at;
+    loop {
+        let line = printed[start..].lines().next().unwrap_or("");
+        let statement =
+            line.starts_with("  ") && !line[2..].starts_with(' ') && !line[2..].starts_with(['|', ')', ']', '}', '#']);
+        if statement || start == 0 {
+            return (start, "  ".to_string());
+        }
+        start = printed[..start - 1].rfind('\n').map_or(0, |at| at + 1);
+    }
+}
+
 fn statements_start(printed: &str, at: usize) -> usize {
     let mut offset = at;
     let mut in_block = false;

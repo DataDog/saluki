@@ -204,8 +204,9 @@ async fn renamed_nodes_keep_the_native_telemetry_identity_of_their_former_ids() 
     }
 
     // `metrics` is the enrichment chain's last node, whichever operator that is: host tags when enabled, host
-    // enrichment otherwise (and the merge, were there no stage). Each reports as metrics enrichment.
-    for operator in [names::HOST_TAGS, names::HOST_ENRICHMENT, names::MERGE] {
+    // enrichment otherwise. Each reports as metrics enrichment. Host enrichment is always a stage, so no merge is named
+    // `metrics`.
+    for operator in [names::HOST_TAGS, names::HOST_ENRICHMENT] {
         assert_eq!(
             lookup("metrics", operator),
             Some(NativeTelemetry {
@@ -217,6 +218,7 @@ async fn renamed_nodes_keep_the_native_telemetry_identity_of_their_former_ids() 
             operator
         );
     }
+    assert_eq!(lookup("metrics", names::MERGE), None);
     assert_eq!(lookup("metrics", names::TEE), None);
 
     // The default program's nodes are these, and each reports as its native component, as its provenance records.
