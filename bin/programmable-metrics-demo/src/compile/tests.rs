@@ -3,7 +3,7 @@ use crate::export::{
     tests::{demo_export, DEMO_EXPORT},
     ExportBundle,
 };
-use crate::scenario::edits::insert_before_policy;
+use crate::scenario::edits::append_to_metrics;
 
 /// Compiles against the export alone, as for an ADP that does not serve its default program: the structural checks
 /// run instead of composition. (Composition is tested in `preview::tests`, against a real default program.)
@@ -28,47 +28,54 @@ static NO_LABELS: std::sync::LazyLock<RecipientLabels> = std::sync::LazyLock::ne
 const DEFAULT_SOURCE: &str = r#"policy metrics {
   # Sources: each one's metrics enter at an input of the scope: dogstatsd.
 
+  # Policy: one branch per output; route here
+  let metrics_fanout = dogstatsd | tee(ports: 4)
+
   # Recipients:
   #   primary                   http://127.0.0.1:17101
   #   mrf                       http://127.0.0.1:17104
   #   "http://127.0.0.1:17102"
   #   "http://127.0.0.1:17103"
-  # Policy: one branch per output; route here
-  dogstatsd | fork as metrics_policy {
-    emit output dd_metrics_encode
-    # Endpoint routing to http://127.0.0.1:17102
-    where intake_name in config.endpoint_routing.group.b0b0b0b0.names
+  metrics_fanout.0 | emit output dd_metrics_encode
+
+  # Endpoint routing to http://127.0.0.1:17102
+  let metrics_routing_filter_0 = metrics_fanout.1
+    | where intake_name in config.endpoint_routing.group.b0b0b0b0.names
         or intake_name starts_with config.endpoint_routing.group.b0b0b0b0.prefixes
-        as metrics_routing_filter_0
-      | emit output metrics_routing_encode_0
-    # Endpoint routing to http://127.0.0.1:17103
-    where intake_name in config.endpoint_routing.group.c0c0c0c0.names
+
+  metrics_routing_filter_0 | emit output metrics_routing_encode_0
+
+  # Endpoint routing to http://127.0.0.1:17103
+  let metrics_routing_filter_1 = metrics_fanout.2
+    | where intake_name in config.endpoint_routing.group.c0c0c0c0.names
         or intake_name starts_with config.endpoint_routing.group.c0c0c0c0.prefixes
-        as metrics_routing_filter_1
-      | emit output metrics_routing_encode_1
-    # Multi-Region Failover: mirrors listed, or all, metrics while failing over
-    where config.multi_region_failover.enabled
+
+  metrics_routing_filter_1 | emit output metrics_routing_encode_1
+
+  # Multi-Region Failover: mirrors listed, or all, metrics while failing over
+  let mrf_metrics_gateway = metrics_fanout.3
+    | where config.multi_region_failover.enabled
         and config.multi_region_failover.metric_mirroring.enabled
         and (
           is_empty(config.multi_region_failover.metric_mirroring.allowlist)
           or name in config.multi_region_failover.metric_mirroring.allowlist
         )
-        as mrf_metrics_gateway
-      | emit output mrf_metrics_encode
-  }
+
+  mrf_metrics_gateway | emit output mrf_metrics_encode
 }
 "#;
 
-/// The failover gateway's branch of the policy `fork`, with the comment above it.
-const MRF_BRANCH: &str = "    # Multi-Region Failover: mirrors listed, or all, metrics while failing over\n    where \
-                          config.multi_region_failover.enabled\n";
+/// The failover gateway's branch of the policy, with the comment above it and the blank line before.
+const MRF_BRANCH: &str =
+    "\n  # Multi-Region Failover: mirrors listed, or all, metrics while failing over\n  let mrf_metrics_gateway = \
+                          metrics_fanout.3\n";
 
-/// Returns `source` without the failover gateway's branch.
+/// Returns `source` without the failover gateway's branch, and without the port of the policy's tee it read.
 fn without_mrf(source: &str) -> String {
     let start = source.find(MRF_BRANCH).expect("the source has the failover gateway");
-    let end_text = "      | emit output mrf_metrics_encode\n";
+    let end_text = "  mrf_metrics_gateway | emit output mrf_metrics_encode\n";
     let end = start + source[start..].find(end_text).unwrap() + end_text.len();
-    format!("{}{}", &source[..start], &source[end..])
+    format!("{}{}", &source[..start], &source[end..]).replacen("tee(ports: 4)", "tee(ports: 3)", 1)
 }
 
 /// The demo export's base, with its `outputs` block, which the editor leaves out.
@@ -154,7 +161,7 @@ fn edits_change_the_hash_and_reformatting_does_not() {
     let export = demo_export();
     let reformatted = DEFAULT_SOURCE
         .replace("\n\n", "\n")
-        .replace("\n      | emit", " | emit");
+        .replace("metrics_fanout.0 | emit", "metrics_fanout.0\n    | emit");
     let (outcome, _) = compile(&reformatted, Some(&structural(&export)));
     assert_eq!(outcome.artifact_hash, Some(export.artifact.hash.to_string()));
     assert_eq!(outcome.canonical_source.as_deref(), Some(DEFAULT_SOURCE));
@@ -175,9 +182,11 @@ fn edits_change_the_hash_and_reformatting_does_not() {
     assert_eq!(outcome.restored_fingerprints.len(), 3);
 
     // An output emitted to twice is restored once.
-    let twice = replaced(
-        "    emit output dd_metrics_encode\n",
-        "    emit output dd_metrics_encode\n    where name starts_with \"demo.copy.\" | emit output dd_metrics_encode\n",
+    let twice = replaced_in(
+        &replaced("tee(ports: 4)", "tee(ports: 5)"),
+        "  metrics_fanout.0 | emit output dd_metrics_encode\n",
+        "  metrics_fanout.0 | emit output dd_metrics_encode\n\n  metrics_fanout.4 | where name starts_with \"demo.copy.\" \
+         | emit output dd_metrics_encode\n",
     );
     let (outcome, _) = compile(&twice, Some(&structural(&export)));
     assert_eq!(
@@ -209,8 +218,8 @@ fn the_examples_of_the_demo_scenarios_compile_without_findings() {
 
 #[test]
 fn syntax_errors_are_placed_by_line_and_column() {
-    // `=>` instead of `|` on line 10: `=` is a token, and the `>` after it, at column 14, is not.
-    let source = replaced("  dogstatsd | fork", "  dogstatsd => fork");
+    // `=>` instead of `|` on line 5: `=` is a token, and the `>` after it, at column 35, is not.
+    let source = replaced("= dogstatsd | tee", "= dogstatsd => tee");
     let (outcome, compiled) = compile(&source, Some(&structural(&demo_export())));
     assert!(!outcome.ok);
     assert!(compiled.is_none());
@@ -218,8 +227,8 @@ fn syntax_errors_are_placed_by_line_and_column() {
     let diagnostic = &outcome.diagnostics[0];
     assert_eq!(diagnostic.origin, Origin::Syntax);
     assert_eq!(diagnostic.severity, Severity::Error);
-    assert_eq!((diagnostic.range.line, diagnostic.range.column), (10, 14));
-    assert_eq!((diagnostic.range.end_line, diagnostic.range.end_column), (10, 15));
+    assert_eq!((diagnostic.range.line, diagnostic.range.column), (5, 35));
+    assert_eq!((diagnostic.range.end_line, diagnostic.range.end_column), (5, 36));
     assert_eq!(&source[diagnostic.range.start..diagnostic.range.end], ">");
     assert!(diagnostic.message.contains("`|`"), "{}", diagnostic.message);
     assert_eq!(outcome.errors, 1);
@@ -261,7 +270,7 @@ fn structural_findings_are_placed_where_the_problem_is() {
             ),
             vec![(
                 Severity::Error,
-                21,
+                26,
                 "`metrics_routing_encode_9`, which ADP does not declare",
             )],
         ),
@@ -270,7 +279,7 @@ fn structural_findings_are_placed_where_the_problem_is() {
         (
             "an emit to an output the artifact does not list",
             replaced_in(&with_fingerprints(), &mrf_output_line, ""),
-            vec![(Severity::Error, 37, mrf_output_fix.as_str())],
+            vec![(Severity::Error, 44, mrf_output_fix.as_str())],
         ),
         (
             "an output whose fingerprint changed",
@@ -289,7 +298,7 @@ fn structural_findings_are_placed_where_the_problem_is() {
             ),
             vec![(
                 Severity::Error,
-                18,
+                23,
                 "`endpoint_routing.group.ffffffff.names`, which ADP does not declare",
             )],
         ),
@@ -300,24 +309,24 @@ fn structural_findings_are_placed_where_the_problem_is() {
         ),
         (
             "a parameter the operator does not have",
-            insert_before_policy(
+            append_to_metrics(
                 DEFAULT_SOURCE,
                 "namespace_prefix(\"x\", exclusions: [], colour: \"red\") as extra",
             )
             .unwrap(),
-            vec![(Severity::Error, 10, "parameter `colour`")],
+            vec![(Severity::Error, 6, "parameter `colour`")],
         ),
         (
             "an operator that is not registered",
-            insert_before_policy(DEFAULT_SOURCE, "frobnicate(x: 1) as extra").unwrap(),
-            vec![(Severity::Error, 10, "`frobnicate` is not a registered operator")],
+            append_to_metrics(DEFAULT_SOURCE, "frobnicate(x: 1) as extra").unwrap(),
+            vec![(Severity::Error, 6, "`frobnicate` is not a registered operator")],
         ),
         (
             "another scope",
             replaced("policy metrics {", "policy dogstatsd {"),
             vec![
                 (Severity::Error, 1, "ADP exports the scope `metrics`"),
-                (Severity::Error, 10, "has no input `dogstatsd`"),
+                (Severity::Error, 5, "has no input `dogstatsd`"),
             ],
         ),
     ];
@@ -395,13 +404,13 @@ fn state_owners_are_checked_for_their_parameters_only() {
     let export = demo_export();
     // Aggregation with its parameters missing: each missing parameter is reported, at the node. That it keeps state is
     // no finding: ADP composes state owners, and placement decides where they run.
-    let source = insert_before_policy(DEFAULT_SOURCE, "aggregate as rollup").unwrap();
+    let source = append_to_metrics(DEFAULT_SOURCE, "aggregate as rollup").unwrap();
     let (outcome, compiled) = compile(&source, Some(&structural(&export)));
     assert!(outcome.ok && compiled.is_some(), "{:#?}", outcome.diagnostics);
     assert!(!outcome.diagnostics.is_empty());
     for diagnostic in &outcome.diagnostics {
         assert_eq!(diagnostic.severity, Severity::Error);
-        assert_eq!(diagnostic.range.line, 10);
+        assert_eq!(diagnostic.range.line, 6);
         assert!(
             diagnostic
                 .message
@@ -514,7 +523,10 @@ fn the_recipient_directory_names_the_demos_labels_and_what_the_program_addresses
     );
     // Without the routing group's emit to it, team B's endpoint is not addressed.
     let unrouted = source
-        .replace("      | emit output metrics_routing_encode_0\n", "      | drop\n")
+        .replace(
+            "  metrics_routing_filter_0 | emit output metrics_routing_encode_0\n",
+            "  metrics_routing_filter_0 | drop\n",
+        )
         .lines()
         .filter(|line| !line.trim_start().starts_with('#'))
         .map(|line| format!("{}\n", line))

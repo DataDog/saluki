@@ -1,14 +1,19 @@
 //! The edits of the scenarios, made to the default program's source as the editor shows it, the way a presenter
 //! types them.
 //!
-//! The default program is the whole metrics path, its one scope fed by every source; the policy region starts at its
-//! `fork`, [`POLICY_NODE`] (`| fork as metrics_policy { ... }`), which enrichment feeds, and whose first branch emits to
-//! the main output's recipients: `emit [primary, "http://127.0.0.1:17102", "http://127.0.0.1:17103"]`, the primary
-//! endpoint and every additional one. Each edit finds the text it changes by what it says, never by line number or
-//! exact layout: a stage by its operator (`timestamp_split(`), a node by its `as` clause or the `let` that names it, the
-//! policy `fork` by `fork as metrics_policy`, the main `emit` as the first branch of the policy `fork` that emits to
-//! `primary`. Strings and comments are never matched. An edit fails with a message naming what it looked for when the
-//! default program is printed otherwise, so that a change of the printed form shows up as a clear check failure.
+//! The default program is the whole metrics path, its one scope fed by every source. Enrichment ends in the stream
+//! every destination reads, `let metrics = ...`, and each use of it, `metrics | ...`, is a branch of the policy: the
+//! first emits to the main output's recipients, `metrics | emit [primary, "http://127.0.0.1:17102",
+//! "http://127.0.0.1:17103"]`, the primary endpoint and every additional one. Where enrichment ends in no node of its
+//! own, as when the export leaves out host enrichment and there are no host tags, the stream is the policy's tee
+//! instead, `let metrics_fanout = ... | tee(ports: n)`, and each branch reads a port of it, `metrics_fanout.<i> | ...`;
+//! every edit works on both.
+//!
+//! Each edit finds the text it changes by what it says, never by line number or exact layout: a stage by its operator
+//! (`timestamp_split(`), a node by the `let` that names it, the policy by `let metrics` or `let metrics_fanout`, the
+//! main `emit` as the first branch of the policy that emits to `primary`. Strings and comments are never matched. An
+//! edit fails with a message naming what it looked for when the default program is printed otherwise, so that a change
+//! of the printed form shows up as a clear check failure.
 
 use saluki_error::{generic_error, GenericError};
 
@@ -21,14 +26,11 @@ pub const UNKNOWN_RECIPIENT: &str = "team_z";
 /// The family the routing to an added destination sends there: the metrics tagged `team:platform`.
 pub const PLATFORM_FAMILY: &str = "demo.platform.queue_depth";
 
-/// The policy `fork`, where the policy region begins: enrichment feeds it, and it has one branch per destination.
-pub const POLICY_NODE: &str = "metrics_policy";
-
 /// DogStatsD aggregation, the program's one aggregation: the `let` that ends in it names it.
 const AGGREGATION_NODE: &str = "dsd_agg";
 
-/// The failover gateway: the policy `fork`'s branch that mirrors metrics to the failover endpoint while failover is
-/// on, `where <signals> as mrf_metrics_gateway | emit mrf`.
+/// The failover gateway: the policy's branch that mirrors metrics to the failover endpoint while failover is on,
+/// `let mrf_metrics_gateway = metrics | where <signals>`, then `mrf_metrics_gateway | emit mrf`.
 const FAILOVER_GATEWAY: &str = "mrf_metrics_gateway";
 
 /// The name the renaming scenario gives the aggregation.
@@ -40,7 +42,7 @@ pub const TEAM_B_ROUTE: &str = "to_team_b";
 /// The node that routes the platform family to an added destination.
 pub const DESTINATION_ROUTE: &str = "to_destination";
 
-/// The node S3b adds, which sends the metrics tagged `team:checkout` to team B alone, ahead of the policy.
+/// The node S3b adds, the branch that sends the metrics tagged `team:checkout` to team B alone.
 const EXCLUSIVE_ROUTE: &str = "checkout_only";
 
 /// Returns a recipient name as a program writes an endpoint URL: quoted.
@@ -151,13 +153,6 @@ fn line_end(source: &str, at: usize) -> usize {
     source[at..].find('\n').map_or(source.len(), |newline| at + newline)
 }
 
-/// Returns the indentation of the line `at` is on.
-fn indent_at(source: &str, at: usize) -> &str {
-    let start = line_start(source, at);
-    let line = &source[start..line_end(source, start)];
-    &line[..line.len() - line.trim_start().len()]
-}
-
 /// Returns the start of the comment lines right above the line that starts at `start`, or `start` if there are none:
 /// the comments that belong to that line.
 fn comments_above(source: &str, start: usize) -> usize {
@@ -172,143 +167,346 @@ fn comments_above(source: &str, start: usize) -> usize {
     start
 }
 
-/// Returns the offset of the `fork` keyword of the policy `fork`, `fork as metrics_policy`.
-fn policy_fork(source: &str) -> Result<usize, GenericError> {
+/// Returns the indentation of the line that starts at `start`, in spaces.
+fn indent_of(source: &str, start: usize) -> usize {
+    let line = &source[start..line_end(source, start)];
+    line.len() - line.trim_start().len()
+}
+
+/// Returns each statement of `source`, as the start of its first line and the end of its last: a statement starts on a
+/// line indented two spaces that is no comment and no closing brace, and goes on in the lines after it that are
+/// indented further. Headers, such as `base`, are statements to this too; no edit looks for one.
+fn statements(source: &str) -> Vec<std::ops::Range<usize>> {
+    let mut found = Vec::new();
+    let mut at = 0;
+    while at < source.len() {
+        let code = source[at..line_end(source, at)].trim_start();
+        if indent_of(source, at) == 2 && !code.is_empty() && !code.starts_with(['#', '}']) {
+            let start = at;
+            let mut end = line_end(source, at);
+            while end < source.len() {
+                let next = end + 1;
+                if source[next..line_end(source, next)].trim().is_empty() || indent_of(source, next) <= 2 {
+                    break;
+                }
+                end = line_end(source, next);
+            }
+            found.push(start..end);
+            at = end + 1;
+        } else {
+            at = line_end(source, at) + 1;
+        }
+    }
+    found
+}
+
+/// Returns the name a statement's `let` defines, if it is a `let`.
+fn let_name(statement: &str) -> Option<&str> {
+    let rest = statement.trim_start().strip_prefix("let ")?.trim_start();
+    let end = rest.find(|c: char| !is_ident(c)).unwrap_or(rest.len());
+    rest[end..].trim_start().starts_with('=').then(|| &rest[..end])
+}
+
+/// Returns the offset in `statement` of its pipeline's head: just past the `=` of a `let`, its whitespace skipped, or
+/// its first non-blank character.
+fn head_offset(statement: &str) -> usize {
+    let skip = |at: usize| at + (statement[at..].len() - statement[at..].trim_start().len());
+    match let_name(statement) {
+        Some(_) => skip(statement.find('=').expect("a `let` has an `=`") + 1),
+        None => skip(0),
+    }
+}
+
+/// The stream that every destination's branch reads, which the default program names `metrics`: what enrichment ends
+/// in, each of its uses a branch of the policy.
+pub const METRICS: &str = "metrics";
+
+/// The policy's tee: the copy of [`METRICS`] for each branch, as native lowering names it. The default program prints
+/// it as a `let` of its own, `let metrics_fanout = ... | tee(ports: n)`, read as `metrics_fanout.<i>`, when nothing in
+/// enrichment ends in a node named [`METRICS`], as when the export leaves out host enrichment and there are no host
+/// tags.
+pub const POLICY_TEE: &str = "metrics_fanout";
+
+/// How the default program writes the stream every destination's branch reads.
+enum PolicyForm {
+    /// `let metrics = ...`, used once per branch: `metrics | ...`.
+    Reuse,
+
+    /// `let metrics_fanout = ... | tee(ports: <ports>)`, its ports read once each: `metrics_fanout.<i> | ...`. `tee`
+    /// is the offset of the operator's name.
+    Tee { tee: usize, ports: usize },
+}
+
+/// The stream every destination's branch reads, in a source.
+struct Policy {
+    /// The `let` statement that names it.
+    statement: std::ops::Range<usize>,
+
+    /// How it is written.
+    form: PolicyForm,
+}
+
+impl Policy {
+    /// Returns whether the head of a statement, `head`, reads this stream: `metrics`, or a port of the policy's tee.
+    fn read_by(&self, head: &str) -> bool {
+        let name = match self.form {
+            PolicyForm::Reuse => METRICS,
+            PolicyForm::Tee { .. } => POLICY_TEE,
+        };
+        let Some(rest) = head.strip_prefix(name) else {
+            return false;
+        };
+        match self.form {
+            PolicyForm::Reuse => !rest.starts_with(|c: char| is_ident(c) || c == '.'),
+            PolicyForm::Tee { .. } => rest
+                .strip_prefix('.')
+                .is_some_and(|port| port.starts_with(|c: char| c.is_ascii_digit())),
+        }
+    }
+
+    /// Returns the statements after this one that read the stream: the branches of the policy, in order.
+    fn uses(&self, source: &str) -> Vec<std::ops::Range<usize>> {
+        statements(source)
+            .into_iter()
+            .filter(|statement| statement.start > self.statement.start)
+            .filter(|statement| {
+                let text = &source[statement.clone()];
+                self.read_by(&text[head_offset(text)..])
+            })
+            .collect()
+    }
+}
+
+/// Returns the stream every destination's branch reads: `let metrics = ...`, or, where the default program has no
+/// such `let`, `let metrics_fanout = ... | tee(ports: n)`.
+fn policy(source: &str) -> Result<Policy, GenericError> {
+    let statements = statements(source);
+    if let Some(statement) = statements
+        .iter()
+        .find(|statement| let_name(&source[(*statement).clone()]) == Some(METRICS))
+    {
+        return Ok(Policy {
+            statement: statement.clone(),
+            form: PolicyForm::Reuse,
+        });
+    }
     let not_found = || {
         generic_error!(
-            "The default program has no policy `fork` (looked for `fork as {}`).",
-            POLICY_NODE
+            "The default program has no stream that every destination reads (looked for `let {} = ...`, or `let {} = \
+             ... | tee(ports: n)`).",
+            METRICS,
+            POLICY_TEE
         )
     };
-    let at = as_clause(source, POLICY_NODE).ok_or_else(not_found)?;
-    let before = source[..at].trim_end();
-    if !before.ends_with("fork") || before[..before.len() - 4].chars().next_back().is_some_and(is_ident) {
+    let statement = statements
+        .iter()
+        .find(|statement| let_name(&source[(*statement).clone()]) == Some(POLICY_TEE))
+        .ok_or_else(not_found)?
+        .clone();
+    let text = &source[statement.clone()];
+    let tee = stage(text, "tee").ok_or_else(not_found)?;
+    // The tee is the `let`'s last stage: nothing but its parameters follows it.
+    let after = &text[tee + "tee".len()..];
+    let close = after
+        .starts_with('(')
+        .then(|| matching_close(text, tee + "tee".len()))
+        .flatten()
+        .ok_or_else(not_found)?;
+    if !text[close + 1..].trim().is_empty() {
         return Err(not_found());
     }
-    Ok(before.len() - 4)
+    let ports = text[tee + "tee".len() + 1..close]
+        .trim()
+        .strip_prefix("ports")
+        .and_then(|rest| rest.trim_start().strip_prefix(':'))
+        .and_then(|value| value.trim().trim_end_matches(',').trim().parse::<usize>().ok())
+        .ok_or_else(not_found)?;
+    Ok(Policy {
+        form: PolicyForm::Tee {
+            tee: statement.start + tee,
+            ports,
+        },
+        statement,
+    })
 }
 
-/// Puts `stage` (a stage, such as `where <predicate>`) right before the policy `fork`, so that what enrichment feeds
-/// the policy passes through it first: on a line of its own above the fork's line and the comments above it, or, when
-/// the fork does not start its line, inline.
-pub(crate) fn insert_before_policy(source: &str, stage: &str) -> Result<String, GenericError> {
-    let fork = policy_fork(source)?;
-    let start = line_start(source, fork);
-    let before = source[start..fork].trim();
-    let indent = indent_at(source, fork).to_string();
-    if before == "|" {
-        // `| fork as metrics_policy {`, a stage of its own line.
-        let above = comments_above(source, start);
-        Ok(format!(
-            "{}{}| {}\n{}",
-            &source[..above],
-            indent,
-            stage,
-            &source[above..]
-        ))
-    } else if before.is_empty() {
-        // A fork that starts a branch of another fork: the stage starts the branch instead.
-        let above = comments_above(source, start);
-        Ok(format!(
-            "{}{}{}\n{}| {}",
-            &source[..above],
-            indent,
-            stage,
-            &source[above..fork],
-            &source[fork..]
-        ))
-    } else {
-        // `<head> | fork as metrics_policy {` on one line.
-        Ok(format!("{}{} | {}", &source[..fork], stage, &source[fork..]))
+/// Appends `stage` (a stage, such as `where <predicate>`) to the stream every destination reads, on a line of its own,
+/// so that every destination's branch reads what it passes: at the end of `let metrics`'s pipeline, whichever operator
+/// ends it, or, where the default program writes the policy's tee as `let metrics_fanout = ... | tee(ports: n)`, just
+/// before the tee.
+pub(crate) fn append_to_metrics(source: &str, stage: &str) -> Result<String, GenericError> {
+    let policy = policy(source)?;
+    match policy.form {
+        PolicyForm::Reuse => {
+            let end = policy.statement.end;
+            Ok(format!("{}\n    | {}{}", &source[..end], stage, &source[end..]))
+        }
+        PolicyForm::Tee { tee, .. } => {
+            let mask = code_mask(source);
+            let bar = source[policy.statement.start..tee]
+                .char_indices()
+                .rev()
+                .map(|(offset, c)| (policy.statement.start + offset, c))
+                .find(|(at, c)| mask[*at] && *c == '|')
+                .map(|(at, _)| at)
+                .ok_or_else(|| generic_error!("The policy's tee does not follow a `|`."))?;
+            let start = line_start(source, bar);
+            if source[start..bar].trim().is_empty() {
+                // `| tee(ports: n)` on a line of its own: the stage goes on the line above it.
+                Ok(format!(
+                    "{}{}| {}\n{}",
+                    &source[..start],
+                    &source[start..bar],
+                    stage,
+                    &source[start..]
+                ))
+            } else {
+                // `let metrics_fanout = <head> | tee(ports: n)` on one line: the stage and the tee each take a line.
+                let end = source[..bar].trim_end().len();
+                Ok(format!("{}\n    | {}\n    {}", &source[..end], stage, &source[bar..]))
+            }
+        }
     }
 }
 
-/// Returns the span of the main `emit` line in `source`: the first branch of the policy `fork` that emits to the
-/// primary endpoint, from the line's first non-blank character to its end.
+/// Returns the span of the main `emit` in `source`, from `emit` to the end of its statement: the first branch of the
+/// policy that emits to the primary endpoint, `metrics | emit primary` or `metrics | emit [primary, ...]`.
 fn main_emit(source: &str) -> Result<std::ops::Range<usize>, GenericError> {
     let not_found = || {
         generic_error!(
-            "The default program's policy `fork` has no branch that emits to the primary endpoint (looked for a line \
-             `emit primary` or `emit [primary, ...]` after `fork as {}`).",
-            POLICY_NODE
+            "The default program has no branch that emits to the primary endpoint (looked for a statement `{} | emit \
+             primary` or `{} | emit [primary, ...]`, or the same from a port of `{}`).",
+            METRICS,
+            METRICS,
+            POLICY_TEE
         )
     };
-    let fork = policy_fork(source)?;
-    let open = fork + source[fork..].find('{').ok_or_else(not_found)?;
-    let close = matching_close(source, open).ok_or_else(not_found)?;
-    let mut at = line_end(source, open) + 1;
-    while at < close {
-        let end = line_end(source, at);
-        let line = source[at..end].trim_start();
-        if line.starts_with("emit primary") || line.starts_with("emit [primary") {
-            let start = end - source[at..end].trim_start().len();
-            return Ok(start..end);
+    let policy = policy(source)?;
+    for statement in policy.uses(source) {
+        let text = &source[statement.clone()];
+        let Some(emit) = words(text, "emit").first().copied() else {
+            continue;
+        };
+        let recipients = text[emit + "emit".len()..].trim_start();
+        let primary = recipients
+            .strip_prefix('[')
+            .unwrap_or(recipients)
+            .trim_start()
+            .strip_prefix("primary")
+            .is_some_and(|rest| !rest.starts_with(is_ident));
+        if primary && text[..emit].trim_end().ends_with('|') {
+            return Ok(statement.start + emit..statement.start + text.trim_end().len());
         }
-        at = end + 1;
     }
     Err(not_found())
 }
 
-/// Adds a branch to the policy `fork`, right after the main `emit`.
-pub(crate) fn add_policy_branch(source: &str, branch: &str) -> Result<String, GenericError> {
-    let line = main_emit(source)?;
-    let indent = indent_at(source, line.start).to_string();
-    Ok(format!(
-        "{}\n{}{}{}",
-        &source[..line.end],
-        indent,
-        branch,
-        &source[line.end..]
-    ))
+/// Adds a branch to the policy, right after the main `emit`'s statement: `branch` makes its statements from the stream
+/// they read, `metrics`, or, where the default program writes the policy's tee, a new port of it, whose `ports` the
+/// edit raises by one.
+pub(crate) fn add_policy_branch(source: &str, branch: impl FnOnce(&str) -> String) -> Result<String, GenericError> {
+    let policy = policy(source)?;
+    let main = main_emit(source)?;
+    let main_end = policy
+        .uses(source)
+        .into_iter()
+        .find(|statement| statement.contains(&main.start))
+        .map_or(main.end, |statement| statement.end);
+    let stream = match policy.form {
+        PolicyForm::Reuse => METRICS.to_string(),
+        PolicyForm::Tee { ports, .. } => format!("{}.{}", POLICY_TEE, ports),
+    };
+    let added = format!(
+        "{}\n\n  {}{}",
+        &source[..main_end],
+        branch(&stream),
+        &source[main_end..]
+    );
+    match policy.form {
+        PolicyForm::Reuse => Ok(added),
+        PolicyForm::Tee { ports, .. } => {
+            // The tee comes before the main `emit`, so its offsets still hold.
+            let statement = &added[policy.statement.clone()];
+            let raised = set_param(statement, "tee", "ports", false, &(ports + 1).to_string())?;
+            Ok(format!(
+                "{}{}{}",
+                &added[..policy.statement.start],
+                raised,
+                &added[policy.statement.end..]
+            ))
+        }
+    }
 }
 
-/// Returns a branch that emits what `predicate` matches to `recipients` (as `emit` writes them: one bare, several in
-/// brackets) and drops the rest, as the node `id`.
-fn route(id: &str, predicate: &str, recipients: &str) -> String {
-    format!("where {} as {} | emit {}", predicate, id, recipients)
+/// Returns a branch, from `stream`, that emits what `predicate` matches to `recipients` (as `emit` writes them: one
+/// bare, several in brackets) and drops the rest, its filter named `id` with a `let`: `let <id> = <stream> | where
+/// <predicate>`, then `<id> | emit <recipients>`, as the default program writes its routing filters.
+fn route(stream: &str, id: &str, predicate: &str, recipients: &str) -> String {
+    format!(
+        "let {id} = {stream} | where {predicate}\n\n  {id} | emit {recipients}",
+        id = id,
+        stream = stream,
+        predicate = predicate,
+        recipients = recipients
+    )
 }
 
-/// Replaces the predicate of the `where` stage named `id` (`where <predicate> as <id>`) with what `edit` makes of it.
+/// Returns the statement `<id> | ...`, which reads the stream the `let` `id` names.
+fn statement_reading(source: &str, id: &str) -> Option<std::ops::Range<usize>> {
+    statements(source).into_iter().find(|statement| {
+        let text = &source[statement.clone()];
+        let head = &text[head_offset(text)..];
+        head.strip_prefix(id)
+            .is_some_and(|rest| !rest.starts_with(|c: char| is_ident(c) || c == '.'))
+    })
+}
+
+/// Replaces the predicate of the `where` that ends the `let` named `id` (`let <id> = ... | where <predicate>`) with
+/// what `edit` makes of it.
 fn edit_where(
     source: &str, id: &str, what: &str, edit: impl FnOnce(&str) -> Result<String, GenericError>,
 ) -> Result<String, GenericError> {
-    let at = as_clause(source, id).ok_or_else(|| {
-        generic_error!(
-            "The default program has no {} (looked for `where ... as {}`).",
-            what,
-            id
-        )
-    })?;
-    let keyword = words(&source[..at], "where")
+    let statement = statements(source)
+        .into_iter()
+        .find(|statement| let_name(&source[statement.clone()]) == Some(id))
+        .ok_or_else(|| {
+            generic_error!(
+                "The default program has no {} (looked for `let {} = ... | where ...`).",
+                what,
+                id
+            )
+        })?;
+    let text = &source[statement.clone()];
+    let keyword = words(text, "where")
         .last()
         .copied()
-        .ok_or_else(|| generic_error!("The {} `{}` is not a `where` stage.", what, id))?;
-    let written = &source[keyword + "where".len()..at];
-    // The `where` must be the stage the `as` names: a `|` in code between them means another stage, or another
-    // statement, comes first.
-    let mask = code_mask(source);
+        .ok_or_else(|| generic_error!("The {} `{}` does not end in a `where` stage.", what, id))?;
+    let written = &text[keyword + "where".len()..];
+    // The `where` must be the `let`'s last stage: a `|` in code after it means another stage comes after it.
+    let mask = code_mask(text);
     let crosses_a_stage = written
         .char_indices()
         .any(|(offset, c)| c == '|' && mask[keyword + "where".len() + offset]);
     if crosses_a_stage {
-        return Err(generic_error!("The {} `{}` is not a `where` stage.", what, id));
+        return Err(generic_error!("The {} `{}` does not end in a `where` stage.", what, id));
     }
     let predicate = written.trim();
     if predicate.is_empty() {
         return Err(generic_error!("The {} `{}` has no predicate.", what, id));
     }
     let trailing = &written[written.trim_end().len()..];
+    let keyword = statement.start + keyword;
     Ok(format!(
         "{}where {}{}{}",
         &source[..keyword],
         edit(predicate)?,
         trailing,
-        &source[at..]
+        &source[statement.end..]
     ))
 }
 
 /// Returns the offset of the operator name of the first stage that runs `op`: the name after a `|`, or at the start of
-/// a line, as a fork's branch starts.
+/// a line.
 fn stage(source: &str, op: &str) -> Option<usize> {
     words(source, op).into_iter().find(|at| {
         let before = source[..*at].trim_end_matches([' ', '\t']);
@@ -420,13 +618,23 @@ fn rename(source: &str, from: &str, to: &str) -> Result<String, GenericError> {
     Ok(renamed)
 }
 
-/// S1: drops every `demo.debug.*` metric ahead of the policy, after aggregation and enrichment.
+/// The stage S1 adds, which is also the first recipe.
+pub const DROP_DEBUG: &str = "where not (name starts_with \"demo.debug.\")";
+
+/// S1: drops every `demo.debug.*` metric ahead of the policy, after aggregation and enrichment: the stage
+/// [`DROP_DEBUG`] at the end of the stream every destination reads. It is not named: its ID is the one the syntax
+/// derives where it goes, which [`is_drop_debug`] recognizes.
 pub fn drop_debug(source: &str) -> Result<String, GenericError> {
-    insert_before_policy(source, "where not (name starts_with \"demo.debug.\") as drop_debug")
+    append_to_metrics(source, DROP_DEBUG)
+}
+
+/// Returns whether `node`, a node of a plan or artifact document, is the `split` that [`drop_debug`] adds.
+pub fn is_drop_debug(node: &serde_json::Value) -> bool {
+    node["op"] == "split" && node["params"].to_string().contains("\"demo.debug.\"")
 }
 
 /// S2, the recipe: narrows team B to the checkout families. Team B's URL leaves the main `emit`, and a branch of the
-/// policy `fork`, [`TEAM_B_ROUTE`], sends `demo.checkout.*` to team B.
+/// policy, [`TEAM_B_ROUTE`], sends `demo.checkout.*` to team B.
 pub fn narrow_team_b(source: &str, team_b: &str) -> Result<String, GenericError> {
     let line = main_emit(source)?;
     let name = quoted(team_b);
@@ -456,10 +664,9 @@ pub fn narrow_team_b(source: &str, team_b: &str) -> Result<String, GenericError>
         rest => format!("emit [{}]", rest.join(", ")),
     };
     let narrowed = format!("{}{}{}", &source[..line.start], narrowed, &source[line.end..]);
-    add_policy_branch(
-        &narrowed,
-        &route(TEAM_B_ROUTE, "name starts_with \"demo.checkout.\"", &name),
-    )
+    add_policy_branch(&narrowed, |stream| {
+        route(stream, TEAM_B_ROUTE, "name starts_with \"demo.checkout.\"", &name)
+    })
 }
 
 /// S3a: widens the recipe's route to team B to the metrics tagged `team:platform` as well.
@@ -475,178 +682,31 @@ pub fn widen_team_b(narrowed: &str) -> Result<String, GenericError> {
     })
 }
 
-/// Returns the first line, at or above the line `at` is on, that starts a statement: at the statement's indentation, two
-/// spaces, and no comment.
-fn statement_start(source: &str, at: usize) -> Result<usize, GenericError> {
-    let mut statement = line_start(source, at);
-    loop {
-        let line = &source[statement..line_end(source, statement)];
-        let indent = line.len() - line.trim_start().len();
-        if indent == 2 && !line.trim_start().starts_with('#') && !line.trim().is_empty() {
-            return Ok(statement);
-        }
-        if statement == 0 {
-            return Err(generic_error!("The statement around offset {} has no start.", at));
-        }
-        statement = line_start(source, statement - 1);
-    }
-}
+/// The metrics S3b sends to team B alone.
+const CHECKOUT: &str = "tags.team == \"checkout\"";
 
-/// Removes `width` spaces of indentation from each line of `text` that has them.
-fn dedent(text: &str, width: usize) -> String {
-    let prefix = " ".repeat(width);
-    text.split_inclusive('\n')
-        .map(|line| line.strip_prefix(prefix.as_str()).unwrap_or(line))
-        .collect()
-}
-
-/// Writes the `fork` whose block holds the offset `inner` in its long form: the statement it ends becomes
-/// `let <fork> = ... | tee(ports: n)`, and each branch `i` a statement of its own that starts from `<fork>.i`, with the
-/// comments above it. The node IDs stay as they were: the tee is named by the `let`, and a branch's nodes derive
-/// theirs from the port they start from either way.
-fn unfork_around(source: &str, inner: usize) -> Result<String, GenericError> {
-    let mask = code_mask(source);
-    // The `{` that holds `inner`: the nearest one before it that is not closed before it.
-    let mut depth = 0usize;
-    let mut open = None;
-    for (at, c) in source[..inner].char_indices().rev() {
-        if !mask[at] {
-            continue;
-        }
-        match c {
-            '}' | ')' | ']' => depth += 1,
-            '{' | '(' | '[' if depth > 0 => depth -= 1,
-            '{' => {
-                open = Some(at);
-                break;
-            }
-            _ => {}
-        }
-    }
-    let open = open.ok_or_else(|| generic_error!("The policy `fork` is in no other fork."))?;
-    let close = matching_close(source, open).ok_or_else(|| generic_error!("The outer fork has no end."))?;
-    let header = source[..open].trim_end();
-    let (before, name) = header
-        .rsplit_once(" as ")
-        .filter(|(before, name)| before.trim_end().ends_with("fork") && name.chars().all(is_ident))
-        .ok_or_else(|| generic_error!("The fork around the policy `fork` has no `as` clause: {}", header))?;
-    let keyword = before.trim_end().len() - "fork".len();
-    let statement = statement_start(source, keyword)?;
-    if source[statement..].trim_start().starts_with("let ") {
-        return Err(generic_error!(
-            "The fork around the policy `fork` ends a `let`, which no pipeline may."
-        ));
-    }
-    // The branches: each starts on a line at the branches' indentation, after the comments above it, and goes on in
-    // the lines indented further.
-    let body = &source[line_end(source, open) + 1..line_start(source, close)];
-    let indent = body
-        .lines()
-        .find(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
-        .map(|line| line.len() - line.trim_start().len())
-        .ok_or_else(|| generic_error!("The fork around the policy `fork` has no branches."))?;
-    let mut branches: Vec<(String, String)> = Vec::new();
-    let mut comments = String::new();
-    for line in body.split_inclusive('\n') {
-        let line_indent = line.len() - line.trim_start().len();
-        let code = line.trim();
-        if code.is_empty() {
-            continue;
-        }
-        if line_indent <= indent && code.starts_with('#') {
-            comments.push_str(&format!("  {}\n", code));
-        } else if line_indent <= indent && !code.starts_with(['}', ')', ']']) {
-            branches.push((std::mem::take(&mut comments), line.trim_start().to_string()));
-        } else if let Some((_, branch)) = branches.last_mut() {
-            branch.push_str(&dedent(line, indent - 2));
-        }
-    }
-    let mut statements = format!(
-        "{}let {} = {}tee(ports: {})\n",
-        &source[statement..statement + 2],
-        name,
-        &source[statement + 2..keyword],
-        branches.len()
-    );
-    for (index, (comments, branch)) in branches.iter().enumerate() {
-        statements.push_str(&format!("\n{}  {}.{} | {}", comments, name, index, branch));
-    }
-    let after = line_end(source, close);
-    Ok(format!(
-        "{}{}{}",
-        &source[..statement],
-        statements,
-        &source[after + 1..]
-    ))
-}
-
-/// S3b: routes the metrics tagged `team:checkout` to team B only, ahead of the policy `fork`: they no longer reach the
-/// primary endpoint or team C.
+/// S3b: routes the metrics tagged `team:checkout` to team B only: they no longer reach the primary endpoint, team C,
+/// or any other destination.
 ///
-/// A `split` whose ports are both used is named by a `let`, so the statement that ends in the policy `fork` becomes
-/// `let checkout_only = <what it was> | split(...)`, its `true` port emits to team B, and its `false` port carries on
-/// to the policy `fork`. A policy `fork` that is a branch of another fork is first given a statement of its own, the
-/// other fork written in its long form.
+/// Every branch of the policy reads every metric, so the edit says so in each: each branch the default program has
+/// excludes them first, `metrics | where tags.team != "checkout" | ...`, and a branch of its own,
+/// [`EXCLUSIVE_ROUTE`], sends them to team B, `let checkout_only = metrics | where tags.team == "checkout"`. Each
+/// exclusion and the route split on the same predicate and send the metrics opposite ways, which is how validation
+/// knows that no metric reaches team B twice, and the policy's tee and its branches keep their IDs.
 pub fn exclusive_team_b(source: &str, team_b: &str) -> Result<String, GenericError> {
-    let fork = policy_fork(source)?;
-    if source[line_start(source, fork)..fork].trim().is_empty() {
-        let unforked = unfork_around(source, fork)?;
-        return exclusive_team_b(&unforked, team_b);
+    let policy = policy(source)?;
+    let mut edited = source.to_string();
+    // From the last branch, so that the offsets of the others hold.
+    for statement in policy.uses(source).into_iter().rev() {
+        let head = statement.start + head_offset(&source[statement.clone()]);
+        let end = source[head..]
+            .find(|c: char| !(is_ident(c) || c == '.'))
+            .map_or(source.len(), |length| head + length);
+        edited.insert_str(end, " | where tags.team != \"checkout\"");
     }
-    let fork_line = line_start(source, fork);
-    // The statement's first line: the last line above the fork's that starts at the statement's indentation, two
-    // spaces, and is no comment.
-    let mut statement = fork_line;
-    loop {
-        let line = &source[statement..line_end(source, statement)];
-        let indent = line.len() - line.trim_start().len();
-        if indent == 2 && !line.trim_start().starts_with('#') && !line.trim().is_empty() {
-            break;
-        }
-        if statement == 0 {
-            return Err(generic_error!(
-                "The statement that ends in the policy `fork` has no start."
-            ));
-        }
-        statement = line_start(source, statement - 1);
-    }
-    if source[statement..].trim_start().starts_with("let ") {
-        return Err(generic_error!("The policy `fork` ends a `let`, which no pipeline may."));
-    }
-    let head = statement + 2;
-    let routes = format!(
-        "\n  {id}.true | emit {team_b}\n\n  {id}.false\n",
-        id = EXCLUSIVE_ROUTE,
-        team_b = quoted(team_b),
-    );
-    let edited = if source[fork_line..fork].trim() == "|" {
-        // `| fork as metrics_policy {` on a line of its own: the split goes above it and the comments above it, and
-        // the `false` port's statement continues with them.
-        let above = comments_above(source, fork_line);
-        let indent = indent_at(source, fork);
-        format!(
-            "{}{}| split(tags.team == \"checkout\")\n{}{}",
-            &source[..above],
-            indent,
-            routes,
-            &source[above..]
-        )
-    } else {
-        // `<head> | fork as metrics_policy {` on one line: the split takes the fork's place on it.
-        let bar = source[..fork].rfind('|').expect("an inline fork follows a `|`");
-        format!(
-            "{}| split(tags.team == \"checkout\")\n{}    | {}",
-            &source[..bar],
-            routes,
-            &source[fork..]
-        )
-    };
-    Ok(format!(
-        "{}let {} = {}",
-        &edited[..head],
-        EXCLUSIVE_ROUTE,
-        &edited[head..]
-    ))
+    add_policy_branch(&edited, |stream| {
+        route(stream, EXCLUSIVE_ROUTE, CHECKOUT, &quoted(team_b))
+    })
 }
 
 /// S4a: mirrors only one checkout family on failover: the failover gateway's predicate gains
@@ -664,12 +724,12 @@ pub fn mirror_checkout_on_failover(source: &str) -> Result<String, GenericError>
     })
 }
 
-/// S5, duplicate branch: a second branch of the policy `fork` to the main `emit`'s recipients, so that every record
-/// reaches them twice.
+/// S5, duplicate branch: a second branch of the policy to the main `emit`'s recipients, so that every record reaches
+/// them twice.
 pub fn duplicate_branch(source: &str) -> Result<String, GenericError> {
     let line = main_emit(source)?;
     let emit = source[line].to_string();
-    add_policy_branch(source, &emit)
+    add_policy_branch(source, |stream| format!("{} | {}", stream, emit))
 }
 
 /// S5, two hosts: the failover gateway emits to the primary endpoint and the failover endpoint together, which are
@@ -677,18 +737,25 @@ pub fn duplicate_branch(source: &str) -> Result<String, GenericError> {
 pub fn two_hosts(source: &str) -> Result<String, GenericError> {
     let not_found = || {
         generic_error!(
-            "The default program has no failover gateway (looked for `where ... as {} | emit mrf`).",
+            "The default program has no failover gateway (looked for `{} | emit mrf`).",
             FAILOVER_GATEWAY
         )
     };
-    let at = as_clause(source, FAILOVER_GATEWAY).ok_or_else(not_found)?;
-    let emit = at + words(&source[at..], "emit").first().copied().ok_or_else(not_found)?;
-    let end = line_end(source, emit);
-    let recipients = source[emit + "emit".len()..end].trim();
+    let statement = statement_reading(source, FAILOVER_GATEWAY).ok_or_else(not_found)?;
+    let emit = statement.start
+        + words(&source[statement.clone()], "emit")
+            .first()
+            .copied()
+            .ok_or_else(not_found)?;
+    let recipients = source[emit + "emit".len()..statement.end].trim();
     if recipients != "mrf" && recipients != "[mrf]" {
         return Err(not_found());
     }
-    Ok(format!("{}emit [primary, mrf]{}", &source[..emit], &source[end..]))
+    Ok(format!(
+        "{}emit [primary, mrf]{}",
+        &source[..emit],
+        &source[statement.end..]
+    ))
 }
 
 /// S5, a policy binding: the aggregation's percentiles bind the native setting again,
@@ -707,19 +774,18 @@ pub fn policy_binding(source: &str) -> Result<String, GenericError> {
     )
 }
 
-/// S5, an unknown recipient: a branch of the policy `fork` emits everything to [`UNKNOWN_RECIPIENT`], which ADP's
-/// directory does not name: ADP holds the program pending until a recipient of that name is declared.
+/// S5, an unknown recipient: a branch of the policy emits everything to [`UNKNOWN_RECIPIENT`], which ADP's directory
+/// does not name: ADP holds the program pending until a recipient of that name is declared.
 pub fn unknown_recipient(source: &str) -> Result<String, GenericError> {
-    add_policy_branch(source, &format!("emit {}", UNKNOWN_RECIPIENT))
+    add_policy_branch(source, |stream| format!("{} | emit {}", stream, UNKNOWN_RECIPIENT))
 }
 
-/// S9c: a branch of the policy `fork`, [`DESTINATION_ROUTE`], that sends the metrics tagged `team:platform` to the
+/// S9c: a branch of the policy, [`DESTINATION_ROUTE`], that sends the metrics tagged `team:platform` to the
 /// destination at `url` as well.
 pub fn route_platform_to(source: &str, url: &str) -> Result<String, GenericError> {
-    add_policy_branch(
-        source,
-        &route(DESTINATION_ROUTE, "tags.team == \"platform\"", &quoted(url)),
-    )
+    add_policy_branch(source, |stream| {
+        route(stream, DESTINATION_ROUTE, "tags.team == \"platform\"", &quoted(url))
+    })
 }
 
 /// S14: renames the aggregation, [`AGGREGATION_NODE`], to [`RENAMED_AGGREGATION`]: the `let` that names it and every
@@ -745,7 +811,7 @@ pub fn width_change(source: &str, width: &str) -> Result<String, GenericError> {
 /// S5, a second aggregation: an aggregation with every parameter, in front of the policy. ADP runs at most one
 /// aggregation per program, so validation rejects it at its node, as the editor shows.
 pub fn second_aggregation(source: &str) -> Result<String, GenericError> {
-    insert_before_policy(
+    append_to_metrics(
         source,
         "aggregate(window: 10s, flush_interval: 10s, context_limit: 1000, counter_expiry: 5m, flush_open_windows: \
          false, histogram_aggregates: [\"max\", \"count\"], histogram_percentiles: [95], copy_to_distribution: false, \
@@ -862,7 +928,7 @@ pub fn aggregation_after_enrichment(source: &str) -> Result<String, GenericError
             rename(&removed, AGGREGATION_NODE, &feeder)?
         }
     };
-    insert_before_policy(&edited, &format!("{} as {}", moved, AGGREGATION_NODE))
+    append_to_metrics(&edited, &format!("{} as {}", moved, AGGREGATION_NODE))
 }
 
 #[cfg(test)]

@@ -117,9 +117,9 @@ fn line_of(source: &str, text: &str) -> usize {
     source[..at].matches('\n').count() + 1
 }
 
-/// Puts `stage` between enrichment and the policy `fork`, as the S1 scenario does.
+/// Puts `stage` at the end of the stream every destination reads, as the S1 scenario does.
 fn with_stage_before_policy(source: &str, stage: &str) -> String {
-    crate::scenario::edits::insert_before_policy(source, stage).unwrap()
+    crate::scenario::edits::append_to_metrics(source, stage).unwrap()
 }
 
 #[test]
@@ -171,11 +171,12 @@ fn an_unmodified_export_composes_to_the_active_default_program_with_an_empty_dif
 #[test]
 fn a_change_diffs_node_by_node_in_the_artifacts_terms() {
     let (plan, export) = fixture();
-    // S1: drop the debug metrics in front of the policy `fork`.
-    let source = with_stage_before_policy(
-        &default_program_source(&export, &crate::compile::RecipientLabels::default()),
-        "where not (name starts_with \"demo.debug.\") as drop_debug",
-    );
+    // S1: drop the debug metrics at the end of `let metrics`.
+    let source = crate::scenario::edits::drop_debug(&default_program_source(
+        &export,
+        &crate::compile::RecipientLabels::default(),
+    ))
+    .unwrap();
     let outcome = compile_against(&source, &plan, &export);
     assert!(outcome.diagnostics.is_empty(), "{:#?}", outcome.diagnostics);
     let preview = &outcome.preview;
@@ -198,36 +199,43 @@ fn a_change_diffs_node_by_node_in_the_artifacts_terms() {
             )
         })
         .collect::<Vec<_>>();
-    // The new split and its inline drop are the artifact's (`policy/` IDs): a `where` drops what its `false` port
-    // leads to, which normalization keeps whichever way the predicate is written. The host tags node, which fed the
-    // `tee`,
-    // now feeds the split, and the `tee` is fed by it: both are the default program's nodes, with other edges. Nothing
-    // else changes: a node is what it does, whatever feeds it, so the routing drops behind the `tee` are unchanged.
+    // The `where` ends `let metrics` now, so it is the node `metrics`, which changes operator, and the host tags node
+    // before it is the artifact's `metrics_host_tags` (a `policy/` ID); the inline drop is the artifact's too: a `where`
+    // drops what its `false` port leads to, which normalization keeps whichever way the predicate is written. The merge
+    // feeds host tags, and the `tee` is fed by the split: both are the default program's nodes, with other edges.
+    // Nothing else changes: a node is what it does, whatever feeds it, so the branches behind the `tee` are unchanged.
     let expected = vec![
         (
-            "metrics_enrich_host_tags",
-            Some("metrics_enrich_host_tags"),
-            "host_tags",
+            "metrics_in",
+            Some("metrics_in"),
+            "merge",
             ChangeKind::Changed,
             vec!["edges"],
         ),
         (
-            "policy/drop_debug",
-            Some("drop_debug"),
-            "split",
+            "policy/metrics_host_tags",
+            Some("metrics_host_tags"),
+            "host_tags",
             ChangeKind::Added,
             vec![],
         ),
         (
-            "metrics_policy",
-            Some("metrics_policy"),
+            "metrics",
+            Some("metrics"),
+            "split",
+            ChangeKind::Changed,
+            vec!["operator", "params", "edges"],
+        ),
+        (
+            "metrics_fanout",
+            Some("metrics_fanout"),
             "tee",
             ChangeKind::Changed,
             vec!["edges"],
         ),
         (
-            "policy/drop_debug_false",
-            Some("drop_debug_false"),
+            "policy/metrics_false",
+            Some("metrics_false"),
             "drop",
             ChangeKind::Added,
             vec![],
@@ -237,34 +245,39 @@ fn a_change_diffs_node_by_node_in_the_artifacts_terms() {
     assert_eq!(
         preview.edges_added,
         [
-            "metrics_enrich_host_tags.out -> policy/drop_debug.in",
-            "policy/drop_debug.true -> metrics_policy.in",
-            "policy/drop_debug.false -> policy/drop_debug_false.in",
+            "metrics_in.out -> policy/metrics_host_tags.in",
+            "policy/metrics_host_tags.out -> metrics.in",
+            "metrics.true -> metrics_fanout.in",
+            "metrics.false -> policy/metrics_false.in",
         ]
     );
     assert_eq!(
         preview.edges_removed,
-        ["metrics_enrich_host_tags.out -> metrics_policy.in"]
+        ["metrics_in.out -> metrics.in", "metrics.out -> metrics_fanout.in"]
     );
     assert!(preview.outputs.is_empty());
 
-    // Artifact nodes are placed in the source: the new split and the drop it implies at its `where`.
-    let split = &preview.nodes[1];
-    assert_eq!(split.range.unwrap().line, line_of(&source, "as drop_debug"));
-    let drop = &preview.nodes[3];
-    assert_eq!(drop.range.unwrap().line, line_of(&source, "as drop_debug"));
-    // So is a node of the default program that the artifact keeps: the host tags node, at its stage.
-    assert_eq!(preview.nodes[0].range.unwrap().line, line_of(&source, "| host_tags("));
+    // Artifact nodes are placed in the source: the split and the drop it implies at its `where`, host tags at its
+    // stage.
+    let stage = line_of(&source, crate::scenario::edits::DROP_DEBUG);
+    assert_eq!(preview.nodes[2].range.unwrap().line, stage);
+    assert_eq!(preview.nodes[4].range.unwrap().line, stage);
+    assert_eq!(preview.nodes[1].range.unwrap().line, line_of(&source, "| host_tags("));
+    // So is a node of the default program that the artifact keeps: the merge, at its `let`.
+    assert_eq!(
+        preview.nodes[0].range.unwrap().line,
+        line_of(&source, "  let metrics = ")
+    );
 }
 
 #[test]
 fn validation_findings_are_placed_at_the_artifact_nodes_they_are_about() {
     let (plan, export) = fixture();
     let source = default_program_source(&export, &crate::compile::RecipientLabels::default());
-    // A second branch of the policy `fork` to the primary output: every record reaches it twice.
+    // A second branch of the policy to the primary output: every record reaches it twice.
     let duplicate = source.replacen(
-        "      emit output dd_metrics_encode\n",
-        "      emit output dd_metrics_encode\n      emit output dd_metrics_encode\n",
+        "  metrics | emit output dd_metrics_encode\n",
+        "  metrics | emit output dd_metrics_encode\n\n  metrics | emit output dd_metrics_encode\n",
         1,
     );
     let outcome = compile_against(&duplicate, &plan, &export);
@@ -278,7 +291,7 @@ fn validation_findings_are_placed_at_the_artifact_nodes_they_are_about() {
     assert_eq!(errors.len(), 1, "{:#?}", outcome.diagnostics);
     assert_eq!(errors[0].origin, Origin::Validation);
     assert_eq!(errors[0].rule, Some("duplicate_contribution"));
-    assert_eq!(errors[0].range.line, line_of(&duplicate, "| fork as metrics_policy"));
+    assert_eq!(errors[0].range.line, line_of(&duplicate, "  let metrics = "));
     // The plan diff is still shown, of a plan that does not validate.
     assert!(outcome.preview.available && !outcome.preview.valid);
     assert_eq!(outcome.errors, 1);
@@ -627,7 +640,7 @@ fn renaming_a_state_owner_is_a_note_that_says_how_to_keep_its_id() {
         renamed_state_owners(&plan, &renamed, &registry, |_| None),
         [
             "This edit renames the aggregation from `dsd_agg` to `agg`, so its state will not carry over; keep its ID \
-          with `as dsd_agg`."
+          by naming it with `let dsd_agg = ...`."
         ]
     );
     // The new node is named as the artifact writes it, when the correspondence knows it.
@@ -638,7 +651,7 @@ fn renaming_a_state_owner_is_a_note_that_says_how_to_keep_its_id() {
         named,
         [
             "This edit renames the aggregation from `dsd_agg` to `rollup`, so its state will not carry over; keep its \
-          ID with `as dsd_agg`."
+          ID by naming it with `let dsd_agg = ...`."
         ]
     );
 }
@@ -650,7 +663,7 @@ fn no_note_without_a_renamed_state_owner() {
     // Unchanged.
     assert!(renamed_state_owners(&plan, &plan, &registry, |_| None).is_empty());
     // A node without state renamed: there is nothing to carry over.
-    let renamed = with_node_renamed(&plan, "metrics_policy", policy_id("policy_copies"));
+    let renamed = with_node_renamed(&plan, "metrics_fanout", policy_id("policy_copies"));
     assert!(renamed_state_owners(&plan, &renamed, &registry, |_| None).is_empty());
     // The aggregation removed, with none in its place.
     let mut removed = plan.clone();

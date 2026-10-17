@@ -33,12 +33,11 @@ const CONCEPTS = [
     "Names a stream, for later statements to use. A `let` never ends in a sink; a statement without one always does."],
   ["Ports", "let by_time = dogstatsd | timestamp_split(10s)\nby_time.passthrough | drop",
     "A node with several output ports is read one port at a time, as `<name>.<port>`, and every port is used."],
-  ["Reuse", "dsd | emit output dsd_client_telemetry\n(dsd, otlp) | emit primary",
-    "Using a stream more than once copies each metric to every use."],
+  ["Reuse", "metrics | emit primary\nmetrics | where tags.team == \"b\" | emit mrf",
+    "A stream used more than once is copied to each use. This is how a program fans out: each use is a " +
+    "statement of its own, a branch that gets every metric."],
   ["Tuples", "(dsd, otlp) | host_tags([\"env:demo\"], deadline: 30s)",
     "Merge streams: the first into the merge's port 0, the next into port 1, and so on."],
-  ["Forks", "... | fork {\n    emit primary\n    where tags.team == \"b\" | emit mrf\n  }",
-    "Copy each metric to every branch. A branch is stages, then a sink, and the `fork` ends its pipeline."],
 ];
 
 const GRAMMAR = `program    = "policy" scope "{" header* statement* "}"
@@ -51,8 +50,6 @@ ref        = ident ["." port]                           # a let, or a scope inpu
 tuple      = "(" ref ("," ref)* ","? ")" ["as" ident]   # a merge, its input ports in order
 stage      = operator ["(" args ")"] ["as" ident]       # any registered operator
            | "where" predicate ["as" ident]             # shorthand
-           | "fork" ["as" ident] "{" branch+ "}"        # shorthand; ends the pipeline
-branch     = (stage "|")* sink | (stage "|")* fork-stage
 sink       = "emit" recipients ["as" ident]             # emit primary, emit [primary, "https://b.example.com"]
            | "emit" "output" output ["as" ident]
            | "drop" ["as" ident]
@@ -170,8 +167,10 @@ function renderRecipe(r) {
   return `<div class="recipe"><h3>${esc(r.title)}</h3><p>${prose(r.how)}</p>
     <div class="insert" aria-label="The line, in its place">
       <div class="ctx">    ...</div>
+      <div class="ctx">${highlighted(r.above)}</div>
       <div class="add">${highlighted(r.line)}</div>
-      <div class="ctx">${highlighted(r.before)}</div>
+      <div class="ctx">${highlighted(r.below)}</div>
+      <div class="ctx">    ...</div>
     </div></div>`;
 }
 

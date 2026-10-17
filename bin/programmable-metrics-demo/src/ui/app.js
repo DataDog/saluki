@@ -23,7 +23,7 @@
     '  base "sha256:0000000000000000000000000000000000000000000000000000000000000000"',
     "",
     "  dogstatsd",
-    '    | where not (name starts_with "demo.debug.") as drop_debug',
+    '    | where not (name starts_with "demo.debug.")',
     "    | emit output dd_metrics_encode",
     "}",
     "",

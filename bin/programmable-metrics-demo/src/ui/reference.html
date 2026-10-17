@@ -135,7 +135,7 @@
       <a href="#values">Values</a>
       <a href="#predicates">Predicates</a>
       <a href="#operators">Operators</a>
-      <a href="#ids">Node IDs and <code>as</code></a>
+      <a href="#ids">Node IDs</a>
       <a href="#rules">Rules</a>
       <a href="#recipes">Recipes</a>
       <a href="#limits">Limits</a>
@@ -241,14 +241,19 @@
       </section>
 
       <section id="ids">
-        <h2>Node IDs and <code>as</code></h2>
-        <p>Every stage and sink is a node of the plan, and every node has an ID: the one an <code>as</code> clause
-          gives it, or one the syntax derives from where it is written.</p>
+        <h2>Node IDs</h2>
+        <p>Every stage and sink is a node of the plan, and every node has an ID, which the syntax derives from where
+          it is written. The last stage of a <code>let</code> takes the <code>let</code>'s name, so <strong>if something
+          needs a specific name, give it one with <code>let</code></strong>: <code>let to_team_b = metrics | where
+          tags.team == "b"</code> names the filter <code>to_team_b</code>, and its sink, in
+          <code>to_team_b | emit "http://127.0.0.1:17102"</code>, is <code>to_team_b_true</code>. An
+          <code>as &lt;id&gt;</code> clause after a stage or a sink names that node instead, for the rare cases a
+          <code>let</code> cannot: a sink, which has an ID of its own, or a node named like a scope input.</p>
         <div class="callout">
           <p><strong>Why IDs matter.</strong> ADP keeps a node's state, such as an aggregation's open buckets, and
             reuses its kernel from one program to the next by its ID. An edit that changes the ID of a node with state
-            starts that state over. The editor warns when an edit renames one, and says how to keep its ID with
-            <code>as</code>.</p>
+            starts that state over. The editor warns when an edit renames one, and says how to keep its ID: name it with
+            <code>let</code>.</p>
         </div>
         <h3>The derived scheme</h3>
         <table class="ids">
@@ -261,8 +266,6 @@
               where the anchor is the port the pipeline starts from: a node's ID; <code>x_&lt;port&gt;</code> for
               <code>x.port</code>; <code>input_&lt;name&gt;</code> for a scope input; for a tuple head, its merge,
               <code>&lt;anchor of its first element&gt;_in</code>.</td></tr>
-            <tr><td><code>fork { ... }</code></td><td>The fork's tee is <code>&lt;anchor&gt;_fork</code>, and branch
-              <code>i</code> starts from the anchor <code>&lt;fork&gt;_&lt;i&gt;</code>.</td></tr>
             <tr><td>A stream used more than once</td><td>The tee that copies it is <code>x_fanout</code>, or
               <code>x_&lt;port&gt;_fanout</code> after <code>x.port</code>; use <code>i</code> starts from
               <code>&lt;tee&gt;_&lt;i&gt;</code>.</td></tr>
@@ -273,13 +276,6 @@
         <p>An ID longer than 63 bytes is shortened, and an ID that equals another node's is an error that asks for an
           <code>as</code>.</p>
         <div id="example-ids"></div>
-        <h3>Why the default program shows <code>as</code></h3>
-        <p>ADP's telemetry, topology, and correspondence of plan nodes to native components know the default program's
-          nodes by their native IDs, such as <code>dsd_agg</code> and <code>metrics_policy</code>, which do not all
-          follow the derived scheme. So the editor prints an <code>as</code> clause wherever a node's ID is not the one
-          the syntax would derive, and dims it: it keeps the ID, and changes nothing else. A later step renames the
-          native IDs to the derived scheme, and the clauses go away. Leave them as they are, and write none of your
-          own unless you want to name a node.</p>
       </section>
 
       <section id="rules">
@@ -311,12 +307,11 @@
 
       <section id="recipes">
         <h2>Recipes</h2>
-        <p>Common needs, each one line added to the default program: a stage just before the policy
-          <code>fork</code>, <code>metrics_policy</code>, so that what every destination receives passes through it.
-          Load the default program, add the line, and compile. Where the policy <code>fork</code> starts a branch of
-          another <code>fork</code>, as it does when nothing else enriches metrics, the stage starts that branch
-          instead, and the <code>fork</code> follows it after a <code>|</code>:
-          <code>where tags.env != "dev" | fork as metrics_policy { ... }</code>.</p>
+        <p>Common needs, each one line added to the default program: a stage at the end of the stream every
+          destination reads, <code>let metrics = ...</code>, so that every use of <code>metrics</code>, one per
+          destination, reads what it passes. Load the default program, add the line, and compile. Where enrichment
+          does nothing, as in this demo, the default program writes that stream as the policy's tee,
+          <code>let metrics_fanout = ... | tee(ports: n)</code>, and the line goes just before the tee.</p>
         <div class="recipes" id="recipes-body"></div>
       </section>
 

@@ -236,7 +236,7 @@ async fn the_compile_api_returns_placed_diagnostics_and_checks_against_the_expor
     let diagnostic = &body["diagnostics"][0];
     assert_eq!(diagnostic["severity"], "error");
     assert_eq!(diagnostic["origin"], "check");
-    assert_eq!(diagnostic["range"]["line"], 23);
+    assert_eq!(diagnostic["range"]["line"], 28);
     assert!(diagnostic["message"]
         .as_str()
         .unwrap()
@@ -306,9 +306,10 @@ async fn the_compile_api_composes_into_the_default_program_adp_serves_as_the_rev
         .as_array()
         .unwrap()
         .iter()
-        .find(|node| node["node"] == "policy/drop_debug")
+        .find(|node| node["op"] == "split" && node["artifact_node"] == "metrics")
         .expect("the new split is in the diff");
-    assert_eq!(split["change"], json!("added"));
+    // It ends `let metrics`, so it takes the ID of the host tags node it follows, which changes operator.
+    assert_eq!(split["change"], json!("changed"));
 
     // A default program that is not the one the export was taken from (the configuration changed between the two
     // requests) is refused, and compiling falls back to the structural checks.

@@ -219,11 +219,15 @@ pub struct RecipeEntry {
     /// The stage the line adds.
     pub stage: &'static str,
 
-    /// The line, as it goes into the default program: a stage on its own line, just before the policy `fork`.
+    /// The line, as it goes into the default program: a stage on its own line, at the end of the stream every
+    /// destination reads, `let metrics = ...`.
     pub line: String,
 
-    /// The line it goes before.
-    pub before: String,
+    /// The line of the default program just above where the line goes.
+    pub above: String,
+
+    /// The line of the default program just below where the line goes, past any blank lines.
+    pub below: String,
 }
 
 /// A validation rule.
@@ -255,27 +259,32 @@ pub struct LimitEntry {
     pub description: &'static str,
 }
 
-/// The default program's policy `fork`, which a recipe's line goes before.
-pub(crate) const POLICY_FORK: &str = "| fork as metrics_policy {";
+/// Where a recipe's line goes when the default program is not at hand: the end of a `let metrics` that ends in host
+/// tags, above its first use.
+const RECIPE_CONTEXT: (&str, &str) = (
+    "    | host_tags(config.host.tags, deadline: config.host.tags_deadline)",
+    "  metrics | emit primary",
+);
 
-/// A whole program that shows each part of the language: scope inputs, a `let`, stages, `where`, a stream used twice,
-/// a tuple, a `fork`, sinks, and comments.
+/// A whole program that shows each part of the language: scope inputs, a `let`, stages, `where`, streams used more
+/// than once, a tuple, sinks, and comments.
 pub const EXAMPLE_PROGRAM: &str = r#"policy metrics {
   # A `let` names a stream: here, DogStatsD's metrics, filtered, then aggregated.
   let dsd = dogstatsd
     | where not (name starts_with "demo.debug.")
     | aggregate(window: 10s, flush_interval: 10s)
 
-  # A stream used twice is copied: `dsd` feeds this pipeline and the tuple below.
+  # A stream used more than once is copied to each use: `dsd` feeds this pipeline and the tuple below.
   dsd | emit output dsd_client_telemetry
 
-  # A tuple merges streams. A `fork` copies each metric to every branch, and each branch ends in a sink.
-  (dsd, otlp)
-    | host_tags(["env:demo"], deadline: 30s)
-    | fork {
-        emit primary
-        where name starts_with "demo.checkout." and tags.env == "prod" | emit "http://127.0.0.1:17102"
-      }
+  # A tuple merges streams.
+  let metrics = (dsd, otlp) | host_tags(["env:demo"], deadline: 30s)
+
+  # Each use of `metrics` is a branch that gets every metric, and each ends in a sink.
+  metrics | emit primary
+  metrics
+    | where name starts_with "demo.checkout." and tags.env == "prod"
+    | emit "http://127.0.0.1:17102"
 }
 "#;
 
@@ -288,13 +297,6 @@ const SUGAR: &[(&str, &str, &str, &str)] = &[
         "dogstatsd\n  | where name starts_with \"demo.\" as keep\n  | emit primary",
         "let keep = dogstatsd | split(name starts_with \"demo.\")\nkeep.false | drop\nkeep.true | emit primary",
         "A `split` on `p` whose `false` port leads to `drop`: the pipeline carries on from its `true` port.",
-    ),
-    (
-        "`e | fork { ... }`",
-        "dogstatsd\n  | fork as copies {\n      emit primary\n      drop\n    }",
-        "let copies = dogstatsd | tee(ports: 2)\ncopies.0 | emit primary\ncopies.1 | drop",
-        "A `tee` with one port per branch, branch `i` reading port `i`. Each branch is stages, then a sink or \
-         another `fork`.",
     ),
     (
         "`a != b`",
@@ -384,8 +386,8 @@ const PORTS_NOTES: &[(&str, &str)] = &[
     ),
     (
         names::TEE,
-        "Usually written as `fork { ... }`, or implied by using a stream more than once. Written as a stage, it has \
-         one output port per copy, numbered from 0: `<name>.0`, `<name>.1`.",
+        "Usually implied: a stream used more than once is copied to each use. Written as a stage, it has one output \
+         port per copy, numbered from 0: `<name>.0`, `<name>.1`.",
     ),
     (
         names::MERGE,
@@ -445,8 +447,8 @@ const PREDICATES: &[(&str, &str)] = &[
     ),
 ];
 
-/// One-line edits to the default program for common needs: a title, what the line does, and the stage it adds just
-/// before the policy `fork`.
+/// One-line edits to the default program for common needs: a title, what the line does, and the stage it appends to
+/// the stream every destination reads, `let metrics = ...`.
 const RECIPES: &[(&str, &str, &str)] = &[
     (
         "Drop metrics by name",
@@ -519,7 +521,7 @@ const RULES: &[(Rule, &str, bool)] = &[
     ),
     (
         Rule::DuplicateContribution,
-        "No metric reaches one recipient twice, as by two branches of a `fork` that both emit to it.",
+        "No metric reaches one recipient twice, as by two uses of a stream that both emit to it.",
         false,
     ),
     (
@@ -556,9 +558,25 @@ const LIMITS: &[LimitSpec] = &[
     limits::BUCKET_WIDTHS,
 ];
 
-/// Returns a recipe's stage as a line of the default program, at the indentation of the policy `fork`'s stage.
+/// Returns a recipe's stage as a line of the default program, at the indentation of a stage of `let metrics`.
 pub(crate) fn recipe_line(stage: &str) -> String {
     format!("    | {}", stage)
+}
+
+/// Returns the lines of the default program around where a recipe's line goes, the one above it and the first one
+/// below it that is not blank: in the default program `export` prints when it is at hand, else in a typical one.
+fn recipe_context(export: Option<&ExportBundle>, labels: &RecipientLabels) -> (String, String) {
+    const MARK: &str = "where true";
+    let found = export.and_then(|export| {
+        let printed = crate::compile::default_program_source(export, labels);
+        let edited = crate::scenario::edits::append_to_metrics(&printed, MARK).ok()?;
+        let lines = edited.lines().collect::<Vec<_>>();
+        let at = lines.iter().position(|line| *line == recipe_line(MARK))?;
+        let above = at.checked_sub(1).map(|above| lines[above])?;
+        let below = lines[at + 1..].iter().find(|line| !line.trim().is_empty())?;
+        Some((above.to_string(), below.to_string()))
+    });
+    found.unwrap_or_else(|| (RECIPE_CONTEXT.0.to_string(), RECIPE_CONTEXT.1.to_string()))
 }
 
 /// Builds the reference, with the host's side from `export` when it is at hand.
@@ -582,16 +600,20 @@ pub fn reference(export: Option<&ExportBundle>, labels: &RecipientLabels, host_m
             .iter()
             .map(|&(tests, example)| PredicateEntry { tests, example })
             .collect(),
-        recipes: RECIPES
-            .iter()
-            .map(|&(title, how, stage)| RecipeEntry {
-                title,
-                how,
-                stage,
-                line: recipe_line(stage),
-                before: format!("    {}", POLICY_FORK),
-            })
-            .collect(),
+        recipes: {
+            let (above, below) = recipe_context(export, labels);
+            RECIPES
+                .iter()
+                .map(|&(title, how, stage)| RecipeEntry {
+                    title,
+                    how,
+                    stage,
+                    line: recipe_line(stage),
+                    above: above.clone(),
+                    below: below.clone(),
+                })
+                .collect()
+        },
         rules: RULES
             .iter()
             .map(|&(rule, means, met_by_syntax)| RuleEntry {

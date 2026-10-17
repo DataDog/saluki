@@ -4,7 +4,7 @@ use super::*;
 use crate::{
     compile::{compile, default_program_source, CompileOutcome},
     preview::{ActivePlan, CompileContext},
-    scenario::{edits::insert_before_policy, tests::named_fixture},
+    scenario::{edits::append_to_metrics, tests::named_fixture},
 };
 
 /// Compiles `source` against the plan crate's default program, detached, as the editor does with ADP at hand.
@@ -28,10 +28,19 @@ fn compile_against_default(source: &str) -> CompileOutcome {
     compile(source, Some(&context)).0
 }
 
-/// Puts a recipe's line into the default program, as its text says to: just before the policy `fork`.
+/// Puts a recipe's line into the default program, as its text says to: at the end of the stream every destination
+/// reads, between the lines the recipe shows around it.
 fn with_recipe(source: &str, recipe: &RecipeEntry) -> String {
-    assert!(source.contains(&recipe.before), "{}", source);
-    insert_before_policy(source, recipe.stage).unwrap()
+    assert!(source.contains(&format!("{}\n", recipe.above)), "{}", source);
+    let edited = append_to_metrics(source, recipe.stage).unwrap();
+    assert!(
+        edited.contains(&format!("{}\n{}\n", recipe.above, recipe.line)),
+        "{}",
+        edited
+    );
+    let line = edited.find(&format!("{}\n", recipe.line)).unwrap();
+    assert!(edited[line..].contains(&format!("\n{}\n", recipe.below)), "{}", edited);
+    edited
 }
 
 /// Returns the binding names an example's text reads: each `config.<name>`, its name the identifiers and dots after
@@ -263,7 +272,7 @@ fn the_example_program_parses_and_its_nodes_are_listed() {
 fn every_recipe_is_one_line_that_compiles_into_the_default_program_with_no_finding() {
     let (_, export) = named_fixture();
     let source = default_program_source(&export, &RecipientLabels::default());
-    for recipe in reference(None, &RecipientLabels::default(), None).recipes {
+    for recipe in reference(Some(&export), &RecipientLabels::default(), None).recipes {
         assert!(!recipe.line.contains('\n'), "{}", recipe.line);
         let edited = with_recipe(&source, &recipe);
         assert!(edited.contains(&format!("\n{}\n", recipe.line)), "{}", edited);

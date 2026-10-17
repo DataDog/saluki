@@ -26,8 +26,8 @@ fn other_artifact() -> Value {
             && edge["to"].as_str().unwrap() != "metrics_routing_filter_1.in"
     });
     for edge in edges.iter_mut() {
-        if edge["from"] == "metrics_policy.3" {
-            edge["from"] = "metrics_policy.2".into();
+        if edge["from"] == "metrics_fanout.3" {
+            edge["from"] = "metrics_fanout.2".into();
         }
     }
     artifact

@@ -673,7 +673,8 @@ pub(crate) fn renamed_state_owners(
             format!("the `{}` node", op)
         };
         notes.push(format!(
-            "This edit renames {} from `{}` to `{}`, so its state will not carry over; keep its ID with `as {}`.",
+            "This edit renames {} from `{}` to `{}`, so its state will not carry over; keep its ID by naming it with \
+             `let {} = ...`.",
             what, from, to, from
         ));
     }

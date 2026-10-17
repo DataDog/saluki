@@ -200,7 +200,7 @@ mod tests {
             MetricType::Counter,
             Some("Events leaving each plan node port."),
             [
-                (vec![("component_id", "metrics_policy"), ("port", "0")], 120.0),
+                (vec![("component_id", "metrics_fanout"), ("port", "0")], 120.0),
                 (vec![("port", "true"), ("component_id", "drop_debug")], 7.5),
             ],
         );
@@ -218,7 +218,7 @@ mod tests {
             vec![
                 Sample {
                     name: "adp__plan_node_events_total".to_string(),
-                    labels: labels(&[("component_id", "metrics_policy"), ("port", "0")]),
+                    labels: labels(&[("component_id", "metrics_fanout"), ("port", "0")]),
                     value: 120.0,
                 },
                 Sample {

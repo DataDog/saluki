@@ -269,24 +269,25 @@ pub(crate) fn named_fixture() -> (saluki_metric_plan::ir::Plan, crate::export::E
     (plan, export)
 }
 
-/// Returns `source` without the fixture's endpoint routing groups: their branches of the policy `fork`.
+/// Returns `source`, in which enrichment ends in `let metrics`, without the fixture's endpoint routing groups: their
+/// branches of the policy, each a `let` of its filter and the statement that emits what it keeps.
 fn without_routing_groups(source: &str) -> String {
     let mut edited = source.to_string();
     for group in ["metrics_routing_filter_0", "metrics_routing_filter_1"] {
-        // The branch: from the line its `where` starts, through the line of its `emit`, and the comments above it.
-        let Some(clause) = edited.find(&format!(" as {}", group)) else {
+        // The branch: from the comments above its `let`, through the line of its `emit`, and the blank line after.
+        let Some(at) = edited.find(&format!("\n  let {} = ", group)) else {
             continue;
         };
-        let keyword = edited[..clause].rfind("where ").unwrap();
-        let mut start = edited[..keyword].rfind('\n').unwrap() + 1;
+        let mut start = at + 1;
         while let Some(previous) = edited[..start - 1].rfind('\n').map(|at| at + 1) {
             if !edited[previous..start].trim_start().starts_with('#') {
                 break;
             }
             start = previous;
         }
-        let emit = clause + edited[clause..].find("emit ").unwrap();
+        let emit = edited.find(&format!("\n  {} | emit ", group)).unwrap() + 1;
         let end = emit + edited[emit..].find('\n').unwrap() + 1;
+        let end = if edited[end..].starts_with('\n') { end + 1 } else { end };
         edited.replace_range(start..end, "");
     }
     edited

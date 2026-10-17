@@ -248,13 +248,14 @@ impl RecipientLabels {
 /// How the comment that names the scope's inputs, where each source's metrics enter the program, starts.
 const INPUTS_SECTION: &str = "Sources: each one's metrics enter at an input of the scope:";
 
-/// The node above which the recipient directory is listed: the policy `tee`, the `fork` where a program routes.
-const POLICY_NODE: &str = "metrics_policy";
+/// The policy's tee, which copies the stream every destination reads, `metrics`, to each of its uses: the recipient
+/// directory is listed above the first use.
+const POLICY_TEE: &str = "metrics_fanout";
 
 /// Returns a printed program with ADP's notes as comment lines: what the export leaves out because it does nothing as
 /// configured, and the scope inputs the program reads, at the top of the program, wrapped; each node's note from the
 /// export ([`ExportBundle::annotations`]) above the line its stage starts on; and the recipient directory above the
-/// policy `fork`, each recipient with its endpoint and the label `labels` gives it, said to be not addressed when no
+/// first branch of the policy, the first use of `metrics` (what port `0` of the policy's tee feeds), each recipient with its endpoint and the label `labels` gives it, said to be not addressed when no
 /// `emit` of `artifact` reaches it.
 ///
 /// The stages are found by parsing `printed` back, through the span of each node, so the comments follow the printed
@@ -298,11 +299,20 @@ pub fn annotate(
         },
     )
     .ok();
+    // A node a `let` names ends that `let`'s pipeline: its note goes above the `let`, which is where a reader looks
+    // for it, rather than above its stage.
     let line_of = |node: &str| {
         let span = reparsed.as_ref()?.spans.node(node)?;
-        let start = printed[..span.start.min(printed.len())]
-            .rfind('\n')
-            .map_or(0, |at| at + 1);
+        let named = printed
+            .match_indices(&format!("\n  let {} = ", node))
+            .map(|(at, _)| at)
+            .find(|at| *at < span.start);
+        let start = match named {
+            Some(at) => at + 1,
+            None => printed[..span.start.min(printed.len())]
+                .rfind('\n')
+                .map_or(0, |at| at + 1),
+        };
         let indent = printed[start..].chars().take_while(|c| *c == ' ').collect::<String>();
         Some((start, indent))
     };
@@ -312,7 +322,20 @@ pub fn annotate(
                 marks.push((at, 1, indent, vec![format!("# {}", note)]));
             }
         }
-        if let Some((at, indent)) = line_of(POLICY_NODE) {
+        // The first branch of the policy: what port `0` of the policy's tee feeds, or the tee itself.
+        let first_branch = artifact
+            .edges
+            .iter()
+            .find(|edge| {
+                matches!(&edge.from, ArtifactPortRef::Node { node, port }
+                    if node.as_str() == POLICY_TEE && port.as_str() == "0")
+            })
+            .and_then(|edge| match &edge.to {
+                ArtifactPortRef::Node { node, .. } => line_of(node.as_str()),
+                _ => None,
+            })
+            .or_else(|| line_of(POLICY_TEE));
+        if let Some((at, indent)) = first_branch {
             let lines = recipient_lines(artifact, export, labels);
             if !lines.is_empty() {
                 marks.push((at, 0, indent, lines));

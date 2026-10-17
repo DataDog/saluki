@@ -426,7 +426,7 @@ mod tests {
         let header = "# TYPE adp__plan_node_events_total counter\n# TYPE adp__plan_active_generation gauge\n";
         let scrape = |value: u64, generation: u64| {
             exposition(&format!(
-                "{}adp__plan_node_events_total{{component_id=\"metrics_policy\",port=\"0\"}} {}\n\
+                "{}adp__plan_node_events_total{{component_id=\"metrics_fanout\",port=\"0\"}} {}\n\
                  adp__plan_active_generation {}\nadp__unrelated_total 5\n",
                 header, value, generation
             ))
@@ -446,7 +446,7 @@ mod tests {
         let node = &snapshot.nodes[0];
         assert_eq!(
             node.labels.get("component_id").map(String::as_str),
-            Some("metrics_policy")
+            Some("metrics_fanout")
         );
         assert_eq!(node.labels.get("port").map(String::as_str), Some("0"));
         // (160 - 100) / 2 s, (170 - 160) / 1 s, then 4 / 1 s after the reset.

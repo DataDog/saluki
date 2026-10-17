@@ -42,7 +42,7 @@
 //!   counted drop of policy loss at its node, E's recipient retires, and the other endpoints are unchanged. Then team
 //!   C removed (S10b), which the program's main `emit` names beside the primary endpoint: the `emit` keeps delivering
 //!   to the primary endpoint, whose canaries stay exact, what team C would have received is counted as policy loss at
-//!   the drop beside it (`metrics_policy_0_missing`), team B is unchanged, and team C's recipient retires. Team C stays
+//!   the drop beside it (`metrics_fanout_0_missing`), team B is unchanged, and team C's recipient retires. Team C stays
 //!   out of the configuration for the rest of the launch.
 //! - **S11**: a native policy change under the published program (`metric_filterlist` in the file) makes no new
 //!   generation and changes nothing it sends, and ADP's status lists the setting as differing (S11a); revoking then
@@ -1617,15 +1617,19 @@ impl Runner {
                 active.plan_hash
             ));
         }
-        let has_node = plan["nodes"]
+        // S1's `where` is not named, so its node is known by what it is: the `split` on `demo.debug.`.
+        let drop_debug = plan["nodes"]
             .as_array()
-            .is_some_and(|nodes| nodes.iter().any(|node| node["id"] == "policy/drop_debug"));
-        if !has_node {
-            return Err(generic_error!("The active plan has no node `policy/drop_debug`."));
-        }
+            .and_then(|nodes| nodes.iter().find(|node| edits::is_drop_debug(node)))
+            .and_then(|node| node["id"].as_str())
+            .map(str::to_string)
+            .ok_or_else(|| generic_error!("The active plan has no node for S1's `{}`.", edits::DROP_DEBUG))?;
         self.report.routes.push(RouteReport {
             route: "/api/adp/plan",
-            checked: "it hashes to the status's active plan hash and has S1's node `policy/drop_debug`".to_string(),
+            checked: format!(
+                "it hashes to the status's active plan hash and has S1's node `{}`",
+                drop_debug
+            ),
         });
         let explain = self.client.get_json("/api/adp/explain").await?;
         if explain["plan"]["hash"].as_str() != active.plan_hash.as_deref() {
@@ -1637,15 +1641,16 @@ impl Runner {
         }
         let (status, text) = self.client.get("/api/adp/explain-text").await?;
         let text = String::from_utf8_lossy(&text);
-        if !status.is_success() || !text.contains("policy/drop_debug") {
+        if !status.is_success() || !text.contains(&drop_debug) {
             return Err(generic_error!(
-                "The explain text ({}) does not describe `policy/drop_debug`.",
-                status
+                "The explain text ({}) does not describe `{}`.",
+                status,
+                drop_debug
             ));
         }
         self.report.routes.push(RouteReport {
             route: "/api/adp/explain, /api/adp/explain-text",
-            checked: "both describe the active plan, with `policy/drop_debug`".to_string(),
+            checked: format!("both describe the active plan, with `{}`", drop_debug),
         });
         Ok(())
     }

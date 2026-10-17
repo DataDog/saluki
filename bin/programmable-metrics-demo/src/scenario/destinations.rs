@@ -95,7 +95,7 @@ fn drain_summary(report: &Value) -> String {
 
 /// The plan node that counts what the recipe's main `emit` would have sent a recipient that is gone, once it delivers
 /// to those that remain: the counted drop beside it.
-const MAIN_EMIT_MISSING: &str = "metrics_policy_0_missing";
+const MAIN_EMIT_MISSING: &str = "metrics_fanout_0_missing";
 
 /// Returns `routing` without the intake `name`, which then receives nothing.
 fn without(mut routing: Routing, name: &str) -> Routing {

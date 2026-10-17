@@ -14,8 +14,8 @@
       }
     },
     "nodes": [
-      { "id": "metrics_policy", "op": "tee", "params": { "ports": 4 } },
-      { "id": "metrics_policy_0", "op": "emit", "params": { "output": "dd_metrics_encode" } },
+      { "id": "metrics_fanout", "op": "tee", "params": { "ports": 4 } },
+      { "id": "metrics_fanout_0", "op": "emit", "params": { "output": "dd_metrics_encode" } },
       {
         "id": "metrics_routing_filter_0",
         "op": "split",
@@ -66,15 +66,15 @@
       { "id": "mrf_metrics_gateway_false", "op": "drop" }
     ],
     "edges": [
-      { "from": "input.dogstatsd", "to": "metrics_policy.in" },
-      { "from": "metrics_policy.0", "to": "metrics_policy_0.in" },
-      { "from": "metrics_policy.1", "to": "metrics_routing_filter_0.in" },
+      { "from": "input.dogstatsd", "to": "metrics_fanout.in" },
+      { "from": "metrics_fanout.0", "to": "metrics_fanout_0.in" },
+      { "from": "metrics_fanout.1", "to": "metrics_routing_filter_0.in" },
       { "from": "metrics_routing_filter_0.true", "to": "metrics_routing_filter_0_true.in" },
       { "from": "metrics_routing_filter_0.false", "to": "metrics_routing_filter_0_false.in" },
-      { "from": "metrics_policy.2", "to": "metrics_routing_filter_1.in" },
+      { "from": "metrics_fanout.2", "to": "metrics_routing_filter_1.in" },
       { "from": "metrics_routing_filter_1.true", "to": "metrics_routing_filter_1_true.in" },
       { "from": "metrics_routing_filter_1.false", "to": "metrics_routing_filter_1_false.in" },
-      { "from": "metrics_policy.3", "to": "mrf_metrics_gateway.in" },
+      { "from": "metrics_fanout.3", "to": "mrf_metrics_gateway.in" },
       { "from": "mrf_metrics_gateway.true", "to": "mrf_metrics_gateway_true.in" },
       { "from": "mrf_metrics_gateway.false", "to": "mrf_metrics_gateway_false.in" }
     ]
@@ -175,7 +175,7 @@
       "dsd_enrich": "DogStatsD mapper: renames and tags by `dogstatsd_mapper_profiles`",
       "dsd_agg": "Aggregation; edits keep its state unless they change its window or lineage",
       "metrics_enrich": "Host enrichment: leaves metrics unchanged",
-      "metrics_policy": "Policy: one branch per output; route here",
+      "metrics_fanout": "Policy: one branch per output; route here",
       "metrics_routing_filter_0": "Endpoint routing to http://127.0.0.1:17102",
       "metrics_routing_filter_1": "Endpoint routing to http://127.0.0.1:17103",
       "mrf_metrics_gateway": "Multi-Region Failover: mirrors listed, or all, metrics while failing over"
