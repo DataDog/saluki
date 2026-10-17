@@ -16,8 +16,7 @@ use serde_json::{json, Value};
 
 use super::*;
 use crate::ast::{
-    Base, Branch, End, Fork, Head, Name, OpStage, Pipeline, Program, Ref, Sink, SinkKind, Stage, Statement, Tuple,
-    WhereStage,
+    Base, Head, Name, OpStage, Pipeline, Program, Ref, Sink, SinkKind, Stage, Statement, Tuple, WhereStage,
 };
 
 const BASE: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -122,15 +121,15 @@ fn wh(intake_name: &str) -> Stage {
     where_with(json!({"intake_name": {"eq": intake_name}}), None)
 }
 
-fn sink(kind: SinkKind, as_id: Option<&str>) -> End {
-    End::Sink(Sink {
+fn sink(kind: SinkKind, as_id: Option<&str>) -> Sink {
+    Sink {
         kind,
         id: as_id.map(name),
         span: sp(),
-    })
+    }
 }
 
-fn emit_output(output: &str) -> End {
+fn emit_output(output: &str) -> Sink {
     sink(
         SinkKind::Output {
             output: output.parse().unwrap(),
@@ -140,24 +139,8 @@ fn emit_output(output: &str) -> End {
     )
 }
 
-fn drop_() -> End {
+fn drop_() -> Sink {
     sink(SinkKind::Drop, None)
-}
-
-fn fork(as_id: Option<&str>, branches: Vec<Branch>) -> End {
-    End::Fork(Fork {
-        id: as_id.map(name),
-        branches,
-        span: sp(),
-    })
-}
-
-fn branch(stages: Vec<Stage>, end: End) -> Branch {
-    Branch {
-        stages,
-        end,
-        span: sp(),
-    }
 }
 
 fn tuple(items: Vec<Ref>, as_id: Option<&str>) -> Head {
@@ -168,7 +151,7 @@ fn tuple(items: Vec<Ref>, as_id: Option<&str>) -> Head {
     })
 }
 
-fn pipeline(head: Head, stages: Vec<Stage>, end: Option<End>) -> Pipeline {
+fn pipeline(head: Head, stages: Vec<Stage>, end: Option<Sink>) -> Pipeline {
     Pipeline {
         head,
         stages,
@@ -185,7 +168,7 @@ fn let_(value: &str, head: Head, stages: Vec<Stage>) -> Statement {
     }
 }
 
-fn run(head: Head, stages: Vec<Stage>, end: End) -> Statement {
+fn run(head: Head, stages: Vec<Stage>, end: Sink) -> Statement {
     Statement::Run {
         pipeline: pipeline(head, stages, Some(end)),
         span: sp(),
@@ -556,67 +539,17 @@ fn a_bare_tuple_head_is_named_after_its_first_items_anchor_and_anchors_the_stage
 }
 
 #[test]
-fn a_fork_is_a_tee_whose_ports_start_its_branches() {
-    let (artifact, spans) = lower_ok(program(vec![run(
-        reference("a"),
-        vec![op("host_enrichment")],
-        fork(
-            None,
-            vec![
-                branch(vec![], emit_output("o")),
-                branch(vec![wh("m"), op("host_enrichment")], drop_()),
-                branch(
-                    vec![],
-                    fork(
-                        None,
-                        vec![branch(vec![], drop_()), branch(vec![op("host_enrichment")], drop_())],
-                    ),
-                ),
-            ],
-        ),
-    )]));
-    assert_eq!(
-        ids(&artifact),
-        [
-            "input_a_host_enrichment",
-            "input_a_fork",
-            "input_a_fork_0",
-            "input_a_fork_1_split",
-            "input_a_fork_1_host_enrichment",
-            "input_a_fork_1_host_enrichment_out",
-            "input_a_fork_1_split_false",
-            "input_a_fork_2_fork",
-            "input_a_fork_2_fork_0",
-            "input_a_fork_2_fork_1_host_enrichment",
-            "input_a_fork_2_fork_1_host_enrichment_out",
-        ]
-    );
-    assert_eq!(node(&artifact, "input_a_fork").params, params(json!({"ports": 3})));
-    assert!(edges(&artifact).contains(&"input_a_fork.2 -> input_a_fork_2_fork.in".to_string()));
-    // The fork's tee has the fork's span, as does the edge into it.
-    let fork_span = spans.node("input_a_fork").unwrap();
-    let into_fork = artifact
-        .edges
-        .iter()
-        .position(|edge| edge.to.to_string() == "input_a_fork.in")
-        .unwrap();
-    assert_eq!(spans.edge(into_fork), Some(fork_span));
-}
-
-#[test]
-fn a_named_fork_anchors_its_branches_on_its_name() {
-    let (artifact, _) = lower_ok(program(vec![run(
-        reference("a"),
-        vec![],
-        fork(
-            Some("p"),
-            vec![branch(vec![], emit_output("o")), branch(vec![wh("m")], drop_())],
-        ),
-    )]));
+fn a_tee_is_written_in_the_core_form_and_its_ports_picked_by_index() {
+    let (artifact, _) = lower_ok(program(vec![
+        let_("p", reference("a"), vec![op_with("tee", json!({"ports": 2}), None)]),
+        run(Head::Ref(rp("p", "0")), vec![], emit_output("o")),
+        run(Head::Ref(rp("p", "1")), vec![wh("m")], drop_()),
+    ]));
     assert_eq!(
         ids(&artifact),
         ["p", "p_0", "p_1_split", "p_1_split_true", "p_1_split_false"]
     );
+    assert_eq!(node(&artifact, "p").params, params(json!({"ports": 2})));
     assert_eq!(edges(&artifact)[0], "input.a -> p.in");
 }
 
@@ -774,11 +707,11 @@ fn nodes_parameters_and_edges_have_the_spans_of_what_they_were_written_as() {
     let Stage::Op(written) = &stage else { unreachable!() };
     let (stage_span, deadline_span) = (written.span, written.param_spans[0].1);
     let end = emit_output("o");
-    let End::Sink(Sink {
+    let Sink {
         span: sink_span,
         kind: SinkKind::Output { span: output_span, .. },
         ..
-    }) = &end
+    } = &end
     else {
         unreachable!()
     };
@@ -959,7 +892,7 @@ fn an_as_on_an_exit_is_an_error() {
         },
         Some("e"),
     );
-    let End::Sink(Sink { id: Some(as_id), .. }) = &exit else {
+    let Sink { id: Some(as_id), .. } = &exit else {
         unreachable!()
     };
     let span = as_id.span;
@@ -1093,18 +1026,17 @@ fn the_size_limit_is_checked() {
 
 // The default program.
 
-const DEFAULT_EXPORT: &str = include_str!("../../../saluki-metric-plan/fixtures/export/default-program-metrics.json");
-
-/// Returns the default program's export, which is in normal form: its splits drop their `false` port.
+/// Returns the default program's export, with the IDs native lowering derives (see
+/// [`NATIVE_RENAMES`](crate::tests::NATIVE_RENAMES)), which is in normal form: its splits drop their `false` port.
 fn normalized_export() -> PolicyArtifact {
-    PolicyArtifact::from_json(DEFAULT_EXPORT).unwrap()
+    crate::tests::default_export()
 }
 
 /// Returns the default program's export as native lowering writes it, before normalization's split polarity rule:
 /// the two splits that drop their `false` port turned around, their predicates' `not` removed, their ports swapped,
 /// and their drop terminals renamed, in canonical order.
 fn native_export() -> PolicyArtifact {
-    let mut document: Value = serde_json::from_str(DEFAULT_EXPORT).unwrap();
+    let mut document = crate::tests::default_export_document();
     let flipped = ["dsd_prefix_filter_blocklist", "dsd_post_agg_filter"];
     for node in document["nodes"].as_array_mut().unwrap() {
         let id = node["id"].as_str().unwrap().to_string();
@@ -1154,57 +1086,69 @@ fn export_params(export: &PolicyArtifact, value: &str) -> Value {
     serde_json::to_value(&node(export, value).params).unwrap()
 }
 
-fn export_stage(export: &PolicyArtifact, op: &str, value: &str) -> Stage {
-    op_with(op, export_params(export, value), Some(value))
-}
-
 fn export_where(export: &PolicyArtifact, value: &str, as_id: Option<&str>) -> Stage {
     where_with(export_params(export, value)["predicate"].clone(), as_id)
 }
 
-/// The default program as the design document prints it, with the export's parameters:
+/// The default program as it prints, with the export's parameters, which is written without any `as`:
 ///
 /// <!-- vale off -->
 /// ```text
-/// let dsd_no_agg_split = dogstatsd
-///   | dogstatsd_mapper(...) as dsd_enrich
-///   | namespace_prefix(...) as dsd_prefix_filter
-///   | where not ... as dsd_prefix_filter_blocklist
-///   | timestamp_split(...)
-/// let dsd_agg = dsd_no_agg_split.default | tag_projection(...) as dsd_tag_filterlist | aggregate(...)
+/// let dsd_enrich = dogstatsd | dogstatsd_mapper(...)
+/// let dsd_prefix_filter_blocklist = dsd_enrich | namespace_prefix(...) | where not ...
+/// let dsd_no_agg_split = dsd_prefix_filter_blocklist | timestamp_split(...)
+/// let dsd_tag_filterlist = dsd_no_agg_split.default | tag_projection(...)
+/// let dsd_agg = dsd_tag_filterlist | aggregate(...)
 /// let dsd_post_agg_filter = (dsd_agg, dsd_no_agg_split.passthrough) | where not ...
 /// dsd_post_agg_filter | emit output dsd_client_telemetry
-/// (dsd_post_agg_filter, otlp, checks, liveness, trace_sampler) as metrics_enrich_in
-///   | host_enrichment as metrics_enrich
-///   | host_tags(...) as metrics_enrich_host_tags
-///   | fork as metrics_policy { emit output dd_metrics_encode; where ... as metrics_routing_filter_0 | emit ...; ... }
+/// let metrics = (dsd_post_agg_filter, otlp, checks, liveness, trace_sampler) | host_enrichment | host_tags(...)
+/// metrics | emit output dd_metrics_encode
+/// let metrics_routing_filter_0 = metrics | where ...
+/// metrics_routing_filter_0 | emit output metrics_routing_encode_0
+/// ...
 /// ```
 /// <!-- vale on -->
 fn default_program_tree(export: &PolicyArtifact) -> Program {
-    let routed =
-        |filter: &str, output: &str| branch(vec![export_where(export, filter, Some(filter))], emit_output(output));
-    let mut tree = program(vec![
+    let mut statements = vec![
         let_(
-            "dsd_no_agg_split",
+            "dsd_enrich",
             reference("dogstatsd"),
+            vec![op_with("dogstatsd_mapper", export_params(export, "dsd_enrich"), None)],
+        ),
+        let_(
+            "dsd_prefix_filter_blocklist",
+            reference("dsd_enrich"),
             vec![
-                export_stage(export, "dogstatsd_mapper", "dsd_enrich"),
-                export_stage(export, "namespace_prefix", "dsd_prefix_filter"),
-                export_where(
-                    export,
-                    "dsd_prefix_filter_blocklist",
-                    Some("dsd_prefix_filter_blocklist"),
+                op_with(
+                    "namespace_prefix",
+                    export_params(export, "dsd_prefix_filter_blocklist_namespace_prefix"),
+                    None,
                 ),
-                op_with("timestamp_split", export_params(export, "dsd_no_agg_split"), None),
+                export_where(export, "dsd_prefix_filter_blocklist", None),
             ],
         ),
         let_(
-            "dsd_agg",
+            "dsd_no_agg_split",
+            reference("dsd_prefix_filter_blocklist"),
+            vec![op_with(
+                "timestamp_split",
+                export_params(export, "dsd_no_agg_split"),
+                None,
+            )],
+        ),
+        let_(
+            "dsd_tag_filterlist",
             Head::Ref(rp("dsd_no_agg_split", "default")),
-            vec![
-                export_stage(export, "tag_projection", "dsd_tag_filterlist"),
-                op_with("aggregate", export_params(export, "dsd_agg"), None),
-            ],
+            vec![op_with(
+                "tag_projection",
+                export_params(export, "dsd_tag_filterlist"),
+                None,
+            )],
+        ),
+        let_(
+            "dsd_agg",
+            reference("dsd_tag_filterlist"),
+            vec![op_with("aggregate", export_params(export, "dsd_agg"), None)],
         ),
         let_(
             "dsd_post_agg_filter",
@@ -1216,7 +1160,8 @@ fn default_program_tree(export: &PolicyArtifact) -> Program {
             vec![],
             emit_output("dsd_client_telemetry"),
         ),
-        run(
+        let_(
+            "metrics",
             tuple(
                 vec![
                     r("dsd_post_agg_filter"),
@@ -1225,26 +1170,37 @@ fn default_program_tree(export: &PolicyArtifact) -> Program {
                     r("liveness"),
                     r("trace_sampler"),
                 ],
-                Some("metrics_enrich_in"),
+                None,
             ),
             vec![
-                op_as("host_enrichment", "metrics_enrich"),
-                export_stage(export, "host_tags", "metrics_enrich_host_tags"),
+                op("host_enrichment"),
+                op_with("host_tags", export_params(export, "metrics"), None),
             ],
-            fork(
-                Some("metrics_policy"),
-                vec![
-                    branch(vec![], emit_output("dd_metrics_encode")),
-                    routed("metrics_routing_filter_0", "metrics_routing_encode_0"),
-                    routed("metrics_routing_filter_1", "metrics_routing_encode_1"),
-                    routed("mrf_metrics_gateway", "mrf_metrics_encode"),
-                    routed("af_metrics_gateway", "af_metrics_encode"),
-                ],
-            ),
         ),
-    ]);
+        run(reference("metrics"), vec![], emit_output("dd_metrics_encode")),
+    ];
+    statements.extend(routed(export));
+    let mut tree = program(statements);
     tree.base = None;
     tree
+}
+
+/// The statements of the default program's routes, each a `let` of the filter, used by its `emit`.
+fn routed(export: &PolicyArtifact) -> Vec<Statement> {
+    [
+        ("metrics_routing_filter_0", "metrics_routing_encode_0"),
+        ("metrics_routing_filter_1", "metrics_routing_encode_1"),
+        ("mrf_metrics_gateway", "mrf_metrics_encode"),
+        ("af_metrics_gateway", "af_metrics_encode"),
+    ]
+    .into_iter()
+    .flat_map(|(filter, output)| {
+        [
+            let_(filter, reference("metrics"), vec![export_where(export, filter, None)]),
+            run(reference(filter), vec![], emit_output(output)),
+        ]
+    })
+    .collect()
 }
 
 #[test]
@@ -1262,7 +1218,11 @@ fn the_default_program_lowers_to_its_normalized_export_with_the_native_ids() {
         "dsd_post_agg_filter_false",
         "dsd_post_agg_filter_fanout",
         "dsd_post_agg_filter_fanout_0",
-        "metrics_policy_0",
+        "metrics_in",
+        "metrics_host_enrichment",
+        "metrics",
+        "metrics_fanout",
+        "metrics_fanout_0",
         "metrics_routing_filter_0_true",
         "metrics_routing_filter_0_false",
         "af_metrics_gateway_false",
@@ -1296,15 +1256,21 @@ fn the_default_program_lowers_to_its_normalized_export_with_the_native_ids() {
 /// form: its two splits whose `true` port is dropped, and the tee after the second, written explicitly.
 fn default_program_core_tree(export: &PolicyArtifact) -> Program {
     let split = |value: &str| op_with("split", export_params(export, value), None);
-    let routed =
-        |filter: &str, output: &str| branch(vec![export_where(export, filter, Some(filter))], emit_output(output));
-    let mut tree = program(vec![
+    let mut statements = vec![
+        let_(
+            "dsd_enrich",
+            reference("dogstatsd"),
+            vec![op_with("dogstatsd_mapper", export_params(export, "dsd_enrich"), None)],
+        ),
         let_(
             "dsd_prefix_filter_blocklist",
-            reference("dogstatsd"),
+            reference("dsd_enrich"),
             vec![
-                export_stage(export, "dogstatsd_mapper", "dsd_enrich"),
-                export_stage(export, "namespace_prefix", "dsd_prefix_filter"),
+                op_with(
+                    "namespace_prefix",
+                    export_params(export, "dsd_prefix_filter_blocklist_namespace_prefix"),
+                    None,
+                ),
                 split("dsd_prefix_filter_blocklist"),
             ],
         ),
@@ -1319,12 +1285,18 @@ fn default_program_core_tree(export: &PolicyArtifact) -> Program {
             )],
         ),
         let_(
-            "dsd_agg",
+            "dsd_tag_filterlist",
             Head::Ref(rp("dsd_no_agg_split", "default")),
-            vec![
-                export_stage(export, "tag_projection", "dsd_tag_filterlist"),
-                op_with("aggregate", export_params(export, "dsd_agg"), None),
-            ],
+            vec![op_with(
+                "tag_projection",
+                export_params(export, "dsd_tag_filterlist"),
+                None,
+            )],
+        ),
+        let_(
+            "dsd_agg",
+            reference("dsd_tag_filterlist"),
+            vec![op_with("aggregate", export_params(export, "dsd_agg"), None)],
         ),
         let_(
             "dsd_post_agg_filter",
@@ -1342,7 +1314,8 @@ fn default_program_core_tree(export: &PolicyArtifact) -> Program {
             vec![],
             emit_output("dsd_client_telemetry"),
         ),
-        run(
+        let_(
+            "metrics",
             tuple(
                 vec![
                     rp("dsd_post_agg_filter_fanout", "1"),
@@ -1351,24 +1324,17 @@ fn default_program_core_tree(export: &PolicyArtifact) -> Program {
                     r("liveness"),
                     r("trace_sampler"),
                 ],
-                Some("metrics_enrich_in"),
+                None,
             ),
             vec![
-                op_as("host_enrichment", "metrics_enrich"),
-                export_stage(export, "host_tags", "metrics_enrich_host_tags"),
+                op("host_enrichment"),
+                op_with("host_tags", export_params(export, "metrics"), None),
             ],
-            fork(
-                Some("metrics_policy"),
-                vec![
-                    branch(vec![], emit_output("dd_metrics_encode")),
-                    routed("metrics_routing_filter_0", "metrics_routing_encode_0"),
-                    routed("metrics_routing_filter_1", "metrics_routing_encode_1"),
-                    routed("mrf_metrics_gateway", "mrf_metrics_encode"),
-                    routed("af_metrics_gateway", "af_metrics_encode"),
-                ],
-            ),
         ),
-    ]);
+        run(reference("metrics"), vec![], emit_output("dd_metrics_encode")),
+    ];
+    statements.extend(routed(export));
+    let mut tree = program(statements);
     tree.base = None;
     tree
 }
@@ -1396,6 +1362,8 @@ fn the_default_programs_core_form_lowers_to_its_export_exactly_and_composes_into
     );
 
     let plan = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
+    // Composition takes the resolved values of bindings from the plan's node with the same ID.
+    let artifact = crate::tests::with_plan_ids(&artifact, &plan);
     let received = receive_artifact(serde_json::to_value(&artifact).unwrap()).unwrap();
     let approval = Approval {
         revision: 1,
@@ -1416,39 +1384,51 @@ fn the_default_programs_core_form_lowers_to_its_export_exactly_and_composes_into
 }
 
 #[test]
-fn the_default_program_without_as_clauses_derives_ids_from_lets_and_anchors() {
+fn the_default_program_with_fewer_lets_derives_its_ids_from_the_others() {
+    // The default program with fewer `let`s, as a person might write it: the DogStatsD chain in three, and the routes
+    // as uses of `metrics` without `let`s of their own. The IDs derive from the `let`s, the anchors, and the implicit
+    // tee's ports.
     let export = normalized_export();
+    let params = |id: &str| export_params(&export, id);
+    let mut statements = vec![
+        let_(
+            "dsd_no_agg_split",
+            reference("dogstatsd"),
+            vec![
+                op_with("dogstatsd_mapper", params("dsd_enrich"), None),
+                op_with(
+                    "namespace_prefix",
+                    params("dsd_prefix_filter_blocklist_namespace_prefix"),
+                    None,
+                ),
+                export_where(&export, "dsd_prefix_filter_blocklist", None),
+                op_with("timestamp_split", params("dsd_no_agg_split"), None),
+            ],
+        ),
+        let_(
+            "dsd_agg",
+            Head::Ref(rp("dsd_no_agg_split", "default")),
+            vec![
+                op_with("tag_projection", params("dsd_tag_filterlist"), None),
+                op_with("aggregate", params("dsd_agg"), None),
+            ],
+        ),
+    ];
     let mut tree = default_program_tree(&export);
-    // Strip every `as` clause.
-    fn strip_stages(stages: &mut [Stage]) {
-        for stage in stages {
-            match stage {
-                Stage::Op(stage) => stage.id = None,
-                Stage::Where(stage) => stage.id = None,
-            }
-        }
+    statements.extend(tree.statements.drain(5..9));
+    for (filter, output) in [
+        ("metrics_routing_filter_0", "metrics_routing_encode_0"),
+        ("metrics_routing_filter_1", "metrics_routing_encode_1"),
+        ("mrf_metrics_gateway", "mrf_metrics_encode"),
+        ("af_metrics_gateway", "af_metrics_encode"),
+    ] {
+        statements.push(run(
+            reference("metrics"),
+            vec![export_where(&export, filter, None)],
+            emit_output(output),
+        ));
     }
-    fn strip_end(end: &mut End) {
-        if let End::Fork(fork) = end {
-            fork.id = None;
-            for branch in &mut fork.branches {
-                strip_stages(&mut branch.stages);
-                strip_end(&mut branch.end);
-            }
-        }
-    }
-    for statement in &mut tree.statements {
-        let pipeline = match statement {
-            Statement::Let { pipeline, .. } | Statement::Run { pipeline, .. } => pipeline,
-        };
-        if let Head::Tuple(tuple) = &mut pipeline.head {
-            tuple.id = None;
-        }
-        strip_stages(&mut pipeline.stages);
-        if let Some(end) = &mut pipeline.end {
-            strip_end(end);
-        }
-    }
+    tree.statements = statements;
     let (artifact, _) = lower(&source(), tree, Some(&export.base)).unwrap();
     assert_well_formed(&artifact);
     let ids = ids(&artifact);
@@ -1463,14 +1443,15 @@ fn the_default_program_without_as_clauses_derives_ids_from_lets_and_anchors() {
         "dsd_post_agg_filter_in",
         "dsd_post_agg_filter_fanout",
         "dsd_post_agg_filter_fanout_0",
-        "dsd_post_agg_filter_fanout_1_in",
-        "dsd_post_agg_filter_fanout_1_in_host_enrichment",
-        "dsd_post_agg_filter_fanout_1_in_host_tags",
-        "dsd_post_agg_filter_fanout_1_in_fork",
-        "dsd_post_agg_filter_fanout_1_in_fork_0",
-        "dsd_post_agg_filter_fanout_1_in_fork_1_split",
-        "dsd_post_agg_filter_fanout_1_in_fork_1_split_true",
-        "dsd_post_agg_filter_fanout_1_in_fork_4_split_false",
+        "metrics_in",
+        "metrics_host_enrichment",
+        "metrics",
+        "metrics_fanout",
+        "metrics_fanout_0",
+        "metrics_fanout_1_split",
+        "metrics_fanout_1_split_true",
+        "metrics_fanout_1_split_false",
+        "metrics_fanout_4_split_false",
     ] {
         assert!(ids.contains(&derived), "{} in {:?}", derived, ids);
     }
@@ -1490,10 +1471,7 @@ fn a_let_with_a_sink_and_a_statement_without_one_are_errors() {
     else {
         unreachable!()
     };
-    let End::Sink(Sink { span: sink_span, .. }) = ended_pipeline.end.as_ref().unwrap() else {
-        unreachable!()
-    };
-    let sink_span = *sink_span;
+    let sink_span = ended_pipeline.end.as_ref().unwrap().span;
     let open = Statement::Run {
         pipeline: pipeline(reference("b"), vec![op("host_enrichment")], None),
         span: sp(),
@@ -1508,7 +1486,11 @@ fn a_let_with_a_sink_and_a_statement_without_one_are_errors() {
         sink_span,
         "A `let` names a stream, so its pipeline cannot end in a sink",
     );
-    assert_error(&errors, open_span, "This statement does not end in a sink or `fork`");
+    assert_error(
+        &errors,
+        open_span,
+        "This statement does not end in a sink, so its stream goes nowhere",
+    );
 }
 
 #[test]
@@ -1556,8 +1538,8 @@ proptest::proptest! {
 
 #[test]
 fn programs_wider_than_a_node_can_be_are_reported_not_lowered() {
-    // A node has at most 10000 ports, numbered 0 to 9999, so the 10001st copy of a stream, branch of a fork, or item of
-    // a tuple is reported at its text, where it used to make lowering panic.
+    // A node has at most 10000 ports, numbered 0 to 9999, so the 10001st copy of a stream or item of a tuple is
+    // reported at its text, where it used to make lowering panic.
     const BASE: &str = "  base \"sha256:1111111111111111111111111111111111111111111111111111111111111111\"\n";
     let tuple = |n: usize| {
         format!(
@@ -1566,18 +1548,18 @@ fn programs_wider_than_a_node_can_be_are_reported_not_lowered() {
             vec!["a"; n].join(", ")
         )
     };
-    let fork = |n: usize| {
+    let uses = |n: usize| {
         format!(
-            "policy metrics {{\n{}  a | fork {{ {} }}\n}}\n",
+            "policy metrics {{\n{}  let x = a | host_enrichment\n{}}}\n",
             BASE,
-            vec!["drop"; n].join(" ")
+            "  x | drop\n".repeat(n)
         )
     };
     let statements = |n: usize| format!("policy metrics {{\n{}{}}}\n", BASE, "  a | drop\n".repeat(n));
 
     for (what, source) in [
         ("tuple", tuple as fn(usize) -> String),
-        ("fork", fork),
+        ("uses", uses),
         ("statements", statements),
     ] {
         // 10000 is within the width, though the artifact may be over the size limit, which is reported instead.

@@ -12,29 +12,29 @@
 //!    - an `emit` or `drop` whose parameters a sink can write is a **sink**;
 //!    - a `split` whose `false` port leads to a `drop` with the derived ID [`ids::terminal`]`(split, "false")` is a
 //!      **`where`**;
-//!    - a `tee` whose ports each lead, through stages that each have one input and one output, to a sink, an exit, or
-//!      another such `tee`, is a **fork**, nested at most [`MAX_FORK_DEPTH`] deep;
 //!    - a `tee` with the derived ID [`ids::fanout`] of the stream before it, when that stream can be named, is an
 //!      **implicit tee**: the stream is used once per port, in port order;
-//!    - anything else is a **multi-output** node (a `let` of its own, whose ports are written `x.p`), a **plain**
-//!      node with one output port, or a **final** node without one (a `let` of its own too, since lowering exempts
-//!      such a `let` from being used).
+//!    - anything else is a **multi-output** node (a `let` of its own, whose ports are written `x.p`, as any other
+//!      `tee` is: `let t = x | tee(ports: 2)`, then `t.0 | ...` and `t.1 | ...`), a **plain** node with one output
+//!      port, or a **final** node without one (a `let` of its own too, since lowering exempts such a `let` from being
+//!      used).
 //! 2. **Streams.** A port is **named** when it must be written as a reference: a scope input, a port of a
 //!    multi-output node, or the output of a node that is used more than once (through an implicit tee) or feeds a
 //!    tuple. Every other port continues its pipeline into the one node it feeds.
 //! 3. **Chains.** Each use of a named stream starts a pipeline with a reference to it, and each tuple starts a pipeline
-//!    with the tuple. A pipeline follows its stream through plain nodes and `where`s until it reaches a sink, an exit,
-//!    or a fork (a statement without `let`), or a named stream, multi-output node, or final node (a `let` named for its
-//!    last node). Nodes that no scope input reaches start pipelines of their own, from a reference to whatever feeds
-//!    them, so that lowering reports the problem.
-//! 4. **Intermediate names.** A pipeline is split into several `let`s where a person evidently named an intermediate
-//!    stream: where a run of two or more nodes (the merge of a tuple counts) would all have their derived IDs as a `let`
-//!    named for the run's last node. Among the ways to split it, the one with the fewest `as` clauses wins, then the
-//!    one with the fewest statements.
-//! 5. **`as`.** Every node whose ID differs from the one lowering derives at its position gets an `as`: stages from
-//!    the statement's anchor and their ordinal (every stage of a pipeline or fork branch counts, a `where` as `split`,
-//!    and each branch counts afresh), the merge of a bare tuple from the anchor of its first item, a fork's tee from the
-//!    statement's anchor, and a sink from the node and port that feed it.
+//!    with the tuple. A pipeline follows its stream through plain nodes and `where`s until it reaches a sink or an exit
+//!    (a statement without `let`), or a named stream, multi-output node, or final node (a `let` named for its last
+//!    node). Nodes that no scope input reaches start pipelines of their own, from a reference to whatever feeds them,
+//!    so that lowering reports the problem.
+//! 4. **Names.** A node whose ID is not the one lowering would derive where it is written is named by a `let`
+//!    wherever one can end at it: the pipeline is split into several `let`s, each named for its last node, the merge
+//!    of a tuple included (`let m = (a, b)`). Among the ways to split it in which no `let` but the last writes an `as`
+//!    that a `let` could replace, the one with the fewest `as` clauses wins, then the one with the fewest statements.
+//! 5. **`as`.** `as` is the last resort, for the nodes no `let` can name: a sink whose ID is not [`ids::terminal`] of
+//!    the node and port that feed it, and a node named like a scope input that the artifact reads, which a reference
+//!    to the input would name instead (see `let_names` in [`Graph`]). Whether a stage needs one depends on the ID
+//!    lowering derives at its position: from the statement's anchor and the stage's ordinal (every stage of a
+//!    pipeline counts, a `where` as `split`), or the `let`'s name for its last stage.
 //! 6. **Order.** Statements are ordered by the canonical position of the edge each starts from, subject to every
 //!    `let` coming before its uses, and to the uses of each implicit tee coming in port order (lowering numbers them
 //!    in source order). When no order satisfies both, the implicit tee involved is written in the core form instead,
@@ -60,18 +60,11 @@ use saluki_metric_plan::{
 use serde_json::{Map, Value};
 
 use crate::{
-    ast::{
-        Base, Branch, End, Fork, Head, Name, OpStage, Pipeline, Program, Ref, Sink, SinkKind, Stage, Statement, Tuple,
-        WhereStage,
-    },
+    ast::{Base, Head, Name, OpStage, Pipeline, Program, Ref, Sink, SinkKind, Stage, Statement, Tuple, WhereStage},
     diagnostic::Span,
     graph::{canonical_order, param_specs, NodeShape},
     ids, PrintOptions,
 };
-
-/// The deepest that forks nest. A `tee` whose branches would nest deeper is written in the core form, so that the
-/// tree, and the text formatted from it, stay shallow however the artifact nests its `tee`s.
-const MAX_FORK_DEPTH: usize = 16;
 
 /// Returns the tree that describes `artifact`, with sugar wherever lowering it gives back exactly the same graph.
 ///
@@ -337,7 +330,7 @@ impl<'a> Graph<'a> {
             && n.params.get("ports").and_then(Value::as_u64) == Some(self.outputs[node].len() as u64)
     }
 
-    /// Returns the role a node has before forks and implicit tees are recognized.
+    /// Returns the role a node has before implicit tees are recognized.
     fn base_role(&self, node: usize) -> Role {
         let n = &self.nodes[node];
         if n.op.as_str() == names::MERGE {
@@ -390,105 +383,14 @@ impl<'a> Graph<'a> {
         is_where_drop.then_some(Role::Where { drop })
     }
 
-    /// Returns, for each node, whether it is a `tee` to write as a fork.
-    fn forks(&self, base: &[Role]) -> Vec<bool> {
-        let mut state = vec![Term::Unknown; self.nodes.len()];
-        for node in 0..self.nodes.len() {
-            if self.is_tee(node) {
-                self.terminates(node, base, &mut state);
-            }
-        }
-        (0..self.nodes.len())
-            .map(|node| self.is_tee(node) && matches!(state[node], Term::Done(Some(_))))
-            .collect()
-    }
-
-    /// Returns where a pipeline entering `node` goes next, if it can be part of a fork's branch: one entry per port it
-    /// continues from, `None` for an exit. Returns `None` if the node cannot be part of a branch.
-    fn branch_next(&self, node: usize, base: &[Role]) -> Option<Vec<Option<usize>>> {
-        if self.entering[node].len() != 1 {
-            return None;
-        }
-        let ports = if self.is_tee(node) {
-            self.outputs[node].clone()
-        } else {
-            match &base[node] {
-                Role::Sink(_) => Vec::new(),
-                Role::Where { .. } => vec![PortName::new(TRUE_PORT).ok()?],
-                Role::Plain(port) => vec![port.clone()],
-                _ => return None,
-            }
-        };
-        ports
-            .into_iter()
-            .map(|port| match self.target(self.sole(&Stream::Port(node, port))?) {
-                Target::Exit(_) => Some(None),
-                Target::Node(next) => Some(Some(next)),
-                Target::Missing => None,
-            })
-            .collect()
-    }
-
-    /// Works out whether a pipeline entering `start` ends, through stages with one input and one output, in sinks,
-    /// exits, and forks, and how deeply its forks nest. Iterative, so a long chain cannot exhaust the stack.
-    fn terminates(&self, start: usize, base: &[Role], state: &mut [Term]) {
-        let mut stack = vec![start];
-        while let Some(&node) = stack.last() {
-            match state[node] {
-                Term::Done(_) => {
-                    stack.pop();
-                }
-                Term::Unknown => {
-                    state[node] = Term::Busy;
-                    if let Some(next) = self.branch_next(node, base) {
-                        for next in next.into_iter().flatten() {
-                            if matches!(state[next], Term::Unknown) {
-                                stack.push(next);
-                            }
-                        }
-                    }
-                }
-                Term::Busy => {
-                    // Everything pushed after this node has been worked out, or is on a cycle with it.
-                    let value = self.branch_next(node, base).and_then(|next| {
-                        let mut depth = 0;
-                        for next in next.into_iter().flatten() {
-                            match state[next] {
-                                Term::Done(Some(d)) => depth = depth.max(d),
-                                _ => return None,
-                            }
-                        }
-                        if self.is_tee(node) {
-                            (depth < MAX_FORK_DEPTH).then_some(depth + 1)
-                        } else {
-                            Some(depth)
-                        }
-                    });
-                    state[node] = Term::Done(value);
-                    stack.pop();
-                }
-            }
-        }
-    }
-
     /// Returns every node's role, with the implicit tees in `demoted` written in the core form.
     fn roles(&self, demoted: &HashSet<usize>) -> Vec<Role> {
         let mut roles = (0..self.nodes.len())
             .map(|node| self.base_role(node))
             .collect::<Vec<_>>();
-        let forks = self.forks(&roles);
-        for (node, fork) in forks.into_iter().enumerate() {
-            if fork {
-                roles[node] = Role::Fork;
-            }
-        }
         // In canonical order, so that the role of the node before a tee is final when the tee is looked at.
         for &node in &self.node_order {
-            if !self.is_tee(node)
-                || matches!(roles[node], Role::Fork)
-                || demoted.contains(&node)
-                || self.outputs[node].len() < 2
-            {
+            if !self.is_tee(node) || demoted.contains(&node) || self.outputs[node].len() < 2 {
                 continue;
             }
             let Some(uses) = self.outputs[node]
@@ -759,15 +661,6 @@ fn sink_kind(node: &ArtifactNode) -> Option<SinkKind> {
     }
 }
 
-/// The state of [`Graph::terminates`] for one node: unknown, being worked out, or done, with the depth its forks nest
-/// to if a pipeline entering it ends in sinks, exits, and forks.
-#[derive(Clone, Copy, Debug)]
-enum Term {
-    Unknown,
-    Busy,
-    Done(Option<usize>),
-}
-
 /// How a node is written.
 #[derive(Clone, Debug)]
 enum Role {
@@ -777,8 +670,6 @@ enum Role {
     Sink(SinkKind),
     /// A `split` written as `where`, with the `drop` its `false` port leads to.
     Where { drop: usize },
-    /// A `tee` written as `fork`.
-    Fork,
     /// A `tee` that lowering makes for a stream used once per port, with the edge leaving each port.
     Implicit { upstream: Stream, uses: Vec<usize> },
     /// A node with several output ports: the last stage of a `let`, whose ports references name.
@@ -820,23 +711,10 @@ impl ChainHead {
     }
 }
 
-/// How a chain ends, when it ends in a sink, an exit, or a fork.
+/// How a chain ends, when it ends in a sink or an exit.
 enum ChainEnd {
     Sink { node: usize, parent: Parent },
     Exit(ExitName),
-    Fork(ForkTree),
-}
-
-/// A fork's tee and its branches.
-struct ForkTree {
-    tee: usize,
-    branches: Vec<BranchTree>,
-}
-
-/// One branch of a fork.
-struct BranchTree {
-    stages: Vec<usize>,
-    end: Option<ChainEnd>,
 }
 
 /// A pipeline found in the graph, before it is split into statements.
@@ -912,7 +790,7 @@ impl<'g, 'a> Builder<'g, 'a> {
                     [edge] => !self.enterable(*edge),
                     _ => true,
                 },
-                Role::Sink(_) | Role::Fork | Role::Implicit { .. } | Role::Final => false,
+                Role::Sink(_) | Role::Implicit { .. } | Role::Final => false,
             },
         }
     }
@@ -977,7 +855,8 @@ impl<'g, 'a> Builder<'g, 'a> {
                 let parent = graph.parent(&stream)?;
                 let (name, port) = match graph.written(&self.roles, &stream) {
                     Some(written) => written,
-                    // A port no reference names, such as one of a fork's: written as it is, which lowering reports.
+                    // A port no reference names, such as the `false` port of a `where`: written as it is, which
+                    // lowering reports.
                     None => match &stream {
                         Stream::Port(node, port) => (graph.id(*node).clone(), Some(port.clone())),
                         Stream::Input(_) => return None,
@@ -1173,10 +1052,6 @@ impl<'g, 'a> Builder<'g, 'a> {
                     self.placed[node] = true;
                     return (stages, Some(ChainEnd::Sink { node, parent }), false);
                 }
-                Role::Fork => {
-                    let tree = self.fork(node);
-                    return (stages, Some(ChainEnd::Fork(tree)), false);
-                }
                 Role::Multi | Role::Final => {
                     self.placed[node] = true;
                     stages.push(node);
@@ -1208,29 +1083,6 @@ impl<'g, 'a> Builder<'g, 'a> {
             };
         }
     }
-
-    /// Follows the branches of a fork. Forks nest at most [`MAX_FORK_DEPTH`] deep, which bounds the recursion.
-    fn fork(&mut self, tee: usize) -> ForkTree {
-        let graph = self.graph;
-        self.placed[tee] = true;
-        let branches = graph.outputs[tee]
-            .iter()
-            .map(|port| {
-                let parent = (graph.id(tee).to_string(), port.clone());
-                match graph.leaving(&Stream::Port(tee, port.clone())).first() {
-                    Some(&edge) => {
-                        let (stages, end, _) = self.follow(Start::Edge(edge), parent);
-                        BranchTree { stages, end }
-                    }
-                    None => BranchTree {
-                        stages: Vec::new(),
-                        end: None,
-                    },
-                }
-            })
-            .collect();
-        ForkTree { tee, branches }
-    }
 }
 
 /// What a statement is: a `let` with its name, or a statement without one.
@@ -1253,78 +1105,172 @@ struct Emitter<'p, 'g, 'a> {
 }
 
 impl Emitter<'_, '_, '_> {
-    /// Returns whether a chain can be split into a `let` after its stage `j`.
-    fn cuttable(&self, chain: &Chain, j: usize) -> bool {
-        matches!(self.roles[chain.stages[j]], Role::Plain(_) | Role::Where { .. })
-            && (j + 1 < chain.stages.len() || (!chain.is_let && chain.end.is_some()))
+    /// Returns whether a chain can be split into a `let` after its unit `j` (see [`Self::chain`]): a stage, or the merge
+    /// of the chain's tuple, that a `let` can be named for, and that something in the chain follows.
+    fn cuttable(&self, chain: &Chain, units: &[usize], j: usize) -> bool {
+        let graph = self.graph;
+        let node = units[j];
+        let nameable = match self.roles[node] {
+            Role::Plain(_) | Role::Where { .. } => true,
+            // A reference to the merge's `let` continues from its only output port, which must be the one the chain
+            // follows. Only the first unit can be a merge.
+            Role::Tuple => graph.shapes[node].default_output().as_ref() == graph.outputs[node].first(),
+            _ => false,
+        };
+        let followed = j + 1 < units.len() || (!chain.is_let && chain.end.is_some());
+        nameable && followed && !graph.input_names.contains(graph.id(node).as_str())
     }
 
-    /// Writes a chain as one or more statements, splitting it where a person evidently named an intermediate stream.
-    fn chain(&self, chain: &Chain) -> Vec<Statement> {
+    /// Returns, for each unit `j` of a chain, the units `i < j` a `let` from `i` to `j` can start at: those whose ID
+    /// is the first one a `let` named for unit `j` derives (the merge `<name>_in`, or the stage `<name>_<operator>`),
+    /// and those named like a scope input, which take an `as` wherever they are.
+    ///
+    /// An ID that is not shortened is the first derived ID of at most one name, so this takes time proportional to the
+    /// chain's length, apart from shortened IDs and nodes named like scope inputs, each compared with every later unit.
+    fn starts(&self, chain: &Chain, units: &[usize], tuple: bool) -> Vec<Vec<usize>> {
         let graph = self.graph;
-        let stages = &chain.stages;
-        let m = stages.len();
-        let ctx = match (chain.is_let, stages.last(), &chain.head) {
-            (false, _, _) => Ctx::Bare,
-            (true, Some(&last), _) => Ctx::Let(graph.let_names[last].clone()),
-            (true, None, ChainHead::Tuple { merge, .. }) => Ctx::Let(graph.let_names[*merge].clone()),
-            // A reference alone names nothing new.
-            (true, None, ChainHead::Ref(_)) => return Vec::new(),
-        };
-        let head_at = |i: usize| {
-            if i == 0 {
-                SegHead::Chain(&chain.head)
-            } else {
-                SegHead::After(stages[i - 1])
-            }
-        };
-
-        // reach[k]: the fewest `let`s, each with every ID derived, that write the first k stages, and where the last
-        // of them starts.
-        let mut reach: Vec<Option<(usize, usize)>> = vec![None; m + 1];
-        reach[0] = Some((0, 0));
-        for j in 0..m {
-            if !self.cuttable(chain, j) {
+        let ends = (0..units.len())
+            .filter(|&j| self.cuttable(chain, units, j))
+            .collect::<Vec<_>>();
+        let by_name = ends
+            .iter()
+            .map(|&j| (graph.let_names[units[j]].as_str(), j))
+            .collect::<HashMap<_, _>>();
+        let mut starts = vec![Vec::new(); units.len()];
+        for (i, &node) in units.iter().enumerate() {
+            let id = graph.id(node);
+            let later = ends.iter().copied().filter(|&j| j > i);
+            if graph.input_names.contains(id.as_str()) {
+                later.for_each(|j| starts[j].push(i));
                 continue;
             }
-            let name = graph.id(stages[j]);
-            if graph.input_names.contains(name.as_str()) {
-                continue;
-            }
-            for i in (0..=j).rev() {
-                let Some((count, _)) = reach[i] else {
-                    continue;
-                };
-                let tuple = i == 0 && matches!(chain.head, ChainHead::Tuple { .. });
-                if j - i + 1 + usize::from(tuple) < 2 {
-                    continue;
+            let merged = i == 0 && tuple;
+            let suffix = if merged { "in" } else { graph.nodes[node].op.as_str() };
+            let first = |name: &str| {
+                if merged {
+                    Some(ids::merge(name))
+                } else {
+                    stage_id(name, suffix, 1)
                 }
-                // The first stage of a run has ordinal 1, which rules most runs out cheaply.
-                if i < j {
-                    let first = stages[i];
-                    if stage_id(name.as_str(), graph.nodes[first].op.as_str(), 1).as_ref() != Some(graph.id(first)) {
-                        continue;
+            };
+            if is_shortened(id.as_str()) {
+                for j in later {
+                    if first(graph.let_names[units[j]].as_str()).as_ref() == Some(id) {
+                        starts[j].push(i);
                     }
                 }
-                let ctx = Ctx::Let(name.clone());
-                if !self.decide(&ctx, head_at(i), &stages[i..=j], None).is_empty() {
+            } else if let Some(name) = id.as_str().strip_suffix(suffix).and_then(|rest| rest.strip_suffix('_')) {
+                if let Some(&j) = by_name.get(name) {
+                    if j > i && first(name).as_ref() == Some(id) {
+                        starts[j].push(i);
+                    }
+                }
+            }
+        }
+        starts
+    }
+
+    /// Writes a chain as one or more statements, ending a `let` at each node whose ID it would not otherwise derive.
+    ///
+    /// The chain's **units** are the merge of its tuple, if it starts with one, then its stages. A `let` can end after
+    /// any unit that [`Self::cuttable`] allows, and is named for it, so a node a `let` ends needs no `as`. Among the ways
+    /// to split the chain in which no `let` but the last writes an `as` that a `let` could replace, the one with the
+    /// fewest `as` clauses wins, then the one with the fewest statements.
+    fn chain(&self, chain: &Chain) -> Vec<Statement> {
+        let graph = self.graph;
+        let merge = match &chain.head {
+            ChainHead::Tuple { merge, .. } => Some(*merge),
+            ChainHead::Ref(_) => None,
+        };
+        let units = merge
+            .into_iter()
+            .chain(chain.stages.iter().copied())
+            .collect::<Vec<_>>();
+        let n = units.len();
+        let ctx = match (chain.is_let, units.last()) {
+            (false, _) => Ctx::Bare,
+            (true, Some(&last)) => Ctx::Let(graph.let_names[last].clone()),
+            // A reference alone names nothing new.
+            (true, None) => return Vec::new(),
+        };
+        // The statement that writes units `i..k`: its head, and its stages, which leave out the merge of a tuple head.
+        let segment = |i: usize, k: usize| {
+            let head = if i == 0 {
+                SegHead::Chain(&chain.head)
+            } else {
+                SegHead::After(units[i - 1])
+            };
+            (head, &units[i.max(usize::from(merge.is_some()))..k])
+        };
+
+        // A node named like a scope input the artifact reads, which a `let` cannot be named for.
+        let unnameable = |node: usize| graph.input_names.contains(graph.id(node).as_str());
+        // reach[k]: the fewest `as` clauses, then `let`s, that write the first k units in `let`s that write an `as`
+        // only for an unnameable node, and where the last of them starts.
+        let starts = self.starts(chain, &units, merge.is_some());
+        let mut reach: Vec<Option<((usize, usize), usize)>> = vec![None; n + 1];
+        reach[0] = Some(((0, 0), 0));
+        for j in 0..n {
+            if !self.cuttable(chain, &units, j) {
+                continue;
+            }
+            let ctx = Ctx::Let(graph.let_names[units[j]].clone());
+            // From the latest start to the earliest, so that among equal splits the shortest last `let` wins.
+            for i in std::iter::once(j).chain(starts[j].iter().rev().copied()) {
+                let Some(((aliases, count), _)) = reach[i] else {
+                    continue;
+                };
+                let (head, stages) = segment(i, j + 1);
+                let aliased = self.decide(&ctx, head, stages, None);
+                if !aliased.iter().all(|&node| unnameable(node)) {
                     continue;
                 }
-                if reach[j + 1].is_none_or(|(best, _)| count + 1 < best) {
-                    reach[j + 1] = Some((count + 1, i));
+                let cost = (aliases + aliased.len(), count + 1);
+                if reach[j + 1].is_none_or(|(best, _)| cost < best) {
+                    reach[j + 1] = Some((cost, i));
                 }
             }
         }
 
-        // The last statement: the split with the fewest `as` clauses, then the fewest statements.
+        // The last statement: the split with the fewest `as` clauses, then the fewest statements, then the longest
+        // last statement. Whether the sink and the last statement's first stage need an `as` bounds its cost from
+        // below, which rules most splits out without writing the statement.
+        let mut ending = HashSet::new();
+        if let Some(end) = &chain.end {
+            self.decide_end(end, &mut ending);
+        }
+        let lower = |c: usize| {
+            let first = c.max(usize::from(merge.is_some()));
+            let anchor = match (&ctx, c) {
+                // The last stage of a `let` is named by it.
+                (Ctx::Let(_), _) if first + 1 >= n => return ending.len(),
+                (Ctx::Let(name), _) => name.clone(),
+                (Ctx::Bare, 0) => match &chain.head {
+                    ChainHead::Ref(head) => head.anchor.clone(),
+                    ChainHead::Tuple { merge, .. } => graph.id(*merge).clone(),
+                },
+                (Ctx::Bare, _) => graph.id(units[c - 1]).clone(),
+            };
+            let first_aliased = units.get(first).is_some_and(|&node| {
+                stage_id(anchor.as_str(), graph.nodes[node].op.as_str(), 1).as_ref() != Some(graph.id(node))
+            });
+            ending.len() + usize::from(first_aliased)
+        };
         let mut best: Option<((usize, usize), usize, HashSet<usize>)> = None;
-        for (c, found) in reach.iter().enumerate() {
-            let Some((count, _)) = *found else {
+        for c in (0..=n).rev() {
+            let Some(((aliases, count), _)) = reach[c] else {
                 continue;
             };
-            let aliased = self.decide(&ctx, head_at(c), &stages[c..], chain.end.as_ref());
-            let cost = (aliased.len(), count);
-            if best.as_ref().is_none_or(|(least, _, _)| cost < *least) {
+            if best
+                .as_ref()
+                .is_some_and(|(least, _, _)| (aliases + lower(c), count) > *least)
+            {
+                continue;
+            }
+            let (head, stages) = segment(c, n);
+            let aliased = self.decide(&ctx, head, stages, chain.end.as_ref());
+            let cost = (aliases + aliased.len(), count);
+            if best.as_ref().is_none_or(|(least, _, _)| cost <= *least) {
                 best = Some((cost, c, aliased));
             }
         }
@@ -1338,19 +1284,22 @@ impl Emitter<'_, '_, '_> {
             let Some((_, i)) = reach[k] else {
                 break;
             };
-            runs.push((i, k - 1));
+            runs.push((i, k));
             k = i;
         }
         runs.reverse();
 
         let mut statements = runs
             .into_iter()
-            .map(|(i, j)| {
-                let ctx = Ctx::Let(graph.id(stages[j]).clone());
-                self.statement(&ctx, head_at(i), &stages[i..=j], None, &HashSet::new())
+            .map(|(i, k)| {
+                let ctx = Ctx::Let(graph.let_names[units[k - 1]].clone());
+                let (head, stages) = segment(i, k);
+                let aliased = self.decide(&ctx, head, stages, None);
+                self.statement(&ctx, head, stages, None, &aliased)
             })
             .collect::<Vec<_>>();
-        statements.push(self.statement(&ctx, head_at(c), &stages[c..], chain.end.as_ref(), &aliased));
+        let (head, stages) = segment(c, n);
+        statements.push(self.statement(&ctx, head, stages, chain.end.as_ref(), &aliased));
         statements
     }
 
@@ -1384,7 +1333,7 @@ impl Emitter<'_, '_, '_> {
         };
         self.decide_stages(&anchor, stages, let_name, &mut aliased);
         if let Some(end) = end {
-            self.decide_end(&anchor, end, &mut aliased);
+            self.decide_end(end, &mut aliased);
         }
         aliased
     }
@@ -1411,27 +1360,11 @@ impl Emitter<'_, '_, '_> {
         }
     }
 
-    fn decide_end(&self, anchor: &ArtifactNodeId, end: &ChainEnd, aliased: &mut HashSet<usize>) {
-        let graph = self.graph;
-        match end {
-            ChainEnd::Sink { node, parent } => {
-                if &ids::terminal(&parent.0, &parent.1) != graph.id(*node) {
-                    aliased.insert(*node);
-                }
-            }
-            ChainEnd::Exit(_) => {}
-            ChainEnd::Fork(tree) => {
-                let id = graph.id(tree.tee);
-                if &ids::fork(anchor.as_str()) != id {
-                    aliased.insert(tree.tee);
-                }
-                for (i, branch) in tree.branches.iter().enumerate() {
-                    let anchor = ids::tee_port(id.as_str(), i);
-                    self.decide_stages(&anchor, &branch.stages, None, aliased);
-                    if let Some(end) = &branch.end {
-                        self.decide_end(&anchor, end, aliased);
-                    }
-                }
+    /// Adds a sink whose ID is not the one derived from the node and port that feed it to `aliased`.
+    fn decide_end(&self, end: &ChainEnd, aliased: &mut HashSet<usize>) {
+        if let ChainEnd::Sink { node, parent } = end {
+            if &ids::terminal(&parent.0, &parent.1) != self.graph.id(*node) {
+                aliased.insert(*node);
             }
         }
     }
@@ -1504,47 +1437,36 @@ impl Emitter<'_, '_, '_> {
         })
     }
 
-    fn end(&self, end: &ChainEnd, aliased: &HashSet<usize>) -> End {
+    fn end(&self, end: &ChainEnd, aliased: &HashSet<usize>) -> Sink {
         match end {
-            ChainEnd::Sink { node, .. } => End::Sink(Sink {
+            ChainEnd::Sink { node, .. } => Sink {
                 kind: match &self.roles[*node] {
                     Role::Sink(kind) => kind.clone(),
                     _ => SinkKind::Drop,
                 },
                 id: self.alias(*node, aliased),
                 span: Span::default(),
-            }),
-            ChainEnd::Exit(name) => End::Sink(Sink {
+            },
+            ChainEnd::Exit(name) => Sink {
                 kind: SinkKind::Exit {
                     name: name.clone(),
                     span: Span::default(),
                 },
                 id: None,
                 span: Span::default(),
-            }),
-            ChainEnd::Fork(tree) => End::Fork(Fork {
-                id: self.alias(tree.tee, aliased),
-                branches: tree
-                    .branches
-                    .iter()
-                    .map(|branch| Branch {
-                        stages: branch.stages.iter().map(|&stage| self.stage(stage, aliased)).collect(),
-                        // A branch always ends for a fork the graph has; the fallback keeps resugaring total.
-                        end: match &branch.end {
-                            Some(end) => self.end(end, aliased),
-                            None => End::Sink(Sink {
-                                kind: SinkKind::Drop,
-                                id: None,
-                                span: Span::default(),
-                            }),
-                        },
-                        span: Span::default(),
-                    })
-                    .collect(),
-                span: Span::default(),
-            }),
+            },
         }
     }
+}
+
+/// Returns whether an ID may be one that [`ids::join`] shortened: one that ends in `_` and eight hexadecimal digits.
+fn is_shortened(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    bytes.len() > 9
+        && bytes[bytes.len() - 9] == b'_'
+        && bytes[bytes.len() - 8..]
+            .iter()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
 }
 
 /// Returns [`ids::stage`], or `None` where its suffix, the operator and ordinal, would be longer than an identifier

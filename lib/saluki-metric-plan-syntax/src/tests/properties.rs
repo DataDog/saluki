@@ -5,8 +5,8 @@
 //!
 //! - [`arb_graph`] makes well-formed graphs a step at a time, from open streams: every node of the registry but
 //!   `source` (which has no input, so no well-formed artifact has one), with rich parameters and predicates, merges,
-//!   reused streams, forks, `where`s, splits in both polarities, nodes with several output ports, exits, and node IDs
-//!   that are often the ones lowering derives and otherwise need an `as`.
+//!   reused streams, `tee`s in the core form, `where`s, splits in both polarities, nodes with several output ports,
+//!   exits, and node IDs that are often the ones lowering derives and otherwise need a `let` or an `as`.
 //! - [`arb_tree_artifact`] makes well-formed graphs from recursive shapes, with fresh node IDs, written in canonical
 //!   order by a builder independent of the crate's.
 //! - [`arb_arbitrary_artifact`] makes small graphs with arbitrary edges, mostly not well-formed.
@@ -611,7 +611,8 @@ impl GraphBuilder<'_> {
                 &open.parent,
                 (open.multi || open.parent == "input").then_some(&port),
             )),
-            4 => Some(ids::fork(&open.anchor)),
+            // The first ID of its operator under the anchor, which a repeated operator does not derive.
+            4 => Some(ids::stage(&open.anchor, op, 1)),
             _ => Some(ids::stage(&open.anchor, op, open.ordinal(op))),
         }
     }
@@ -1112,7 +1113,7 @@ fn arb_arbitrary_artifact() -> impl Strategy<Value = PolicyArtifact> {
         "a_fanout",
         "a_split",
         "a_false",
-        "input_x_fork",
+        "input_x_fanout",
         "input_x_split",
         "input_x_split_false",
         "c_0",
@@ -1383,7 +1384,7 @@ fn check_round_trip(artifact: &PolicyArtifact) -> Result<(), TestCaseError> {
     let json = serde_json::to_vec(artifact).unwrap().len();
     prop_assert!(tokens < json, "{} tokens, {} bytes of JSON", tokens, json);
 
-    // Every node and edge has a span, and each node's span is where it is written: its stage, tuple, fork, or sink, the
+    // Every node and edge has a span, and each node's span is where it is written: its stage, tuple, or sink, the
     // `where` that makes a drop, or for an implicit tee, the name of the stream it copies.
     for node in &artifact.nodes {
         let span = parsed.spans.node(node.id.as_str());
@@ -1392,7 +1393,6 @@ fn check_round_trip(artifact: &PolicyArtifact) -> Result<(), TestCaseError> {
         let ok = written.starts_with(node.op.as_str())
             || written.starts_with("where ")
             || written.starts_with('(')
-            || written.starts_with("fork")
             || written.starts_with("emit ")
             || written.starts_with("drop")
             || is_identifier(written);
@@ -1671,15 +1671,19 @@ fn generating_and_checking_property_inputs_fits_in_a_small_stack() {
     });
 }
 
-/// Forks nested more deeply than resugaring writes them, and chains of `where`s and merges, print and parse back
-/// exactly: the deepest `tee`s are written in the core form.
+/// Long chains of `tee`s, each feeding the next through a `where`, and of `where`s and merges, print and parse back
+/// exactly.
 #[test]
 fn deeply_nested_forms_print_and_parse_back_exactly() {
-    let forks = format!(
-        "  dogstatsd | {}drop{}",
-        "fork {\n drop\n where name == \"a\" | ".repeat(24),
-        "\n}".repeat(24)
-    );
+    let tees = (0..24).fold("  let t0 = dogstatsd | tee(ports: 2)".to_string(), |text, i| {
+        format!(
+            "{}\n  t{}.0 | drop\n  let t{} = t{}.1 | where name == \"a\" | tee(ports: 2)",
+            text,
+            i,
+            i + 1,
+            i
+        )
+    }) + "\n  t24.0 | drop\n  t24.1 | drop";
     let merges = (0..40).fold("  let m0 = (dogstatsd, otlp)".to_string(), |text, i| {
         format!(
             "{}\n  let m{} = (m{}, checks{}) | where tags.k{} is set",
@@ -1691,7 +1695,7 @@ fn deeply_nested_forms_print_and_parse_back_exactly() {
         )
     }) + "\n  m40 | drop";
     on_small_stack(move || {
-        for (source, core) in [(forks, "tee(ports: 2)"), (merges, "")] {
+        for (source, core) in [(tees, "tee(ports: 2)"), (merges, "")] {
             let artifact = parse_ok(&policy(&source)).artifact;
             assert!(print_default(&artifact).contains(core));
             check_round_trip(&artifact).unwrap();
@@ -1716,9 +1720,6 @@ fn the_generators_cover_every_form() {
         for (form, needle) in [
             ("let", "let "),
             ("where", "| where "),
-            ("fork", "fork"),
-            ("named fork", "fork as "),
-            ("nested fork", "    fork"),
             ("as", " as "),
             ("let named apart from its node", "_let = "),
             ("operator in parentheses", "()"),
@@ -1763,6 +1764,12 @@ fn the_generators_cover_every_form() {
             }
             if matches!(statement, crate::ast::Statement::Let { .. }) && pipeline.stages.len() >= 2 {
                 seen.insert("let of several stages".to_string());
+            }
+            if matches!(statement, crate::ast::Statement::Let { .. })
+                && matches!(pipeline.head, crate::ast::Head::Tuple(_))
+                && pipeline.stages.is_empty()
+            {
+                seen.insert("let of a tuple alone".to_string());
             }
         }
         let inputs = parsed
@@ -1809,9 +1816,7 @@ fn the_generators_cover_every_form() {
                 "let",
                 "let of several stages",
                 "where",
-                "fork",
-                "named fork",
-                "nested fork",
+                "let of a tuple alone",
                 "as",
                 "let named apart from its node",
                 "operator in parentheses",

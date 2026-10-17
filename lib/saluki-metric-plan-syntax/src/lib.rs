@@ -27,7 +27,7 @@
 //! policy <scope> {
 //!   [base "<program hash>" [outputs { <output> = "<fingerprint>", ... }]]
 //!   let <name> = <head> | <stage> | ...           # a named stream
-//!   <head> | <stage> | ... | <sink>               # a pipeline that ends in a sink, or in a fork
+//!   <head> | <stage> | ... | <sink>               # a pipeline that ends in a sink
 //! }
 //! ```
 //!
@@ -37,15 +37,18 @@
 //!   <predicate>`, which keeps what matches. An operator's positional parameter may be written first without its name,
 //!   and a parameter with a default may be left out. A word with arguments right after it is always an operator, so an
 //!   `emit` whose parameters no sink writes is `emit(to: [...], output: "o")`; an operator named like a sink,
-//!   `where`, `fork`, or `as` is written with parentheses even without arguments, as in `drop()`.
+//!   `where`, the retired `fork`, or `as` is written with parentheses even without arguments, as in `drop()`.
 //! - A **sink** ends a pipeline: `emit primary`, `emit [primary, "https://b.example.com"]`, `emit output <output>`,
-//!   `drop`, or `exit <name>` where the pipeline leaves a scope that ends early. `fork { <branch> ... }` also ends a
-//!   pipeline: it copies the stream to each branch, which is stages then a sink or another fork.
+//!   `drop`, or `exit <name>` where the pipeline leaves a scope that ends early.
 //! - A **stream used more than once** is copied to each use. Copying is how a stream reaches several places, so a sink
-//!   in the middle of a pipeline is an error: name the stream with `let` and use it twice.
-//! - **`as <id>`** after any stage, tuple, fork, or sink gives its node an ID of its own instead of the one derived from
-//!   where it is written ([the derived IDs](../../../docs/design/programmable-metrics-pipeline-syntax.md#node-ids)).
-//!   State carries over a change by node ID, so an aggregation's ID is worth keeping.
+//!   in the middle of a pipeline is an error: name the stream with `let` and use it once per place it goes. (A `tee`
+//!   written as an operator copies it too, as in `let t = s | tee(ports: 2)`, its copies used as `t.0` and `t.1`.)
+//! - A **`let`** names the node its last stage makes, so a `let` gives a node a name of its own:
+//!   `let enriched = s | host_enrichment` makes the node `enriched`. Every other node's ID is derived from where it is
+//!   written ([the derived IDs](../../../docs/design/programmable-metrics-pipeline-syntax.md#node-ids)). State carries
+//!   over a change by node ID, so an aggregation's ID is worth keeping.
+//! - **`as <id>`** after any stage, tuple, or sink also gives its node an ID of its own, where no `let` can, such as on
+//!   a sink.
 //! - **`base`** records the hash of the program the artifact was derived from and, under `outputs`, the fingerprint of
 //!   every output it refers to. It is required, unless the tool that parses the text gives the base instead
 //!   ([`ParseOptions::base`]). `ir_version <n>` and `blobs { "<hash>" = <value>, ... }` are optional headers.
@@ -63,7 +66,6 @@
 //! | a stream used `n > 1` times | a `tee(ports: n)`, whose port `i` feeds the `i`th use in the text |
 //! | `emit ...`, `drop` | an inline `emit` or `drop` node |
 //! | `e \| where p` | `split(p)`, whose `false` port leads to `drop` and whose `true` port continues |
-//! | `e \| fork { t1 ... tn }` | `tee(ports: n)`, whose port `i` leads to branch `i` |
 //!
 //! ## Values
 //!
@@ -125,8 +127,13 @@
 //!   input of its name.
 //! - `print(parse(s))` is a fixed point: printing what it parses to gives it back.
 //!
-//! A `let` is named for the node it ends, except where the node's ID is the name of a scope input the artifact reads,
-//! which a reference to the input would then name: such a `let` is named `<id>_let`, and its last stage has `as <id>`.
+//! A node whose ID is not the one derived where it is written is named by a `let` wherever one can end at it, so a
+//! pipeline is printed as several `let`s where its nodes have names of their own, the merge of a tuple included
+//! (`let m = (a, b)`), and a `tee` whose ID is not `<stream>_fanout` for the stream before it is printed in the core
+//! form, `let t = s | tee(ports: n)`. `as` is the last resort, for a node no `let` can name: a sink, and a node whose ID is the name of a
+//! scope input the artifact reads, which a reference to the input would name instead. Such a node's `let` is named
+//! `<id>_let`, and its last stage has `as <id>`. Among the ways to print a pipeline with the fewest `as` clauses, the
+//! one with the fewest statements wins.
 //!
 //! The plan crate's [normalization](saluki_metric_plan::normalize) puts equivalent programs into one form, such as a
 //! filter that drops on `true` into one that drops on `false`, so that they print the same way. It also fills in every

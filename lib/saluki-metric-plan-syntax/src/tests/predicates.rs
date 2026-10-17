@@ -5,9 +5,10 @@ use serde_json::{json, Value};
 
 use super::*;
 
-/// Returns a policy whose only node is a `where` with `predicate`, named `f`, in printed form.
+/// Returns a policy whose only node, but its sinks, is a `where` with `predicate`, named `f` by a `let`, in printed
+/// form.
 fn split_source(predicate: &str) -> String {
-    policy(&format!("  metrics | where {} as f | drop", predicate))
+    policy(&format!("  let f = metrics | where {}\n\n  f | drop", predicate))
 }
 
 /// Returns a policy whose only node is a `split` with `predicate`, named `f`, in printed form, for a predicate the

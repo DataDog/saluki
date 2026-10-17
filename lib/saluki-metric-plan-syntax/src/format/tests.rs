@@ -10,10 +10,7 @@ use serde_json::{json, Value};
 
 use super::format;
 use crate::{
-    ast::{
-        Base, Branch, End, Fork, Head, Name, OpStage, Pipeline, Program, Ref, Sink, SinkKind, Stage, Statement, Tuple,
-        WhereStage,
-    },
+    ast::{Base, Head, Name, OpStage, Pipeline, Program, Ref, Sink, SinkKind, Stage, Statement, Tuple, WhereStage},
     diagnostic::Span,
 };
 
@@ -94,57 +91,41 @@ fn sink(kind: SinkKind, id: Option<&str>) -> Sink {
     }
 }
 
-fn emit(names: &[&str], id: Option<&str>) -> End {
-    End::Sink(sink(
+fn emit(names: &[&str], id: Option<&str>) -> Sink {
+    sink(
         SinkKind::Recipients {
             names: names.iter().map(|name| name.to_string()).collect(),
             span: Span::default(),
         },
         id,
-    ))
+    )
 }
 
-fn emit_output(output: &str, id: Option<&str>) -> End {
-    End::Sink(sink(
+fn emit_output(output: &str, id: Option<&str>) -> Sink {
+    sink(
         SinkKind::Output {
             output: OutputId::new(output).unwrap(),
             span: Span::default(),
         },
         id,
-    ))
+    )
 }
 
-fn drop_sink(id: Option<&str>) -> End {
-    End::Sink(sink(SinkKind::Drop, id))
+fn drop_sink(id: Option<&str>) -> Sink {
+    sink(SinkKind::Drop, id)
 }
 
-fn exit(exit: &str, id: Option<&str>) -> End {
-    End::Sink(sink(
+fn exit(exit: &str, id: Option<&str>) -> Sink {
+    sink(
         SinkKind::Exit {
             name: ExitName::new(exit).unwrap(),
             span: Span::default(),
         },
         id,
-    ))
+    )
 }
 
-fn fork(id: Option<&str>, branches: Vec<Branch>) -> End {
-    End::Fork(Fork {
-        id: as_id(id),
-        branches,
-        span: Span::default(),
-    })
-}
-
-fn branch(stages: Vec<Stage>, end: End) -> Branch {
-    Branch {
-        stages,
-        end,
-        span: Span::default(),
-    }
-}
-
-fn pipeline(head: Head, stages: Vec<Stage>, end: Option<End>) -> Pipeline {
+fn pipeline(head: Head, stages: Vec<Stage>, end: Option<Sink>) -> Pipeline {
     Pipeline {
         head,
         stages,
@@ -564,39 +545,6 @@ fn a_lone_positional_argument_takes_no_comma_when_broken() {
 }
 
 #[test]
-fn a_broken_where_in_a_branch_continues_deeper_than_the_branchs_pipes() {
-    let predicate = json!({"all": [
-        {"intake_name": {"eq": "checkout.requests"}},
-        {"any": [{"host": {"eq": "web-1"}}, {"host": {"eq": "web-2"}}]},
-    ]});
-    let first = branch(
-        vec![where_stage(predicate.clone(), Some("routed"))],
-        emit_output("a_out", None),
-    );
-    let later = branch(
-        vec![
-            op("host_enrichment", json!({}), None, None),
-            where_stage(predicate, None),
-        ],
-        drop_sink(None),
-    );
-    let statement = run(pipeline(head("x"), vec![], Some(fork(None, vec![first, later]))));
-    assert_eq!(
-        statement_text(statement, 50),
-        r#"  x | fork {
-    where intake_name == "checkout.requests"
-        and (host == "web-1" or host == "web-2")
-        as routed
-      | emit output a_out
-    host_enrichment
-      | where intake_name == "checkout.requests"
-          and (host == "web-1" or host == "web-2")
-      | drop
-  }"#
-    );
-}
-
-#[test]
 fn a_long_where_breaks_at_its_junction_under_the_stage() {
     let predicate = json!({"any": [
         {"intake_name": {"eq": "checkout.requests"}},
@@ -722,124 +670,6 @@ fn sinks_are_written_with_their_ids() {
         let statement = run(pipeline(head("x"), vec![], Some(end)));
         assert_eq!(statement_text(statement, 120), expected);
     }
-}
-
-// Forks.
-
-#[test]
-fn a_fork_has_a_branch_per_line() {
-    let statement = run(pipeline(
-        head("x"),
-        vec![op("host_enrichment", json!({}), None, None)],
-        Some(fork(
-            Some("policy"),
-            vec![
-                branch(vec![], emit_output("a_out", None)),
-                branch(
-                    vec![where_stage(json!({"name": {"eq": "a"}}), Some("filter"))],
-                    emit_output("b_out", Some("b_sink")),
-                ),
-                branch(vec![], drop_sink(None)),
-            ],
-        )),
-    ));
-    assert_eq!(
-        statement_text(statement, 120),
-        r#"  x
-    | host_enrichment
-    | fork as policy {
-      emit output a_out
-      where name == "a" as filter | emit output b_out as b_sink
-      drop
-    }"#
-    );
-}
-
-#[test]
-fn a_fork_that_is_the_only_stage_follows_the_head_on_its_line() {
-    let statement = run(pipeline(
-        head("x"),
-        vec![],
-        Some(fork(
-            None,
-            vec![
-                branch(vec![], drop_sink(None)),
-                branch(vec![], emit(&["primary"], None)),
-            ],
-        )),
-    ));
-    assert_eq!(
-        statement_text(statement, 120),
-        "  x | fork {\n    drop\n    emit primary\n  }"
-    );
-}
-
-#[test]
-fn a_branch_that_does_not_fit_continues_on_pipe_lines() {
-    let statement = run(pipeline(
-        head("x"),
-        vec![],
-        Some(fork(
-            None,
-            vec![
-                branch(
-                    vec![
-                        where_stage(json!({"name": {"eq": "first"}}), None),
-                        op("host_enrichment", json!({}), None, Some("enrich")),
-                    ],
-                    emit_output("a_out", None),
-                ),
-                branch(vec![], drop_sink(None)),
-            ],
-        )),
-    ));
-    assert_eq!(
-        statement_text(statement, 50),
-        r#"  x | fork {
-    where name == "first"
-      | host_enrichment as enrich
-      | emit output a_out
-    drop
-  }"#
-    );
-}
-
-#[test]
-fn a_nested_fork_is_aligned_with_its_pipe() {
-    let inner = fork(
-        Some("inner"),
-        vec![
-            branch(vec![], emit_output("a_out", None)),
-            branch(vec![], drop_sink(None)),
-        ],
-    );
-    let statement = run(pipeline(
-        head("x"),
-        vec![],
-        Some(fork(
-            Some("outer"),
-            vec![
-                // The fork starts its branch, so its braces align with the branch.
-                branch(vec![], inner.clone()),
-                // The fork follows a stage, so its braces align with its pipe.
-                branch(vec![where_stage(json!({"name": {"eq": "a"}}), None)], inner),
-            ],
-        )),
-    ));
-    assert_eq!(
-        statement_text(statement, 120),
-        r#"  x | fork as outer {
-    fork as inner {
-      emit output a_out
-      drop
-    }
-    where name == "a"
-      | fork as inner {
-        emit output a_out
-        drop
-      }
-  }"#
-    );
 }
 
 // Values.
@@ -1170,12 +1000,10 @@ fn a_long_predicate_breaks_with_parenthesized_operands() {
 
 // The default program.
 
-/// The default program of the metrics scope, with the values of its export, as the design document shows it.
+/// The default program of the metrics scope, with the values of its export, as it prints: a `let` for each stream a
+/// node names, and no `as`.
 fn default_program() -> Program {
-    let fixture: Value = serde_json::from_str(include_str!(
-        "../../../saluki-metric-plan/fixtures/export/default-program-metrics.json"
-    ))
-    .unwrap();
+    let fixture = crate::tests::default_export_document();
     let node_params = |id: &str| -> Value {
         let nodes = fixture["nodes"].as_array().unwrap();
         nodes
@@ -1188,41 +1016,57 @@ fn default_program() -> Program {
     // The export is in normal form, so its `split` nodes drop their `false` port, as `where` does.
 
     let base = &fixture["base"];
-    let mut program = program(vec![
+    let mut statements = vec![
+        let_(
+            "dsd_enrich",
+            pipeline(
+                head("dogstatsd"),
+                vec![op("dogstatsd_mapper", node_params("dsd_enrich"), None, None)],
+                None,
+            ),
+        ),
+        let_(
+            "dsd_prefix_filter_blocklist",
+            pipeline(
+                head("dsd_enrich"),
+                vec![
+                    op(
+                        "namespace_prefix",
+                        node_params("dsd_prefix_filter_blocklist_namespace_prefix"),
+                        Some("namespace"),
+                        None,
+                    ),
+                    where_stage(predicate("dsd_prefix_filter_blocklist"), None),
+                ],
+                None,
+            ),
+        ),
         let_(
             "dsd_no_agg_split",
             pipeline(
-                head("dogstatsd"),
-                vec![
-                    op("dogstatsd_mapper", node_params("dsd_enrich"), None, Some("dsd_enrich")),
-                    op(
-                        "namespace_prefix",
-                        node_params("dsd_prefix_filter"),
-                        Some("namespace"),
-                        Some("dsd_prefix_filter"),
-                    ),
-                    where_stage(
-                        predicate("dsd_prefix_filter_blocklist"),
-                        Some("dsd_prefix_filter_blocklist"),
-                    ),
-                    op("timestamp_split", node_params("dsd_no_agg_split"), Some("window"), None),
-                ],
+                head("dsd_prefix_filter_blocklist"),
+                vec![op(
+                    "timestamp_split",
+                    node_params("dsd_no_agg_split"),
+                    Some("window"),
+                    None,
+                )],
+                None,
+            ),
+        ),
+        let_(
+            "dsd_tag_filterlist",
+            pipeline(
+                port_ref_head("dsd_no_agg_split", "default"),
+                vec![op("tag_projection", node_params("dsd_tag_filterlist"), None, None)],
                 None,
             ),
         ),
         let_(
             "dsd_agg",
             pipeline(
-                port_ref_head("dsd_no_agg_split", "default"),
-                vec![
-                    op(
-                        "tag_projection",
-                        node_params("dsd_tag_filterlist"),
-                        None,
-                        Some("dsd_tag_filterlist"),
-                    ),
-                    op("aggregate", node_params("dsd_agg"), None, None),
-                ],
+                head("dsd_tag_filterlist"),
+                vec![op("aggregate", node_params("dsd_agg"), None, None)],
                 None,
             ),
         ),
@@ -1242,59 +1086,45 @@ fn default_program() -> Program {
             vec![],
             Some(emit_output("dsd_client_telemetry", None)),
         )),
-        run(pipeline(
-            tuple(
-                vec![
-                    reference("dsd_post_agg_filter"),
-                    reference("otlp"),
-                    reference("checks"),
-                    reference("liveness"),
-                    reference("trace_sampler"),
-                ],
-                Some("metrics_enrich_in"),
-            ),
-            vec![
-                op("host_enrichment", json!({}), None, Some("metrics_enrich")),
-                op(
-                    "host_tags",
-                    node_params("metrics_enrich_host_tags"),
-                    Some("tags"),
-                    Some("metrics_enrich_host_tags"),
+        let_(
+            "metrics",
+            pipeline(
+                tuple(
+                    vec![
+                        reference("dsd_post_agg_filter"),
+                        reference("otlp"),
+                        reference("checks"),
+                        reference("liveness"),
+                        reference("trace_sampler"),
+                    ],
+                    None,
                 ),
-            ],
-            Some(fork(
-                Some("metrics_policy"),
                 vec![
-                    branch(vec![], emit_output("dd_metrics_encode", None)),
-                    branch(
-                        vec![where_stage(
-                            predicate("metrics_routing_filter_0"),
-                            Some("metrics_routing_filter_0"),
-                        )],
-                        emit_output("metrics_routing_encode_0", None),
-                    ),
-                    branch(
-                        vec![where_stage(
-                            predicate("metrics_routing_filter_1"),
-                            Some("metrics_routing_filter_1"),
-                        )],
-                        emit_output("metrics_routing_encode_1", None),
-                    ),
-                    branch(
-                        vec![where_stage(
-                            predicate("mrf_metrics_gateway"),
-                            Some("mrf_metrics_gateway"),
-                        )],
-                        emit_output("mrf_metrics_encode", None),
-                    ),
-                    branch(
-                        vec![where_stage(predicate("af_metrics_gateway"), Some("af_metrics_gateway"))],
-                        emit_output("af_metrics_encode", None),
-                    ),
+                    op("host_enrichment", json!({}), None, None),
+                    op("host_tags", node_params("metrics"), Some("tags"), None),
                 ],
-            )),
+                None,
+            ),
+        ),
+        run(pipeline(
+            head("metrics"),
+            vec![],
+            Some(emit_output("dd_metrics_encode", None)),
         )),
-    ]);
+    ];
+    for (filter, output) in [
+        ("metrics_routing_filter_0", "metrics_routing_encode_0"),
+        ("metrics_routing_filter_1", "metrics_routing_encode_1"),
+        ("mrf_metrics_gateway", "mrf_metrics_encode"),
+        ("af_metrics_gateway", "af_metrics_encode"),
+    ] {
+        statements.push(let_(
+            filter,
+            pipeline(head("metrics"), vec![where_stage(predicate(filter), None)], None),
+        ));
+        statements.push(run(pipeline(head(filter), vec![], Some(emit_output(output, None)))));
+    }
+    let mut program = program(statements);
     program.base = Some(Base {
         program_hash: PlanHash::from_str(base["program_hash"].as_str().unwrap()).unwrap(),
         outputs: base["outputs"]
@@ -1313,40 +1143,49 @@ fn default_program() -> Program {
 }
 
 #[test]
-fn the_default_program_reads_like_the_design_document() {
-    let expected = r#"policy metrics {
-  base "sha256:e007ebd04f3f0e4403a6b10acf82ccd2721b3447f17a94decff0091c1f149d4c"
-  outputs {
+fn the_default_program_reads_as_a_person_would_write_it() {
+    let program = default_program();
+    let hash = program.base.as_ref().unwrap().program_hash;
+    let expected = format!(
+        r#"policy metrics {{
+  base "{hash}"
+  outputs {{
     af_metrics_encode = "sha256:6666666666666666666666666666666666666666666666666666666666666666",
     dd_metrics_encode = "sha256:2222222222222222222222222222222222222222222222222222222222222222",
     dsd_client_telemetry = "sha256:1111111111111111111111111111111111111111111111111111111111111111",
     metrics_routing_encode_0 = "sha256:3333333333333333333333333333333333333333333333333333333333333333",
     metrics_routing_encode_1 = "sha256:4444444444444444444444444444444444444444444444444444444444444444",
     mrf_metrics_encode = "sha256:5555555555555555555555555555555555555555555555555555555555555555",
-  }
+  }}
 
-  let dsd_no_agg_split = dogstatsd
+  let dsd_enrich = dogstatsd
     | dogstatsd_mapper(
         profiles: config.dogstatsd.mapper.profiles,
         cache_size: config.dogstatsd.mapper.cache_size,
         string_interner_bytes: config.dogstatsd.mapper.string_interner_size_bytes,
-      ) as dsd_enrich
+      )
+
+  let dsd_prefix_filter_blocklist = dsd_enrich
     | namespace_prefix(
         config.dogstatsd.prefix_filter.metric_namespace,
         exclusions: config.dogstatsd.prefix_filter.metric_namespace_blocklist,
-      ) as dsd_prefix_filter
+      )
     | where not intake_name matches(
         values: config.dogstatsd.metric_filter.values,
         prefix: config.dogstatsd.metric_filter.match_prefix,
-      ) as dsd_prefix_filter_blocklist
+      )
+
+  let dsd_no_agg_split = dsd_prefix_filter_blocklist
     | timestamp_split(config.dogstatsd.aggregation.window_duration_seconds)
 
-  let dsd_agg = dsd_no_agg_split.default
+  let dsd_tag_filterlist = dsd_no_agg_split.default
     | tag_projection(
         rules: config.dogstatsd.tag_filterlist,
         value_rules: config.dogstatsd.tag_value_allowlist,
         cache_capacity: config.dogstatsd.aggregation.aggregator_tag_filter_cache_capacity,
-      ) as dsd_tag_filterlist
+      )
+
+  let dsd_agg = dsd_tag_filterlist
     | aggregate(
         window: config.dogstatsd.aggregation.window_duration_seconds,
         flush_interval: config.dogstatsd.aggregation.flush_interval,
@@ -1370,34 +1209,44 @@ fn the_default_program_reads_like_the_design_document() {
 
   dsd_post_agg_filter | emit output dsd_client_telemetry
 
-  (dsd_post_agg_filter, otlp, checks, liveness, trace_sampler) as metrics_enrich_in
-    | host_enrichment as metrics_enrich
-    | host_tags(config.host.tags, deadline: config.host.tags_deadline) as metrics_enrich_host_tags
-    | fork as metrics_policy {
-      emit output dd_metrics_encode
-      where intake_name in config.metrics_endpoint_routing.group.0123456789abcdef.names
-          or intake_name starts_with config.metrics_endpoint_routing.group.0123456789abcdef.prefixes
-          as metrics_routing_filter_0
-        | emit output metrics_routing_encode_0
-      where intake_name in config.metrics_endpoint_routing.group.fedcba9876543210.names
-          or intake_name starts_with config.metrics_endpoint_routing.group.fedcba9876543210.prefixes
-          as metrics_routing_filter_1
-        | emit output metrics_routing_encode_1
-      where config.multi_region_failover.enabled
-          and config.multi_region_failover.metric_mirroring.enabled
-          and (
-            is_empty(config.multi_region_failover.metric_mirroring.allowlist)
-            or name in config.multi_region_failover.metric_mirroring.allowlist
-          )
-          as mrf_metrics_gateway
-        | emit output mrf_metrics_encode
-      where kind in [counter, rate, gauge, set]
-          and config.autoscaling_failover.enabled
-          and name in config.autoscaling_failover.metrics
-          as af_metrics_gateway
-        | emit output af_metrics_encode
-    }
-}
-"#;
-    assert_eq!(format(&default_program(), 120), expected);
+  let metrics = (dsd_post_agg_filter, otlp, checks, liveness, trace_sampler)
+    | host_enrichment
+    | host_tags(config.host.tags, deadline: config.host.tags_deadline)
+
+  metrics | emit output dd_metrics_encode
+
+  let metrics_routing_filter_0 = metrics
+    | where intake_name in config.metrics_endpoint_routing.group.0123456789abcdef.names
+        or intake_name starts_with config.metrics_endpoint_routing.group.0123456789abcdef.prefixes
+
+  metrics_routing_filter_0 | emit output metrics_routing_encode_0
+
+  let metrics_routing_filter_1 = metrics
+    | where intake_name in config.metrics_endpoint_routing.group.fedcba9876543210.names
+        or intake_name starts_with config.metrics_endpoint_routing.group.fedcba9876543210.prefixes
+
+  metrics_routing_filter_1 | emit output metrics_routing_encode_1
+
+  let mrf_metrics_gateway = metrics
+    | where config.multi_region_failover.enabled
+        and config.multi_region_failover.metric_mirroring.enabled
+        and (
+          is_empty(config.multi_region_failover.metric_mirroring.allowlist)
+          or name in config.multi_region_failover.metric_mirroring.allowlist
+        )
+
+  mrf_metrics_gateway | emit output mrf_metrics_encode
+
+  let af_metrics_gateway = metrics
+    | where kind in [counter, rate, gauge, set]
+        and config.autoscaling_failover.enabled
+        and name in config.autoscaling_failover.metrics
+
+  af_metrics_gateway | emit output af_metrics_encode
+}}
+"#
+    );
+    let printed = format(&program, 120);
+    assert_eq!(printed, expected);
+    assert!(printed.lines().all(|line| line.chars().count() <= 120), "{}", printed);
 }

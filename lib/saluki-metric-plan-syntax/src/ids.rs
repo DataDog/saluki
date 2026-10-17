@@ -1,7 +1,7 @@
 //! The node IDs the syntax derives for nodes written without an `as` clause.
 //!
-//! Lowering names nodes with these functions, and resugaring compares an artifact's IDs with them to decide where an
-//! `as` clause is needed, so the two passes cannot disagree. The rules (see the [design
+//! Lowering names nodes with these functions, and resugaring compares an artifact's IDs with them to decide where a
+//! `let` or an `as` clause must give a node its ID, so the two passes cannot disagree. The rules (see the [design
 //! document](../../../docs/design/programmable-metrics-pipeline-syntax.md#node-ids)):
 //!
 //! - In `let x = s1 | ... | sn`, the last stage's node is `x`, and each earlier stage is [`stage`]`(x, op, n)`; a tuple
@@ -9,7 +9,6 @@
 //! - In a statement without `let`, the anchor is the port the pipeline starts from ([`port_anchor`],
 //!   [`input_anchor`], [`tee_port`], or for a tuple head, the merge [`merge`]`(<anchor of its first element>)`), and
 //!   every stage is [`stage`]`(anchor, op, n)`.
-//! - A fork's tee is [`fork`]`(anchor)`, and its branch `i` starts from the anchor [`tee_port`]`(<fork>, i)`.
 //! - A stream used more than once is followed by the tee [`fanout`].
 //! - A sink is the inline terminal [`terminal`]`(<parent>, <port>)`, as [`derived_terminal_id`] names it.
 //!
@@ -56,11 +55,6 @@ pub(crate) fn merge(anchor: &str) -> ArtifactNodeId {
     join(anchor, "in")
 }
 
-/// The ID of a fork's tee under `anchor`: `<anchor>_fork`.
-pub(crate) fn fork(anchor: &str) -> ArtifactNodeId {
-    join(anchor, "fork")
-}
-
 /// The ID of the tee after a stream used more than once: `<node>_fanout` for a node's only output port,
 /// `<node>_<port>_fanout` for one of several.
 pub(crate) fn fanout(node: &str, port: Option<&PortName>) -> ArtifactNodeId {
@@ -81,7 +75,7 @@ pub(crate) fn input_anchor(input: &str) -> ArtifactNodeId {
     join(SCOPE_INPUT_NODE, input)
 }
 
-/// The anchor of a pipeline that starts from port `index` of a tee, and of a fork's branch `index`: `<tee>_<index>`.
+/// The anchor of a pipeline that starts from port `index` of an implicit tee: `<tee>_<index>`.
 pub(crate) fn tee_port(tee: &str, index: usize) -> ArtifactNodeId {
     join(tee, &index.to_string())
 }
@@ -120,14 +114,13 @@ mod tests {
                 fanout("ts", Some(&PortName::new("passthrough").unwrap())),
                 "ts_passthrough_fanout",
             ),
-            (fork("metrics_enrich"), "metrics_enrich_fork"),
             (port_anchor("ts", None), "ts"),
             (
                 port_anchor("ts", Some(&PortName::new("default").unwrap())),
                 "ts_default",
             ),
             (input_anchor("dogstatsd"), "input_dogstatsd"),
-            (tee_port("metrics_policy", 0), "metrics_policy_0"),
+            (tee_port("metrics_fanout", 0), "metrics_fanout_0"),
             (
                 terminal("metrics_routing_filter_0", &PortName::new("false").unwrap()),
                 "metrics_routing_filter_0_false",

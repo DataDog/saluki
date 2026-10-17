@@ -95,20 +95,6 @@ fn where_(stage: &Stage) -> &WhereStage {
     }
 }
 
-fn sink(end: &End) -> &Sink {
-    match end {
-        End::Sink(sink) => sink,
-        End::Fork(_) => panic!("expected a sink, found a fork"),
-    }
-}
-
-fn fork(end: &End) -> &Fork {
-    match end {
-        End::Fork(fork) => fork,
-        End::Sink(_) => panic!("expected a fork, found a sink"),
-    }
-}
-
 fn reference(head: &Head) -> &Ref {
     match head {
         Head::Ref(reference) => reference,
@@ -167,14 +153,16 @@ const EXAMPLE: &str = r#"policy metrics {
 
   dsd_post_agg_filter | emit output dsd_client_telemetry
 
-  (dsd_post_agg_filter, otlp, checks, liveness, trace_sampler) as metrics_enrich_in
+  let metrics = (dsd_post_agg_filter, otlp, checks, liveness, trace_sampler) as metrics_enrich_in
     | host_tags(config.host.tags, deadline: config.host.tags_deadline) as metrics_enrich_host_tags
-    | fork as metrics_policy {
-        emit output dd_metrics_encode
-        where intake_name == "checkout.requests" or intake_name starts_with "checkout." as metrics_routing_filter_0
-          | emit output metrics_routing_encode_0
-        where tags.env == "prod" | emit [primary, "https://b.example.com"]
-      }
+
+  metrics | emit output dd_metrics_encode
+
+  metrics
+    | where intake_name == "checkout.requests" or intake_name starts_with "checkout." as metrics_routing_filter_0
+    | emit output metrics_routing_encode_0
+
+  metrics | where tags.env == "prod" | emit [primary, "https://b.example.com"]
 }
 "#;
 
@@ -185,7 +173,7 @@ fn the_example_program_parses() {
     assert_eq!(text(EXAMPLE, program.head), "policy metrics");
     assert_eq!(text(EXAMPLE, program.close), "}");
     assert_eq!(program.close.end, EXAMPLE.len() - 1);
-    assert_eq!(program.statements.len(), 5);
+    assert_eq!(program.statements.len(), 8);
 
     // let dsd_no_agg_split = dogstatsd | ... | timestamp_split(10s)
     let Statement::Let { name, pipeline, span } = &program.statements[0] else {
@@ -269,7 +257,7 @@ fn the_example_program_parses() {
         text(EXAMPLE, *span),
         "dsd_post_agg_filter | emit output dsd_client_telemetry"
     );
-    let emit = sink(pipeline.end.as_ref().unwrap());
+    let emit = pipeline.end.as_ref().unwrap();
     let SinkKind::Output { output, span } = &emit.kind else {
         panic!("expected `emit output`");
     };
@@ -277,10 +265,11 @@ fn the_example_program_parses() {
     assert_eq!(text(EXAMPLE, *span), "dsd_client_telemetry");
     assert_eq!(text(EXAMPLE, emit.span), "emit output dsd_client_telemetry");
 
-    // (...) as metrics_enrich_in | host_tags(...) as metrics_enrich_host_tags | fork as metrics_policy { ... }
-    let Statement::Run { pipeline, .. } = &program.statements[4] else {
-        panic!("expected a bare statement");
+    // let metrics = (...) as metrics_enrich_in | host_tags(...) as metrics_enrich_host_tags
+    let Statement::Let { name, pipeline, .. } = &program.statements[4] else {
+        panic!("expected a `let`");
     };
+    assert_eq!(name.id.as_str(), "metrics");
     let head = tuple(&pipeline.head);
     assert_eq!(head.items.len(), 5);
     assert_eq!(id_text(&head.id).as_deref(), Some("metrics_enrich_in"));
@@ -292,33 +281,39 @@ fn the_example_program_parses() {
         host_tags.params.get("deadline"),
         Some(&json!({"config": "host.tags_deadline"}))
     );
-    let policy_fork = fork(pipeline.end.as_ref().unwrap());
-    assert_eq!(id_text(&policy_fork.id).as_deref(), Some("metrics_policy"));
-    assert!(text(EXAMPLE, policy_fork.span).starts_with("fork as metrics_policy {"));
-    assert!(text(EXAMPLE, policy_fork.span).ends_with('}'));
-    assert_eq!(policy_fork.branches.len(), 3);
-    let branch = &policy_fork.branches[0];
-    assert!(branch.stages.is_empty());
-    assert_eq!(text(EXAMPLE, branch.span), "emit output dd_metrics_encode");
-    let branch = &policy_fork.branches[1];
+    assert_eq!(id_text(&host_tags.id).as_deref(), Some("metrics_enrich_host_tags"));
+    assert_eq!(pipeline.end, None);
+
+    // Each use of `metrics` is a statement of its own.
+    let Statement::Run { pipeline, span } = &program.statements[5] else {
+        panic!("expected a bare statement");
+    };
+    assert_eq!(ref_text(reference(&pipeline.head)), "metrics");
+    assert!(pipeline.stages.is_empty());
+    assert_eq!(text(EXAMPLE, *span), "metrics | emit output dd_metrics_encode");
+    let Statement::Run { pipeline, span } = &program.statements[6] else {
+        panic!("expected a bare statement");
+    };
     assert_eq!(
-        where_(&branch.stages[0]).predicate,
+        where_(&pipeline.stages[0]).predicate,
         json!({"any": [
             {"intake_name": {"eq": "checkout.requests"}},
             {"intake_name": {"prefix": "checkout."}},
         ]})
     );
     assert_eq!(
-        id_text(&where_(&branch.stages[0]).id).as_deref(),
+        id_text(&where_(&pipeline.stages[0]).id).as_deref(),
         Some("metrics_routing_filter_0")
     );
-    assert!(text(EXAMPLE, branch.span).ends_with("| emit output metrics_routing_encode_0"));
-    let branch = &policy_fork.branches[2];
+    assert!(text(EXAMPLE, *span).ends_with("| emit output metrics_routing_encode_0"));
+    let Statement::Run { pipeline, .. } = &program.statements[7] else {
+        panic!("expected a bare statement");
+    };
     assert_eq!(
-        where_(&branch.stages[0]).predicate,
+        where_(&pipeline.stages[0]).predicate,
         json!({"tag": {"key": "env", "value": {"eq": "prod"}}})
     );
-    let SinkKind::Recipients { names, span } = &sink(&branch.end).kind else {
+    let SinkKind::Recipients { names, span } = &pipeline.end.as_ref().unwrap().kind else {
         panic!("expected recipients");
     };
     assert_eq!(names, &["primary", "https://b.example.com"]);
@@ -592,9 +587,8 @@ fn unknown_operators_get_a_note() {
 fn as_is_accepted_on_every_form() {
     let body =
         "  (a, b) as m\n    | host_enrichment as h\n    | aggregate(window: 10s) as g\n    | where true as w\n    \
-                | fork as f {\n        emit primary as e1\n        emit \"https://x.example.com\" as e2\n        emit \
-                [a, b] as e3\n        emit output o as e4\n        drop as d\n        exit aggregated as x\n        \
-                fork as inner { drop as d2 }\n      }";
+                | emit primary as e1\n  s | emit \"https://x.example.com\" as e2\n  s | emit [a, b] as e3\n  s | emit \
+                output o as e4\n  s | drop as d\n  s | exit aggregated as x";
     let source = policy(body);
     let program = parse_ok(&source);
     let pipeline = pipeline_of(&program.statements[0]);
@@ -603,22 +597,14 @@ fn as_is_accepted_on_every_form() {
         Stage::Op(stage) => id_text(&stage.id),
         Stage::Where(stage) => id_text(&stage.id),
     }));
-    let outer = fork(pipeline.end.as_ref().unwrap());
-    ids.push(id_text(&outer.id));
-    for branch in &outer.branches {
-        match &branch.end {
-            End::Sink(sink) => ids.push(id_text(&sink.id)),
-            End::Fork(inner) => {
-                ids.push(id_text(&inner.id));
-                ids.push(id_text(&sink(&inner.branches[0].end).id));
-            }
-        }
-    }
+    let sinks = program
+        .statements
+        .iter()
+        .map(|statement| pipeline_of(statement).end.as_ref().unwrap())
+        .collect::<Vec<_>>();
+    ids.extend(sinks.iter().map(|sink| id_text(&sink.id)));
     let ids = ids.into_iter().map(Option::unwrap).collect::<Vec<_>>();
-    assert_eq!(
-        ids,
-        ["m", "h", "g", "w", "f", "e1", "e2", "e3", "e4", "d", "x", "inner", "d2"]
-    );
+    assert_eq!(ids, ["m", "h", "g", "w", "e1", "e2", "e3", "e4", "d", "x"]);
 
     // Each `as` is part of its form's span, and each ID's span covers the identifier.
     assert_eq!(text(&source, tuple(&pipeline.head).span), "(a, b) as m");
@@ -626,11 +612,11 @@ fn as_is_accepted_on_every_form() {
     assert_eq!(text(&source, host.span), "host_enrichment as h");
     assert_eq!(text(&source, host.id.as_ref().unwrap().span), "h");
     assert_eq!(text(&source, where_(&pipeline.stages[2]).span), "where true as w");
-    assert_eq!(text(&source, sink(&outer.branches[0].end).span), "emit primary as e1");
-    assert_eq!(text(&source, sink(&outer.branches[4].end).span), "drop as d");
+    assert_eq!(text(&source, sinks[0].span), "emit primary as e1");
+    assert_eq!(text(&source, sinks[4].span), "drop as d");
 }
 
-// Sinks and forks.
+// Sinks.
 
 #[test]
 fn every_sink_parses() {
@@ -642,7 +628,7 @@ fn every_sink_parses() {
         .statements
         .iter()
         .map(|statement| {
-            let sink = sink(pipeline_of(statement).end.as_ref().unwrap());
+            let sink = pipeline_of(statement).end.as_ref().unwrap();
             let described = match &sink.kind {
                 SinkKind::Recipients { names, span } => format!("to {:?} at {}", names, text(&source, *span)),
                 SinkKind::Output { output, span } => format!("output {} at {}", output, text(&source, *span)),
@@ -678,24 +664,23 @@ fn every_sink_parses() {
 }
 
 #[test]
-fn forks_nest_and_branches_take_stages() {
-    let body = "  dogstatsd | fork {\n    host_enrichment | where true | emit primary\n    fork { drop emit output \
-                o }\n    aggregate(window: 10s) | fork as inner { drop }\n  }";
-    let source = policy(body);
-    let program = parse_ok(&source);
-    let outer = fork(pipeline_of(&program.statements[0]).end.as_ref().unwrap());
-    assert_eq!(outer.id, None);
-    assert_eq!(outer.branches.len(), 3);
-    assert_eq!(outer.branches[0].stages.len(), 2);
-    assert_eq!(
-        text(&source, outer.branches[0].span),
-        "host_enrichment | where true | emit primary"
-    );
-    let nested = fork(&outer.branches[1].end);
-    assert_eq!(nested.branches.len(), 2);
-    assert_eq!(text(&source, nested.span), "fork { drop emit output o }");
-    assert_eq!(outer.branches[2].stages.len(), 1);
-    assert_eq!(id_text(&fork(&outer.branches[2].end).id).as_deref(), Some("inner"));
+fn fork_is_gone() {
+    // Wherever `fork` would have been written, the error says what replaced it.
+    let gone = "`fork` is gone: name the stream with `let` and use it once per branch.";
+    for body in [
+        "  dogstatsd | fork {\n    drop\n  }",
+        "  dogstatsd | host_enrichment | fork as f { emit primary }",
+        "  let a = dogstatsd | fork { drop }",
+        "  dogstatsd | host_enrichment fork { drop }",
+        "  dogstatsd | drop\n  fork { drop }",
+    ] {
+        assert_error(body, "fork", gone);
+    }
+
+    // A stream may still be named `fork`, and an operator, written with parentheses.
+    let statements = statements("  let fork = dogstatsd | fork()\n  fork | drop");
+    assert_eq!(op(&pipeline_of(&statements[0]).stages[0]).op.as_str(), "fork");
+    assert_eq!(ref_text(reference(&pipeline_of(&statements[1]).head)), "fork");
 }
 
 // The syntax rules.
@@ -713,25 +698,14 @@ fn sinks_end_pipelines() {
             ),
         );
     }
-    assert_error(
-        "  dogstatsd | fork { drop } | drop",
-        "fork",
-        "`fork` ends a pipeline, since each of its branches ends in a sink or another `fork`; to continue after it, \
-         add the stages to its branches.",
-    );
-    assert_error(
-        "  dogstatsd | fork { emit primary | drop }",
-        "emit",
-        "`emit` ends a branch; to send a copy and keep going, end the branch in a nested `fork`",
-    );
 }
 
 #[test]
 fn a_word_with_arguments_right_after_it_is_an_operator() {
     // The core form of an `emit` whose parameters no sink writes, in a `let`, and operators named like the other
-    // stages, or like `as`, which after a sink would otherwise name it.
+    // stages, or like `as`.
     let body = "  let e = dogstatsd | emit(output: \"o\", to: []) | drop() | where() as w | fork() | exit()\n  \
-                e | fork {\n    drop\n    as() as a\n      | drop\n  }";
+                e | as() as a | drop";
     let statements = statements(body);
     let ops = pipeline_of(&statements[0])
         .stages
@@ -743,11 +717,9 @@ fn a_word_with_arguments_right_after_it_is_an_operator() {
         op(&pipeline_of(&statements[0]).stages[0]).params,
         serde_json::from_value::<Params>(json!({"output": "o", "to": []})).unwrap()
     );
-    let branches = &fork(pipeline_of(&statements[1]).end.as_ref().unwrap()).branches;
-    assert_eq!(branches.len(), 2);
-    assert_eq!(id_text(&sink(&branches[0].end).id), None);
-    assert_eq!(op(&branches[1].stages[0]).op.as_str(), "as");
-    assert_eq!(id_text(&op(&branches[1].stages[0]).id).as_deref(), Some("a"));
+    let stage = op(&pipeline_of(&statements[1]).stages[0]);
+    assert_eq!(stage.op.as_str(), "as");
+    assert_eq!(id_text(&stage.id).as_deref(), Some("a"));
 
     // With a space, the word is what it is otherwise.
     assert_error("  dogstatsd | emit (x)", "(", "Expected what `emit` sends to");
@@ -766,11 +738,6 @@ fn a_let_does_not_end() {
         "drop",
         "`drop` ends a pipeline, but `let a`",
     );
-    assert_error(
-        "  let a = dogstatsd | fork { drop }",
-        "fork",
-        "`fork` ends a pipeline, but `let a`",
-    );
 }
 
 #[test]
@@ -778,30 +745,9 @@ fn a_bare_statement_ends() {
     assert_error(
         "  dogstatsd | host_enrichment",
         "dogstatsd | host_enrichment",
-        "This pipeline does not end: a statement without `let` ends in a sink (`emit`, `drop`, or `exit`) or a \
-         `fork`.",
+        "This pipeline does not end: a statement without `let` ends in a sink (`emit`, `drop`, or `exit`).",
     );
     assert_error("  (a, b) as m", "(a, b) as m", "This pipeline does not end");
-}
-
-#[test]
-fn branch_errors() {
-    assert_error("  dogstatsd | fork { }", "fork { }", "A fork has at least one branch");
-    assert_error(
-        "  dogstatsd | fork { host_enrichment }",
-        "}",
-        "Expected `|` and the branch's next stage: each branch of a fork ends in a sink",
-    );
-    assert_error(
-        "  dogstatsd | fork { | drop }",
-        "|",
-        "A fork's branch starts with its first stage, without `|`",
-    );
-    assert_error(
-        "  dogstatsd | fork drop",
-        "drop",
-        "Expected `{` and the fork's branches",
-    );
 }
 
 #[test]
@@ -855,21 +801,12 @@ fn structural_errors() {
 }
 
 #[test]
-fn unclosed_policies_point_at_the_last_fork() {
-    let source = "policy metrics {\n  a | fork {\n    drop\n}\n  b | drop\n";
+fn unclosed_policies_point_at_their_opening() {
+    let source = "policy metrics {\n  a | drop\n";
     let errors = parse(source).unwrap_err();
-    let error = errors.last().unwrap();
-    assert!(
-        error
-            .message
-            .starts_with("Expected `}` to close the policy opened at line 1, column 16, found the end of the input."),
-        "{}",
-        error.message
-    );
-    assert!(
-        error.message.contains("check the fork opened at line 2, column 12"),
-        "{}",
-        error.message
+    assert_eq!(
+        errors.last().unwrap().message,
+        "Expected `}` to close the policy opened at line 1, column 16, found the end of the input."
     );
 
     let errors = parse("policy metrics {} extra").unwrap_err();
@@ -1269,13 +1206,6 @@ fn nesting_is_bounded() {
     let (offending, message, _) = error_in(&format!("  dogstatsd | frobnicate(a: {}) | drop", lists(MAX_DEPTH + 1)));
     assert_eq!(offending, "[");
     assert!(message.contains(&depth_error), "{}", message);
-
-    // Each fork takes one level.
-    let forks = |count: usize| format!("  dogstatsd | {}drop{}", "fork { ".repeat(count), " }".repeat(count));
-    parse_ok(&policy(&forks(MAX_DEPTH)));
-    let (offending, message, _) = error_in(&forks(MAX_DEPTH + 1));
-    assert_eq!(offending, "{");
-    assert!(message.contains(&depth_error), "{}", message);
 }
 
 #[test]
@@ -1286,7 +1216,6 @@ fn deep_nesting_does_not_exhaust_the_stack() {
         format!("  dogstatsd | where {}true | drop", "not ".repeat(deep)),
         format!("  dogstatsd | where {}true | drop", "(".repeat(deep)),
         format!("  dogstatsd | frobnicate(a: {}) | drop", "[".repeat(deep)),
-        format!("  dogstatsd | {}drop", "fork { ".repeat(deep)),
     ] {
         let (_, message, _) = error_in(&body);
         assert!(message.contains("levels deep"), "{}", message);

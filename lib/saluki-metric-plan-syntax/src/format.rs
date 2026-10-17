@@ -17,9 +17,7 @@ use saluki_metric_plan::{
 };
 use serde_json::{Map, Value};
 
-use crate::ast::{
-    Branch, End, Fork, Head, Name, OpStage, Pipeline, Program, Ref, Sink, SinkKind, Stage, Statement, Tuple, WhereStage,
-};
+use crate::ast::{Head, Name, OpStage, Pipeline, Program, Ref, Sink, SinkKind, Stage, Statement, Tuple, WhereStage};
 
 #[cfg(test)]
 mod tests;
@@ -30,12 +28,12 @@ const INDENT: usize = 2;
 /// The units a duration literal ends in.
 const DURATION_UNITS: [&str; 6] = ["h", "m", "s", "ms", "us", "ns"];
 
-/// The words the grammar reserves where it expects them, which a bare recipient name cannot be.
+/// The words the grammar reserves where it expects them, which a bare recipient name is not written as. These include
+/// the retired `fork`, which parsing still recognizes to say what replaced it.
 const KEYWORDS: [&str; 8] = ["let", "as", "where", "fork", "emit", "output", "drop", "exit"];
 
 /// The words that an operator of the same name is written with parentheses to be told apart from: those that start a
-/// stage other than an operator, and `as`, which after a sink would otherwise name it rather than start the next
-/// branch of a fork.
+/// stage other than an operator or that parsing rejects there (the retired `fork`), and `as`, which names nodes.
 const STAGE_WORDS: [&str; 6] = ["where", "fork", "emit", "drop", "exit", "as"];
 
 /// Writes `program` as text, breaking lines beyond `width` columns. `usize::MAX` writes every value on one line.
@@ -136,13 +134,6 @@ struct Argument<'a> {
     ty: Option<&'static ParamType>,
 }
 
-/// One part of a branch, which is written as stages, then an end.
-enum Item<'a> {
-    Stage(&'a Stage),
-    Sink(&'a Sink),
-    Fork(&'a Fork),
-}
-
 struct Printer {
     width: usize,
 }
@@ -162,21 +153,16 @@ impl Printer {
     }
 
     /// Prints a statement's pipeline after `prefix`, on one line if it has at most two stages and fits, and otherwise
-    /// with the head on the first line and each stage on a line of its own. A pipeline whose only stage is a fork
-    /// writes the fork on the head's line, its branches one level deeper than the statement.
+    /// with the head on the first line and each stage on a line of its own.
     fn pipeline(&self, prefix: &str, pipeline: &Pipeline) -> String {
         let indent = INDENT;
-        if let (true, Some(End::Fork(fork))) = (pipeline.stages.is_empty(), &pipeline.end) {
-            let head = self.head(&pipeline.head, At::line(indent, 0).right(prefix.len()));
-            return format!("{}{}{} | {}", pad(indent), prefix, head, self.fork(fork, indent));
-        }
-        let stages = pipeline.stages.len() + usize::from(matches!(pipeline.end, Some(End::Sink(_))));
-        if stages <= 2 && !matches!(pipeline.end, Some(End::Fork(_))) {
+        let stages = pipeline.stages.len() + usize::from(pipeline.end.is_some());
+        if stages <= 2 {
             let mut flat = format!("{}{}{}", pad(indent), prefix, self.flat_head(&pipeline.head));
             for stage in &pipeline.stages {
                 flat.push_str(&format!(" | {}", self.flat_stage(stage)));
             }
-            if let Some(End::Sink(sink)) = &pipeline.end {
+            if let Some(sink) = &pipeline.end {
                 flat.push_str(&format!(" | {}", sink_text(sink)));
             }
             if self.fits(At::line(0, 0), &flat) {
@@ -198,10 +184,8 @@ impl Printer {
                 self.stage(stage, bar + INDENT, bar + 2 * INDENT)
             ));
         }
-        match &pipeline.end {
-            Some(End::Sink(sink)) => text.push_str(&format!("\n{}| {}", pad(bar), sink_text(sink))),
-            Some(End::Fork(fork)) => text.push_str(&format!("\n{}| {}", pad(bar), self.fork(fork, bar))),
-            None => {}
+        if let Some(sink) = &pipeline.end {
+            text.push_str(&format!("\n{}| {}", pad(bar), sink_text(sink)));
         }
         text
     }
@@ -393,63 +377,6 @@ impl Printer {
             Some(name) => format!("{}: {}", name, self.flat_value(arg.value, arg.ty)),
             None => self.flat_value(arg.value, arg.ty),
         }
-    }
-
-    // Forks and branches.
-
-    /// Prints a `fork` whose `|` (or whose line, if it starts a branch) is indented by `bar`: its branches are one
-    /// level deeper, and its closing brace is aligned with the `|`.
-    fn fork(&self, fork: &Fork, bar: usize) -> String {
-        let mut text = format!("fork{} {{", as_clause(&fork.id));
-        for branch in &fork.branches {
-            text.push('\n');
-            text.push_str(&self.branch(branch, bar + INDENT));
-        }
-        text.push_str(&format!("\n{}}}", pad(bar)));
-        text
-    }
-
-    /// Prints a branch indented by `indent`: on one line if it fits, and otherwise with its first item starting the
-    /// line and the rest continuing as `| item` lines one level deeper.
-    fn branch(&self, branch: &Branch, indent: usize) -> String {
-        let mut items = branch.stages.iter().map(Item::Stage).collect::<Vec<_>>();
-        items.push(match &branch.end {
-            End::Sink(sink) => Item::Sink(sink),
-            End::Fork(fork) => Item::Fork(fork),
-        });
-
-        if let End::Sink(_) = &branch.end {
-            let flat = items
-                .iter()
-                .map(|item| match item {
-                    Item::Stage(stage) => self.flat_stage(stage),
-                    Item::Sink(sink) => sink_text(sink),
-                    Item::Fork(_) => unreachable!("a branch that ends in a sink has no fork"),
-                })
-                .collect::<Vec<_>>()
-                .join(" | ");
-            let line = format!("{}{}", pad(indent), flat);
-            if self.fits(At::line(0, 0), &line) {
-                return line;
-            }
-        }
-
-        let mut text = pad(indent);
-        for (i, item) in items.iter().enumerate() {
-            // A broken `where` that starts the branch continues deeper than the `|` lines after it.
-            let (bar, lead, junction) = if i == 0 {
-                (indent, indent, indent + 2 * INDENT)
-            } else {
-                text.push_str(&format!("\n{}| ", pad(indent + INDENT)));
-                (indent + INDENT, indent + 2 * INDENT, indent + 3 * INDENT)
-            };
-            match item {
-                Item::Stage(stage) => text.push_str(&self.stage(stage, lead, junction)),
-                Item::Sink(sink) => text.push_str(&sink_text(sink)),
-                Item::Fork(fork) => text.push_str(&self.fork(fork, bar)),
-            }
-        }
-        text
     }
 
     // Values.

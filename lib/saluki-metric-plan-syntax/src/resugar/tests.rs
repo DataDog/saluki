@@ -1,7 +1,7 @@
 //! Tests of resugaring: the tree each graph shape gives, written compactly so that a test reads as the program.
 //!
 //! Lowering is tested on its own; these tests pin the forms resugaring chooses, where it falls back to the core form,
-//! where it writes `as`, and the order of statements.
+//! where a `let` names a node and where only an `as` can, and the order of statements.
 
 use proptest::prelude::*;
 use saluki_metric_plan::ir::{ParamType, PolicyArtifact};
@@ -109,30 +109,14 @@ fn stage_text(stage: &Stage) -> String {
     }
 }
 
-fn end_text(end: &End) -> String {
-    match end {
-        End::Sink(sink) => {
-            let kind = match &sink.kind {
-                SinkKind::Recipients { names, .. } => format!("emit [{}]", names.join(", ")),
-                SinkKind::Output { output, .. } => format!("emit output {}", output),
-                SinkKind::Drop => "drop".to_string(),
-                SinkKind::Exit { name, .. } => format!("exit {}", name),
-            };
-            format!("{}{}", kind, as_text(&sink.id))
-        }
-        End::Fork(fork) => {
-            let branches = fork
-                .branches
-                .iter()
-                .map(|branch| {
-                    let mut parts = branch.stages.iter().map(stage_text).collect::<Vec<_>>();
-                    parts.push(end_text(&branch.end));
-                    parts.join(" | ")
-                })
-                .collect::<Vec<_>>();
-            format!("fork{} {{ {} }}", as_text(&fork.id), branches.join("; "))
-        }
-    }
+fn end_text(sink: &Sink) -> String {
+    let kind = match &sink.kind {
+        SinkKind::Recipients { names, .. } => format!("emit [{}]", names.join(", ")),
+        SinkKind::Output { output, .. } => format!("emit output {}", output),
+        SinkKind::Drop => "drop".to_string(),
+        SinkKind::Exit { name, .. } => format!("exit {}", name),
+    };
+    format!("{}{}", kind, as_text(&sink.id))
 }
 
 fn emit(output: &str) -> Value {
@@ -172,9 +156,10 @@ fn a_chain_with_derived_ids_has_no_as() {
 }
 
 #[test]
-fn as_goes_on_every_node_whose_id_is_not_derived() {
-    // Ordinals count every stage, including those with an `as`: the second `alpha` is `_2` even though the first has
-    // an `as`.
+fn a_node_whose_id_is_not_derived_ends_a_let_and_only_a_sink_takes_an_as() {
+    // `first` ends a `let`, so the second `alpha`, which lowering would derive as `input_dogstatsd_alpha_2` after an
+    // `alpha as first`, is no longer derived after it either and ends a `let` of its own. The sink's ID cannot be a
+    // `let`'s name, so only it takes an `as`.
     let a = artifact(
         &[
             ("first", "alpha", none()),
@@ -187,7 +172,15 @@ fn as_goes_on_every_node_whose_id_is_not_derived() {
             ("input_dogstatsd_alpha_2.out", "sink.in"),
         ],
     );
-    assert_eq!(statements(&a), ["dogstatsd | alpha as first | alpha | drop as sink"]);
+    assert_eq!(
+        statements(&a),
+        [
+            "let first = dogstatsd | alpha",
+            "let input_dogstatsd_alpha_2 = first | alpha",
+            "input_dogstatsd_alpha_2 | drop as sink",
+        ]
+    );
+    assert_lowers_back(&a);
 }
 
 #[test]
@@ -284,53 +277,44 @@ fn a_split_that_drops_on_true_is_the_core_form() {
 }
 
 #[test]
-fn a_tee_whose_branches_end_in_sinks_is_a_fork() {
-    // Each branch counts its ordinals afresh, from its own anchor.
+fn a_tee_whose_ports_end_in_sinks_is_the_core_form() {
+    // Each port of the tee starts a statement, whose stages derive from the port.
     let a = artifact(
         &[
-            ("input_dogstatsd_fork", "tee", json!({"ports": 3})),
-            ("input_dogstatsd_fork_0", "emit", emit("a")),
-            ("input_dogstatsd_fork_1_split", "split", predicate("a")),
-            ("input_dogstatsd_fork_1_split_false", "drop", none()),
-            ("input_dogstatsd_fork_1_split_true", "emit", emit("b")),
-            ("input_dogstatsd_fork_2_split", "split", predicate("a")),
-            ("input_dogstatsd_fork_2_split_false", "drop", none()),
-            ("input_dogstatsd_fork_2_split_true", "drop", none()),
+            ("t", "tee", json!({"ports": 3})),
+            ("t_0", "emit", emit("a")),
+            ("t_1_split", "split", predicate("a")),
+            ("t_1_split_false", "drop", none()),
+            ("t_1_split_true", "emit", emit("b")),
+            ("t_2_split", "split", predicate("a")),
+            ("t_2_split_false", "drop", none()),
+            ("t_2_split_true", "drop", none()),
         ],
         &[
-            ("input.dogstatsd", "input_dogstatsd_fork.in"),
-            ("input_dogstatsd_fork.0", "input_dogstatsd_fork_0.in"),
-            ("input_dogstatsd_fork.1", "input_dogstatsd_fork_1_split.in"),
-            (
-                "input_dogstatsd_fork_1_split.true",
-                "input_dogstatsd_fork_1_split_true.in",
-            ),
-            (
-                "input_dogstatsd_fork_1_split.false",
-                "input_dogstatsd_fork_1_split_false.in",
-            ),
-            ("input_dogstatsd_fork.2", "input_dogstatsd_fork_2_split.in"),
-            (
-                "input_dogstatsd_fork_2_split.true",
-                "input_dogstatsd_fork_2_split_true.in",
-            ),
-            (
-                "input_dogstatsd_fork_2_split.false",
-                "input_dogstatsd_fork_2_split_false.in",
-            ),
+            ("input.dogstatsd", "t.in"),
+            ("t.0", "t_0.in"),
+            ("t.1", "t_1_split.in"),
+            ("t_1_split.true", "t_1_split_true.in"),
+            ("t_1_split.false", "t_1_split_false.in"),
+            ("t.2", "t_2_split.in"),
+            ("t_2_split.true", "t_2_split_true.in"),
+            ("t_2_split.false", "t_2_split_false.in"),
         ],
     );
     assert_eq!(
         statements(&a),
-        [format!(
-            "dogstatsd | fork {{ emit output a; where {} | emit output b; where {} | drop }}",
-            P, P
-        )]
+        [
+            "let t = dogstatsd | tee(ports: 3)".to_string(),
+            "t.0 | emit output a".to_string(),
+            format!("t.1 | where {} | emit output b", P),
+            format!("t.2 | where {} | drop", P),
+        ]
     );
+    assert_lowers_back(&a);
 }
 
 #[test]
-fn forks_nest_and_take_their_ids_from_their_branch() {
+fn a_tee_after_a_tee_is_a_let_of_its_own() {
     let a = artifact(
         &[
             ("policy", "tee", json!({"ports": 2})),
@@ -349,13 +333,19 @@ fn forks_nest_and_take_their_ids_from_their_branch() {
     );
     assert_eq!(
         statements(&a),
-        ["dogstatsd | fork as policy { emit output a; fork { emit output b; drop } }"]
+        [
+            "let policy = dogstatsd | tee(ports: 2)",
+            "policy.0 | emit output a",
+            "let policy_1_fork = policy.1 | tee(ports: 2)",
+            "policy_1_fork.0 | emit output b",
+            "policy_1_fork.1 | drop",
+        ]
     );
 }
 
 #[test]
-fn a_fanout_tee_whose_uses_all_end_in_sinks_is_a_fork() {
-    // An implicit tee and a fork could both describe this graph; the fork wins.
+fn a_fanout_tee_whose_uses_all_end_in_sinks_is_reuse() {
+    // Reuse is the only way to copy a stream, whatever its copies lead to.
     let a = artifact(
         &[
             ("x", "alpha", none()),
@@ -372,7 +362,7 @@ fn a_fanout_tee_whose_uses_all_end_in_sinks_is_a_fork() {
     );
     assert_eq!(
         statements(&a),
-        ["dogstatsd | alpha as x | fork as x_fanout { emit output a; emit output b }"]
+        ["let x = dogstatsd | alpha", "x | emit output a", "x | emit output b"]
     );
 }
 
@@ -412,9 +402,13 @@ fn a_fanout_tee_is_reuse_of_a_let() {
     assert_eq!(
         statements(&reused(0)),
         [
+            // The tuple's merge has its derived ID, which the stage after it cannot derive from, so the merge ends a
+            // `let`, which an `as` would otherwise have to name.
             "let x = dogstatsd | alpha",
             "x | emit output a",
-            "(x, otlp) | beta as joined | emit output b",
+            "let x_fanout_1_in = (x, otlp)",
+            "let joined = x_fanout_1_in | beta",
+            "joined | emit output b",
         ]
     );
 }
@@ -426,7 +420,9 @@ fn the_uses_of_an_implicit_tee_come_in_port_order() {
         statements(&reused(1)),
         [
             "let x = dogstatsd | alpha",
-            "(x, otlp) | beta as joined | emit output b",
+            "let x_fanout_0_in = (x, otlp)",
+            "let joined = x_fanout_0_in | beta",
+            "joined | emit output b",
             "x | emit output a",
         ]
     );
@@ -453,8 +449,10 @@ fn an_implicit_tee_whose_uses_cannot_be_in_port_order_is_the_core_form() {
     assert_eq!(
         statements(&a),
         [
-            "let x_fanout = dogstatsd | alpha as x | tee(ports: 2)",
-            "(x_fanout.1, x_fanout.0) as m | drop",
+            "let x = dogstatsd | alpha",
+            "let x_fanout = x | tee(ports: 2)",
+            "let m = (x_fanout.1, x_fanout.0)",
+            "m | drop",
         ]
     );
 }
@@ -487,8 +485,10 @@ fn the_implicit_tee_written_in_the_core_form_depends_only_on_the_graph() {
     let a = artifact(&nodes, &edges);
     let expected = [
         "let input_dogstatsd_fanout = dogstatsd | tee(ports: 3)",
-        "(input_dogstatsd_fanout.0, otlp, input_dogstatsd_fanout.2) as m1 | drop",
-        "(checks, otlp, input_dogstatsd_fanout.1) as m2 | drop",
+        "let m1 = (input_dogstatsd_fanout.0, otlp, input_dogstatsd_fanout.2)",
+        "m1 | drop",
+        "let m2 = (checks, otlp, input_dogstatsd_fanout.1)",
+        "m2 | drop",
     ];
     assert_eq!(statements(&a), expected);
     let mut reversed = a.clone();
@@ -520,9 +520,11 @@ fn a_tee_without_the_derived_id_is_the_core_form() {
     assert_eq!(
         statements(&a),
         [
-            "let copies = dogstatsd | alpha as x | tee(ports: 2)",
+            "let x = dogstatsd | alpha",
+            "let copies = x | tee(ports: 2)",
             "copies.0 | emit output a",
-            "(copies.1, otlp) as m | drop",
+            "let m = (copies.1, otlp)",
+            "m | drop",
         ]
     );
 }
@@ -549,7 +551,7 @@ fn a_scope_input_used_twice_is_reused_through_its_fanout() {
 
 #[test]
 fn a_bare_tuple_anchors_its_stages_on_its_merge() {
-    // The merge's ID is written with `as`, and the stages after it still derive from it.
+    // The merge's ID is not derived, so it ends a `let`, and the stages after it still derive from it.
     let a = artifact(
         &[
             ("joined", "merge", json!({"inputs": 2})),
@@ -563,7 +565,8 @@ fn a_bare_tuple_anchors_its_stages_on_its_merge() {
             ("joined_alpha.out", "joined_alpha_out.in"),
         ],
     );
-    assert_eq!(statements(&a), ["(otlp, checks) as joined | alpha | drop"]);
+    assert_eq!(statements(&a), ["let joined = (otlp, checks)", "joined | alpha | drop"]);
+    assert_lowers_back(&a);
 
     let derived = artifact(
         &[
@@ -601,7 +604,12 @@ fn a_tuple_used_twice_is_a_let_of_its_own() {
     );
     assert_eq!(
         statements(&a),
-        ["let m = (otlp, checks)", "m | drop", "(m, liveness) as n | drop"]
+        [
+            "let m = (otlp, checks)",
+            "m | drop",
+            "let n = (m, liveness)",
+            "n | drop"
+        ]
     );
 }
 
@@ -629,36 +637,45 @@ fn a_named_intermediate_stream_starts_a_let() {
 }
 
 #[test]
-fn a_single_node_is_not_split_off_without_evidence() {
-    // Splitting at `a` would save its `as`, but nothing says a person named it: one statement.
+fn a_let_names_each_node_whose_id_is_not_derived() {
+    // `as` is the last resort: `a` and `b` each end a `let` named for them, which saves both `as` clauses.
     let a = artifact(
         &[("a", "alpha", none()), ("b", "beta", none()), ("b_out", "drop", none())],
         &[("input.dogstatsd", "a.in"), ("a.out", "b.in"), ("b.out", "b_out.in")],
     );
-    assert_eq!(statements(&a), ["dogstatsd | alpha as a | beta as b | drop"]);
+    assert_eq!(
+        statements(&a),
+        ["let a = dogstatsd | alpha", "let b = a | beta", "b | drop"]
+    );
 }
 
 #[test]
-fn a_let_can_be_split_before_a_fork_to_derive_the_fork() {
+fn a_let_is_split_before_a_node_with_a_name_of_its_own() {
+    // `x_alpha` derives from `x`, and the tee, which does not, ends a `let` of its own.
     let a = artifact(
         &[
             ("x_alpha", "alpha", none()),
             ("x", "beta", none()),
-            ("x_fork", "tee", json!({"ports": 2})),
-            ("x_fork_0", "drop", none()),
-            ("x_fork_1", "drop", none()),
+            ("x_copies", "tee", json!({"ports": 2})),
+            ("x_copies_0", "drop", none()),
+            ("x_copies_1", "drop", none()),
         ],
         &[
             ("input.dogstatsd", "x_alpha.in"),
             ("x_alpha.out", "x.in"),
-            ("x.out", "x_fork.in"),
-            ("x_fork.0", "x_fork_0.in"),
-            ("x_fork.1", "x_fork_1.in"),
+            ("x.out", "x_copies.in"),
+            ("x_copies.0", "x_copies_0.in"),
+            ("x_copies.1", "x_copies_1.in"),
         ],
     );
     assert_eq!(
         statements(&a),
-        ["let x = dogstatsd | alpha | beta", "x | fork { drop; drop }"]
+        [
+            "let x = dogstatsd | alpha | beta",
+            "let x_copies = x | tee(ports: 2)",
+            "x_copies.0 | drop",
+            "x_copies.1 | drop",
+        ]
     );
 }
 
@@ -692,7 +709,8 @@ fn a_node_with_several_output_ports_is_a_let_with_port_references() {
 #[test]
 fn a_let_whose_node_has_the_name_of_a_scope_input_takes_a_name_of_its_own() {
     // `let checks = ...` would make the reference to the scope input `checks` refer to the `let`, so the `let` is
-    // named `checks_let` (and `checks_let_2` when that is taken), and its last stage has the node's ID.
+    // named `checks_let` (and `checks_let_2` when that is taken), and its last stage has the node's ID. The node
+    // before it, whose ID is not derived, ends a `let` of its own.
     let a = artifact(
         &[
             ("checks", "gamma", none()),
@@ -713,7 +731,8 @@ fn a_let_whose_node_has_the_name_of_a_scope_input_takes_a_name_of_its_own() {
         statements(&a),
         [
             "checks | drop",
-            "let checks_let_2 = dogstatsd | alpha as checks_let | gamma as checks",
+            "let checks_let = dogstatsd | alpha",
+            "let checks_let_2 = checks_let | gamma as checks",
             "checks_let_2.left | drop",
             "checks_let_2.right | drop",
         ]
@@ -740,7 +759,8 @@ fn a_let_whose_node_has_the_name_of_a_scope_input_takes_a_name_of_its_own() {
         statements(&a),
         [
             "let otlp_let = (otlp, checks) as otlp",
-            "(otlp_let, liveness) as m | drop"
+            "let m = (otlp_let, liveness)",
+            "m | drop",
         ]
     );
     assert_lowers_back(&a);
@@ -774,7 +794,7 @@ fn a_node_whose_ports_are_unknown_continues_only_from_out() {
         &[("t", "gamma", none()), ("t_out", "drop", none())],
         &[("input.dogstatsd", "t.in"), ("t.out", "t_out.in")],
     );
-    assert_eq!(statements(&a), ["dogstatsd | gamma as t | drop"]);
+    assert_eq!(statements(&a), ["let t = dogstatsd | gamma", "t | drop"]);
 }
 
 #[test]
@@ -965,18 +985,17 @@ fn a_long_chain_resugars_without_deep_recursion() {
     let a = artifact(&nodes, &edges);
     std::thread::Builder::new()
         .stack_size(1024 * 1024)
-        .spawn(move || assert_eq!(statements(&a).len(), 1))
+        // Each node, its ID not derived, ends a `let` named for it, which the next statement continues.
+        .spawn(move || assert_eq!(statements(&a).len(), count + 1))
         .unwrap()
         .join()
         .unwrap();
 }
 
-/// The default program's export, in normal form: its splits drop on `false`.
+/// The default program's export, in normal form (its splits drop on `false`), with the IDs native lowering derives
+/// (see [`NATIVE_RENAMES`](crate::tests::NATIVE_RENAMES)).
 fn default_export() -> PolicyArtifact {
-    PolicyArtifact::from_json(include_str!(
-        "../../../saluki-metric-plan/fixtures/export/default-program-metrics.json"
-    ))
-    .expect("the fixture reads")
+    crate::tests::default_export()
 }
 
 /// Returns the statements of `artifact` with parameters and predicates written as `...`.
@@ -990,9 +1009,9 @@ fn outline(artifact: &PolicyArtifact) -> Vec<String> {
 #[test]
 fn the_default_program_resugars_into_lets_named_for_its_streams() {
     // In the native polarity, the splits drop on `true`, so they are written in the core form, and the tee after
-    // `dsd_post_agg_filter.false` does not have that port's fanout ID, so it is explicit. The tuple and the enrichment
-    // after it are a `let` named `metrics_enrich`, which derives the merge's native ID, `metrics_enrich_in`, and the
-    // host tags stage's, `metrics_enrich_host_tags`.
+    // `dsd_post_agg_filter.false` does not have that port's fanout ID, so it is explicit. Every node whose ID its
+    // position does not derive ends a `let` named for it; the tuple and the stages after it are a `let` named
+    // `metrics`, which derives the merge's ID, `metrics_in`, and the enrichment's, `metrics_host_enrichment`.
     assert_eq!(
         outline(&with_drops_on(
             &default_export(),
@@ -1000,22 +1019,27 @@ fn the_default_program_resugars_into_lets_named_for_its_streams() {
             Some(&["dsd_prefix_filter_blocklist", "dsd_post_agg_filter"])
         )),
         [
-            "let dsd_prefix_filter_blocklist = dogstatsd | dogstatsd_mapper(...) as dsd_enrich \
-             | namespace_prefix(...) as dsd_prefix_filter | split(...)",
+            "let dsd_enrich = dogstatsd | dogstatsd_mapper(...)",
+            "let dsd_prefix_filter_blocklist = dsd_enrich | namespace_prefix(...) | split(...)",
             "dsd_prefix_filter_blocklist.true | drop",
             "let dsd_no_agg_split = dsd_prefix_filter_blocklist.false | timestamp_split(...)",
-            "let dsd_agg = dsd_no_agg_split.default | tag_projection(...) as dsd_tag_filterlist | aggregate(...)",
+            "let dsd_tag_filterlist = dsd_no_agg_split.default | tag_projection(...)",
+            "let dsd_agg = dsd_tag_filterlist | aggregate(...)",
             "let dsd_post_agg_filter = (dsd_agg, dsd_no_agg_split.passthrough) | split(...)",
             "dsd_post_agg_filter.true | drop",
             "let dsd_post_agg_filter_fanout = dsd_post_agg_filter.false | tee(...)",
             "dsd_post_agg_filter_fanout.0 | emit output dsd_client_telemetry",
-            "let metrics_enrich = (dsd_post_agg_filter_fanout.1, otlp, checks, liveness, trace_sampler) \
-             | host_enrichment",
-            "metrics_enrich | host_tags(...) | fork as metrics_policy { emit output dd_metrics_encode; \
-             where ... as metrics_routing_filter_0 | emit output metrics_routing_encode_0; \
-             where ... as metrics_routing_filter_1 | emit output metrics_routing_encode_1; \
-             where ... as mrf_metrics_gateway | emit output mrf_metrics_encode; \
-             where ... as af_metrics_gateway | emit output af_metrics_encode }",
+            "let metrics = (dsd_post_agg_filter_fanout.1, otlp, checks, liveness, trace_sampler) | host_enrichment \
+             | host_tags(...)",
+            "metrics | emit output dd_metrics_encode",
+            "let metrics_routing_filter_0 = metrics | where ...",
+            "metrics_routing_filter_0 | emit output metrics_routing_encode_0",
+            "let metrics_routing_filter_1 = metrics | where ...",
+            "metrics_routing_filter_1 | emit output metrics_routing_encode_1",
+            "let mrf_metrics_gateway = metrics | where ...",
+            "mrf_metrics_gateway | emit output mrf_metrics_encode",
+            "let af_metrics_gateway = metrics | where ...",
+            "af_metrics_gateway | emit output af_metrics_encode",
         ]
     );
 }
@@ -1086,8 +1110,8 @@ fn canonical(artifact: PolicyArtifact) -> PolicyArtifact {
 
 #[test]
 fn the_normalized_default_program_has_the_designed_shape() {
-    // With normalization's polarity, the splits are `where`s and `dsd_post_agg_filter` is reused through its native
-    // fanout, as the design's example shows.
+    // With normalization's polarity, the splits are `where`s, and `dsd_post_agg_filter` and `metrics` are reused
+    // through their fanouts. No node needs an `as`.
     assert_eq!(
         with_drops_on(&default_export(), "false", None),
         canonical(default_export())
@@ -1095,18 +1119,24 @@ fn the_normalized_default_program_has_the_designed_shape() {
     assert_eq!(
         outline(&default_export()),
         [
-            "let dsd_no_agg_split = dogstatsd | dogstatsd_mapper(...) as dsd_enrich \
-             | namespace_prefix(...) as dsd_prefix_filter | where ... as dsd_prefix_filter_blocklist \
-             | timestamp_split(...)",
-            "let dsd_agg = dsd_no_agg_split.default | tag_projection(...) as dsd_tag_filterlist | aggregate(...)",
+            "let dsd_enrich = dogstatsd | dogstatsd_mapper(...)",
+            "let dsd_prefix_filter_blocklist = dsd_enrich | namespace_prefix(...) | where ...",
+            "let dsd_no_agg_split = dsd_prefix_filter_blocklist | timestamp_split(...)",
+            "let dsd_tag_filterlist = dsd_no_agg_split.default | tag_projection(...)",
+            "let dsd_agg = dsd_tag_filterlist | aggregate(...)",
             "let dsd_post_agg_filter = (dsd_agg, dsd_no_agg_split.passthrough) | where ...",
             "dsd_post_agg_filter | emit output dsd_client_telemetry",
-            "let metrics_enrich = (dsd_post_agg_filter, otlp, checks, liveness, trace_sampler) | host_enrichment",
-            "metrics_enrich | host_tags(...) | fork as metrics_policy { emit output dd_metrics_encode; \
-             where ... as metrics_routing_filter_0 | emit output metrics_routing_encode_0; \
-             where ... as metrics_routing_filter_1 | emit output metrics_routing_encode_1; \
-             where ... as mrf_metrics_gateway | emit output mrf_metrics_encode; \
-             where ... as af_metrics_gateway | emit output af_metrics_encode }",
+            "let metrics = (dsd_post_agg_filter, otlp, checks, liveness, trace_sampler) | host_enrichment \
+             | host_tags(...)",
+            "metrics | emit output dd_metrics_encode",
+            "let metrics_routing_filter_0 = metrics | where ...",
+            "metrics_routing_filter_0 | emit output metrics_routing_encode_0",
+            "let metrics_routing_filter_1 = metrics | where ...",
+            "metrics_routing_filter_1 | emit output metrics_routing_encode_1",
+            "let mrf_metrics_gateway = metrics | where ...",
+            "mrf_metrics_gateway | emit output mrf_metrics_encode",
+            "let af_metrics_gateway = metrics | where ...",
+            "af_metrics_gateway | emit output af_metrics_encode",
         ]
     );
 }
@@ -1123,7 +1153,7 @@ fn arbitrary_artifact() -> impl Strategy<Value = PolicyArtifact> {
         ("merge", r#"{"inputs": 2}"#),
         ("timestamp_split", r#"{"window": "10s"}"#),
     ];
-    const IDS: &[&str] = &["a", "b", "c", "a_fanout", "a_split", "b_false", "input_x_fork", "c_0"];
+    const IDS: &[&str] = &["a", "b", "c", "a_fanout", "a_split", "b_false", "input_x_fanout", "c_0"];
     const PORTS: &[&str] = &["out", "in", "true", "false", "0", "1", "2", "default", "passthrough"];
     let end = prop_oneof![
         (0..IDS.len(), 0..PORTS.len()).prop_map(|(n, p)| format!("{}.{}", IDS[n], PORTS[p])),

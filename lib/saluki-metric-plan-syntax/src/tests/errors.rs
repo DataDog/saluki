@@ -97,7 +97,7 @@ fn common_mistakes_are_reported_at_the_offending_text() {
             "Expected a node name after `as`, found `|`.",
         ),
         case(
-            lines("  dogstatsd | fork { drop } as"),
+            lines("  dogstatsd | drop as"),
             4,
             1,
             "}",
@@ -153,19 +153,20 @@ fn common_mistakes_are_reported_at_the_offending_text() {
             "Write the arguments of `host_enrichment` right after its name, without a space, as in \
              `host_enrichment(...)`: a `(` after a space starts a tuple, the head of the next statement.",
         ),
+        // The retired `fork`.
         case(
-            lines("  dogstatsd | fork drop"),
-            3,
-            20,
-            "drop",
-            "Expected `{` and the fork's branches, one per copy of the stream, found `drop`.",
-        ),
-        case(
-            lines("  dogstatsd | fork { drop drop } | drop"),
+            lines("  dogstatsd | fork {\n    emit primary\n    drop\n  }"),
             3,
             15,
             "fork",
-            "`fork` ends a pipeline, since each of its branches ends in a sink or another `fork`",
+            "`fork` is gone: name the stream with `let` and use it once per branch.",
+        ),
+        case(
+            lines("  let a = dogstatsd | fork { drop }"),
+            3,
+            23,
+            "fork",
+            "`fork` is gone: name the stream with `let` and use it once per branch.",
         ),
         case(
             lines("  dogstatsd | where | drop"),
@@ -348,12 +349,11 @@ fn common_mistakes_are_reported_at_the_offending_text() {
             "Expected `and`, `or`, or `)` to close the parenthesis opened at line 3, column 21, found `|`.",
         ),
         case(
-            lines("  dogstatsd | fork {\n    drop\n    drop\n"),
-            8,
+            format!("policy p {{\n  base \"{}\"\n  dogstatsd | drop\n", BASE),
+            4,
             1,
             "",
-            "Expected `}` to close the policy opened at line 1, column 10, found the end of the input. If a fork is \
-             missing its `}`, the policy's `}` closed it instead: check the fork opened at line 3, column 20.",
+            "Expected `}` to close the policy opened at line 1, column 10, found the end of the input.",
         ),
         case(
             "policy p {\n}\n".to_string(),
@@ -595,11 +595,19 @@ fn sources_near_the_limits_parse_in_linear_time() {
     assert_eq!(value.as_array().map(Vec::len), Some(elements));
 }
 
-/// Returns a policy with the width of a wide node in each form: a fork, a tuple, and a stream used many times (in one tuple).
+/// Returns a policy with the width of a wide node in each form: a `tee`, a tuple, and a stream used many times (in one
+/// tuple).
 fn wide_sources(width: usize) -> [(&'static str, String); 3] {
     // Scrambled orders: 7919 is prime, so multiplying by it permutes the indexes.
     let scrambled = |i: usize| i * 7919 % width;
-    let fork = format!("  dogstatsd\n    | fork {{\n{}    }}", "      drop\n".repeat(width));
+    let tee = format!(
+        "  let t = dogstatsd | tee(ports: {})\n{}",
+        width,
+        (0..width)
+            .map(|i| format!("  t.{} | drop", scrambled(i)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
     let tuple = format!(
         "  ({}) | drop",
         (0..width)
@@ -612,7 +620,7 @@ fn wide_sources(width: usize) -> [(&'static str, String); 3] {
         vec!["x"; width].join(", ")
     );
     [
-        ("fork", policy(&fork)),
+        ("tee", policy(&tee)),
         ("tuple", policy(&tuple)),
         ("uses", policy(&uses)),
     ]
@@ -642,22 +650,20 @@ fn wide_nodes_parse_and_print_in_time_proportional_to_their_edges() {
     let width = 10_000;
 
     // Each form's artifact, built by hand with its edges in reverse order, as a tool writing JSON might give them. A
-    // fork's tee, a tuple's merge, and the tee after a reused stream.
+    // `tee` in the core form, a tuple's merge, and the tee after a reused stream.
     let artifact_of = |nodes: Vec<Value>, mut edges: Vec<Value>| {
         edges.reverse();
         raw_artifact(json!({
             "ir_version": 1, "scope": "p", "base": {"program_hash": BASE}, "nodes": nodes, "edges": edges,
         }))
     };
-    let mut nodes = vec![json!({"id": "input_dogstatsd_fork", "op": "tee", "params": {"ports": width}})];
-    let mut edges = vec![json!({"from": "input.dogstatsd", "to": "input_dogstatsd_fork.in"})];
+    let mut nodes = vec![json!({"id": "t", "op": "tee", "params": {"ports": width}})];
+    let mut edges = vec![json!({"from": "input.dogstatsd", "to": "t.in"})];
     for port in 0..width {
-        nodes.push(json!({"id": format!("input_dogstatsd_fork_{}", port), "op": "drop"}));
-        edges.push(json!({
-            "from": format!("input_dogstatsd_fork.{}", port), "to": format!("input_dogstatsd_fork_{}.in", port),
-        }));
+        nodes.push(json!({"id": format!("t_{}", port), "op": "drop"}));
+        edges.push(json!({"from": format!("t.{}", port), "to": format!("t_{}.in", port)}));
     }
-    let fork = artifact_of(nodes, edges);
+    let tee = artifact_of(nodes, edges);
 
     let mut nodes = vec![json!({"id": "input_i0_in", "op": "merge", "params": {"inputs": width}})];
     let mut edges = Vec::new();
@@ -703,7 +709,11 @@ fn wide_nodes_parse_and_print_in_time_proportional_to_their_edges() {
     }
 
     for (form, wide, sugar) in [
-        ("fork", &fork, "| fork {\n"),
+        (
+            "tee",
+            &tee,
+            "  let t = dogstatsd | tee(ports: 10000)\n\n  t.0 | drop\n\n  t.1 | drop\n",
+        ),
         ("tuple", &tuple, "(\n    i0,\n    i1,\n    i2,\n"),
         ("uses", &uses, "(\n    x,\n    x,\n    x,\n"),
     ] {
@@ -919,13 +929,6 @@ const NESTING_FORMS: &[NestingForm] = &[
             nest(levels - 1, "(", "true", ")")
         ))
     }),
-    ("forks", |levels| {
-        policy(&format!(
-            "  dogstatsd | {}drop{}",
-            "fork { ".repeat(levels),
-            " }".repeat(levels)
-        ))
-    }),
 ];
 
 #[test]
@@ -964,8 +967,6 @@ fn nesting_is_bounded_without_exhausting_the_stack() {
             format!("  dogstatsd | where {}true | drop", "not ".repeat(depth)),
             format!("  dogstatsd | where {}true | drop", "(".repeat(depth)),
             format!("  dogstatsd | where {}true | drop", "not (".repeat(depth)),
-            format!("  dogstatsd | {}drop", "fork { ".repeat(depth)),
-            format!("  dogstatsd | {}", "fork { drop ".repeat(depth)),
         ];
         for items in deep_inputs {
             let diagnostics = parse_err(&policy(&items));

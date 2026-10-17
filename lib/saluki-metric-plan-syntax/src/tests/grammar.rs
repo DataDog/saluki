@@ -18,7 +18,7 @@ fn blob_table(hash: &str, blob: Value) -> Value {
     Value::Object(table)
 }
 
-/// The routing example: a `fork` and a `where`, and inline terminals.
+/// The routing example: a scope input used twice, a `where`, and inline terminals.
 fn routing_source() -> String {
     format!(
         r#"policy post_enrich {{
@@ -28,10 +28,11 @@ fn routing_source() -> String {
     metrics_routing_encode_0 = "{FP3}",
   }}
 
-  metrics | fork as metrics_policy {{
-    emit output dd_metrics_encode
-    where intake_name starts_with ["demo.checkout."] as metrics_routing_filter_0 | emit output metrics_routing_encode_0
-  }}
+  metrics | emit output dd_metrics_encode
+
+  let metrics_routing_filter_0 = metrics | where intake_name starts_with ["demo.checkout."]
+
+  metrics_routing_filter_0 | emit output metrics_routing_encode_0
 }}
 "#
     )
@@ -46,17 +47,17 @@ fn routing_artifact() -> PolicyArtifact {
             "outputs": {"dd_metrics_encode": FP2, "metrics_routing_encode_0": FP3},
         },
         "nodes": [
-            {"id": "metrics_policy", "op": "tee", "params": {"ports": 2}},
-            {"id": "metrics_policy_0", "op": "emit", "params": {"output": "dd_metrics_encode"}},
+            {"id": "input_metrics_fanout", "op": "tee", "params": {"ports": 2}},
+            {"id": "input_metrics_fanout_0", "op": "emit", "params": {"output": "dd_metrics_encode"}},
             {"id": "metrics_routing_filter_0", "op": "split",
              "params": {"predicate": {"intake_name": {"prefix_in": ["demo.checkout."]}}}},
             {"id": "metrics_routing_filter_0_true", "op": "emit", "params": {"output": "metrics_routing_encode_0"}},
             {"id": "metrics_routing_filter_0_false", "op": "drop"},
         ],
         "edges": [
-            {"from": "input.metrics", "to": "metrics_policy.in"},
-            {"from": "metrics_policy.0", "to": "metrics_policy_0.in"},
-            {"from": "metrics_policy.1", "to": "metrics_routing_filter_0.in"},
+            {"from": "input.metrics", "to": "input_metrics_fanout.in"},
+            {"from": "input_metrics_fanout.0", "to": "input_metrics_fanout_0.in"},
+            {"from": "input_metrics_fanout.1", "to": "metrics_routing_filter_0.in"},
             {"from": "metrics_routing_filter_0.true", "to": "metrics_routing_filter_0_true.in"},
             {"from": "metrics_routing_filter_0.false", "to": "metrics_routing_filter_0_false.in"},
         ],
@@ -89,11 +90,11 @@ fn the_core_forms_build_the_same_artifact_as_the_sugar() {
         r#"policy post_enrich {{
   # The routing example in the core forms, in another order, on fewer lines.
   base "{BASE}" outputs {{ metrics_routing_encode_0 = "{FP3}", dd_metrics_encode = "{FP2}", }}
-  let metrics_policy = metrics | tee(ports: 2)
-  let metrics_routing_filter_0 = metrics_policy.1 | split(predicate: intake_name starts_with ["demo.checkout."])
+  let input_metrics_fanout = metrics | tee(ports: 2)
+  let metrics_routing_filter_0 = input_metrics_fanout.1 | split(predicate: intake_name starts_with ["demo.checkout."])
   metrics_routing_filter_0.false | drop
   metrics_routing_filter_0.true | emit output metrics_routing_encode_0
-  metrics_policy.0 | emit output dd_metrics_encode
+  input_metrics_fanout.0 | emit output dd_metrics_encode
 }}"#
     );
     let parsed = parse_ok(&source);
@@ -145,22 +146,29 @@ fn the_core_forms_build_the_same_artifact_as_the_sugar() {
     }));
     assert_eq!(parse_ok(&reuse).artifact, expected);
     assert_eq!(parse_ok(&explicit).artifact, expected);
-    // Where a tee's consumers all end in sinks, `fork` is printed rather than reuse: it has priority.
+    // Reuse is how the tee prints, whatever its uses end in.
+    assert_eq!(print_default(&expected), reuse);
+
+    // A tee with any other ID is written in the core form, under a `let` named for it.
+    let renamed = serde_json::to_string(&expected)
+        .unwrap()
+        .replace("enriched_fanout", "copies");
+    let renamed = PolicyArtifact::from_json(&renamed).unwrap();
     let printed = format!(
         r#"policy post_enrich {{
   base "{BASE}"
 
-  metrics
-    | host_enrichment as enriched
-    | fork as enriched_fanout {{
-      emit output dd_metrics_encode
-      emit output dsd_client_telemetry
-    }}
+  let enriched = metrics | host_enrichment
+
+  let copies = enriched | tee(ports: 2)
+
+  copies.0 | emit output dd_metrics_encode
+
+  copies.1 | emit output dsd_client_telemetry
 }}
 "#
     );
-    assert_eq!(print_default(&expected), printed);
-    assert_eq!(parse_ok(&printed).artifact, expected);
+    assert_round_trip(&printed, &renamed);
 }
 
 #[test]
@@ -168,15 +176,15 @@ fn spans_lead_back_to_nodes_parameters_and_edges() {
     let source = routing_source();
     let spans = parse_ok(&source).spans;
 
-    // A `fork`'s node is the whole `fork`; a `where`'s is the `where`, with its `as` clause.
-    let node = spans.node("metrics_policy").unwrap();
-    assert!(text(&source, node).starts_with("fork as metrics_policy {"));
-    assert!(text(&source, node).ends_with("emit output metrics_routing_encode_0\n  }"));
+    // The implicit tee after a scope input has the span of the input's first use; a `where`'s node is the `where`.
+    let node = spans.node("input_metrics_fanout").unwrap();
+    assert_eq!(text(&source, node), "metrics");
+    assert_eq!(node.start, source.find("  metrics | emit").unwrap() + 2);
     assert_eq!(
-        text(&source, spans.node("metrics_policy_0").unwrap()),
+        text(&source, spans.node("input_metrics_fanout_0").unwrap()),
         "emit output dd_metrics_encode"
     );
-    let filter = r#"where intake_name starts_with ["demo.checkout."] as metrics_routing_filter_0"#;
+    let filter = r#"where intake_name starts_with ["demo.checkout."]"#;
     assert_eq!(text(&source, spans.node("metrics_routing_filter_0").unwrap()), filter);
     assert_eq!(
         text(&source, spans.node("metrics_routing_filter_0_true").unwrap()),
@@ -189,8 +197,8 @@ fn spans_lead_back_to_nodes_parameters_and_edges() {
     );
     assert_eq!(spans.node("missing"), None);
 
-    // A `fork`'s port count comes from its branches, so the parameter has no span of its own.
-    assert_eq!(spans.param("metrics_policy", "ports"), None);
+    // An implicit tee's port count comes from the uses, so the parameter has no span of its own.
+    assert_eq!(spans.param("input_metrics_fanout", "ports"), None);
     assert_eq!(
         text(&source, spans.param("metrics_routing_filter_0", "predicate").unwrap()),
         r#"intake_name starts_with ["demo.checkout."]"#
@@ -201,7 +209,7 @@ fn spans_lead_back_to_nodes_parameters_and_edges() {
         spans.param("metrics_routing_filter_0", "predicate")
     );
     assert_eq!(
-        text(&source, spans.param("metrics_policy_0", "output").unwrap()),
+        text(&source, spans.param("input_metrics_fanout_0", "output").unwrap()),
         "dd_metrics_encode"
     );
 
@@ -268,12 +276,12 @@ fn values_convert_to_their_json_shapes_and_print_back() {
     "{hash}" = ["a", "b"],
   }}
 
-  metrics
-    | tag_projection(
-        rules: [{{ metric_name: "a.b", action: "exclude", tags: ["user_id"] }}],
-        cache_capacity: 1000,
-      ) as scrub
-    | host_tags({tags}, deadline: 1700000300s) as stamp
+  let scrub = metrics
+    | tag_projection(rules: [{{ metric_name: "a.b", action: "exclude", tags: ["user_id"] }}], cache_capacity: 1000)
+
+  let stamp = scrub | host_tags({tags}, deadline: 1700000300s)
+
+  let agg = stamp
     | aggregate(
         window: 10s,
         flush_interval: config.dogstatsd.aggregation.flush_interval,
@@ -284,7 +292,9 @@ fn values_convert_to_their_json_shapes_and_print_back() {
         histogram_percentiles: [95, 99],
         copy_to_distribution: true,
         copy_to_distribution_prefix: "dist.",
-      ) as agg
+      )
+
+  let odd = agg
     | frobnicate(
         big: 18446744073709551615,
         nothing: null,
@@ -293,8 +303,9 @@ fn values_convert_to_their_json_shapes_and_print_back() {
         shared: blob("{hash}"),
         small: -9223372036854775808,
         span: "500ms",
-      ) as odd
-    | drop
+      )
+
+  odd | drop
 }}
 "#
     );
@@ -403,7 +414,7 @@ fn printing_breaks_long_headers_lists_and_predicates() {
 
   let ts = metrics | timestamp_split(10s)
 
-  let gateway = ts.default
+  let scrub = ts.default
     | tag_projection(
         rules: [
           {{
@@ -419,7 +430,9 @@ fn printing_breaks_long_headers_lists_and_predicates() {
         ],
         value_rules: config.dogstatsd.tag_value_allowlist,
         cache_capacity: 50000,
-      ) as scrub
+      )
+
+  let gateway = scrub
     | split(
         config.multi_region_failover.enabled
         and (
@@ -431,15 +444,16 @@ fn printing_breaks_long_headers_lists_and_predicates() {
 
   gateway.true | emit output mrf_metrics_encode
 
-  gateway.false
+  let routing = gateway.false
     | where intake_name in [
         "checkout.requests.count",
         "checkout.requests.latency.p99",
         "checkout.errors.count",
         "checkout.cart.items.added",
         "checkout.cart.items.removed",
-      ] as routing
-    | emit output metrics_routing_encode_0
+      ]
+
+  routing | emit output metrics_routing_encode_0
 
   ts.passthrough | emit output dd_metrics_encode
 }}
@@ -471,7 +485,9 @@ fn nodes_are_ordered_by_the_graph_not_by_the_text() {
 
   let tagged = fork.true | host_enrichment
 
-  (tagged, fork.false) as joined | emit output dd_metrics_encode
+  let joined = (tagged, fork.false)
+
+  joined | emit output dd_metrics_encode
 }}
 "#
     );
@@ -546,7 +562,9 @@ fn keywords_can_be_names_and_terminals_can_be_named() {
 
   let fork = metrics | split(true)
 
-  fork.true | host_enrichment as drop | emit output dd_metrics_encode
+  let drop = fork.true | host_enrichment
+
+  drop | emit output dd_metrics_encode
 
   fork.false | drop as sink
 }}
@@ -583,9 +601,9 @@ fn inline_terminals_of_scope_inputs_and_long_parents_use_the_derived_id() {
 
   first | drop
 
-  second
-    | where false as {long}
-    | emit output dd_metrics_encode
+  let {long} = second | where false
+
+  {long} | emit output dd_metrics_encode
 }}
 "#
     );
@@ -645,7 +663,7 @@ fn an_elided_base_prints_no_base_statement_and_parses_with_the_base_the_caller_g
     );
     assert!(!printed.contains("base") && !printed.contains("outputs"), "{}", printed);
     assert!(
-        printed.starts_with("policy post_enrich {\n  metrics | fork as metrics_policy {\n"),
+        printed.starts_with("policy post_enrich {\n  metrics | emit output dd_metrics_encode\n"),
         "{}",
         printed
     );
@@ -660,9 +678,9 @@ fn an_elided_base_prints_no_base_statement_and_parses_with_the_base_the_caller_g
     let error = parse(&printed).unwrap_err().to_string();
     assert!(error.contains("Expected `base"), "{}", error);
     // The node lines are where they are in the text, so diagnostics placed by the span map point at them.
-    let span = parsed.spans.node("metrics_policy").unwrap();
+    let span = parsed.spans.node("metrics_routing_filter_0").unwrap();
     assert!(
-        printed[span.start..].starts_with("fork as metrics_policy"),
+        printed[span.start..].starts_with("where intake_name starts_with"),
         "{:?}",
         span
     );
@@ -837,10 +855,9 @@ fn emits_to_recipients_name_them_bare_or_quoted_and_print_back() {
         r#"policy metrics {{
   base "{BASE}"
 
-  metrics | fork as metrics_policy {{
-    emit [primary, "https://127.0.0.1:17102"]
-    emit output dsd_client_telemetry
-  }}
+  metrics | emit [primary, "https://127.0.0.1:17102"]
+
+  metrics | emit output dsd_client_telemetry
 }}
 "#
     );
@@ -849,14 +866,14 @@ fn emits_to_recipients_name_them_bare_or_quoted_and_print_back() {
         "scope": "metrics",
         "base": {"program_hash": BASE},
         "nodes": [
-            {"id": "metrics_policy", "op": "tee", "params": {"ports": 2}},
-            {"id": "metrics_policy_0", "op": "emit", "params": {"to": ["primary", "https://127.0.0.1:17102"]}},
-            {"id": "metrics_policy_1", "op": "emit", "params": {"output": "dsd_client_telemetry"}},
+            {"id": "input_metrics_fanout", "op": "tee", "params": {"ports": 2}},
+            {"id": "input_metrics_fanout_0", "op": "emit", "params": {"to": ["primary", "https://127.0.0.1:17102"]}},
+            {"id": "input_metrics_fanout_1", "op": "emit", "params": {"output": "dsd_client_telemetry"}},
         ],
         "edges": [
-            {"from": "input.metrics", "to": "metrics_policy.in"},
-            {"from": "metrics_policy.0", "to": "metrics_policy_0.in"},
-            {"from": "metrics_policy.1", "to": "metrics_policy_1.in"},
+            {"from": "input.metrics", "to": "input_metrics_fanout.in"},
+            {"from": "input_metrics_fanout.0", "to": "input_metrics_fanout_0.in"},
+            {"from": "input_metrics_fanout.1", "to": "input_metrics_fanout_1.in"},
         ],
     }));
     assert_round_trip(&source, &expected);

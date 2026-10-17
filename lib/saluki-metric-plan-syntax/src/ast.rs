@@ -42,12 +42,12 @@ pub(crate) struct Base {
     pub(crate) outputs: BTreeMap<OutputId, PlanHash>,
 }
 
-/// A statement: a named stream, or a pipeline that ends in a sink or a fork.
+/// A statement: a named stream, or a pipeline that ends in a sink.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Statement {
     /// `let <name> = <pipeline>`, where the pipeline has no end.
     Let { name: Name, pipeline: Pipeline, span: Span },
-    /// `<pipeline>`, where the pipeline has an end.
+    /// `<pipeline>`, where the pipeline ends in a sink.
     Run { pipeline: Pipeline, span: Span },
 }
 
@@ -58,12 +58,12 @@ pub(crate) struct Name {
     pub(crate) span: Span,
 }
 
-/// `<head> | <stage> | ... [| <end>]`.
+/// `<head> | <stage> | ... [| <sink>]`.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Pipeline {
     pub(crate) head: Head,
     pub(crate) stages: Vec<Stage>,
-    pub(crate) end: Option<End>,
+    pub(crate) end: Option<Sink>,
     pub(crate) span: Span,
 }
 
@@ -93,7 +93,7 @@ pub(crate) struct Tuple {
     pub(crate) span: Span,
 }
 
-/// One stage of a pipeline, between its head and its end.
+/// One stage of a pipeline, between its head and its sink.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Stage {
     /// `<operator>[(<args>)] [as <id>]`.
@@ -126,29 +126,6 @@ pub(crate) struct WhereStage {
     /// The span of the predicate, and of values nested in it, by parameter path from `predicate`.
     pub(crate) param_spans: Vec<(String, Span)>,
     pub(crate) id: Option<Name>,
-    pub(crate) span: Span,
-}
-
-/// How a pipeline ends.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum End {
-    Sink(Sink),
-    Fork(Fork),
-}
-
-/// `fork [as <id>] { <branch>+ }`: a `tee` with a port per branch.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Fork {
-    pub(crate) id: Option<Name>,
-    pub(crate) branches: Vec<Branch>,
-    pub(crate) span: Span,
-}
-
-/// One branch of a fork: stages, then a sink or another fork.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Branch {
-    pub(crate) stages: Vec<Stage>,
-    pub(crate) end: End,
     pub(crate) span: Span,
 }
 

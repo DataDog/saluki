@@ -14,7 +14,6 @@
 //!   by the start of the reference's span, and in the order the tree lists references where two start together.
 //! - `e | where p` is a `split(predicate: p)` whose `false` port leads to a `drop` terminal; the pipeline continues
 //!   from its `true` port.
-//! - `e | fork { b0 ... bn }` is a `tee(ports: n + 1)` whose port `i` starts branch `i`.
 //! - `emit <recipients>` and `emit output <output>` are `emit` nodes with the `to` or `output` parameter, `drop` is a
 //!   `drop` node, and `exit <name>` is an edge to the scope's exit `exit.<name>`, which makes no node.
 //!
@@ -31,16 +30,15 @@
 //!   the use's port when the stream is used more than once. A tuple head's merge is [`ids::merge`]`(<anchor of its
 //!   first item>)`, and the ID of the merge, written or derived, is then the anchor. Each stage is
 //!   [`ids::stage`]`(anchor, <operator>, <ordinal>)`.
-//! - A fork's tee is [`ids::fork`]`(anchor)`, and its branch `i` has the anchor [`ids::tee_port`]`(<fork's ID>, i)`.
 //! - The implicit tee after a stream used more than once is [`ids::fanout`]`(<node>, <port>)`, where the node is the
 //!   one that ends the `let` (whatever its ID) and the port is the one the references write, if any. After a scope
 //!   input `i`, it is [`ids::fanout`]`(input, i)`, that is `input_<i>_fanout`.
 //! - A sink is [`ids::terminal`]`(<parent>, <port>)`, named after the node and output port the edge into it leaves
 //!   (`input` and the input's name for a scope input).
 //!
-//! Ordinals count the stages of one pipeline (or of one fork branch) by operator, from 1, in pipeline order. Every
-//! stage counts, including those named with `as` and the last stage of a `let`, so naming one stage never changes
-//! the ID of another. A `where` counts as its operator, [`ids::WHERE_OPERATOR`].
+//! Ordinals count the stages of one pipeline by operator, from 1, in pipeline order. Every stage counts, including
+//! those named with `as` and the last stage of a `let`, so naming one stage never changes the ID of another. A `where`
+//! counts as its operator, [`ids::WHERE_OPERATOR`].
 //!
 //! # Rules
 //!
@@ -66,7 +64,7 @@ use saluki_metric_plan::{
 use serde_json::Value;
 
 use crate::{
-    ast::{Branch, End, Fork, Head, Name, OpStage, Pipeline, Program, Ref, Sink, SinkKind, Stage, Statement, Tuple},
+    ast::{Head, Name, OpStage, Pipeline, Program, Ref, Sink, SinkKind, Stage, Statement, Tuple},
     diagnostic::{Error, LineIndex, Span},
     graph::{canonical_order, NodeShape},
     ids::{self, Ordinals},
@@ -77,9 +75,9 @@ use crate::{
 ///
 /// A program without a `base` statement records `default_base`, if given.
 ///
-/// Spans: a node's span is its stage, tuple, `fork`, or sink; a `where`'s drop terminal has the `where`'s span; an
-/// implicit tee has the span of the `let`'s name, or for a scope input, of its first use. An edge's span is that of
-/// the element it enters: a stage, a sink, a tuple item, a `fork`, or for the edge into an implicit tee, the tee's.
+/// Spans: a node's span is its stage, tuple, or sink; a `where`'s drop terminal has the `where`'s span; an implicit tee
+/// has the span of the `let`'s name, or for a scope input, of its first use. An edge's span is that of the element it
+/// enters: a stage, a sink, a tuple item, or for the edge into an implicit tee, the tee's.
 ///
 /// # Errors
 ///
@@ -102,7 +100,7 @@ pub(crate) fn lower(
         ranks: Vec::new(),
         tees: HashMap::new(),
         seq: 0,
-        pipeline_start: None,
+        pipeline_start: 0,
         reported: HashSet::new(),
         errors: Vec::new(),
     };
@@ -124,8 +122,8 @@ pub(crate) fn lower(
     };
 
     lowering.scan(&program.statements);
-    // Every port index a stream's copies, a fork's branches, or a tuple's items take must be a valid port name, so a
-    // program wider than that stops here, before any node is made.
+    // Every port index a stream's copies or a tuple's items take must be a valid port name, so a program wider than
+    // that stops here, before any node is made.
     if !lowering.check_widths(&program.statements) {
         return Err(lowering.errors);
     }
@@ -291,9 +289,8 @@ struct Lowering<'s> {
     tees: HashMap<UseKey, Option<ArtifactNodeId>>,
     /// The position of the next reference, as lowering meets them in the order the scan did.
     seq: usize,
-    /// Where the pipeline of the statement being lowered starts, which a suggestion to name part of it quotes, or
-    /// `None` in a fork's branch.
-    pipeline_start: Option<usize>,
+    /// Where the pipeline of the statement being lowered starts, which a suggestion to name part of it quotes.
+    pipeline_start: usize,
     /// The names and node IDs already reported as taken twice, which are not reported again.
     reported: HashSet<String>,
     errors: Vec<Error>,
@@ -366,8 +363,8 @@ impl Lowering<'_> {
             .collect();
     }
 
-    /// Reports every stream used, fork branched, or tuple merged more than [`MAX_PORTS`] ways, which would need port
-    /// indices beyond the largest a port name may have. Returns whether there were none.
+    /// Reports every stream used or tuple merged more than [`MAX_PORTS`] ways, which would need port indices beyond the
+    /// largest a port name may have. Returns whether there were none.
     fn check_widths(&mut self, statements: &[Statement]) -> bool {
         let before = self.errors.len();
         let mut too_wide = Vec::new();
@@ -378,16 +375,14 @@ impl Lowering<'_> {
                     too_wide.push((item.span, format!("A tuple merges at most {} streams.", MAX_PORTS)));
                 }
             }
-            if let Some(end) = &pipeline.end {
-                fork_widths(end, &mut too_wide);
-            }
         }
         for uses in self.uses.values() {
             if let Some(extra) = uses.get(MAX_PORTS) {
                 too_wide.push((
                     extra.span,
                     format!(
-                        "A stream is used at most {} times; copy it fewer ways, or join the uses with a `fork`.",
+                        "A stream is used at most {} times; copy it in steps, as in `let t = s | tee(ports: 2)`, and \
+                         use each copy fewer times.",
                         MAX_PORTS
                     ),
                 ));
@@ -416,37 +411,17 @@ impl Lowering<'_> {
                 }
             }
         }
-        if let Some(end) = &pipeline.end {
-            self.scan_end(end);
-        }
-    }
-
-    fn scan_end(&mut self, end: &End) {
-        match end {
-            End::Sink(sink) => {
-                if let Some(id) = &sink.id {
-                    if matches!(sink.kind, SinkKind::Exit { .. }) {
-                        self.error(
-                            id.span,
-                            "An `exit` leaves the scope and makes no node, so it cannot be named with `as`.",
-                        );
-                    } else {
-                        self.define(id, NameKind::As);
-                    }
-                }
-            }
-            End::Fork(fork) => {
-                if let Some(id) = &fork.id {
-                    self.define(id, NameKind::As);
-                }
-                for branch in &fork.branches {
-                    for stage in &branch.stages {
-                        if let Some(id) = stage_id(stage) {
-                            self.define(id, NameKind::As);
-                        }
-                    }
-                    self.scan_end(&branch.end);
-                }
+        let Some(sink) = &pipeline.end else {
+            return;
+        };
+        if let Some(id) = &sink.id {
+            if matches!(sink.kind, SinkKind::Exit { .. }) {
+                self.error(
+                    id.span,
+                    "An `exit` leaves the scope and makes no node, so it cannot be named with `as`.",
+                );
+            } else {
+                self.define(id, NameKind::As);
             }
         }
     }
@@ -516,14 +491,14 @@ impl Lowering<'_> {
 
     /// Lowers `let x = <pipeline>`.
     fn lower_let(&mut self, name: &Name, pipeline: &Pipeline, span: Span) {
-        self.pipeline_start = Some(pipeline.span.start);
+        self.pipeline_start = pipeline.span.start;
         let x = name.id.as_str();
-        if let Some(end) = &pipeline.end {
+        if let Some(sink) = &pipeline.end {
             self.error(
-                end_span(end),
+                sink.span,
                 format!(
-                    "A `let` names a stream, so its pipeline cannot end in a sink or `fork`; end the `let` before it, \
-                     and write `{} | ...` in a statement of its own.",
+                    "A `let` names a stream, so its pipeline cannot end in a sink; end the `let` before it, and write \
+                     `{} | ...` in a statement of its own.",
                     x
                 ),
             );
@@ -578,9 +553,9 @@ impl Lowering<'_> {
         }
     }
 
-    /// Lowers a pipeline that ends in a sink or a fork.
+    /// Lowers a pipeline that ends in a sink.
     fn lower_run(&mut self, pipeline: &Pipeline, span: Span) {
-        self.pipeline_start = Some(pipeline.span.start);
+        self.pipeline_start = pipeline.span.start;
         let (mut flow, anchor) = match &pipeline.head {
             Head::Ref(reference) => {
                 let (source, anchor) = self.reference(reference);
@@ -614,74 +589,16 @@ impl Lowering<'_> {
         }
 
         match &pipeline.end {
-            Some(end) => {
-                let input = self.continue_from(flow, end_span(end));
-                self.end(end, &anchor, input);
+            Some(sink) => {
+                let input = self.continue_from(flow, sink.span);
+                self.sink(sink, input);
             }
             None => self.error(
                 span,
-                "This statement does not end in a sink or `fork`, so its stream goes nowhere. End it with `| drop`, \
-                 or name it with `let` to use it later.",
+                "This statement does not end in a sink, so its stream goes nowhere. End it with `| drop`, or name it \
+                 with `let` to use it later.",
             ),
         }
-    }
-
-    /// Lowers a fork's branches, or a sink.
-    fn end(&mut self, end: &End, anchor: &ArtifactNodeId, input: Option<Source>) {
-        match end {
-            End::Sink(sink) => self.sink(sink, input),
-            End::Fork(fork) => self.fork(fork, anchor, input),
-        }
-    }
-
-    fn fork(&mut self, fork: &Fork, anchor: &ArtifactNodeId, input: Option<Source>) {
-        let id = match &fork.id {
-            Some(id) => id.id.clone(),
-            None => ids::fork(anchor.as_str()),
-        };
-        let params = count_param("ports", fork.branches.len());
-        let tee = self.add_node(
-            id.clone(),
-            names::TEE,
-            params,
-            fork.span,
-            Vec::new(),
-            fork.id.is_some(),
-            None,
-        );
-        if let (Some(tee), Some(input)) = (tee, input) {
-            let to = self.input_port(tee, fork.span);
-            self.connect(input, to, fork.span);
-        }
-        for (index, branch) in fork.branches.iter().enumerate() {
-            let port = port_name(&index.to_string());
-            let source = tee.map(|_| Source {
-                from: ArtifactPortRef::Node {
-                    node: id.clone(),
-                    port: port.clone(),
-                },
-                parent: id.to_string(),
-                port,
-            });
-            self.branch(branch, ids::tee_port(id.as_str(), index), source);
-        }
-    }
-
-    fn branch(&mut self, branch: &Branch, anchor: ArtifactNodeId, source: Option<Source>) {
-        self.pipeline_start = None;
-        let mut flow = Flow::Source(source);
-        let mut ordinals = Ordinals::default();
-        for stage in &branch.stages {
-            let ordinal = ordinals.next(stage_operator(stage));
-            let input = self.continue_from(flow, stage_span(stage));
-            let id = match stage_id(stage) {
-                Some(id) => id.id.clone(),
-                None => ids::stage(anchor.as_str(), stage_operator(stage), ordinal),
-            };
-            flow = Flow::Stream(self.stage(stage, id, None, input));
-        }
-        let input = self.continue_from(flow, end_span(&branch.end));
-        self.end(&branch.end, &anchor, input);
     }
 
     /// Lowers a sink, entered from `input`.
@@ -1041,8 +958,8 @@ impl Lowering<'_> {
                         let ports = outputs.iter().map(|port| format!("`{}`", port)).collect::<Vec<_>>();
                         let uses = outputs.iter().map(|port| format!("`s.{}`", port)).collect::<Vec<_>>();
                         let written = self
-                            .pipeline_start
-                            .and_then(|start| self.source.get(start..entry.span.end))
+                            .source
+                            .get(self.pipeline_start..entry.span.end)
                             .filter(|written| !written.trim().is_empty());
                         let named = match written {
                             Some(written) => format!(
@@ -1238,18 +1155,6 @@ fn statement_pipeline(statement: &Statement) -> &Pipeline {
 /// The most ports a node may have: one per port index a port name may take.
 const MAX_PORTS: usize = PortName::MAX_INDEX as usize + 1;
 
-/// Collects every fork under `end` with more than [`MAX_PORTS`] branches.
-fn fork_widths(end: &End, too_wide: &mut Vec<(Span, String)>) {
-    if let End::Fork(fork) = end {
-        if let Some(branch) = fork.branches.get(MAX_PORTS) {
-            too_wide.push((branch.span, format!("A fork has at most {} branches.", MAX_PORTS)));
-        }
-        for branch in &fork.branches {
-            fork_widths(&branch.end, too_wide);
-        }
-    }
-}
-
 /// Returns the references of a pipeline's head, in order. Only heads hold references.
 fn head_refs(head: &Head) -> Vec<&Ref> {
     match head {
@@ -1277,13 +1182,6 @@ fn stage_operator(stage: &Stage) -> &str {
     match stage {
         Stage::Op(stage) => stage.op.as_str(),
         Stage::Where(_) => ids::WHERE_OPERATOR,
-    }
-}
-
-fn end_span(end: &End) -> Span {
-    match end {
-        End::Sink(sink) => sink.span,
-        End::Fork(fork) => fork.span,
     }
 }
 

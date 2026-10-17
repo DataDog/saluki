@@ -30,16 +30,13 @@ use saluki_metric_plan::{
 use serde_json::{Map, Value};
 
 use crate::{
-    ast::{
-        Base, Branch, End, Fork, Head, Name, OpStage, Pipeline, Program, Ref, Sink, SinkKind, Stage, Statement, Tuple,
-        WhereStage,
-    },
+    ast::{Base, Head, Name, OpStage, Pipeline, Program, Ref, Sink, SinkKind, Stage, Statement, Tuple, WhereStage},
     diagnostic::{Error, LineIndex, Span},
     graph::param_specs,
     lexer::{Token, TokenKind},
 };
 
-/// The deepest that lists, records, predicates, parenthesized expressions, and forks may nest.
+/// The deepest that lists, records, predicates, and parenthesized expressions may nest.
 ///
 /// This bounds how deeply the parser recurses, so no input can exhaust its stack. A parameter value read from a JSON
 /// document nests less deeply than the JSON reader allows, and its text nests no more deeply than its JSON does, so
@@ -59,7 +56,6 @@ pub(crate) fn parse_program(source: &str, tokens: &[Token]) -> Result<Program, V
         tokens,
         pos: 0,
         depth: 0,
-        last_fork: None,
         notes: Vec::new(),
     };
     let result = parser.program().and_then(|program| {
@@ -80,17 +76,14 @@ struct Parser<'s> {
     tokens: &'s [Token],
     pos: usize,
     depth: usize,
-    /// The opening brace of the fork closed last: if the policy is not closed, that fork may be what took its closing
-    /// brace.
-    last_fork: Option<Span>,
     /// Notes on the likely cause of the syntax error being returned.
     notes: Vec<Error>,
 }
 
-/// What follows a `|`: a stage, or the end of the pipeline.
+/// What follows a `|`: a stage, or the sink that ends the pipeline.
 enum Item {
     Stage(Stage),
-    End(End),
+    End(Sink),
 }
 
 // Error messages that refer back to an opening token are only built when there is an error: computing a position
@@ -304,7 +297,7 @@ impl<'s> Parser<'s> {
                     program.close = self.advance().span;
                     return Ok(program);
                 }
-                TokenKind::Eof => return Err(self.unclosed_policy(open)),
+                TokenKind::Eof => return Err(self.unclosed("`}` to close the policy", open)),
                 TokenKind::Ident
                     if matches!(self.text(token), "ir_version" | "base" | "blobs") && !self.names_stream(0) =>
                 {
@@ -344,21 +337,6 @@ impl<'s> Parser<'s> {
                 }
             }
         }
-    }
-
-    /// Returns the error for a policy that the end of the input leaves open.
-    #[cold]
-    fn unclosed_policy(&self, open: Span) -> Error {
-        let mut error = self.unclosed("`}` to close the policy", open);
-        if let Some(fork) = self.last_fork {
-            let (line, column) = LineIndex::new(self.source).line_column(self.source, fork.start);
-            error.message.push_str(&format!(
-                " If a fork is missing its `}}`, the policy's `}}` closed it instead: check the fork opened at line \
-                 {}, column {}.",
-                line, column
-            ));
-        }
-        error
     }
 
     fn ir_version(&mut self) -> Result<u32, Error> {
@@ -451,9 +429,8 @@ impl<'s> Parser<'s> {
             self.missing_pipe(&pipeline)?;
             return Err(Error::new(
                 pipeline.span,
-                "This pipeline does not end: a statement without `let` ends in a sink (`emit`, `drop`, or `exit`) or a \
-                 `fork`. Name the stream with `let <name> = ...` to use it in later statements, or end it, as with \
-                 `| drop`.",
+                "This pipeline does not end: a statement without `let` ends in a sink (`emit`, `drop`, or `exit`). Name \
+                 the stream with `let <name> = ...` to use it in later statements, or end it, as with `| drop`.",
             ));
         }
         let span = pipeline.span;
@@ -477,7 +454,7 @@ impl<'s> Parser<'s> {
                 Item::Stage(stage) => stages.push(stage),
                 Item::End(last) => {
                     if self.peek().kind == TokenKind::Pipe {
-                        return Err(self.end_in_middle(&last, false));
+                        return Err(self.end_in_middle(&last));
                     }
                     end = Some(last);
                     break;
@@ -489,6 +466,9 @@ impl<'s> Parser<'s> {
             && matches!(self.text(next), "emit" | "drop" | "exit" | "fork" | "where")
             && !self.names_stream(0)
         {
+            if self.text(next) == "fork" {
+                return Err(fork_is_gone(next.span));
+            }
             return Err(Error::new(
                 next.span,
                 format!(
@@ -541,34 +521,17 @@ impl<'s> Parser<'s> {
         ))
     }
 
-    /// Returns the error for a sink or fork that a `|` follows.
+    /// Returns the error for a sink that a `|` follows.
     #[cold]
-    fn end_in_middle(&self, end: &End, in_branch: bool) -> Error {
-        match end {
-            End::Sink(sink) => {
-                let word = sink_word(&sink.kind);
-                let span = Span::new(sink.span.start, sink.span.start + word.len());
-                let message = if in_branch {
-                    format!(
-                        "`{}` ends a branch; to send a copy and keep going, end the branch in a nested `fork` with a \
-                         branch for each.",
-                        word
-                    )
-                } else {
-                    format!(
-                        "`{}` ends a pipeline; to send a copy and keep going, name the stream with `let` and use it \
-                         twice.",
-                        word
-                    )
-                };
-                Error::new(span, message)
-            }
-            End::Fork(fork) => Error::new(
-                Span::new(fork.span.start, fork.span.start + "fork".len()),
-                "`fork` ends a pipeline, since each of its branches ends in a sink or another `fork`; to continue \
-                 after it, add the stages to its branches.",
+    fn end_in_middle(&self, sink: &Sink) -> Error {
+        let word = sink_word(&sink.kind);
+        Error::new(
+            Span::new(sink.span.start, sink.span.start + word.len()),
+            format!(
+                "`{}` ends a pipeline; to send a copy and keep going, name the stream with `let` and use it twice.",
+                word
             ),
-        }
+        )
     }
 
     fn head(&mut self) -> Result<Head, Error> {
@@ -577,7 +540,10 @@ impl<'s> Parser<'s> {
             TokenKind::LParen => self.tuple().map(Head::Tuple),
             TokenKind::Ident => {
                 let word = self.text(token);
-                if !self.names_stream(0) && matches!(word, "emit" | "drop" | "exit" | "fork" | "where") {
+                if !self.names_stream(0) && word == "fork" {
+                    return Err(fork_is_gone(token.span));
+                }
+                if !self.names_stream(0) && matches!(word, "emit" | "drop" | "exit" | "where") {
                     return Err(Error::new(
                         token.span,
                         format!(
@@ -668,8 +634,7 @@ impl<'s> Parser<'s> {
         })
     }
 
-    /// Parses `as <id>`, if it comes next. An `as` with arguments right after it is an operator, which starts the next
-    /// branch of a fork.
+    /// Parses `as <id>`, if it comes next. An `as` with arguments right after it is an operator, not an `as` clause.
     ///
     /// An `as` that `|` or `.` follows names the stream the next statement starts from when it starts a line, as the
     /// printer writes statements; on the line of what it follows, it is an `as` missing its name.
@@ -688,14 +653,14 @@ impl<'s> Parser<'s> {
         Ok(Some(name))
     }
 
-    /// Parses what follows a `|`: a stage, or a sink or fork that ends the pipeline. In a `let`, `name` is the
-    /// stream's name, and an end is an error.
+    /// Parses what follows a `|`: a stage, or a sink that ends the pipeline. In a `let`, `name` is the stream's name,
+    /// and a sink is an error.
     fn item(&mut self, name: Option<&Name>, what: &str) -> Result<Item, Error> {
         let token = self.peek();
         if token.kind != TokenKind::Ident {
             return Err(self.expected(&format!(
-                "{}: an operator such as `aggregate(window: 10s)`, `where <predicate>`, `fork {{ ... }}`, or a sink: \
-                 `emit`, `drop`, or `exit`",
+                "{}: an operator such as `aggregate(window: 10s)`, `where <predicate>`, or a sink: `emit`, `drop`, \
+                 or `exit`",
                 what
             )));
         }
@@ -705,22 +670,19 @@ impl<'s> Parser<'s> {
             return self.op_stage().map(|stage| Item::Stage(Stage::Op(stage)));
         }
         match self.text(token) {
-            word @ ("emit" | "drop" | "exit" | "fork") => {
+            "fork" => Err(fork_is_gone(token.span)),
+            word @ ("emit" | "drop" | "exit") => {
                 if let Some(name) = name {
                     return Err(self.end_in_let(token, word, name));
                 }
-                if word == "fork" {
-                    self.fork().map(|fork| Item::End(End::Fork(fork)))
-                } else {
-                    self.sink().map(|sink| Item::End(End::Sink(sink)))
-                }
+                self.sink().map(Item::End)
             }
             "where" => self.where_stage().map(|stage| Item::Stage(Stage::Where(stage))),
             _ => self.op_stage().map(|stage| Item::Stage(Stage::Op(stage))),
         }
     }
 
-    /// Returns the error for a sink or fork in the pipeline of `let <name>`.
+    /// Returns the error for a sink in the pipeline of `let <name>`.
     #[cold]
     fn end_in_let(&self, token: &Token, word: &str, name: &Name) -> Error {
         Error::new(
@@ -898,79 +860,6 @@ impl<'s> Parser<'s> {
             "a parameter, written `<name>: <value>`{}, or `)`{}",
             positional, accepted
         ))
-    }
-
-    fn fork(&mut self) -> Result<Fork, Error> {
-        let keyword = self.advance().span;
-        let id = self.as_clause()?;
-        let open = self
-            .expect(
-                TokenKind::LBrace,
-                "`{` and the fork's branches, one per copy of the stream",
-            )?
-            .span;
-        self.enter(open)?;
-        let mut branches = Vec::new();
-        loop {
-            match self.peek().kind {
-                TokenKind::RBrace => {
-                    let close = self.advance().span;
-                    if branches.is_empty() {
-                        return Err(Error::new(
-                            keyword.to(close),
-                            "A fork has at least one branch, such as `emit primary`: each branch gets a copy of the \
-                             stream.",
-                        ));
-                    }
-                    break;
-                }
-                TokenKind::Eof => return Err(self.unclosed("a branch, or `}` to close the fork", open)),
-                _ => branches.push(self.branch()?),
-            }
-        }
-        self.leave();
-        self.last_fork = Some(open);
-        Ok(Fork {
-            id,
-            branches,
-            span: self.since(keyword),
-        })
-    }
-
-    /// Parses one branch of a fork: stages joined with `|`, ending in a sink or another fork.
-    fn branch(&mut self) -> Result<Branch, Error> {
-        let start = self.peek().span;
-        if self.peek().kind == TokenKind::Pipe {
-            return Err(Error::new(
-                start,
-                "A fork's branch starts with its first stage, without `|`, as in `where <predicate> | emit primary`.",
-            ));
-        }
-        let mut stages = Vec::new();
-        loop {
-            match self.item(None, "a branch's stage, or `}` to close the fork")? {
-                Item::Stage(stage) => {
-                    stages.push(stage);
-                    if self.peek().kind != TokenKind::Pipe {
-                        return Err(self.expected(
-                            "`|` and the branch's next stage: each branch of a fork ends in a sink (`emit`, `drop`, \
-                             or `exit`) or another `fork`",
-                        ));
-                    }
-                    self.advance();
-                }
-                Item::End(end) => {
-                    if self.peek().kind == TokenKind::Pipe {
-                        return Err(self.end_in_middle(&end, true));
-                    }
-                    return Ok(Branch {
-                        stages,
-                        end,
-                        span: self.since(start),
-                    });
-                }
-            }
-        }
     }
 
     fn sink(&mut self) -> Result<Sink, Error> {
@@ -1810,9 +1699,18 @@ fn too_deep(span: Span) -> Error {
     Error::new(
         span,
         format!(
-            "This nests more than {} levels deep, the most a policy may. Flatten the value, predicate, or fork.",
+            "This nests more than {} levels deep, the most a policy may. Flatten the value or predicate.",
             MAX_DEPTH
         ),
+    )
+}
+
+/// Returns the error for the retired `fork`: reusing a named stream is the one way to copy it.
+#[cold]
+fn fork_is_gone(span: Span) -> Error {
+    Error::new(
+        span,
+        "`fork` is gone: name the stream with `let` and use it once per branch.",
     )
 }
 
