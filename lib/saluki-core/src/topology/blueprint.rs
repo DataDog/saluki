@@ -23,6 +23,7 @@ use crate::{
     data_model::event::Event,
     health::HealthRegistry,
     runtime::{
+        halt::HaltWatch,
         state::{DataspaceRegistry, ResourceRegistry},
         InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture, UnadoptedScope,
     },
@@ -854,8 +855,7 @@ impl Supervisable for TopologyBlueprint {
     }
 
     fn shutdown_strategy(&self) -> ShutdownStrategy {
-        // Set an infinitely long (effectively) graceful shutdown timeout because we enforce our _own_ realistic graceful
-        // shutdown as part of the supervisor future we generate.
+        // Each component's own shutdown timeout bounds the topology, so we don't need one.
         ShutdownStrategy::Graceful(Duration::MAX)
     }
 
@@ -937,8 +937,10 @@ impl Supervisable for TopologyBlueprint {
             // component exits on its own (how a component failure fails the topology) or if a component had to be
             // forcefully aborted after ignoring graceful shutdown (`SupervisorError::ShutdownTimedOut`). That error is
             // preserved here as a `GenericError` so the root supervisor can still recover the aborted-worker count.
+            //
+            // Nothing halts the topology supervisor, since each component is bounded by its own timeout.
             let (topology_shutdown_trigger, topology_shutdown) = ShutdownHandle::paired();
-            let run = topology_sup.run_with_shutdown_inner(topology_shutdown, Some(dataspace));
+            let run = topology_sup.run_with_shutdown_inner(topology_shutdown, HaltWatch::never(), Some(dataspace));
             pin!(run);
 
             let mut topology_shutdown_trigger = Some(topology_shutdown_trigger);

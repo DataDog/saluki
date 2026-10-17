@@ -59,13 +59,11 @@ const DEFAULT_SERVER_NAME: &str = "http_server";
 /// is built around.
 const DEFAULT_DRAIN_DEADLINE: Duration = Duration::from_secs(30);
 
-/// How much longer than the drain deadline the subtree's shutdown budget runs.
+/// How much longer than its drain deadline a connection's shutdown timeout runs.
 ///
-/// A connection bounds its own drain, so under normal circumstances it finishes and exits cleanly before the budget is
-/// anywhere near elapsing. The slack keeps the two from racing: without it a connection that took its full deadline
-/// could be force-aborted at the very moment it was about to return, which would be reported as an unclean shutdown
-/// all the way up the tree. The budget is the backstop for a connection that ignores its own deadline entirely.
-const SHUTDOWN_BUDGET_SLACK: Duration = Duration::from_secs(1);
+/// A connection bounds its own drain. The slack keeps one that takes its full deadline from being halted just as it
+/// returns, which would be reported as an unclean shutdown all the way up the tree.
+const SHUTDOWN_TIMEOUT_SLACK: Duration = Duration::from_secs(1);
 
 /// How long a TLS handshake is given to complete before the connection is abandoned.
 ///
@@ -388,9 +386,7 @@ impl HttpServer {
         let bound_address_id = self.get_server_id();
 
         let drain_deadline = self.graceful_shutdown_timeout.unwrap_or(DEFAULT_DRAIN_DEADLINE);
-        let mut supervisor = Supervisor::new(&*self.name)
-            .expect("server name is derived from a non-empty constant")
-            .with_shutdown_budget(drain_deadline.saturating_add(SHUTDOWN_BUDGET_SLACK));
+        let mut supervisor = Supervisor::new(&*self.name).expect("server name is derived from a non-empty constant");
 
         let acceptor = Acceptor {
             listen_address: self.listen_address,
@@ -522,9 +518,7 @@ impl ConnectionContext {
         };
 
         let builder = self.supervisor.supervisable(connection);
-        place_on_pool(builder, self.worker_pool.as_ref())
-            .with_budget_bounded_shutdown()
-            .spawn();
+        place_on_pool(builder, self.worker_pool.as_ref()).spawn();
     }
 
     /// Spawns the child that performs the TLS handshake for `stream`, and serves it once it completes.
@@ -536,9 +530,7 @@ impl ConnectionContext {
         };
 
         let builder = self.supervisor.supervisable(handshake);
-        place_on_pool(builder, self.worker_pool.as_ref())
-            .with_budget_bounded_shutdown()
-            .spawn();
+        place_on_pool(builder, self.worker_pool.as_ref()).spawn();
     }
 }
 
@@ -654,9 +646,8 @@ where
     }
 
     fn shutdown_strategy(&self) -> ShutdownStrategy {
-        // Spawned with a budget-bounded shutdown, so this is only consulted if the subtree somehow has no budget. A
-        // connection bounds its own drain either way, so there is nothing shorter worth imposing here.
-        ShutdownStrategy::Graceful(Duration::MAX)
+        // Only a backstop: a connection bounds its own drain.
+        ShutdownStrategy::Graceful(self.drain_deadline.saturating_add(SHUTDOWN_TIMEOUT_SLACK))
     }
 
     fn can_restart(&self) -> bool {

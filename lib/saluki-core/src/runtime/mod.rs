@@ -111,9 +111,8 @@
 //!   [`scope::current`], and spawn the child with [`ChildBuilder::spawn_in`].
 //! - The child must continue to run after restarts of the process that spawns it. Make both of them children of a
 //!   [`Supervisor`], and spawn the child through its [`SupervisorHandle`].
-//! - Children need their own restart strategy, shutdown budget, resource group, or runtime. A scope restarts its
-//!   children at most once in each five-second period, for all of its children together. Put these children under a
-//!   [`Supervisor`].
+//! - Children need their own restart strategy, resource group, or runtime. A scope restarts its children at most once
+//!   in each five-second period, for all of its children together. Put these children under a [`Supervisor`].
 //!
 //! If a worker body only waits for a stop request while its children do the work, use a [`Supervisor`] instead.
 //!
@@ -154,6 +153,8 @@ pub mod state;
 
 mod dedicated;
 pub use self::dedicated::{RuntimeConfiguration, RuntimeMode};
+
+pub(crate) mod halt;
 
 mod restart;
 pub use self::restart::{RestartMode, RestartStrategy, RestartType};
