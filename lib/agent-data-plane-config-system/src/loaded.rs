@@ -397,6 +397,81 @@ mod tests {
     }
 
     #[test]
+    fn metric_aggregation_intervals_environment_variable_reaches_the_model() {
+        let _guard = test_env_lock();
+        let path = std::env::temp_dir().join(format!("adp_metric_intervals_env_{}.yaml", std::process::id()));
+        std::fs::write(&path, "{}\n").unwrap();
+        std::env::set_var(
+            "DD_METRIC_AGGREGATION_INTERVALS",
+            r#"[{"metric_prefix":"high_resolution.","interval_seconds":1}]"#,
+        );
+
+        let loaded = block_on(LoadedConfiguration::load(&path, EnvPrecedence::AfterFile)).expect("local sources load");
+
+        std::env::remove_var("DD_METRIC_AGGREGATION_INTERVALS");
+        std::fs::remove_file(&path).ok();
+        let intervals = &loaded.local().domains.dogstatsd.aggregation.metric_intervals;
+        assert_eq!(intervals.len(), 1);
+        assert_eq!(intervals[0].metric_prefix, "high_resolution.");
+        assert_eq!(intervals[0].interval_seconds, 1);
+    }
+
+    #[test]
+    fn metric_aggregation_intervals_load_from_local_yaml() {
+        let path = std::env::temp_dir().join(format!("adp_metric_intervals_file_{}.yaml", std::process::id()));
+        let yaml = r#"aggregate_window_duration_seconds: 30
+metric_aggregation_intervals:
+  - metric_prefix: high_resolution.
+    interval_seconds: 1
+  - metric_prefix: archival.
+    interval_seconds: 60
+"#;
+        std::fs::write(&path, yaml).unwrap();
+        let result = block_on(LoadedConfiguration::load(&path, EnvPrecedence::Disabled));
+        std::fs::remove_file(&path).unwrap();
+        let loaded = result.expect("local prefix interval configuration should load");
+        let aggregation = &loaded.local().domains.dogstatsd.aggregation;
+        assert_eq!(aggregation.window_duration_seconds.get(), 30);
+        assert_eq!(aggregation.metric_intervals.len(), 2);
+        assert_eq!(aggregation.metric_intervals[0].metric_prefix, "high_resolution.");
+        assert_eq!(aggregation.metric_intervals[0].interval_seconds, 1);
+        assert_eq!(aggregation.metric_intervals[1].metric_prefix, "archival.");
+        assert_eq!(aggregation.metric_intervals[1].interval_seconds, 60);
+    }
+
+    #[test]
+    fn empty_metric_aggregation_intervals_load_as_no_rules() {
+        // An operator can leave the key present with no value; YAML reads that as null.
+        let path = std::env::temp_dir().join(format!("adp_empty_metric_intervals_file_{}.yaml", std::process::id()));
+        for yaml in ["metric_aggregation_intervals:\n", "metric_aggregation_intervals: []\n"] {
+            std::fs::write(&path, yaml).unwrap();
+            let result = block_on(LoadedConfiguration::load(&path, EnvPrecedence::Disabled));
+            std::fs::remove_file(&path).unwrap();
+            let loaded = result.expect("an empty rule list should load");
+            assert!(loaded.local().domains.dogstatsd.aggregation.metric_intervals.is_empty());
+        }
+    }
+
+    #[test]
+    fn invalid_metric_aggregation_intervals_fail_local_yaml_loading() {
+        let path = std::env::temp_dir().join(format!("adp_bad_metric_intervals_file_{}.yaml", std::process::id()));
+        for rules in [
+            "  - metric_prefix: requests.\n    interval_seconds: 7\n",
+            "  - metric_prefix: requests.\n    interval_seconds: 1\n  - metric_prefix: requests.api.\n    interval_seconds: 60\n",
+        ] {
+            std::fs::write(&path, format!("metric_aggregation_intervals:\n{rules}")).unwrap();
+            let result = block_on(LoadedConfiguration::load(&path, EnvPrecedence::Disabled));
+            std::fs::remove_file(&path).unwrap();
+            let error = match result {
+                Err(error) => error,
+                Ok(_) => panic!("invalid prefix interval configuration must fail loading"),
+            };
+            assert!(matches!(error, Error::Deserialize { .. }));
+            assert!(error.to_string().contains("metric_aggregation_intervals"));
+        }
+    }
+
+    #[test]
     fn metric_tag_value_allowlist_from_file_preserves_whitespace() {
         let path = std::env::temp_dir().join(format!("adp_tag_value_allowlist_{}.yaml", std::process::id()));
         std::fs::write(
