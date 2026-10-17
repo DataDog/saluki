@@ -555,6 +555,54 @@ fn nodes_are_ordered_by_the_graph_not_by_the_text() {
 }
 
 #[test]
+fn a_let_with_no_stages_names_a_stream() {
+    // Used once, an alias makes no node: its use is the stream it names, so printing the artifact writes the stream.
+    let once = policy("  let x = metrics\n  x | host_enrichment | drop");
+    let parsed = parse_ok(&once);
+    let ids = parsed
+        .artifact
+        .nodes
+        .iter()
+        .map(|node| node.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ids,
+        ["input_metrics_host_enrichment", "input_metrics_host_enrichment_out"]
+    );
+    assert_eq!(
+        print_default(&parsed.artifact),
+        policy("  metrics | host_enrichment | drop")
+    );
+
+    // Used several times, it makes its own tee, `<name>_fanout`, which the use of the stream it names feeds, and
+    // prints back as written.
+    let several = policy(
+        "  let ts = metrics | timestamp_split(10s)\n\n  ts.default | drop\n\n  let p = ts.passthrough\n\n  p | drop\n\n  \
+         p | emit output dd_metrics_encode",
+    );
+    let expected = artifact(json!({
+        "ir_version": 1,
+        "scope": "post_enrich",
+        "base": {"program_hash": BASE},
+        "nodes": [
+            {"id": "ts", "op": "timestamp_split", "params": {"window": "10s"}},
+            {"id": "ts_default", "op": "drop"},
+            {"id": "p_fanout", "op": "tee", "params": {"ports": 2}},
+            {"id": "p_fanout_0", "op": "drop"},
+            {"id": "p_fanout_1", "op": "emit", "params": {"output": "dd_metrics_encode"}},
+        ],
+        "edges": [
+            {"from": "input.metrics", "to": "ts.in"},
+            {"from": "ts.default", "to": "ts_default.in"},
+            {"from": "ts.passthrough", "to": "p_fanout.in"},
+            {"from": "p_fanout.0", "to": "p_fanout_0.in"},
+            {"from": "p_fanout.1", "to": "p_fanout_1.in"},
+        ],
+    }));
+    assert_round_trip(&several, &expected);
+}
+
+#[test]
 fn keywords_can_be_names_and_terminals_can_be_named() {
     let source = format!(
         r#"policy post_enrich {{

@@ -5,7 +5,7 @@
 //!
 //! - [`arb_graph`] makes well-formed graphs a step at a time, from open streams: every node of the registry but
 //!   `source` (which has no input, so no well-formed artifact has one), with rich parameters and predicates, merges,
-//!   reused streams, `tee`s in the core form, `where`s, splits in both polarities, nodes with several output ports,
+//!   reused streams, aliases, `tee`s in the core form, `where`s, splits in both polarities, nodes with several output ports,
 //!   exits, and node IDs that are often the ones lowering derives and otherwise need a `let` or an `as`.
 //! - [`arb_tree_artifact`] makes well-formed graphs from recursive shapes, with fresh node IDs, written in canonical
 //!   order by a builder independent of the crate's.
@@ -386,6 +386,8 @@ enum Action {
     Tee,
     /// A `tee` with two or three ports and the ID of the implicit tee after the stream: the stream, reused.
     Reuse,
+    /// A `tee` with two or three ports named `<name>_fanout` for a fresh name: an alias of the stream, reused.
+    Alias,
     /// A `timestamp_split`.
     TimestampSplit,
     /// An `opaque_host` with one to three output ports.
@@ -442,6 +444,7 @@ fn arb_action() -> impl Strategy<Value = Action> {
         1 => Just(Action::Split),
         2 => Just(Action::Tee),
         2 => Just(Action::Reuse),
+        2 => Just(Action::Alias),
         1 => Just(Action::TimestampSplit),
         1 => Just(Action::Opaque),
         2 => Just(Action::Merge),
@@ -734,6 +737,17 @@ impl GraphBuilder<'_> {
                     1 + usize::from(step.count % 3)
                 };
                 let id = self.id(Self::candidate(&open, "tee", if reuse { 3 } else { naming }));
+                self.edge(&open.from, &format!("{}.in", id));
+                self.node(&id, "tee", json!({"ports": ports}));
+                for port in 0..ports {
+                    self.open.push(Open::port_of(&id, &port.to_string()));
+                }
+            }
+            Action::Alias => {
+                // The name is taken, so that no node has it.
+                let name = self.id(None);
+                let id = self.id(Some(ids::fanout(&name, None)));
+                let ports = 2 + usize::from(step.count % 2);
                 self.edge(&open.from, &format!("{}.in", id));
                 self.node(&id, "tee", json!({"ports": ports}));
                 for port in 0..ports {
@@ -1747,7 +1761,20 @@ fn the_generators_cover_every_form() {
         }
         let program = crate::parser::parse_program(&printed, &crate::lexer::lex(&printed).unwrap()).unwrap();
         let mut refs: HashMap<(String, Option<String>), usize> = HashMap::new();
+        let mut aliases = HashSet::new();
         for statement in &program.statements {
+            if let crate::ast::Statement::Let { name, pipeline, .. } = statement {
+                if let (crate::ast::Head::Ref(head), true) = (&pipeline.head, pipeline.stages.is_empty()) {
+                    seen.insert("alias".to_string());
+                    if head.port.is_some() {
+                        seen.insert("alias of a port".to_string());
+                    }
+                    if aliases.contains(&head.name.id) {
+                        seen.insert("alias of an alias".to_string());
+                    }
+                    aliases.insert(name.id.clone());
+                }
+            }
             let pipeline = match statement {
                 crate::ast::Statement::Let { pipeline, .. } | crate::ast::Statement::Run { pipeline, .. } => pipeline,
             };
@@ -1817,6 +1844,9 @@ fn the_generators_cover_every_form() {
                 "let of several stages",
                 "where",
                 "let of a tuple alone",
+                "alias",
+                "alias of a port",
+                "alias of an alias",
                 "as",
                 "let named apart from its node",
                 "operator in parentheses",
@@ -1953,6 +1983,31 @@ proptest! {
                 .map(f64::to_bits)
         };
         prop_assert_eq!(parsed.as_ref().map(float_bits).ok().flatten(), Some(float.to_bits()));
+    }
+
+    #[test]
+    fn property_test_aliases_print_and_parse_back_to_a_fixed_point(
+        (depth, order) in vec(0..3usize, 1..5).prop_flat_map(|extra| {
+            let depth = extra.len();
+            let uses = (0..depth)
+                .flat_map(|i| std::iter::repeat_n(i, extra[i] + usize::from(i + 1 == depth)))
+                .collect::<Vec<_>>();
+            Just(uses).prop_shuffle().prop_map(move |order| (depth, order))
+        }),
+    ) {
+        // `let a0 = metrics | host_enrichment`, then a chain of aliases, `let a1 = a0`, ..., each used some more times
+        // by a sink, the last at least once, the uses in any order: an alias used once makes no node, and one used
+        // several times makes its own tee. The text parses, and printing what it parses to parses back to the same
+        // artifact and prints the same again.
+        let mut statements = vec!["  let a0 = metrics | host_enrichment".to_string()];
+        statements.extend((1..depth).map(|i| format!("  let a{} = a{}", i, i - 1)));
+        statements.extend(order.iter().map(|i| format!("  a{} | drop", i)));
+        let source = policy(&statements.join("\n"));
+        let parsed = parse(&source).map_err(|diagnostics| TestCaseError::fail(format!("{}\n{}", diagnostics, source)))?;
+        let printed = print_default(&parsed.artifact);
+        let reparsed = parse(&printed).map_err(|diagnostics| TestCaseError::fail(format!("{}\n{}", diagnostics, printed)))?;
+        prop_assert_eq!(&reparsed.artifact, &parsed.artifact, "{}\n---\n{}", source, printed);
+        prop_assert_eq!(print_default(&reparsed.artifact), printed);
     }
 
     #[test]

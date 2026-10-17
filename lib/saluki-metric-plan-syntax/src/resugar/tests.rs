@@ -530,6 +530,162 @@ fn a_tee_without_the_derived_id_is_the_core_form() {
 }
 
 #[test]
+fn a_tee_named_for_a_free_name_is_an_alias_used_several_times() {
+    // `x_fanout` is not the fanout of `dogstatsd`, but `x` is free, so the tee is the alias `let x = dogstatsd`, used
+    // once per port, rather than the core form.
+    let a = artifact(
+        &[
+            ("x_fanout", "tee", json!({"ports": 2})),
+            ("x_fanout_0", "drop", none()),
+            ("x_fanout_1", "emit", emit("a")),
+        ],
+        &[
+            ("input.dogstatsd", "x_fanout.in"),
+            ("x_fanout.0", "x_fanout_0.in"),
+            ("x_fanout.1", "x_fanout_1.in"),
+        ],
+    );
+    assert_eq!(statements(&a), ["let x = dogstatsd", "x | drop", "x | emit output a"]);
+    assert_lowers_back(&a);
+
+    // A name that a node, a scope input, or another `let` has cannot be an alias's: the core form.
+    let taken = artifact(
+        &[
+            ("otlp_fanout", "tee", json!({"ports": 2})),
+            ("otlp_fanout_0", "drop", none()),
+            ("otlp_fanout_1", "drop", none()),
+            ("input_otlp", "drop", none()),
+        ],
+        &[
+            ("input.dogstatsd", "otlp_fanout.in"),
+            ("otlp_fanout.0", "otlp_fanout_0.in"),
+            ("otlp_fanout.1", "otlp_fanout_1.in"),
+            ("input.otlp", "input_otlp.in"),
+        ],
+    );
+    assert_eq!(
+        statements(&taken),
+        [
+            "let otlp_fanout = dogstatsd | tee(ports: 2)",
+            "otlp_fanout.0 | drop",
+            "otlp_fanout.1 | drop",
+            "otlp | drop",
+        ]
+    );
+    assert_lowers_back(&taken);
+}
+
+#[test]
+fn an_alias_of_a_port_and_an_alias_of_an_alias() {
+    let a = artifact(
+        &[
+            ("t", "timestamp_split", json!({"window": "10s"})),
+            ("t_default", "drop", none()),
+            ("p_fanout", "tee", json!({"ports": 2})),
+            ("q_fanout", "tee", json!({"ports": 2})),
+            ("q_fanout_0", "drop", none()),
+            ("q_fanout_1", "emit", emit("a")),
+            ("p_fanout_1", "drop", none()),
+        ],
+        &[
+            ("input.dogstatsd", "t.in"),
+            ("t.default", "t_default.in"),
+            ("t.passthrough", "p_fanout.in"),
+            ("p_fanout.0", "q_fanout.in"),
+            ("q_fanout.0", "q_fanout_0.in"),
+            ("q_fanout.1", "q_fanout_1.in"),
+            ("p_fanout.1", "p_fanout_1.in"),
+        ],
+    );
+    assert_eq!(
+        statements(&a),
+        [
+            r#"let t = dogstatsd | timestamp_split("10s")"#,
+            "t.default | drop",
+            "let p = t.passthrough",
+            "let q = p",
+            "q | drop",
+            "q | emit output a",
+            "p | drop",
+        ]
+    );
+    assert_lowers_back(&a);
+}
+
+#[test]
+fn the_demos_export_copies_a_reused_stream_again_through_an_alias() {
+    // The demo's detached export leaves out nodes that do nothing, so the tee after `dsd_post_agg_filter` feeds the
+    // tee `metrics_fanout`, which feeds the destinations: the alias `let metrics = dsd_post_agg_filter`.
+    let a = artifact(
+        &[
+            ("dsd_post_agg_filter", "split", predicate("a")),
+            ("dsd_post_agg_filter_false", "drop", none()),
+            ("dsd_post_agg_filter_fanout", "tee", json!({"ports": 2})),
+            ("dsd_post_agg_filter_fanout_0", "emit", emit("dsd_client_telemetry")),
+            ("metrics_fanout", "tee", json!({"ports": 2})),
+            (
+                "metrics_fanout_0",
+                "emit",
+                json!({"to": ["primary", "http://127.0.0.1:17102"]}),
+            ),
+            ("mrf_metrics_gateway", "split", predicate("b")),
+            ("mrf_metrics_gateway_true", "emit", emit("mrf")),
+            ("mrf_metrics_gateway_false", "drop", none()),
+        ],
+        &[
+            ("input.dogstatsd", "dsd_post_agg_filter.in"),
+            ("dsd_post_agg_filter.true", "dsd_post_agg_filter_fanout.in"),
+            ("dsd_post_agg_filter_fanout.0", "dsd_post_agg_filter_fanout_0.in"),
+            ("dsd_post_agg_filter_fanout.1", "metrics_fanout.in"),
+            ("metrics_fanout.0", "metrics_fanout_0.in"),
+            ("metrics_fanout.1", "mrf_metrics_gateway.in"),
+            ("mrf_metrics_gateway.true", "mrf_metrics_gateway_true.in"),
+            ("mrf_metrics_gateway.false", "mrf_metrics_gateway_false.in"),
+            ("dsd_post_agg_filter.false", "dsd_post_agg_filter_false.in"),
+        ],
+    );
+    assert_eq!(
+        statements(&a),
+        [
+            r#"let dsd_post_agg_filter = dogstatsd | where {"name":{"eq":"a"}}"#,
+            "dsd_post_agg_filter | emit output dsd_client_telemetry",
+            "let metrics = dsd_post_agg_filter",
+            "metrics | emit [primary, http://127.0.0.1:17102]",
+            r#"let mrf_metrics_gateway = metrics | where {"name":{"eq":"b"}}"#,
+            "mrf_metrics_gateway | emit output mrf",
+        ]
+    );
+    assert_lowers_back(&a);
+}
+
+#[test]
+fn an_alias_whose_uses_cannot_be_in_port_order_is_the_core_form() {
+    // Port 0 feeds the tuple's second item and port 1 its first.
+    let a = artifact(
+        &[
+            ("x_fanout", "tee", json!({"ports": 2})),
+            ("m", "merge", json!({"inputs": 2})),
+            ("m_out", "drop", none()),
+        ],
+        &[
+            ("input.dogstatsd", "x_fanout.in"),
+            ("x_fanout.0", "m.1"),
+            ("x_fanout.1", "m.0"),
+            ("m.out", "m_out.in"),
+        ],
+    );
+    assert_eq!(
+        statements(&a),
+        [
+            "let x_fanout = dogstatsd | tee(ports: 2)",
+            "let m = (x_fanout.1, x_fanout.0)",
+            "m | drop",
+        ]
+    );
+    assert_lowers_back(&a);
+}
+
+#[test]
 fn a_scope_input_used_twice_is_reused_through_its_fanout() {
     let a = artifact(
         &[

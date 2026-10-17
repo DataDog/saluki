@@ -873,14 +873,87 @@ fn a_derived_id_may_not_take_a_lets_name() {
 }
 
 #[test]
-fn a_let_without_stages_is_an_error() {
-    let statement = let_("x", reference("a"), vec![]);
-    let Statement::Let { span, .. } = &statement else {
-        unreachable!()
-    };
-    let span = *span;
-    let errors = lower_err(program(vec![statement, run(reference("x"), vec![], drop_())]));
-    assert_error(&errors, span, "`let x = a` names no node");
+fn an_alias_used_once_is_the_stream_it_names() {
+    // `let x = a` makes no node: its one use is the stream `a`, with `a`'s anchor.
+    let (artifact, _) = lower_ok(program(vec![
+        let_("x", reference("a"), vec![]),
+        run(reference("x"), vec![op("host_enrichment")], drop_()),
+    ]));
+    assert_eq!(
+        edges(&artifact),
+        [
+            "input.a -> input_a_host_enrichment.in",
+            "input_a_host_enrichment.out -> input_a_host_enrichment_out.in"
+        ]
+    );
+}
+
+#[test]
+fn an_alias_used_several_times_has_its_own_tee_fed_by_its_one_use() {
+    // `x` is the first use of `a` in source order, so port 0 of `a`'s tee feeds `x`'s tee, `x_fanout`, whose ports feed
+    // the uses of `x` in source order.
+    let (artifact, spans) = lower_ok(program(vec![
+        let_("x", reference("a"), vec![]),
+        run(reference("x"), vec![], drop_()),
+        run(reference("a"), vec![], drop_()),
+        run(reference("x"), vec![], emit_output("o")),
+    ]));
+    assert_eq!(
+        edges(&artifact),
+        [
+            "input.a -> input_a_fanout.in",
+            "input_a_fanout.0 -> x_fanout.in",
+            "x_fanout.0 -> x_fanout_0.in",
+            "x_fanout.1 -> x_fanout_1.in",
+            "input_a_fanout.1 -> input_a_fanout_1.in",
+        ]
+    );
+    assert_eq!(node(&artifact, "x_fanout").params, params(json!({"ports": 2})));
+    assert_eq!(node(&artifact, "x_fanout_1").op.as_str(), "emit");
+    // The alias's tee has the span of the alias's name.
+    assert!(spans.node("x_fanout").is_some());
+
+    // An alias of an alias, and of a port.
+    let (artifact, _) = lower_ok(program(vec![
+        let_("t", reference("a"), vec![ts()]),
+        let_("p", Head::Ref(rp("t", "passthrough")), vec![]),
+        let_("q", reference("p"), vec![]),
+        run(Head::Ref(rp("t", "default")), vec![], drop_()),
+        run(reference("q"), vec![], drop_()),
+        run(reference("q"), vec![], drop_()),
+    ]));
+    assert_eq!(
+        edges(&artifact),
+        [
+            "input.a -> t.in",
+            "t.default -> t_default.in",
+            "t.passthrough -> q_fanout.in",
+            "q_fanout.0 -> q_fanout_0.in",
+            "q_fanout.1 -> q_fanout_1.in",
+        ]
+    );
+}
+
+#[test]
+fn an_alias_is_one_stream_that_must_be_used() {
+    let errors = lower_err(program(vec![let_("x", reference("a"), vec![])]));
+    assert!(
+        errors.iter().any(|e| e.message.starts_with("`x` is never used")),
+        "{:?}",
+        errors
+    );
+
+    let errors = lower_err(program(vec![
+        let_("x", reference("a"), vec![]),
+        run(Head::Ref(rp("x", "p")), vec![], drop_()),
+    ]));
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message == "`x` names one stream, with no port `p`; write `x`."),
+        "{:?}",
+        errors
+    );
 }
 
 #[test]

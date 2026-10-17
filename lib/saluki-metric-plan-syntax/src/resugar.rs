@@ -14,6 +14,9 @@
 //!      **`where`**;
 //!    - a `tee` with the derived ID [`ids::fanout`] of the stream before it, when that stream can be named, is an
 //!      **implicit tee**: the stream is used once per port, in port order;
+//!    - any other `tee` with the ID `<name>_fanout`, for a `<name>` that no node, scope input, or other `let` has, after
+//!      a stream a reference can name (a port of an implicit tee or another alias included), is an **alias**: the
+//!      statement `let <name> = <stream>`, one use of the stream, then `<name>` used once per port, in port order;
 //!    - anything else is a **multi-output** node (a `let` of its own, whose ports are written `x.p`, as any other
 //!      `tee` is: `let t = x | tee(ports: 2)`, then `t.0 | ...` and `t.1 | ...`), a **plain** node with one output
 //!      port, or a **final** node without one (a `let` of its own too, since lowering exempts such a `let` from being
@@ -36,9 +39,9 @@
 //!    lowering derives at its position: from the statement's anchor and the stage's ordinal (every stage of a
 //!    pipeline counts, a `where` as `split`), or the `let`'s name for its last stage.
 //! 6. **Order.** Statements are ordered by the canonical position of the edge each starts from, subject to every
-//!    `let` coming before its uses, and to the uses of each implicit tee coming in port order (lowering numbers them
-//!    in source order). When no order satisfies both, the implicit tee involved is written in the core form instead,
-//!    and the program is resugared again.
+//!    `let` coming before its uses, and to the uses of each implicit tee and alias coming in port order (lowering
+//!    numbers them in source order). When no order satisfies both, the tee involved is written in the core form
+//!    instead, and the program is resugared again.
 //! 7. **Parameters.** Parameters equal to their registry default are left out, and the positional parameter, when
 //!    present, is written first.
 //!
@@ -65,6 +68,10 @@ use crate::{
     graph::{canonical_order, param_specs, NodeShape},
     ids, PrintOptions,
 };
+
+/// The words that the parser reads as the start of a stage, not as a reference, where a pipeline starts and neither
+/// `|` nor `.` follows: a stream named one of them can head an alias, `let x = <name>`, only with a port.
+const STAGE_HEADS: [&str; 6] = ["where", "emit", "drop", "exit", "fork", "as"];
 
 /// Returns the tree that describes `artifact`, with sugar wherever lowering it gives back exactly the same graph.
 ///
@@ -270,11 +277,14 @@ impl<'a> Graph<'a> {
         &self.nodes[node].id
     }
 
-    /// Returns the name a reference to a stream writes: the name of the `let` that ends at its node, or of the scope
-    /// input.
-    fn spelled(&self, head: &HeadRef) -> ArtifactNodeId {
+    /// Returns the name a reference to a stream writes: the name of the `let` that ends at its node, or of the alias
+    /// its node is written as, or of the scope input.
+    fn spelled(&self, roles: &[Role], head: &HeadRef) -> ArtifactNodeId {
         match &head.stream {
-            Some(Stream::Port(node, _)) => self.let_names[*node].clone(),
+            Some(Stream::Port(node, _)) => match &roles[*node] {
+                Role::Alias { name, .. } => name.clone(),
+                _ => self.let_names[*node].clone(),
+            },
             _ => head.name.clone(),
         }
     }
@@ -406,14 +416,55 @@ impl<'a> Graph<'a> {
             let Some(upstream) = self.source(edge) else {
                 continue;
             };
-            if self.leaving(&upstream) != [edge] || !self.nameable(&roles, &upstream) {
+            if self.leaving(&upstream) != [edge] {
                 continue;
             }
-            if self.fanout_id(&roles, &upstream).as_ref() == Some(self.id(node)) {
+            if self.nameable(&roles, &upstream) && self.fanout_id(&roles, &upstream).as_ref() == Some(self.id(node)) {
                 roles[node] = Role::Implicit { upstream, uses };
+            } else if let Some(name) = self.alias_name(&roles, node, &upstream) {
+                roles[node] = Role::Alias { name, uses };
             }
         }
         roles
+    }
+
+    /// Returns the name of the alias a `tee` is written as, `let <name> = <upstream>` used once per port, if it can be
+    /// one: its ID is `<name>_fanout`, as lowering derives it for the alias, `<name>` is free (no node, scope input, or
+    /// other `let` has it), and a reference can name the stream it copies.
+    fn alias_name(&self, roles: &[Role], tee: usize, upstream: &Stream) -> Option<ArtifactNodeId> {
+        if !self.unique[tee] {
+            return None;
+        }
+        let name = ArtifactNodeId::new(self.id(tee).as_str().strip_suffix("_fanout")?).ok()?;
+        if ids::fanout(name.as_str(), None) != *self.id(tee)
+            || self.index.contains_key(name.as_str())
+            || self.input_names.contains(name.as_str())
+            || self.let_names.contains(&name)
+        {
+            return None;
+        }
+        // The reference the alias is written with: a port of a stream used several times, or of another alias, is
+        // named through it.
+        let (word, port) = match upstream {
+            Stream::Input(input) => (input.to_string(), false),
+            Stream::Port(node, _) => match &roles[*node] {
+                Role::Implicit { upstream, .. } => match upstream {
+                    Stream::Input(input) => (input.to_string(), false),
+                    Stream::Port(node, _) => {
+                        let (_, port) = self.written(roles, upstream)?;
+                        (self.let_names[*node].to_string(), port.is_some())
+                    }
+                },
+                Role::Alias { name, .. } => (name.to_string(), false),
+                _ if self.nameable(roles, upstream) => {
+                    let (_, port) = self.written(roles, upstream)?;
+                    (self.let_names[*node].to_string(), port.is_some())
+                }
+                _ => return None,
+            },
+        };
+        // A reference alone that is a word starting a stage would be read as the stage.
+        (port || !STAGE_HEADS.contains(&word.as_str())).then_some(name)
     }
 
     /// Returns how a reference to a stream is written: the name, and the port, written only for a port of a
@@ -480,6 +531,10 @@ impl<'a> Graph<'a> {
         let mut definer = HashMap::new();
         for (c, chain) in chains.iter().enumerate() {
             if !chain.is_let {
+                continue;
+            }
+            if let Some(alias) = chain.alias {
+                definer.insert(alias, c);
                 continue;
             }
             match (chain.stages.last(), &chain.head) {
@@ -672,6 +727,9 @@ enum Role {
     Where { drop: usize },
     /// A `tee` that lowering makes for a stream used once per port, with the edge leaving each port.
     Implicit { upstream: Stream, uses: Vec<usize> },
+    /// A `tee` that lowering makes for an alias, `let <name> = <stream>`, used once per port, with the edge leaving
+    /// each port.
+    Alias { name: ArtifactNodeId, uses: Vec<usize> },
     /// A node with several output ports: the last stage of a `let`, whose ports references name.
     Multi,
     /// A node with one output port, which pipelines continue from.
@@ -725,6 +783,8 @@ struct Chain {
     end: Option<ChainEnd>,
     /// Whether its last node (or the merge of its tuple, if it has no stages) is a `let`.
     is_let: bool,
+    /// The `tee` of the alias the chain is, `let <name> = <head>`, if it is one.
+    alias: Option<usize>,
     /// The canonical position of the edge it starts from, which orders statements.
     key: usize,
 }
@@ -771,7 +831,10 @@ impl<'g, 'a> Builder<'g, 'a> {
     fn enterable(&self, edge: usize) -> bool {
         match self.graph.target(edge) {
             Target::Exit(_) => true,
-            Target::Node(node) => !matches!(self.roles[node], Role::Tuple | Role::Implicit { .. }),
+            Target::Node(node) => !matches!(
+                self.roles[node],
+                Role::Tuple | Role::Implicit { .. } | Role::Alias { .. }
+            ),
             Target::Missing => false,
         }
     }
@@ -790,7 +853,7 @@ impl<'g, 'a> Builder<'g, 'a> {
                     [edge] => !self.enterable(*edge),
                     _ => true,
                 },
-                Role::Sink(_) | Role::Implicit { .. } | Role::Final => false,
+                Role::Sink(_) | Role::Implicit { .. } | Role::Alias { .. } | Role::Final => false,
             },
         }
     }
@@ -851,6 +914,21 @@ impl<'g, 'a> Builder<'g, 'a> {
                 };
                 Some((head, (id.to_string(), port)))
             }
+            Some(Stream::Port(tee, port)) if matches!(self.roles[tee], Role::Alias { .. }) => {
+                let Role::Alias { name, uses } = &self.roles[tee] else {
+                    return None;
+                };
+                let index = uses.iter().position(|&e| e == edge)?;
+                let id = graph.id(tee);
+                let head = HeadRef {
+                    name: name.clone(),
+                    port: None,
+                    anchor: ids::tee_port(id.as_str(), index),
+                    stream: Some(Stream::Port(tee, port.clone())),
+                    via: Some((tee, index)),
+                };
+                Some((head, (id.to_string(), port)))
+            }
             Some(stream) => {
                 let parent = graph.parent(&stream)?;
                 let (name, port) = match graph.written(&self.roles, &stream) {
@@ -894,12 +972,25 @@ impl<'g, 'a> Builder<'g, 'a> {
         let graph = self.graph;
         let mut chains = Vec::new();
 
-        // A pipeline for each use of each named stream, except tuple items.
+        // A pipeline for each use of each named stream and alias, except tuple items.
         let mut seen = HashSet::new();
+        let mut aliases = HashSet::new();
         for &edge in &graph.edge_order {
             let Some(stream) = graph.source(edge) else {
                 continue;
             };
+            if let Stream::Port(tee, _) = &stream {
+                if let Role::Alias { uses, .. } = &self.roles[*tee] {
+                    if aliases.insert(*tee) {
+                        for edge in uses.clone() {
+                            if let Some((head, parent)) = self.reference(edge) {
+                                self.push_use(&mut chains, head, edge, parent);
+                            }
+                        }
+                    }
+                    continue;
+                }
+            }
             if !self.named(&stream) || seen.contains(&stream) {
                 continue;
             }
@@ -911,11 +1002,6 @@ impl<'g, 'a> Builder<'g, 'a> {
                 if let Some((tee, _)) = use_.via {
                     self.placed[tee] = true;
                 }
-                if let Target::Node(target) = graph.target(use_.edge) {
-                    if matches!(self.roles[target], Role::Tuple) {
-                        continue;
-                    }
-                }
                 let head = HeadRef {
                     name: name.clone(),
                     port: port.clone(),
@@ -923,14 +1009,7 @@ impl<'g, 'a> Builder<'g, 'a> {
                     stream: Some(stream.clone()),
                     via: use_.via,
                 };
-                let (stages, end, is_let) = self.follow(Start::Edge(use_.edge), use_.parent);
-                chains.push(Chain {
-                    head: ChainHead::Ref(head),
-                    stages,
-                    end,
-                    is_let,
-                    key: graph.edge_rank[use_.edge],
-                });
+                self.push_use(&mut chains, head, use_.edge, use_.parent);
             }
         }
 
@@ -980,6 +1059,7 @@ impl<'g, 'a> Builder<'g, 'a> {
                 stages,
                 end,
                 is_let,
+                alias: None,
                 key,
             });
         }
@@ -993,6 +1073,18 @@ impl<'g, 'a> Builder<'g, 'a> {
             let fed = graph.entering[node]
                 .first()
                 .and_then(|&edge| self.reference(edge).map(|found| (found, edge)));
+            if let (Role::Alias { .. }, Some(((head, _), edge))) = (&self.roles[node], &fed) {
+                self.placed[node] = true;
+                chains.push(Chain {
+                    head: ChainHead::Ref(head.clone()),
+                    stages: Vec::new(),
+                    end: None,
+                    is_let: true,
+                    alias: Some(node),
+                    key: graph.edge_rank[*edge],
+                });
+                continue;
+            }
             let (head, start, parent, key) = match fed {
                 Some(((head, parent), edge)) => (head, Start::Edge(edge), parent, graph.edge_rank[edge]),
                 None => {
@@ -1018,6 +1110,7 @@ impl<'g, 'a> Builder<'g, 'a> {
                 stages,
                 end,
                 is_let,
+                alias: None,
                 key,
             });
         }
@@ -1026,6 +1119,40 @@ impl<'g, 'a> Builder<'g, 'a> {
             roles: self.roles,
             chains,
         }
+    }
+
+    /// Adds the chain of one use of a stream, which starts from `edge` with `head`, unless it is an item of a tuple,
+    /// which the chain of the tuple writes: the alias the edge enters, if it enters one, or the pipeline that follows it.
+    fn push_use(&mut self, chains: &mut Vec<Chain>, head: HeadRef, edge: usize, parent: Parent) {
+        let graph = self.graph;
+        let key = graph.edge_rank[edge];
+        if let Target::Node(target) = graph.target(edge) {
+            match self.roles[target] {
+                Role::Tuple => return,
+                Role::Alias { .. } if !self.placed[target] => {
+                    self.placed[target] = true;
+                    chains.push(Chain {
+                        head: ChainHead::Ref(head),
+                        stages: Vec::new(),
+                        end: None,
+                        is_let: true,
+                        alias: Some(target),
+                        key,
+                    });
+                    return;
+                }
+                _ => {}
+            }
+        }
+        let (stages, end, is_let) = self.follow(Start::Edge(edge), parent);
+        chains.push(Chain {
+            head: ChainHead::Ref(head),
+            stages,
+            end,
+            is_let,
+            alias: None,
+            key,
+        });
     }
 
     /// Follows a pipeline from `start`, whose stream leaves `parent`: returns its stages, its end, and whether its last
@@ -1047,7 +1174,7 @@ impl<'g, 'a> Builder<'g, 'a> {
                 return (stages, None, false);
             }
             let port = match &self.roles[node] {
-                Role::Tuple | Role::Implicit { .. } => return (stages, None, false),
+                Role::Tuple | Role::Implicit { .. } | Role::Alias { .. } => return (stages, None, false),
                 Role::Sink(_) => {
                     self.placed[node] = true;
                     return (stages, Some(ChainEnd::Sink { node, parent }), false);
@@ -1178,6 +1305,21 @@ impl Emitter<'_, '_, '_> {
     /// fewest `as` clauses wins, then the one with the fewest statements.
     fn chain(&self, chain: &Chain) -> Vec<Statement> {
         let graph = self.graph;
+        if let (Some(alias), ChainHead::Ref(head)) = (chain.alias, &chain.head) {
+            let Role::Alias { name, .. } = &self.roles[alias] else {
+                return Vec::new();
+            };
+            return vec![Statement::Let {
+                name: name_of(name),
+                pipeline: Pipeline {
+                    head: Head::Ref(reference(&graph.spelled(self.roles, head), head.port.as_ref())),
+                    stages: Vec::new(),
+                    end: None,
+                    span: Span::default(),
+                },
+                span: Span::default(),
+            }];
+        }
         let merge = match &chain.head {
             ChainHead::Tuple { merge, .. } => Some(*merge),
             ChainHead::Ref(_) => None,
@@ -1375,11 +1517,13 @@ impl Emitter<'_, '_, '_> {
     ) -> Statement {
         let graph = self.graph;
         let head = match head {
-            SegHead::Chain(ChainHead::Ref(head)) => Head::Ref(reference(&graph.spelled(head), head.port.as_ref())),
+            SegHead::Chain(ChainHead::Ref(head)) => {
+                Head::Ref(reference(&graph.spelled(self.roles, head), head.port.as_ref()))
+            }
             SegHead::Chain(ChainHead::Tuple { merge, items }) => Head::Tuple(Tuple {
                 items: items
                     .iter()
-                    .map(|item| reference(&graph.spelled(item), item.port.as_ref()))
+                    .map(|item| reference(&graph.spelled(self.roles, item), item.port.as_ref()))
                     .collect(),
                 id: self.alias(*merge, aliased),
                 span: Span::default(),

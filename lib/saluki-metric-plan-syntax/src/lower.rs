@@ -12,6 +12,9 @@
 //! - `(a, b, ...)` is a `merge(inputs: n)`, with item `i` at its input port `i`.
 //! - A stream used `n > 1` times is followed by a `tee(ports: n)`, whose port `i` feeds the `i`th use in source order:
 //!   by the start of the reference's span, and in the order the tree lists references where two start together.
+//! - `let x = y` (or `y.port`), a `let` without stages, is an alias: one use of `y`, at the position of the reference
+//!   in the `let`, whose own uses are counted on `x`. Used once, its use is that use of `y`, with its anchor, and makes
+//!   no node; used `n > 1` times, it is followed by a `tee(ports: n)` as any stream is, fed by that use of `y`.
 //! - `e | where p` is a `split(predicate: p)` whose `false` port leads to a `drop` terminal; the pipeline continues
 //!   from its `true` port.
 //! - `emit <recipients>` and `emit output <output>` are `emit` nodes with the `to` or `output` parameter, `drop` is a
@@ -32,7 +35,8 @@
 //!   [`ids::stage`]`(anchor, <operator>, <ordinal>)`.
 //! - The implicit tee after a stream used more than once is [`ids::fanout`]`(<node>, <port>)`, where the node is the
 //!   one that ends the `let` (whatever its ID) and the port is the one the references write, if any. After a scope
-//!   input `i`, it is [`ids::fanout`]`(input, i)`, that is `input_<i>_fanout`.
+//!   input `i`, it is [`ids::fanout`]`(input, i)`, that is `input_<i>_fanout`, and after an alias `x`, which ends at no
+//!   node, [`ids::fanout`]`(x)`, that is `x_fanout`.
 //! - A sink is [`ids::terminal`]`(<parent>, <port>)`, named after the node and output port the edge into it leaves
 //!   (`input` and the input's name for a scope input).
 //!
@@ -44,7 +48,7 @@
 //!
 //! Lowering enforces the syntax's rules, and reports every problem it finds together: a name used before its `let`
 //! (or by its own `let`), two names that collide (two `let`s, a `let` and an `as`, two `as` clauses, or a derived ID
-//! and any other node's ID), a `let` with no stages, an `as` on an `exit`, an unused `let` or output port, a bare
+//! and any other node's ID), a port written on an alias, an `as` on an `exit`, an unused `let` or output port, a bare
 //! reference to a node with several output ports, a reference to a port that does not exist, and a pipeline that
 //! continues from a node with several output ports, or none.
 
@@ -232,10 +236,21 @@ struct Let {
     /// The position of its statement.
     statement: usize,
     span: Span,
-    /// The stream it names, once lowered, unless lowering it failed.
+    /// The stream it names, once lowered, unless lowering it failed or it is an alias.
     stream: Option<Stream>,
+    /// For `let x = y`, which names the stream `y` rather than a node: the port its one use of `y` starts from, and
+    /// that use's anchor.
+    alias: Option<Alias>,
     /// Whether a reference to it without a port was reported as needing one, which makes its unused ports moot.
     bare_error: bool,
+}
+
+/// The stream an alias, `let x = y`, names: the port its one use of `y` starts from, unless that use is in error, and
+/// the use's anchor.
+#[derive(Clone, Debug)]
+struct Alias {
+    source: Option<Source>,
+    anchor: ArtifactNodeId,
 }
 
 /// The stream a pipeline has reached: an output of the node `node`, either its only one, or `port` when the stream
@@ -321,6 +336,7 @@ impl Lowering<'_> {
                             statement: index,
                             span: name.span,
                             stream: None,
+                            alias: None,
                             bare_error: false,
                         },
                     );
@@ -484,13 +500,13 @@ impl Lowering<'_> {
 
     fn statement(&mut self, statement: &Statement) {
         match statement {
-            Statement::Let { name, pipeline, span } => self.lower_let(name, pipeline, *span),
+            Statement::Let { name, pipeline, .. } => self.lower_let(name, pipeline),
             Statement::Run { pipeline, span } => self.lower_run(pipeline, *span),
         }
     }
 
-    /// Lowers `let x = <pipeline>`.
-    fn lower_let(&mut self, name: &Name, pipeline: &Pipeline, span: Span) {
+    /// Lowers `let x = <pipeline>`, or the alias `let x = y`.
+    fn lower_let(&mut self, name: &Name, pipeline: &Pipeline) {
         self.pipeline_start = pipeline.span.start;
         let x = name.id.as_str();
         if let Some(sink) = &pipeline.end {
@@ -505,21 +521,15 @@ impl Lowering<'_> {
         }
 
         let mut stream = match &pipeline.head {
-            Head::Ref(reference) => {
-                if pipeline.stages.is_empty() {
-                    self.error(
-                        span,
-                        format!(
-                            "`let {} = {}` names no node: a `let` names the node its last stage makes. Use `{}` \
-                             directly, or add a stage.",
-                            x,
-                            describe_ref(reference),
-                            describe_ref(reference)
-                        ),
-                    );
+            Head::Ref(reference) if pipeline.stages.is_empty() => {
+                // An alias: one use of the stream, which the uses of `x` share.
+                let (source, anchor) = self.reference(reference);
+                if let Some(definition) = self.lets.get_mut(x) {
+                    definition.alias = Some(Alias { source, anchor });
                 }
-                Flow::Source(self.reference(reference).0)
+                return;
             }
+            Head::Ref(reference) => Flow::Source(self.reference(reference).0),
             Head::Tuple(tuple) => {
                 let (id, own) = match &tuple.id {
                     Some(id) => (id.id.clone(), None),
@@ -755,6 +765,10 @@ impl Lowering<'_> {
             if *count > 1 {
                 return ids::tee_port(fanout_id(target, node.as_deref(), port.as_ref()).as_str(), *rank);
             }
+            // An alias used once is the stream it names, and its use has the anchor of that stream's use.
+            if let Some(alias) = self.alias(target) {
+                return alias.anchor.clone();
+            }
             if let Target::Input(name) = target {
                 return ids::input_anchor(name);
             }
@@ -763,7 +777,15 @@ impl Lowering<'_> {
         ids::port_anchor(name, port)
     }
 
-    /// Returns the ID of the node that ends the `let` a target names, if it is lowered.
+    /// Returns the alias a target names, if it is one.
+    fn alias(&self, target: &Target) -> Option<&Alias> {
+        match target {
+            Target::Let(name) => self.lets.get(name)?.alias.as_ref(),
+            Target::Input(_) => None,
+        }
+    }
+
+    /// Returns the ID of the node that ends the `let` a target names, if it is lowered. An alias names no node.
     fn target_node(&self, target: &Target) -> Option<String> {
         match target {
             Target::Let(name) => {
@@ -859,6 +881,18 @@ impl Lowering<'_> {
             }
             Target::Let(let_name) => let_name,
         };
+        if let Some(alias) = self.alias(target) {
+            let source = alias.source.clone();
+            if let Some(port) = port {
+                let message = format!(
+                    "`{}` names one stream, with no port `{}`; write `{}`.",
+                    name, port, name
+                );
+                self.error(port_span, message);
+                return None;
+            }
+            return source;
+        }
         let stream = self.lets.get(let_name)?.stream.clone()?;
         let entry = &self.entries[stream.node];
         let node_id = entry.node.id.clone();
@@ -1086,9 +1120,6 @@ impl Lowering<'_> {
                 // A second `let` of the same name, already reported.
                 continue;
             }
-            let Some(stream) = &definition.stream else {
-                continue;
-            };
             let target = Target::Let(name.id.to_string());
             let used = self
                 .uses
@@ -1096,6 +1127,19 @@ impl Lowering<'_> {
                 .filter(|(used, _)| *used == target)
                 .map(|(_, port)| port.clone())
                 .collect::<HashSet<_>>();
+            if definition.alias.as_ref().is_some_and(|alias| alias.source.is_some()) {
+                if used.is_empty() {
+                    let message = format!(
+                        "`{}` is never used; use it, write `{} | drop` to discard it, or remove the `let`.",
+                        name.id, name.id
+                    );
+                    self.error(name.span, message);
+                }
+                continue;
+            }
+            let Some(stream) = &definition.stream else {
+                continue;
+            };
             let shape = &self.entries[stream.node].shape;
             let outputs = match (&stream.port, shape.outputs()) {
                 (None, Some(outputs)) if outputs.len() > 1 => outputs.to_vec(),
@@ -1182,13 +1226,6 @@ fn stage_operator(stage: &Stage) -> &str {
     match stage {
         Stage::Op(stage) => stage.op.as_str(),
         Stage::Where(_) => ids::WHERE_OPERATOR,
-    }
-}
-
-fn describe_ref(reference: &Ref) -> String {
-    match &reference.port {
-        Some((port, _)) => format!("{}.{}", reference.name.id, port),
-        None => reference.name.id.to_string(),
     }
 }
 
