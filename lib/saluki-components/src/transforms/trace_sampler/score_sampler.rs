@@ -79,6 +79,13 @@ impl ScoreSampler {
         self.sampler.size() as u64
     }
 
+    /// Updates the target traces per second.
+    ///
+    /// Does not re-enable a sampler constructed as disabled.
+    pub(super) fn update_target_tps(&mut self, target_tps: f64) {
+        self.sampler.update_target_tps(target_tps);
+    }
+
     /// Sample counts an incoming trace and tells if it's a sample which has to be kept
     pub fn sample(&mut self, now: SystemTime, trace: &mut Trace, root_idx: usize) -> bool {
         // logic taken from here: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/sampler/scoresampler.go#L71
@@ -162,6 +169,13 @@ impl ScoreSampler {
 }
 
 #[cfg(test)]
+impl NoPrioritySampler {
+    pub(crate) fn test_target_tps(&self) -> f64 {
+        self.score_sampler.test_target_tps()
+    }
+}
+
+#[cfg(test)]
 impl ScoreSampler {
     pub(crate) fn test_shrink(&mut self, sig: Signature) -> Signature {
         self.shrink(sig)
@@ -173,6 +187,14 @@ impl ScoreSampler {
 
     pub(crate) fn test_shrink_cardinality() -> usize {
         SHRINK_CARDINALITY
+    }
+
+    pub(crate) fn test_target_tps(&self) -> f64 {
+        self.sampler.target_tps()
+    }
+
+    pub(crate) fn test_signature_sample_rates(&self) -> (FastHashMap<Signature, f64>, f64) {
+        self.sampler.get_all_signature_sample_rates()
     }
 }
 
