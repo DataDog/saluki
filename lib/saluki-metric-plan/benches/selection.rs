@@ -96,12 +96,12 @@ fn policy_plan(policies: usize) -> (Plan, MemoryCatalog) {
     let node = |id: &str, op: &str, params: Value| json!({"id": id, "op": op, "params": params});
     let mut nodes = vec![
         json!({"id": "src", "op": "source", "params": {"binding": "otlp"}}),
-        node("metrics_policy", "tee", json!({"ports": policies + 1})),
+        node("metrics_fanout", "tee", json!({"ports": policies + 1})),
         node("primary", "emit", json!({"output": "primary"})),
     ];
     let mut edges = vec![
-        json!({"from": "src.metrics", "to": "metrics_policy.in"}),
-        json!({"from": "metrics_policy.0", "to": "primary.in"}),
+        json!({"from": "src.metrics", "to": "metrics_fanout.in"}),
+        json!({"from": "metrics_fanout.0", "to": "primary.in"}),
     ];
     let mut outputs = vec!["primary".to_string()];
     for index in 0..policies {
@@ -118,7 +118,7 @@ fn policy_plan(policies: usize) -> (Plan, MemoryCatalog) {
         ));
         nodes.push(node(&format!("{}_true", split), "emit", json!({"output": output})));
         nodes.push(node(&format!("{}_false", split), "drop", json!({})));
-        edges.push(json!({"from": format!("metrics_policy.{}", index + 1), "to": format!("{}.in", split)}));
+        edges.push(json!({"from": format!("metrics_fanout.{}", index + 1), "to": format!("{}.in", split)}));
         edges.push(json!({"from": format!("{}.true", split), "to": format!("{}_true.in", split)}));
         edges.push(json!({"from": format!("{}.false", split), "to": format!("{}_false.in", split)}));
         outputs.push(output);
@@ -280,7 +280,7 @@ fn selected_outputs(decision: &Decision, set: ExitSet) -> u64 {
     set.iter().fold(0, |selected, exit| {
         let target = &decision.exits[exit.get()];
         match (target.node.local().as_str(), target.port.as_str()) {
-            ("metrics_policy", "0") => selected | 1,
+            ("metrics_fanout", "0") => selected | 1,
             (split, "true") => {
                 let index = split
                     .trim_start_matches("routing_filter_")
@@ -510,17 +510,17 @@ fn default_program_with(policies: usize) -> (Plan, MemoryCatalog) {
     let nodes = value["nodes"].as_array_mut().unwrap();
     nodes.retain(|node| !routing(&node["id"]));
     for node in nodes.iter_mut() {
-        if node["id"] == "metrics_policy" {
+        if node["id"] == "metrics_fanout" {
             node["params"]["ports"] = json!(policies + 3);
         }
     }
     let edges = value["edges"].as_array_mut().unwrap();
     edges.retain(|edge| !routing(&edge["from"]) && !routing(&edge["to"]));
     for edge in edges.iter_mut() {
-        if edge["from"] == "metrics_policy.3" {
-            edge["from"] = json!(format!("metrics_policy.{}", policies + 1));
-        } else if edge["from"] == "metrics_policy.4" {
-            edge["from"] = json!(format!("metrics_policy.{}", policies + 2));
+        if edge["from"] == "metrics_fanout.3" {
+            edge["from"] = json!(format!("metrics_fanout.{}", policies + 1));
+        } else if edge["from"] == "metrics_fanout.4" {
+            edge["from"] = json!(format!("metrics_fanout.{}", policies + 2));
         }
     }
     value["outputs"]
@@ -549,7 +549,7 @@ fn default_program_with(policies: usize) -> (Plan, MemoryCatalog) {
             json!({"id": format!("{}_false", split), "op": "drop"}),
         ]);
         value["edges"].as_array_mut().unwrap().extend([
-            json!({"from": format!("metrics_policy.{}", index + 1), "to": format!("{}.in", split)}),
+            json!({"from": format!("metrics_fanout.{}", index + 1), "to": format!("{}.in", split)}),
             json!({"from": format!("{}.true", split), "to": format!("{}_true.in", split)}),
             json!({"from": format!("{}.false", split), "to": format!("{}_false.in", split)}),
         ]);
@@ -755,8 +755,8 @@ impl DefaultProgramBaseline {
     fn new(program: &DefaultProgram, policies: usize) -> Self {
         let enrich = program.program(program.slot("metrics_enrich"));
         Self {
-            enrichment: kernel_of(enrich, "metrics_enrich"),
-            host_tags: kernel_of(enrich, "metrics_enrich_host_tags"),
+            enrichment: kernel_of(enrich, "metrics_host_enrichment"),
+            host_tags: kernel_of(enrich, "metrics"),
             policies: policy_matchers(policies),
             autoscaling: RawNameSet::new(["requests.count"]),
             counters: TurnCounters::default(),
@@ -904,7 +904,7 @@ fn bench_default_program(c: &mut Criterion) {
         let program = DefaultProgram::new(&plan, &catalog);
         // R1 never cuts a decision: the policy fan-out, every routing filter, and both failover gateways are one
         // decision of the enrichment region, and it is memoized.
-        let (slot, decision) = program.decision("metrics_policy");
+        let (slot, decision) = program.decision("metrics_fanout");
         assert_eq!(slot, program.slot("metrics_enrich"));
         assert_eq!(decision.nodes.len(), policies + 3);
         assert!(decision.memoized);
@@ -1044,7 +1044,7 @@ fn bench_memo_misses(c: &mut Criterion) {
         .id;
     for (name, root, memoized) in [
         ("listener_filterlist", "dsd_prefix_filter_blocklist", false),
-        ("policy_region", "metrics_policy", true),
+        ("policy_region", "metrics_fanout", true),
     ] {
         let (slot, decision) = program.decision(root);
         assert_eq!(decision.memoized, memoized, "`{}`", root);

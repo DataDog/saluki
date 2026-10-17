@@ -109,10 +109,10 @@ fn the_default_programs_one_scope_exports_the_whole_metrics_path_as_the_derived_
         inputs,
         [
             "input.dogstatsd -> dsd_enrich.in",
-            "input.otlp -> metrics_enrich_in.1",
-            "input.checks -> metrics_enrich_in.2",
-            "input.liveness -> metrics_enrich_in.3",
-            "input.trace_sampler -> metrics_enrich_in.4",
+            "input.otlp -> metrics_in.1",
+            "input.checks -> metrics_in.2",
+            "input.liveness -> metrics_in.3",
+            "input.trace_sampler -> metrics_in.4",
         ]
     );
 
@@ -245,7 +245,7 @@ fn annotations_and_the_recipient_directory_travel_with_the_bundle_and_change_not
 
     let mut bundle = plain.clone();
     bundle.annotations.nodes.insert(
-        "metrics_policy".parse().unwrap(),
+        "metrics_fanout".parse().unwrap(),
         "Policy: one branch per destination".to_string(),
     );
     bundle
@@ -255,7 +255,7 @@ fn annotations_and_the_recipient_directory_travel_with_the_bundle_and_change_not
     let written = serde_json::to_value(&bundle).unwrap();
     assert_eq!(
         written["annotations"],
-        json!({"nodes": {"metrics_policy": "Policy: one branch per destination"},
+        json!({"nodes": {"metrics_fanout": "Policy: one branch per destination"},
                "bindings": {"host.tags": "The host's tags"}})
     );
     assert_eq!(
@@ -384,7 +384,7 @@ fn the_base_program_hash_covers_the_scopes_structure_and_outputs_but_not_its_val
     assert_eq!(base(&plan, &scope).unwrap(), expected);
     assert_eq!(
         expected.program_hash.to_string(),
-        "sha256:8b26675fd175dfa56ac0386830efa732d3a030ac745d7d909f95f74e09553327"
+        "sha256:2a50e2fde258382f9c73648897090cd5007975bac821740b23602687c8c83157"
     );
 
     let index = |plan: &Plan, id: &str| plan.nodes.iter().position(|node| node.id.to_string() == id).unwrap();
@@ -480,8 +480,8 @@ fn the_default_program_with_opaque_gateways_exports_them_as_opaque_hosts() {
     assert_eq!(
         nodes,
         [
-            "metrics_policy=tee",
-            "metrics_policy_0=emit",
+            "metrics_fanout=tee",
+            "metrics_fanout_0=emit",
             "metrics_routing_filter_0=opaque_host",
             "metrics_routing_filter_0_out=emit",
             "metrics_routing_filter_1=opaque_host",
@@ -516,14 +516,14 @@ fn scopes_that_cannot_be_written_as_artifacts_are_not_exported() {
         (
             "two inputs of one port",
             |plan| {
-                let port = "metrics_enrich_host_tags.out".parse().unwrap();
+                let port = "metrics.out".parse().unwrap();
                 plan.scopes
                     .get_mut("post_enrich")
                     .unwrap()
                     .inputs
                     .insert("again".parse().unwrap(), port);
             },
-            "both name `metrics_enrich_host_tags.out`",
+            "both name `metrics.out`",
         ),
         (
             "a region node fed from outside",
@@ -546,19 +546,19 @@ fn scopes_that_cannot_be_written_as_artifacts_are_not_exported() {
         (
             "an edge into a missing node",
             |plan| {
-                plan.nodes.retain(|node| node.id.to_string() != "metrics_policy_0");
+                plan.nodes.retain(|node| node.id.to_string() != "metrics_fanout_0");
             },
-            "an edge enters `metrics_policy_0`, which is not a node of the plan",
+            "an edge enters `metrics_fanout_0`, which is not a node of the plan",
         ),
         (
             "a node named like the scope input",
-            |plan| rename(plan, "metrics_policy_0", "input"),
+            |plan| rename(plan, "metrics_fanout_0", "input"),
             "local ID that artifact nodes cannot have",
         ),
         (
             "two nodes with one local ID",
-            |plan| rename(plan, "metrics_policy_0", "policy/metrics_policy"),
-            "the local ID `metrics_policy`",
+            |plan| rename(plan, "metrics_fanout_0", "policy/metrics_fanout"),
+            "the local ID `metrics_fanout`",
         ),
     ];
     for (what, mutate, fragment) in cases {
@@ -590,7 +590,7 @@ fn scopes_that_cannot_be_written_as_artifacts_are_not_exported() {
         .iter_mut()
         .find(|edge| edge.to.to_string() == "dsd_post_agg_filter_in.1")
         .unwrap();
-    edge.to = "metrics_enrich_in.0".parse().unwrap();
+    edge.to = "metrics_in.0".parse().unwrap();
     let error = base(&plan, &"dogstatsd_pre_aggregation".parse().unwrap()).unwrap_err();
     assert!(
         error
@@ -676,7 +676,7 @@ fn without_the_no_aggregation_pipeline_the_pre_aggregation_scope_ends_at_one_exi
         nodes,
         [
             "dsd_enrich",
-            "dsd_prefix_filter",
+            "dsd_prefix_filter_blocklist_namespace_prefix",
             "dsd_prefix_filter_blocklist",
             "dsd_prefix_filter_blocklist_false",
             "dsd_tag_filterlist",
@@ -687,8 +687,8 @@ fn without_the_no_aggregation_pipeline_the_pre_aggregation_scope_ends_at_one_exi
         edges(&artifact),
         [
             "input.metrics -> dsd_enrich.in",
-            "dsd_enrich.out -> dsd_prefix_filter.in",
-            "dsd_prefix_filter.out -> dsd_prefix_filter_blocklist.in",
+            "dsd_enrich.out -> dsd_prefix_filter_blocklist_namespace_prefix.in",
+            "dsd_prefix_filter_blocklist_namespace_prefix.out -> dsd_prefix_filter_blocklist.in",
             "dsd_prefix_filter_blocklist.false -> dsd_prefix_filter_blocklist_false.in",
             "dsd_prefix_filter_blocklist.true -> dsd_tag_filterlist.in",
             "dsd_tag_filterlist.out -> dsd_agg.in",

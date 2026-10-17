@@ -217,8 +217,8 @@ mod tests {
                 assert_eq!(plan_node.to_string(), artifact.to_string());
             }
             assert_eq!(
-                diff.artifact_nodes.get(&node("metrics_policy")),
-                Some(&artifact_node("metrics_policy"))
+                diff.artifact_nodes.get(&node("metrics_fanout")),
+                Some(&artifact_node("metrics_fanout"))
             );
             assert_eq!(
                 diff.artifact_nodes.get(&node("dsd_agg")),
@@ -233,12 +233,12 @@ mod tests {
         let plan = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
         let (diff, _) = compose_edit(&plan, |document| {
             for node in document["nodes"].as_array_mut().unwrap() {
-                if node["id"] == "metrics_policy_0" {
+                if node["id"] == "metrics_fanout_0" {
                     node["id"] = json!("primary");
                 }
             }
             for edge in document["edges"].as_array_mut().unwrap() {
-                if edge["to"] == "metrics_policy_0.in" {
+                if edge["to"] == "metrics_fanout_0.in" {
                     edge["to"] = json!("primary.in");
                 }
             }
@@ -252,7 +252,7 @@ mod tests {
             changes,
             [
                 (
-                    "metrics_policy".to_string(),
+                    "metrics_fanout".to_string(),
                     NodeChange::Changed {
                         operator: false,
                         params: false,
@@ -260,23 +260,23 @@ mod tests {
                     }
                 ),
                 ("policy/primary".to_string(), NodeChange::Added),
-                ("metrics_policy_0".to_string(), NodeChange::Removed),
+                ("metrics_fanout_0".to_string(), NodeChange::Removed),
             ]
         );
         assert_eq!(
             diff.artifact_nodes.get(&node("policy/primary")),
             Some(&artifact_node("primary"))
         );
-        assert_eq!(diff.artifact_nodes.get(&node("metrics_policy_0")), None);
+        assert_eq!(diff.artifact_nodes.get(&node("metrics_fanout_0")), None);
     }
 
     #[test]
     fn correspondence_maps_both_ways_and_keeps_one_record_per_node() {
         let mut correspondence = Correspondence::new();
         correspondence.insert(
-            artifact_node("metrics_policy"),
+            artifact_node("metrics_fanout"),
             NodeCorrespondence {
-                node: node("metrics_policy"),
+                node: node("metrics_fanout"),
                 kind: CorrespondenceKind::Unmodified,
             },
         );
@@ -296,20 +296,20 @@ mod tests {
         );
         assert_eq!(correspondence.artifact_node(&node("debug_drop")), None);
         assert_eq!(
-            correspondence.get(&artifact_node("metrics_policy")).map(|c| c.kind),
+            correspondence.get(&artifact_node("metrics_fanout")).map(|c| c.kind),
             Some(CorrespondenceKind::Unmodified)
         );
         assert_eq!(correspondence.removed(), [node("mrf_metrics_gateway")]);
 
         // Re-recording an artifact node replaces its earlier plan node in both directions.
         correspondence.insert(
-            artifact_node("metrics_policy"),
+            artifact_node("metrics_fanout"),
             NodeCorrespondence {
-                node: node("policy/metrics_policy"),
+                node: node("policy/metrics_fanout"),
                 kind: CorrespondenceKind::Added,
             },
         );
-        assert_eq!(correspondence.artifact_node(&node("metrics_policy")), None);
+        assert_eq!(correspondence.artifact_node(&node("metrics_fanout")), None);
         assert_eq!(correspondence.iter().count(), 2);
     }
 }

@@ -152,12 +152,12 @@ fn route(document: &mut Value) {
     );
     replace_edge(
         document,
-        "metrics_enrich_host_tags.out",
-        "metrics_policy.in",
+        "metrics.out",
+        "metrics_fanout.in",
         &[
-            ("metrics_enrich_host_tags.out", "drop_debug.in"),
+            ("metrics.out", "drop_debug.in"),
             ("drop_debug.true", "drop_debug_true.in"),
-            ("drop_debug.false", "metrics_policy.in"),
+            ("drop_debug.false", "metrics_fanout.in"),
         ],
     );
 }
@@ -239,7 +239,7 @@ fn the_default_program_rescoped_to_one_scope_validates_with_no_findings() {
     assert_eq!(
         closed,
         [
-            "`metrics_enrich_in.1` is inside the scope, but is fed from `otlp_in.metrics`, outside it; feed the scope \
+            "`metrics_in.1` is inside the scope, but is fed from `otlp_in.metrics`, outside it; feed the scope \
           only through its inputs, or declare that port as one of them"
         ]
     );
@@ -391,8 +391,8 @@ fn a_routing_only_edit_composes_validates_places_and_retains_aggregation_with_no
         "dsd_enrich",
         "dsd_no_agg_split",
         "dsd_agg",
-        "metrics_enrich",
-        "metrics_enrich_host_tags",
+        "metrics_host_enrichment",
+        "metrics",
     ] {
         assert_eq!(correspondence(node).kind, CorrespondenceKind::Unmodified, "`{}`", node);
     }
@@ -585,12 +585,9 @@ fn the_one_aggregation_keeps_the_default_programs_id_and_lineage_whatever_the_ar
         document["nodes"].as_array_mut().unwrap().push(second);
         replace_edge(
             document,
-            "metrics_enrich_host_tags.out",
-            "metrics_policy.in",
-            &[
-                ("metrics_enrich_host_tags.out", "late_agg.in"),
-                ("late_agg.out", "metrics_policy.in"),
-            ],
+            "metrics.out",
+            "metrics_fanout.in",
+            &[("metrics.out", "late_agg.in"), ("late_agg.out", "metrics_fanout.in")],
         );
     }))
     .unwrap();
@@ -1000,7 +997,7 @@ fn a_width_and_routing_edit_installs_as_one_generation_through_one_cut_with_the_
     assert!(plan
         .edges
         .iter()
-        .any(|edge| edge.from.to_string() == "policy/drop_debug.true" && edge.to.to_string() == "metrics_policy.in"));
+        .any(|edge| edge.from.to_string() == "policy/drop_debug.true" && edge.to.to_string() == "metrics_fanout.in"));
     assert_eq!(host.demo().1, Some(2));
 }
 
@@ -1174,7 +1171,7 @@ fn second_one(node: &str) -> String {
 const SECOND_AGGREGATIONS: [(&str, (&str, &str)); 5] = [
     (
         "after enrichment, ahead of the policy tee",
-        ("metrics_enrich_host_tags.out", "metrics_policy.in"),
+        ("metrics.out", "metrics_fanout.in"),
     ),
     (
         "after the first, fed by its isolation slot",
@@ -1188,7 +1185,7 @@ const SECOND_AGGREGATIONS: [(&str, (&str, &str)); 5] = [
         "on the no-aggregation pipeline's path, the timestamp split's other branch",
         ("dsd_no_agg_split.passthrough", "dsd_post_agg_filter_in.1"),
     ),
-    ("on OTLP's path", ("input.otlp", "metrics_enrich_in.1")),
+    ("on OTLP's path", ("input.otlp", "metrics_in.1")),
 ];
 
 #[test]
@@ -1339,7 +1336,7 @@ fn the_installer_core_rejects_a_second_aggregation_even_where_placement_would_ru
     );
     for (from, to) in [
         ("dsd_no_agg_split.passthrough", "dsd_post_agg_filter_in.1"),
-        ("metrics_enrich_host_tags.out", "metrics_policy.in"),
+        ("metrics.out", "metrics_fanout.in"),
     ] {
         let mut host = Host::new();
         let performed = host.deliver(1, second_aggregation("late_agg", from, to));
@@ -1371,19 +1368,14 @@ fn the_one_aggregation_fed_by_the_otlp_input_has_no_isolation_slot_in_the_boot_f
             "dsd_agg.in",
             &[("dsd_tag_filterlist.out", "agg_in.0"), ("agg_in.out", "dsd_agg.in")],
         );
-        replace_edge(
-            document,
-            "input.otlp",
-            "metrics_enrich_in.1",
-            &[("input.otlp", "agg_in.1")],
-        );
+        replace_edge(document, "input.otlp", "metrics_in.1", &[("input.otlp", "agg_in.1")]);
         // The merge ahead of enrichment loses its OTLP port.
-        node_mut(document, "metrics_enrich_in")["params"]["inputs"] = json!(4);
+        node_mut(document, "metrics_in")["params"]["inputs"] = json!(4);
         for edge in document["edges"].as_array_mut().unwrap() {
             for (old, new) in [
-                ("metrics_enrich_in.2", "metrics_enrich_in.1"),
-                ("metrics_enrich_in.3", "metrics_enrich_in.2"),
-                ("metrics_enrich_in.4", "metrics_enrich_in.3"),
+                ("metrics_in.2", "metrics_in.1"),
+                ("metrics_in.3", "metrics_in.2"),
+                ("metrics_in.4", "metrics_in.3"),
             ] {
                 if edge["to"] == old {
                     edge["to"] = json!(new);
@@ -1412,8 +1404,8 @@ fn the_one_aggregation_fed_by_the_otlp_input_has_no_isolation_slot_in_the_boot_f
         replace_edge(
             document,
             "input.otlp",
-            "metrics_enrich_in.1",
-            &[("input.otlp", "dsd_agg.in"), ("dsd_agg.out", "metrics_enrich_in.1")],
+            "metrics_in.1",
+            &[("input.otlp", "dsd_agg.in"), ("dsd_agg.out", "metrics_in.1")],
         );
     }));
     assert!(moved.as_ref().is_ok_and(|composed| composed.report.is_valid()));
@@ -1438,7 +1430,11 @@ fn unconfigured_plan() -> Plan {
             at["resolved"] = resolved;
         };
         resolve("dsd_enrich", &["profiles"], json!([]));
-        resolve("dsd_prefix_filter", &["namespace"], json!(""));
+        resolve(
+            "dsd_prefix_filter_blocklist_namespace_prefix",
+            &["namespace"],
+            json!(""),
+        );
         resolve(
             "dsd_prefix_filter_blocklist",
             &["predicate", "not", "intake_name", "matches", "values"],
@@ -1507,11 +1503,11 @@ fn the_shorter_detached_export_over_the_default_program_is_a_commit_that_builds_
             "dsd_enrich",
             "dsd_post_agg_filter",
             "dsd_post_agg_filter_false",
-            "dsd_prefix_filter",
             "dsd_prefix_filter_blocklist",
             "dsd_prefix_filter_blocklist_false",
+            "dsd_prefix_filter_blocklist_namespace_prefix",
             "dsd_tag_filterlist",
-            "metrics_enrich",
+            "metrics_host_enrichment",
         ]
     );
 

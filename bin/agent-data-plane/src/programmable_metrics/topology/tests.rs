@@ -837,15 +837,15 @@ async fn region_bounds_are_their_kernels_native_bounds_and_their_buffers_and_the
     // the registers of the largest entry of its boot program, its decisions (the listener filterlist; the
     // post-aggregation filter with the client telemetry tap's copy, and the policy fan-out) with the exits of the
     // widest, its memoized decisions (none: each filter matches one intake-name leaf, too little to memoize, and the
-    // policy fan-out has no predicate), the native transform each of its kernels is, and the `split` of each predicate
-    // its decisions hold.
+    // policy fan-out has no predicate), each of its kernels with the native transform it is, and the `split` of each
+    // predicate its decisions hold.
     type Region<'a> = (
         &'a str,
         &'a [&'a str],
         usize,
         (usize, usize),
         usize,
-        &'a [&'a str],
+        &'a [(&'a str, &'a str)],
         &'a [&'a str],
     );
     let regions: [Region; 2] = [
@@ -862,10 +862,10 @@ async fn region_bounds_are_their_kernels_native_bounds_and_their_buffers_and_the
             (1, 2),
             0,
             &[
-                "dsd_enrich",
-                "dsd_prefix_filter",
-                "dsd_no_agg_split",
-                "dsd_tag_filterlist",
+                ("dsd_enrich", "dsd_enrich"),
+                ("dsd_prefix_filter_blocklist_namespace_prefix", "dsd_prefix_filter"),
+                ("dsd_no_agg_split", "dsd_no_agg_split"),
+                ("dsd_tag_filterlist", "dsd_tag_filterlist"),
             ],
             &["dsd_prefix_filter_blocklist"],
         ),
@@ -875,7 +875,7 @@ async fn region_bounds_are_their_kernels_native_bounds_and_their_buffers_and_the
             4,
             (2, 3),
             0,
-            &["metrics_enrich"],
+            &[("metrics_host_enrichment", "metrics_enrich")],
             &["dsd_post_agg_filter"],
         ),
     ];
@@ -930,7 +930,8 @@ async fn region_bounds_are_their_kernels_native_bounds_and_their_buffers_and_the
             .map(|(name, _)| name.as_str())
             .collect::<Vec<_>>();
         nodes.sort();
-        let mut expected = [kernels, splits].concat();
+        let mut expected = kernels.iter().map(|(node, _)| *node).collect::<Vec<_>>();
+        expected.extend_from_slice(splits);
         expected.sort();
         assert_eq!(nodes, expected, "`{}`", region);
         for split in splits {
@@ -944,11 +945,11 @@ async fn region_bounds_are_their_kernels_native_bounds_and_their_buffers_and_the
                 region
             );
         }
-        for kernel in kernels {
+        for (kernel, native) in kernels {
             let kernel_bounds = bounds_at(region_bounds, &[kernel]);
             assert_eq!(
                 declared_without_structs(kernel_bounds),
-                declared_without_structs(at(&legacy, kernel)),
+                declared_without_structs(at(&legacy, native)),
                 "`{}` in `{}`",
                 kernel,
                 region

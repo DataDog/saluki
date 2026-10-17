@@ -280,7 +280,10 @@ impl PreAggregationBaseline {
         let program = |name: &str| &compiled.programs[slot_named(frame, name).get()];
         Self {
             mapper: kernel_of(program("dsd_pre_aggregation"), "dsd_enrich"),
-            prefix: kernel_of(program("dsd_prefix_filter_region"), "dsd_prefix_filter"),
+            prefix: kernel_of(
+                program("dsd_prefix_filter_region"),
+                "dsd_prefix_filter_blocklist_namespace_prefix",
+            ),
             split: kernel_of(program("dsd_no_agg_split_region"), "dsd_no_agg_split"),
             tags: kernel_of(program("dsd_no_agg_split_region"), "dsd_tag_filterlist"),
             blocklist: split_of(program("dsd_prefix_filter_region")),
@@ -349,8 +352,8 @@ impl PostAggregationBaseline {
         let filter_program = &compiled.programs[slot_named(frame, "dsd_post_agg_filter_region").get()];
         let enrich_program = &compiled.programs[slot_named(frame, "metrics_enrich").get()];
         Self {
-            enrichment: kernel_of(enrich_program, "metrics_enrich"),
-            host_tags: kernel_of(enrich_program, "metrics_enrich_host_tags"),
+            enrichment: kernel_of(enrich_program, "metrics_host_enrichment"),
+            host_tags: kernel_of(enrich_program, "metrics"),
             post_aggregate: split_of(filter_program),
             counters: TurnCounters::default(),
         }

@@ -918,7 +918,7 @@ fn the_default_programs_decisions_are_its_filters_its_fan_outs_and_its_gateways(
             (
                 "metrics_enrich".to_string(),
                 strings(&[
-                    "metrics_policy",
+                    "metrics_fanout",
                     "metrics_routing_filter_0",
                     "metrics_routing_filter_1",
                     "mrf_metrics_gateway",
@@ -947,7 +947,7 @@ fn the_default_programs_decisions_are_its_filters_its_fan_outs_and_its_gateways(
             (
                 RewriteId::R4,
                 strings(&[
-                    "metrics_policy",
+                    "metrics_fanout",
                     "metrics_routing_filter_0",
                     "metrics_routing_filter_1",
                     "mrf_metrics_gateway",

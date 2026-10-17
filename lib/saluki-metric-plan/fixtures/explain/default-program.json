@@ -2,8 +2,8 @@
   "explain_version": 2,
   "plan": {
     "ir_version": 1,
-    "hash": "sha256:a548b8e1b4638801b3bd495b5b3e9f386a1a2309b8bb2e1fc46dcf39567c7e8e",
-    "structural_hash": "sha256:b75867a95f2b639a91f271b7d276dbac90a2b10b9de882c3f2891a8edbea7450",
+    "hash": "sha256:8edb8fe4edc546cf032e9ffb0663375131c69fbdc7894edf74b365e682d22a6d",
+    "structural_hash": "sha256:5512d342e373742feb1d562be16be732190c754b3a533a77dbd2d5c308ad754e",
     "provenance": {
       "native_components": {
         "af_metrics_gateway_false": "af_metrics_gateway",
@@ -14,10 +14,12 @@
         "dsd_post_agg_filter_in": "dsd_post_agg_filter",
         "dsd_prefix_filter_blocklist": "dsd_prefix_filter",
         "dsd_prefix_filter_blocklist_false": "dsd_prefix_filter",
-        "metrics_enrich_host_tags": "metrics_enrich",
-        "metrics_enrich_in": "metrics_enrich",
-        "metrics_policy": "metrics_enrich",
-        "metrics_policy_0": "dd_metrics_encode",
+        "dsd_prefix_filter_blocklist_namespace_prefix": "dsd_prefix_filter",
+        "metrics": "metrics_enrich",
+        "metrics_fanout": "metrics_enrich",
+        "metrics_fanout_0": "dd_metrics_encode",
+        "metrics_host_enrichment": "metrics_enrich",
+        "metrics_in": "metrics_enrich",
         "metrics_routing_filter_0_false": "metrics_routing_filter_0",
         "metrics_routing_filter_0_true": "metrics_routing_encode_0",
         "metrics_routing_filter_1_false": "metrics_routing_filter_1",
@@ -155,12 +157,12 @@
               ],
               "timestamps": "mixed"
             },
-            "to": "dsd_prefix_filter.in"
+            "to": "dsd_prefix_filter_blocklist_namespace_prefix.in"
           }
         ]
       },
       {
-        "id": "dsd_prefix_filter",
+        "id": "dsd_prefix_filter_blocklist_namespace_prefix",
         "op": "namespace_prefix",
         "boundary": "synchronous",
         "state": "none",
@@ -267,7 +269,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "from": "dsd_prefix_filter.out"
+            "from": "dsd_prefix_filter_blocklist_namespace_prefix.out"
           }
         ],
         "outputs": [
@@ -827,7 +829,7 @@
               ],
               "timestamps": "timestamped"
             },
-            "to": "metrics_enrich_in.0"
+            "to": "metrics_in.0"
           }
         ]
       },
@@ -876,7 +878,7 @@
               ],
               "timestamps": "mixed"
             },
-            "to": "metrics_enrich_in.1"
+            "to": "metrics_in.1"
           }
         ]
       },
@@ -903,7 +905,7 @@
               ],
               "timestamps": "mixed"
             },
-            "to": "metrics_enrich_in.2"
+            "to": "metrics_in.2"
           }
         ]
       },
@@ -927,7 +929,7 @@
               ],
               "timestamps": "timestamped"
             },
-            "to": "metrics_enrich_in.3"
+            "to": "metrics_in.3"
           }
         ]
       },
@@ -952,12 +954,12 @@
               ],
               "timestamps": "untimestamped"
             },
-            "to": "metrics_enrich_in.4"
+            "to": "metrics_in.4"
           }
         ]
       },
       {
-        "id": "metrics_enrich_in",
+        "id": "metrics_in",
         "op": "merge",
         "boundary": "synchronous",
         "state": "none",
@@ -1015,12 +1017,12 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "to": "metrics_enrich.in"
+            "to": "metrics_host_enrichment.in"
           }
         ]
       },
       {
-        "id": "metrics_enrich",
+        "id": "metrics_host_enrichment",
         "op": "host_enrichment",
         "boundary": "synchronous",
         "state": "none",
@@ -1034,7 +1036,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "from": "metrics_enrich_in.out"
+            "from": "metrics_in.out"
           }
         ],
         "outputs": [
@@ -1044,12 +1046,12 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "to": "metrics_enrich_host_tags.in"
+            "to": "metrics.in"
           }
         ]
       },
       {
-        "id": "metrics_enrich_host_tags",
+        "id": "metrics",
         "op": "host_tags",
         "boundary": "synchronous",
         "state": "none",
@@ -1089,7 +1091,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "from": "metrics_enrich.out"
+            "from": "metrics_host_enrichment.out"
           }
         ],
         "outputs": [
@@ -1099,12 +1101,12 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "to": "metrics_policy.in"
+            "to": "metrics_fanout.in"
           }
         ]
       },
       {
-        "id": "metrics_policy",
+        "id": "metrics_fanout",
         "op": "tee",
         "boundary": "synchronous",
         "state": "none",
@@ -1120,7 +1122,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "from": "metrics_enrich_host_tags.out"
+            "from": "metrics.out"
           }
         ],
         "outputs": [
@@ -1130,7 +1132,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "to": "metrics_policy_0.in"
+            "to": "metrics_fanout_0.in"
           },
           {
             "name": "1",
@@ -1167,7 +1169,7 @@
         ]
       },
       {
-        "id": "metrics_policy_0",
+        "id": "metrics_fanout_0",
         "op": "emit",
         "boundary": "synchronous",
         "state": "none",
@@ -1183,7 +1185,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "from": "metrics_policy.0"
+            "from": "metrics_fanout.0"
           }
         ],
         "outputs": []
@@ -1249,7 +1251,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "from": "metrics_policy.1"
+            "from": "metrics_fanout.1"
           }
         ],
         "outputs": [
@@ -1372,7 +1374,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "from": "metrics_policy.2"
+            "from": "metrics_fanout.2"
           }
         ],
         "outputs": [
@@ -1512,7 +1514,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "from": "metrics_policy.3"
+            "from": "metrics_fanout.3"
           }
         ],
         "outputs": [
@@ -1638,7 +1640,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "from": "metrics_policy.4"
+            "from": "metrics_fanout.4"
           }
         ],
         "outputs": [
@@ -1727,7 +1729,7 @@
       },
       {
         "from": "dsd_enrich.out",
-        "to": "dsd_prefix_filter.in",
+        "to": "dsd_prefix_filter_blocklist_namespace_prefix.in",
         "port_type": {
           "kinds": [
             "counter",
@@ -1740,7 +1742,7 @@
         }
       },
       {
-        "from": "dsd_prefix_filter.out",
+        "from": "dsd_prefix_filter_blocklist_namespace_prefix.out",
         "to": "dsd_prefix_filter_blocklist.in",
         "port_type": {
           "kinds": [
@@ -1892,7 +1894,7 @@
       },
       {
         "from": "dsd_post_agg_filter_fanout.1",
-        "to": "metrics_enrich_in.0",
+        "to": "metrics_in.0",
         "port_type": {
           "kinds": [
             "rate",
@@ -1906,7 +1908,7 @@
       },
       {
         "from": "otlp_in.metrics",
-        "to": "metrics_enrich_in.1",
+        "to": "metrics_in.1",
         "port_type": {
           "kinds": [
             "counter",
@@ -1919,7 +1921,7 @@
       },
       {
         "from": "checks_ipc_in.metrics",
-        "to": "metrics_enrich_in.2",
+        "to": "metrics_in.2",
         "port_type": {
           "kinds": [
             "counter",
@@ -1932,7 +1934,7 @@
       },
       {
         "from": "liveness_in.metrics",
-        "to": "metrics_enrich_in.3",
+        "to": "metrics_in.3",
         "port_type": {
           "kinds": [
             "gauge"
@@ -1942,7 +1944,7 @@
       },
       {
         "from": "trace_sampler.metrics",
-        "to": "metrics_enrich_in.4",
+        "to": "metrics_in.4",
         "port_type": {
           "kinds": [
             "counter",
@@ -1952,39 +1954,39 @@
         }
       },
       {
-        "from": "metrics_enrich_in.out",
-        "to": "metrics_enrich.in",
+        "from": "metrics_in.out",
+        "to": "metrics_host_enrichment.in",
         "port_type": {
           "kinds": "all",
           "timestamps": "mixed"
         }
       },
       {
-        "from": "metrics_enrich.out",
-        "to": "metrics_enrich_host_tags.in",
+        "from": "metrics_host_enrichment.out",
+        "to": "metrics.in",
         "port_type": {
           "kinds": "all",
           "timestamps": "mixed"
         }
       },
       {
-        "from": "metrics_enrich_host_tags.out",
-        "to": "metrics_policy.in",
+        "from": "metrics.out",
+        "to": "metrics_fanout.in",
         "port_type": {
           "kinds": "all",
           "timestamps": "mixed"
         }
       },
       {
-        "from": "metrics_policy.0",
-        "to": "metrics_policy_0.in",
+        "from": "metrics_fanout.0",
+        "to": "metrics_fanout_0.in",
         "port_type": {
           "kinds": "all",
           "timestamps": "mixed"
         }
       },
       {
-        "from": "metrics_policy.1",
+        "from": "metrics_fanout.1",
         "to": "metrics_routing_filter_0.in",
         "port_type": {
           "kinds": "all",
@@ -2008,7 +2010,7 @@
         }
       },
       {
-        "from": "metrics_policy.2",
+        "from": "metrics_fanout.2",
         "to": "metrics_routing_filter_1.in",
         "port_type": {
           "kinds": "all",
@@ -2032,7 +2034,7 @@
         }
       },
       {
-        "from": "metrics_policy.3",
+        "from": "metrics_fanout.3",
         "to": "mrf_metrics_gateway.in",
         "port_type": {
           "kinds": "all",
@@ -2056,7 +2058,7 @@
         }
       },
       {
-        "from": "metrics_policy.4",
+        "from": "metrics_fanout.4",
         "to": "af_metrics_gateway.in",
         "port_type": {
           "kinds": "all",
@@ -2111,7 +2113,7 @@
         ],
         "delivery": "native",
         "emitted_by": [
-          "metrics_policy_0"
+          "metrics_fanout_0"
         ]
       },
       {

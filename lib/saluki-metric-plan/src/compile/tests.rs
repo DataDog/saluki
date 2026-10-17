@@ -121,7 +121,7 @@ const PRE_AGGREGATION: [(&str, &[&str]); 3] = [
     (
         "dsd_prefix_filter_region",
         &[
-            "dsd_prefix_filter",
+            "dsd_prefix_filter_blocklist_namespace_prefix",
             "dsd_prefix_filter_blocklist",
             "dsd_prefix_filter_blocklist_false",
         ],
@@ -147,11 +147,11 @@ const POST_AGGREGATION: [(&str, &[&str]); 2] = [
     (
         "metrics_enrich",
         &[
-            "metrics_enrich_in",
-            "metrics_enrich",
-            "metrics_enrich_host_tags",
-            "metrics_policy",
-            "metrics_policy_0",
+            "metrics_in",
+            "metrics_host_enrichment",
+            "metrics",
+            "metrics_fanout",
+            "metrics_fanout_0",
         ],
     ),
 ];
@@ -503,7 +503,10 @@ fn the_default_programs_fusion_decisions_name_each_edges_fence_or_slot() {
     );
     // The cost model cuts the pre-aggregation chain between native components: the mapper (65 ns per event) and the
     // namespace prefix with its filterlist (110 ns) would cost more than the budget together.
-    assert_eq!(verdict("dsd_enrich.out", "dsd_prefix_filter.in"), pipelined(0, 1));
+    assert_eq!(
+        verdict("dsd_enrich.out", "dsd_prefix_filter_blocklist_namespace_prefix.in"),
+        pipelined(0, 1)
+    );
     assert_eq!(
         verdict(
             "dsd_prefix_filter_blocklist.false",
@@ -516,10 +519,7 @@ fn the_default_programs_fusion_decisions_name_each_edges_fence_or_slot() {
         pipelined(1, 2)
     );
     assert_eq!(verdict("dsd_no_agg_split.default", "dsd_tag_filterlist.in"), fused(2));
-    assert_eq!(
-        verdict("dsd_post_agg_filter_fanout.1", "metrics_enrich_in.0"),
-        pipelined(4, 5)
-    );
+    assert_eq!(verdict("dsd_post_agg_filter_fanout.1", "metrics_in.0"), pipelined(4, 5));
     // Both edges of aggregation cross its isolation fence, into and out of its isolation slot.
     let isolation = FusionVerdict::Isolation { slot: SlotId::new(3) };
     assert_eq!(verdict("dsd_tag_filterlist.out", "dsd_agg.in"), isolation);
@@ -535,12 +535,12 @@ fn the_default_programs_fusion_decisions_name_each_edges_fence_or_slot() {
         }
     );
     assert_eq!(
-        verdict("otlp_in.metrics", "metrics_enrich_in.1"),
+        verdict("otlp_in.metrics", "metrics_in.1"),
         fence("otlp_in", Boundary::IoHost)
     );
-    assert_eq!(verdict("metrics_policy.0", "metrics_policy_0.in"), fused(5));
+    assert_eq!(verdict("metrics_fanout.0", "metrics_fanout_0.in"), fused(5));
     assert_eq!(
-        verdict("metrics_policy.3", "mrf_metrics_gateway.in"),
+        verdict("metrics_fanout.3", "mrf_metrics_gateway.in"),
         fence("mrf_metrics_gateway", Boundary::OpaqueHost)
     );
     assert_eq!(
@@ -553,7 +553,7 @@ fn the_default_programs_fusion_decisions_name_each_edges_fence_or_slot() {
     assert_eq!(frame.site(&id("dsd_in")), Some(Site::Fixed));
     assert_eq!(frame.site(&id("dsd_tag_filterlist")), Some(Site::Slot(SlotId::new(2))));
     assert_eq!(frame.site(&id("dsd_agg")), Some(Site::Slot(SlotId::new(3))));
-    assert_eq!(frame.site(&id("metrics_policy_0")), Some(Site::Slot(SlotId::new(5))));
+    assert_eq!(frame.site(&id("metrics_fanout_0")), Some(Site::Slot(SlotId::new(5))));
     assert_eq!(frame.site(&id("af_metrics_gateway_out")), Some(Site::Direct));
     assert_eq!(frame.site(&id("nonexistent")), None);
 }
@@ -1121,7 +1121,7 @@ fn frames_need_a_sound_plan_and_distinct_names() {
 
     // A slot named like an output it has an exit to cannot name both exits.
     let clashing = |nodes: &[NodeId]| {
-        if nodes.iter().any(|node| node.to_string() == "metrics_enrich") {
+        if nodes.iter().any(|node| node.to_string() == "metrics_host_enrichment") {
             Ok(NativeComponentId::new("dd_metrics_encode").unwrap())
         } else {
             namer(nodes)
@@ -1189,7 +1189,12 @@ fn the_default_programs_entries_and_exits_follow_its_edges() {
     // Each region of the pre-aggregation pipeline enters the next as that one's entry 0.
     assert_eq!(
         entries(1),
-        vec![from_region(0, 0, "dsd_enrich.out", "dsd_prefix_filter.in")]
+        vec![from_region(
+            0,
+            0,
+            "dsd_enrich.out",
+            "dsd_prefix_filter_blocklist_namespace_prefix.in"
+        )]
     );
     assert_eq!(
         entries(2),
@@ -1216,15 +1221,15 @@ fn the_default_programs_entries_and_exits_follow_its_edges() {
     );
     let mut expected = Vec::new();
     for (id, from, input) in [
-        (1, "otlp_in.metrics", "metrics_enrich_in.1"),
-        (2, "checks_ipc_in.metrics", "metrics_enrich_in.2"),
-        (3, "liveness_in.metrics", "metrics_enrich_in.3"),
-        (4, "trace_sampler.metrics", "metrics_enrich_in.4"),
+        (1, "otlp_in.metrics", "metrics_in.1"),
+        (2, "checks_ipc_in.metrics", "metrics_in.2"),
+        (3, "liveness_in.metrics", "metrics_in.3"),
+        (4, "trace_sampler.metrics", "metrics_in.4"),
     ] {
         let (key, source) = admission(id);
         expected.push((key, source, from.to_string(), input.to_string()));
     }
-    expected.push(from_region(4, 1, "dsd_post_agg_filter_fanout.1", "metrics_enrich_in.0"));
+    expected.push(from_region(4, 1, "dsd_post_agg_filter_fanout.1", "metrics_in.0"));
     assert_eq!(entries(5), expected);
 
     // Each slot uses the exits its edges leave by: to the next region, to aggregation, from aggregation to the
@@ -1279,7 +1284,7 @@ fn removing_a_branch_leaves_its_exit_and_host_idle() {
     let frame = frame_of(&stage3_default_program());
     let plan = edited(|value| {
         remove_nodes(value, &["af_metrics_gateway", "af_metrics_gateway_out"]);
-        node_mut(value, "metrics_policy")["params"]["ports"] = json!(4);
+        node_mut(value, "metrics_fanout")["params"]["ports"] = json!(4);
         value["outputs"].as_array_mut().unwrap().pop();
     });
     let placement = placed(&plan, &frame).unwrap();
@@ -1310,11 +1315,11 @@ fn removing_a_branch_of_routing_operators_leaves_its_output_exit_idle() {
         ],
     );
     for edge in value["edges"].as_array_mut().unwrap() {
-        if edge["from"] == "metrics_policy.4" {
-            edge["from"] = json!("metrics_policy.3");
+        if edge["from"] == "metrics_fanout.4" {
+            edge["from"] = json!("metrics_fanout.3");
         }
     }
-    node_mut(&mut value, "metrics_policy")["params"]["ports"] = json!(4);
+    node_mut(&mut value, "metrics_fanout")["params"]["ports"] = json!(4);
     let plan = Plan::from_value(value).unwrap();
     let placement = placed(&plan, &frame).unwrap();
     // `mrf_metrics_encode` is the enrichment slot's exit 3, where the Multi-Region Failover gateway runs.
@@ -1353,14 +1358,14 @@ fn adding_a_fixed_destination_needs_a_restart() {
             "id": "new_encode", "accepts": {"kinds": "all", "timestamps": "mixed"}, "fingerprint": fingerprint,
             "recipients": ["new_out/primary/0"]
         }));
-        node_mut(value, "metrics_policy")["params"]["ports"] = json!(6);
+        node_mut(value, "metrics_fanout")["params"]["ports"] = json!(6);
         value["nodes"].as_array_mut().unwrap().push(json!({
-            "id": "metrics_policy_5", "op": "emit", "params": {"output": "new_encode"}
+            "id": "metrics_fanout_5", "op": "emit", "params": {"output": "new_encode"}
         }));
         value["edges"]
             .as_array_mut()
             .unwrap()
-            .push(json!({"from": "metrics_policy.5", "to": "metrics_policy_5.in"}));
+            .push(json!({"from": "metrics_fanout.5", "to": "metrics_fanout_5.in"}));
     });
     let catalog = default_program_catalog().with_output(
         output("new_encode"),
@@ -1438,12 +1443,12 @@ fn a_new_fence_crossing_native_configuration_asks_for_needs_a_restart() {
             .as_array_mut()
             .unwrap()
             .push(json!({"from": "dsd_enrich_in.out", "to": "dsd_enrich.in"}));
-        node_mut(value, "metrics_enrich_in")["params"]["inputs"] = json!(4);
+        node_mut(value, "metrics_in")["params"]["inputs"] = json!(4);
         for edge in value["edges"].as_array_mut().unwrap() {
             for (old, new) in [
-                ("metrics_enrich_in.2", "metrics_enrich_in.1"),
-                ("metrics_enrich_in.3", "metrics_enrich_in.2"),
-                ("metrics_enrich_in.4", "metrics_enrich_in.3"),
+                ("metrics_in.2", "metrics_in.1"),
+                ("metrics_in.3", "metrics_in.2"),
+                ("metrics_in.4", "metrics_in.3"),
             ] {
                 if edge["to"] == old {
                     edge["to"] = json!(new);
@@ -1488,7 +1493,7 @@ fn host_components_keep_their_boot_configuration() {
     // A source cannot be left out: its host keeps producing.
     let without_source = edited(|value| {
         remove_nodes(value, &["trace_sampler"]);
-        node_mut(value, "metrics_enrich_in")["params"]["inputs"] = json!(4);
+        node_mut(value, "metrics_in")["params"]["inputs"] = json!(4);
         value["scopes"]["metrics"]["inputs"]
             .as_object_mut()
             .unwrap()
@@ -1616,7 +1621,11 @@ fn the_pre_aggregation_programs_map_split_and_hand_each_batch_to_the_next_region
         kernels,
         vec![
             vec![("dsd_enrich".to_string(), "dogstatsd_mapper", 1)],
-            vec![("dsd_prefix_filter".to_string(), "namespace_prefix", 1)],
+            vec![(
+                "dsd_prefix_filter_blocklist_namespace_prefix".to_string(),
+                "namespace_prefix",
+                1
+            )],
             vec![
                 ("dsd_no_agg_split".to_string(), "timestamp_split", 2),
                 ("dsd_tag_filterlist".to_string(), "tag_projection", 1),
@@ -1655,7 +1664,7 @@ fn the_pre_aggregation_programs_map_split_and_hand_each_batch_to_the_next_region
             // The listener filterlist drops in place: its `false` port leads to the `drop`.
             (
                 EntryKey::Region(EntryId::new(0)),
-                "dsd_prefix_filter.in".to_string(),
+                "dsd_prefix_filter_blocklist_namespace_prefix.in".to_string(),
                 vec![
                     map(0, 0),
                     decide(0, 0, vec![to(1), Route::Drop(id("dsd_prefix_filter_blocklist_false"))]),
@@ -1825,14 +1834,14 @@ fn the_enrichment_program_has_one_entry_per_logical_input() {
     assert_eq!(
         kernel_nodes(program),
         vec![
-            ("metrics_enrich".to_string(), "host_enrichment", 1),
-            ("metrics_enrich_host_tags".to_string(), "host_tags", 1),
+            ("metrics_host_enrichment".to_string(), "host_enrichment", 1),
+            ("metrics".to_string(), "host_tags", 1),
         ]
     );
     let tee = |ports: usize| (0..ports).map(|port| port.to_string()).collect::<Vec<_>>();
     assert_eq!(
         decision_nodes(program),
-        vec![("metrics_policy".to_string(), tee(5), false)]
+        vec![("metrics_fanout".to_string(), tee(5), false)]
     );
 
     // From a source, and from the filter's region: enrichment and the policy region.
@@ -1853,10 +1862,10 @@ fn the_enrichment_program_has_one_entry_per_logical_input() {
         .collect::<Vec<_>>();
     let mut expected = Vec::new();
     for (point_id, input) in [
-        (1, "metrics_enrich_in.1"),
-        (2, "metrics_enrich_in.2"),
-        (3, "metrics_enrich_in.3"),
-        (4, "metrics_enrich_in.4"),
+        (1, "metrics_in.1"),
+        (2, "metrics_in.2"),
+        (3, "metrics_in.3"),
+        (4, "metrics_in.4"),
     ] {
         expected.push((
             EntryKey::Admission(point(point_id)),
@@ -1867,7 +1876,7 @@ fn the_enrichment_program_has_one_entry_per_logical_input() {
     }
     expected.push((
         EntryKey::Region(EntryId::new(0)),
-        "metrics_enrich_in.0".to_string(),
+        "metrics_in.0".to_string(),
         enriched,
         6,
     ));
@@ -1880,8 +1889,8 @@ fn the_enrichment_program_has_one_entry_per_logical_input() {
         ..BatchHeader::default()
     };
     let found = |header: BatchHeader| program.entry_for(&header).map(|entry| entry.input.to_string());
-    assert_eq!(found(header(None, Some(1))), Some("metrics_enrich_in.1".to_string()));
-    assert_eq!(found(header(Some(0), Some(0))), Some("metrics_enrich_in.0".to_string()));
+    assert_eq!(found(header(None, Some(1))), Some("metrics_in.1".to_string()));
+    assert_eq!(found(header(Some(0), Some(0))), Some("metrics_in.0".to_string()));
     assert_eq!(found(header(Some(1), Some(0))), None);
     assert_eq!(found(header(None, Some(0))), None);
     assert_eq!(found(header(None, None)), None);

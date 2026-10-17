@@ -2,14 +2,14 @@
   "ir_version": 1,
   "scope": "dogstatsd_pre_aggregation",
   "base": {
-    "program_hash": "sha256:d8209ecf38131e69b1a4880ab9aa9e8ac04200b67bbf01476678fa35a414472e"
+    "program_hash": "sha256:362519ec71e7884e03c5c029b5303e8affc6404a4b0e5d01b00a8a00d4aed699"
   },
   "nodes": [
     {"id": "dsd_enrich", "op": "dogstatsd_mapper", "params": {
       "profiles": {"config": "dogstatsd.mapper.profiles"},
       "cache_size": {"config": "dogstatsd.mapper.cache_size"},
       "string_interner_bytes": {"config": "dogstatsd.mapper.string_interner_size_bytes"}}},
-    {"id": "dsd_prefix_filter", "op": "namespace_prefix", "params": {
+    {"id": "dsd_prefix_filter_blocklist_namespace_prefix", "op": "namespace_prefix", "params": {
       "namespace": {"config": "dogstatsd.prefix_filter.metric_namespace"},
       "exclusions": {"config": "dogstatsd.prefix_filter.metric_namespace_blocklist"}}},
     {"id": "dsd_prefix_filter_blocklist", "op": "split", "params": {"predicate": {"not": {"intake_name": {"matches": {
@@ -35,8 +35,8 @@
   ],
   "edges": [
     {"from": "input.metrics", "to": "dsd_enrich.in"},
-    {"from": "dsd_enrich.out", "to": "dsd_prefix_filter.in"},
-    {"from": "dsd_prefix_filter.out", "to": "dsd_prefix_filter_blocklist.in"},
+    {"from": "dsd_enrich.out", "to": "dsd_prefix_filter_blocklist_namespace_prefix.in"},
+    {"from": "dsd_prefix_filter_blocklist_namespace_prefix.out", "to": "dsd_prefix_filter_blocklist.in"},
     {"from": "dsd_prefix_filter_blocklist.false", "to": "dsd_prefix_filter_blocklist_false.in"},
     {"from": "dsd_prefix_filter_blocklist.true", "to": "dsd_no_agg_split.in"},
     {"from": "dsd_no_agg_split.default", "to": "dsd_tag_filterlist.in"},

@@ -355,11 +355,11 @@ fn dropping(default: &Plan, name: &str, revision: u64, hash: PlanHash) -> Plan {
     let edges = value["edges"].as_array_mut().unwrap();
     let main = edges
         .iter_mut()
-        .find(|edge| edge["to"] == "metrics_policy_0.in")
+        .find(|edge| edge["to"] == "metrics_fanout_0.in")
         .expect("the main output is emitted by the policy tee");
     main["to"] = json!("policy/drop.in");
     edges.push(json!({"from": "policy/drop.true", "to": "policy/drop_true.in"}));
-    edges.push(json!({"from": "policy/drop.false", "to": "metrics_policy_0.in"}));
+    edges.push(json!({"from": "policy/drop.false", "to": "metrics_fanout_0.in"}));
     let nodes = value["nodes"].as_array_mut().unwrap();
     nodes.push(json!({
         "id": "policy/drop", "op": "split",
@@ -1363,11 +1363,11 @@ async fn an_exported_artifact_installs_follows_configuration_and_rolls_back_thro
     let edges = edited["edges"].as_array_mut().unwrap();
     let main = edges
         .iter_mut()
-        .find(|edge| edge["to"] == "metrics_policy_0.in")
+        .find(|edge| edge["to"] == "metrics_fanout_0.in")
         .expect("the export emits the main output");
     main["to"] = json!("drop.in");
     edges.push(json!({"from": "drop.true", "to": "drop_true.in"}));
-    edges.push(json!({"from": "drop.false", "to": "metrics_policy_0.in"}));
+    edges.push(json!({"from": "drop.false", "to": "metrics_fanout_0.in"}));
     let nodes = edited["nodes"].as_array_mut().unwrap();
     nodes.push(json!({
         "id": "drop", "op": "split",

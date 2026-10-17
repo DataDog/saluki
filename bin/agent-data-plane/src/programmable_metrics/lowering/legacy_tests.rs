@@ -11,16 +11,16 @@
 //! | `source` nodes | the source component (`trace_sampler` is a transform); port `metrics` is its `metrics` output |
 //! | `emit` nodes | the component of the output they name: its encoder, or the tap `dsd_client_telemetry_out` |
 //! | `dsd_enrich` (mapper kernel) | the `dsd_enrich` chain |
-//! | `dsd_prefix_filter` (prefix), `dsd_prefix_filter_blocklist` (split) and its `drop` | `dsd_prefix_filter` |
+//! | `dsd_prefix_filter_blocklist_namespace_prefix` (prefix), `dsd_prefix_filter_blocklist` (split) and its `drop` | `dsd_prefix_filter` |
 //! | `dsd_no_agg_split` (timestamp split) | `dsd_no_agg_split`; port `passthrough` is its `passthrough` output |
 //! | `dsd_tag_filterlist` (tag projection) | `dsd_tag_filterlist` |
 //! | `dsd_agg` (aggregation, opaque) | `dsd_agg` |
 //! | `dsd_post_agg_filter_in` (merge) | fan-in at the input of `dsd_post_agg_filter` |
 //! | `dsd_post_agg_filter` (split) with its `drop` | `dsd_post_agg_filter` |
 //! | `dsd_post_agg_filter_fanout` (tee) | fan-out of `dsd_post_agg_filter`'s output |
-//! | `metrics_enrich_in` (merge) | fan-in at the input of `metrics_enrich` |
-//! | `metrics_enrich` (host enrichment) and `metrics_enrich_host_tags` (host tags) | the `metrics_enrich` chain |
-//! | `metrics_policy` (tee) | fan-out of `metrics_enrich`'s output |
+//! | `metrics_in` (merge) | fan-in at the input of `metrics_enrich` |
+//! | `metrics_host_enrichment` (host enrichment) and `metrics` (host tags) | the `metrics_enrich` chain |
+//! | `metrics_fanout` (tee) | fan-out of `metrics_enrich`'s output |
 //! | `metrics_routing_filter_{i}` (split) and its `false` drop | the transform `metrics_routing_filter_{i}` |
 //! | `mrf_metrics_gateway` (split) and its `false` drop | the transform `mrf_metrics_gateway` |
 //! | `af_metrics_gateway` (split) and its `false` drop | the transform `af_metrics_gateway` |
@@ -123,11 +123,11 @@ fn legacy(node: &Node, outputs: &NativeOutputs) -> Legacy {
     }
     match id.as_str() {
         "dsd_enrich" | "dsd_no_agg_split" | "dsd_tag_filterlist" | "dsd_agg" => component(&id, Transform),
-        "dsd_prefix_filter" | "dsd_prefix_filter_blocklist" | "dsd_prefix_filter_blocklist_false" => {
-            component("dsd_prefix_filter", Transform)
-        }
+        "dsd_prefix_filter_blocklist_namespace_prefix"
+        | "dsd_prefix_filter_blocklist"
+        | "dsd_prefix_filter_blocklist_false" => component("dsd_prefix_filter", Transform),
         "dsd_post_agg_filter" | "dsd_post_agg_filter_false" => component("dsd_post_agg_filter", Transform),
-        "metrics_enrich" | "metrics_enrich_host_tags" => component("metrics_enrich", Transform),
+        "metrics_host_enrichment" | "metrics" => component("metrics_enrich", Transform),
         _ => panic!("node `{}` ({}) is not in the mapping table", id, op),
     }
 }
@@ -428,7 +428,7 @@ async fn every_lowered_node_has_a_legacy_counterpart_by_the_mapping_table() {
             component("dsd_client_telemetry_out", ComponentType::Destination),
         ),
         (
-            node("metrics_policy_0", names::EMIT, json!({"output": "mrf_metrics_encode"})),
+            node("metrics_fanout_0", names::EMIT, json!({"output": "mrf_metrics_encode"})),
             component("mrf_metrics_encode", ComponentType::Encoder),
         ),
         (

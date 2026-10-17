@@ -143,7 +143,7 @@ fn the_default_program_has_the_native_port_types() {
         ),
         ("liveness_in.metrics", port_type(&[Gauge], Timestamped)),
         ("trace_sampler.metrics", port_type(&[Counter, Gauge], Untimestamped)),
-        ("metrics_enrich_host_tags.out", PortType::ANY),
+        ("metrics.out", PortType::ANY),
         // The autoscaling gateway forwards only scalar series, which its output requires.
         (
             "af_metrics_gateway.true",
@@ -161,7 +161,7 @@ fn the_default_program_has_the_native_port_types() {
         ("dsd_in.metrics", port_type(&dogstatsd, Untimestamped)),
         ("dsd_agg.out", port_type(&aggregated, Timestamped)),
         ("dsd_post_agg_filter.true", port_type(&aggregated, Timestamped)),
-        ("metrics_enrich_host_tags.out", PortType::ANY),
+        ("metrics.out", PortType::ANY),
     ];
     for (port, expected) in expected {
         assert_eq!(fixture.port_type(port), expected, "{}", port);
@@ -214,7 +214,7 @@ fn changes_that_break_the_default_program_are_rejected() {
         rules,
         vec![
             (Rule::UnusedOutput, "output `metrics_routing_encode_0`".to_string()),
-            (Rule::DuplicateContribution, "node `metrics_policy`".to_string()),
+            (Rule::DuplicateContribution, "node `metrics_fanout`".to_string()),
         ],
         "{}",
         fixture.report
@@ -276,11 +276,20 @@ const COVERAGE: &[CoverageCheck] = &[
         "DogStatsD mapping, prefix and listener filtering, tag filterlist",
         |f| {
             assert_eq!(f.op("dsd_enrich").name(), names::DOGSTATSD_MAPPER);
-            assert_eq!(f.target("dsd_enrich.out"), "dsd_prefix_filter.in");
-            assert_eq!(f.op("dsd_prefix_filter").name(), names::NAMESPACE_PREFIX);
+            assert_eq!(
+                f.target("dsd_enrich.out"),
+                "dsd_prefix_filter_blocklist_namespace_prefix.in"
+            );
+            assert_eq!(
+                f.op("dsd_prefix_filter_blocklist_namespace_prefix").name(),
+                names::NAMESPACE_PREFIX
+            );
             // The listener filterlist matches the intake name after prefixing, and drops what matches: in normal
             // form, its split keeps what does not match.
-            assert_eq!(f.target("dsd_prefix_filter.out"), "dsd_prefix_filter_blocklist.in");
+            assert_eq!(
+                f.target("dsd_prefix_filter_blocklist_namespace_prefix.out"),
+                "dsd_prefix_filter_blocklist.in"
+            );
             let Predicate::Not(matched) = f.predicate("dsd_prefix_filter_blocklist") else {
                 panic!("the listener filterlist keeps what it does not match");
             };
@@ -291,7 +300,7 @@ const COVERAGE: &[CoverageCheck] = &[
             assert!(tags.contract().writes.get(Kind::Gauge).is_empty());
             for operator in [
                 "dsd_enrich",
-                "dsd_prefix_filter",
+                "dsd_prefix_filter_blocklist_namespace_prefix",
                 "dsd_prefix_filter_blocklist",
                 "dsd_tag_filterlist",
             ] {
@@ -356,10 +365,10 @@ const COVERAGE: &[CoverageCheck] = &[
         "OTLP metrics receiver and translation; checks IPC; `liveness_in`; `trace_sampler.metrics`",
         |f| {
             for (id, binding, port) in [
-                ("otlp_in", "otlp", "metrics_enrich_in.1"),
-                ("checks_ipc_in", "checks", "metrics_enrich_in.2"),
-                ("liveness_in", "liveness", "metrics_enrich_in.3"),
-                ("trace_sampler", "trace_sampler", "metrics_enrich_in.4"),
+                ("otlp_in", "otlp", "metrics_in.1"),
+                ("checks_ipc_in", "checks", "metrics_in.2"),
+                ("liveness_in", "liveness", "metrics_in.3"),
+                ("trace_sampler", "trace_sampler", "metrics_in.4"),
             ] {
                 let op = f.op(id);
                 assert_eq!(op.params().str("binding"), Some(binding));
@@ -369,17 +378,17 @@ const COVERAGE: &[CoverageCheck] = &[
         },
     ),
     ("`metrics_enrich`: host enrichment, then host tags", |f| {
-        assert_eq!(f.target("metrics_enrich_in.out"), "metrics_enrich.in");
-        assert_eq!(f.op("metrics_enrich").name(), names::HOST_ENRICHMENT);
-        assert_eq!(f.target("metrics_enrich.out"), "metrics_enrich_host_tags.in");
-        let host_tags = f.op("metrics_enrich_host_tags");
+        assert_eq!(f.target("metrics_in.out"), "metrics_host_enrichment.in");
+        assert_eq!(f.op("metrics_host_enrichment").name(), names::HOST_ENRICHMENT);
+        assert_eq!(f.target("metrics_host_enrichment.out"), "metrics.in");
+        let host_tags = f.op("metrics");
         assert_eq!(host_tags.name(), names::HOST_TAGS);
         assert!(host_tags.contract().time.reads_admission_time);
         assert!(host_tags.params().duration("deadline").is_some());
     }),
     ("Endpoint allowlists and additional endpoints", |f| {
         // One output per encoder: the main encoder, and one per routing group, each behind a split on the intake name.
-        assert_eq!(f.target("metrics_policy.0"), "metrics_policy_0.in");
+        assert_eq!(f.target("metrics_fanout.0"), "metrics_fanout_0.in");
         for group in 0..2 {
             let split = format!("metrics_routing_filter_{}", group);
             let Predicate::Any(operands) = f.predicate(&split) else {

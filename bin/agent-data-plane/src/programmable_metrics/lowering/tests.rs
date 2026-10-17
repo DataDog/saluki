@@ -296,7 +296,7 @@ async fn branches_exist_only_when_native_wiring_builds_them() {
         "checks_ipc_in",
         "liveness_in",
         "trace_sampler",
-        "metrics_enrich_host_tags",
+        "metrics",
         "metrics_routing_filter_0",
         "metrics_routing_filter_1",
         "metrics_routing_filter_2",
@@ -319,7 +319,7 @@ async fn branches_exist_only_when_native_wiring_builds_them() {
         ("connected without host tags", [&dsd[..], &["liveness_in"]].concat()),
         (
             "connected with host tags",
-            [&dsd[..], &["liveness_in", "metrics_enrich_host_tags"]].concat(),
+            [&dsd[..], &["liveness_in", "metrics"]].concat(),
         ),
         ("one routing group", [&dsd[..], &["metrics_routing_filter_0"]].concat()),
         // b and c share a group; d has empty lists and gets none.
@@ -358,7 +358,7 @@ async fn branches_exist_only_when_native_wiring_builds_them() {
                     "checks_ipc_in",
                     "liveness_in",
                     "trace_sampler",
-                    "metrics_enrich_host_tags",
+                    "metrics",
                     "metrics_routing_filter_0",
                     "metrics_routing_filter_1",
                     "mrf_metrics_gateway",
@@ -387,7 +387,7 @@ async fn branches_exist_only_when_native_wiring_builds_them() {
         let dogstatsd = present.contains(&"dsd_in");
         for id in [
             "dsd_enrich",
-            "dsd_prefix_filter",
+            "dsd_prefix_filter_blocklist_namespace_prefix",
             "dsd_prefix_filter_blocklist",
             "dsd_tag_filterlist",
             "dsd_agg",
@@ -397,10 +397,10 @@ async fn branches_exist_only_when_native_wiring_builds_them() {
             assert_eq!(has(id), dogstatsd, "{}: `{}`", name, id);
         }
         for id in [
-            "metrics_enrich_in",
-            "metrics_enrich",
-            "metrics_policy",
-            "metrics_policy_0",
+            "metrics_in",
+            "metrics_host_enrichment",
+            "metrics_fanout",
+            "metrics_fanout_0",
         ] {
             assert!(has(id), "{}: `{}`", name, id);
         }
@@ -712,14 +712,14 @@ async fn parameters_are_native_configuration_converted_into_plan_values() {
         ),
         (
             mapper,
-            "dsd_prefix_filter",
+            "dsd_prefix_filter_blocklist_namespace_prefix",
             "namespace",
             "dogstatsd.prefix_filter.metric_namespace",
             json!("tenant."),
         ),
         (
             mapper,
-            "dsd_prefix_filter",
+            "dsd_prefix_filter_blocklist_namespace_prefix",
             "exclusions",
             "dogstatsd.prefix_filter.metric_namespace_blocklist",
             json!(["internal."]),
@@ -1074,7 +1074,7 @@ async fn host_tags_deadlines_are_whole_seconds_whatever_the_process_start() {
         .unwrap()
         .lower(&config)
         .unwrap();
-    let host_tags = lowered.plan.node(&"metrics_enrich_host_tags".parse().unwrap()).unwrap();
+    let host_tags = lowered.plan.node(&"metrics".parse().unwrap()).unwrap();
     assert_eq!(
         host_tags.params.get("deadline"),
         Some(&json!({"config": "host.tags_deadline", "resolved": "1700000301s"}))
@@ -1294,7 +1294,7 @@ async fn the_default_program_is_lowered_in_normal_form() {
     let components = &plan.provenance.as_ref().unwrap().native_components;
     assert_eq!(
         components[&node_id("dsd_prefix_filter_blocklist_false")].as_str(),
-        ids::DSD_PREFIX_FILTER
+        super::components::DSD_PREFIX_FILTER
     );
     assert_eq!(
         components[&node_id("dsd_post_agg_filter_false")].as_str(),

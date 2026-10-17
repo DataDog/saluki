@@ -2,7 +2,7 @@
   "ir_version": 1,
   "scope": "post_enrich",
   "base": {
-    "program_hash": "sha256:8b26675fd175dfa56ac0386830efa732d3a030ac745d7d909f95f74e09553327",
+    "program_hash": "sha256:2a50e2fde258382f9c73648897090cd5007975bac821740b23602687c8c83157",
     "outputs": {
       "af_metrics_encode": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
       "dd_metrics_encode": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
@@ -12,8 +12,8 @@
     }
   },
   "nodes": [
-    {"id": "metrics_policy", "op": "tee", "params": {"ports": 5}},
-    {"id": "metrics_policy_0", "op": "emit", "params": {"output": "dd_metrics_encode"}},
+    {"id": "metrics_fanout", "op": "tee", "params": {"ports": 5}},
+    {"id": "metrics_fanout_0", "op": "emit", "params": {"output": "dd_metrics_encode"}},
     {"id": "metrics_routing_filter_0", "op": "split", "params": {"predicate": {"any": [
        {"intake_name": {"matches": {"values": {"config": "metrics_endpoint_routing.group.0123456789abcdef.names"},
                                     "prefix": false}}},
@@ -45,18 +45,18 @@
     {"id": "af_metrics_gateway_false", "op": "drop"}
   ],
   "edges": [
-    {"from": "input.metrics", "to": "metrics_policy.in"},
-    {"from": "metrics_policy.0", "to": "metrics_policy_0.in"},
-    {"from": "metrics_policy.1", "to": "metrics_routing_filter_0.in"},
+    {"from": "input.metrics", "to": "metrics_fanout.in"},
+    {"from": "metrics_fanout.0", "to": "metrics_fanout_0.in"},
+    {"from": "metrics_fanout.1", "to": "metrics_routing_filter_0.in"},
     {"from": "metrics_routing_filter_0.true", "to": "metrics_routing_filter_0_true.in"},
     {"from": "metrics_routing_filter_0.false", "to": "metrics_routing_filter_0_false.in"},
-    {"from": "metrics_policy.2", "to": "metrics_routing_filter_1.in"},
+    {"from": "metrics_fanout.2", "to": "metrics_routing_filter_1.in"},
     {"from": "metrics_routing_filter_1.true", "to": "metrics_routing_filter_1_true.in"},
     {"from": "metrics_routing_filter_1.false", "to": "metrics_routing_filter_1_false.in"},
-    {"from": "metrics_policy.3", "to": "mrf_metrics_gateway.in"},
+    {"from": "metrics_fanout.3", "to": "mrf_metrics_gateway.in"},
     {"from": "mrf_metrics_gateway.true", "to": "mrf_metrics_gateway_true.in"},
     {"from": "mrf_metrics_gateway.false", "to": "mrf_metrics_gateway_false.in"},
-    {"from": "metrics_policy.4", "to": "af_metrics_gateway.in"},
+    {"from": "metrics_fanout.4", "to": "af_metrics_gateway.in"},
     {"from": "af_metrics_gateway.true", "to": "af_metrics_gateway_true.in"},
     {"from": "af_metrics_gateway.false", "to": "af_metrics_gateway_false.in"}
   ]

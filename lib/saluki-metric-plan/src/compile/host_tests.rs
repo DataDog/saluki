@@ -225,12 +225,12 @@ fn a_boot_plan_bound_to_a_host_the_frame_lacks_or_feeding_an_encode_host_directl
                 edge["to"] = json!("otlp_direct.in");
             }
         }
-        node_mut(value, "metrics_enrich_in")["params"]["inputs"] = json!(4);
+        node_mut(value, "metrics_in")["params"]["inputs"] = json!(4);
         for edge in value["edges"].as_array_mut().unwrap() {
             for (old, new) in [
-                ("metrics_enrich_in.2", "metrics_enrich_in.1"),
-                ("metrics_enrich_in.3", "metrics_enrich_in.2"),
-                ("metrics_enrich_in.4", "metrics_enrich_in.3"),
+                ("metrics_in.2", "metrics_in.1"),
+                ("metrics_in.3", "metrics_in.2"),
+                ("metrics_in.4", "metrics_in.3"),
             ] {
                 if edge["to"] == old {
                     edge["to"] = json!(new);
@@ -290,7 +290,7 @@ fn a_new_or_rebound_output_on_a_frame_host_places_as_a_lease_with_no_new_structu
     let fingerprint =
         crate::resources::fingerprint(&HostId::new("dd_out").unwrap(), crate::model::PortType::ANY, &selector);
     let routed = bound(|value| {
-        node_mut(value, "metrics_policy_0")["params"]["output"] = json!("implied_to_own");
+        node_mut(value, "metrics_fanout_0")["params"]["output"] = json!("implied_to_own");
         value["outputs"].as_array_mut().unwrap().push(json!({
             "id": "implied_to_own", "accepts": {"kinds": "all", "timestamps": "mixed"},
             "fingerprint": fingerprint, "recipients": [recipient],
@@ -395,14 +395,14 @@ fn structure_only_an_artifact_asks_for_is_unsupported_until_stage_10() {
         aggregate["id"] = json!("policy/agg");
         value["nodes"].as_array_mut().unwrap().push(aggregate);
         for edge in value["edges"].as_array_mut().unwrap() {
-            if edge["from"] == "metrics_enrich_host_tags.out" {
+            if edge["from"] == "metrics.out" {
                 edge["from"] = json!("policy/agg.out");
             }
         }
         value["edges"]
             .as_array_mut()
             .unwrap()
-            .push(json!({"from": "metrics_enrich_host_tags.out", "to": "policy/agg.in"}));
+            .push(json!({"from": "metrics.out", "to": "policy/agg.in"}));
     });
     // A host that runs one aggregation per program rejects it at validation; placement's own refusal is the one
     // without that restriction.

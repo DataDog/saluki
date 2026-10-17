@@ -60,7 +60,12 @@ fn resolve(plan: &mut Value, node: &str, path: &[&str], value: Value) {
 fn unconfigured() -> Value {
     let mut plan = serde_json::from_str::<Value>(DEFAULT_PROGRAM_JSON).unwrap();
     resolve(&mut plan, "dsd_enrich", &["profiles"], json!([]));
-    resolve(&mut plan, "dsd_prefix_filter", &["namespace"], json!(""));
+    resolve(
+        &mut plan,
+        "dsd_prefix_filter_blocklist_namespace_prefix",
+        &["namespace"],
+        json!(""),
+    );
     resolve(
         &mut plan,
         "dsd_prefix_filter_blocklist",
@@ -92,15 +97,14 @@ fn a_configured_default_program_loses_only_host_enrichment_which_changes_no_metr
     let eliminated = without_facts(&plan);
     assert_eq!(
         omitted(&eliminated),
-        [("metrics_enrich".to_string(), Omission::Identity)]
+        [("metrics_host_enrichment".to_string(), Omission::Identity)]
     );
     // The merge in front of it now feeds the host tags directly.
     assert!(eliminated
         .plan
         .edges
         .iter()
-        .any(|edge| edge.from.to_string() == "metrics_enrich_in.out"
-            && edge.to.to_string() == "metrics_enrich_host_tags.in"));
+        .any(|edge| edge.from.to_string() == "metrics_in.out" && edge.to.to_string() == "metrics.in"));
 }
 
 #[test]
@@ -121,9 +125,9 @@ fn an_unconfigured_default_program_loses_every_native_feature_that_does_nothing_
             ("metrics_routing_filter_0_true", Omission::Unreachable),
             // Then the nodes that pass every record through unchanged.
             ("dsd_enrich", Omission::Identity),
-            ("dsd_prefix_filter", Omission::Identity),
+            ("dsd_prefix_filter_blocklist_namespace_prefix", Omission::Identity),
             ("dsd_tag_filterlist", Omission::Identity),
-            ("metrics_enrich", Omission::Identity),
+            ("metrics_host_enrichment", Omission::Identity),
         ]
         .map(|(node, why)| (node.to_string(), why))
     );
@@ -138,8 +142,8 @@ fn an_unconfigured_default_program_loses_every_native_feature_that_does_nothing_
         "dsd_in.metrics -> dsd_no_agg_split.in",
         "dsd_no_agg_split.default -> dsd_agg.in",
         "dsd_post_agg_filter_in.out -> dsd_post_agg_filter_fanout.in",
-        "metrics_enrich_in.out -> metrics_enrich_host_tags.in",
-        "metrics_policy.1 -> metrics_routing_filter_0_false.in",
+        "metrics_in.out -> metrics.in",
+        "metrics_fanout.1 -> metrics_routing_filter_0_false.in",
     ] {
         assert!(edges.contains(&edge.to_string()), "no edge {}: {:?}", edge, edges);
     }
@@ -148,7 +152,7 @@ fn an_unconfigured_default_program_loses_every_native_feature_that_does_nothing_
     // they decide nothing, whatever they resolve to. Counted as literals, as a comparison that knew no facts would,
     // they would.
     let mut plan = unconfigured();
-    resolve(&mut plan, "metrics_enrich_host_tags", &["tags"], json!([]));
+    resolve(&mut plan, "metrics", &["tags"], json!([]));
     resolve(
         &mut plan,
         "mrf_metrics_gateway",
@@ -157,16 +161,12 @@ fn an_unconfigured_default_program_loses_every_native_feature_that_does_nothing_
     );
     let plan = Plan::from_value(plan).unwrap();
     let kept = without_facts(&plan);
-    for node in [
-        "metrics_enrich_host_tags",
-        "mrf_metrics_gateway",
-        "mrf_metrics_gateway_true",
-    ] {
+    for node in ["metrics", "mrf_metrics_gateway", "mrf_metrics_gateway_true"] {
         assert!(kept.plan.node(&id(node)).is_some(), "{} was left out", node);
     }
     let everything = eliminate(&plan, &OperatorRegistry::native(), &|_| true);
     for (node, why) in [
-        ("metrics_enrich_host_tags", Omission::Identity),
+        ("metrics", Omission::Identity),
         ("mrf_metrics_gateway", Omission::ConstantSplit),
         ("mrf_metrics_gateway_true", Omission::Unreachable),
     ] {
@@ -187,7 +187,7 @@ fn an_unconfigured_default_program_loses_every_native_feature_that_does_nothing_
             "dsd_post_agg_filter_in",
             "dsd_post_agg_filter_fanout",
             "dsd_post_agg_filter_fanout_0",
-            "metrics_policy",
+            "metrics_fanout",
         ] {
             assert!(eliminated.plan.node(&id(node)).is_some(), "{} was left out", node);
         }
@@ -294,14 +294,12 @@ fn what_is_left_out_changes_nothing_the_reference_interpreter_delivers() {
         .as_array_mut()
         .unwrap()
         .iter_mut()
-        .find(|node| node["id"] == "metrics_enrich_host_tags")
+        .find(|node| node["id"] == "metrics")
         .unwrap();
     tags["params"]["tags"] = json!([]);
     let plan = Plan::from_value(value).unwrap();
     let eliminated = without_facts(&plan);
-    assert!(eliminated
-        .omitted
-        .contains(&(id("metrics_enrich_host_tags"), Omission::Identity)));
+    assert!(eliminated.omitted.contains(&(id("metrics"), Omission::Identity)));
     assert_eq!(eliminated.omitted.len(), 11);
 
     let dogstatsd = || {

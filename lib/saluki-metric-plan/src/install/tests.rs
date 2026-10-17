@@ -65,7 +65,7 @@ fn without_autoscaling() -> Plan {
             .as_array_mut()
             .unwrap()
             .retain(|edge| edge["to"] != "af_metrics_gateway.in" && edge["from"] != "af_metrics_gateway.out");
-        node_mut(value, "metrics_policy")["params"]["ports"] = json!(4);
+        node_mut(value, "metrics_fanout")["params"]["ports"] = json!(4);
         value["outputs"].as_array_mut().unwrap().pop();
     })
 }
@@ -194,7 +194,7 @@ fn removing_a_branch_diffs_as_removed_nodes_edges_and_output() {
         changed,
         vec![
             (
-                "metrics_policy".to_string(),
+                "metrics_fanout".to_string(),
                 NodeChange::Changed {
                     operator: false,
                     params: true,
@@ -213,7 +213,7 @@ fn removing_a_branch_diffs_as_removed_nodes_edges_and_output() {
     assert_eq!(
         removed,
         vec![
-            "metrics_policy.4 -> af_metrics_gateway.in".to_string(),
+            "metrics_fanout.4 -> af_metrics_gateway.in".to_string(),
             "af_metrics_gateway.out -> af_metrics_gateway_out.in".to_string(),
         ]
     );
@@ -311,10 +311,10 @@ fn kernel_reuse_keeps_every_kernel_whose_key_is_unchanged() {
     // in its isolation slot, none in the post-aggregation filter's region, and host enrichment with host tags.
     let unchanged = [
         vec!["dsd_enrich"],
-        vec!["dsd_prefix_filter"],
+        vec!["dsd_prefix_filter_blocklist_namespace_prefix"],
         vec!["dsd_agg"],
         Vec::new(),
-        vec!["metrics_enrich", "metrics_enrich_host_tags"],
+        vec!["metrics_host_enrichment", "metrics"],
     ];
     for (slot, reused) in [0, 1, 3, 4, 5].into_iter().zip(unchanged) {
         assert!(slots[slot].unchanged, "slot {}", slot);
@@ -844,11 +844,11 @@ fn invalid_and_unplaceable_candidates_are_rejected_and_the_active_generation_sta
         value["nodes"].as_array_mut().unwrap().push(aggregate);
         let edges = value["edges"].as_array_mut().unwrap();
         for edge in edges.iter_mut() {
-            if edge["from"] == "metrics_enrich_host_tags.out" {
+            if edge["from"] == "metrics.out" {
                 edge["from"] = json!("late_agg.out");
             }
         }
-        edges.push(json!({"from": "metrics_enrich_host_tags.out", "to": "late_agg.in"}));
+        edges.push(json!({"from": "metrics.out", "to": "late_agg.in"}));
     });
     let (_, actions) = harness.propose(late);
     let [Action::Report(Report {

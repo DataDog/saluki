@@ -1622,7 +1622,7 @@ fn kernels_are_built_from_their_nodes_parameters() {
         let ports = run_kernel(
             "host_tags",
             host_tags.clone(),
-            "metrics_enrich_host_tags",
+            "metrics",
             Some(saluki_core::execution::AdmissionTime::from_unix_secs(secs)),
             vec![Metric::gauge("a", 1.0)],
         );

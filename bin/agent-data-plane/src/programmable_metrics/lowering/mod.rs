@@ -35,8 +35,8 @@
 //! helpers. The DogStatsD pipeline and the sources follow the startup configuration; the output branches (endpoint
 //! routing groups, the failover branches) follow the current one, so a routing group or a failover branch appears and
 //! disappears live, which an artifact composed against an earlier export sees as a stale base. Outputs a resources
-//! artifact declares have no branch: only artifacts emit to them. The metrics enrichment merge (`metrics_enrich_in`)
-//! and the tees (`metrics_policy`, `dsd_post_agg_filter_fanout`) are present even with one input or output, so that
+//! artifact declares have no branch: only artifacts emit to them. The metrics enrichment merge (`metrics_in`)
+//! and the tees (`metrics_fanout`, `dsd_post_agg_filter_fanout`) are present even with one input or output, so that
 //! their IDs never depend on which other branches exist. The merge in front of the post-aggregation filter
 //! (`dsd_post_agg_filter_in`) exists only with the no-aggregation pipeline, whose passthrough is its second input, as
 //! natively that filter has a second input only then.
@@ -112,14 +112,21 @@ use crate::{
     cli::run::dogstatsd_mapper_configuration, components::tag_filterlist::value_rules, config::DataPlaneConfiguration,
 };
 
-/// The reserved node IDs of the default program, which are, or derive from, native component IDs.
+/// The reserved node IDs of the default program.
+///
+/// A node whose native telemetry identity matters keeps its native component's ID, or one derived from it, such as
+/// `dsd_prefix_filter_blocklist` and `dsd_agg`. The others have the IDs the pipeline syntax derives for their place in
+/// the program (`let dsd_prefix_filter_blocklist = dsd_enrich | namespace_prefix(...) | where ...`, and
+/// `let metrics = (...) | host_enrichment | host_tags`, used once per output branch), so that the program prints
+/// without naming them. The telemetry profiles map each node to the native component it stands for
+/// ([`components`](super::components) where no node has that component's ID).
 pub mod ids {
     /// The DogStatsD source.
     pub const DSD_IN: &str = "dsd_in";
     /// The DogStatsD mapper.
     pub const DSD_ENRICH: &str = "dsd_enrich";
-    /// The namespace prefix of the DogStatsD prefix filter.
-    pub const DSD_PREFIX_FILTER: &str = "dsd_prefix_filter";
+    /// The namespace prefix of the DogStatsD prefix filter, the first stage of the listener filterlist's pipeline.
+    pub const DSD_PREFIX_FILTER_BLOCKLIST_NAMESPACE_PREFIX: &str = "dsd_prefix_filter_blocklist_namespace_prefix";
     /// The listener filterlist of the DogStatsD prefix filter.
     pub const DSD_PREFIX_FILTER_BLOCKLIST: &str = "dsd_prefix_filter_blocklist";
     /// The no-aggregation timestamp split.
@@ -143,13 +150,13 @@ pub mod ids {
     /// The trace sampler's metrics.
     pub const TRACE_SAMPLER: &str = "trace_sampler";
     /// The fan-in of metrics enrichment.
-    pub const METRICS_ENRICH_IN: &str = "metrics_enrich_in";
+    pub const METRICS_IN: &str = "metrics_in";
     /// Host enrichment.
-    pub const METRICS_ENRICH: &str = "metrics_enrich";
-    /// Host tags.
-    pub const METRICS_ENRICH_HOST_TAGS: &str = "metrics_enrich_host_tags";
-    /// The fan-out of metrics enrichment to every output branch.
-    pub const METRICS_POLICY: &str = "metrics_policy";
+    pub const METRICS_HOST_ENRICHMENT: &str = "metrics_host_enrichment";
+    /// Host tags: the enriched metrics.
+    pub const METRICS: &str = "metrics";
+    /// The fan-out of the enriched metrics to every output branch.
+    pub const METRICS_FANOUT: &str = "metrics_fanout";
     /// The multi-region failover gateway.
     pub const MRF_METRICS_GATEWAY: &str = "mrf_metrics_gateway";
     /// The autoscaling failover gateway.
@@ -159,6 +166,14 @@ pub mod ids {
     pub fn routing_filter(index: usize) -> String {
         format!("metrics_routing_filter_{}", index)
     }
+}
+
+/// The native components that nodes of the default program stand for, where no node has the component's ID.
+pub mod components {
+    /// The DogStatsD prefix filter: the namespace prefix and the listener filterlist.
+    pub const DSD_PREFIX_FILTER: &str = "dsd_prefix_filter";
+    /// Metrics enrichment: its fan-in, host enrichment, host tags, and the fan-out to the outputs.
+    pub const METRICS_ENRICH: &str = "metrics_enrich";
 }
 
 /// A place where lowering departs from the configuration as written.
@@ -182,7 +197,7 @@ const ANNOTATIONS: &[(&str, &str)] = &[
         "DogStatsD mapper: renames and tags by `dogstatsd_mapper_profiles`",
     ),
     (
-        ids::DSD_PREFIX_FILTER,
+        ids::DSD_PREFIX_FILTER_BLOCKLIST_NAMESPACE_PREFIX,
         "Namespace prefix, from `statsd_metric_namespace`, except blocklisted names",
     ),
     (
@@ -210,13 +225,16 @@ const ANNOTATIONS: &[(&str, &str)] = &[
         ids::DSD_POST_AGG_FILTER_FANOUT,
         "Copies every metric to the client telemetry tap and to enrichment",
     ),
-    (ids::METRICS_ENRICH_IN, "Every source's metrics, to enrichment"),
-    (ids::METRICS_ENRICH, "Host enrichment: leaves metrics unchanged"),
+    (ids::METRICS_IN, "Every source's metrics, to enrichment"),
     (
-        ids::METRICS_ENRICH_HOST_TAGS,
+        ids::METRICS_HOST_ENRICHMENT,
+        "Host enrichment: leaves metrics unchanged",
+    ),
+    (
+        ids::METRICS,
         "Adds the host's tags (a fact) until `expected_tags_duration` passes",
     ),
-    (ids::METRICS_POLICY, "Policy: one branch per output; route here"),
+    (ids::METRICS_FANOUT, "Policy: one branch per output; route here"),
     (
         ids::MRF_METRICS_GATEWAY,
         "Multi-Region Failover: mirrors listed, or all, metrics while failing over",
@@ -236,14 +254,17 @@ const ANNOTATIONS: &[(&str, &str)] = &[
 /// a published program keeps bound, so the export never leaves those gateways out for their values.
 const OMITTED: &[(&str, &str)] = &[
     (ids::DSD_ENRICH, "mapper (no profiles)"),
-    (ids::DSD_PREFIX_FILTER, "namespace prefix (none)"),
+    (
+        ids::DSD_PREFIX_FILTER_BLOCKLIST_NAMESPACE_PREFIX,
+        "namespace prefix (none)",
+    ),
     (ids::DSD_PREFIX_FILTER_BLOCKLIST, "metric filterlist (empty)"),
     (ids::DSD_TAG_FILTERLIST, "tag filterlist (empty)"),
     (ids::DSD_POST_AGG_FILTER_IN, "post-aggregation merge (one input)"),
     (ids::DSD_POST_AGG_FILTER, "post-aggregation filter (empty)"),
-    (ids::METRICS_ENRICH_IN, "enrichment merge (one input)"),
-    (ids::METRICS_ENRICH, "host enrichment (changes no metric)"),
-    (ids::METRICS_ENRICH_HOST_TAGS, "host tags (none)"),
+    (ids::METRICS_IN, "enrichment merge (one input)"),
+    (ids::METRICS_HOST_ENRICHMENT, "host enrichment (changes no metric)"),
+    (ids::METRICS, "host tags (none)"),
     (ids::AF_METRICS_GATEWAY, "autoscaling failover (no metrics listed)"),
 ];
 
@@ -665,10 +686,10 @@ impl<'a> Program<'a> {
             "exclusions": self.bound("dogstatsd.prefix_filter.metric_namespace_blocklist")?,
         });
         let prefix = self.node(
-            ids::DSD_PREFIX_FILTER,
+            ids::DSD_PREFIX_FILTER_BLOCKLIST_NAMESPACE_PREFIX,
             names::NAMESPACE_PREFIX,
             params,
-            ids::DSD_PREFIX_FILTER,
+            components::DSD_PREFIX_FILTER,
         );
         self.edge(PortRef::new(mapper, port("out")), &prefix, "in");
 
@@ -681,10 +702,16 @@ impl<'a> Program<'a> {
             ids::DSD_PREFIX_FILTER_BLOCKLIST,
             names::SPLIT,
             json!({"predicate": predicate}),
-            ids::DSD_PREFIX_FILTER,
+            components::DSD_PREFIX_FILTER,
         );
         self.edge(PortRef::new(prefix, port("out")), &blocklist, "in");
-        self.terminal(&blocklist, "true", names::DROP, Value::Null, ids::DSD_PREFIX_FILTER);
+        self.terminal(
+            &blocklist,
+            "true",
+            names::DROP,
+            Value::Null,
+            components::DSD_PREFIX_FILTER,
+        );
         let kept = PortRef::new(blocklist, port("false"));
 
         let (to_projection, passthrough) = if no_aggregation_pipeline {
@@ -809,19 +836,19 @@ impl<'a> Program<'a> {
         &mut self, startup: &SalukiConfiguration, facts: &HostFacts, inputs: Vec<PortRef>,
     ) -> Result<PortRef, GenericError> {
         let merge = self.node(
-            ids::METRICS_ENRICH_IN,
+            ids::METRICS_IN,
             names::MERGE,
             json!({"inputs": inputs.len()}),
-            ids::METRICS_ENRICH,
+            components::METRICS_ENRICH,
         );
         for (index, input) in inputs.into_iter().enumerate() {
             self.edge(input, &merge, &index.to_string());
         }
         let enrichment = self.node(
-            ids::METRICS_ENRICH,
+            ids::METRICS_HOST_ENRICHMENT,
             names::HOST_ENRICHMENT,
             Value::Null,
-            ids::METRICS_ENRICH,
+            components::METRICS_ENRICH,
         );
         self.edge(PortRef::new(merge, port("out")), &enrichment, "in");
         let mut enriched = PortRef::new(enrichment, port("out"));
@@ -838,12 +865,7 @@ impl<'a> Program<'a> {
                 "tags": self.bound("host.tags")?,
                 "deadline": self.bound("host.tags_deadline")?,
             });
-            let host_tags = self.node(
-                ids::METRICS_ENRICH_HOST_TAGS,
-                names::HOST_TAGS,
-                params,
-                ids::METRICS_ENRICH,
-            );
+            let host_tags = self.node(ids::METRICS, names::HOST_TAGS, params, components::METRICS_ENRICH);
             self.edge(enriched, &host_tags, "in");
             enriched = PortRef::new(host_tags, port("out"));
         }
@@ -859,10 +881,10 @@ impl<'a> Program<'a> {
             .filter(|output| !matches!(output.kind, OutputKind::ClientTelemetry | OutputKind::Implied { .. }))
             .collect::<Vec<_>>();
         let policy = self.node(
-            ids::METRICS_POLICY,
+            ids::METRICS_FANOUT,
             names::TEE,
             json!({"ports": branches.len()}),
-            ids::METRICS_ENRICH,
+            components::METRICS_ENRICH,
         );
         self.edge(enriched, &policy, "in");
 

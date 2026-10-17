@@ -74,7 +74,7 @@ fn reserved_nodes_report_as_the_native_component_they_stand_for() {
         ),
         ("policy/dsd_agg", names::AGGREGATE, None),
         (
-            "metrics_policy_0",
+            "metrics_fanout_0",
             names::EMIT,
             telemetry("dd_metrics_encode", ComponentType::Encoder, TelemetryProfile::Silent),
         ),
@@ -136,6 +136,90 @@ fn reserved_nodes_report_as_the_native_component_they_stand_for() {
     ];
     for (node, operator, expected) in cases {
         assert_eq!(lookup(node, operator), expected, "`{}` running `{}`", node, operator);
+    }
+}
+
+#[tokio::test]
+async fn renamed_nodes_keep_the_native_telemetry_identity_of_their_former_ids() {
+    // The nodes renamed to the IDs the pipeline syntax derives, each with its former ID, its operator, and the native
+    // identity the former ID had: no native series moves with the rename.
+    let cases = [
+        (
+            "dsd_prefix_filter_blocklist_namespace_prefix",
+            "dsd_prefix_filter",
+            names::NAMESPACE_PREFIX,
+            ("dsd_prefix_filter", ComponentType::Transform, TelemetryProfile::Silent),
+        ),
+        (
+            "metrics_in",
+            "metrics_enrich_in",
+            names::MERGE,
+            ("metrics_enrich", ComponentType::Transform, TelemetryProfile::Silent),
+        ),
+        (
+            "metrics_host_enrichment",
+            "metrics_enrich",
+            names::HOST_ENRICHMENT,
+            ("metrics_enrich", ComponentType::Transform, TelemetryProfile::Silent),
+        ),
+        (
+            "metrics",
+            "metrics_enrich_host_tags",
+            names::HOST_TAGS,
+            ("metrics_enrich", ComponentType::Transform, TelemetryProfile::Silent),
+        ),
+        (
+            "metrics_fanout",
+            "metrics_policy",
+            names::TEE,
+            ("metrics_enrich", ComponentType::Transform, TelemetryProfile::Silent),
+        ),
+        (
+            "metrics_fanout_0",
+            "metrics_policy_0",
+            names::EMIT,
+            ("dd_metrics_encode", ComponentType::Encoder, TelemetryProfile::Silent),
+        ),
+    ];
+    for (node, former, operator, (component, component_type, profile)) in cases {
+        let expected = NativeTelemetry {
+            component_id: component.to_string(),
+            component_type,
+            profile,
+        };
+        assert_eq!(
+            lookup(node, operator),
+            Some(expected),
+            "`{}` running `{}`",
+            node,
+            operator
+        );
+        assert_eq!(
+            lookup(former, operator),
+            None,
+            "the former ID `{}` running `{}`",
+            former,
+            operator
+        );
+    }
+
+    // The default program's nodes are these, and each reports as its native component, as its provenance records.
+    let config = configuration(EVERY_BRANCH).await;
+    let lowered = Lowering::new(Arc::new(config.clone()), facts(&config))
+        .unwrap()
+        .unwrap()
+        .lower(&config)
+        .unwrap();
+    let native_components = &lowered.plan.provenance.as_ref().unwrap().native_components;
+    for (node, _, operator, (component, _, _)) in cases {
+        let id = node.parse().unwrap();
+        let lowered_node = lowered
+            .plan
+            .node(&id)
+            .unwrap_or_else(|| panic!("the default program has `{}`", node));
+        assert_eq!(lowered_node.op.as_str(), operator, "`{}`", node);
+        let native = native_components.get(&id).map_or(node, |native| native.as_str());
+        assert_eq!(native, component, "the native component of `{}`", node);
     }
 }
 

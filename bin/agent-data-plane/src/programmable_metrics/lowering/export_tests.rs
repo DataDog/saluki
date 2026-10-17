@@ -206,7 +206,12 @@ fn assert_leaves_out_what_the_comparison_does(
         .collect::<BTreeMap<_, _>>();
     assert_eq!(exported, compared, "{}", name);
     // Host enrichment changes no metric in any configuration, and the nodes the export keeps are all it has.
-    assert_eq!(exported.get("metrics_enrich"), Some(&Omission::Identity), "{}", name);
+    assert_eq!(
+        exported.get("metrics_host_enrichment"),
+        Some(&Omission::Identity),
+        "{}",
+        name
+    );
     for node in &detached.artifact.nodes {
         assert!(!exported.contains_key(node.id.as_str()), "{}: {}", name, node.id);
     }
@@ -484,12 +489,12 @@ async fn the_detached_export_names_what_it_leaves_out_in_one_note_in_program_ord
             ("dsd_enrich", Identity),
             ("dsd_post_agg_filter", ConstantSplit),
             ("dsd_post_agg_filter_false", Unreachable),
-            ("dsd_prefix_filter", Identity),
             ("dsd_prefix_filter_blocklist", ConstantSplit),
             ("dsd_prefix_filter_blocklist_false", Unreachable),
+            ("dsd_prefix_filter_blocklist_namespace_prefix", Identity),
             ("dsd_tag_filterlist", Identity),
-            ("metrics_enrich", Identity),
-            ("metrics_enrich_in", Identity),
+            ("metrics_host_enrichment", Identity),
+            ("metrics_in", Identity),
         ]
     );
     // Human names, in program order; the `drop`s go with their filters, unnamed.
@@ -516,7 +521,11 @@ async fn the_detached_export_names_what_it_leaves_out_in_one_note_in_program_ord
     let omitted = bundle.omitted.keys().map(|node| node.as_str()).collect::<Vec<_>>();
     assert_eq!(
         omitted,
-        ["dsd_post_agg_filter", "dsd_post_agg_filter_false", "metrics_enrich"],
+        [
+            "dsd_post_agg_filter",
+            "dsd_post_agg_filter_false",
+            "metrics_host_enrichment"
+        ],
         "{:?}",
         bundle.annotations.omitted
     );
@@ -565,24 +574,24 @@ async fn the_export_notes_what_each_node_and_binding_of_the_default_program_is()
             ),
             ("dsd_post_agg_filter_in", "Aggregated and timestamped points rejoin"),
             (
-                "dsd_prefix_filter",
-                "Namespace prefix, from `statsd_metric_namespace`, except blocklisted names"
-            ),
-            (
                 "dsd_prefix_filter_blocklist",
                 "Metric filterlist, from `metric_filterlist`: matches drop"
+            ),
+            (
+                "dsd_prefix_filter_blocklist_namespace_prefix",
+                "Namespace prefix, from `statsd_metric_namespace`, except blocklisted names"
             ),
             (
                 "dsd_tag_filterlist",
                 "Tag filterlist and value rules: `metric_tag_filterlist`, `metric_tag_value_allowlist`"
             ),
-            ("metrics_enrich", "Host enrichment: leaves metrics unchanged"),
             (
-                "metrics_enrich_host_tags",
+                "metrics",
                 "Adds the host's tags (a fact) until `expected_tags_duration` passes"
             ),
-            ("metrics_enrich_in", "Every source's metrics, to enrichment"),
-            ("metrics_policy", "Policy: one branch per output; route here"),
+            ("metrics_fanout", "Policy: one branch per output; route here"),
+            ("metrics_host_enrichment", "Host enrichment: leaves metrics unchanged"),
+            ("metrics_in", "Every source's metrics, to enrichment"),
             ("metrics_routing_filter_0", "Endpoint routing to https://c.example.com"),
             ("metrics_routing_filter_1", "Endpoint routing to https://b.example.com"),
             (

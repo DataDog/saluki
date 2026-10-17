@@ -337,7 +337,7 @@ static PROFILES: &[ProfileEntry] = {
         // DogStatsD pre-aggregation, aggregation, and the post-aggregation filter.
         entry("dsd_enrich", names::DOGSTATSD_MAPPER, "dsd_enrich", Transform, Mapper),
         entry(
-            "dsd_prefix_filter",
+            "dsd_prefix_filter_blocklist_namespace_prefix",
             names::NAMESPACE_PREFIX,
             "dsd_prefix_filter",
             Transform,
@@ -408,23 +408,17 @@ static PROFILES: &[ProfileEntry] = {
             Silent,
         ),
         // Metrics enrichment and its fan-out to the outputs.
-        entry("metrics_enrich_in", names::MERGE, "metrics_enrich", Transform, Silent),
+        entry("metrics_in", names::MERGE, "metrics_enrich", Transform, Silent),
         entry(
-            "metrics_enrich",
+            "metrics_host_enrichment",
             names::HOST_ENRICHMENT,
             "metrics_enrich",
             Transform,
             Silent,
         ),
-        entry(
-            "metrics_enrich_host_tags",
-            names::HOST_TAGS,
-            "metrics_enrich",
-            Transform,
-            Silent,
-        ),
-        entry("metrics_policy", names::TEE, "metrics_enrich", Transform, Silent),
-        entry("metrics_policy_0", names::EMIT, "dd_metrics_encode", Encoder, Silent),
+        entry("metrics", names::HOST_TAGS, "metrics_enrich", Transform, Silent),
+        entry("metrics_fanout", names::TEE, "metrics_enrich", Transform, Silent),
+        entry("metrics_fanout_0", names::EMIT, "dd_metrics_encode", Encoder, Silent),
         // Endpoint routing groups.
         entry(
             "metrics_routing_filter_{i}",

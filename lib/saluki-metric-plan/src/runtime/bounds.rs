@@ -36,7 +36,7 @@ pub fn kernel_accounting_name(node: &NodeId) -> String {
 /// isolation slot of aggregation stands for the native `dsd_agg` transform: its kernel keeps that component's resource
 /// group and bounds path, such as `dsd_agg.aggregate_context_limit`. Every other kernel is accounted under
 /// [`kernel_accounting_name`]. Fused slots account every kernel under [`kernel_accounting_name`], even one named
-/// after the node it runs, as host enrichment's `metrics_enrich` is; [`kernel_accounting_in`] applies both rules.
+/// after the node it runs; [`kernel_accounting_in`] applies both rules.
 pub fn kernel_accounting_path(region: &str, node: &NodeId) -> Option<String> {
     match node.namespace() {
         Namespace::Reserved if node.local().as_str() == region => None,
@@ -305,8 +305,8 @@ mod tests {
 
     #[test]
     fn only_an_isolation_slot_named_after_its_state_owner_accounts_it_in_its_own_group() {
-        // `dsd_agg` stands for the native transform of that name; `metrics_enrich` is a fused slot named after host
-        // enrichment, whose kernel keeps its own subcomponent.
+        // `dsd_agg` stands for the native transform of that name; `metrics_enrich` is a fused slot, in which host
+        // enrichment's kernel keeps its own subcomponent.
         let plan = Plan::from_json(crate::testing::DEFAULT_PROGRAM_JSON).unwrap();
         let frame = crate::compile::Frame::compute(
             &plan,
@@ -328,6 +328,11 @@ mod tests {
             kernel_accounting_in(&slot("dsd_agg"), &node("policy/dsd_agg")),
             Some("policy".to_string())
         );
+        assert_eq!(
+            kernel_accounting_in(&slot("metrics_enrich"), &node("metrics_host_enrichment")),
+            Some("metrics_host_enrichment".to_string())
+        );
+        // So does a reserved node named like the fused slot it runs in.
         assert_eq!(
             kernel_accounting_in(&slot("metrics_enrich"), &node("metrics_enrich")),
             Some("metrics_enrich".to_string())

@@ -759,7 +759,7 @@ fn a_pushed_filter_reaches_its_state_owners_parameters_and_fingerprint_and_a_sit
     let other_site = test_site("second", "second_filter");
     let unrelated = RewriteRecord {
         id: RewriteId::R3,
-        ..applied(vec![id("dsd_prefix_filter")])
+        ..applied(vec![id("dsd_prefix_filter_blocklist_namespace_prefix")])
     };
     let records = vec![
         applied(vec![id("dsd_agg"), id("dsd_post_agg_filter")]),

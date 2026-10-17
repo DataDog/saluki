@@ -1707,7 +1707,7 @@ async fn a_program_routing_to_an_additional_endpoint_by_its_url_gets_an_implied_
         .as_array_mut()
         .unwrap()
         .iter_mut()
-        .find(|node| node["id"] == "metrics_policy_0")
+        .find(|node| node["id"] == "metrics_fanout_0")
         .unwrap();
     assert_eq!(main["params"], json!({"to": ["primary", b]}));
 
@@ -1717,7 +1717,7 @@ async fn a_program_routing_to_an_additional_endpoint_by_its_url_gets_an_implied_
         .as_array_mut()
         .unwrap()
         .iter_mut()
-        .find(|node| node["id"] == "metrics_policy")
+        .find(|node| node["id"] == "metrics_fanout")
         .unwrap();
     let ports = tee["params"]["ports"].as_u64().unwrap();
     tee["params"]["ports"] = json!(ports + 1);
@@ -1727,7 +1727,7 @@ async fn a_program_routing_to_an_additional_endpoint_by_its_url_gets_an_implied_
         json!({"id": "to_team_b_false", "op": "drop"}),
     ]);
     artifact["edges"].as_array_mut().unwrap().extend([
-        json!({"from": format!("metrics_policy.{}", ports), "to": "to_team_b.in"}),
+        json!({"from": format!("metrics_fanout.{}", ports), "to": "to_team_b.in"}),
         json!({"from": "to_team_b.true", "to": "to_team_b_true.in"}),
         json!({"from": "to_team_b.false", "to": "to_team_b_false.in"}),
     ]);
@@ -1865,7 +1865,7 @@ async fn an_endpoint_removed_under_a_program_that_names_it_beside_the_primary_le
         .as_array_mut()
         .unwrap()
         .iter_mut()
-        .find(|node| node["id"] == "metrics_policy_0")
+        .find(|node| node["id"] == "metrics_fanout_0")
         .unwrap();
     main["params"] = json!({"to": ["primary", c.clone()]});
     assert!(transport.publisher.publish(ArtifactSnapshot::new(

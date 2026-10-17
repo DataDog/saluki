@@ -2,8 +2,8 @@
   "explain_version": 2,
   "plan": {
     "ir_version": 1,
-    "hash": "sha256:93f3bdaa4ce6dc615e06b549813577dfcf8c87fb0585ae16fd25a7e6ab43398a",
-    "structural_hash": "sha256:ee0e3e12f71ffff1a0470395580b07604772d4a3f6b1a88fffe124bf52e721a0",
+    "hash": "sha256:71c0f38b022c58c78c38d123d834c1a12064be793070503e52e45c57f8c7d372",
+    "structural_hash": "sha256:936957db573128dff0e650f064ed8cf42d9a067388851a60d4a35db40ea6009d",
     "provenance": {
       "native_components": {
         "af_metrics_gateway_false": "af_metrics_gateway",
@@ -14,10 +14,12 @@
         "dsd_post_agg_filter_in": "dsd_post_agg_filter",
         "dsd_prefix_filter_blocklist": "dsd_prefix_filter",
         "dsd_prefix_filter_blocklist_false": "dsd_prefix_filter",
-        "metrics_enrich_host_tags": "metrics_enrich",
-        "metrics_enrich_in": "metrics_enrich",
-        "metrics_policy": "metrics_enrich",
-        "metrics_policy_0": "dd_metrics_encode",
+        "dsd_prefix_filter_blocklist_namespace_prefix": "dsd_prefix_filter",
+        "metrics": "metrics_enrich",
+        "metrics_fanout": "metrics_enrich",
+        "metrics_fanout_0": "dd_metrics_encode",
+        "metrics_host_enrichment": "metrics_enrich",
+        "metrics_in": "metrics_enrich",
         "metrics_routing_filter_0_false": "metrics_routing_filter_0",
         "metrics_routing_filter_0_true": "metrics_routing_encode_0",
         "metrics_routing_filter_1_false": "metrics_routing_filter_1",
@@ -155,12 +157,12 @@
               ],
               "timestamps": "mixed"
             },
-            "to": "dsd_prefix_filter.in"
+            "to": "dsd_prefix_filter_blocklist_namespace_prefix.in"
           }
         ]
       },
       {
-        "id": "dsd_prefix_filter",
+        "id": "dsd_prefix_filter_blocklist_namespace_prefix",
         "op": "namespace_prefix",
         "boundary": "synchronous",
         "state": "none",
@@ -267,7 +269,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "from": "dsd_prefix_filter.out"
+            "from": "dsd_prefix_filter_blocklist_namespace_prefix.out"
           }
         ],
         "outputs": [
@@ -827,7 +829,7 @@
               ],
               "timestamps": "timestamped"
             },
-            "to": "metrics_enrich_in.0"
+            "to": "metrics_in.0"
           }
         ]
       },
@@ -876,7 +878,7 @@
               ],
               "timestamps": "mixed"
             },
-            "to": "metrics_enrich_in.1"
+            "to": "metrics_in.1"
           }
         ]
       },
@@ -903,7 +905,7 @@
               ],
               "timestamps": "mixed"
             },
-            "to": "metrics_enrich_in.2"
+            "to": "metrics_in.2"
           }
         ]
       },
@@ -927,7 +929,7 @@
               ],
               "timestamps": "timestamped"
             },
-            "to": "metrics_enrich_in.3"
+            "to": "metrics_in.3"
           }
         ]
       },
@@ -952,12 +954,12 @@
               ],
               "timestamps": "untimestamped"
             },
-            "to": "metrics_enrich_in.4"
+            "to": "metrics_in.4"
           }
         ]
       },
       {
-        "id": "metrics_enrich_in",
+        "id": "metrics_in",
         "op": "merge",
         "boundary": "synchronous",
         "state": "none",
@@ -1015,12 +1017,12 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "to": "metrics_enrich.in"
+            "to": "metrics_host_enrichment.in"
           }
         ]
       },
       {
-        "id": "metrics_enrich",
+        "id": "metrics_host_enrichment",
         "op": "host_enrichment",
         "boundary": "synchronous",
         "state": "none",
@@ -1034,7 +1036,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "from": "metrics_enrich_in.out"
+            "from": "metrics_in.out"
           }
         ],
         "outputs": [
@@ -1044,12 +1046,12 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "to": "metrics_enrich_host_tags.in"
+            "to": "metrics.in"
           }
         ]
       },
       {
-        "id": "metrics_enrich_host_tags",
+        "id": "metrics",
         "op": "host_tags",
         "boundary": "synchronous",
         "state": "none",
@@ -1089,7 +1091,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "from": "metrics_enrich.out"
+            "from": "metrics_host_enrichment.out"
           }
         ],
         "outputs": [
@@ -1099,12 +1101,12 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "to": "metrics_policy.in"
+            "to": "metrics_fanout.in"
           }
         ]
       },
       {
-        "id": "metrics_policy",
+        "id": "metrics_fanout",
         "op": "tee",
         "boundary": "synchronous",
         "state": "none",
@@ -1120,7 +1122,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "from": "metrics_enrich_host_tags.out"
+            "from": "metrics.out"
           }
         ],
         "outputs": [
@@ -1130,7 +1132,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "to": "metrics_policy_0.in"
+            "to": "metrics_fanout_0.in"
           },
           {
             "name": "1",
@@ -1167,7 +1169,7 @@
         ]
       },
       {
-        "id": "metrics_policy_0",
+        "id": "metrics_fanout_0",
         "op": "emit",
         "boundary": "synchronous",
         "state": "none",
@@ -1183,7 +1185,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "from": "metrics_policy.0"
+            "from": "metrics_fanout.0"
           }
         ],
         "outputs": []
@@ -1217,7 +1219,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "from": "metrics_policy.1"
+            "from": "metrics_fanout.1"
           }
         ],
         "outputs": [
@@ -1282,7 +1284,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "from": "metrics_policy.2"
+            "from": "metrics_fanout.2"
           }
         ],
         "outputs": [
@@ -1347,7 +1349,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "from": "metrics_policy.3"
+            "from": "metrics_fanout.3"
           }
         ],
         "outputs": [
@@ -1417,7 +1419,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "from": "metrics_policy.4"
+            "from": "metrics_fanout.4"
           }
         ],
         "outputs": [
@@ -1476,7 +1478,7 @@
       },
       {
         "from": "dsd_enrich.out",
-        "to": "dsd_prefix_filter.in",
+        "to": "dsd_prefix_filter_blocklist_namespace_prefix.in",
         "port_type": {
           "kinds": [
             "counter",
@@ -1489,7 +1491,7 @@
         }
       },
       {
-        "from": "dsd_prefix_filter.out",
+        "from": "dsd_prefix_filter_blocklist_namespace_prefix.out",
         "to": "dsd_prefix_filter_blocklist.in",
         "port_type": {
           "kinds": [
@@ -1641,7 +1643,7 @@
       },
       {
         "from": "dsd_post_agg_filter_fanout.1",
-        "to": "metrics_enrich_in.0",
+        "to": "metrics_in.0",
         "port_type": {
           "kinds": [
             "rate",
@@ -1655,7 +1657,7 @@
       },
       {
         "from": "otlp_in.metrics",
-        "to": "metrics_enrich_in.1",
+        "to": "metrics_in.1",
         "port_type": {
           "kinds": [
             "counter",
@@ -1668,7 +1670,7 @@
       },
       {
         "from": "checks_ipc_in.metrics",
-        "to": "metrics_enrich_in.2",
+        "to": "metrics_in.2",
         "port_type": {
           "kinds": [
             "counter",
@@ -1681,7 +1683,7 @@
       },
       {
         "from": "liveness_in.metrics",
-        "to": "metrics_enrich_in.3",
+        "to": "metrics_in.3",
         "port_type": {
           "kinds": [
             "gauge"
@@ -1691,7 +1693,7 @@
       },
       {
         "from": "trace_sampler.metrics",
-        "to": "metrics_enrich_in.4",
+        "to": "metrics_in.4",
         "port_type": {
           "kinds": [
             "counter",
@@ -1701,39 +1703,39 @@
         }
       },
       {
-        "from": "metrics_enrich_in.out",
-        "to": "metrics_enrich.in",
+        "from": "metrics_in.out",
+        "to": "metrics_host_enrichment.in",
         "port_type": {
           "kinds": "all",
           "timestamps": "mixed"
         }
       },
       {
-        "from": "metrics_enrich.out",
-        "to": "metrics_enrich_host_tags.in",
+        "from": "metrics_host_enrichment.out",
+        "to": "metrics.in",
         "port_type": {
           "kinds": "all",
           "timestamps": "mixed"
         }
       },
       {
-        "from": "metrics_enrich_host_tags.out",
-        "to": "metrics_policy.in",
+        "from": "metrics.out",
+        "to": "metrics_fanout.in",
         "port_type": {
           "kinds": "all",
           "timestamps": "mixed"
         }
       },
       {
-        "from": "metrics_policy.0",
-        "to": "metrics_policy_0.in",
+        "from": "metrics_fanout.0",
+        "to": "metrics_fanout_0.in",
         "port_type": {
           "kinds": "all",
           "timestamps": "mixed"
         }
       },
       {
-        "from": "metrics_policy.1",
+        "from": "metrics_fanout.1",
         "to": "metrics_routing_filter_0.in",
         "port_type": {
           "kinds": "all",
@@ -1749,7 +1751,7 @@
         }
       },
       {
-        "from": "metrics_policy.2",
+        "from": "metrics_fanout.2",
         "to": "metrics_routing_filter_1.in",
         "port_type": {
           "kinds": "all",
@@ -1765,7 +1767,7 @@
         }
       },
       {
-        "from": "metrics_policy.3",
+        "from": "metrics_fanout.3",
         "to": "mrf_metrics_gateway.in",
         "port_type": {
           "kinds": "all",
@@ -1781,7 +1783,7 @@
         }
       },
       {
-        "from": "metrics_policy.4",
+        "from": "metrics_fanout.4",
         "to": "af_metrics_gateway.in",
         "port_type": {
           "kinds": "all",
@@ -1828,7 +1830,7 @@
         ],
         "delivery": "native",
         "emitted_by": [
-          "metrics_policy_0"
+          "metrics_fanout_0"
         ]
       },
       {
@@ -2180,7 +2182,7 @@
         "name": "dsd_prefix_filter_region",
         "cost": 110,
         "nodes": [
-          "dsd_prefix_filter",
+          "dsd_prefix_filter_blocklist_namespace_prefix",
           "dsd_prefix_filter_blocklist",
           "dsd_prefix_filter_blocklist_false"
         ],
@@ -2188,7 +2190,7 @@
           {
             "key": "entry 0",
             "from": "dsd_enrich.out",
-            "input": "dsd_prefix_filter.in"
+            "input": "dsd_prefix_filter_blocklist_namespace_prefix.in"
           }
         ],
         "exits": [
@@ -2406,37 +2408,37 @@
         "name": "metrics_enrich",
         "cost": 90,
         "nodes": [
-          "metrics_enrich_in",
-          "metrics_enrich",
-          "metrics_enrich_host_tags",
-          "metrics_policy",
-          "metrics_policy_0"
+          "metrics_in",
+          "metrics_host_enrichment",
+          "metrics",
+          "metrics_fanout",
+          "metrics_fanout_0"
         ],
         "entries": [
           {
             "key": "admission point 1",
             "from": "otlp_in.metrics",
-            "input": "metrics_enrich_in.1"
+            "input": "metrics_in.1"
           },
           {
             "key": "admission point 2",
             "from": "checks_ipc_in.metrics",
-            "input": "metrics_enrich_in.2"
+            "input": "metrics_in.2"
           },
           {
             "key": "admission point 3",
             "from": "liveness_in.metrics",
-            "input": "metrics_enrich_in.3"
+            "input": "metrics_in.3"
           },
           {
             "key": "admission point 4",
             "from": "trace_sampler.metrics",
-            "input": "metrics_enrich_in.4"
+            "input": "metrics_in.4"
           },
           {
             "key": "entry 0",
             "from": "dsd_post_agg_filter_fanout.1",
-            "input": "metrics_enrich_in.0"
+            "input": "metrics_in.0"
           }
         ],
         "exits": [
@@ -2748,12 +2750,12 @@
       },
       {
         "from": "dsd_enrich.out",
-        "to": "dsd_prefix_filter.in",
+        "to": "dsd_prefix_filter_blocklist_namespace_prefix.in",
         "decision": "pipelined",
         "reason": "fusing would make one region cost more than 110 ns per event, the cost model's budget: slots `dsd_pre_aggregation` and `dsd_prefix_filter_region` pipeline"
       },
       {
-        "from": "dsd_prefix_filter.out",
+        "from": "dsd_prefix_filter_blocklist_namespace_prefix.out",
         "to": "dsd_prefix_filter_blocklist.in",
         "decision": "fused",
         "reason": "both nodes are synchronous and nothing separates them: slot `dsd_prefix_filter_region`"
@@ -2820,60 +2822,60 @@
       },
       {
         "from": "dsd_post_agg_filter_fanout.1",
-        "to": "metrics_enrich_in.0",
+        "to": "metrics_in.0",
         "decision": "pipelined",
         "reason": "fusing would make one region cost more than 110 ns per event, the cost model's budget: slots `dsd_post_agg_filter_region` and `metrics_enrich` pipeline"
       },
       {
         "from": "otlp_in.metrics",
-        "to": "metrics_enrich_in.1",
+        "to": "metrics_in.1",
         "decision": "fence",
         "reason": "`otlp_in` is an io_host, a fence that fusion never crosses"
       },
       {
         "from": "checks_ipc_in.metrics",
-        "to": "metrics_enrich_in.2",
+        "to": "metrics_in.2",
         "decision": "fence",
         "reason": "`checks_ipc_in` is an io_host, a fence that fusion never crosses"
       },
       {
         "from": "liveness_in.metrics",
-        "to": "metrics_enrich_in.3",
+        "to": "metrics_in.3",
         "decision": "fence",
         "reason": "`liveness_in` is an io_host, a fence that fusion never crosses"
       },
       {
         "from": "trace_sampler.metrics",
-        "to": "metrics_enrich_in.4",
+        "to": "metrics_in.4",
         "decision": "fence",
         "reason": "`trace_sampler` is an io_host, a fence that fusion never crosses"
       },
       {
-        "from": "metrics_enrich_in.out",
-        "to": "metrics_enrich.in",
+        "from": "metrics_in.out",
+        "to": "metrics_host_enrichment.in",
         "decision": "fused",
         "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
       },
       {
-        "from": "metrics_enrich.out",
-        "to": "metrics_enrich_host_tags.in",
+        "from": "metrics_host_enrichment.out",
+        "to": "metrics.in",
         "decision": "fused",
         "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
       },
       {
-        "from": "metrics_enrich_host_tags.out",
-        "to": "metrics_policy.in",
+        "from": "metrics.out",
+        "to": "metrics_fanout.in",
         "decision": "fused",
         "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
       },
       {
-        "from": "metrics_policy.0",
-        "to": "metrics_policy_0.in",
+        "from": "metrics_fanout.0",
+        "to": "metrics_fanout_0.in",
         "decision": "fused",
         "reason": "both nodes are synchronous and nothing separates them: slot `metrics_enrich`"
       },
       {
-        "from": "metrics_policy.1",
+        "from": "metrics_fanout.1",
         "to": "metrics_routing_filter_0.in",
         "decision": "fence",
         "reason": "`metrics_routing_filter_0` is an opaque_host, a fence that fusion never crosses"
@@ -2885,7 +2887,7 @@
         "reason": "an `emit` or `drop` right after `metrics_routing_filter_0` runs in no slot: a direct edge"
       },
       {
-        "from": "metrics_policy.2",
+        "from": "metrics_fanout.2",
         "to": "metrics_routing_filter_1.in",
         "decision": "fence",
         "reason": "`metrics_routing_filter_1` is an opaque_host, a fence that fusion never crosses"
@@ -2897,7 +2899,7 @@
         "reason": "an `emit` or `drop` right after `metrics_routing_filter_1` runs in no slot: a direct edge"
       },
       {
-        "from": "metrics_policy.3",
+        "from": "metrics_fanout.3",
         "to": "mrf_metrics_gateway.in",
         "decision": "fence",
         "reason": "`mrf_metrics_gateway` is an opaque_host, a fence that fusion never crosses"
@@ -2909,7 +2911,7 @@
         "reason": "an `emit` or `drop` right after `mrf_metrics_gateway` runs in no slot: a direct edge"
       },
       {
-        "from": "metrics_policy.4",
+        "from": "metrics_fanout.4",
         "to": "af_metrics_gateway.in",
         "decision": "fence",
         "reason": "`af_metrics_gateway` is an opaque_host, a fence that fusion never crosses"
@@ -2928,7 +2930,7 @@
         "mode": "admit",
         "nodes": [
           "dsd_enrich",
-          "dsd_prefix_filter",
+          "dsd_prefix_filter_blocklist_namespace_prefix",
           "dsd_prefix_filter_blocklist",
           "dsd_prefix_filter_blocklist_false",
           "dsd_no_agg_split",
@@ -2938,11 +2940,11 @@
           "dsd_post_agg_filter_false",
           "dsd_post_agg_filter_fanout",
           "dsd_post_agg_filter_fanout_0",
-          "metrics_enrich_in",
-          "metrics_enrich",
-          "metrics_enrich_host_tags",
-          "metrics_policy",
-          "metrics_policy_0"
+          "metrics_in",
+          "metrics_host_enrichment",
+          "metrics",
+          "metrics_fanout",
+          "metrics_fanout_0"
         ],
         "slots": [
           "dsd_pre_aggregation",
@@ -2966,11 +2968,11 @@
         "from": "otlp_in.metrics",
         "mode": "admit",
         "nodes": [
-          "metrics_enrich_in",
-          "metrics_enrich",
-          "metrics_enrich_host_tags",
-          "metrics_policy",
-          "metrics_policy_0"
+          "metrics_in",
+          "metrics_host_enrichment",
+          "metrics",
+          "metrics_fanout",
+          "metrics_fanout_0"
         ],
         "slots": [
           "metrics_enrich"
@@ -2988,11 +2990,11 @@
         "from": "checks_ipc_in.metrics",
         "mode": "admit",
         "nodes": [
-          "metrics_enrich_in",
-          "metrics_enrich",
-          "metrics_enrich_host_tags",
-          "metrics_policy",
-          "metrics_policy_0"
+          "metrics_in",
+          "metrics_host_enrichment",
+          "metrics",
+          "metrics_fanout",
+          "metrics_fanout_0"
         ],
         "slots": [
           "metrics_enrich"
@@ -3010,11 +3012,11 @@
         "from": "liveness_in.metrics",
         "mode": "admit",
         "nodes": [
-          "metrics_enrich_in",
-          "metrics_enrich",
-          "metrics_enrich_host_tags",
-          "metrics_policy",
-          "metrics_policy_0"
+          "metrics_in",
+          "metrics_host_enrichment",
+          "metrics",
+          "metrics_fanout",
+          "metrics_fanout_0"
         ],
         "slots": [
           "metrics_enrich"
@@ -3032,11 +3034,11 @@
         "from": "trace_sampler.metrics",
         "mode": "admit",
         "nodes": [
-          "metrics_enrich_in",
-          "metrics_enrich",
-          "metrics_enrich_host_tags",
-          "metrics_policy",
-          "metrics_policy_0"
+          "metrics_in",
+          "metrics_host_enrichment",
+          "metrics",
+          "metrics_fanout",
+          "metrics_fanout_0"
         ],
         "slots": [
           "metrics_enrich"
@@ -3107,11 +3109,11 @@
           "dsd_post_agg_filter_false",
           "dsd_post_agg_filter_fanout",
           "dsd_post_agg_filter_fanout_0",
-          "metrics_enrich_in",
-          "metrics_enrich",
-          "metrics_enrich_host_tags",
-          "metrics_policy",
-          "metrics_policy_0"
+          "metrics_in",
+          "metrics_host_enrichment",
+          "metrics",
+          "metrics_fanout",
+          "metrics_fanout_0"
         ],
         "slots": [
           "dsd_post_agg_filter_region",

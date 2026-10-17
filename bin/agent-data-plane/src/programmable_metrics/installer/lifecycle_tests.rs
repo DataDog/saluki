@@ -319,7 +319,7 @@ fn nodes(document: &mut Value) -> &mut Vec<Value> {
 
 /// Puts `node`, whose input port is `in` and whose port `out` continues, in front of the main output's `emit`.
 fn in_front_of_the_main_output(document: &mut Value, node: Value, out: &str) {
-    in_front_of(document, "metrics_policy_0.in", node, out);
+    in_front_of(document, "metrics_fanout_0.in", node, out);
 }
 
 /// Puts `node`, whose input port is `in` and whose port `out` continues, in front of the input port `port`
@@ -1266,7 +1266,7 @@ fn with_fingerprint(artifact: &Value, output: &str, fingerprint: Option<PlanHash
 fn addressed_to_output(artifact: &Value, output: &str) -> Value {
     let mut artifact = artifact.clone();
     let emit = match output {
-        MAIN => Some("metrics_policy_0"),
+        MAIN => Some("metrics_fanout_0"),
         ROUTED => Some("metrics_routing_filter_0_true"),
         _ => None,
     };

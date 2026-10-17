@@ -92,7 +92,8 @@ pub fn default_program_resources_catalog() -> MemoryCatalog {
 /// The slot holding the DogStatsD mapper is `dsd_pre_aggregation`, the slot holding host enrichment is
 /// `metrics_enrich`, and the isolation slot holding DogStatsD aggregation is `dsd_agg`. Any other slot, one that R1's
 /// cost model cut from a pipeline, is named after its first node, without the `_in` of a merge that starts it, as
-/// `<node>_region`.
+/// `<node>_region`, except that a slot the namespace prefix or the enrichment merge starts is named for the native
+/// component that node stands for: `dsd_prefix_filter_region` or `metrics_enrich_region`.
 ///
 /// # Errors
 ///
@@ -103,11 +104,15 @@ pub fn default_program_slot_name(nodes: &[NodeId]) -> Result<NativeComponentId, 
         "dsd_agg".to_string()
     } else if has("dsd_enrich") {
         "dsd_pre_aggregation".to_string()
-    } else if has("metrics_enrich") {
+    } else if has("metrics_host_enrichment") {
         "metrics_enrich".to_string()
     } else {
-        let first = nodes.first().map_or("slot", |node| node.local().as_str());
-        format!("{}_region", first.strip_suffix("_in").unwrap_or(first))
+        let first = match nodes.first().map_or("slot", |node| node.local().as_str()) {
+            "dsd_prefix_filter_blocklist_namespace_prefix" => "dsd_prefix_filter",
+            "metrics_in" => "metrics_enrich",
+            first => first.strip_suffix("_in").unwrap_or(first),
+        };
+        format!("{}_region", first)
     };
     NativeComponentId::new(name).map_err(|error| error.to_string())
 }
@@ -255,7 +260,7 @@ pub fn with_two_scopes(mut value: Value) -> Value {
     };
     value["scopes"] = json!({
         "dogstatsd_pre_aggregation": {"inputs": {"metrics": "dsd_in.metrics"}, "exits": exits},
-        "post_enrich": {"inputs": {"metrics": "metrics_enrich_host_tags.out"}}
+        "post_enrich": {"inputs": {"metrics": "metrics.out"}}
     });
     value
 }

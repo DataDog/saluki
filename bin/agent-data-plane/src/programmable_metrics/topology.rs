@@ -94,7 +94,7 @@ use saluki_metrics::{Counter, Gauge};
 
 use super::{
     installer::{BootTopology, HostWiring, ProgrammableMetrics},
-    lowering::ids,
+    lowering::{components, ids},
     resources::{
         specs::{host_settings, lease_spec, publication, recipient_settings},
         FixedHost, NativeOutputs, OutputKind, CLUSTER_AGENT_OUT, DD_OUT, MRF_DD_OUT,
@@ -111,7 +111,8 @@ use crate::cli::run::{autoscaling_failover_wired, mrf_metrics_endpoint};
 /// connected to. The isolation slot of DogStatsD aggregation is `dsd_agg`, the native aggregation transform's ID. A
 /// slot that R1's cost model cuts from one of them, so that a costly chain pipelines across regions, is named after the
 /// native component it starts with: `<first node>_region`, without the `_in` of a merge that starts it, such as
-/// `dsd_prefix_filter_region`.
+/// `dsd_post_agg_filter_region`. A slot that the namespace prefix or the enrichment merge starts is named for the
+/// native component that node stands for: `dsd_prefix_filter_region` or `metrics_enrich_region`.
 ///
 /// # Errors
 ///
@@ -122,15 +123,20 @@ pub fn slot_name(nodes: &[NodeId]) -> Result<NativeComponentId, String> {
         ids::DSD_AGG.to_string()
     } else if has(ids::DSD_ENRICH) {
         "dsd_pre_aggregation".to_string()
-    } else if has(ids::METRICS_ENRICH) {
-        ids::METRICS_ENRICH.to_string()
+    } else if has(ids::METRICS_HOST_ENRICHMENT) {
+        components::METRICS_ENRICH.to_string()
     } else {
         let first = nodes
             .first()
             .ok_or_else(|| "a region of the default program has no nodes; this is a bug".to_string())?
             .local()
             .as_str();
-        format!("{}_region", first.strip_suffix("_in").unwrap_or(first))
+        let first = match first {
+            ids::DSD_PREFIX_FILTER_BLOCKLIST_NAMESPACE_PREFIX => components::DSD_PREFIX_FILTER,
+            ids::METRICS_IN => components::METRICS_ENRICH,
+            first => first.strip_suffix("_in").unwrap_or(first),
+        };
+        format!("{}_region", first)
     };
     NativeComponentId::new(name).map_err(|error| format!("{}; this is a lowering bug", error))
 }

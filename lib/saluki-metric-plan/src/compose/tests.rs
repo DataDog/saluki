@@ -360,18 +360,18 @@ fn edits_of_the_export_compose_with_their_correspondence() {
                         "mrf_metrics_gateway_false",
                     ],
                 );
-                node(document, "metrics_policy")["params"]["ports"] = json!(4);
-                edge_to(document, "af_metrics_gateway.in")["from"] = json!("metrics_policy.3");
+                node(document, "metrics_fanout")["params"]["ports"] = json!(4);
+                edge_to(document, "af_metrics_gateway.in")["from"] = json!("metrics_fanout.3");
             },
             Accepted {
-                changed: &[("metrics_policy", "metrics_policy", Modified)],
+                changed: &[("metrics_fanout", "metrics_fanout", Modified)],
                 removed: &[
                     "mrf_metrics_gateway",
                     "mrf_metrics_gateway_true",
                     "mrf_metrics_gateway_false",
                 ],
                 diff: &[
-                    ("metrics_policy", "changed params edges"),
+                    ("metrics_fanout", "changed params edges"),
                     ("af_metrics_gateway", "changed edges"),
                     ("mrf_metrics_gateway", "removed"),
                     ("mrf_metrics_gateway_true", "removed"),
@@ -399,7 +399,7 @@ fn edits_of_the_export_compose_with_their_correspondence() {
                     "metrics_routing_filter_0_false",
                 ],
                 diff: &[
-                    ("metrics_policy", "changed edges"),
+                    ("metrics_fanout", "changed edges"),
                     ("policy/team_b", "added"),
                     ("policy/team_b_true", "added"),
                     ("policy/team_b_false", "added"),
@@ -420,7 +420,7 @@ fn edits_of_the_export_compose_with_their_correspondence() {
                            "params": {"predicate": {"name": {"prefix": "demo.debug."}}}}),
                 );
                 nodes.insert(1, json!({"id": "drop_debug_true", "op": "drop"}));
-                edge_to(document, "metrics_policy.in")["from"] = json!("drop_debug.false");
+                edge_to(document, "metrics_fanout.in")["from"] = json!("drop_debug.false");
                 push_edge(document, "input.metrics", "drop_debug.in");
                 push_edge(document, "drop_debug.true", "drop_debug_true.in");
             },
@@ -435,10 +435,10 @@ fn edits_of_the_export_compose_with_their_correspondence() {
                 removed: &[],
                 // The node feeding the scope's input is outside the scope, but the edge at its output port changes.
                 diff: &[
-                    ("metrics_enrich_host_tags", "changed edges"),
+                    ("metrics", "changed edges"),
                     ("policy/drop_debug", "added"),
                     ("policy/drop_debug_false", "added"),
-                    ("metrics_policy", "changed edges"),
+                    ("metrics_fanout", "changed edges"),
                 ],
                 stale_base: false,
             },
@@ -448,20 +448,20 @@ fn edits_of_the_export_compose_with_their_correspondence() {
             |document| {
                 // The `tee` port that fed the primary output now feeds the drop of the first routing filter, and the
                 // filter's rejects go to a new drop: the kept drop discards the whole primary stream.
-                remove_nodes(document, &["metrics_policy_0"]);
-                edge_to(document, "metrics_routing_filter_0_false.in")["from"] = json!("metrics_policy.0");
+                remove_nodes(document, &["metrics_fanout_0"]);
+                edge_to(document, "metrics_routing_filter_0_false.in")["from"] = json!("metrics_fanout.0");
                 push_node(document, json!({"id": "discard", "op": "drop"}));
                 push_edge(document, "metrics_routing_filter_0.false", "discard.in");
             },
             Accepted {
                 changed: &[("discard", "policy/discard", Added)],
-                removed: &["metrics_policy_0"],
+                removed: &["metrics_fanout_0"],
                 diff: &[
-                    ("metrics_policy", "changed edges"),
+                    ("metrics_fanout", "changed edges"),
                     ("metrics_routing_filter_0", "changed edges"),
                     ("metrics_routing_filter_0_false", "changed edges"),
                     ("policy/discard", "added"),
-                    ("metrics_policy_0", "removed"),
+                    ("metrics_fanout_0", "removed"),
                 ],
                 stale_base: false,
             },
@@ -469,16 +469,16 @@ fn edits_of_the_export_compose_with_their_correspondence() {
         (
             "the primary output and a kept drop swapped",
             |document| {
-                edge_to(document, "metrics_policy_0.in")["from"] = json!("metrics_routing_filter_0.false");
-                edge_to(document, "metrics_routing_filter_0_false.in")["from"] = json!("metrics_policy.0");
+                edge_to(document, "metrics_fanout_0.in")["from"] = json!("metrics_routing_filter_0.false");
+                edge_to(document, "metrics_routing_filter_0_false.in")["from"] = json!("metrics_fanout.0");
             },
             Accepted {
                 // Both do what they did, whatever feeds them: only edges change.
                 changed: &[],
                 removed: &[],
                 diff: &[
-                    ("metrics_policy", "changed edges"),
-                    ("metrics_policy_0", "changed edges"),
+                    ("metrics_fanout", "changed edges"),
+                    ("metrics_fanout_0", "changed edges"),
                     ("metrics_routing_filter_0", "changed edges"),
                     ("metrics_routing_filter_0_false", "changed edges"),
                 ],
@@ -693,7 +693,7 @@ fn artifact_nodes_take_the_place_of_the_scope_in_the_default_programs_order() {
     nodes.insert(0, split);
     nodes.insert(1, json!({"id": "drop_debug_true", "op": "drop"}));
     // The first edge now leaves the new split, and the two new edges are the artifact's last.
-    edge_to(&mut document, "metrics_policy.in")["from"] = json!("drop_debug.false");
+    edge_to(&mut document, "metrics_fanout.in")["from"] = json!("drop_debug.false");
     push_edge(&mut document, "input.metrics", "drop_debug.in");
     push_edge(&mut document, "drop_debug.true", "drop_debug_true.in");
     let composed = fixture.compose(document, &approval(1)).unwrap();
@@ -708,14 +708,14 @@ fn artifact_nodes_take_the_place_of_the_scope_in_the_default_programs_order() {
         .map(|node| node.id.to_string())
         .collect::<Vec<_>>();
     let before = ids.iter().position(|id| id == "policy/drop_debug").unwrap();
-    assert_eq!(ids[before - 1], "metrics_enrich_host_tags");
+    assert_eq!(ids[before - 1], "metrics");
     assert_eq!(
         ids[before..before + 4],
         [
             "policy/drop_debug",
             "policy/drop_debug_false",
-            "metrics_policy",
-            "metrics_policy_0"
+            "metrics_fanout",
+            "metrics_fanout_0"
         ]
     );
     assert_eq!(ids.len(), fixture.plan.nodes.len() + 2);
@@ -729,15 +729,15 @@ fn artifact_nodes_take_the_place_of_the_scope_in_the_default_programs_order() {
         edges[edges.len() - 3..],
         [
             "af_metrics_gateway.false -> af_metrics_gateway_false.in",
-            "metrics_enrich_host_tags.out -> policy/drop_debug.in",
+            "metrics.out -> policy/drop_debug.in",
             "policy/drop_debug.false -> policy/drop_debug_false.in",
         ]
     );
     let first = edges
         .iter()
-        .position(|edge| edge == "policy/drop_debug.true -> metrics_policy.in")
+        .position(|edge| edge == "policy/drop_debug.true -> metrics_fanout.in")
         .unwrap();
-    assert_eq!(edges[first - 1], "metrics_enrich.out -> metrics_enrich_host_tags.in");
+    assert_eq!(edges[first - 1], "metrics_host_enrichment.out -> metrics.in");
     assert_eq!(edges.len() - first, 16);
     assert_eq!(edges.len(), fixture.plan.edges.len() + 2);
 }
@@ -802,7 +802,7 @@ fn edits_that_cannot_be_composed_are_refused_with_the_reason() {
         (
             "an unknown output",
             |document| {
-                node(document, "metrics_policy_0")["params"]["output"] = json!("nowhere");
+                node(document, "metrics_fanout_0")["params"]["output"] = json!("nowhere");
                 document["base"]["outputs"]["nowhere"] = json!(ZERO_HASH);
             },
             ComposeError::PendingOutput {
@@ -811,17 +811,17 @@ fn edits_that_cannot_be_composed_are_refused_with_the_reason() {
         ),
         (
             "an output the base does not record",
-            |document| node(document, "metrics_policy_0")["params"]["output"] = json!("dsd_client_telemetry"),
+            |document| node(document, "metrics_fanout_0")["params"]["output"] = json!("dsd_client_telemetry"),
             ComposeError::UnrecordedOutput {
-                node: id("metrics_policy_0"),
+                node: id("metrics_fanout_0"),
                 output: output("dsd_client_telemetry"),
             },
         ),
         (
             "an output neither the base records nor the host declares",
-            |document| node(document, "metrics_policy_0")["params"]["output"] = json!("metrics_routing_encode_99"),
+            |document| node(document, "metrics_fanout_0")["params"]["output"] = json!("metrics_routing_encode_99"),
             ComposeError::UndeclaredOutput {
-                node: id("metrics_policy_0"),
+                node: id("metrics_fanout_0"),
                 output: output("metrics_routing_encode_99"),
                 declared: [
                     "dsd_client_telemetry",
@@ -845,7 +845,7 @@ fn edits_that_cannot_be_composed_are_refused_with_the_reason() {
         ),
         (
             "a reserved ID outside the scope",
-            |document| rename(document, "metrics_policy_0", "dsd_agg"),
+            |document| rename(document, "metrics_fanout_0", "dsd_agg"),
             ComposeError::ReservedOutsideScope {
                 node: id("dsd_agg"),
                 reserved: "dsd_agg".parse().unwrap(),
@@ -861,14 +861,14 @@ fn edits_that_cannot_be_composed_are_refused_with_the_reason() {
         ),
         (
             "an edge from an undeclared input",
-            |document| edge_to(document, "metrics_policy.in")["from"] = json!("input.traces"),
+            |document| edge_to(document, "metrics_fanout.in")["from"] = json!("input.traces"),
             ComposeError::Malformed {
                 message: "edge 0 leaves `input.traces`, but the scope has no input `traces`".to_string(),
             },
         ),
         (
             "an edge into an input",
-            |document| push_edge(document, "metrics_policy_0.in", "input.metrics"),
+            |document| push_edge(document, "metrics_fanout_0.in", "input.metrics"),
             ComposeError::Malformed {
                 message: "edge 14 enters `input.metrics`, which is a scope input; edges leave a scope's inputs"
                     .to_string(),
@@ -876,16 +876,16 @@ fn edits_that_cannot_be_composed_are_refused_with_the_reason() {
         ),
         (
             "an edge to an unknown node",
-            |document| edge_to(document, "metrics_policy_0.in")["to"] = json!("ghost.in"),
+            |document| edge_to(document, "metrics_fanout_0.in")["to"] = json!("ghost.in"),
             ComposeError::Malformed {
                 message: "edge 1 enters `ghost.in`, but the artifact has no node `ghost`".to_string(),
             },
         ),
         (
             "two nodes with one ID",
-            |document| push_node(document, json!({"id": "metrics_policy_0", "op": "drop"})),
+            |document| push_node(document, json!({"id": "metrics_fanout_0", "op": "drop"})),
             ComposeError::Malformed {
-                message: "more than one node has the ID `metrics_policy_0`; give each node its own ID".to_string(),
+                message: "more than one node has the ID `metrics_fanout_0`; give each node its own ID".to_string(),
             },
         ),
     ];
@@ -911,7 +911,7 @@ fn a_state_owner_composes_with_the_artifacts_provenance_whatever_its_parameters(
     for params in [json!(params), json!({})] {
         let mut document = fixture.artifact();
         push_node(&mut document, json!({"id": "agg", "op": "aggregate", "params": params}));
-        edge_to(&mut document, "metrics_policy.in")["from"] = json!("agg.out");
+        edge_to(&mut document, "metrics_fanout.in")["from"] = json!("agg.out");
         push_edge(&mut document, "input.metrics", "agg.in");
         let composed = fixture.compose(document, &approval(1)).unwrap();
         let correspondence = composed.correspondence.get(&"agg".parse().unwrap()).unwrap();
@@ -997,12 +997,12 @@ fn a_binding_the_host_declares_without_a_value_cannot_be_composed() {
 fn composed_plans_that_break_a_validation_rule_are_composed_with_the_finding() {
     let fixture = Fixture::default_program();
     let wide_tee: Mutation = |document| {
-        node(document, "metrics_policy")["params"]["ports"] = json!(40);
+        node(document, "metrics_fanout")["params"]["ports"] = json!(40);
         for port in 5..40 {
             push_node(document, json!({"id": format!("extra_{}", port), "op": "drop"}));
             push_edge(
                 document,
-                &format!("metrics_policy.{}", port),
+                &format!("metrics_fanout.{}", port),
                 &format!("extra_{}.in", port),
             );
         }
@@ -1071,8 +1071,8 @@ fn an_artifact_whose_nodes_declare_more_memory_than_the_limit_is_invalid() {
     ];
     for (what, interner, expected) in cases {
         let mut document = fixture.artifact();
-        edge_to(&mut document, "metrics_policy.in")["to"] = json!("mapper.in");
-        push_edge(&mut document, "mapper.out", "metrics_policy.in");
+        edge_to(&mut document, "metrics_fanout.in")["to"] = json!("mapper.in");
+        push_edge(&mut document, "mapper.out", "metrics_fanout.in");
         push_node(
             &mut document,
             json!({"id": "mapper", "op": "dogstatsd_mapper", "params": {
@@ -1466,11 +1466,11 @@ enum Edit {
 
 fn arb_edit() -> impl Strategy<Value = Edit> {
     let names = select(vec![
-        "metrics_policy",
-        "metrics_policy_0",
+        "metrics_fanout",
+        "metrics_fanout_0",
         "af_metrics_gateway",
         "dsd_agg",
-        "metrics_enrich",
+        "metrics_host_enrichment",
         "fresh",
         "input",
     ]);
@@ -1698,7 +1698,7 @@ proptest! {
         let diff = diff(&fixture.plan, &composed.plan, &registry);
         for change in diff.changes() {
             if change.id.is_reserved() && !fixture.is_scope_node(&change.id) {
-                prop_assert_eq!(change.id.to_string(), "metrics_enrich_host_tags");
+                prop_assert_eq!(change.id.to_string(), "metrics");
                 prop_assert_eq!(
                     &change.change,
                     &NodeChange::Changed { operator: false, params: false, edges: true }
@@ -2328,7 +2328,7 @@ fn the_detached_export_addresses_native_outputs_to_their_recipients_and_composes
                 "dsd_post_agg_filter_fanout_0".to_string(),
                 json!({"output": "dsd_client_telemetry"})
             ),
-            ("metrics_policy_0".to_string(), json!({"to": ["primary"]})),
+            ("metrics_fanout_0".to_string(), json!({"to": ["primary"]})),
             (
                 "metrics_routing_filter_0_true".to_string(),
                 json!({"to": ["https://a.example.com"]})
@@ -2373,7 +2373,7 @@ fn emits_to_recipients_wait_for_unknown_names_and_outputs_and_are_refused_across
     .unwrap();
     let with_main_to = |to: Value| {
         let mut document = serde_json::to_value(&detached.artifact).unwrap();
-        node(&mut document, "metrics_policy_0")["params"] = json!({"to": to});
+        node(&mut document, "metrics_fanout_0")["params"] = json!({"to": to});
         received_directly(PolicyArtifact::from_value(document).unwrap())
     };
     let composing = |artifact: &ReceivedArtifact, in_effect: bool| {
@@ -2400,7 +2400,7 @@ fn emits_to_recipients_wait_for_unknown_names_and_outputs_and_are_refused_across
     assert!(matches!(error, ComposeError::PendingRecipients { .. }), "{}", error);
     assert_eq!(
         error.to_string(),
-        "Waiting for an output to [primary, \"https://a.example.com\"]: artifact node `metrics_policy_0` emits to these \
+        "Waiting for an output to [primary, \"https://a.example.com\"]: artifact node `metrics_fanout_0` emits to these \
          recipients, and no output delivers to exactly them yet. The host adds one; whatever runs keeps running."
     );
     let demand = crate::compose::demanded_outputs(&unserved.artifact, &catalog).unwrap();
@@ -2408,14 +2408,14 @@ fn emits_to_recipients_wait_for_unknown_names_and_outputs_and_are_refused_across
         .iter()
         .find(|demand| demand.recipients.len() == 2 && demand.host.as_str() == "dd_out")
         .unwrap();
-    assert_eq!(wanted.emit.as_str(), "metrics_policy_0");
+    assert_eq!(wanted.emit.as_str(), "metrics_fanout_0");
 
     // The artifact in effect keeps running: the emit becomes a counted drop, and it runs degraded.
     let composed = composing(&unserved, true).unwrap();
     assert_eq!(
         composed
             .plan
-            .node(&"metrics_policy_0".parse().unwrap())
+            .node(&"metrics_fanout_0".parse().unwrap())
             .unwrap()
             .op
             .as_str(),
@@ -2427,7 +2427,7 @@ fn emits_to_recipients_wait_for_unknown_names_and_outputs_and_are_refused_across
     let error = composing(&with_main_to(json!(["primary", "mrf"])), false).unwrap_err();
     assert_eq!(
         error.to_string(),
-        "Artifact node `metrics_policy_0` emits to [primary, mrf], recipients of more than one delivery host (`primary` \
+        "Artifact node `metrics_fanout_0` emits to [primary, mrf], recipients of more than one delivery host (`primary` \
          on `dd_out`, `mrf` on `mrf_dd_out`). An output is one encoder stream on one host: emit to each host's \
          recipients from a branch of its own."
     );
@@ -2449,7 +2449,7 @@ fn an_emit_in_effect_delivers_to_its_recipients_that_remain_and_counts_what_the_
     .unwrap();
     let mut document = serde_json::to_value(&detached.artifact).unwrap();
     // The main emit names the primary endpoint and an endpoint the configuration no longer has.
-    node(&mut document, "metrics_policy_0")["params"] = json!({"to": ["primary", "https://gone.example.com"]});
+    node(&mut document, "metrics_fanout_0")["params"] = json!({"to": ["primary", "https://gone.example.com"]});
     let artifact = received_directly(PolicyArtifact::from_value(document).unwrap());
     let composing = |in_effect: bool| {
         let approval = Approval {
@@ -2475,13 +2475,13 @@ fn an_emit_in_effect_delivers_to_its_recipients_that_remain_and_counts_what_the_
     let composed = composing(true).unwrap();
     let id = |id: &str| id.parse::<NodeId>().unwrap();
     let op = |node: &str| composed.plan.node(&id(node)).unwrap().op.as_str().to_string();
-    assert_eq!(op("metrics_policy_0"), names::TEE);
-    assert_eq!(op("policy/metrics_policy_0_delivered"), names::EMIT);
-    assert_eq!(op("policy/metrics_policy_0_missing"), names::DROP);
+    assert_eq!(op("metrics_fanout_0"), names::TEE);
+    assert_eq!(op("policy/metrics_fanout_0_delivered"), names::EMIT);
+    assert_eq!(op("policy/metrics_fanout_0_missing"), names::DROP);
     assert_eq!(
         composed
             .plan
-            .node(&id("policy/metrics_policy_0_delivered"))
+            .node(&id("policy/metrics_fanout_0_delivered"))
             .unwrap()
             .params
             .get("output"),
@@ -2494,8 +2494,8 @@ fn an_emit_in_effect_delivers_to_its_recipients_that_remain_and_counts_what_the_
         .map(|edge| format!("{} -> {}", edge.from, edge.to))
         .collect::<Vec<_>>();
     for edge in [
-        "metrics_policy_0.0 -> policy/metrics_policy_0_delivered.in",
-        "metrics_policy_0.1 -> policy/metrics_policy_0_missing.in",
+        "metrics_fanout_0.0 -> policy/metrics_fanout_0_delivered.in",
+        "metrics_fanout_0.1 -> policy/metrics_fanout_0_missing.in",
     ] {
         assert!(edges.iter().any(|found| found == edge), "{} in {:?}", edge, edges);
     }
@@ -2512,15 +2512,15 @@ fn an_emit_in_effect_delivers_to_its_recipients_that_remain_and_counts_what_the_
           recipient `https://gone.example.com`; the `emit` still delivers to [primary]"
         ]
     );
-    assert_eq!(dropped[0].nodes, [id("policy/metrics_policy_0_missing")]);
+    assert_eq!(dropped[0].nodes, [id("policy/metrics_fanout_0_missing")]);
     // The correspondence maps the artifact's emit to the `tee` that took its place.
     assert_eq!(
         composed
             .correspondence
-            .get(&"metrics_policy_0".parse().unwrap())
+            .get(&"metrics_fanout_0".parse().unwrap())
             .unwrap()
             .node,
-        id("metrics_policy_0")
+        id("metrics_fanout_0")
     );
 
     // Its demand is the set that remains, for which a host adds an output when none delivers to exactly it.
@@ -2531,7 +2531,7 @@ fn an_emit_in_effect_delivers_to_its_recipients_that_remain_and_counts_what_the_
 
     // With none of its recipients left, the emit in effect is a counted drop, as before.
     let mut document = serde_json::to_value(&detached.artifact).unwrap();
-    node(&mut document, "metrics_policy_0")["params"] = json!({"to": ["https://gone.example.com"]});
+    node(&mut document, "metrics_fanout_0")["params"] = json!({"to": ["https://gone.example.com"]});
     let gone = received_directly(PolicyArtifact::from_value(document).unwrap());
     let approval = Approval {
         in_effect: true,
@@ -2539,7 +2539,7 @@ fn an_emit_in_effect_delivers_to_its_recipients_that_remain_and_counts_what_the_
     };
     let composed = compose(&plan, &gone, &approval, &catalog, &registry).unwrap();
     assert_eq!(
-        composed.plan.node(&id("metrics_policy_0")).unwrap().op.as_str(),
+        composed.plan.node(&id("metrics_fanout_0")).unwrap().op.as_str(),
         names::DROP
     );
 }

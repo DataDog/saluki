@@ -179,7 +179,7 @@ fn the_default_programs_explain_describes_its_graph() {
         .iter()
         .find(|output| output.id.as_str() == "dd_metrics_encode")
         .unwrap();
-    assert_eq!(output.emitted_by, vec!["metrics_policy_0".parse::<NodeId>().unwrap()]);
+    assert_eq!(output.emitted_by, vec!["metrics_fanout_0".parse::<NodeId>().unwrap()]);
     let scopes = explain
         .graph
         .scopes
@@ -218,7 +218,13 @@ fn the_default_programs_explain_summarizes_every_nodes_contract() {
     let expected: &[(&str, &str, &str, &str, &[&str])] = &[
         ("dsd_in", "source", "io_host", "none", NONE),
         ("dsd_enrich", "dogstatsd_mapper", SYNC, "none", NONE),
-        ("dsd_prefix_filter", "namespace_prefix", SYNC, "none", NONE),
+        (
+            "dsd_prefix_filter_blocklist_namespace_prefix",
+            "namespace_prefix",
+            SYNC,
+            "none",
+            NONE,
+        ),
         ("dsd_prefix_filter_blocklist", "split", SYNC, "none", NONE),
         ("dsd_prefix_filter_blocklist_false", "drop", SYNC, "none", POLICY),
         ("dsd_no_agg_split", "timestamp_split", SYNC, "none", NONE),
@@ -239,11 +245,11 @@ fn the_default_programs_explain_summarizes_every_nodes_contract() {
         ("checks_ipc_in", "source", "io_host", "none", NONE),
         ("liveness_in", "source", "io_host", "none", NONE),
         ("trace_sampler", "source", "io_host", "none", NONE),
-        ("metrics_enrich_in", "merge", SYNC, "none", NONE),
-        ("metrics_enrich", "host_enrichment", SYNC, "none", NONE),
-        ("metrics_enrich_host_tags", "host_tags", SYNC, "none", NONE),
-        ("metrics_policy", "tee", SYNC, "none", NONE),
-        ("metrics_policy_0", "emit", SYNC, "none", NONE),
+        ("metrics_in", "merge", SYNC, "none", NONE),
+        ("metrics_host_enrichment", "host_enrichment", SYNC, "none", NONE),
+        ("metrics", "host_tags", SYNC, "none", NONE),
+        ("metrics_fanout", "tee", SYNC, "none", NONE),
+        ("metrics_fanout_0", "emit", SYNC, "none", NONE),
         ("metrics_routing_filter_0", "split", SYNC, "none", NONE),
         ("metrics_routing_filter_0_true", "emit", SYNC, "none", NONE),
         ("metrics_routing_filter_0_false", "drop", SYNC, "none", POLICY),
@@ -309,9 +315,9 @@ fn the_default_programs_bounds_are_measured_against_their_limits() {
     // - predicate leaves: 1 (prefix blocklist) + 2 (post-aggregation filter) + 2 + 2 (routing filters) + 4 (MRF
     //   gateway: two flags, an emptiness check, and a name match) + 3 (autoscaling gateway: a kind, a flag, and a name
     //   match) = 14;
-    // - the widest copying node is `metrics_policy`, with 5 ports;
+    // - the widest copying node is `metrics_fanout`, with 5 ports;
     // - work per input, from `dsd_in`, counting the source: the policy tee costs 1 + (1 + 4 * 2) = 10 visits, so
-    //   `metrics_enrich_in` costs 13, the post-aggregation tee 1 + 1 + 13 = 15, its filter 16, its merge 17,
+    //   `metrics_in` costs 13, the post-aggregation tee 1 + 1 + 13 = 15, its filter 16, its merge 17,
     //   aggregation (expanding a histogram into 4 statistics and 1 percentile) 1 + 5 * 17 = 86, the tag filterlist 87,
     //   the timestamp split (expanding into 2) 1 + 2 * max(87, 17) = 175, and the blocklist, prefix filter, mapper,
     //   and source one more each: 179.
@@ -579,7 +585,7 @@ mod physical {
 
         // Where each port of the policy fan-out led in the default program.
         let targets = [
-            "metrics_policy_0",
+            "metrics_fanout_0",
             "metrics_routing_filter_0",
             "metrics_routing_filter_1",
         ]
@@ -592,7 +598,7 @@ mod physical {
             let filter = format!("policy/no_debug_{}", port);
             nodes.push(node(&filter, "split", json!({"predicate": {"has_tag": "debug"}})));
             nodes.push(node(&format!("{}_dropped", filter), "drop", json!({})));
-            edges.push(edge(format!("metrics_policy.{}", port), format!("{}.in", filter)));
+            edges.push(edge(format!("metrics_fanout.{}", port), format!("{}.in", filter)));
             edges.push(edge(format!("{}.true", filter), format!("{}_dropped.in", filter)));
             let next = match port {
                 0 => "policy/strip_user".to_string(),
@@ -622,7 +628,7 @@ mod physical {
         ]);
         edges.extend([
             edge("policy/strip_user.out".to_string(), "policy/only_known.in".to_string()),
-            edge("policy/only_known.true".to_string(), "metrics_policy_0.in".to_string()),
+            edge("policy/only_known.true".to_string(), "metrics_fanout_0.in".to_string()),
             edge(
                 "policy/only_known.false".to_string(),
                 "policy/only_known_dropped.in".to_string(),
@@ -638,7 +644,7 @@ mod physical {
         let replaced = |edge: &serde_json::Value| {
             edge["from"]
                 .as_str()
-                .is_some_and(|from| from.starts_with("metrics_policy."))
+                .is_some_and(|from| from.starts_with("metrics_fanout."))
         };
         let plan_edges = value["edges"].as_array_mut().unwrap();
         plan_edges.retain(|edge| !replaced(edge));
@@ -683,7 +689,7 @@ mod physical {
             vec![(RewriteId::R5b, true, strings(&["dsd_agg", "dsd_post_agg_filter"]))]
         );
         let policy = strings(&[
-            "metrics_policy",
+            "metrics_fanout",
             "metrics_routing_filter_0",
             "metrics_routing_filter_1",
             "mrf_metrics_gateway",
@@ -707,7 +713,7 @@ mod physical {
             vec![
                 "  R5b applied: dsd_agg, dsd_post_agg_filter",
                 "  R3 applied: mrf_metrics_gateway",
-                "  R4 applied: metrics_policy, metrics_routing_filter_0, metrics_routing_filter_1, \
+                "  R4 applied: metrics_fanout, metrics_routing_filter_0, metrics_routing_filter_1, \
                  mrf_metrics_gateway, af_metrics_gateway",
             ]
         );
@@ -761,10 +767,10 @@ mod physical {
                 .iter()
                 .any(|edge| edge.from.to_string() == from && edge.to.to_string() == to)
         };
-        assert!(edge("metrics_policy.3", "mrf_metrics_gateway.in"));
-        assert!(edge("metrics_policy.0", "policy/only_known.in"));
+        assert!(edge("metrics_fanout.3", "mrf_metrics_gateway.in"));
+        assert!(edge("metrics_fanout.0", "policy/only_known.in"));
         assert!(edge("policy/only_known.true", "policy/strip_user.in"));
-        assert!(edge("policy/strip_user.out", "metrics_policy_0.in"));
+        assert!(edge("policy/strip_user.out", "metrics_fanout_0.in"));
         let only_known = rewritten.node(&"policy/only_known".parse().unwrap()).unwrap();
         assert_eq!(
             only_known.params.get("predicate"),
@@ -950,11 +956,11 @@ mod physical {
             "dsd_post_agg_filter_false",
             "dsd_post_agg_filter_fanout",
             "dsd_post_agg_filter_fanout_0",
-            "metrics_enrich_in",
-            "metrics_enrich",
-            "metrics_enrich_host_tags",
-            "metrics_policy",
-            "metrics_policy_0",
+            "metrics_in",
+            "metrics_host_enrichment",
+            "metrics",
+            "metrics_fanout",
+            "metrics_fanout_0",
         ];
 
         // DogStatsD's passthrough points are not re-admitted before the post-aggregation filter, so the segment that
@@ -974,7 +980,7 @@ mod physical {
         );
         let mut nodes = ids(&[
             "dsd_enrich",
-            "dsd_prefix_filter",
+            "dsd_prefix_filter_blocklist_namespace_prefix",
             "dsd_prefix_filter_blocklist",
             "dsd_prefix_filter_blocklist_false",
             "dsd_no_agg_split",
