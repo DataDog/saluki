@@ -49,40 +49,47 @@ abbreviated `...`):
 
 ```text
 policy metrics {
-  let dsd_no_agg_split = dogstatsd
-    | dogstatsd_mapper(profiles: ..., cache_size: ..., string_interner_bytes: ...) as dsd_enrich
-    | namespace_prefix(config.dogstatsd.prefix_filter.metric_namespace, exclusions: ...) as dsd_prefix_filter
-    | where not intake_name matches(values: ..., prefix: ...) as dsd_prefix_filter_blocklist
-    | timestamp_split(config.dogstatsd.aggregation.window_duration_seconds)
+  let dsd_enrich = dogstatsd | dogstatsd_mapper(profiles: ..., cache_size: ..., string_interner_bytes: ...)
 
-  let dsd_agg = dsd_no_agg_split.default
-    | tag_projection(rules: ..., value_rules: ..., cache_capacity: ...) as dsd_tag_filterlist
-    | aggregate(window: ..., flush_interval: ..., context_limit: ..., ...)
+  let dsd_prefix_filter_blocklist = dsd_enrich
+    | namespace_prefix(config.dogstatsd.prefix_filter.metric_namespace, exclusions: ...)
+    | where not intake_name matches(values: ..., prefix: ...)
+
+  let dsd_no_agg_split = dsd_prefix_filter_blocklist | timestamp_split(config.dogstatsd.aggregation.window_duration_seconds)
+
+  let dsd_tag_filterlist = dsd_no_agg_split.default | tag_projection(rules: ..., value_rules: ..., cache_capacity: ...)
+
+  let dsd_agg = dsd_tag_filterlist | aggregate(window: ..., flush_interval: ..., ...)
 
   let dsd_post_agg_filter = (dsd_agg, dsd_no_agg_split.passthrough)
     | where not (kind in [counter, rate, gauge, set] and intake_name matches(values: ..., prefix: ...))
 
   dsd_post_agg_filter | emit output dsd_client_telemetry
 
-  let metrics_enrich = (dsd_post_agg_filter, otlp, checks, liveness, trace_sampler) | host_enrichment
-
-  metrics_enrich
+  let metrics = (dsd_post_agg_filter, otlp, checks, liveness, trace_sampler)
+    | host_enrichment
     | host_tags(config.host.tags, deadline: config.host.tags_deadline)
-    | fork as metrics_policy {
-      emit output dd_metrics_encode
-      where intake_name in config.metrics_endpoint_routing.group.0123456789abcdef.names
-          or intake_name starts_with config.metrics_endpoint_routing.group.0123456789abcdef.prefixes
-          as metrics_routing_filter_0
-        | emit output metrics_routing_encode_0
-      ...
-    }
+
+  metrics | emit output dd_metrics_encode
+
+  let metrics_routing_filter_0 = metrics
+    | where intake_name in config.metrics_endpoint_routing.group.0123456789abcdef.names
+        or intake_name starts_with config.metrics_endpoint_routing.group.0123456789abcdef.prefixes
+
+  metrics_routing_filter_0 | emit output metrics_routing_encode_0
+
+  let mrf_metrics_gateway = metrics
+    | where config.multi_region_failover.enabled and config.multi_region_failover.metric_mirroring.enabled
+
+  mrf_metrics_gateway | emit output mrf_metrics_encode
+  ...
 }
 ```
 
-The `as` clauses keep the native node IDs that ADP's telemetry, topology, and correspondence depend on (the owner's
-decision of 2026-10-16). A later step, with V10, renames native IDs to the derived scheme, and they disappear. Merges
-(`_in`), tees (`_fanout`), and terminals already follow native naming, so `dsd_post_agg_filter`'s tuple and its reuse
-need none.
+Every `let` names a node whose ID matters: one whose native telemetry identity, or state, is keyed by it. Every other
+node takes the ID its position derives, so the program needs no `as`. The demo's detached export leaves out what does
+nothing there, the merge and host enrichment among them, and names the destinations' stream with `let metrics =
+dsd_post_agg_filter`.
 
 ### Lexical structure
 
@@ -93,7 +100,7 @@ and a word that could continue a stage or start a new statement (`as` followed b
 statement only at the start of a line. The printer always writes `op(` and starts statements on new lines. A word right
 after an adjacent `.` is an identifier even if it starts with a digit, so binding segments such as
 `config.metrics_endpoint_routing.group.0123456789abcdef.names` read as written. New tokens: `|`, `!=`. New keywords, reserved only where the grammar
-expects them: `let`, `as`, `where`, `fork`, `emit`, `output`, `drop`, `exit`. Retired: `node`, `->`, `input.`, and
+expects them: `let`, `as`, `where`, `emit`, `output`, `drop`, `exit`. Retired: `node`, `->`, `input.`, and
 `prefix_in`.
 
 ### Grammar
@@ -101,7 +108,7 @@ expects them: `let`, `as`, `where`, `fork`, `emit`, `output`, `drop`, `exit`. Re
 ```text
 program    = "policy" scope "{" header* statement* "}"
 header     = "ir_version" int | "base" hash [ "outputs" "{" (output "=" hash ","?)* "}" ] | "blobs" "{" ... "}"
-statement  = "let" ident "=" pipeline                   # a named stream
+statement  = "let" ident "=" pipeline                   # a named stream; `let x = y` names the stream y as x
            | pipeline                                   # must end in a sink
 pipeline   = head ("|" stage)* ["|" sink]
 head       = ref | tuple
@@ -109,8 +116,6 @@ ref        = ident ["." port]                           # a let, or a scope inpu
 tuple      = "(" ref ("," ref)* ","? ")" ["as" ident]   # a merge, its input ports in order
 stage      = operator ["(" args ")"] ["as" ident]       # any registered operator
            | "where" predicate ["as" ident]             # sugar
-           | "fork" ["as" ident] "{" branch+ "}"        # sugar; ends the pipeline
-branch     = (stage "|")* sink | (stage "|")* fork-stage
 sink       = "emit" recipients ["as" ident]             # `emit primary`, `emit [primary, "https://b.example.com"]`
            | "emit" "output" output ["as" ident]
            | "drop" ["as" ident]
@@ -118,8 +123,9 @@ sink       = "emit" recipients ["as" ident]             # `emit primary`, `emit 
 args       = [positional ","] (param ":" value ","?)*
 ```
 
-A `fork` is always the last stage of its pipeline (every branch ends in a sink), and a pipeline in a `let` never ends in
-a sink. A branch is stages then a sink, so branches need no separators.
+A pipeline in a `let` never ends in a sink. A stream reaches several places by being used several times: there is one
+way to fan out, reuse. (A `fork { ... }` block was built first and removed on 2026-10-16: it was a second spelling of
+the same `tee`, and the printer had to choose between the two arbitrarily.)
 
 ### The core and what each form becomes
 
@@ -130,13 +136,13 @@ a sink. A branch is stages then a sink, so branches need no separators.
 | `x.port` | output port `port` of the last node of `x`, which must have several output ports |
 | `(a, b, ...)` | a `merge(inputs: n)`, with `a` at port `0`, `b` at port `1`, and so on |
 | `let x = e` | names the stream `e`; `x` is used by each later reference to it |
+| `let x = y`, with no stages | one use of `y`, named `x`: `x` used once is `y` itself, and used `n > 1` times gets its own `tee(ports: n)`, `x_fanout` |
 | a stream used `n > 1` times | a `tee(ports: n)` after it, port `i` feeding the `i`th use in source order |
 | `e \| emit recipients`, `e \| emit output o`, `e \| drop`, `e \| exit name` | an inline terminal node |
 
 **Sugar**, each one rewrite into the core:
 
 - `e | where p` is `let s = e | split(p); s.false | drop; s.true`.
-- `e | fork { t1 ... tn }` is `let s = e | tee(ports: n); s.0 | t1; ...; s.(n-1) | tn`, with the tee named by the fork.
 - Inside predicates, `a != b` is `not (a == b)`, and `tags.k is unset` is `not has_tag("k")` (see
   [predicates](#predicates)).
 
@@ -208,8 +214,6 @@ when someone edits elsewhere. Every node has an ID: the one its `as` clause give
   output port, that node's ID; for `x.port`, `x_<port>`; for a scope input, `input_<name>`; for a stream used several
   times, its tee's port, `<tee>_<i>`; for a tuple head, its merge is `<anchor of its first element>_in` and the anchor
   is that merge. Each stage is `<anchor>_<operator>`, repeats numbered as above.
-- **A fork's branches** start from the fork's tee: branch `i` has the anchor `<fork>_<i>`. A fork's tee is
-  `<anchor>_fork` unless named.
 - **An implicit tee** after a stream `x` with one output port is `x_fanout`; after a port `x.p` it is `x_p_fanout`.
 - **A sink** is the inline terminal [`derived_terminal_id`] names, `<parent>_<port>`, as today.
 - A derived ID longer than 63 bytes is shortened as `derived_terminal_id` shortens. A derived ID that equals another
@@ -242,12 +246,15 @@ writes:
    stream used several times, at a merge, and where a node's ID does not follow the derived scheme for the current
    statement but its successor's does (so a person's choice to name an intermediate stream survives).
 2. **`let` or bare.** A chain whose last node is used by another statement is a `let` named for that node; a chain that
-   ends in a sink or fork is a bare statement.
+   ends in a sink is a bare statement.
 3. **Sugar, in priority order.** A `split` whose `false` port leads to a `drop` terminal with the derived ID is
-   `where`. A `tee` whose consumers all end in sinks, with nothing else using its ports, is `fork`. A `tee` named
-   `x_fanout` after a stream `x`, whose port order matches the order its uses are printed in, is an implicit tee
-   (reuse of `x`). A `merge` is a tuple. Anything else is the core form.
-4. **`as`.** Every node whose ID is not the derived one gets an `as`.
+   `where`. A `tee` named `x_fanout` after a stream `x`, whose port order matches the order its uses are printed in, is
+   an implicit tee (reuse of `x`); one named `x_fanout` after any other stream `s`, where `x` names nothing else, is
+   `let x = s` and the reuse of `x`. A `merge` is a tuple. Anything else is the core form, such as `let t = x |
+   tee(ports: n)` with `t.0 | ...`.
+4. **Names come from `let`.** A node whose ID is not the derived one ends a `let` of that name, and the pipeline goes
+   on from it in a new statement, wherever a `let` can carry the name; `as` is the last resort, for a sink with an ID
+   of its own and a node named like a scope input. If something needs a specific name, a `let` gives it.
 5. **Defaults and positionals.** Parameters equal to their registry default are left out; a positional parameter is
    written first, without its name.
 
@@ -291,7 +298,7 @@ page is reworked for it:
   form beside the core form it rewrites to, then predicates, operators with an example of each in pipeline form,
   node IDs and `as`, the rules the syntax and the validator enforce, and the limits. Every example parses and every
   recipe compiles into the default program, as today.
-- **Recipes** become one-line inserts: add `| where not (name starts_with "demo.debug.")` before `| fork`.
+- **Recipes** become one-line inserts: add `| where not (name starts_with "demo.debug.")` at the end of `let metrics`.
 - **Editor.** Highlights the new keywords, dims `as` clauses, warns when an edit changes a stateful node's ID, and keeps
   underlining validator findings through the span map.
 - **Annotations** (`compile.rs`'s `annotate`) attach their comments to the new statements.
@@ -334,6 +341,7 @@ Built on 2026-10-16, in this order:
 | `9f1962f5d2` | Normalization and the registry defaults, wired into native lowering and composition |
 | `95c8d545b0` | The public API on the new passes, the rewritten end-to-end and property tests, and the fixes they found |
 | `d35c5f8453`, then the legacy removal | The editor, the reference page, the recipes, the scenario edits, and the stateful-ID warning; then the old syntax removed |
+| `15a4d521a2` to `5d6107d10e`, and the demo after | `fork` removed and names from `let` (the owner's decisions of 2026-10-16): the printer names nodes with `let` and keeps `as` for sinks, native lowering gives the silent nodes it invented derived IDs, and `let x = y` names a stream |
 
 What changed from the plan:
 
@@ -347,9 +355,21 @@ What changed from the plan:
   found was needed once normalization flips filters.
 - **Every nested junction is parenthesized** when printed, `(a and b) or c` included, for readers.
 
+## Known limits
+
+- **A name follows the last stage of its `let`.** Appending a stage to `let metrics` makes the new stage `metrics`, and
+  the stage it follows takes a derived ID. Where enrichment survives in the program (host tags on, or a full export),
+  appending moves the reserved ID, and with it the native identity, from host tags or host enrichment to the new stage,
+  and rebuilds that node's kernel. The demo's detached export leaves enrichment out (`let metrics =
+  dsd_post_agg_filter`), so it does not meet this. Adding the stage to each use of `metrics` instead keeps every ID.
+- **Sink IDs follow position.** A sink's ID comes from the port it hangs off, so reordering statements that use one
+  stream renumbers its tee's ports, and a sink can take the ID, and the native identity, the default program gives
+  another sink: put `let metrics = dsd_post_agg_filter` above the client-telemetry statement, and the main `emit`
+  becomes `dsd_post_agg_filter_fanout_0`, which reports as the client-telemetry tap. Native identity keyed by node ID is
+  what V10 replaces.
+
 ## Deferred
 
-- Renaming native node IDs to the derived scheme, so the default program needs no `as` (with V10).
 - `emit <name>` resolving to a recipient or an output by the host's directory (needs the catalog at parse time).
 - A general expression language for rewrites (needs effect contracts for arbitrary rewrites).
 - A `route` block for first-match routing tables.
