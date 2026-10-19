@@ -224,6 +224,18 @@ pub struct Config {
     /// Millstone would wait 6 seconds, until the current time was 20 (20 % 10 == 0) before starting to send.
     pub aggregation_bucket_width_secs: Option<u64>,
 
+    /// Delay before sending the first payload, in seconds, counted from when the target is ready.
+    ///
+    /// An HTTP target is ready once it answers with anything other than a server error, so a proxy only is once its
+    /// upstream is up. The delay is useful when the target accepts payloads before it has finished starting up: for
+    /// example, the trace-agent's tagger connects to the Core Agent after the trace-agent starts listening, and the
+    /// trace-agent sends payloads that arrive before then without container tags. Applied before aligning to an aggregation bucket, so that
+    /// alignment still holds.
+    ///
+    /// Defaults to `0` (no delay).
+    #[serde(default)]
+    pub start_delay_secs: u64,
+
     /// The target to send payloads to.
     pub target: TargetAddress,
 

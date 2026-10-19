@@ -33,6 +33,9 @@ use crate::config::{Config, TargetAddress};
 
 const MAX_RETRIES: usize = 5;
 
+/// Interval between readiness checks while waiting for a target to become ready.
+const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
 enum TargetBackend {
     Tcp(TcpStream),
     Udp(UdpSocket),
@@ -156,6 +159,42 @@ impl TargetSender {
         };
 
         Ok(Self { backend, runtime })
+    }
+
+    /// Waits until the target is ready to handle payloads, for at most `timeout`.
+    ///
+    /// An HTTP target is ready once it answers a `GET` for the target URI with anything other than a server error. A
+    /// target that only accepts connections may not be: a proxy answers `502 Bad Gateway` until its own upstream is up.
+    /// Other targets are connected when the sender is created, so are ready by then.
+    ///
+    /// # Errors
+    ///
+    /// If the target isn't ready within `timeout`, an error is returned.
+    pub fn wait_until_ready(&self, timeout: Duration) -> Result<(), GenericError> {
+        let TargetBackend::Http(backend) = &self.backend else {
+            return Ok(());
+        };
+        let runtime = self
+            .runtime
+            .as_ref()
+            .ok_or_else(|| saluki_error::generic_error!("Runtime not available for HTTP readiness check."))?;
+
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let not_ready = match runtime.block_on(probe_http_target(backend)) {
+                Ok(()) => return Ok(()),
+                Err(reason) => reason,
+            };
+            if std::time::Instant::now() >= deadline {
+                return Err(saluki_error::generic_error!(
+                    "HTTP target '{}' was not ready within {:?}: {}",
+                    backend.display_target,
+                    timeout,
+                    not_ready
+                ));
+            }
+            std::thread::sleep(READINESS_POLL_INTERVAL);
+        }
     }
 
     /// Sends a single payload to the target.
@@ -447,6 +486,25 @@ impl std::fmt::Display for HttpSendError {
     }
 }
 
+/// Sends a `GET` for the target URI, and returns why the target isn't ready if it fails or answers with a server error.
+async fn probe_http_target(backend: &HttpBackend) -> Result<(), String> {
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri(backend.uri.clone())
+        .body(Full::new(Bytes::new()))
+        .map_err(|e| format!("failed to build request: {}", e))?;
+    let response = backend.client.request(request).await.map_err(|e| format!("{:?}", e))?;
+    let status = response.status();
+    // Read the body to completion so the connection can be reused.
+    let _ = response.into_body().collect().await;
+
+    if status.is_server_error() {
+        Err(format!("answered with {}", status))
+    } else {
+        Ok(())
+    }
+}
+
 async fn try_http_post(backend: &HttpBackend, payload: &[u8]) -> Result<(), HttpSendError> {
     let mut builder = Request::builder().method(Method::POST).uri(backend.uri.clone());
     for (name, value) in backend.headers {
@@ -569,6 +627,7 @@ mod tests {
         io::{BufRead as _, BufReader, Read, Write},
         net::TcpListener,
         thread,
+        time::Duration,
     };
 
     use super::{
@@ -668,6 +727,50 @@ mod tests {
             "unexpected request head: {head}"
         );
         assert_eq!(body, b"payload");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn waits_for_a_unix_http_target_to_stop_answering_with_server_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("apm.socket");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let (backend, runtime) = create_unix_http_client(&socket_path, "/v0.4/traces", &[]).unwrap();
+        let sender = TargetSender { backend, runtime };
+
+        // Like a proxy whose upstream isn't up yet, then is.
+        let server = thread::spawn(move || {
+            for response in [
+                "HTTP/1.1 502 Bad Gateway\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                "HTTP/1.1 405 Method Not Allowed\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+            ] {
+                let (stream, _) = listener.accept().unwrap();
+                let (head, _) = read_request_and_respond(stream, response);
+                assert!(
+                    head.starts_with("GET /v0.4/traces HTTP/1.1\r\n"),
+                    "unexpected request head: {head}"
+                );
+            }
+        });
+
+        sender.wait_until_ready(Duration::from_secs(5)).unwrap();
+        server.join().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gives_up_on_a_unix_http_target_that_never_becomes_ready() {
+        let dir = tempfile::tempdir().unwrap();
+        let (backend, runtime) =
+            create_unix_http_client(&dir.path().join("missing.socket"), "/v0.4/traces", &[]).unwrap();
+        let sender = TargetSender { backend, runtime };
+
+        let error = sender
+            .wait_until_ready(Duration::from_millis(250))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("was not ready"), "unexpected error: {error}");
     }
 
     #[test]

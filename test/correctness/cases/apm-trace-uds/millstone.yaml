@@ -3,6 +3,10 @@ seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 7
 # side. `http_path` makes millstone speak HTTP over it, as tracers do.
 target: "unix:///$GROUP-airlock/apm.socket"
 http_path: "/v0.4/traces"
+# The trace-agent starts listening before its tagger has connected to the Core Agent, and sends payloads that arrive
+# before then without container tags. Wait a few seconds once the target is ready (on the comparison side, once ADP no
+# longer answers `502` because the trace-agent behind it is up), so that no payload goes out without them on either side.
+start_delay_secs: 5
 # Keep the volume no larger than the corpus: resending a payload would duplicate span IDs.
 volume: 100
 corpus:
