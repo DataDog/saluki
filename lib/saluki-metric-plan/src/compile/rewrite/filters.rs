@@ -356,12 +356,7 @@ pub(super) fn applied_above(
         kinds,
         reads,
     };
-    inputs > 0
-        && (0..inputs).all(|port| {
-            graph
-                .source(node, port)
-                .is_some_and(|(above, _)| applied_at(graph, report, above, &removes, &mut memo))
-        })
+    inputs > 0 && (0..inputs).all(|port| applied_on(graph, report, node, port, &removes, &mut memo))
 }
 
 /// What [`applied_above`] looks for: a filter that removes what `condition` removes, from records of `kinds`.
@@ -369,6 +364,21 @@ struct Removes<'a> {
     condition: &'a Predicate,
     kinds: KindSet,
     reads: FieldSet,
+}
+
+/// Returns `true` if every record of the kinds `removes.kinds` reaching the input port `port` of `node` already passed a
+/// filter that removes what `removes.condition` removes, or if the condition can remove none of them: a partial copy
+/// that crosses a `merge` goes only into the inputs whose records it could remove ([R5a](super::r5a)), so an input
+/// without a copy has nothing to cover.
+fn applied_on(
+    graph: &Graph<'_>, report: &ValidationReport, node: usize, port: usize, removes: &Removes<'_>,
+    memo: &mut HashMap<usize, bool>,
+) -> bool {
+    let kinds = input_kinds(graph, report, node, port).intersection(removes.kinds);
+    removes.condition.kinds_where(true, kinds).is_empty()
+        || graph
+            .source(node, port)
+            .is_some_and(|(above, _)| applied_at(graph, report, above, removes, memo))
 }
 
 fn applied_at(
@@ -404,12 +414,7 @@ fn applied_at(
                                 .iter()
                                 .all(|port| port.mapping.kinds.get(kind).is_subset(KindSet::of(&[kind])))
                     });
-                transparent
-                    && (0..inputs).all(|port| {
-                        graph
-                            .source(node, port)
-                            .is_some_and(|(above, _)| applied_at(graph, report, above, removes, memo))
-                    })
+                transparent && (0..inputs).all(|port| applied_on(graph, report, node, port, removes, memo))
             }
         }
     };

@@ -815,6 +815,41 @@ fn a_filter_below_a_merge_is_copied_only_onto_inputs_it_can_remove_records_from(
 }
 
 #[test]
+fn a_partial_copy_moved_into_some_inputs_of_a_merge_still_covers_the_residual() {
+    // Tag projection writes the tags of counters, so the filter's copy above it is restricted to the other kinds. The
+    // copy then crosses the merge only into the input that carries them, since the other carries only counters. The
+    // residual must see that copy as covering it on every input, or it would insert another forever.
+    let (case, optimized) = r5a(plan(
+        vec![
+            node(
+                "src",
+                names::SOURCE,
+                json!({"binding": "dogstatsd", "timestamps": "mixed"}),
+                true,
+            ),
+            split("k", json!({"kind_in": ["counter"]}), false),
+            node("m", names::MERGE, json!({"inputs": 2}), false),
+            tag_projection("t"),
+            split("f", json!({"has_tag": "env"}), false),
+            drop("f_drop", false),
+            emit("e", "o0"),
+        ],
+        &[
+            "src.metrics -> policy/k.in",
+            "policy/k.true -> policy/m.0",
+            "policy/k.false -> policy/m.1",
+            "policy/m.out -> t.in",
+            "t.out -> policy/f.in",
+            "policy/f.false -> policy/f_drop.in",
+            "policy/f.true -> policy/e.in",
+        ],
+        &["o0"],
+    ));
+    assert_eq!(applied(&optimized).len(), 2, "{:?}", optimized.records);
+    case.check_structure(&optimized).unwrap();
+}
+
+#[test]
 fn a_filter_crossing_a_one_port_tee_changes_the_tees_counts() {
     let (case, optimized) = r5a(plan(
         vec![
