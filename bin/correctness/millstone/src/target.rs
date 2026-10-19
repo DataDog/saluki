@@ -621,18 +621,17 @@ impl tonic::codec::Decoder for NoopDecoder {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
-    use std::os::unix::net::UnixListener;
     use std::{
         io::{BufRead as _, BufReader, Read, Write},
         net::TcpListener,
         thread,
-        time::Duration,
     };
+    #[cfg(unix)]
+    use std::{os::unix::net::UnixListener, time::Duration};
 
-    use super::{
-        create_grpc_client_with_backoff, create_http_client, create_unix_http_client, retry_backoff, TargetSender,
-    };
+    #[cfg(unix)]
+    use super::create_unix_http_client;
+    use super::{create_grpc_client_with_backoff, create_http_client, retry_backoff, TargetSender};
 
     /// Accepts a single HTTP/1.1 request, answers it with `response`, and returns the request head and body.
     fn serve_one_request(listener: TcpListener, response: &'static str) -> thread::JoinHandle<(String, Vec<u8>)> {
