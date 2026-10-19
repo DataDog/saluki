@@ -143,38 +143,11 @@ impl ExponentialBackoff {
 
 #[cfg(test)]
 mod tests {
-    use std::{convert::Infallible, time::Duration};
+    use std::time::Duration;
 
     use proptest::prelude::*;
-    use rand::rand_core::TryRng;
 
     use crate::net::util::retry::ExponentialBackoff;
-
-    /// Adapter to bridge `proptest`'s `TestRng` (`rand` 0.9 `RngCore`) to `rand` 0.10's `TryRng`. Created by Claude as
-    /// a workaround to compilation issues when updating our workspace version of `rand` to 0.10 while `proptest` was
-    /// still using 0.9.
-    // TODO: remove this when proptest updates to 0.10
-    struct PropTestRng(proptest::test_runner::TestRng);
-
-    impl TryRng for PropTestRng {
-        type Error = Infallible;
-
-        fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
-            use proptest::prelude::RngCore as _;
-            Ok(self.0.next_u32())
-        }
-
-        fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
-            use proptest::prelude::RngCore as _;
-            Ok(self.0.next_u64())
-        }
-
-        fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
-            use proptest::prelude::RngCore as _;
-            self.0.fill_bytes(dst);
-            Ok(())
-        }
-    }
 
     fn arb_exponential_backoff(min_backoff_factor: f64) -> impl Strategy<Value = ExponentialBackoff> {
         (1u64..=u64::MAX, 1u64..u64::MAX)
@@ -186,7 +159,7 @@ mod tests {
                     min_backoff_factor,
                 )
             })
-            .prop_perturb(|backoff, rng| backoff.with_rng(PropTestRng(rng)))
+            .prop_perturb(|backoff, rng| backoff.with_rng(rng))
     }
 
     proptest! {
