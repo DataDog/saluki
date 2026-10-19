@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use saluki_common::resource_tracking::Track as _;
 use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_error::{generic_error, GenericError};
@@ -21,7 +22,7 @@ use crate::components::{
     forwarders::{ForwarderBuilder, ForwarderContext},
     relays::{RelayBuilder, RelayContext},
     sources::{SourceBuilder, SourceContext},
-    transforms::{TransformBuilder, TransformContext},
+    transforms::{SynchronousTransform, SynchronousTransformBuilder, Transform, TransformBuilder, TransformContext},
     BuildContext, ComponentContext, ComponentType,
 };
 use crate::health::{Health, HealthRegistry};
@@ -125,6 +126,21 @@ impl TestComponentDriver {
         builder: B,
     ) -> Result<(ComponentControl<EventsBuffer>, Outputs<EventsBuffer>), GenericError> {
         DriverOptions::default().transform(builder).await
+    }
+
+    /// Builds and runs a synchronous transform with the default options.
+    ///
+    /// # Errors
+    ///
+    /// See [`DriverOptions::synchronous_transform`].
+    ///
+    /// # Panics
+    ///
+    /// See [`DriverOptions::synchronous_transform`].
+    pub async fn synchronous_transform<B: SynchronousTransformBuilder>(
+        builder: B,
+    ) -> Result<(ComponentControl<EventsBuffer>, Output<EventsBuffer>), GenericError> {
+        DriverOptions::default().synchronous_transform(builder).await
     }
 
     /// Builds and runs an encoder with the default options.
@@ -397,6 +413,47 @@ impl DriverOptions {
             .spawn(TransformRunnable { component, context }, Some(input))
             .await;
         Ok((control, outputs))
+    }
+
+    /// Builds and runs a synchronous transform.
+    ///
+    /// A synchronous transform has no run loop of its own, so it runs inside a transform that does for each buffer what
+    /// a chained transform does: call `transform_buffer`, then dispatch the buffer to the default output, its only
+    /// output. That transform marks itself ready once it starts, accepts every event type, and stops once its input
+    /// closes. A failed dispatch stops it with the dispatch error.
+    ///
+    /// # Errors
+    ///
+    /// If the builder fails to build the synchronous transform, an error is returned.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the component's supervisor fails to start.
+    pub async fn synchronous_transform<B: SynchronousTransformBuilder>(
+        self, builder: B,
+    ) -> Result<(ComponentControl<EventsBuffer>, Output<EventsBuffer>), GenericError> {
+        let harness = Harness::new(self, ComponentType::Transform);
+
+        builder.specify_bounds(&mut harness.bounds_builder());
+        let transform = harness.build(builder.build(harness.build_context())).await?;
+        drop(builder);
+
+        let (dispatcher, output) = harness.default_output();
+        let (input, consumer) = harness.input();
+        let context = TransformContext::new(
+            &harness.topology_context,
+            &harness.component_context,
+            harness.component_registry.clone(),
+            harness.register_health(),
+            dispatcher,
+            consumer,
+        );
+
+        let component = Box::new(SynchronousTransformRunner { transform });
+        let control = harness
+            .spawn(TransformRunnable { component, context }, Some(input))
+            .await;
+        Ok((control, output))
     }
 
     /// Builds and runs an encoder.
@@ -694,5 +751,25 @@ impl<C: RunnableComponent> RunnableComponent for Reporting<C> {
             let _ = outcome_tx.send(outcome);
             Ok(())
         })
+    }
+}
+
+/// Runs a synchronous transform on each buffer it receives, the way a chained transform runs each of its steps.
+struct SynchronousTransformRunner {
+    transform: Box<dyn SynchronousTransform + Send>,
+}
+
+#[async_trait]
+impl Transform for SynchronousTransformRunner {
+    async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
+        let mut health = context.take_health_handle();
+        health.mark_ready();
+
+        while let Some(mut buffer) = context.events().next().await {
+            self.transform.transform_buffer(&mut buffer);
+            context.dispatcher().dispatch(buffer).await?;
+        }
+
+        Ok(())
     }
 }
