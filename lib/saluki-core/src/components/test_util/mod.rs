@@ -25,7 +25,8 @@
 //! ```
 //!
 //! Use [`TestComponentDriver::options`] to change the component ID, the channel capacity, the deadlines, or the
-//! resource registry the component is built with.
+//! resource registry the component is built with. To run a source that the test builds by hand, wrap it in a
+//! [`PrebuiltSource`].
 //!
 //! # Things to know
 //!
@@ -88,6 +89,9 @@ pub use self::driver::{DriverOptions, TestComponentDriver};
 
 mod output;
 pub use self::output::{Output, Outputs};
+
+mod prebuilt;
+pub use self::prebuilt::PrebuiltSource;
 
 mod supervisor;
 pub use self::supervisor::TestComponentSupervisor;
