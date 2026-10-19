@@ -474,11 +474,11 @@ fn is_vec_json_map(ty: &syn::Type) -> bool {
     let Some(syn::GenericArgument::Type(inner)) = args.args.first() else {
         return false;
     };
-    is_json_map(inner)
+    is_exact_json_map(inner)
 }
 
 /// Returns whether `ty` is exactly `serde_json::Map<String, serde_json::Value>`.
-fn is_json_map(ty: &syn::Type) -> bool {
+fn is_exact_json_map(ty: &syn::Type) -> bool {
     let syn::Type::Path(tp) = ty else { return false };
     if !tp.path.segments.iter().any(|segment| segment.ident == "serde_json") {
         return false;
