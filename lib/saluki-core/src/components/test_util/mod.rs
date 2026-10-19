@@ -25,9 +25,10 @@
 //! ```
 //!
 //! Use [`TestComponentDriver::options`] to change the component ID, the channel capacity, the deadlines, or the
-//! resource registry the component is built with. To run a source that the test builds by hand, wrap it in a
-//! [`PrebuiltSource`]. A synchronous transform has no run loop of its own, so
-//! [`TestComponentDriver::synchronous_transform`] runs it the way a chained transform runs each of its steps.
+//! resource registry the component is built with, or to withhold the shutdown signal from a source or relay so that it
+//! behaves as if it ignored shutdown. To run a source that the test builds by hand, wrap it in a [`PrebuiltSource`]. A
+//! synchronous transform has no run loop of its own, so [`TestComponentDriver::synchronous_transform`] runs it the way
+//! a chained transform runs each of its steps.
 //!
 //! # Things to know
 //!
