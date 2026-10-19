@@ -577,17 +577,17 @@ impl DriverOptions {
 /// The setup shared by every component type: a topology context, and the wiring around the component.
 ///
 /// Mirrors what a topology does for each component between adding it to the blueprint and running it.
-struct Harness {
+pub(super) struct Harness {
     options: DriverOptions,
-    component_context: ComponentContext,
-    identity: SubsystemIdentifier,
+    pub(super) component_context: ComponentContext,
+    pub(super) identity: SubsystemIdentifier,
     dataspace: DataspaceRegistry,
-    topology_context: TopologyContext,
-    component_registry: ComponentRegistry,
+    pub(super) topology_context: TopologyContext,
+    pub(super) component_registry: ComponentRegistry,
 }
 
 impl Harness {
-    fn new(options: DriverOptions, component_type: ComponentType) -> Self {
+    pub(super) fn new(options: DriverOptions, component_type: ComponentType) -> Self {
         let component_context = ComponentContext::new(
             &topology_identifier(TOPOLOGY_NAME),
             options.component_id.clone(),
@@ -638,7 +638,7 @@ impl Harness {
             .await
     }
 
-    fn register_health(&self) -> Health {
+    pub(super) fn register_health(&self) -> Health {
         self.topology_context
             .health_registry()
             .register_component(&self.identity)
@@ -648,7 +648,7 @@ impl Harness {
     /// Creates a dispatcher with one channel per output definition, returning the receiving ends as [`Output`]s.
     ///
     /// The dispatcher holds the only senders, so each output closes exactly when the component drops its dispatcher.
-    fn outputs<T, D>(
+    pub(super) fn outputs<T, D>(
         &self, definitions: &[OutputDefinition<D>],
     ) -> Result<(Dispatcher<T>, Vec<Output<T>>), GenericError>
     where
@@ -682,7 +682,7 @@ impl Harness {
     }
 
     /// Creates a dispatcher with only a default output, for decoders and encoders.
-    fn default_output<T: Dispatchable>(&self) -> (Dispatcher<T>, Output<T>) {
+    pub(super) fn default_output<T: Dispatchable>(&self) -> (Dispatcher<T>, Output<T>) {
         let (dispatcher, mut outputs) = self
             .outputs(&[OutputDefinition::default_output(())])
             .expect("a lone default output should always be valid");
@@ -693,7 +693,7 @@ impl Harness {
     /// Creates the component's input channel.
     ///
     /// The returned sender is the only one, so the input closes exactly when the control drops it.
-    fn input<T: Dispatchable>(&self) -> (mpsc::Sender<T>, Consumer<T>) {
+    pub(super) fn input<T: Dispatchable>(&self) -> (mpsc::Sender<T>, Consumer<T>) {
         let (sender, receiver) = mpsc::channel(self.options.interconnect_capacity.get());
         (sender, Consumer::new(self.component_context.clone(), receiver))
     }

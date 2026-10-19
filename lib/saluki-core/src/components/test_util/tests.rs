@@ -14,6 +14,7 @@ use crate::components::{
     BuildContext,
 };
 use crate::data_model::event::{metric::Metric, Event, EventType};
+use crate::data_model::payload::PayloadType;
 use crate::runtime::state::IdentifierFilter;
 use crate::runtime::{self, FnWorker, ShutdownStrategy, SupervisorError};
 use crate::topology::{EventsBuffer, OutputDefinition};
@@ -793,4 +794,82 @@ async fn withheld_shutdown_fires_once_the_control_is_dropped() {
         .await
         .expect("the source should stop once the control is dropped")
         .expect("the source should see its shutdown handle fire");
+}
+
+#[tokio::test]
+async fn source_context_dispatches_to_its_outputs_and_fires_shutdown_on_signal() {
+    let mut parts = TestComponentDriver::options()
+        .with_component_id("parts")
+        .source_context(&TwoOutputSourceBuilder::new().outputs)
+        .expect("the outputs should be valid");
+    assert_eq!(
+        parts.context.component_context().to_string(),
+        "topology.test.sources.parts"
+    );
+
+    parts
+        .context
+        .dispatcher()
+        .dispatch_one_named("alt", Event::Metric(Metric::counter("to_alt", 1.0)))
+        .await
+        .expect("the alt output should accept the event");
+    let alt = parts
+        .outputs
+        .named_output("alt")
+        .next()
+        .await
+        .expect("alt output should receive a buffer");
+    assert_eq!(metric_names(alt), ["to_alt"]);
+
+    let shutdown = parts.context.take_shutdown_handle();
+    assert!(!shutdown.is_triggered());
+    parts.signal_shutdown();
+    assert!(shutdown.is_triggered());
+}
+
+#[tokio::test]
+async fn relay_context_fires_shutdown_on_signal() {
+    let mut parts = TestComponentDriver::options()
+        .relay_context(&[OutputDefinition::default_output(PayloadType::Raw)])
+        .expect("the outputs should be valid");
+
+    let shutdown = parts.context.take_shutdown_handle();
+    assert!(!shutdown.is_triggered());
+    parts.signal_shutdown();
+    assert!(shutdown.is_triggered());
+}
+
+#[tokio::test]
+async fn transform_context_receives_what_is_sent_to_its_input_until_it_closes() {
+    let mut parts = TestComponentDriver::options()
+        .transform_context(&[OutputDefinition::default_output(EventType::Metric)])
+        .expect("the outputs should be valid");
+
+    let mut buffer = EventsBuffer::default();
+    assert!(buffer.try_push(Event::Metric(Metric::counter("sent", 1.0))).is_none());
+    parts.input.send(buffer).await.expect("the input should be open");
+    let received = parts
+        .context
+        .events()
+        .next()
+        .await
+        .expect("the input should hold the buffer");
+    assert_eq!(metric_names(received), ["sent"]);
+
+    drop(parts.input);
+    assert!(parts.context.events().next().await.is_none());
+}
+
+#[tokio::test]
+async fn context_parts_keep_the_health_registry_alive() {
+    let mut parts = TestComponentDriver::options().destination_context();
+    let mut health = parts.context.take_health_handle();
+    drop(parts.context);
+
+    // Once the registry is dropped, `live` resolves at once instead of waiting for a probe.
+    let live = tokio::time::timeout(Duration::from_millis(20), health.live()).await;
+    assert!(
+        live.is_err(),
+        "`live` should wait for a probe while the parts are alive"
+    );
 }
