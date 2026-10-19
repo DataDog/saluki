@@ -422,6 +422,7 @@ mod tests {
         task::JoinHandle,
         time::{sleep, timeout, Instant},
     };
+    use tonic::service::Routes;
 
     use super::*;
 
@@ -438,6 +439,32 @@ mod tests {
         fn generate_routes(&self) -> Router<Self::State> {
             let body = self.body;
             Router::new().route(self.path, axum::routing::get(move || async move { body }))
+        }
+    }
+
+    /// A gRPC service that answers every method with an `OK` status.
+    #[derive(Clone)]
+    struct OkService;
+
+    impl NamedService for OkService {
+        const NAME: &'static str = "test.Ok";
+    }
+
+    impl Service<Request<GrpcBody>> for OkService {
+        type Response = Response<GrpcBody>;
+        type Error = Infallible;
+        type Future = std::future::Ready<Result<Self::Response, Self::Error>>;
+
+        fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn call(&mut self, _request: Request<GrpcBody>) -> Self::Future {
+            let response = Response::builder()
+                .header("grpc-status", "0")
+                .body(GrpcBody::empty())
+                .unwrap();
+            std::future::ready(Ok(response))
         }
     }
 
@@ -606,6 +633,24 @@ mod tests {
             .unwrap();
         let resp = client.request(req).await.unwrap();
         (resp.status(), resp.headers().clone())
+    }
+
+    async fn assert_grpc_status_eventually(addr: SocketAddr, path: &str, expected: &str) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let (_, headers) = grpc_post(addr, path).await;
+            let grpc_status = headers.get("grpc-status").and_then(|v| v.to_str().ok());
+            if grpc_status == Some(expected) {
+                return;
+            }
+            if Instant::now() > deadline {
+                panic!(
+                    "expected grpc-status {} for {} but got {:?}",
+                    expected, path, grpc_status
+                );
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
     }
 
     async fn assert_status_eventually(addr: SocketAddr, path: &str, expected: StatusCode) -> String {
@@ -890,6 +935,23 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         let grpc_status = headers.get("grpc-status").and_then(|v| v.to_str().ok());
         assert_eq!(grpc_status, Some("12"));
+    }
+
+    #[tokio::test]
+    async fn serves_asserted_grpc_route() {
+        let harness = setup_test_harness(EndpointType::Unprivileged).await;
+
+        // gRPC errors are reported with HTTP 200 plus a `grpc-status` header: OK is code 0, UNIMPLEMENTED is code 12.
+        harness
+            .assert_route(
+                "ok",
+                DynamicRoute::grpc(EndpointType::Unprivileged, Routes::new(OkService)),
+            )
+            .await;
+        assert_grpc_status_eventually(harness.addr, "/test.Ok/Call", "0").await;
+
+        harness.retract_route("ok").await;
+        assert_grpc_status_eventually(harness.addr, "/test.Ok/Call", "12").await;
     }
 
     #[tokio::test]

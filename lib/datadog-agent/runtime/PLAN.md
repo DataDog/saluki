@@ -18,10 +18,10 @@ This crate replaces those copies. A remote agent uses it to:
 - receive its configuration over the configuration stream
 - get a workload provider backed by the Datadog Agent's tagger and workloadmeta
 - serve the status, flare, and telemetry services
-- run the standard control plane
+- run the workers of a standard control plane
 
-A binary only supplies what is truly its own: its configuration system, its topology, its status sections, its
-telemetry remapping rules, and any extra API handlers.
+A binary only supplies what is truly its own: its configuration system, its topology, its control plane supervisor, its
+status sections, its telemetry remapping rules, and any extra API handlers.
 
 ## Decisions
 
@@ -32,21 +32,25 @@ telemetry remapping rules, and any extra API handlers.
    public building blocks that a binary can also use one at a time.
 3. **Each extraction is a pure move.** Every pull request in the stack preserves ADP's behavior and migrates ADP onto
    the extracted code in the same pull request. Known bugs are fixed in follow-up pull requests, listed under
-   [Follow-ups](#follow-ups).
+   [Follow-ups](#follow-ups). The one exception is the status, flare, and telemetry services: they're published as a
+   dynamic gRPC route, which is how routes are meant to be published internally, rather than mounted on the privileged
+   API endpoint up front.
+4. **Each binary builds its own control plane supervisor.** The runtime shares the workers that go into `ctrl-pln`,
+   not the supervisor itself, so each binary chooses which of them it runs.
 
 ## Stack
 
 Each pull request keeps ADP's behavior unchanged. The status of each one is either not started, in review (with a link
 to the pull request), or merged.
 
-- [ ] **1. Skeleton and remote agent core.** Status: in review (pull request not opened yet).
+- [x] **1. Skeleton and remote agent core.** Status: merged ([#2803](https://github.com/DataDog/saluki/pull/2803)).
   - Creates the crate, its workspace entries, its `taskdump` feature, and this document.
   - Moves `internal/remote_agent.rs` to `remote_agent/mod.rs`, adds the `StatusSectionProvider` hook, and takes the
     telemetry remapping rules as a parameter.
   - Adds `RemoteAgentClientConfiguration::from_parts` to `datadog-agent-commons` for the vsock name mapping.
   - Moves ADP's DogStatsD status fields into `DogStatsDStatusSection` and adds `datadog_agent_runtime` to ADP's
     first-party log targets.
-- [ ] **2. Logging.** Status: in review (pull request not opened yet).
+- [x] **2. Logging.** Status: merged ([#2806](https://github.com/DataDog/saluki/pull/2806)).
   - Moves the logging translator and the log level parsing into the runtime, and adds `LoggingSettings` and
     `LoggingTranslator`. The base first-party target list moves into the runtime, and it shrinks to the `datadog_agent`
     and `saluki` target prefixes. None of the crates that this adds or drops both logs and is linked into ADP, so this
@@ -54,15 +58,18 @@ to the pull request), or merged.
   - Moves `DynamicLogLevelWorker` into `saluki-app`, where it applies a stream of already translated `LogLevel`s.
     `LoggingTranslator::translate_log_levels` produces that stream, and ADP feeds it from `Live::into_stream`, which
     this pull request adds to `agent-data-plane-config`.
-- [ ] **3. Environment and workload.** Status: in review (pull request not opened yet).
+- [x] **3. Environment and workload.** Status: merged ([#2836](https://github.com/DataDog/saluki/pull/2836)).
   - Moves `internal/env/**` and the tagger prefix fixture, and adds `WorkloadSettings` and
     `RemoteAgentEnvironmentProvider`.
   - Updates `.github/workflows/update-agent-tagger-prefixes.yml` for the new paths.
-- [ ] **4. Control plane.** Status: not started.
-  - Moves the telemetry, runtime configuration, configuration updates, and control plane modules, and adds
-    `ControlPlaneBuilder`.
+- [ ] **4. Control plane workers.** Status: in review (pull request not opened yet).
+  - Moves the runtime configuration and configuration updates workers, and moves the internal telemetry worker into
+    `saluki-core`, next to the internal metrics types. ADP still builds `ctrl-pln` itself, from these workers.
+  - Adds `RemoteAgentServicesWorker`, which publishes the status, flare, and telemetry services as a dynamic gRPC route
+    on the privileged API endpoint.
 - [ ] **5. Facade.** Status: not started.
-  - Adds the facade module and rewrites ADP's `run` command on top of it.
+  - Adds the facade module and rewrites ADP's `run` command on top of it. ADP still builds `ctrl-pln`, and adds to it a
+    nested supervisor from the facade that holds what only the facade can build.
 - [ ] **6. Documentation and example.** Status: not started.
   - Adds the crate documentation, `examples/minimal_remote_agent.rs`, and the `AGENTS.md` entry.
 
@@ -83,6 +90,7 @@ Every pull request in the stack checks its changes against these.
 - `/workload/remote_agent/tags/dump` and `/workload/remote_agent/external_data/dump`, which the ADP `debug workload`
   command calls.
 - `/metrics`, `/compat/metrics`, `/config`, and `/config/runtime`.
+- The status, flare, and telemetry gRPC services on the privileged API endpoint.
 
 ### Unchanged behavior
 
@@ -133,8 +141,7 @@ its item when it merges.
    - workload provider toggles for a tagger-only setup, without the containerd and cgroups collectors
    - configurable tag store and external data store entity limits, which are hard-coded to 2000 in
      `lib/datadog-agent/runtime/src/env/workload/mod.rs`
-   - a process start time for the status `Started` field, which today records when the status service was created
-   - extra workers in the `ctrl-pln` supervisor
+   - a process start time for the status `Started` field, which today records when the services worker was created
 6. **Make the configuration system generic.** This gets its own plan.
 7. **Split `remote_agent/mod.rs` into submodules.** Registration, the configuration stream, the services, flare
    collection, and event reporting can each have their own module. Deferred so that the first pull request keeps rename

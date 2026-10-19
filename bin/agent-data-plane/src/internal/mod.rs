@@ -10,11 +10,6 @@ use saluki_core::health::HealthRegistry;
 use saluki_core::runtime::{SupervisionTreeHandle, Supervisor};
 use saluki_error::GenericError;
 
-mod config_runtime;
-
-mod config_updates;
-pub use self::config_updates::ConfigUpdatesWorker;
-
 mod control_plane;
 pub use self::control_plane::create_control_plane_supervisor;
 
@@ -23,10 +18,11 @@ pub use self::control_surfaces::{DogStatsDControlSurface, TopologyControlSurface
 
 pub mod logging;
 
+mod remote_agent;
+pub use self::remote_agent::AdpConfigUpdates;
+
 mod status;
 pub use self::status::DogStatsDStatusSection;
-
-mod telemetry;
 
 /// Creates the root internal supervisor containing control plane and environment subsystems.
 ///
