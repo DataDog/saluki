@@ -1,9 +1,10 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
-use agent_data_plane_config::SalukiConfiguration;
+use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
 use datadog_agent_commons::ipc::config::{IpcAuthConfiguration, RemoteAgentClientConfiguration};
 use datadog_agent_config::classifier::Pipeline;
+use datadog_agent_runtime::env::WorkloadSettings;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::ListenAddress;
 
@@ -23,6 +24,30 @@ pub(crate) fn remote_agent_client_configuration(
     let ipc = &config.control.ipc;
     let auth = DataPlaneConfiguration::from_configuration(config).ipc_auth_configuration();
     RemoteAgentClientConfiguration::from_parts(ipc.cmd_port, auth, ipc.grpc_max_message_size, &ipc.vsock_addr)
+}
+
+/// Translates the typed workload settings into the workload provider's settings.
+///
+/// Paths are only carried over when they were set explicitly, so that defaulted values select automatic detection.
+pub(crate) fn workload_settings(config: &SalukiConfiguration) -> WorkloadSettings {
+    let environment = &config.shared.environment;
+
+    let mut settings = WorkloadSettings::new(config.control.ipc.remote_agent_string_interner_size_bytes);
+    settings.containerd_socket_path = explicit(&environment.containerd.socket_path);
+    settings.containerd_connection_timeout = environment.containerd.connection_timeout;
+    settings.containerd_query_timeout = environment.containerd.query_timeout;
+    settings.proc_root = explicit(&environment.container_roots.proc_root);
+    settings.cgroup_root = explicit(&environment.container_roots.cgroup_root);
+    settings
+}
+
+/// Returns the hostname to report in standalone mode, if one was set explicitly.
+pub(crate) fn standalone_hostname(config: &SalukiConfiguration) -> Option<String> {
+    explicit(&config.shared.environment.hostname)
+}
+
+fn explicit<T: Clone>(value: &ConfigValue<T>) -> Option<T> {
+    value.is_explicit().then(|| value.value.clone())
 }
 
 impl<'a> DataPlaneConfiguration<'a> {
@@ -259,6 +284,35 @@ mod tests {
         config.control.ipc.vsock_addr = "invalid".to_string();
 
         assert!(remote_agent_client_configuration(&config).is_err());
+    }
+
+    #[test]
+    fn workload_settings_only_carry_explicit_paths() {
+        let mut config = SalukiConfiguration::default();
+        config.control.ipc.remote_agent_string_interner_size_bytes = std::num::NonZeroUsize::new(4096).unwrap();
+        config.shared.environment.containerd.socket_path = ConfigValue::defaulted("/run/containerd.sock".into());
+        config.shared.environment.containerd.connection_timeout = Duration::from_secs(2);
+        config.shared.environment.containerd.query_timeout = Duration::from_secs(7);
+        config.shared.environment.container_roots.proc_root = ConfigValue::explicit("/host/proc".into());
+        config.shared.environment.container_roots.cgroup_root = ConfigValue::defaulted("/host/sys/fs/cgroup".into());
+
+        let settings = workload_settings(&config);
+        assert_eq!(settings.string_interner_size_bytes.get(), 4096);
+        assert_eq!(settings.containerd_socket_path, None);
+        assert_eq!(settings.containerd_connection_timeout, Duration::from_secs(2));
+        assert_eq!(settings.containerd_query_timeout, Duration::from_secs(7));
+        assert_eq!(settings.proc_root, Some("/host/proc".into()));
+        assert_eq!(settings.cgroup_root, None);
+    }
+
+    #[test]
+    fn standalone_hostname_requires_an_explicit_value() {
+        let mut config = SalukiConfiguration::default();
+        config.shared.environment.hostname = ConfigValue::defaulted("defaulted-host".to_string());
+        assert_eq!(standalone_hostname(&config), None);
+
+        config.shared.environment.hostname = ConfigValue::explicit("explicit-host".to_string());
+        assert_eq!(standalone_hostname(&config).as_deref(), Some("explicit-host"));
     }
 
     fn pipeline_configuration(

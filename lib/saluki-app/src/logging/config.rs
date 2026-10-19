@@ -4,6 +4,7 @@ use bytesize::ByteSize;
 use saluki_common::logging::parse_filter_directives;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
+use tracing::Level;
 use tracing_subscriber::filter::{LevelFilter, Targets};
 
 const DEFAULT_LOG_FILE_MAX_SIZE: ByteSize = ByteSize::mib(10);
@@ -136,6 +137,13 @@ impl LogLevel {
     /// Returns the underlying `Targets` filter.
     pub fn as_targets(&self) -> Targets {
         self.0.clone()
+    }
+
+    /// Creates a `LogLevel` at the INFO level.
+    ///
+    /// This applies to all targets, with no prefix filtering whatsoever.
+    pub fn info() -> Self {
+        Self(Targets::new().with_default(Level::INFO))
     }
 }
 

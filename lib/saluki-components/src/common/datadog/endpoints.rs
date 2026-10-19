@@ -16,6 +16,7 @@ use url::Url;
 
 use super::api_key::ApiKeyCell;
 use super::protocol::{MetricsPayloadInfo, MetricsProtocolVersion, UseV3ApiSeriesConfig};
+use super::routing::RoutingTargetId;
 
 static DD_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^app(\.mrf)?\.([a-z]{2,}\d{1,2}\.)?(datad(?:oghq|0g)\.(?:com|eu)|ddog-gov\.com)$").unwrap()
@@ -266,11 +267,6 @@ pub struct EndpointConfiguration {
 }
 
 impl EndpointConfiguration {
-    /// Returns the configured primary endpoint identity, before any metrics-only override.
-    pub(crate) fn primary_endpoint(&self) -> &str {
-        &self.primary_endpoint
-    }
-
     /// Creates a new `EndpointConfiguration` from the resolved endpoint configuration.
     pub(crate) fn from_configuration(endpoints: &shared::Endpoints) -> Self {
         Self {
@@ -359,17 +355,36 @@ pub(crate) enum EndpointRoute {
 pub(crate) struct RoutableEndpoint {
     route: EndpointRoute,
     endpoint: ResolvedEndpoint,
+    target: Option<RoutingTargetId>,
 }
 
 impl RoutableEndpoint {
-    /// Creates a new routable endpoint.
+    /// Creates a new routable endpoint that is not a routing target.
     pub(crate) const fn new(route: EndpointRoute, endpoint: ResolvedEndpoint) -> Self {
-        Self { route, endpoint }
+        Self {
+            route,
+            endpoint,
+            target: None,
+        }
+    }
+
+    /// Sets the routing target this endpoint delivers for.
+    pub(crate) const fn with_target(mut self, target: Option<RoutingTargetId>) -> Self {
+        self.target = target;
+        self
     }
 
     /// Returns the routing role.
     pub(crate) const fn route(&self) -> EndpointRoute {
         self.route
+    }
+
+    /// Returns the routing target this endpoint delivers for, if it has one.
+    ///
+    /// An endpoint without a target receives only payloads that are not addressed to specific targets.
+    #[cfg(test)]
+    pub(crate) const fn target(&self) -> Option<RoutingTargetId> {
+        self.target
     }
 
     /// Returns the resolved endpoint.
@@ -378,8 +393,8 @@ impl RoutableEndpoint {
     }
 
     /// Consumes the routable endpoint and returns its parts.
-    pub(crate) fn into_parts(self) -> (EndpointRoute, ResolvedEndpoint) {
-        (self.route, self.endpoint)
+    pub(crate) fn into_parts(self) -> (EndpointRoute, ResolvedEndpoint, Option<RoutingTargetId>) {
+        (self.route, self.endpoint, self.target)
     }
 }
 

@@ -18,7 +18,6 @@ tokio = { workspace = true, features = ["macros", "rt"] }
 datadog-agent-config-overlay-model = { workspace = true }
 indexmap = { workspace = true }
 serde = { workspace = true }
-serde_yaml = { workspace = true }
 tinytemplate = { workspace = true }
 
 [lints]

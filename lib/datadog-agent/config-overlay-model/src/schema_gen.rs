@@ -9,7 +9,7 @@
 use std::path::Path;
 
 use indexmap::IndexMap;
-use serde_yaml::Value;
+use serde_json::{Map, Value};
 
 /// Value type of a config field, as declared in the schema YAML.
 ///
@@ -101,10 +101,10 @@ pub fn load_schema(datadog_schema: &Path, otel_schema_dir: &Path) -> IndexMap<St
 ///
 /// Callers that already hold the composed schema should use this instead of [`load_schema`] to
 /// avoid a redundant disk read and guarantee every consumer sees the same document.
-pub fn load_schema_from_value(doc: &serde_yaml::Value) -> IndexMap<String, FieldInfo> {
+pub fn load_schema_from_value(doc: &Value) -> IndexMap<String, FieldInfo> {
     let properties = doc
         .get("properties")
-        .and_then(|v| v.as_mapping())
+        .and_then(|v| v.as_object())
         .expect("schema root must have a 'properties' mapping");
 
     let mut entries = Vec::new();
@@ -118,15 +118,10 @@ pub fn load_schema_from_value(doc: &serde_yaml::Value) -> IndexMap<String, Field
     map
 }
 
-fn collect_entries(mapping: &serde_yaml::Mapping, path_parts: &[&str], out: &mut Vec<(String, FieldInfo)>) {
+fn collect_entries(mapping: &Map<String, Value>, path_parts: &[&str], out: &mut Vec<(String, FieldInfo)>) {
     for (key, value) in mapping {
-        let key_str = match key.as_str() {
-            Some(s) => s,
-            None => continue,
-        };
-
         let mut parts = path_parts.to_vec();
-        parts.push(key_str);
+        parts.push(key);
 
         // `$ref`s are inlined by `crate::load_resolved_schema` before we get here, so every node
         // is either a `setting`, a `section`, or some other container with `properties`.
@@ -135,12 +130,12 @@ fn collect_entries(mapping: &serde_yaml::Mapping, path_parts: &[&str], out: &mut
         match node_type {
             "setting" => out.push(parse_setting(&parts, value)),
             "section" => {
-                if let Some(props) = value.get("properties").and_then(|v| v.as_mapping()) {
+                if let Some(props) = value.get("properties").and_then(|v| v.as_object()) {
                     collect_entries(props, &parts, out);
                 }
             }
             _ => {
-                if let Some(props) = value.get("properties").and_then(|v| v.as_mapping()) {
+                if let Some(props) = value.get("properties").and_then(|v| v.as_object()) {
                     collect_entries(props, &parts, out);
                 }
             }
@@ -153,13 +148,13 @@ fn parse_setting(path_parts: &[&str], value: &Value) -> (String, FieldInfo) {
 
     let has_no_env_tag = value
         .get("tags")
-        .and_then(|v| v.as_sequence())
+        .and_then(|v| v.as_array())
         .map(|tags| tags.iter().any(|t| t.as_str() == Some("no-env")))
         .unwrap_or(false);
 
     let explicit_env_vars: Vec<String> = value
         .get("env_vars")
-        .and_then(|v| v.as_sequence())
+        .and_then(|v| v.as_array())
         .map(|seq| seq.iter().filter_map(|v| v.as_str()).map(|s| s.to_string()).collect())
         .unwrap_or_default();
 
@@ -222,20 +217,20 @@ fn parse_value_type(value: &Value) -> FieldType {
     }
 }
 
-fn yaml_value_to_json_str(value: &serde_yaml::Value) -> Option<String> {
+fn yaml_value_to_json_str(value: &Value) -> Option<String> {
     match value {
-        serde_yaml::Value::Null => None,
-        serde_yaml::Value::Bool(b) => Some(b.to_string()),
-        serde_yaml::Value::Number(n) => Some(n.to_string()),
-        serde_yaml::Value::String(s) => {
+        Value::Null => None,
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::String(s) => {
             let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
             Some(format!("\"{}\"", escaped))
         }
-        serde_yaml::Value::Sequence(seq) => {
+        Value::Array(seq) => {
             let items: Option<Vec<String>> = seq.iter().map(yaml_value_to_json_str).collect();
             items.map(|elems| format!("[{}]", elems.join(",")))
         }
-        serde_yaml::Value::Mapping(map) if map.is_empty() => Some("{}".to_string()),
+        Value::Object(map) if map.is_empty() => Some("{}".to_string()),
         _ => None,
     }
 }

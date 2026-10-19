@@ -163,7 +163,7 @@ mod tests {
     use super::*;
 
     fn config() -> Config {
-        serde_yaml::from_str(
+        serde_saphyr::from_str(
             r#"
 runtime: docker
 analysis_mode: metrics

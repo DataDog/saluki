@@ -1,193 +1,83 @@
-//! Translation between ADP's typed logging configuration and the logging stack's own configuration.
+//! ADP's logging rules on top of the shared remote agent logging support.
 //!
-//! ADP's logging behavior must follow the Datadog Agent's logging configuration for the settings that are sensibly
-//! shared (level, format, console output, rotation), but it must use its own per-subagent destination so it doesn't
-//! collide with the Core Agent's own log file. This module owns those rules in one place.
+//! ADP logs to its own default log file and treats its own crates as first-party log targets. Everything else about
+//! translating the Datadog Agent's logging settings lives in [`datadog_agent_runtime::logging`].
 
-use agent_data_plane_config::{control::Logging, Live};
-use async_trait::async_trait;
-use bytesize::ByteSize;
+use std::sync::OnceLock;
+
+use agent_data_plane_config::Logging;
+use agent_data_plane_config_system::ConfigurationSystem;
 use datadog_agent_commons::platform::PlatformSettings;
-use saluki_app::logging::{LogLevel, LoggingConfiguration, LoggingOverrideController};
-use saluki_common::sync::shutdown::ShutdownHandle;
-use saluki_core::runtime::{InitializationError, Supervisable, SupervisorFuture};
-use saluki_error::{ErrorContext as _, GenericError};
-use tokio::{pin, select};
-use tracing::{debug, warn};
+use datadog_agent_runtime::logging::{LoggingSettings, LoggingTranslator};
+use futures::Stream;
+use saluki_app::logging::{LogLevel, LoggingConfiguration};
+use saluki_error::GenericError;
 
-// `tracing` targets use Rust crate/module names, so Cargo package names with hyphens appear with underscores.
-const FIRST_PARTY_LOG_TARGETS: &[&str] = &[
-    "agent_data_plane",
-    "containerd_protos",
-    "datadog_protos",
-    "datadog_agent_commons",
-    "datadog_agent_runtime",
-    "ddsketch",
-    "otlp_protos",
-    "ottl",
-    "process_memory",
-    "prometheus_exposition",
-    "saluki_api",
-    "saluki_app",
-    "saluki_common",
-    "saluki_components",
-    "saluki_config",
-    "saluki_core",
-    "saluki_env",
-    "saluki_error",
-    "saluki_io",
-    "saluki_metadata",
-    "saluki_metrics",
-    "saluki_tls",
-    "stringtheory",
-];
+static LOGGING_TRANSLATOR: OnceLock<LoggingTranslator> = OnceLock::new();
 
-/// Logging configuration translator for matching the Datadog Agent's logging behavior.
+/// Creates the logging translator for ADP.
 ///
-/// In the Datadog Agent, all processes generally follow the same logging configuration, paying attention to the same
-/// settings/keys for determining log level, log format, and so on. They differ in some ways, such as determining what
-/// file to write to when logging to file is enabled. We want ADP to follow the same pattern.
+/// It logs to ADP's platform-specific default log file unless one is configured explicitly, and applies a plain log
+/// level to ADP's own crates on top of the shared first-party log targets. The `agent_data_plane` target is a prefix,
+/// so it also covers `agent_data_plane_config` and `agent_data_plane_config_system`.
+fn get_logging_translator() -> &'static LoggingTranslator {
+    LOGGING_TRANSLATOR.get_or_init(|| {
+        LoggingTranslator::new(PlatformSettings::get_default_log_file_path())
+            .with_first_party_targets(&["agent_data_plane"])
+    })
+}
+
+/// Gets a translated logging configuration from the given Agent Data Plane-specific logging configuration.
 ///
-/// `LoggingConfigurationTranslator` takes the typed [`Logging`] slice and allows generating a Saluki-oriented
-/// [`LoggingConfiguration`] from it, overriding the ADP-specific setting as necessary. This ensures that we obey
-/// all the logging configuration rules set by the Datadog Agent but log to the right location for the ADP process.
-pub struct LoggingConfigurationTranslator;
-
-impl LoggingConfigurationTranslator {
-    /// Builds a [`LoggingConfiguration`] from the given configuration, applying ADP's per-subagent rules.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the configured log level is not a level name or a valid set of filter directives.
-    pub fn translate(logging: &Logging) -> Result<LoggingConfiguration, GenericError> {
-        let mut config = LoggingConfiguration::simple();
-
-        config.log_level = parse_adp_log_level(&logging.level)?;
-        config.log_format_json = logging.format_json;
-        config.log_format_rfc3339 = logging.format_rfc3339;
-        config.log_to_console = logging.to_console;
-        config.log_to_syslog = logging.to_syslog;
-
-        if logging.to_syslog {
-            config.syslog_rfc = logging.syslog_rfc;
-            config.syslog_uri = if logging.syslog_uri.is_empty() {
-                PlatformSettings::get_default_syslog_uri().to_string()
-            } else {
-                logging.syslog_uri.clone()
-            };
-        }
-
-        // Preserve the logging stack's binary default when the schema value is defaulted.
-        if logging.file_max_size.is_explicit() {
-            config.log_file_max_size = ByteSize::b(logging.file_max_size.value);
-        }
-        config.log_file_max_rolls = logging.file_max_rolls;
-
-        // Use the platform default unless the ADP log file was set explicitly.
-        config.log_file = if logging.disable_file_logging {
-            String::new()
-        } else if logging.file.is_explicit() && !logging.file.value.is_empty() {
-            logging.file.value.clone()
-        } else {
-            PlatformSettings::get_default_log_file_path()
-                .to_string_lossy()
-                .into_owned()
-        };
-
-        Ok(config)
-    }
-}
-
-/// Parses a configured log level, expanding a plain level name into per-target directives.
+/// This converts the Agent Data Plane-specific logging configuration (which itself is a layered version of the Datadog
+/// Agent's logging configuration) into the Saluki-specific logging configuration necessary for bootstrapping the
+/// application.
 ///
-/// Plain levels apply to ADP crates; other values are `target=level` filter directives.
-fn parse_adp_log_level(value: &str) -> Result<LogLevel, GenericError> {
-    let trimmed = value.trim();
-    if let Some(level) = plain_log_level(trimmed) {
-        first_party_log_level_filter(level)
-    } else {
-        LogLevel::try_from(value.to_string()).error_context("Failed to parse log filter directives.")
-    }
-}
-
-fn plain_log_level(value: &str) -> Option<&'static str> {
-    match value.to_ascii_lowercase().as_str() {
-        "trace" => Some("trace"),
-        "debug" => Some("debug"),
-        "info" => Some("info"),
-        "warn" => Some("warn"),
-        "error" => Some("error"),
-        "off" => Some("off"),
-        _ => None,
-    }
-}
-
-fn first_party_log_level_filter(level: &str) -> Result<LogLevel, GenericError> {
-    let filter = FIRST_PARTY_LOG_TARGETS
-        .iter()
-        .map(|target| format!("{target}={level}"))
-        .collect::<Vec<_>>()
-        .join(",");
-
-    LogLevel::try_from(filter).error_context("Failed to parse first-party log filter directives.")
-}
-
-/// A worker that watches the configured log level and adjusts the logging stack's current filter directives to match.
+/// # Errors
 ///
-/// The worker relies on dynamic configuration; if it's not enabled, the worker simply idles until shutdown.
-pub struct DynamicLogLevelWorker {
-    level: Live<String>,
-    controller: LoggingOverrideController,
+/// If any of the logging configuration is invalid, or cannot be parsed, an error is returned.
+pub fn get_translated_logging_config(adp_log_config: &Logging) -> Result<LoggingConfiguration, GenericError> {
+    // We need to first go from the Agent Data Plane-specific logging configuration shape to the Datadog Agent-specific
+    // logging configuration, which gets all of the settings and remote agent-specific defaults lined up and in place.
+    let mut agent_log_settings = LoggingSettings::default();
+    agent_log_settings.level = adp_log_config.level.clone();
+    agent_log_settings.format_json = adp_log_config.format_json;
+    agent_log_settings.format_rfc3339 = adp_log_config.format_rfc3339;
+    agent_log_settings.to_console = adp_log_config.to_console;
+    agent_log_settings.to_syslog = adp_log_config.to_syslog;
+    agent_log_settings.syslog_rfc = adp_log_config.syslog_rfc;
+    agent_log_settings.syslog_uri = adp_log_config.syslog_uri.clone();
+    agent_log_settings.file = adp_log_config
+        .file
+        .is_explicit()
+        .then(|| adp_log_config.file.value.clone());
+    agent_log_settings.disable_file_logging = adp_log_config.disable_file_logging;
+    agent_log_settings.file_max_rolls = adp_log_config.file_max_rolls;
+    agent_log_settings.file_max_size = adp_log_config
+        .file_max_size
+        .is_explicit()
+        .then_some(adp_log_config.file_max_size.value);
+
+    // Now we can translate the Datadog Agent-specific configuration into the underlying logging configuration used by Saluki.
+    get_logging_translator().translate(agent_log_settings)
 }
 
-impl DynamicLogLevelWorker {
-    /// Creates a new `DynamicLogLevelWorker` watching the given log level.
-    pub fn new(level: Live<String>, controller: LoggingOverrideController) -> Self {
-        Self { level, controller }
-    }
-}
-
-#[async_trait]
-impl Supervisable for DynamicLogLevelWorker {
-    fn name(&self) -> &str {
-        "dynamic-log-level"
-    }
-
-    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
-        let mut level = self.level.clone();
-        let controller = self.controller.clone();
-
-        Ok(Box::pin(async move {
-            pin!(process_shutdown);
-
-            debug!("Dynamic log level worker started.");
-
-            loop {
-                select! {
-                    _ = &mut process_shutdown => break,
-                    new_level = level.changed() => {
-                        match parse_adp_log_level(&new_level) {
-                            Ok(log_level) => {
-                                if let Err(e) = controller.update_base(log_level.as_targets()).await {
-                                    warn!(error = %e, %log_level, "Failed to apply updated log level.");
-                                }
-                            }
-                            Err(e) => warn!(error = %e, "Failed to parse updated log level."),
-                        }
-                    }
-                }
-            }
-
-            debug!("Dynamic log level worker stopped.");
-
-            Ok(())
-        }))
-    }
+/// Gets a translated stream of log level updates from the given configuration system.
+///
+/// This allows feeding dynamic updates to the log level in the configuration system to the logging system to be
+/// applied.
+pub fn get_translated_log_level_stream(
+    config_sys: &ConfigurationSystem,
+) -> impl Stream<Item = LogLevel> + Send + 'static {
+    let log_levels = config_sys.live(|config| &config.control.logging.level).into_stream();
+    get_logging_translator().translate_log_levels(log_levels)
 }
 
 #[cfg(test)]
 mod tests {
     use agent_data_plane_config::ConfigValue;
+    use bytesize::ByteSize;
+    use tracing::Level;
 
     use super::*;
 
@@ -207,142 +97,35 @@ mod tests {
         }
     }
 
-    fn translate_level(level: &str) -> Result<Vec<String>, GenericError> {
+    #[test]
+    fn plain_log_level_covers_adp_and_the_remote_agent_runtime() {
         let logging = Logging {
-            level: level.to_string(),
+            level: "debug".to_string(),
             ..defaulted_logging()
         };
+        let targets = get_translated_logging_config(&logging)
+            .expect("translate logging config")
+            .log_level
+            .as_targets();
 
-        LoggingConfigurationTranslator::translate(&logging)
-            .map(|config| config.log_level.as_targets().to_string())
-            .map(|filter| filter.split(',').map(str::to_string).collect())
-    }
-
-    #[test]
-    fn default_log_level_becomes_first_party_info() {
-        let directives = translate_level("info").expect("translate logging config");
-
-        assert!(directives.contains(&"agent_data_plane=info".to_string()));
-    }
-
-    #[test]
-    fn plain_log_level_becomes_first_party_filter() {
-        let directives = translate_level("warn").expect("translate logging config");
-
-        assert!(directives.contains(&"agent_data_plane=warn".to_string()));
-        assert!(directives.contains(&"saluki_components=warn".to_string()));
-
-        assert!(!directives.contains(&"hyper=warn".to_string()));
-        assert!(!directives.contains(&"tokio=warn".to_string()));
-        assert!(!directives.contains(&"tonic=warn".to_string()));
-        assert!(!directives.contains(&"warn".to_string()));
-    }
-
-    #[test]
-    fn plain_log_level_covers_the_subagent_runtime() {
-        // Registration, the configuration stream, and the status, flare, and telemetry services live in the subagent
-        // runtime crate, so a plain level must reach its logs too.
-        let directives = translate_level("debug").expect("translate logging config");
-
-        assert!(directives.contains(&"datadog_agent_runtime=debug".to_string()));
-    }
-
-    #[test]
-    fn plain_log_level_is_case_insensitive() {
-        let directives = translate_level("WaRn").expect("translate logging config");
-
-        assert!(directives.contains(&"agent_data_plane=warn".to_string()));
-    }
-
-    #[test]
-    fn advanced_log_level_directives_are_preserved() {
-        let directives = translate_level("warn,agent_data_plane=debug,hyper=warn").expect("translate logging config");
-
-        assert!(directives.contains(&"warn".to_string()));
-        assert!(directives.contains(&"agent_data_plane=debug".to_string()));
-        assert!(directives.contains(&"hyper=warn".to_string()));
-    }
-
-    #[test]
-    fn unparseable_log_level_returns_error() {
-        for level in ["agent_data_plane=verbose", ""] {
+        for target in [
+            "agent_data_plane",
+            "agent_data_plane_config",
+            "agent_data_plane_config_system",
+            "datadog_agent_runtime",
+            "saluki_app",
+            "saluki_components",
+        ] {
             assert!(
-                translate_level(level).is_err(),
-                "log level `{level}` should be rejected"
+                targets.would_enable(target, &Level::DEBUG),
+                "target `{target}` should be enabled"
             );
         }
     }
 
     #[test]
-    fn format_and_console_settings_are_carried_through() {
-        let logging = Logging {
-            format_json: true,
-            format_rfc3339: true,
-            to_console: false,
-            ..defaulted_logging()
-        };
-        let config = LoggingConfigurationTranslator::translate(&logging).expect("translate logging config");
-
-        assert!(config.log_format_json);
-        assert!(config.log_format_rfc3339);
-        assert!(!config.log_to_console);
-    }
-
-    #[test]
-    fn defaults_leave_syslog_disabled_with_no_destination() {
-        let config = LoggingConfigurationTranslator::translate(&defaulted_logging()).expect("translate logging config");
-
-        assert!(!config.log_to_syslog);
-        assert!(config.syslog_uri.is_empty());
-        assert!(!config.syslog_rfc);
-    }
-
-    #[test]
-    fn enabled_syslog_uses_configured_uri_and_framing() {
-        let logging = Logging {
-            to_syslog: true,
-            syslog_uri: "udp://127.0.0.1:1514".to_string(),
-            syslog_rfc: true,
-            ..defaulted_logging()
-        };
-        let config = LoggingConfigurationTranslator::translate(&logging).expect("translate logging config");
-
-        assert!(config.log_to_syslog);
-        assert_eq!(config.syslog_uri, "udp://127.0.0.1:1514");
-        assert!(config.syslog_rfc);
-    }
-
-    #[test]
-    fn enabled_syslog_with_empty_uri_uses_platform_default() {
-        let logging = Logging {
-            to_syslog: true,
-            ..defaulted_logging()
-        };
-        let config = LoggingConfigurationTranslator::translate(&logging).expect("translate logging config");
-
-        assert!(config.log_to_syslog);
-        assert_eq!(config.syslog_uri, PlatformSettings::get_default_syslog_uri());
-        assert!(!config.syslog_rfc);
-    }
-
-    #[test]
-    fn syslog_settings_have_no_effect_when_syslog_is_disabled() {
-        let logging = Logging {
-            to_syslog: false,
-            syslog_uri: "udp://127.0.0.1:1514".to_string(),
-            syslog_rfc: true,
-            ..defaulted_logging()
-        };
-        let config = LoggingConfigurationTranslator::translate(&logging).expect("translate logging config");
-
-        assert!(!config.log_to_syslog);
-        assert!(config.syslog_uri.is_empty());
-        assert!(!config.syslog_rfc);
-    }
-
-    #[test]
     fn defaulted_log_file_uses_the_platform_default_path() {
-        let config = LoggingConfigurationTranslator::translate(&defaulted_logging()).expect("translate logging config");
+        let config = get_translated_logging_config(&defaulted_logging()).expect("translate logging config");
 
         assert_eq!(
             config.log_file,
@@ -356,57 +139,26 @@ mod tests {
             file: ConfigValue::explicit("/tmp/adp.log".to_string()),
             ..defaulted_logging()
         };
-        let config = LoggingConfigurationTranslator::translate(&logging).expect("translate logging config");
+        let config = get_translated_logging_config(&logging).expect("translate logging config");
 
         assert_eq!(config.log_file, "/tmp/adp.log");
     }
 
     #[test]
-    fn explicitly_empty_log_file_uses_the_platform_default_path() {
-        let logging = Logging {
-            file: ConfigValue::explicit(String::new()),
-            ..defaulted_logging()
-        };
-        let config = LoggingConfigurationTranslator::translate(&logging).expect("translate logging config");
-
-        assert_eq!(
-            config.log_file,
-            PlatformSettings::get_default_log_file_path().to_string_lossy()
-        );
-    }
-
-    #[test]
-    fn disabled_file_logging_overrides_a_configured_log_file() {
-        let logging = Logging {
-            disable_file_logging: true,
-            file: ConfigValue::explicit("/tmp/adp.log".to_string()),
-            to_syslog: true,
-            ..defaulted_logging()
-        };
-        let config = LoggingConfigurationTranslator::translate(&logging).expect("translate logging config");
-
-        assert!(config.log_file.is_empty());
-        assert!(config.log_to_syslog);
-    }
-
-    #[test]
     fn defaulted_max_size_keeps_the_binary_rotation_default() {
-        let config = LoggingConfigurationTranslator::translate(&defaulted_logging()).expect("translate logging config");
+        let config = get_translated_logging_config(&defaulted_logging()).expect("translate logging config");
 
         assert_eq!(config.log_file_max_size, ByteSize::mib(10));
-        assert_eq!(config.log_file_max_rolls, 1);
     }
 
     #[test]
-    fn explicit_max_size_and_rolls_are_used() {
+    fn explicit_max_size_is_used() {
         let logging = Logging {
             file_max_size: ConfigValue::explicit(1_048_576),
-            file_max_rolls: 5,
             ..defaulted_logging()
         };
-        let config = LoggingConfigurationTranslator::translate(&logging).expect("translate logging config");
+        let config = get_translated_logging_config(&logging).expect("translate logging config");
 
         assert_eq!(config.log_file_max_size, ByteSize::b(1_048_576));
-        assert_eq!(config.log_file_max_rolls, 5);
     }
 }

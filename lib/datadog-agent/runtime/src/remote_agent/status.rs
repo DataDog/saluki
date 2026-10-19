@@ -19,8 +19,8 @@ pub trait StatusSectionProvider: Send + Sync + 'static {
 
 /// Builder for the status details reported to the Datadog Agent.
 ///
-/// Status details consist of a main section, which the Datadog Agent shows under the name of the subagent, and any
-/// number of named sections.
+/// Status details consist of a main section, which the Datadog Agent shows under the name of the remote agent, and
+/// any number of named sections.
 pub struct StatusBuilder {
     main_section: StatusSection,
     named_sections: HashMap<String, StatusSection>,
