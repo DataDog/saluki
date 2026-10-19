@@ -71,6 +71,7 @@ use tracing::{debug, info, warn};
 use crate::config::{
     remote_agent_client_configuration, standalone_hostname, workload_settings, DataPlaneConfiguration,
 };
+use crate::remote_config::{self, RemoteConfigSubscriptions};
 use crate::{
     components::{
         apm_onboarding::ApmOnboardingConfiguration, dogstatsd_no_agg_split::DogStatsDNoAggSplitConfiguration,
@@ -86,7 +87,6 @@ use crate::{
         TopologyControlSurfaces,
     },
 };
-use crate::remote_config::{self, RemoteConfigSubscriptions};
 
 /// Runs the data plane.
 #[derive(FromArgs, Debug)]
