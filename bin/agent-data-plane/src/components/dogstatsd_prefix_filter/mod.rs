@@ -18,6 +18,7 @@ use saluki_core::{
 };
 use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
+use stringtheory::MetaString;
 use tokio::select;
 use tracing::{debug, error, warn};
 
@@ -181,29 +182,47 @@ impl DogStatsDPrefixFilter {
     }
 
     fn process_metric(&self, metric: &mut Metric) -> bool {
-        let metric_name = metric.context().name().as_ref();
-        let new_metric_name = if self.metric_prefix.is_empty() || self.has_excluded_prefix(metric_name) {
-            metric.context().name().clone()
-        } else {
-            let mut prefixed_metric_name = self.metric_prefix.clone();
-            prefixed_metric_name.push_str(metric_name);
-            prefixed_metric_name.into()
-        };
+        // Metrics that keep their submitted name are passed through without touching their context.
+        //
+        // This is the common case, covering deployments with no namespace prefix configured as well as metrics that
+        // are already prefixed. Rebuilding the context here would clone the host, tags, and origin tags, and
+        // recalculate the context key, for every metric, so the name is only rewritten when prefixing changes it.
+        if self.metric_prefix.is_empty() || self.has_excluded_prefix(metric.context().name().as_ref()) {
+            return !self.is_filtered(metric, metric.context().name().as_ref());
+        }
 
-        let blocked = self.matcher.contains(&new_metric_name);
-        let preserved_for_histogram_outputs =
-            blocked && is_histogram_metric(metric) && self.matcher.has_descendant_exception(&new_metric_name);
+        let mut prefixed_metric_name = self.metric_prefix.clone();
+        prefixed_metric_name.push_str(metric.context().name().as_ref());
+        let new_metric_name = MetaString::from(prefixed_metric_name);
 
-        if blocked && !preserved_for_histogram_outputs {
-            self.telemetry.increment_listener_filtered_points();
-            debug!("Metric {} excluded due to blocklist.", new_metric_name);
+        if self.is_filtered(metric, &new_metric_name) {
             return false;
         }
 
-        // Update metric with the computed name (which may be unchanged).
+        // Update metric with the new prefixed name.
         let new_context = metric.context().with_name(new_metric_name);
         let existing_context = metric.context_mut();
         *existing_context = new_context;
+
+        true
+    }
+
+    /// Returns whether `metric` is filtered out by the metric filterlist.
+    ///
+    /// `name` is the name the metric carries once prefixing has been applied, since that is the name the filterlist
+    /// is written against. Histogram inputs are kept when an aggregate output below their namespace is excepted,
+    /// because the aggregate transform still needs the input to generate that excepted output.
+    fn is_filtered(&self, metric: &Metric, name: &str) -> bool {
+        if !self.matcher.contains(name) {
+            return false;
+        }
+
+        if is_histogram_metric(metric) && self.matcher.has_descendant_exception(name) {
+            return false;
+        }
+
+        self.telemetry.increment_listener_filtered_points();
+        debug!("Metric {} excluded due to blocklist.", name);
 
         true
     }
@@ -261,6 +280,7 @@ mod tests {
     use std::{sync::Arc, time::Duration};
 
     use metrics::set_default_local_recorder;
+    use saluki_common::resource_tracking::{ResourceGroupRegistry, ResourceStatsSnapshot};
     use saluki_metrics::{test::TestRecorder, MetricsBuilder};
 
     use super::*;
@@ -354,6 +374,56 @@ mod tests {
         let mut metric = Metric::gauge("foo", 1.0);
         assert!(filter.process_metric(&mut metric));
         assert_eq!(metric.context().name(), "foo");
+    }
+
+    /// Metrics that keep their submitted name must pass through without their context being rebuilt.
+    ///
+    /// Rebuilding a context clones the host, tags, and origin tags, and recalculates the context key. Paying that per
+    /// metric is not free: doing it unconditionally raised this component's live allocations from ~7 KB to ~5 MB in
+    /// the DogStatsD memory quality gates, which configure no filterlist and no namespace prefix at all.
+    #[test]
+    fn passthrough_metric_does_not_rebuild_its_context() {
+        const GROUP: &str = "dsd_prefix_filter_passthrough_test";
+
+        // Without the tracking allocator installed every group reports zero allocations regardless of what
+        // `process_metric` does, which would make the assertion below pass vacuously.
+        assert!(
+            ResourceGroupRegistry::allocator_installed(),
+            "tracking allocator is not installed, so allocations cannot be observed"
+        );
+
+        fn allocated_objects() -> usize {
+            let mut allocated = 0;
+            ResourceGroupRegistry::global().visit_resource_groups(|name, stats| {
+                if name == GROUP {
+                    allocated = stats.snapshot_delta(&ResourceStatsSnapshot::empty()).allocated_objects;
+                }
+            });
+            allocated
+        }
+
+        let token = ResourceGroupRegistry::global().register_resource_group(GROUP);
+        let filter = FilterBuilder::new().matcher(Blocklist::new(["blocked"], false)).build();
+        let mut metric = Metric::gauge("passes.through", 1.0);
+
+        // Run once outside the measured window so that any one-time lazy initialization is not counted.
+        assert!(filter.process_metric(&mut metric));
+
+        let enter = token.enter();
+        let before = allocated_objects();
+        for _ in 0..64 {
+            assert!(filter.process_metric(&mut metric));
+        }
+        let after = allocated_objects();
+        drop(enter);
+
+        assert_eq!(
+            after - before,
+            0,
+            "pass-through metrics must not allocate, but {} allocation(s) were made",
+            after - before
+        );
+        assert_eq!(metric.context().name(), "passes.through");
     }
 
     #[test]
