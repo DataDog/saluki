@@ -1,16 +1,18 @@
 //! Experimental ADP destination for configuration-selected Foldspace series delivery.
 //!
 //! Each sender worker owns one sans-I/O core, one gRPC stream per configured endpoint, and a
-//! retry queue. The core sends every payload to every endpoint, sharing one dictionary. Batches
-//! an endpoint could not carry come back tagged with that endpoint and wait in its own retry
-//! lane; other logical batches wait in the shared ADP priority queue. Both can spill to disk.
-//! Retried data is encoded against the current core state; original ADP metrics are not
-//! retained. Stable series routing assigns fresh input to independent sender tasks.
+//! retry queue. The core sends every payload to every endpoint, sharing one dictionary, and
+//! retries stream failures itself by replaying its retained compressed payloads. Batches it gives
+//! up on (over its retry budget, age, or attempt limits, on a permanent failure, or at shutdown)
+//! come back tagged with their endpoint and wait in that endpoint's retry lane; other logical
+//! batches wait in the shared ADP priority queue. Both can spill to disk. Batches from the retry
+//! queue are encoded against the current core state; original ADP metrics are not retained.
+//! Stable series routing assigns fresh input to independent sender tasks.
 //!
 //! # Missing
 //!
 //! - TODO: Add TLS/proxy support before using this path beyond plaintext integration tests.
-//! - TODO: Add a byte budget for core inflight metrics and dictionary state.
+//! - TODO: Add a byte budget for dictionary state beyond the eviction estimate.
 //! - TODO: Support per-endpoint API keys; every endpoint uses the primary API key.
 
 use std::{
@@ -25,8 +27,9 @@ use agent_data_plane_config::Live;
 use async_trait::async_trait;
 use foldspace_core::{
     proto::stateful::batch_status, CoreConfig, LogicalMetricBatch, MetricClientEffect, MetricClientError,
-    MetricDictionaryEvictionConfig, MetricEndpointId, MetricFailureAction, MetricStreamError, MetricStreamFailure,
-    MetricStreamFailureKind, SenderConfig, StatefulMetricsClient, StreamId, TimerKind, ZstdBatchCompressor,
+    MetricDictionaryEvictionConfig, MetricEndpointId, MetricFailureAction, MetricRetryConfig, MetricStreamError,
+    MetricStreamFailure, MetricStreamFailureKind, SenderConfig, StatefulMetricsClient, StreamId, TimerKind,
+    ZstdBatchCompressor,
 };
 use futures::{future::BoxFuture, stream::FuturesUnordered, FutureExt as _, StreamExt as _};
 use saluki_common::task::JoinSetExt as _;
@@ -107,6 +110,14 @@ pub struct StatefulMetricsConfiguration {
     pub dictionary_max_entries: NonZeroUsize,
     /// Estimated dictionary byte cap for each worker, at most `i64::MAX`; the process total is this times `workers`.
     pub dictionary_max_bytes: NonZeroU64,
+    /// Bytes of compressed payloads, and of definitions kept only for them, each worker's core retains to retry
+    /// itself before the oldest waiting payloads move to the retry queue.
+    pub retry_max_bytes: u64,
+    /// How long a payload may wait in a worker's core for an endpoint before it moves to the retry queue; zero
+    /// disables the limit.
+    pub retry_max_age: Duration,
+    /// Sends per payload before a stream ending without its acknowledgement moves it to the retry queue.
+    pub retry_max_attempts: u32,
     /// Existing forwarder settings for high-priority capacity, retry memory, and disk storage.
     pub queue: DeliveryQueueConfiguration,
     /// Total component stop budget. At most half (capped at 30 seconds) is used waiting for delivery.
@@ -129,6 +140,11 @@ impl StatefulMetricsConfiguration {
                 ..MetricDictionaryEvictionConfig::default()
             }),
             metrics_endpoints: self.endpoints.len(),
+            metrics_retry: MetricRetryConfig {
+                max_retained_bytes: usize::try_from(self.retry_max_bytes).unwrap_or(usize::MAX),
+                max_retry_age: self.retry_max_age,
+                max_send_attempts: self.retry_max_attempts,
+            },
         }
     }
 }
@@ -335,6 +351,7 @@ impl StatefulMetricsWorker {
         loop {
             self.pump().await?;
             self.telemetry.record_dictionary(self.core.dictionary_stats());
+            self.telemetry.record_retries(self.core.retry_stats());
             if input_closed {
                 if self.core.has_send_capacity() {
                     self.flush().await?;
@@ -540,12 +557,15 @@ impl StatefulMetricsWorker {
                         .await;
                 }
                 let effects = self.core.handle_ack(stream_id, u64::from(ack.batch_id));
+                // A rejected acknowledgement fails or ignores the stream; replays it frees room for, and payloads
+                // over a retry limit, can still accompany an accepted one.
                 let accepted = !effects.iter().any(|effect| {
                     matches!(
                         effect,
                         MetricClientEffect::StreamFailed { .. }
-                            | MetricClientEffect::ReturnUnacknowledged { .. }
-                            | MetricClientEffect::ReportError { .. }
+                            | MetricClientEffect::ReportError {
+                                error: MetricStreamError::UnexpectedStream { .. }
+                            }
                     )
                 });
                 if accepted {
@@ -693,6 +713,11 @@ impl StatefulMetricsWorker {
                             ?error,
                             "Stateful protocol rejected acknowledgement; endpoint suspended."
                         );
+                    } else if matches!(error, MetricStreamError::UnreadablePayload { .. }) {
+                        warn!(
+                            ?error,
+                            "Stateful metrics retained payload could not be returned and was lost."
+                        );
                     } else {
                         debug!(?error, "Stateful protocol event rejected.");
                     }
@@ -718,6 +743,7 @@ impl StatefulMetricsWorker {
                 _ => {}
             }
         }
+        self.telemetry.record_retries(self.core.retry_stats());
         self.transports.clear();
         self.telemetry.track_drops(self.queue.flush().await?);
         Ok(())

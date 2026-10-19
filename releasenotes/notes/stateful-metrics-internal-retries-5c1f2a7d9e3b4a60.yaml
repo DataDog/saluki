@@ -1,0 +1,24 @@
+enhancements:
+  - |
+    The experimental stateful metrics path now retries stream failures inside
+    Foldspace. Each sender worker keeps the payloads it sends in their
+    compressed wire form until every endpoint acknowledges them and replays
+    them on the reconnected stream, instead of handing logical batches back to
+    the retry queue to be encoded and compressed again. Payloads move to the
+    retry queue only past ``data_plane.stateful_metrics_retry_max_bytes``
+    (default ``8MiB`` per worker), ``data_plane.stateful_metrics_retry_max_age``
+    (default ``2m``), or ``data_plane.stateful_metrics_retry_max_attempts``
+    (default ``8``), on a permanent failure, or at shutdown. All three
+    require a restart.
+  - |
+    Report internal retries through the
+    ``stateful_metrics_internal_retry_retained_payloads``,
+    ``stateful_metrics_internal_retry_retained_bytes``, and
+    ``stateful_metrics_internal_retry_pending_copies`` gauges, the
+    ``stateful_metrics_internal_retry_replays_total``,
+    ``stateful_metrics_internal_retry_definition_batches_total``,
+    ``stateful_metrics_internal_retry_rewrites_total``,
+    ``stateful_metrics_internal_retry_returned_total`` (by ``reason``), and
+    ``stateful_metrics_internal_retry_unreadable_total`` counters, and the
+    ``stateful_metrics_dictionary_retired_entries`` and
+    ``stateful_metrics_dictionary_retired_bytes`` gauges.
