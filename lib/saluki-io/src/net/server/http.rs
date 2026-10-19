@@ -960,14 +960,13 @@ mod tests {
     use http_body_util::{Empty, Full};
     use hyper_util::client::legacy::Client;
     use hyper_util::rt::TokioExecutor;
+    use saluki_core::components::test_util::TestComponentSupervisor;
     use saluki_core::runtime::state::{DataspaceUpdate, IdentifierFilter};
     use saluki_core::runtime::SupervisorError;
     use saluki_metrics::test::TestRecorder;
     use saluki_tls::test_util::SelfSignedCert;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::TcpStream;
-    use tokio::sync::oneshot;
-    use tokio::task::JoinHandle;
     use tokio::time::{timeout, Instant};
     use tower::util::service_fn;
 
@@ -975,24 +974,19 @@ mod tests {
     use crate::net::addr::BoundListenAddress;
     #[cfg(unix)]
     use crate::net::server::test_util::connect_unix;
-    use crate::net::server::test_util::{connect_tcp, DataspaceCapture, ServerTestHarness};
+    use crate::net::server::test_util::{connect_tcp, ServerTestHarness};
 
     /// Bound on any server await in these tests, so a hang fails rather than stalling the suite.
     const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 
-    /// A running server subtree, together with the trigger that stops it.
+    /// A running server subtree, under a test supervisor of its own.
     struct RunningServer {
-        // Not resolved until `bound_tcp_address` is called: a server whose initialization is expected to fail (e.g.
-        // to hit an already-bound port) may tear down before the capture worker ever gets to send anything, and
-        // tests exercising that don't ask for the bound address at all.
-        dataspace_rx: Mutex<Option<oneshot::Receiver<DataspaceRegistry>>>,
+        supervisor: TestComponentSupervisor,
         bound_address_id: Identifier,
-        shutdown_tx: Option<oneshot::Sender<()>>,
-        task: JoinHandle<Result<(), SupervisorError>>,
     }
 
     impl RunningServer {
-        /// Starts `server` on its own task.
+        /// Starts `server` under a test supervisor.
         ///
         /// A server can't be driven by hand any more: its connections are children of its supervisor, so there has to
         /// be one running for anything to be served at all.
@@ -1005,36 +999,23 @@ mod tests {
             });
             let server = server.with_server_id(server_id.clone());
 
-            let (capture, dataspace_rx) = DataspaceCapture::new();
-            let mut supervisor = server.into_supervisor();
-            supervisor.add_worker(capture);
-
-            let (shutdown_tx, shutdown_rx) = oneshot::channel();
-            let task = tokio::spawn(async move { supervisor.run_with_shutdown(shutdown_rx).await });
+            let supervisor = TestComponentSupervisor::start_with("running-server", |supervisor| {
+                supervisor.add_worker(server.into_supervisor());
+            })
+            .await;
 
             Self {
-                dataspace_rx: Mutex::new(Some(dataspace_rx)),
+                supervisor,
                 bound_address_id: get_bound_address_id(&server_id),
-                shutdown_tx: Some(shutdown_tx),
-                task,
             }
         }
 
         /// Looks up the address the server actually bound, once it has finished initializing.
         async fn bound_tcp_address(&self) -> SocketAddr {
-            let dataspace_rx = self
-                .dataspace_rx
-                .lock()
-                .expect("dataspace receiver lock should not be poisoned")
-                .take()
-                .expect("the bound address should only be looked up once");
-            let dataspace = timeout(TEST_TIMEOUT, dataspace_rx)
-                .await
-                .expect("should capture the supervisor dataspace")
-                .expect("dataspace capture worker should send the registry");
-
-            let mut subscription =
-                dataspace.subscribe::<BoundListenAddress>(IdentifierFilter::exact(self.bound_address_id.clone()));
+            let mut subscription = self
+                .supervisor
+                .dataspace()
+                .subscribe::<BoundListenAddress>(IdentifierFilter::exact(self.bound_address_id.clone()));
 
             match timeout(TEST_TIMEOUT, subscription.recv()).await {
                 Ok(Some(DataspaceUpdate::Asserted(_, BoundListenAddress::Tcp(addr)))) => addr,
@@ -1047,15 +1028,14 @@ mod tests {
 
         /// Signals shutdown without waiting for the subtree to finish.
         fn signal_shutdown(&mut self) {
-            let _ = self.shutdown_tx.take().expect("should only shut down once").send(());
+            self.supervisor.signal_shutdown();
         }
 
         /// Awaits the subtree, returning whatever it reported.
         async fn join(self) -> Result<(), SupervisorError> {
-            timeout(TEST_TIMEOUT, self.task)
+            timeout(TEST_TIMEOUT, self.supervisor.wait())
                 .await
                 .expect("server should stop before timeout")
-                .expect("server task should not panic")
         }
 
         /// Signals shutdown and asserts the subtree drained cleanly.
@@ -1727,8 +1707,9 @@ mod tests {
 
         // The handler is still working, so the subtree must not be finished yet. This ordering is the actual assertion:
         // without the drain the subtree returns here and the response is abandoned.
+        tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(
-            timeout(Duration::from_millis(50), &mut server.task).await.is_err(),
+            !server.supervisor.is_finished(),
             "subtree should not finish while a request is still being served"
         );
 
@@ -1779,7 +1760,7 @@ mod tests {
         // `hyper` hands us one future per HTTP/2 stream -- so one per request -- and our executor turns each into a
         // dynamic child rather than a detached task. That is what puts per-request work in the process tree, and the
         // per-task poll metrics are where it becomes observable. The tag is the child's fully qualified process name,
-        // scoped under the subtree's own supervisor ID.
+        // scoped under the test supervisor and then the subtree's own supervisor ID.
         let recorder = TestRecorder::default();
         let _guard = metrics::set_default_local_recorder(&recorder);
 
@@ -1804,7 +1785,10 @@ mod tests {
 
         let polls = recorder.counter((
             "runtime_task_poll_count",
-            &[("task_name", "http_server_supervised_stream.http_conn_task")],
+            &[(
+                "task_name",
+                "running_server.http_server_supervised_stream.http_conn_task",
+            )],
         ));
         assert!(
             polls.is_some_and(|polls| polls > 0),
