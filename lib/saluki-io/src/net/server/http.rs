@@ -10,7 +10,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use axum::{response::IntoResponse, Router};
+use axum::{extract::ConnectInfo, response::IntoResponse, Router};
 use http::Request;
 use hyper::rt::{Read, Write};
 use hyper_util::{
@@ -41,7 +41,8 @@ use tower::{util::Oneshot, Service, ServiceExt as _};
 use tracing::{debug, error, info, warn};
 
 use crate::net::{
-    listener::ConnectionOrientedListener, server::grpc::merge_grpc_routes, stream::Connection, ListenAddress,
+    listener::ConnectionOrientedListener, server::grpc::merge_grpc_routes, stream::Connection, ConnectionAddress,
+    ListenAddress,
 };
 
 /// Conventional gRPC keepalive interval: how long a connection sits idle before the server sends a PING.
@@ -508,13 +509,14 @@ struct ConnectionContext {
 
 impl ConnectionContext {
     /// Spawns the child that serves `io`.
-    fn spawn_connection<I>(&self, io: I)
+    fn spawn_connection<I>(&self, io: I, remote_addr: ConnectionAddress)
     where
         I: Read + Write + Unpin + Send + 'static,
     {
         let connection = HttpConnection {
             conn_builder: self.conn_builder.clone(),
             io: Mutex::new(Some(io)),
+            remote_addr,
             service: self.service.clone(),
             listen_addr: self.listen_addr.clone(),
             drain_deadline: self.drain_deadline,
@@ -528,10 +530,11 @@ impl ConnectionContext {
     }
 
     /// Spawns the child that performs the TLS handshake for `stream`, and serves it once it completes.
-    fn spawn_handshake(&self, acceptor: TlsAcceptor, stream: Connection) {
+    fn spawn_handshake(&self, acceptor: TlsAcceptor, stream: Connection, remote_addr: ConnectionAddress) {
         let handshake = TlsHandshake {
             acceptor,
             stream: Mutex::new(Some(stream)),
+            remote_addr,
             context: self.clone(),
         };
 
@@ -562,9 +565,14 @@ async fn run_accept_loop(
             result = listener.accept() => match result {
                 // Neither arm awaits anything: the handshake is a child of its own precisely so that a slow one
                 // can't hold up the connections queued behind it on the listener.
-                Ok(stream) => match &maybe_tls_acceptor {
-                    Some(acceptor) => context.spawn_handshake(acceptor.clone(), stream),
-                    None => context.spawn_connection(TokioIo::new(stream)),
+                Ok(stream) => {
+                    // Captured once per connection: for a Unix domain socket, the peer's credentials are fixed when it
+                    // connects.
+                    let remote_addr = stream.remote_addr();
+                    match &maybe_tls_acceptor {
+                        Some(acceptor) => context.spawn_handshake(acceptor.clone(), stream, remote_addr),
+                        None => context.spawn_connection(TokioIo::new(stream), remote_addr),
+                    }
                 },
                 Err(e) => break Err(GenericError::from(e)),
             },
@@ -589,6 +597,7 @@ async fn run_accept_loop(
 struct TlsHandshake {
     acceptor: TlsAcceptor,
     stream: Mutex<Option<Connection>>,
+    remote_addr: ConnectionAddress,
     context: ConnectionContext,
 }
 
@@ -600,6 +609,7 @@ impl Supervisable for TlsHandshake {
 
     async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         let stream = take_once(&self.stream, "TLS handshake")?;
+        let remote_addr = self.remote_addr.clone();
         let acceptor = self.acceptor.clone();
         let context = self.context.clone();
 
@@ -608,7 +618,7 @@ impl Supervisable for TlsHandshake {
 
             select! {
                 result = timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream)) => match result {
-                    Ok(Ok(stream)) => context.spawn_connection(TokioIo::new(stream)),
+                    Ok(Ok(stream)) => context.spawn_connection(TokioIo::new(stream), remote_addr),
                     Ok(Err(e)) => error!(%listen_addr, error = %e, "Failed to complete TLS handshake."),
                     Err(_) => warn!(
                         %listen_addr,
@@ -633,6 +643,7 @@ impl Supervisable for TlsHandshake {
 struct HttpConnection<I> {
     conn_builder: ConnBuilder,
     io: Mutex<Option<I>>,
+    remote_addr: ConnectionAddress,
     service: Router,
     listen_addr: ListenAddress,
     drain_deadline: Duration,
@@ -656,6 +667,7 @@ where
 
     async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         let io = take_once(&self.io, "HTTP connection")?;
+        let remote_addr = self.remote_addr.clone();
         let conn_builder = self.conn_builder.clone();
         let service = self.service.clone();
         let listen_addr = self.listen_addr.clone();
@@ -666,6 +678,7 @@ where
             drive_connection(
                 conn_builder,
                 io,
+                remote_addr,
                 service,
                 listen_addr,
                 process_shutdown,
@@ -693,11 +706,16 @@ fn take_once<T>(slot: &Mutex<Option<T>>, what: &str) -> Result<T, Initialization
 }
 
 async fn drive_connection<I>(
-    conn_builder: ConnBuilder, io: I, service: Router, listen_addr: ListenAddress, shutdown: ShutdownHandle,
-    drain_deadline: Duration, http2_config: Http2Config,
+    conn_builder: ConnBuilder, io: I, remote_addr: ConnectionAddress, service: Router, listen_addr: ListenAddress,
+    shutdown: ShutdownHandle, drain_deadline: Duration, http2_config: Http2Config,
 ) where
     I: Read + Write + Unpin + Send + 'static,
 {
+    // Every request carries the address of the peer that sent it, which handlers read with the `ConnectInfo` extractor.
+    let service = service.map_request(move |mut request: Request<hyper::body::Incoming>| {
+        request.extensions_mut().insert(ConnectInfo(remote_addr.clone()));
+        request
+    });
     let service = TowerToHyperService::new(service);
     let conn = conn_builder.serve_connection(io, service);
     let mut connection_age = ConnectionAge::new(&http2_config);
@@ -1270,6 +1288,48 @@ mod tests {
         // here since no panic means "it worked."
         let stream = connect_unix(&socket_path).await;
         drop(stream);
+
+        harness.shutdown().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn requests_over_unix_socket_carry_the_peer_process_credentials() {
+        let tempdir = tempfile::tempdir().expect("should create temp dir");
+        let socket_path = tempdir.path().join("http.sock");
+        let listen_address = ListenAddress::Unix(socket_path.clone());
+
+        // Answers with the peer process ID the server attached to the request.
+        let routes = Router::new().fallback(|ConnectInfo(addr): ConnectInfo<ConnectionAddress>| async move {
+            match addr.process_credentials() {
+                Some(creds) => creds.pid.to_string(),
+                None => format!("no credentials: {addr}"),
+            }
+        });
+
+        let harness = ServerTestHarness::start("http-unix-peer-credentials", move |supervisor, server_id| {
+            let server = HttpServer::from_listen_address(listen_address)
+                .add_routes(routes)
+                .with_server_id(server_id);
+            supervisor.add_worker(server.into_supervisor());
+        })
+        .await;
+        harness.bound_address().await;
+
+        let mut stream = connect_unix(&socket_path).await;
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("should write request");
+        let mut response = String::new();
+        timeout(TEST_TIMEOUT, stream.read_to_string(&mut response))
+            .await
+            .expect("response should arrive in time")
+            .expect("should read response");
+
+        // This process is the one that connected.
+        let body = response.split("\r\n\r\n").nth(1).unwrap_or_default();
+        assert_eq!(body, std::process::id().to_string(), "unexpected response: {response}");
 
         harness.shutdown().await;
     }

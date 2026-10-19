@@ -144,11 +144,6 @@ impl TraceAgentProxy {
         // still marked as HTTP/2.
         parts.version = Version::HTTP_11;
 
-        // TODO: The trace-agent derives a tracer's container ID from the connection's Unix domain socket peer
-        // credentials when the tracer sends no container headers. Behind this proxy, those credentials are ADP's. Set
-        // `Datadog-Container-ID` here, from ADP's own peer lookup, when the tracer sent neither it nor
-        // `Datadog-Entity-ID`.
-
         let upstream_request = http::Request::from_parts(parts, SyncBody::new(body));
 
         let mut client = self

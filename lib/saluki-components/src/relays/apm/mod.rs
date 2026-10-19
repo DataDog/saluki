@@ -3,13 +3,14 @@
 //! Listens on TCP and/or a Unix domain socket where the trace-agent normally listens and forwards every request
 //! to the relocated trace-agent.
 
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use agent_data_plane_config::domains;
 use async_trait::async_trait;
-use axum::extract::{Request as AxumRequest, State};
+use axum::extract::{ConnectInfo, Request as AxumRequest, State};
 use axum::response::IntoResponse;
 use axum::Router;
+use http::{HeaderName, HeaderValue};
 use metrics::Counter;
 use saluki_api::APIHandler;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -18,9 +19,10 @@ use saluki_core::components::BuildContext;
 use saluki_core::data_model::payload::PayloadType;
 use saluki_core::runtime;
 use saluki_core::topology::OutputDefinition;
+use saluki_env::workload::{CaptureEntityResolver, EntityId};
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::server::http::HttpServer;
-use saluki_io::net::ListenAddress;
+use saluki_io::net::{ConnectionAddress, ListenAddress};
 use saluki_metrics::static_metrics;
 use tokio::{pin, select};
 use tracing::debug;
@@ -28,16 +30,24 @@ use tracing::debug;
 mod proxy;
 use self::proxy::TraceAgentProxy;
 
+/// Header a tracer sends its container ID in.
+const CONTAINER_ID_HEADER: HeaderName = HeaderName::from_static("datadog-container-id");
+
+/// Header a tracer sends its origin in (for example, `ci-<container ID>` or `in-<cgroup inode>`), which the trace-agent
+/// prefers over `Datadog-Container-ID`.
+const ENTITY_ID_HEADER: HeaderName = HeaderName::from_static("datadog-entity-id");
+
 /// Configuration for the APM relay.
 ///
-/// Holds plain values, populated by the binary that assembles the topology.
+/// Holds plain values, populated by the binary that assembles the topology, plus an optional resolver for the
+/// container of a tracer connected over the Unix domain socket.
 ///
 /// Fields are plain, public `String`s rather than `Option<String>` for two reasons: it collapses the redundant
 /// `None` vs. `Some("")` "disabled" encoding down to a single empty-string representation, and, because
 /// `receiver_endpoint` and `receiver_socket` are otherwise identically typed, it makes constructing this struct with
 /// the two swapped a matter of getting a field name wrong (a compiler-obvious mistake) rather than transposing two
 /// positional constructor arguments (a silent one).
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ApmRelayConfiguration {
     /// TCP address the relay listens on, for example `0.0.0.0:8126`.
     ///
@@ -52,6 +62,13 @@ pub struct ApmRelayConfiguration {
     /// URL of the trace-agent that every request not handled by ADP is proxied to: `http://host:port` or
     /// `unix:///path/to/socket`.
     pub proxy_destination: String,
+
+    /// Resolver for mapping the process ID of a tracer connected over the Unix domain socket to its container.
+    ///
+    /// The trace-agent finds the container of a tracer that sends no container headers from the peer credentials of
+    /// its Unix domain socket connection, but behind the relay those credentials are ADP's. With a resolver, the relay
+    /// resolves the container from the tracer's credentials itself, and passes it on as `Datadog-Container-ID`.
+    pub capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
 }
 
 #[static_metrics(prefix = component, labels(component_id, component_type))]
@@ -79,7 +96,14 @@ impl ApmRelayConfiguration {
             receiver_endpoint,
             receiver_socket: config.receiver_socket.clone().unwrap_or_default(),
             proxy_destination: config.proxy_destination.to_owned(),
+            capture_entity_resolver: None,
         }
+    }
+
+    /// Sets the resolver used to find the container of a tracer connected over the Unix domain socket.
+    pub fn with_capture_entity_resolver(mut self, resolver: Arc<dyn CaptureEntityResolver + Send + Sync>) -> Self {
+        self.capture_entity_resolver = Some(resolver);
+        self
     }
 
     fn tcp_listen_address(&self) -> Result<Option<ListenAddress>, GenericError> {
@@ -146,6 +170,7 @@ impl RelayBuilder for ApmRelayConfiguration {
             tcp_endpoint,
             uds_endpoint,
             proxy,
+            capture_entity_resolver: self.capture_entity_resolver.clone(),
             metrics: Metrics::new(context.component_id(), context.component_type().as_category_str()),
         }))
     }
@@ -158,6 +183,7 @@ pub struct ApmRelay {
     tcp_endpoint: Option<ListenAddress>,
     uds_endpoint: Option<ListenAddress>,
     proxy: TraceAgentProxy,
+    capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     metrics: Metrics,
 }
 
@@ -168,6 +194,7 @@ impl Relay for ApmRelay {
             tcp_endpoint,
             uds_endpoint,
             proxy,
+            capture_entity_resolver,
             metrics,
         } = *self;
 
@@ -176,7 +203,11 @@ impl Relay for ApmRelay {
 
         let mut health = context.take_health_handle();
         let worker_pool = context.topology_context().global_thread_pool().clone();
-        let api_handler = ApmRelayAPIHandler::new(RelayState { metrics, proxy });
+        let api_handler = ApmRelayAPIHandler::new(RelayState {
+            metrics,
+            proxy,
+            capture_entity_resolver,
+        });
         let router = api_handler
             .generate_routes()
             .with_state(api_handler.generate_initial_state());
@@ -219,6 +250,7 @@ impl Relay for ApmRelay {
 #[derive(Clone)]
 struct RelayState {
     proxy: TraceAgentProxy,
+    capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     metrics: Metrics,
 }
 
@@ -232,10 +264,50 @@ impl ApmRelayAPIHandler {
     }
 
     async fn proxy_request(
-        State(RelayState { proxy, metrics }): State<RelayState>, request: AxumRequest,
+        State(RelayState {
+            proxy,
+            capture_entity_resolver,
+            metrics,
+        }): State<RelayState>,
+        mut request: AxumRequest,
     ) -> impl IntoResponse {
         metrics.requests_relayed_total().increment(1);
+        if let Some(resolver) = capture_entity_resolver.as_deref() {
+            add_peer_container_id(&mut request, resolver);
+        }
         proxy.forward(request).await
+    }
+}
+
+/// Sets `Datadog-Container-ID` to the container of the tracer that sent `request`, when the tracer is connected over the
+/// Unix domain socket and sent no container headers of its own.
+///
+/// This stands in for the trace-agent's own lookup from the connection's peer credentials, which behind the relay
+/// would find ADP rather than the tracer.
+fn add_peer_container_id(request: &mut AxumRequest, resolver: &(dyn CaptureEntityResolver + Send + Sync)) {
+    let headers = request.headers();
+    if headers.contains_key(CONTAINER_ID_HEADER) || headers.contains_key(ENTITY_ID_HEADER) {
+        return;
+    }
+
+    let Some(process_id) = request
+        .extensions()
+        .get::<ConnectInfo<ConnectionAddress>>()
+        .and_then(|ConnectInfo(addr)| addr.process_credentials())
+        .and_then(|creds| u32::try_from(creds.pid).ok())
+    else {
+        return;
+    };
+
+    match resolver.resolve_container_entity_for_live_pid(process_id) {
+        Some(EntityId::Container(container_id)) => match HeaderValue::from_str(&container_id) {
+            Ok(value) => {
+                request.headers_mut().insert(CONTAINER_ID_HEADER, value);
+            }
+            Err(_) => debug!(process_id, %container_id, "Resolved container ID is not a valid header value."),
+        },
+        Some(entity_id) => debug!(process_id, %entity_id, "Tracer process resolved to a non-container entity."),
+        None => debug!(process_id, "Could not resolve the container of the tracer process."),
     }
 }
 
@@ -254,12 +326,13 @@ impl APIHandler for ApmRelayAPIHandler {
 
 #[cfg(test)]
 mod tests {
+    use std::net::SocketAddr;
     use std::time::Duration;
 
     use http::{Request, StatusCode};
     use saluki_core::components::test_util::TestComponentSupervisor;
     use saluki_core::runtime::state::{DataspaceUpdate, IdentifierFilter};
-    use saluki_io::net::BoundListenAddress;
+    use saluki_io::net::{BoundListenAddress, ProcessCredentials};
     #[cfg(unix)]
     use tempfile::tempdir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -286,8 +359,67 @@ mod tests {
     fn test_router() -> Router {
         build_router(RelayState {
             proxy: unreachable_proxy(),
+            capture_entity_resolver: None,
             metrics: Metrics::new("dd_traces_relay", "relays"),
         })
+    }
+
+    /// Resolves every process to the same container.
+    struct FixedContainerResolver;
+
+    impl CaptureEntityResolver for FixedContainerResolver {
+        fn resolve_container_entity_for_live_pid(&self, _process_id: u32) -> Option<EntityId> {
+            Some(EntityId::Container("tracer-container".into()))
+        }
+    }
+
+    /// Builds a request as the relay's server hands it over: with the address of the peer that sent it.
+    fn request_from(peer: ConnectionAddress, headers: &[(&str, &str)]) -> AxumRequest {
+        let mut builder = Request::builder().method("POST").uri("/v0.4/traces");
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        let mut request = builder.body(axum::body::Body::empty()).unwrap();
+        request.extensions_mut().insert(ConnectInfo(peer));
+        request
+    }
+
+    fn unix_peer() -> ConnectionAddress {
+        ProcessCredentials {
+            pid: 1234,
+            uid: 0,
+            gid: 0,
+        }
+        .into()
+    }
+
+    #[test]
+    fn sets_the_container_id_of_a_unix_socket_peer() {
+        let mut request = request_from(unix_peer(), &[]);
+
+        add_peer_container_id(&mut request, &FixedContainerResolver);
+
+        assert_eq!(request.headers()[CONTAINER_ID_HEADER], "tracer-container");
+    }
+
+    #[test]
+    fn keeps_the_container_headers_a_tracer_sent() {
+        let mut request = request_from(unix_peer(), &[("Datadog-Container-ID", "from-tracer")]);
+        add_peer_container_id(&mut request, &FixedContainerResolver);
+        assert_eq!(request.headers()[CONTAINER_ID_HEADER], "from-tracer");
+
+        let mut request = request_from(unix_peer(), &[("Datadog-Entity-ID", "in-42")]);
+        add_peer_container_id(&mut request, &FixedContainerResolver);
+        assert!(!request.headers().contains_key(CONTAINER_ID_HEADER));
+    }
+
+    #[test]
+    fn leaves_tcp_requests_alone() {
+        let mut request = request_from(ConnectionAddress::from(SocketAddr::from(([127, 0, 0, 1], 4242))), &[]);
+
+        add_peer_container_id(&mut request, &FixedContainerResolver);
+
+        assert!(!request.headers().contains_key(CONTAINER_ID_HEADER));
     }
 
     #[tokio::test]
@@ -436,6 +568,7 @@ mod tests {
             receiver_endpoint: String::new(),
             receiver_socket: String::new(),
             proxy_destination: "http://127.0.0.1:8127".to_string(),
+            capture_entity_resolver: None,
         };
 
         let error = match config.build(BuildContext::test_relay("apm_relay_no_endpoints")).await {
@@ -451,6 +584,7 @@ mod tests {
             receiver_endpoint: "0.0.0.0:8127".to_string(),
             receiver_socket: String::new(),
             proxy_destination: "http://127.0.0.1:8127".to_string(),
+            capture_entity_resolver: None,
         };
 
         assert!(config
@@ -465,6 +599,7 @@ mod tests {
             receiver_endpoint: "127.0.0.1:8126".to_string(),
             receiver_socket: String::new(),
             proxy_destination: "ftp://127.0.0.1:8127".to_string(),
+            capture_entity_resolver: None,
         };
 
         assert!(config
@@ -479,6 +614,7 @@ mod tests {
             receiver_endpoint: "not a valid host:port".to_string(),
             receiver_socket: String::new(),
             proxy_destination: "http://127.0.0.1:8127".to_string(),
+            capture_entity_resolver: None,
         };
 
         let error = match config
@@ -497,6 +633,7 @@ mod tests {
             receiver_endpoint: "0.0.0.0:8127".to_string(),
             receiver_socket: String::new(),
             proxy_destination: "http://127.0.0.1:8127".to_string(),
+            capture_entity_resolver: None,
         };
         assert_eq!(
             config.tcp_listen_address().unwrap().unwrap().to_string(),
@@ -511,6 +648,7 @@ mod tests {
             receiver_endpoint: String::new(),
             receiver_socket: "/tmp/apm.sock".to_string(),
             proxy_destination: "http://127.0.0.1:8127".to_string(),
+            capture_entity_resolver: None,
         };
         assert_eq!(
             config.uds_listen_address().unwrap().unwrap().to_string(),
