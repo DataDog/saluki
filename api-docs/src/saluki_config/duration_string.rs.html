@@ -244,12 +244,12 @@
 <a href=#244 id=244 data-nosnippet>244</a>            expected_struct == roundtrip_json,
 <a href=#245 id=245 data-nosnippet>245</a>            <span class="string">"{msg}, expected json roundrip to produce {expected_struct:?}, but got {roundtrip_json:?}"
 <a href=#246 id=246 data-nosnippet>246</a>        </span>);
-<a href=#247 id=247 data-nosnippet>247</a>        <span class="kw">let </span>deserialized_from_yaml: SerdeTest = serde_yaml::from_str(<span class="kw-2">&amp;</span>yaml).context(msg.clone())<span class="question-mark">?</span>;
+<a href=#247 id=247 data-nosnippet>247</a>        <span class="kw">let </span>deserialized_from_yaml: SerdeTest = <span class="kw">crate</span>::yaml::from_str(<span class="kw-2">&amp;</span>yaml).context(msg.clone())<span class="question-mark">?</span>;
 <a href=#248 id=248 data-nosnippet>248</a>        <span class="macro">anyhow::ensure!</span>(
 <a href=#249 id=249 data-nosnippet>249</a>            expected_struct == deserialized_from_yaml,
 <a href=#250 id=250 data-nosnippet>250</a>            <span class="string">"{msg}, expected: {expected_struct:?}, got {deserialized_from_yaml:?}"
 <a href=#251 id=251 data-nosnippet>251</a>        </span>);
-<a href=#252 id=252 data-nosnippet>252</a>        <span class="kw">let </span>roundtrip_yaml = serde_yaml::from_str(<span class="kw-2">&amp;</span>serde_yaml::to_string(<span class="kw-2">&amp;</span>expected_struct)<span class="question-mark">?</span>)<span class="question-mark">?</span>;
+<a href=#252 id=252 data-nosnippet>252</a>        <span class="kw">let </span>roundtrip_yaml = <span class="kw">crate</span>::yaml::from_str(<span class="kw-2">&amp;</span>serde_saphyr::to_string(<span class="kw-2">&amp;</span>expected_struct)<span class="question-mark">?</span>)<span class="question-mark">?</span>;
 <a href=#253 id=253 data-nosnippet>253</a>        <span class="macro">anyhow::ensure!</span>(
 <a href=#254 id=254 data-nosnippet>254</a>            expected_struct == roundtrip_yaml,
 <a href=#255 id=255 data-nosnippet>255</a>            <span class="string">"{msg}, expected json roundrip to produce {expected_struct:?}, but got {roundtrip_yaml:?}"
