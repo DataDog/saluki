@@ -531,6 +531,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stateful_metrics_retry_limits_load_from_file_and_environment() {
+        const MIB_4: u64 = 4 * 1024 * 1024;
+
+        let default = standalone_system(None, None).await.unwrap();
+        let stateful = &default.config().domains.stateful_metrics;
+        assert_eq!(stateful.retry_max_bytes, 8 * 1024 * 1024);
+        assert_eq!(stateful.retry_max_age, std::time::Duration::from_secs(120));
+        assert_eq!(stateful.retry_max_attempts, 8);
+
+        for (max_bytes, expected) in [(json!(0), 0), (json!(MIB_4), MIB_4), (json!("4MiB"), MIB_4)] {
+            let from_file = standalone_system(
+                Some(json!({
+                    "api_key": TEST_API_KEY,
+                    "data_plane": {
+                        "stateful_metrics_retry_max_bytes": max_bytes,
+                        "stateful_metrics_retry_max_age": "30s",
+                        "stateful_metrics_retry_max_attempts": 3,
+                    },
+                })),
+                None,
+            )
+            .await
+            .unwrap();
+            let stateful = &from_file.config().domains.stateful_metrics;
+            assert_eq!(stateful.retry_max_bytes, expected, "{max_bytes}");
+            assert_eq!(stateful.retry_max_age, std::time::Duration::from_secs(30));
+            assert_eq!(stateful.retry_max_attempts, 3);
+        }
+
+        let (map, _) = ConfigurationLoader::for_tests_with_provider_factory(
+            None,
+            Some(&[
+                ("DD_API_KEY".to_string(), TEST_API_KEY.to_string()),
+                (
+                    "DD_DATA_PLANE_STATEFUL_METRICS_RETRY_MAX_BYTES".to_string(),
+                    "4MiB".to_string(),
+                ),
+                (
+                    "DD_DATA_PLANE_STATEFUL_METRICS_RETRY_MAX_AGE".to_string(),
+                    "0".to_string(),
+                ),
+                (
+                    "DD_DATA_PLANE_STATEFUL_METRICS_RETRY_MAX_ATTEMPTS".to_string(),
+                    "1".to_string(),
+                ),
+            ]),
+            false,
+            |_| crate::env_provider::EnvironmentProvider::new().unwrap(),
+        )
+        .await;
+        let from_env = translate_strict(&SourceTree::all_explicit(map.as_typed::<Value>().unwrap())).unwrap();
+        let stateful = &from_env.domains.stateful_metrics;
+        assert_eq!(stateful.retry_max_bytes, MIB_4);
+        assert_eq!(stateful.retry_max_age, std::time::Duration::ZERO);
+        assert_eq!(stateful.retry_max_attempts, 1);
+    }
+
+    #[tokio::test]
+    async fn stateful_metrics_rejects_invalid_retry_limits() {
+        let cases = [
+            ("stateful_metrics_retry_max_bytes", json!(-1)),
+            ("stateful_metrics_retry_max_bytes", json!("invalid")),
+            ("stateful_metrics_retry_max_age", json!("invalid")),
+            ("stateful_metrics_retry_max_attempts", json!(-1)),
+            ("stateful_metrics_retry_max_attempts", json!("invalid")),
+        ];
+        for (key, value) in cases {
+            assert!(
+                standalone_system(
+                    Some(json!({ "api_key": TEST_API_KEY, "data_plane": { key: value.clone() } })),
+                    None,
+                )
+                .await
+                .is_err(),
+                "{key}: {value}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn stateful_metrics_rejects_invalid_dictionary_caps() {
         let invalid_entries = [json!(0), json!(-1), json!(1.5), json!("invalid")];
         let invalid_bytes = [

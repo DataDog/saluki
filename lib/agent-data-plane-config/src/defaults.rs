@@ -22,6 +22,15 @@ pub const DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES: NonZeroU64 = NonZeroU64
 /// Largest accepted stateful metrics dictionary byte cap; the dictionary tracks its estimate as an `i64`.
 pub const MAX_STATEFUL_METRICS_DICTIONARY_MAX_BYTES: u64 = i64::MAX as u64;
 
+/// Default byte budget for payloads Foldspace retains to retry itself, per sender worker (8 MiB).
+pub const DEFAULT_STATEFUL_METRICS_RETRY_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Default time a payload may wait inside Foldspace for an endpoint before it moves to the retry queue.
+pub const DEFAULT_STATEFUL_METRICS_RETRY_MAX_AGE: Duration = Duration::from_secs(120);
+
+/// Default number of sends per payload before Foldspace moves it to the retry queue.
+pub const DEFAULT_STATEFUL_METRICS_RETRY_MAX_ATTEMPTS: u32 = 8;
+
 /// Default internal telemetry verbosity.
 pub const DEFAULT_METRICS_LEVEL: &str = "info";
 
