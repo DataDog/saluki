@@ -1,0 +1,38 @@
+seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+# Datadog tracing libraries default to the trace-agent's Unix socket, which ADP's APM proxy owns on the comparison
+# side. `http_path` makes millstone speak HTTP over it, as tracers do.
+target: "unix:///$GROUP-airlock/apm.socket"
+http_path: "/v0.4/traces"
+# Keep the volume no larger than the corpus: resending a payload would duplicate span IDs.
+volume: 100
+corpus:
+  size: 100
+  payload:
+    datadog_traces:
+      v0.4:
+        contexts:
+          inclusive: { min: 10, max: 20 }
+        spans_per_trace:
+          inclusive: { min: 1, max: 10 }
+        tags_per_span:
+          inclusive: { min: 2, max: 5 }
+        metrics_per_span:
+          inclusive: { min: 0, max: 3 }
+        error_rate: 0.01
+        # Tracers always set a sampling priority. `1` (auto keep) also makes the trace-agent keep every trace on both
+        # sides, so all spans get compared.
+        priority: 1
+        service_name_length:
+          inclusive: { min: 1, max: 32 }
+        operation_name_length:
+          inclusive: { min: 1, max: 32 }
+        resource_name_length:
+          inclusive: { min: 1, max: 32 }
+        span_type_length:
+          inclusive: { min: 1, max: 32 }
+        tag_key_length:
+          inclusive: { min: 1, max: 32 }
+        tag_value_length:
+          inclusive: { min: 1, max: 32 }
+        metric_key_length:
+          inclusive: { min: 1, max: 32 }

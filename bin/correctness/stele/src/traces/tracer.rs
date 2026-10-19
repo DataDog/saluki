@@ -79,7 +79,7 @@ impl From<&proto::TracerPayload> for TracerMetadata {
             language_version: (*payload.languageVersion).into(),
             tracer_version: (*payload.tracerVersion).into(),
             runtime_id: (*payload.runtimeID).into(),
-            tags: payload.tags.iter().map(|(k, v)| ((**k).into(), (**v).into())).collect(),
+            tags: normalize_tracer_tags(payload.tags.iter().map(|(k, v)| ((**k).into(), (**v).into())).collect()),
             env: (*payload.env).into(),
             hostname: (*payload.hostname).into(),
             app_version: (*payload.appVersion).into(),
@@ -96,7 +96,7 @@ impl TracerMetadata {
             language_version: resolve_ref(strings, payload.languageVersionRef),
             tracer_version: resolve_ref(strings, payload.tracerVersionRef),
             runtime_id: resolve_ref(strings, payload.runtimeIDRef),
-            tags: string_attrs_from_etp(&payload.attributes, strings),
+            tags: normalize_tracer_tags(string_attrs_from_etp(&payload.attributes, strings)),
             env: resolve_ref(strings, payload.envRef),
             hostname: resolve_ref(strings, payload.hostnameRef),
             app_version: resolve_ref(strings, payload.appVersionRef),
@@ -467,6 +467,22 @@ fn trace_id_low_from_bytes(bytes: &[u8]) -> u64 {
 }
 
 /// Collects only the string-valued entries from a string interned attribute map.
+/// Tracer payload tag holding the container's tags as a comma-separated list.
+const CONTAINER_TAGS_KEY: &str = "_dd.tags.container";
+
+/// Normalizes tracer payload tags whose encoding doesn't define an order.
+///
+/// The trace-agent builds `_dd.tags.container` from its tagger, which doesn't return a container's tags in a stable
+/// order, so the list is sorted to compare it as a set.
+fn normalize_tracer_tags(mut tags: FastHashMap<MetaString, MetaString>) -> FastHashMap<MetaString, MetaString> {
+    if let Some(container_tags) = tags.get_mut(CONTAINER_TAGS_KEY) {
+        let mut sorted = container_tags.split(',').collect::<Vec<_>>();
+        sorted.sort_unstable();
+        *container_tags = sorted.join(",").into();
+    }
+    tags
+}
+
 fn string_attrs_from_etp(
     attrs: &std::collections::HashMap<u32, etp_proto::AnyValue>, strings: &[String],
 ) -> FastHashMap<MetaString, MetaString> {
@@ -551,5 +567,39 @@ fn etp_anyvalue_to_array_attr(v: &etp_proto::AnyValue, strings: &[String]) -> Op
             Some(AttributeArrayValue::Double(WrappedFloat(OrderedFloat(*f))))
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use saluki_common::collections::FastHashMap;
+    use stringtheory::MetaString;
+
+    use super::{normalize_tracer_tags, CONTAINER_TAGS_KEY};
+
+    fn tags(pairs: &[(&str, &str)]) -> FastHashMap<MetaString, MetaString> {
+        pairs.iter().map(|(k, v)| ((*k).into(), (*v).into())).collect()
+    }
+
+    #[test]
+    fn container_tags_compare_regardless_of_order() {
+        let a = normalize_tracer_tags(tags(&[(
+            CONTAINER_TAGS_KEY,
+            "short_image:a,image_tag:latest,container_id:1",
+        )]));
+        let b = normalize_tracer_tags(tags(&[(
+            CONTAINER_TAGS_KEY,
+            "container_id:1,short_image:a,image_tag:latest",
+        )]));
+
+        assert_eq!(a, b);
+        assert_eq!(a[CONTAINER_TAGS_KEY], "container_id:1,image_tag:latest,short_image:a");
+    }
+
+    #[test]
+    fn other_tags_are_left_alone() {
+        let original = tags(&[("_dd.p.dm", "b,a")]);
+
+        assert_eq!(normalize_tracer_tags(original.clone()), original);
     }
 }

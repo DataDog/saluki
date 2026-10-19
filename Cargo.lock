@@ -4087,6 +4087,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tonic",
+ "tower",
  "tracing",
  "tracing-subscriber",
  "zstd",

@@ -227,6 +227,13 @@ pub struct Config {
     /// The target to send payloads to.
     pub target: TargetAddress,
 
+    /// HTTP request path to `POST` each payload to over a `unix://` target.
+    ///
+    /// When set, the socket is spoken to as an HTTP/1.1 server (for example, the trace-agent's `apm.socket`) instead of
+    /// written to as a raw stream. Only valid with a `unix://` target, and must start with `/`.
+    #[serde(default)]
+    pub http_path: Option<String>,
+
     /// Output volume.
     ///
     /// This controls the number of payloads to send. If this number is larger than the corpus size, then the entire
@@ -272,8 +279,40 @@ impl Config {
             std::fs::read_to_string(config_path).error_context("Failed to read configuration file.")?;
         let config: Self =
             serde_yaml::from_str(&config_file_raw).error_context("Failed to parse configuration file.")?;
+        config.validate()?;
 
         Ok(config)
+    }
+
+    /// Validates settings that depend on each other.
+    ///
+    /// # Errors
+    ///
+    /// If `http_path` is set without a `unix://` target, or doesn't start with `/`, an error is returned.
+    pub fn validate(&self) -> Result<(), GenericError> {
+        let Some(http_path) = &self.http_path else {
+            return Ok(());
+        };
+
+        if !matches!(self.target, TargetAddress::Unix(_)) {
+            return Err(generic_error!(
+                "`http_path` is only supported with a `unix://` target, not a `{}://` target.",
+                self.target.kind()
+            ));
+        }
+        if !http_path.starts_with('/') {
+            return Err(generic_error!("`http_path` must start with '/', got '{}'.", http_path));
+        }
+
+        Ok(())
+    }
+
+    /// Returns the name of the transport payloads are sent over.
+    pub fn target_kind(&self) -> &'static str {
+        match (&self.target, &self.http_path) {
+            (TargetAddress::Unix(_), Some(_)) => "http+unix",
+            (target, _) => target.kind(),
+        }
     }
 }
 
@@ -318,5 +357,62 @@ corpus:
             ("content-type", "application/msgpack")
         );
         config.corpus.validate().unwrap();
+    }
+
+    fn config_with_target(target: &str, http_path: Option<&str>) -> Config {
+        let http_path = http_path
+            .map(|path| format!("http_path: \"{path}\"\n"))
+            .unwrap_or_default();
+        serde_yaml::from_str(&format!(
+            r#"
+seed: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+target: "{target}"
+{http_path}volume: 10
+corpus:
+  size: 10
+  payload:
+    static: "payload"
+"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn parses_an_http_over_unix_target() {
+        let config = config_with_target("unix:///tmp/apm.socket", Some("/v0.4/traces"));
+
+        config.validate().unwrap();
+        assert_eq!(config.http_path.as_deref(), Some("/v0.4/traces"));
+        assert_eq!(config.target_kind(), "http+unix");
+    }
+
+    #[test]
+    fn unix_target_without_http_path_stays_a_raw_stream() {
+        let config = config_with_target("unix:///tmp/metrics.sock", None);
+
+        config.validate().unwrap();
+        assert_eq!(config.target_kind(), "unix");
+    }
+
+    #[test]
+    fn rejects_http_path_without_a_unix_target() {
+        for target in [
+            "tcp://baseline:8126",
+            "http://baseline:8126/v0.4/traces",
+            "unixgram:///tmp/dsd.sock",
+        ] {
+            let config = config_with_target(target, Some("/v0.4/traces"));
+            assert!(
+                config.validate().is_err(),
+                "`http_path` should be rejected for '{target}'"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_a_relative_http_path() {
+        let config = config_with_target("unix:///tmp/apm.socket", Some("v0.4/traces"));
+
+        assert!(config.validate().is_err());
     }
 }

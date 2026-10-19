@@ -150,7 +150,7 @@ impl Driver {
             let facts = RunFacts {
                 seed: self.config.seed.iter().map(|b| format!("{:02x}", b)).collect(),
                 payload_kind: self.config.corpus.payload.name(),
-                target_kind: self.config.target.kind(),
+                target_kind: self.config.target_kind(),
                 send_delay_us: self.config.send_delay_us,
                 volume: max_payloads,
                 payloads_sent,

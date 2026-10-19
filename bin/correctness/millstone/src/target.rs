@@ -7,10 +7,19 @@ use std::{
     path::Path,
     time::Duration,
 };
+#[cfg(unix)]
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+};
 
 use backon::{Backoff, BackoffBuilder as _, ExponentialBuilder, Retryable as _};
 use http_body_util::{BodyExt as _, Full};
-use hyper::{Method, Request, StatusCode, Uri};
+use hyper::{body::Incoming, Method, Request, Response, StatusCode, Uri};
+#[cfg(unix)]
+use hyper_util::rt::TokioIo;
 use hyper_util::{
     client::legacy::{connect::HttpConnector, Client},
     rt::TokioExecutor,
@@ -32,7 +41,7 @@ enum TargetBackend {
     #[cfg(unix)]
     Unix(UnixStream),
     Grpc(GrpcBackend),
-    Http(HttpBackend),
+    Http(Box<HttpBackend>),
     File(File),
 }
 
@@ -43,10 +52,56 @@ struct GrpcBackend {
 }
 
 struct HttpBackend {
-    client: Client<HttpConnector, Full<Bytes>>,
+    client: HttpClient,
     uri: Uri,
+    /// Human-readable target used in error messages.
+    ///
+    /// For a Unix socket target, `uri` only carries the request path, so this names the socket as well.
+    display_target: String,
     /// Headers sent with every request, which depend on the payload type.
     headers: &'static [(&'static str, &'static str)],
+}
+
+/// HTTP client over either TCP or a Unix domain socket.
+enum HttpClient {
+    Tcp(Client<HttpConnector, Full<Bytes>>),
+    #[cfg(unix)]
+    Unix(Client<UnixConnector, Full<Bytes>>),
+}
+
+impl HttpClient {
+    async fn request(
+        &self, request: Request<Full<Bytes>>,
+    ) -> Result<Response<Incoming>, hyper_util::client::legacy::Error> {
+        match self {
+            Self::Tcp(client) => client.request(request).await,
+            #[cfg(unix)]
+            Self::Unix(client) => client.request(request).await,
+        }
+    }
+}
+
+/// Connector that opens every connection to the same Unix domain socket, regardless of the request URI.
+#[cfg(unix)]
+#[derive(Clone)]
+struct UnixConnector {
+    path: Arc<Path>,
+}
+
+#[cfg(unix)]
+impl tower::Service<Uri> for UnixConnector {
+    type Response = TokioIo<tokio::net::UnixStream>;
+    type Error = std::io::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, _dst: Uri) -> Self::Future {
+        let path = Arc::clone(&self.path);
+        Box::pin(async move { tokio::net::UnixStream::connect(&*path).await.map(TokioIo::new) })
+    }
 }
 
 pub struct TargetSender {
@@ -92,7 +147,10 @@ impl TargetSender {
                 (TargetBackend::Udp(socket), None)
             }
             TargetAddress::UnixDatagram(path) => create_unix_datagram_backend(path)?,
-            TargetAddress::Unix(path) => create_unix_stream_backend(path)?,
+            TargetAddress::Unix(path) => match &config.http_path {
+                Some(http_path) => create_unix_http_client(path, http_path, config.corpus.payload.http_headers())?,
+                None => create_unix_stream_backend(path)?,
+            },
             TargetAddress::Grpc(url) => create_grpc_client(url)?,
             TargetAddress::Http(url) => create_http_client(url, config.corpus.payload.http_headers())?,
         };
@@ -307,10 +365,55 @@ fn create_http_client(
         .parse::<Uri>()
         .with_error_context(|| format!("Invalid HTTP target URL '{}'.", url))?;
     let runtime = tokio::runtime::Runtime::new().error_context("Failed to create tokio runtime for HTTP client.")?;
-    let client = Client::builder(TokioExecutor::new()).build_http();
+    let client = HttpClient::Tcp(Client::builder(TokioExecutor::new()).build_http());
 
-    let backend = HttpBackend { client, uri, headers };
-    Ok((TargetBackend::Http(backend), Some(runtime)))
+    let backend = HttpBackend {
+        client,
+        uri,
+        display_target: url.to_string(),
+        headers,
+    };
+    Ok((TargetBackend::Http(Box::new(backend)), Some(runtime)))
+}
+
+/// Creates an HTTP backend that sends requests for `http_path` over the Unix domain socket at `socket_path`.
+///
+/// Like [`create_http_client`], no connection is made until the first payload is sent.
+///
+/// # Errors
+///
+/// Returns an error if the path doesn't form a valid URI or the runtime can't be created.
+#[cfg(unix)]
+fn create_unix_http_client(
+    socket_path: &Path, http_path: &str, headers: &'static [(&'static str, &'static str)],
+) -> Result<(TargetBackend, Option<tokio::runtime::Runtime>), GenericError> {
+    // The host is never resolved, but HTTP/1.1 requires one: use `localhost`, as tracing libraries do over UDS.
+    let uri = format!("http://localhost{}", http_path)
+        .parse::<Uri>()
+        .with_error_context(|| format!("Invalid HTTP path '{}'.", http_path))?;
+    let runtime = tokio::runtime::Runtime::new().error_context("Failed to create tokio runtime for HTTP client.")?;
+    let connector = UnixConnector {
+        path: Arc::from(socket_path),
+    };
+    let client = HttpClient::Unix(Client::builder(TokioExecutor::new()).build(connector));
+
+    let backend = HttpBackend {
+        client,
+        uri,
+        display_target: format!("unix://{}{}", socket_path.display(), http_path),
+        headers,
+    };
+    Ok((TargetBackend::Http(Box::new(backend)), Some(runtime)))
+}
+
+#[cfg(not(unix))]
+fn create_unix_http_client(
+    socket_path: &Path, _http_path: &str, _headers: &'static [(&'static str, &'static str)],
+) -> Result<(TargetBackend, Option<tokio::runtime::Runtime>), GenericError> {
+    Err(saluki_error::generic_error!(
+        "Unix stream targets are not supported on this platform: '{}'.",
+        socket_path.display()
+    ))
 }
 
 /// Error from a single HTTP send attempt.
@@ -403,7 +506,7 @@ fn send_http_payload(
                     );
                 }),
         )
-        .map_err(|error| saluki_error::generic_error!("HTTP request to '{}' failed: {}", backend.uri, error))
+        .map_err(|error| saluki_error::generic_error!("HTTP request to '{}' failed: {}", backend.display_target, error))
 }
 
 // No-op codec for sending raw protobuf bytes via gRPC without encoding/decoding.
@@ -460,19 +563,38 @@ impl tonic::codec::Decoder for NoopDecoder {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::os::unix::net::UnixListener;
     use std::{
-        io::{BufRead as _, BufReader, Read as _, Write as _},
+        io::{BufRead as _, BufReader, Read, Write},
         net::TcpListener,
         thread,
     };
 
-    use super::{create_grpc_client_with_backoff, create_http_client, retry_backoff, TargetSender};
+    use super::{
+        create_grpc_client_with_backoff, create_http_client, create_unix_http_client, retry_backoff, TargetSender,
+    };
 
     /// Accepts a single HTTP/1.1 request, answers it with `response`, and returns the request head and body.
     fn serve_one_request(listener: TcpListener, response: &'static str) -> thread::JoinHandle<(String, Vec<u8>)> {
         thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            read_request_and_respond(stream, response)
+        })
+    }
+
+    /// Unix domain socket counterpart of [`serve_one_request`].
+    #[cfg(unix)]
+    fn serve_one_unix_request(listener: UnixListener, response: &'static str) -> thread::JoinHandle<(String, Vec<u8>)> {
+        thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            read_request_and_respond(stream, response)
+        })
+    }
+
+    fn read_request_and_respond<S: Read + Write>(mut stream: S, response: &'static str) -> (String, Vec<u8>) {
+        let (head, body) = {
+            let mut reader = BufReader::new(&mut stream);
 
             let mut head = String::new();
             let mut content_length = 0;
@@ -489,10 +611,11 @@ mod tests {
             }
             let mut body = vec![0; content_length];
             reader.read_exact(&mut body).unwrap();
-
-            (&stream).write_all(response.as_bytes()).unwrap();
             (head, body)
-        })
+        };
+
+        stream.write_all(response.as_bytes()).unwrap();
+        (head, body)
     }
 
     fn http_sender(listener: &TcpListener, headers: &'static [(&'static str, &'static str)]) -> TargetSender {
@@ -514,6 +637,32 @@ mod tests {
             head.starts_with("POST /v0.4/traces HTTP/1.1\r\n"),
             "unexpected request head: {head}"
         );
+        assert!(
+            head.contains("content-type: application/msgpack\r\n"),
+            "unexpected request head: {head}"
+        );
+        assert_eq!(body, b"payload");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_http_target_posts_the_payload_with_its_headers() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("apm.socket");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let (backend, runtime) =
+            create_unix_http_client(&socket_path, "/v0.4/traces", &[("content-type", "application/msgpack")]).unwrap();
+        let mut sender = TargetSender { backend, runtime };
+        let server = serve_one_unix_request(listener, "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}");
+
+        assert_eq!(sender.send(b"payload").unwrap(), 7);
+
+        let (head, body) = server.join().unwrap();
+        assert!(
+            head.starts_with("POST /v0.4/traces HTTP/1.1\r\n"),
+            "unexpected request head: {head}"
+        );
+        assert!(head.contains("host: localhost\r\n"), "unexpected request head: {head}");
         assert!(
             head.contains("content-type: application/msgpack\r\n"),
             "unexpected request head: {head}"
