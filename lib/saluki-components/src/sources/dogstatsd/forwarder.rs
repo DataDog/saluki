@@ -208,8 +208,8 @@ mod tests {
     use std::{net::SocketAddr, time::Duration};
 
     use bytes::Bytes;
-    use saluki_core::components::{test_util::TestComponentSupervisor, ComponentContext};
-    use saluki_core::runtime::Supervisor;
+    use saluki_core::components::ComponentContext;
+    use saluki_core::runtime::{test_util::TestSupervisor, Supervisor};
     use saluki_io::net::ListenAddress;
     use saluki_metrics::test::TestRecorder;
     use tokio::{net::UdpSocket, time::timeout};
@@ -265,7 +265,7 @@ mod tests {
         let forwarder = build_forwarder(target_addr);
 
         // The forwarder spawns on the ambient supervisor, so it has to run under the component's own.
-        let supervisor = TestComponentSupervisor::start("dogstatsd").await;
+        let supervisor = TestSupervisor::start("dogstatsd").await;
         let forwarder_spawn = forwarder.clone();
         supervisor.scope(forwarder_spawn.connect()).await;
 
@@ -329,7 +329,7 @@ mod tests {
         let forwarder = build_forwarder(target_addr);
 
         // The forwarder spawns on the ambient supervisor, so it has to run under the component's own.
-        let supervisor = TestComponentSupervisor::start("dogstatsd").await;
+        let supervisor = TestSupervisor::start("dogstatsd").await;
         let forwarder_spawn = forwarder.clone();
         supervisor.scope(forwarder_spawn.connect()).await;
 
@@ -385,7 +385,7 @@ mod tests {
         let target_addr = target.local_addr().expect("target should have an address");
         let forwarder = build_forwarder(target_addr);
 
-        let supervisor = TestComponentSupervisor::start("dogstatsd").await;
+        let supervisor = TestSupervisor::start("dogstatsd").await;
         let forwarder_spawn = forwarder.clone();
         supervisor.scope(forwarder_spawn.connect()).await;
 
@@ -420,7 +420,7 @@ mod tests {
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let forwarder = build_forwarder(IPV4_ANY_ADDR);
 
-        let supervisor = TestComponentSupervisor::start("dogstatsd").await;
+        let supervisor = TestSupervisor::start("dogstatsd").await;
         let forwarder_spawn = forwarder.clone();
         supervisor.scope(forwarder_spawn.connect()).await;
 
@@ -455,7 +455,7 @@ mod tests {
         let target_addr = target.local_addr().expect("target should have an address");
         let forwarder = build_forwarder(target_addr);
 
-        let supervisor = TestComponentSupervisor::start("dogstatsd").await;
+        let supervisor = TestSupervisor::start("dogstatsd").await;
         let forwarder_spawn = forwarder.clone();
         supervisor.scope(forwarder_spawn.connect()).await;
 
@@ -516,7 +516,7 @@ mod tests {
         let target_addr = target.local_addr().expect("target should have an address");
         let forwarder = build_forwarder(target_addr);
 
-        let supervisor = TestComponentSupervisor::start("dogstatsd").await;
+        let supervisor = TestSupervisor::start("dogstatsd").await;
         let forwarder_spawn = forwarder.clone();
         supervisor.scope(forwarder_spawn.connect()).await;
 

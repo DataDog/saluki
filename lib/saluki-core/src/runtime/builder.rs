@@ -644,7 +644,7 @@ mod tests {
     use tokio::time::timeout;
 
     use super::*;
-    use crate::components::test_util::TestComponentSupervisor;
+    use crate::runtime::test_util::TestSupervisor;
     use crate::runtime::{InitializationError, SupervisorError, SupervisorFuture};
     use crate::test_support::wait_until;
 
@@ -756,7 +756,7 @@ mod tests {
         // The central promise of a one-shot worker: shutdown is a trigger, not an enforcement, so a worker that is
         // still finishing when the drain starts gets to finish. A clean supervisor result is the assertion that
         // matters -- `ShutdownTimedOut` would mean it was aborted instead.
-        let supervisor = TestComponentSupervisor::start("test_component").await;
+        let supervisor = TestSupervisor::start("test_component").await;
 
         // The child does real work *after* its input closes, which a premature halt would cut short.
         let drained = Arc::new(AtomicUsize::new(0));
@@ -785,10 +785,9 @@ mod tests {
     async fn worker_without_a_terminal_condition_is_halted_at_once_when_marked_brutal() {
         // The counterpart: work that never ends has to say so, otherwise it holds the drain open until its owner's
         // timeout. `Brutal` is how it says so, and the shutdown is still clean.
-        let supervisor =
-            TestComponentSupervisor::start_with_component_timeout("test_component", Duration::from_secs(30)).await;
+        let supervisor = TestSupervisor::start_with_worker_timeout("test_component", Duration::from_secs(30)).await;
 
-        supervisor.spawn_component("component", |shutdown| async move {
+        supervisor.spawn_worker("component", |shutdown| async move {
             crate::runtime::worker("endless", std::future::pending::<()>())
                 .with_shutdown_strategy(ShutdownStrategy::Brutal)
                 .spawn();
@@ -813,10 +812,9 @@ mod tests {
     #[tokio::test]
     async fn endless_worker_is_halted_with_the_component_it_belongs_to() {
         // The child keeps its default five-second timeout, but the component's shorter timeout halts it first.
-        let supervisor =
-            TestComponentSupervisor::start_with_component_timeout("test_component", Duration::from_millis(200)).await;
+        let supervisor = TestSupervisor::start_with_worker_timeout("test_component", Duration::from_millis(200)).await;
 
-        supervisor.spawn_component("component", |shutdown| async move {
+        supervisor.spawn_worker("component", |shutdown| async move {
             crate::runtime::worker("stuck", std::future::pending::<()>()).spawn();
             shutdown.await;
         });
@@ -846,7 +844,7 @@ mod tests {
             .build()
             .expect("should build pool");
 
-        let supervisor = TestComponentSupervisor::start("test_component").await;
+        let supervisor = TestSupervisor::start("test_component").await;
 
         let (thread_tx, thread_rx) = oneshot::channel();
         supervisor
@@ -876,7 +874,7 @@ mod tests {
     async fn child_exiting_does_not_shut_the_supervisor_down() {
         // Spawned children are hosted. Thus, a child that finishes must not stop the supervisor, because that also
         // stops the component. During a drain, a child that finishes is the normal case.
-        let supervisor = TestComponentSupervisor::start("test_component").await;
+        let supervisor = TestSupervisor::start("test_component").await;
         let handle = supervisor.handle();
 
         // Wait for the child to have actually run and exited. `wait_for_children(0)` would be vacuously true before
@@ -903,7 +901,7 @@ mod tests {
     async fn a_needed_child_exiting_stops_the_supervisor() {
         // The counterpart: when a child that is marked needed terminates permanently, its supervisor also stops. Here
         // the child exits cleanly. It is not obvious that a clean exit also stops the supervisor.
-        let supervisor = TestComponentSupervisor::start("test_component").await;
+        let supervisor = TestSupervisor::start("test_component").await;
         let handle = supervisor.handle();
 
         handle.worker("brief", async {}).needed().spawn();
@@ -927,7 +925,7 @@ mod tests {
         let _guard = metrics::set_default_local_recorder(&recorder);
 
         // The recorder must be installed before the child is spawned: metric handles are resolved once, at spawn.
-        let supervisor = TestComponentSupervisor::start("metrics_component").await;
+        let supervisor = TestSupervisor::start("metrics_component").await;
 
         // Spawning only queues the child, so wait for it to actually run before shutting down -- otherwise there's no
         // guarantee it was ever polled, and therefore none that it recorded anything.
@@ -967,7 +965,7 @@ mod tests {
             .build()
             .expect("should build pool");
 
-        let supervisor = TestComponentSupervisor::start("test_component").await;
+        let supervisor = TestSupervisor::start("test_component").await;
 
         let (worker, initializations, worker_thread_id) = CountingWorker::new("counting");
         supervisor
@@ -1005,7 +1003,7 @@ mod tests {
 
     #[tokio::test]
     async fn supervisable_children_are_restarted_by_default() {
-        let supervisor = TestComponentSupervisor::start("test_component").await;
+        let supervisor = TestSupervisor::start("test_component").await;
 
         let (worker, initializations) = FailingOnceWorker::new();
         supervisor.handle().spawn_supervisable(worker);
@@ -1024,7 +1022,7 @@ mod tests {
     async fn a_worker_that_cannot_restart_overrides_an_explicit_restart_policy() {
         // A worker that reports that it cannot start again is never restarted by its owner. This is also true if the
         // deprecated `transient` gave it an explicit policy that restarts it after a failure.
-        let supervisor = TestComponentSupervisor::start("test_component").await;
+        let supervisor = TestSupervisor::start("test_component").await;
 
         let (worker, initializations) = FailingOnceWorker::new();
         supervisor.handle().supervisable(worker.one_shot()).transient().spawn();
@@ -1070,7 +1068,7 @@ mod tests {
 
     #[tokio::test]
     async fn spawning_after_shutdown_never_starts_the_child() {
-        let supervisor = TestComponentSupervisor::start("test_component").await;
+        let supervisor = TestSupervisor::start("test_component").await;
         let handle = supervisor.handle();
         assert!(supervisor.shutdown().await.is_ok());
 
