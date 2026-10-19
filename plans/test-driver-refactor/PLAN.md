@@ -32,46 +32,46 @@ behavior.
 
 ## Stack
 
-The status of each pull request is either not started, in review (with a link to the pull request), or merged.
+Each pull request checks off its own item.
 
-- [ ] **1. Plan.** Status: in review (pull request not opened yet).
+- [x] **1. Plan.**
   - Adds this document.
-- [ ] **2. F1: `ComponentControl::wait_until`.** Status: not started.
-  - Polls a condition within the control's wait timeout, and says in the panic message if the component's `run` has
-    already returned, as `wait_until_ready` does.
+- [x] **2. F1: `ComponentControl::wait_until`.**
+  - Polls a condition within the control's wait timeout. The panic message names the component, and says if its `run`
+    has already returned, as `wait_until_ready` does.
   - For updates that don't arrive on the input, such as a `Live<T>` change. Tests typically poll a `TestRecorder`
     counter.
-- [ ] **3. F2: pre-built source.** Status: not started.
+- [ ] **3. F2: pre-built source.**
   - A `SourceBuilder` that wraps an already-built `Box<dyn Source + Send>` and its output definitions. Its `build`
     hands the box over once and returns an error on a second build. Its memory bounds are empty.
   - Works with every `DriverOptions` setting. Sources only for now.
-- [ ] **4. F3: `synchronous_transform` entry point.** Status: not started.
+- [ ] **4. F3: `synchronous_transform` entry point.**
   - `TestComponentDriver::synchronous_transform` and `DriverOptions::synchronous_transform` run a
     `SynchronousTransformBuilder` through a small adapter `Transform`. The adapter receives a buffer, calls
     `transform_buffer`, dispatches the buffer to the default output, and stops when its input closes.
   - The adapter accepts every event type, as `ChainedConfiguration` does. No conversion needs it yet; its consumers
     are follow-ups.
-- [ ] **5. F4: shutdown separate from the supervisor.** Status: not started.
+- [ ] **5. F4: shutdown separate from the supervisor.**
   - A `DriverOptions` setting for sources and relays. The component then gets a shutdown handle that the control owns,
     in place of the one from its worker, and signalling shutdown stops only the supervisor.
   - The substitution happens in the driver, so production code doesn't change.
-- [ ] **6. F5: contexts without running.** Status: not started.
+- [ ] **6. F5: contexts without running.**
   - One `DriverOptions` method per component type. Each builds the context that the driver would have passed to `run`,
     along with the input sender and the outputs, and a guard that keeps the topology context and health registry
     alive. Nothing is spawned.
   - For tests that drive a sub-piece of a component with a real component context.
-- [ ] **7. F8: `TestComponentSupervisor` with static workers.** Status: not started.
+- [ ] **7. F8: `TestComponentSupervisor` with static workers.**
   - A constructor that adds static workers before the supervisor runs, and still waits until the supervisor is
     running. Its `dataspace()` replaces the hand-written `DataspaceCapture` workers.
-- [ ] **8. Sources conversions.** Status: not started. Needs F2, F4, and F5.
+- [ ] **8. Sources conversions.** Needs F2, F4, and F5.
   - Converts the tests listed under [Sources](#sources), and removes `set_shutdown_handle_for_test` from
     `SourceContext` and `RelayContext`.
-- [ ] **9. Transforms conversions.** Status: not started. Needs F1.
+- [ ] **9. Transforms conversions.** Needs F1.
   - Converts the tests listed under [Transforms](#transforms), and deletes the duplicated fake source and destination
     builders.
-- [ ] **10. Encoders conversions.** Status: not started.
+- [ ] **10. Encoders conversions.**
   - Converts the test listed under [Encoders](#encoders).
-- [ ] **11. Misc conversions and cleanup.** Status: not started. Needs F5 and F8.
+- [ ] **11. Misc conversions and cleanup.** Needs F5 and F8.
   - Converts the setups listed under [Misc](#misc), and adds `saluki-core` with the `test-util` feature to the
     dev-dependencies of `saluki-app` and `saluki-io`.
   - Moves the [Follow-ups](#follow-ups) to tracking issues, and deletes `plans/test-driver-refactor/`.

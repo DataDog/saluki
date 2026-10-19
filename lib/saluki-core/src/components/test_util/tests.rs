@@ -549,3 +549,67 @@ async fn unbounded_wait_timeout_is_accepted_by_every_wait() {
     control.wait_until_input_drained().await;
     control.shutdown().await.expect("destination should stop cleanly");
 }
+
+#[tokio::test]
+async fn wait_until_returns_once_the_condition_holds() {
+    let (control, _outputs) = TestComponentDriver::source(SourceBuilderFor {
+        source: || AssertingSource,
+    })
+    .await
+    .expect("source should build");
+
+    let dataspace = control.supervisor().dataspace().clone();
+    control
+        .wait_until(
+            || {
+                !dataspace
+                    .current_values::<SourceState>(IdentifierFilter::exact("state"))
+                    .is_empty()
+            },
+            || "the source asserts its state".to_string(),
+        )
+        .await;
+
+    control
+        .shutdown()
+        .await
+        .expect("source should stop cleanly on shutdown");
+}
+
+#[tokio::test]
+#[should_panic(
+    expected = "timed out after 10ms waiting until the condition holds for component 'topology.test.sources.test'"
+)]
+async fn wait_until_panics_with_its_description_once_the_wait_timeout_elapses() {
+    let (control, _outputs) = TestComponentDriver::options()
+        .with_wait_timeout(Duration::from_millis(10))
+        .source(SourceBuilderFor { source: || StuckSource })
+        .await
+        .expect("source should build");
+
+    control.wait_until(|| false, || "the condition holds".to_string()).await;
+}
+
+#[tokio::test]
+#[should_panic(
+    expected = "the condition holds for component 'topology.test.transforms.test'; its `run` has already returned"
+)]
+async fn wait_until_says_when_the_run_has_already_returned() {
+    let (control, _outputs) = TestComponentDriver::options()
+        .with_wait_timeout(Duration::from_millis(10))
+        .transform(FailingTransformBuilder {
+            failure: Failure::ReturnsError,
+        })
+        .await
+        .expect("transform should build");
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !control.is_finished() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the transform's run should fail straight away");
+
+    control.wait_until(|| false, || "the condition holds".to_string()).await;
+}
