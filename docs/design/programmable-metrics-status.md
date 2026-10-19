@@ -1092,12 +1092,14 @@ the shutdown row, the expiry row, and the timestamped row.
 
 Totals: kinds C 49, D 26, N 9, L 3; themes STA 20, ART 16, NAT 12, INS 9, IR 8, VER 8, FRM 7, TEL 4, EXE 3.
 
-Amendments 88 to 191 are in [the stages 7 and 9 plan's section
+Amendments 88 to 192 and 195 are in [the stages 7 and 9 plan's section
 10](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments): 88 to 107 from its stage 7 design, 108 to 128
 from its stage 9 design, 129 to 138 from stage 7's parts and integration, 139 and 140 from stage 9's foundations (P9.F),
 141 to 162 from stage 9's parts and integration, 163 to 167 from stage 9's review, 168 and 169 from the one-scope
 change after stage 9, 170 to 182 from the detached-programs design, 183 to 188 from its phase 2, 189 and 190 from its
-phase 3, 191 from leaving out what does nothing, and 192 from version 2's step V2; the next is 193.
+phase 3, 191 from leaving out what does nothing, 192 from version 2's step V2, and 195 from version 2's design for
+many aggregations. 193 and 194 come from the [pipeline syntax](programmable-metrics-pipeline-syntax.md) and are indexed
+below only. The next is 196.
 Stage 7's:
 
 | # | Short title | Theme | Kind | Owner |
@@ -1240,6 +1242,12 @@ After detached programs, what does nothing left out (built, not committed):
 | 192 | Resources artifacts are removed | ART | D | version 2, decided by the owner (2026-10-15) |
 | 193 | Programs are normalized before composition and at the end of native lowering: literal set matches become string matches, predicates are simplified, defaults are written, and a filter drops on `false` | ART | D | the pipeline syntax (2026-10-16) |
 | 194 | Operator parameters that tune native behavior have registry defaults, the native configuration's, which decoding applies to a missing parameter | IR | D | the pipeline syntax (2026-10-16) |
+
+After version 2's design for many aggregations (proposed, not built):
+
+| # | Short title | Theme | Kind | Owner |
+|---|---|---|---|---|
+| 195 | Telemetry identity is a node's name, and compatibility is an analysis; any number of state owners, each in a region of its own | TEL | D | proposed (2026-10-19): confirm identity by name, warnings, and the rename cut |
 
 Wording proposed for adoption: amendment 49 ("under the reference interpreter's delivery order"), 51 ("a maximal
 group of `split` and `tee` operators joined directly by edges within one region"), and 52 ("operator parameters,

@@ -3970,6 +3970,20 @@ After detached programs, phase 2 ([as built](programmable-metrics-detached-progr
      declared recipients and outputs, credential references for them (`credentials/<name>` and its configuration key),
      and resource provenance go. Every recipient keeps its host's native delivery policy, and implied outputs alone
      count against the limit that declared outputs shared (`max_implied_outputs`, 16).
+195. **Telemetry identity is a node's name, and compatibility is an analysis** (TEL, D; withdraws amendment 169 and
+     amendment 182's adoption of a reserved ID; proposed for version 2's steps V10 and V7a, 2026-10-19, not built).
+     A node reports its telemetry under its name, the ID the elaborated program gives it (`let`), whatever its
+     provenance; native component IDs survive only in the remapper's table, at the edge. Each operator describes the
+     series it reports and who records each value. The host's compatibility analysis reads a program, what each node
+     reports, and the remapper's rules as expectations, and warns, at the node, about every series the Core Agent reads
+     that the program will not produce, or will produce from a node of another operator; the series of "the aggregator"
+     are the `aggregate` node named `dsd_agg`. A program may have any number of state owners: `single_aggregation`
+     goes, and a state owner runs in a region of its own, made from the program when a generation installs, with its
+     ticks, watermark, drains, and cuts keyed by node rather than by an isolation slot. The rules that remain are about
+     meaning: shared bucket boundaries for an exact cut, the host's state budget, and a watermark per state owner, which
+     for a state owner fed by several sources or by another state owner is still to be designed. Renaming a state owner
+     starts a new lineage. Owner: accept identity by name, warnings rather than refusals, and the rename cut, or key
+     lineages by structure. The design is [many aggregations](programmable-metrics-v2.md#many-aggregations).
 
 ## 11. Risks
 
