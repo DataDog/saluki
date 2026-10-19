@@ -54,6 +54,12 @@
 //! # }
 //! ```
 //!
+//! ## Wait for changes that don't arrive on the input
+//!
+//! Some changes reach a running component another way, such as a `Live` configuration update that its run loop
+//! applies. Wait for the effect with [`ComponentControl::wait_until`], for example by polling a counter that the
+//! component increments, rather than sleeping for a fixed time.
+//!
 //! ## Keep the handles alive
 //!
 //! Bind handles you don't use to `_control` or `_outputs`, not to `_`. A `_` pattern drops the value immediately:

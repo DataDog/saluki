@@ -97,6 +97,27 @@ impl<I> ComponentControl<I> {
         }
     }
 
+    /// Waits until `condition` holds.
+    ///
+    /// Use this for changes that don't arrive on the input, such as a `Live` configuration update that the component
+    /// applies in its run loop. `describe` says what is being waited for. It's only called if the wait times out, so it
+    /// can report the state at that point.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `condition` doesn't hold within the wait timeout.
+    pub async fn wait_until(&self, condition: impl FnMut() -> bool, describe: impl FnOnce() -> String) {
+        poll_until(self.wait_timeout, condition, || {
+            let hint = if self.is_finished() {
+                "; its `run` has already returned"
+            } else {
+                ""
+            };
+            format!("{} for component '{}'{}", describe(), self.component_context, hint)
+        })
+        .await;
+    }
+
     /// Signals the component to shut down, without waiting for it to stop.
     ///
     /// Signals the component's supervisor first, then closes the component's input. This is the order production uses:

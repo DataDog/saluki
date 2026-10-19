@@ -175,9 +175,12 @@ let dispatched = outputs.default_output().collect_events().await;
 ```
 
 There is one method for each component type. Every wait has a deadline and panics with a description of what it was
-waiting for, so a stuck component fails the test instead of hanging it. The module's rustdoc covers draining outputs
-that can fill up, and what the driver can't reach. The driver is behind the `test-util` feature of `saluki-core`, so
-enable that feature in the testing crate's `dev-dependencies`.
+waiting for, so a stuck component fails the test instead of hanging it. To wait for a change that doesn't arrive on
+the component's input, such as a live configuration update, poll for its effect with `control.wait_until(..)` instead
+of sleeping.
+
+The module's rustdoc covers draining outputs that can fill up, and what the driver can't reach. The driver is behind
+the `test-util` feature of `saluki-core`, so enable that feature in the testing crate's `dev-dependencies`.
 
 ## Mocking philosophy
 
