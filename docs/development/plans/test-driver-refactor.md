@@ -68,9 +68,11 @@ Each pull request checks off its own item.
   - `TestComponentSupervisor::start_with(id, configure)` lets `configure` add static workers before the supervisor
     runs, and still waits until the supervisor is running. Its `dataspace()` replaces the hand-written
     `DataspaceCapture` workers.
-- [ ] **8. Sources conversions.** Needs F2, F4, and F5.
+- [x] **8. Sources conversions.** Needs F2, F4, and F5.
   - Converts the tests listed under [Sources](#sources), and removes `set_shutdown_handle_for_test` from
     `SourceContext` and `RelayContext`.
+  - The decoder sub-piece tests no longer drain the `metrics` output in the background: the output holds 128 buffers,
+    more than any of them dispatches.
 - [ ] **9. Transforms conversions.** Needs F1.
   - Converts the tests listed under [Transforms](#transforms), and deletes the duplicated fake source and destination
     builders.
@@ -89,7 +91,8 @@ Tests are named rather than located by line, since line numbers drift as the sta
 
 In `lib/saluki-components/src/sources/dogstatsd/mod.rs`:
 
-- **The driver with `with_resource_registry`, expecting an error:** `building_against_an_already_leased_address_says_so`.
+- **The driver with `with_resource_registry`:** `no_created_listener_runs_idle_only_when_listeners_are_optional` and
+  `listener_that_cannot_be_created_is_skipped_unless_all_are_required`, which landed already on the driver.
 - **F2 with driver options,** all in the `supervision` module:
   - `background_work_runs_as_the_sources_own_children`
   - `source_does_not_finish_until_the_decoders_have_drained`, with `with_interconnect_capacity(1)` and a paused clock

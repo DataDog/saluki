@@ -2392,15 +2392,17 @@ mod tests {
     use bytes::{Buf as _, BufMut as _};
     use bytesize::ByteSize;
     use metrics::{Key, Label};
+    #[cfg(unix)]
+    use saluki_core::accounting::MemoryLimiter;
     use saluki_core::{
-        accounting::{ComponentRegistry, MemoryLimiter},
-        components::{sources::SourceContext, ComponentContext},
+        components::{
+            sources::{SourceBuilder as _, SourceContext},
+            test_util::{ContextParts, Outputs, TestComponentDriver},
+            ComponentContext,
+        },
         data_model::event::metric::context::{ContextResolverBuilder, TagsResolverBuilder},
-        health::HealthRegistry,
         pooling::{helpers::get_pooled_object_via_builder, ObjectPool as _},
-        runtime::state::DataspaceRegistry,
-        support::SubsystemIdentifier,
-        topology::{EventsBuffer, EventsDispatcher, OutputName, TopologyContext},
+        topology::EventsBuffer,
     };
     #[cfg(target_os = "linux")]
     use saluki_env::workload::providers::TestWorkloadProvider;
@@ -2420,7 +2422,6 @@ mod tests {
         net::{UnixDatagram, UnixStream},
     };
     use tokio::{
-        runtime::Handle,
         sync::{mpsc, Mutex},
         task::yield_now,
         time::timeout,
@@ -2518,42 +2519,16 @@ mod tests {
         ContextResolvers::manual(context_resolver.clone(), context_resolver, tags_resolver)
     }
 
-    /// Builds a source context, plus the receiver for its `metrics` output.
+    /// Builds the context of the source, along with its outputs.
     ///
-    /// Only useful for tests that drive pieces of the source directly. A test that runs the source itself needs a
-    /// running supervisor for it to spawn its children onto -- see `build_source`.
-    fn test_source_context() -> (SourceContext, mpsc::Receiver<EventsBuffer>) {
-        let component_context = test_component_context();
-        let mut dispatcher = EventsDispatcher::new(component_context.clone());
-        let metrics_output = OutputName::Given("metrics".into());
-        dispatcher
-            .add_output(metrics_output.clone())
-            .expect("metrics output should be added");
-        let (metrics_tx, metrics_rx) = mpsc::channel(4);
-        dispatcher
-            .attach_sender_to_output(&metrics_output, metrics_tx)
-            .expect("metrics output should accept a sender");
-
-        let health_registry = HealthRegistry::new();
-        let topology_context = TopologyContext::new(
-            Arc::from("test"),
-            MemoryLimiter::noop(),
-            health_registry.clone(),
-            Handle::current(),
-            DataspaceRegistry::new(),
-        );
-        let health = health_registry
-            .register_component(&SubsystemIdentifier::from_dotted("test.decoder"))
-            .expect("test decoder should have a health handle");
-        let source_context = SourceContext::new(
-            &topology_context,
-            &component_context,
-            ComponentRegistry::default(),
-            health,
-            dispatcher,
-        );
-
-        (source_context, metrics_rx)
+    /// Only useful for tests that drive pieces of the source directly. Hold the returned parts for as long as the test
+    /// runs, since they keep the outputs open. A test that runs the source itself goes through the driver, as the tests
+    /// in the `supervision` module do.
+    fn test_source_context() -> ContextParts<SourceContext, (), Outputs<EventsBuffer>> {
+        TestComponentDriver::options()
+            .with_component_id("dogstatsd_test")
+            .source_context(DogStatsDConfiguration::for_test().outputs())
+            .expect("the source's outputs should be valid")
     }
 
     fn test_decoder_context(origin_detection_enabled: bool) -> DecoderContext {
@@ -2617,8 +2592,9 @@ mod tests {
         let listen_addr = ListenAddress::Unixgram("/tmp/dsd.sock".into());
         let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable);
         let metrics = build_metrics(&listen_addr, &test_component_context(), false);
-        let (source_context, mut metrics_rx) = test_source_context();
-        let mut decoder = DogStatsDDecoder::new(source_context, test_decoder_context(false));
+        let mut source = test_source_context();
+        let mut metrics_rx = source.outputs.take_named_output("metrics");
+        let mut decoder = DogStatsDDecoder::new(source.context, test_decoder_context(false));
         let event_buffer_capacity = EventsBuffer::default().capacity();
         let (packet_forwarder, mut packets_rx) = PacketForwarder::for_tests(event_buffer_capacity + 1);
         let mut buffer_decode_context = BufferDecodeContext::new(
@@ -2640,10 +2616,7 @@ mod tests {
             .await
             .expect("connectionless decoder should return the I/O buffer");
         assert_eq!(io_buffer.remaining(), 0);
-        let full_buffer = timeout(Duration::from_secs(1), metrics_rx.recv())
-            .await
-            .expect("full event buffer dispatch should not time out")
-            .expect("metrics output should remain connected");
+        let full_buffer = metrics_rx.next().await.expect("metrics output should remain connected");
         assert_eq!(full_buffer.len(), event_buffer_capacity);
         assert!(
             timeout(Duration::from_secs(1), packets_rx.recv())
@@ -2655,14 +2628,11 @@ mod tests {
         assert_eq!(packets_rx.len(), event_buffer_capacity);
 
         decoder.flush_events().await;
-        let flushed_buffer = timeout(Duration::from_secs(1), metrics_rx.recv())
-            .await
-            .expect("partial event buffer flush should not time out")
-            .expect("metrics output should remain connected");
+        let flushed_buffer = metrics_rx.next().await.expect("metrics output should remain connected");
         assert_eq!(flushed_buffer.len(), 1);
         decoder.flush_events().await;
         assert!(
-            metrics_rx.try_recv().is_err(),
+            metrics_rx.try_next().is_none(),
             "empty flush should not dispatch another buffer"
         );
 
@@ -2704,8 +2674,9 @@ mod tests {
             saluki_io::net::ProcessCredentialsError::InvalidCredentials,
         ));
         let metrics = build_metrics(&listen_addr, &test_component_context(), false);
-        let (source_context, mut metrics_rx) = test_source_context();
-        let mut decoder = DogStatsDDecoder::new(source_context, test_decoder_context(true));
+        let mut source = test_source_context();
+        let mut metrics_rx = source.outputs.take_named_output("metrics");
+        let mut decoder = DogStatsDDecoder::new(source.context, test_decoder_context(true));
         let (packet_forwarder, mut packets_rx) = PacketForwarder::for_tests(1);
         let mut buffer_decode_context = BufferDecodeContext::new(
             &listen_addr,
@@ -2779,10 +2750,7 @@ mod tests {
         assert!(!returned_buffer.has_remaining());
 
         decoder.flush_events().await;
-        let flushed_buffer = timeout(Duration::from_secs(1), metrics_rx.recv())
-            .await
-            .expect("connected event buffer flush should not time out")
-            .expect("metrics output should remain connected");
+        let flushed_buffer = metrics_rx.next().await.expect("metrics output should remain connected");
         assert_eq!(flushed_buffer.len(), 1);
         assert_eq!(
             recorder.counter((
@@ -2885,13 +2853,13 @@ mod tests {
         let capture_directory = tempfile::tempdir().expect("temporary capture directory should be created");
         let capture = TrafficCapture::new(capture_directory.path().to_path_buf(), 1);
         let metrics = build_metrics(&listen_addr, &test_component_context(), false);
-        let (source_context, mut metrics_rx) = test_source_context();
-        tokio::spawn(async move { while metrics_rx.recv().await.is_some() {} });
+        // The metrics output holds more buffers than the test dispatches, so nothing needs to drain it.
+        let source = test_source_context();
         let decoder_context = DecoderContext {
             traffic_capture: capture.clone(),
             ..test_decoder_context(false)
         };
-        let mut decoder = DogStatsDDecoder::new(source_context, decoder_context);
+        let mut decoder = DogStatsDDecoder::new(source.context, decoder_context);
         let mut context = BufferDecodeContext::new(&listen_addr, false, &metrics, None, BufferDecodeMode::Connected);
 
         let capture_path = capture
@@ -2921,13 +2889,13 @@ mod tests {
         let capture_directory = tempfile::tempdir().expect("temporary capture directory should be created");
         let capture = TrafficCapture::new(capture_directory.path().to_path_buf(), 1);
         let metrics = build_metrics(&listen_addr, &test_component_context(), false);
-        let (source_context, mut metrics_rx) = test_source_context();
-        tokio::spawn(async move { while metrics_rx.recv().await.is_some() {} });
+        // The metrics output holds more buffers than the test dispatches, so nothing needs to drain it.
+        let source = test_source_context();
         let decoder_context = DecoderContext {
             traffic_capture: capture.clone(),
             ..test_decoder_context(false)
         };
-        let mut decoder = DogStatsDDecoder::new(source_context, decoder_context);
+        let mut decoder = DogStatsDDecoder::new(source.context, decoder_context);
         let mut context = BufferDecodeContext::new(&listen_addr, false, &metrics, None, BufferDecodeMode::Connected);
 
         let payloads = stream_test_payloads(20);
@@ -2969,8 +2937,8 @@ mod tests {
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let listen_addr = ListenAddress::Unixgram("/tmp/dsd.sock".into());
         let metrics = build_metrics(&listen_addr, &test_component_context(), false);
-        let (source_context, _metrics_rx) = test_source_context();
-        let mut decoder = DogStatsDDecoder::new(source_context, test_decoder_context(true));
+        let source = test_source_context();
+        let mut decoder = DogStatsDDecoder::new(source.context, test_decoder_context(true));
         let mut buffer_decode_context =
             BufferDecodeContext::new(&listen_addr, false, &metrics, None, BufferDecodeMode::Connectionless);
 
@@ -3013,8 +2981,8 @@ mod tests {
         let recorder = TestRecorder::default();
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable);
-        let (source_context, _metrics_rx) = test_source_context();
-        let mut decoder = DogStatsDDecoder::new(source_context, test_decoder_context(false));
+        let source = test_source_context();
+        let mut decoder = DogStatsDDecoder::new(source.context, test_decoder_context(false));
 
         let datagram_addr = ListenAddress::Unixgram("/tmp/dsd.sock".into());
         let datagram_metrics = build_metrics(&datagram_addr, &test_component_context(), false);
@@ -4434,41 +4402,31 @@ mod supervision {
     use std::net::SocketAddr;
     use std::num::NonZeroUsize;
     use std::path::PathBuf;
-    use std::sync::Arc;
     use std::time::Duration;
 
     use bytes::BytesMut;
-    use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
-    use saluki_core::accounting::{ComponentRegistry, MemoryLimiter};
-    use saluki_core::components::test_util::TestComponentSupervisor;
-    #[cfg(unix)]
-    use saluki_core::components::test_util::{ComponentControl, NoInput, Outputs, TestComponentDriver};
     use saluki_core::{
-        components::{
-            sources::{Source as _, SourceContext},
-            ComponentContext,
+        components::test_util::{
+            ComponentControl, DriverOptions, NoInput, Outputs, PrebuiltSource, TestComponentDriver,
         },
         data_model::event::metric::context::{ContextResolverBuilder, TagsResolverBuilder},
-        health::HealthRegistry,
-        runtime::{
-            state::{DataspaceRegistry, ResourceRegistry},
-            NodeSnapshot, NodeState, SupervisorError,
-        },
+        runtime::{state::ResourceRegistry, NodeSnapshot, NodeState, SupervisorError},
         support::SubsystemIdentifier,
-        topology::{EventsBuffer, EventsDispatcher, OutputName, TopologyContext},
+        topology::EventsBuffer,
     };
     use saluki_io::net::listener::Listener;
     use saluki_io::net::{BoundListenAddress, ListenAddress};
     use stringtheory::MetaString;
     use tokio::net::UdpSocket;
-    use tokio::runtime::Handle;
-    use tokio::sync::mpsc;
     use tokio::time::timeout;
 
     use super::*;
 
-    /// Bound on driving the source to completion, so a hang fails rather than stalling the suite.
+    /// Bound on socket operations, so a hang fails rather than stalling the suite.
     const RUN_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// ID of the source under test, which names its worker `sources.dogstatsd` in the supervision tree.
+    const COMPONENT_ID: &str = "dogstatsd";
 
     /// Decoder workers the test source runs with.
     ///
@@ -4502,22 +4460,23 @@ mod supervision {
         1 + DECODER_WORKERS + 1 + 1
     }
 
-    /// Processes that run below the test supervisor while a source with one UDP listener runs.
+    /// Processes that run below the component's supervisor while a source with one UDP listener runs.
     ///
     /// These processes are the source itself and its children.
     const fn udp_descendant_count() -> usize {
         1 + udp_child_count()
     }
 
-    /// Runs `source` as the worker of its component, and installs the shutdown handle of the worker as the handle of
-    /// the source.
-    ///
-    /// The topology does the same thing. This step also gives the source a scope for the children that it spawns.
-    fn run_source(supervisor: &TestComponentSupervisor, source: Box<DogStatsD>, mut context: SourceContext) {
-        supervisor.spawn_component("source", move |shutdown| async move {
-            context.set_shutdown_handle_for_test(shutdown);
-            source.run(context).await
-        });
+    /// Runs `source` through the driver with `options`, declaring the outputs that its configuration declares.
+    async fn run_source(
+        options: DriverOptions, source: Box<DogStatsD>,
+    ) -> (ComponentControl<NoInput>, Outputs<EventsBuffer>) {
+        let outputs = DogStatsDConfiguration::for_test().outputs().to_vec();
+        options
+            .with_component_id(COMPONENT_ID)
+            .source(PrebuiltSource::new(source, outputs))
+            .await
+            .expect("the pre-built source should build")
     }
 
     /// Counts the running processes below `node`.
@@ -4539,45 +4498,18 @@ mod supervision {
         })
     }
 
-    /// Everything a test needs to drive `DogStatsD::run` and observe the result.
-    struct Harness {
-        source: Box<DogStatsD>,
-        context: SourceContext,
-        /// Events dispatched to the `metrics` output.
-        metrics_rx: mpsc::Receiver<EventsBuffer>,
-        /// The address the source is listening on.
-        listen_addr: SocketAddr,
-    }
-
-    /// Builds a source with a single UDP listener bound to an ephemeral port.
+    /// Builds a source with a single UDP listener bound to an ephemeral port, and returns it with that port's address.
     ///
-    /// `health_registry` **MUST** outlive the run: `Health::live` resolves immediately once its registry is dropped,
-    /// and the source's run loop polls liveness in a `select!`, so a dropped registry spins it instead of waiting for
-    /// shutdown.
-    /// Builds a source whose `metrics` output holds a single buffer.
-    ///
-    /// One slot makes backpressure trivial to arrange: one dispatched buffer fills it and the next blocks a decoder.
-    async fn build_source(health_registry: &HealthRegistry, shutdown: ShutdownHandle) -> Harness {
-        build_source_with_output_capacity(health_registry, shutdown, 1).await
-    }
-
-    async fn build_source_with_output_capacity(
-        health_registry: &HealthRegistry, shutdown: ShutdownHandle, output_capacity: usize,
-    ) -> Harness {
-        build_source_with(health_registry, shutdown, output_capacity, 16).await
-    }
-
-    async fn build_source_with(
-        health_registry: &HealthRegistry, shutdown: ShutdownHandle, output_capacity: usize, io_buffer_count: usize,
-    ) -> Harness {
-        let component_context = ComponentContext::test_source("dogstatsd");
-
+    /// The source is built by hand, since its configuration can't ask for an ephemeral port: `build_addresses` treats
+    /// port 0 as disabled.
+    async fn build_source() -> (Box<DogStatsD>, SocketAddr) {
         let listener = leased_listener(ListenAddress::udp_loopback(0)).await;
         let listen_addr = match listener.bound_listen_address() {
             BoundListenAddress::Udp(addr) => addr,
             other => panic!("expected a bound UDP address, got {other:?}"),
         };
 
+        let io_buffer_count = 16;
         let (io_buffer_pool, io_buffer_pool_shrinker) = build_io_buffer_pool(
             io_buffer_count,
             io_buffer_count,
@@ -4610,44 +4542,7 @@ mod supervision {
             packet_forwarder_target: None,
         });
 
-        // Only the `metrics` output is wired up: these tests feed counters, so nothing reaches the other two.
-        let mut dispatcher = EventsDispatcher::new(component_context.clone());
-        let metrics_output = OutputName::Given("metrics".into());
-        dispatcher
-            .add_output(metrics_output.clone())
-            .expect("metrics output should be added");
-        let (metrics_tx, metrics_rx) = mpsc::channel(output_capacity);
-        dispatcher
-            .attach_sender_to_output(&metrics_output, metrics_tx)
-            .expect("metrics output should accept a sender");
-
-        let topology_context = TopologyContext::new(
-            Arc::from("test"),
-            MemoryLimiter::noop(),
-            health_registry.clone(),
-            Handle::current(),
-            DataspaceRegistry::new(),
-        );
-        let health = health_registry
-            .register_component(&SubsystemIdentifier::from_dotted("test.dogstatsd"))
-            .expect("component was not previously registered");
-
-        let mut context = SourceContext::new(
-            &topology_context,
-            &component_context,
-            ComponentRegistry::default(),
-            health,
-            dispatcher,
-        );
-
-        context.set_shutdown_handle_for_test(shutdown);
-
-        Harness {
-            source,
-            context,
-            metrics_rx,
-            listen_addr,
-        }
+        (source, listen_addr)
     }
 
     /// Acquires a listener the way a real build does, so the source holds a lease rather than a bare listener.
@@ -4662,7 +4557,7 @@ mod supervision {
     async fn leased_listener_from(registry: &ResourceRegistry, address: ListenAddress) -> ResourceLease<Listener> {
         registry
             .acquire(
-                &SubsystemIdentifier::from_segments(["test", "dogstatsd"]),
+                &SubsystemIdentifier::from_segments(["test", COMPONENT_ID]),
                 SocketSpecification::new(address),
             )
             .await
@@ -4674,23 +4569,23 @@ mod supervision {
         // The pool shrinker, each datagram decoder, and each listener are children of the source. They are not detached
         // tasks or siblings. Thus, all of them appear below the source while it runs, and none of them remain after it
         // stops.
-        let supervisor = TestComponentSupervisor::start("dogstatsd").await;
-        let health_registry = HealthRegistry::new();
-        let Harness { source, context, .. } = build_source(&health_registry, ShutdownHandle::noop()).await;
+        let (source, _) = build_source().await;
+        let (control, _outputs) = run_source(TestComponentDriver::options(), source).await;
+        control
+            .supervisor()
+            .wait_for_running_descendants(udp_descendant_count())
+            .await;
 
-        run_source(&supervisor, source, context);
-        supervisor.wait_for_running_descendants(udp_descendant_count()).await;
-
-        let root = supervisor.tree_handle().snapshot().root;
-        let source_node = find_node(&root, "source").expect("the source is running");
+        let root = control.supervisor().tree_handle().snapshot().root;
+        let source_node = find_node(&root, "sources.dogstatsd").expect("the source is running");
         assert_eq!(running_beneath(source_node), udp_child_count());
 
-        // If the result is `ShutdownTimedOut`, a child ignored shutdown and was aborted. The pool shrinker is a
-        // deliberate exception. It stops brutally, and a brutal stop does not count as forced.
-        let result = timeout(RUN_TIMEOUT, supervisor.shutdown())
+        // If the error is `ShutdownTimedOut`, a child ignored shutdown and was aborted. The pool shrinker is a deliberate
+        // exception. It stops brutally, and a brutal stop does not count as forced.
+        control
+            .shutdown()
             .await
-            .expect("the source and its children should stop on shutdown");
-        assert!(result.is_ok(), "every child should have stopped on its own: {result:?}");
+            .expect("every child should have stopped on its own");
     }
 
     #[tokio::test]
@@ -4704,18 +4599,16 @@ mod supervision {
         // buffer, so one dispatched buffer fills it and the next blocks a decoder mid-dispatch. The source must not
         // finish while that is true, even after the test signals shutdown. The test holds the decoder there for longer
         // than the default timeout of a closure-based child, but for less than the shutdown timeout of the component.
-        let mut supervisor =
-            TestComponentSupervisor::start_with_component_timeout("dogstatsd", DRAIN_COMPONENT_TIMEOUT).await;
-        let health_registry = HealthRegistry::new();
-        let Harness {
-            source,
-            context,
-            mut metrics_rx,
-            listen_addr,
-        } = build_source(&health_registry, ShutdownHandle::noop()).await;
-
-        run_source(&supervisor, source, context);
-        supervisor.wait_for_running_descendants(udp_descendant_count()).await;
+        let (source, listen_addr) = build_source().await;
+        let options = TestComponentDriver::options()
+            .with_shutdown_timeout(DRAIN_COMPONENT_TIMEOUT)
+            .with_interconnect_capacity(NonZeroUsize::MIN);
+        let (mut control, mut outputs) = run_source(options, source).await;
+        let mut metrics = outputs.take_named_output("metrics");
+        control
+            .supervisor()
+            .wait_for_running_descendants(udp_descendant_count())
+            .await;
 
         let client = UdpSocket::bind("127.0.0.1:0").await.expect("client should bind");
 
@@ -4724,10 +4617,7 @@ mod supervision {
             .send_to(b"first.metric:1|c", listen_addr)
             .await
             .expect("client should send");
-        let buffer = timeout(RUN_TIMEOUT, metrics_rx.recv())
-            .await
-            .expect("the first datagram should be decoded and dispatched")
-            .expect("the metrics output should stay open");
+        let buffer = metrics.next().await.expect("the metrics output should stay open");
         assert_eq!(buffer.len(), 1);
 
         // Now back the output up: the first of these fills the single slot, the second blocks a decoder.
@@ -4739,38 +4629,29 @@ mod supervision {
         // From here on, the test does not wait on the socket. Thus, it can pause the clock, and the hold below then
         // takes no real time.
         tokio::time::pause();
-        supervisor.signal_shutdown();
+        control.signal_shutdown();
 
-        // The body of the source already returned. But the source still waits for its blocked decoder, and the
-        // supervisor also waits. Without the drain, the source and the supervisor finish at this point. If the decoders
-        // had the default timeout of a closure-based child, the scope of the source aborts them during the hold.
+        // The body of the source already returned. But the source still waits for its blocked decoder, and its
+        // supervisor also waits. Without the drain, the source and the supervisor finish at this point. If the
+        // decoders had the default timeout of a closure-based child, the scope of the source aborts them during the
+        // hold.
         tokio::time::sleep(DRAIN_HOLD).await;
         assert!(
-            !supervisor.is_finished(),
+            !control.supervisor().is_finished(),
             "the source finished while a decoder was still mid-dispatch"
         );
 
         // The test drains the output, and this unblocks the decoder. Then the drain completes, and the source also
         // completes. The output closes after the source and all of its decoders stop.
-        let mut drained = 1;
-        timeout(RUN_TIMEOUT, async {
-            while let Some(buffer) = metrics_rx.recv().await {
-                drained += buffer.len();
-            }
-        })
-        .await
-        .expect("the output should close once the source has drained");
+        let drained = 1 + metrics.collect().await.iter().map(EventsBuffer::len).sum::<usize>();
 
         // Nothing accepted before shutdown should have been dropped on the way out.
         assert_eq!(drained, 3, "every queued datagram should have been dispatched");
 
-        let supervisor_result = timeout(RUN_TIMEOUT, supervisor.wait())
+        control
+            .wait()
             .await
-            .expect("the supervisor should stop once the source has");
-        assert!(
-            supervisor_result.is_ok(),
-            "every child should have stopped on its own: {supervisor_result:?}"
-        );
+            .expect("every child should have stopped on its own");
     }
 
     #[tokio::test]
@@ -4778,31 +4659,29 @@ mod supervision {
         // In the orderly path, the body of the source returns when it receives the shutdown signal, and this stops its
         // children. This test covers the other path: a source that never sees the signal is halted along with
         // everything below it.
-        let supervisor =
-            TestComponentSupervisor::start_with_component_timeout("dogstatsd", Duration::from_millis(500)).await;
-        let health_registry = HealthRegistry::new();
+        //
+        // This cannot occur in production, because there the shutdown signal of a source *is* the signal of its
+        // worker, so the test withholds the signal from the source.
+        let (source, _) = build_source().await;
+        let options = TestComponentDriver::options()
+            .with_shutdown_timeout(Duration::from_millis(500))
+            .with_shutdown_withheld();
+        let (control, _outputs) = run_source(options, source).await;
+        control
+            .supervisor()
+            .wait_for_running_descendants(udp_descendant_count())
+            .await;
 
-        // This signal belongs to the test, and the test deliberately never fires it. Thus, the body of the source stays
-        // in its loop for the whole test. This condition cannot occur in production, because there the shutdown signal
-        // of a source *is* the signal of its worker. For this reason, the test runs the source with this signal
-        // directly, not through `run_source`.
-        let mut source_shutdown = ShutdownCoordinator::default();
-        let Harness { source, context, .. } = build_source(&health_registry, source_shutdown.register()).await;
-
-        supervisor.spawn_component("source", move |_shutdown| source.run(context));
-        supervisor.wait_for_running_descendants(udp_descendant_count()).await;
-
-        let result = timeout(RUN_TIMEOUT, supervisor.shutdown())
+        let error = control
+            .shutdown()
             .await
-            .expect("the source should be halted once its timeout runs out");
-        match result {
+            .expect_err("the source should be halted once its timeout runs out");
+        match error.downcast_ref::<SupervisorError>() {
             // The body never returned, so every child is still running when the source is halted. All are counted
             // except the brutal pool shrinker.
-            Err(SupervisorError::ShutdownTimedOut { aborted }) => assert_eq!(aborted, udp_descendant_count() - 1),
+            Some(SupervisorError::ShutdownTimedOut { aborted }) => assert_eq!(*aborted, udp_descendant_count() - 1),
             other => panic!("expected the source to be halted and counted, got {other:?}"),
         }
-
-        drop(source_shutdown);
     }
 
     #[tokio::test]
@@ -4810,8 +4689,6 @@ mod supervision {
         // Per-connection handlers are also supervised, with one fixed name for each listener type. Each handler belongs
         // to the listener that accepted its connection. When the listener accepts a connection, it adds a handler. When
         // the source stops, its handlers stop with everything else.
-        let supervisor = TestComponentSupervisor::start("dogstatsd").await;
-        let health_registry = HealthRegistry::new();
 
         // A TCP listener, so there are real connections to accept.
         let tcp_listener = leased_listener(ListenAddress::Tcp("127.0.0.1:0".parse().unwrap())).await;
@@ -4820,15 +4697,13 @@ mod supervision {
             other => panic!("expected a bound TCP address, got {other:?}"),
         };
 
-        let mut harness = build_source(&health_registry, ShutdownHandle::noop()).await;
-        harness.source.listeners = vec![tcp_listener];
-        let Harness { source, context, .. } = harness;
-
-        run_source(&supervisor, source, context);
+        let (mut source, _) = build_source().await;
+        source.listeners = vec![tcp_listener];
+        let (control, _outputs) = run_source(TestComponentDriver::options(), source).await;
 
         // The baseline is the source, the pool shrinker, the decoders, and the listener.
         let baseline = 1 + 1 + DECODER_WORKERS + 1;
-        supervisor.wait_for_running_descendants(baseline).await;
+        control.supervisor().wait_for_running_descendants(baseline).await;
 
         let _client = tokio::net::TcpStream::connect(listen_addr)
             .await
@@ -4836,8 +4711,8 @@ mod supervision {
 
         // Each connection adds two processes. One is the handler, below the listener. The other is the stream reader
         // that the handler starts below itself.
-        supervisor.wait_for_running_descendants(baseline + 2).await;
-        let root = supervisor.tree_handle().snapshot().root;
+        control.supervisor().wait_for_running_descendants(baseline + 2).await;
+        let root = control.supervisor().tree_handle().snapshot().root;
         let listener_node = find_node(&root, "listener_tcp").expect("the listener is running");
         let handler_node = find_node(listener_node, "conn_tcp")
             .expect("the handler should hang beneath the listener that accepted its connection");
@@ -4846,10 +4721,10 @@ mod supervision {
             "the stream reader should hang beneath the handler that started it"
         );
 
-        let result = timeout(RUN_TIMEOUT, supervisor.shutdown())
+        control
+            .shutdown()
             .await
-            .expect("the source and its children should stop on shutdown");
-        assert!(result.is_ok(), "every child should have stopped on its own: {result:?}");
+            .expect("every child should have stopped on its own");
     }
 
     #[tokio::test]
@@ -4857,8 +4732,6 @@ mod supervision {
         // The property the whole migration is for. The source only ever borrows its listener, so stopping it hands the
         // socket back to the registry still bound, rather than releasing the port to the operating system and leaving
         // a rebuilt source to race whatever else wants it.
-        let supervisor = TestComponentSupervisor::start("dogstatsd").await;
-        let health_registry = HealthRegistry::new();
 
         // A registry the test keeps, so it can ask for the same address once the source is gone.
         //
@@ -4868,22 +4741,20 @@ mod supervision {
         let registry = ResourceRegistry::new();
         let address = ListenAddress::udp_loopback(0);
 
-        let mut harness = build_source(&health_registry, ShutdownHandle::noop()).await;
-        harness.source.listeners = vec![leased_listener_from(&registry, address.clone()).await];
-        let bound = harness.source.listeners[0].bound_listen_address();
+        let (mut source, _) = build_source().await;
+        source.listeners = vec![leased_listener_from(&registry, address.clone()).await];
+        let bound = source.listeners[0].bound_listen_address();
         let listen_addr = match bound {
             BoundListenAddress::Udp(addr) => addr,
             other => panic!("expected a bound UDP address, got {other:?}"),
         };
 
-        let Harness { source, context, .. } = harness;
-        run_source(&supervisor, source, context);
-        supervisor.wait_for_running_descendants(udp_descendant_count()).await;
-
-        timeout(RUN_TIMEOUT, supervisor.shutdown())
-            .await
-            .expect("the source should stop on shutdown")
-            .expect("supervisor should drain cleanly");
+        let (control, _outputs) = run_source(TestComponentDriver::options(), source).await;
+        control
+            .supervisor()
+            .wait_for_running_descendants(udp_descendant_count())
+            .await;
+        control.shutdown().await.expect("the source should stop cleanly");
 
         // The same socket, not a lucky re-bind: the registry never let go of it.
         let mut listener = leased_listener_from(&registry, address).await;
@@ -4964,6 +4835,7 @@ mod supervision {
     #[cfg(unix)]
     async fn drive_source(registry: ResourceRegistry, config: DogStatsDConfiguration) -> DriveResult {
         TestComponentDriver::options()
+            .with_component_id(COMPONENT_ID)
             .with_resource_registry(registry)
             .source(config)
             .await
