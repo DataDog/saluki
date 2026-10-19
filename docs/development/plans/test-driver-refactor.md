@@ -64,9 +64,10 @@ Each pull request checks off its own item.
   - The context of a source or relay comes with a shutdown handle installed, which `ContextParts::signal_shutdown`
     fires.
   - For tests that drive a sub-piece of a component with a real component context.
-- [ ] **7. F8: `TestComponentSupervisor` with static workers.**
-  - A constructor that adds static workers before the supervisor runs, and still waits until the supervisor is
-    running. Its `dataspace()` replaces the hand-written `DataspaceCapture` workers.
+- [x] **7. F8: `TestComponentSupervisor` with static workers.**
+  - `TestComponentSupervisor::start_with(id, configure)` lets `configure` add static workers before the supervisor
+    runs, and still waits until the supervisor is running. Its `dataspace()` replaces the hand-written
+    `DataspaceCapture` workers.
 - [ ] **8. Sources conversions.** Needs F2, F4, and F5.
   - Converts the tests listed under [Sources](#sources), and removes `set_shutdown_handle_for_test` from
     `SourceContext` and `RelayContext`.

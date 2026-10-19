@@ -73,7 +73,22 @@ impl TestComponentSupervisor {
     ///
     /// Panics if `id` isn't a valid supervisor name, or if the supervisor doesn't start within a few seconds.
     pub async fn start_with_component_timeout(id: &str, component_timeout: Duration) -> Self {
-        Self::start_inner(id, component_timeout, DataspaceRegistry::default(), None).await
+        Self::start_inner(id, component_timeout, DataspaceRegistry::default(), |_| {}).await
+    }
+
+    /// Starts a supervisor named `id` with the static workers that `configure` adds, returning once it is running.
+    ///
+    /// `configure` gets the supervisor before it runs, to add workers with
+    /// [`add_worker`][Supervisor::add_worker], the way an application adds its own. The workers share
+    /// [`dataspace`][Self::dataspace] with the supervisor, so the test can read what they assert, such as the address a
+    /// server bound to. Static workers aren't counted by [`active_children`][Self::active_children], and keep their own
+    /// shutdown timeouts.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` isn't a valid supervisor name, or if the supervisor doesn't start within a few seconds.
+    pub async fn start_with(id: &str, configure: impl FnOnce(&mut Supervisor)) -> Self {
+        Self::start_inner(id, TEST_COMPONENT_TIMEOUT, DataspaceRegistry::default(), configure).await
     }
 
     /// Starts a supervisor named `id` with `worker` as its one static child, sharing `dataspace` with it.
@@ -88,16 +103,17 @@ impl TestComponentSupervisor {
     pub(super) async fn start_with_worker(
         id: &str, component_timeout: Duration, dataspace: DataspaceRegistry, worker: ChildSpecification,
     ) -> Self {
-        Self::start_inner(id, component_timeout, dataspace, Some(worker)).await
+        Self::start_inner(id, component_timeout, dataspace, |supervisor| {
+            supervisor.add_worker(worker)
+        })
+        .await
     }
 
     async fn start_inner(
-        id: &str, component_timeout: Duration, dataspace: DataspaceRegistry, worker: Option<ChildSpecification>,
+        id: &str, component_timeout: Duration, dataspace: DataspaceRegistry, configure: impl FnOnce(&mut Supervisor),
     ) -> Self {
         let mut supervisor = Supervisor::new(id).expect("test supervisor name should be valid");
-        if let Some(worker) = worker {
-            supervisor.add_worker(worker);
-        }
+        configure(&mut supervisor);
 
         // Take the handle before moving the supervisor into its task; the handle is usable before the run starts, and
         // is how we observe that it has.

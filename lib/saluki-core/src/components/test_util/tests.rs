@@ -5,7 +5,7 @@ use saluki_error::{generic_error, GenericError};
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 
-use super::{PrebuiltSource, TestComponentDriver};
+use super::{PrebuiltSource, TestComponentDriver, TestComponentSupervisor};
 use crate::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use crate::components::{
     destinations::{Destination, DestinationBuilder, DestinationContext},
@@ -15,7 +15,7 @@ use crate::components::{
 };
 use crate::data_model::event::{metric::Metric, Event, EventType};
 use crate::data_model::payload::PayloadType;
-use crate::runtime::state::IdentifierFilter;
+use crate::runtime::state::{DataspaceRegistry, DataspaceUpdate, IdentifierFilter};
 use crate::runtime::{self, FnWorker, ShutdownStrategy, SupervisorError};
 use crate::topology::{EventsBuffer, OutputDefinition};
 
@@ -870,4 +870,38 @@ async fn context_parts_keep_the_health_registry_alive() {
         live.is_err(),
         "`live` should wait for a probe while the parts are alive"
     );
+}
+
+#[tokio::test]
+async fn static_workers_share_the_supervisors_dataspace_and_stop_on_shutdown() {
+    let supervisor = TestComponentSupervisor::start_with("static", |supervisor| {
+        supervisor.add_worker(FnWorker::with_shutdown("asserter", |shutdown| async move {
+            DataspaceRegistry::try_current()
+                .expect("a static worker should run in the supervisor's dataspace")
+                .assert(SourceState("running"), "state");
+            shutdown.await;
+        }));
+        supervisor.add_worker(FnWorker::with_shutdown("idle", |shutdown| shutdown));
+    })
+    .await;
+
+    let mut states = supervisor
+        .dataspace()
+        .subscribe::<SourceState>(IdentifierFilter::exact("state"));
+    match tokio::time::timeout(Duration::from_secs(5), states.recv()).await {
+        Ok(Some(DataspaceUpdate::Asserted(_, state))) => assert_eq!(state, SourceState("running")),
+        other => panic!("expected the asserter's state, got {other:?}"),
+    }
+
+    supervisor.wait_for_running_descendants(2).await;
+    assert_eq!(
+        supervisor.active_children(),
+        0,
+        "static workers aren't dynamic children"
+    );
+
+    supervisor
+        .shutdown()
+        .await
+        .expect("both static workers should stop on shutdown");
 }
