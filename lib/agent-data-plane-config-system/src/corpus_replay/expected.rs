@@ -2316,21 +2316,23 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             cause: TRANSLATOR_REJECTS_VALUE,
         }),
         known_bug(Entry {
-            origin: "yaml-bool-word-string-key",
-            tier: Bootstrap,
-            at: "snapshot",
-            getter: "GetString",
-            key: "env",
-            adp: Adp::value("\"yes\""),
-            cause: BOOTSTRAP_YAML_LOADING,
-        }),
-        known_bug(Entry {
             origin: "yaml-dotted-keys",
             tier: Bootstrap,
             at: "snapshot",
             getter: "GetString",
             key: "data_plane.api_listen_address",
             adp: Adp::value("\"tcp://0.0.0.0:5100\""),
+            cause: BOOTSTRAP_YAML_LOADING,
+        }),
+        known_bug(Entry {
+            origin: "yaml-duplicate-key",
+            tier: Bootstrap,
+            at: "snapshot",
+            getter: "-",
+            key: "<boot>",
+            adp: Adp::error(
+                "failed to build the configuration base: parse `datadog.yaml`: duplicate mapping key: log_level, set DuplicateKeyPolicy in Options if acceptable at line 2, column 1",
+            ),
             cause: BOOTSTRAP_YAML_LOADING,
         }),
         intentional(Entry {
@@ -2348,7 +2350,7 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             at: "snapshot",
             getter: "GetFloat64",
             key: "forwarder_backoff_factor",
-            adp: Adp::value("2.0"),
+            adp: Adp::error("invalid value: string \".nan\", expected a number, a numeric string, or a boolean"),
             cause: BOOTSTRAP_YAML_LOADING,
         }),
         intentional(Entry {
@@ -2407,24 +2409,6 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             adp: Adp::value("{\"010\": [\"j\"], \"true\": [\"k\"]}"),
             cause: BOOTSTRAP_YAML_LOADING,
         }),
-        known_bug(Entry {
-            origin: "yaml-plain-octal",
-            tier: Bootstrap,
-            at: "snapshot",
-            getter: "GetInt",
-            key: "dogstatsd_buffer_size",
-            adp: Adp::value("10"),
-            cause: BOOTSTRAP_YAML_LOADING,
-        }),
-        known_bug(Entry {
-            origin: "yaml-plain-octal",
-            tier: Bootstrap,
-            at: "snapshot",
-            getter: "GetString",
-            key: "env",
-            adp: Adp::value("\"0755\""),
-            cause: BOOTSTRAP_YAML_LOADING,
-        }),
     ]
 }
 const AGENT_LOAD_WRITE: Cause = Cause {
@@ -2441,7 +2425,7 @@ const BOOTSTRAP_ENV_PARSING: Cause = Cause {
 
 const BOOTSTRAP_YAML_LOADING: Cause = Cause {
     name: "bootstrap-yaml-loading",
-    why: "ADP's own datadog.yaml reader has no YAML 1.1 resolution (octal, yes/no), no dotted-key split, and loses NaN",
+    why: "ADP's own datadog.yaml reader rejects duplicate keys and NaN, does not split dotted keys, and resolves non-string map keys differently",
     issue: Some(2754),
 };
 
