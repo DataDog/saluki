@@ -1419,6 +1419,7 @@ dependencies = [
 name = "datadog-agent-runtime"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "async-trait",
  "bytesize",
  "chrono",
@@ -5722,6 +5723,8 @@ dependencies = [
  "ddsketch",
  "futures",
  "http",
+ "http-body-util",
+ "hyper",
  "indexmap",
  "loom",
  "memchr",
@@ -5748,6 +5751,7 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tokio-util",
+ "tower",
  "tracing",
  "tracing-subscriber",
 ]

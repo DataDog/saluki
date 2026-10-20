@@ -28,6 +28,8 @@
 //!   build also requires `--cfg tokio_unstable`.
 #![deny(missing_docs)]
 
+pub mod control_plane;
+
 pub mod env;
 
 pub mod logging;

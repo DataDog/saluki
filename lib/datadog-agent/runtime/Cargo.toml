@@ -15,6 +15,7 @@ default = []
 taskdump = ["dep:tokio"]
 
 [dependencies]
+arc-swap = { workspace = true }
 async-trait = { workspace = true }
 bytesize = { workspace = true }
 chrono = { workspace = true }
@@ -37,7 +38,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 stringtheory = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
-tonic = { workspace = true }
+tonic = { workspace = true, features = ["router"] }
 tracing = { workspace = true }
 
 # The targets where Tokio supports task dumps. This must match the `cfg` guarding the task dump code.

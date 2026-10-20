@@ -2,45 +2,66 @@
 
 use std::sync::Arc;
 
-use agent_data_plane_config::SalukiConfiguration;
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
-use http::StatusCode;
 use saluki_api::{
     extract::State,
     response::IntoResponse,
     routing::{get, Router},
-    APIHandler, DynamicRoute, EndpointType,
+    APIHandler, DynamicRoute, EndpointType, StatusCode,
 };
 use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_core::runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture};
 use saluki_error::generic_error;
+use serde::Serialize;
+
+/// Produces the current runtime configuration in its serialized JSON form.
+#[derive(Clone)]
+pub struct RuntimeConfigSnapshot {
+    serialize: Arc<dyn Fn() -> Result<String, serde_json::Error> + Send + Sync>,
+}
+
+impl RuntimeConfigSnapshot {
+    /// Creates a `RuntimeConfigSnapshot` that serializes whatever configuration `current` holds at the time of each
+    /// request.
+    pub fn from_shared<T>(current: Arc<ArcSwap<T>>) -> Self
+    where
+        T: Serialize + Send + Sync + 'static,
+    {
+        Self {
+            serialize: Arc::new(move || serde_json::to_string(&**current.load())),
+        }
+    }
+
+    fn to_json(&self) -> Result<String, serde_json::Error> {
+        (self.serialize)()
+    }
+}
 
 /// State used for the runtime configuration API handler.
 #[derive(Clone)]
 pub struct ConfigRuntimeState {
-    current: Arc<ArcSwap<SalukiConfiguration>>,
+    snapshot: RuntimeConfigSnapshot,
 }
 
 /// An API handler for returning the translated runtime configuration.
 ///
 /// This handler exposes a single route -- `/config/runtime` -- that returns the current
-/// translated [`SalukiConfiguration`] in its serialized JSON form. It reflects any dynamic updates
+/// translated configuration in its serialized JSON form. It reflects any dynamic updates
 /// applied to the configuration since startup.
 pub struct ConfigRuntimeAPIHandler {
     state: ConfigRuntimeState,
 }
 
 impl ConfigRuntimeAPIHandler {
-    fn new(current: Arc<ArcSwap<SalukiConfiguration>>) -> Self {
+    fn new(snapshot: RuntimeConfigSnapshot) -> Self {
         Self {
-            state: ConfigRuntimeState { current },
+            state: ConfigRuntimeState { snapshot },
         }
     }
 
     async fn config_handler(State(state): State<ConfigRuntimeState>) -> impl IntoResponse {
-        let config = state.current.load();
-        match serde_json::to_string(&**config) {
+        match state.snapshot.to_json() {
             Ok(body) => (StatusCode::OK, body).into_response(),
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -65,7 +86,7 @@ impl APIHandler for ConfigRuntimeAPIHandler {
 
 /// A worker for exposing an endpoint that returns the translated runtime configuration.
 ///
-/// When running, the worker asserts a route (based on [`ConfigRuntimeAPIHandler`]) that returns
+/// When running, the worker asserts a route (based on `ConfigRuntimeAPIHandler`) that returns
 /// the current translated configuration. As the configuration may contain sensitive data, this
 /// route is only present on the privileged API endpoint.
 pub struct ConfigRuntimeWorker {
@@ -74,9 +95,9 @@ pub struct ConfigRuntimeWorker {
 
 impl ConfigRuntimeWorker {
     /// Creates a new [`ConfigRuntimeWorker`] serving the given configuration.
-    pub fn new(current: Arc<ArcSwap<SalukiConfiguration>>) -> Self {
+    pub fn new(snapshot: RuntimeConfigSnapshot) -> Self {
         Self {
-            handler: ConfigRuntimeAPIHandler::new(current),
+            handler: ConfigRuntimeAPIHandler::new(snapshot),
         }
     }
 }
@@ -99,5 +120,29 @@ impl Supervisable for ConfigRuntimeWorker {
             process_shutdown.await;
             Ok(())
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Serialize)]
+    struct ExampleConfig {
+        log_level: String,
+    }
+
+    #[test]
+    fn shared_snapshot_follows_updates_to_the_shared_configuration() {
+        let current = Arc::new(ArcSwap::from_pointee(ExampleConfig {
+            log_level: "info".to_string(),
+        }));
+        let snapshot = RuntimeConfigSnapshot::from_shared(Arc::clone(&current));
+        assert_eq!(snapshot.to_json().unwrap(), r#"{"log_level":"info"}"#);
+
+        current.store(Arc::new(ExampleConfig {
+            log_level: "debug".to_string(),
+        }));
+        assert_eq!(snapshot.to_json().unwrap(), r#"{"log_level":"debug"}"#);
     }
 }

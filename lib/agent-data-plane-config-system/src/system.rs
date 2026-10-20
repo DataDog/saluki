@@ -230,7 +230,7 @@ impl ConfigurationUpdates {
     ///
     /// Returns [`Error::UpdateStreamClosed`] when the configuration stream closes. The stream does
     /// not reopen, so each later call fails in the same way at once.
-    pub fn run(&self) -> impl Future<Output = std::result::Result<(), Error>> + Send + 'static {
+    pub fn run(&self) -> impl Future<Output = Result<()>> + Send + 'static {
         let state = Arc::clone(&self.state);
         async move {
             // A panic does not poison this lock, so a later call takes over the state as the panic left it.

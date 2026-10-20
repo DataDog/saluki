@@ -14,7 +14,9 @@ use agent_data_plane_config_system::{ConfigurationSystem, LoadedConfiguration};
 use argh::FromArgs;
 use bytesize::ByteSize;
 use datadog_agent_commons::{ipc::config::RemoteAgentClientConfiguration, platform::PlatformSettings};
-use datadog_agent_runtime::{env::RemoteAgentEnvironmentProvider, remote_agent::RemoteAgentBootstrap};
+use datadog_agent_runtime::{
+    control_plane::ConfigUpdatesWorker, env::RemoteAgentEnvironmentProvider, remote_agent::RemoteAgentBootstrap,
+};
 use saluki_app::{
     accounting::{initialize_memory_bounds, MemoryBoundsConfiguration, MemoryMode as AppMemoryMode},
     bootstrap::BootstrapGuard,
@@ -79,8 +81,8 @@ use crate::{
     },
     dogstatsd_contexts::DogStatsDContextDumpAPIHandler,
     internal::{
-        create_internal_supervisor, logging::get_translated_logging_config, ConfigUpdatesWorker,
-        DogStatsDControlSurface, TopologyControlSurfaces,
+        create_internal_supervisor, logging::get_translated_logging_config, AdpConfigUpdates, DogStatsDControlSurface,
+        TopologyControlSurfaces,
     },
 };
 
@@ -291,7 +293,7 @@ pub async fn handle_run_command(
     // the restarted worker fails again at once. The failure then escalates and stops ADP, rather than leaving ADP to run
     // on a configuration that can no longer change.
     if let Some(config_updates) = config_updates {
-        internal_supervisor.add_worker(ConfigUpdatesWorker::new(config_updates));
+        internal_supervisor.add_worker(ConfigUpdatesWorker::new(AdpConfigUpdates::new(config_updates)));
     }
 
     if let Some(env_supervisor) = maybe_env_supervisor {
