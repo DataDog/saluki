@@ -22,11 +22,15 @@ frame
       exit 3 dd_metrics_encode -> encode host dd_metrics_encode of dd_out, idle
       exit 4 mrf_metrics_encode -> encode host mrf_metrics_encode of mrf_dd_out, idle
       exit 5 af_metrics_encode -> encode host af_metrics_encode of cluster_agent_out, idle
-    dsd_agg (not priced: R1 never fuses an isolation slot), 2 lanes
-      isolation slot, output points 6, 7, watermark of admission points 0, 1
+    dsd_agg (not priced: R1 never fuses a state owner's slot), 2 lanes
+      region main, state owner dsd_agg, output points 6, 7, watermark of admission points 0, 1
       nodes dsd_agg
       entry 0: dsd_tag_filterlist.out -> dsd_agg.in
       exit 0 metrics_enrich -> metrics_enrich, spread
+      exit 1 dsd_client_telemetry -> output dsd_client_telemetry, idle
+      exit 2 dd_metrics_encode -> encode host dd_metrics_encode of dd_out, idle
+      exit 3 mrf_metrics_encode -> encode host mrf_metrics_encode of mrf_dd_out, idle
+      exit 4 af_metrics_encode -> encode host af_metrics_encode of cluster_agent_out, idle
     metrics_enrich (estimated 141 ns per event), 2 lanes
       nodes dsd_post_agg_filter_in, dsd_post_agg_filter, dsd_post_agg_filter_false, dsd_post_agg_filter_fanout, dsd_post_agg_filter_fanout_0, metrics_in, metrics_host_enrichment, metrics, metrics_fanout, metrics_fanout_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false
       admission point 2: otlp_in.metrics -> metrics_in.1
@@ -39,7 +43,7 @@ frame
       exit 1 dd_metrics_encode -> encode host dd_metrics_encode of dd_out
       exit 2 mrf_metrics_encode -> encode host mrf_metrics_encode of mrf_dd_out
       exit 3 af_metrics_encode -> encode host af_metrics_encode of cluster_agent_out
-  edges (16)
+  edges (20)
     dsd_in.metrics -> dsd_pre_aggregation (admission, lane by lane)
     otlp_in.metrics -> metrics_enrich (admission, spread)
     checks_ipc_in.metrics -> metrics_enrich (admission, spread)
@@ -52,6 +56,10 @@ frame
     dsd_pre_aggregation.mrf_metrics_encode -> encode host mrf_metrics_encode of mrf_dd_out (exit)
     dsd_pre_aggregation.af_metrics_encode -> encode host af_metrics_encode of cluster_agent_out (exit)
     dsd_agg.metrics_enrich -> metrics_enrich (exit, spread)
+    dsd_agg.dsd_client_telemetry -> output dsd_client_telemetry (exit)
+    dsd_agg.dd_metrics_encode -> encode host dd_metrics_encode of dd_out (exit)
+    dsd_agg.mrf_metrics_encode -> encode host mrf_metrics_encode of mrf_dd_out (exit)
+    dsd_agg.af_metrics_encode -> encode host af_metrics_encode of cluster_agent_out (exit)
     metrics_enrich.dsd_client_telemetry -> output dsd_client_telemetry (exit)
     metrics_enrich.dd_metrics_encode -> encode host dd_metrics_encode of dd_out (exit)
     metrics_enrich.mrf_metrics_encode -> encode host mrf_metrics_encode of mrf_dd_out (exit)
@@ -64,8 +72,8 @@ fusion (34)
   dsd_prefix_filter.false -> dsd_prefix_filter_false.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`)
   dsd_prefix_filter.true -> dsd_no_agg_split.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`)
   dsd_no_agg_split.default -> dsd_tag_filterlist.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`)
-  dsd_tag_filterlist.out -> dsd_agg.in: isolation (the edge enters or leaves the isolation slot `dsd_agg`, which runs its state owner alone)
-  dsd_agg.out -> dsd_post_agg_filter_in.0: isolation (the edge enters or leaves the isolation slot `dsd_agg`, which runs its state owner alone)
+  dsd_tag_filterlist.out -> dsd_agg.in: isolation (the edge enters or leaves `dsd_agg`, the slot the boot layout gives a state owner of its own)
+  dsd_agg.out -> dsd_post_agg_filter_in.0: isolation (the edge enters or leaves `dsd_agg`, the slot the boot layout gives a state owner of its own)
   dsd_no_agg_split.passthrough -> dsd_post_agg_filter_in.1: separated (fusing would form a cycle through `dsd_agg`: slots `dsd_pre_aggregation` and `metrics_enrich` stay apart)
   dsd_post_agg_filter_in.out -> dsd_post_agg_filter.in: fused (both nodes are synchronous and nothing separates them: slot `metrics_enrich`)
   dsd_post_agg_filter.false -> dsd_post_agg_filter_false.in: fused (both nodes are synchronous and nothing separates them: slot `metrics_enrich`)
@@ -124,29 +132,29 @@ output bindings (6)
     recipients none
     delivery native (overflow wait, closure native)
     fed by metrics_enrich.dsd_client_telemetry
-    idle dsd_pre_aggregation.dsd_client_telemetry
+    idle dsd_pre_aggregation.dsd_client_telemetry, dsd_agg.dsd_client_telemetry
   dd_metrics_encode: a lease in encode host dd_metrics_encode of dd_out
     recipients dd_out/primary/0
     delivery native (overflow wait, closure native)
     fed by metrics_enrich.dd_metrics_encode
-    idle dsd_pre_aggregation.dd_metrics_encode
+    idle dsd_pre_aggregation.dd_metrics_encode, dsd_agg.dd_metrics_encode
   metrics_routing_encode_0: a lease in encode host dd_metrics_encode of dd_out
     recipients dd_out/additional_0/0
     delivery native (overflow wait, closure native)
     fed by metrics_enrich.dd_metrics_encode
-    idle dsd_pre_aggregation.dd_metrics_encode
+    idle dsd_pre_aggregation.dd_metrics_encode, dsd_agg.dd_metrics_encode
   metrics_routing_encode_1: a lease in encode host dd_metrics_encode of dd_out
     recipients dd_out/additional_1/0, dd_out/additional_1/1
     delivery native (overflow wait, closure native)
     fed by metrics_enrich.dd_metrics_encode
-    idle dsd_pre_aggregation.dd_metrics_encode
+    idle dsd_pre_aggregation.dd_metrics_encode, dsd_agg.dd_metrics_encode
   mrf_metrics_encode: a lease in encode host mrf_metrics_encode of mrf_dd_out
     recipients mrf_dd_out/primary/0
     delivery native (overflow wait, closure native)
     fed by metrics_enrich.mrf_metrics_encode
-    idle dsd_pre_aggregation.mrf_metrics_encode
+    idle dsd_pre_aggregation.mrf_metrics_encode, dsd_agg.mrf_metrics_encode
   af_metrics_encode: a lease in encode host af_metrics_encode of cluster_agent_out
     recipients cluster_agent_out/primary/0
     delivery native (overflow wait, closure native)
     fed by metrics_enrich.af_metrics_encode
-    idle dsd_pre_aggregation.af_metrics_encode
+    idle dsd_pre_aggregation.af_metrics_encode, dsd_agg.af_metrics_encode

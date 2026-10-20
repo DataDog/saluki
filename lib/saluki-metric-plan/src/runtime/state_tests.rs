@@ -197,8 +197,10 @@ fn every_tick_flushes_at_its_wall_clock_second_what_was_admitted_before_it() {
             (30_000, 1, &["c rate/10s [10:0, 20:0]"]),
         ])
     );
-    let output_point = harness.frame().slots()[0]
-        .output_point(0)
+    let frame = harness.frame();
+    let output_point = frame
+        .boot_output_points(&frame.slots()[0].nodes[0])
+        .and_then(|points| points.first().copied())
         .expect("aggregation runs in an isolation slot");
     assert!(harness
         .delivered()

@@ -83,7 +83,13 @@ fn validated(plan: &Plan, catalog: &MemoryCatalog) -> ValidationReport {
 
 fn placed(plan: &Plan, frame: &Frame) -> Result<Placement, PlacementError> {
     let report = validated(plan, &default_program_catalog());
-    place(plan, &report, &OperatorRegistry::native(), frame)
+    place(
+        plan,
+        &report,
+        &OperatorRegistry::native(),
+        frame,
+        &crate::compile::DerivedPoints::for_plan(frame, plan, &OperatorRegistry::native()),
+    )
 }
 
 fn exits(slot: &Slot) -> Vec<(String, FrameTarget)> {
@@ -273,7 +279,7 @@ fn expected_admission_points() -> Vec<(u32, &'static str, &'static str, Admissio
 /// The exit of aggregation's isolation slot in either default program: only its boot edge's target, the
 /// post-aggregation filter's slot. An isolation slot has no idle exits to outputs.
 fn aggregation_exits() -> Vec<(String, FrameTarget)> {
-    named(&[("dsd_post_agg_filter_region", to_slot(4))])
+    then_every_output(&[("dsd_post_agg_filter_region", to_slot(4))])
 }
 
 fn admission_points(frame: &Frame) -> Vec<(u32, String, String, AdmissionMode, Option<FrameTarget>)> {
@@ -387,7 +393,7 @@ fn the_default_programs_slots_have_an_exit_for_every_edge_leaving_them_and_every
 
     // Each slot of the pre-aggregation pipeline leaves to the next, and its last to aggregation's isolation slot and,
     // for timestamped points, to the post-aggregation merge; every output is downstream of each, so each has an idle
-    // exit to every output. Aggregation's isolation slot has only its boot edge's exit.
+    // exit to every output. Aggregation's slot is no different: its boot edge's exit, then one to every output.
     let expected = [
         then_every_output(&[("dsd_prefix_filter_region", to_slot(1))]),
         then_every_output(&[("dsd_no_agg_split_region", to_slot(2))]),
@@ -1056,7 +1062,14 @@ fn a_candidate_runs_its_boot_nodes_in_their_boot_regions_and_new_nodes_where_the
         .push(json!({"from": "t2.out", "to": "between.in"}));
     let candidate = Plan::from_value(value).unwrap();
     let report = validated(&candidate, &synthetic_catalog());
-    let placement = place(&candidate, &report, &OperatorRegistry::native(), &frame).unwrap();
+    let placement = place(
+        &candidate,
+        &report,
+        &OperatorRegistry::native(),
+        &frame,
+        &crate::compile::DerivedPoints::for_plan(&frame, &candidate, &OperatorRegistry::native()),
+    )
+    .unwrap();
     let nodes = placement
         .slots()
         .iter()
@@ -1332,7 +1345,14 @@ fn live_parameter_changes_place_like_the_boot_plan() {
 /// Returns the problems of a placement that must fail, as text, and its capabilities.
 fn unplaceable(plan: &Plan, catalog: &MemoryCatalog, frame: &Frame) -> (Vec<String>, Vec<MissingCapability>) {
     let report = validated(plan, catalog);
-    let error = place(plan, &report, &OperatorRegistry::native(), frame).unwrap_err();
+    let error = place(
+        plan,
+        &report,
+        &OperatorRegistry::native(),
+        frame,
+        &crate::compile::DerivedPoints::for_plan(frame, plan, &OperatorRegistry::native()),
+    )
+    .unwrap_err();
     let PlacementError::Unplaceable { problems } = &error else {
         panic!("not unplaceable: {}", error)
     };
@@ -1497,7 +1517,13 @@ fn an_invalid_candidate_is_not_placed() {
     let report = Validator::new(&OperatorRegistry::native(), &MemoryCatalog::new()).validate(&plan);
     assert!(!report.is_valid());
     assert!(matches!(
-        place(&plan, &report, &OperatorRegistry::native(), &frame),
+        place(
+            &plan,
+            &report,
+            &OperatorRegistry::native(),
+            &frame,
+            &crate::compile::DerivedPoints::for_plan(&frame, &plan, &OperatorRegistry::native())
+        ),
         Err(PlacementError::Invalid { .. })
     ));
 }

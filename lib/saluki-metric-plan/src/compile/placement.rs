@@ -13,16 +13,9 @@
 //!   inputs can reach that slot: R1's cost model may have put it in a later slot of a pipeline than its inputs. Any
 //!   other node's slot follows from its inputs: the slot an admission point's edge leads to, or the slot of the node
 //!   feeding it. When its inputs come from several slots, it runs in the one that every other of them has an exit to.
-//! - A state owner behind an isolation fence runs in an isolation slot, and nothing else does: its boot slot, or the
-//!   isolation slot that the slot its input comes from has an exit to, so that one artifact can aggregate each branch
-//!   with its own width in the one isolation slot. A state owner fed straight by an admission point whose edge leads to
-//!   a fused slot runs in the isolation slot that slot has an exit to: the fused slot passes the point's batches
-//!   through, unchanged. A node fed by a state owner runs in a fused slot that the state owner's isolation slot has an
-//!   exit to. A state owner outside the boot plan's isolation slots needs a frame change. An isolation slot on
-//!   several lanes holds a share of its state owner's state per lane, which its keyed exits route by context key
-//!   ([`ExitRouting::Keyed`][super::frame::ExitRouting::Keyed]), so a state owner placed in it must have its state
-//!   partitioned by that key ([`PartitionKey::Context`]); one whose state cannot be partitioned needs the slot on one
-//!   lane, a frame change.
+//! - A state owner behind an isolation fence places as any synchronous node: a boot state owner in its boot slot,
+//!   which the slot an admission point feeding it straight leads to passes the point's batches through to, unchanged,
+//!   and any other by its inputs. Each slot then runs it in a region of its own (see [below](#regions)).
 //! - Every edge between slots, from a slot to a fixed component, and from a slot to an output must use one of the
 //!   slot's exits, and every edge leaving a fixed component must use its physical edge. An edge to an `emit` leads to
 //!   the encode host of the output's delivery host when the output is bound, and to its fixed destination otherwise.
@@ -37,19 +30,44 @@
 //! node the artifact wrote, is not in the frame built from the default program, and a restart does not add it
 //! ([`MissingCapability::FrameChanges`], stage 10).
 //!
+//! # Regions
+//!
+//! Each slot's nodes are partitioned into **regions**, in topological order ([`SlotPlacement::regions`]). The main
+//! region runs the slot's entries and every node before its first state owner. Each state owner opens a region of its
+//! own, a **sub-region** ([`RegionKey::State`]): a task of the slot's component, fed through internal exits of the
+//! regions before it. A state owner every one of whose inputs enters the slot from outside it runs in the main region
+//! instead, when that runs no state owner yet and has one lane, or is the state owner's boot slot, so that a boot
+//! state owner runs in its slot's own task, as at boot. Any other node runs in the highest region among those of its
+//! inputs in the slot, so that a state owner's consumers in its slot run in its region and write the slot's exits.
+//! Edges between regions of a slot go only to later regions: the regions of a slot form a DAG, with no loop through
+//! their bounded inputs. A sub-region runs on one lane, fed by every lane of the regions before it.
+//!
+//! Each state owner's **upstream points**, whose latest admission times make up its watermark, are found per
+//! generation by walking its inputs back through stateless nodes: the admission points of fixed components, which
+//! readmit what they receive, and the **derived points** of the state owners feeding it, which stamp their
+//! time-driven output ([`DerivedPoints`]). Each point reaches the state owner over one physical path, along which its
+//! batches keep their order: a point that reaches it over several is refused. Every exit and internal exit on that
+//! path forwards the point's progress ([`RegionPlacement::progress`]). With lanes, a state owner fed by another on
+//! several lanes, and one over several clocks one of which stamps several of its points (a point with lanes), are
+//! refused; so is a state owner whose state cannot be partitioned by context key in a main region on several lanes,
+//! each of which holds the share of its state that the slot's keyed exits route to it
+//! ([`ExitRouting::Keyed`][super::frame::ExitRouting::Keyed], [`PartitionKey::Context`]).
+//!
 //! # Entries
 //!
 //! A slot's program maps each batch it receives to a logical input of the slot: an **entry**. A batch from a fixed
 //! component is mapped by the admission point that stamped it ([`EntryKey::Admission`]). A batch from another slot
 //! carries the entry in its header, set by the slot that sent it ([`EntryKey::Region`]), since several logical edges
 //! can share one exit. Entry IDs are numbered per slot and per generation, in plan edge order. A slot that passes an
-//! admission point's batches through to a state owner has an entry for the point whose input is the state owner's,
-//! in the isolation slot, which has the matching entry from the passing slot's exit.
+//! admission point's batches through to a boot state owner has an entry for the point whose input is the state
+//! owner's, in its boot slot, which has the matching entry from the passing slot's exit. The slot's entries are its
+//! main region's; a sub-region's program has an entry for each edge entering it, from the slot's other regions or from
+//! outside the slot through its main region, in plan edge order.
 //!
 //! A point with lanes is one admission point per lane ([`AdmissionPointInfo::lanes`]), each stamping the batches of
 //! its lane, so a logical edge leaving it has one entry per lane's ID, in lane order, each with the same input: the
 //! slot's program runs every lane's batches alike, and each lane of the slot receives its own lane's. The entry of
-//! the isolation slot a passing slot leads to stays one: it is keyed by the entry its batches carry, which every
+//! the boot slot a passing slot leads to stays one: it is keyed by the entry its batches carry, which every
 //! lane's exit writes alike.
 //!
 //! [`AdmissionPointInfo::lanes`]: super::frame::AdmissionPointInfo::lanes
@@ -62,14 +80,17 @@ use std::{
 use saluki_core::execution::{AdmissionPointId, EntryId};
 
 use super::{
-    frame::{ExitIndex, ExitRouting, Frame, FrameSource, FrameTarget, Site, SlotId, SlotKind},
-    program::KernelIndex,
+    frame::{AdmissionPointInfo, ExitIndex, ExitRouting, Frame, FrameSource, FrameTarget, Site, SlotId},
+    program::{KernelIndex, StepExit},
     resolve, Role,
 };
 use crate::{
     ir::{NodeId, OutputId, Plan, PortRef},
     operators::{OperatorRegistry, PartitionKey, StateContract},
-    validate::{graph::emit_output, ValidationReport},
+    validate::{
+        graph::{emit_output, Graph},
+        ValidationReport,
+    },
 };
 
 /// A capability a candidate needs that the running host does not have.
@@ -83,7 +104,7 @@ pub enum MissingCapability {
     /// restarting with that configuration.
     Restart,
 
-    /// Physical structure that only an artifact asks for, such as a new exit from a region to an isolation slot: the
+    /// Physical structure that only an artifact asks for, such as a new exit from a region to another: the
     /// frame is built from the default program, so a restart does not add it (stage 10).
     FrameChanges,
 
@@ -250,7 +271,8 @@ pub enum EntryKey {
     Region(EntryId),
 
     /// The time-driven output of the state owner whose kernel is at this index of the program's kernel table: what it
-    /// emits at a flush tick, a clock reset, its retirement, or shutdown. Only isolation slots have such entries; the
+    /// emits at a flush tick, a clock reset, its retirement, or shutdown. Only a state owner's region has such an entry;
+    /// the
     /// region runs them itself, never for a batch it receives.
     StateOutput(KernelIndex),
 }
@@ -278,7 +300,7 @@ pub struct PlacedEntry {
     pub from: PortRef,
 
     /// The input port that the logical edge enters: inside the slot, or, for an entry the slot passes through to a
-    /// state owner, the state owner's, in the isolation slot it passes the batches to.
+    /// boot state owner, the state owner's, in the boot slot it passes the batches to.
     pub input: PortRef,
 }
 
@@ -338,6 +360,9 @@ pub struct RegionPlacement {
     /// The candidate's nodes in the region, in plan order.
     pub nodes: Vec<NodeId>,
 
+    /// The region's state owner, if it runs one: at most one.
+    pub state_owner: Option<NodeId>,
+
     /// The region's entries from outside the slot, as in [`SlotPlacement::entries`]: the main region's are the slot's.
     pub entries: Vec<PlacedEntry>,
 
@@ -347,6 +372,15 @@ pub struct RegionPlacement {
 
     /// The points upstream of the region's state owner, in ID order: empty for a region without one.
     pub upstream: Vec<UpstreamPoint>,
+
+    /// The exits the region writes, of the slot or to its other regions, that forward the progress of points upstream
+    /// of a state owner downstream of them, in exit order, each with those points in ID order: a point with lanes by
+    /// every lane's ID.
+    pub progress: Vec<(StepExit, Vec<AdmissionPointId>)>,
+
+    /// The derived points that stamp the region's state owner's time-driven output, one per lane of the region, in
+    /// lane order: empty for a region without one.
+    pub output_points: Vec<AdmissionPointId>,
 }
 
 /// What one slot runs in a placed candidate.
@@ -539,21 +573,21 @@ pub fn state_owners(plan: &Plan, registry: &OperatorRegistry) -> Vec<NodeId> {
         .collect()
 }
 
-/// Places a validated candidate plan into a frame.
+/// Places a validated candidate plan into a frame, with the derived points of its state owners.
 ///
 /// # Errors
 ///
 /// Returns [`PlacementError::Invalid`] if the report has errors or the plan has structural problems, and
 /// [`PlacementError::Unplaceable`] with every problem found if the candidate needs structure the frame does not have.
 pub fn place(
-    plan: &Plan, report: &ValidationReport, registry: &OperatorRegistry, frame: &Frame,
+    plan: &Plan, report: &ValidationReport, registry: &OperatorRegistry, frame: &Frame, derived: &DerivedPoints,
 ) -> Result<Placement, PlacementError> {
     if !report.is_valid() {
         return Err(PlacementError::Invalid {
             problems: report.errors().map(ToString::to_string).collect(),
         });
     }
-    place_unvalidated(plan, registry, frame)
+    place_unvalidated(plan, registry, frame, derived)
 }
 
 /// Places a candidate plan into a frame whatever its validation report says, as long as the plan is structurally
@@ -567,7 +601,9 @@ pub fn place(
 ///
 /// Returns [`PlacementError::Invalid`] if the plan has structural problems, and [`PlacementError::Unplaceable`] with
 /// every problem found if the candidate needs structure the frame does not have.
-pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame) -> Result<Placement, PlacementError> {
+pub fn place_unvalidated(
+    plan: &Plan, registry: &OperatorRegistry, frame: &Frame, derived: &DerivedPoints,
+) -> Result<Placement, PlacementError> {
     let graph = resolve(plan, registry).map_err(|problems| PlacementError::Invalid { problems })?;
     let roles = super::roles(&graph);
     let mut problems = Vec::new();
@@ -657,7 +693,7 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
                     )),
                     Some(fixed) if fixed.operator != written.op || fixed.params != written.params => {
                         // A host component keeps the configuration it was built with. (Aggregation runs as a kernel in
-                        // its isolation slot, so its changes are state transitions the installer classifies, not host
+                        // a region of its own, so its changes are state transitions the installer classifies, not host
                         // reconfigurations.)
                         problems.push(problem(
                             Some(id),
@@ -683,8 +719,8 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
                         Some(MissingCapability::State),
                         format!(
                             "this `{}` node keeps state without an isolation fence, or declares an isolation fence \
-                             without keyed state: a region runs a state owner only behind an isolation fence, in an \
-                             isolation slot",
+                             without keyed state: a region runs a state owner only behind an isolation fence, in a \
+                             region of its own",
                             op.name(),
                         ),
                     ));
@@ -767,15 +803,12 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
     };
     let mut slot_of: Vec<Option<SlotId>> = vec![None; graph.nodes.len()];
     let mut unplaced = vec![false; graph.nodes.len()];
-    let isolation = |slot: SlotId| frame.slot(slot).is_some_and(|slot| slot.is_isolation());
-    // A fused slot an admission point's edge leads to can pass the point's batches through, unchanged, to a state
-    // owner in an isolation slot it has an exit to.
+    // The slot an admission point's edge leads to can pass the point's batches through, unchanged, to a boot state
+    // owner in its boot slot, which it has an exit to.
     let passes_through = |from: SlotId, to: SlotId| {
-        !isolation(from)
-            && isolation(to)
-            && frame
-                .slot(from)
-                .is_some_and(|from| from.exit_to(&FrameTarget::Slot(to)).is_some())
+        frame
+            .slot(from)
+            .is_some_and(|from| from.exit_to(&FrameTarget::Slot(to)).is_some())
     };
     for &node in &graph.order {
         let role = roles[node];
@@ -857,60 +890,28 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
                         .is_some_and(|other| other.exit_to(&FrameTarget::Slot(slot)).is_some())
             })
         };
-        // A state owner runs only in an isolation slot, and every other node only in a fused one.
-        let fits = |slot: SlotId| isolation(slot) == (role == Role::Isolated);
-        // An admission point's route binds the node to the slot it leads to, or, for a state owner, to an isolation
-        // slot that slot passes the point's batches through to.
-        let reached_from =
-            |fixed: SlotId, slot: SlotId| fixed == slot || (role == Role::Isolated && passes_through(fixed, slot));
+        // A boot state owner fed straight by an admission point keeps its boot slot when the slot the point's route
+        // leads to passes the point's batches through to it.
+        let reached_from = |fixed: SlotId, slot: SlotId| {
+            fixed == slot
+                || (role == Role::Isolated && frame.boot_output_points(id).is_some() && passes_through(fixed, slot))
+        };
         // A node keeps the slot it has at boot when its inputs reach it, so that a candidate runs pipelined as the boot
         // plan does.
         let boot_slot = match frame.site(id) {
             Some(Site::Slot(slot)) => Some(slot),
             _ => None,
         }
-        .filter(|&slot| fits(slot) && fixed_slots.keys().all(|&fixed| reached_from(fixed, slot)) && receives_all(slot));
+        .filter(|&slot| fixed_slots.keys().all(|&fixed| reached_from(fixed, slot)) && receives_all(slot));
         let chosen = match (boot_slot, fixed_slots.keys().next()) {
             (Some(slot), _) => Some(slot),
-            (None, Some(&slot)) if fits(slot) => receives_all(slot).then_some(slot),
-            (None, Some(&slot)) => {
-                // A state owner fed straight by a point whose route is a fused slot: the one isolation slot that slot
-                // has an exit to.
-                let exits = frame.slot(slot).map(|slot| slot.exits.as_slice()).unwrap_or_default();
-                let targets = exits
-                    .iter()
-                    .filter_map(|exit| match exit.target {
-                        FrameTarget::Slot(next) if fits(next) && reached_from(slot, next) && receives_all(next) => {
-                            Some(next)
-                        }
-                        _ => None,
-                    })
-                    .collect::<BTreeSet<_>>();
-                match targets.into_iter().collect::<Vec<_>>().as_slice() {
-                    [target] => Some(*target),
-                    _ => None,
-                }
-            }
+            (None, Some(&slot)) => receives_all(slot).then_some(slot),
+            // The one slot its inputs come from that receives from every other.
             (None, None) => {
-                // The slots that can run the node: those its inputs come from, and those an isolation slot it is fed
-                // from has an exit to, since an isolation slot runs only its state owner; a state owner runs in an
-                // isolation slot its inputs' slots have an exit to.
-                let mut candidates = BTreeSet::new();
-                for &slot in &fed_from {
-                    if !isolation(slot) {
-                        candidates.insert(slot);
-                    }
-                    if isolation(slot) || role == Role::Isolated {
-                        let exits = frame.slot(slot).map(|slot| slot.exits.as_slice()).unwrap_or_default();
-                        candidates.extend(exits.iter().filter_map(|exit| match exit.target {
-                            FrameTarget::Slot(next) => Some(next),
-                            _ => None,
-                        }));
-                    }
-                }
-                let sinks = candidates
-                    .into_iter()
-                    .filter(|&slot| fits(slot) && receives_all(slot))
+                let sinks = fed_from
+                    .iter()
+                    .copied()
+                    .filter(|&slot| receives_all(slot))
                     .collect::<Vec<_>>();
                 match sinks.as_slice() {
                     [slot] => Some(*slot),
@@ -920,34 +921,6 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
         };
         match chosen {
             Some(slot) => slot_of[node] = Some(slot),
-            None if role == Role::Isolated => {
-                let regions = fixed_slots
-                    .keys()
-                    .chain(&fed_from)
-                    .copied()
-                    .collect::<BTreeSet<_>>()
-                    .into_iter()
-                    .map(region)
-                    .collect::<Vec<_>>();
-                // Without an isolation slot the topology cannot run a state owner at all; with one, it is not where the
-                // state owner's input can reach.
-                let what = if frame.slots().iter().any(|slot| slot.is_isolation()) {
-                    "a new exit from a region to an isolation slot"
-                } else {
-                    "adding an isolation slot"
-                };
-                problems.push(problem(
-                    Some(id),
-                    asked_by(node),
-                    format!(
-                        "it is a state owner, which runs only in an isolation slot that the region its input comes \
-                         from has an exit to, and the topology built at boot has no such isolation slot for {}: {}",
-                        regions.join(", "),
-                        asked_by(node).needs(what)
-                    ),
-                ));
-                unplaced[node] = true;
-            }
             None => {
                 let regions = fixed_slots
                     .keys()
@@ -967,25 +940,6 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
                     ),
                 ));
                 unplaced[node] = true;
-            }
-        }
-        // Each lane of an isolation slot on several lanes holds the share of its state owners' state that the slot's
-        // keyed exits route to it by context key, so a state owner there must have its state partitioned by that key.
-        if let Some(slot) = slot_of[node].filter(|_| role == Role::Isolated) {
-            let lanes = frame.slot(slot).map_or(1, |slot| slot.lanes);
-            if lanes > 1 && op.partition_key() != Some(PartitionKey::Context) {
-                problems.push(problem(
-                    Some(id),
-                    asked_by(node),
-                    format!(
-                        "it is a state owner whose state cannot be partitioned by context key, and the topology built \
-                         at boot runs isolation slot {} on {} lanes, each holding the share of the state that the \
-                         slot's keyed exits route to it by context key: {}",
-                        region(slot),
-                        lanes,
-                        asked_by(node).needs("running the isolation slot on one lane")
-                    ),
-                ));
             }
         }
     }
@@ -1155,7 +1109,7 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
                 });
                 match &point.route {
                     Some(FrameTarget::Slot(route)) if *route != target => {
-                        // The route's slot passes the point's batches through to the state owner's isolation slot.
+                        // The route's slot passes the point's batches through to the boot state owner's slot.
                         let exit = frame
                             .slot(*route)
                             .and_then(|slot| slot.exit_to(&FrameTarget::Slot(target)))
@@ -1230,33 +1184,16 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
     for (placed, used) in slots.iter_mut().zip(exits_used) {
         placed.exits_used = used.into_iter().collect();
     }
-    // Each slot runs everything in its main region. The state owner of an isolation slot has the points the frame
-    // found upstream of the slot.
+    // Each slot's regions, and the points upstream of each state owner.
+    let regions = Regions::partition(&graph, &roles, &slot_of, frame);
+    let mut problems = regions.lane_problems(&asked_by);
+    let (upstream, progress) = regions.upstream(derived, &route_of, &asked_by, &mut problems);
+    let outputs = regions.output_points(derived, &mut problems);
+    if !problems.is_empty() {
+        return Err(PlacementError::Unplaceable { problems });
+    }
     for placed in &mut slots {
-        let upstream = match frame.slot(placed.slot).map(|slot| &slot.kind) {
-            Some(SlotKind::Isolation { upstream, .. }) if !placed.nodes.is_empty() => upstream
-                .iter()
-                .filter_map(|&id| {
-                    let source = frame
-                        .admission_points()
-                        .iter()
-                        .find(|point| point.lane_of(id).is_some())?;
-                    Some(UpstreamPoint {
-                        id,
-                        clock: ClockId::Source(source.node.clone()),
-                        derived: false,
-                    })
-                })
-                .collect(),
-            _ => Vec::new(),
-        };
-        placed.regions = vec![RegionPlacement {
-            key: RegionKey::Main,
-            nodes: placed.nodes.clone(),
-            entries: placed.entries.clone(),
-            internal: Vec::new(),
-            upstream,
-        }];
+        placed.regions = regions.placements(placed, &upstream, &progress, &outputs);
     }
 
     Ok(Placement {
@@ -1264,4 +1201,460 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
         slots,
         idle_fixed,
     })
+}
+
+/// One physical hop a batch takes toward a state owner, by which [`Regions::upstream`] counts paths and finds the
+/// exits that forward progress.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum Hop {
+    /// An admission point's edge into the main region of a slot.
+    Entry(AdmissionPointId, SlotId),
+
+    /// An exit of a slot, written by one of its regions, by position.
+    Exit(SlotId, usize, ExitIndex),
+
+    /// An internal exit from one region of a slot to another, by position.
+    Internal(SlotId, usize, usize),
+}
+
+/// What feeds a state owner: an admission point, by its fixed node and output port, or another state owner, whose
+/// derived point it is.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum Feed {
+    Point(usize, usize),
+    Owner(usize),
+}
+
+/// The progress each region's exits forward, by slot and region position.
+type Progress = BTreeMap<(SlotId, usize), BTreeMap<StepExit, BTreeSet<AdmissionPointId>>>;
+
+/// The regions of every slot of a placed candidate (see [regions](self#regions)).
+struct Regions<'a, 'p> {
+    graph: &'a Graph<'p>,
+    roles: &'a [Role],
+    slot_of: &'a [Option<SlotId>],
+    frame: &'a Frame,
+    /// The position of each node's region among its slot's regions, by graph position: zero, the main region, for a
+    /// node outside every slot.
+    region_of: Vec<usize>,
+    /// The regions of each slot, in order: the main region, then a sub-region per state owner that opens one.
+    keys: Vec<Vec<RegionKey>>,
+}
+
+impl<'a, 'p> Regions<'a, 'p> {
+    /// Partitions each slot's nodes into regions, in topological order: a state owner opens a region of its own, unless
+    /// every one of its inputs enters the slot from outside it and the main region runs no state owner yet, on one lane
+    /// or as the boot state owner of the slot, when it runs in the main region; any other node runs in the highest
+    /// region among those of its inputs in the slot, the main region if it has none.
+    fn partition(graph: &'a Graph<'p>, roles: &'a [Role], slot_of: &'a [Option<SlotId>], frame: &'a Frame) -> Self {
+        let mut region_of = vec![0; graph.nodes.len()];
+        let mut keys = vec![vec![RegionKey::Main]; frame.slots().len()];
+        let mut main_owner = vec![false; frame.slots().len()];
+        for &node in &graph.order {
+            let Some(slot) = slot_of[node] else { continue };
+            let ports = graph.op(node).map_or(0, |op| op.ports().inputs.len());
+            let inputs = (0..ports)
+                .filter_map(|port| graph.source(node, port))
+                .filter(|&(from, _)| slot_of[from] == Some(slot))
+                .map(|(from, _)| region_of[from])
+                .collect::<Vec<_>>();
+            if roles[node] != Role::Isolated {
+                region_of[node] = inputs.into_iter().max().unwrap_or(0);
+                continue;
+            }
+            let id = graph.id(node);
+            let lanes = frame.slot(slot).map_or(1, |slot| slot.lanes);
+            let boot = frame.boot_output_points(id).is_some() && frame.site(id) == Some(Site::Slot(slot));
+            if inputs.is_empty() && !main_owner[slot.get()] && (lanes == 1 || boot) {
+                main_owner[slot.get()] = true;
+            } else {
+                keys[slot.get()].push(RegionKey::State(id.clone()));
+                region_of[node] = keys[slot.get()].len() - 1;
+            }
+        }
+        Self {
+            graph,
+            roles,
+            slot_of,
+            frame,
+            region_of,
+            keys,
+        }
+    }
+
+    /// Returns the number of lanes a region runs on: the slot's for its main region, one for a sub-region.
+    fn lanes(&self, slot: SlotId, region: usize) -> u16 {
+        if region == 0 {
+            self.frame.slot(slot).map_or(1, |slot| slot.lanes)
+        } else {
+            1
+        }
+    }
+
+    /// Refuses a state owner whose state cannot be partitioned by context key in a main region on several lanes, each
+    /// of which holds the share of the state that the slot's keyed exits route to it by context key.
+    fn lane_problems(&self, asked_by: &impl Fn(usize) -> AskedBy) -> Vec<PlacementProblem> {
+        let mut problems = Vec::new();
+        for node in 0..self.graph.nodes.len() {
+            let Some(slot) = self.slot_of[node].filter(|_| self.roles[node] == Role::Isolated) else {
+                continue;
+            };
+            let lanes = self.lanes(slot, self.region_of[node]);
+            let op = self.graph.op(node).expect("configured");
+            if lanes > 1 && op.partition_key() != Some(PartitionKey::Context) {
+                let asked = asked_by(node);
+                problems.push(PlacementProblem::new(
+                    Some(self.graph.id(node)),
+                    Some(asked.capability()),
+                    format!(
+                        "it is a state owner whose state cannot be partitioned by context key, and the topology built \
+                         at boot runs region `{}` on {} lanes, each holding the share of the state that the slot's \
+                         keyed exits route to it by context key: {}",
+                        self.frame.describe_target(&FrameTarget::Slot(slot)),
+                        lanes,
+                        asked.needs("running the region on one lane")
+                    ),
+                ));
+            }
+        }
+        problems
+    }
+
+    /// Returns the hops an edge from `(from, port)` to the node `to` takes: from an admission point into the main region
+    /// of the slot its route leads to, and on to another slot when that slot passes the batches through; between slots
+    /// by an exit of the sending region, into the receiving slot's main region; and between regions of a slot by an
+    /// internal exit.
+    fn hops<'r>(
+        &self, from: usize, port: usize, to: usize, route_of: &impl Fn(usize, usize) -> Option<&'r AdmissionPointInfo>,
+    ) -> Vec<Hop> {
+        let Some(slot) = self.slot_of[to] else {
+            return Vec::new();
+        };
+        let region = self.region_of[to];
+        let exit = |from_slot: SlotId| {
+            self.frame
+                .slot(from_slot)
+                .and_then(|placed| placed.exit_to(&FrameTarget::Slot(slot)))
+                .map(|exit| exit.index)
+        };
+        let mut hops = Vec::new();
+        match self.slot_of[from] {
+            Some(from_slot) if from_slot == slot => {
+                if self.region_of[from] != region {
+                    hops.push(Hop::Internal(slot, self.region_of[from], region));
+                }
+                return hops;
+            }
+            Some(from_slot) => {
+                hops.extend(exit(from_slot).map(|index| Hop::Exit(from_slot, self.region_of[from], index)))
+            }
+            None => {
+                let Some(point) = route_of(from, port) else {
+                    return hops;
+                };
+                let Some(FrameTarget::Slot(route)) = point.route else {
+                    return hops;
+                };
+                hops.push(Hop::Entry(point.id, route));
+                if route != slot {
+                    hops.extend(exit(route).map(|index| Hop::Exit(route, 0, index)));
+                }
+            }
+        }
+        if region != 0 {
+            hops.push(Hop::Internal(slot, 0, region));
+        }
+        hops
+    }
+
+    /// Returns the points upstream of every state owner, by graph position, and the progress each region's exits
+    /// forward, refusing a point that reaches a state owner over several paths, and, with lanes, a state owner fed by
+    /// another on several lanes, or over several clocks one of which stamps several of its points.
+    ///
+    /// A state owner's upstream points are found by walking its inputs back through stateless nodes, to the admission
+    /// points of fixed components, which readmit what they receive, and to other state owners' derived points. Every
+    /// exit on a path from such a point to the state owner forwards the point's progress.
+    fn upstream<'r>(
+        &self, derived: &DerivedPoints, route_of: &impl Fn(usize, usize) -> Option<&'r AdmissionPointInfo>,
+        asked_by: &impl Fn(usize) -> AskedBy, problems: &mut Vec<PlacementProblem>,
+    ) -> (BTreeMap<usize, Vec<UpstreamPoint>>, Progress) {
+        let graph = self.graph;
+        let mut upstream = BTreeMap::new();
+        let mut progress = Progress::new();
+        let inputs = |node: usize| {
+            let ports = graph.op(node).map_or(0, |op| op.ports().inputs.len());
+            (0..ports).filter_map(move |port| graph.source(node, port))
+        };
+        let outputs = |node: usize| {
+            let ports = graph.op(node).map_or(0, |op| op.ports().outputs.len());
+            (0..ports).filter_map(move |port| graph.target(node, port).map(|(to, _)| (port, to)))
+        };
+        for owner in 0..graph.nodes.len() {
+            if self.roles[owner] != Role::Isolated || self.slot_of[owner].is_none() {
+                continue;
+            }
+            let id = graph.id(owner);
+            // The stateless nodes between the state owner and what feeds it, and what feeds it.
+            let mut between = BTreeSet::new();
+            let mut feeds = BTreeSet::new();
+            let mut pending = vec![owner];
+            while let Some(node) = pending.pop() {
+                for (from, port) in inputs(node) {
+                    match self.roles[from] {
+                        Role::Fixed => {
+                            feeds.insert(Feed::Point(from, port));
+                        }
+                        Role::Isolated if self.slot_of[from].is_some() => {
+                            feeds.insert(Feed::Owner(from));
+                        }
+                        Role::Synchronous if self.slot_of[from].is_some() && between.insert(from) => {
+                            pending.push(from);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            let on_path = |node: usize| node == owner || between.contains(&node);
+
+            let mut points = Vec::new();
+            for feed in feeds {
+                let (start, start_port, ids, clock, is_derived, name) = match feed {
+                    Feed::Point(fixed, port) => {
+                        let Some(point) = route_of(fixed, port) else { continue };
+                        let name = format!("admission point `{}.{}`", point.node, point.port);
+                        let clock = ClockId::Source(graph.id(fixed).clone());
+                        (fixed, port, point.lane_ids().collect::<Vec<_>>(), clock, false, name)
+                    }
+                    Feed::Owner(from) => {
+                        let from_slot = self.slot_of[from].expect("a state owner that feeds another is placed");
+                        let lanes = self.lanes(from_slot, self.region_of[from]);
+                        let from_id = graph.id(from);
+                        if lanes > 1 {
+                            let asked = asked_by(owner);
+                            problems.push(PlacementProblem::new(
+                                Some(id),
+                                Some(asked.capability()),
+                                format!(
+                                    "it is fed by state owner `{}`, which runs on {} lanes, each stamping its output at \
+                                     a derived point of its own, and a state owner fed by another on several lanes is \
+                                     not supported: {}",
+                                    from_id,
+                                    lanes,
+                                    asked.needs("running that state owner on one lane")
+                                ),
+                            ));
+                            continue;
+                        }
+                        let Some(first) = derived.get(from_id).and_then(|ids| ids.first()) else {
+                            problems.push(PlacementProblem::new(
+                                Some(id),
+                                None,
+                                format!(
+                                    "it is fed by state owner `{}`, which has no derived point: the installer assigns \
+                                     one to every state owner of a candidate before placing it",
+                                    from_id
+                                ),
+                            ));
+                            continue;
+                        };
+                        let name = format!("the derived point of state owner `{}`", from_id);
+                        (from, 0, vec![*first], ClockId::Derived(from_id.clone()), true, name)
+                    }
+                };
+
+                // The paths from the feed to the state owner, each as the hops it takes, up to two, and every hop on
+                // them.
+                let Some((first, _)) = graph.target(start, start_port).filter(|&(to, _)| on_path(to)) else {
+                    continue;
+                };
+                let mut paths: BTreeMap<usize, BTreeSet<Vec<Hop>>> = BTreeMap::new();
+                let first_hops = self.hops(start, start_port, first, route_of);
+                let mut used = first_hops.iter().copied().collect::<BTreeSet<_>>();
+                paths.entry(first).or_default().insert(first_hops);
+                for &node in &graph.order {
+                    if !between.contains(&node) {
+                        continue;
+                    }
+                    let Some(here) = paths.get(&node).cloned() else {
+                        continue;
+                    };
+                    for (port, to) in outputs(node) {
+                        if !on_path(to) {
+                            continue;
+                        }
+                        let hops = self.hops(node, port, to, route_of);
+                        used.extend(hops.iter().copied());
+                        let there = paths.entry(to).or_default();
+                        for path in &here {
+                            // Two paths are enough to refuse, so no more are kept.
+                            if there.len() < 2 {
+                                there.insert(path.iter().chain(&hops).copied().collect());
+                            }
+                        }
+                    }
+                }
+                if paths.get(&owner).is_some_and(|paths| paths.len() > 1) {
+                    problems.push(PlacementProblem::new(
+                        Some(id),
+                        None,
+                        format!(
+                            "{} reaches this state owner over more than one path, and a state owner's watermark needs \
+                             one path from each point upstream of it, along which its batches keep their order: join \
+                             the paths before the state owner's input, in one region",
+                            name
+                        ),
+                    ));
+                    continue;
+                }
+                for hop in used {
+                    let (unit, exit) = match hop {
+                        Hop::Entry(..) => continue,
+                        Hop::Exit(slot, region, index) => ((slot, region), StepExit::Slot(index)),
+                        Hop::Internal(slot, from, to) => {
+                            ((slot, from), StepExit::Region(self.keys[slot.get()][to].clone()))
+                        }
+                    };
+                    progress
+                        .entry(unit)
+                        .or_default()
+                        .entry(exit)
+                        .or_default()
+                        .extend(ids.iter().copied());
+                }
+                points.extend(ids.into_iter().map(|point| UpstreamPoint {
+                    id: point,
+                    clock: clock.clone(),
+                    derived: is_derived,
+                }));
+            }
+            points.sort_by_key(|point| point.id);
+            points.dedup();
+
+            // A state owner over several clocks has one point of each: the reset window of a clock of several points,
+            // its lanes, would close buckets at the resets of that clock alone.
+            let mut clocks: BTreeMap<&ClockId, usize> = BTreeMap::new();
+            for point in &points {
+                *clocks.entry(&point.clock).or_default() += 1;
+            }
+            if clocks.len() > 1 {
+                if let Some((clock, count)) = clocks.iter().find(|(_, &count)| count > 1) {
+                    let asked = asked_by(owner);
+                    let clock = match clock {
+                        ClockId::Source(node) => format!("`{}`", node),
+                        ClockId::Derived(node) => format!("state owner `{}`", node),
+                    };
+                    problems.push(PlacementProblem::new(
+                        Some(id),
+                        Some(asked.capability()),
+                        format!(
+                            "its upstream points come from {} clocks, and the clock of {} stamps {} of them, one per \
+                             lane, and a state owner over several clocks one of which stamps several of its points is \
+                             not supported: {}",
+                            clocks.len(),
+                            clock,
+                            count,
+                            asked.needs("running the source on one lane")
+                        ),
+                    ));
+                }
+            }
+            upstream.insert(owner, points);
+        }
+        (upstream, progress)
+    }
+
+    /// Returns the derived points of every state owner that stamp its time-driven output, one per lane of its region,
+    /// by graph position, refusing a state owner without them.
+    fn output_points(
+        &self, derived: &DerivedPoints, problems: &mut Vec<PlacementProblem>,
+    ) -> BTreeMap<usize, Vec<AdmissionPointId>> {
+        let mut outputs = BTreeMap::new();
+        for owner in 0..self.graph.nodes.len() {
+            let Some(slot) = self.slot_of[owner].filter(|_| self.roles[owner] == Role::Isolated) else {
+                continue;
+            };
+            let lanes = usize::from(self.lanes(slot, self.region_of[owner]));
+            let id = self.graph.id(owner);
+            match derived.get(id) {
+                Some(points) if points.len() >= lanes => {
+                    outputs.insert(owner, points[..lanes].to_vec());
+                }
+                _ => problems.push(PlacementProblem::new(
+                    Some(id),
+                    None,
+                    format!(
+                        "it is a state owner without a derived point for each of the {} lanes of its region: the \
+                         installer assigns them to every state owner of a candidate before placing it",
+                        lanes
+                    ),
+                )),
+            }
+        }
+        outputs
+    }
+
+    /// Returns the regions of one placed slot, from the partition, the points upstream of its state owners, the
+    /// progress its regions' exits forward, and its state owners' derived points.
+    fn placements(
+        &self, placed: &SlotPlacement, upstream: &BTreeMap<usize, Vec<UpstreamPoint>>, progress: &Progress,
+        outputs: &BTreeMap<usize, Vec<AdmissionPointId>>,
+    ) -> Vec<RegionPlacement> {
+        let graph = self.graph;
+        let slot = placed.slot;
+        let keys = &self.keys[slot.get()];
+        let in_slot = |node: usize| self.slot_of[node] == Some(slot);
+        // The internal exits: between regions of the slot along its edges, and from the main region to each sub-region
+        // an entry of the slot leads into.
+        let mut internal = vec![BTreeSet::new(); keys.len()];
+        for node in (0..graph.nodes.len()).filter(|&node| in_slot(node)) {
+            let ports = graph.op(node).map_or(0, |op| op.ports().inputs.len());
+            for (from, _) in (0..ports).filter_map(|port| graph.source(node, port)) {
+                if in_slot(from) && self.region_of[from] != self.region_of[node] {
+                    internal[self.region_of[from]].insert(self.region_of[node]);
+                }
+            }
+        }
+        for entry in &placed.entries {
+            if let Some((node, _)) = graph.input_port(&entry.input.node, &entry.input.port) {
+                if in_slot(node) && self.region_of[node] != 0 {
+                    internal[0].insert(self.region_of[node]);
+                }
+            }
+        }
+        keys.iter()
+            .enumerate()
+            .map(|(region, key)| {
+                let members = (0..graph.nodes.len())
+                    .filter(|&node| in_slot(node) && self.region_of[node] == region)
+                    .collect::<Vec<_>>();
+                let owner = members.iter().copied().find(|&node| self.roles[node] == Role::Isolated);
+                let progress = progress.get(&(slot, region)).map_or_else(Vec::new, |exits| {
+                    exits
+                        .iter()
+                        .map(|(exit, points)| (exit.clone(), points.iter().copied().collect()))
+                        .collect()
+                });
+                RegionPlacement {
+                    key: key.clone(),
+                    nodes: members.iter().map(|&node| graph.id(node).clone()).collect(),
+                    state_owner: owner.map(|owner| graph.id(owner).clone()),
+                    entries: if region == 0 {
+                        placed.entries.clone()
+                    } else {
+                        Vec::new()
+                    },
+                    internal: internal[region]
+                        .iter()
+                        .map(|&to| (keys[to].clone(), ExitRouting::One))
+                        .collect(),
+                    upstream: owner
+                        .and_then(|owner| upstream.get(&owner))
+                        .cloned()
+                        .unwrap_or_default(),
+                    progress,
+                    output_points: owner.and_then(|owner| outputs.get(&owner)).cloned().unwrap_or_default(),
+                }
+            })
+            .collect()
+    }
 }

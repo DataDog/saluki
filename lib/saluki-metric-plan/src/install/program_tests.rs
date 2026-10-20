@@ -297,8 +297,22 @@ fn the_composed_plan_places_onto_the_boot_frame_exactly_as_the_boot_plan_does() 
 
     let composed = composed(exported()).unwrap();
     let boot_report = boot_report();
-    let boot = place(&plan, &boot_report, &registry(), &frame).unwrap();
-    let candidate = place(&composed.plan, &composed.report, &registry(), &frame).unwrap();
+    let boot = place(
+        &plan,
+        &boot_report,
+        &registry(),
+        &frame,
+        &crate::compile::DerivedPoints::for_plan(&frame, &plan, &registry()),
+    )
+    .unwrap();
+    let candidate = place(
+        &composed.plan,
+        &composed.report,
+        &registry(),
+        &frame,
+        &crate::compile::DerivedPoints::for_plan(&frame, &composed.plan, &registry()),
+    )
+    .unwrap();
     assert_eq!(candidate, boot);
     for node in &plan.nodes {
         assert_eq!(candidate.site(&node.id), boot.site(&node.id), "`{}`", node.id);
@@ -973,7 +987,7 @@ fn described(record: &crate::runtime::harness::DeliveredRecord) -> String {
     )
 }
 
-// 7. A second aggregation, wherever the frame can run it.
+// 7. A second aggregation, wherever it is written.
 
 /// An artifact with a copy of `dsd_agg` named `id`, spliced in place of the artifact edge `from -> to`.
 fn second_aggregation(id: &str, from: &str, to: &str) -> Value {
@@ -1009,18 +1023,6 @@ fn outcome(composed: Result<Composed, ComposeError>) -> String {
     }
 }
 
-/// The message of a second state owner whose input comes from a region with no exit to an isolation slot.
-fn no_isolation_slot(node: &str, region: &str) -> String {
-    format!(
-        "unplaceable [FrameChanges]: The candidate plan cannot run in the physical structure built at boot: node `{}`: \
-         it is a state owner, which runs only in an isolation slot that the region its input comes from has an exit \
-         to, and the topology built at boot has no such isolation slot for `{}`: a new exit from a region to an \
-         isolation slot requires stage 10 frame changes: the physical structure is built from the default program at \
-         boot, so a restart does not add it.",
-        node, region
-    )
-}
-
 /// Where a second aggregation goes, as (what, the artifact edge it is spliced into).
 const SECOND_AGGREGATIONS: [(&str, (&str, &str)); 5] = [
     (
@@ -1028,7 +1030,7 @@ const SECOND_AGGREGATIONS: [(&str, (&str, &str)); 5] = [
         ("metrics.out", "metrics_fanout.in"),
     ),
     (
-        "after the first, fed by its isolation slot",
+        "after the first, fed by its region",
         ("dsd_agg.out", "dsd_post_agg_filter_in.0"),
     ),
     (
@@ -1043,25 +1045,15 @@ const SECOND_AGGREGATIONS: [(&str, (&str, &str)); 5] = [
 ];
 
 #[test]
-fn a_second_aggregation_validates_and_places_wherever_the_frame_can_run_it() {
-    // A program may have any number of aggregations. Placement runs a second one on the timestamp split's other
-    // branch, whose region has an exit to the one isolation slot, which runs a state owner of each branch by design,
-    // and refuses one where the frame has no isolation slot for it.
-    let expected = [
-        no_isolation_slot("late_agg", "metrics_enrich"),
-        no_isolation_slot("late_agg", "dsd_agg"),
-        // The second takes the first's place in the pre-aggregation region's exit, so the first is the one without an
-        // isolation slot it can reach.
-        no_isolation_slot("dsd_agg", "dsd_post_agg_filter_region"),
-        "places".to_string(),
-        no_isolation_slot("late_agg", "metrics_enrich"),
-    ];
-    for ((what, (from, to)), expected) in SECOND_AGGREGATIONS.into_iter().zip(expected) {
+fn a_second_aggregation_validates_and_places_wherever_it_is_written() {
+    // A program may have any number of aggregations. Placement runs a second one wherever an artifact writes it, in a
+    // region of its own inside the slot its input comes from.
+    for (what, (from, to)) in SECOND_AGGREGATIONS {
         let composed = composed(second_aggregation("late_agg", from, to)).unwrap();
         // The default program's aggregation keeps its name, so the host's telemetry contract is met: no findings.
         assert!(composed.report.findings().is_empty(), "{}: {}", what, composed.report);
         assert_eq!(plan_id(&composed, "late_agg"), "late_agg", "{}", what);
-        assert_eq!(outcome(Ok(composed)), expected, "{}", what);
+        assert_eq!(outcome(Ok(composed)), "places", "{}", what);
     }
 }
 
@@ -1109,9 +1101,10 @@ fn the_installer_core_installs_a_second_aggregation_where_placement_runs_it_star
 }
 
 #[test]
-fn the_one_aggregation_fed_by_the_otlp_input_has_no_isolation_slot_in_the_boot_frame() {
-    // OTLP's records reach the enrichment region, whose region has no exit to an isolation slot: the one aggregation
-    // cannot be fed by them, whether it is fed by them as well or moved to their path, nor can a second one (above).
+fn the_one_aggregation_fed_by_the_otlp_input_runs_where_otlps_records_go_and_joins_none() {
+    // OTLP's records reach the enrichment region: the one aggregation moved to their path runs in a region of its own
+    // there, but fed by them as well, it would join the records of two slots neither of which sends to the other. A
+    // second aggregation there places (above).
 
     // The one aggregation fed by OTLP too, through a merge ahead of it.
     let merged = composed(edited(|document| {
@@ -1166,7 +1159,7 @@ fn the_one_aggregation_fed_by_the_otlp_input_has_no_isolation_slot_in_the_boot_f
         );
     }));
     assert!(moved.as_ref().is_ok_and(|composed| composed.report.is_valid()));
-    assert_eq!(outcome(moved), no_isolation_slot("dsd_agg", "metrics_enrich"));
+    assert_eq!(outcome(moved), "places");
 }
 
 // What does nothing as configured: the detached export leaves it out; published over the default program, it is a

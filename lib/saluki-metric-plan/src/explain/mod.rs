@@ -55,8 +55,9 @@ use crate::{
 
 mod physical;
 pub use self::physical::{
-    AdmissionPointEntry, ExitEntry, FixedEntry, FusionEntry, IsolationEntry, KeyGroupsEntry, LayoutEntry,
-    OutputBindingEntry, PhysicalEdgeEntry, PhysicalPlan, SegmentEntry, SlotEntry, SlotInputEntry,
+    AdmissionPointEntry, ExitEntry, FixedEntry, FusionEntry, InternalExitEntry, KeyGroupsEntry, LayoutEntry,
+    OutputBindingEntry, PhysicalEdgeEntry, PhysicalPlan, RegionEntry, SegmentEntry, SlotEntry, SlotInputEntry,
+    UpstreamEntry,
 };
 
 mod resources;

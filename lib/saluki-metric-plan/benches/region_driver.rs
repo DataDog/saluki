@@ -497,7 +497,7 @@ fn bench_post_aggregation(c: &mut Criterion) {
     // Batches from aggregation carry its isolation slot's output point, which stamps its time-driven output, and the
     // entry of the post-aggregation filter's region that its exit sets.
     let aggregation = slot_named(&frame, "dsd_agg");
-    let Some(output_point) = frame.slot(aggregation).unwrap().output_point(0) else {
+    let Some(&output_point) = compiled.programs[aggregation.get()].output_points().first() else {
         panic!("aggregation runs in an isolation slot");
     };
     let entry = compiled.programs[aggregation.get()]

@@ -491,8 +491,13 @@ fn check_obligations(
     if let Some(profile) = profile {
         ctx = ctx.with_profile(profile);
     }
-    let placement =
-        place_unvalidated(&case.plan, registry, &case.frame).map_err(|error| TestCaseError::fail(error.to_string()))?;
+    let placement = place_unvalidated(
+        &case.plan,
+        registry,
+        &case.frame,
+        &crate::compile::DerivedPoints::for_plan(&case.frame, &case.plan, registry),
+    )
+    .map_err(|error| TestCaseError::fail(error.to_string()))?;
     let (report, _) = check(&ctx, &placement, rewritten).map_err(TestCaseError::fail)?;
     // A fixed point, and a deterministic one: R7 proposes nothing more, and compiling again gives the same plan.
     prop_assert!(

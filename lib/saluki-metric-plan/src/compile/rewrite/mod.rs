@@ -63,7 +63,7 @@ use std::{collections::BTreeSet, fmt};
 
 use super::{
     frame::{FrameTarget, Site, SlotId},
-    placement::{place_unvalidated, Placement},
+    placement::{place_unvalidated, DerivedPoints, Placement},
     Frame,
 };
 use crate::{
@@ -402,7 +402,12 @@ fn run_pipeline(plan: &Plan, ctx: &RewriteContext<'_>, rewrites: &[&dyn Rewrite]
 
     // A plan that does not place is not compiled, so nothing is rewritten; the placement of the plan so far is what
     // each application's is compared with.
-    let Ok(mut placement) = place_unvalidated(plan, ctx.registry, ctx.frame) else {
+    let Ok(mut placement) = place_unvalidated(
+        plan,
+        ctx.registry,
+        ctx.frame,
+        &DerivedPoints::for_plan(ctx.frame, plan, ctx.registry),
+    ) else {
         return optimized;
     };
     let mut report = ctx.report.clone();
@@ -462,8 +467,13 @@ fn check(
             errors.into_iter().collect::<Vec<_>>().join("; ")
         ));
     }
-    let placed = place_unvalidated(plan, ctx.registry, ctx.frame)
-        .map_err(|error| format!("the rewritten plan would not fit the frame built at boot: {}", error))?;
+    let placed = place_unvalidated(
+        plan,
+        ctx.registry,
+        ctx.frame,
+        &DerivedPoints::for_plan(ctx.frame, plan, ctx.registry),
+    )
+    .map_err(|error| format!("the rewritten plan would not fit the frame built at boot: {}", error))?;
     if let Some(moved) = moved_kernel(ctx, placement, &placed, plan) {
         return Err(moved);
     }

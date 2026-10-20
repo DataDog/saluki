@@ -6,8 +6,8 @@ use saluki_core::execution::{BatchHeader, EntryId, ExitId};
 use super::{telemetry::Layout, RegionError};
 use crate::{
     compile::{
-        DecisionExit, DecisionFunction, EntryKey, EntrySource, ExitSet, KernelIndex, LeaseTable, RegionProgram,
-        RegisterId, Route, Step, StepExit,
+        DecisionExit, DecisionFunction, EntryKey, EntrySource, ExitSet, KernelIndex, LeaseTable, RegionKey,
+        RegionProgram, RegisterId, Route, Step, StepExit,
     },
     ir::NodeId,
 };
@@ -111,7 +111,7 @@ pub(super) struct ProgramCode {
 
 impl ProgramCode {
     /// Translates a program for a region with `exit_count` exits, which is the region of the state owner `state`, if
-    /// it is given: today, an isolation slot's.
+    /// it is given, and has the internal exits `internal`, toward the other regions of its slot it sends to.
     ///
     /// Each exit toward an encode host writes the lease of the output it delivers to from `leases`, the lease table of
     /// the program's generation, so that the host knows which encoder stream a buffer belongs to. An exit toward a
@@ -119,18 +119,16 @@ impl ProgramCode {
     ///
     /// # Errors
     ///
-    /// Returns an error if the program refers to a kernel, decision, register, exit, or state parameters it does not
-    /// have, if a decision is malformed, if a decision's targets do not match its exits, if a state owner's kernel runs
-    /// outside an isolation slot, as a stateless step, or without exactly one entry for its time-driven output, if an
-    /// isolation slot's program has any step but state steps and exits, or if an exit delivers to an encode host
-    /// without a lease table, or to an output the lease table has no lease for: a program the region cannot run, since
-    /// the host could only drop such buffers as addressed to no lease, or if a step writes to another region of the
-    /// slot, which a region cannot do yet.
+    /// Returns an error if the program refers to a kernel, decision, register, exit, internal exit, or state
+    /// parameters it does not have, if a decision is malformed, if a decision's targets do not match its exits, if a
+    /// state owner's kernel runs as a stateless step, outside the region of its state owner, or without exactly one
+    /// entry for its time-driven output, or if an exit delivers to an encode host without a lease table, or to an output
+    /// the lease table has no lease for: a program the region cannot run, since the host could only drop such buffers
+    /// as addressed to no lease. A region program has state steps for at most one state owner, `state`.
     pub fn translate(
         program: &RegionProgram, layout: &Layout, exit_count: usize, state: Option<&NodeId>,
-        leases: Option<&LeaseTable>,
+        internal: &[(RegionKey, ExitId)], leases: Option<&LeaseTable>,
     ) -> Result<Self, RegionError> {
-        let isolation = state.is_some();
         let malformed = |entry: &EntryKey, message: String| RegionError::MalformedProgram {
             slot: program.slot(),
             entry: *entry,
@@ -193,12 +191,6 @@ impl ProgramCode {
 
             let mut ops = Vec::with_capacity(entry.steps.len());
             for step in &entry.steps {
-                if isolation && !matches!(step, Step::State { .. } | Step::Exit { .. }) {
-                    return Err(malformed(
-                        key,
-                        "a stateless step runs in an isolation slot, which runs only state owners".to_string(),
-                    ));
-                }
                 let op = match step {
                     Step::Map {
                         kernel: index,
@@ -297,24 +289,31 @@ impl ProgramCode {
                         entry: consumer,
                     } => {
                         let exit = match exit {
-                            StepExit::Slot(exit) => exit,
-                            StepExit::Region(region) => {
+                            StepExit::Slot(exit) if exit.get() < exit_count => ExitId::new(exit.get() as u16),
+                            StepExit::Slot(exit) => {
                                 return Err(malformed(
                                     key,
-                                    format!("a step writes to {} of the slot, which has no other regions", region),
+                                    format!(
+                                        "a step writes to exit {}, but the region has {} exits",
+                                        exit.get(),
+                                        exit_count
+                                    ),
                                 ))
                             }
+                            StepExit::Region(region) => internal
+                                .iter()
+                                .find(|(key, _)| key == region)
+                                .map(|(_, exit)| *exit)
+                                .ok_or_else(|| {
+                                    malformed(
+                                        key,
+                                        format!(
+                                            "a step writes to {}, which the region has no internal exit to",
+                                            region
+                                        ),
+                                    )
+                                })?,
                         };
-                        if exit.get() >= exit_count {
-                            return Err(malformed(
-                                key,
-                                format!(
-                                    "a step writes to exit {}, but the region has {} exits",
-                                    exit.get(),
-                                    exit_count
-                                ),
-                            ));
-                        }
                         let entry = match (consumer, leases) {
                             (EntrySource::None, _) => None,
                             (EntrySource::Region(entry), _) => Some(*entry),
@@ -343,7 +342,7 @@ impl ProgramCode {
                         };
                         Op::Exit {
                             register: register(*id)?,
-                            exit: ExitId::new(exit.get() as u16),
+                            exit,
                             entry,
                         }
                     }
@@ -364,11 +363,11 @@ impl ProgramCode {
                                 format!("a step feeds kernel {} its state, which is no state owner's", index),
                             ));
                         };
-                        if !isolation {
+                        if state != Some(&found.key.node) {
                             return Err(malformed(
                                 key,
                                 format!(
-                                    "a step feeds the state owner `{}`, which runs only in an isolation slot",
+                                    "a step feeds the state owner `{}`, which runs only in a region of its own",
                                     found.key.node
                                 ),
                             ));
@@ -406,6 +405,15 @@ impl ProgramCode {
         for (index, kernel) in program.kernels().iter().enumerate() {
             if kernel.lineage.is_none() {
                 continue;
+            }
+            if state != Some(&kernel.key.node) {
+                return Err(malformed(
+                    &EntryKey::StateOutput(KernelIndex::new(index as u16)),
+                    format!(
+                        "the program has the kernel of state owner `{}`, which runs only in a region of its own",
+                        kernel.key.node
+                    ),
+                ));
             }
             let output_key = EntryKey::StateOutput(KernelIndex::new(index as u16));
             let outputs = entries

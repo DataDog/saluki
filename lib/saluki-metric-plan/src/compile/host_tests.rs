@@ -4,6 +4,7 @@
 //! The default program here is the one with its outputs bound to `dd_out`, `mrf_dd_out`, and `cluster_agent_out`, as
 //! `fixtures/default-program-resources.json` binds them, and its frame has the three hosts' encode hosts.
 
+use saluki_core::execution::AdmissionPointId;
 use serde_json::{json, Value};
 
 use super::*;
@@ -91,6 +92,7 @@ fn unplaceable(plan: &Plan, catalog: &MemoryCatalog) -> (Vec<String>, Vec<Missin
         &validated(plan, catalog),
         &OperatorRegistry::native(),
         &boot_frame(),
+        &crate::compile::DerivedPoints::for_plan(&boot_frame(), plan, &OperatorRegistry::native()),
     )
     .unwrap_err();
     let PlacementError::Unplaceable { problems } = &error else {
@@ -125,11 +127,14 @@ fn every_fused_slot_with_an_output_downstream_has_one_exit_to_every_encode_host(
     ];
     expected.extend(encode_hosts.iter().cloned());
     assert_eq!(exits(&frame, "dsd_pre_aggregation"), named(&expected));
-    // The isolation slot has only its boot edge.
-    assert_eq!(
-        exits(&frame, "dsd_agg"),
-        named(&[("dsd_post_agg_filter_region", FrameTarget::Slot(SlotId::new(4)))])
-    );
+    // Aggregation's slot has the exits of any slot: its boot edge, then the tap downstream of it, and every encode
+    // host, so that stateless nodes after aggregation, or a state owner after it, can emit from its regions.
+    let mut expected = vec![
+        ("dsd_post_agg_filter_region", FrameTarget::Slot(SlotId::new(4))),
+        ("dsd_client_telemetry", destination("dsd_client_telemetry")),
+    ];
+    expected.extend(encode_hosts.iter().cloned());
+    assert_eq!(exits(&frame, "dsd_agg"), named(&expected));
     assert_eq!(
         frame
             .encode_host(&HostId::new("mrf_dd_out").unwrap())
@@ -152,7 +157,10 @@ fn an_idle_host_gets_its_exits_so_an_output_bound_to_it_later_places_without_a_r
     let enrich = exits(&frame, "metrics_enrich");
     assert_eq!(enrich.last(), Some(&("spare_encode".to_string(), host("spare_out"))));
     assert_eq!(enrich.len(), 4);
-    assert!(exits(&frame, "dsd_agg").iter().all(|(name, _)| name != "spare_encode"));
+    assert_eq!(
+        exits(&frame, "dsd_agg").last(),
+        Some(&("spare_encode".to_string(), host("spare_out")))
+    );
 
     // The autoscaling failover output bound to the spare host later places, as a lease there.
     let moved = bound(|value| {
@@ -173,7 +181,14 @@ fn an_idle_host_gets_its_exits_so_an_output_bound_to_it_later_places_without_a_r
         },
     );
     let report = validated(&moved, &catalog);
-    let placement = place(&moved, &report, &registry, &frame).unwrap();
+    let placement = place(
+        &moved,
+        &report,
+        &registry,
+        &frame,
+        &crate::compile::DerivedPoints::for_plan(&frame, &moved, &registry),
+    )
+    .unwrap();
     let enrich = frame
         .slots()
         .iter()
@@ -275,7 +290,14 @@ fn a_new_or_rebound_output_on_a_frame_host_places_as_a_lease_with_no_new_structu
         },
     );
     let report = validated(&rebound, &catalog_rebound);
-    assert!(place(&rebound, &report, &registry, &frame).is_ok());
+    assert!(place(
+        &rebound,
+        &report,
+        &registry,
+        &frame,
+        &crate::compile::DerivedPoints::for_plan(&frame, &rebound, &registry)
+    )
+    .is_ok());
 
     // The policy's primary branch emitting to an implied output for an endpoint of its own instead: it runs as a lease
     // of `dd_out`'s encode host, by the enrichment slot's exit to it, which writes the implied output's lease.
@@ -377,9 +399,10 @@ fn an_output_bound_to_a_delivery_host_the_frame_lacks_needs_a_restart() {
 }
 
 #[test]
-fn structure_only_an_artifact_asks_for_is_unsupported_until_stage_10() {
-    // An artifact aggregating after enrichment: the topology has no isolation slot there, and a restart would not add
-    // one, since the frame is built from the default program.
+fn an_artifact_aggregating_after_enrichment_runs_it_in_a_sub_region_of_enrichments_slot() {
+    // An artifact aggregating after enrichment: the topology has no slot of aggregation's there, so it runs in a
+    // sub-region of enrichment's slot, with the nodes after it, over every source's point and aggregation's derived
+    // point.
     let hash = "sha256:00000000000000000000000000000000000000000000000000000000000000a7";
     let plan = bound(|value| {
         value["provenance"] = json!({"artifact": {"revision": 7, "hash": hash}});
@@ -396,18 +419,69 @@ fn structure_only_an_artifact_asks_for_is_unsupported_until_stage_10() {
             .unwrap()
             .push(json!({"from": "metrics.out", "to": "second_agg.in"}));
     });
-    let (problems, capabilities) = unplaceable(&plan, &default_program_resources_catalog());
-    assert_eq!(capabilities, vec![MissingCapability::FrameChanges]);
+    let catalog = default_program_resources_catalog();
+    let frame = boot_frame();
+    let registry = OperatorRegistry::native();
+    let derived = DerivedPoints::for_plan(&frame, &plan, &registry);
+    let owner = "second_agg".parse::<NodeId>().unwrap();
+    let dsd_agg = "dsd_agg".parse::<NodeId>().unwrap();
+    // Its derived point is numbered after aggregation's output point.
+    let base = frame.derived_point_base();
+    assert_eq!(derived.get(&owner), Some(&[AdmissionPointId::new(base)][..]));
+    let compiled = compile(&plan, &validated(&plan, &catalog), &registry, &frame, &derived).unwrap();
+    let enrich = frame
+        .slots()
+        .iter()
+        .find(|slot| slot.name.as_str() == "metrics_enrich")
+        .unwrap();
+    let key = RegionKey::State(owner.clone());
+    assert_eq!(compiled.placement.region_of(&owner), Some((enrich.id, key.clone())));
+    let regions = &compiled.placement.slot(enrich.id).unwrap().regions;
     assert_eq!(
-        problems,
-        vec![
-            "node `second_agg`: it is a state owner, which runs only in an isolation slot that the region its input \
-              comes from has an exit to, and the topology built at boot has no such isolation slot for \
-              `metrics_enrich`: a new exit from a region to an isolation slot requires stage 10 frame changes: the \
-              physical structure is built from the default program at boot, so a restart does not add it"
-                .to_string()
-        ]
+        regions.iter().map(|region| region.key.clone()).collect::<Vec<_>>(),
+        vec![RegionKey::Main, key.clone()]
     );
+    // The routing after the aggregation runs in its region, and writes the slot's exits.
+    assert!(regions[1].nodes.contains(&"metrics_fanout".parse().unwrap()));
+    assert_eq!(regions[0].internal, vec![(key.clone(), ExitRouting::One)]);
+    let upstream = &regions[1].upstream;
+    let real = frame.admission_point_ids().collect::<Vec<_>>();
+    assert_eq!(
+        upstream
+            .iter()
+            .filter(|point| !point.derived)
+            .map(|point| point.id)
+            .collect::<Vec<_>>(),
+        real
+    );
+    let dsd_agg_point = frame.boot_output_points(&dsd_agg).unwrap()[0];
+    assert_eq!(
+        upstream
+            .iter()
+            .filter(|point| point.derived)
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec![UpstreamPoint {
+            id: dsd_agg_point,
+            clock: ClockId::Derived(dsd_agg.clone()),
+            derived: true
+        }]
+    );
+    assert_eq!(
+        compiled.placement.admission_upstream(&owner),
+        real.iter().copied().collect()
+    );
+    // Enrichment's main region forwards every point's progress to the sub-region.
+    let mut every = real.clone();
+    every.push(dsd_agg_point);
+    every.sort();
+    assert_eq!(regions[0].progress, vec![(StepExit::Region(key.clone()), every)]);
+    let [sub] = compiled.sub_programs.as_slice() else {
+        panic!("one sub-region");
+    };
+    assert_eq!((sub.slot(), sub.region()), (enrich.id, &key));
+    assert_eq!(sub.state_upstream(), upstream.as_slice());
+    assert_eq!(sub.output_points(), &[AdmissionPointId::new(base)]);
     assert_eq!(MissingCapability::FrameChanges.to_string(), "stage 10 frame changes");
     assert_eq!(MissingCapability::Restart.to_string(), "a restart");
     assert_eq!(MissingCapability::Restart.stage(), None);

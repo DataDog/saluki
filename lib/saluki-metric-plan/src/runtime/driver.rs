@@ -1157,6 +1157,7 @@ impl MetricRegionDriver {
             &layout,
             self.exit_count,
             self.state_node.as_ref(),
+            &[],
             leases.as_deref(),
         )?;
         let state_error = |message: String| RegionError::StateBinding {

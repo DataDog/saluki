@@ -817,14 +817,11 @@ mod physical {
             physical.fixed[7].admission_points[0].to.as_deref(),
             Some("output mrf_metrics_encode")
         );
-        assert_eq!(
-            physical.slots[3].isolation,
-            Some(crate::explain::IsolationEntry {
-                output_point: 9,
-                output_points: Vec::new(),
-                upstream: vec![0],
-            })
-        );
+        let [main] = physical.slots[3].regions.as_slice() else {
+            panic!("aggregation runs in its slot's main region");
+        };
+        assert_eq!(main.output_point, Some(9));
+        assert_eq!(main.upstream.iter().map(|point| point.id).collect::<Vec<_>>(), vec![0]);
 
         let idle = |slot: usize| {
             physical.slots[slot]
@@ -833,9 +830,8 @@ mod physical {
                 .map(|exit| exit.idle)
                 .collect::<Vec<_>>()
         };
-        // Every fused slot but enrichment has an exit to the next one and idle exits to every output; aggregation's
-        // isolation slot only its exit to the post-aggregation filter; enrichment to its primary output and the four
-        // gateways, and idle ones to the gateways' outputs.
+        // Every slot but enrichment has an exit to the next one and idle exits to every output, aggregation's too;
+        // enrichment to its primary output and the four gateways, and idle ones to the gateways' outputs.
         let names = physical.slots.iter().map(|slot| slot.name.as_str()).collect::<Vec<_>>();
         assert_eq!(
             names,
@@ -860,7 +856,7 @@ mod physical {
                 busy_then_idle(1, 6),
                 busy_then_idle(1, 6),
                 busy_then_idle(2, 6),
-                busy_then_idle(1, 0),
+                busy_then_idle(1, 6),
                 busy_then_idle(2, 5),
                 busy_then_idle(5, 4),
             ]
@@ -868,10 +864,10 @@ mod physical {
         assert_eq!(physical.slots[5].entries.len(), 5);
         assert_eq!(physical.slots[5].entries[4].key, "entry 0");
 
-        // 9 admission points (4 of them direct edges to encoders) and 7 + 7 + 8 + 1 + 7 + 9 exits.
-        assert_eq!(physical.edges.len(), 48);
+        // 9 admission points (4 of them direct edges to encoders) and 7 + 7 + 8 + 7 + 7 + 9 exits.
+        assert_eq!(physical.edges.len(), 54);
         let kinds = |kind: &str| physical.edges.iter().filter(|edge| edge.kind == kind).count();
-        assert_eq!((kinds("admission"), kinds("direct"), kinds("exit")), (5, 4, 39));
+        assert_eq!((kinds("admission"), kinds("direct"), kinds("exit")), (5, 4, 45));
 
         assert_eq!(physical.fusion.len(), 30);
         let separated = physical
@@ -1029,6 +1025,7 @@ mod physical {
             "dsd_pre_aggregation",
             "dsd_prefix_filter_region",
             "dsd_no_agg_split_region",
+            "dsd_agg",
             "dsd_post_agg_filter_region",
         ];
         let idle_exits = |output: &str, slots: &[&str]| {
@@ -1364,8 +1361,8 @@ mod resources {
         assert_eq!(tap.encode_host, None);
         assert!(!tap.removed && !main.removed);
         // Every fused slot with an output downstream has one exit to every encode host, named after it, and none to
-        // the outputs bound to them; the isolation slot has only its boot edges' exits.
-        for slot in physical.slots.iter().filter(|slot| slot.isolation.is_none()) {
+        // the outputs bound to them, aggregation's slot as any other.
+        for slot in &physical.slots {
             let names = slot.exits.iter().map(|exit| exit.name.as_str()).collect::<Vec<_>>();
             for encoder in ["dd_metrics_encode", "mrf_metrics_encode", "af_metrics_encode"] {
                 let exits = names.iter().filter(|name| **name == encoder).count();
@@ -1542,15 +1539,24 @@ mod lanes {
 
         // Each state lane stamps its time-driven output at a point of its own, after every source's point.
         let agg = &physical.slots[1];
+        let [main] = agg.regions.as_slice() else {
+            panic!("aggregation runs in its slot's main region");
+        };
+        assert_eq!((main.output_point, main.output_points.clone()), (Some(6), vec![6, 7]));
         assert_eq!(
-            agg.isolation,
-            Some(IsolationEntry {
-                output_point: 6,
-                output_points: vec![6, 7],
-                upstream: vec![0, 1],
-            })
+            main.upstream.iter().map(|point| point.id).collect::<Vec<_>>(),
+            vec![0, 1]
         );
-        assert_eq!(routing(agg), vec![named("metrics_enrich", "spread")]);
+        assert_eq!(
+            routing(agg),
+            vec![
+                named("metrics_enrich", "spread"),
+                one("dsd_client_telemetry"),
+                one("dd_metrics_encode"),
+                one("mrf_metrics_encode"),
+                one("af_metrics_encode"),
+            ]
+        );
         assert!(routing(&physical.slots[2]).iter().all(|(_, routing)| routing == "one"));
 
         // The physical edges say the same, and so do the segments of the lane points and the state lanes.
@@ -1584,7 +1590,7 @@ mod lanes {
             "      exit 0 dsd_agg -> dsd_agg, keyed (key groups 0 to 127 on lane 0, 128 to 255 on lane 1), progress \
              of admission points 0, 1",
             "      exit 1 metrics_enrich -> metrics_enrich, affinity",
-            "      isolation slot, output points 6, 7, watermark of admission points 0, 1",
+            "      region main, state owner dsd_agg, output points 6, 7, watermark of admission points 0, 1",
             "    dsd_pre_aggregation.dsd_agg -> dsd_agg (exit, keyed)",
             "  output points 6 to 7 dsd_agg.out (time-driven)",
         ] {
@@ -1647,10 +1653,7 @@ mod lanes {
             .all(|point| point.lanes == 1 && point.routing == "one"));
         assert!(read.edges.iter().all(|edge| edge.routing == "one"));
         assert!(read.segments.iter().all(|segment| segment.lanes == 1));
-        assert_eq!(
-            read.slots[1].isolation.as_ref().unwrap().output_points,
-            Vec::<u32>::new()
-        );
+        assert_eq!(read.slots[1].regions[0].output_points, Vec::<u32>::new());
     }
 
     /// Removes every member named in `names` from every object in `value`.

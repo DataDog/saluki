@@ -1,11 +1,13 @@
 //! The physical sections of explain documents: the frame, its slots, fences, exits, and direct edges, rewrite R1's
-//! fusion decisions, segments, and output bindings. Isolation slots, the admission points that feed their state owners,
-//! and the exits that carry those points' progress are marked; documents without them read as they always did.
+//! fusion decisions, segments, and output bindings. The regions of each slot that run a state owner, and its
+//! sub-regions, are listed with the points upstream of each state owner, the derived points that stamp its output, and
+//! the internal exits between them; the admission points upstream of a state owner and the exits that carry their
+//! progress are marked. Documents without them read as they always did.
 //!
 //! A frame laid out on lanes ([`LanePolicy`][crate::compile::LanePolicy]) says so: its lane counts and whether R1
 //! pipelines its slots, the lanes of every admission point and slot, how every edge into a slot with lanes reaches its
-//! lanes (with the key groups each lane owns behind a keyed exit), and the output point of every lane of an isolation
-//! slot. A frame on one lane, laid out with R1's pipelining, has none of these members, so its document reads as it
+//! lanes (with the key groups each lane owns behind a keyed exit), and the output point of every lane of a state
+//! owner's region. A frame on one lane, laid out with R1's pipelining, has none of these members, so its document reads as it
 //! did before lanes, and a document without them reads as one on one lane.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,8 +19,8 @@ use serde_json::Value;
 use super::boundary_name;
 use crate::{
     compile::{
-        ExitIndex, ExitRouting, Frame, FrameSource, FrameTarget, FusionVerdict, Placement, PointRouting, Site, SlotId,
-        SlotKind,
+        ClockId, ExitIndex, ExitRouting, Frame, FrameSource, FrameTarget, FusionVerdict, Placement, PointRouting,
+        RegionKey, Site, SlotId, StepExit,
     },
     extension::DeliveryPolicy,
     ir::{NodeId, OperatorName, OutputId, Plan, PortName, PortRef, RecipientId},
@@ -59,7 +61,7 @@ pub struct LayoutEntry {
     /// lanes.
     pub dogstatsd_lanes: u16,
 
-    /// The lanes of each isolation slot whose state owner's state is partitioned, fed by other slots' exits only: the
+    /// The lanes of each boot state owner's slot whose state is partitioned, fed by other slots' exits only: the
     /// state lanes.
     pub state_lanes: u16,
 
@@ -120,7 +122,8 @@ pub struct AdmissionPointEntry {
     #[serde(default = "one_routing", skip_serializing_if = "is_one_routing")]
     pub routing: String,
 
-    /// Whether the point feeds a state owner: it sends heartbeats toward it, and a cut is armed over it.
+    /// Whether the point is upstream of a state owner of the explained plan: its latest admission time is part of the
+    /// state owner's watermark, and a cut of the state owner is armed over it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub feeds_state: bool,
 }
@@ -145,20 +148,64 @@ fn is_one_routing(routing: &str) -> bool {
     routing == ExitRouting::One.name()
 }
 
-/// What an isolation slot is: the region of one state owner, which owns its state, watermark, and flush ticks.
+/// One region of a slot that runs a state owner, or a sub-region: a task of the slot's component with an input of its
+/// own, which runs a state owner and the stateless nodes after it in the slot.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct IsolationEntry {
-    /// The ID that stamps the slot's time-driven output: with lanes, its first lane's.
-    pub output_point: u32,
+pub struct RegionEntry {
+    /// `main` for the slot's own region, or ``state `<node>` `` for the sub-region of a state owner.
+    pub region: String,
 
-    /// The IDs that stamp each lane's time-driven output, in lane order, for a slot on several lanes; left out for a
-    /// slot on one lane, whose ID is `output_point`.
+    /// The explained plan's nodes in the region, in plan order.
+    pub nodes: Vec<NodeId>,
+
+    /// The region's state owner, if it runs one: it owns its state, watermark, and flush ticks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_owner: Option<NodeId>,
+
+    /// The derived point that stamps the state owner's time-driven output: with lanes, its first lane's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_point: Option<u32>,
+
+    /// The derived points that stamp each lane's time-driven output, in lane order, for a region on several lanes; left
+    /// out for a region on one lane, whose point is `output_point`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub output_points: Vec<u32>,
 
-    /// The admission points whose latest admission times make up its watermark: every lane's point of a point with
-    /// lanes.
-    pub upstream: Vec<u32>,
+    /// The points whose latest admission times make up the state owner's watermark, in ID order: every lane's point of
+    /// a point with lanes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub upstream: Vec<UpstreamEntry>,
+
+    /// The internal exits to the slot's other regions that the region sends to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub internal: Vec<InternalExitEntry>,
+}
+
+/// One point upstream of a state owner.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct UpstreamEntry {
+    /// The point's ID.
+    pub id: u32,
+
+    /// The node whose clock stamps it: the fixed component of an admission point, or the state owner whose derived
+    /// point it is.
+    pub clock: NodeId,
+
+    /// Whether it is a state owner's derived point, whose batches hold buckets closed before their stamp.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub derived: bool,
+}
+
+/// One internal exit, from a region of a slot to a later one.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct InternalExitEntry {
+    /// The region it leads to.
+    pub to: String,
+
+    /// The points whose progress it forwards toward a state owner, when a batch leaves the region without output on
+    /// it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub progress_points: Vec<u32>,
 }
 
 /// One slot.
@@ -168,8 +215,8 @@ pub struct SlotEntry {
     pub name: String,
 
     /// The estimated cost per event of the slot's boot nodes, in nanoseconds, which R1's cost model kept within its
-    /// budget. Documents written before it was added have none, read as zero. An isolation slot, which R1 never fuses,
-    /// is not priced: its cost is zero, whatever its state owner's work.
+    /// budget. Documents written before it was added have none, read as zero. A boot state owner's slot, which R1 never
+    /// fuses, is not priced: its cost is zero, whatever its state owner's work.
     #[serde(default)]
     pub cost: u32,
 
@@ -187,9 +234,14 @@ pub struct SlotEntry {
     /// The slot's exits, in order.
     pub exits: Vec<ExitEntry>,
 
-    /// What makes the slot an isolation slot, if it is one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub isolation: Option<IsolationEntry>,
+    /// Whether the boot layout gave the slot to a boot state owner, which R1 neither fuses nor prices.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub state_slot: bool,
+
+    /// The regions of the slot that run a state owner, and its sub-regions, in region order: none for a slot whose one
+    /// region runs no state owner.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub regions: Vec<RegionEntry>,
 }
 
 /// One entry of a slot: a logical edge entering it.
@@ -236,7 +288,7 @@ pub struct ExitEntry {
     pub key_groups: Vec<KeyGroupsEntry>,
 }
 
-/// The key groups one lane of a state owner's isolation slot owns, behind a keyed exit: a contiguous range.
+/// The key groups one lane of a boot state owner's slot owns, behind a keyed exit: a contiguous range.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct KeyGroupsEntry {
     /// The lane.
@@ -291,7 +343,7 @@ pub struct SegmentEntry {
     pub admission_point: u32,
 
     /// The number of points the segment starts at, with consecutive IDs from `admission_point`: the lanes of a point
-    /// with lanes, or of an isolation slot on lanes, each lane of which stamps its time-driven output at a point of its
+    /// with lanes, or of a state owner's region on lanes, each lane of which stamps its time-driven output at a point of its
     /// own. One, which documents leave out, without lanes.
     #[serde(default = "one_lane", skip_serializing_if = "is_one_lane")]
     pub lanes: u16,
@@ -299,7 +351,7 @@ pub struct SegmentEntry {
     /// The admission point's port.
     pub from: PortRef,
 
-    /// `admit` or `readmit`, or `time-driven` for an isolation slot's output point, which stamps what a state owner
+    /// `admit` or `readmit`, or `time-driven` for a state owner's derived point, which stamps what a state owner
     /// emits at its flush ticks.
     pub mode: String,
 
@@ -364,6 +416,13 @@ impl PhysicalPlan {
     pub fn of(plan: &Plan, frame: &Frame, placement: &Placement) -> Self {
         let slot_name = |slot: SlotId| frame.describe_target(&FrameTarget::Slot(slot));
         let present = plan.nodes.iter().map(|node| &node.id).collect::<BTreeSet<_>>();
+        let regions = placement.slots().iter().flat_map(|placed| &placed.regions);
+        let upstream = regions
+            .clone()
+            .flat_map(|region| &region.upstream)
+            .filter(|point| !point.derived)
+            .map(|point| point.id)
+            .collect::<BTreeSet<_>>();
 
         let (lanes, options) = (frame.lane_policy(), frame.options());
         let layout = (!lanes.is_one() || !options.pipelining).then_some(LayoutEntry {
@@ -393,7 +452,7 @@ impl PhysicalPlan {
                         mode: mode_name(point.mode).to_string(),
                         to: point.route.as_ref().map(|target| frame.describe_target(target)),
                         routing: point.routing.name().to_string(),
-                        feeds_state: point.feeds_state,
+                        feeds_state: point.lane_ids().any(|id| upstream.contains(&id)),
                     })
                     .collect(),
             })
@@ -404,6 +463,16 @@ impl PhysicalPlan {
             .iter()
             .map(|slot| {
                 let placed = placement.slot(slot.id);
+                let placed_regions = placed.map(|placed| placed.regions.as_slice()).unwrap_or_default();
+                let progress = |index: ExitIndex| {
+                    let points = placed_regions
+                        .iter()
+                        .flat_map(|region| &region.progress)
+                        .filter(|(exit, _)| *exit == StepExit::Slot(index))
+                        .flat_map(|(_, points)| points.iter().map(|point| point.get()))
+                        .collect::<BTreeSet<_>>();
+                    points.into_iter().collect()
+                };
                 SlotEntry {
                     name: slot.name.to_string(),
                     cost: slot.cost,
@@ -430,27 +499,51 @@ impl PhysicalPlan {
                             name: exit.name.to_string(),
                             to: frame.describe_target(&exit.target),
                             idle: placement.is_idle(slot.id, exit.index),
-                            progress_points: exit.progress_points.iter().map(|point| point.get()).collect(),
+                            progress_points: progress(exit.index),
                             routing: exit.routing.name().to_string(),
                             key_groups: key_groups(&exit.routing),
                         })
                         .collect(),
-                    isolation: match &slot.kind {
-                        SlotKind::Isolation {
-                            output_points,
-                            upstream,
-                        } => Some(IsolationEntry {
-                            // Lane 0's is the slot's output point without lanes.
-                            output_point: output_points.first().map_or(0, |point| point.get()),
-                            output_points: if output_points.len() > 1 {
-                                output_points.iter().map(|point| point.get()).collect()
+                    state_slot: slot.nodes.iter().any(|node| frame.boot_output_points(node).is_some()),
+                    regions: placed_regions
+                        .iter()
+                        .filter(|region| region.key != RegionKey::Main || region.state_owner.is_some())
+                        .map(|region| RegionEntry {
+                            region: region.key.to_string(),
+                            nodes: region.nodes.clone(),
+                            state_owner: region.state_owner.clone(),
+                            output_point: region.output_points.first().map(|point| point.get()),
+                            output_points: if region.output_points.len() > 1 {
+                                region.output_points.iter().map(|point| point.get()).collect()
                             } else {
                                 Vec::new()
                             },
-                            upstream: upstream.iter().map(|point| point.get()).collect(),
-                        }),
-                        SlotKind::Fused => None,
-                    },
+                            upstream: region
+                                .upstream
+                                .iter()
+                                .map(|point| UpstreamEntry {
+                                    id: point.id.get(),
+                                    clock: match &point.clock {
+                                        ClockId::Source(node) | ClockId::Derived(node) => node.clone(),
+                                    },
+                                    derived: point.derived,
+                                })
+                                .collect(),
+                            internal: region
+                                .internal
+                                .iter()
+                                .map(|(to, _)| InternalExitEntry {
+                                    to: to.to_string(),
+                                    progress_points: region
+                                        .progress
+                                        .iter()
+                                        .filter(|(exit, _)| *exit == StepExit::Region(to.clone()))
+                                        .flat_map(|(_, points)| points.iter().map(|point| point.get()))
+                                        .collect(),
+                                })
+                                .collect(),
+                        })
+                        .collect(),
                 }
             })
             .collect();
@@ -525,7 +618,7 @@ impl PhysicalPlan {
                     FusionVerdict::Isolation { slot } => (
                         "isolation",
                         format!(
-                            "the edge enters or leaves the isolation slot `{}`, which runs its state owner alone",
+                            "the edge enters or leaves `{}`, the slot the boot layout gives a state owner of its own",
                             slot_name(*slot)
                         ),
                     ),
@@ -663,10 +756,16 @@ fn emitting_exits(
 }
 
 /// Returns the segment of every admission point of the frame whose fixed component the plan has, then the segment of
-/// every state owner the isolation slots run, which starts at its slot's output point: its time-driven output is
-/// stamped anew there. The lanes of a point, or of an isolation slot, share one segment, which starts at all of their
-/// points.
+/// every state owner, which starts at its derived point: its time-driven output is stamped anew there. The lanes of a
+/// point, or of a state owner's region, share one segment, which starts at all of their points.
 fn segments(plan: &Plan, frame: &Frame, placement: &Placement) -> Vec<SegmentEntry> {
+    // Every state owner, with the derived points of its region.
+    let owners = placement
+        .slots()
+        .iter()
+        .flat_map(|placed| &placed.regions)
+        .filter_map(|region| Some((region.state_owner.as_ref()?, region.output_points.as_slice())))
+        .collect::<BTreeMap<_, _>>();
     let index = plan
         .nodes
         .iter()
@@ -685,11 +784,7 @@ fn segments(plan: &Plan, frame: &Frame, placement: &Placement) -> Vec<SegmentEnt
         let mut ends = Vec::new();
         let mut pending = leaving.get(&from).copied().into_iter().collect::<Vec<_>>();
         while let Some(node) = pending.pop() {
-            let isolated = match placement.site(node) {
-                Some(Site::Slot(slot)) => frame.slot(slot).is_some_and(|slot| slot.is_isolation()),
-                _ => false,
-            };
-            if placement.site(node) == Some(Site::Fixed) || isolated {
+            if placement.site(node) == Some(Site::Fixed) || owners.contains_key(node) {
                 let end = node.to_string();
                 if !ends.contains(&end) {
                     ends.push(end);
@@ -745,21 +840,19 @@ fn segments(plan: &Plan, frame: &Frame, placement: &Placement) -> Vec<SegmentEnt
             segment(point.id.get(), point.lanes, from, mode_name(point.mode))
         })
         .collect::<Vec<_>>();
-    for (slot, placed) in frame.slots().iter().zip(placement.slots()) {
-        let Some(output_point) = slot.output_point(0) else {
-            continue;
-        };
-        for node in &placed.nodes {
-            // A state owner's time-driven output leaves by its output port; every edge from it starts the segment.
-            let ports = plan
-                .edges
-                .iter()
-                .filter(|edge| &edge.from.node == node)
-                .map(|edge| edge.from.clone())
-                .collect::<BTreeSet<_>>();
-            for from in ports {
-                segments.push(segment(output_point.get(), slot.lanes, from, "time-driven"));
-            }
+    let mut owned = owners.iter().map(|(&node, &points)| (node, points)).collect::<Vec<_>>();
+    owned.sort_by_key(|(node, _)| index.get(node).copied().unwrap_or(usize::MAX));
+    for (node, points) in owned {
+        // A state owner's time-driven output leaves by its output port; every edge from it starts the segment.
+        let ports = plan
+            .edges
+            .iter()
+            .filter(|edge| &edge.from.node == node)
+            .map(|edge| edge.from.clone())
+            .collect::<BTreeSet<_>>();
+        let lanes = u16::try_from(points.len()).unwrap_or(u16::MAX);
+        for from in ports {
+            segments.push(segment(points[0].get(), lanes, from, "time-driven"));
         }
     }
     segments
@@ -782,7 +875,7 @@ mod tests {
     }
 
     #[test]
-    fn an_isolation_slot_its_feeding_point_and_its_progress_exits_are_marked_and_end_the_segment() {
+    fn a_state_owners_region_its_upstream_point_and_its_progress_exits_are_marked_and_end_the_segment() {
         let plan = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
         let registry = OperatorRegistry::native();
         let report = Validator::new(&registry, &default_program_catalog()).validate(&plan);
@@ -798,19 +891,28 @@ mod tests {
         let physical = PhysicalPlan::of(&compiled.plan, &frame, &compiled.placement);
 
         let agg = physical.slots.iter().find(|slot| slot.name == "dsd_agg").unwrap();
+        assert!(agg.state_slot);
         assert_eq!(
-            agg.isolation,
-            Some(IsolationEntry {
-                output_point: 5,
+            agg.regions,
+            vec![RegionEntry {
+                region: "main".to_string(),
+                nodes: vec!["dsd_agg".parse().unwrap()],
+                state_owner: Some("dsd_agg".parse().unwrap()),
+                output_point: Some(5),
                 output_points: Vec::new(),
-                upstream: vec![0],
-            })
+                upstream: vec![UpstreamEntry {
+                    id: 0,
+                    clock: "dsd_in".parse().unwrap(),
+                    derived: false,
+                }],
+                internal: Vec::new(),
+            }]
         );
         assert!(physical
             .slots
             .iter()
             .filter(|slot| slot.name != "dsd_agg")
-            .all(|slot| slot.isolation.is_none()));
+            .all(|slot| slot.regions.is_empty() && !slot.state_slot));
         let progress = physical
             .slots
             .iter()
@@ -863,7 +965,7 @@ mod tests {
             .to_text();
         for line in [
             "      admission point 0 metrics (admit) -> dsd_pre_aggregation, feeds state",
-            "      isolation slot, output point 5, watermark of admission points 0",
+            "      region main, state owner dsd_agg, output point 5, watermark of admission point 0",
             "      exit 0 dsd_agg -> dsd_agg, progress of admission points 0",
         ] {
             assert!(
@@ -874,12 +976,16 @@ mod tests {
             );
         }
 
-        // A document written without the new fields reads as one without isolation slots.
+        // A document written without the new fields reads as one without state owners.
         let mut value = serde_json::to_value(&physical).unwrap();
         for slot in value["slots"].as_array_mut().unwrap() {
-            slot.as_object_mut().unwrap().remove("isolation");
+            slot.as_object_mut().unwrap().remove("regions");
+            slot.as_object_mut().unwrap().remove("state_slot");
         }
         let read: PhysicalPlan = serde_json::from_value(value).unwrap();
-        assert!(read.slots.iter().all(|slot| slot.isolation.is_none()));
+        assert!(read
+            .slots
+            .iter()
+            .all(|slot| slot.regions.is_empty() && !slot.state_slot));
     }
 }

@@ -157,22 +157,31 @@ fn the_default_program_on_lanes_splits_dogstatsd_into_lane_points_and_routes_eac
     // Aggregation's watermark is made of both lane points, and each state lane stamps its output at a point of its own,
     // numbered after every point of the sources.
     assert_eq!(
-        agg.kind,
-        SlotKind::Isolation {
-            output_points: vec![point(6), point(7), point(8)],
-            upstream: vec![point(0), point(1)],
-        }
+        frame.boot_output_points(&"dsd_agg".parse::<NodeId>().unwrap()),
+        Some(&[point(6), point(7), point(8)][..])
     );
-    assert_eq!(agg.output_point(2), Some(point(8)));
-    assert_eq!(agg.output_point(3), None);
-    assert_eq!(pre.output_point(0), None);
-    assert_eq!(frame.affected_points(&[agg.id]), vec![point(0), point(1)]);
-    let order = frame.cancel_lock_order();
-    assert_eq!(order.len(), 6);
+    let plan = default_program();
+    let registry = OperatorRegistry::native();
+    let compiled = compile_unvalidated(
+        &plan,
+        &registry,
+        &frame,
+        &DerivedPoints::for_plan(&frame, &plan, &registry),
+    )
+    .unwrap();
+    let main = &compiled.placement.slot(agg.id).unwrap().regions[0];
+    assert_eq!(main.output_points, vec![point(6), point(7), point(8)]);
     assert_eq!(
-        &order[4..],
-        &[point(0), point(1)],
-        "the points that feed state lock last"
+        main.upstream.iter().map(|upstream| upstream.id).collect::<Vec<_>>(),
+        vec![point(0), point(1)]
+    );
+    assert!(main
+        .upstream
+        .iter()
+        .all(|upstream| upstream.clock == ClockId::Source("dsd_in".parse::<NodeId>().unwrap()) && !upstream.derived));
+    assert_eq!(
+        compiled.programs[agg.id.get()].output_points(),
+        main.output_points.as_slice()
     );
 
     // The exit into aggregation is the repartition edge, routing by key over three lanes, and forwards both points'
@@ -679,7 +688,9 @@ fn a_candidate_passes_every_lanes_batches_through_the_keyed_exit_to_the_state_la
 #[test]
 fn without_pipelining_aggregation_fed_straight_by_dogstatsd_places_through_the_one_pre_aggregation_slot() {
     // A candidate that drops the whole pre-aggregation chain feeds aggregation straight from DogStatsD. R1's pipelined
-    // frame cannot run it: the point's slot has no exit to aggregation, only to the next stage of its pipeline. With
+    // frame cannot run it: the point's slot has no exit to aggregation, only to the next stage of its pipeline, so
+    // aggregation runs in the point's slot, and the nodes after it there too, until enrichment joins them with the
+    // other sources, whose slot that one has no exit to. With
     // fusion maximal, the point's slot is the one that leads to aggregation, so it passes each producer lane's batches
     // through its keyed exit.
     let mut value = serde_json::from_str::<Value>(DEFAULT_PROGRAM_JSON).unwrap();
@@ -712,11 +723,17 @@ fn without_pipelining_aggregation_fed_straight_by_dogstatsd_places_through_the_o
     let registry = OperatorRegistry::native();
 
     let pipelined = Frame::compute(&default_program(), &registry, &namer).unwrap();
-    let error = place_unvalidated(&straight, &registry, &pipelined).unwrap_err();
+    let error = place_unvalidated(
+        &straight,
+        &registry,
+        &pipelined,
+        &crate::compile::DerivedPoints::for_plan(&pipelined, &straight, &registry),
+    )
+    .unwrap_err();
     assert!(
         error
             .to_string()
-            .contains("no such isolation slot for `dsd_pre_aggregation`"),
+            .contains("it joins records from the regions `dsd_pre_aggregation`, `metrics_enrich`"),
         "{}",
         error
     );
@@ -848,7 +865,10 @@ fn a_state_owner_without_a_partition_key_runs_on_one_lane_and_is_placed_on_state
     assert_eq!(agg.lanes, 1);
     let pre = slot_named(&frame, "dsd_pre_aggregation");
     assert_eq!(exit_to(&frame, pre, "dsd_agg").routing, ExitRouting::One);
-    assert_eq!(agg.output_point(0), Some(point(6)));
+    assert_eq!(
+        frame.boot_output_points(&"dsd_agg".parse().unwrap()),
+        Some(&[point(6)][..])
+    );
 
     // A frame whose state lanes hold a partitioned state owner's state cannot run one that keeps its state whole: the
     // restart that native configuration asks for lays the slot out on one lane; an artifact cannot have it at all.
@@ -859,7 +879,13 @@ fn a_state_owner_without_a_partition_key_runs_on_one_lane_and_is_placed_on_state
         (true, MissingCapability::FrameChanges),
     ] {
         let candidate = unpartitioned_default_program(artifact);
-        let error = place_unvalidated(&candidate, &registry, &frame).unwrap_err();
+        let error = place_unvalidated(
+            &candidate,
+            &registry,
+            &frame,
+            &crate::compile::DerivedPoints::for_plan(&frame, &candidate, &registry),
+        )
+        .unwrap_err();
         let PlacementError::Unplaceable { problems } = &error else {
             panic!("expected an unplaceable candidate, not {:?}", error);
         };
@@ -871,7 +897,7 @@ fn a_state_owner_without_a_partition_key_runs_on_one_lane_and_is_placed_on_state
         assert!(
             problem.message.contains("cannot be partitioned by context key")
                 && problem.message.contains("`dsd_agg` on 3 lanes")
-                && problem.message.contains("running the isolation slot on one lane"),
+                && problem.message.contains("running the region on one lane"),
             "{}",
             problem.message
         );
@@ -879,7 +905,13 @@ fn a_state_owner_without_a_partition_key_runs_on_one_lane_and_is_placed_on_state
 
     // On one state lane, the same candidate places.
     let frame = laned_with(&default_program(), &registry, lanes(2, 1, 2)).unwrap();
-    assert!(place_unvalidated(&unpartitioned_default_program(true), &registry, &frame).is_ok());
+    assert!(place_unvalidated(
+        &unpartitioned_default_program(true),
+        &registry,
+        &frame,
+        &crate::compile::DerivedPoints::for_plan(&frame, &unpartitioned_default_program(true), &registry)
+    )
+    .is_ok());
 }
 
 #[test]
@@ -927,8 +959,9 @@ fn a_state_owner_fed_by_another_state_owner_and_a_point_on_lanes_has_no_frame_an
         error
     );
 
-    // A point of another source merged before aggregation is a second point upstream of it, which is what the frame
-    // says, on lanes as on one.
+    // A point of another source merged before aggregation is a second point upstream of it: on one lane, of a clock of
+    // its own; on lanes, the frame cannot spread the other source's point over the producer lanes of a slot with a
+    // state owner downstream.
     let merged = plan_of(
         json!([
             dogstatsd("src"),
@@ -950,10 +983,22 @@ fn a_state_owner_fed_by_another_state_owner_and_a_point_on_lanes_has_no_frame_an
             ("dsd_agg.out", "emit.in"),
         ],
     );
-    for policy in [LanePolicy::ONE, lanes(2, 2, 2)] {
-        let error = laned(&merged, policy).unwrap_err();
-        assert!(matches!(error, FrameError::StateOwnerPoints { .. }), "{}", error);
-    }
+    let frame = laned(&merged, LanePolicy::ONE).unwrap();
+    let registry = OperatorRegistry::native();
+    let compiled = compile_unvalidated(
+        &merged,
+        &registry,
+        &frame,
+        &DerivedPoints::for_plan(&frame, &merged, &registry),
+    )
+    .unwrap();
+    let owner = "dsd_agg".parse::<NodeId>().unwrap();
+    assert_eq!(
+        compiled.placement.admission_upstream(&owner),
+        [point(0), point(1)].into()
+    );
+    let error = laned(&merged, lanes(2, 2, 2)).unwrap_err();
+    assert!(matches!(error, FrameError::Lanes { .. }), "{}", error);
 }
 
 #[test]
@@ -1034,11 +1079,114 @@ fn a_fence_on_the_way_to_aggregation_leaves_the_producer_lanes_before_it_and_one
         (host_point.id, host_point.lanes, host_point.routing),
         (point(4), 1, PointRouting::One)
     );
-    assert_eq!(frame.affected_points(&[agg.id]), vec![point(4)]);
+    let registry = OperatorRegistry::native();
+    let compiled = compile_unvalidated(
+        &plan,
+        &registry,
+        &frame,
+        &DerivedPoints::for_plan(&frame, &plan, &registry),
+    )
+    .unwrap();
+    assert_eq!(
+        compiled.placement.admission_upstream(&"dsd_agg".parse().unwrap()),
+        [point(4)].into()
+    );
     // The emit after aggregation runs on the post-aggregation lanes, fed by a spread exit.
     let tail = slot_named(&frame, "emit_region");
     assert_eq!(tail.lanes, 2);
     assert_eq!(exit_to(&frame, agg, "emit_region").routing, ExitRouting::Spread);
+}
+
+/// The default program with a second aggregation after enrichment, as an artifact might write it.
+fn aggregating_after_enrichment() -> Plan {
+    let mut value = serde_json::from_str::<Value>(DEFAULT_PROGRAM_JSON).unwrap();
+    let mut aggregate = value["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["id"] == "dsd_agg")
+        .unwrap()
+        .clone();
+    aggregate["id"] = json!("again");
+    value["nodes"].as_array_mut().unwrap().push(aggregate);
+    for edge in value["edges"].as_array_mut().unwrap() {
+        if edge["from"] == "metrics.out" {
+            edge["from"] = json!("again.out");
+        }
+    }
+    value["edges"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"from": "metrics.out", "to": "again.in"}));
+    Plan::from_value(value).unwrap()
+}
+
+#[test]
+fn with_lanes_a_state_owner_fed_by_one_on_several_lanes_or_over_several_clocks_one_of_several_points_is_refused() {
+    let plan = aggregating_after_enrichment();
+    let registry = OperatorRegistry::native();
+    let again = "again".parse::<NodeId>().unwrap();
+    let problems = |policy: LanePolicy| {
+        let frame = frame_on(policy, false).unwrap();
+        match place_unvalidated(
+            &plan,
+            &registry,
+            &frame,
+            &DerivedPoints::for_plan(&frame, &plan, &registry),
+        ) {
+            Ok(placement) => {
+                assert_eq!(
+                    placement.region_of(&again).map(|(_, key)| key),
+                    Some(RegionKey::State(again.clone()))
+                );
+                Vec::new()
+            }
+            Err(PlacementError::Unplaceable { problems }) => {
+                assert!(
+                    problems.iter().all(|problem| problem.node.as_ref() == Some(&again)),
+                    "{:?}",
+                    problems
+                );
+                assert!(problems
+                    .iter()
+                    .all(|problem| problem.capability == Some(MissingCapability::Restart)));
+                problems.into_iter().map(|problem| problem.message).collect()
+            }
+            Err(error) => panic!("{}", error),
+        }
+    };
+
+    // Without lanes, it runs in a sub-region of enrichment's slot, over every source and aggregation's derived point.
+    assert!(problems(LanePolicy::ONE).is_empty());
+    assert!(
+        problems(lanes(1, 1, 4)).is_empty(),
+        "post-aggregation lanes alone change nothing"
+    );
+
+    // Aggregation on three state lanes stamps its output at three derived points of one clock.
+    let [fed] = problems(lanes(1, 3, 1))
+        .try_into()
+        .unwrap_or_else(|problems: Vec<String>| panic!("{:?}", problems));
+    assert!(
+        fed.contains("it is fed by state owner `dsd_agg`, which runs on 3 lanes")
+            && fed.contains("running that state owner on one lane needs a restart"),
+        "{}",
+        fed
+    );
+
+    // DogStatsD's passthrough reaches it on two producer lanes, two points of one clock among the other sources'.
+    let [clocks] = problems(lanes(2, 1, 1))
+        .try_into()
+        .unwrap_or_else(|problems: Vec<String>| panic!("{:?}", problems));
+    assert!(
+        clocks.contains("the clock of `dsd_in` stamps 2 of them, one per lane")
+            && clocks.contains("running the source on one lane needs a restart"),
+        "{}",
+        clocks
+    );
+
+    // Both at once.
+    assert_eq!(problems(lanes(2, 3, 4)).len(), 2);
 }
 
 // Random plans on random lanes.

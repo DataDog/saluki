@@ -725,8 +725,13 @@ fn check_obligations(case: &Case, optimized: &crate::compile::Optimized) -> Resu
 
     // The rewritten plan is valid and runs in the boot frame.
     let ctx = RewriteContext::new(registry, &case.frame, &case.report);
-    let placement =
-        place_unvalidated(&case.plan, registry, &case.frame).map_err(|error| TestCaseError::fail(error.to_string()))?;
+    let placement = place_unvalidated(
+        &case.plan,
+        registry,
+        &case.frame,
+        &crate::compile::DerivedPoints::for_plan(&case.frame, &case.plan, registry),
+    )
+    .map_err(|error| TestCaseError::fail(error.to_string()))?;
     let (report, _) = check(&ctx, &placement, rewritten).map_err(TestCaseError::fail)?;
 
     // Outputs never change; sources and fences stay as they were.

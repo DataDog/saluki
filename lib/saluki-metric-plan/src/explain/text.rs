@@ -314,15 +314,15 @@ fn write_physical(physical: &PhysicalPlan, out: &mut String) -> std::fmt::Result
     }
     writeln!(out, "  slots ({})", physical.slots.len())?;
     for slot in &physical.slots {
-        // R1 never fuses an isolation slot, so its cost model does not price one.
-        match &slot.isolation {
-            Some(_) => writeln!(
+        // R1 never fuses a boot state owner's slot, so its cost model does not price one.
+        match slot.state_slot {
+            true => writeln!(
                 out,
-                "    {} (not priced: R1 never fuses an isolation slot){}",
+                "    {} (not priced: R1 never fuses a state owner's slot){}",
                 slot.name,
                 lanes_suffix(slot.lanes)
             )?,
-            None => writeln!(
+            false => writeln!(
                 out,
                 "    {} (estimated {} ns per event){}",
                 slot.name,
@@ -330,24 +330,64 @@ fn write_physical(physical: &PhysicalPlan, out: &mut String) -> std::fmt::Result
                 lanes_suffix(slot.lanes)
             )?,
         }
-        if let Some(isolation) = &slot.isolation {
-            let upstream = isolation.upstream.iter().map(ToString::to_string).collect::<Vec<_>>();
-            let output = if isolation.output_points.is_empty() {
-                format!("output point {}", isolation.output_point)
-            } else {
-                let lanes = isolation
-                    .output_points
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>();
-                format!("output points {}", list(&lanes))
-            };
-            writeln!(
-                out,
-                "      isolation slot, {}, watermark of admission points {}",
-                output,
-                list(&upstream)
-            )?;
+        for region in &slot.regions {
+            write!(out, "      region {}", region.region)?;
+            if region.region != "main" {
+                let nodes = region.nodes.iter().map(ToString::to_string).collect::<Vec<_>>();
+                write!(out, ", nodes {}", list(&nodes))?;
+            }
+            if let Some(owner) = &region.state_owner {
+                let outputs = if region.output_points.is_empty() {
+                    region.output_point.iter().map(ToString::to_string).collect::<Vec<_>>()
+                } else {
+                    region.output_points.iter().map(ToString::to_string).collect::<Vec<_>>()
+                };
+                let points = |derived: bool| {
+                    region
+                        .upstream
+                        .iter()
+                        .filter(|point| point.derived == derived)
+                        .map(|point| match derived {
+                            false => point.id.to_string(),
+                            true => format!("{} of `{}`", point.id, point.clock),
+                        })
+                        .collect::<Vec<_>>()
+                };
+                let mut watermark = Vec::new();
+                for (derived, kind) in [(false, "admission"), (true, "derived")] {
+                    let points = points(derived);
+                    if !points.is_empty() {
+                        let plural = if points.len() == 1 { "point" } else { "points" };
+                        watermark.push(format!("{} {} {}", kind, plural, list(&points)));
+                    }
+                }
+                write!(
+                    out,
+                    ", state owner {}, output {} {}, watermark of {}",
+                    owner,
+                    if outputs.len() == 1 { "point" } else { "points" },
+                    list(&outputs),
+                    if watermark.is_empty() {
+                        "no points".to_string()
+                    } else {
+                        list(&watermark)
+                    }
+                )?;
+            }
+            writeln!(out)?;
+            for internal in &region.internal {
+                let progress = if internal.progress_points.is_empty() {
+                    String::new()
+                } else {
+                    let points = internal
+                        .progress_points
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>();
+                    format!(", progress of points {}", list(&points))
+                };
+                writeln!(out, "        internal exit -> {}{}", internal.to, progress)?;
+            }
         }
         let nodes = slot.nodes.iter().map(ToString::to_string).collect::<Vec<_>>();
         writeln!(out, "      nodes {}", list(&nodes))?;
@@ -408,7 +448,7 @@ fn write_physical(physical: &PhysicalPlan, out: &mut String) -> std::fmt::Result
     writeln!(out)?;
     writeln!(out, "segments ({})", physical.segments.len())?;
     for segment in &physical.segments {
-        // An isolation slot's output point stamps time-driven output; it admits nothing.
+        // A state owner's derived point stamps its time-driven output; it admits nothing.
         let kind = if segment.mode == "time-driven" {
             "output"
         } else {

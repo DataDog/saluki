@@ -1,4 +1,4 @@
-//! Region programs: what each slot runs for one generation.
+//! Region programs: what each region of each slot runs for one generation.
 //!
 //! A [`RegionProgram`] is plain data plus the [specifications][KernelSpec] of the kernels it runs, so that a region
 //! host can build its kernels, rebuild them after a panic, and share them with other generations. It has one
@@ -32,7 +32,7 @@
 //!   generation's [`LeaseTable`], and none otherwise: a fixed component or a fixed destination reads none. Exit buffers
 //!   leave by value.
 //! - [`Step::Drop`] discards a register's buffers, counting their events and points as policy loss of the node.
-//! - [`Step::State`] hands a register's buffers to a state owner's kernel in an isolation slot, with the per-call
+//! - [`Step::State`] hands a register's buffers to a state owner's kernel in its region, with the per-call
 //!   parameters of the batch's generation. What the kernel emits later, at its flush ticks, runs the steps of its
 //!   [`EntryKey::StateOutput`] entry.
 //!
@@ -71,7 +71,7 @@ use super::{
         EXIT_SET_CAPACITY, MEMO_COST_FLOOR,
     },
     frame::{ExitIndex, Frame, FrameTarget, SlotId},
-    placement::{DerivedPoints, EntryKey, Placement, RegionKey, UpstreamPoint},
+    placement::{EntryKey, Placement, RegionKey, UpstreamPoint},
     resolve,
     rewrite::r5b::PushedFilterSite,
     Role,
@@ -278,7 +278,7 @@ pub struct ProgramKernel {
     /// How to build the kernel.
     pub spec: KernelSpec,
 
-    /// The lineage of the kernel's state, for a state owner in an isolation slot, and `None` for a stateless kernel.
+    /// The lineage of the kernel's state, for a state owner, and `None` for a stateless kernel.
     pub lineage: Option<LineageInfo>,
 }
 
@@ -524,7 +524,7 @@ pub struct EntryProgram {
     pub registers: usize,
 }
 
-/// What one slot runs for one generation.
+/// What one region of a slot runs for one generation.
 #[derive(Clone, Debug)]
 pub struct RegionProgram {
     slot: SlotId,
@@ -727,11 +727,11 @@ impl fmt::Debug for SiteFilter {
 ///
 /// Returns an error if a `split`'s predicate has a binding without a resolved value, if a node's parameters cannot be
 /// hashed, if a `tee` has more output ports than a decision has exits ([`EXIT_SET_CAPACITY`]), if a state owner has
-/// no derived point, or if the plan does not match its placement.
+/// or if the plan does not match its placement.
 pub(crate) fn compile_programs_with(
-    plan: &Plan, registry: &OperatorRegistry, frame: &Frame, placement: &Placement, derived: &DerivedPoints,
-    pushed: &[SiteFilter], rewrites: DecisionRewrites,
-) -> Result<Vec<RegionProgram>, CompileError> {
+    plan: &Plan, registry: &OperatorRegistry, frame: &Frame, placement: &Placement, pushed: &[SiteFilter],
+    rewrites: DecisionRewrites,
+) -> Result<(Vec<RegionProgram>, Vec<RegionProgram>), CompileError> {
     let graph = resolve(plan, registry).map_err(|problems| CompileError::Internal {
         message: format!("a placed plan has structural problems: {}", problems.join("; ")),
     })?;
@@ -742,18 +742,59 @@ pub(crate) fn compile_programs_with(
             *slot = Some(placed);
         }
     }
+    let position = graph
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(position, written)| (&written.node.id, position))
+        .collect::<BTreeMap<_, _>>();
+    let mut region_of = vec![0; graph.nodes.len()];
+    for placed in placement.slots() {
+        for (region, placed_region) in placed.regions.iter().enumerate() {
+            for node in &placed_region.nodes {
+                if let Some(&node) = position.get(node) {
+                    region_of[node] = region;
+                }
+            }
+        }
+    }
+    // The edges entering each sub-region, from the slot's other regions or from outside the slot through its main
+    // region, in plan edge order: each is an entry of the sub-region's program.
+    let mut sub_entries: BTreeMap<(SlotId, usize), Vec<(usize, usize)>> = BTreeMap::new();
+    for edge in &plan.edges {
+        let (Some((from, _)), Some((to, port))) = (
+            graph.output_port(&edge.from.node, &edge.from.port),
+            graph.input_port(&edge.to.node, &edge.to.port),
+        ) else {
+            continue;
+        };
+        let Some(slot) = slot_of[to] else { continue };
+        if region_of[to] != 0 && (slot_of[from] != Some(slot) || region_of[from] != region_of[to]) {
+            sub_entries.entry((slot, region_of[to])).or_default().push((to, port));
+        }
+    }
     let context = Context {
         plan,
         graph: &graph,
         roles: &roles,
         slot_of: &slot_of,
+        region_of: &region_of,
+        sub_entries: &sub_entries,
         frame,
         placement,
-        derived,
         pushed,
         rewrites,
     };
-    frame.slots().iter().map(|slot| context.compile_slot(slot.id)).collect()
+    let mut programs = Vec::with_capacity(frame.slots().len());
+    let mut sub_programs = Vec::new();
+    for slot in frame.slots() {
+        programs.push(context.compile_region(slot.id, 0)?);
+        let regions = placement.slot(slot.id).map_or(1, |placed| placed.regions.len());
+        for region in 1..regions {
+            sub_programs.push(context.compile_region(slot.id, region)?);
+        }
+    }
+    Ok((programs, sub_programs))
 }
 
 struct Context<'a, 'p> {
@@ -761,9 +802,13 @@ struct Context<'a, 'p> {
     graph: &'a Graph<'p>,
     roles: &'a [Role],
     slot_of: &'a [Option<SlotId>],
+    /// The position of each node's region among its slot's regions, by graph position.
+    region_of: &'a [usize],
+    /// The edges entering each sub-region, by slot and region position, each as its input port: the entries of the
+    /// sub-region's program, in order.
+    sub_entries: &'a BTreeMap<(SlotId, usize), Vec<(usize, usize)>>,
     frame: &'a Frame,
     placement: &'a Placement,
-    derived: &'a DerivedPoints,
     pushed: &'a [SiteFilter],
     rewrites: DecisionRewrites,
 }
@@ -778,11 +823,28 @@ struct SlotDecisions {
 }
 
 impl Context<'_, '_> {
-    fn compile_slot(&self, slot: SlotId) -> Result<RegionProgram, CompileError> {
+    /// Returns `true` if `node` runs in the region at position `region` of `slot`.
+    fn in_region(&self, slot: SlotId, region: usize, node: usize) -> bool {
+        self.slot_of[node] == Some(slot) && self.roles[node] != Role::Fixed && self.region_of[node] == region
+    }
+
+    /// Returns the key of the region at position `region` of `slot`.
+    fn region_key(&self, slot: SlotId, region: usize) -> Result<&RegionKey, CompileError> {
+        self.placement
+            .slot(slot)
+            .and_then(|placed| placed.regions.get(region))
+            .map(|placed| &placed.key)
+            .ok_or_else(|| CompileError::Internal {
+                message: format!("the placement has no region {} in slot {}", region, slot),
+            })
+    }
+
+    fn compile_region(&self, slot: SlotId, region: usize) -> Result<RegionProgram, CompileError> {
         let graph = self.graph;
         let members = (0..graph.nodes.len())
-            .filter(|&node| self.slot_of[node] == Some(slot))
+            .filter(|&node| self.in_region(slot, region, node))
             .collect::<Vec<_>>();
+        let key = self.region_key(slot, region)?.clone();
 
         let too_large = |what| CompileError::TooLarge {
             slot,
@@ -837,30 +899,65 @@ impl Context<'_, '_> {
             decisions,
             exits: decision_exits,
             decision_of,
-        } = self.decisions(slot, &members)?;
+        } = self.decisions(slot, region, &members)?;
 
         let placed = self.placement.slot(slot).ok_or_else(|| CompileError::Internal {
             message: format!("the placement has no slot {}", slot),
         })?;
-        let mut entries = Vec::with_capacity(placed.entries.len());
-        for entry in &placed.entries {
-            let (start, port) =
-                graph
-                    .input_port(&entry.input.node, &entry.input.port)
+        let placed_region = &placed.regions[region];
+        let builder = |start: usize, port: usize| EntryBuilder {
+            context: self,
+            slot,
+            region,
+            kernel_of: &kernel_of,
+            params_of: &params_of,
+            decision_of: &decision_of,
+            decision_exits: &decision_exits,
+            steps: Vec::new(),
+            registers: 1,
+            inputs: BTreeMap::from([((start, port), RegisterId(0))]),
+            folded: vec![false; graph.nodes.len()],
+        };
+        // The main region's entries are the slot's; a sub-region's, the edges entering it.
+        let mut slot_entries = Vec::new();
+        if region == 0 {
+            for entry in &placed.entries {
+                let (start, port) =
+                    graph
+                        .input_port(&entry.input.node, &entry.input.port)
+                        .ok_or_else(|| CompileError::Internal {
+                            message: format!("entry input `{}` does not resolve", entry.input),
+                        })?;
+                slot_entries.push((entry.key, entry.input.clone(), start, port));
+            }
+        } else {
+            for (index, &(start, port)) in self.sub_entries.get(&(slot, region)).into_iter().flatten().enumerate() {
+                let id = u16::try_from(index).map_err(|_| too_large("entries"))?;
+                let name = graph.op(start).expect("configured").ports().inputs[port].name.clone();
+                slot_entries.push((
+                    EntryKey::Region(EntryId::new(id)),
+                    PortRef::new(graph.id(start).clone(), name),
+                    start,
+                    port,
+                ));
+            }
+        }
+        let mut entries = Vec::with_capacity(slot_entries.len());
+        for (entry_key, input, start, port) in slot_entries {
+            if !self.in_region(slot, region, start) {
+                // The main region passes the entry's batches on, unchanged: to the sub-region of the slot the edge
+                // enters, or through an exit to the state owner of another slot they enter.
+                let (exit, next) = self
+                    .route_to(slot, region, start, port)
                     .ok_or_else(|| CompileError::Internal {
-                        message: format!("entry input `{}` does not resolve", entry.input),
+                        message: format!(
+                            "slot {} passes batches on to `{}`, which none of its exits leads to",
+                            slot, input
+                        ),
                     })?;
-            if self.slot_of[start] != Some(slot) {
-                // The slot passes the entry's batches through, unchanged, to the state owner they enter.
-                let (exit, next) = self.exit_for(slot, start, port).ok_or_else(|| CompileError::Internal {
-                    message: format!(
-                        "slot {} passes batches through to `{}`, which none of its exits leads to",
-                        slot, entry.input
-                    ),
-                })?;
                 entries.push(EntryProgram {
-                    key: entry.key,
-                    input: entry.input.clone(),
+                    key: entry_key,
+                    input,
                     steps: vec![Step::Exit {
                         register: RegisterId(0),
                         exit,
@@ -870,84 +967,74 @@ impl Context<'_, '_> {
                 });
                 continue;
             }
-            let builder = EntryBuilder {
-                context: self,
-                slot,
-                kernel_of: &kernel_of,
-                params_of: &params_of,
-                decision_of: &decision_of,
-                decision_exits: &decision_exits,
-                steps: Vec::new(),
-                registers: 1,
-                inputs: BTreeMap::from([((start, port), RegisterId(0))]),
-                folded: vec![false; graph.nodes.len()],
-            };
-            let (steps, registers) = builder.build(start).map_err(|()| too_large("registers"))?;
+            let (steps, registers) = builder(start, port).build(start).map_err(|()| too_large("registers"))?;
             entries.push(EntryProgram {
-                key: entry.key,
-                input: entry.input.clone(),
+                key: entry_key,
+                input,
                 steps,
                 registers,
             });
         }
 
-        // What each state owner emits at its flush ticks leaves the slot from its output port, as the node's edges say.
-        for &node in &members {
-            if self.roles[node] != Role::Isolated {
-                continue;
-            }
+        // What the region's state owner emits at its flush ticks runs from its output port, through the nodes after it
+        // in the region, to the region's exits, as the node's edges say.
+        let owner = members.iter().copied().find(|&node| self.roles[node] == Role::Isolated);
+        if let Some(node) = owner {
             let kernel = kernel_of[node].expect("every state owner has a kernel");
-            entries.push(self.state_output(slot, node, kernel)?);
+            let id = graph.id(node);
+            let internal = |what: &str| CompileError::Internal {
+                message: format!("state owner `{}` {}", id, what),
+            };
+            let op = graph.op(node).expect("a resolved plan configures every node");
+            let [port] = op.ports().outputs.as_slice() else {
+                return Err(internal("does not have exactly one output port"));
+            };
+            let (to, to_port) = graph
+                .target(node, 0)
+                .ok_or_else(|| internal("has an unconnected output port"))?;
+            let (steps, registers) = if self.in_region(slot, region, to) {
+                builder(to, to_port).build(to).map_err(|()| too_large("registers"))?
+            } else {
+                let (exit, entry) = self
+                    .route_to(slot, region, to, to_port)
+                    .ok_or_else(|| internal("feeds a node its region has no exit to"))?;
+                (
+                    vec![Step::Exit {
+                        register: RegisterId(0),
+                        exit,
+                        entry,
+                    }],
+                    1,
+                )
+            };
+            entries.push(EntryProgram {
+                key: EntryKey::StateOutput(kernel),
+                input: PortRef::new(id.clone(), port.name.clone()),
+                steps,
+                registers,
+            });
         }
 
-        let fingerprint = fingerprint(slot, &entries, &kernels, &decisions, &state_params).map_err(|message| {
-            CompileError::Internal {
-                message: format!("the program of slot {} has no canonical form: {}", slot, message),
-            }
-        })?;
-        // The slot runs one region, which forwards progress on the exits the frame found on a path to a state owner,
-        // and stamps its state owner's output with the frame's output points.
-        let frame_slot = self.frame.slot(slot).ok_or_else(|| CompileError::Internal {
-            message: format!("the frame has no slot {}", slot),
-        })?;
-        let progress = frame_slot
-            .exits
-            .iter()
-            .filter(|exit| !exit.progress_points.is_empty())
-            .map(|exit| (StepExit::Slot(exit.index), exit.progress_points.clone()))
-            .collect();
-        let output_points = match members.iter().find(|&&node| self.roles[node] == Role::Isolated) {
-            Some(&owner) => {
-                let id = graph.id(owner);
-                let lanes = usize::from(frame_slot.lanes);
-                match self.derived.get(id) {
-                    Some(points) if points.len() >= lanes => points[..lanes].to_vec(),
-                    _ => {
-                        return Err(CompileError::Internal {
-                            message: format!("state owner `{}` has no derived point for each lane of its region", id),
-                        })
-                    }
+        let fingerprint =
+            fingerprint(slot, &key, &entries, &kernels, &decisions, &state_params).map_err(|message| {
+                CompileError::Internal {
+                    message: format!(
+                        "the program of {} of slot {} has no canonical form: {}",
+                        key, slot, message
+                    ),
                 }
-            }
-            None => Vec::new(),
-        };
-        let state_upstream = placed
-            .regions
-            .iter()
-            .find(|region| region.key == RegionKey::Main)
-            .map(|region| region.upstream.clone())
-            .unwrap_or_default();
+            })?;
         Ok(RegionProgram {
             slot,
-            region: RegionKey::Main,
+            region: key,
             fingerprint,
             entries,
             kernels,
             decisions,
             state_params,
-            state_upstream,
-            progress,
-            output_points,
+            state_upstream: placed_region.upstream.clone(),
+            progress: placed_region.progress.clone(),
+            output_points: placed_region.output_points.clone(),
         })
     }
 
@@ -1043,50 +1130,17 @@ impl Context<'_, '_> {
         ))
     }
 
-    /// Compiles the entry that runs what a state owner's kernel emits at its flush ticks: from register 0, through the
-    /// state owner's output port, to the exit its edge leaves the slot by.
-    fn state_output(&self, slot: SlotId, node: usize, kernel: KernelIndex) -> Result<EntryProgram, CompileError> {
-        let graph = self.graph;
-        let id = graph.id(node);
-        let op = graph.op(node).expect("a resolved plan configures every node");
-        let internal = |what: &str| CompileError::Internal {
-            message: format!("state owner `{}` {}", id, what),
-        };
-        let [port] = op.ports().outputs.as_slice() else {
-            return Err(internal("does not have exactly one output port"));
-        };
-        let (to, to_port) = graph
-            .target(node, 0)
-            .ok_or_else(|| internal("has an unconnected output port"))?;
-        if self.slot_of[to] == Some(slot) && self.roles[to] != Role::Fixed {
-            return Err(internal("feeds a node in its own isolation slot"));
-        }
-        let (exit, entry) = self
-            .exit_for(slot, to, to_port)
-            .ok_or_else(|| internal("feeds a node its isolation slot has no exit to"))?;
-        Ok(EntryProgram {
-            key: EntryKey::StateOutput(kernel),
-            input: PortRef::new(id.clone(), port.name.clone()),
-            steps: vec![Step::Exit {
-                register: RegisterId(0),
-                exit,
-                entry,
-            }],
-            registers: 1,
-        })
-    }
-
-    /// Groups the `split` and `tee` nodes of a slot into decisions, and compiles each, with the decision-time rewrites.
+    /// Groups the `split` and `tee` nodes of a region into decisions, and compiles each, with the decision-time rewrites.
     ///
     /// A group starts at each `split` or `tee` whose input does not come from another `split` or `tee` of the slot,
     /// and takes in, depth first, every `split` and `tee` an edge from the group leads to, as long as the group's exits
     /// stay within [`EXIT_SET_CAPACITY`] (and its nodes within what a branch numbers); a node that would take the group
     /// beyond either starts a group of its own.
     /// Decisions are numbered in plan order of their first node, then in the order cut groups were found.
-    fn decisions(&self, slot: SlotId, members: &[usize]) -> Result<SlotDecisions, CompileError> {
+    fn decisions(&self, slot: SlotId, region: usize, members: &[usize]) -> Result<SlotDecisions, CompileError> {
         let graph = self.graph;
         let is_decision = |node: usize| {
-            self.slot_of[node] == Some(slot)
+            self.in_region(slot, region, node)
                 && graph
                     .op(node)
                     .is_some_and(|op| matches!(op.name(), names::SPLIT | names::TEE))
@@ -1271,6 +1325,26 @@ impl Context<'_, '_> {
             })
     }
 
+    /// Returns where an edge from the region at position `region` of `slot` to the input port `(to, port)` outside the
+    /// region leads: the input of another region of the slot, with that region's entry for the edge, or one of the
+    /// slot's exits ([`exit_for`][Self::exit_for]).
+    fn route_to(&self, slot: SlotId, region: usize, to: usize, port: usize) -> Option<(StepExit, EntrySource)> {
+        let other = self.region_of[to];
+        if self.slot_of[to] != Some(slot) || self.roles[to] == Role::Fixed || other == region {
+            return self.exit_for(slot, to, port);
+        }
+        let entry = self
+            .sub_entries
+            .get(&(slot, other))?
+            .iter()
+            .position(|&input| input == (to, port))?;
+        let key = self.region_key(slot, other).ok()?.clone();
+        Some((
+            StepExit::Region(key),
+            EntrySource::Region(EntryId::new(u16::try_from(entry).ok()?)),
+        ))
+    }
+
     /// Returns the exit an edge from `slot` to the input port `(to, port)` leaves by, and where the consumer's entry
     /// comes from: the consumer region's entry when it leads to another slot, and the output's lease when it leads to
     /// the encode host of a bound output's delivery host. A fixed component or destination reads no entry.
@@ -1306,6 +1380,8 @@ impl Context<'_, '_> {
 struct EntryBuilder<'c, 'a, 'p> {
     context: &'c Context<'a, 'p>,
     slot: SlotId,
+    /// The position of the region among the slot's regions.
+    region: usize,
     kernel_of: &'c [Option<KernelIndex>],
     /// The state parameter table entry of each state owner, by graph position.
     params_of: &'c [Option<StateParamsIndex>],
@@ -1418,9 +1494,9 @@ impl EntryBuilder<'_, '_, '_> {
                 let Some((to, to_port)) = graph.target(from, port) else {
                     continue;
                 };
-                if self.context.slot_of[to] == Some(self.slot) && self.context.roles[to] != Role::Fixed {
+                if self.context.in_region(self.slot, self.region, to) {
                     self.inputs.insert((to, to_port), register);
-                } else if let Some((exit, entry)) = self.context.exit_for(self.slot, to, to_port) {
+                } else if let Some((exit, entry)) = self.context.route_to(self.slot, self.region, to, to_port) {
                     self.steps.push(Step::Exit { register, exit, entry });
                 }
             }
@@ -1433,7 +1509,8 @@ impl EntryBuilder<'_, '_, '_> {
     fn route(&mut self, node: usize, port: usize, outputs: &mut Vec<(usize, usize, RegisterId)>) -> Result<Route, ()> {
         let graph = self.context.graph;
         let drop = graph.target(node, port).filter(|&(to, _)| {
-            self.context.slot_of[to] == Some(self.slot) && graph.op(to).is_some_and(|op| op.name() == names::DROP)
+            self.context.in_region(self.slot, self.region, to)
+                && graph.op(to).is_some_and(|op| op.name() == names::DROP)
         });
         match drop {
             Some((to, _)) => {
@@ -1458,8 +1535,7 @@ impl EntryBuilder<'_, '_, '_> {
     /// order.
     fn reachable_order(&self, start: usize) -> Vec<usize> {
         let graph = self.context.graph;
-        let in_slot =
-            |node: usize| self.context.slot_of[node] == Some(self.slot) && self.context.roles[node] != Role::Fixed;
+        let in_slot = |node: usize| self.context.in_region(self.slot, self.region, node);
         let successors = |node: usize| {
             let ports = graph.op(node).map_or(0, |op| op.ports().outputs.len());
             (0..ports)
@@ -1502,7 +1578,7 @@ impl EntryBuilder<'_, '_, '_> {
 
 /// Returns the fingerprint of a program: the hash of a JSON description of everything it does.
 fn fingerprint(
-    slot: SlotId, entries: &[EntryProgram], kernels: &[ProgramKernel], decisions: &[Decision],
+    slot: SlotId, region: &RegionKey, entries: &[EntryProgram], kernels: &[ProgramKernel], decisions: &[Decision],
     state_params: &[StateParamsEntry],
 ) -> Result<PlanHash, String> {
     let params_hash = |index: StateParamsIndex| {
@@ -1621,6 +1697,10 @@ fn fingerprint(
             "steps": entry.steps.iter().map(step).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
     });
+    // A slot's main region keeps the description it had before sub-regions existed.
+    if let RegionKey::State(node) = region {
+        description["region"] = json!({"state": node.to_string()});
+    }
     // Programs without state parameters keep the description they had before state parameters existed.
     if !state_params.is_empty() {
         description["state_params"] = state_params

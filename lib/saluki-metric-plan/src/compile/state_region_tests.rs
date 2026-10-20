@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 use super::*;
 use crate::{
-    ir::{NativeComponentId, NodeId, OutputId, Plan, PortRef, RecipientId},
+    ir::{NativeComponentId, NodeId, OutputId, Plan, RecipientId},
     model::PortType,
     testing::{default_program_catalog, DEFAULT_PROGRAM_JSON},
     validate::{CatalogOutput, MemoryCatalog, Validator},
@@ -44,7 +44,7 @@ fn slot_named<'f>(frame: &'f Frame, name: &str) -> &'f Slot {
 }
 
 #[test]
-fn the_default_program_runs_aggregation_alone_in_an_isolation_slot_fed_by_dogstatsd_alone() {
+fn the_default_program_runs_aggregation_alone_in_its_slots_main_region_fed_by_dogstatsd_alone() {
     let frame = frame_of(&default_program()).unwrap();
     let names = frame
         .slots()
@@ -67,93 +67,107 @@ fn the_default_program_runs_aggregation_alone_in_an_isolation_slot_fed_by_dogsta
     let agg = slot_named(&frame, "dsd_agg");
     assert_eq!(agg.nodes, vec![id("dsd_agg")]);
     assert_eq!(agg.cost, 0, "R1 prices no state owner");
-    // DogStatsD's point is the only one upstream, and the isolation slot's output point is numbered after the five
-    // admission points of the sources.
-    assert_eq!(
-        agg.kind,
-        SlotKind::Isolation {
-            output_points: vec![point(5)],
-            upstream: vec![point(0)],
-        }
-    );
+    // Aggregation's output point is numbered after the five admission points of the sources, and other state owners'
+    // derived points after it.
+    assert_eq!(frame.boot_output_points(&id("dsd_agg")), Some(&[point(5)][..]));
+    assert_eq!(frame.derived_point_base(), 6);
     assert!(
         frame.fixed().iter().all(|fixed| fixed.node != id("dsd_agg")),
         "aggregation is no host"
     );
-    // Its only exit is its boot edge's target: no idle exits to outputs.
-    assert_eq!(
-        agg.exits
-            .iter()
-            .map(|exit| (exit.name.to_string(), exit.target.clone()))
-            .collect::<Vec<_>>(),
-        vec![(
-            "dsd_post_agg_filter_region".to_string(),
-            FrameTarget::Slot(slot_named(&frame, "dsd_post_agg_filter_region").id)
-        )]
-    );
-    assert!(agg.exits[0].progress_points.is_empty(), "nothing downstream owns state");
+    // Its exits are those of any slot: its boot edge's target, then every output downstream of it, idle.
+    let exits = agg.exits.iter().map(|exit| exit.name.to_string()).collect::<Vec<_>>();
+    assert_eq!(exits[0], "dsd_post_agg_filter_region");
+    assert!(exits.len() > 1, "{:?}", exits);
+    assert!(agg
+        .exits
+        .iter()
+        .skip(1)
+        .all(|exit| matches!(exit.target, FrameTarget::Destination(_))));
 
-    // Every exit on the path from DogStatsD's point to the isolation slot forwards its progress, and no other.
-    let progress = frame
+    // Placed, aggregation runs in its slot's main region, alone, over DogStatsD's point.
+    let plan = default_program();
+    let registry = OperatorRegistry::native();
+    let compiled = compile_unvalidated(
+        &plan,
+        &registry,
+        &frame,
+        &DerivedPoints::for_plan(&frame, &plan, &registry),
+    )
+    .unwrap();
+    let placed = compiled.placement.slot(agg.id).unwrap();
+    assert_eq!(placed.regions.len(), 1);
+    let main = &placed.regions[0];
+    assert_eq!(main.key, RegionKey::Main);
+    assert_eq!(main.state_owner, Some(id("dsd_agg")));
+    assert_eq!(main.output_points, vec![point(5)]);
+    assert_eq!(
+        main.upstream,
+        vec![UpstreamPoint {
+            id: point(0),
+            clock: ClockId::Source(id("dsd_in")),
+            derived: false,
+        }]
+    );
+    assert!(compiled.sub_programs.is_empty());
+    assert!(compiled
+        .placement
         .slots()
         .iter()
-        .flat_map(|slot| {
-            slot.exits
-                .iter()
-                .filter(|exit| !exit.progress_points.is_empty())
-                .map(move |exit| {
-                    (
-                        slot.name.to_string(),
-                        exit.name.to_string(),
-                        exit.progress_points.clone(),
-                    )
-                })
+        .all(|placed| placed.regions.len() == 1));
+    assert_eq!(
+        compiled.placement.region_of(&id("dsd_agg")),
+        Some((agg.id, RegionKey::Main))
+    );
+    assert_eq!(compiled.placement.admission_upstream(&id("dsd_agg")), [point(0)].into());
+    let program = &compiled.programs[agg.id.get()];
+    assert_eq!(program.region(), &RegionKey::Main);
+    assert_eq!(program.output_points(), &[point(5)]);
+    assert_eq!(program.state_upstream(), main.upstream.as_slice());
+
+    // Every exit on the path from DogStatsD's point to aggregation forwards its progress, and no other.
+    let progress = compiled
+        .placement
+        .slots()
+        .iter()
+        .flat_map(|placed| {
+            let name = frame.slot(placed.slot).unwrap().name.to_string();
+            placed.regions.iter().flat_map(move |region| {
+                let name = name.clone();
+                region
+                    .progress
+                    .iter()
+                    .map(move |(exit, points)| (name.clone(), exit.clone(), points.clone()))
+            })
         })
         .collect::<Vec<_>>();
+    let exit_to = |from: &str, to: &str| {
+        let to = slot_named(&frame, to).id;
+        StepExit::Slot(slot_named(&frame, from).exit_to(&FrameTarget::Slot(to)).unwrap().index)
+    };
     assert_eq!(
         progress,
         vec![
             (
                 "dsd_pre_aggregation".to_string(),
-                "dsd_prefix_filter_region".to_string(),
+                exit_to("dsd_pre_aggregation", "dsd_prefix_filter_region"),
                 vec![point(0)]
             ),
             (
                 "dsd_prefix_filter_region".to_string(),
-                "dsd_no_agg_split_region".to_string(),
+                exit_to("dsd_prefix_filter_region", "dsd_no_agg_split_region"),
                 vec![point(0)]
             ),
             (
                 "dsd_no_agg_split_region".to_string(),
-                "dsd_agg".to_string(),
+                exit_to("dsd_no_agg_split_region", "dsd_agg"),
                 vec![point(0)]
             ),
         ]
     );
-    let feeding = frame
-        .admission_points()
-        .iter()
-        .map(|point| (point.node.to_string(), point.feeds_state))
-        .collect::<Vec<_>>();
     assert_eq!(
-        feeding,
-        vec![
-            ("dsd_in".to_string(), true),
-            ("otlp_in".to_string(), false),
-            ("checks_ipc_in".to_string(), false),
-            ("liveness_in".to_string(), false),
-            ("trace_sampler".to_string(), false),
-        ]
-    );
-    // A cut of aggregation is armed over DogStatsD's point alone; its cancellation locks every other point first.
-    assert_eq!(frame.affected_points(&[agg.id]), vec![point(0)]);
-    assert_eq!(
-        frame.affected_points(&[slot_named(&frame, "metrics_enrich").id]),
-        vec![]
-    );
-    assert_eq!(
-        frame.cancel_lock_order(),
-        vec![point(1), point(2), point(3), point(4), point(0)]
+        compiled.programs[slot_named(&frame, "dsd_no_agg_split_region").id.get()].progress(),
+        &[(exit_to("dsd_no_agg_split_region", "dsd_agg"), vec![point(0)])]
     );
 
     // The edges into and out of aggregation are isolation decisions.
@@ -218,7 +232,11 @@ fn emit() -> Value {
 }
 
 #[test]
-fn a_state_owner_fed_by_several_points_or_paths_or_by_another_state_owner_has_no_frame() {
+fn a_state_owner_fed_by_several_points_or_by_another_places_and_one_point_over_two_paths_is_refused() {
+    let registry = OperatorRegistry::native();
+    let compiled = |plan: &Plan, frame: &Frame| {
+        compile_unvalidated(plan, &registry, frame, &DerivedPoints::for_plan(frame, plan, &registry))
+    };
     // Two sources merged before aggregation: two upstream points.
     let two_points = plan_of(
         json!([
@@ -235,15 +253,29 @@ fn a_state_owner_fed_by_several_points_or_paths_or_by_another_state_owner_has_no
             ("agg.out", "emit.in"),
         ],
     );
+    // Its watermark is the minimum over both points, each of its own clock.
+    let frame = frame_of(&two_points).unwrap();
+    let placed = compiled(&two_points, &frame).unwrap().placement;
+    let (slot, region) = placed.region_of(&id("agg")).unwrap();
+    assert_eq!(region, RegionKey::Main);
     assert_eq!(
-        frame_of(&two_points).unwrap_err(),
-        FrameError::StateOwnerPoints {
-            slot: NativeComponentId::new("agg_region").unwrap(),
-            points: vec!["a.metrics".parse::<PortRef>().unwrap(), "b.metrics".parse().unwrap()],
-        }
+        placed.slot(slot).unwrap().regions[0].upstream,
+        vec![
+            UpstreamPoint {
+                id: point(0),
+                clock: ClockId::Source(id("a")),
+                derived: false
+            },
+            UpstreamPoint {
+                id: point(1),
+                clock: ClockId::Source(id("b")),
+                derived: false
+            },
+        ]
     );
 
-    // A state owner fed only by another's time-driven output: no admission point upstream.
+    // A state owner fed only by another's time-driven output: its upstream is the other's derived point, through which
+    // the source's point is upstream of it.
     let chained = plan_of(
         json!([
             source("a"),
@@ -257,13 +289,20 @@ fn a_state_owner_fed_by_several_points_or_paths_or_by_another_state_owner_has_no
             ("second.out", "emit.in"),
         ],
     );
-    match frame_of(&chained).unwrap_err() {
-        FrameError::Unsupported { node, stage, .. } => {
-            assert_eq!(node, id("second"));
-            assert_eq!(stage, 10);
-        }
-        other => panic!("expected an unsupported state owner, not {:?}", other),
-    }
+    let frame = frame_of(&chained).unwrap();
+    let first = frame.boot_output_points(&id("first")).unwrap().to_vec();
+    assert_eq!(first, vec![point(1)]);
+    let placed = compiled(&chained, &frame).unwrap().placement;
+    let (slot, _) = placed.region_of(&id("second")).unwrap();
+    assert_eq!(
+        placed.slot(slot).unwrap().regions[0].upstream,
+        vec![UpstreamPoint {
+            id: point(1),
+            clock: ClockId::Derived(id("first")),
+            derived: true
+        }]
+    );
+    assert_eq!(placed.admission_upstream(&id("second")), [point(0)].into());
 
     // One point over two paths: a chain of mappers that R1 pipelines, one per slot since each alone costs the whole
     // budget, beside the split's direct edge to the merge, which runs with the last of them: the split's slot reaches
@@ -325,17 +364,31 @@ fn a_state_owner_fed_by_several_points_or_paths_or_by_another_state_owner_has_no
         "R1 pipelines the chain over three slots: {:?}",
         stateless.fusion()
     );
-    assert_eq!(
-        frame_of(&two_paths).unwrap_err(),
-        FrameError::StateOwnerPaths {
-            slot: NativeComponentId::new("agg_region").unwrap(),
-            point: "a.metrics".parse().unwrap(),
-        }
+    // The boot layout has a frame; placing the plan finds the point's two paths, along which its batches could
+    // overtake each other.
+    let frame = frame_of(&two_paths).unwrap();
+    let Err(CompileError::Placement {
+        source: PlacementError::Unplaceable { problems },
+    }) = compiled(&two_paths, &frame)
+    else {
+        panic!("expected the plan to be refused");
+    };
+    let [problem] = problems.as_slice() else {
+        panic!("expected one problem: {:?}", problems);
+    };
+    assert_eq!(problem.node, Some(id("agg")));
+    assert_eq!(problem.capability, None);
+    assert!(
+        problem
+            .message
+            .contains("admission point `a.metrics` reaches this state owner over more than one path"),
+        "{}",
+        problem.message
     );
 }
 
 #[test]
-fn a_candidate_places_each_state_owner_in_the_isolation_slot_its_input_reaches_or_names_the_capability_it_needs() {
+fn a_candidate_places_a_state_owner_by_its_inputs_in_a_sub_region_after_the_nodes_before_it() {
     let boot = plan_of(
         json!([
             source("a"),
@@ -359,8 +412,21 @@ fn a_candidate_places_each_state_owner_in_the_isolation_slot_its_input_reaches_o
         report
     };
 
-    // A second state owner on the other branch runs in the same isolation slot, and the merge after both in the
-    // slot their exits lead to.
+    let compiled = |plan: &Plan| {
+        compile(
+            plan,
+            &validated(plan),
+            &registry,
+            &frame,
+            &DerivedPoints::for_plan(&frame, plan, &registry),
+        )
+        .unwrap()
+    };
+    let agg = slot_named(&frame, "dsd_agg");
+    let pick = slot_named(&frame, "pick_region");
+
+    // A second state owner on the other branch runs in the split's slot, in a sub-region the split's region feeds
+    // through an internal exit.
     let branched = plan_of(
         json!([
             source("a"),
@@ -379,27 +445,74 @@ fn a_candidate_places_each_state_owner_in_the_isolation_slot_its_input_reaches_o
             ("join.out", "emit.in"),
         ],
     );
-    let placement = place(&branched, &validated(&branched), &registry, &frame).unwrap();
-    let agg = slot_named(&frame, "dsd_agg");
-    let emit_slot = slot_named(&frame, "emit_region");
-    assert_eq!(placement.site(&id("second")), Some(Site::Slot(agg.id)));
-    assert_eq!(placement.site(&id("join")), Some(Site::Slot(emit_slot.id)));
-    let entries = placement
-        .slot(agg.id)
-        .unwrap()
-        .entries
-        .iter()
-        .map(|entry| (entry.key, entry.input.to_string()))
-        .collect::<Vec<_>>();
+    let branched = compiled(&branched);
+    let second = RegionKey::State(id("second"));
     assert_eq!(
-        entries,
+        branched.placement.region_of(&id("dsd_agg")),
+        Some((agg.id, RegionKey::Main))
+    );
+    assert_eq!(
+        branched.placement.region_of(&id("second")),
+        Some((pick.id, second.clone()))
+    );
+    let regions = &branched.placement.slot(pick.id).unwrap().regions;
+    assert_eq!(
+        regions.iter().map(|region| region.key.clone()).collect::<Vec<_>>(),
+        vec![RegionKey::Main, second.clone()]
+    );
+    assert_eq!(regions[0].internal, vec![(second.clone(), ExitRouting::One)]);
+    assert_eq!(regions[1].state_owner, Some(id("second")));
+    assert_eq!(regions[1].output_points, vec![point(frame.derived_point_base())]);
+    assert_eq!(
+        regions[1].upstream,
+        vec![UpstreamPoint {
+            id: point(0),
+            clock: ClockId::Source(id("a")),
+            derived: false
+        }]
+    );
+    // The split's region forwards the point's progress on both branches: to aggregation's slot and to the sub-region.
+    let to_agg = StepExit::Slot(pick.exit_to(&FrameTarget::Slot(agg.id)).unwrap().index);
+    assert_eq!(
+        regions[0].progress,
         vec![
-            (EntryKey::Region(EntryId::new(0)), "dsd_agg.in".to_string()),
-            (EntryKey::Region(EntryId::new(1)), "second.in".to_string()),
+            (to_agg, vec![point(0)]),
+            (StepExit::Region(second.clone()), vec![point(0)])
         ]
     );
+    let [sub] = branched.sub_programs.as_slice() else {
+        panic!("one sub-region");
+    };
+    assert_eq!((sub.slot(), sub.region()), (pick.id, &second));
+    assert_eq!(sub.output_points(), regions[1].output_points.as_slice());
+    assert_eq!(
+        sub.entries().iter().map(|entry| entry.key).collect::<Vec<_>>(),
+        vec![
+            EntryKey::Region(EntryId::new(0)),
+            EntryKey::StateOutput(KernelIndex::new(0))
+        ]
+    );
+    let decides = branched.programs[pick.id.get()].entries()[0]
+        .steps
+        .iter()
+        .filter_map(|step| match step {
+            Step::Exit { exit, entry, .. } => Some((exit.clone(), entry.clone())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        decides.contains(&(StepExit::Region(second.clone()), EntrySource::Region(EntryId::new(0)))),
+        "{:?}",
+        decides
+    );
+    assert_ne!(
+        sub.fingerprint(),
+        branched.programs[pick.id.get()].fingerprint(),
+        "a sub-region's program is told apart from its slot's"
+    );
 
-    // A state owner after the one that runs in the isolation slot needs an isolation slot the topology lacks.
+    // A state owner after the one in aggregation's slot runs there, in a sub-region its time-driven output feeds,
+    // over its derived point.
     let chained = plan_of(
         json!([
             source("a"),
@@ -417,20 +530,57 @@ fn a_candidate_places_each_state_owner_in_the_isolation_slot_its_input_reaches_o
             ("again.out", "emit.in"),
         ],
     );
-    let error = place(&chained, &validated(&chained), &registry, &frame).unwrap_err();
-    let PlacementError::Unplaceable { problems } = &error else {
-        panic!("expected an unplaceable candidate, not {:?}", error);
+    let chained = compiled(&chained);
+    let again = RegionKey::State(id("again"));
+    assert_eq!(chained.placement.region_of(&id("again")), Some((agg.id, again.clone())));
+    let regions = &chained.placement.slot(agg.id).unwrap().regions;
+    let dsd_agg = frame.boot_output_points(&id("dsd_agg")).unwrap().to_vec();
+    assert_eq!(regions[0].output_points, dsd_agg);
+    assert_eq!(regions[0].internal, vec![(again.clone(), ExitRouting::One)]);
+    assert_eq!(
+        regions[0].progress,
+        vec![(StepExit::Region(again.clone()), dsd_agg.clone())]
+    );
+    assert_eq!(
+        regions[1].upstream,
+        vec![UpstreamPoint {
+            id: dsd_agg[0],
+            clock: ClockId::Derived(id("dsd_agg")),
+            derived: true
+        }]
+    );
+    assert_eq!(chained.placement.admission_upstream(&id("again")), [point(0)].into());
+    // Aggregation's time-driven output enters the sub-region; the sub-region's leaves by the slot's exit.
+    let output = |program: &RegionProgram| {
+        program
+            .entries()
+            .iter()
+            .find(|entry| matches!(entry.key, EntryKey::StateOutput(_)))
+            .unwrap()
+            .steps
+            .clone()
     };
-    let problem = problems
-        .iter()
-        .find(|problem| problem.node.as_ref() == Some(&id("again")))
-        .unwrap_or_else(|| panic!("no problem names the second state owner: {}", error));
-    assert_eq!(problem.capability, Some(MissingCapability::Restart));
-    assert!(problem.message.contains("isolation slot"), "{}", problem.message);
+    assert_eq!(
+        output(&chained.programs[agg.id.get()]),
+        vec![Step::Exit {
+            register: RegisterId::new(0),
+            exit: StepExit::Region(again.clone()),
+            entry: EntrySource::Region(EntryId::new(0)),
+        }]
+    );
+    let emit_slot = slot_named(&frame, "emit_region");
+    assert_eq!(
+        output(&chained.sub_programs[0]),
+        vec![Step::Exit {
+            register: RegisterId::new(0),
+            exit: StepExit::Slot(agg.exit_to(&FrameTarget::Slot(emit_slot.id)).unwrap().index),
+            entry: EntrySource::Region(EntryId::new(0)),
+        }]
+    );
 }
 
 #[test]
-fn a_state_owner_fed_straight_by_an_admission_point_runs_in_the_isolation_slot_the_points_region_passes_batches_to() {
+fn a_boot_state_owner_fed_straight_by_an_admission_point_keeps_its_slot_which_the_points_slot_passes_batches_to() {
     // At boot, the source's batches reach aggregation through the split's region. A candidate without the split feeds
     // aggregation straight from the source: the split's region keeps the point's entry, and passes its batches,
     // unchanged, by its exit to the isolation slot, where they enter aggregation.
@@ -460,7 +610,14 @@ fn a_state_owner_fed_straight_by_an_admission_point_runs_in_the_isolation_slot_t
         json!([source("a"), aggregate("dsd_agg", "10s"), emit()]),
         &[("a.metrics", "dsd_agg.in"), ("dsd_agg.out", "emit.in")],
     );
-    let placement = place(&straight, &validated(&straight), &registry, &frame).unwrap();
+    let placement = place(
+        &straight,
+        &validated(&straight),
+        &registry,
+        &frame,
+        &DerivedPoints::for_plan(&frame, &straight, &registry),
+    )
+    .unwrap();
     let pick = slot_named(&frame, "pick_region");
     let agg = slot_named(&frame, "dsd_agg");
     let to_agg = pick.exit_to(&FrameTarget::Slot(agg.id)).unwrap().index;
@@ -505,7 +662,7 @@ fn a_state_owner_fed_straight_by_an_admission_point_runs_in_the_isolation_slot_t
         &validated(&straight),
         &registry,
         &frame,
-        &crate::compile::DerivedPoints::for_plan(&frame, &straight, &registry),
+        &DerivedPoints::for_plan(&frame, &straight, &registry),
     )
     .unwrap();
     let steps = |slot: SlotId| {
@@ -538,7 +695,8 @@ fn a_state_owner_fed_straight_by_an_admission_point_runs_in_the_isolation_slot_t
         )
     );
 
-    // Without an isolation slot in the topology, there is nowhere to run a state owner.
+    // In a topology without a boot state owner, the state owner runs in the main region of the slot the point leads
+    // to.
     let stateless = plan_of(
         json!([
             source("a"),
@@ -553,21 +711,17 @@ fn a_state_owner_fed_straight_by_an_admission_point_runs_in_the_isolation_slot_t
         ],
     );
     let frame = frame_of(&stateless).unwrap();
-    let error = place(&straight, &validated(&straight), &registry, &frame).unwrap_err();
-    let PlacementError::Unplaceable { problems } = &error else {
-        panic!("expected an unplaceable candidate, not {:?}", error);
-    };
-    let problem = problems
-        .iter()
-        .find(|problem| problem.node.as_ref() == Some(&id("dsd_agg")))
-        .unwrap_or_else(|| panic!("no problem names the state owner: {}", error));
-    assert_eq!(problem.capability, Some(MissingCapability::Restart));
-    assert!(
-        problem.message.contains("no such isolation slot for `pick_region`")
-            && problem.message.contains("adding an isolation slot"),
-        "{}",
-        problem.message
-    );
+    let placement = place(
+        &straight,
+        &validated(&straight),
+        &registry,
+        &frame,
+        &DerivedPoints::for_plan(&frame, &straight, &registry),
+    )
+    .unwrap();
+    let pick = slot_named(&frame, "pick_region");
+    assert_eq!(placement.region_of(&id("dsd_agg")), Some((pick.id, RegionKey::Main)));
+    assert_eq!(placement.admission_upstream(&id("dsd_agg")), [point(0)].into());
 }
 
 #[test]
@@ -584,7 +738,7 @@ fn a_state_owners_kernel_is_keyed_by_its_lineage_and_its_per_call_parameters_by_
             &report,
             &registry,
             &frame,
-            &crate::compile::DerivedPoints::for_plan(&frame, plan, &registry),
+            &DerivedPoints::for_plan(&frame, plan, &registry),
         )
         .unwrap()
     };
@@ -592,7 +746,7 @@ fn a_state_owners_kernel_is_keyed_by_its_lineage_and_its_per_call_parameters_by_
     let slot = slot_named(&frame, "dsd_agg").id;
     let program = &compiled.programs[slot.get()];
     let [kernel] = program.kernels() else {
-        panic!("the isolation slot runs one kernel");
+        panic!("aggregation's region runs one kernel");
     };
     let lineage = kernel.lineage.as_ref().expect("a state owner's kernel has a lineage");
     assert_eq!(lineage.flush_interval, Duration::from_secs(15));
@@ -706,7 +860,14 @@ fn a_pushed_filter_reaches_its_state_owners_parameters_and_fingerprint_and_a_sit
     let frame = frame_of(&plan).unwrap();
     let report = Validator::new(&registry, &default_program_catalog()).validate(&plan);
     assert!(report.is_valid(), "{}", report);
-    let placement = place(&plan, &report, &registry, &frame).unwrap();
+    let placement = place(
+        &plan,
+        &report,
+        &registry,
+        &frame,
+        &DerivedPoints::for_plan(&frame, &plan, &registry),
+    )
+    .unwrap();
     let slot = slot_named(&frame, "dsd_agg").id;
     let test_site = |owner: &str, filter: &str| PushedFilterSite {
         owner: id(owner),
@@ -722,16 +883,9 @@ fn a_pushed_filter_reaches_its_state_owners_parameters_and_fingerprint_and_a_sit
     let filter: std::sync::Arc<dyn saluki_metric_kernels::aggregate::EmissionFilter> =
         std::sync::Arc::new(DropsEverything);
     let programs = |pushed: &[program::SiteFilter]| {
-        program::compile_programs_with(
-            &plan,
-            &registry,
-            &frame,
-            &placement,
-            &DerivedPoints::for_plan(&frame, &plan, &registry),
-            pushed,
-            DecisionRewrites::ALL,
-        )
-        .unwrap()
+        program::compile_programs_with(&plan, &registry, &frame, &placement, pushed, DecisionRewrites::ALL)
+            .unwrap()
+            .0
     };
     let plain = programs(&[]);
     let pushed = programs(&[program::SiteFilter {

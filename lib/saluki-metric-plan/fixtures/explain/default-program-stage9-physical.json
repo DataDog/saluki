@@ -192,19 +192,57 @@
           "to": "metrics_enrich",
           "idle": false,
           "routing": "spread"
+        },
+        {
+          "index": 1,
+          "name": "dsd_client_telemetry",
+          "to": "output dsd_client_telemetry",
+          "idle": true
+        },
+        {
+          "index": 2,
+          "name": "dd_metrics_encode",
+          "to": "encode host dd_metrics_encode of dd_out",
+          "idle": true
+        },
+        {
+          "index": 3,
+          "name": "mrf_metrics_encode",
+          "to": "encode host mrf_metrics_encode of mrf_dd_out",
+          "idle": true
+        },
+        {
+          "index": 4,
+          "name": "af_metrics_encode",
+          "to": "encode host af_metrics_encode of cluster_agent_out",
+          "idle": true
         }
       ],
-      "isolation": {
-        "output_point": 6,
-        "output_points": [
-          6,
-          7
-        ],
-        "upstream": [
-          0,
-          1
-        ]
-      }
+      "state_slot": true,
+      "regions": [
+        {
+          "region": "main",
+          "nodes": [
+            "dsd_agg"
+          ],
+          "state_owner": "dsd_agg",
+          "output_point": 6,
+          "output_points": [
+            6,
+            7
+          ],
+          "upstream": [
+            {
+              "id": 0,
+              "clock": "dsd_in"
+            },
+            {
+              "id": 1,
+              "clock": "dsd_in"
+            }
+          ]
+        }
+      ]
     },
     {
       "name": "metrics_enrich",
@@ -364,6 +402,26 @@
       "routing": "spread"
     },
     {
+      "from": "dsd_agg.dsd_client_telemetry",
+      "to": "output dsd_client_telemetry",
+      "kind": "exit"
+    },
+    {
+      "from": "dsd_agg.dd_metrics_encode",
+      "to": "encode host dd_metrics_encode of dd_out",
+      "kind": "exit"
+    },
+    {
+      "from": "dsd_agg.mrf_metrics_encode",
+      "to": "encode host mrf_metrics_encode of mrf_dd_out",
+      "kind": "exit"
+    },
+    {
+      "from": "dsd_agg.af_metrics_encode",
+      "to": "encode host af_metrics_encode of cluster_agent_out",
+      "kind": "exit"
+    },
+    {
       "from": "metrics_enrich.dsd_client_telemetry",
       "to": "output dsd_client_telemetry",
       "kind": "exit"
@@ -425,13 +483,13 @@
       "from": "dsd_tag_filterlist.out",
       "to": "dsd_agg.in",
       "decision": "isolation",
-      "reason": "the edge enters or leaves the isolation slot `dsd_agg`, which runs its state owner alone"
+      "reason": "the edge enters or leaves `dsd_agg`, the slot the boot layout gives a state owner of its own"
     },
     {
       "from": "dsd_agg.out",
       "to": "dsd_post_agg_filter_in.0",
       "decision": "isolation",
-      "reason": "the edge enters or leaves the isolation slot `dsd_agg`, which runs its state owner alone"
+      "reason": "the edge enters or leaves `dsd_agg`, the slot the boot layout gives a state owner of its own"
     },
     {
       "from": "dsd_no_agg_split.passthrough",
@@ -829,7 +887,8 @@
         "metrics_enrich.dsd_client_telemetry"
       ],
       "idle": [
-        "dsd_pre_aggregation.dsd_client_telemetry"
+        "dsd_pre_aggregation.dsd_client_telemetry",
+        "dsd_agg.dsd_client_telemetry"
       ]
     },
     {
@@ -845,7 +904,8 @@
         "metrics_enrich.dd_metrics_encode"
       ],
       "idle": [
-        "dsd_pre_aggregation.dd_metrics_encode"
+        "dsd_pre_aggregation.dd_metrics_encode",
+        "dsd_agg.dd_metrics_encode"
       ]
     },
     {
@@ -861,7 +921,8 @@
         "metrics_enrich.dd_metrics_encode"
       ],
       "idle": [
-        "dsd_pre_aggregation.dd_metrics_encode"
+        "dsd_pre_aggregation.dd_metrics_encode",
+        "dsd_agg.dd_metrics_encode"
       ]
     },
     {
@@ -878,7 +939,8 @@
         "metrics_enrich.dd_metrics_encode"
       ],
       "idle": [
-        "dsd_pre_aggregation.dd_metrics_encode"
+        "dsd_pre_aggregation.dd_metrics_encode",
+        "dsd_agg.dd_metrics_encode"
       ]
     },
     {
@@ -894,7 +956,8 @@
         "metrics_enrich.mrf_metrics_encode"
       ],
       "idle": [
-        "dsd_pre_aggregation.mrf_metrics_encode"
+        "dsd_pre_aggregation.mrf_metrics_encode",
+        "dsd_agg.mrf_metrics_encode"
       ]
     },
     {
@@ -910,7 +973,8 @@
         "metrics_enrich.af_metrics_encode"
       ],
       "idle": [
-        "dsd_pre_aggregation.af_metrics_encode"
+        "dsd_pre_aggregation.af_metrics_encode",
+        "dsd_agg.af_metrics_encode"
       ]
     }
   ]

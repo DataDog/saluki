@@ -13,7 +13,8 @@
 //! - [`rewrite`]: the **logical rewrites** (R3, R5a, R6, R7) that [`compile`] applies to a candidate before placing
 //!   it, each checked against the frame, with a record of every application for `explain`.
 //! - [`placement`] then places the rewritten candidate.
-//! - [`program`]: the **region programs** of one generation, one per slot: plain data, with the specifications of the
+//! - [`program`]: the **region programs** of one generation, one per region of each slot: plain data, with the
+//!   specifications of the
 //!   kernels they run, that a region host executes batch at a time. Each program's `split`s and `tee`s compile to
 //!   [decisions](decision), where the decision-time rewrites (R2, R3's folding of bound constants, R4) apply.
 //!
@@ -102,8 +103,12 @@ pub struct CompiledPlan {
     /// Where each node of the rewritten plan runs.
     pub placement: Placement,
 
-    /// The program of every slot of the frame, in slot order. A slot the plan places nothing in has an empty program.
+    /// The program of every slot's main region, in slot order. A slot the plan places nothing in has an empty program.
     pub programs: Vec<Arc<RegionProgram>>,
+
+    /// The program of every sub-region, in slot order and, within a slot, in region order: one per state owner that
+    /// runs in a region of its own inside another slot's component (see [regions](placement#regions)).
+    pub sub_programs: Vec<Arc<RegionProgram>>,
 
     /// Every rewrite considered, applied or skipped: first the logical rewrites, in the order the pipeline considered
     /// them, then R5b's sites, in plan order of their state owners, then the decision-time rewrites of each program's
@@ -132,10 +137,14 @@ impl CompiledPlan {
         &self.rewrites[self.rewrites.len() - self.decision_rewrite_count()..]
     }
 
+    /// Returns every program, of main regions and sub-regions, in slot order and, within a slot, in region order.
+    pub fn all_programs(&self) -> impl Iterator<Item = &Arc<RegionProgram>> {
+        ordered_programs(&self.programs, &self.sub_programs)
+    }
+
     fn decision_rewrite_count(&self) -> usize {
         let count = self
-            .programs
-            .iter()
+            .all_programs()
             .flat_map(|program| program.decisions())
             .map(|decision| decision.rewrites.len())
             .sum::<usize>();
@@ -156,7 +165,8 @@ impl CompiledPlan {
 pub fn compile(
     plan: &Plan, report: &ValidationReport, registry: &OperatorRegistry, frame: &Frame, derived: &DerivedPoints,
 ) -> Result<CompiledPlan, CompileError> {
-    let placement = place(plan, report, registry, frame).map_err(|source| CompileError::Placement { source })?;
+    let placement =
+        place(plan, report, registry, frame, derived).map_err(|source| CompileError::Placement { source })?;
     compile_placed(
         plan,
         Some(report),
@@ -174,7 +184,8 @@ pub fn compile(
 pub(crate) fn compile_without_decision_rewrites(
     plan: &Plan, report: &ValidationReport, registry: &OperatorRegistry, frame: &Frame, derived: &DerivedPoints,
 ) -> Result<CompiledPlan, CompileError> {
-    let placement = place(plan, report, registry, frame).map_err(|source| CompileError::Placement { source })?;
+    let placement =
+        place(plan, report, registry, frame, derived).map_err(|source| CompileError::Placement { source })?;
     compile_placed(
         plan,
         Some(report),
@@ -191,7 +202,8 @@ pub(crate) fn compile_without_decision_rewrites(
 pub(crate) fn compile_without_pushed_filters(
     plan: &Plan, report: &ValidationReport, registry: &OperatorRegistry, frame: &Frame, derived: &DerivedPoints,
 ) -> Result<CompiledPlan, CompileError> {
-    let placement = place(plan, report, registry, frame).map_err(|source| CompileError::Placement { source })?;
+    let placement =
+        place(plan, report, registry, frame, derived).map_err(|source| CompileError::Placement { source })?;
     compile_placed(
         plan,
         Some(report),
@@ -217,7 +229,8 @@ pub(crate) fn compile_without_pushed_filters(
 pub fn compile_unvalidated(
     plan: &Plan, registry: &OperatorRegistry, frame: &Frame, derived: &DerivedPoints,
 ) -> Result<CompiledPlan, CompileError> {
-    let placement = place_unvalidated(plan, registry, frame).map_err(|source| CompileError::Placement { source })?;
+    let placement =
+        place_unvalidated(plan, registry, frame, derived).map_err(|source| CompileError::Placement { source })?;
     compile_placed(plan, None, registry, frame, derived, placement, DecisionRewrites::ALL)
 }
 
@@ -237,7 +250,7 @@ fn compile_placed(
     };
     let placement = if optimized.changed() {
         // The pipeline placed every application it accepted, so this fails only on a bug.
-        place_unvalidated(&optimized.plan, registry, frame).map_err(|error| CompileError::Internal {
+        place_unvalidated(&optimized.plan, registry, frame, derived).map_err(|error| CompileError::Internal {
             message: format!("the rewritten plan does not place into the frame: {}", error),
         })?
     } else {
@@ -250,23 +263,14 @@ fn compile_placed(
     };
     let pushed = site_filters(&sites)?;
     let (pushed_filters, pushed_records) = reconcile_pushed(sites, records, &pushed);
-    let programs = program::compile_programs_with(
-        &optimized.plan,
-        registry,
-        frame,
-        &placement,
-        derived,
-        &pushed,
-        decision_rewrites,
-    )?
-    .into_iter()
-    .map(Arc::new)
-    .collect::<Vec<_>>();
+    let (programs, sub_programs) =
+        program::compile_programs_with(&optimized.plan, registry, frame, &placement, &pushed, decision_rewrites)?;
+    let programs = programs.into_iter().map(Arc::new).collect::<Vec<_>>();
+    let sub_programs = sub_programs.into_iter().map(Arc::new).collect::<Vec<_>>();
     let mut rewrites = optimized.records;
     rewrites.extend(pushed_records);
     rewrites.extend(
-        programs
-            .iter()
+        ordered_programs(&programs, &sub_programs)
             .flat_map(|program| program.decisions())
             .flat_map(|decision| decision.rewrites.iter().cloned()),
     );
@@ -274,9 +278,19 @@ fn compile_placed(
         plan: Arc::new(optimized.plan),
         placement,
         programs,
+        sub_programs,
         rewrites,
         pushed_filters,
         converged: optimized.converged,
+    })
+}
+
+/// Returns the programs of main regions and sub-regions in slot order and, within a slot, in region order.
+fn ordered_programs<'a>(
+    programs: &'a [Arc<RegionProgram>], sub_programs: &'a [Arc<RegionProgram>],
+) -> impl Iterator<Item = &'a Arc<RegionProgram>> {
+    programs.iter().flat_map(move |main| {
+        std::iter::once(main).chain(sub_programs.iter().filter(move |sub| sub.slot() == main.slot()))
     })
 }
 
@@ -356,8 +370,9 @@ pub(crate) enum Role {
     /// A synchronous operator, run in a slot.
     Synchronous,
 
-    /// A state owner behind a declared isolation fence ([`Boundary::Isolated`][crate::operators::Boundary]), run in an
-    /// isolation slot of its own ([`SlotKind::Isolation`]).
+    /// A state owner behind a declared isolation fence ([`Boundary::Isolated`][crate::operators::Boundary]), run in a
+    /// region of its own. A boot state owner starts a slot of its own in the frame's layout; placement treats it as any
+    /// synchronous node, and partitions each slot into regions.
     Isolated,
 }
 
@@ -411,8 +426,8 @@ mod execution_tests;
 #[cfg(test)]
 mod host_tests;
 #[cfg(test)]
-mod isolation_tests;
-#[cfg(test)]
 mod lane_tests;
+#[cfg(test)]
+mod state_region_tests;
 #[cfg(test)]
 mod tests;
