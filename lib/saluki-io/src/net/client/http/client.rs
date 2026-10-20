@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::{
     future::Future,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
     time::Duration,
 };
@@ -21,8 +22,12 @@ use pin_project::pin_project;
 use rustls::ClientConfig;
 use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
-use saluki_tls::{ensure_client_config_fips_compliant, ClientTLSConfigBuilder, TlsMinimumVersion};
+use saluki_tls::{
+    ensure_client_config_fips_compliant, load_platform_root_certificates_inner, ClientTLSConfigBuilder,
+    TlsMinimumVersion,
+};
 use stringtheory::MetaString;
+use tokio_rustls::TlsConnector;
 use tower::{timeout::TimeoutLayer, util::BoxCloneService, BoxError, Service, ServiceBuilder, ServiceExt as _};
 
 use super::{
@@ -365,10 +370,13 @@ impl HttpClientBuilder {
         };
         let connector = self.connector_builder.build(tls_config)?;
         let tls_handshake_timeout = connector.tls_handshake_timeout();
-        // TODO(fips): Look into updating `hyper-http-proxy` to use the provided connector for establishing the
-        // connection to the proxy itself, even when the proxy is at an HTTPS URL, to ensure our desired TLS stack is
-        // being used.
-        let mut proxy_connector = hyper_http_proxy::ProxyConnector::new(connector)?;
+        // The inner connector verifies HTTPS proxies; this separate config verifies destinations through CONNECT.
+        // Keep native roots and verification enabled here even if the inner connector uses an insecure local config.
+        let proxy_tls_config = ClientTLSConfigBuilder::new()
+            .with_root_cert_store(load_platform_root_certificates_inner()?)
+            .build()?;
+        let mut proxy_connector = hyper_http_proxy::ProxyConnector::unsecured(connector);
+        proxy_connector.set_tls(Some(TlsConnector::from(Arc::new(proxy_tls_config))));
         // A zero timeout means the handshake deadline is disabled, matching `HttpsCapableConnector`'s own
         // handling of `Duration::ZERO` for direct connections.
         let proxy_tls_handshake_timeout = (!tls_handshake_timeout.is_zero()).then_some(tls_handshake_timeout);
