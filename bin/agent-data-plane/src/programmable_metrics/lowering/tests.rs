@@ -65,7 +65,8 @@ fn validate(plan: &Plan, catalog: &dyn Catalog) -> ValidationReport {
     Validator::new(&OperatorRegistry::native(), catalog).validate(plan)
 }
 
-/// Returns every configuration binding in a node's parameters: the parameter, the binding, and its resolved value.
+/// Returns every configuration binding in a node's parameters, a fact or a signal: the parameter, the binding, and its
+/// resolved value.
 fn bindings_of(node: &Node) -> Vec<(String, String, Value)> {
     fn visit(param: &str, value: &Value, found: &mut Vec<(String, String, Value)>) {
         match value {
@@ -91,11 +92,15 @@ fn bindings_of(node: &Node) -> Vec<(String, String, Value)> {
 /// Returns the parameters, as `node.param`, that differ between two plans of the same structure.
 #[track_caller]
 fn changed_parameters(old: &Plan, new: &Plan) -> BTreeSet<String> {
-    assert_eq!(
-        old.hash(ResolvedValues::Exclude).unwrap(),
-        new.hash(ResolvedValues::Exclude).unwrap(),
-        "the structure is unchanged"
-    );
+    let structure = |plan: &Plan| {
+        let nodes = plan
+            .nodes
+            .iter()
+            .map(|node| (node.id.clone(), node.op.clone()))
+            .collect::<Vec<_>>();
+        (nodes, plan.edges.clone())
+    };
+    assert_eq!(structure(old), structure(new), "the structure is unchanged");
     let mut changed = BTreeSet::new();
     for (old, new) in old.nodes.iter().zip(&new.nodes) {
         for (param, value) in old.params.iter() {
@@ -253,12 +258,13 @@ async fn every_configuration_of_the_matrix_lowers_to_a_valid_plan() {
 }
 
 #[tokio::test]
-async fn no_configuration_of_the_matrix_gives_r3_or_r7_anything_to_rewrite() {
-    // Lowering writes no constant `split`, and every junction in R7's static order (operands cheapest first, ties by
-    // canonical form, so by binding name), so compiling a lowered default program applies neither logical rewrite:
-    // explain and the rewrite telemetry show neither. A lowering whose order drifts would start reordering in
-    // production. (Decision compilation still folds bound constants, such as a Multi-Region Failover gateway whose
-    // mirroring is off, inside the compiled programs: R3 records of the decisions, not of the plan.)
+async fn compiling_a_lowered_default_program_folds_only_filters_with_nothing_in_them() {
+    // Lowering writes every junction in R7's static order (operands cheapest first, ties by canonical form, so by
+    // binding name), so compiling a lowered default program never reorders one: a lowering whose order drifts would
+    // start reordering in production. Policy settings are literals, so a filter whose list is empty is a `split` on a
+    // constant, which R3 folds, with the `drop` only it fed: nothing else. (Decision compilation still folds bound
+    // constants, such as a Multi-Region Failover gateway whose mirroring is off, inside the compiled programs: R3
+    // records of the decisions, not of the plan.)
     let registry = OperatorRegistry::native();
     for (name, yaml) in MATRIX {
         let lowered = lowered(yaml).await;
@@ -274,13 +280,29 @@ async fn no_configuration_of_the_matrix_gives_r3_or_r7_anything_to_rewrite() {
         let compiled =
             compile(&lowered.plan, &report, &registry, &frame).unwrap_or_else(|error| panic!("{}: {}", name, error));
         assert!(compiled.converged, "{}", name);
-        assert_eq!(*compiled.plan, lowered.plan, "{}", name);
-        let records = compiled
-            .logical_rewrites()
-            .iter()
-            .filter(|record| matches!(record.id, RewriteId::R3 | RewriteId::R7))
-            .collect::<Vec<_>>();
-        assert!(records.is_empty(), "{}: {:#?}", name, records);
+        let records = compiled.logical_rewrites();
+        assert!(
+            !records.iter().any(|record| record.id == RewriteId::R7),
+            "{}: {:#?}",
+            name,
+            records
+        );
+        for record in records.iter().filter(|record| record.id == RewriteId::R3) {
+            for node in &record.nodes {
+                let node = lowered.plan.node(node).unwrap();
+                let constant = node.op.as_str() == names::SPLIT
+                    && node
+                        .params
+                        .get("predicate")
+                        .is_some_and(|predicate| predicate.get("const").is_some());
+                assert!(
+                    constant || node.op.as_str() == names::DROP,
+                    "{}: R3 folds `{}`",
+                    name,
+                    node.id
+                );
+            }
+        }
     }
 }
 
@@ -478,7 +500,8 @@ async fn live_inputs_change_only_the_parameters_bound_to_them() {
         assert!(validate(&after.plan, &after.catalog).findings().is_empty(), "{}", name);
     }
 
-    // The gateway's predicate carries the new values, and so does the catalog.
+    // The gateway's predicate carries the new values, the allowlist as a literal and mirroring as its signal, and the
+    // catalog carries the signal's value.
     let current = layered_configuration(&[
         EVERY_BRANCH,
         "multi_region_failover: {failover_metrics: true, metric_allowlist: [requests.count]}",
@@ -487,26 +510,12 @@ async fn live_inputs_change_only_the_parameters_bound_to_them() {
     let after = lower_with(&startup, &current);
     let gateway = after.plan.node(&ids::MRF_METRICS_GATEWAY.parse().unwrap()).unwrap();
     assert_eq!(
-        bindings_of(gateway),
-        [
-            ("predicate", "multi_region_failover.enabled", json!(true)),
-            (
-                "predicate",
-                "multi_region_failover.metric_mirroring.enabled",
-                json!(true)
-            ),
-            (
-                "predicate",
-                "multi_region_failover.metric_mirroring.allowlist",
-                json!(["requests.count"])
-            ),
-            (
-                "predicate",
-                "multi_region_failover.metric_mirroring.allowlist",
-                json!(["requests.count"])
-            ),
-        ]
-        .map(|(param, binding, value)| (param.to_string(), binding.to_string(), value))
+        gateway.params.get("predicate"),
+        Some(&json!({"all": [
+            {"flag": {"config": "multi_region_failover.enabled", "resolved": true}},
+            {"flag": {"config": "multi_region_failover.metric_mirroring.enabled", "resolved": true}},
+            {"name": {"eq": "requests.count"}},
+        ]}))
     );
     let value = |lowered: &Lowered, name: &str| {
         lowered
@@ -521,10 +530,6 @@ async fn live_inputs_change_only_the_parameters_bound_to_them() {
     assert_eq!(
         value(&after, "multi_region_failover.metric_mirroring.enabled"),
         Some(json!(true))
-    );
-    assert_eq!(
-        value(&after, "multi_region_failover.metric_mirroring.allowlist"),
-        Some(json!(["requests.count"]))
     );
 }
 
@@ -561,20 +566,14 @@ async fn startup_inputs_do_not_change_a_re_lowered_plan() {
             .iter()
             .filter(|spec| spec.liveness == Liveness::Startup)
         {
-            for key in spec
-                .key
-                .map(|key| key.keys(&startup))
-                .unwrap_or_else(|| vec![String::new()])
-            {
-                let name = spec.instance_name(&key).parse().unwrap();
-                assert_eq!(
-                    after.catalog.binding(&name),
-                    before.catalog.binding(&name),
-                    "{}: `{}`",
-                    change,
-                    name
-                );
-            }
+            let name = spec.name.parse().unwrap();
+            assert_eq!(
+                after.catalog.binding(&name),
+                before.catalog.binding(&name),
+                "{}: `{}`",
+                change,
+                name
+            );
         }
     }
 }
@@ -665,7 +664,8 @@ async fn live_bindings_are_only_on_components_that_read_live_views_natively() {
 
 #[tokio::test]
 async fn parameters_are_native_configuration_converted_into_plan_values() {
-    // (configuration, node, parameter, binding, resolved value), each derived by hand from the configuration.
+    // (configuration, node, parameter, value), each derived by hand from the configuration. Every policy setting is a
+    // literal; predicates are in normal form, so a list of one name is an `eq`, and an empty list is folded away.
     let mapper = matrix_entry("mapper profiles, a namespace prefix, and filterlists");
     let aggregation = matrix_entry("aggregation settings");
     let legacy_blocklist = matrix_entry("the legacy metric blocklist");
@@ -673,18 +673,15 @@ async fn parameters_are_native_configuration_converted_into_plan_values() {
     let multi_region_failover = matrix_entry("multi-region failover");
     let mirroring = matrix_entry("multi-region failover mirroring an allowlist");
     let autoscaling_failover = matrix_entry("autoscaling failover");
-    // The keys of that configuration's routing groups: the first 16 hexadecimal digits of the SHA-256 of
-    // `["https://e.example.com"]` and of `["https://b.example.com","https://c.example.com"]`, by `shasum -a 256`.
-    let (group_e, group_b_c) = ("ce7249fa1ea667a9", "e3488d4119bf8279");
-    let group = |key: &str, list: &str| format!("metrics_endpoint_routing.group.{}.{}", key, list);
-    let (e_names, e_prefixes) = (group(group_e, "names"), group(group_e, "prefixes"));
-    let (b_c_names, b_c_prefixes) = (group(group_b_c, "names"), group(group_b_c, "prefixes"));
-    let cases: Vec<(&str, &str, &str, &str, Value)> = vec![
+    let scalars = json!({"kind_in": ["counter", "rate", "gauge", "set"]});
+    let failover = json!({"flag": {"config": "multi_region_failover.enabled", "resolved": true}});
+    let mirroring_flag =
+        |on: bool| json!({"flag": {"config": "multi_region_failover.metric_mirroring.enabled", "resolved": on}});
+    let cases: Vec<(&str, &str, &str, Value)> = vec![
         (
             mapper,
             "dsd_enrich",
             "profiles",
-            "dogstatsd.mapper.profiles",
             // An empty match type is wildcard, and tags are written in canonical order.
             json!([
                 {"name": "wildcards", "prefix": "raw.", "mappings": [
@@ -698,32 +695,23 @@ async fn parameters_are_native_configuration_converted_into_plan_values() {
                 ]}
             ]),
         ),
-        (
-            mapper,
-            "dsd_enrich",
-            "cache_size",
-            "dogstatsd.mapper.cache_size",
-            json!(0),
-        ),
+        (mapper, "dsd_enrich", "cache_size", json!(0)),
         (
             mapper,
             "dsd_prefix_filter_blocklist_namespace_prefix",
             "namespace",
-            "dogstatsd.prefix_filter.metric_namespace",
             json!("tenant."),
         ),
         (
             mapper,
             "dsd_prefix_filter_blocklist_namespace_prefix",
             "exclusions",
-            "dogstatsd.prefix_filter.metric_namespace_blocklist",
             json!(["internal."]),
         ),
         (
             mapper,
             "dsd_tag_filterlist",
             "rules",
-            "dogstatsd.tag_filterlist",
             // An entry without an action excludes.
             json!([
                 {"metric_name": "tenant.requests", "action": "include", "tags": ["env"]},
@@ -734,89 +722,31 @@ async fn parameters_are_native_configuration_converted_into_plan_values() {
             mapper,
             "dsd_tag_filterlist",
             "value_rules",
-            "dogstatsd.tag_value_allowlist",
             // Mismatches are removed by default, and a removing rule has no replacement.
             json!([{"metric_prefix": "tenant.", "tag_name": "env", "values": ["prod"], "on_miss": "remove"}]),
         ),
-        (
-            aggregation,
-            "dsd_agg",
-            "window",
-            "dogstatsd.aggregation.window_duration_seconds",
-            json!("1m"),
-        ),
-        (
-            aggregation,
-            "dsd_no_agg_split",
-            "window",
-            "dogstatsd.aggregation.window_duration_seconds",
-            json!("1m"),
-        ),
-        (
-            aggregation,
-            "dsd_agg",
-            "flush_interval",
-            "dogstatsd.aggregation.flush_interval",
-            json!("1500ms"),
-        ),
-        (
-            aggregation,
-            "dsd_agg",
-            "context_limit",
-            "dogstatsd.aggregation.context_limit",
-            json!(5000),
-        ),
+        (aggregation, "dsd_agg", "window", json!("1m")),
+        (aggregation, "dsd_no_agg_split", "window", json!("1m")),
+        (aggregation, "dsd_agg", "flush_interval", json!("1500ms")),
+        (aggregation, "dsd_agg", "context_limit", json!(5000)),
         // A zero expiry never expires counters, written `0s`.
-        (
-            aggregation,
-            "dsd_agg",
-            "counter_expiry",
-            "dogstatsd.aggregation.counter_expiry_seconds",
-            json!("0s"),
-        ),
-        (
-            aggregation,
-            "dsd_agg",
-            "flush_open_windows",
-            "dogstatsd.aggregation.flush_open_windows",
-            json!(true),
-        ),
-        (
-            aggregation,
-            "dsd_agg",
-            "copy_to_distribution",
-            "metrics_encoding.histogram.copy_to_distribution",
-            json!(true),
-        ),
-        (
-            aggregation,
-            "dsd_agg",
-            "copy_to_distribution_prefix",
-            "metrics_encoding.histogram.copy_to_distribution_prefix",
-            json!("dist."),
-        ),
-        // The legacy blocklist applies while `metric_filterlist` is empty, as translation resolves it.
+        (aggregation, "dsd_agg", "counter_expiry", json!("0s")),
+        (aggregation, "dsd_agg", "flush_open_windows", json!(true)),
+        (aggregation, "dsd_agg", "copy_to_distribution", json!(true)),
+        (aggregation, "dsd_agg", "copy_to_distribution_prefix", json!("dist.")),
+        // The legacy blocklist applies while `metric_filterlist` is empty, as translation resolves it, by prefix.
         (
             legacy_blocklist,
             "dsd_prefix_filter_blocklist",
             "predicate",
-            "dogstatsd.metric_filter.values",
-            json!(["blocked.metric"]),
-        ),
-        (
-            legacy_blocklist,
-            "dsd_prefix_filter_blocklist",
-            "predicate",
-            "dogstatsd.metric_filter.match_prefix",
-            json!(true),
+            json!({"not": {"intake_name": {"prefix": "blocked.metric"}}}),
         ),
         // Only the filterlist entries that name a histogram statistic's series reach the post-aggregation filter.
         (
             mapper,
             "dsd_post_agg_filter",
             "predicate",
-            "dogstatsd.post_aggregate_filter.values",
-            json!(["tenant.requests.max"]),
+            json!({"not": {"all": [scalars.clone(), {"intake_name": {"prefix": "tenant.requests.max"}}]}}),
         ),
         // Routing groups are ordered by their lists, an endpoint with empty lists has none, and endpoints with equal
         // lists share one.
@@ -824,96 +754,116 @@ async fn parameters_are_native_configuration_converted_into_plan_values() {
             routing_groups,
             "metrics_routing_filter_0",
             "predicate",
-            &e_names,
-            json!([]),
-        ),
-        (
-            routing_groups,
-            "metrics_routing_filter_0",
-            "predicate",
-            &e_prefixes,
-            json!(["catalog."]),
+            json!({"intake_name": {"prefix": "catalog."}}),
         ),
         (
             routing_groups,
             "metrics_routing_filter_1",
             "predicate",
-            &b_c_names,
-            json!(["orders.total"]),
-        ),
-        (
-            routing_groups,
-            "metrics_routing_filter_1",
-            "predicate",
-            &b_c_prefixes,
-            json!([]),
+            json!({"intake_name": {"eq": "orders.total"}}),
         ),
         // The branch exists only while failover is enabled; mirroring is off and mirrors everything by default.
         (
             multi_region_failover,
             "mrf_metrics_gateway",
             "predicate",
-            "multi_region_failover.enabled",
-            json!(true),
-        ),
-        (
-            multi_region_failover,
-            "mrf_metrics_gateway",
-            "predicate",
-            "multi_region_failover.metric_mirroring.enabled",
-            json!(false),
-        ),
-        (
-            multi_region_failover,
-            "mrf_metrics_gateway",
-            "predicate",
-            "multi_region_failover.metric_mirroring.allowlist",
-            json!([]),
+            json!({"all": [failover.clone(), mirroring_flag(false)]}),
         ),
         (
             mirroring,
             "mrf_metrics_gateway",
             "predicate",
-            "multi_region_failover.metric_mirroring.enabled",
-            json!(true),
-        ),
-        (
-            mirroring,
-            "mrf_metrics_gateway",
-            "predicate",
-            "multi_region_failover.metric_mirroring.allowlist",
-            json!(["requests.count", "orders.total"]),
+            json!({"all": [
+                failover.clone(),
+                mirroring_flag(true),
+                {"name": {"in": ["requests.count", "orders.total"]}},
+            ]}),
         ),
         (
             autoscaling_failover,
             "af_metrics_gateway",
             "predicate",
-            "autoscaling_failover.metrics",
-            json!(["requests.count"]),
+            json!({"all": [
+                scalars.clone(),
+                {"flag": {"config": "autoscaling_failover.enabled", "resolved": true}},
+                {"name": {"eq": "requests.count"}},
+            ]}),
         ),
     ];
-    for (yaml, node, param, binding, expected) in cases {
+    for (yaml, node, param, expected) in cases {
         let lowered = lowered(yaml).await;
         let node = lowered.plan.node(&node.parse().unwrap()).unwrap();
-        let found = bindings_of(node)
-            .into_iter()
-            .find(|(p, b, _)| p == param && b == binding)
-            .unwrap_or_else(|| panic!("`{}.{}` is bound to `{}`", node.id, param, binding));
-        assert_eq!(found.2, expected, "`{}.{}` bound to `{}`", node.id, param, binding);
+        assert_eq!(node.params.get(param), Some(&expected), "`{}.{}`", node.id, param);
     }
+}
+
+/// Every policy setting a configuration that sets each one is lowered to, derived by hand from the configuration:
+/// read from the startup configuration, but for those native components read live, from the current one.
+#[tokio::test]
+async fn policy_settings_come_from_the_snapshot_native_components_read_them_from() {
+    let startup = configuration("metric_filterlist: [h.max]\nstatsd_metric_namespace: old").await;
+    let current = layered_configuration(&[
+        "metric_filterlist: [h.max]\nstatsd_metric_namespace: old",
+        "metric_filterlist: [h.min, h.max]\nstatsd_metric_namespace: new\nhistogram_aggregates: [min]",
+    ])
+    .await;
+    let lowered = lower_with(&startup, &current);
+    let param = |node: &str, param: &str| {
+        lowered
+            .plan
+            .node(&node.parse().unwrap())
+            .and_then(|node| node.params.get(param).cloned())
+    };
+    // The filterlist follows the current configuration.
+    assert_eq!(
+        param(ids::DSD_PREFIX_FILTER_BLOCKLIST, "predicate"),
+        Some(json!({"not": {"intake_name": {"in": ["h.min", "h.max"]}}}))
+    );
+    // The namespace keeps the startup configuration.
+    assert_eq!(
+        param(ids::DSD_PREFIX_FILTER_BLOCKLIST_NAMESPACE_PREFIX, "namespace"),
+        Some(json!("old"))
+    );
+    // The post-aggregation filter takes the filterlist from the current configuration and the statistics from startup:
+    // `min` was added only to the current configuration, so `h.min` names no statistic yet.
+    assert_eq!(
+        param(ids::DSD_POST_AGG_FILTER, "predicate"),
+        Some(json!({"not": {"all": [
+            {"kind_in": ["counter", "rate", "gauge", "set"]},
+            {"intake_name": {"eq": "h.max"}},
+        ]}}))
+    );
+}
+
+#[tokio::test]
+async fn an_unset_or_zero_counter_expiry_never_expires() {
+    for (yaml, expected) in [
+        ("dogstatsd_expiry_seconds: 0", "0s"),
+        ("dogstatsd_expiry_seconds: 300", "5m"),
+        ("", "5m"),
+    ] {
+        let lowered = lowered(yaml).await;
+        let aggregate = lowered.plan.node(&ids::DSD_AGG.parse().unwrap()).unwrap();
+        assert_eq!(
+            aggregate.params.get("counter_expiry"),
+            Some(&json!(expected)),
+            "{:?}",
+            yaml
+        );
+    }
+    // The typed model's unset expiry, which translation never leaves, also never expires.
+    let mut config = configuration("").await;
+    config.domains.dogstatsd.aggregation.counter_expiry_seconds = None;
+    let lowered = lower_with(&config, &config);
+    let aggregate = lowered.plan.node(&ids::DSD_AGG.parse().unwrap()).unwrap();
+    assert_eq!(aggregate.params.get("counter_expiry"), Some(&json!("0s")));
 }
 
 #[tokio::test]
 async fn repeated_histogram_statistics_are_computed_once_and_noted() {
     let lowered = lowered("histogram_aggregates: [max, max, count]\nhistogram_percentiles: ['0.95', '0.951']").await;
     let aggregate = lowered.plan.node(&"dsd_agg".parse().unwrap()).unwrap();
-    let resolved = |param: &str| {
-        bindings_of(aggregate)
-            .into_iter()
-            .find(|(p, _, _)| p == param)
-            .map(|(_, _, value)| value)
-            .unwrap()
-    };
+    let resolved = |param: &str| aggregate.params.get(param).cloned().unwrap();
     assert_eq!(resolved("histogram_aggregates"), json!(["max", "count"]));
     // Both quantiles round to the 95th percentile.
     assert_eq!(resolved("histogram_percentiles"), json!([95]));

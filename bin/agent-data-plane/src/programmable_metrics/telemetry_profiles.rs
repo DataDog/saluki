@@ -15,8 +15,8 @@
 //! Each kept metric says where its value comes from in the plan-driven topology, and so who records it (see
 //! [`MetricSource`]). A kernel records its own. A `split` has no kernel, so the region host running it counts what
 //! leaves its ports, and the installer records what describes the configuration a generation runs with, when the
-//! generation commits: the length of a bound list, the rules a tag filterlist puts in effect, and how many
-//! configuration changes changed a binding. These are the values the native components report: the native listener
+//! generation commits: the length of a list a node matches names against, the rules a tag filterlist puts in effect,
+//! and how many configuration changes changed a node's parameters. These are the values the native components report: the native listener
 //! filterlist reports its configured list's length and counts its live updates, the native tag filterlist reports its
 //! rule count, and a native filter counts the metrics it drops.
 
@@ -47,26 +47,23 @@ pub enum MetricSource {
     /// `drop`. The region host running the node counts them: a `split` has no kernel.
     PortEvents(&'static str),
 
-    /// The number of values in the list bound to the named binding, as configured, repeats included. The installer
-    /// sets it whenever it installs a generation.
-    BindingLength(&'static str),
+    /// The number of distinct values a `split`'s predicate matches the intake name against: the length of its
+    /// filterlist, as the plan writes it, each value once. The installer sets it whenever it installs a generation.
+    ListLength,
 
-    /// The number of entries a name matcher keeps for the list bound to the named binding: its distinct names, or, for
-    /// a list of prefixes, the prefixes that no other prefix in it covers. The installer sets it whenever it installs a
-    /// generation.
+    /// The number of entries a name matcher keeps for the values a `split`'s predicate matches the intake name against,
+    /// exactly or by prefix: its distinct names, or the prefixes that no other prefix covers. The installer sets it
+    /// whenever it installs a generation.
     MatcherEntries {
-        /// The binding, with `{key}` standing for the key of a keyed binding.
-        binding: &'static str,
-
-        /// Whether the list holds prefixes.
+        /// Whether to count the values matched by prefix, rather than exactly.
         prefixes: bool,
     },
 
-    /// The number of configuration changes, after the first installation, that changed the value of any of the named
-    /// bindings, all of them live. The installer counts them, as it observes configuration changes.
-    BindingChanges(&'static [&'static str]),
+    /// The number of configuration changes, after the first installation, that changed the node's parameters in the
+    /// default program lowered from them. The installer counts them, as it observes configuration changes.
+    ParamChanges,
 
-    /// The number of rules a `tag_projection` node's resolved `rules` and `value_rules` put in effect: one per metric
+    /// The number of rules a `tag_projection` node's `rules` and `value_rules` put in effect: one per metric
     /// name with tag rules, plus one per metric prefix and tag with a value rule, as the native tag filterlist counts
     /// them. The installer sets it whenever it installs a generation, so that it describes the rules of the generation
     /// that is active, never those of one still being prepared.
@@ -147,14 +144,8 @@ pub enum TelemetryProfile {
 const LISTENER_FILTERLIST_METRICS: &[NativeMetric] = {
     use MetricSource::*;
     &[
-        gauge(
-            "metric_filterlist_size",
-            BindingLength("dogstatsd.metric_filter.values"),
-        ),
-        counter(
-            "metric_filterlist_updates_total",
-            BindingChanges(&["dogstatsd.metric_filter.values", "dogstatsd.metric_filter.match_prefix"]),
-        ),
+        gauge("metric_filterlist_size", ListLength),
+        counter("metric_filterlist_updates_total", ParamChanges),
         // One per metric the filterlist drops, whatever its number of points. In normal form, the split keeps what
         // the filterlist does not match on its `true` port, so what it drops leaves on `false`.
         counter("dogstatsd_listener_filtered_points_total", PortEvents("false")),
@@ -177,10 +168,7 @@ const TAG_FILTERLIST_METRICS: &[NativeMetric] = {
         // A kernel is built while its generation is prepared, which may never commit.
         gauge("tag_filterlist_size", TagProjectionRules),
         // A change of rules builds a new kernel, which cannot know it replaces one.
-        counter(
-            "tag_filterlist_updates_total",
-            BindingChanges(&["dogstatsd.tag_filterlist"]),
-        ),
+        counter("tag_filterlist_updates_total", ParamChanges),
     ]
 };
 
@@ -246,23 +234,11 @@ const ENDPOINT_ALLOWLIST_METRICS: &[NativeMetric] = {
         counter("metrics_endpoint_allowlist_metrics_filtered_total", PortEvents("false")),
         NativeMetric {
             tags: &["match_type:exact"],
-            ..gauge(
-                "metrics_endpoint_allowlist_size",
-                MatcherEntries {
-                    binding: "metrics_endpoint_routing.group.{key}.names",
-                    prefixes: false,
-                },
-            )
+            ..gauge("metrics_endpoint_allowlist_size", MatcherEntries { prefixes: false })
         },
         NativeMetric {
             tags: &["match_type:prefix"],
-            ..gauge(
-                "metrics_endpoint_allowlist_size",
-                MatcherEntries {
-                    binding: "metrics_endpoint_routing.group.{key}.prefixes",
-                    prefixes: true,
-                },
-            )
+            ..gauge("metrics_endpoint_allowlist_size", MatcherEntries { prefixes: true })
         },
     ]
 };

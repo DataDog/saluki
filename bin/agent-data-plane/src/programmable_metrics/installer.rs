@@ -72,7 +72,10 @@
 //! snapshot the channel delivers, and hands it to the core ([`InstallerCore::on_snapshot`]), which revokes, rejects,
 //! acknowledges, or proposes the artifact it holds, composed into the default program ADP last lowered, with its
 //! catalog. While an artifact is in effect, each configuration change composes it again against the new default
-//! program ([`InstallerCore::on_default_program`]), so native configuration still reaches it through its bindings.
+//! program ([`InstallerCore::on_default_program`]), so native configuration still reaches it through the facts and
+//! signals it binds, and the resources it delivers through. Its policy is its own: native policy settings reach only the
+//! default program, whose lowering writes them as literals, so a change of one is a new default program, installed as a
+//! generation that rebuilds only what the change touches.
 //! The core's actions are performed as for any candidate. A preparation's panic budget is the budget of the program it
 //! runs, in every region: zero for the default program, so that a panic fails its region as a native component's does,
 //! and [`PanicBudget::ARTIFACT`] for a published program, covering every node it runs, whether its author changed the
@@ -147,7 +150,7 @@ use saluki_metric_plan::{
     compile::{compile, compile_unvalidated, Frame, LeaseTable, RegionProgram, SlotId},
     compose::{compose_all, demanded_outputs, Approval, ComposeError, Composed, Composer, Demand},
     explain::Explain,
-    export::{base, export_as, policy_differences, Annotations, ExportBundle, ExportForm, Omission},
+    export::{base, export_as, node_differences, Annotations, ExportBundle, ExportForm, Omission},
     install::{
         Action, ArmCut, Candidate, CandidateId, CreditKey, CutDeferReason, CutPhase, GenerationState, InstallerConfig,
         InstallerCore, InstallerStatus, LeaseRef, Origin, Outcome, PendingReason, Prepare, PrepareOutcome, PrepareSite,
@@ -451,12 +454,19 @@ impl ProgrammableMetrics {
         });
         let mut telemetry = InstallerTelemetry::new(topology_root);
         telemetry.register_hosts(lowering.hosts().iter().map(|host| host.delivery));
-        telemetry.set_binding_gauges(&plan);
+        telemetry.set_plan_gauges(&plan);
         telemetry.register_change_counters(&plan);
         telemetry.rewrites(core.active_rewrites());
 
         let labels = output_labels(&lowered.resources.outputs);
-        let default_program = DefaultProgramView::of(&plan, lowered.catalog, &labels, &lowered.annotations, &registry);
+        let default_program = DefaultProgramView::of(
+            &plan,
+            lowered.catalog,
+            &labels,
+            &lowered.annotations,
+            lowered.policy_nodes,
+            &registry,
+        );
         let outputs = lowering.outputs().clone();
         let credentials = Arc::new(AdpCredentialSource::new(config.clone()));
         let hosts_at_boot = *lowering.hosts();
@@ -661,11 +671,11 @@ pub struct PlanStatus {
     pub apply_states: ApplyStates,
 
     /// The export of every scope of the default program last lowered, by scope, or why the scope cannot be exported,
-    /// in the detached form a published program starts from: its policy settings written as their current values.
+    /// in the detached form a published program starts from: without what does nothing as configured, and with emits
+    /// addressed to recipients.
     pub exports: BTreeMap<ScopeName, Result<Arc<ExportBundle>, String>>,
 
-    /// The same exports in the bound form, as the default program binds its policy settings, for tools that study
-    /// lowering.
+    /// The same exports in the bound form, every node as the default program has it, for tools that study lowering.
     pub bound_exports: BTreeMap<ScopeName, Result<Arc<ExportBundle>, String>>,
 
     /// The default program last lowered, with every configuration binding resolved: the plan artifacts are composed
@@ -1027,8 +1037,8 @@ struct DefaultProgramView {
     exports: BTreeMap<ScopeName, Result<Arc<ExportBundle>, String>>,
     /// The same exports, bound.
     bound_exports: BTreeMap<ScopeName, Result<Arc<ExportBundle>, String>>,
-    /// The catalog's document form, as exports carry it, which says which bindings are policy settings.
-    document: saluki_metric_plan::validate::MemoryCatalog,
+    /// The nodes whose parameters lowering writes from native policy settings.
+    policy_nodes: BTreeSet<NodeId>,
     /// The base program hash an artifact derived from the export of each scope records, for every scope whose base can
     /// be computed.
     bases: BTreeMap<ScopeName, PlanHash>,
@@ -1036,11 +1046,12 @@ struct DefaultProgramView {
 
 impl DefaultProgramView {
     /// Derives the view of a default program lowered with `catalog`, with output display labels `labels` and the notes
-    /// lowering wrote for its nodes, `annotations`; `registry` is the operator registry plans are compiled with, which
-    /// says which nodes the detached export leaves out because they do nothing.
+    /// lowering wrote for its nodes, `annotations`, and the nodes it writes from native policy settings,
+    /// `policy_nodes`; `registry` is the operator registry plans are compiled with, which says which nodes the detached
+    /// export leaves out because they do nothing.
     fn of(
         plan: &Plan, catalog: AdpCatalog, labels: &BTreeMap<OutputId, String>, annotations: &BTreeMap<NodeId, String>,
-        registry: &OperatorRegistry,
+        policy_nodes: BTreeSet<NodeId>, registry: &OperatorRegistry,
     ) -> Self {
         let document = catalog.to_document();
         let exports_as = |form: ExportForm| {
@@ -1079,7 +1090,7 @@ impl DefaultProgramView {
             exports,
             bound_exports,
             bases,
-            document,
+            policy_nodes,
         }
     }
 }
@@ -1287,7 +1298,7 @@ struct Installer {
     regions: Vec<ControlSender<RegionControl>>,
     region_telemetry: RegionTelemetry,
     telemetry: InstallerTelemetry,
-    /// The generation whose activation last set the gauges that describe the active plan: the binding gauges and the
+    /// The generation whose activation last set the gauges that describe the active plan: the plan gauges and the
     /// rewrites applied.
     gauges_describe: Option<GenerationId>,
     retired: mpsc::UnboundedReceiver<GenerationId>,
@@ -1327,9 +1338,10 @@ struct Installer {
     artifact_paths: Box<dyn ArtifactPaths>,
     /// The active generation's plan and explain document, once published.
     active_plan: Option<Arc<ActivePlan>>,
-    /// The native policy settings the published program running does not follow, computed for the plan running and the
-    /// default program last lowered, which it was computed for: computing it decides what does nothing in both.
-    differs: Option<(Arc<Plan>, Arc<Plan>, Vec<saluki_metric_plan::ir::BindingName>)>,
+    /// The nodes of the default program whose native policy settings the published program running does not follow,
+    /// computed for the plan running and the default program last lowered, which it was computed for: computing it
+    /// decides what does nothing in both.
+    differs: Option<(Arc<Plan>, Arc<Plan>, Vec<saluki_metric_plan::ir::LocalId>)>,
     /// The links to every fixed delivery host and its encode host, with their event channels.
     hosts: BTreeMap<HostId, HostLink>,
     /// The core's resource paths, or a test double.
@@ -1635,7 +1647,7 @@ impl Installer {
                 return Vec::new();
             }
         };
-        self.telemetry.count_binding_changes(&self.last_lowered, &lowered.plan);
+        self.telemetry.count_param_changes(&self.last_lowered, &lowered.plan);
         let report = Validator::new(&self.registry, &lowered.catalog).validate(&lowered.plan);
         let degraded = errors(&report);
         let plan = Arc::new(lowered.plan);
@@ -1648,9 +1660,10 @@ impl Installer {
                 lowered.catalog,
                 &self.labels,
                 &lowered.annotations,
+                lowered.policy_nodes,
                 &self.registry,
             );
-            self.note_native_policy_changes(&view.document);
+            self.note_native_policy_changes(&plan, &lowered.annotations);
             self.default_program = view;
         }
         self.last_lowered = Arc::clone(&plan);
@@ -2003,7 +2016,7 @@ impl Installer {
         }
     }
 
-    /// Sets the gauges that describe the active plan, the binding gauges and the rewrites applied, from the core's
+    /// Sets the gauges that describe the active plan, the plan gauges and the rewrites applied, from the core's
     /// active plan, for the activation of `generation`: at its commit, or, for a cut's generation, which becomes active
     /// with no commit, when the core reports it active. Whichever of the two comes first sets them, once per
     /// activation.
@@ -2012,7 +2025,7 @@ impl Installer {
             return;
         }
         if let Some(plan) = self.core.active_plan() {
-            self.telemetry.set_binding_gauges(plan);
+            self.telemetry.set_plan_gauges(plan);
         }
         self.telemetry.rewrites(self.core.active_rewrites());
         self.gauges_describe = Some(generation);
@@ -2311,29 +2324,29 @@ impl Installer {
         }
     }
 
-    /// Logs each native policy setting whose value differs in `next`, the catalog of the default program just lowered,
-    /// from the last one, while a published program runs: the program owns its policy, so the change reaches the
-    /// default program only, and status lists the setting under `program.differs`.
-    fn note_native_policy_changes(&self, next: &saluki_metric_plan::validate::MemoryCatalog) {
+    /// Logs each node of `next`, the default program just lowered, whose native policy settings changed from the last
+    /// one, while a published program runs: the program owns its policy, so the change reaches the default program
+    /// only, and status lists the node under `program.differs`. `annotations` says what each node stands for.
+    fn note_native_policy_changes(&self, next: &Plan, annotations: &BTreeMap<NodeId, String>) {
         let Some(Origin::Artifact { revision, .. }) = self.core.status().active.map(|active| active.origin) else {
             return;
         };
-        let previous = &self.default_program.document;
-        for (name, binding) in next.bindings() {
-            if binding.class != saluki_metric_plan::validate::BindingClass::Policy {
-                continue;
-            }
-            let was = previous
-                .bindings()
-                .find(|(other, _)| *other == name)
-                .and_then(|(_, other)| other.value.as_ref());
-            if was.is_some() && was != binding.value.as_ref() {
+        for node in next
+            .nodes
+            .iter()
+            .filter(|node| self.default_program.policy_nodes.contains(&node.id))
+        {
+            let was = self.last_lowered.node(&node.id);
+            if was.is_some_and(|was| was.params != node.params) {
+                let what = annotations.get(&node.id).map_or("", String::as_str);
                 info!(
-                    binding = %name,
+                    node = %node.id,
                     revision,
-                    "`{}` changed; the published program (revision {}) owns its policy, so the change applies to the \
-                     default program only; revoke the program, or publish one with the new value, to apply it.",
-                    name,
+                    "The native settings of `{}` changed ({}); the published program (revision {}) owns its policy, so \
+                     the change applies to the default program only; revoke the program, or publish one with the new \
+                     value, to apply it.",
+                    node.id,
+                    what,
                     revision
                 );
             }
@@ -2385,12 +2398,15 @@ impl Installer {
                 program.differs = match cached {
                     Some((_, _, differs)) => differs.clone(),
                     None => {
-                        let differs = policy_differences(
+                        let differs = node_differences(
                             &self.last_lowered,
                             active,
-                            &self.default_program.document,
+                            &self.default_program.policy_nodes,
                             &self.registry,
-                        );
+                        )
+                        .iter()
+                        .map(|node| node.local().clone())
+                        .collect::<Vec<_>>();
                         self.differs = Some((Arc::clone(active), Arc::clone(&self.last_lowered), differs.clone()));
                         differs
                     }

@@ -30,7 +30,7 @@ pub enum NodeChange {
         /// The operator differs.
         operator: bool,
 
-        /// The parameters differ, including only in the resolved value of a configuration binding, but not where one plan
+        /// The parameters differ, including only in the resolved value of a configuration binding, or where one plan
         /// binds a value and the other writes the same literal.
         params: bool,
 
@@ -371,9 +371,10 @@ pub fn diff(active: &Plan, candidate: &Plan, registry: &OperatorRegistry) -> Pla
             continue;
         };
         let operator = old.op != node.op;
-        // Compared by what they do: a parameter bound to a value and the same literal are the same.
-        let params = crate::export::operation_params(&old.op, &old.params)
-            != crate::export::operation_params(&node.op, &node.params);
+        // Compared by what they do: a parameter left out and its default are the same, and so are two sets written in
+        // another order.
+        let params = crate::export::compared_params(&old.op, &old.params, registry)
+            != crate::export::compared_params(&node.op, &node.params, registry);
         let edges = old_edges.get(&node.id) != new_edges.get(&node.id);
         let change = if operator || params || edges {
             NodeChange::Changed {

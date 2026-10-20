@@ -7,24 +7,20 @@
 //!
 //! - the [detached export](super#the-detached-form) is only what actually happens, and lists what it left out
 //!   ([`ExportBundle::omitted`](super::ExportBundle::omitted)); and
-//! - a tool's diff of what two plans do ([`diff_operations`](crate::install::diff_operations)) and the native settings
-//!   a published program no longer follows ([`policy_differences`](super::policy_differences)) see a program written
-//!   from that export, which does not have the nodes, as doing what the default program, which does, does.
+//! - a tool's diff of what two plans do ([`diff_operations`](crate::install::diff_operations)) and the nodes of the
+//!   default program a published program does not run as it writes them ([`node_differences`](super::node_differences))
+//!   see a program written from that export, which does not have the nodes, as doing what the default program, which
+//!   does, does.
 //!
 //! The plan that runs is never changed by this: the default program keeps every node, whatever its values, so its
 //! structure never depends on a configuration value, and the installer compares plans as written
 //! ([`operation_hash`](super::operation_hash)): publishing the shorter export over the default program is a generation
-//! that builds no kernel, after which the plan running is the program as published. Every use decides with
-//! [`policy_literals`] of one catalog, so they leave out exactly the same nodes for one plan.
+//! that builds no kernel, after which the plan running is the program as published.
 //!
 //! # What is left out
 //!
-//! Decisions read **literal** parameters only: a literal, or a binding the caller says counts as one, written as its
-//! resolved value. Every use counts the catalog's policy settings ([`policy_literals`]), which the detached export
-//! writes as literals; facts and signals stay bound in a published program, and so does a binding the catalog does not
-//! declare, which validation refuses. Every other binding is not known, whatever its resolved value, so it never
-//! decides anything. Two kinds of
-//! node go, until none is left:
+//! Decisions read **literal** parameters only. A binding, a fact or a signal, is not known, whatever its resolved value,
+//! so it never decides anything. Two kinds of node go, until none is left:
 //!
 //! - **A constant `split`**: one whose predicate its literal operands decide ([`Predicate::literal_value`]), such as a
 //!   filterlist with nothing in it (`intake_name in []`), together with everything only its dead port feeds, by rewrite
@@ -45,14 +41,13 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use super::write_bindings_as_values;
 use crate::{
     canonical::strip_resolved_values,
     compile::rewrite::r3::fold_split,
-    ir::{BindingName, Edge, NodeId, Plan, PortRef},
+    ir::{Edge, NodeId, Plan, PortRef},
     normalize::normalize_params,
     operators::{names, Cardinality, OperatorRegistry, StateContract},
-    validate::{graph::Graph, BindingClass, Catalog, ValidationReport},
+    validate::{graph::Graph, ValidationReport},
 };
 
 /// Why [`eliminate`] left a node out.
@@ -86,20 +81,10 @@ pub struct Eliminated {
     pub omitted: Vec<(NodeId, Omission)>,
 }
 
-/// Returns which bindings count as literals for [`eliminate`]: those `catalog` declares as policy settings, as the
-/// detached export writes them. Facts, signals, and bindings the catalog does not declare stay bound.
-pub fn policy_literals(catalog: &dyn Catalog) -> impl Fn(&BindingName) -> bool + '_ {
-    |binding| {
-        catalog
-            .binding(binding)
-            .is_some_and(|declared| declared.class == BindingClass::Policy)
-    }
-}
-
 /// Returns `plan` without the nodes that do nothing as configured (see [the module documentation](self)), deciding by
-/// the literal parameters only: literals, and the bindings for which `literal` holds, as their resolved values.
-pub fn eliminate(plan: &Plan, registry: &OperatorRegistry, literal: &dyn Fn(&BindingName) -> bool) -> Eliminated {
-    let mut decided = literal_form(plan, literal);
+/// the literal parameters only.
+pub fn eliminate(plan: &Plan, registry: &OperatorRegistry) -> Eliminated {
+    let mut decided = literal_form(plan);
     let mut result = plan.clone();
     let mut omitted = Vec::new();
     loop {
@@ -129,10 +114,9 @@ pub fn eliminate(plan: &Plan, registry: &OperatorRegistry, literal: &dyn Fn(&Bin
     Eliminated { plan: result, omitted }
 }
 
-/// Returns `plan` as the decisions read it: every binding for which `literal` holds written as its resolved value,
-/// every other binding without its resolved value, so not known, and every node's parameters in normal form
-/// ([`normalize_params`]), with every predicate's literal `flag` and `is_empty` folded.
-fn literal_form(plan: &Plan, literal: &dyn Fn(&BindingName) -> bool) -> Plan {
+/// Returns `plan` as the decisions read it: every binding without its resolved value, so not known, and every node's
+/// parameters in normal form ([`normalize_params`]), with every predicate's literal `flag` and `is_empty` folded.
+fn literal_form(plan: &Plan) -> Plan {
     let mut plan = plan.clone();
     for node in &mut plan.nodes {
         let params = node
@@ -140,7 +124,6 @@ fn literal_form(plan: &Plan, literal: &dyn Fn(&BindingName) -> bool) -> Plan {
             .iter()
             .map(|(name, value)| {
                 let mut value = value.clone();
-                write_bindings_as_values(&mut value, literal);
                 strip_resolved_values(&mut value);
                 (name.clone(), value)
             })

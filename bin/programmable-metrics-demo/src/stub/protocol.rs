@@ -284,7 +284,8 @@ pub struct ProgramStatus {
     #[serde(default)]
     pub native_policy: String,
 
-    /// The native policy settings, by binding, whose current value the running program does not run.
+    /// The nodes of the default program, by name, whose native policy settings the running program does not run as
+    /// they are now.
     #[serde(default)]
     pub differs: Vec<String>,
 }

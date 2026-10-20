@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use saluki_metric_plan::{
     canonical::{PlanHash, ResolvedValues},
     compose::{compose_all, demanded_outputs, receive_artifact, Approval, ComposeError, ComposeOutcome},
-    export::{eliminate, policy_literals},
+    export::eliminate,
     install::{
         diff::{NodeChange, OutputChange},
         diff_operations, Correspondence,
@@ -493,8 +493,8 @@ pub fn compose_preview(
     // By what the plans do: what does nothing as configured, which the detached export leaves out and the default
     // program runs, is no change in what the program does. ADP compares plans as written, so dropping those nodes is a
     // generation of its own, which builds no kernel for them: a note says so.
-    let diff = diff_operations(base, &composed.plan, correspondence, &registry, &export.catalog);
-    let dropped = eliminate(base, &registry, &policy_literals(&export.catalog))
+    let diff = diff_operations(base, &composed.plan, correspondence, &registry);
+    let dropped = eliminate(base, &registry)
         .omitted
         .into_iter()
         .filter(|(node, _)| composed.plan.node(node).is_none())
@@ -833,21 +833,6 @@ fn find(source: &str, text: &str) -> Option<Span> {
     source.find(text).map(|start| Span::new(start, start + text.len()))
 }
 
-/// Returns the span of the first occurrence of the binding reference `text`, such as `config.host.tags`, in `source`
-/// that is not the start of a longer binding name, such as `config.host.tags_deadline`.
-fn find_binding(source: &str, text: &str) -> Option<Span> {
-    source
-        .match_indices(text)
-        .map(|(start, _)| start)
-        .find(|start| {
-            !source[start + text.len()..]
-                .chars()
-                .next()
-                .is_some_and(|next| next.is_ascii_alphanumeric() || next == '_' || next == '.')
-        })
-        .map(|start| Span::new(start, start + text.len()))
-}
-
 /// Returns the span of the `output` parameter of the first `emit` of the artifact that delivers to `output`.
 fn emit_span(parsed: &Parsed, output: &OutputId) -> Option<Span> {
     let node = parsed.artifact.nodes.iter().find(|node| {
@@ -870,15 +855,6 @@ fn compose_error_span(error: &ComposeError, parsed: &Parsed, source: &str) -> Op
     match error {
         ComposeError::ReservedOutsideScope { node, .. } | ComposeError::UnresolvedBinding { node, .. } => {
             written.node(parsed, node.as_str())
-        }
-        // A policy binding is placed where the node writes it, as `config.<binding>`, or at the node.
-        ComposeError::PolicyBinding { node, binding, .. } => {
-            let within = written.node(parsed, node.as_str())?;
-            source
-                .get(within.start..within.end)
-                .and_then(|text| find_binding(text, &format!("config.{}", binding)))
-                .map(|found| Span::new(within.start + found.start, within.start + found.end))
-                .or(Some(within))
         }
         ComposeError::UnknownRecipient { node, .. }
         | ComposeError::PendingRecipients { node, .. }

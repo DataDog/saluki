@@ -896,11 +896,11 @@ fn the_default_programs_decisions_are_its_filters_its_fan_outs_and_its_gateways(
         .collect::<Vec<_>>();
     let strings = |list: &[&str]| list.iter().map(|item| item.to_string()).collect::<Vec<_>>();
     // R1 never cuts a decision, and prices one by its function (a memo lookup when regions memoize it), so the policy
-    // fan-out and every gateway below it are one decision of `metrics_enrich`. Multi-Region Failover's predicate is
-    // constant for this configuration (enabled, mirroring, an empty allowlist: everything is forwarded), so R3 folds
-    // it. What is left to evaluate, the routing filters on two intake-name leaves each (25 ns each by R1's cost
-    // model) and the autoscaling gateway's on the kind and the raw name (11 ns), costs at least `MEMO_COST_FLOOR`, so
-    // the decision is memoized. The filters on one intake-name leaf (20 ns, and 21 with the kind) cost less, and are
+    // fan-out and every gateway below it are one decision of `metrics_enrich`. Multi-Region Failover's predicate, two
+    // bound flags once lowering folded its empty allowlist away, is constant for this configuration (enabled and
+    // mirroring: everything is forwarded), so R3 folds it. What is left to evaluate, the routing filters on their
+    // intake-name leaves and the autoscaling gateway's on the kind and the raw name, costs at least `MEMO_COST_FLOOR`,
+    // so the decision is memoized. The filters on one intake-name leaf (20 ns, and 21 with the kind) cost less, and are
     // not.
     assert_eq!(
         decisions,
@@ -959,8 +959,7 @@ fn the_default_programs_decisions_are_its_filters_its_fan_outs_and_its_gateways(
     let folded = &compiled.rewrites[1].justification;
     assert!(
         folded.starts_with(
-            "The predicate is constant given the resolved values of \
-             `multi_region_failover.metric_mirroring.allowlist`, `multi_region_failover.enabled`, and \
+            "The predicate is constant given the resolved values of `multi_region_failover.enabled` and \
              `multi_region_failover.metric_mirroring.enabled`: it is true for every event"
         ),
         "{}",

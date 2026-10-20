@@ -1274,3 +1274,34 @@ itself were deleted. The plan crate passes 904 tests (property tests excluded, t
 
 **Left for later**, in the plan: the delivery host's declared origin, bounded delivery policies, and conflict
 detection in `saluki-components`, which ADP no longer uses.
+
+## Version 2: V3 (native configuration lowers to literals)
+
+**What went** (amendment 196): every policy binding in ADP's registry (24 of 29 entries), keyed bindings
+(`BindingKey`, `Resolve::Keyed`, `metrics_endpoint_routing.group.<key>.*`), derived bindings, and `BindingClass::Policy`;
+the catalog's `detached_programs` and `facts_and_signals`; composition's `policy_binding` refusal; the detached export's
+conversion of bindings into values (`policy_literals`, `write_bindings_as_values`) and the catalog argument of
+`eliminate` and `diff_operations`; `operation_params` writing bindings as their values, which made a literal the same
+parameter as a binding of that value; and `policy_differences`, which located settings by their bindings' places.
+
+**What replaced it:** lowering writes each setting as a literal, read from the current configuration for the settings a
+native component reads live (the filterlists, the tag filterlist, the output branches' lists) and from the startup one
+otherwise, normalized as its type. The installer already lowered and proposed on every configuration change, so a
+native policy change is now a generation; the new test
+`a_native_policy_change_installs_a_generation_that_rebuilds_only_the_kernels_whose_settings_changed`, written first and
+passing on both paths, pins that a filterlist, tag filterlist, routing list, or mirroring list change changes one slot's
+program, builds at most that node's kernel, keeps aggregation's state, and makes no cut. Comparison goes through one
+function, `compared_params`: decoded when it can be, so a reordered set is the same set, with every binding kept, so a
+literal never equals a binding. `node_differences` replaces `policy_differences`, and status names default-program
+nodes. The installer's native telemetry reads the plan's literals (`ListLength`, `MatcherEntries`, `ParamChanges`).
+
+**A consequence:** a filter with nothing in it is now a `split` on a constant, which R3 folds when compiling, so the
+native counters region hosts keep for its ports were missing (the Agent's `dogstatsd.listener_filtered_points` and
+`aggregator.dogstatsd_filtered_metrics`, caught by the remap test). The installer now registers them at zero, as the
+native components do.
+
+**Tests.** The plan crate's default-program fixtures, its export fixtures, ADP's `every-branch.json`, and the demo's
+export fixture carry literals; explain golden files were regenerated. Tests of policy bindings were rewritten against
+literals, or deleted where the behavior is gone (the refusal, keyed lookups, value-versus-binding equality, now tested
+the other way). Targeted runs: the plan crate's non-property suite, ADP's bindings, lowering, export, telemetry,
+telemetry profile, API, installer, live, and differential tests, and the demo crate.

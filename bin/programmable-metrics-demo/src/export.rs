@@ -429,7 +429,7 @@ pub(crate) mod tests {
                 "mrf_metrics_encode"
             ]
         );
-        assert_eq!(export.binding_names.len(), 7);
+        assert_eq!(export.binding_names.len(), 2);
         assert_eq!(
             export.program_hash().to_string(),
             "sha256:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
@@ -458,14 +458,15 @@ pub(crate) mod tests {
             legend.outputs[1].recipients,
             ["dd_out/additional/0/http://127.0.0.1:17102"]
         );
-        let prefixes = legend
+        // Only facts and signals are bound: the routing groups' lists are literals of the program.
+        let mirroring = legend
             .bindings
             .iter()
-            .find(|binding| binding.name == "endpoint_routing.group.b0b0b0b0.prefixes")
+            .find(|binding| binding.name == "multi_region_failover.metric_mirroring.enabled")
             .unwrap();
-        assert_eq!(prefixes.value, Some(serde_json::json!(["demo.checkout."])));
-        assert!(!prefixes.live);
-        assert_eq!(legend.bindings.len(), 7);
+        assert_eq!(mirroring.value, Some(serde_json::json!(false)));
+        assert!(mirroring.live);
+        assert_eq!(legend.bindings.len(), 2);
 
         // An endpoint named by its URL in a label or a recipient is matched by port, before anything else.
         let by_url = super::intake_of(

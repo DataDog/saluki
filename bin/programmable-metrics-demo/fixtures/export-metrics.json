@@ -20,12 +20,7 @@
         "id": "metrics_routing_filter_0",
         "op": "split",
         "params": {
-          "predicate": {
-            "any": [
-              { "intake_name": { "matches": { "values": { "config": "endpoint_routing.group.b0b0b0b0.names" }, "prefix": false } } },
-              { "intake_name": { "matches": { "values": { "config": "endpoint_routing.group.b0b0b0b0.prefixes" }, "prefix": true } } }
-            ]
-          }
+          "predicate": { "intake_name": { "prefix": "demo.checkout." } }
         }
       },
       { "id": "metrics_routing_filter_0_true", "op": "emit", "params": { "output": "metrics_routing_encode_0" } },
@@ -34,12 +29,7 @@
         "id": "metrics_routing_filter_1",
         "op": "split",
         "params": {
-          "predicate": {
-            "any": [
-              { "intake_name": { "matches": { "values": { "config": "endpoint_routing.group.c0c0c0c0.names" }, "prefix": false } } },
-              { "intake_name": { "matches": { "values": { "config": "endpoint_routing.group.c0c0c0c0.prefixes" }, "prefix": true } } }
-            ]
-          }
+          "predicate": { "intake_name": { "prefix": "demo.catalog." } }
         }
       },
       { "id": "metrics_routing_filter_1_true", "op": "emit", "params": { "output": "metrics_routing_encode_1" } },
@@ -51,13 +41,7 @@
           "predicate": {
             "all": [
               { "flag": { "config": "multi_region_failover.enabled" } },
-              { "flag": { "config": "multi_region_failover.metric_mirroring.enabled" } },
-              {
-                "any": [
-                  { "is_empty": { "config": "multi_region_failover.metric_mirroring.allowlist" } },
-                  { "name": { "matches": { "values": { "config": "multi_region_failover.metric_mirroring.allowlist" }, "prefix": false } } }
-                ]
-              }
+              { "flag": { "config": "multi_region_failover.metric_mirroring.enabled" } }
             ]
           }
         }
@@ -105,26 +89,6 @@
       }
     },
     "bindings": {
-      "endpoint_routing.group.b0b0b0b0.names": {
-        "type": { "type": "list", "element": { "type": "string" } },
-        "liveness": "startup",
-        "value": []
-      },
-      "endpoint_routing.group.b0b0b0b0.prefixes": {
-        "type": { "type": "list", "element": { "type": "string" } },
-        "liveness": "startup",
-        "value": ["demo.checkout."]
-      },
-      "endpoint_routing.group.c0c0c0c0.names": {
-        "type": { "type": "list", "element": { "type": "string" } },
-        "liveness": "startup",
-        "value": []
-      },
-      "endpoint_routing.group.c0c0c0c0.prefixes": {
-        "type": { "type": "list", "element": { "type": "string" } },
-        "liveness": "startup",
-        "value": ["demo.catalog."]
-      },
       "multi_region_failover.enabled": {
         "type": { "type": "bool" },
         "liveness": "startup",
@@ -136,11 +100,6 @@
         "liveness": "live",
         "class": "signal",
         "value": false
-      },
-      "multi_region_failover.metric_mirroring.allowlist": {
-        "type": { "type": "list", "element": { "type": "string" } },
-        "liveness": "live",
-        "value": []
       }
     },
     "scopes": {

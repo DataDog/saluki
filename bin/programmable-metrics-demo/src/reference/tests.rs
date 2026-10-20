@@ -306,12 +306,11 @@ fn every_binding_an_example_reads_is_one_a_program_may_bind() {
     for text in texts {
         for name in bindings_read(text) {
             read += 1;
-            let binding = host
-                .bindings
-                .iter()
-                .find(|binding| binding.name == name)
-                .unwrap_or_else(|| panic!("{} is not a binding", name));
-            assert!(binding.bindable, "{} is a policy setting", name);
+            assert!(
+                host.bindings.iter().any(|binding| binding.name == name),
+                "{} is not a binding",
+                name
+            );
         }
     }
     assert!(read > 0);
@@ -330,22 +329,23 @@ fn the_host_side_lists_the_inputs_the_directory_and_which_bindings_a_program_may
         "{:?}",
         host.inputs
     );
-    assert!(host.detached && host.single_aggregation);
+    assert!(host.single_aggregation);
     let primary = host
         .recipients
         .iter()
         .find(|recipient| recipient.name == "primary")
         .unwrap();
     assert!(primary.endpoint.starts_with("http"), "{:?}", primary);
-    // Policy settings are listed, but a detached program writes them as literals.
+    // Facts and signals are listed; policy settings are never bindings.
+    assert!(host.bindings.iter().any(|binding| binding.class == BindingClass::Fact));
     assert!(host
         .bindings
         .iter()
-        .any(|binding| binding.class == BindingClass::Policy && !binding.bindable));
-    assert!(host
+        .any(|binding| binding.class == BindingClass::Signal));
+    assert!(!host
         .bindings
         .iter()
-        .any(|binding| binding.class != BindingClass::Policy && binding.bindable));
+        .any(|binding| binding.name.starts_with("dogstatsd.")));
 
     let without = super::reference(None, &labels, Some("ADP is not running.".to_string()));
     assert!(without.host.is_none());

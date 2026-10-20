@@ -104,17 +104,22 @@ fn the_default_programs_explain_describes_its_graph() {
     // Aggregation runs in a host, keeps keyed state, and loses by policy (its merge), capacity, and at shutdown.
     let aggregate = node(&explain, "dsd_agg");
     assert_eq!(aggregate.loss, vec!["policy", "capacity", "shutdown"]);
-    assert_eq!(aggregate.bindings.len(), 9);
-    assert_eq!(aggregate.bindings[0].param, "window");
+    // Its parameters are policy settings, which lowering writes as literals: it binds nothing.
+    assert!(aggregate.bindings.is_empty());
+
+    // Host tags bind two facts of the host, listed with their resolved values.
+    let host_tags = node(&explain, "metrics");
+    assert_eq!(host_tags.bindings.len(), 2);
+    assert_eq!(host_tags.bindings[0].param, "tags");
+    assert_eq!(host_tags.bindings[0].binding.to_string(), "host.tags");
     assert_eq!(
-        aggregate.bindings[0].binding.to_string(),
-        "dogstatsd.aggregation.window_duration_seconds"
+        host_tags.bindings[0].resolved,
+        Some(json!(["cloud_provider:example", "zone:a"]))
     );
-    assert_eq!(aggregate.bindings[0].resolved, Some(json!("10s")));
 
     // Bindings inside predicates are listed with their place in the predicate and their resolved values.
-    let blocklist = node(&explain, "dsd_prefix_filter_blocklist");
-    let bindings = blocklist
+    let gateway = node(&explain, "mrf_metrics_gateway");
+    let bindings = gateway
         .bindings
         .iter()
         .map(|binding| {
@@ -129,17 +134,19 @@ fn the_default_programs_explain_describes_its_graph() {
         bindings,
         vec![
             (
-                "predicate.not.intake_name.values",
-                "dogstatsd.metric_filter.values".to_string(),
-                Some(json!(["tenant.raw.blocked"]))
+                "predicate.all[0].flag",
+                "multi_region_failover.enabled".to_string(),
+                Some(json!(true))
             ),
             (
-                "predicate.not.intake_name.prefix",
-                "dogstatsd.metric_filter.match_prefix".to_string(),
-                Some(json!(false))
+                "predicate.all[1].flag",
+                "multi_region_failover.metric_mirroring.enabled".to_string(),
+                Some(json!(true))
             ),
         ]
     );
+    let blocklist = node(&explain, "dsd_prefix_filter_blocklist");
+    assert!(blocklist.bindings.is_empty());
     assert_eq!(blocklist.loss, Vec::<String>::new());
     assert_eq!(node(&explain, "dsd_prefix_filter_blocklist_false").loss, vec!["policy"]);
 
@@ -312,9 +319,9 @@ fn the_default_programs_bounds_are_measured_against_their_limits() {
         .collect::<Vec<_>>();
     // Counted by hand from the fixture:
     // - 34 nodes;
-    // - predicate leaves: 1 (prefix blocklist) + 2 (post-aggregation filter) + 2 + 2 (routing filters) + 4 (MRF
-    //   gateway: two flags, an emptiness check, and a name match) + 3 (autoscaling gateway: a kind, a flag, and a name
-    //   match) = 14;
+    // - predicate leaves: 1 (prefix blocklist) + 2 (post-aggregation filter) + 2 + 1 (routing filters, the second with
+    //   no names) + 2 (MRF gateway: two flags, its empty allowlist folded away) + 3 (autoscaling gateway: a kind, a
+    //   flag, and a name match) = 11;
     // - the widest copying node is `metrics_fanout`, with 5 ports;
     // - work per input, from `dsd_in`, counting the source: the policy tee costs 1 + (1 + 4 * 2) = 10 visits, so
     //   `metrics_in` costs 13, the post-aggregation tee 1 + 1 + 13 = 15, its filter 16, its merge 17,
@@ -325,7 +332,7 @@ fn the_default_programs_bounds_are_measured_against_their_limits() {
         bounds,
         vec![
             ("artifact_nodes", Some(34), 256, false, true),
-            ("predicate_leaves", Some(14), 1024, false, true),
+            ("predicate_leaves", Some(11), 1024, false, true),
             ("tee_fan_out", Some(5), 32, false, true),
             ("work_per_input", Some(179), 4096, false, true),
         ]

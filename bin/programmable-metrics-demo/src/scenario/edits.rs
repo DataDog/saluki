@@ -614,9 +614,10 @@ pub fn two_hosts(source: &str) -> Result<String, GenericError> {
     ))
 }
 
-/// S5, a policy binding: the aggregation's percentiles bind the native setting again,
-/// `config.metrics_encoding.histogram.percentiles`, where the detached export writes their value or leaves out the
-/// default. A published program owns its policy: it may bind facts and signals only.
+/// S5, a binding of a policy setting: the aggregation's percentiles bind
+/// `config.metrics_encoding.histogram.percentiles`, where the export writes their value or leaves out the default.
+/// Policy settings are literals, never bindings, so ADP declares no such binding and refuses the program: it may bind
+/// facts and signals only.
 ///
 /// The aggregation is in every default program's export, configured or not; the metric filterlist, which this edit
 /// bound before, is left out of the export while it is empty, as it is in the demo.

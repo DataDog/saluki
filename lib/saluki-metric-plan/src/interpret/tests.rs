@@ -740,7 +740,7 @@ fn split_predicates_use_the_plans_resolved_values() {
         crate::validate::CatalogBinding {
             ty: crate::ir::ValueType::from(crate::ir::ParamType::List(&crate::ir::ParamType::String)),
             liveness: crate::validate::Liveness::Live,
-            class: crate::validate::BindingClass::Policy,
+            class: crate::validate::BindingClass::Fact,
             value: Some(json!(["y"])),
         },
     );

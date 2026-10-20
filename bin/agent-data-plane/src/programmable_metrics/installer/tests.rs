@@ -45,7 +45,9 @@ use crate::{
         lanes::LaneCounts,
         telemetry::{PLAN_ACTIVE_GENERATION, PLAN_INSTALLS_TOTAL, PLAN_LIVE_GENERATIONS, PLAN_REWRITES_APPLIED},
         test_hosts::FakeHost,
-        test_support::{configuration, programmable_metrics, programmable_metrics_on, ConfigCell},
+        test_support::{
+            configuration, layered_configuration, programmable_metrics, programmable_metrics_on, ConfigCell,
+        },
         topology::{add_hosts, add_regions, connect_frame, HostDoubles},
     },
 };
@@ -397,14 +399,15 @@ async fn a_configuration_change_installs_a_new_generation_and_the_old_one_retire
     let mut running = Running::start("", Aggregation::Native).await;
     status_where(&running.status, |status| active(status) == Some(1)).await;
     assert_eq!(gauge(&recorder, "metric_filterlist_size", PREFIX_FILTER), Some(0.0));
-    // The installer reports the rewrites applied in compiling the boot generation, by rewrite, from boot: R5b pushes
-    // the post-aggregation filter into aggregation, once, and nothing else applies to DogStatsD's default program (see
-    // the next test for a decision-time rewrite; gauges in `RewriteId::ALL` order: R2, R3, R4, R5a, R5b, R6, R7).
+    // The installer reports the rewrites applied in compiling the boot generation, by rewrite, from boot: R3 folds the
+    // listener filterlist and the post-aggregation filter, both with nothing in them, and nothing else applies to
+    // DogStatsD's default program (see the next test for a decision-time rewrite; gauges in `RewriteId::ALL` order: R2,
+    // R3, R4, R5a, R5b, R6, R7).
     let rewrites =
         || RewriteId::ALL.map(|rewrite| gauge(&recorder, PLAN_REWRITES_APPLIED, &[("rewrite", rewrite.as_str())]));
-    let mut pushed = [Some(0.0); 7];
-    pushed[4] = Some(1.0);
-    assert_eq!(rewrites(), pushed);
+    let mut folded = [Some(0.0); 7];
+    folded[1] = Some(2.0);
+    assert_eq!(rewrites(), folded);
 
     // Generation 1 runs the boot configuration, which blocks nothing.
     assert_eq!(running.send(&["blocked", "kept"]).await, ["blocked", "kept"]);
@@ -436,9 +439,12 @@ async fn a_configuration_change_installs_a_new_generation_and_the_old_one_retire
         counter(&recorder, PLAN_INSTALLS_TOTAL, &[("outcome", "unchanged")]),
         Some(1)
     );
-    // And it sets them at every commit, for the generation committed: still R5b alone here.
-    assert_eq!(rewrites(), pushed);
-    // The native filterlist's size and updates, which the installer records from the plan's bindings.
+    // And it sets them at every commit, for the generation committed: the listener filterlist now blocks something, so
+    // R3 folds the post-aggregation filter alone.
+    let mut folded = [Some(0.0); 7];
+    folded[1] = Some(1.0);
+    assert_eq!(rewrites(), folded);
+    // The native filterlist's size and updates, which the installer records from the plan's literals.
     assert_eq!(gauge(&recorder, "metric_filterlist_size", PREFIX_FILTER), Some(1.0));
     assert_eq!(
         counter(&recorder, "metric_filterlist_updates_total", PREFIX_FILTER),
@@ -497,20 +503,13 @@ async fn the_installer_reports_the_rewrites_of_the_boot_generation_and_of_every_
 
     // With mirroring off, the Multi-Region Failover gateway's predicate, `all(flag(enabled), flag(mirroring), ...)`,
     // is false given its resolved values, so decision compilation folds it (R3): one application, from boot. Beside it,
-    // R5b pushes the post-aggregation filter into aggregation (gauges in `RewriteId::ALL` order: R2, R3, R4, R5a, R5b,
-    // R6, R7).
+    // R3 folds the listener filterlist and the post-aggregation filter, which have nothing in them (gauges in
+    // `RewriteId::ALL` order: R2, R3, R4, R5a, R5b, R6, R7).
     // Aggregation runs in its region, which every commit prepares too.
     let running = Running::start(&multi_region_failover(false), Aggregation::Native).await;
     let boot = status_where(&running.status, |status| active(status) == Some(1)).await;
-    let folded = [
-        Some(0.0),
-        Some(1.0),
-        Some(0.0),
-        Some(0.0),
-        Some(1.0),
-        Some(0.0),
-        Some(0.0),
-    ];
+    let mut folded = [Some(0.0); 7];
+    folded[1] = Some(3.0);
     assert_eq!(rewrites(), folded);
     // The active plan's explain document lists the same applications.
     let explained = |status: &PlanStatus| {
@@ -522,16 +521,16 @@ async fn the_installer_reports_the_rewrites_of_the_boot_generation_and_of_every_
             .map(|rewrite| rewrite.id.clone())
             .collect::<Vec<_>>()
     };
-    assert_eq!(explained(&boot), ["R5b", "R3"]);
+    assert_eq!(explained(&boot), ["R3", "R3", "R3"]);
 
     // Mirroring on: the predicate now depends on each metric's name (the allowlist is not empty), so the generation
-    // committed folds nothing, and the gauges say so at the commit.
+    // committed folds only the empty filters, and the gauges say so at the commit.
     running.cell.set(configuration(&multi_region_failover(true)).await);
     let mirroring = status_where(&running.status, |status| active(status) == Some(2)).await;
-    let mut pushed = [Some(0.0); 7];
-    pushed[4] = Some(1.0);
-    assert_eq!(rewrites(), pushed);
-    assert_eq!(explained(&mirroring), ["R5b"]);
+    let mut empty_filters = [Some(0.0); 7];
+    empty_filters[1] = Some(2.0);
+    assert_eq!(rewrites(), empty_filters);
+    assert_eq!(explained(&mirroring), ["R3", "R3"]);
 
     // And off again.
     running.cell.set(configuration(&multi_region_failover(false)).await);
@@ -808,6 +807,102 @@ async fn kernel_instances_on_lanes_are_admitted_once_for_every_lane_that_builds_
     }
     let instances = on_one.values().sum::<u64>();
     assert_eq!(used_on_three - used_on_one, 2 * instances);
+}
+
+/// A configuration with every native policy setting that has a branch of its own: an endpoint routing group and
+/// Multi-Region Failover, with mirroring on.
+const POLICY_BRANCHES: &str = "\
+additional_endpoints: {https://b.example.com: [key-b]}
+experimental: {metrics_endpoint_routing: {metric_allowlist: {https://b.example.com: [orders.total]}}}
+multi_region_failover:
+  enabled: true
+  api_key: mrf-key
+  dd_url: https://mrf.example.com
+  failover_metrics: true
+  metric_allowlist: [mirrored.a]
+";
+
+#[tokio::test]
+async fn a_native_policy_change_installs_a_generation_that_rebuilds_only_the_kernels_whose_settings_changed() {
+    // Each change of a native policy setting, from the same boot configuration: the node it changes, and whether that
+    // node runs as a kernel of its own (a `split` is a decision of its slot's program, which has no kernel to build).
+    let changes = [
+        ("metric_filterlist: [blocked]", "dsd_prefix_filter_blocklist", false),
+        (
+            "metric_tag_filterlist: [{metric_name: checkout.latency, action: exclude, tags: [user_id]}]",
+            "dsd_tag_filterlist",
+            true,
+        ),
+        (
+            "experimental: {metrics_endpoint_routing: {metric_allowlist: {https://b.example.com: [orders.total, \
+             orders.count]}}}",
+            "metrics_routing_filter_0",
+            false,
+        ),
+        (
+            "multi_region_failover: {metric_allowlist: [mirrored.a, mirrored.b]}",
+            "mrf_metrics_gateway",
+            false,
+        ),
+    ];
+    let boot = configuration(POLICY_BRANCHES).await;
+    for (change, node, kernel) in changes {
+        let cell = ConfigCell::new(boot.clone());
+        let mut path = programmable_metrics(&boot, cell.live(), &ComponentRegistry::default())
+            .expect("a metrics pipeline is required");
+        let installer = &mut path.installer;
+        let changed = layered_configuration(&[POLICY_BRANCHES, change]).await;
+
+        // The change is a generation of its own. Its preparation changes only the program of the slot that runs the
+        // node, and builds only the node's kernel, if it has one: every other slot keeps its program, every other
+        // kernel is reused, and aggregation keeps its state.
+        let actions = installer.propose_default_program(&changed);
+        let prepare = actions
+            .iter()
+            .find_map(|action| match action {
+                Action::Prepare(prepare) => Some(prepare),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("`{}` makes no generation: {:?}", change, actions));
+        assert_eq!(prepare.generation.id(), GenerationId::new(2), "{}", change);
+        let runs = |program: &saluki_metric_plan::compile::RegionProgram| {
+            program
+                .kernels()
+                .iter()
+                .any(|kernel| kernel.key.node.local().as_str() == node)
+                || program.decisions().iter().any(|decision| {
+                    decision
+                        .nodes
+                        .iter()
+                        .any(|decided| decided.node.local().as_str() == node)
+                })
+        };
+        let changed_slots = prepare.slots.iter().filter(|slot| !slot.unchanged).collect::<Vec<_>>();
+        assert_eq!(changed_slots.len(), 1, "{}", change);
+        assert!(runs(&changed_slots[0].program), "{}", change);
+        let built = prepare
+            .slots
+            .iter()
+            .flat_map(|slot| &slot.build)
+            .map(|key| key.node.local().as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(built, if kernel { vec![node] } else { vec![] }, "{}", change);
+        assert!(prepare.slots.iter().any(|slot| !slot.state.is_empty()), "{}", change);
+        for binding in prepare.slots.iter().flat_map(|slot| &slot.state) {
+            assert!(
+                matches!(binding, saluki_metric_plan::install::StateBinding::Retain { .. }),
+                "{}: {:?}",
+                change,
+                binding
+            );
+        }
+
+        // It commits at a batch boundary: no cut.
+        super::artifact_tests::settle(installer, actions).await;
+        let installed = installer.current_status();
+        assert_eq!(active(&installed), Some(2), "{}", change);
+        assert!(installed.installer.cut.is_none(), "{}", change);
+    }
 }
 
 #[tokio::test]

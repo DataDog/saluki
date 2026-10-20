@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use super::snapshot::{ArtifactConfigId, ArtifactProduct};
 use crate::{
     canonical::PlanHash,
-    ir::{BindingName, ScopeName},
+    ir::{LocalId, ScopeName},
 };
 
 /// The scope the top-level members of the [status summary](StatusSummary) describe, as version 1 of the stub protocol
@@ -179,7 +179,7 @@ pub struct StatusSummary {
 ///
 /// A published program owns its policy: it writes what to do with metrics as literals, so a change of a native policy
 /// setting reaches the default program only, and runs only once the program is revoked, or a program with the new
-/// value is published. `differs` says which settings that leaves different.
+/// value is published. `differs` says which nodes of the default program that leaves different.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ProgramStatus {
     /// Which program runs: the default program, or a published one.
@@ -188,11 +188,11 @@ pub struct ProgramStatus {
     /// Whether the native policy settings apply: always for the default program, never for a published one.
     pub native_policy: NativePolicy,
 
-    /// The native policy settings, by binding, whose current value the running program does not run as the default
-    /// program would: a setting of a node the program left out, or whose value at the setting's place differs. Empty
-    /// for the default program. A host that cannot tell leaves it empty.
+    /// The nodes of the default program, by name, whose parameters come from native policy settings and that the
+    /// running program does not run as the default program writes them now: left out while they do something, or with
+    /// other parameters. Empty for the default program. A host that cannot tell leaves it empty.
     #[serde(default)]
-    pub differs: Vec<BindingName>,
+    pub differs: Vec<LocalId>,
 }
 
 /// Which program the active generation runs.
@@ -285,7 +285,7 @@ mod tests {
                 program: Some(ProgramStatus {
                     runs: ProgramRuns::Published,
                     native_policy: NativePolicy::NotApplied,
-                    differs: vec!["dogstatsd.metric_filter.values".parse().unwrap()],
+                    differs: vec!["dsd_prefix_filter_blocklist".parse().unwrap()],
                 }),
             },
             config_states: vec![ConfigAcknowledgment {
@@ -310,7 +310,7 @@ mod tests {
             "stale_review": false,
             "degraded": null,
             "live_generations": 2,
-            "program": {"runs": "published", "native_policy": "not_applied", "differs": ["dogstatsd.metric_filter.values"]},
+            "program": {"runs": "published", "native_policy": "not_applied", "differs": ["dsd_prefix_filter_blocklist"]},
             "config_states": [{
                 "product": "policy", "id": "demo", "version": 7, "revision": 7, "artifact_hash": HASH,
                 "state": "active", "generation": 12, "cut_at": null, "error": null

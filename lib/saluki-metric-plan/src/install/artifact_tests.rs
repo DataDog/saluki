@@ -41,10 +41,10 @@ const PANICS: &str = "3 panics in 60 seconds";
 /// an artifact's policy is its listener filterlist, and configuration changes set the post-aggregation filter.
 pub(super) fn program(listener: &str, post_aggregation: &str) -> Plan {
     edited(|value| {
-        node_mut(value, "dsd_prefix_filter_blocklist")["params"]["predicate"]["not"]["intake_name"]["matches"]
-            ["values"]["resolved"] = json!([listener]);
-        node_mut(value, "dsd_post_agg_filter")["params"]["predicate"]["not"]["all"][1]["intake_name"]["matches"]
-            ["values"]["resolved"] = json!([post_aggregation]);
+        node_mut(value, "dsd_prefix_filter_blocklist")["params"]["predicate"] =
+            crate::testing::listener_filterlist(json!([listener]));
+        node_mut(value, "dsd_post_agg_filter")["params"]["predicate"] =
+            crate::testing::post_aggregate_filter(json!([post_aggregation]));
     })
 }
 

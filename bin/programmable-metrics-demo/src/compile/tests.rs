@@ -39,27 +39,18 @@ const DEFAULT_SOURCE: &str = r#"policy metrics {
   metrics | emit output dd_metrics_encode
 
   # Endpoint routing to http://127.0.0.1:17102
-  let metrics_routing_filter_0 = metrics
-    | where intake_name in config.endpoint_routing.group.b0b0b0b0.names
-        or intake_name starts_with config.endpoint_routing.group.b0b0b0b0.prefixes
+  let metrics_routing_filter_0 = metrics | where intake_name starts_with "demo.checkout."
 
   metrics_routing_filter_0 | emit output metrics_routing_encode_0
 
   # Endpoint routing to http://127.0.0.1:17103
-  let metrics_routing_filter_1 = metrics
-    | where intake_name in config.endpoint_routing.group.c0c0c0c0.names
-        or intake_name starts_with config.endpoint_routing.group.c0c0c0c0.prefixes
+  let metrics_routing_filter_1 = metrics | where intake_name starts_with "demo.catalog."
 
   metrics_routing_filter_1 | emit output metrics_routing_encode_1
 
   # Multi-Region Failover: mirrors listed, or all, metrics while failing over
   let mrf_metrics_gateway = metrics
-    | where config.multi_region_failover.enabled
-        and config.multi_region_failover.metric_mirroring.enabled
-        and (
-          is_empty(config.multi_region_failover.metric_mirroring.allowlist)
-          or name in config.multi_region_failover.metric_mirroring.allowlist
-        )
+    | where config.multi_region_failover.enabled and config.multi_region_failover.metric_mirroring.enabled
 
   mrf_metrics_gateway | emit output mrf_metrics_encode
 }
@@ -206,9 +197,8 @@ fn the_examples_of_the_demo_scenarios_compile_without_findings() {
     // S2 of the design's scenarios: widen the checkout route to the platform team's metrics, written as the
     // implementation design writes it.
     let widened = replaced(
-        "        or intake_name starts_with config.endpoint_routing.group.b0b0b0b0.prefixes\n",
-        "        or intake_name starts_with config.endpoint_routing.group.b0b0b0b0.prefixes\n        or tags.team == \
-         \"platform\"\n",
+        "| where intake_name starts_with \"demo.checkout.\"\n",
+        "| where intake_name starts_with \"demo.checkout.\" or tags.team == \"platform\"\n",
     );
     let (outcome, compiled) = compile(&widened, Some(&structural(&demo_export())));
     assert!(outcome.ok && compiled.is_some());
@@ -269,7 +259,7 @@ fn structural_findings_are_placed_where_the_problem_is() {
             ),
             vec![(
                 Severity::Error,
-                26,
+                22,
                 "`metrics_routing_encode_9`, which ADP does not declare",
             )],
         ),
@@ -278,7 +268,7 @@ fn structural_findings_are_placed_where_the_problem_is() {
         (
             "an emit to an output the artifact does not list",
             replaced_in(&with_fingerprints(), &mrf_output_line, ""),
-            vec![(Severity::Error, 44, mrf_output_fix.as_str())],
+            vec![(Severity::Error, 35, mrf_output_fix.as_str())],
         ),
         (
             "an output whose fingerprint changed",
@@ -292,13 +282,13 @@ fn structural_findings_are_placed_where_the_problem_is() {
         (
             "a binding ADP does not declare",
             replaced(
-                "endpoint_routing.group.c0c0c0c0.names",
-                "endpoint_routing.group.ffffffff.names",
+                "config.multi_region_failover.metric_mirroring.enabled",
+                "config.multi_region_failover.metric_mirroring.allowlist",
             ),
             vec![(
                 Severity::Error,
-                23,
-                "`endpoint_routing.group.ffffffff.names`, which ADP does not declare",
+                26,
+                "`multi_region_failover.metric_mirroring.allowlist`, which ADP does not declare",
             )],
         ),
         (

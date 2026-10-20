@@ -71,7 +71,7 @@ fn marker_of(artifact: &ReceivedArtifact) -> String {
 /// The default program with the listener filterlist and the tag filterlist rule's metric name set.
 fn plan(listener: &str, filterlist: &str) -> Plan {
     let mut plan = serde_json::to_value(program(listener, BOOT_POST_AGGREGATION)).unwrap();
-    node_mut(&mut plan, "dsd_tag_filterlist")["params"]["rules"]["resolved"][0]["metric_name"] = json!(filterlist);
+    node_mut(&mut plan, "dsd_tag_filterlist")["params"]["rules"][0]["metric_name"] = json!(filterlist);
     Plan::from_value(plan).unwrap()
 }
 
@@ -226,14 +226,14 @@ impl Host {
         let filterlist = plan
             .node(&"dsd_tag_filterlist".parse().unwrap())
             .and_then(|node| node.params.get("rules"))
-            .and_then(|rules| rules.pointer("/resolved/0/metric_name"))
+            .and_then(|rules| rules.pointer("/0/metric_name"))
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
         let listener = plan
             .node(&"dsd_prefix_filter_blocklist".parse().unwrap())
             .and_then(|node| node.params.get("predicate"))
-            .and_then(|predicate| predicate.pointer("/not/intake_name/matches/values/resolved/0"))
+            .and_then(|predicate| predicate.pointer("/not/intake_name/eq"))
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
@@ -511,7 +511,7 @@ fn a_config_that_moves_to_another_scope_revokes_the_scope_it_left() {
 fn filterlist(plan: &Plan) -> String {
     plan.node(&"dsd_tag_filterlist".parse().unwrap())
         .and_then(|node| node.params.get("rules"))
-        .and_then(|rules| rules.pointer("/resolved/0/metric_name"))
+        .and_then(|rules| rules.pointer("/0/metric_name"))
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string()

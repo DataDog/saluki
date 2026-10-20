@@ -2,8 +2,8 @@
 //! and parses back as the same document but for the order of its nodes and edges, and composing the detached export,
 //! or its printed form, back gives a plan that does what the default program does, with its operation hash, and the
 //! printed form the same plan as the export itself. The detached export leaves out exactly the nodes the comparison of
-//! what plans do leaves out. The bound export, which binds native policy settings, is refused: ADP's programs bind
-//! facts and signals only.
+//! what plans do leaves out. The bound export, which writes every node as the default program has it, composes back to
+//! the default program itself.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -13,7 +13,7 @@ use std::{
 use saluki_metric_plan::{
     canonical::PlanHash,
     compose::{compose, receive_artifact, Approval},
-    export::{eliminate, export, export_as, operation_hash, operation_params, policy_literals, ExportForm, Omission},
+    export::{eliminate, export, export_as, operation_hash, operation_params, ExportForm, Omission},
     install::diff_operations,
     ir::{OutputId, Plan, ScopeName},
     operators::{names, OperatorRegistry},
@@ -84,10 +84,11 @@ async fn every_lowered_default_program_exports_and_composes_back_unchanged() {
             );
         }
 
-        // The export prints and parses back as itself, but for the order of its nodes and edges: the printed form
-        // writes the edges from the scope's inputs first, in input-name order, and each node's edges in its block, and
-        // the drop of a filter in normal form, which keeps its `true` port, after what it keeps, while the export lists
-        // them in the plan's order. Composition puts them in the default program's order.
+        // The export prints and parses back as itself, but for the order of its nodes and edges, and for the
+        // parameters it writes with their defaults, which the printed form leaves out and normal form writes again:
+        // the printed form writes the edges from the scope's inputs first, in input-name order, and each node's edges
+        // in its block, and the drop of a filter in normal form, which keeps its `true` port, after what it keeps,
+        // while the export lists them in the plan's order. Composition puts them in the default program's order.
         let printed = print(&bundle.artifact, &PrintOptions::default());
         let parsed = parse(&printed).unwrap_or_else(|diagnostics| panic!("{}:\n{}\n{}", name, diagnostics, printed));
         let sorted = |edges: &[saluki_metric_plan::ir::ArtifactEdge]| {
@@ -104,7 +105,7 @@ async fn every_lowered_default_program_exports_and_composes_back_unchanged() {
             nodes
         };
         assert_eq!(
-            by_id(&parsed.artifact.nodes),
+            by_id(&saluki_metric_plan::normalize::normalize_artifact(&parsed.artifact).nodes),
             by_id(&bundle.artifact.nodes),
             "{}:\n{}",
             name,
@@ -134,14 +135,14 @@ async fn every_lowered_default_program_exports_and_composes_back_unchanged() {
             try_compose(artifact).unwrap_or_else(|e| panic!("{}: {}", name, e))
         };
 
-        // The bound export binds policy settings, which a published program owns: refused, unless it binds none.
-        match try_compose(&bundle.artifact) {
-            Ok(_) | Err(saluki_metric_plan::compose::ComposeError::PolicyBinding { .. }) => {}
-            Err(other) => panic!("{}: {}", name, other),
-        }
+        // The bound export writes every policy setting as the default program does, as a literal: it composes back to
+        // the default program itself.
+        let bound = compose_document(&bundle.artifact);
+        assert_eq!(bound.plan.nodes, plan.nodes, "{}", name);
+        assert_eq!(bound.plan.edges, plan.edges, "{}", name);
 
         // Composing the detached export back, with ADP's catalog, gives a plan that does what the default program
-        // does, writing its policy as literals, and its diff against the default program by what they do is empty.
+        // does, and its diff against the default program by what they do is empty.
         let detached = export_as(
             plan,
             &scope,
@@ -152,16 +153,15 @@ async fn every_lowered_default_program_exports_and_composes_back_unchanged() {
         )
         .unwrap_or_else(|e| panic!("{}: {}", name, e));
         assert_eq!(detached.artifact.base, bundle.artifact.base, "{}", name);
-        let catalog = &lowered.catalog;
-        assert_leaves_out_what_the_comparison_does(&detached, plan, &registry, catalog, name);
+        assert_leaves_out_what_the_comparison_does(&detached, plan, &registry, name);
         let composed = compose_document(&detached.artifact);
         assert!(composed.report.findings().is_empty(), "{}:\n{}", name, composed.report);
         assert!(!composed.stale_base && !composed.stale_review, "{}", name);
-        assert_does_the_same(&composed.plan, plan, &registry, catalog, name);
+        assert_does_the_same(&composed.plan, plan, &registry, name);
         // The composed plan has nothing left that the comparison would leave out: the export left out all of it.
-        let left = eliminate(&composed.plan, &registry, &policy_literals(catalog)).omitted;
+        let left = eliminate(&composed.plan, &registry).omitted;
         assert!(left.is_empty(), "{}: {:?}", name, left);
-        let diff = diff_operations(plan, &composed.plan, &composed.correspondence, &registry, catalog);
+        let diff = diff_operations(plan, &composed.plan, &composed.correspondence, &registry);
         assert!(diff.diff.is_empty(), "{}: {:?}", name, diff.diff);
         assert_eq!(diff.artifact_nodes.len(), detached.artifact.nodes.len(), "{}", name);
 
@@ -181,8 +181,8 @@ async fn every_lowered_default_program_exports_and_composes_back_unchanged() {
         };
         assert_eq!(edges(&composed.plan), edges(&unprinted), "{}", name);
         assert!(composed.report.findings().is_empty(), "{}:\n{}", name, composed.report);
-        assert_does_the_same(&composed.plan, plan, &registry, catalog, name);
-        let diff = diff_operations(plan, &composed.plan, &composed.correspondence, &registry, catalog);
+        assert_does_the_same(&composed.plan, plan, &registry, name);
+        let diff = diff_operations(plan, &composed.plan, &composed.correspondence, &registry);
         assert!(diff.diff.is_empty(), "{}: {:?}", name, diff.diff);
     }
 }
@@ -190,10 +190,9 @@ async fn every_lowered_default_program_exports_and_composes_back_unchanged() {
 /// Asserts that the detached export of `plan` leaves out exactly the nodes of its scope that the comparison of what
 /// plans do leaves out of `plan`, with ADP's facts and signals kept bound, for the same reasons: one pass decides both.
 fn assert_leaves_out_what_the_comparison_does(
-    detached: &saluki_metric_plan::export::ExportBundle, plan: &Plan, registry: &OperatorRegistry,
-    catalog: &dyn saluki_metric_plan::validate::Catalog, name: &str,
+    detached: &saluki_metric_plan::export::ExportBundle, plan: &Plan, registry: &OperatorRegistry, name: &str,
 ) {
-    let compared = eliminate(plan, registry, &policy_literals(catalog))
+    let compared = eliminate(plan, registry)
         .omitted
         .into_iter()
         // The sources are outside the scope, and are never left out.
@@ -221,15 +220,8 @@ fn assert_leaves_out_what_the_comparison_does(
 /// Asserts that `composed` does what the default program `plan` does: without what does nothing as configured, the
 /// same nodes, each the same operation, the same edges, and so the same operation hash, by which the installer adopts
 /// or keeps the running generation.
-fn assert_does_the_same(
-    composed: &Plan, plan: &Plan, registry: &OperatorRegistry, catalog: &dyn saluki_metric_plan::validate::Catalog,
-    name: &str,
-) {
-    let literal = policy_literals(catalog);
-    let (composed, plan) = (
-        &eliminate(composed, registry, &literal).plan,
-        &eliminate(plan, registry, &literal).plan,
-    );
+fn assert_does_the_same(composed: &Plan, plan: &Plan, registry: &OperatorRegistry, name: &str) {
+    let (composed, plan) = (&eliminate(composed, registry).plan, &eliminate(plan, registry).plan);
     let edges = |plan: &Plan| {
         let mut edges = plan
             .edges
@@ -265,7 +257,7 @@ fn assert_does_the_same(
 }
 
 /// Lowers the configuration `yaml`, and composes its unmodified detached export, and then the export with `edit`.
-/// Returns the default program, the export, both compositions, and the catalog.
+/// Returns the default program, the export, and both compositions.
 async fn compose_detached(
     yaml: &str, edit: impl FnOnce(&mut Value),
 ) -> (
@@ -273,7 +265,6 @@ async fn compose_detached(
     Value,
     saluki_metric_plan::compose::Composed,
     saluki_metric_plan::compose::Composed,
-    crate::programmable_metrics::catalog::AdpCatalog,
 ) {
     let registry = OperatorRegistry::native();
     let config = configuration(yaml).await;
@@ -316,7 +307,6 @@ async fn compose_detached(
         document.clone(),
         compose_document(document),
         compose_document(edited),
-        lowered.catalog.clone(),
     )
 }
 
@@ -335,7 +325,7 @@ async fn a_program_may_keep_a_mapper_interner_beyond_the_memory_limit_that_nativ
     // Native configuration sizes the DogStatsD mapper's interner at 128 MiB, twice the memory limit on programs.
     let yaml = "dogstatsd_mapper_string_interner_size: 134217728\ndogstatsd_mapper_profiles: [{name: p, prefix: \
                 \"p.\", mappings: [{match: \"p.*\", name: q}]}]";
-    let (plan, _, unmodified, grown, catalog) = compose_detached(yaml, |document| {
+    let (plan, _, unmodified, grown) = compose_detached(yaml, |document| {
         let mapper = document["nodes"]
             .as_array_mut()
             .unwrap()
@@ -347,13 +337,7 @@ async fn a_program_may_keep_a_mapper_interner_beyond_the_memory_limit_that_nativ
     .await;
     // The unmodified export keeps it: valid, and the same as the default program, so it would adopt its generation.
     assert!(unmodified.report.is_valid(), "{}", unmodified.report);
-    assert_does_the_same(
-        &unmodified.plan,
-        &plan,
-        &OperatorRegistry::native(),
-        &catalog,
-        "unmodified",
-    );
+    assert_does_the_same(&unmodified.plan, &plan, &OperatorRegistry::native(), "unmodified");
     // Growth beyond what native configuration sized the host for is refused: the limit holds. (The program leaves out
     // the tag filterlist, which has no rules, and the memory its context cache declares with it, which the mapper may
     // take instead; 64 MiB more it may not.)
@@ -398,7 +382,7 @@ async fn a_program_may_keep_a_routing_tee_wider_than_the_fan_out_limit_but_not_w
             .max()
             .unwrap_or(0)
     };
-    let (plan, exported, unmodified, widened, catalog) = compose_detached(&yaml, |document| {
+    let (plan, exported, unmodified, widened) = compose_detached(&yaml, |document| {
         // Another copy of the widest tee's input: one more port, to a drop.
         let tee = document["nodes"]
             .as_array_mut()
@@ -422,13 +406,7 @@ async fn a_program_may_keep_a_routing_tee_wider_than_the_fan_out_limit_but_not_w
     .await;
     assert!(wide(&exported) > 32, "{}", wide(&exported));
     assert!(unmodified.report.is_valid(), "{}", unmodified.report);
-    assert_does_the_same(
-        &unmodified.plan,
-        &plan,
-        &OperatorRegistry::native(),
-        &catalog,
-        "unmodified",
-    );
+    assert_does_the_same(&unmodified.plan, &plan, &OperatorRegistry::native(), "unmodified");
     let errors = errors_of(&widened, Rule::TeeFanOut);
     assert_eq!(errors.len(), 1, "{}", widened.report);
     assert!(

@@ -311,7 +311,7 @@ async fn the_plan_route_serves_the_active_composed_plan_with_its_resolved_values
     assert_eq!((code, content_type), (StatusCode::OK, json_type()));
     let served = Plan::from_value(serde_json::from_str(&body).unwrap()).expect("the body is a plan");
     assert_eq!(served, *active.plan);
-    // Resolved values are included: the plan the boot generation runs, hash for hash.
+    // With the resolved values of any fact or signal it binds: the plan the boot generation runs, hash for hash.
     let record = status.installer.active.as_ref().unwrap();
     assert_eq!(
         served
@@ -319,7 +319,6 @@ async fn the_plan_route_serves_the_active_composed_plan_with_its_resolved_values
             .unwrap(),
         record.plan_hash
     );
-    assert!(body.contains("\"resolved\""), "{}", body);
 
     let mut idle = status;
     idle.active = None;
@@ -352,8 +351,8 @@ async fn the_default_program_route_serves_the_plan_artifacts_are_composed_into()
         ),
         status.apply_states.status.default_program_hash
     );
-    // With resolved values, as composition needs them: at boot, it is the plan the active generation runs.
-    assert!(body.contains("\"resolved\""), "{}", body);
+    // With the resolved values of any fact or signal it binds, as composition needs them: at boot, it is the plan the
+    // active generation runs.
     assert_eq!(served, *status.active.as_ref().unwrap().plan);
 
     // It does not depend on a generation being active, or on what the active generation runs.

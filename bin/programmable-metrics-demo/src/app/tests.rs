@@ -236,7 +236,7 @@ async fn the_compile_api_returns_placed_diagnostics_and_checks_against_the_expor
     let diagnostic = &body["diagnostics"][0];
     assert_eq!(diagnostic["severity"], "error");
     assert_eq!(diagnostic["origin"], "check");
-    assert_eq!(diagnostic["range"]["line"], 28);
+    assert_eq!(diagnostic["range"]["line"], 24);
     assert!(diagnostic["message"]
         .as_str()
         .unwrap()
@@ -386,7 +386,7 @@ async fn the_state_says_plainly_when_adp_lacks_the_control_surface() {
     );
     let (_, state) = call(app, "GET", "/api/state", None).await;
     assert_eq!(state["legend"]["outputs"][0]["intake"], "primary");
-    assert_eq!(state["legend"]["bindings"][1]["value"], json!(["demo.checkout."]));
+    assert_eq!(state["legend"]["bindings"][1]["value"], json!(false));
     // The export's directory names teams B and C (as the fixture writes their ports); this harness's intakes listen
     // elsewhere, so ADP's directory does not name them.
     assert_eq!(state["intakes"][1]["in_directory"], false);

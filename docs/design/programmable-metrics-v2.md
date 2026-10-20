@@ -199,11 +199,15 @@ Targeted, so that each step is quick to check:
 origin, all general capabilities with their own tests that ADP no longer uses. Remove them, or reuse the bounded policy
 for N5's shedding.
 
+**Left by V3, for later:** the export keeps two forms, `bound` and `detached`, which now differ only in leaving out
+what does nothing and in addressing emits to recipients; V6's elaboration may make one of them the only form.
+`program.differs` names default-program nodes; V4, which makes programs whole, decides whether it stays.
+
 | Step | State | Commit |
 |---|---|---|
 | V1 | not started (V2 went first: opaque hosts carry about 50 tests of the frame and the interpreter's re-admission, which V7 and V8 rework anyway) | |
 | V2 | done: amendment 192 | `06e7301501` |
-| V3 | not started | |
+| V3 | done: amendment 196 | (V3 commit) |
 | V4 | not started | |
 | V5 | not started | |
 | V6 | not started | |

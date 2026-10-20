@@ -6,12 +6,11 @@ use std::{
 use metrics::{Counter, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SharedString, Unit};
 use saluki_core::{components::ComponentContext, support::SubsystemIdentifier, topology::ComponentId};
 use saluki_metric_plan::{
-    ir::{Node, Plan},
+    ir::Plan,
     operators::{KernelBuildContext, OperatorRegistry},
     testing::DEFAULT_PROGRAM_JSON,
-    validate::Liveness,
 };
-use serde_json::{json, Value};
+use serde_json::json;
 
 use super::*;
 use crate::{
@@ -23,7 +22,6 @@ use crate::{
         metric_filter::{ALLOWLIST_METRICS_FILTERED_METRIC, ALLOWLIST_SIZE_METRIC},
     },
     programmable_metrics::{
-        bindings,
         lowering::{matrix::EVERY_BRANCH, Lowering},
         test_support::{configuration, facts},
     },
@@ -421,34 +419,10 @@ fn kernels_built_as_their_profile_says_register_exactly_its_kernel_metrics() {
     }
 }
 
-/// Returns the bindings a node's parameters are bound to.
-fn bound(node: &Node) -> BTreeSet<String> {
-    fn visit(value: &Value, found: &mut BTreeSet<String>) {
-        match value {
-            Value::Object(members) => match members.get("config") {
-                Some(Value::String(binding)) => {
-                    found.insert(binding.clone());
-                }
-                _ => members.values().for_each(|value| visit(value, found)),
-            },
-            Value::Array(values) => values.iter().for_each(|value| visit(value, found)),
-            _ => {}
-        }
-    }
-    let mut found = BTreeSet::new();
-    node.params.iter().for_each(|(_, value)| visit(value, &mut found));
-    found
-}
-
-/// Returns `true` if the binding `name` is an instance of the registry binding `pattern`, which may be keyed.
-fn instance_of(name: &str, pattern: &str) -> bool {
-    bindings::lookup(&name.parse().unwrap()).is_some_and(|(spec, _)| spec.name == pattern)
-}
-
 /// Every metric a host records rather than a kernel names what it is computed from, on the nodes that keep it: a port
-/// of the node, or bindings of its parameters; and only live bindings change.
+/// of the node, the names its predicate matches, or its parameters.
 #[tokio::test]
-async fn metrics_recorded_outside_kernels_name_ports_and_bindings_of_their_nodes() {
+async fn metrics_recorded_outside_kernels_name_ports_and_parameters_of_their_nodes() {
     // The lowered default program and the plan crate's default program both have every branch.
     let config = configuration(EVERY_BRANCH).await;
     let lowered = Lowering::new(Arc::new(config.clone()), facts(&config))
@@ -464,8 +438,6 @@ async fn metrics_recorded_outside_kernels_name_ports_and_bindings_of_their_nodes
             let Some(telemetry) = native_telemetry(&node.id, node.op.as_str()) else {
                 continue;
             };
-            let bound = bound(node);
-            let has_binding = |pattern: &str| bound.iter().any(|binding| instance_of(binding, pattern));
             for metric in telemetry.profile.metrics() {
                 let what = format!("`{}` of `{}`", metric.name, node.id);
                 match metric.source {
@@ -478,24 +450,20 @@ async fn metrics_recorded_outside_kernels_name_ports_and_bindings_of_their_nodes
                         what,
                         port
                     ),
-                    MetricSource::BindingLength(binding) | MetricSource::MatcherEntries { binding, .. } => {
-                        assert!(has_binding(binding), "{}: not bound to `{}`", what, binding)
+                    MetricSource::ListLength | MetricSource::MatcherEntries { .. } => {
+                        assert_eq!(node.op.as_str(), names::SPLIT, "{}: not a `split`", what);
+                        assert!(node.params.get("predicate").is_some(), "{}: no predicate", what);
                     }
                     MetricSource::TagProjectionRules => {
                         assert_eq!(node.op.as_str(), names::TAG_PROJECTION, "{}", what);
                         assert!(
-                            has_binding("dogstatsd.tag_filterlist") && has_binding("dogstatsd.tag_value_allowlist"),
-                            "{}: the rules are not bound",
+                            node.params.get("rules").is_some() && node.params.get("value_rules").is_some(),
+                            "{}: no rules",
                             what
                         );
                     }
-                    MetricSource::BindingChanges(changed) => {
-                        assert!(!changed.is_empty(), "{}", what);
-                        for binding in changed {
-                            assert!(has_binding(binding), "{}: not bound to `{}`", what, binding);
-                            let spec = bindings::BINDINGS.iter().find(|spec| spec.name == *binding).unwrap();
-                            assert_eq!(spec.liveness, Liveness::Live, "{}: `{}` never changes", what, binding);
-                        }
+                    MetricSource::ParamChanges => {
+                        assert!(node.params.iter().next().is_some(), "{}: no parameters", what);
                     }
                 }
                 checked.insert(format!("{:?}", telemetry.profile));

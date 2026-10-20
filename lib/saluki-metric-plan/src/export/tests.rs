@@ -384,7 +384,7 @@ fn the_base_program_hash_covers_the_scopes_structure_and_outputs_but_not_its_val
     assert_eq!(base(&plan, &scope).unwrap(), expected);
     assert_eq!(
         expected.program_hash.to_string(),
-        "sha256:2a50e2fde258382f9c73648897090cd5007975bac821740b23602687c8c83157"
+        "sha256:642c2e72ec4225e2ffbd5e992fadc75694cdc76a0a99be94c6ab3a2f1f41f6c9"
     );
 
     let index = |plan: &Plan, id: &str| plan.nodes.iter().position(|node| node.id.to_string() == id).unwrap();
@@ -396,12 +396,11 @@ fn the_base_program_hash_covers_the_scopes_structure_and_outputs_but_not_its_val
         base(&changed, &scope).unwrap()
     };
 
-    // A new resolved value of a binding inside the scope: the same base.
+    // A new resolved value of a signal inside the scope: the same base.
     let resolved = with(|plan, inside, _| {
         let predicate = json!({"all": [{"kind_in": ["counter", "rate", "gauge", "set"]},
             {"flag": {"config": "autoscaling_failover.enabled", "resolved": false}},
-            {"name": {"matches": {"values": {"config": "autoscaling_failover.metrics", "resolved": ["other"]},
-                                  "prefix": false}}}]});
+            {"name": {"eq": "requests.count"}}]});
         plan.nodes[inside]
             .params
             .insert("predicate".parse().unwrap(), predicate);

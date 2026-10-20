@@ -25,51 +25,44 @@
   "nodes": [
     {"id": "dsd_in", "op": "source", "params": {"binding": "dogstatsd", "timestamps": "mixed"}},
     {"id": "dsd_enrich", "op": "dogstatsd_mapper", "params": {
-       "profiles": {"config": "dogstatsd.mapper.profiles", "resolved": [
+       "profiles": [
          {"name": "checkout", "prefix": "raw.", "mappings": [
            {"match": "raw.requests.*", "match_type": "wildcard", "name": "mapped.requests",
             "tags": [{"name": "route", "value": "$1"}]}
          ]}
-       ]},
-       "cache_size": {"config": "dogstatsd.mapper.cache_size", "resolved": 1000},
-       "string_interner_bytes": {"config": "dogstatsd.mapper.string_interner_size_bytes", "resolved": 65536}}},
+       ],
+       "cache_size": 1000,
+       "string_interner_bytes": 65536}},
     {"id": "dsd_prefix_filter_blocklist_namespace_prefix", "op": "namespace_prefix", "params": {
-       "namespace": {"config": "dogstatsd.prefix_filter.metric_namespace", "resolved": "tenant"},
-       "exclusions": {"config": "dogstatsd.prefix_filter.metric_namespace_blocklist",
-                      "resolved": ["internal.", "system."]}}},
-    {"id": "dsd_prefix_filter_blocklist", "op": "split", "params": {"predicate": {"not": {"intake_name": {"matches": {
-       "values": {"config": "dogstatsd.metric_filter.values", "resolved": ["tenant.raw.blocked"]},
-       "prefix": {"config": "dogstatsd.metric_filter.match_prefix", "resolved": false}}}}}}},
+       "namespace": "tenant",
+       "exclusions": ["internal.", "system."]}},
+    {"id": "dsd_prefix_filter_blocklist", "op": "split", "params": {"predicate": {"not": {"intake_name": {"eq": "tenant.raw.blocked"}}}}},
     {"id": "dsd_prefix_filter_blocklist_false", "op": "drop"},
     {"id": "dsd_no_agg_split", "op": "timestamp_split", "params": {
-       "window": {"config": "dogstatsd.aggregation.window_duration_seconds", "resolved": "10s"}}},
+       "window": "10s"}},
     {"id": "dsd_tag_filterlist", "op": "tag_projection", "params": {
-       "rules": {"config": "dogstatsd.tag_filterlist", "resolved": [
+       "rules": [
          {"metric_name": "tenant.checkout.latency", "action": "exclude", "tags": ["user_id"]}
-       ]},
-       "value_rules": {"config": "dogstatsd.tag_value_allowlist", "resolved": [
+       ],
+       "value_rules": [
          {"metric_prefix": "tenant.checkout.", "tag_name": "env", "values": ["prod", "staging"],
           "on_miss": "replace", "replacement": "other"}
-       ]},
-       "cache_capacity": {"config": "dogstatsd.aggregation.aggregator_tag_filter_cache_capacity", "resolved": 100000}}},
+       ],
+       "cache_capacity": 100000}},
     {"id": "dsd_agg", "op": "aggregate", "params": {
-       "window": {"config": "dogstatsd.aggregation.window_duration_seconds", "resolved": "10s"},
-       "flush_interval": {"config": "dogstatsd.aggregation.flush_interval", "resolved": "15s"},
-       "context_limit": {"config": "dogstatsd.aggregation.context_limit", "resolved": 1000000},
-       "counter_expiry": {"config": "dogstatsd.aggregation.counter_expiry_seconds", "resolved": "5m"},
-       "flush_open_windows": {"config": "dogstatsd.aggregation.flush_open_windows", "resolved": false},
-       "histogram_aggregates": {"config": "metrics_encoding.histogram.aggregates",
-                                "resolved": ["max", "median", "avg", "count"]},
-       "histogram_percentiles": {"config": "metrics_encoding.histogram.percentiles", "resolved": [95]},
-       "copy_to_distribution": {"config": "metrics_encoding.histogram.copy_to_distribution", "resolved": false},
-       "copy_to_distribution_prefix": {"config": "metrics_encoding.histogram.copy_to_distribution_prefix",
-                                       "resolved": ""}}},
+       "window": "10s",
+       "flush_interval": "15s",
+       "context_limit": 1000000,
+       "counter_expiry": "5m",
+       "flush_open_windows": false,
+       "histogram_aggregates": ["max", "median", "avg", "count"],
+       "histogram_percentiles": [95],
+       "copy_to_distribution": false,
+       "copy_to_distribution_prefix": ""}},
     {"id": "dsd_post_agg_filter_in", "op": "merge", "params": {"inputs": 2}},
     {"id": "dsd_post_agg_filter", "op": "split", "params": {"predicate": {"not": {"all": [
        {"kind_in": ["counter", "rate", "gauge", "set"]},
-       {"intake_name": {"matches": {
-         "values": {"config": "dogstatsd.post_aggregate_filter.values", "resolved": ["tenant.checkout.latency.max"]},
-         "prefix": {"config": "dogstatsd.metric_filter.match_prefix", "resolved": false}}}}
+       {"intake_name": {"eq": "tenant.checkout.latency.max"}}
      ]}}}},
     {"id": "dsd_post_agg_filter_false", "op": "drop"},
     {"id": "dsd_post_agg_filter_fanout", "op": "tee", "params": {"ports": 2}},
@@ -86,43 +79,24 @@
     {"id": "metrics_fanout", "op": "tee", "params": {"ports": 5}},
     {"id": "metrics_fanout_0", "op": "emit", "params": {"output": "dd_metrics_encode"}},
     {"id": "metrics_routing_filter_0", "op": "split", "params": {"predicate": {"any": [
-       {"intake_name": {"matches": {
-         "values": {"config": "metrics_endpoint_routing.group.0123456789abcdef.names", "resolved": ["checkout.requests"]},
-         "prefix": false}}},
-       {"intake_name": {"matches": {
-         "values": {"config": "metrics_endpoint_routing.group.0123456789abcdef.prefixes", "resolved": ["checkout."]},
-         "prefix": true}}}
+       {"intake_name": {"eq": "checkout.requests"}},
+       {"intake_name": {"prefix": "checkout."}}
      ]}}},
     {"id": "metrics_routing_filter_0_true", "op": "emit", "params": {"output": "metrics_routing_encode_0"}},
     {"id": "metrics_routing_filter_0_false", "op": "drop"},
-    {"id": "metrics_routing_filter_1", "op": "split", "params": {"predicate": {"any": [
-       {"intake_name": {"matches": {
-         "values": {"config": "metrics_endpoint_routing.group.fedcba9876543210.names", "resolved": []},
-         "prefix": false}}},
-       {"intake_name": {"matches": {
-         "values": {"config": "metrics_endpoint_routing.group.fedcba9876543210.prefixes", "resolved": ["catalog."]},
-         "prefix": true}}}
-     ]}}},
+    {"id": "metrics_routing_filter_1", "op": "split", "params": {"predicate": {"intake_name": {"prefix": "catalog."}}}},
     {"id": "metrics_routing_filter_1_true", "op": "emit", "params": {"output": "metrics_routing_encode_1"}},
     {"id": "metrics_routing_filter_1_false", "op": "drop"},
     {"id": "mrf_metrics_gateway", "op": "split", "params": {"predicate": {"all": [
        {"flag": {"config": "multi_region_failover.enabled", "resolved": true}},
-       {"flag": {"config": "multi_region_failover.metric_mirroring.enabled", "resolved": true}},
-       {"any": [
-         {"is_empty": {"config": "multi_region_failover.metric_mirroring.allowlist", "resolved": []}},
-         {"name": {"matches": {
-           "values": {"config": "multi_region_failover.metric_mirroring.allowlist", "resolved": []},
-           "prefix": false}}}
-       ]}
+       {"flag": {"config": "multi_region_failover.metric_mirroring.enabled", "resolved": true}}
      ]}}},
     {"id": "mrf_metrics_gateway_true", "op": "emit", "params": {"output": "mrf_metrics_encode"}},
     {"id": "mrf_metrics_gateway_false", "op": "drop"},
     {"id": "af_metrics_gateway", "op": "split", "params": {"predicate": {"all": [
        {"kind_in": ["counter", "rate", "gauge", "set"]},
        {"flag": {"config": "autoscaling_failover.enabled", "resolved": true}},
-       {"name": {"matches": {
-         "values": {"config": "autoscaling_failover.metrics", "resolved": ["requests.count"]},
-         "prefix": false}}}
+       {"name": {"eq": "requests.count"}}
      ]}}},
     {"id": "af_metrics_gateway_true", "op": "emit", "params": {"output": "af_metrics_encode"}},
     {"id": "af_metrics_gateway_false", "op": "drop"}

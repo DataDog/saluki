@@ -2,8 +2,8 @@
   "explain_version": 2,
   "plan": {
     "ir_version": 1,
-    "hash": "sha256:8edb8fe4edc546cf032e9ffb0663375131c69fbdc7894edf74b365e682d22a6d",
-    "structural_hash": "sha256:5512d342e373742feb1d562be16be732190c754b3a533a77dbd2d5c308ad754e",
+    "hash": "sha256:036de4ef28c3bcf78686e81175b61a6ee24510acbf3bdb8b36c5aa51252e9596",
+    "structural_hash": "sha256:1c612fa220c7d5fcdddf9d8504ee670347e9f620d90835e064b947addfb2f496",
     "provenance": {
       "native_components": {
         "af_metrics_gateway_false": "af_metrics_gateway",
@@ -68,72 +68,29 @@
         "state": "none",
         "loss": [],
         "params": {
-          "cache_size": {
-            "config": "dogstatsd.mapper.cache_size",
-            "resolved": 1000
-          },
-          "profiles": {
-            "config": "dogstatsd.mapper.profiles",
-            "resolved": [
-              {
-                "mappings": [
-                  {
-                    "match": "raw.requests.*",
-                    "match_type": "wildcard",
-                    "name": "mapped.requests",
-                    "tags": [
-                      {
-                        "name": "route",
-                        "value": "$1"
-                      }
-                    ]
-                  }
-                ],
-                "name": "checkout",
-                "prefix": "raw."
-              }
-            ]
-          },
-          "string_interner_bytes": {
-            "config": "dogstatsd.mapper.string_interner_size_bytes",
-            "resolved": 65536
-          }
+          "cache_size": 1000,
+          "profiles": [
+            {
+              "mappings": [
+                {
+                  "match": "raw.requests.*",
+                  "match_type": "wildcard",
+                  "name": "mapped.requests",
+                  "tags": [
+                    {
+                      "name": "route",
+                      "value": "$1"
+                    }
+                  ]
+                }
+              ],
+              "name": "checkout",
+              "prefix": "raw."
+            }
+          ],
+          "string_interner_bytes": 65536
         },
-        "bindings": [
-          {
-            "param": "profiles",
-            "binding": "dogstatsd.mapper.profiles",
-            "resolved": [
-              {
-                "mappings": [
-                  {
-                    "match": "raw.requests.*",
-                    "match_type": "wildcard",
-                    "name": "mapped.requests",
-                    "tags": [
-                      {
-                        "name": "route",
-                        "value": "$1"
-                      }
-                    ]
-                  }
-                ],
-                "name": "checkout",
-                "prefix": "raw."
-              }
-            ]
-          },
-          {
-            "param": "cache_size",
-            "binding": "dogstatsd.mapper.cache_size",
-            "resolved": 1000
-          },
-          {
-            "param": "string_interner_bytes",
-            "binding": "dogstatsd.mapper.string_interner_size_bytes",
-            "resolved": 65536
-          }
-        ],
+        "bindings": [],
         "inputs": [
           {
             "name": "in",
@@ -168,33 +125,13 @@
         "state": "none",
         "loss": [],
         "params": {
-          "exclusions": {
-            "config": "dogstatsd.prefix_filter.metric_namespace_blocklist",
-            "resolved": [
-              "internal.",
-              "system."
-            ]
-          },
-          "namespace": {
-            "config": "dogstatsd.prefix_filter.metric_namespace",
-            "resolved": "tenant"
-          }
+          "exclusions": [
+            "internal.",
+            "system."
+          ],
+          "namespace": "tenant"
         },
-        "bindings": [
-          {
-            "param": "namespace",
-            "binding": "dogstatsd.prefix_filter.metric_namespace",
-            "resolved": "tenant"
-          },
-          {
-            "param": "exclusions",
-            "binding": "dogstatsd.prefix_filter.metric_namespace_blocklist",
-            "resolved": [
-              "internal.",
-              "system."
-            ]
-          }
-        ],
+        "bindings": [],
         "inputs": [
           {
             "name": "in",
@@ -232,36 +169,12 @@
           "predicate": {
             "not": {
               "intake_name": {
-                "matches": {
-                  "prefix": {
-                    "config": "dogstatsd.metric_filter.match_prefix",
-                    "resolved": false
-                  },
-                  "values": {
-                    "config": "dogstatsd.metric_filter.values",
-                    "resolved": [
-                      "tenant.raw.blocked"
-                    ]
-                  }
-                }
+                "eq": "tenant.raw.blocked"
               }
             }
           }
         },
-        "bindings": [
-          {
-            "param": "predicate.not.intake_name.values",
-            "binding": "dogstatsd.metric_filter.values",
-            "resolved": [
-              "tenant.raw.blocked"
-            ]
-          },
-          {
-            "param": "predicate.not.intake_name.prefix",
-            "binding": "dogstatsd.metric_filter.match_prefix",
-            "resolved": false
-          }
-        ],
+        "bindings": [],
         "inputs": [
           {
             "name": "in",
@@ -332,18 +245,9 @@
         "state": "none",
         "loss": [],
         "params": {
-          "window": {
-            "config": "dogstatsd.aggregation.window_duration_seconds",
-            "resolved": "10s"
-          }
+          "window": "10s"
         },
-        "bindings": [
-          {
-            "param": "window",
-            "binding": "dogstatsd.aggregation.window_duration_seconds",
-            "resolved": "10s"
-          }
-        ],
+        "bindings": [],
         "inputs": [
           {
             "name": "in",
@@ -394,74 +298,30 @@
           "policy"
         ],
         "params": {
-          "cache_capacity": {
-            "config": "dogstatsd.aggregation.aggregator_tag_filter_cache_capacity",
-            "resolved": 100000
-          },
-          "rules": {
-            "config": "dogstatsd.tag_filterlist",
-            "resolved": [
-              {
-                "action": "exclude",
-                "metric_name": "tenant.checkout.latency",
-                "tags": [
-                  "user_id"
-                ]
-              }
-            ]
-          },
-          "value_rules": {
-            "config": "dogstatsd.tag_value_allowlist",
-            "resolved": [
-              {
-                "metric_prefix": "tenant.checkout.",
-                "on_miss": "replace",
-                "replacement": "other",
-                "tag_name": "env",
-                "values": [
-                  "prod",
-                  "staging"
-                ]
-              }
-            ]
-          }
+          "cache_capacity": 100000,
+          "rules": [
+            {
+              "action": "exclude",
+              "metric_name": "tenant.checkout.latency",
+              "tags": [
+                "user_id"
+              ]
+            }
+          ],
+          "value_rules": [
+            {
+              "metric_prefix": "tenant.checkout.",
+              "on_miss": "replace",
+              "replacement": "other",
+              "tag_name": "env",
+              "values": [
+                "prod",
+                "staging"
+              ]
+            }
+          ]
         },
-        "bindings": [
-          {
-            "param": "rules",
-            "binding": "dogstatsd.tag_filterlist",
-            "resolved": [
-              {
-                "action": "exclude",
-                "metric_name": "tenant.checkout.latency",
-                "tags": [
-                  "user_id"
-                ]
-              }
-            ]
-          },
-          {
-            "param": "value_rules",
-            "binding": "dogstatsd.tag_value_allowlist",
-            "resolved": [
-              {
-                "metric_prefix": "tenant.checkout.",
-                "on_miss": "replace",
-                "replacement": "other",
-                "tag_name": "env",
-                "values": [
-                  "prod",
-                  "staging"
-                ]
-              }
-            ]
-          },
-          {
-            "param": "cache_capacity",
-            "binding": "dogstatsd.aggregation.aggregator_tag_filter_cache_capacity",
-            "resolved": 100000
-          }
-        ],
+        "bindings": [],
         "inputs": [
           {
             "name": "in",
@@ -500,104 +360,24 @@
           "shutdown"
         ],
         "params": {
-          "context_limit": {
-            "config": "dogstatsd.aggregation.context_limit",
-            "resolved": 1000000
-          },
-          "copy_to_distribution": {
-            "config": "metrics_encoding.histogram.copy_to_distribution",
-            "resolved": false
-          },
-          "copy_to_distribution_prefix": {
-            "config": "metrics_encoding.histogram.copy_to_distribution_prefix",
-            "resolved": ""
-          },
-          "counter_expiry": {
-            "config": "dogstatsd.aggregation.counter_expiry_seconds",
-            "resolved": "5m"
-          },
-          "flush_interval": {
-            "config": "dogstatsd.aggregation.flush_interval",
-            "resolved": "15s"
-          },
-          "flush_open_windows": {
-            "config": "dogstatsd.aggregation.flush_open_windows",
-            "resolved": false
-          },
-          "histogram_aggregates": {
-            "config": "metrics_encoding.histogram.aggregates",
-            "resolved": [
-              "max",
-              "median",
-              "avg",
-              "count"
-            ]
-          },
-          "histogram_percentiles": {
-            "config": "metrics_encoding.histogram.percentiles",
-            "resolved": [
-              95
-            ]
-          },
-          "window": {
-            "config": "dogstatsd.aggregation.window_duration_seconds",
-            "resolved": "10s"
-          }
+          "context_limit": 1000000,
+          "copy_to_distribution": false,
+          "copy_to_distribution_prefix": "",
+          "counter_expiry": "5m",
+          "flush_interval": "15s",
+          "flush_open_windows": false,
+          "histogram_aggregates": [
+            "max",
+            "median",
+            "avg",
+            "count"
+          ],
+          "histogram_percentiles": [
+            95
+          ],
+          "window": "10s"
         },
-        "bindings": [
-          {
-            "param": "window",
-            "binding": "dogstatsd.aggregation.window_duration_seconds",
-            "resolved": "10s"
-          },
-          {
-            "param": "flush_interval",
-            "binding": "dogstatsd.aggregation.flush_interval",
-            "resolved": "15s"
-          },
-          {
-            "param": "context_limit",
-            "binding": "dogstatsd.aggregation.context_limit",
-            "resolved": 1000000
-          },
-          {
-            "param": "counter_expiry",
-            "binding": "dogstatsd.aggregation.counter_expiry_seconds",
-            "resolved": "5m"
-          },
-          {
-            "param": "flush_open_windows",
-            "binding": "dogstatsd.aggregation.flush_open_windows",
-            "resolved": false
-          },
-          {
-            "param": "histogram_aggregates",
-            "binding": "metrics_encoding.histogram.aggregates",
-            "resolved": [
-              "max",
-              "median",
-              "avg",
-              "count"
-            ]
-          },
-          {
-            "param": "histogram_percentiles",
-            "binding": "metrics_encoding.histogram.percentiles",
-            "resolved": [
-              95
-            ]
-          },
-          {
-            "param": "copy_to_distribution",
-            "binding": "metrics_encoding.histogram.copy_to_distribution",
-            "resolved": false
-          },
-          {
-            "param": "copy_to_distribution_prefix",
-            "binding": "metrics_encoding.histogram.copy_to_distribution_prefix",
-            "resolved": ""
-          }
-        ],
+        "bindings": [],
         "inputs": [
           {
             "name": "in",
@@ -689,38 +469,14 @@
                 },
                 {
                   "intake_name": {
-                    "matches": {
-                      "prefix": {
-                        "config": "dogstatsd.metric_filter.match_prefix",
-                        "resolved": false
-                      },
-                      "values": {
-                        "config": "dogstatsd.post_aggregate_filter.values",
-                        "resolved": [
-                          "tenant.checkout.latency.max"
-                        ]
-                      }
-                    }
+                    "eq": "tenant.checkout.latency.max"
                   }
                 }
               ]
             }
           }
         },
-        "bindings": [
-          {
-            "param": "predicate.not.all[1].intake_name.values",
-            "binding": "dogstatsd.post_aggregate_filter.values",
-            "resolved": [
-              "tenant.checkout.latency.max"
-            ]
-          },
-          {
-            "param": "predicate.not.all[1].intake_name.prefix",
-            "binding": "dogstatsd.metric_filter.match_prefix",
-            "resolved": false
-          }
-        ],
+        "bindings": [],
         "inputs": [
           {
             "name": "in",
@@ -1201,49 +957,18 @@
             "any": [
               {
                 "intake_name": {
-                  "matches": {
-                    "prefix": false,
-                    "values": {
-                      "config": "metrics_endpoint_routing.group.0123456789abcdef.names",
-                      "resolved": [
-                        "checkout.requests"
-                      ]
-                    }
-                  }
+                  "eq": "checkout.requests"
                 }
               },
               {
                 "intake_name": {
-                  "matches": {
-                    "prefix": true,
-                    "values": {
-                      "config": "metrics_endpoint_routing.group.0123456789abcdef.prefixes",
-                      "resolved": [
-                        "checkout."
-                      ]
-                    }
-                  }
+                  "prefix": "checkout."
                 }
               }
             ]
           }
         },
-        "bindings": [
-          {
-            "param": "predicate.any[0].intake_name.values",
-            "binding": "metrics_endpoint_routing.group.0123456789abcdef.names",
-            "resolved": [
-              "checkout.requests"
-            ]
-          },
-          {
-            "param": "predicate.any[1].intake_name.values",
-            "binding": "metrics_endpoint_routing.group.0123456789abcdef.prefixes",
-            "resolved": [
-              "checkout."
-            ]
-          }
-        ],
+        "bindings": [],
         "inputs": [
           {
             "name": "in",
@@ -1325,48 +1050,12 @@
         "loss": [],
         "params": {
           "predicate": {
-            "any": [
-              {
-                "intake_name": {
-                  "matches": {
-                    "prefix": false,
-                    "values": {
-                      "config": "metrics_endpoint_routing.group.fedcba9876543210.names",
-                      "resolved": []
-                    }
-                  }
-                }
-              },
-              {
-                "intake_name": {
-                  "matches": {
-                    "prefix": true,
-                    "values": {
-                      "config": "metrics_endpoint_routing.group.fedcba9876543210.prefixes",
-                      "resolved": [
-                        "catalog."
-                      ]
-                    }
-                  }
-                }
-              }
-            ]
+            "intake_name": {
+              "prefix": "catalog."
+            }
           }
         },
-        "bindings": [
-          {
-            "param": "predicate.any[0].intake_name.values",
-            "binding": "metrics_endpoint_routing.group.fedcba9876543210.names",
-            "resolved": []
-          },
-          {
-            "param": "predicate.any[1].intake_name.values",
-            "binding": "metrics_endpoint_routing.group.fedcba9876543210.prefixes",
-            "resolved": [
-              "catalog."
-            ]
-          }
-        ],
+        "bindings": [],
         "inputs": [
           {
             "name": "in",
@@ -1460,27 +1149,6 @@
                   "config": "multi_region_failover.metric_mirroring.enabled",
                   "resolved": true
                 }
-              },
-              {
-                "any": [
-                  {
-                    "is_empty": {
-                      "config": "multi_region_failover.metric_mirroring.allowlist",
-                      "resolved": []
-                    }
-                  },
-                  {
-                    "name": {
-                      "matches": {
-                        "prefix": false,
-                        "values": {
-                          "config": "multi_region_failover.metric_mirroring.allowlist",
-                          "resolved": []
-                        }
-                      }
-                    }
-                  }
-                ]
               }
             ]
           }
@@ -1495,16 +1163,6 @@
             "param": "predicate.all[1].flag",
             "binding": "multi_region_failover.metric_mirroring.enabled",
             "resolved": true
-          },
-          {
-            "param": "predicate.all[2].any[0].is_empty",
-            "binding": "multi_region_failover.metric_mirroring.allowlist",
-            "resolved": []
-          },
-          {
-            "param": "predicate.all[2].any[1].name.values",
-            "binding": "multi_region_failover.metric_mirroring.allowlist",
-            "resolved": []
           }
         ],
         "inputs": [
@@ -1605,15 +1263,7 @@
               },
               {
                 "name": {
-                  "matches": {
-                    "prefix": false,
-                    "values": {
-                      "config": "autoscaling_failover.metrics",
-                      "resolved": [
-                        "requests.count"
-                      ]
-                    }
-                  }
+                  "eq": "requests.count"
                 }
               }
             ]
@@ -1624,13 +1274,6 @@
             "param": "predicate.all[1].flag",
             "binding": "autoscaling_failover.enabled",
             "resolved": true
-          },
-          {
-            "param": "predicate.all[2].name.values",
-            "binding": "autoscaling_failover.metrics",
-            "resolved": [
-              "requests.count"
-            ]
           }
         ],
         "inputs": [
@@ -2208,7 +1851,7 @@
     {
       "limit": "predicate_leaves",
       "scope": "plan",
-      "value": 14,
+      "value": 11,
       "maximum": 1024,
       "enforced": false,
       "within": true

@@ -6,31 +6,23 @@ use saluki_metric_plan::{
 };
 
 use super::*;
-use crate::programmable_metrics::test_support::{configuration, facts, layered_configuration};
+use crate::programmable_metrics::test_support::{configuration, facts};
 
 fn name(name: &str) -> BindingName {
     name.parse().unwrap()
 }
 
 #[test]
-fn the_registry_names_typed_model_paths_once() {
+fn the_registry_names_each_binding_once() {
     let mut names = BTreeSet::new();
     for spec in BINDINGS {
         assert!(names.insert(spec.name), "`{}` is registered once", spec.name);
-        match spec.key {
-            None => assert!(BindingName::new(spec.name).is_ok(), "`{}`", spec.name),
-            Some(key) => {
-                assert!(spec.name.contains(BindingKey::PLACEHOLDER), "`{}`", spec.name);
-                let instance = spec.instance_name("0123456789abcdef");
-                assert!(BindingName::new(&instance).is_ok(), "`{}`", instance);
-                assert!(key.accepts("0123456789abcdef"));
-            }
-        }
+        assert!(BindingName::new(spec.name).is_ok(), "`{}`", spec.name);
     }
 }
 
 /// Bindings read straight from configuration are named by the path of what they read in the typed model, below its
-/// top-level section; derived and keyed bindings have names of their own.
+/// top-level section; facts of the host have names of their own.
 #[test]
 fn bindings_read_from_configuration_are_named_by_their_typed_model_path() {
     let model = serde_json::to_value(SalukiConfiguration::default()).unwrap();
@@ -44,90 +36,33 @@ fn bindings_read_from_configuration_are_named_by_their_typed_model_path() {
     for spec in BINDINGS {
         match spec.resolve {
             Resolve::Value(_) => assert!(path_exists(spec.name), "`{}` is a typed-model path", spec.name),
-            Resolve::Derived(_) | Resolve::Keyed(_) | Resolve::Fact(_) => {
-                assert!(!path_exists(spec.name), "`{}` is not a typed-model path", spec.name)
-            }
+            Resolve::Fact(_) => assert!(!path_exists(spec.name), "`{}` is not a typed-model path", spec.name),
         }
     }
 }
 
+/// Every binding is a fact or a signal, listed here, so that a new binding is classified on purpose. Policy settings
+/// are never bindings: lowering writes them as literals.
 #[test]
-fn live_bindings_are_exactly_the_natively_live_inputs_and_those_of_the_output_branches() {
-    let live = BINDINGS
-        .iter()
-        .filter(|spec| spec.liveness == Liveness::Live)
-        .map(|spec| spec.name)
-        .collect::<BTreeSet<_>>();
-    assert_eq!(
-        live,
-        [
-            // The output branches follow the current configuration, and their gateways' inputs with them.
-            "autoscaling_failover.enabled",
-            "autoscaling_failover.metrics",
-            "dogstatsd.metric_filter.match_prefix",
-            "dogstatsd.metric_filter.values",
-            // Derived from the live filterlist.
-            "dogstatsd.post_aggregate_filter.values",
-            "dogstatsd.tag_filterlist",
-            "metrics_endpoint_routing.group.{key}.names",
-            "metrics_endpoint_routing.group.{key}.prefixes",
-            "multi_region_failover.enabled",
-            "multi_region_failover.metric_mirroring.allowlist",
-            "multi_region_failover.metric_mirroring.enabled",
-        ]
-        .into_iter()
-        .collect()
-    );
-}
-
-/// Every binding chooses a class, listed here, so that a new binding is classified on purpose: facts of the host and
-/// signals are what a published program may bind; everything else is native policy, which the default program alone
-/// binds.
-#[test]
-fn every_binding_is_a_fact_a_signal_or_a_policy_setting() {
+fn every_binding_is_a_fact_or_a_signal() {
     let classes = BINDINGS
         .iter()
-        .map(|spec| (spec.name, spec.class))
+        .map(|spec| (spec.name, (spec.class, spec.liveness)))
         .collect::<std::collections::BTreeMap<_, _>>();
-    let (fact, signal, policy) = (BindingClass::Fact, BindingClass::Signal, BindingClass::Policy);
+    let (fact, signal) = (BindingClass::Fact, BindingClass::Signal);
+    let (live, startup) = (Liveness::Live, Liveness::Startup);
     let expected = [
-        ("autoscaling_failover.enabled", signal),
-        ("autoscaling_failover.metrics", policy),
-        ("dogstatsd.aggregation.aggregator_tag_filter_cache_capacity", policy),
-        ("dogstatsd.aggregation.context_limit", policy),
-        ("dogstatsd.aggregation.counter_expiry_seconds", policy),
-        ("dogstatsd.aggregation.flush_interval", policy),
-        ("dogstatsd.aggregation.flush_open_windows", policy),
-        ("dogstatsd.aggregation.window_duration_seconds", policy),
-        ("dogstatsd.mapper.cache_size", policy),
-        ("dogstatsd.mapper.profiles", policy),
-        ("dogstatsd.mapper.string_interner_size_bytes", policy),
-        ("dogstatsd.metric_filter.match_prefix", policy),
-        ("dogstatsd.metric_filter.values", policy),
-        ("dogstatsd.post_aggregate_filter.values", policy),
-        ("dogstatsd.prefix_filter.metric_namespace", policy),
-        ("dogstatsd.prefix_filter.metric_namespace_blocklist", policy),
-        ("dogstatsd.tag_filterlist", policy),
-        ("dogstatsd.tag_value_allowlist", policy),
-        ("host.tags", fact),
-        ("host.tags_deadline", fact),
-        ("metrics_encoding.histogram.aggregates", policy),
-        ("metrics_encoding.histogram.copy_to_distribution", policy),
-        ("metrics_encoding.histogram.copy_to_distribution_prefix", policy),
-        ("metrics_encoding.histogram.percentiles", policy),
-        ("metrics_endpoint_routing.group.{key}.names", policy),
-        ("metrics_endpoint_routing.group.{key}.prefixes", policy),
-        ("multi_region_failover.enabled", fact),
-        ("multi_region_failover.metric_mirroring.allowlist", policy),
-        ("multi_region_failover.metric_mirroring.enabled", signal),
+        // The switches of the output branches follow the current configuration, as the branches do.
+        ("autoscaling_failover.enabled", (signal, live)),
+        ("host.tags", (fact, startup)),
+        ("host.tags_deadline", (fact, startup)),
+        ("multi_region_failover.enabled", (fact, live)),
+        ("multi_region_failover.metric_mirroring.enabled", (signal, live)),
     ];
     assert_eq!(classes, expected.into_iter().collect());
 
-    // Facts of the host are fixed for the life of the process, and every binding says what it is.
+    // Every binding says what it is.
     for spec in BINDINGS {
-        if spec.class == BindingClass::Fact && matches!(spec.resolve, Resolve::Fact(_)) {
-            assert_eq!(spec.liveness, Liveness::Startup, "`{}`", spec.name);
-        }
         assert!(!spec.about.is_empty() && spec.about.ends_with('.'), "`{}`", spec.name);
     }
     assert_eq!(
@@ -137,23 +72,17 @@ fn every_binding_is_a_fact_a_signal_or_a_policy_setting() {
 }
 
 #[test]
-fn keyed_names_are_looked_up_by_their_pattern() {
-    let (spec, key) = lookup(&name("metrics_endpoint_routing.group.0123456789abcdef.names")).unwrap();
-    assert_eq!(spec.name, "metrics_endpoint_routing.group.{key}.names");
-    assert_eq!(key, "0123456789abcdef");
-    let (spec, key) = lookup(&name("dogstatsd.tag_filterlist")).unwrap();
-    assert_eq!(spec.name, "dogstatsd.tag_filterlist");
-    assert_eq!(key, "");
-
+fn policy_settings_datadog_keys_and_credentials_are_not_bindings() {
     for unknown in [
-        // Keys are 16 lowercase hexadecimal digits.
-        "metrics_endpoint_routing.group.0123456789abcde.names",
-        "metrics_endpoint_routing.group.0123456789abcdeg.names",
-        "metrics_endpoint_routing.group.0123456789abcdef.other",
+        // Policy settings, which lowering writes as literals.
+        "dogstatsd.metric_filter.values",
+        "dogstatsd.tag_filterlist",
+        "multi_region_failover.metric_mirroring.allowlist",
+        "metrics_endpoint_routing.group.0123456789abcdef.names",
         // Datadog keys are not binding names.
         "metric_filterlist",
         "autoscaling.failover.metrics",
-        // Nor are paths the registry does not have, such as credentials.
+        // Nor are credentials.
         "endpoints.api_key",
         "multi_region_failover.api_key",
     ] {
@@ -161,40 +90,13 @@ fn keyed_names_are_looked_up_by_their_pattern() {
     }
 }
 
-/// Every binding's value for a configuration that sets each setting, derived by hand from the configuration.
+/// Every binding's value for a configuration that sets each one, derived by hand from the configuration.
 #[tokio::test]
 async fn bindings_resolve_to_native_values_written_as_plan_parameters() {
     let config = configuration(
         r#"
-dd_url: https://primary.example.com
-additional_endpoints: {https://b.example.com: [key-b], https://c.example.com: [key-c]}
-experimental:
-  metrics_endpoint_routing:
-    metric_allowlist: {https://b.example.com: [orders.total, checkout.cart, orders.total]}
-    metric_prefix_allowlist: {https://b.example.com: [checkout., checkout.a.], https://c.example.com: [catalog.]}
-dogstatsd_mapper_profiles:
-  - name: p
-    prefix: a.
-    mappings: [{match: a.*, name: b, tags: {z: $1, y: two}}]
-dogstatsd_mapper_cache_size: 7
-dogstatsd_mapper_string_interner_size: 2048
-statsd_metric_namespace: ns
-statsd_metric_namespace_blacklist: [skip.]
-metric_filterlist: [blocked, h.max, h.95percentile, h.99percentile]
-metric_filterlist_match_prefix: true
-metric_tag_filterlist: [{metric_name: m, action: include, tags: [env]}]
-metric_tag_value_allowlist: [{metric_prefix: m., tag_name: env, values: [prod], on_miss: replace, replacement: o}]
-data_plane: {standalone_mode: false, dogstatsd: {aggregator_tag_filter_cache_capacity: 9}}
+data_plane: {standalone_mode: false}
 expected_tags_duration: 10m
-aggregate_window_duration_seconds: 300
-aggregate_flush_interval: 1500ms
-aggregate_context_limit: 42
-dogstatsd_expiry_seconds: 90
-dogstatsd_flush_incomplete_buckets: true
-histogram_aggregates: [max, count, max]
-histogram_percentiles: ['0.955', '0.95', '0.951']
-histogram_copy_to_distribution: true
-histogram_copy_to_distribution_prefix: d.
 multi_region_failover: {enabled: true, failover_metrics: true, metric_allowlist: [m1, m2]}
 autoscaling: {failover: {enabled: true, metrics: [cpu]}}
 "#,
@@ -206,209 +108,40 @@ autoscaling: {failover: {enabled: true, metrics: [cpu]}}
         current: &config,
         facts: &host_facts,
     };
-    let b_key = super::super::resources::routing_group_key(&["https://b.example.com".to_string()]);
-    let c_key = super::super::resources::routing_group_key(&["https://c.example.com".to_string()]);
     let cases = [
-        (
-            "dogstatsd.mapper.profiles".to_string(),
-            json!([{"name": "p", "prefix": "a.", "mappings": [
-                {"match": "a.*", "match_type": "wildcard", "name": "b",
-                 "tags": [{"name": "y", "value": "two"}, {"name": "z", "value": "$1"}]}
-            ]}]),
-        ),
-        ("dogstatsd.mapper.cache_size".to_string(), json!(7)),
-        ("dogstatsd.mapper.string_interner_size_bytes".to_string(), json!(2048)),
-        ("dogstatsd.prefix_filter.metric_namespace".to_string(), json!("ns")),
-        (
-            "dogstatsd.prefix_filter.metric_namespace_blocklist".to_string(),
-            json!(["skip."]),
-        ),
-        (
-            "dogstatsd.metric_filter.values".to_string(),
-            json!(["blocked", "h.max", "h.95percentile", "h.99percentile"]),
-        ),
-        ("dogstatsd.metric_filter.match_prefix".to_string(), json!(true)),
-        // Only entries naming a configured statistic's series: `95percentile` and `96percentile` are configured, `99`
-        // is not.
-        (
-            "dogstatsd.post_aggregate_filter.values".to_string(),
-            json!(["h.max", "h.95percentile"]),
-        ),
-        (
-            "dogstatsd.tag_filterlist".to_string(),
-            json!([{"metric_name": "m", "action": "include", "tags": ["env"]}]),
-        ),
-        (
-            "dogstatsd.tag_value_allowlist".to_string(),
-            json!([{"metric_prefix": "m.", "tag_name": "env", "values": ["prod"], "on_miss": "replace",
-                    "replacement": "o"}]),
-        ),
-        (
-            "dogstatsd.aggregation.aggregator_tag_filter_cache_capacity".to_string(),
-            json!(9),
-        ),
-        ("dogstatsd.aggregation.window_duration_seconds".to_string(), json!("5m")),
-        ("dogstatsd.aggregation.flush_interval".to_string(), json!("1500ms")),
-        ("dogstatsd.aggregation.context_limit".to_string(), json!(42)),
-        ("dogstatsd.aggregation.counter_expiry_seconds".to_string(), json!("90s")),
-        ("dogstatsd.aggregation.flush_open_windows".to_string(), json!(true)),
-        // Each statistic once, in configured order; `0.955` rounds up to 96, and `0.951` repeats 95.
-        (
-            "metrics_encoding.histogram.aggregates".to_string(),
-            json!(["max", "count"]),
-        ),
-        ("metrics_encoding.histogram.percentiles".to_string(), json!([96, 95])),
-        (
-            "metrics_encoding.histogram.copy_to_distribution".to_string(),
-            json!(true),
-        ),
-        (
-            "metrics_encoding.histogram.copy_to_distribution_prefix".to_string(),
-            json!("d."),
-        ),
-        // The canonical lists: names sorted and deduplicated without those a prefix covers, prefixes compacted.
-        (
-            format!("metrics_endpoint_routing.group.{}.names", b_key),
-            json!(["orders.total"]),
-        ),
-        (
-            format!("metrics_endpoint_routing.group.{}.prefixes", b_key),
-            json!(["checkout."]),
-        ),
-        (format!("metrics_endpoint_routing.group.{}.names", c_key), json!([])),
-        (
-            format!("metrics_endpoint_routing.group.{}.prefixes", c_key),
-            json!(["catalog."]),
-        ),
-        ("multi_region_failover.enabled".to_string(), json!(true)),
-        (
-            "multi_region_failover.metric_mirroring.enabled".to_string(),
-            json!(true),
-        ),
-        (
-            "multi_region_failover.metric_mirroring.allowlist".to_string(),
-            json!(["m1", "m2"]),
-        ),
-        ("autoscaling_failover.metrics".to_string(), json!(["cpu"])),
-        ("autoscaling_failover.enabled".to_string(), json!(true)),
+        ("multi_region_failover.enabled", json!(true)),
+        ("multi_region_failover.metric_mirroring.enabled", json!(true)),
+        ("autoscaling_failover.enabled", json!(true)),
         // Facts of the host: the tags fetched at boot, and the process start plus `expected_tags_duration`.
-        ("host.tags".to_string(), json!(["cloud_provider:example", "zone:a"])),
-        ("host.tags_deadline".to_string(), json!("1700000600s")),
+        ("host.tags", json!(["cloud_provider:example", "zone:a"])),
+        ("host.tags_deadline", json!("1700000600s")),
     ];
-    let resolved = cases
-        .iter()
-        .map(|(binding, _)| binding.clone())
-        .collect::<BTreeSet<_>>();
+    let resolved = cases.iter().map(|(binding, _)| *binding).collect::<BTreeSet<_>>();
     for spec in BINDINGS {
-        let instances = match spec.key {
-            None => vec![spec.name.to_string()],
-            Some(key) => key.keys(&config).iter().map(|key| spec.instance_name(key)).collect(),
-        };
-        for instance in instances {
-            assert!(resolved.contains(&instance), "`{}` has a case", instance);
-        }
+        assert!(resolved.contains(spec.name), "`{}` has a case", spec.name);
     }
     for (binding, expected) in cases {
-        assert_eq!(resolve(&name(&binding), snapshots), Some(expected), "`{}`", binding);
+        assert_eq!(resolve(&name(binding), snapshots), Some(expected), "`{}`", binding);
     }
-
-    // A routing group key that the configuration does not have resolves to nothing.
-    assert_eq!(
-        resolve(
-            &name("metrics_endpoint_routing.group.0123456789abcdef.names"),
-            snapshots
-        ),
-        None
-    );
 }
 
 #[tokio::test]
-async fn an_unset_or_zero_counter_expiry_never_expires() {
-    for (yaml, expected) in [
-        ("dogstatsd_expiry_seconds: 0", "0s"),
-        ("dogstatsd_expiry_seconds: 300", "5m"),
-        ("", "5m"),
-    ] {
-        let config = configuration(yaml).await;
-        let host_facts = facts(&config);
-        let snapshots = Snapshots {
-            startup: &config,
-            current: &config,
-            facts: &host_facts,
-        };
-        assert_eq!(
-            resolve(&name("dogstatsd.aggregation.counter_expiry_seconds"), snapshots),
-            Some(json!(expected)),
-            "{:?}",
-            yaml
-        );
-    }
-    // The typed model's unset expiry, which translation never leaves, also never expires.
-    let mut config = configuration("").await;
-    config.domains.dogstatsd.aggregation.counter_expiry_seconds = None;
-    let host_facts = facts(&config);
-    let snapshots = Snapshots {
-        startup: &config,
-        current: &config,
-        facts: &host_facts,
-    };
-    assert_eq!(
-        resolve(&name("dogstatsd.aggregation.counter_expiry_seconds"), snapshots),
-        Some(json!("0s"))
-    );
-}
-
-#[tokio::test]
-async fn bindings_resolve_from_the_snapshot_their_liveness_names() {
-    let startup = configuration("metric_filterlist: [h.max]\nstatsd_metric_namespace: old").await;
-    let current = layered_configuration(&[
-        "metric_filterlist: [h.max]\nstatsd_metric_namespace: old",
-        "metric_filterlist: [h.min, h.max]\nstatsd_metric_namespace: new\nhistogram_aggregates: [min]",
-    ])
-    .await;
+async fn live_bindings_resolve_from_the_current_configuration_and_facts_from_startup() {
+    let startup = configuration("multi_region_failover: {failover_metrics: false}\nexpected_tags_duration: 10m").await;
+    let current = configuration("multi_region_failover: {failover_metrics: true}\nexpected_tags_duration: 1h").await;
     let host_facts = facts(&startup);
     let snapshots = Snapshots {
         startup: &startup,
         current: &current,
         facts: &host_facts,
     };
-    // A live binding follows the current configuration.
     assert_eq!(
-        resolve(&name("dogstatsd.metric_filter.values"), snapshots),
-        Some(json!(["h.min", "h.max"]))
+        resolve(&name("multi_region_failover.metric_mirroring.enabled"), snapshots),
+        Some(json!(true))
     );
-    // A startup binding keeps the startup configuration.
     assert_eq!(
-        resolve(&name("dogstatsd.prefix_filter.metric_namespace"), snapshots),
-        Some(json!("old"))
-    );
-    // A derived binding takes its live input from the current configuration and the statistics from startup: `min`
-    // was added only to the current configuration, so `h.min` names no statistic yet.
-    assert_eq!(
-        resolve(&name("dogstatsd.post_aggregate_filter.values"), snapshots),
-        Some(json!(["h.max"]))
-    );
-}
-
-#[tokio::test]
-async fn bindings_have_no_value_for_settings_aggregation_cannot_compute() {
-    let config = configuration("histogram_aggregates: [p99]").await;
-    let host_facts = facts(&config);
-    let snapshots = Snapshots {
-        startup: &config,
-        current: &config,
-        facts: &host_facts,
-    };
-    for binding in [
-        "metrics_encoding.histogram.aggregates",
-        "metrics_encoding.histogram.percentiles",
-        "dogstatsd.post_aggregate_filter.values",
-    ] {
-        assert_eq!(resolve(&name(binding), snapshots), None, "`{}`", binding);
-    }
-    assert_eq!(
-        histogram_params(&config).unwrap_err().to_string(),
-        "Unknown histogram aggregate: p99"
+        resolve(&name("host.tags_deadline"), snapshots),
+        Some(json!("1700000600s"))
     );
 }
 
@@ -441,23 +174,12 @@ secret_backend_command: secret-backend-command
         facts: &host_facts,
     };
     for spec in BINDINGS {
-        let keys = spec
-            .key
-            .map(|key| key.keys(&config))
-            .unwrap_or_else(|| vec![String::new()]);
-        for key in keys {
-            let value = spec
-                .resolve(snapshots, &key)
-                .map(|value| value.to_string())
-                .unwrap_or_default();
-            for secret in secrets {
-                assert!(
-                    !value.contains(secret),
-                    "`{}` carries `{}`",
-                    spec.instance_name(&key),
-                    secret
-                );
-            }
+        let value = spec
+            .resolve(snapshots)
+            .map(|value| value.to_string())
+            .unwrap_or_default();
+        for secret in secrets {
+            assert!(!value.contains(secret), "`{}` carries `{}`", spec.name, secret);
         }
     }
 }
@@ -467,12 +189,14 @@ secret_backend_command: secret-backend-command
 fn the_plan_crates_default_program_catalog_follows_the_registry() {
     let document = serde_json::to_value(default_program_catalog()).unwrap();
     let bindings = document["bindings"].as_object().unwrap();
-    assert!(!bindings.is_empty());
+    assert_eq!(bindings.len(), BINDINGS.len());
     for (binding, declared) in bindings {
-        let (spec, _) = lookup(&name(binding)).unwrap_or_else(|| panic!("`{}` is not in the registry", binding));
+        let spec = lookup(&name(binding)).unwrap_or_else(|| panic!("`{}` is not in the registry", binding));
         let ty: ValueType = serde_json::from_value(declared["type"].clone()).unwrap();
         assert_eq!(ty, ValueType::from(&spec.ty), "`{}`", binding);
         let liveness: Liveness = serde_json::from_value(declared["liveness"].clone()).unwrap();
         assert_eq!(liveness, spec.liveness, "`{}`", binding);
+        let class: BindingClass = serde_json::from_value(declared["class"].clone()).unwrap();
+        assert_eq!(class, spec.class, "`{}`", binding);
     }
 }

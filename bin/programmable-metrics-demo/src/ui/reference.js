@@ -83,8 +83,6 @@ function renderHost(host, missing) {
           .join("")}
       </tbody></table>`
     : '<p class="muted">The directory is empty: name outputs with <code>emit output &lt;output&gt;</code>.</p>';
-  const bindable = host.bindings.filter((b) => b.bindable);
-  const policy = host.bindings.filter((b) => !b.bindable);
   const bindingRows = (rows) => rows
     .map((b) => `<tr><td>${program(`config.${b.name}`)}</td>
       <td>${tag(b.class)}${b.live ? " " + tag("live", "ok") : ""}</td>
@@ -104,15 +102,10 @@ function renderHost(host, missing) {
     <h3>Bindings a program may read</h3>
     <p>Facts about the host and signals that change as ADP runs. A <span class="tag ok">live</span> one changes
       what the program does without a new program.</p>
-    ${bindable.length ? `<table>${head}<tbody>${bindingRows(bindable)}</tbody></table>`
+    ${host.bindings.length ? `<table>${head}<tbody>${bindingRows(host.bindings)}</tbody></table>`
       : '<p class="muted">None.</p>'}
-    ${policy.length && host.detached ? `
-      <details><summary>Policy settings (${policy.length}): written as literals, not bound</summary>
-        <p>These native settings feed only the default program. A published program owns its policy, so it writes
-          the value it wants instead of <code>config.&lt;name&gt;</code>; compiling refuses a program that binds
-          one.</p>
-        <table>${head}<tbody>${bindingRows(policy)}</tbody></table>
-      </details>` : ""}`;
+    <p>Policy settings, such as the filterlist, are never bound: a program writes the values it wants, as the
+      default program writes native configuration's.</p>`;
 }
 
 function renderSugar(sugar) {

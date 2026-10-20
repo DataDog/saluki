@@ -549,7 +549,7 @@ pub(crate) fn detached_fixture_with(host: impl FnOnce(MemoryCatalog) -> MemoryCa
     let bundle = saluki_metric_plan::export::export_as(
         &plan,
         &crate::stub::protocol::POLICY_SCOPE.parse().unwrap(),
-        &host(catalog_for(&plan).with_detached_programs()),
+        &host(catalog_for(&plan)),
         &BTreeMap::new(),
         saluki_metric_plan::export::ExportForm::Detached,
         &saluki_metric_plan::operators::OperatorRegistry::native(),
@@ -559,32 +559,6 @@ pub(crate) fn detached_fixture_with(host: impl FnOnce(MemoryCatalog) -> MemoryCa
         plan,
         ExportBundle::from_value(serde_json::to_value(bundle).unwrap()).unwrap(),
     )
-}
-
-#[test]
-fn a_policy_binding_is_underlined_in_the_node_that_binds_it() {
-    // Two nodes bind the same setting; composition names the second, so the underline is its `config.<binding>`, not
-    // the first one in the source.
-    let source = r#"policy metrics {
-  base "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-
-  dogstatsd
-    | where not (name starts_with config.dogstatsd.metric_filter.values) as first
-    | where not (name in config.dogstatsd.metric_filter.values) as second
-    | emit output dd_metrics_encode
-}
-"#;
-    let parsed = saluki_metric_plan_syntax::parse(source).unwrap();
-    let error = ComposeError::PolicyBinding {
-        node: "second".parse().unwrap(),
-        binding: "dogstatsd.metric_filter.values".parse().unwrap(),
-        value: None,
-        allowed: Vec::new(),
-    };
-    let span = compose_error_span(&error, &parsed, source).unwrap();
-    let written = "config.dogstatsd.metric_filter.values";
-    assert_eq!(&source[span.start..span.end], written);
-    assert_eq!(span.start, source.rfind(written).unwrap());
 }
 
 #[test]

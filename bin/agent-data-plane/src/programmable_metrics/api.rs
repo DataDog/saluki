@@ -74,8 +74,9 @@ struct ExportQuery {
     /// The scope to export.
     scope: Option<String>,
 
-    /// The form to export it in: `detached`, the default, which writes the default program's policy settings as their
-    /// current values, or `bound`, which binds them as the default program does.
+    /// The form to export it in: `detached`, the default, which leaves out what does nothing as configured and
+    /// addresses emits to recipients, as a published program starts from, or `bound`, every node as the default program
+    /// has it.
     form: Option<String>,
 }
 

@@ -1168,7 +1168,7 @@ async fn the_installer_keeps_the_last_snapshot_and_follows_the_configuration_onc
 
 /// Performs `actions` as the worker does, except that every preparation is acknowledged by every slot at once, in
 /// place of regions: for tests of the installer without a running topology.
-async fn settle(installer: &mut Installer, actions: Vec<Action>) {
+pub(super) async fn settle(installer: &mut Installer, actions: Vec<Action>) {
     let mut queue = VecDeque::from(actions);
     while let Some(action) = queue.pop_front() {
         match action {
@@ -1386,8 +1386,8 @@ async fn an_exported_artifact_installs_follows_configuration_and_rolls_back_thro
     // A native policy change does not reach the published program, which owns its policy: composed again against the
     // new default program, its filterlist keeps the value it was published with, so the plan does what generation 3
     // does, and nothing is built: no generation. Status says the program no longer follows the setting.
-    let filter = "dogstatsd.metric_filter.values"
-        .parse::<saluki_metric_plan::ir::BindingName>()
+    let filter = "dsd_prefix_filter_blocklist"
+        .parse::<saluki_metric_plan::ir::LocalId>()
         .unwrap();
     harness
         .stream
@@ -1489,7 +1489,7 @@ async fn an_exported_artifact_installs_follows_configuration_and_rolls_back_thro
 
 #[tokio::test]
 async fn a_native_policy_change_under_a_published_detached_program_changes_nothing_and_neither_does_its_return() {
-    use saluki_metric_plan::{channel::ApplyState, ir::BindingName};
+    use saluki_metric_plan::channel::ApplyState;
 
     let mut harness = Harness::start_with(Options::new(MetricsPath::Plan, Aggregation::Native), Paths::Core).await;
     let names = [KEPT[0], KEPT[1], "blocked"];
@@ -1504,7 +1504,9 @@ async fn a_native_policy_change_under_a_published_detached_program_changes_nothi
         .status_where(|status| ack(status).is_some_and(|(state, ..)| state == ApplyState::Active))
         .await;
     assert_eq!(active(&adopted), Some(2));
-    let filter = "dogstatsd.metric_filter.values".parse::<BindingName>().unwrap();
+    let filter = "dsd_prefix_filter_blocklist"
+        .parse::<saluki_metric_plan::ir::LocalId>()
+        .unwrap();
 
     // The filterlist changes natively. The program owns its filterlist, which it wrote as a literal: composed again,
     // it does what generation 2 does, so it keeps running generation 2, with nothing prepared, and its plan keeps the

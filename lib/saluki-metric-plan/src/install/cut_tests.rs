@@ -54,7 +54,7 @@ fn strings(list: &[&str]) -> Vec<String> {
 fn listener(plan: &Plan) -> String {
     plan.node(&id("dsd_prefix_filter_blocklist"))
         .and_then(|node| node.params.get("predicate"))
-        .and_then(|predicate| predicate.pointer("/not/intake_name/matches/values/resolved/0"))
+        .and_then(|predicate| predicate.pointer("/not/intake_name/eq"))
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string()
@@ -406,8 +406,7 @@ const REVOKED: &str = "rejected (the channel revoked the policy before the artif
 #[test]
 fn state_owners_are_classified_with_their_lineages_and_widths() {
     let registry = OperatorRegistry::native();
-    let window =
-        |window: &str| edited(|value| node_mut(value, "dsd_agg")["params"]["window"]["resolved"] = json!(window));
+    let window = |window: &str| edited(|value| node_mut(value, "dsd_agg")["params"]["window"] = json!(window));
     let owner = |diff: &PlanDiff, node: &str| {
         diff.state_owners
             .iter()
@@ -432,7 +431,7 @@ fn state_owners_are_classified_with_their_lineages_and_widths() {
     assert!(cut.unknown_widths.is_empty());
 
     // Another flush interval keeps the state: the time contract is the window.
-    let flushed = edited(|value| node_mut(value, "dsd_agg")["params"]["flush_interval"]["resolved"] = json!("30s"));
+    let flushed = edited(|value| node_mut(value, "dsd_agg")["params"]["flush_interval"] = json!("30s"));
     let changes = diff(&boot_plan(), &flushed, &registry);
     let aggregation = owner(&changes, "dsd_agg");
     assert_eq!(
@@ -476,13 +475,8 @@ fn state_owners_are_classified_with_their_lineages_and_widths() {
     assert_eq!(owner(&changes, "dsd_agg").class, TransitionClass::Reject);
     assert_eq!(changes.cut(), None, "a rejected owner leaves no cut to make");
 
-    // A width the plan does not resolve is not known.
-    let unresolved = edited(|value| {
-        node_mut(value, "dsd_agg")["params"]["window"]
-            .as_object_mut()
-            .unwrap()
-            .remove("resolved");
-    });
+    // A width bound to a binding the plan does not resolve is not known.
+    let unresolved = edited(|value| node_mut(value, "dsd_agg")["params"]["window"] = json!({"config": "test.window"}));
     let changes = diff(&boot_plan(), &unresolved, &registry);
     let aggregation = owner(&changes, "dsd_agg");
     assert_eq!(

@@ -90,7 +90,7 @@ fn the_width_change_composes_into_the_default_program_as_the_check_expects() {
     let source = default_program_source(&export, &RecipientLabels::default());
     let edited = edits::width_change(&source, "30s").unwrap();
     // Both windows, and nothing else, change: the timestamp split's, its positional parameter, and the aggregation's.
-    assert_windows_changed(&source, &edited, "config.dogstatsd.aggregation.window_duration_seconds");
+    assert_windows_changed(&source, &edited, "10s");
     assert_eq!(source.lines().count(), edited.lines().count());
 
     let context = CompileContext {
@@ -467,7 +467,7 @@ fn plan_diffs_are_summarized_by_kind_of_change() {
 #[test]
 fn acknowledgments_are_found_by_product_and_revision_and_status_says_which_program_runs() {
     let status = Status::read(json!({
-        "program": {"runs": "published", "native_policy": "not_applied", "differs": ["dogstatsd.metric_filter.values"]},
+        "program": {"runs": "published", "native_policy": "not_applied", "differs": ["dsd_prefix_filter_blocklist"]},
         "config_states": [
             {"id": "demo", "revision": 2, "state": "pending", "error": "waiting for recipient `team_z`: ..."},
             {"product": "policy", "id": "demo", "revision": 3, "state": "active"}
@@ -483,7 +483,7 @@ fn acknowledgments_are_found_by_product_and_revision_and_status_says_which_progr
         (
             Some("published"),
             Some("not_applied"),
-            vec!["dogstatsd.metric_filter.values"]
+            vec!["dsd_prefix_filter_blocklist"]
         )
     );
     // An ADP that does not say which program runs says nothing of it.

@@ -57,7 +57,7 @@ use snafu::Snafu;
 
 use crate::{
     canonical::{contains_resolved_values, to_canonical_string, PlanHash, BINDING_MEMBER, RESOLVED_MEMBER},
-    export::{emitted_output, operation_params, unresolved, ScopeRegion},
+    export::{compared_params, emitted_output, unresolved, ScopeRegion},
     install::{
         correspondence::{CorrespondenceKind, NodeCorrespondence},
         Correspondence,
@@ -71,7 +71,7 @@ use crate::{
     limits::values::{ARTIFACT_NODES, ARTIFACT_SIZE, BLOB_SIZE, PREDICATE_LEAVES},
     normalize::normalize_artifact,
     operators::{names, OperatorRegistry, StateContract, EMIT_TO},
-    validate::{predicate_leaves, BindingClass, Catalog, ValidationReport, Validator},
+    validate::{predicate_leaves, Catalog, ValidationReport, Validator},
 };
 
 /// Reads an artifact document received from the channel, after checking it against the artifact limits.
@@ -528,7 +528,7 @@ pub fn compose(
 ///   parameters left out written with their defaults, its predicates normalized, and its filters turned to keep what
 ///   leaves their `true` port, with their derived terminals renamed. So an artifact that differs from the default
 ///   program only in how it is written composes as one that writes it as the default program does. Everything below
-///   reads the normal form, except the check of policy bindings, which judges what the author wrote.
+///   reads the normal form.
 /// - An artifact must replace a scope the default program declares, and reach its inputs as `input.<name>` and its
 ///   exits as `exit.<name>` (only as an edge's target). Its nodes replace the scope's region (every node reachable from
 ///   the scope's inputs without entering one of its exits' ports), and its edges replace the edges that enter the
@@ -676,17 +676,6 @@ fn compose_scope(
     default_plan: &Plan, received: &ReceivedArtifact, approval: &Approval, catalog: &dyn Catalog,
     registry: &OperatorRegistry,
 ) -> Result<ScopePart, ComposeError> {
-    // A published program owns its policy: it binds facts and signals only. The rule judges what the author wrote, so
-    // it covers every node, kept from the default program or not, before anything is resolved or normalized.
-    if catalog.detached_programs() {
-        for node in &received.artifact.nodes {
-            let params =
-                inline_blobs(&node.params, &received.artifact.blobs).map_err(|error| ComposeError::Malformed {
-                    message: format!("node `{}`: {}", node.id, error),
-                })?;
-            check_policy_bindings(&node.id, &params, catalog)?;
-        }
-    }
     // The artifact composes in normal form, as the default program is lowered in it, so that a program that differs
     // from the default program only in how it is written composes to the default program.
     let artifact = &normalize_artifact(&received.artifact);
@@ -872,12 +861,11 @@ fn compose_scope(
         }
         let by_name = matches!(addressed, Addressed::Recipients);
         let (composed, kind) = match same {
-            // Written as the default program writes it, the node is the default program's own, bindings and all, and
-            // follows native configuration.
+            // Written as the default program writes it, the node is the default program's own, with its resolved values.
             Some(default) if unresolved(&default.params) == params => (default.clone(), CorrespondenceKind::Unmodified),
-            // The same only by value: the node is unmodified, but it runs what the artifact wrote, so that a detached
-            // program never follows native policy. The plan does the same as the default program's, so the installer,
-            // which compares plans by what they do, adopts or keeps the running generation, and builds nothing.
+            // The same only as decoded, such as a set written in another order: the node is unmodified, but it runs
+            // what the artifact wrote. The plan does the same as the default program's, so the installer, which compares
+            // plans by what they do, adopts or keeps the running generation, and builds nothing.
             Some(_) => (
                 Node {
                     id: id.clone(),
@@ -1451,18 +1439,12 @@ fn inline_blobs(params: &Params, blobs: &Blobs) -> Result<Params, BlobError> {
 }
 
 /// Returns `true` if an artifact node `node` with operator `op` and parameters `params` does what the default
-/// program's node `default` does: the same operator, and the same parameters, compared by the values they have.
+/// program's node `default` does: the same operator, and the same parameters.
 ///
-/// Parameters written as the default program writes them are the same. Otherwise both sides are compared with every
-/// configuration binding written as the value it has now (the artifact's resolved from `catalog`), and in [normal
-/// form](crate::normalize::normalize_params), as the detached export writes them (every default written, and every
-/// predicate's literals folded), as written or, when both decode, as their operator decodes them, so that a set written
-/// in another order is the same set. So a literal
-/// equal to a binding's value is the same operation, and the detached export composes to what the default program
-/// does, without the nodes it leaves out because they do nothing ([`eliminate`](crate::export::eliminate)): an
-/// operation is what it does with the values it has, not where they come from. Such a node composes as the artifact
-/// writes it, so a later change of the binding's value leaves it as it is: the next composition, which follows every
-/// configuration change, finds it modified, still with the artifact's value.
+/// Parameters written as the default program writes them are the same. Otherwise both sides are compared as plans are
+/// ([`compared_params`]), with the artifact's configuration bindings resolved from `catalog`: so that a set written in
+/// another order is the same set, but a literal and a binding are never the same parameter, whatever the binding's
+/// value. Such a node composes as the artifact writes it.
 fn same_operation(
     default: &Node, op: &OperatorName, params: &Params, node: &ArtifactNodeId, catalog: &dyn Catalog,
     registry: &OperatorRegistry,
@@ -1476,59 +1458,7 @@ fn same_operation(
     let Ok(resolved) = resolve_bindings(params.clone(), catalog, node) else {
         return false;
     };
-    let (default_params, artifact_params) = (operation_params(op, &default.params), operation_params(op, &resolved));
-    if default_params == artifact_params {
-        return true;
-    }
-    match (
-        registry.configure(op.as_str(), &default_params),
-        registry.configure(op.as_str(), &artifact_params),
-    ) {
-        (Ok(default), Ok(artifact)) => default.params().encode() == artifact.params().encode(),
-        _ => false,
-    }
-}
-
-/// Refuses a node of an artifact for a host whose programs bind facts and signals only
-/// ([`Catalog::detached_programs`]) if its parameters bind a binding the catalog declares a policy setting.
-///
-/// # Errors
-///
-/// Returns [`ComposeError::PolicyBinding`] for the first such binding, with its current value and the facts and
-/// signals the catalog declares.
-fn check_policy_bindings(node: &ArtifactNodeId, params: &Params, catalog: &dyn Catalog) -> Result<(), ComposeError> {
-    fn find(value: &Value, found: &mut Vec<BindingName>) {
-        match value {
-            Value::Object(members) if members.contains_key(BINDING_MEMBER) => {
-                if let Some(binding) = members
-                    .get(BINDING_MEMBER)
-                    .and_then(Value::as_str)
-                    .and_then(|name| name.parse::<BindingName>().ok())
-                {
-                    found.push(binding);
-                }
-            }
-            Value::Object(members) => members.values().for_each(|member| find(member, found)),
-            Value::Array(values) => values.iter().for_each(|element| find(element, found)),
-            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
-        }
-    }
-    let mut found = Vec::new();
-    params.iter().for_each(|(_, value)| find(value, &mut found));
-    for binding in found {
-        let Some(declared) = catalog.binding(&binding) else {
-            continue;
-        };
-        if declared.class == BindingClass::Policy {
-            return Err(ComposeError::PolicyBinding {
-                node: node.clone(),
-                binding,
-                value: declared.value.clone(),
-                allowed: catalog.facts_and_signals(),
-            });
-        }
-    }
-    Ok(())
+    compared_params(op, &default.params, registry) == compared_params(op, &resolved, registry)
 }
 
 /// Fills in the resolved value of every configuration binding in `params` that the catalog declares.
@@ -1864,40 +1794,6 @@ pub enum ComposeError {
 
         /// The output that now carries the recorded fingerprint, if one does.
         renumbered: Option<OutputId>,
-    },
-
-    /// An artifact node binds a policy setting, which a published program owns and writes as a literal, on a host whose
-    /// programs bind facts and signals only ([`Catalog::detached_programs`]).
-    #[snafu(display(
-        "`{}` binds `{}`, a native policy setting. A published program owns its policy: write the value itself ({}; the \
-         detached export writes current values). Only facts and signals can be bound{}.",
-        node,
-        binding,
-        value.as_ref().map_or_else(
-            || "it has no value now".to_string(),
-            |value| format!("now `{}`", value)
-        ),
-        if allowed.is_empty() {
-            String::new()
-        } else {
-            format!(
-                ": {}",
-                allowed.iter().map(|name| format!("`{}`", name)).collect::<Vec<_>>().join(", ")
-            )
-        }
-    ))]
-    PolicyBinding {
-        /// The artifact node.
-        node: ArtifactNodeId,
-
-        /// The binding.
-        binding: BindingName,
-
-        /// The binding's current value, if the catalog carries it: what the author writes in its place.
-        value: Option<Value>,
-
-        /// The facts and signals the host declares, which a program may bind, in name order.
-        allowed: Vec<BindingName>,
     },
 
     /// A new artifact emits to a recipient name the host's recipient directory does not have: it waits, a held state,

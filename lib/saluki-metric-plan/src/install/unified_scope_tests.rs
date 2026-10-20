@@ -1419,33 +1419,20 @@ fn the_one_aggregation_fed_by_the_otlp_input_has_no_isolation_slot_in_the_boot_f
 /// empty metric filterlist, no tag rules, and no histogram statistic filterlisted.
 fn unconfigured_plan() -> Plan {
     unified_with(|value| {
-        let mut resolve = |node: &str, path: &[&str], resolved: Value| {
-            let mut at = &mut node_mut(value, node)["params"];
-            for step in path {
-                at = match step.parse::<usize>() {
-                    Ok(index) => &mut at[index],
-                    Err(_) => &mut at[*step],
-                };
-            }
-            at["resolved"] = resolved;
-        };
-        resolve("dsd_enrich", &["profiles"], json!([]));
-        resolve(
-            "dsd_prefix_filter_blocklist_namespace_prefix",
-            &["namespace"],
-            json!(""),
-        );
-        resolve(
+        let mut set = |node: &str, param: &str, literal: Value| node_mut(value, node)["params"][param] = literal;
+        set("dsd_enrich", "profiles", json!([]));
+        set("dsd_prefix_filter_blocklist_namespace_prefix", "namespace", json!(""));
+        set(
             "dsd_prefix_filter_blocklist",
-            &["predicate", "not", "intake_name", "matches", "values"],
-            json!([]),
+            "predicate",
+            crate::testing::listener_filterlist(json!([])),
         );
-        resolve("dsd_tag_filterlist", &["rules"], json!([]));
-        resolve("dsd_tag_filterlist", &["value_rules"], json!([]));
-        resolve(
+        set("dsd_tag_filterlist", "rules", json!([]));
+        set("dsd_tag_filterlist", "value_rules", json!([]));
+        set(
             "dsd_post_agg_filter",
-            &["predicate", "not", "all", "1", "intake_name", "matches", "values"],
-            json!([]),
+            "predicate",
+            crate::testing::post_aggregate_filter(json!([])),
         );
     })
 }
@@ -1513,7 +1500,8 @@ fn the_shorter_detached_export_over_the_default_program_is_a_commit_that_builds_
 
     // The program does what the default program does, but without the nodes that do nothing: the plans differ as
     // written, so it is a generation. Aggregation keeps its lineage (`retain`), so it is a commit, not a cut, and no
-    // kernel is built: every slot that ran a left-out node gets a program without it, whose kernels it already has.
+    // kernel is built: every slot that ran a left-out node gets a program without it, whose kernels it already has,
+    // and every other slot keeps its program.
     let composed = composed(document.clone()).unwrap();
     let changes = super::diff::diff(&plan, &composed.plan, &registry());
     assert_eq!(
@@ -1531,8 +1519,8 @@ fn the_shorter_detached_export_over_the_default_program_is_a_commit_that_builds_
         strings(&[
             &prepare(
                 2,
-                "0:changed reuse 1 build 0, 1:changed reuse 1 build 0, 2:changed reuse 0 build 0, 3:changed reuse 1 \
-                 build 0"
+                "0:changed reuse 1 build 0, 1:unchanged reuse 1 build 0, 2:unchanged reuse 0 build 0, 3:changed reuse \
+                 1 build 0"
             ),
             "candidate 2 generation 2: pending"
         ])
@@ -1629,14 +1617,21 @@ fn a_published_program_without_a_node_that_does_nothing_follows_no_setting_until
         &registry,
     )
     .unwrap();
-    assert!(crate::export::policy_differences(&plan, &composed.plan, &catalog, &registry).is_empty());
+    // The nodes with parameters, as lowering writes them from native settings.
+    let every = |plan: &Plan| {
+        plan.nodes
+            .iter()
+            .filter(|node| node.params.iter().next().is_some())
+            .map(|node| node.id.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    assert!(crate::export::node_differences(&plan, &composed.plan, &every(&plan), &registry).is_empty());
 
-    // The filterlist set natively: the program, which has none, no longer does what the default program does, and
-    // its entries differ, not its match mode, which alone would not make it do nothing again.
+    // The filterlist set natively: the program, which has none, no longer does what the default program does.
     let changed = unified_with(|value| {
         *value = serde_json::to_value(&plan).unwrap();
-        node_mut(value, "dsd_prefix_filter_blocklist")["params"]["predicate"]["not"]["intake_name"]["matches"]
-            ["values"]["resolved"] = json!(["tenant.raw.blocked"]);
+        node_mut(value, "dsd_prefix_filter_blocklist")["params"]["predicate"] =
+            json!({"not": {"intake_name": {"eq": "tenant.raw.blocked"}}});
     });
     let changed_catalog = unified_catalog(&changed);
     let recomposed = compose_all(
@@ -1647,9 +1642,7 @@ fn a_published_program_without_a_node_that_does_nothing_follows_no_setting_until
     )
     .unwrap();
     assert_eq!(
-        crate::export::policy_differences(&changed, &recomposed.plan, &changed_catalog, &registry),
-        ["dogstatsd.metric_filter.values"
-            .parse::<crate::ir::BindingName>()
-            .unwrap()]
+        crate::export::node_differences(&changed, &recomposed.plan, &every(&changed), &registry),
+        ["dsd_prefix_filter_blocklist".parse::<NodeId>().unwrap()]
     );
 }

@@ -183,7 +183,7 @@ pub struct KernelKey {
     pub node: NodeId,
 
     /// The hash of `{"op": <operator>, "params": <parameters>}`, with the parameters in their [operation
-    /// form](crate::export::operation_params): a parameter bound to a value and the same literal build the same kernel.
+    /// form](crate::export::operation_params): a parameter left out and its default build the same kernel.
     pub params_hash: PlanHash,
 }
 

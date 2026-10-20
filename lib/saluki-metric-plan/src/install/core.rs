@@ -1238,7 +1238,7 @@ impl InstallerCore {
         };
         let cancels = arrival == Arrival::Cancel
             && (self.preparing.is_some() || self.cut.as_ref().is_some_and(|cut| cut.phase == CutPhase::Barrier));
-        // Compared by what the plans do: a parameter bound to a value and the same literal are the same.
+        // Compared by what the plans do: a parameter left out and its default are the same.
         let does = operation_hash(&candidate.plan, &self.registry).ok();
         if does.is_some() && (does == target || (cancels && does == active)) {
             if let Some(replaced) = self.pending.take() {

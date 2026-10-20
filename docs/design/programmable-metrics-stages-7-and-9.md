@@ -3984,6 +3984,20 @@ After detached programs, phase 2 ([as built](programmable-metrics-detached-progr
      for a state owner fed by several sources or by another state owner is still to be designed. Renaming a state owner
      starts a new lineage. Owner: accept identity by name, warnings rather than refusals, and the rename cut, or key
      lineages by structure. The design is [many aggregations](programmable-metrics-v2.md#many-aggregations).
+196. **Native policy settings are literals of the default program; bindings are facts and signals** (CFG, D; withdraws
+     amendments 174 and 181 and the policy class of 171, and refines 173 and 175; version 2's step V3, 2026-10-19).
+     Native lowering writes every policy setting as its value, from the configuration the native component reads it
+     from (the current one for a setting a native component reads live, the startup one otherwise). A native policy
+     change lowers a new default program, which installs as a generation that rebuilds only the kernels whose
+     parameters changed, with no cut. Bindings, and their classes, are facts and signals only; keyed bindings go. A
+     literal and a binding are never the same parameter, whatever the binding's value, in composition, the plan diff,
+     kernel keys, and the operation hash. An artifact that names a former policy binding names a binding the host does
+     not declare, which validation refuses. The detached export converts nothing: it is the bound export without what
+     does nothing as configured, with emits addressed to recipients. Status's `program.differs` names the nodes of the
+     default program, among those whose parameters lowering writes from policy settings, that the published program
+     does not run as the default program writes them now. Since a filter with nothing in it is a `split` on a constant,
+     R3 folds it in compiled programs; the host registers the native counters of such a node's ports at zero, as the
+     native component registers its own. The installer's native size gauges read the plan's literals, each value once.
 
 ## 11. Risks
 

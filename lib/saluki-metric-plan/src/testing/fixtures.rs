@@ -3,12 +3,9 @@
 use serde_json::{json, Value};
 
 use crate::{
-    canonical::{PlanHash, MAX_SAFE_INTEGER},
+    canonical::PlanHash,
     compile::FrameHosts,
-    ir::{
-        BindingName, HostId, InputName, NativeComponentId, NodeId, OutputDecl, OutputId, ParamSpec, ParamType,
-        RecipientId,
-    },
+    ir::{BindingName, HostId, InputName, NativeComponentId, NodeId, OutputDecl, OutputId, ParamType, RecipientId},
     model::{Kind, KindSet, PortType, TimestampForm},
     operators::SourceBinding,
     validate::{BindingClass, CatalogOutput, Liveness, MemoryCatalog},
@@ -20,6 +17,44 @@ use crate::{
 /// This is `fixtures/default-program.json`, written by hand from the implementation design. It validates with no
 /// findings against [`default_program_catalog`].
 pub const DEFAULT_PROGRAM_JSON: &str = include_str!("../../fixtures/default-program.json");
+
+/// Returns the predicate of the default-program fixtures' listener filterlist (`dsd_prefix_filter_blocklist`) for the
+/// filterlist `values`, a JSON list of names, in normal form, as lowering writes it: a filterlist with nothing in it
+/// keeps everything.
+pub fn listener_filterlist(values: Value) -> Value {
+    match names_match(values) {
+        Some(matched) => json!({"not": {"intake_name": matched}}),
+        None => json!({"const": true}),
+    }
+}
+
+/// Returns the predicate of the default-program fixtures' post-aggregation filter (`dsd_post_agg_filter`) for the
+/// filterlist entries `values`, a JSON list of names, in normal form, as lowering writes it.
+pub fn post_aggregate_filter(values: Value) -> Value {
+    match names_match(values) {
+        Some(matched) => json!({"not": {"all": [
+            {"kind_in": ["counter", "rate", "gauge", "set"]},
+            {"intake_name": matched},
+        ]}}),
+        None => json!({"const": true}),
+    }
+}
+
+/// Returns the normal form of an exact match of the names `values`, each kept once: `eq` of one, `in` of several, or
+/// `None` for none, which matches nothing.
+fn names_match(values: Value) -> Option<Value> {
+    let mut names = Vec::new();
+    for value in values.as_array().expect("a list of names") {
+        if !names.contains(value) {
+            names.push(value.clone());
+        }
+    }
+    match names.len() {
+        0 => None,
+        1 => Some(json!({"eq": names[0]})),
+        _ => Some(json!({"in": names})),
+    }
+}
 
 /// The default program of [`DEFAULT_PROGRAM_JSON`] with the no-aggregation pipeline off: no timestamp split, and no
 /// merge before the post-aggregation filter.
@@ -162,33 +197,6 @@ pub fn with_opaque_gateways(plan_json: &str) -> Value {
 }
 
 const STRINGS: ParamType = ParamType::List(&ParamType::String);
-const MAPPING_TAG: &[ParamSpec] = &[
-    ParamSpec::required("name", ParamType::String),
-    ParamSpec::required("value", ParamType::String),
-];
-const MAPPING: &[ParamSpec] = &[
-    ParamSpec::required("match", ParamType::String),
-    ParamSpec::required("match_type", ParamType::Enum(&["wildcard", "regex"])),
-    ParamSpec::required("name", ParamType::String),
-    ParamSpec::optional("tags", ParamType::Set(&ParamType::Record(MAPPING_TAG))),
-];
-const PROFILE: &[ParamSpec] = &[
-    ParamSpec::required("name", ParamType::String),
-    ParamSpec::required("prefix", ParamType::String),
-    ParamSpec::required("mappings", ParamType::List(&ParamType::Record(MAPPING))),
-];
-const TAG_RULE: &[ParamSpec] = &[
-    ParamSpec::required("metric_name", ParamType::String),
-    ParamSpec::required("action", ParamType::Enum(&["include", "exclude"])),
-    ParamSpec::required("tags", STRINGS),
-];
-const TAG_VALUE_RULE: &[ParamSpec] = &[
-    ParamSpec::required("metric_prefix", ParamType::String),
-    ParamSpec::required("tag_name", ParamType::String),
-    ParamSpec::required("values", STRINGS),
-    ParamSpec::required("on_miss", ParamType::Enum(&["remove", "replace"])),
-    ParamSpec::optional("replacement", ParamType::String),
-];
 
 /// Returns the hash whose 64 hexadecimal digits are all `digit`.
 fn hash(digit: char) -> PlanHash {
@@ -216,7 +224,6 @@ pub const DEFAULT_PROGRAM_SCOPE_INPUTS: [(&str, &str, SourceBinding); 5] = [
 /// most one aggregation per program.
 ///
 /// Binding names, types, and liveness are those of the host's binding registry, whose tests check that they agree.
-/// Endpoint routing group keys are placeholders.
 ///
 /// Output fingerprints are placeholder hashes whose digits are all the same: `1` for `dsd_client_telemetry` through
 /// `6` for `af_metrics_encode`, in the order the fixtures declare the outputs.
@@ -318,135 +325,34 @@ fn catalog_without_scopes() -> MemoryCatalog {
         ("af_metrics_encode", counters, '6', &["cluster_agent_out/primary/0"]),
     ];
 
-    // Counts are integers within the plan's integer range, as the host declares them.
-    let count = |max| ParamType::Integer { min: 0, max };
-    let bindings: Vec<(&str, ParamType, Liveness)> = vec![
+    // The facts and signals the default program binds, as the host classifies them: the host's tags and whether
+    // failover is configured are facts, and the two failover switches signals. Every policy setting is a literal.
+    let bindings: [(&str, ParamType, Liveness, BindingClass); 5] = [
         (
-            "dogstatsd.mapper.profiles",
-            ParamType::List(&ParamType::Record(PROFILE)),
-            Liveness::Startup,
-        ),
-        (
-            "dogstatsd.mapper.cache_size",
-            count(MAX_SAFE_INTEGER),
-            Liveness::Startup,
-        ),
-        (
-            "dogstatsd.mapper.string_interner_size_bytes",
-            ParamType::Integer {
-                min: 1,
-                max: MAX_SAFE_INTEGER,
-            },
-            Liveness::Startup,
-        ),
-        (
-            "dogstatsd.prefix_filter.metric_namespace",
-            ParamType::String,
-            Liveness::Startup,
-        ),
-        (
-            "dogstatsd.prefix_filter.metric_namespace_blocklist",
-            STRINGS,
-            Liveness::Startup,
-        ),
-        ("dogstatsd.metric_filter.values", STRINGS, Liveness::Live),
-        ("dogstatsd.metric_filter.match_prefix", ParamType::Bool, Liveness::Live),
-        ("dogstatsd.post_aggregate_filter.values", STRINGS, Liveness::Live),
-        (
-            "dogstatsd.tag_filterlist",
-            ParamType::List(&ParamType::Record(TAG_RULE)),
-            Liveness::Live,
-        ),
-        (
-            "dogstatsd.tag_value_allowlist",
-            ParamType::List(&ParamType::Record(TAG_VALUE_RULE)),
-            Liveness::Startup,
-        ),
-        (
-            "dogstatsd.aggregation.window_duration_seconds",
-            ParamType::Duration,
-            Liveness::Startup,
-        ),
-        (
-            "dogstatsd.aggregation.flush_interval",
-            ParamType::Duration,
-            Liveness::Startup,
-        ),
-        (
-            "dogstatsd.aggregation.context_limit",
-            count(MAX_SAFE_INTEGER),
-            Liveness::Startup,
-        ),
-        (
-            "dogstatsd.aggregation.counter_expiry_seconds",
-            ParamType::Duration,
-            Liveness::Startup,
-        ),
-        (
-            "dogstatsd.aggregation.flush_open_windows",
+            "multi_region_failover.enabled",
             ParamType::Bool,
-            Liveness::Startup,
-        ),
-        (
-            "dogstatsd.aggregation.aggregator_tag_filter_cache_capacity",
-            count(MAX_SAFE_INTEGER),
-            Liveness::Startup,
-        ),
-        (
-            "metrics_encoding.histogram.aggregates",
-            ParamType::List(&ParamType::Enum(&["count", "sum", "min", "max", "avg", "median"])),
-            Liveness::Startup,
-        ),
-        (
-            "metrics_encoding.histogram.percentiles",
-            ParamType::List(&ParamType::Integer { min: 0, max: 100 }),
-            Liveness::Startup,
-        ),
-        (
-            "metrics_encoding.histogram.copy_to_distribution",
-            ParamType::Bool,
-            Liveness::Startup,
-        ),
-        (
-            "metrics_encoding.histogram.copy_to_distribution_prefix",
-            ParamType::String,
-            Liveness::Startup,
-        ),
-        (
-            "metrics_endpoint_routing.group.0123456789abcdef.names",
-            STRINGS,
             Liveness::Live,
+            BindingClass::Fact,
         ),
-        (
-            "metrics_endpoint_routing.group.0123456789abcdef.prefixes",
-            STRINGS,
-            Liveness::Live,
-        ),
-        (
-            "metrics_endpoint_routing.group.fedcba9876543210.names",
-            STRINGS,
-            Liveness::Live,
-        ),
-        (
-            "metrics_endpoint_routing.group.fedcba9876543210.prefixes",
-            STRINGS,
-            Liveness::Live,
-        ),
-        ("multi_region_failover.enabled", ParamType::Bool, Liveness::Live),
         (
             "multi_region_failover.metric_mirroring.enabled",
             ParamType::Bool,
             Liveness::Live,
+            BindingClass::Signal,
         ),
         (
-            "multi_region_failover.metric_mirroring.allowlist",
-            STRINGS,
+            "autoscaling_failover.enabled",
+            ParamType::Bool,
             Liveness::Live,
+            BindingClass::Signal,
         ),
-        ("autoscaling_failover.metrics", STRINGS, Liveness::Live),
-        ("autoscaling_failover.enabled", ParamType::Bool, Liveness::Live),
-        ("host.tags", STRINGS, Liveness::Startup),
-        ("host.tags_deadline", ParamType::Duration, Liveness::Startup),
+        ("host.tags", STRINGS, Liveness::Startup, BindingClass::Fact),
+        (
+            "host.tags_deadline",
+            ParamType::Duration,
+            Liveness::Startup,
+            BindingClass::Fact,
+        ),
     ];
 
     let mut catalog = MemoryCatalog::new();
@@ -460,14 +366,7 @@ fn catalog_without_scopes() -> MemoryCatalog {
             },
         );
     }
-    for (name, ty, liveness) in bindings {
-        // As the host classifies them: the host's tags and whether failover is configured are facts, and the two
-        // failover switches signals; everything else is policy.
-        let class = match name {
-            "host.tags" | "host.tags_deadline" | "multi_region_failover.enabled" => BindingClass::Fact,
-            "multi_region_failover.metric_mirroring.enabled" | "autoscaling_failover.enabled" => BindingClass::Signal,
-            _ => BindingClass::Policy,
-        };
+    for (name, ty, liveness, class) in bindings {
         catalog = catalog.with_classified_binding(BindingName::new(name).unwrap(), ty, liveness, class);
     }
     catalog

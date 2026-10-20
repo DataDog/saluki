@@ -1333,8 +1333,8 @@ fn live_parameter_changes_place_like_the_boot_plan() {
     let boot = stage3_default_program();
     let frame = frame_of(&boot);
     let plan = edited(|value| {
-        node_mut(value, "dsd_prefix_filter_blocklist")["params"]["predicate"]["not"]["intake_name"]["matches"]
-            ["values"]["resolved"] = json!(["tenant.raw.blocked", "tenant.raw.other"]);
+        node_mut(value, "dsd_prefix_filter_blocklist")["params"]["predicate"] =
+            crate::testing::listener_filterlist(json!(["tenant.raw.blocked", "tenant.raw.other"]));
     });
     assert_eq!(placed(&plan, &frame).unwrap(), placed(&boot, &frame).unwrap());
 }
@@ -1476,7 +1476,7 @@ fn host_components_keep_their_boot_configuration() {
     // Aggregation is no host component: it runs as a kernel in its isolation slot, so a change of its parameters
     // places as the boot plan does, and the installer classifies it as a state transition.
     let wider = edited(|value| {
-        node_mut(value, "dsd_agg")["params"]["flush_interval"]["resolved"] = json!("30s");
+        node_mut(value, "dsd_agg")["params"]["flush_interval"] = json!("30s");
     });
     assert_eq!(
         placed(&wider, &frame).unwrap(),
@@ -1985,8 +1985,8 @@ fn fingerprints_and_kernel_keys_change_only_with_what_they_cover() {
 
     // A live change of the listener filterlist changes only the program of the region running it, and no kernel.
     let filtered = edited(|value| {
-        node_mut(value, "dsd_prefix_filter_blocklist")["params"]["predicate"]["not"]["intake_name"]["matches"]
-            ["values"]["resolved"] = json!(["tenant.raw.blocked", "tenant.raw.other"]);
+        node_mut(value, "dsd_prefix_filter_blocklist")["params"]["predicate"] =
+            crate::testing::listener_filterlist(json!(["tenant.raw.blocked", "tenant.raw.other"]));
     });
     let after = compiled(&filtered, &frame);
     let changed_programs = |after: &CompiledPlan| {
@@ -2006,7 +2006,7 @@ fn fingerprints_and_kernel_keys_change_only_with_what_they_cover() {
 
     // A live change of the tag filterlist changes the tag projection kernel's key, and only that one.
     let projected = edited(|value| {
-        node_mut(value, "dsd_tag_filterlist")["params"]["rules"]["resolved"] =
+        node_mut(value, "dsd_tag_filterlist")["params"]["rules"] =
             json!([{"metric_name": "tenant.checkout.latency", "action": "exclude", "tags": ["user_id", "session"]}]);
     });
     let after = compiled(&projected, &frame);

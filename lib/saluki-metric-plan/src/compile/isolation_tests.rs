@@ -628,11 +628,11 @@ fn a_state_owners_kernel_is_keyed_by_its_lineage_and_its_per_call_parameters_by_
     for (parameter, value, same_lineage) in cases {
         let mut changed = serde_json::to_value(&plan).unwrap();
         let nodes = changed["nodes"].as_array_mut().unwrap();
-        // The timestamp split's window is bound to the aggregation's, and follows it.
+        // The timestamp split's window is the aggregation's, and follows it.
         for node in nodes.iter_mut() {
             let follows = parameter == "window" && node["id"] == "dsd_no_agg_split";
             if node["id"] == "dsd_agg" || follows {
-                node["params"][parameter]["resolved"] = value.clone();
+                node["params"][parameter] = value.clone();
             }
         }
         let changed = Plan::from_value(changed).unwrap();

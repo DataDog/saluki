@@ -72,9 +72,6 @@ pub struct HostReference {
     /// The configuration bindings a program may read, in name order.
     pub bindings: Vec<BindingEntry>,
 
-    /// Whether a program may bind facts and signals only, writing its policy settings as literals.
-    pub detached: bool,
-
     /// Whether a program may hold at most one aggregation.
     pub single_aggregation: bool,
 }
@@ -103,14 +100,11 @@ pub struct BindingEntry {
     #[serde(rename = "type")]
     pub ty: String,
 
-    /// A fact, a signal, or a policy setting.
+    /// A fact or a signal.
     pub class: BindingClass,
 
     /// Whether its value changes while ADP runs.
     pub live: bool,
-
-    /// Whether a program may bind it: not a policy setting when programs are detached.
-    pub bindable: bool,
 
     /// Its current value, if the export carries it.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -639,7 +633,6 @@ pub fn reference(export: Option<&ExportBundle>, labels: &RecipientLabels, host_m
 
 fn host_reference(export: &ExportBundle, labels: &RecipientLabels) -> HostReference {
     let catalog = &export.catalog;
-    let detached = catalog.detached_programs();
     let scope = export.scope.parse().ok();
     HostReference {
         scope: export.scope.clone(),
@@ -670,11 +663,9 @@ fn host_reference(export: &ExportBundle, labels: &RecipientLabels) -> HostRefere
                 ty: value_type(&binding.ty),
                 class: binding.class,
                 live: binding.liveness == Liveness::Live,
-                bindable: !detached || binding.class != BindingClass::Policy,
                 value: binding.value.clone(),
             })
             .collect(),
-        detached,
         single_aggregation: catalog.single_aggregation(),
     }
 }

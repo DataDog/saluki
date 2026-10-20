@@ -24,8 +24,9 @@ use crate::{
 /// wait for the retirement ([`REMOVAL_TIMEOUT`](crate::destinations::REMOVAL_TIMEOUT)), with room for its polls.
 const RETIRE_TIMEOUT: Duration = Duration::from_secs(75);
 
-/// The binding of the metric filterlist, which ADP's status lists as differing while a published program runs.
-const FILTERLIST_BINDING: &str = "dogstatsd.metric_filter.values";
+/// The node of the default program that `metric_filterlist` sets: what ADP's status lists as differing when the
+/// filterlist changes under a published program.
+const FILTERLIST_NODE: &str = "dsd_prefix_filter_blocklist";
 
 /// An added destination, as `POST /api/destinations` answers.
 #[derive(Clone, Debug)]
@@ -419,14 +420,14 @@ impl Runner {
         let deadline = changed_at + ACK_TIMEOUT;
         let after = loop {
             let status = self.status().await?;
-            if status.differs().contains(&FILTERLIST_BINDING) {
+            if status.differs().contains(&FILTERLIST_NODE) {
                 break status;
             }
             if Instant::now() >= deadline {
                 return Err(generic_error!(
                     "ADP's status does not list `{}` as differing from the published program {} s after the \
                      filterlist changed: {}",
-                    FILTERLIST_BINDING,
+                    FILTERLIST_NODE,
                     ACK_TIMEOUT.as_secs(),
                     status.document["program"]
                 ));

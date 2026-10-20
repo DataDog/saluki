@@ -246,7 +246,8 @@ taken, which is usually such a leftover ADP.
 - **Native configuration**: the card of that name writes the failover signal (`failover on`,
   `multi_region_failover.failover_metrics`) and `metric_filterlist` (`POST /api/native`). The default program applies
   both. A published program reads the signal live and owns its policy, so a filterlist change reaches only the default
-  program: ADP lists the setting under `program.differs`, and the card and the header say so.
+  program: ADP lists the node it sets, `dsd_prefix_filter_blocklist`, under `program.differs`, and the card and the
+  header say so.
 - **The header** says what runs, from the `program` member of ADP's status, with how many native settings differ:
   either `Running: the default program` or `Running: published revision N (native policy settings not applied)`.
 - **Lanes** (stage 9): ADP runs on its automatic lanes, which on this Mac's 18 cores are 16 producer lanes, 4 state
@@ -400,7 +401,7 @@ lane (`plan_lane_misrouted_total` above 0) fails the check.
 | S9a to S9c | Publish the recipe again; add destination E; route `team:platform` to E. | E is declared (in ADP's directory) and not addressed, and receives nothing, until the program routes to it; then it receives the platform family alone. |
 | S10 | Remove E while the program routes to it. | The program stays `active` without a new revision, degraded: the acknowledgment says the emits to E's URL are dropped, policy loss is counted at `to_destination_true`, E's recipient retires, and the others are unchanged. |
 | S10b | Remove team C, which the program's main `emit` names beside the primary endpoint. | The `emit` keeps delivering to the primary endpoint, whose canaries stay exact; what team C would have received is policy loss at `metrics_policy_0_missing`; the acknowledgment names team C's URL; team B is unchanged; team C's recipient retires and its intake stops. Team C stays out for the rest of the launch. |
-| S11a to S11c | `metric_filterlist: [demo.catalog.views]` in the file under the published program; revoke; clear the filterlist. | No new generation and nothing the program sends changes, while status lists `dogstatsd.metric_filter.values` under `program.differs`; revoked, the default program applies it and `demo.catalog.views` leaves every endpoint; cleared, it returns. |
+| S11a to S11c | `metric_filterlist: [demo.catalog.views]` in the file under the published program; revoke; clear the filterlist. | No new generation and nothing the program sends changes, while status lists `dsd_prefix_filter_blocklist` under `program.differs`; revoked, the default program applies it and `demo.catalog.views` leaves every endpoint; cleared, it returns. |
 | S12a | (second launch, `--decoders 2 --state-lanes 2 --post-lanes 3`) | The frame runs on the lanes asked for, without R1's pipelining: keyed, affinity, and spread exits, key groups covering 0 to 255, events on every state and post-aggregation lane. |
 | S12b | Canary-only traffic until a state lane is empty for two windows, then probe counters one at a time. | A counter first seen in a state lane that was empty at ticks arrives as one point at its bucket, with no zero before it (fixture X1 end to end); every probe once. |
 | S13a | `window: 30s` on `dsd_no_agg_split` and `dsd_agg` in the default program. | Installs at a cut at a multiple of 30 s; every state lane crosses (`plan_lane_crossings_total{kind:cut}`); the last 10 s bucket and the first 30 s bucket each balance, whole. |
@@ -847,7 +848,32 @@ built](programmable-metrics-detached-programs.md#107-what-does-nothing-as-built)
   tag filterlist memo's lookups even with no rules, stops counting; `filterlist.size` and `tag_filterlist.size` read
   zero, as an empty list and no rules imply; the other remapped series of those nodes stay zero.
 - `program.differs` lists, for a node the published program left out that native configuration later makes do
-  something, the settings that make it do something (a filterlist's entries, not its match mode).
+  something, the settings that make it do something (a filterlist's entries, not its match mode). Version 2's step V3
+  replaced this with node names.
+
+**Version 2's step V3: native configuration lowers to literals** (not committed; **not release-noted**; amendment
+196):
+
+- The default program writes every native policy setting as its value: `GET /programmable-metrics/default-program`,
+  `/plan`, `/explain`, and both export forms show literals where they showed `{"config": ..., "resolved": ...}`, and
+  only facts and signals stay bound (`host.tags`, `host.tags_deadline`, `multi_region_failover.enabled`,
+  `multi_region_failover.metric_mirroring.enabled`, `autoscaling_failover.enabled`). The export's catalog lists only
+  those. Predicates are in normal form, so an empty filterlist prints as `where true`, and the printed program leaves
+  out parameters equal to their defaults.
+- A native policy change, a Remote Config filterlist update included, arrives as a new default program, installed as a
+  generation that rebuilds only the kernels whose parameters changed, with no cut; a startup-only setting still
+  changes nothing until restart.
+- An artifact that binds a former policy setting, such as `config.dogstatsd.metric_filter.values`, is refused by
+  validation (`known_binding`: not a binding the host declares), no longer by composition's `policy_binding`, which
+  named the value to write.
+- `program.differs` names nodes of the default program, such as `dsd_prefix_filter_blocklist`, not binding names, and
+  lists every node whose native settings the published program does not run as they are now; ADP's log line on a
+  native change under a published program names the node too.
+- Compiling folds a filter with nothing in it (R3), so its `plan_node_events_total` series and its drop's
+  `plan_loss_total` series are absent while it is empty, and `plan_rewrites_applied{rewrite:r3}` counts those folds; R5b
+  no longer pushes an empty post-aggregation filter into aggregation. The native counters of its ports, such as
+  `dogstatsd.listener_filtered_points` and `aggregator.dogstatsd_filtered_metrics`, are registered at zero as natively.
+- `filterlist.size` counts each name once: the native gauge counted each listing of a repeated name.
 
 **Telemetry** (all release-noted): the fused components' and gateways' component, health, and task series are gone;
 `metrics_enrich` and `dsd_agg` report sent counts per output instead of `_default`; accounting paths nest under the
@@ -1248,6 +1274,12 @@ After version 2's design for many aggregations (proposed, not built):
 | # | Short title | Theme | Kind | Owner |
 |---|---|---|---|---|
 | 195 | Telemetry identity is a node's name, and compatibility is an analysis; any number of state owners, each in a region of its own | TEL | D | proposed (2026-10-19): confirm identity by name, warnings, and the rename cut |
+
+After version 2's step V3 (built, not committed):
+
+| # | Short title | Theme | Kind | Owner |
+|---|---|---|---|---|
+| 196 | Native policy settings are literals of the default program; bindings are facts and signals | CFG | D | version 2, decided by the owner (2026-10-15) |
 
 Wording proposed for adoption: amendment 49 ("under the reference interpreter's delivery order"), 51 ("a maximal
 group of `split` and `tee` operators joined directly by edges within one region"), and 52 ("operator parameters,

@@ -18,12 +18,9 @@ fn id(value: &str) -> NodeId {
     value.parse().unwrap()
 }
 
-/// Leaves out what does nothing, with the policy settings of the default-program fixtures' catalog as the literals, as
-/// the host classifies them: the host's tags and failover's switches are a fact and signals, which stay bound.
+/// Leaves out what does nothing: the host's tags and failover's switches are a fact and signals, which stay bound.
 fn without_facts(plan: &Plan) -> Eliminated {
-    let catalog = default_program_catalog();
-    let literal = policy_literals(&catalog);
-    eliminate(plan, &OperatorRegistry::native(), &literal)
+    eliminate(plan, &OperatorRegistry::native())
 }
 
 fn omitted(eliminated: &Eliminated) -> Vec<(String, Omission)> {
@@ -34,8 +31,8 @@ fn omitted(eliminated: &Eliminated) -> Vec<(String, Omission)> {
         .collect()
 }
 
-/// Sets the resolved value of a parameter of the default-program fixture: at `path` (member names and indexes, from
-/// the node's parameters), a binding whose resolved value becomes `value`.
+/// Sets a parameter of the default-program fixture: at `path` (member names and indexes, from the node's parameters),
+/// the value `value`, which replaces a literal or a binding's resolved value.
 fn resolve(plan: &mut Value, node: &str, path: &[&str], value: Value) {
     let node = plan["nodes"]
         .as_array_mut()
@@ -50,13 +47,16 @@ fn resolve(plan: &mut Value, node: &str, path: &[&str], value: Value) {
             Err(_) => &mut at[*step],
         };
     }
-    assert!(at.get("config").is_some(), "{:?} is not a binding", path);
-    at["resolved"] = value;
+    match at.get_mut("resolved") {
+        Some(resolved) => *resolved = value,
+        None => *at = value,
+    }
 }
 
 /// The default-program fixture with nothing configured for DogStatsD processing: no mapper profiles, no namespace, an
 /// empty metric filterlist, no tag rules, no histogram statistic filterlisted, and the first endpoint routing group
-/// with neither names nor prefixes. Aggregation, the timestamp split, and the policy are as the fixture has them.
+/// with neither names nor prefixes, each predicate in normal form. Aggregation, the timestamp split, and the policy are
+/// as the fixture has them.
 fn unconfigured() -> Value {
     let mut plan = serde_json::from_str::<Value>(DEFAULT_PROGRAM_JSON).unwrap();
     resolve(&mut plan, "dsd_enrich", &["profiles"], json!([]));
@@ -66,28 +66,23 @@ fn unconfigured() -> Value {
         &["namespace"],
         json!(""),
     );
+    // A filterlist with nothing in it keeps everything.
     resolve(
         &mut plan,
         "dsd_prefix_filter_blocklist",
-        &["predicate", "not", "intake_name", "matches", "values"],
-        json!([]),
+        &["predicate"],
+        json!({"const": true}),
     );
     resolve(&mut plan, "dsd_tag_filterlist", &["rules"], json!([]));
     resolve(&mut plan, "dsd_tag_filterlist", &["value_rules"], json!([]));
+    resolve(&mut plan, "dsd_post_agg_filter", &["predicate"], json!({"const": true}));
+    // A routing group with neither names nor prefixes selects nothing.
     resolve(
         &mut plan,
-        "dsd_post_agg_filter",
-        &["predicate", "not", "all", "1", "intake_name", "matches", "values"],
-        json!([]),
+        "metrics_routing_filter_0",
+        &["predicate"],
+        json!({"const": false}),
     );
-    for list in ["0", "1"] {
-        resolve(
-            &mut plan,
-            "metrics_routing_filter_0",
-            &["predicate", "any", list, "intake_name", "matches", "values"],
-            json!([]),
-        );
-    }
     plan
 }
 
@@ -148,9 +143,8 @@ fn an_unconfigured_default_program_loses_every_native_feature_that_does_nothing_
         assert!(edges.contains(&edge.to_string()), "no edge {}: {:?}", edge, edges);
     }
 
-    // The host's tags are a fact, and failover's switches a fact and a signal, which a published program keeps bound:
-    // they decide nothing, whatever they resolve to. Counted as literals, as a comparison that knew no facts would,
-    // they would.
+    // The host's tags are a fact, and failover's switches a fact and a signal, which stay bound: they decide nothing,
+    // whatever they resolve to.
     let mut plan = unconfigured();
     resolve(&mut plan, "metrics", &["tags"], json!([]));
     resolve(
@@ -164,22 +158,8 @@ fn an_unconfigured_default_program_loses_every_native_feature_that_does_nothing_
     for node in ["metrics", "mrf_metrics_gateway", "mrf_metrics_gateway_true"] {
         assert!(kept.plan.node(&id(node)).is_some(), "{} was left out", node);
     }
-    let everything = eliminate(&plan, &OperatorRegistry::native(), &|_| true);
-    for (node, why) in [
-        ("metrics", Omission::Identity),
-        ("mrf_metrics_gateway", Omission::ConstantSplit),
-        ("mrf_metrics_gateway_true", Omission::Unreachable),
-    ] {
-        assert!(
-            everything.omitted.contains(&(id(node), why)),
-            "{} was kept: {:?}",
-            node,
-            everything.omitted
-        );
-    }
-
     // Aggregation, the timestamp split, the client telemetry tap, and the sources stay in every case.
-    for eliminated in [&eliminated, &kept, &everything] {
+    for eliminated in [&eliminated, &kept] {
         for node in [
             "dsd_in",
             "dsd_no_agg_split",
@@ -248,7 +228,7 @@ fn a_merge_a_fold_leaves_with_one_input_goes_too_and_a_scope_port_stays() {
         "rejoin.out -> out.in",
     ];
     let plan = small_plan(nodes.clone(), &edges);
-    let eliminated = eliminate(&plan, &OperatorRegistry::native(), &|_| true);
+    let eliminated = eliminate(&plan, &OperatorRegistry::native());
     assert_eq!(
         omitted(&eliminated),
         [
@@ -270,7 +250,7 @@ fn a_merge_a_fold_leaves_with_one_input_goes_too_and_a_scope_port_stays() {
     let mut scoped = serde_json::to_value(&plan).unwrap();
     scoped["scopes"] = json!({"s": {"inputs": {"metrics": "in.metrics"}, "exits": {"rejoined": "rejoin.1"}}});
     let scoped = Plan::from_value(scoped).unwrap();
-    let eliminated = eliminate(&scoped, &OperatorRegistry::native(), &|_| true);
+    let eliminated = eliminate(&scoped, &OperatorRegistry::native());
     assert!(eliminated.plan.node(&id("rejoin")).is_some());
 }
 

@@ -27,8 +27,9 @@
 //!   stops when it turns off (S4c).
 //! - **S5**: guardrails, each published anyway and refused while S4's generation keeps running: a duplicate branch to
 //!   the main `emit`'s recipients, an `emit` to recipients of two delivery hosts, a second aggregation, the aggregation
-//!   moved after enrichment (refused by placement, which the editor does not run), a policy binding in a published
-//!   program, each rejected; and an `emit` to a recipient ADP does not know, held `pending`.
+//!   moved after enrichment (refused by placement, which the editor does not run), a binding of a policy setting, which
+//!   ADP does not declare (policy settings are literals, never bindings), each rejected; and an `emit` to a recipient
+//!   ADP does not know, held `pending`.
 //! - **S6**: revoking (an empty snapshot) brings the default program back, the boot plan again.
 //!
 //! Then destinations come and go while ADP runs ([`destinations`]): ADP re-reads its configuration file, which the demo
@@ -672,7 +673,7 @@ impl Status {
         self.document["program"]["native_policy"].as_str()
     }
 
-    /// Returns the native policy settings the status's `program` member lists as differing from what runs.
+    /// Returns the nodes of the default program the status's `program` member lists as differing from what runs.
     fn differs(&self) -> Vec<&str> {
         self.document["program"]["differs"]
             .as_array()
@@ -740,8 +741,9 @@ const IMPLIED_OUTPUT: &str = crate::preview::IMPLIED_OUTPUT_NOTE;
 /// The fragment of ADP's refusal of an `emit` to recipients of two delivery hosts.
 const TWO_HOSTS: &[&str] = &["more than one delivery host"];
 
-/// The fragment of ADP's refusal of a policy binding in a published program.
-const POLICY_BINDING: &[&str] = &["a native policy setting"];
+/// The fragment of ADP's refusal of a binding of a policy setting: policy settings are literals, never bindings, so the
+/// binding is one the host does not declare.
+const POLICY_BINDING: &[&str] = &["which is not a configuration binding the host declares"];
 
 /// The fragment of ADP's refusal of a second aggregation: the validation rule that a program has at most one.
 const SECOND_AGGREGATION: &[&str] = &["single_aggregation"];
@@ -1037,7 +1039,7 @@ impl Runner {
             ),
             (
                 "S5e",
-                "guardrail: a policy binding in a published program",
+                "guardrail: a binding of a policy setting, which ADP does not declare",
                 edits::policy_binding(&source)?,
                 POLICY_BINDING,
             ),

@@ -64,7 +64,7 @@ use std::collections::{BTreeMap, HashSet};
 use agent_data_plane_config::{domains::multi_region_failover, shared::SharedConfiguration, Live, SalukiConfiguration};
 use http::HeaderValue;
 use saluki_components::{
-    config::{AutoscalingFailoverConfiguration, MrfConfiguration},
+    config::{AutoscalingFailoverConfiguration, MetricsEndpointRoutingConfiguration, MrfConfiguration},
     encoders::{DatadogMetricsConfiguration, MetricsEndpointRouting},
     forwarders::{
         delivery::PayloadClasses as NativeClasses, queue_endpoint, resolved_endpoint,
@@ -88,7 +88,7 @@ use saluki_metric_plan::{
 use serde_json::{json, Value};
 
 use self::params::{encode_encoder, encode_host_settings, encode_protocol};
-use super::{bindings::routing_groups, host_facts::HostFacts, telemetry_profiles::lease_telemetry};
+use super::{host_facts::HostFacts, telemetry_profiles::lease_telemetry};
 use crate::{
     cli::run::{main_metrics_encoder, routing_group_encoder},
     config::DataPlaneConfiguration,
@@ -251,6 +251,18 @@ pub fn routing_group_key(endpoints: &[String]) -> String {
 }
 
 /// Returns the first 16 hexadecimal digits of a digest.
+/// Returns the endpoint routing groups of the given configuration, as `run.rs` resolves them.
+pub(super) fn routing_groups(
+    config: &SalukiConfiguration,
+) -> Result<MetricsEndpointRoutingConfiguration, GenericError> {
+    let routing = &config.domains.metrics_endpoint_routing;
+    MetricsEndpointRoutingConfiguration::from_configuration(
+        &routing.metric_allowlists,
+        &routing.metric_prefix_allowlists,
+        &config.shared.endpoints,
+    )
+}
+
 fn short_digest(digest: &PlanHash) -> String {
     digest.digest()[..8]
         .iter()

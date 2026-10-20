@@ -10,9 +10,7 @@ use saluki_metric_plan::{
     },
     model::{Kind, PortType},
     operators::SourceBinding,
-    validate::{
-        BindingClass, Catalog, CatalogBinding, CatalogOutput, CatalogRecipient, HostSchema, Liveness, MemoryCatalog,
-    },
+    validate::{Catalog, CatalogBinding, CatalogOutput, CatalogRecipient, HostSchema, MemoryCatalog},
 };
 
 use super::{
@@ -78,26 +76,20 @@ impl AdpCatalog {
             })
             .collect();
 
-        let mut bindings = BTreeMap::new();
-        for spec in BINDINGS {
-            let keys = match (spec.key, spec.liveness) {
-                (None, _) => vec![String::new()],
-                (Some(key), Liveness::Live) => key.keys(snapshots.current),
-                (Some(key), Liveness::Startup) => key.keys(snapshots.startup),
-            };
-            for key in keys {
-                let name = BindingName::new(spec.instance_name(&key)).expect("registry binding names are valid");
-                bindings.insert(
-                    name,
+        let bindings = BINDINGS
+            .iter()
+            .map(|spec| {
+                (
+                    BindingName::new(spec.name).expect("registry binding names are valid"),
                     CatalogBinding {
                         ty: ValueType::from(&spec.ty),
                         liveness: spec.liveness,
                         class: spec.class,
-                        value: spec.resolve(snapshots, &key),
+                        value: spec.resolve(snapshots),
                     },
-                );
-            }
-        }
+                )
+            })
+            .collect();
 
         // DogStatsD aggregation's context limit is a startup setting: every lineage of every state owner, in every
         // generation, shares the limit the process started with.
@@ -149,9 +141,6 @@ impl AdpCatalog {
         if Catalog::single_aggregation(self) {
             catalog = catalog.with_single_aggregation();
         }
-        if Catalog::detached_programs(self) {
-            catalog = catalog.with_detached_programs();
-        }
         match self.state_budget {
             Some(capacity) => catalog.with_state_budget(capacity),
             None => catalog,
@@ -198,20 +187,6 @@ impl Catalog for AdpCatalog {
 
     fn implied_output_refused(&self, recipients: &[RecipientId]) -> Option<String> {
         self.refused_demand.get(recipients).cloned()
-    }
-
-    fn facts_and_signals(&self) -> Vec<BindingName> {
-        self.bindings
-            .iter()
-            .filter(|(_, binding)| binding.class != BindingClass::Policy)
-            .map(|(name, _)| name.clone())
-            .collect()
-    }
-
-    fn detached_programs(&self) -> bool {
-        // A published program owns its policy: it binds facts and signals only, and writes policy settings as
-        // literals, as the detached export does.
-        true
     }
 
     fn host(&self, host: &HostId) -> Option<HostSchema> {

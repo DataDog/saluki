@@ -22,9 +22,9 @@
 //! output and whose `false` port drops:
 //!
 //! - an endpoint routing group's filter, `metrics_routing_filter_{i}`, selects the metrics whose intake name is one of
-//!   the group's names or starts with one of its prefixes (both lists bound to the group, by its key);
+//!   the group's names or starts with one of its prefixes;
 //! - the multi-region failover gateway selects every metric while failover is enabled and metric mirroring is on (both
-//!   live flags), and only the metrics its live allowlist names when that allowlist is not empty;
+//!   live flags), and only the metrics its allowlist names when that allowlist is not empty;
 //! - the autoscaling failover gateway selects, while autoscaling failover is enabled (a live flag), the scalar series
 //!   (counters, rates, gauges, and sets) whose name is one of the configured list of metrics.
 //!
@@ -43,14 +43,18 @@
 //!
 //! # Parameters
 //!
-//! Every configuration-derived parameter is bound to a [binding](super::bindings) and carries its resolved value:
-//! `Startup` bindings from the startup configuration, `Live` ones from the current configuration. So re-lowering with
-//! a changed live input changes only the parameters bound to it and the structure that follows it, and re-lowering
-//! with a changed startup-only input changes nothing, as natively. Host facts (the host tags and their deadline) are
-//! bound to fact bindings (`host.tags`, `host.tags_deadline`), which resolve from the host facts. Structural parameters
-//! (port counts, source bindings, the kinds a gateway selects, and whether a list holds names or prefixes) are
-//! literals. A flag or an emptiness test over a bound value stays in the program as written; only
-//! compiled programs fold it.
+//! Every native policy setting is written as its value, a literal, as a published program writes its policy. A setting
+//! that a native component reads through a live view comes from the current configuration (the metric filterlist and
+//! the histogram statistics it names, the tag filterlist, and the lists of the output branches, which follow the
+//! current configuration since outputs became live); every other setting comes from the startup configuration, so a
+//! change to it takes effect only at restart, as natively. So re-lowering with a changed live setting changes only the
+//! parameters it writes and the structure that follows it, which the installer installs as a generation that rebuilds
+//! only what changed, and re-lowering with a changed startup-only setting changes nothing.
+//!
+//! Only facts and signals are bound to [bindings](super::bindings), with their resolved values: the host tags and their
+//! deadline (`host.tags`, `host.tags_deadline`), whether failover is configured, and whether it mirrors metrics now. A
+//! flag or an emptiness test over a bound value stays in the program as written; normalization folds those over
+//! literals.
 //!
 //! # Normal form
 //!
@@ -58,7 +62,9 @@
 //! Lowering builds each filter as its native component decides, a `split` on what the filterlist matches whose `true`
 //! port drops, and normalization turns it into a `split` on the negation whose `false` port drops, renaming the drop
 //! from `<split>_true` to `<split>_false`: the listener filterlist's drop is `dsd_prefix_filter_blocklist_false`, and
-//! the post-aggregation filter's `dsd_post_agg_filter_false`. Every parameter is written, defaults included.
+//! the post-aggregation filter's `dsd_post_agg_filter_false`. Every parameter is written, defaults included, and every
+//! literal set match as the string match it is: a filterlist with nothing in it is a `split` on `true`, which keeps
+//! every metric. The node stays: the program's structure never depends on a setting's value.
 //!
 //! # Errors
 //!
@@ -80,22 +86,32 @@
 //! [`LoweringNote`]: today, only histogram statistics listed more than once, which the plan computes once while native
 //! aggregation emits them once per listing.
 
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use agent_data_plane_config::SalukiConfiguration;
 use saluki_components::transforms::HistogramConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use saluki_metric_kernels::mapper::validate_profiles;
+use saluki_metric_kernels::{
+    mapper::validate_profiles, params::HistogramParams, selection::histogram_statistic_entries,
+};
 use saluki_metric_plan::{
     canonical::MAX_SAFE_INTEGER,
     compose::Demand,
     ir::{
         derived_terminal_id, format_duration, BindingName, Edge, Namespace, NativeComponentId, Node, NodeId,
-        OperatorName, ParamName, Params, Plan, PlanProvenance, PortName, PortRef, ScopeDecl, IR_VERSION,
+        OperatorName, ParamName, ParamType, ParamValue, Params, Plan, PlanProvenance, PortName, PortRef, ScopeDecl,
+        IR_VERSION,
     },
     model::{PortType, TimestampForm},
     normalize::normalize_plan,
-    operators::{names, SourceBinding, METRICS_PORT},
+    operators::{
+        encode_mapper_profiles, encode_tag_filter_rules, encode_tag_value_rules, names, SourceBinding, MAPPER_PROFILES,
+        METRICS_PORT, TAG_FILTER_RULES, TAG_VALUE_RULES,
+    },
 };
 use serde_json::{json, Value};
 
@@ -104,13 +120,33 @@ use super::{
     catalog::{scope_input_name, AdpCatalog, METRICS_SCOPE},
     host_facts::{host_tags_enabled, HostFacts},
     resources::{
-        cluster_agent_forwarder, spelled_endpoint, Demanded, FixedHosts, NativeOutputs, NativeResources, OutputKind,
-        RoutingGroup, DSD_CLIENT_TELEMETRY, DSD_CLIENT_TELEMETRY_OUT,
+        cluster_agent_forwarder, routing_groups, spelled_endpoint, Demanded, FixedHosts, NativeOutputs,
+        NativeResources, OutputKind, RoutingGroup, DSD_CLIENT_TELEMETRY, DSD_CLIENT_TELEMETRY_OUT,
     },
 };
 use crate::{
-    cli::run::dogstatsd_mapper_configuration, components::tag_filterlist::value_rules, config::DataPlaneConfiguration,
+    cli::run::dogstatsd_mapper_configuration,
+    components::tag_filterlist::{tag_filter_rules, tag_value_rules, value_rules},
+    config::DataPlaneConfiguration,
 };
+
+/// The types policy settings are written as, so that every lowering of one configuration writes, and hashes, the same
+/// plan: each value is decoded and encoded again as its type, as the parameter that reads it will read it.
+mod types {
+    use saluki_metric_plan::{canonical::MAX_SAFE_INTEGER, ir::ParamType, operators::HISTOGRAM_AGGREGATES};
+
+    pub const STRINGS: ParamType = ParamType::List(&ParamType::String);
+    pub const COUNT: ParamType = ParamType::Integer {
+        min: 0,
+        max: MAX_SAFE_INTEGER,
+    };
+    pub const POSITIVE_COUNT: ParamType = ParamType::Integer {
+        min: 1,
+        max: MAX_SAFE_INTEGER,
+    };
+    pub const HISTOGRAM_AGGREGATE_NAMES: ParamType = ParamType::List(&ParamType::Enum(HISTOGRAM_AGGREGATES));
+    pub const HISTOGRAM_PERCENTILES: ParamType = ParamType::List(&ParamType::Integer { min: 0, max: 100 });
+}
 
 /// The reserved node IDs of the default program.
 ///
@@ -376,6 +412,10 @@ pub struct Lowered {
     /// it comes from. Not part of the program.
     pub annotations: BTreeMap<NodeId, String>,
 
+    /// The nodes whose parameters lowering writes from native policy settings, which a published program owns: what
+    /// status compares a published program with when it says which native settings that program does not follow.
+    pub policy_nodes: BTreeSet<NodeId>,
+
     /// The outputs, recipients, and host settings the program delivers through, as resolved for it.
     pub resources: NativeResources,
 }
@@ -435,8 +475,9 @@ impl Lowering {
 
     /// Lowers native configuration into the default program.
     ///
-    /// The DogStatsD pipeline, the sources, and `Startup` bindings come from the startup configuration; the outputs,
-    /// their bindings, the recipients, the host settings, and `Live` bindings from `current`, the configuration now.
+    /// The DogStatsD pipeline, the sources, and the settings read only at startup come from the startup configuration;
+    /// the outputs, their bindings, the recipients, the host settings, the settings native components read live, and
+    /// `Live` bindings from `current`, the configuration now.
     ///
     /// # Errors
     ///
@@ -568,6 +609,7 @@ impl Lowering {
             catalog,
             notes,
             annotations,
+            policy_nodes: program.policy_nodes,
             resources: resolved,
         })
     }
@@ -580,7 +622,7 @@ impl Lowering {
 /// pipeline, and then builds every component, transforms before forwarders.
 fn check_native_construction(startup: &SalukiConfiguration, facts: &HostFacts) -> Result<(), GenericError> {
     // Assembling the blueprint.
-    bindings::routing_groups(startup)?;
+    routing_groups(startup)?;
     cluster_agent_forwarder(&startup.shared, facts)?;
     let dp = DataPlaneConfiguration::from_configuration(startup);
     if dp.dogstatsd_enabled() {
@@ -644,6 +686,78 @@ fn format_seconds(duration: Duration) -> String {
     }
 }
 
+/// Returns a policy setting's value as a literal of type `ty`, in its canonical form: decoded and encoded again as the
+/// parameter that reads it will, so that every lowering of the same configuration writes, and hashes, the same plan. A
+/// value that is not of the type, such as an integer beyond the plan's integer range, is written as it is, so that
+/// validating the plan reports the problem; `setting` names the setting, for that report.
+///
+/// Returns an error if the configuration has no value for it, such as a duration no plan duration represents.
+fn literal(ty: &ParamType, value: Option<Value>, setting: &str) -> Result<Value, GenericError> {
+    let value = value.ok_or_else(|| generic_error!("The configuration has no valid value for `{}`.", setting))?;
+    Ok(match ParamValue::decode(ty, &value, setting) {
+        Ok(decoded) => decoded.encode(),
+        Err(_) => value,
+    })
+}
+
+/// Returns the histogram statistics aggregation computes, as native configuration parses them, each listed once, and
+/// the statistics that configuration repeats, in order.
+///
+/// Native aggregation computes a repeated statistic as many times as it is listed, emitting the same series more than
+/// once per flush, and a plan lists each statistic once, so the first of each is kept. Percentiles that round to the
+/// same whole percent are repeats too.
+///
+/// # Errors
+///
+/// Returns the native error for a statistic that aggregation cannot compute.
+pub fn histogram_params(
+    config: &SalukiConfiguration,
+) -> Result<(HistogramParams, Vec<String>), saluki_metric_kernels::params::InvalidHistogramStatistic> {
+    let histogram = &config.shared.metrics_encoding.histogram;
+    let mut params = HistogramParams::from_names(
+        &histogram.aggregates,
+        &histogram.percentiles,
+        histogram.copy_to_distribution,
+        histogram.copy_to_distribution_prefix.clone(),
+    )?;
+    let mut repeated = Vec::new();
+    let mut seen = Vec::new();
+    params.aggregates.retain(|aggregate| {
+        let first = !seen.contains(aggregate);
+        if first {
+            seen.push(*aggregate);
+        } else {
+            repeated.push(aggregate.as_str().to_string());
+        }
+        first
+    });
+    let mut seen = Vec::new();
+    params.percentiles.retain(|percentile| {
+        let first = !seen.contains(percentile);
+        if first {
+            seen.push(*percentile);
+        } else {
+            repeated.push(format!("{}percentile", percentile));
+        }
+        first
+    });
+    Ok((params, repeated))
+}
+
+fn seconds(seconds: u64) -> Option<Value> {
+    format_duration(Duration::from_secs(seconds)).map(Value::String)
+}
+
+/// Returns the metric filterlist's entries that name a histogram statistic's series, which the post-aggregation filter
+/// drops: the filterlist as it is now, and the statistics as configured at startup, as natively.
+fn post_aggregate_filter_values(live: &SalukiConfiguration, startup: &SalukiConfiguration) -> Option<Value> {
+    let (histogram, _) = histogram_params(startup).ok()?;
+    Some(json!(histogram_statistic_entries(
+        &live.domains.dogstatsd.metric_filter.values,
+        &histogram
+    )))
+}
+
 /// Returns the port name `name`, which is a constant of the default program.
 fn port(name: &str) -> PortName {
     PortName::new(name).expect("default-program port names are valid")
@@ -664,6 +778,8 @@ struct Program<'a> {
     native_components: BTreeMap<NodeId, NativeComponentId>,
     /// Notes of nodes whose note depends on the configuration, beside [`ANNOTATIONS`].
     annotations: BTreeMap<NodeId, String>,
+    /// The nodes whose parameters come from native policy settings.
+    policy_nodes: BTreeSet<NodeId>,
 }
 
 impl<'a> Program<'a> {
@@ -674,6 +790,7 @@ impl<'a> Program<'a> {
             edges: Vec::new(),
             native_components: BTreeMap::new(),
             annotations: BTreeMap::new(),
+            policy_nodes: BTreeSet::new(),
         }
     }
 
@@ -699,6 +816,13 @@ impl<'a> Program<'a> {
         id
     }
 
+    /// Adds a node whose parameters come from native policy settings, as [`node`][Self::node] does.
+    fn policy_node(&mut self, id: &str, op: &str, params: Value, native: &str) -> NodeId {
+        let id = self.node(id, op, params, native);
+        self.policy_nodes.insert(id.clone());
+        id
+    }
+
     /// Adds an edge from `from` to the input port `to_port` of `to`.
     fn edge(&mut self, from: PortRef, to: &NodeId, to_port: &str) {
         self.edges.push(Edge {
@@ -714,7 +838,13 @@ impl<'a> Program<'a> {
         self.edge(PortRef::new(parent.clone(), port(parent_port)), &terminal, "in");
     }
 
-    /// Returns the parameter value binding `name`, with its resolved value.
+    /// Returns the configuration the settings a native component reads through a live view come from: the current
+    /// one. Every other setting comes from the startup configuration.
+    fn live(&self) -> &'a SalukiConfiguration {
+        self.snapshots.current
+    }
+
+    /// Returns the parameter value binding the fact or signal `name`, with its resolved value.
     fn bound(&self, name: &str) -> Result<Value, GenericError> {
         let binding = BindingName::new(name).expect("registry binding names are valid");
         let resolved = bindings::resolve(&binding, self.snapshots)
@@ -749,19 +879,38 @@ impl<'a> Program<'a> {
             TimestampForm::Untimestamped
         };
 
+        // Every setting of DogStatsD's processing is read at startup, but the filterlists.
+        let mapper = &dogstatsd.mapper;
+        let profiles = dogstatsd_mapper_configuration(mapper)
+            .profiles()
+            .ok()
+            .map(|profiles| encode_mapper_profiles(&profiles));
         let params = json!({
-            "profiles": self.bound("dogstatsd.mapper.profiles")?,
-            "cache_size": self.bound("dogstatsd.mapper.cache_size")?,
-            "string_interner_bytes": self.bound("dogstatsd.mapper.string_interner_size_bytes")?,
+            "profiles": literal(&MAPPER_PROFILES, profiles, "dogstatsd_mapper_profiles")?,
+            "cache_size": literal(&types::COUNT, Some(json!(mapper.cache_size)), "dogstatsd_mapper_cache_size")?,
+            "string_interner_bytes": literal(
+                &types::POSITIVE_COUNT,
+                Some(json!(mapper.string_interner_size_bytes.get())),
+                "dogstatsd_mapper_string_interner_size",
+            )?,
         });
-        let mapper = self.node(ids::DSD_ENRICH, names::DOGSTATSD_MAPPER, params, ids::DSD_ENRICH);
+        let mapper = self.policy_node(ids::DSD_ENRICH, names::DOGSTATSD_MAPPER, params, ids::DSD_ENRICH);
         self.edge(PortRef::new(dsd_in, port(METRICS_PORT)), &mapper, "in");
 
+        let prefix_filter = &dogstatsd.prefix_filter;
         let params = json!({
-            "namespace": self.bound("dogstatsd.prefix_filter.metric_namespace")?,
-            "exclusions": self.bound("dogstatsd.prefix_filter.metric_namespace_blocklist")?,
+            "namespace": literal(
+                &ParamType::String,
+                Some(json!(prefix_filter.metric_namespace)),
+                "statsd_metric_namespace",
+            )?,
+            "exclusions": literal(
+                &types::STRINGS,
+                Some(json!(prefix_filter.metric_namespace_blocklist)),
+                "statsd_metric_namespace_blocklist",
+            )?,
         });
-        let prefix = self.node(
+        let prefix = self.policy_node(
             ids::DSD_PREFIX_FILTER_BLOCKLIST_NAMESPACE_PREFIX,
             names::NAMESPACE_PREFIX,
             params,
@@ -769,12 +918,19 @@ impl<'a> Program<'a> {
         );
         self.edge(PortRef::new(mapper, port("out")), &prefix, "in");
 
-        // The listener filterlist matches the intake name after prefixing, as the native prefix filter does.
+        // The listener filterlist matches the intake name after prefixing, as the native prefix filter does. It follows
+        // the current configuration, as the native prefix filter's live view does.
+        let filter = &self.live().domains.dogstatsd.metric_filter;
+        let match_prefix = literal(
+            &ParamType::Bool,
+            Some(json!(filter.match_prefix)),
+            "metric_filterlist_match_prefix",
+        )?;
         let predicate = json!({"intake_name": {"matches": {
-            "values": self.bound("dogstatsd.metric_filter.values")?,
-            "prefix": self.bound("dogstatsd.metric_filter.match_prefix")?,
+            "values": literal(&types::STRINGS, Some(json!(filter.values)), "metric_filterlist")?,
+            "prefix": match_prefix,
         }}});
-        let blocklist = self.node(
+        let blocklist = self.policy_node(
             ids::DSD_PREFIX_FILTER_BLOCKLIST,
             names::SPLIT,
             json!({"predicate": predicate}),
@@ -790,9 +946,15 @@ impl<'a> Program<'a> {
         );
         let kept = PortRef::new(blocklist, port("false"));
 
+        let aggregation = &dogstatsd.aggregation;
+        let window = literal(
+            &ParamType::Duration,
+            seconds(aggregation.window_duration_seconds.get()),
+            "aggregate_window_duration_seconds",
+        )?;
         let (to_projection, passthrough) = if no_aggregation_pipeline {
-            let params = json!({"window": self.bound("dogstatsd.aggregation.window_duration_seconds")?});
-            let split = self.node(
+            let params = json!({"window": window});
+            let split = self.policy_node(
                 ids::DSD_NO_AGG_SPLIT,
                 names::TIMESTAMP_SPLIT,
                 params,
@@ -807,12 +969,22 @@ impl<'a> Program<'a> {
             (kept, None)
         };
 
+        // The tag filterlist follows the current configuration, as the native one's live view does.
+        let rules = tag_filter_rules(&self.live().domains.dogstatsd.tag_filterlist);
         let params = json!({
-            "rules": self.bound("dogstatsd.tag_filterlist")?,
-            "value_rules": self.bound("dogstatsd.tag_value_allowlist")?,
-            "cache_capacity": self.bound("dogstatsd.aggregation.aggregator_tag_filter_cache_capacity")?,
+            "rules": literal(&TAG_FILTER_RULES, Some(encode_tag_filter_rules(&rules)), "metric_tag_filterlist")?,
+            "value_rules": literal(
+                &TAG_VALUE_RULES,
+                Some(encode_tag_value_rules(&tag_value_rules(&dogstatsd.tag_value_allowlist))),
+                "metric_tag_value_allowlist",
+            )?,
+            "cache_capacity": literal(
+                &types::COUNT,
+                Some(json!(aggregation.aggregator_tag_filter_cache_capacity)),
+                "aggregator_tag_filter_cache_capacity",
+            )?,
         });
-        let projection = self.node(
+        let projection = self.policy_node(
             ids::DSD_TAG_FILTERLIST,
             names::TAG_PROJECTION,
             params,
@@ -820,21 +992,52 @@ impl<'a> Program<'a> {
         );
         self.edge(to_projection, &projection, "in");
 
-        // `Lowering::new` parsed the statistics, so this cannot fail.
-        let (_, repeated) =
-            bindings::histogram_params(startup).error_context("Failed to configure histogram aggregation.")?;
+        // `Lowering::new` parsed the statistics, so this cannot fail. Each is listed once, in its configured order.
+        let (histogram, repeated) =
+            histogram_params(startup).error_context("Failed to configure histogram aggregation.")?;
+        let aggregates = histogram
+            .aggregates
+            .iter()
+            .map(|aggregate| aggregate.as_str())
+            .collect::<Vec<_>>();
+        // An unset or zero expiry never expires counters, which the parameter writes as `0s`.
+        let counter_expiry = seconds(aggregation.counter_expiry_seconds.unwrap_or_default());
         let params = json!({
-            "window": self.bound("dogstatsd.aggregation.window_duration_seconds")?,
-            "flush_interval": self.bound("dogstatsd.aggregation.flush_interval")?,
-            "context_limit": self.bound("dogstatsd.aggregation.context_limit")?,
-            "counter_expiry": self.bound("dogstatsd.aggregation.counter_expiry_seconds")?,
-            "flush_open_windows": self.bound("dogstatsd.aggregation.flush_open_windows")?,
-            "histogram_aggregates": self.bound("metrics_encoding.histogram.aggregates")?,
-            "histogram_percentiles": self.bound("metrics_encoding.histogram.percentiles")?,
-            "copy_to_distribution": self.bound("metrics_encoding.histogram.copy_to_distribution")?,
-            "copy_to_distribution_prefix": self.bound("metrics_encoding.histogram.copy_to_distribution_prefix")?,
+            "window": window,
+            "flush_interval": literal(
+                &ParamType::Duration,
+                format_duration(aggregation.flush_interval).map(Value::String),
+                "aggregate_flush_interval",
+            )?,
+            "context_limit": literal(&types::COUNT, Some(json!(aggregation.context_limit)), "aggregate_context_limit")?,
+            "counter_expiry": literal(&ParamType::Duration, counter_expiry, "dogstatsd_expiry_seconds")?,
+            "flush_open_windows": literal(
+                &ParamType::Bool,
+                Some(json!(aggregation.flush_open_windows)),
+                "aggregate_flush_open_windows",
+            )?,
+            "histogram_aggregates": literal(
+                &types::HISTOGRAM_AGGREGATE_NAMES,
+                Some(json!(aggregates)),
+                "histogram_aggregates",
+            )?,
+            "histogram_percentiles": literal(
+                &types::HISTOGRAM_PERCENTILES,
+                Some(json!(histogram.percentiles)),
+                "histogram_percentiles",
+            )?,
+            "copy_to_distribution": literal(
+                &ParamType::Bool,
+                Some(json!(histogram.copy_to_distribution)),
+                "histogram_copy_to_distribution",
+            )?,
+            "copy_to_distribution_prefix": literal(
+                &ParamType::String,
+                Some(json!(histogram.copy_to_distribution_prefix)),
+                "histogram_copy_to_distribution_prefix",
+            )?,
         });
-        let aggregate = self.node(ids::DSD_AGG, names::AGGREGATE, params, ids::DSD_AGG);
+        let aggregate = self.policy_node(ids::DSD_AGG, names::AGGREGATE, params, ids::DSD_AGG);
         self.edge(PortRef::new(projection, port("out")), &aggregate, "in");
         if !repeated.is_empty() {
             notes.push(LoweringNote {
@@ -868,14 +1071,16 @@ impl<'a> Program<'a> {
             None => aggregated,
         };
 
+        // The filterlist's entries that name a histogram statistic's series, live with the filterlist.
+        let statistics = post_aggregate_filter_values(self.live(), startup);
         let predicate = json!({"all": [
             {"kind_in": ["counter", "rate", "gauge", "set"]},
             {"intake_name": {"matches": {
-                "values": self.bound("dogstatsd.post_aggregate_filter.values")?,
-                "prefix": self.bound("dogstatsd.metric_filter.match_prefix")?,
+                "values": literal(&types::STRINGS, statistics, "metric_filterlist")?,
+                "prefix": match_prefix,
             }}},
         ]});
-        let post_aggregation = self.node(
+        let post_aggregation = self.policy_node(
             ids::DSD_POST_AGG_FILTER,
             names::SPLIT,
             json!({"predicate": predicate}),
@@ -1000,7 +1205,7 @@ impl<'a> Program<'a> {
                 }
                 OutputKind::AutoscalingFailover => (ids::AF_METRICS_GATEWAY.to_string(), self.autoscaling_failover()?),
             };
-            let split = self.node(&gateway, names::SPLIT, json!({"predicate": predicate}), &gateway);
+            let split = self.policy_node(&gateway, names::SPLIT, json!({"predicate": predicate}), &gateway);
             self.edge(PortRef::new(policy.clone(), port(&branch)), &split, "in");
             self.terminal(&split, "true", names::EMIT, emit, &output.component);
             self.terminal(&split, "false", names::DROP, Value::Null, &gateway);
@@ -1009,12 +1214,33 @@ impl<'a> Program<'a> {
     }
 
     /// Returns the predicate of an endpoint routing group's filter: the intake name is one of the group's names, or
-    /// starts with one of its prefixes. Two empty lists match nothing, as natively.
+    /// starts with one of its prefixes, as the current configuration lists them. Two empty lists match nothing, as
+    /// natively.
     fn routing_group(&self, group: &RoutingGroup) -> Result<Value, GenericError> {
-        let binding = |list: &str| format!("metrics_endpoint_routing.group.{}.{}", group.key, list);
+        let routing = routing_groups(self.live())?;
+        let configured = routing
+            .policy_groups()
+            .iter()
+            .find(|configured| configured.endpoints == group.endpoints)
+            .ok_or_else(|| {
+                generic_error!(
+                    "The configuration has no endpoint routing group for {:?}.",
+                    group.endpoints
+                )
+            })?;
+        let names = literal(
+            &types::STRINGS,
+            Some(json!(configured.metric_allowlist)),
+            "metrics_endpoint_routing.metric_allowlist",
+        )?;
+        let prefixes = literal(
+            &types::STRINGS,
+            Some(json!(configured.metric_prefix_allowlist)),
+            "metrics_endpoint_routing.metric_prefix_allowlist",
+        )?;
         Ok(json!({"any": [
-            {"intake_name": {"matches": {"values": self.bound(&binding("names"))?, "prefix": false}}},
-            {"intake_name": {"matches": {"values": self.bound(&binding("prefixes"))?, "prefix": true}}},
+            {"intake_name": {"matches": {"values": names, "prefix": false}}},
+            {"intake_name": {"matches": {"values": prefixes, "prefix": true}}},
         ]}))
     }
 
@@ -1022,7 +1248,12 @@ impl<'a> Program<'a> {
     /// exists only then), metric mirroring is on, and the raw name is in the mirroring allowlist, unless the allowlist
     /// is empty, which mirrors everything. Mirroring and its allowlist are live, as natively.
     fn multi_region_failover(&self) -> Result<Value, GenericError> {
-        let allowlist = self.bound("multi_region_failover.metric_mirroring.allowlist")?;
+        let mirroring = &self.live().domains.multi_region_failover.metric_mirroring;
+        let allowlist = literal(
+            &types::STRINGS,
+            Some(json!(mirroring.allowlist)),
+            "multi_region_failover.metric_allowlist",
+        )?;
         Ok(json!({"all": [
             {"flag": self.bound("multi_region_failover.enabled")?},
             {"flag": self.bound("multi_region_failover.metric_mirroring.enabled")?},
@@ -1037,10 +1268,15 @@ impl<'a> Program<'a> {
     /// while autoscaling failover is enabled (a live signal, always true in the default program, whose branch exists
     /// only then), whose raw name is one of the configured metrics.
     fn autoscaling_failover(&self) -> Result<Value, GenericError> {
+        let metrics = literal(
+            &types::STRINGS,
+            Some(json!(self.live().shared.autoscaling_failover.metrics)),
+            "autoscaling.failover.metrics",
+        )?;
         Ok(json!({"all": [
             {"kind_in": ["counter", "rate", "gauge", "set"]},
             {"flag": self.bound("autoscaling_failover.enabled")?},
-            {"name": {"matches": {"values": self.bound("autoscaling_failover.metrics")?, "prefix": false}}},
+            {"name": {"matches": {"values": metrics, "prefix": false}}},
         ]}))
     }
 }

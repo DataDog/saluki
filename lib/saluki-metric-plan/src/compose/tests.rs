@@ -20,7 +20,7 @@ use crate::{
         arb_predicate, default_program_catalog, predicate_json, two_scope_catalog, with_opaque_gateways,
         with_two_scopes, DEFAULT_PROGRAM_JSON, NO_AGGREGATION_PIPELINE_OFF_JSON, TWO_SCOPES,
     },
-    validate::{BindingClass, BoundScope, CatalogBinding, Location, MemoryCatalog, Rule},
+    validate::{BoundScope, CatalogBinding, Location, MemoryCatalog, Rule},
 };
 
 const ZERO_HASH: &str = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
@@ -502,11 +502,11 @@ fn edits_of_the_export_compose_with_their_correspondence() {
             |document| {
                 node(document, "mrf_metrics_gateway")["params"]["predicate"]["all"][1] = json!({"flag": true});
             },
-            // A literal equal to the binding's value is the same operation: composition compares values.
+            // A literal equal to the binding's value is another parameter: it never follows the signal.
             Accepted {
-                changed: &[],
+                changed: &[("mrf_metrics_gateway", "mrf_metrics_gateway", Modified)],
                 removed: &[],
-                diff: &[],
+                diff: &[("mrf_metrics_gateway", "changed params")],
                 stale_base: false,
             },
         ),
@@ -621,12 +621,15 @@ fn edits_of_the_export_compose_with_their_correspondence() {
             if correspondence.kind == CorrespondenceKind::Unmodified {
                 let default = fixture.plan.node(&correspondence.node).unwrap();
                 assert_eq!(node.op, default.op, "{}", what);
-                assert_eq!(
-                    crate::export::operation_params(&node.op, &node.params),
-                    crate::export::operation_params(&default.op, &default.params),
-                    "{}",
-                    what
-                );
+                // As their operator decodes them, so that a set written in another order is the same set.
+                let decoded = |node: &Node| {
+                    let params = crate::export::operation_params(&node.op, &node.params);
+                    registry
+                        .configure(node.op.as_str(), &params)
+                        .map(|configured| configured.params().encode())
+                        .unwrap_or(params)
+                };
+                assert_eq!(decoded(node), decoded(default), "{}", what);
             }
         }
         assert_eq!(
@@ -771,11 +774,11 @@ fn splicing_fills_the_regions_places_in_order_and_puts_the_rest_after_the_last()
 fn modified_and_added_nodes_have_their_bindings_resolved_from_the_catalog() {
     let fixture = Fixture::default_program();
     let mut document = fixture.artifact();
-    // A different kind filter, and a binding the default program does not use in this scope.
+    // A different kind filter, and a binding the default program does not use in this node.
     node(&mut document, "af_metrics_gateway")["params"]["predicate"] = json!({"all": [
         {"kind_in": ["counter"]},
-        {"name": {"matches": {"values": {"config": "autoscaling_failover.metrics"},
-                              "prefix": {"config": "dogstatsd.metric_filter.match_prefix"}}}}]});
+        {"flag": {"config": "autoscaling_failover.enabled"}},
+        {"flag": {"config": "multi_region_failover.enabled"}}]});
     let composed = fixture.compose(document, &approval(2)).unwrap();
     assert!(composed.report.is_valid(), "{}", composed.report);
 
@@ -784,9 +787,8 @@ fn modified_and_added_nodes_have_their_bindings_resolved_from_the_catalog() {
         node.params.get("predicate").unwrap(),
         &json!({"all": [
             {"kind_in": ["counter"]},
-            {"name": {"matches": {
-                "values": {"config": "autoscaling_failover.metrics", "resolved": ["requests.count"]},
-                "prefix": {"config": "dogstatsd.metric_filter.match_prefix", "resolved": false}}}}]})
+            {"flag": {"config": "autoscaling_failover.enabled", "resolved": true}},
+            {"flag": {"config": "multi_region_failover.enabled", "resolved": true}}]})
     );
 }
 
@@ -1164,12 +1166,12 @@ fn artifacts_beyond_the_limits_or_carrying_resolved_values_are_refused_on_receip
         matches!(error, ReceiptError::TooManyNodes { nodes: 257, limit: 256 })
     }));
 
-    // The export's predicates have eleven leaves: two per routing filter, four in the multi-region gateway, three in the
-    // autoscaling one.
+    // The export's predicates have eight leaves: two in the first routing filter, one in the second, whose names are
+    // empty, two in the multi-region gateway, whose mirroring list is empty, and three in the autoscaling one.
     let mut leaves = fixture.artifact();
     push_node(
         &mut leaves,
-        json!({"id": "wide", "op": "split", "params": {"predicate": consts(1014)}}),
+        json!({"id": "wide", "op": "split", "params": {"predicate": consts(1017)}}),
     );
     cases.push(("too many predicate leaves", leaves, |error| {
         matches!(
@@ -1183,7 +1185,7 @@ fn artifacts_beyond_the_limits_or_carrying_resolved_values_are_refused_on_receip
 
     // Leaves count with blob references replaced by their content.
     let mut blob_leaves = fixture.artifact();
-    let predicate = consts(1014);
+    let predicate = consts(1017);
     let predicate_hash = PlanHash::of_value(&predicate).unwrap();
     push_node(
         &mut blob_leaves,
@@ -1223,9 +1225,9 @@ fn artifacts_beyond_the_limits_or_carrying_resolved_values_are_refused_on_receip
 
     // A blob is part of the artifact: it carries no resolved value either.
     let mut resolved_blob = fixture.artifact();
-    let smuggled = json!({"config": "autoscaling_failover.metrics", "resolved": ["smuggled"]});
+    let smuggled = json!({"config": "autoscaling_failover.enabled", "resolved": false});
     let smuggled_hash = PlanHash::of_value(&smuggled).unwrap();
-    node(&mut resolved_blob, "af_metrics_gateway")["params"]["predicate"]["all"][2]["name"]["matches"]["values"] =
+    node(&mut resolved_blob, "af_metrics_gateway")["params"]["predicate"]["all"][1]["flag"] =
         json!({"blob": smuggled_hash.to_string()});
     resolved_blob["blobs"] = json!({smuggled_hash.to_string(): smuggled});
     cases.push(("resolved values inside a blob", resolved_blob, |error| {
@@ -1297,7 +1299,7 @@ fn artifacts_beyond_the_limits_or_carrying_resolved_values_are_refused_on_receip
     }
     push_node(
         &mut at_limits,
-        json!({"id": "wide", "op": "split", "params": {"predicate": consts(1013)}}),
+        json!({"id": "wide", "op": "split", "params": {"predicate": consts(1016)}}),
     );
     let received = receive_artifact(at_limits).unwrap();
     assert_eq!(received.artifact.nodes.len(), 255);
@@ -1645,9 +1647,7 @@ fn explains(error: &ComposeError, artifact: &PolicyArtifact, fixture: &Fixture) 
         | ComposeError::UnknownRecipient { .. }
         | ComposeError::PendingRecipients { .. }
         | ComposeError::RecipientsOnTwoHosts { .. }
-        | ComposeError::NoOutputFor { .. }
-        // The fixture's catalog allows any binding.
-        | ComposeError::PolicyBinding { .. } => None,
+        | ComposeError::NoOutputFor { .. } => None,
     }
 }
 
@@ -2092,7 +2092,7 @@ fn bindings_in(value: &Value, found: &mut BTreeSet<String>) {
 }
 
 #[test]
-fn the_detached_export_writes_policy_settings_as_their_values_and_keeps_facts_and_signals_bound() {
+fn the_detached_export_keeps_facts_and_signals_bound_and_the_bound_exports_base() {
     for (name, plan, catalog) in one_scope_programs() {
         let bound = export(&plan, &metrics_scope(), &catalog, &BTreeMap::new()).unwrap();
         let detached = crate::export::export_as(
@@ -2105,22 +2105,12 @@ fn the_detached_export_writes_policy_settings_as_their_values_and_keeps_facts_an
         )
         .unwrap();
         assert_eq!(detached.form, ExportForm::Detached, "{}", name);
-        // The base describes the scope's structure, which writing values does not change.
+        // The base describes the scope's structure, which leaving out what does nothing does not change.
         assert_eq!(detached.artifact.base, bound.artifact.base, "{}", name);
 
         let mut found = BTreeSet::new();
         for node in &detached.artifact.nodes {
             node.params.iter().for_each(|(_, value)| bindings_in(value, &mut found));
-        }
-        for binding in &found {
-            let declared = catalog.binding(&binding.parse().unwrap()).unwrap();
-            assert_ne!(
-                declared.class,
-                BindingClass::Policy,
-                "{}: `{}` is still bound",
-                name,
-                binding
-            );
         }
         for kept in [
             "host.tags",
@@ -2130,8 +2120,8 @@ fn the_detached_export_writes_policy_settings_as_their_values_and_keeps_facts_an
             assert!(found.contains(kept), "{}: `{}` is not bound: {:?}", name, kept, found);
         }
 
-        // The failover gateway mirrors every metric while its flags hold: its empty mirroring list is not written
-        // twice, as an emptiness test and as a match.
+        // The failover gateway mirrors every metric while its flags hold: the default program's normal form has no
+        // emptiness test of its empty mirroring list.
         let gateway = detached
             .artifact
             .nodes
@@ -2168,20 +2158,8 @@ fn the_unmodified_detached_export_composes_to_what_the_default_program_does_in_i
         .unwrap();
         let received = received_directly(detached.artifact);
         let composed = compose(&plan, &received, &approval(1), &catalog, &registry).unwrap();
-        // It does what the default program does, writing as literals what the default program binds: a detached
-        // program never follows native policy.
+        // It does what the default program does, without what does nothing as configured.
         assert_eq!(does(&composed.plan), does(&plan), "{}", name);
-        let bound = |plan: &Plan| {
-            plan.nodes
-                .iter()
-                .filter(|node| {
-                    node.params
-                        .iter()
-                        .any(|(_, value)| value.to_string().contains("\"config\""))
-                })
-                .count()
-        };
-        assert!(bound(&composed.plan) < bound(&plan), "{}", name);
         assert!(!composed.stale_base, "{}", name);
         assert!(
             composed
@@ -2214,8 +2192,7 @@ fn a_native_policy_change_after_publishing_leaves_the_program_its_own_value() {
     let mut changed = serde_json::to_value(&plan).unwrap();
     for node in changed["nodes"].as_array_mut().unwrap() {
         if node["id"] == "dsd_prefix_filter_blocklist" {
-            node["params"]["predicate"]["not"]["intake_name"]["matches"]["values"]["resolved"] =
-                json!(["tenant.raw.other"]);
+            node["params"]["predicate"] = json!({"not": {"intake_name": {"eq": "tenant.raw.other"}}});
         }
     }
     let changed = Plan::from_value(changed).unwrap();
@@ -2241,15 +2218,19 @@ fn a_native_policy_change_after_publishing_leaves_the_program_its_own_value() {
         .count();
     assert_eq!(modified, 1);
 
-    // Status names the native setting the program no longer follows; before the change, nothing differed.
-    let differs =
-        crate::export::policy_differences(&changed, &composed.plan, &changed_catalog, &OperatorRegistry::native());
-    assert_eq!(
-        differs,
-        ["dogstatsd.metric_filter.values".parse::<BindingName>().unwrap()]
-    );
+    // Status names the node whose native settings the program no longer follows; before the change, nothing differed.
+    // The nodes with parameters, as lowering writes them from native settings.
+    let every = |plan: &Plan| {
+        plan.nodes
+            .iter()
+            .filter(|node| node.params.iter().next().is_some())
+            .map(|node| node.id.clone())
+            .collect::<BTreeSet<_>>()
+    };
+    let differs = crate::export::node_differences(&changed, &composed.plan, &every(&changed), &registry);
+    assert_eq!(differs, ["dsd_prefix_filter_blocklist".parse::<NodeId>().unwrap()]);
     let before = compose(&plan, &received, &approval(1), &catalog, &registry).unwrap();
-    assert!(crate::export::policy_differences(&plan, &before.plan, &catalog, &OperatorRegistry::native()).is_empty());
+    assert!(crate::export::node_differences(&plan, &before.plan, &every(&plan), &registry).is_empty());
 }
 
 /// The one-scope default program's catalog with a recipient directory: `primary`, `mrf`, `cluster_agent`, and two
@@ -2545,88 +2526,45 @@ fn an_emit_in_effect_delivers_to_its_recipients_that_remain_and_counts_what_the_
 }
 
 #[test]
-fn a_host_whose_programs_own_their_policy_refuses_a_policy_binding_and_accepts_facts_and_signals() {
+fn a_literal_equal_to_a_bindings_value_is_another_parameter_than_the_binding() {
     let registry = OperatorRegistry::native();
     let (_, plan, catalog) = one_scope_programs().remove(0);
-    let catalog = catalog.with_detached_programs();
 
-    // The bound export binds policy settings: refused at the first node that does, kept unmodified or not, since the
-    // rule is about what the author wrote. The message gives the value to write instead.
+    // The export binds the host's tags, a fact; an edit writes their value as a literal in its place. The node then
+    // does something else than the default program's: the literal never follows the host's tags.
     let bound = export(&plan, &metrics_scope(), &catalog, &BTreeMap::new()).unwrap();
-    let error = compose(
-        &plan,
-        &received_directly(bound.artifact),
-        &approval(1),
-        &catalog,
-        &registry,
-    )
-    .unwrap_err();
-    let ComposeError::PolicyBinding {
-        node,
-        binding,
-        value,
-        allowed,
-    } = &error
-    else {
-        panic!("{}", error);
-    };
-    assert_eq!(node.as_str(), "dsd_enrich");
-    assert_eq!(binding.as_str(), "dogstatsd.mapper.cache_size");
-    assert_eq!(value, &Some(json!(1000)));
-    assert!(allowed.iter().any(|name| name.as_str() == "host.tags"), "{:?}", allowed);
-    assert!(!allowed.iter().any(|name| name.as_str() == binding.as_str()));
-    let message = error.to_string();
-    assert!(
-        message.starts_with(
-            "`dsd_enrich` binds `dogstatsd.mapper.cache_size`, a native policy setting. A published program owns its \
-             policy: write the value itself (now `1000`; the detached export writes current values). Only facts and \
-             signals can be bound: `"
-        ),
-        "{}",
-        message
+    let tags = catalog
+        .binding(&"host.tags".parse().unwrap())
+        .and_then(|binding| binding.value.clone())
+        .unwrap_or_else(|| json!(["cloud_provider:example", "zone:a"]));
+    let mut document = serde_json::to_value(&bound.artifact).unwrap();
+    node(&mut document, "metrics")["params"]["tags"] = tags;
+    let edited = received_directly(PolicyArtifact::from_value(document).unwrap());
+    let composed = compose(&plan, &edited, &approval(1), &catalog, &registry).unwrap();
+    let host_tags = composed.correspondence.get(&"metrics".parse().unwrap()).unwrap();
+    assert_eq!(host_tags.kind, CorrespondenceKind::Modified);
+    assert_ne!(
+        crate::export::operation_hash(&composed.plan, &registry).unwrap(),
+        crate::export::operation_hash(&plan, &registry).unwrap()
     );
 
-    // The detached export binds facts and signals only: it composes, to the default program.
-    let detached = crate::export::export_as(
-        &plan,
-        &metrics_scope(),
-        &catalog,
-        &BTreeMap::new(),
-        ExportForm::Detached,
-        &OperatorRegistry::native(),
-    )
-    .unwrap();
+    // Unmodified, the export composes to the default program itself.
     let composed = compose(
         &plan,
-        &received_directly(detached.artifact),
+        &received_directly(bound.artifact),
         &approval(1),
         &catalog,
         &registry,
     )
     .unwrap();
-    assert_eq!(does(&composed.plan), does(&plan));
-
-    // Without the host's say-so, any binding is allowed, as the fixtures' own catalog shows.
-    let (_, plan, catalog) = one_scope_programs().remove(0);
-    let bound = export(&plan, &metrics_scope(), &catalog, &BTreeMap::new()).unwrap();
-    assert!(compose(
-        &plan,
-        &received_directly(bound.artifact),
-        &approval(1),
-        &catalog,
-        &registry
-    )
-    .is_ok());
+    assert_eq!((&composed.plan.nodes, &composed.plan.edges), (&plan.nodes, &plan.edges));
 }
 
 /// Returns what `plan` does with every record: the [operation hash](crate::export::operation_hash) of the plan without
-/// what does nothing as configured, as the detached export leaves it out, with the fixtures' policy settings as the
-/// literals.
+/// what does nothing as configured, as the detached export leaves it out.
 fn does(plan: &Plan) -> crate::canonical::PlanHash {
-    let catalog = crate::testing::default_program_catalog();
-    let literal = crate::export::policy_literals(&catalog);
     let registry = OperatorRegistry::native();
-    crate::export::operation_hash(&crate::export::eliminate(plan, &registry, &literal).plan, &registry).unwrap()
+    crate::export::operation_hash(&crate::export::eliminate(plan, &registry).plan, &registry).unwrap()
 }
 
 #[test]

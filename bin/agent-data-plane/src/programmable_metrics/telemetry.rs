@@ -12,8 +12,8 @@
 //! - [`InstallerTelemetry`] is what the installer publishes: the active generation, the active artifact's revision,
 //!   the live generations, the installations by outcome, the cut installations by how they ended and the refused
 //!   cancellations of cuts, and the rewrites applied in compiling the active generation, and the native metrics that
-//!   telemetry profiles say the installer records from the plan a generation runs (`MetricSource::BindingLength`,
-//!   `MatcherEntries`, `TagProjectionRules`, and `BindingChanges`).
+//!   telemetry profiles say the installer records from the plan a generation runs (`MetricSource::ListLength`,
+//!   `MatcherEntries`, `TagProjectionRules`, and `ParamChanges`).
 //! - [`LaneTelemetry`] publishes what the lanes of each slot measure of their own work, once a second, per
 //!   `component_id` and `lane`: the `plan_lane_*` series. Lanes are fixed at boot, so these series are bounded by the
 //!   lanes of each slot. A kernel of a slot on several lanes is accounted to `<region>.lane_<i>.<node>`, under the
@@ -46,20 +46,17 @@ use saluki_metric_kernels::{
 };
 use saluki_metric_plan::{
     compile::{Frame, RegionProgram, RewriteId, RewriteRecord, SlotId},
-    ir::{BindingName, Namespace, Node, NodeId, Plan, PortName},
+    ir::{Namespace, Node, NodeId, Plan, PortName},
     operators::{decode_tag_filter_rules, decode_tag_value_rules, KernelBuildContext, OperatorRegistry},
+    predicate::{Predicate, StringMatch},
     runtime::{
         kernel_accounting_name, kernel_accounting_path, PlanTelemetry, RegisterTelemetry, StateBudgets,
         StateLaneTelemetry, StateTelemetry,
     },
 };
 use saluki_metrics::{Counter, Gauge, MetricsBuilder};
-use serde_json::Value;
 
-use super::{
-    bindings,
-    telemetry_profiles::{native_telemetry, MetricSource, NativeMetric, NativeMetricKind, NativeTelemetry},
-};
+use super::telemetry_profiles::{native_telemetry, MetricSource, NativeMetric, NativeMetricKind, NativeTelemetry};
 
 /// The name of the gauge of the active generation's identifier.
 pub const PLAN_ACTIVE_GENERATION: &str = "plan_active_generation";
@@ -594,7 +591,7 @@ pub struct InstallerTelemetry {
     rewrites: Vec<(RewriteId, Gauge)>,
     native_gauges: BTreeMap<NativeKey, Gauge>,
     /// The node each native gauge the installer sets from a plan was last set for.
-    binding_gauge_nodes: BTreeMap<NativeKey, NodeId>,
+    plan_gauge_nodes: BTreeMap<NativeKey, NodeId>,
     native_counters: BTreeMap<NativeKey, Counter>,
     budget_granted: Gauge,
     budget_used: Gauge,
@@ -635,7 +632,7 @@ impl InstallerTelemetry {
             rewrites: Vec::new(),
             topology,
             native_gauges: BTreeMap::new(),
-            binding_gauge_nodes: BTreeMap::new(),
+            plan_gauge_nodes: BTreeMap::new(),
             native_counters: BTreeMap::new(),
             budget_granted: builder.register_gauge_with_tags(PLAN_RESOURCE_BUDGET_BYTES, [("state", "granted")]),
             budget_used: builder.register_gauge_with_tags(PLAN_RESOURCE_BUDGET_BYTES, [("state", "used")]),
@@ -729,41 +726,51 @@ impl InstallerTelemetry {
     }
 
     /// Sets the native gauges the installer records from the plan of a generation, as the generation is installed:
-    /// the length of a bound list (`BindingLength`), the entries a name matcher keeps for it (`MatcherEntries`), and
-    /// the rules a tag filterlist puts in effect (`TagProjectionRules`).
+    /// the length of a list a `split` matches names against (`ListLength`), the entries a name matcher keeps for it
+    /// (`MatcherEntries`), and the rules a tag filterlist puts in effect (`TagProjectionRules`). It also registers, at
+    /// zero, the native counters region hosts count on a node's ports (`PortEvents`), as a native component registers
+    /// its own when it is built: compiling folds a filter whose list is empty (R3), so no region counts its ports, and
+    /// the series would otherwise be missing while it does nothing.
     ///
     /// A gauge set before for a node the plan does not have is set to zero: a published program written from the
     /// detached export leaves out a filterlist with nothing in it and a tag filterlist with no rules, which is what an
     /// empty list and no rules imply, rather than keep the value of a generation that no longer runs.
-    pub fn set_binding_gauges(&mut self, plan: &Plan) {
+    pub fn set_plan_gauges(&mut self, plan: &Plan) {
         for node in &plan.nodes {
             let Some(native) = native_telemetry(&node.id, node.op.as_str()) else {
                 continue;
             };
             for metric in native.profile.metrics() {
                 let value = match metric.source {
-                    MetricSource::BindingLength(binding) => {
-                        bound_list(node, |name| name == binding).map(|list| list.len())
+                    MetricSource::ListLength => {
+                        intake_name_matches(node).map(|matches| matches.iter().map(|(values, _)| values.len()).sum())
                     }
-                    MetricSource::MatcherEntries { binding, prefixes } => {
-                        bound_list(node, |name| instance_of(name, binding)).map(|list| {
-                            let entries = list.iter().filter_map(Value::as_str);
-                            SortedSetMatcher::new(entries, prefixes).len()
-                        })
-                    }
+                    MetricSource::MatcherEntries { prefixes } => intake_name_matches(node).map(|matches| {
+                        let entries = matches
+                            .iter()
+                            .filter(|(_, prefix)| *prefix == prefixes)
+                            .flat_map(|(values, _)| values.iter().map(String::as_str));
+                        SortedSetMatcher::new(entries, prefixes).len()
+                    }),
                     MetricSource::TagProjectionRules => tag_projection_rule_count(node),
+                    MetricSource::PortEvents(_) => {
+                        if metric.kind == NativeMetricKind::Counter {
+                            self.native_counter(&native, metric);
+                        }
+                        None
+                    }
                     _ => None,
                 };
                 if let (Some(value), NativeMetricKind::Gauge) = (value, metric.kind) {
                     if let Some(gauge) = self.native_gauge(&native, metric) {
                         gauge.set(value as f64);
-                        self.binding_gauge_nodes
+                        self.plan_gauge_nodes
                             .insert(Self::native_key(&native, metric), node.id.clone());
                     }
                 }
             }
         }
-        for (key, node) in &self.binding_gauge_nodes {
+        for (key, node) in &self.plan_gauge_nodes {
             if plan.node(node).is_none() {
                 if let Some(gauge) = self.native_gauges.get(key) {
                     gauge.set(0.0);
@@ -772,7 +779,7 @@ impl InstallerTelemetry {
         }
     }
 
-    /// Registers, at zero, every counter of configuration changes (`BindingChanges`) the nodes of the boot plan keep,
+    /// Registers, at zero, every counter of configuration changes (`ParamChanges`) the nodes of the boot plan keep,
     /// as the native components register theirs when they are built: the series are reported before the first change.
     pub fn register_change_counters(&mut self, plan: &Plan) {
         for node in &plan.nodes {
@@ -780,8 +787,7 @@ impl InstallerTelemetry {
                 continue;
             };
             for metric in native.profile.metrics() {
-                if matches!(metric.source, MetricSource::BindingChanges(_)) && metric.kind == NativeMetricKind::Counter
-                {
+                if metric.source == MetricSource::ParamChanges && metric.kind == NativeMetricKind::Counter {
                     self.native_counter(&native, metric);
                 }
             }
@@ -789,22 +795,17 @@ impl InstallerTelemetry {
     }
 
     /// Counts a configuration change, after which `current` was lowered where `previous` was before: for each node of
-    /// `current` whose profile counts changes of some bindings (`BindingChanges`), once if the change changed the
-    /// value of any of them.
-    pub fn count_binding_changes(&mut self, previous: &Plan, current: &Plan) {
+    /// `current` whose profile counts changes of its parameters (`ParamChanges`), once if the change changed them.
+    pub fn count_param_changes(&mut self, previous: &Plan, current: &Plan) {
         for node in &current.nodes {
             let Some(native) = native_telemetry(&node.id, node.op.as_str()) else {
                 continue;
             };
-            let before = previous.node(&node.id).map(bound_values).unwrap_or_default();
-            let after = bound_values(node);
+            let changed = previous.node(&node.id).map(|before| &before.params) != Some(&node.params);
             for metric in native.profile.metrics() {
-                let MetricSource::BindingChanges(watched) = metric.source else {
+                if metric.source != MetricSource::ParamChanges {
                     continue;
-                };
-                let changed = watched
-                    .iter()
-                    .any(|binding| before.get(*binding) != after.get(*binding));
+                }
                 if changed && metric.kind == NativeMetricKind::Counter {
                     if let Some(counter) = self.native_counter(&native, metric) {
                         counter.increment(1);
@@ -858,42 +859,33 @@ fn tag_projection_rule_count(node: &Node) -> Option<usize> {
     Some(TagProjectionRules::new(&rules, value_rules).rule_count())
 }
 
-/// Returns the resolved value of every binding a node's parameters name, by binding name.
-fn bound_values(node: &Node) -> BTreeMap<String, Value> {
-    fn visit(value: &Value, found: &mut BTreeMap<String, Value>) {
-        match value {
-            Value::Object(members) => match (members.get("config"), members.get("resolved")) {
-                (Some(Value::String(binding)), Some(resolved)) => {
-                    found.insert(binding.clone(), resolved.clone());
-                }
-                _ => members.values().for_each(|value| visit(value, found)),
-            },
-            Value::Array(values) => values.iter().for_each(|value| visit(value, found)),
+/// Returns the values a `split`'s predicate matches the intake name against, each list with whether it matches by
+/// prefix, or `None` for a node that is not a `split` with a predicate it can read. A predicate in normal form writes a
+/// filterlist with nothing in it as a constant, which matches no values.
+fn intake_name_matches(node: &Node) -> Option<Vec<(Vec<String>, bool)>> {
+    fn visit(predicate: &Predicate, found: &mut Vec<(Vec<String>, bool)>) {
+        match predicate {
+            Predicate::IntakeName(matched) => found.extend(match matched {
+                StringMatch::Eq(value) => Some((vec![value.clone()], false)),
+                StringMatch::Prefix(value) => Some((vec![value.clone()], true)),
+                StringMatch::In(values) => Some((values.clone(), false)),
+                StringMatch::PrefixIn(values) => Some((values.clone(), true)),
+                StringMatch::Matches(set) => set.values.value().cloned().zip(set.prefix.value().copied()),
+            }),
+            Predicate::All(operands) | Predicate::Any(operands) => {
+                operands.iter().for_each(|operand| visit(operand, found))
+            }
+            Predicate::Not(operand) => visit(operand, found),
             _ => {}
         }
     }
-    let mut found = BTreeMap::new();
-    node.params.iter().for_each(|(_, value)| visit(value, &mut found));
-    found
-}
-
-/// Returns the resolved list of the first binding of a node's parameters whose name `matches`.
-fn bound_list(node: &Node, matches: impl Fn(&str) -> bool) -> Option<Vec<Value>> {
-    bound_values(node)
-        .into_iter()
-        .find(|(name, _)| matches(name))
-        .and_then(|(_, value)| match value {
-            Value::Array(values) => Some(values),
-            _ => None,
-        })
-}
-
-/// Returns `true` if the binding `name` is an instance of the registry binding `pattern`, which may be keyed.
-fn instance_of(name: &str, pattern: &str) -> bool {
-    name.parse::<BindingName>()
-        .ok()
-        .and_then(|name| bindings::lookup(&name))
-        .is_some_and(|(spec, _)| spec.name == pattern)
+    if node.op.as_str() != saluki_metric_plan::operators::names::SPLIT {
+        return None;
+    }
+    let predicate = serde_json::from_value::<Predicate>(node.params.get("predicate")?.clone()).ok()?;
+    let mut found = Vec::new();
+    visit(&predicate, &mut found);
+    Some(found)
 }
 
 #[cfg(test)]

@@ -49,8 +49,8 @@ pub(super) fn node_mut<'a>(value: &'a mut Value, id: &str) -> &'a mut Value {
 /// The default program with the listener filterlist set to `values`, a live change.
 fn filtered(values: &[&str]) -> Plan {
     edited(|value| {
-        node_mut(value, "dsd_prefix_filter_blocklist")["params"]["predicate"]["not"]["intake_name"]["matches"]
-            ["values"]["resolved"] = json!(values);
+        node_mut(value, "dsd_prefix_filter_blocklist")["params"]["predicate"] =
+            crate::testing::listener_filterlist(json!(values));
     })
 }
 
@@ -246,7 +246,7 @@ fn state_owner_and_output_changes_are_classified() {
 
     // A different aggregation width changes the state owner's time contract: a cut.
     let wider = edited(|value| {
-        node_mut(value, "dsd_agg")["params"]["window"]["resolved"] = json!("20s");
+        node_mut(value, "dsd_agg")["params"]["window"] = json!("20s");
     });
     let changes = diff(&boot_plan(), &wider, &registry);
     let aggregation = changes
@@ -293,7 +293,7 @@ fn kernel_reuse_keeps_every_kernel_whose_key_is_unchanged() {
     let frame = frame();
     let boot = compiled(&boot_plan(), &frame);
     let projected = edited(|value| {
-        node_mut(value, "dsd_tag_filterlist")["params"]["rules"]["resolved"] = json!([]);
+        node_mut(value, "dsd_tag_filterlist")["params"]["rules"] = json!([]);
     });
     let candidate = compiled(&projected, &frame);
     let slots = kernel_reuse(Some(&boot.programs), &candidate.programs);
@@ -868,7 +868,7 @@ fn a_change_of_aggregations_flush_interval_alone_keeps_its_instance() {
     // aggregation's isolation slot keeps its instance with new per-call parameters.
     let mut harness = Harness::new(InstallerConfig::default());
     let wider = edited(|value| {
-        node_mut(value, "dsd_agg")["params"]["flush_interval"]["resolved"] = json!("30s");
+        node_mut(value, "dsd_agg")["params"]["flush_interval"] = json!("30s");
     });
     let (_, actions) = harness.propose(wider);
     assert_eq!(

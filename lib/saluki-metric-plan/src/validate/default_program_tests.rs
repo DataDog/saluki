@@ -391,8 +391,11 @@ const COVERAGE: &[CoverageCheck] = &[
         assert_eq!(f.target("metrics_fanout.0"), "metrics_fanout_0.in");
         for group in 0..2 {
             let split = format!("metrics_routing_filter_{}", group);
-            let Predicate::Any(operands) = f.predicate(&split) else {
-                panic!("{} matches names or prefixes", split);
+            // A group with only prefixes, as the second has, is one match in normal form.
+            let operands = match f.predicate(&split) {
+                Predicate::Any(operands) => operands,
+                single @ Predicate::IntakeName(_) => vec![single],
+                other => panic!("{} matches names or prefixes: {:?}", split, other),
             };
             assert!(operands
                 .iter()
@@ -413,17 +416,17 @@ const COVERAGE: &[CoverageCheck] = &[
         assert!(Fixture::from_value(with_opaque_gateways()).report.is_valid());
     }),
     ("Multi-region failover gateway", |_| {
-        // Bound to the static enable flag, the live mirroring flag, and a live allowlist of raw names; an empty list
-        // forwards everything (see `the_gateways_forward_what_native_configuration_selects`).
+        // The enable flag and the live mirroring flag, and the allowlist of raw names as lowering writes it; an empty
+        // list forwards everything (see `the_gateways_forward_what_native_configuration_selects`).
         let forwards = |enabled: bool, mirroring: bool, allowlist: Value| {
-            let gateway = gateway(
-                "mrf_metrics_gateway",
-                &[
-                    ("multi_region_failover.enabled", json!(enabled)),
-                    ("multi_region_failover.metric_mirroring.enabled", json!(mirroring)),
-                    ("multi_region_failover.metric_mirroring.allowlist", allowlist),
-                ],
-            );
+            let gateway = gateway(json!({"all": [
+                {"flag": enabled},
+                {"flag": mirroring},
+                {"any": [
+                    {"is_empty": allowlist},
+                    {"name": {"matches": {"values": allowlist, "prefix": false}}},
+                ]},
+            ]}));
             [counter("requests.count"), counter("other")].map(|metric| gateway.forwards(&metric))
         };
         assert_eq!(forwards(true, true, json!([])), [true, true]);
@@ -432,13 +435,17 @@ const COVERAGE: &[CoverageCheck] = &[
         assert_eq!(forwards(true, false, json!(["requests.count"])), [false, false]);
     }),
     ("Autoscaling failover gateway", |f| {
-        // Bound to a startup list of raw names; an empty list forwards nothing, and only scalar series pass.
-        let empty = gateway("af_metrics_gateway", &[("autoscaling_failover.metrics", json!([]))]);
+        // A list of raw names, as lowering writes it; an empty list forwards nothing, and only scalar series pass.
+        let autoscaling = |metrics: Value| {
+            gateway(json!({"all": [
+                {"kind_in": ["counter", "rate", "gauge", "set"]},
+                {"flag": true},
+                {"name": {"matches": {"values": metrics, "prefix": false}}},
+            ]}))
+        };
+        let empty = autoscaling(json!([]));
         assert!(!empty.forwards(&counter("requests.count")));
-        let listed = gateway(
-            "af_metrics_gateway",
-            &[("autoscaling_failover.metrics", json!(["requests.count"]))],
-        );
+        let listed = autoscaling(json!(["requests.count"]));
         for metric in [
             counter("requests.count"),
             Metric::rate("requests.count", 1.0, std::time::Duration::from_secs(10)),
@@ -544,42 +551,10 @@ impl Gateway {
     }
 }
 
-/// Returns the predicate of the fixture's node `id`, with the resolved value of each given binding replaced, as if
-/// native configuration had those values.
+/// Returns the predicate `predicate`, written with literals as lowering writes a gateway's for some native
+/// configuration, compiled for evaluation.
 #[track_caller]
-fn gateway(id: &str, values: &[(&str, Value)]) -> Gateway {
-    fn rebind(value: &mut Value, binding: &str, resolved: &Value, found: &mut usize) {
-        match value {
-            Value::Object(members) => {
-                if members.get("config").and_then(Value::as_str) == Some(binding) {
-                    members.insert("resolved".to_string(), resolved.clone());
-                    *found += 1;
-                    return;
-                }
-                members
-                    .values_mut()
-                    .for_each(|member| rebind(member, binding, resolved, found));
-            }
-            Value::Array(elements) => elements
-                .iter_mut()
-                .for_each(|element| rebind(element, binding, resolved, found)),
-            _ => {}
-        }
-    }
-
-    let fixture = serde_json::from_str::<Value>(DEFAULT_PROGRAM_JSON).unwrap();
-    let node = fixture["nodes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|node| node["id"] == id)
-        .unwrap_or_else(|| panic!("no node `{}`", id));
-    let mut predicate = node["params"]["predicate"].clone();
-    for (binding, resolved) in values {
-        let mut found = 0;
-        rebind(&mut predicate, binding, resolved, &mut found);
-        assert!(found > 0, "`{}` does not use the binding `{}`", id, binding);
-    }
+fn gateway(predicate: Value) -> Gateway {
     let predicate = serde_json::from_value::<Predicate>(predicate).unwrap();
     Gateway(predicate.compile(&NoBindings).unwrap())
 }
@@ -593,13 +568,10 @@ fn the_gateways_forward_what_native_configuration_selects() {
     // Endpoint routing: the intake name is one of the group's names, or starts with one of its prefixes; an empty
     // group forwards nothing.
     let routing = |names: Value, prefixes: Value| {
-        gateway(
-            "metrics_routing_filter_0",
-            &[
-                ("metrics_endpoint_routing.group.0123456789abcdef.names", names),
-                ("metrics_endpoint_routing.group.0123456789abcdef.prefixes", prefixes),
-            ],
-        )
+        gateway(json!({"any": [
+            {"intake_name": {"matches": {"values": names, "prefix": false}}},
+            {"intake_name": {"matches": {"values": prefixes, "prefix": true}}},
+        ]}))
     };
     let metrics = || {
         [

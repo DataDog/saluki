@@ -61,9 +61,11 @@ pub enum Liveness {
     Startup,
 }
 
-/// What a binding's value is to a program: something true of the host, a state the program reacts to, or a choice of
-/// what to do with metrics.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
+/// What a binding's value is to a program: something true of the host, or a state the program reacts to.
+///
+/// What to do with metrics is never a binding: a program writes its policy as literals, the default program included,
+/// whose lowering writes native policy settings as their values.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BindingClass {
     /// Something true of the host or its resources that a program does not choose, such as the host's tags.
@@ -71,13 +73,6 @@ pub enum BindingClass {
 
     /// A live operational state a program reacts to, such as whether a failover is in progress.
     Signal,
-
-    /// What to do with metrics, such as a filter list or an aggregation's window: a program that replaces the host's
-    /// default program owns it, and writes it as a literal.
-    ///
-    /// The default, for a catalog document that does not say.
-    #[default]
-    Policy,
 }
 
 impl BindingClass {
@@ -86,7 +81,6 @@ impl BindingClass {
         match self {
             Self::Fact => "fact",
             Self::Signal => "signal",
-            Self::Policy => "policy",
         }
     }
 }
@@ -102,9 +96,7 @@ pub struct CatalogBinding {
     /// Whether the value can change while the process runs.
     pub liveness: Liveness,
 
-    /// What the value is to a program: a fact, a signal, or a policy setting. A document that leaves it out declares a
-    /// policy setting.
-    #[serde(default)]
+    /// What the value is to a program: a fact or a signal.
     pub class: BindingClass,
 
     /// The binding's current value, written as a parameter of its type is, if the catalog carries it.
@@ -206,23 +198,6 @@ pub trait Catalog {
         None
     }
 
-    /// Returns `true` if a program composed for the host binds facts and signals only, never a policy setting, which a
-    /// published program owns and writes as a literal ([`BindingClass::Policy`]); composition then refuses an artifact
-    /// that binds one.
-    ///
-    /// The default allows any binding.
-    fn detached_programs(&self) -> bool {
-        false
-    }
-
-    /// Returns the bindings the host declares as facts or signals, in name order: what a program for a host whose
-    /// programs bind facts and signals only may bind.
-    ///
-    /// The default lists none.
-    fn facts_and_signals(&self) -> Vec<BindingName> {
-        Vec::new()
-    }
-
     /// Returns the schema of the given delivery host's parameters, if the host declares it.
     ///
     /// Output bindings, host settings, and recipients name a delivery host; validation checks that their parameters
@@ -274,8 +249,8 @@ impl BindingResolver for dyn Catalog + '_ {
 ///
 /// Serialized as an object with these members, each of which may be left out when empty: `outputs`, from output ID to
 /// the output's `accepts`, `fingerprint`, and `recipients`; `bindings`, from binding name to the binding's `type` (a
-/// [`ValueType`]), `liveness` (`live` or `startup`), `class` (`fact`, `signal`, or `policy`, which is what a binding
-/// without one is), and optional `value`; `scopes`, from scope name to the scope's `inputs` and `exits`, each a map
+/// [`ValueType`]), `liveness` (`live` or `startup`), `class` (`fact` or `signal`), and optional
+/// `value`; `scopes`, from scope name to the scope's `inputs` and `exits`, each a map
 /// from name to port type; `recipients`, the host's recipient directory, from recipient name to the entry's
 /// `recipients`, `host`, `endpoint`, and `source`; `state_budget`, the host's state budget; and `single_aggregation`,
 /// `true` when the host runs at most one aggregation per program. A scope without exits is written as the map of its
@@ -306,9 +281,6 @@ pub struct MemoryCatalog {
 
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     recipients: BTreeMap<RecipientName, CatalogRecipient>,
-
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    detached_programs: bool,
 }
 
 /// What a catalog declares about one scope: the port types of its inputs and of its exits.
@@ -399,9 +371,9 @@ impl MemoryCatalog {
         self
     }
 
-    /// Declares a policy setting's configuration binding, without its value.
+    /// Declares a fact's configuration binding, without its value.
     pub fn with_binding(self, name: BindingName, ty: ParamType, liveness: Liveness) -> Self {
-        self.with_classified_binding(name, ty, liveness, BindingClass::Policy)
+        self.with_classified_binding(name, ty, liveness, BindingClass::Fact)
     }
 
     /// Declares a configuration binding of the given class, without its value.
@@ -440,12 +412,6 @@ impl MemoryCatalog {
     /// Declares the host's state budget: the most contexts its state owners hold together.
     pub fn with_state_budget(mut self, capacity: u64) -> Self {
         self.state_budget = Some(capacity);
-        self
-    }
-
-    /// Declares that programs bind facts and signals only ([`Catalog::detached_programs`]).
-    pub fn with_detached_programs(mut self) -> Self {
-        self.detached_programs = true;
         self
     }
 
@@ -515,18 +481,6 @@ impl Catalog for MemoryCatalog {
             .find(|(_, output)| !output.recipients.is_empty() && output.recipients == recipients)
             .map(|(id, _)| id.clone())
     }
-
-    fn detached_programs(&self) -> bool {
-        self.detached_programs
-    }
-
-    fn facts_and_signals(&self) -> Vec<BindingName> {
-        self.bindings
-            .iter()
-            .filter(|(_, binding)| binding.class != BindingClass::Policy)
-            .map(|(name, _)| name.clone())
-            .collect()
-    }
 }
 
 #[cfg(test)]
@@ -542,7 +496,7 @@ mod tests {
                                      "fingerprint": format!("sha256:{}", "0".repeat(64))}},
             "bindings": {
                 "test.names": {"type": {"type": "list", "element": {"type": "string"}}, "liveness": "live",
-                               "class": "policy", "value": ["a.b", "c.d"]},
+                               "class": "fact", "value": ["a.b", "c.d"]},
                 "test.flag": {"type": {"type": "bool"}, "liveness": "startup", "class": "signal", "value": true},
                 "test.unknown": {"type": {"type": "bool"}, "liveness": "live", "class": "fact"}
             },
@@ -577,7 +531,7 @@ mod tests {
             .unwrap()
             .recipients
             .is_empty());
-        assert_eq!(names.class, BindingClass::Policy);
+        assert_eq!(names.class, BindingClass::Fact);
         assert_eq!(
             catalog.binding(&"test.flag".parse().unwrap()).unwrap().class,
             BindingClass::Signal
@@ -587,14 +541,10 @@ mod tests {
         assert_eq!(endpoint.recipients.len(), 2);
         assert!(catalog.recipient(&"mrf".parse().unwrap()).is_none());
 
-        // A binding without a class is a policy setting's, as documents written before classes say.
-        let mut older = document();
-        older["bindings"]["test.flag"].as_object_mut().unwrap().remove("class");
-        let read: MemoryCatalog = serde_json::from_value(older).unwrap();
-        assert_eq!(
-            read.binding(&"test.flag".parse().unwrap()).unwrap().class,
-            BindingClass::Policy
-        );
+        // A binding says what it is: a policy setting is never a binding.
+        let mut policy = document();
+        policy["bindings"]["test.flag"]["class"] = json!("policy");
+        assert!(serde_json::from_value::<MemoryCatalog>(policy).is_err());
 
         // Every member is checked.
         let mut unknown = document();

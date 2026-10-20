@@ -886,13 +886,13 @@
     if (status.active_artifact) {
       const policy = program && program.native_policy === "not_applied" ? " (native policy settings not applied)" : "";
       text = `Running: published revision ${status.active_artifact.revision ?? "?"}${policy}`;
-      if (differs.length) text = `${text} · ${plural(differs.length, "native setting")} differ`;
+      if (differs.length) text = `${text} · ${plural(differs.length, "default-program node")} differ`;
       kind = "artifact";
       title = `Generation ${generation}. Active artifact ${status.active_artifact.artifact_hash || ""}. A published `
         + "program owns its policy: a change of a native policy setting reaches the default program only, which runs again once the program is "
         + "revoked."
-        + (differs.length ? ` Native settings the program does not run as the default program would: `
-          + `${differs.join(", ")}.` : "");
+        + (differs.length ? ` Nodes of the default program whose native settings the program does not run as they `
+          + `are now: ${differs.join(", ")}.` : "");
       // Flags that ADP installed the artifact although it changed since the approval: a stale base or review.
       const stale = [status.stale_base ? "stale base" : null, status.stale_review ? "stale review" : null]
         .filter(Boolean);
@@ -1684,7 +1684,9 @@
     if (program && program.runs === "published") {
       note = "A published program runs: it owns its policy, so a native policy setting changes the default program "
         + "only, which runs again when the program is revoked. Failover is a signal, which the program reads live.";
-      if (program.differs && program.differs.length) note += ` Differing now: ${program.differs.join(", ")}.`;
+      if (program.differs && program.differs.length) {
+        note += ` Default-program nodes differing now: ${program.differs.join(", ")}.`;
+      }
     }
     ui.nativeNote.textContent = note;
   }

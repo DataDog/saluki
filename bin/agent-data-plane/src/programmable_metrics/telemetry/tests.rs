@@ -1522,7 +1522,7 @@ experimental: {metrics_endpoint_routing: {metric_allowlist: {https://b.example.c
 }
 
 #[test]
-fn a_binding_gauge_of_a_node_the_running_plan_leaves_out_reads_zero() {
+fn a_plan_gauge_of_a_node_the_running_plan_leaves_out_reads_zero() {
     use saluki_metric_plan::ir::Plan;
 
     let recorder = TestRecorder::default();
@@ -1533,7 +1533,7 @@ fn a_binding_gauge_of_a_node_the_running_plan_leaves_out_reads_zero() {
 
     // The default program's filterlist has one entry, and its tag filterlist two rules (a tag rule and a value rule).
     let plan = Plan::from_json(saluki_metric_plan::testing::DEFAULT_PROGRAM_JSON).unwrap();
-    telemetry.set_binding_gauges(&plan);
+    telemetry.set_plan_gauges(&plan);
     let reported = recorded(&recorder);
     assert_eq!(value(&reported, "metric_filterlist_size", &prefix_filter), "gauge 1");
     assert_eq!(value(&reported, "tag_filterlist_size", &tag_filterlist), "gauge 2");
@@ -1544,13 +1544,13 @@ fn a_binding_gauge_of_a_node_the_running_plan_leaves_out_reads_zero() {
     without
         .nodes
         .retain(|node| !["dsd_prefix_filter_blocklist", "dsd_tag_filterlist"].contains(&node.id.local().as_str()));
-    telemetry.set_binding_gauges(&without);
+    telemetry.set_plan_gauges(&without);
     let reported = recorded(&recorder);
     assert_eq!(value(&reported, "metric_filterlist_size", &prefix_filter), "gauge 0");
     assert_eq!(value(&reported, "tag_filterlist_size", &tag_filterlist), "gauge 0");
 
     // Back, they report their values again.
-    telemetry.set_binding_gauges(&plan);
+    telemetry.set_plan_gauges(&plan);
     let reported = recorded(&recorder);
     assert_eq!(value(&reported, "metric_filterlist_size", &prefix_filter), "gauge 1");
 }

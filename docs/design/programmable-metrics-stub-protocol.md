@@ -76,14 +76,17 @@ Request body:
 - A payload whose artifact composes to a plan that does what the running plan does **adopts** the running generation
   (detached programs, phase 2): its config is acknowledged `active` with the generation ID already running, no
   generation is created, and `active_artifact` and `program` name it from then on. Plans are compared by what their
-  nodes do, with every binding written as its value, so a detached program's literals adopt the generation of the
-  default program that binds them, and a later change of a native policy setting creates no generation. Revoking it
-  hands that generation back to the default program the same way, so an unmodified export is published and revoked
+  nodes do: a parameter left out and its default are the same, and so are two sets written in another order, but a
+  literal and a binding never are. The default program writes native policy settings as literals, so a later change of
+  one, which a published program does not follow, creates no generation while it runs. Revoking it hands that
+  generation back to the default program the same way, so a program equal to the plan running is published and revoked
   without a generation of its own.
 - `status.program` (additive, detached programs): `{"runs": "default" | "published", "native_policy": "applied" |
-  "not_applied", "differs": ["<binding>", ...]}`, left out while no generation is active. A published program owns its
-  policy settings, so native ones are not applied to it; `differs` lists the native policy settings, by binding, whose
-  current value the running program does not run as the default program would (none for the default program).
+  "not_applied", "differs": ["<node>", ...]}`, left out while no generation is active. A published program owns its
+  policy settings, so native ones are not applied to it; `differs` lists the nodes of the default program, by name,
+  whose parameters come from native policy settings and that the running program does not run as the default program
+  writes them now (none for the default program), such as `dsd_prefix_filter_blocklist` after `metric_filterlist`
+  changes (version 2's step V3; before, it listed binding names).
 - `status.stale_review` is `true` when the active artifact's `approved_against.active_plan_hash` (section 2) differs
   from the active plan hash it was prepared against, or, for a delivery that acknowledged the current state, from the
   active plan hash when it was delivered. It was added after the first version of this contract, as an
