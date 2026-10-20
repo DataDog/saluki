@@ -4,6 +4,7 @@ use std::{fmt, time::Instant};
 
 use saluki_error::GenericError;
 
+use super::subregion::SubRegionKey;
 use crate::{
     execution::{Budget, DrainPolicy, Progress},
     topology::EventsBuffer,
@@ -187,6 +188,30 @@ pub trait RegionDriver: Send + 'static {
     ///
     /// The default does nothing.
     fn publish_telemetry(&mut self) {}
+
+    /// Returns the sub-regions of its component that this driver writes to, through their internal exits
+    /// ([`ExitSink::sub_region_exit`]), in any order.
+    ///
+    /// A region whose host has sub-regions ([`RegionHostBuilder::with_sub_regions`]) holds a sender to the input of
+    /// each sub-region its driver lists, and a sub-region runs while anything holds one: once no driver of the component
+    /// lists it, and no control message that started it is still being acknowledged, its input ends, and it finishes
+    /// and stops. A driver lists every sub-region that a live generation of its programs routes to, and lists a
+    /// sub-region before it writes to it.
+    ///
+    /// The host reads this after every control message, before it acknowledges the message, and connects to every
+    /// sub-region listed that it is not connected to yet, which must run: one that the message started, or one that
+    /// still runs because another driver lists it. A sub-region listed that does not run fails the component. The host
+    /// reads it again after [`publish_telemetry`][Self::publish_telemetry] and after a recovery from a panic, and
+    /// disconnects from every sub-region no longer listed once it has sent everything the driver wrote. The list may
+    /// therefore grow only in [`control`][Self::control], and shrink only there, in `publish_telemetry`, and in
+    /// [`reset_after_panic`][Self::reset_after_panic]: where a driver releases the generations that retired.
+    ///
+    /// The default lists none.
+    ///
+    /// [`RegionHostBuilder::with_sub_regions`]: crate::execution::RegionHostBuilder::with_sub_regions
+    fn sub_region_routes(&self) -> &[SubRegionKey] {
+        &[]
+    }
 }
 
 /// The context of one call from a region host into its driver.
@@ -262,13 +287,24 @@ impl fmt::Display for ExitId {
 /// each event to the lane that owns its key, keeps its lane: [`drain_routed`][Self::drain_routed] returns it, and a
 /// host whose exits lead to components with one lane each may ignore it.
 ///
+/// # Internal exits
+///
+/// A region whose component has sub-regions ([`with_sub_regions`][Self::with_sub_regions]) also has an **internal
+/// exit** per sub-region, numbered past its exits: the internal exit of sub-region `k` is exit `exit_count + k`
+/// ([`sub_region_exit`][Self::sub_region_exit]). A buffer written to one goes to the sub-region's input, in the order
+/// it was written among everything else the call wrote. A lane named for an internal exit
+/// ([`emit_to_lane`][Self::emit_to_lane]) is kept, for sub-regions that run on lanes later, and ignored while each
+/// runs on one.
+///
 /// # Panics
 ///
-/// Writing to an exit that does not exist is a bug in the driver, and panics. The host runs drivers under
-/// supervision, so such a panic is handled like any other driver panic.
+/// Writing to an exit that does not exist is a bug in the driver, and panics: past the region's exits in a sink without
+/// internal exits, or past the last exit an identifier can name. The host runs drivers under supervision, so such a
+/// panic is handled like any other driver panic.
 #[derive(Debug)]
 pub struct ExitSink {
     exit_count: usize,
+    sub_regions: bool,
     buffers: Vec<(ExitId, Option<u16>, EventsBuffer)>,
 }
 
@@ -277,13 +313,48 @@ impl ExitSink {
     pub fn new(exit_count: usize) -> Self {
         Self {
             exit_count,
+            sub_regions: false,
             buffers: Vec::new(),
         }
     }
 
-    /// Returns the number of exits.
+    /// Creates an empty sink for a region with `exit_count` exits, and an internal exit per sub-region of its
+    /// component (see [Internal exits](#internal-exits)).
+    pub fn with_sub_regions(exit_count: usize) -> Self {
+        Self {
+            sub_regions: true,
+            ..Self::new(exit_count)
+        }
+    }
+
+    /// Returns the number of exits, not counting internal exits.
     pub fn exit_count(&self) -> usize {
         self.exit_count
+    }
+
+    /// Returns the internal exit of the sub-region `key`: exit `exit_count + key`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the sink has no internal exits, or if the exit's number is past the last an [`ExitId`] can name. The
+    /// host starts no sub-region whose internal exit it cannot name.
+    pub fn sub_region_exit(&self, key: SubRegionKey) -> ExitId {
+        assert!(
+            self.sub_regions,
+            "region wrote to sub-region {} but its component has no sub-regions",
+            key
+        );
+        internal_exit(self.exit_count, key).unwrap_or_else(|| {
+            panic!(
+                "region wrote to sub-region {}, whose internal exit is past the last exit an identifier names",
+                key
+            )
+        })
+    }
+
+    /// Returns the sub-region whose internal exit `exit` is, or `None` if `exit` is one of the region's exits.
+    pub fn sub_region_of(&self, exit: ExitId) -> Option<SubRegionKey> {
+        sub_region_of(self.exit_count, exit)
     }
 
     /// Writes `buffer` to `exit`, after everything already written.
@@ -314,7 +385,7 @@ impl ExitSink {
 
     fn push(&mut self, exit: ExitId, lane: Option<u16>, buffer: EventsBuffer) {
         assert!(
-            exit.get() < self.exit_count,
+            exit.get() < self.exit_count || self.sub_regions,
             "region wrote to exit {} but has only {} exits",
             exit,
             self.exit_count
@@ -353,6 +424,24 @@ impl ExitSink {
     pub fn clear(&mut self) {
         self.buffers.clear();
     }
+}
+
+/// Returns the internal exit of sub-region `key` of a region with `exit_count` exits, or `None` if an [`ExitId`] cannot
+/// name it.
+pub(super) fn internal_exit(exit_count: usize, key: SubRegionKey) -> Option<ExitId> {
+    exit_count
+        .checked_add(usize::from(key.get()))
+        .and_then(|index| u16::try_from(index).ok())
+        .map(ExitId::new)
+}
+
+/// Returns the sub-region whose internal exit `exit` is, in a region with `exit_count` exits, or `None` if `exit` is
+/// one of the region's exits.
+pub(super) fn sub_region_of(exit_count: usize, exit: ExitId) -> Option<SubRegionKey> {
+    exit.get()
+        .checked_sub(exit_count)
+        .and_then(|key| u16::try_from(key).ok())
+        .map(SubRegionKey::new)
 }
 
 /// The driver method a panic happened in.

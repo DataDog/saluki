@@ -66,5 +66,6 @@ pub use self::kernel::{
 mod region;
 pub use self::region::{
     lanes, ExitId, ExitSink, LaneContext, LaneSplit, LaneStats, PanicOutcome, PanicSite, RegionDriver, RegionFailure,
-    RegionHostBuilder, RegionPanic, RegionTurn,
+    RegionHostBuilder, RegionPanic, RegionParts, RegionTurn, SubRegionKey, SubRegionPart, SubRegionSpec,
+    SubRegionSplit,
 };

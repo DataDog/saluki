@@ -8,6 +8,10 @@
 //!   batches, sends what the driver writes to the region's exits, runs the driver's timers, answers liveness probes,
 //!   applies control messages, paces telemetry, and supervises every call into the driver.
 //!
+//! A region component may also run **sub-regions** beside its own lanes: tasks that each run another region of the
+//! program, fed by the component's other regions through internal exits, started by control messages and retired once
+//! nothing routes to them (see [`SubRegionSpec`] and [`RegionHostBuilder::with_sub_regions`]).
+//!
 //! A region is controlled through its [control mailbox][crate::execution::control]: a controller, such as an installer
 //! preparing a new generation of the program, sends messages with a
 //! [`ControlSender`][crate::execution::control::ControlSender] without ever blocking on the region, and awaits each
@@ -31,6 +35,9 @@ pub use self::host::RegionHostBuilder;
 
 pub mod lanes;
 pub use self::lanes::{LaneContext, LaneSplit, LaneStats};
+
+mod subregion;
+pub use self::subregion::{RegionParts, SubRegionKey, SubRegionPart, SubRegionSpec, SubRegionSplit};
 
 #[cfg(test)]
 mod tests;

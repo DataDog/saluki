@@ -7,6 +7,7 @@
 
 use std::{
     collections::VecDeque,
+    fmt,
     num::{NonZeroU16, NonZeroUsize},
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -735,10 +736,16 @@ async fn start(setup: Setup, mailbox: ControlMailbox<Command>, driver: ScriptedD
         mailbox,
         driver,
     )
-    .expect("exits are valid")
-    .with_turn_budget(setup.turn_budget)
-    .with_lane_admission(setup.admission)
-    .with_lane_stats(setup.stats);
+    .expect("exits are valid");
+    start_built(setup, builder).await
+}
+
+/// Runs the region host `builder` builds, given the rest of `setup`, as [`start`] does.
+async fn start_built<D: RegionDriver>(setup: Setup, builder: RegionHostBuilder<D>) -> Running {
+    let builder = builder
+        .with_turn_budget(setup.turn_budget)
+        .with_lane_admission(setup.admission)
+        .with_lane_stats(setup.stats);
     let transform = builder
         .build(BuildContext::test_transform(REGION_ID))
         .await
@@ -843,10 +850,18 @@ where
         |_: &BuildContext| Err(generic_error!("a region with lanes builds its drivers per lane")),
     )
     .expect("exits are valid")
-    .with_turn_budget(setup.turn_budget)
-    .with_lanes(NonZeroU16::new(lanes).expect("lanes"), move |_, lane| Ok(driver(lane)))
-    .with_lane_admission(setup.admission)
-    .with_lane_stats(setup.stats);
+    .with_lanes(NonZeroU16::new(lanes).expect("lanes"), move |_, lane| Ok(driver(lane)));
+    start_laned_built(setup, builder).await
+}
+
+/// Runs the coordinator of the region host with lanes `builder` builds, given the rest of `setup`, as [`start_laned`]
+/// does.
+async fn start_laned_built<D: RegionDriver>(setup: Setup, builder: RegionHostBuilder<D>) -> LanedRunning {
+    let lanes = builder.lanes().get();
+    let builder = builder
+        .with_turn_budget(setup.turn_budget)
+        .with_lane_admission(setup.admission)
+        .with_lane_stats(setup.stats);
     let host = match builder.build_host(&BuildContext::test_transform(REGION_ID)) {
         Ok(BuiltHost::Laned(host)) => host,
         Ok(BuiltHost::One(_)) => panic!("a region with {} lanes builds a host with lanes", lanes),
@@ -4079,4 +4094,558 @@ proptest! {
             prop_assert_eq!(of(&case.channels[0]), of(&case.channels[1]));
         }
     }
+}
+
+// Sub-regions.
+
+/// What the drivers of a region with sub-regions did, in order, across every task of the region.
+#[derive(Clone, Default)]
+struct SubLog(Arc<Mutex<Vec<String>>>);
+
+impl SubLog {
+    fn push(&self, entry: String) {
+        self.0.lock().unwrap().push(entry);
+    }
+
+    fn entries(&self) -> Vec<String> {
+        self.0.lock().unwrap().clone()
+    }
+
+    fn contains(&self, entry: &str) -> bool {
+        self.entries().iter().any(|logged| logged == entry)
+    }
+
+    /// Returns the position of `entry` in the log, failing the test if it is not there.
+    fn position(&self, entry: &str) -> usize {
+        let entries = self.entries();
+        entries
+            .iter()
+            .position(|logged| logged == entry)
+            .unwrap_or_else(|| panic!("'{}' is not logged: {:?}", entry, entries))
+    }
+}
+
+/// The control messages of the drivers of a region with sub-regions.
+#[derive(Debug)]
+enum Plan {
+    /// Gives the region's own lanes routes to the sub-regions `main` names, and starts each of `sub_regions`, named,
+    /// with routes of its own, as a preparation does.
+    Prepare {
+        main: Vec<u16>,
+        sub_regions: Vec<(u16, &'static str, Vec<u16>)>,
+    },
+
+    /// The part for one region: its routes from now on.
+    Routes(Vec<u16>),
+
+    /// Drops the routes of every region, as a release of the last generation that has the sub-regions does.
+    ReleaseAll,
+
+    /// Recorded by every region that runs.
+    Note(&'static str),
+
+    /// For one sub-region alone.
+    For(u16, Box<Plan>),
+
+    /// Starts or stops accepting input.
+    Accept(bool),
+
+    /// Rejected by the region that receives it.
+    Reject,
+}
+
+fn keys(keys: &[u16]) -> Vec<SubRegionKey> {
+    keys.iter().copied().map(SubRegionKey::new).collect()
+}
+
+impl SubRegionSplit for Plan {
+    fn split_sub_regions(self, running: &[SubRegionKey]) -> RegionParts<Self> {
+        let to_running = |part: &dyn Fn() -> Plan| {
+            running
+                .iter()
+                .map(|key| SubRegionPart::Running(*key, part()))
+                .collect::<Vec<_>>()
+        };
+        match self {
+            Self::Prepare { main, sub_regions } => RegionParts {
+                main: Some(Self::Routes(main)),
+                sub_regions: sub_regions
+                    .into_iter()
+                    .map(|(key, name, routes)| {
+                        let spec = SubRegionSpec {
+                            key: SubRegionKey::new(key),
+                            name: name.to_string(),
+                            input_buffers: NonZeroUsize::MIN,
+                        };
+                        SubRegionPart::Start(spec, Self::Routes(routes))
+                    })
+                    .collect(),
+            },
+            Self::ReleaseAll => RegionParts {
+                main: Some(Self::Routes(Vec::new())),
+                sub_regions: to_running(&|| Self::Routes(Vec::new())),
+            },
+            Self::Note(label) => RegionParts {
+                main: Some(Self::Note(label)),
+                sub_regions: to_running(&|| Self::Note(label)),
+            },
+            Self::For(key, part) => RegionParts {
+                main: None,
+                sub_regions: vec![SubRegionPart::Running(SubRegionKey::new(key), *part)],
+            },
+            other => RegionParts::main(other),
+        }
+    }
+}
+
+impl LaneSplit for Plan {
+    fn split(self, lanes: u16) -> Result<Vec<Self>, Self> {
+        match self {
+            Self::Routes(routes) => Ok((0..lanes).map(|_| Self::Routes(routes.clone())).collect()),
+            Self::Note(label) => Ok((0..lanes).map(|_| Self::Note(label)).collect()),
+            other => Err(other),
+        }
+    }
+}
+
+/// A driver of a region with sub-regions: it writes every batch it receives, whole, to the first sub-region it routes
+/// to, or to exit 0 if it routes to none, and writes one event named after itself (`<name>.final`) the same way when
+/// it finishes. It records every call in a log shared by every task of the region. A sub-region's driver panics on an
+/// event named `panic`, and fails its region when it does.
+struct SubDriver {
+    name: String,
+    log: SubLog,
+    routes: Vec<SubRegionKey>,
+    accepting: bool,
+    panics: bool,
+}
+
+impl SubDriver {
+    fn new(name: impl Into<String>, log: &SubLog) -> Self {
+        Self {
+            name: name.into(),
+            log: log.clone(),
+            routes: Vec::new(),
+            accepting: true,
+            panics: false,
+        }
+    }
+
+    fn record(&self, what: impl fmt::Display) {
+        self.log.push(format!("{} {}", self.name, what));
+    }
+
+    fn send(&self, exits: &mut ExitSink, buffer: EventsBuffer) {
+        match self.routes.first() {
+            Some(key) => exits.emit(exits.sub_region_exit(*key), buffer),
+            None => exits.emit(ExitId::new(0), buffer),
+        }
+    }
+
+    fn final_event(&self) -> &'static str {
+        match self.name.as_str() {
+            "main" => "main.final",
+            "x" => "x.final",
+            "y" => "y.final",
+            _ => "final",
+        }
+    }
+}
+
+impl RegionDriver for SubDriver {
+    type Control = Plan;
+
+    fn accepts_input(&self) -> bool {
+        self.accepting
+    }
+
+    fn process(&mut self, _turn: &mut RegionTurn<'_>, batch: EventsBuffer, exits: &mut ExitSink) -> Progress {
+        let names = names(&batch);
+        self.record(format!("process {}", names.join(",")));
+        assert!(
+            !(self.panics && names.iter().any(|name| name == "panic")),
+            "boom in process"
+        );
+        self.send(exits, batch);
+        Progress::Done
+    }
+
+    fn control(
+        &mut self, _turn: &mut RegionTurn<'_>, message: Plan, _exits: &mut ExitSink,
+    ) -> Result<(), RegionFailure> {
+        match message {
+            Plan::Routes(routes) => {
+                self.record(format!("routes {:?}", routes));
+                self.routes = keys(&routes);
+            }
+            Plan::Note(label) => self.record(format!("note {}", label)),
+            Plan::Accept(accepting) => self.accepting = accepting,
+            Plan::Reject => return Err(RegionFailure::new(generic_error!("Generation 7 is not prepared."))),
+            other => panic!("{} received an unsplit message: {:?}", self.name, other),
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self, _turn: &mut RegionTurn<'_>, exits: &mut ExitSink, policy: DrainPolicy) -> Progress {
+        self.record(format!("finish {:?}", policy));
+        self.send(exits, batch(&[self.final_event()]));
+        Progress::Done
+    }
+
+    fn reset_after_panic(&mut self, _panic: &RegionPanic) -> PanicOutcome {
+        PanicOutcome::Fail(generic_error!("The sub-region has no panic budget."))
+    }
+
+    fn sub_region_routes(&self) -> &[SubRegionKey] {
+        &self.routes
+    }
+}
+
+/// Returns the factory of the drivers of sub-regions, which records each driver it builds, makes each panic on an
+/// event named `panic`, and fails to build one named `bad`.
+fn sub_factory(log: &SubLog) -> impl Fn(&SubRegionSpec, &Plan) -> Result<SubDriver, GenericError> + Send + Sync {
+    let log = log.clone();
+    move |spec, first| {
+        if spec.name == "bad" {
+            return Err(generic_error!("No kernels for sub-region 'bad'."));
+        }
+        log.push(format!("{} built from {:?}", spec.name, first));
+        let mut driver = SubDriver::new(spec.name.clone(), &log);
+        driver.panics = true;
+        Ok(driver)
+    }
+}
+
+/// Builds a region host without lanes, with sub-regions, whose own driver is named `main`.
+fn sub_host(setup: &Setup, mailbox: ControlMailbox<Plan>, log: &SubLog) -> RegionHostBuilder<SubDriver> {
+    RegionHostBuilder::from_driver(
+        setup.exits.iter().copied(),
+        NonZeroUsize::new(setup.work_per_turn).expect("work per turn is not zero"),
+        mailbox,
+        SubDriver::new("main", log),
+    )
+    .expect("exits are valid")
+    .with_sub_regions(Budget::unlimited(), sub_factory(log))
+}
+
+/// Prepares routes from the region's own lanes to sub-region 1, `x`, which routes to none.
+fn prepare_x() -> Plan {
+    Plan::Prepare {
+        main: vec![1],
+        sub_regions: vec![(1, "x", vec![])],
+    }
+}
+
+#[test]
+fn internal_exits_are_numbered_past_the_regions_exits() {
+    let mut sink = ExitSink::with_sub_regions(2);
+    let exit = sink.sub_region_exit(SubRegionKey::new(3));
+    assert_eq!(exit, ExitId::new(5));
+    assert_eq!(sink.sub_region_of(exit), Some(SubRegionKey::new(3)));
+    assert_eq!(sink.sub_region_of(ExitId::new(1)), None);
+    sink.emit(exit, batch(&["x"]));
+    sink.emit_to_lane(exit, 1, batch(&["y"]));
+    assert_eq!(
+        sink.drain_routed()
+            .map(|(exit, lane, buffer)| (exit, lane, names(&buffer)))
+            .collect::<Vec<_>>(),
+        vec![
+            (ExitId::new(5), None, vec!["x".to_string()]),
+            (ExitId::new(5), Some(1), vec!["y".to_string()])
+        ]
+    );
+}
+
+#[test]
+#[should_panic(expected = "region wrote to sub-region 0 but its component has no sub-regions")]
+fn a_sink_without_internal_exits_names_none() {
+    ExitSink::new(2).sub_region_exit(SubRegionKey::new(0));
+}
+
+#[tokio::test]
+async fn a_control_message_starts_a_sub_region_which_the_region_feeds_through_its_internal_exit() {
+    let log = SubLog::default();
+    let (control, mailbox) = control_mailbox();
+    let (out, mut out_rx) = downstream(16);
+    let setup = Setup::new(&["out"]).connect(0, &out);
+    let builder = sub_host(&setup, mailbox, &log);
+    let mut region = start_built(setup, builder).await;
+    drop(out);
+
+    // Without sub-regions, the region runs as any other.
+    region.send(batch(&["a"]));
+    assert_eq!(receive_names(&mut out_rx, 1).await, expected(&[&["a"]]));
+
+    // The sub-region is built from its part of the message, and has applied it once the message is acknowledged.
+    acknowledged(control.send(prepare_x())).await.unwrap();
+    assert!(log.contains("x built from Routes([])"));
+    assert!(log.contains("x routes []"));
+    assert!(log.contains("main routes [1]"));
+
+    region.send(batch(&["b"]));
+    assert_eq!(receive_names(&mut out_rx, 1).await, expected(&[&["b"]]));
+    assert!(log.position("main process b") < log.position("x process b"));
+
+    // A message every region applies reaches the sub-region too; one it rejects is rejected with its name.
+    acknowledged(control.send(Plan::Note("both"))).await.unwrap();
+    assert!(log.contains("main note both") && log.contains("x note both"));
+    assert_eq!(
+        acknowledged(control.send(Plan::For(1, Box::new(Plan::Reject))))
+            .await
+            .unwrap_err()
+            .to_string(),
+        "The region could not apply the control message: Sub-region 'x' rejected it: Generation 7 is not prepared."
+    );
+
+    // At the end of input, the region finishes first, and the sub-region once its input ended.
+    region.close_input();
+    region.stopped().await.expect("the region should stop cleanly");
+    assert!(log.position("main finish Shutdown") < log.position("x finish Shutdown"));
+    assert_eq!(
+        names_of_all(&waiting(&mut out_rx)),
+        expected(&[&["main.final"], &["x.final"]])
+    );
+}
+
+#[tokio::test]
+async fn a_sub_region_retires_once_nothing_routes_to_it_and_a_later_message_starts_a_new_one() {
+    let log = SubLog::default();
+    let (control, mailbox) = control_mailbox();
+    let (out, mut out_rx) = downstream(16);
+    let setup = Setup::new(&["out"]).connect(0, &out);
+    let builder = sub_host(&setup, mailbox, &log);
+    let mut region = start_built(setup, builder).await;
+    drop(out);
+
+    acknowledged(control.send(prepare_x())).await.unwrap();
+    acknowledged(control.send(Plan::For(1, Box::new(Plan::Accept(false)))))
+        .await
+        .unwrap();
+    region.send(batch(&["a"]));
+    wait_until("the region sends `a` to the sub-region", || {
+        log.contains("main process a")
+    })
+    .await;
+
+    // Once no region routes to it, the sub-region processes what its input holds, finishes for retirement, and stops.
+    let accept = control.send(Plan::For(1, Box::new(Plan::Accept(true))));
+    let release = control.send(Plan::ReleaseAll);
+    acknowledged(accept).await.unwrap();
+    acknowledged(release).await.unwrap();
+    assert_eq!(receive_names(&mut out_rx, 2).await, expected(&[&["a"], &["x.final"]]));
+    wait_until("the sub-region retires", || log.contains("x finish Retire")).await;
+    assert!(log.position("x process a") < log.position("x finish Retire"));
+
+    // A retired sub-region takes no more messages: the region's own lanes alone apply one every region applies.
+    acknowledged(control.send(Plan::Note("after"))).await.unwrap();
+    assert!(log.contains("main note after") && !log.contains("x note after"));
+    region.send(batch(&["b"]));
+    assert_eq!(receive_names(&mut out_rx, 1).await, expected(&[&["b"]]));
+
+    // A message that starts its key again starts a new sub-region.
+    acknowledged(control.send(prepare_x())).await.unwrap();
+    let built = log
+        .entries()
+        .iter()
+        .filter(|entry| entry.starts_with("x built"))
+        .count();
+    assert_eq!(built, 2);
+    region.send(batch(&["c"]));
+    assert_eq!(receive_names(&mut out_rx, 1).await, expected(&[&["c"]]));
+    region.close_input();
+    region.stopped().await.expect("the region should stop cleanly");
+    assert!(log.contains("x finish Shutdown"));
+}
+
+#[tokio::test]
+async fn chained_sub_regions_finish_in_the_order_they_feed_each_other_at_the_end_of_input() {
+    let log = SubLog::default();
+    let (control, mailbox) = control_mailbox();
+    let (out, mut out_rx) = downstream(16);
+    let setup = Setup::new(&["out"]).connect(0, &out);
+    let builder = sub_host(&setup, mailbox, &log);
+    let mut region = start_built(setup, builder).await;
+    drop(out);
+
+    // `x` routes to `y`, which one message starts along with it.
+    let prepare = Plan::Prepare {
+        main: vec![1],
+        sub_regions: vec![(1, "x", vec![2]), (2, "y", vec![])],
+    };
+    acknowledged(control.send(prepare)).await.unwrap();
+    region.send(batch(&["a"]));
+    assert_eq!(receive_names(&mut out_rx, 1).await, expected(&[&["a"]]));
+
+    // Each sub-region finishes once every region that feeds it did, after what they sent it while they finished.
+    region.close_input();
+    region.stopped().await.expect("the region should stop cleanly");
+    let main = log.position("main finish Shutdown");
+    let x = log.position("x finish Shutdown");
+    let y = log.position("y finish Shutdown");
+    assert!(main < x && x < y, "{:?}", log.entries());
+    assert!(log.position("x process main.final") < x);
+    assert!(log.position("y process x.final") < y);
+    assert_eq!(
+        names_of_all(&waiting(&mut out_rx)),
+        expected(&[&["main.final"], &["x.final"], &["y.final"]])
+    );
+}
+
+#[tokio::test]
+async fn a_sub_region_that_fails_fails_the_region() {
+    let log = SubLog::default();
+    let (control, mailbox) = control_mailbox();
+    let setup = Setup::new(&["out"]);
+    let builder = sub_host(&setup, mailbox, &log);
+    let region = start_built(setup, builder).await;
+
+    acknowledged(control.send(prepare_x())).await.unwrap();
+    region.send(batch(&["panic"]));
+    let error = format!("{:#}", region.stopped().await.unwrap_err());
+    assert_eq!(
+        error,
+        "Sub-region 'x' of region 'region' failed: Region panicked in process: boom in process: The sub-region has no \
+         panic budget."
+    );
+    assert!(!log.contains("main finish Shutdown"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_full_sub_region_holds_up_the_region_that_feeds_it_which_still_applies_control_messages() {
+    let log = SubLog::default();
+    let (control, mailbox) = control_mailbox();
+    let (out, mut out_rx) = downstream(16);
+    let setup = Setup::new(&["out"]).connect(0, &out);
+    let builder = sub_host(&setup, mailbox, &log);
+    let mut region = start_built(setup, builder).await;
+    drop(out);
+
+    acknowledged(control.send(prepare_x())).await.unwrap();
+    acknowledged(control.send(Plan::For(1, Box::new(Plan::Accept(false)))))
+        .await
+        .unwrap();
+
+    // The sub-region's input holds one buffer: the region waits to send the second, and its input waits upstream.
+    region.send(batch(&["a"]));
+    region.send(batch(&["b"]));
+    region.send(batch(&["c"]));
+    settle().await;
+    assert!(log.contains("main process b") && !log.contains("main process c"));
+    assert_eq!(region.waiting_input(), 1);
+    acknowledged(control.send(Plan::Note("while blocked"))).await.unwrap();
+    assert!(log.contains("main note while blocked"));
+
+    acknowledged(control.send(Plan::For(1, Box::new(Plan::Accept(true)))))
+        .await
+        .unwrap();
+    assert_eq!(receive_names(&mut out_rx, 3).await, expected(&[&["a"], &["b"], &["c"]]));
+    region.close_input();
+    region.stopped().await.expect("the region should stop cleanly");
+}
+
+#[tokio::test]
+async fn a_sub_region_whose_driver_cannot_be_built_rejects_the_message_with_nothing_applied() {
+    let log = SubLog::default();
+    let (control, mailbox) = control_mailbox();
+    let setup = Setup::new(&["out"]);
+    let builder = sub_host(&setup, mailbox, &log);
+    let mut region = start_built(setup, builder).await;
+
+    let prepare = Plan::Prepare {
+        main: vec![1],
+        sub_regions: vec![(1, "bad", vec![])],
+    };
+    assert_eq!(
+        acknowledged(control.send(prepare)).await.unwrap_err().to_string(),
+        "The region could not apply the control message: Failed to build the driver of sub-region 'bad' of region \
+         'region': No kernels for sub-region 'bad'."
+    );
+    assert!(log.entries().is_empty(), "{:?}", log.entries());
+    region.close_input();
+    region.stopped().await.expect("the region should stop cleanly");
+}
+
+#[tokio::test]
+async fn a_driver_that_routes_to_a_sub_region_that_does_not_run_fails_the_region() {
+    let log = SubLog::default();
+    let (control, mailbox) = control_mailbox();
+    let setup = Setup::new(&["out"]);
+    let builder = sub_host(&setup, mailbox, &log);
+    let region = start_built(setup, builder).await;
+
+    let error = acknowledged(control.send(Plan::Routes(vec![5])))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("routes to sub-region 5, which does not run"),
+        "{}",
+        error
+    );
+    let error = format!("{:#}", region.stopped().await.unwrap_err());
+    assert!(
+        error.contains("routes to sub-region 5, which does not run"),
+        "{}",
+        error
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_region_without_lanes_reads_live_while_its_sub_regions_answer_the_probes_it_forwards() {
+    let registry = HealthRegistry::new();
+    let _probes = registry.spawn_runner_for_test();
+    let log = SubLog::default();
+    let (control, mailbox) = control_mailbox();
+    let setup = Setup::new(&["out"]).health(&registry);
+    let builder = sub_host(&setup, mailbox, &log);
+    let mut region = start_built(setup, builder).await;
+
+    acknowledged(control.send(prepare_x())).await.unwrap();
+    sleep(Duration::from_secs(30)).await;
+    assert!(registry.is_live_for_test(&SubsystemIdentifier::from_dotted(REGION_ID)));
+    region.close_input();
+    region.stopped().await.expect("the region should stop cleanly");
+}
+
+#[tokio::test(start_paused = true)]
+async fn every_lane_of_a_region_with_lanes_feeds_its_sub_regions_which_finish_after_every_lane() {
+    let registry = HealthRegistry::new();
+    let _probes = registry.spawn_runner_for_test();
+    let log = SubLog::default();
+    let (control, mailbox) = control_mailbox();
+    let (out, mut out_rx) = downstream(16);
+    let setup = Setup::new(&["out"]).connect(0, &out).health(&registry);
+    let lane_log = log.clone();
+    let builder = RegionHostBuilder::new(
+        setup.exits.iter().copied(),
+        NonZeroUsize::new(setup.work_per_turn).expect("work per turn is not zero"),
+        mailbox,
+        |_: &BuildContext| Err(generic_error!("a region with lanes builds its drivers per lane")),
+    )
+    .expect("exits are valid")
+    .with_lanes(NonZeroU16::new(2).unwrap(), move |_, lane| {
+        Ok(SubDriver::new(format!("lane{}", lane.index), &lane_log))
+    })
+    .with_sub_regions(Budget::unlimited(), sub_factory(&log));
+    let mut region = start_laned_built(setup, builder).await;
+    drop(out);
+
+    acknowledged(control.send(prepare_x())).await.unwrap();
+    assert!(log.contains("lane0 routes [1]") && log.contains("lane1 routes [1]") && log.contains("x routes []"));
+    region.send(0, batch(&["a"]));
+    region.send(1, batch(&["b"]));
+    let mut received = receive_names(&mut out_rx, 2).await;
+    received.sort();
+    assert_eq!(received, expected(&[&["a"], &["b"]]));
+    assert!(log.contains("x process a") && log.contains("x process b"));
+    acknowledged(control.send(Plan::Note("all"))).await.unwrap();
+    assert!(log.contains("lane0 note all") && log.contains("lane1 note all") && log.contains("x note all"));
+
+    sleep(Duration::from_secs(30)).await;
+    assert!(registry.is_live_for_test(&SubsystemIdentifier::from_dotted(REGION_ID)));
+
+    region.close_inputs();
+    region.stopped().await.expect("the region should stop cleanly");
+    let x = log.position("x finish Shutdown");
+    assert!(log.position("lane0 finish Shutdown") < x && log.position("lane1 finish Shutdown") < x);
 }

@@ -10,6 +10,9 @@
 //! ([`lane_link`]).
 //!
 //! With one lane, a region host runs as it always has, without a coordinator.
+//!
+//! A [sub-region][crate::execution::SubRegionSpec] is linked to whoever coordinates it the same way: it is a task with
+//! one lane, whose link the coordinator keeps.
 
 use std::{
     fmt,
@@ -93,8 +96,10 @@ pub fn lane_link<C>(lane: LaneContext) -> (LaneLink<C>, LaneEnd<C>) {
         LaneLink {
             lane,
             control,
-            probes,
-            finished: Arc::clone(&finished),
+            prober: LaneProber {
+                probes,
+                finished: Arc::clone(&finished),
+            },
         },
         LaneEnd {
             lane,
@@ -109,8 +114,7 @@ pub fn lane_link<C>(lane: LaneContext) -> (LaneLink<C>, LaneEnd<C>) {
 pub struct LaneLink<C> {
     lane: LaneContext,
     control: ControlSender<C>,
-    probes: mpsc::Sender<LaneProbe>,
-    finished: Arc<AtomicBool>,
+    prober: LaneProber,
 }
 
 impl<C> LaneLink<C> {
@@ -143,6 +147,34 @@ impl<C> LaneLink<C> {
     /// Returns `true` once the lane answered, and `false` if the lane task has stopped, so that it can no longer
     /// answer.
     pub async fn probe(&self) -> bool {
+        self.prober.probe().await
+    }
+
+    /// Returns `true` if the lane reported that it finished: its input ended and it completed its work.
+    ///
+    /// A lane reports it before its control queue and its probes close, so once either is seen closed, this tells a
+    /// lane that finished from one that failed or was stopped.
+    pub fn has_finished(&self) -> bool {
+        self.prober.has_finished()
+    }
+
+    /// Returns the half of the link that probes the lane, which does not depend on the lane's control messages, so
+    /// that probes can be forwarded to lanes of drivers of several kinds, or from a task that holds no link.
+    pub fn prober(&self) -> LaneProber {
+        self.prober.clone()
+    }
+}
+
+/// The half of a [`LaneLink`] that forwards liveness probes to one lane and tells whether it finished.
+#[derive(Clone, Debug)]
+pub struct LaneProber {
+    probes: mpsc::Sender<LaneProbe>,
+    finished: Arc<AtomicBool>,
+}
+
+impl LaneProber {
+    /// Forwards one liveness probe to the lane and waits for its answer (see [`LaneLink::probe`]).
+    pub async fn probe(&self) -> bool {
         let (reply, answered) = oneshot::channel();
         if self.probes.send(LaneProbe { reply }).await.is_err() {
             return false;
@@ -150,10 +182,7 @@ impl<C> LaneLink<C> {
         answered.await.is_ok()
     }
 
-    /// Returns `true` if the lane reported that it finished: its input ended and it completed its work.
-    ///
-    /// A lane reports it before its control queue and its probes close, so once either is seen closed, this tells a
-    /// lane that finished from one that failed or was stopped.
+    /// Returns `true` if the lane reported that it finished (see [`LaneLink::has_finished`]).
     pub fn has_finished(&self) -> bool {
         self.finished.load(Ordering::Acquire)
     }

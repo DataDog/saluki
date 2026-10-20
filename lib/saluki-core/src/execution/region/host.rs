@@ -21,15 +21,19 @@ use saluki_error::{generic_error, GenericError};
 use saluki_metrics::{Counter, MetricsBuilder};
 use tokio::{
     pin, select,
-    sync::{oneshot, watch},
+    sync::{mpsc, oneshot, watch},
     task::coop::consume_budget,
     time::{sleep_until, Instant},
 };
 use tracing::{debug, error, warn};
 
 use super::{
-    driver::{ExitId, ExitSink, PanicOutcome, PanicSite, RegionDriver, RegionPanic, RegionTurn},
-    lanes::{lane_link, LaneContext, LaneEnd, LaneLink, LaneProbes, LaneSplit, LaneStats},
+    driver::{sub_region_of, ExitId, ExitSink, PanicOutcome, PanicSite, RegionDriver, RegionPanic, RegionTurn},
+    lanes::{lane_link, LaneContext, LaneEnd, LaneLink, LaneProber, LaneProbes, LaneSplit, LaneStats},
+    subregion::{
+        HostPhase, InternalExits, Routed, SubRegionConfig, SubRegionKey, SubRegionLink, SubRegionProbers,
+        SubRegionRegistry, SubRegionSpec, SubRegionSplit, SubRegions,
+    },
 };
 use crate::{
     accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr},
@@ -166,6 +170,25 @@ impl<C: LaneSplit> LaneSplitter<C> {
 /// after them: one full lane does not hold up what the call routes to the others, and every lane receives its buffers
 /// in order.
 ///
+/// # Sub-regions
+///
+/// A region given a factory for sub-regions ([`with_sub_regions`][Self::with_sub_regions]) runs, beside its lanes, a
+/// task per running sub-region, each a host as described here with one lane, fed by the internal exits of the other
+/// regions of the component rather than by the topology, and accounted to a resource group of its own
+/// (`<component>.<name>`). Control messages start sub-regions, and the drivers that route to them retire them (see
+/// [`SubRegionSplit`] and [`RegionDriver::sub_region_routes`]). Whatever task coordinates the lanes coordinates the
+/// sub-regions too: the component's own task in a region with lanes, and its one lane otherwise, so that a region
+/// without lanes runs on the component's task as it always has. The coordinator splits each control message with
+/// [`SubRegionSplit`] before it splits the lanes' part with [`LaneSplit`], sends each sub-region its part, and
+/// acknowledges the message once every part was, or with the first rejection. It forwards every liveness probe to
+/// every sub-region that has not stopped as well, and a sub-region that fails, or stops before its input ends, fails
+/// the component, as a lane does. When the component's input ends, every sub-region's input ends once each region that
+/// feeds it finished, and the component stops once every sub-region stopped.
+///
+/// The buffers a region writes to a sub-region's internal exit are sent in order with everything else it wrote, each
+/// awaited as a send to any exit is: a sub-region whose input is full holds up the region that feeds it, which still
+/// answers liveness probes and handles control messages meanwhile.
+///
 /// # Supervision
 ///
 /// Every call that can run kernel code runs under [`catch_unwind`]. When a call panics, the host discards everything
@@ -185,7 +208,9 @@ impl<C: LaneSplit> LaneSplitter<C> {
 /// Besides the component itself and the bounds given with [`with_bounds`][Self::with_bounds], the host accounts for
 /// one full events buffer per exit and lane, held while it waits for downstream. A driver that can write more than one
 /// full buffer's worth of events to one exit per call accounts for the rest in its own bounds, and the bounds given
-/// with `with_bounds` cover every lane's driver.
+/// with `with_bounds` cover every lane's driver. Sub-regions are not counted: they start after the topology is built,
+/// and whoever starts one accounts for its input buffers ([`SubRegionSpec::input_buffers`]), its driver, and a full
+/// events buffer per exit of its task, against a budget of its own.
 pub struct RegionHostBuilder<D>
 where
     D: RegionDriver,
@@ -200,6 +225,7 @@ where
     lane_stats: Vec<Arc<LaneStats>>,
     input_buffer_events: usize,
     splitter: Option<LaneSplitter<D::Control>>,
+    sub_regions: Option<SubRegionConfig<D>>,
     mailbox: Mutex<Option<ControlMailbox<D::Control>>>,
     bounds: Option<Box<dyn MemoryBounds + Send + Sync>>,
 }
@@ -271,6 +297,7 @@ where
             lane_stats: Vec::new(),
             input_buffer_events: DEFAULT_EVENTS_BUFFER_CAPACITY,
             splitter: None,
+            sub_regions: None,
             mailbox: Mutex::new(Some(mailbox)),
             bounds: None,
         })
@@ -369,6 +396,25 @@ where
     /// an events buffer, 1,024 events, by default.
     pub fn with_input_buffer_events(mut self, events: usize) -> Self {
         self.input_buffer_events = events;
+        self
+    }
+
+    /// Runs sub-regions beside the region's lanes, building each one's driver with `factory` from the sub-region's
+    /// spec and the part of the control message that starts it, which the sub-region then applies as its first control
+    /// message, and starting each of its calls with `turn_budget` (see [Sub-regions](#sub-regions)).
+    ///
+    /// The factory runs on the coordinating task, when a control message starts the sub-region, so it builds nothing
+    /// that takes long, such as kernels, which the message brings. An error it returns, or a panic, rejects the message.
+    pub fn with_sub_regions<F>(mut self, turn_budget: Budget, factory: F) -> Self
+    where
+        F: Fn(&SubRegionSpec, &D::Control) -> Result<D, GenericError> + Send + Sync + 'static,
+        D::Control: SubRegionSplit,
+    {
+        self.sub_regions = Some(SubRegionConfig {
+            factory: Arc::new(factory),
+            split: |message, running| message.split_sub_regions(running),
+            turn_budget,
+        });
         self
     }
 
@@ -531,12 +577,21 @@ where
             })?;
         let control = mailbox.into_receiver_for("region");
 
+        // The sub-regions' inputs, which every task of the component connects to, and the component's phase, which
+        // tells a sub-region whose input ends why.
+        let shared = self
+            .sub_regions
+            .as_ref()
+            .map(|_| (Arc::new(SubRegionRegistry::default()), HostPhase::default()));
         let mut admissions = admissions.into_iter();
         let mut stats = self.lane_stats.iter().cloned();
         let mut lanes = drivers
             .into_iter()
             .map(|(lane, driver)| {
                 let stats = stats.next();
+                let internal = shared.as_ref().map_or_else(InternalExits::none, |(registry, _)| {
+                    InternalExits::new(Arc::clone(registry))
+                });
                 Lane {
                     context: lane,
                     runner: Runner::new(
@@ -545,18 +600,38 @@ where
                         self.turn_budget,
                         HostTelemetry::new(context.component_context()),
                         stats.clone(),
+                        internal,
                     ),
                     admission: admissions.next(),
                     routes: ExitRoutes::new(Arc::clone(&self.exit_names), lane),
                     stats,
                     work_per_turn: self.work_per_turn,
+                    role: LaneRole::Main(shared.as_ref().map(|(_, phase)| phase.clone())),
                 }
             })
             .collect::<Vec<_>>();
+        let sub_regions = self
+            .sub_regions
+            .as_ref()
+            .zip(shared)
+            .map(|(config, (registry, phase))| {
+                Box::new(SubRegions::new(
+                    config.clone(),
+                    Arc::clone(&self.exit_names),
+                    self.work_per_turn,
+                    context.component_context().clone(),
+                    registry,
+                    phase,
+                ))
+            });
 
         if count == 1 {
             let lane = lanes.pop().expect("one lane was built");
-            return Ok(BuiltHost::One(Box::new(RegionHost { lane, control })));
+            return Ok(BuiltHost::One(Box::new(RegionHost {
+                lane,
+                control,
+                sub_regions,
+            })));
         }
         let splitter = self.splitter.ok_or_else(|| {
             generic_error!(
@@ -570,18 +645,19 @@ where
             lanes,
             control,
             splitter,
+            sub_regions,
         }))
     }
 }
 
 /// The telemetry the host records itself, as opposed to the driver's.
-struct HostTelemetry {
+pub(super) struct HostTelemetry {
     events_lost: Counter,
     panics: Counter,
 }
 
 impl HostTelemetry {
-    fn new(context: &ComponentContext) -> Self {
+    pub(super) fn new(context: &ComponentContext) -> Self {
         let builder = MetricsBuilder::from_component_context(context);
         Self {
             events_lost: builder.register_counter_with_tags(
@@ -600,6 +676,7 @@ where
 {
     lane: Lane<D>,
     control: ControlReceiver<D::Control>,
+    sub_regions: Option<Box<SubRegions<D>>>,
 }
 
 #[async_trait]
@@ -608,17 +685,41 @@ where
     D: RegionDriver,
 {
     async fn run(self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
-        let RegionHost { lane, control } = *self;
+        let RegionHost {
+            lane,
+            control,
+            sub_regions,
+        } = *self;
         let mut health = context.take_health_handle();
         let input = only_input(&mut context)?;
         health.mark_ready();
-        lane.run(
-            input,
-            context.dispatcher(),
-            &mut Liveness::Component(health),
-            &mut ControlSource::component(control),
-        )
-        .await
+        let Some(mut sub_regions) = sub_regions else {
+            return lane
+                .run(
+                    LaneInput::Topology(input),
+                    context.dispatcher(),
+                    &mut Liveness::Component(health),
+                    &mut ControlSource::component(control),
+                )
+                .await;
+        };
+
+        // The one lane coordinates the component's sub-regions itself, on the component's task.
+        let dispatcher = context.shared_dispatcher();
+        sub_regions.attach(
+            Arc::clone(&dispatcher),
+            context.component_context().identity(),
+            context.component_context().component_id().to_string(),
+        );
+        let mut liveness = Liveness::Coordinating {
+            health,
+            sub_regions: sub_regions.probers(),
+            forwarding: None,
+        };
+        let mut control = ControlSource::coordinating(control, sub_regions);
+        lane.run(LaneInput::Topology(input), &dispatcher, &mut liveness, &mut control)
+            .await?;
+        control.finish_sub_regions(&mut liveness).await
     }
 }
 
@@ -645,6 +746,7 @@ where
     lanes: Vec<Lane<D>>,
     control: ControlReceiver<D::Control>,
     splitter: LaneSplitter<D::Control>,
+    sub_regions: Option<Box<SubRegions<D>>>,
 }
 
 /// What the lanes of a region with lanes share from their component.
@@ -686,12 +788,14 @@ impl<D> LanedRegionHost<D>
 where
     D: RegionDriver,
 {
-    /// Spawns a task per lane and coordinates them until every lane finished, or one failed.
+    /// Spawns a task per lane and coordinates them, and the sub-regions control messages start, until every lane and
+    /// every sub-region finished, or one failed.
     pub(super) async fn coordinate(self, parts: LaneParts, region: String) -> Result<(), GenericError> {
         let LanedRegionHost {
             lanes,
             control,
             splitter,
+            mut sub_regions,
         } = self;
         let LaneParts {
             inputs,
@@ -718,7 +822,7 @@ where
             let (outcome, exited) = oneshot::channel::<LaneOutcome>();
             let dispatcher = Arc::clone(&dispatcher);
             let task = async move {
-                let _ = outcome.send(lane.run_as_lane(end, input, &dispatcher).await);
+                let _ = outcome.send(lane.run_as_lane(end, LaneInput::Topology(input), &dispatcher).await);
             };
             runtime::worker(LANE_TASK_NAME, task)
                 .with_resource_group(lane_group(&group, context).to_string())
@@ -726,7 +830,11 @@ where
             exits.push(async move { (context, exited.await) });
             links.push(link);
         }
-        // The coordinator keeps no sender of its own: once every lane is gone, so is the component's output.
+        if let Some(sub_regions) = &mut sub_regions {
+            sub_regions.attach(Arc::clone(&dispatcher), group.clone(), region.clone());
+        }
+        // The coordinator keeps no sender of its own: once every lane and sub-region is gone, so is the component's
+        // output.
         drop(dispatcher);
         // Shared with the acknowledgments of control messages, which tell a lane that finished from one that failed.
         let links = Arc::<[LaneLink<D::Control>]>::from(links);
@@ -764,12 +872,16 @@ where
         let mut control = Some(control);
         let mut acknowledgments = FuturesUnordered::<BoxFuture<'static, ()>>::new();
         let mut forwarding: Option<Pin<Box<dyn Future<Output = ()> + Send + '_>>> = None;
-        while finished < count {
+        let sub_region_probers = sub_regions.as_ref().map(|sub_regions| sub_regions.probers());
+        // Once the lanes finished, every sub-region's input ends as the regions that feed it finish.
+        while finished < count || sub_regions.as_ref().is_some_and(|sub_regions| sub_regions.has_tasks()) {
             select! {
                 biased;
 
                 probe = health.next_probe(), if forwarding.is_none() => {
-                    forwarding = Some(Box::pin(forward_probe(probe, &links)));
+                    let mut probers = links.iter().map(LaneLink::prober).collect::<Vec<_>>();
+                    probers.extend(sub_region_probers.iter().flat_map(SubRegionProbers::snapshot));
+                    forwarding = Some(Box::pin(forward_probe_to(probe, probers)));
                 },
 
                 _ = poll_forwarding(&mut forwarding) => forwarding = None,
@@ -780,8 +892,13 @@ where
                     Err(_) => return Err(lane_failed(&region, lane, None)),
                 },
 
+                exited = next_sub_region_exit(&mut sub_regions) => exited?,
+
                 request = next_control(&mut control) => match request {
-                    Some((message, reply)) => acknowledgments.push(dispatch_control(message, reply, &links, splitter)),
+                    Some((message, reply)) => acknowledgments.push(match &mut sub_regions {
+                        Some(sub_regions) => dispatch_control_with(message, reply, &links, splitter, sub_regions),
+                        None => dispatch_control(message, reply, &links, splitter),
+                    }),
                     None => control = None,
                 },
 
@@ -818,6 +935,17 @@ fn capitalized(lane: LaneContext) -> String {
     format!("Lane {} of {}", lane.index, lane.count)
 }
 
+/// Waits until a sub-region of the component stops, or forever if it has none.
+async fn next_sub_region_exit<D>(sub_regions: &mut Option<Box<SubRegions<D>>>) -> Result<(), GenericError>
+where
+    D: RegionDriver,
+{
+    match sub_regions {
+        Some(sub_regions) => sub_regions.next_exit().await,
+        None => std::future::pending().await,
+    }
+}
+
 /// Waits for the probe being forwarded to the lanes, or forever if none is.
 async fn poll_forwarding(forwarding: &mut Option<Pin<Box<dyn Future<Output = ()> + Send + '_>>>) {
     match forwarding {
@@ -826,16 +954,23 @@ async fn poll_forwarding(forwarding: &mut Option<Pin<Box<dyn Future<Output = ()>
     }
 }
 
-/// Forwards one liveness probe to every lane, and responds to it once every lane answered.
-///
-/// A lane that finished, once its input ended, counts as answering: it is done, not stuck. A lane that stopped
-/// otherwise cannot answer, so the probe is then dropped unanswered, and the component reads as not live until the
-/// coordinator, which sees the lane's end, fails it.
+/// Forwards one liveness probe to every lane of `links`, and responds to it once every lane answered (see
+/// [`forward_probe_to`]).
+#[cfg(test)]
 pub(super) async fn forward_probe<C>(probe: Probe, links: &[LaneLink<C>]) {
-    let answers = links
+    forward_probe_to(probe, links.iter().map(LaneLink::prober).collect()).await
+}
+
+/// Forwards one liveness probe to every lane and sub-region of `probers`, and responds to it once every one answered.
+///
+/// A lane or sub-region that finished, once its input ended, counts as answering: it is done, not stuck. One that
+/// stopped otherwise cannot answer, so the probe is then dropped unanswered, and the component reads as not live until
+/// the coordinator, which sees the task's end, fails it.
+async fn forward_probe_to(probe: Probe, probers: Vec<LaneProber>) {
+    let answers = probers
         .iter()
-        .filter(|link| !link.has_finished())
-        .map(|link| async move { link.probe().await || link.has_finished() });
+        .filter(|prober| !prober.has_finished())
+        .map(|prober| async move { prober.probe().await || prober.has_finished() });
     if join_all(answers).await.into_iter().all(|answered| answered) {
         probe.respond().await;
     }
@@ -852,58 +987,107 @@ fn dispatch_control<C>(
 where
     C: Send + 'static,
 {
+    match send_lane_parts(message, links, splitter) {
+        Err(e) => reply.reject(e),
+        // Dropping the reply acknowledges the message as unhandled.
+        Ok(acks) if acks.is_empty() => drop(reply),
+        Ok(acks) => return join_acknowledgments(acks, Arc::clone(links), reply).boxed(),
+    }
+    std::future::ready(()).boxed()
+}
+
+/// Splits a control message per lane, sends each lane that has not finished its part, and returns each part's
+/// acknowledgment, by index into `links`.
+///
+/// # Errors
+///
+/// If the message does not split into one part per lane and names no lane the region has, the error that rejects it
+/// is returned, and nothing was sent.
+fn send_lane_parts<C>(
+    message: C, links: &[LaneLink<C>], splitter: LaneSplitter<C>,
+) -> Result<Vec<(usize, ControlAck)>, GenericError> {
     let lanes = links.len() as u16;
-    let acks = match (splitter.split)(message, lanes) {
-        Ok(parts) if parts.len() == links.len() => links
+    match (splitter.split)(message, lanes) {
+        Ok(parts) if parts.len() == links.len() => Ok(links
             .iter()
             .enumerate()
             .zip(parts)
             .filter(|((_, link), _)| !link.has_finished())
             .map(|((index, link), part)| (index, link.send(part)))
-            .collect::<Vec<_>>(),
-        Ok(parts) => {
-            reply.reject(generic_error!(
-                "A control message split into {} parts for a region with {} lanes. Split messages into one part per \
-                 lane.",
-                parts.len(),
-                lanes
-            ));
-            return std::future::ready(()).boxed();
-        }
+            .collect()),
+        Ok(parts) => Err(generic_error!(
+            "A control message split into {} parts for a region with {} lanes. Split messages into one part per lane.",
+            parts.len(),
+            lanes
+        )),
         Err(message) => match (splitter.lane)(&message) {
             Some(lane) if lane < lanes => {
                 let index = usize::from(lane);
                 let link = &links[index];
                 if link.has_finished() {
-                    Vec::new()
+                    Ok(Vec::new())
                 } else {
-                    vec![(index, link.send(message))]
+                    Ok(vec![(index, link.send(message))])
                 }
             }
-            Some(lane) => {
-                reply.reject(generic_error!(
-                    "A control message is for lane {}, but the region has only {} lanes. Address one of its lanes.",
-                    lane,
-                    lanes
-                ));
-                return std::future::ready(()).boxed();
-            }
-            None => {
-                reply.reject(generic_error!(
-                    "A control message neither splits into one part per lane of the region's {} lanes nor names the \
-                     lane it is for. Send one part per lane, or one message per lane that names it.",
-                    lanes
-                ));
-                return std::future::ready(()).boxed();
-            }
+            Some(lane) => Err(generic_error!(
+                "A control message is for lane {}, but the region has only {} lanes. Address one of its lanes.",
+                lane,
+                lanes
+            )),
+            None => Err(generic_error!(
+                "A control message neither splits into one part per lane of the region's {} lanes nor names the lane \
+                 it is for. Send one part per lane, or one message per lane that names it.",
+                lanes
+            )),
         },
+    }
+}
+
+/// Sends a control message to the sub-regions and the lanes it is for, starting every sub-region it starts first, and
+/// returns the future that acknowledges it once: when every part was accepted, or with the first rejection.
+///
+/// A message that starts a sub-region whose driver cannot be built, or whose lanes' part does not split, is rejected
+/// with nothing sent. A message for no lane or sub-region that still runs is left unhandled.
+fn dispatch_control_with<D>(
+    message: D::Control, reply: ControlReply, links: &Arc<[LaneLink<D::Control>]>, splitter: LaneSplitter<D::Control>,
+    sub_regions: &mut SubRegions<D>,
+) -> BoxFuture<'static, ()>
+where
+    D: RegionDriver,
+{
+    let Routed { main, parts, held } = match sub_regions.route(message) {
+        Ok(routed) => routed,
+        Err(e) => {
+            warn!(error = %e, "Region could not start a sub-region.");
+            reply.reject(e);
+            return std::future::ready(()).boxed();
+        }
     };
+    let mut acks = Vec::with_capacity(links.len() + parts.len());
+    if let Some(main) = main {
+        match send_lane_parts(main, links, splitter) {
+            Ok(lane_acks) => acks.extend(
+                lane_acks
+                    .into_iter()
+                    .map(|(index, ack)| (PartTarget::Lane(Arc::clone(links), index), ack)),
+            ),
+            Err(e) => {
+                reply.reject(e);
+                return std::future::ready(()).boxed();
+            }
+        }
+    }
+    acks.extend(parts.into_iter().map(|(link, part)| {
+        let ack = link.send(part);
+        (PartTarget::SubRegion(link), ack)
+    }));
     if acks.is_empty() {
         // Dropping the reply acknowledges the message as unhandled.
         drop(reply);
         return std::future::ready(()).boxed();
     }
-    join_acknowledgments(acks, Arc::clone(links), reply).boxed()
+    join_parts(acks, reply, held).boxed()
 }
 
 /// Acknowledges a control message once every lane it went to, by index into `links`, accepted its part, or with the
@@ -915,29 +1099,86 @@ where
 pub(super) async fn join_acknowledgments<C>(
     acks: Vec<(usize, ControlAck)>, links: Arc<[LaneLink<C>]>, reply: ControlReply,
 ) {
+    let acks = acks
+        .into_iter()
+        .map(|(index, ack)| (PartTarget::Lane(Arc::clone(&links), index), ack))
+        .collect();
+    join_parts(acks, reply, Vec::new()).await
+}
+
+/// Where one part of a control message went.
+pub(super) enum PartTarget<C> {
+    /// The one lane of a region without lanes, which applies its part itself: its outcome is the message's.
+    Main,
+
+    /// A lane of a region with lanes, by index into the links.
+    Lane(Arc<[LaneLink<C>]>, usize),
+
+    /// A sub-region.
+    SubRegion(Arc<SubRegionLink<C>>),
+}
+
+impl<C> PartTarget<C> {
+    /// Spells the target for the start of a sentence, or `None` for the one lane of a region without lanes.
+    fn describe(&self) -> Option<String> {
+        match self {
+            Self::Main => None,
+            Self::Lane(links, index) => Some(capitalized(links[*index].lane())),
+            Self::SubRegion(link) => Some(format!("Sub-region '{}'", link.name())),
+        }
+    }
+
+    /// Returns `true` if the target finished, so that a part it did not handle had nothing left to apply to.
+    fn has_finished(&self) -> bool {
+        match self {
+            // The one lane applies its part as soon as it takes it, so it drops it only once it stopped.
+            Self::Main => true,
+            Self::Lane(links, index) => links[*index].has_finished(),
+            Self::SubRegion(link) => link.has_finished(),
+        }
+    }
+}
+
+/// Acknowledges a control message once every part of it, sent to the targets of `acks`, was accepted, or with the
+/// first rejection, holding `held` until then.
+///
+/// `held` are senders to the inputs of the component's running sub-regions, which keep each running until the
+/// message is acknowledged: a driver that connects to a sub-region as it applies its part finds it running. A target
+/// that finished before it handled its part had nothing left to apply it to, and is passed over; if every target did,
+/// the message is left unhandled, as by a region that stopped. A target that stopped otherwise, without finishing,
+/// rejects the message: it failed, which fails the component.
+pub(super) async fn join_parts<C>(
+    acks: Vec<(PartTarget<C>, ControlAck)>, reply: ControlReply, held: Vec<mpsc::Sender<EventsBuffer>>,
+) {
+    let _held = held;
     let mut pending = acks
         .into_iter()
-        .map(|(index, ack)| ack.map(move |outcome| (index, outcome)))
+        .map(|(target, ack)| ack.map(move |outcome| (target, outcome)))
         .collect::<FuturesUnordered<_>>();
     let mut accepted = false;
-    while let Some((index, outcome)) = pending.next().await {
-        let link = &links[index];
+    while let Some((target, outcome)) = pending.next().await {
         match outcome {
             Ok(()) => accepted = true,
             Err(ControlError::Rejected { error, .. }) => {
-                reply.reject(error.context(format!("{} rejected it", capitalized(link.lane()))));
+                match target.describe() {
+                    Some(target) => reply.reject(error.context(format!("{} rejected it", target))),
+                    None => reply.reject(error),
+                }
                 return;
             }
             Err(ControlError::Panicked { message, .. }) => {
-                reply.panicked(format!("{} panicked: {}", capitalized(link.lane()), message));
+                match target.describe() {
+                    Some(target) => reply.panicked(format!("{} panicked: {}", target, message)),
+                    None => reply.panicked(message),
+                }
                 return;
             }
-            // A lane reports that it finished before its control queue closes, so this sees the report.
-            Err(ControlError::Stopped { .. }) if link.has_finished() => {}
+            // A lane or sub-region reports that it finished before its control queue closes, so this sees the report.
+            Err(ControlError::Stopped { .. }) if target.has_finished() => {}
             Err(ControlError::Stopped { .. }) => {
                 reply.reject(generic_error!(
                     "{} stopped before it handled the control message.",
-                    capitalized(link.lane())
+                    target.describe().unwrap_or_else(|| "The region".to_owned())
                 ));
                 return;
             }
@@ -946,7 +1187,7 @@ pub(super) async fn join_acknowledgments<C>(
     if accepted {
         reply.ack();
     } else {
-        // Every lane it went to finished first: dropping the reply acknowledges it as unhandled.
+        // Every target it went to finished first: dropping the reply acknowledges it as unhandled.
         drop(reply);
     }
 }
@@ -964,47 +1205,107 @@ enum Liveness {
     /// The component's own health registration: a region with one lane answers it itself.
     Component(Health),
 
+    /// The component's own health registration, which the one lane of a region without lanes answers once every
+    /// sub-region that has not stopped answered too.
+    Coordinating {
+        health: Health,
+        sub_regions: SubRegionProbers,
+
+        /// The probe being forwarded to the sub-regions, which responds to it once all answered.
+        forwarding: Option<BoxFuture<'static, ()>>,
+    },
+
     /// The probes the coordinator of a region with lanes forwards to the lane.
     Lane(LaneProbes),
 }
 
 impl Liveness {
-    /// Waits for the next liveness probe, and answers it.
+    /// Waits for the next liveness probe, and answers it, or for the probe being forwarded to sub-regions to be
+    /// answered.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel-safe as far as [`Health::live`] is: a probe being forwarded is kept across calls.
     async fn answer(&mut self) {
         match self {
             Self::Component(health) => health.live().await,
+            Self::Coordinating {
+                health,
+                sub_regions,
+                forwarding,
+            } => {
+                if let Some(pending) = forwarding {
+                    pending.as_mut().await;
+                    *forwarding = None;
+                    return;
+                }
+                let probe = health.next_probe().await;
+                let probers = sub_regions.snapshot();
+                if probers.is_empty() {
+                    probe.respond().await;
+                } else {
+                    *forwarding = Some(Box::pin(forward_probe_to(probe, probers)));
+                }
+            }
             Self::Lane(probes) => probes.next().await.respond(),
         }
     }
 }
 
 /// Where a lane reads its control messages: the component's mailbox, or, in a region with lanes, the lane's own
-/// control queue, which the coordinator feeds.
-struct ControlSource<C> {
-    receiver: Option<ControlReceiver<C>>,
+/// control queue, which the coordinator feeds, or, for the one lane of a region with sub-regions, the parts of the
+/// component's messages for the lane, as it routes them itself.
+struct ControlSource<D>
+where
+    D: RegionDriver,
+{
+    receiver: Option<ControlReceiver<D::Control>>,
 
     /// Whether this is a lane's queue, which closes only when its coordinator is gone: the component has failed, and
     /// the lane stops.
     lane: bool,
 
-    /// Whether the coordinator is gone.
+    /// Whether the lane stops without finishing: its coordinator is gone, a sub-region it coordinates failed, or, for
+    /// a sub-region, the component failed.
     abandoned: bool,
+
+    /// The component's sub-regions, for the one lane of a region without lanes, which coordinates them itself.
+    sub_regions: Option<Box<SubRegions<D>>>,
+
+    /// Why a lane that coordinates sub-regions stops: one of them failed, which fails the component.
+    failure: Option<GenericError>,
+
+    /// Whether the lane that coordinates sub-regions finished, so that its parts of later messages have nothing to
+    /// apply to.
+    finished: bool,
 }
 
-impl<C> ControlSource<C> {
-    fn component(receiver: ControlReceiver<C>) -> Self {
+impl<D> ControlSource<D>
+where
+    D: RegionDriver,
+{
+    fn component(receiver: ControlReceiver<D::Control>) -> Self {
         Self {
             receiver: Some(receiver),
             lane: false,
             abandoned: false,
+            sub_regions: None,
+            failure: None,
+            finished: false,
         }
     }
 
-    fn lane(receiver: ControlReceiver<C>) -> Self {
+    fn lane(receiver: ControlReceiver<D::Control>) -> Self {
         Self {
-            receiver: Some(receiver),
             lane: true,
-            abandoned: false,
+            ..Self::component(receiver)
+        }
+    }
+
+    fn coordinating(receiver: ControlReceiver<D::Control>, sub_regions: Box<SubRegions<D>>) -> Self {
+        Self {
+            sub_regions: Some(sub_regions),
+            ..Self::component(receiver)
         }
     }
 
@@ -1016,16 +1317,72 @@ impl<C> ControlSource<C> {
 
     /// Waits for the next control request, or forever once the source is closed.
     ///
+    /// A lane that coordinates sub-regions routes each message here, and returns only its own part, if the message has
+    /// one; it also waits for its sub-regions to stop, and returns `None` once one failed, with the failure kept.
+    ///
     /// # Cancel safety
     ///
     /// This method is cancel-safe.
-    async fn next(&mut self) -> Option<(C, ControlReply)> {
-        let request = next_control(&mut self.receiver).await;
-        if request.is_none() {
-            self.receiver = None;
-            self.abandoned = self.lane;
+    async fn next(&mut self) -> Option<(D::Control, ControlReply)> {
+        let Some(sub_regions) = self.sub_regions.as_deref_mut() else {
+            let request = next_control(&mut self.receiver).await;
+            if request.is_none() {
+                self.receiver = None;
+                self.abandoned = self.lane;
+            }
+            return request;
+        };
+        loop {
+            select! {
+                biased;
+
+                event = sub_regions.next_event() => if let Err(e) = event {
+                    self.failure = Some(e);
+                    self.abandoned = true;
+                    return None;
+                },
+
+                request = next_control(&mut self.receiver) => match request {
+                    Some((message, reply)) => {
+                        if let Some(request) = sub_regions.route_one_lane(message, reply, !self.finished) {
+                            return Some(request);
+                        }
+                    }
+                    None => {
+                        self.receiver = None;
+                        return None;
+                    }
+                },
+            }
         }
-        request
+    }
+
+    /// Coordinates the sub-regions after the lane that coordinates them finished: answers probes and routes control
+    /// messages until every sub-region stopped, or one failed.
+    async fn finish_sub_regions(&mut self, liveness: &mut Liveness) -> Result<(), GenericError> {
+        self.finished = true;
+        if let Some(e) = self.failure.take() {
+            return Err(e);
+        }
+        let Some(sub_regions) = self.sub_regions.as_deref_mut() else {
+            return Ok(());
+        };
+        while sub_regions.has_tasks() {
+            select! {
+                biased;
+
+                _ = liveness.answer() => {},
+
+                event = sub_regions.next_event() => event?,
+
+                request = next_control(&mut self.receiver) => match request {
+                    // The lane finished, so its part of the message is dropped, and nothing comes back for it.
+                    Some((message, reply)) => drop(sub_regions.route_one_lane(message, reply, false)),
+                    None => self.receiver = None,
+                },
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1091,6 +1448,11 @@ impl ExitRoutes {
         }
     }
 
+    /// Returns the number of exits, not counting internal exits.
+    pub(super) fn exit_count(&self) -> usize {
+        self.names.len()
+    }
+
     /// Returns the name of `exit`.
     pub(super) fn name(&self, exit: ExitId) -> &str {
         &self.names[exit.get()]
@@ -1152,7 +1514,7 @@ impl ExitRoutes {
     }
 }
 
-/// One lane of a region: its driver, and everything its host keeps for it.
+/// One lane of a region, or a sub-region: its driver, and everything its host keeps for it.
 pub(super) struct Lane<D>
 where
     D: RegionDriver,
@@ -1163,6 +1525,75 @@ where
     routes: ExitRoutes,
     stats: Option<Arc<LaneStats>>,
     work_per_turn: NonZeroUsize,
+    role: LaneRole,
+}
+
+/// What a lane is: one of the region's own lanes, which read the component's input, or a sub-region.
+enum LaneRole {
+    /// One of the region's own lanes, with the phase of its component if the component has sub-regions.
+    Main(Option<HostPhase>),
+
+    /// A sub-region, with the phase of its component.
+    SubRegion(HostPhase),
+}
+
+impl LaneRole {
+    /// Records that the lane's input ended, and returns the policy it finishes with, or `None` if it stops without
+    /// finishing.
+    ///
+    /// The input of one of the region's own lanes ends when the component's does: the component is shutting down. A
+    /// sub-region's input ends once nothing routes to it any more, when it retires, or once every region that feeds it
+    /// stopped, when the component shuts down or failed.
+    fn input_ended(&self) -> Option<DrainPolicy> {
+        match self {
+            Self::Main(phase) => {
+                if let Some(phase) = phase {
+                    phase.shut_down();
+                }
+                Some(DrainPolicy::Shutdown)
+            }
+            Self::SubRegion(phase) => phase.finish_policy(),
+        }
+    }
+
+    /// Records that the lane failed, which fails its component.
+    fn failed(&self) {
+        match self {
+            Self::Main(Some(phase)) | Self::SubRegion(phase) => phase.fail(),
+            Self::Main(None) => {}
+        }
+    }
+}
+
+/// What a lane reads its batches from.
+pub(super) enum LaneInput {
+    /// One of the component's input channels, which the topology feeds.
+    Topology(EventsConsumer),
+
+    /// A sub-region's input, which the other regions of its component feed through their internal exits.
+    Internal(mpsc::Receiver<EventsBuffer>),
+}
+
+impl LaneInput {
+    /// Waits for the next batch, or returns `None` once the input ended.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel-safe.
+    async fn next(&mut self) -> Option<EventsBuffer> {
+        match self {
+            Self::Topology(consumer) => consumer.next().await,
+            Self::Internal(receiver) => receiver.recv().await,
+        }
+    }
+
+    /// Returns the number of batches waiting.
+    fn queued(&self) -> usize {
+        match self {
+            Self::Topology(consumer) => consumer.queued(),
+            Self::Internal(receiver) => receiver.len(),
+        }
+    }
 }
 
 /// What a lane waits on for its admission point's source clock to reset: the clock's epoch channel, which keeps the
@@ -1186,9 +1617,27 @@ impl<D> Lane<D>
 where
     D: RegionDriver,
 {
-    /// Runs the lane as one task of a region with lanes, until its input ends, or its coordinator is gone.
-    async fn run_as_lane(
-        self, end: LaneEnd<D::Control>, input: EventsConsumer, dispatcher: &EventsDispatcher,
+    /// Creates the lane of a sub-region, which runs `driver` on one lane, with no admission point and no statistics.
+    pub(super) fn sub_region(
+        driver: D, exit_names: Arc<[String]>, work_per_turn: NonZeroUsize, turn_budget: Budget,
+        telemetry: HostTelemetry, internal: InternalExits, phase: HostPhase,
+    ) -> Self {
+        let context = LaneContext::ONE;
+        Self {
+            context,
+            runner: Runner::new(driver, exit_names.len(), turn_budget, telemetry, None, internal),
+            admission: None,
+            routes: ExitRoutes::new(exit_names, context),
+            stats: None,
+            work_per_turn,
+            role: LaneRole::SubRegion(phase),
+        }
+    }
+
+    /// Runs the lane as one task of a region with lanes, or as a sub-region, until its input ends, or its coordinator
+    /// is gone.
+    pub(super) async fn run_as_lane(
+        self, end: LaneEnd<D::Control>, input: LaneInput, dispatcher: &EventsDispatcher,
     ) -> LaneOutcome {
         let (control, probes, finish) = end.into_parts();
         let mut liveness = Liveness::Lane(probes);
@@ -1204,8 +1653,21 @@ where
 
     /// Runs the lane until its input ends and it has finished, or until its coordinator is gone.
     async fn run(
-        mut self, mut input: EventsConsumer, dispatcher: &EventsDispatcher, liveness: &mut Liveness,
-        control: &mut ControlSource<D::Control>,
+        mut self, input: LaneInput, dispatcher: &EventsDispatcher, liveness: &mut Liveness,
+        control: &mut ControlSource<D>,
+    ) -> Result<(), GenericError> {
+        let outcome = self.run_until_stopped(input, dispatcher, liveness, control).await;
+        if outcome.is_err() {
+            // Before the lane drops its senders to sub-regions, when it returns, so that a sub-region whose input ends
+            // because of it stops without finishing.
+            self.role.failed();
+        }
+        outcome
+    }
+
+    async fn run_until_stopped(
+        &mut self, mut input: LaneInput, dispatcher: &EventsDispatcher, liveness: &mut Liveness,
+        control: &mut ControlSource<D>,
     ) -> Result<(), GenericError> {
         // Timers are armed from the driver's state before every wait, and only reset when what they wait for changes.
         let deadline_timer = sleep_until(Instant::now());
@@ -1232,7 +1694,8 @@ where
             .map(|clock| wait_for_reset(clock.subscribe()));
 
         let mut input_open = true;
-        let mut finishing = false;
+        // The policy the lane finishes with, once it started finishing.
+        let mut finishing = None;
         // Whether a turn of input ended, by a batch, a heartbeat, or a hold that expired, and the driver has not been
         // told yet: it is told once no call is yielded.
         let mut turn_owed = false;
@@ -1245,6 +1708,9 @@ where
         debug!(exits = self.routes.names.len(), lane = %self.context, "Region host started.");
 
         loop {
+            if let Some(e) = control.failure.take() {
+                return Err(e);
+            }
             if control.abandoned {
                 debug!(lane = %self.context, "Region lane's coordinator is gone. Stopping the lane.");
                 return Ok(());
@@ -1279,16 +1745,26 @@ where
                     break;
                 }
 
-                if finishing {
-                    // A panic ended the finish before it was done, and the driver continues: call `finish` again, which
-                    // resumes the work the panic ended. Let other tasks run first, since nothing here waits.
-                    debug!("Region host finish was ended by a panic. Finishing the region again...");
-                    consume_budget().await;
-                } else {
-                    debug!("Region host input ended. Finishing the region...");
-                    finishing = true;
-                }
-                self.runner.finish()?;
+                let policy = match finishing {
+                    Some(policy) => {
+                        // A panic ended the finish before it was done, and the driver continues: call `finish` again,
+                        // which resumes the work the panic ended. Let other tasks run first, since nothing here waits.
+                        debug!("Region host finish was ended by a panic. Finishing the region again...");
+                        consume_budget().await;
+                        policy
+                    }
+                    None => {
+                        let Some(policy) = self.role.input_ended() else {
+                            debug!("Region sub-region's input ended after its component failed. Stopping it.");
+                            control.abandoned = true;
+                            return Ok(());
+                        };
+                        debug!("Region host input ended. Finishing the region...");
+                        finishing = Some(policy);
+                        policy
+                    }
+                };
+                self.runner.finish(policy)?;
                 self.dispatch(dispatcher, liveness, control).await?;
                 continue;
             }
@@ -1429,7 +1905,7 @@ where
     /// Returns `true` if it processed a heartbeat, which counts as a turn of input.
     async fn heartbeat(
         &mut self, kind: Heartbeat, dispatcher: &EventsDispatcher, liveness: &mut Liveness,
-        control: &mut ControlSource<D::Control>,
+        control: &mut ControlSource<D>,
     ) -> Result<bool, GenericError> {
         let Some(admission) = &self.admission else {
             return Ok(false);
@@ -1448,7 +1924,7 @@ where
     }
 
     async fn dispatch(
-        &mut self, dispatcher: &EventsDispatcher, liveness: &mut Liveness, control: &mut ControlSource<D::Control>,
+        &mut self, dispatcher: &EventsDispatcher, liveness: &mut Liveness, control: &mut ControlSource<D>,
     ) -> Result<(), GenericError> {
         dispatch(&mut self.runner, &mut self.routes, dispatcher, liveness, control).await
     }
@@ -1467,13 +1943,15 @@ enum Heartbeat {
 /// Sends every buffer waiting in the runner's outbox, in order.
 ///
 /// Each buffer goes where its exit's routing sends it ([`ExitRoutes::route`]); one that does not fit its exit's
-/// routing fails the lane. Buffers written back to back to lanes of a keyed exit's target are tried first, without
-/// waiting (see [`send_keyed`]); every other send is awaited. While a send waits for downstream, this keeps answering
-/// liveness probes and handling control messages. The output of a control message is queued behind the buffers already
-/// waiting, and sent before this returns. A lane whose coordinator is gone stops sending.
+/// routing fails the lane. A buffer written to an internal exit goes to its sub-region's input (see
+/// [`send_internal`]). Buffers written back to back to lanes of a keyed exit's target are tried first, without waiting
+/// (see [`send_keyed`]); every other send is awaited. While a send waits for downstream, this keeps answering liveness
+/// probes and handling control messages. The output of a control message is queued behind the buffers already
+/// waiting, and sent before this returns. A lane whose coordinator is gone stops sending. Once everything was sent,
+/// the lane disconnects from every sub-region its driver no longer routes to.
 async fn dispatch<D>(
     runner: &mut Runner<D>, routes: &mut ExitRoutes, dispatcher: &EventsDispatcher, liveness: &mut Liveness,
-    control: &mut ControlSource<D::Control>,
+    control: &mut ControlSource<D>,
 ) -> Result<(), GenericError>
 where
     D: RegionDriver,
@@ -1482,11 +1960,12 @@ where
         if control.abandoned {
             return Ok(());
         }
-        let sent = match lane {
-            Some(lane) if routes.is_keyed(exit) => {
+        let sent = match (sub_region_of(routes.exit_count(), exit), lane) {
+            (Some(key), _) => send_internal(key, buffer, runner, liveness, control).await?,
+            (None, Some(lane)) if routes.is_keyed(exit) => {
                 send_keyed((exit, lane, buffer), runner, routes, dispatcher, liveness, control).await?
             }
-            _ => {
+            (None, _) => {
                 let (exit_name, route) = routes.route(exit, lane)?;
                 let send = async {
                     match route {
@@ -1502,7 +1981,41 @@ where
         }
     }
 
+    runner.settle_routes();
     Ok(())
+}
+
+/// Sends a buffer the driver wrote to the internal exit of the sub-region `key` to the sub-region's input, awaiting the
+/// send as any other is (see [`await_send`]). A sub-region runs on one lane, so a lane the driver named is ignored.
+///
+/// Returns `false` if the lane's coordinator went away while the send waited.
+///
+/// # Errors
+///
+/// If the lane is not connected to the sub-region, its driver wrote to a sub-region it does not list among its
+/// routes, and an error is returned, which fails the component rather than dropping the buffer.
+async fn send_internal<D>(
+    key: SubRegionKey, buffer: EventsBuffer, runner: &mut Runner<D>, liveness: &mut Liveness,
+    control: &mut ControlSource<D>,
+) -> Result<bool, GenericError>
+where
+    D: RegionDriver,
+{
+    let exit = runner.internal.get(key).cloned().ok_or_else(|| {
+        generic_error!(
+            "The region's driver wrote to sub-region {}, which it does not route to. A driver lists every sub-region \
+             it writes to among its routes.",
+            key
+        )
+    })?;
+    let name = Arc::clone(&exit.name);
+    let send = async move {
+        exit.input
+            .send(buffer)
+            .await
+            .map_err(|_| generic_error!("Sub-region '{}' stopped before it received the buffer.", exit.name))
+    };
+    await_send(send, &name, runner, liveness, control).await
 }
 
 /// Sends the buffers the driver wrote back to back to lanes of the target of a keyed exit, from `first`, the exit,
@@ -1516,7 +2029,7 @@ where
 /// Returns `false` if the lane's coordinator went away while a send waited.
 async fn send_keyed<D>(
     first: (ExitId, u16, EventsBuffer), runner: &mut Runner<D>, routes: &mut ExitRoutes, dispatcher: &EventsDispatcher,
-    liveness: &mut Liveness, control: &mut ControlSource<D::Control>,
+    liveness: &mut Liveness, control: &mut ControlSource<D>,
 ) -> Result<bool, GenericError>
 where
     D: RegionDriver,
@@ -1564,7 +2077,7 @@ where
 /// A send that fails, as one to a component that stopped does, is logged, and its buffer dropped. Returns `false` if
 /// the lane's coordinator went away while the send waited.
 async fn await_send<D, F>(
-    send: F, exit_name: &str, runner: &mut Runner<D>, liveness: &mut Liveness, control: &mut ControlSource<D::Control>,
+    send: F, exit_name: &str, runner: &mut Runner<D>, liveness: &mut Liveness, control: &mut ControlSource<D>,
 ) -> Result<bool, GenericError>
 where
     D: RegionDriver,
@@ -1635,6 +2148,9 @@ where
 
     // Where the time of every call into the driver is counted, if the lane has statistics.
     stats: Option<Arc<LaneStats>>,
+
+    // The lane's connections to the inputs of the sub-regions its driver routes to.
+    internal: InternalExits,
 }
 
 /// Keeps the host from spinning on a past deadline that the driver kept after time-driven work that did nothing.
@@ -1678,10 +2194,16 @@ where
 {
     fn new(
         driver: D, exit_count: usize, turn_budget: Budget, telemetry: HostTelemetry, stats: Option<Arc<LaneStats>>,
+        internal: InternalExits,
     ) -> Self {
+        let sink = if internal.has_sub_regions() {
+            ExitSink::with_sub_regions(exit_count)
+        } else {
+            ExitSink::new(exit_count)
+        };
         Self {
             driver,
-            sink: ExitSink::new(exit_count),
+            sink,
             outbox: VecDeque::new(),
             turn_budget,
             pending: None,
@@ -1692,6 +2214,15 @@ where
             last_call_worked: false,
             deadlines: DeadlineGuard::default(),
             stats,
+            internal,
+        }
+    }
+
+    /// Disconnects from every sub-region the driver no longer routes to, if its routes may have shrunk, once
+    /// everything it wrote was sent.
+    fn settle_routes(&mut self) {
+        if self.outbox.is_empty() {
+            self.internal.settle(self.driver.sub_region_routes());
         }
     }
 
@@ -1786,6 +2317,8 @@ where
         match self.driver.reset_after_panic(&panic) {
             PanicOutcome::Continue => {
                 warn!(site = %panic.site(), "Region recovered from a panic and continues.");
+                // A driver that rebuilt may have released generations, and their routes with them.
+                self.internal.unsettle();
                 Ok(())
             }
             PanicOutcome::Fail(e) => {
@@ -1865,18 +2398,29 @@ where
         Ok(())
     }
 
-    fn finish(&mut self) -> Result<(), GenericError> {
+    fn finish(&mut self, policy: DrainPolicy) -> Result<(), GenericError> {
         let called = self.call(PanicSite::Finish, None, |driver, turn, exits| {
-            driver.finish(turn, exits, DrainPolicy::Shutdown)
+            driver.finish(turn, exits, policy)
         });
         self.completed(called, Pending::Finish)
     }
 
-    /// Applies a control message, acknowledges it, and publishes telemetry.
+    /// Applies a control message, connects to every sub-region the driver routes to now, acknowledges the message, and
+    /// publishes telemetry.
+    ///
+    /// A driver that routes to a sub-region that does not run fails the component.
     fn control(&mut self, (message, reply): (D::Control, ControlReply)) -> Result<(), GenericError> {
         let called = self.call(PanicSite::Control, None, |driver, turn, exits| {
             driver.control(turn, message, exits)
         });
+
+        // Before the acknowledgment: whoever sent the message keeps every sub-region it started running until then.
+        if let Called::Returned(_) = called {
+            if let Err(e) = self.internal.connect(self.driver.sub_region_routes()) {
+                reply.reject(generic_error!("{:#}", e));
+                return Err(e);
+            }
+        }
 
         match called {
             Called::Returned(Ok(())) => reply.ack(),
@@ -1903,17 +2447,21 @@ where
     fn publish(&mut self) -> Result<(), GenericError> {
         self.last_publish = Instant::now();
         self.unpublished = false;
-        match self.call(PanicSite::PublishTelemetry, None, |driver, _, _| {
+        let published = match self.call(PanicSite::PublishTelemetry, None, |driver, _, _| {
             driver.publish_telemetry()
         }) {
             Called::Returned(()) => Ok(()),
             Called::Panicked(panic) => self.recover(panic),
-        }
+        };
+        // A driver releases generations that retired as it publishes, and their routes with them.
+        self.internal.unsettle();
+        self.settle_routes();
+        published
     }
 }
 
 /// Returns the message a panic carried.
-fn panic_message(payload: &(dyn Any + Send)) -> String {
+pub(super) fn panic_message(payload: &(dyn Any + Send)) -> String {
     payload
         .downcast_ref::<&str>()
         .map(|message| (*message).to_owned())
