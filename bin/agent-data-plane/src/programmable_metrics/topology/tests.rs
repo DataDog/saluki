@@ -500,26 +500,19 @@ async fn each_region_takes_what_the_native_transforms_it_replaces_held_on_the_wa
         // Enrichment alone: the region holds what the native `metrics_enrich` did, and its fan-out to the main output
         // is lowered from the encoder, whose interconnect remains.
         ("otlp without dogstatsd", &[("metrics_enrich", 1)]),
+        // The empty post-aggregation filter is a `split` on `true`, which costs nothing, so the post-aggregation filter
+        // fuses with host enrichment and enrichment.
         (
             "connected with host tags",
-            &[
-                ("dsd_pre_aggregation", 4),
-                ("dsd_agg", 1),
-                ("dsd_post_agg_filter_region", 1),
-                ("metrics_enrich", 1),
-            ],
+            &[("dsd_pre_aggregation", 4), ("dsd_agg", 1), ("metrics_enrich", 2)],
         ),
-        // Enrichment, then the routing filter on the way to its encoder.
+        // The post-aggregation filter, enrichment, then the routing filter on the way to its encoder.
         (
             "one routing group",
-            &[
-                ("dsd_pre_aggregation", 4),
-                ("dsd_agg", 1),
-                ("dsd_post_agg_filter_region", 1),
-                ("metrics_enrich", 2),
-            ],
+            &[("dsd_pre_aggregation", 4), ("dsd_agg", 1), ("metrics_enrich", 3)],
         ),
-        // The two filters are parallel: one path runs through enrichment and one of them.
+        // The two filters are parallel: one path runs through enrichment and one of them. Their wider fan-out keeps
+        // enrichment from the post-aggregation filter.
         (
             "two routing groups, a shared group, and an endpoint with empty lists",
             &[
@@ -834,11 +827,12 @@ async fn region_bounds_are_their_kernels_native_bounds_and_their_buffers_and_the
     let counts = 128 * (32 + 8 + 8 + 8);
     let scratch = |exits: usize| 1024 * 32 + exits * (size_of::<u64>() + size_of::<Option<EventsBuffer>>());
     // Each region, with its exits (where it sends, then the outputs it keeps an idle exit to for later generations),
-    // the registers of the largest entry of its boot program, its decisions (the listener filterlist; the
-    // post-aggregation filter with the client telemetry tap's copy, and the policy fan-out) with the exits of the
-    // widest, its memoized decisions (none: each filter matches one intake-name leaf, too little to memoize, and the
-    // policy fan-out has no predicate), each of its kernels with the native transform it is, and the `split` of each
-    // predicate its decisions hold.
+    // the registers of the largest entry of its boot program, its decisions (the fan-out of the post-aggregation
+    // filter to the client telemetry tap, and the policy fan-out) with the exits of the widest, its memoized decisions
+    // (none: neither fan-out has a predicate), and each of its kernels with the native transform it is. The default
+    // listener filterlist and post-aggregation filter are empty: each is a `split` on `true`, which keeps every metric
+    // and compiles to no decision and no predicate, so the region holding it neither steps a decision for it nor
+    // declares a predicate (a gateway's predicate is in the gateway test below).
     type Region<'a> = (
         &'a str,
         &'a [&'a str],
@@ -846,7 +840,6 @@ async fn region_bounds_are_their_kernels_native_bounds_and_their_buffers_and_the
         (usize, usize),
         usize,
         &'a [(&'a str, &'a str)],
-        &'a [&'a str],
     );
     let regions: [Region; 2] = [
         (
@@ -858,8 +851,8 @@ async fn region_bounds_are_their_kernels_native_bounds_and_their_buffers_and_the
                 "dd_metrics_encode",
                 "mrf_metrics_encode",
             ],
-            4,
-            (1, 2),
+            3,
+            (0, 0),
             0,
             &[
                 ("dsd_enrich", "dsd_enrich"),
@@ -867,16 +860,14 @@ async fn region_bounds_are_their_kernels_native_bounds_and_their_buffers_and_the
                 ("dsd_no_agg_split", "dsd_no_agg_split"),
                 ("dsd_tag_filterlist", "dsd_tag_filterlist"),
             ],
-            &["dsd_prefix_filter"],
         ),
         (
             "metrics_enrich",
             &["dsd_client_telemetry", "dd_metrics_encode", "mrf_metrics_encode"],
             4,
-            (2, 3),
+            (2, 2),
             0,
             &[("metrics", "metrics_enrich")],
-            &["dsd_post_agg_filter"],
         ),
     ];
     let slot_names = topologies
@@ -886,7 +877,7 @@ async fn region_bounds_are_their_kernels_native_bounds_and_their_buffers_and_the
         .map(|slot| slot.name.as_str())
         .collect::<Vec<_>>();
     assert_eq!(slot_names, ["dsd_pre_aggregation", "dsd_agg", "metrics_enrich"]);
-    for (region, exits, registers, (decisions, widest), memoized, kernels, splits) in regions {
+    for (region, exits, registers, (decisions, widest), memoized, kernels) in regions {
         let index = slot_names.iter().position(|name| *name == region).unwrap();
         let slot = &topologies.frame.slots()[index];
         let slot_exits = slot.exits.iter().map(|exit| exit.name.as_str()).collect::<Vec<_>>();
@@ -900,8 +891,12 @@ async fn region_bounds_are_their_kernels_native_bounds_and_their_buffers_and_the
         let program_decisions = topologies.programs[index].decisions();
         assert_eq!(program_decisions.len(), decisions, "`{}`", region);
         assert_eq!(
-            program_decisions.iter().map(|decision| decision.exits.len()).max(),
-            Some(widest),
+            program_decisions
+                .iter()
+                .map(|decision| decision.exits.len())
+                .max()
+                .unwrap_or_default(),
+            widest,
             "`{}`",
             region
         );
@@ -911,19 +906,20 @@ async fn region_bounds_are_their_kernels_native_bounds_and_their_buffers_and_the
             "`{}`",
             region
         );
+        // A region without a decision keeps no decision scratch.
+        let kept = if decisions == 0 {
+            0
+        } else {
+            memoized * memo + decisions * counts + scratch(widest)
+        };
         assert_eq!(
             firm,
-            exits.len() * exit_buffer
-                + registers * register_buffer
-                + memoized * memo
-                + decisions * counts
-                + scratch(widest),
+            exits.len() * exit_buffer + registers * register_buffer + kept,
             "`{}`",
             region
         );
 
-        // Each kernel declares what its native transform does, but for the transform's own struct, and each predicate
-        // what it holds: its lists, which the default configuration leaves empty, and itself.
+        // Each kernel declares what its native transform does, but for the transform's own struct.
         let mut nodes = region_bounds
             .subcomponents()
             .into_iter()
@@ -931,20 +927,8 @@ async fn region_bounds_are_their_kernels_native_bounds_and_their_buffers_and_the
             .collect::<Vec<_>>();
         nodes.sort();
         let mut expected = kernels.iter().map(|(node, _)| *node).collect::<Vec<_>>();
-        expected.extend_from_slice(splits);
         expected.sort();
         assert_eq!(nodes, expected, "`{}`", region);
-        for split in splits {
-            let predicate = bounds_at(region_bounds, &[split]);
-            assert_eq!(list_bytes(predicate), 0, "`{}` in `{}`", split, region);
-            assert_eq!(
-                predicate.total_firm_limit_bytes(),
-                size_of::<SharedPredicate>(),
-                "`{}` in `{}`",
-                split,
-                region
-            );
-        }
         for (kernel, native) in kernels {
             let kernel_bounds = bounds_at(region_bounds, &[kernel]);
             assert_eq!(
@@ -983,8 +967,8 @@ async fn region_bounds_are_their_kernels_native_bounds_and_their_buffers_and_the
             .total_firm_limit_bytes(),
         100_000 * saluki_metric_kernels::tag_projection::CONTEXT_CACHE_ENTRY_BYTES
     );
-    // The post-aggregation filter, which runs as a decision of the `metrics_enrich` region, declares nothing natively
-    // but its struct; the region declares its predicate, as above.
+    // The post-aggregation filter, empty by default, declares nothing natively but its struct, and the region nothing
+    // for it.
     assert!(declared_without_structs(at(&legacy, "dsd_post_agg_filter")).is_empty());
 
     // Every other component declares what it does natively, the hosts as their native encoders and forwarders do.
@@ -1026,32 +1010,28 @@ async fn gateways_run_in_regions_and_declare_their_lists_as_the_legacy_gateways_
     // region): the legacy gateways are transforms of their own, with an interconnect each, where the plan-driven
     // topology runs them as decisions of its regions. The DogStatsD-only topology has nine legacy transforms, six of
     // which the regions replace (see above); each gateway adds a legacy transform. The policy region is memoized where
-    // its predicates cost at least `MEMO_COST_FLOOR` (25 ns): with a routing filter (25 ns each), not with a failover
-    // gateway alone (13 and 11 ns); the filters on one intake-name leaf never are.
+    // its predicates cost at least `MEMO_COST_FLOOR` (25 ns): with two routing filters, a prefix match and an exact
+    // match on the intake name, not with one exact match or a failover gateway alone; the filters on one intake-name
+    // leaf never are.
     let cases: [GatewayCase; 4] = [
-        // The legacy filter keeps a copy of its source's allowlist; Multi-Region Failover's predicate holds it twice,
-        // in its emptiness test and its name match.
+        // The legacy filter keeps a copy of its source's allowlist; Multi-Region Failover's predicate holds it once, in
+        // its name match: its emptiness test, over a literal allowlist, normalizes to a constant.
         (
             "multi-region failover mirroring an allowlist",
             &["dsd_pre_aggregation", "dsd_agg", "metrics_enrich"],
             10,
-            &[("mrf_metrics_gateway", &["requests.count", "orders.total"], 1, 2)],
+            &[("mrf_metrics_gateway", &["requests.count", "orders.total"], 1, 1)],
             &[0, 0, 0],
         ),
-        // A routing filter's predicate holds its names and prefixes once, as the legacy filter's source does. The
-        // policy region (the fan-out's copy and the memoized routing filter, 15 ns each) leaves no room for the
-        // post-aggregation filter (36 ns with its fan-out's copy) beside enrichment within the 64 ns floor: 66 ns.
+        // A routing filter's predicate holds its names and prefixes once, as the legacy filter's source does. The empty
+        // post-aggregation filter is a `split` on `true`, which costs nothing, and its fan-out's copy fits beside
+        // enrichment and the routing filter, an exact match too cheap to memoize, within the 64 ns budget.
         (
             "one routing group",
-            &[
-                "dsd_pre_aggregation",
-                "dsd_agg",
-                "dsd_post_agg_filter_region",
-                "metrics_enrich",
-            ],
+            &["dsd_pre_aggregation", "dsd_agg", "metrics_enrich"],
             10,
             &[("metrics_routing_filter_0", &["orders.total"], 1, 1)],
-            &[0, 0, 0, 1],
+            &[0, 0, 0],
         ),
         // Two groups (the endpoint with empty lists has none, and two endpoints share one), ordered by their lists,
         // whose wider fan-out keeps enrichment from the post-aggregation filter.
