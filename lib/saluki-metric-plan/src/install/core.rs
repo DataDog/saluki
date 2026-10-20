@@ -15,10 +15,9 @@ use std::{
     time::Duration,
 };
 
-#[cfg(test)]
-use saluki_core::execution::AdmissionPointId;
 use saluki_core::execution::{
-    AdmissionTime, GenerationId, GenerationIdAllocator, GenerationRef, GenerationToken, RetireNotifier,
+    AdmissionPointId, AdmissionTime, GenerationId, GenerationIdAllocator, GenerationRef, GenerationToken,
+    RetireNotifier, SubRegionKey,
 };
 
 use self::artifacts::{ArtifactState, Settle};
@@ -33,14 +32,14 @@ use super::resources::{
     ResourceTable, ResourcesRevision,
 };
 use super::{
-    diff::{diff, kernel_reuse, state_bindings, CutPlan},
+    diff::{diff, kernel_reuse, retirements, state_bindings, CutPlan, SlotKernels},
     lifecycle::{GenerationState, LifecycleEvent},
 };
 use crate::{
     canonical::PlanHash,
     compile::{
-        compile, compile_unvalidated, CompileError, CompiledPlan, Frame, KernelKey, LeaseTable, LineageKey, Placement,
-        PlacementError, RegionProgram, RewriteRecord, SlotId,
+        compile, compile_unvalidated, state_owners, CompileError, CompiledPlan, DerivedPoints, Frame, KernelKey,
+        LeaseTable, LineageKey, Placement, PlacementError, RegionKey, RegionProgram, RewriteRecord, SlotId,
     },
     elaborate::BindingUses,
     extension::TransitionClass,
@@ -206,6 +205,45 @@ pub struct SlotPrepare {
     /// The generation's lease table: the lease of every output its plan declares, which the slot's exits to outputs
     /// write into each buffer's header. Every slot of a generation shares one table.
     pub leases: Arc<LeaseTable>,
+
+    /// The key of each sub-region of the slot the generation runs, by its region, which every region of the slot
+    /// writes to through the internal exit of the key ([`PrepareRegion::with_sub_region_keys`]).
+    ///
+    /// [`PrepareRegion::with_sub_region_keys`]: crate::runtime::PrepareRegion::with_sub_region_keys
+    pub sub_region_keys: Vec<(RegionKey, SubRegionKey)>,
+
+    /// What each sub-region of the slot prepares for the generation: those it runs, in region order, then those of the
+    /// active generation it only retires instances of at its cut.
+    pub sub_regions: Vec<SubRegionPrepare>,
+}
+
+/// What one sub-region of a slot prepares for a generation: the region of a state owner the slot runs beside its main
+/// region, in a task of the slot's component, started with the first generation that runs it and retired with the
+/// last.
+#[derive(Clone, Debug)]
+pub struct SubRegionPrepare {
+    /// The sub-region's key in its slot, which stays the sub-region's while any live generation runs its region.
+    pub key: SubRegionKey,
+
+    /// The region.
+    pub region: RegionKey,
+
+    /// The region's program for the generation, or `None` for a region of the active generation the generation does
+    /// not run, whose instances of state it only retires at its cut ([`state`][Self::state]).
+    pub program: Option<Arc<RegionProgram>>,
+
+    /// Whether the program is the active generation's, so the sub-region can alias it.
+    pub unchanged: bool,
+
+    /// The program's kernels that the active generation's program of the region already has.
+    pub reuse: Vec<KernelKey>,
+
+    /// The program's kernels to build, off the data path.
+    pub build: Vec<KernelKey>,
+
+    /// How the sub-region binds the program's state owner, and which of the active generation's instances retire at
+    /// the cut.
+    pub state: Vec<StateBinding>,
 }
 
 /// How a region binds one state owner of a prepared generation to an instance of its state.
@@ -213,6 +251,21 @@ pub struct SlotPrepare {
 pub enum StateBinding {
     /// Bind the state owner to the instance of its lineage that the generation `from` uses: the state carries over.
     Retain {
+        /// The state owner.
+        node: NodeId,
+
+        /// Its lineage.
+        key: LineageKey,
+
+        /// The generation whose instance it binds.
+        from: GenerationId,
+    },
+
+    /// Bind the state owner to the instance of its lineage that the generation `from` uses, as [`Retain`][Self::Retain]
+    /// does, and make the instance's boundary flush at the prepared generation's cut: the state owner is upstream of
+    /// one the cut affects, so it closes exactly the buckets ending by the cut's time under the generation it served,
+    /// before any later flush.
+    Boundary {
         /// The state owner.
         node: NodeId,
 
@@ -424,16 +477,19 @@ pub enum Action {
         at: AdmissionTime,
     },
 
-    /// Cancel the armed cut of `generation`: lock every admission point, those that feed no state owner first, and, if
-    /// none stamped the new generation, publish `AdmissionSchedule::Steady(old)` and report
-    /// [`InstallerCore::cut_cancelled`]; otherwise, or if the locks are not free in time, report
-    /// [`InstallerCore::cut_cancel_refused`].
+    /// Cancel the armed cut of `generation`: lock every admission point in `lock_order`, and, if none stamped the new
+    /// generation, publish `AdmissionSchedule::Steady(old)` and report [`InstallerCore::cut_cancelled`]; otherwise, or
+    /// if the locks are not free in time, report [`InstallerCore::cut_cancel_refused`].
     CancelCut {
         /// The generation whose cut is cancelled.
         generation: GenerationId,
 
         /// The generation the schedule keeps.
         old: GenerationRef,
+
+        /// Every admission point of the frame, in the order to lock them: those upstream of no state owner of either
+        /// generation first ([`cancel_lock_order`][super::diff::cancel_lock_order]).
+        lock_order: Vec<AdmissionPointId>,
     },
 
     /// Store `AdmissionSchedule::Steady(generation)`, which finalizes its cut: every affected admission point passed
@@ -806,6 +862,8 @@ struct Installed {
     /// The plan's validation report, for a rollback that installs the plan again.
     report: ValidationReport,
     programs: Vec<Arc<RegionProgram>>,
+    /// The program of every sub-region the generation runs, by slot and region.
+    sub_programs: Vec<Arc<RegionProgram>>,
     /// Where each node of the compiled plan runs, which says what a cut of its state owners is armed over.
     placement: Placement,
     /// The rewrites compilation considered, applied or skipped.
@@ -1005,8 +1063,84 @@ pub struct InstallerCore {
     transactions: TransactionState,
     /// The credits the event being handled released, which its last action returns.
     released_credits: Vec<CreditKey>,
+    /// The derived point of every state owner a held candidate or a live generation has, which compilation stamps
+    /// each one's time-driven output with.
+    derived: DerivedPoints,
+    /// The state owners of each live generation, whose derived points stay assigned while it lives.
+    derived_users: BTreeMap<GenerationId, BTreeSet<NodeId>>,
+    /// The key of every sub-region a live generation runs.
+    sub_region_keys: SubRegionKeys,
     #[cfg(test)]
     cut_override: Option<Box<CutOverride>>,
+}
+
+/// The keys of the sub-regions of every slot, each kept while a live generation runs its region.
+#[derive(Debug, Default)]
+struct SubRegionKeys {
+    keys: BTreeMap<(SlotId, NodeId), SubRegionKey>,
+    users: BTreeMap<GenerationId, BTreeSet<(SlotId, NodeId)>>,
+}
+
+impl SubRegionKeys {
+    /// Gives every sub-region `generation` runs a key: the key it has, or the lowest one its slot does not use.
+    fn assign(&mut self, generation: GenerationId, programs: &[Arc<RegionProgram>]) {
+        let regions = programs
+            .iter()
+            .filter_map(|program| match program.region() {
+                RegionKey::State(node) => Some((program.slot(), node.clone())),
+                RegionKey::Main => None,
+            })
+            .collect::<BTreeSet<_>>();
+        for region in &regions {
+            if self.keys.contains_key(region) {
+                continue;
+            }
+            let used = self
+                .keys
+                .iter()
+                .filter(|((slot, _), _)| *slot == region.0)
+                .map(|(_, key)| key.get())
+                .collect::<BTreeSet<_>>();
+            let key = (0..=u16::MAX).find(|key| !used.contains(key)).unwrap_or(u16::MAX);
+            self.keys.insert(region.clone(), SubRegionKey::new(key));
+        }
+        self.users.insert(generation, regions);
+    }
+
+    /// Returns the key of the sub-region of `node` in `slot`, if a live generation runs it.
+    fn key(&self, slot: SlotId, node: &NodeId) -> Option<SubRegionKey> {
+        self.keys.get(&(slot, node.clone())).copied()
+    }
+
+    /// Releases what a generation that retired held: the keys of the sub-regions no live generation runs any more,
+    /// which a later sub-region of their slots may reuse.
+    fn release(&mut self, generation: GenerationId) {
+        self.users.remove(&generation);
+        let held = self.users.values().flatten().collect::<BTreeSet<_>>();
+        self.keys.retain(|region, _| held.contains(region));
+    }
+}
+
+/// Returns every program of a generation: its main programs, in slot order, then its sub-regions'.
+fn all_programs(programs: &[Arc<RegionProgram>], sub_programs: &[Arc<RegionProgram>]) -> Vec<Arc<RegionProgram>> {
+    programs.iter().chain(sub_programs).cloned().collect()
+}
+
+/// Returns, per slot, the kernels every region of the slot reuses and builds, for the credits of a slot's new kernel
+/// instances.
+fn kernels_per_slot(reuse: &[SlotKernels]) -> Vec<SlotKernels> {
+    let mut slots: Vec<SlotKernels> = Vec::new();
+    for region in reuse {
+        match slots.iter_mut().find(|slot| slot.slot == region.slot) {
+            Some(slot) => {
+                slot.reuse.extend(region.reuse.iter().cloned());
+                slot.build.extend(region.build.iter().cloned());
+                slot.release.extend(region.release.iter().cloned());
+            }
+            None => slots.push(region.clone()),
+        }
+    }
+    slots
 }
 
 impl fmt::Debug for InstallerCore {
@@ -1074,6 +1208,9 @@ impl InstallerCore {
             resources: ResourceTable::with_bounds(bounds),
             transactions: TransactionState::default(),
             released_credits: Vec::new(),
+            derived: DerivedPoints::new(),
+            derived_users: BTreeMap::new(),
+            sub_region_keys: SubRegionKeys::default(),
             #[cfg(test)]
             cut_override: None,
         };
@@ -1118,6 +1255,7 @@ impl InstallerCore {
             bindings: queued.bindings,
             report: queued.report,
             programs: programs.clone(),
+            sub_programs: queued.compiled.sub_programs.clone(),
             placement: queued.compiled.placement,
             rewrites: queued.compiled.rewrites.into(),
         });
@@ -1494,6 +1632,9 @@ impl InstallerCore {
     pub fn retired(&mut self, generation: GenerationId) -> Vec<Action> {
         let mut actions = Vec::new();
         self.live.remove(&generation);
+        self.sub_region_keys.release(generation);
+        self.derived_users.remove(&generation);
+        self.prune_derived();
         self.release_retired(generation, &mut actions);
         if self.records.get(&generation).map(|record| record.state) == Some(GenerationState::Draining) {
             self.transition(generation, LifecycleEvent::Retired, None);
@@ -1660,28 +1801,38 @@ impl InstallerCore {
         self.frame.slots().iter().map(|slot| slot.id).collect()
     }
 
-    /// Validates, places, and compiles a candidate.
-    fn queue(&self, id: CandidateId, candidate: Candidate) -> Result<Queued, Rejection> {
+    /// Keeps the derived points of the state owners of every live generation and of the candidate waiting: those no
+    /// generation may still stamp, and no compiled candidate holds, go, and later state owners may take their IDs.
+    fn prune_derived(&mut self) {
+        let mut held = self.derived_users.values().flatten().cloned().collect::<BTreeSet<_>>();
+        if let Some(pending) = &self.pending {
+            held.extend(state_owners(&pending.compiled.plan, &self.registry));
+        }
+        self.derived.retain(|node| held.contains(node));
+    }
+
+    /// Validates, places, and compiles a candidate, with the derived points its state owners have, or are assigned
+    /// now.
+    fn queue(&mut self, id: CandidateId, candidate: Candidate) -> Result<Queued, Rejection> {
         let plan_hash = candidate.plan.hash().map_err(|error| Rejection::Unhashable {
             message: error.to_string(),
         })?;
         // The default program runs even when validation reports errors in it, reported degraded by the caller: it is
         // what native configuration says, and nothing else could run in its place. An artifact must validate.
+        // A state owner keeps its derived points while any generation runs it, so that a state owner downstream of it
+        // follows the same points across generations.
+        let owners = state_owners(&candidate.plan, &self.registry);
+        self.derived.assign(&self.frame, &owners);
         let compiled = if candidate.report.is_valid() {
             compile(
                 &candidate.plan,
                 &candidate.report,
                 &self.registry,
                 &self.frame,
-                &crate::compile::DerivedPoints::for_plan(&self.frame, &candidate.plan, &self.registry),
+                &self.derived,
             )
         } else if matches!(candidate.origin, Origin::DefaultProgram { .. }) {
-            compile_unvalidated(
-                &candidate.plan,
-                &self.registry,
-                &self.frame,
-                &crate::compile::DerivedPoints::for_plan(&self.frame, &candidate.plan, &self.registry),
-            )
+            compile_unvalidated(&candidate.plan, &self.registry, &self.frame, &self.derived)
         } else {
             return Err(Rejection::Invalid {
                 problems: candidate.report.errors().map(ToString::to_string).collect(),
@@ -1711,6 +1862,13 @@ impl InstallerCore {
         let id = self.ids.next();
         let generation = Arc::new(GenerationToken::with_retire_notifier(id, (self.notifier)(id)));
         self.live.insert(id);
+        self.derived_users.insert(
+            id,
+            state_owners(&queued.compiled.plan, &self.registry)
+                .into_iter()
+                .collect(),
+        );
+        self.sub_region_keys.assign(id, &queued.compiled.sub_programs);
         self.records.insert(
             id,
             GenerationRecord {
@@ -1793,27 +1951,46 @@ impl InstallerCore {
         }
 
         let generation = self.generation(&queued);
-        let active_programs = self.active.as_ref().map(|active| active.programs.clone());
         let active_id = self.active.as_ref().map(|active| active.generation.id());
-        let active = active_id.zip(active_programs.as_deref());
-        let active_programs = active_programs.as_deref();
-        let owners = cut
+        let active_programs = self
+            .active
             .as_ref()
-            .map(|cut: &CutSetup| cut.plan.owners.iter().cloned().collect::<BTreeSet<_>>())
+            .map(|active| all_programs(&active.programs, &active.sub_programs));
+        let candidate_programs = all_programs(&queued.compiled.programs, &queued.compiled.sub_programs);
+        let (owners, boundary) = cut
+            .as_ref()
+            .map(|cut: &CutSetup| {
+                (
+                    cut.plan.owners.iter().cloned().collect::<BTreeSet<_>>(),
+                    cut.plan.boundary.iter().cloned().collect::<BTreeSet<_>>(),
+                )
+            })
             .unwrap_or_default();
-        let bindings = state_bindings(active, &queued.compiled.programs, &owners);
-        let reuse = kernel_reuse(active_programs, &queued.compiled.programs);
-        let resources = self.plan_generation(generation.id(), &queued.plan, active_id, &reuse);
-        let slots = reuse
-            .into_iter()
-            .zip(&queued.compiled.programs)
-            .zip(bindings)
-            .map(|((kernels, program), state)| {
-                let program = match active_programs {
-                    Some(active) if kernels.unchanged => Arc::clone(&active[kernels.slot.get()]),
-                    _ => Arc::clone(program),
-                };
-                SlotPrepare {
+        let active = active_id.zip(active_programs.as_deref());
+        let bindings = state_bindings(active, &candidate_programs, &owners, &boundary);
+        let reuse = kernel_reuse(active_programs.as_deref(), &candidate_programs);
+        let retired = active
+            .map(|active| retirements(active, &candidate_programs, &owners))
+            .unwrap_or_default();
+        let resources = self.plan_generation(generation.id(), &queued.plan, active_id, &kernels_per_slot(&reuse));
+        // The program a region keeps running when it is unchanged.
+        let program_of = |kernels: &SlotKernels, program: &Arc<RegionProgram>| {
+            active_programs
+                .as_deref()
+                .filter(|_| kernels.unchanged)
+                .and_then(|active| {
+                    active
+                        .iter()
+                        .find(|old| old.slot() == kernels.slot && *old.region() == kernels.region)
+                })
+                .map_or_else(|| Arc::clone(program), Arc::clone)
+        };
+        let mut slots = Vec::new();
+        let mut sub_regions = Vec::new();
+        for ((kernels, program), state) in reuse.into_iter().zip(&candidate_programs).zip(bindings) {
+            let program = program_of(&kernels, program);
+            match &kernels.region {
+                RegionKey::Main => slots.push(SlotPrepare {
                     slot: kernels.slot,
                     program,
                     unchanged: kernels.unchanged,
@@ -1821,8 +1998,65 @@ impl InstallerCore {
                     build: kernels.build,
                     state,
                     leases: Arc::clone(&resources.leases),
+                    sub_region_keys: Vec::new(),
+                    sub_regions: Vec::new(),
+                }),
+                RegionKey::State(node) => {
+                    let Some(key) = self.sub_region_keys.key(kernels.slot, node) else {
+                        continue;
+                    };
+                    sub_regions.push((
+                        kernels.slot,
+                        SubRegionPrepare {
+                            key,
+                            region: kernels.region.clone(),
+                            program: Some(program),
+                            unchanged: kernels.unchanged,
+                            reuse: kernels.reuse,
+                            build: kernels.build,
+                            state,
+                        },
+                    ));
                 }
-            })
+            }
+        }
+        // The sub-regions of the active generation that only retire instances at the cut, which the active generation
+        // keeps running until their final flush.
+        for (program, state) in retired {
+            let RegionKey::State(node) = program.region() else {
+                continue;
+            };
+            let Some(key) = self.sub_region_keys.key(program.slot(), node) else {
+                continue;
+            };
+            sub_regions.push((
+                program.slot(),
+                SubRegionPrepare {
+                    key,
+                    region: program.region().clone(),
+                    program: None,
+                    unchanged: false,
+                    reuse: Vec::new(),
+                    build: Vec::new(),
+                    state,
+                },
+            ));
+        }
+        for (slot, sub_region) in sub_regions {
+            let Some(prepare) = slots.iter_mut().find(|prepare| prepare.slot == slot) else {
+                continue;
+            };
+            if sub_region.program.is_some() {
+                prepare
+                    .sub_region_keys
+                    .push((sub_region.region.clone(), sub_region.key));
+            }
+            prepare.sub_regions.push(sub_region);
+        }
+        let sub_programs = slots
+            .iter()
+            .flat_map(|slot| &slot.sub_regions)
+            .filter_map(|sub_region| sub_region.program.clone())
             .collect::<Vec<_>>();
         let programs = slots.iter().map(|slot| Arc::clone(&slot.program)).collect();
         let waiting = slots
@@ -1849,6 +2083,7 @@ impl InstallerCore {
                 bindings: queued.bindings,
                 report: queued.report,
                 programs,
+                sub_programs,
                 placement: queued.compiled.placement.clone(),
                 rewrites: queued.compiled.rewrites.clone().into(),
             },
@@ -1877,7 +2112,8 @@ impl InstallerCore {
     ///
     /// Returns the rejection preparing the candidate after `from` reports.
     fn check_transition(&self, from: &Installed, queued: &Queued) -> Result<Option<CutSetup>, Rejection> {
-        let changes = diff(&from.plan, &queued.plan, &self.registry);
+        let mut changes = diff(&from.plan, &queued.plan, &self.registry);
+        changes.place(&from.placement, &queued.compiled.placement);
         if let Some(owner) = changes
             .state_owners
             .iter()
@@ -1888,7 +2124,10 @@ impl InstallerCore {
                 class: owner.class,
             });
         }
-        let cut = self.plan_cut(changes.cut(), from, queued)?;
+        let cut = changes
+            .cut()
+            .map(|cut| cut.with_boundary(&changes, &from.placement, &queued.compiled.placement));
+        let cut = self.plan_cut(cut, from, queued)?;
         self.check_way_back(queued)?;
         Ok(cut)
     }

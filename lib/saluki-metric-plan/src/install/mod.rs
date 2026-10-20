@@ -25,12 +25,13 @@ mod core;
 pub use self::core::{
     Action, AfterCancel, ArmCut, Boot, Candidate, CandidateId, CutDeferReason, CutInFlight, CutPhase, CutProgress,
     CutStatus, GenerationRecord, InstallerConfig, InstallerCore, InstallerStatus, Origin, Outcome, PendingReason,
-    Prepare, PrepareOutcome, PrepareSite, Rejection, Report, SlotPrepare, StateBinding,
+    Prepare, PrepareOutcome, PrepareSite, Rejection, Report, SlotPrepare, StateBinding, SubRegionPrepare,
 };
 
 pub mod diff;
 pub use self::diff::{
-    diff, diff_operations, kernel_reuse, state_bindings, CutPlan, PlanDiff, StateOwnerChange, StateOwnerDiff,
+    cancel_lock_order, diff, diff_operations, kernel_reuse, retirements, state_bindings, CutPlan, PlanDiff,
+    StateOwnerChange, StateOwnerDiff,
 };
 
 pub mod lifecycle;

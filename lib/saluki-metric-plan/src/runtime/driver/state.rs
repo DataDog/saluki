@@ -1,12 +1,12 @@
-//! The driver of an isolation slot: its state owners' instances, its watermark, its flush ticks, and the drains that
-//! run their time-driven work.
+//! The driver of a region holding a state owner: its instances, its watermark, its flush ticks, and the drains that run
+//! its time-driven work.
 //!
-//! See [`MetricRegionDriver`][super::MetricRegionDriver]'s documentation, [Isolation slots](super#isolation-slots),
-//! for the rules; this module implements them.
+//! See [`MetricRegionDriver`][super::MetricRegionDriver]'s documentation, [State regions](super#state-regions), for the
+//! rules; this module implements them.
 //!
 //! # State lanes
 //!
-//! An isolation slot may run on several lanes, each a region of its own holding a disjoint share of every lineage's
+//! A state owner's region may run on several lanes, each a region of its own holding a disjoint share of every lineage's
 //! contexts, by partition key ([`KeyGroups`]), and fed by every upstream point of one source clock. Every lane follows
 //! the stage 6 rules on its own share, with these additions, all of which change nothing with one lane and one point:
 //!
@@ -37,7 +37,7 @@
 
 use std::{
     any::Any,
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     panic::{catch_unwind, AssertUnwindSafe},
     sync::Arc,
     time::{Duration, Instant},
@@ -58,22 +58,23 @@ use saluki_metric_kernels::aggregate::{
 use tracing::{debug, error, warn};
 
 use super::{
-    add_loss, fold_loss, points_in, Cursor, Fault, KernelBinding, KernelControl, KernelTarget, LiveGeneration,
-    MetricRegionDriver, NodeRef, Run,
+    add_loss, fold_loss, keyed::SentMark, points_in, Cursor, Fault, KernelBinding, KernelControl, KernelTarget,
+    LiveGeneration, MetricRegionDriver, NodeRef, Run,
 };
 #[cfg(any(test, feature = "test-util"))]
 use crate::runtime::harness::LaneTimeEvent;
 use crate::{
-    compile::{KernelIndex, KernelKey, KeyGroups, LineageKey, ProgramKernel, StateParamsIndex},
+    compile::{KernelIndex, KernelKey, KeyGroups, LineageKey, ProgramKernel, StateParamsIndex, UpstreamPoint},
     install::StateBinding,
+    ir::NodeId,
     limits::values::MAX_OPEN_EPOCHS,
     runtime::{
         kernels::{KernelSlot, PreparedKernel},
         state::{
             lanes::{LineageLanes, LogicalInstance, SlotLanes},
             rules::{
-                epoch_newer, retiring_flush_time, shutdown_time, stamping_generation, Observation, OutputClock,
-                ResetWindow, RetiringRefs, TickDecision, TickGate, WatermarkTracker, WindowStep,
+                epoch_newer, retiring_flush_time, shutdown_time, stamping_generation, BoundaryRefs, Observation,
+                OutputClock, ResetWindow, RetiringRefs, TickDecision, TickGate, WatermarkTracker, WindowStep,
             },
             slab::{InstanceHandle, Slab},
             StateBudgets,
@@ -82,11 +83,18 @@ use crate::{
     },
 };
 
-/// The state of an isolation slot's region.
+/// The state of a region holding a state owner.
 pub(super) struct StateSlot {
-    /// The progress of the admission points upstream of the slot, and the watermark it makes.
+    /// The state owner.
+    pub node: NodeId,
+    /// The points upstream of the state owner in every live generation that runs it.
+    pub upstream: Vec<UpstreamPoint>,
+    /// Those of them that are derived points of state owners upstream, whose batches are admitted before the ticks
+    /// their headers release.
+    pub derived: BTreeSet<AdmissionPointId>,
+    /// The progress of the admission points upstream of the state owner, and the watermark it makes.
     pub tracker: WatermarkTracker,
-    /// Stamps the slot's time-driven output.
+    /// Stamps the state owner's time-driven output, at its derived point.
     pub output: OutputClock,
     /// Decides each flush tick.
     pub gate: TickGate,
@@ -154,12 +162,13 @@ pub(super) struct LaneCounts {
 }
 
 impl StateSlot {
-    /// Creates the state of an isolation slot's region, running as `lane` of the slot's lanes, if it has lanes, with
-    /// what they share.
+    /// Creates the state of the region of state owner `node`, running as `lane` of the slot's lanes, if it has lanes,
+    /// with what they share. It follows no upstream point until its region's generations give it some
+    /// ([`follow`][Self::follow]).
     pub fn new(
-        output_point: AdmissionPointId, upstream: Vec<AdmissionPointId>, schedule: ScheduleHandle,
-        wall: Arc<dyn WallClock>, budgets: Option<StateBudgets>, telemetry: StateTelemetry,
-        lane: Option<(LaneContext, Arc<SlotLanes>)>, lane_telemetry: StateLaneTelemetry,
+        node: NodeId, output_point: AdmissionPointId, schedule: ScheduleHandle, wall: Arc<dyn WallClock>,
+        budgets: Option<StateBudgets>, telemetry: StateTelemetry, lane: Option<(LaneContext, Arc<SlotLanes>)>,
+        lane_telemetry: StateLaneTelemetry,
     ) -> Self {
         // Records are shared only between lanes: one lane keeps every rule itself.
         let (lane, lanes) = match lane {
@@ -168,7 +177,10 @@ impl StateSlot {
             None => (LaneContext::ONE, None),
         };
         Self {
-            tracker: WatermarkTracker::of_one_clock(upstream),
+            node,
+            upstream: Vec::new(),
+            derived: BTreeSet::new(),
+            tracker: WatermarkTracker::new(&[]),
             output: OutputClock::new(output_point),
             gate: TickGate::default(),
             schedule,
@@ -192,6 +204,26 @@ impl StateSlot {
             #[cfg(any(test, feature = "test-util"))]
             time_events: Vec::new(),
         }
+    }
+
+    /// Follows the upstream points of every live generation that runs the state owner, keeping what the tracker knows
+    /// of the points it still follows.
+    pub fn follow(&mut self, upstream: &[UpstreamPoint]) {
+        let ids = |points: &[UpstreamPoint]| points.iter().map(|point| point.id).collect::<BTreeSet<_>>();
+        if ids(upstream) != ids(&self.upstream) {
+            self.tracker = self.tracker.with_upstream(upstream);
+        }
+        self.upstream = upstream.to_vec();
+        self.derived = upstream
+            .iter()
+            .filter(|point| point.derived)
+            .map(|point| point.id)
+            .collect();
+    }
+
+    /// Returns `true` if the state holds no instance and runs no drain: the region can let it go.
+    pub fn is_idle(&self) -> bool {
+        self.instances.is_empty() && self.drain.is_none() && self.stashed.is_none()
     }
 
     /// Returns `true` if the drain in progress refers to the instance.
@@ -324,6 +356,9 @@ pub(super) struct Instance {
     pub last_flush: Option<AdmissionTime>,
     /// The generations retiring it at a cut, from its preparation until its final retirement.
     pub retiring: Option<Retiring>,
+    /// The cut of a state owner downstream of it at which it makes a boundary flush, from the preparation of the cut's
+    /// generation until the flush.
+    pub boundary: Option<Boundary>,
     /// Whether it made its final flush at a cut: it holds nothing, binds nothing new, and never ticks.
     pub retired: bool,
     /// Whether its last binder went while a drain referred to it: it is skipped, and freed once the drain ends.
@@ -383,6 +418,21 @@ pub(super) struct Retiring {
     pub by: GenerationRef,
 }
 
+/// The generations of an instance that makes a boundary flush at the cut of a state owner downstream of it, both held
+/// strongly: the one it served, whose generation the flush keeps, and the one whose cut says when it flushes.
+pub(super) struct Boundary {
+    pub served: GenerationRef,
+    pub by: GenerationRef,
+}
+
+/// The marks a preparation, or a retirement, sets on instances of the region's state: those it retires at its cut, and
+/// those that make a boundary flush there, each with the generation it served.
+#[derive(Default)]
+pub(super) struct StateMarks {
+    retiring: Vec<(InstanceHandle, GenerationRef)>,
+    boundary: Vec<(InstanceHandle, GenerationRef)>,
+}
+
 /// What a drain runs for one instance.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum DrainKind {
@@ -408,6 +458,10 @@ pub(super) enum DrainKind {
 
     /// The final retirement of an instance at its cut: a flush at the cut's time, then everything it holds.
     FinalRetire,
+
+    /// The boundary flush of a retained instance upstream of a state owner a cut affects, at the cut's time `at`: a flush
+    /// that closes exactly the buckets ending by it, under the generation it served.
+    Boundary { at: AdmissionTime },
 
     /// The final flush at shutdown, at `at`, then the open buckets discarded.
     Shutdown { at: AdmissionTime },
@@ -524,7 +578,7 @@ impl<'a> StateAdmission<'a> {
     /// Returns `None` if the generation binds no instance, or if the lineage's instance of the header's epoch could not
     /// be built ([`unbuilt`][Self::unbuilt]): the step's batches are then invalid.
     pub fn instance(&mut self, bound: InstanceHandle, header: &BatchHeader) -> Option<(InstanceHandle, &mut Instance)> {
-        let epoch = header.epoch;
+        let epoch = self.state.tracker.epoch_of(header);
         self.unbuilt = false;
         let handle = match self.state.instances.get(bound) {
             Some(instance) if instance.epoch == epoch => bound,
@@ -603,6 +657,7 @@ fn fresh_instance(state: &mut StateSlot, bound: InstanceHandle, epoch: u32, now:
         tick,
         last_flush: None,
         retiring: None,
+        boundary: None,
         retired: false,
         removed: false,
         epoch,
@@ -698,12 +753,23 @@ fn stamping(generations: &[LiveGeneration], state: &StateSlot, handle: InstanceH
     });
     let schedule = state.schedule.load();
     let bound = state.bound(handle);
+    // A lineage that owes a boundary flush drains under the generation it served until it made it.
+    let boundary = state
+        .instances
+        .get(bound)
+        .and_then(|instance| instance.boundary.as_ref())
+        .and_then(|boundary| {
+            Some(BoundaryRefs {
+                served: &boundary.served,
+                at: boundary.by.cut()?.at,
+            })
+        });
     stamping_generation(
         &schedule,
         |id| binds(generations, id, bound),
         |id| state.tracker.switched(id),
         retiring,
-        None,
+        boundary,
     )
 }
 
@@ -763,19 +829,82 @@ fn in_drain_order(
     keyed.into_iter().map(|(_, drain)| drain)
 }
 
+/// Returns the gated ticks whose second the watermark has now reached, resolved as fires, in drain order: what the
+/// latest header released. Allocates nothing when it releases none.
+fn released_ticks(generations: &[LiveGeneration], state: &mut StateSlot) -> Vec<(InstanceHandle, DrainKind)> {
+    let due = state
+        .instances
+        .iter()
+        .filter(|(_, instance)| !instance.reset_retiring && !instance.retired && !instance.removed)
+        .filter_map(|(handle, instance)| {
+            let TickState::Gated { at, second, .. } = instance.tick else {
+                return None;
+            };
+            let flush = state
+                .gate
+                .on_watermark(second, state.watermark_of(instance), instance.last_flush)?;
+            Some((handle, at, flush))
+        })
+        .collect::<Vec<_>>();
+    let mut released = Vec::new();
+    for (handle, at, flush) in due {
+        let interval = stamping_interval(generations, state, handle);
+        if let Some(kind) = resolve_fire(state, handle, at, flush, interval, true) {
+            released.push((handle, kind));
+        }
+    }
+    in_drain_order(generations, state, released).collect()
+}
+
+/// Returns `ticks`, drains in drain order, with the boundary flush of every instance whose cut the watermark has
+/// reached among them: after the ticks that flush by its time, and before the others, so that no flush after the cut's
+/// time runs before it.
+fn with_boundaries(
+    generations: &[LiveGeneration], state: &StateSlot, ticks: Vec<(InstanceHandle, DrainKind)>,
+) -> Vec<(InstanceHandle, DrainKind)> {
+    let boundaries = state
+        .instances
+        .iter()
+        .filter(|(_, instance)| !instance.retired && !instance.removed && !instance.reset_retiring)
+        .filter_map(|(handle, instance)| {
+            let cut = instance.boundary.as_ref()?.by.cut()?;
+            let watermark = state.watermark_of(instance)?;
+            (watermark >= cut.at).then_some((handle, DrainKind::Boundary { at: cut.at }))
+        })
+        .collect::<Vec<_>>();
+    let Some(at) = boundaries
+        .iter()
+        .filter_map(|(_, kind)| match kind {
+            DrainKind::Boundary { at } => Some(*at),
+            _ => None,
+        })
+        .min()
+    else {
+        return ticks;
+    };
+    let (before, after): (Vec<_>, Vec<_>) = ticks
+        .into_iter()
+        .partition(|(_, kind)| matches!(kind, DrainKind::Tick { flush, .. } if *flush <= at));
+    before
+        .into_iter()
+        .chain(in_drain_order(generations, state, boundaries))
+        .chain(after)
+        .collect()
+}
+
 impl MetricRegionDriver {
-    /// Returns the isolation slot's state.
+    /// Returns the region's state.
     fn state(&self) -> &StateSlot {
         self.state
             .as_deref()
-            .expect("only an isolation slot's region runs its state")
+            .expect("only a state owner's region runs its state")
     }
 
-    /// Returns the isolation slot's state, mutably.
+    /// Returns the region's state, mutably.
     fn state_mut(&mut self) -> &mut StateSlot {
         self.state
             .as_deref_mut()
-            .expect("only an isolation slot's region runs its state")
+            .expect("only a state owner's region runs its state")
     }
 
     /// Schedules every instance's first tick one interval after the region started, or, with lanes, at the instant of
@@ -798,17 +927,38 @@ impl MetricRegionDriver {
         }
     }
 
-    /// Processes a batch that reached the isolation slot: observes its header, runs whatever it starts before it is
-    /// admitted (a reset window's opening or close, final retirements, gated ticks now due), then admits it.
+    /// Processes a batch that reached the region of its state owner: observes its header, runs whatever it starts before
+    /// it is admitted (a reset window's opening or close, final retirements, boundary flushes, gated ticks now due),
+    /// then admits it. A batch from a derived point is admitted before the gated ticks its header releases.
     pub(super) fn process_isolated(
         &mut self, turn: &mut RegionTurn<'_>, mut batch: EventsBuffer, exits: &mut ExitSink,
     ) -> Progress {
         let header = batch.take_header();
+        // A batch from a point not upstream of the state owner whose entry reaches no state step only passes through
+        // the region's stateless steps, as the output of a state owner of another region does on its way to an exit:
+        // the state owner's watermark does not follow its point.
+        let upstream = header
+            .admission_point
+            .is_some_and(|point| self.state().tracker.upstream().any(|upstream| upstream == point));
+        if !batch.is_empty() && !upstream && !self.entry_runs_state(&header) {
+            return self.pass_through(turn, header, batch, exits);
+        }
         let Self { generations, state, .. } = self;
         let state = state
             .as_deref_mut()
-            .expect("only an isolation slot's region runs its state");
+            .expect("only a state owner's region runs its state");
         if state.tracker.observe(&header) == Observation::Fault {
+            // A batch whose generation runs no state owner in the region only passes through its stateless steps, as
+            // during a cut that moves the state owner, and a header-only one only carries the progress of its point,
+            // as one forwarded while the generations that list it are being released: neither needs its point upstream
+            // of the state owner.
+            let stateless = header
+                .generation_id()
+                .and_then(|id| generations.iter().find(|live| live.id == id))
+                .is_some_and(|live| !live.program.kernels().iter().any(|kernel| kernel.lineage.is_some()));
+            if stateless || batch.is_empty() {
+                return self.pass_through(turn, header, batch, exits);
+            }
             self.reject(Fault::NotUpstream, &header, &batch);
             return Progress::Done;
         }
@@ -871,32 +1021,13 @@ impl MetricRegionDriver {
         queue.extend(in_drain_order(generations, state, crossed));
 
         // Gated ticks whose second the watermark has now reached fire before the batch, as natively they fired before
-        // it arrived. A reset dropped every gated tick of the epochs it closes. A batch that releases none allocates
-        // nothing.
-        let due = state
-            .instances
-            .iter()
-            .filter(|(_, instance)| !instance.reset_retiring && !instance.retired && !instance.removed)
-            .filter_map(|(handle, instance)| {
-                let TickState::Gated { at, second, .. } = instance.tick else {
-                    return None;
-                };
-                let flush = state
-                    .gate
-                    .on_watermark(second, state.watermark_of(instance), instance.last_flush)?;
-                Some((handle, at, flush))
-            })
-            .collect::<Vec<_>>();
-        let mut released = Vec::new();
-        for (handle, at, flush) in due {
-            let interval = stamping_interval(generations, state, handle);
-            if let Some(kind) = resolve_fire(state, handle, at, flush, interval, true) {
-                released.push((handle, kind));
-            }
-        }
-        queue.extend(in_drain_order(generations, state, released));
+        // it arrived. A boundary flush whose cut the watermark has now reached runs among them, after the ticks that
+        // flush by its time. A reset dropped every gated tick of the epochs it closes. A batch from a derived point
+        // holds buckets closed before its stamp: its header raises the watermark only once it is admitted.
+        let released = released_ticks(generations, state);
+        queue.extend(with_boundaries(generations, state, released));
 
-        if !batch.is_empty() && !state.window.holds(header.epoch) {
+        if !batch.is_empty() && !state.window.holds(state.tracker.epoch_of(&header)) {
             // A batch of an epoch the lane already closed: one a window closed at once, past the most epochs it keeps
             // open. No instance holds that epoch any more.
             self.reject(Fault::NotUpstream, &header, &batch);
@@ -909,10 +1040,9 @@ impl MetricRegionDriver {
             }
             return self.admit_isolated(turn, header, batch, exits);
         }
-        if !batch.is_empty() {
-            batch.set_header(header);
-            state.stashed = Some(batch);
-        }
+        // The batch is admitted, and its progress forwarded, once the drain completes.
+        batch.set_header(header);
+        state.stashed = Some(batch);
         state.drain = Some(DrainCursor {
             queue,
             current: None,
@@ -940,19 +1070,55 @@ impl MetricRegionDriver {
         }
     }
 
-    /// Admits a batch into the state of the instances its generation's program binds, in the batch's epoch.
+    /// Admits a batch into the state of the instances its generation's program binds, in the batch's epoch, forwards
+    /// its point's progress, and, for a batch from a derived point, runs the gated ticks its header released.
     fn admit_isolated(
         &mut self, turn: &mut RegionTurn<'_>, header: BatchHeader, batch: EventsBuffer, exits: &mut ExitSink,
     ) -> Progress {
-        if batch.is_empty() {
+        self.scratch.written.fill(false);
+        let header_only = batch.is_empty();
+        self.forward_final_headers(&header, exits);
+        if !header_only {
+            self.run_isolated(turn, &header, batch, exits);
+        }
+        self.forward_progress(&header, header_only, turn.now(), exits);
+        let derived = header
+            .admission_point
+            .is_some_and(|point| self.state().derived.contains(&point));
+        if !derived {
             return Progress::Done;
         }
-        let Some(index) = self.live_index_for(&header, &batch) else {
+        let Self { generations, state, .. } = self;
+        let state = state
+            .as_deref_mut()
+            .expect("only a state owner's region runs its state");
+        state.tracker.observe_after(&header);
+        let released = released_ticks(generations, state);
+        let queue = with_boundaries(generations, state, released);
+        if queue.is_empty() {
             return Progress::Done;
+        }
+        state.drain = Some(DrainCursor {
+            queue: queue.into_iter().collect(),
+            current: None,
+            resets: 0,
+            orphaned: false,
+            timing: Some(FlushTiming::start(Instant::now())),
+        });
+        self.continue_isolated(turn, exits)
+    }
+
+    /// Runs a batch through its generation's program, admitting what its state steps reach into the instances of the
+    /// region's state.
+    fn run_isolated(
+        &mut self, turn: &mut RegionTurn<'_>, header: &BatchHeader, batch: EventsBuffer, exits: &mut ExitSink,
+    ) {
+        let Some(index) = self.live_index_for(header, &batch) else {
+            return;
         };
-        let Some(entry) = self.generations[index].code.entry_index(&header) else {
-            self.reject(Fault::NoEntry, &header, &batch);
-            return Progress::Done;
+        let Some(entry) = self.generations[index].code.entry_index(header) else {
+            self.reject(Fault::NoEntry, header, &batch);
+            return;
         };
         let now = turn.now();
         let Self {
@@ -965,7 +1131,7 @@ impl MetricRegionDriver {
         } = self;
         let state = state
             .as_deref_mut()
-            .expect("only an isolation slot's region runs its state");
+            .expect("only a state owner's region runs its state");
         let LiveGeneration {
             id,
             program,
@@ -989,13 +1155,12 @@ impl MetricRegionDriver {
             state_params: program.state_params(),
             scratch,
             cursor,
-            header: &header,
+            header,
             turn,
             exits,
         }
         .entry(&code.entries[entry], std::iter::once(batch));
         *cursor = Cursor::default();
-        Progress::Done
     }
 
     /// Runs time-driven work: resumes a drain a panic ended, or fires, gates, or skips every tick now due.
@@ -1009,7 +1174,7 @@ impl MetricRegionDriver {
         let Self { generations, state, .. } = self;
         let state = state
             .as_deref_mut()
-            .expect("only an isolation slot's region runs its state");
+            .expect("only a state owner's region runs its state");
         // While a reset window is open, the lane's lineages tick no more: the older epochs' instances wait for their
         // reset drains, and the newest epoch's have no watermark until the window closes. Their deadlines wait for the
         // close, as a gated tick waits for the watermark, so that a lineage catches up the ticks the window held alike
@@ -1086,8 +1251,11 @@ impl MetricRegionDriver {
                 _ => {}
             }
         }
-        let queue = in_drain_order(generations, state, expired)
+        let ticks = in_drain_order(generations, state, expired)
             .chain(in_drain_order(generations, state, fired))
+            .collect::<Vec<_>>();
+        let queue = with_boundaries(generations, state, ticks)
+            .into_iter()
             .collect::<VecDeque<_>>();
         if queue.is_empty() {
             return Progress::Done;
@@ -1102,7 +1270,7 @@ impl MetricRegionDriver {
         self.continue_isolated(turn, exits)
     }
 
-    /// Finishes the isolation slot after its input ended: completes a drain a panic ended, closes a reset window still
+    /// Finishes the state owner's region after its input ended: completes a drain a panic ended, closes a reset window still
     /// open, and then runs the shutdown drain of every instance.
     pub(super) fn finish_isolated(&mut self, turn: &mut RegionTurn<'_>, exits: &mut ExitSink) -> Progress {
         if let Some(drain) = self.state_mut().drain.as_mut() {
@@ -1114,7 +1282,7 @@ impl MetricRegionDriver {
         let Self { generations, state, .. } = self;
         let state = state
             .as_deref_mut()
-            .expect("only an isolation slot's region runs its state");
+            .expect("only a state owner's region runs its state");
         if std::mem::replace(&mut state.shutting_down, true) {
             return Progress::Done;
         }
@@ -1152,7 +1320,7 @@ impl MetricRegionDriver {
         self.continue_isolated(turn, exits)
     }
 
-    /// Takes what the isolation slot's lane did with its time since this was last called: its ticks that took effect,
+    /// Takes what the state owner's region's lane did with its time since this was last called: its ticks that took effect,
     /// reset drains, crossings, and continuations past a reset window; nothing for a slot without state.
     #[cfg(any(test, feature = "test-util"))]
     pub fn take_time_events(&mut self) -> Vec<LaneTimeEvent> {
@@ -1162,7 +1330,7 @@ impl MetricRegionDriver {
             .unwrap_or_default()
     }
 
-    /// Returns when the isolation slot next has time-driven work: at once for a drain a panic ended, never while a
+    /// Returns when the state owner's region next has time-driven work: at once for a drain a panic ended, never while a
     /// drain is pending otherwise, and else the earliest tick deadline or end of a grace.
     pub(super) fn next_deadline_isolated(&self) -> Option<Instant> {
         let state = self.state();
@@ -1220,6 +1388,8 @@ impl MetricRegionDriver {
                     Some(step) => {
                         let drain = self.state_mut().drain.as_mut().expect("the drain is in progress");
                         drain.current = Some(step);
+                        // What the step writes to each exit, over every call that runs it, for its progress.
+                        self.scratch.written.fill(false);
                     }
                     None => {
                         if let DrainKind::Reset { ends_epochs, .. } = kind {
@@ -1235,6 +1405,7 @@ impl MetricRegionDriver {
                 }
                 return Progress::Yielded;
             }
+            self.forward_drain_progress(exits);
             self.complete_step();
         }
     }
@@ -1275,7 +1446,7 @@ impl MetricRegionDriver {
         let Self { generations, state, .. } = self;
         let state = state
             .as_deref_mut()
-            .expect("only an isolation slot's region runs its state");
+            .expect("only a state owner's region runs its state");
         let instance = state.instances.get(handle)?;
         if instance.removed || instance.retired {
             return None;
@@ -1365,6 +1536,7 @@ impl MetricRegionDriver {
                 let at = cut.map_or(at, |cut| at.min(cut.at));
                 (Some(at), at)
             }
+            DrainKind::Boundary { at } => (Some(at), at),
         };
         // Which shared flush of its lineage the call is: the kernel resolves it in the state owner's record, which says
         // where its idle-counter zeros start, and tells the lane when it could not ([`TakeLaneFallbacks`]).
@@ -1407,7 +1579,7 @@ impl MetricRegionDriver {
         } = self;
         let state = state
             .as_deref_mut()
-            .expect("only an isolation slot's region runs its state");
+            .expect("only a state owner's region runs its state");
         let step = state
             .drain
             .as_ref()
@@ -1441,7 +1613,7 @@ impl MetricRegionDriver {
                 kernel_turn = kernel_turn.with_lane_tick(tick);
             }
             let progress = match step.kind {
-                DrainKind::Tick { .. } => kernel.advance_time(&mut kernel_turn),
+                DrainKind::Tick { .. } | DrainKind::Boundary { .. } => kernel.advance_time(&mut kernel_turn),
                 DrainKind::Reset { .. } => kernel.control(&mut kernel_turn, &mut ClockReset),
                 DrainKind::FinalRetire => kernel.finish(&mut kernel_turn, DrainPolicy::Retire),
                 DrainKind::Shutdown { .. } => kernel.finish(&mut kernel_turn, DrainPolicy::Shutdown),
@@ -1508,6 +1680,52 @@ impl MetricRegionDriver {
         }
         *cursor = Cursor::default();
         progress
+    }
+
+    /// Forwards the progress of the state owner's derived point after a drain step that flushed, at its stamp: on every
+    /// exit toward a state owner downstream that lists the point and the step wrote nothing to, so that its watermark
+    /// reaches the flush time even when the flush emits nothing there. A step that sends progress moves the output
+    /// clock as one that emits does, so that the point's stamps only grow.
+    fn forward_drain_progress(&mut self, exits: &mut ExitSink) {
+        let Self {
+            state,
+            progress,
+            scratch,
+            ..
+        } = self;
+        let Some(state) = state.as_deref_mut() else { return };
+        let Some(step) = state.drain.as_ref().and_then(|drain| drain.current.as_ref()) else {
+            return;
+        };
+        if matches!(step.kind, DrainKind::Reset { .. } | DrainKind::Shutdown { .. }) {
+            return;
+        }
+        // Not while another lineage of the state owner retires before its final flush: a state owner downstream would
+        // see the new generation at the point before the retiring lineage's last output.
+        let retiring = state.instances.iter().any(|(handle, instance)| {
+            handle != step.instance && instance.retiring.is_some() && !instance.retired && !instance.removed
+        });
+        if retiring {
+            return;
+        }
+        let Some(mark) = SentMark::of(&step.stamp) else { return };
+        let point = state.output.point();
+        let mut sent = false;
+        for exit in progress.iter_mut() {
+            let Some(position) = exit.points.iter().position(|upstream| *upstream == point) else {
+                continue;
+            };
+            if !scratch.written.get(exit.exit.get()).copied().unwrap_or(false) {
+                let mut header = step.stamp.clone();
+                header.entry = None;
+                exits.emit(exit.exit, EventsBuffer::with_capacity(0).with_header(header));
+                sent = true;
+            }
+            exit.last[position] = Some(mark);
+        }
+        if sent {
+            state.output = step.latch;
+        }
     }
 
     /// Completes the current drain step: moves its instance's tick on, forgets its flushes after a reset, or retires
@@ -1713,8 +1931,67 @@ impl MetricRegionDriver {
         self.collect_instances();
     }
 
-    /// Undoes what an aborted generation's preparation did to the state: the retiring marks it set, and the instances
-    /// it created, which no other generation can bind yet.
+    /// Returns the marks a preparation's bindings set on the region's instances: each instance a
+    /// [`StateBinding::Retire`] retires, and each a [`StateBinding::Boundary`] makes a boundary flush, with the
+    /// generation it served, which the region runs.
+    pub(super) fn state_marks(&self, bindings: &[StateBinding]) -> Result<StateMarks, String> {
+        let mut marks = StateMarks::default();
+        for binding in bindings {
+            let (node, key, from, retires) = match binding {
+                StateBinding::Retire { node, key, from } => (node, key, *from, true),
+                StateBinding::Boundary { node, key, from } => (node, key, *from, false),
+                StateBinding::Retain { .. } | StateBinding::New { .. } => continue,
+            };
+            let found = self.state.as_ref().and_then(|_| self.instance_of(from, key));
+            let served = self
+                .generations
+                .iter()
+                .find(|live| live.id == from)
+                .and_then(|live| live.token.upgrade());
+            let (Some(handle), Some(served)) = (found, served) else {
+                return Err(format!(
+                    "the preparation {} the instance of `{}` that generation {} uses, which the region does not hold",
+                    if retires {
+                        "retires"
+                    } else {
+                        "makes a boundary flush of"
+                    },
+                    node,
+                    from
+                ));
+            };
+            if retires {
+                marks.retiring.push((handle, served));
+            } else {
+                marks.boundary.push((handle, served));
+            }
+        }
+        Ok(marks)
+    }
+
+    /// Sets the marks of a preparation of `generation`, or of a retirement at its cut, on the region's instances.
+    pub(super) fn apply_state_marks(&mut self, marks: StateMarks, generation: &GenerationRef) {
+        let Some(state) = self.state.as_deref_mut() else { return };
+        for (handle, owner) in marks.retiring {
+            if let Some(instance) = state.instances.get_mut(handle) {
+                instance.retiring = Some(Retiring {
+                    owner,
+                    by: Arc::clone(generation),
+                });
+            }
+        }
+        for (handle, served) in marks.boundary {
+            if let Some(instance) = state.instances.get_mut(handle) {
+                instance.boundary = Some(Boundary {
+                    served,
+                    by: Arc::clone(generation),
+                });
+            }
+        }
+    }
+
+    /// Undoes what an aborted generation's preparation did to the state: the retiring and boundary marks it set, and
+    /// the instances it created, which no other generation can bind yet.
     pub(super) fn abort_state(&mut self, generation: GenerationId) {
         let Some(state) = self.state.as_deref_mut() else { return };
         for handle in state.instances.handles() {
@@ -1728,6 +2005,13 @@ impl MetricRegionDriver {
                 .is_some_and(|retiring| retiring.by.id() == generation)
             {
                 instance.retiring = None;
+            }
+            if instance
+                .boundary
+                .as_ref()
+                .is_some_and(|boundary| boundary.by.id() == generation)
+            {
+                instance.boundary = None;
             }
             if instance.created_by == generation && referred {
                 instance.removed = true;
@@ -1746,9 +2030,9 @@ impl MetricRegionDriver {
             .ok_or_else(|| format!("kernel `{}` is no state owner's", kernel.key.node))?;
         let state = self.state();
         let binding = bindings.iter().find(|binding| match binding {
-            StateBinding::Retain { node, key, .. } | StateBinding::New { node, key } => {
-                node == &kernel.key.node && key == &lineage.key
-            }
+            StateBinding::Retain { node, key, .. }
+            | StateBinding::Boundary { node, key, .. }
+            | StateBinding::New { node, key } => node == &kernel.key.node && key == &lineage.key,
             StateBinding::Retire { .. } => false,
         });
         let new = |supplied: &mut BTreeMap<_, _>| {
@@ -1764,7 +2048,7 @@ impl MetricRegionDriver {
                 })
         };
         match binding {
-            Some(StateBinding::Retain { from, .. }) => self
+            Some(StateBinding::Retain { from, .. } | StateBinding::Boundary { from, .. }) => self
                 .instance_of(*from, &lineage.key)
                 .map(StateResolution::Retain)
                 .ok_or_else(|| {
@@ -1844,6 +2128,7 @@ impl MetricRegionDriver {
             tick,
             last_flush: None,
             retiring: None,
+            boundary: None,
             retired: false,
             removed: false,
             epoch: state.window.target(),
@@ -1868,6 +2153,7 @@ impl MetricRegionDriver {
         let KernelControl {
             target,
             lane: _,
+            sub_region: _,
             mut message,
             reply,
         } = control;
@@ -1880,7 +2166,7 @@ impl MetricRegionDriver {
         } = self;
         let state = state
             .as_deref_mut()
-            .expect("only an isolation slot's region runs its state");
+            .expect("only a state owner's region runs its state");
         for handle in state.instances.handles() {
             let generation = stamping(generations, state, handle);
             let bound = state.bound(handle);
@@ -1948,7 +2234,7 @@ impl MetricRegionDriver {
         reply(message);
     }
 
-    /// Recovers an isolation slot from a panic: charges it to the generation whose call ran, rebuilds the instance
+    /// Recovers a state owner's region from a panic: charges it to the generation whose call ran, rebuilds the instance
     /// whose kernel panicked empty, and keeps the rest of a drain the panic ended for the next call to resume.
     ///
     /// Returns the instance that panicked, if a state owner's kernel did.
@@ -2042,7 +2328,7 @@ impl MetricRegionDriver {
             .collect()
     }
 
-    /// Publishes the isolation slot's own telemetry, and what its state owners' kernels accumulated.
+    /// Publishes the state owner's region's own telemetry, and what its kernel's instances accumulated.
     pub(super) fn publish_state(&mut self) {
         let Some(state) = self.state.as_deref_mut() else { return };
         let on_lanes = state.lanes.is_some();
@@ -2119,7 +2405,7 @@ impl MetricRegionDriver {
         lane.crossing_overlap.set(overlap as f64);
     }
 
-    /// Returns `true` if the isolation slot can take input: not while a drain is left to complete.
+    /// Returns `true` if the state owner's region can take input: not while a drain is left to complete.
     pub(super) fn accepts_isolated(&self) -> bool {
         self.state().drain.is_none()
     }
@@ -2573,7 +2859,7 @@ fn time_event(instance: &Instance, step: &DrainStep) -> Option<LaneTimeEvent> {
             pre: step.flush,
         }),
         DrainKind::FinalRetire => step.flush.map(|at| LaneTimeEvent::Crossed { created_by, epoch, at }),
-        DrainKind::Shutdown { .. } => None,
+        DrainKind::Shutdown { .. } | DrainKind::Boundary { .. } => None,
     }
 }
 
@@ -2603,6 +2889,8 @@ fn complete_instance(instance: &mut Instance, step: &DrainStep, retiring: bool) 
             in_publication_epoch, ..
         } => {
             instance.last_flush = None;
+            // A reset drain empties the lineage, so it owes no boundary flush any more.
+            instance.boundary = None;
             // Its reset drain flushed at its cut's time at the latest: nothing after it belongs to the lineage it
             // served, so the drain was its final retirement.
             instance.retires_at_close = retiring && in_publication_epoch;
@@ -2611,6 +2899,18 @@ fn complete_instance(instance: &mut Instance, step: &DrainStep, retiring: bool) 
             instance.retired = true;
             instance.retiring = None;
             instance.tick = TickState::Off;
+        }
+        DrainKind::Boundary { at } => {
+            instance.boundary = None;
+            instance.last_flush = Some(instance.last_flush.map_or(at, |last| last.max(at)));
+            // A tick gated on a second the boundary flush covered has nothing left to close.
+            if let TickState::Gated { at: due, second, .. } = instance.tick {
+                if second <= at.as_unix_secs() {
+                    instance.tick = TickState::Scheduled {
+                        at: due + instance.interval,
+                    };
+                }
+            }
         }
         DrainKind::Shutdown { .. } => {}
     }

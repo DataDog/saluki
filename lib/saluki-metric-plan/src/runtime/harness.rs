@@ -26,7 +26,7 @@
 //! [`cancel_cut`][FrameHarness::cancel_cut] move the schedule as the cut protocol does.
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     panic::{catch_unwind, AssertUnwindSafe},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -57,7 +57,7 @@ use super::{
 use crate::{
     compile::{
         compile, CompiledPlan, ExitRouting, Frame, FrameHosts, FrameOptions, FrameTarget, LanePolicy, LeaseTable,
-        LineageKey, Placement, PointRouting, RegionProgram, Site, Slot, SlotId, SlotKind,
+        LineageKey, Placement, PointRouting, RegionKey, RegionProgram, Site, Slot, SlotId,
     },
     equivalence::{CapacityOutcome, CapacityTrace, OutputPoints},
     explain::loss_class_name,
@@ -250,7 +250,6 @@ struct ModelPoint {
     id: AdmissionPointId,
     mode: AdmissionMode,
     route: Option<FrameTarget>,
-    feeds_state: bool,
     /// The point's lane of its port, and how the port's edge reaches the lanes of its target.
     lane: u16,
     routing: PointRouting,
@@ -468,8 +467,17 @@ pub struct FrameHarness {
     frame: Frame,
     placement: Placement,
     programs: Vec<Arc<RegionProgram>>,
+    /// The program of every sub-region the active generation runs, by slot and region.
+    sub_programs: Vec<Arc<RegionProgram>>,
     /// The drivers of every lane of every slot, slot by slot, lane by lane.
     drivers: Vec<MetricRegionDriver>,
+    /// The driver of every sub-region that runs, by slot and key: the harness calls it as lane `lanes + key` of its
+    /// slot.
+    sub_drivers: BTreeMap<(SlotId, u16), MetricRegionDriver>,
+    /// The key of the sub-region of every state owner a generation ran outside its slot's main region, by slot.
+    sub_keys: BTreeMap<(SlotId, NodeId), u16>,
+    /// The failure reporter every region is given.
+    reporter: crate::runtime::GenerationFailureReporter,
     /// The index in `drivers` of each slot's first lane.
     first_lane: Vec<usize>,
     /// What each slot's lanes share: their lineage records and panic ledger.
@@ -728,7 +736,6 @@ impl FrameHarness {
                         id,
                         mode: point.mode,
                         route: point.route.clone(),
-                        feeds_state: point.feeds_state,
                         lane: lane as u16,
                         routing: point.routing,
                         clock: Arc::clone(&clock),
@@ -744,9 +751,13 @@ impl FrameHarness {
             options,
             registry,
             frame,
+            sub_programs: compiled.sub_programs.clone(),
             placement: compiled.placement,
             programs: compiled.programs,
             drivers,
+            sub_drivers: BTreeMap::new(),
+            sub_keys: BTreeMap::new(),
+            reporter,
             first_lane,
             slot_lanes,
             cells,
@@ -909,12 +920,107 @@ impl FrameHarness {
             .programs
             .iter()
             .zip(&self.programs)
-            .map(|(candidate, current)| state_bindings(current, candidate, active))
+            .map(|(candidate, current)| state_bindings(Some(current), candidate, active))
+            .collect::<Vec<_>>();
+        // Every sub-region the candidate runs has a key in its slot, kept while the harness runs it.
+        let candidate_subs = compiled.sub_programs.clone();
+        for program in &candidate_subs {
+            if let RegionKey::State(node) = program.region() {
+                let used = self
+                    .sub_keys
+                    .iter()
+                    .filter(|((slot, _), _)| *slot == program.slot())
+                    .map(|(_, key)| *key)
+                    .collect::<BTreeSet<_>>();
+                let next = (0..=u16::MAX).find(|key| !used.contains(key)).unwrap_or(u16::MAX);
+                self.sub_keys.entry((program.slot(), node.clone())).or_insert(next);
+            }
+        }
+        let keys_of = |slot: SlotId| {
+            candidate_subs
+                .iter()
+                .filter(|program| program.slot() == slot)
+                .filter_map(|program| match program.region() {
+                    RegionKey::State(node) => self.sub_keys.get(&(slot, node.clone())).map(|key| {
+                        (
+                            program.region().clone(),
+                            saluki_core::execution::SubRegionKey::new(*key),
+                        )
+                    }),
+                    RegionKey::Main => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let slot_keys = self
+            .frame
+            .slots()
+            .iter()
+            .map(|slot| keys_of(slot.id))
+            .collect::<Vec<_>>();
+        let sub_reuse = kernel_reuse(Some(&self.sub_programs), &candidate_subs);
+        let sub_bindings = candidate_subs
+            .iter()
+            .map(|candidate| {
+                let current = self
+                    .sub_programs
+                    .iter()
+                    .find(|current| current.slot() == candidate.slot() && current.region() == candidate.region());
+                state_bindings(current.map(|current| current.as_ref()), candidate, active)
+            })
+            .collect::<Vec<_>>();
+        // The sub-regions of the active generation the candidate does not run retire their instances at its cut.
+        let retired = self
+            .sub_programs
+            .iter()
+            .filter(|current| {
+                !candidate_subs
+                    .iter()
+                    .any(|candidate| candidate.slot() == current.slot() && candidate.region() == current.region())
+            })
+            .map(|current| (Arc::clone(current), retirements_of(current, active)))
+            .filter(|(_, bindings)| !bindings.is_empty())
             .collect::<Vec<_>>();
         let cut = bindings
             .iter()
+            .chain(&sub_bindings)
             .flatten()
-            .any(|binding| !matches!(binding, StateBinding::Retain { .. }));
+            .any(|binding| !matches!(binding, StateBinding::Retain { .. }))
+            || !retired.is_empty();
+        // As the installer does: a retained state owner upstream of one whose lineage the cut starts or ends, in either
+        // generation, makes a boundary flush at the cut.
+        let affected = bindings
+            .iter()
+            .chain(&sub_bindings)
+            .chain(retired.iter().map(|(_, bindings)| bindings))
+            .flatten()
+            .filter_map(|binding| match binding {
+                StateBinding::New { node, .. } | StateBinding::Retire { node, .. } => Some(node.clone()),
+                StateBinding::Retain { .. } | StateBinding::Boundary { .. } => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let upstream = affected
+            .iter()
+            .flat_map(|owner| {
+                crate::install::diff::owners_upstream(&self.placement, owner)
+                    .into_iter()
+                    .chain(crate::install::diff::owners_upstream(&compiled.placement, owner))
+            })
+            .collect::<BTreeSet<_>>();
+        let to_boundary = |bindings: Vec<StateBinding>| {
+            bindings
+                .into_iter()
+                .map(|binding| match binding {
+                    StateBinding::Retain { node, key, from }
+                        if upstream.contains(&node) && !affected.contains(&node) =>
+                    {
+                        StateBinding::Boundary { node, key, from }
+                    }
+                    binding => binding,
+                })
+                .collect::<Vec<_>>()
+        };
+        let bindings = bindings.into_iter().map(to_boundary).collect::<Vec<_>>();
+        let sub_bindings = sub_bindings.into_iter().map(to_boundary).collect::<Vec<_>>();
         let leases = self.leases.table(plan);
         let slots = self.frame.slots().to_vec();
         let mut rejection = None;
@@ -956,7 +1062,8 @@ impl FrameHarness {
                     &self.telemetry,
                 )
                 .with_state_bindings(bindings.clone())
-                .with_leases(Arc::clone(&leases));
+                .with_leases(Arc::clone(&leases))
+                .with_sub_region_keys(slot_keys[slot.id.get()].clone());
                 let mut budget = self.options.turn_budget;
                 let mut sink = ExitSink::new(0);
                 let now = self.start + self.elapsed;
@@ -975,7 +1082,83 @@ impl FrameHarness {
                 }
             }
         }
+        // Each sub-region prepares its program, started first if it does not run, as its slot's coordinator does.
+        for ((program, kernels), bindings) in candidate_subs.iter().zip(&sub_reuse).zip(sub_bindings) {
+            if rejection.is_some() {
+                break;
+            }
+            let RegionKey::State(node) = program.region() else {
+                continue;
+            };
+            let slot = self.frame.slot(program.slot()).expect("the program's slot").clone();
+            let key = self.sub_keys[&(slot.id, node.clone())];
+            let mut keys = kernels.build.clone();
+            for binding in &bindings {
+                if let StateBinding::New { node, .. } = binding {
+                    if let Some(kernel) = program.kernels().iter().find(|kernel| &kernel.key.node == node) {
+                        if !keys.contains(&kernel.key) {
+                            keys.push(kernel.key.clone());
+                        }
+                    }
+                }
+            }
+            let built = build_kernels(program, &keys, |node| context(&self.budgets, node)).expect("the kernels build");
+            let prepare = PrepareRegion::new(
+                Arc::clone(&generation),
+                Arc::clone(program),
+                built,
+                self.options.candidate_budget,
+                &self.telemetry,
+            )
+            .with_state_bindings(bindings)
+            .with_leases(Arc::clone(&leases))
+            .with_sub_region_keys(slot_keys[slot.id.get()].clone());
+            let message = RegionControl::Prepare(Box::new(prepare));
+            if !self.sub_drivers.contains_key(&(slot.id, key)) {
+                if let Err(refusal) = self.start_sub_region(&slot, key, &message) {
+                    rejection = Some(refusal);
+                    break;
+                }
+            }
+            if let Err(refusal) = self.sub_control(slot.id, key, message) {
+                rejection = Some(format!(
+                    "the sub-region {} of `{}` refused the candidate: {}",
+                    key, slot.name, refusal
+                ));
+            }
+        }
+        for (program, bindings) in retired {
+            if rejection.is_some() {
+                break;
+            }
+            let RegionKey::State(node) = program.region() else {
+                continue;
+            };
+            let Some(key) = self.sub_keys.get(&(program.slot(), node.clone())).copied() else {
+                continue;
+            };
+            let message = RegionControl::Retire {
+                generation: Arc::clone(&generation),
+                bindings,
+            };
+            if let Err(refusal) = self.sub_control(program.slot(), key, message) {
+                rejection = Some(format!("the sub-region {} refused the retirements: {}", key, refusal));
+            }
+        }
         if let Some(rejection) = rejection {
+            for driver in self.sub_drivers.values_mut() {
+                let mut budget = self.options.turn_budget;
+                let mut sink = ExitSink::with_sub_regions(0);
+                driver
+                    .control(
+                        &mut RegionTurn::new(self.start + self.elapsed, &mut budget),
+                        RegionControl::Abort {
+                            generation: generation.id(),
+                        },
+                        &mut sink,
+                    )
+                    .expect("aborting never fails");
+            }
             for driver in &mut self.drivers {
                 let mut budget = self.options.turn_budget;
                 let mut sink = ExitSink::new(0);
@@ -990,6 +1173,7 @@ impl FrameHarness {
                     .expect("aborting never fails");
             }
             self.next_generation -= 1;
+            self.retire_sub_regions();
             return Err(rejection);
         }
         self.prepared = Some(Prepared { generation, compiled });
@@ -1011,8 +1195,110 @@ impl FrameHarness {
 
     fn install(&mut self, generation: GenerationRef, compiled: CompiledPlan) {
         self.active = generation;
+        self.sub_programs = compiled.sub_programs.clone();
         self.programs = compiled.programs;
         self.placement = compiled.placement;
+    }
+
+    /// Returns the admission points upstream of a state owner of the active generation, or of the one a cut in flight
+    /// replaces: the points that heartbeat, and that a cut is armed over.
+    fn state_points(&self) -> BTreeSet<AdmissionPointId> {
+        let mut placements = vec![&self.placement];
+        placements.extend(self.replaced.as_ref().map(|(_, _, placement)| placement));
+        state_points(placements)
+    }
+
+    /// Returns the keys of the sub-regions of `slot` that run, in the order of the active generation's regions, those
+    /// it does not run last.
+    fn sub_lanes(&self, slot: SlotId) -> Vec<u16> {
+        let mut keys = self
+            .placement
+            .slot(slot)
+            .map(|placed| {
+                placed
+                    .regions
+                    .iter()
+                    .filter_map(|region| match &region.key {
+                        RegionKey::State(node) => self.sub_keys.get(&(slot, node.clone())).copied(),
+                        RegionKey::Main => None,
+                    })
+                    .filter(|key| self.sub_drivers.contains_key(&(slot, *key)))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for (_, key) in self.sub_drivers.keys().filter(|(running, _)| *running == slot) {
+            if !keys.contains(key) {
+                keys.push(*key);
+            }
+        }
+        keys
+    }
+
+    /// Returns the region the harness calls lane `lane` of `slot`: one of the slot's lanes, or, past them, the
+    /// sub-region whose key is the lane less the slot's lanes.
+    fn region_mut(&mut self, slot: SlotId, lane: u16) -> Option<&mut MetricRegionDriver> {
+        let lanes = self.lanes_of(slot);
+        if lane < lanes {
+            let index = self.driver_index(slot, lane);
+            return self.drivers.get_mut(index);
+        }
+        self.sub_drivers.get_mut(&(slot, lane - lanes))
+    }
+
+    /// Returns the sender a path between regions starts at: the index of a lane's driver, or, for a sub-region, one
+    /// past every lane's.
+    fn sender_index(&self, slot: SlotId, lane: u16) -> usize {
+        let lanes = self.lanes_of(slot);
+        if lane < lanes {
+            self.driver_index(slot, lane)
+        } else {
+            self.drivers.len() + slot.get() * (usize::from(u16::MAX) + 1) + usize::from(lane - lanes)
+        }
+    }
+
+    /// Creates the driver of a sub-region of `slot`, started, from the preparation that starts it, as a region host
+    /// does with its factory.
+    fn start_sub_region(&mut self, slot: &Slot, key: u16, start: &RegionControl) -> Result<(), String> {
+        let config = RegionConfig::for_slot(slot, &self.telemetry)
+            .with_memo_entries(self.options.memo_entries)
+            .with_schedule(Arc::clone(&self.schedule))
+            .with_wall_clock(Arc::new(self.wall.clone()))
+            .with_state_budgets(self.budgets.clone())
+            .with_failure_reporter(Arc::clone(&self.reporter));
+        let mut driver = MetricRegionDriver::for_sub_region(config, start)
+            .map_err(|error| format!("the sub-region {} of `{}` is not created: {}", key, slot.name, error))?;
+        let mut budget = self.options.turn_budget;
+        driver.start(&mut RegionTurn::new(self.now(), &mut budget));
+        self.sub_drivers.insert((slot.id, key), driver);
+        Ok(())
+    }
+
+    /// Retires every sub-region no region of its slot routes to any more, as its host does once nothing holds a sender
+    /// to its input: it finishes under [`DrainPolicy::Retire`], and its output goes on.
+    fn retire_sub_regions(&mut self) {
+        for slot in self.order.clone() {
+            let routed = self
+                .drivers
+                .iter()
+                .filter(|driver| driver.slot() == slot)
+                .chain(
+                    self.sub_drivers
+                        .iter()
+                        .filter(|((of, _), _)| *of == slot)
+                        .map(|(_, driver)| driver),
+                )
+                .flat_map(|driver| driver.sub_region_routes().iter().map(|key| key.get()))
+                .collect::<BTreeSet<_>>();
+            let lanes = self.lanes_of(slot);
+            for key in self.sub_lanes(slot) {
+                if routed.contains(&key) {
+                    continue;
+                }
+                let now = self.wall.now();
+                self.call(slot, lanes + key, Call::Retire, now);
+                self.sub_drivers.remove(&(slot, key));
+            }
+        }
     }
 
     /// Arms a cut to the prepared generation, as the installer does in one transaction over the admission points that
@@ -1026,11 +1312,9 @@ impl FrameHarness {
     pub fn arm_cut(&mut self, widths: &[Duration]) -> AdmissionTime {
         let Prepared { generation, compiled } = self.prepared.take().expect("a generation is prepared");
         let wall = self.wall.now();
-        let affected = self
-            .points
-            .values()
-            .filter(|point| point.feeds_state)
-            .map(|point| point.id)
+        let affected = state_points([&self.placement, &compiled.placement])
+            .into_iter()
+            .filter(|id| self.points.contains_key(id))
             .collect::<Vec<_>>();
         let now = affected
             .iter()
@@ -1067,9 +1351,10 @@ impl FrameHarness {
     /// generation.
     pub fn cut_passed(&self) -> bool {
         let schedule = self.schedule.load();
+        let state = self.state_points();
         self.points
             .values()
-            .filter(|point| point.feeds_state)
+            .filter(|point| state.contains(&point.id))
             .all(|point| point.passed_cut(&schedule))
     }
 
@@ -1215,10 +1500,11 @@ impl FrameHarness {
             self.readmit(&node, output, now);
         }
         if self.options.heartbeats_at_ticks {
+            let state = self.state_points();
             let stale = self
                 .points
                 .values()
-                .filter(|point| point.feeds_state && point.mode == AdmissionMode::Admit)
+                .filter(|point| state.contains(&point.id) && point.mode == AdmissionMode::Admit)
                 .filter(|point| {
                     point
                         .own
@@ -1289,12 +1575,18 @@ impl FrameHarness {
             return;
         }
         let exits = self.frame.slot(slot).map_or(0, |slot| slot.exits.len());
-        for lane in 0..self.lanes_of(slot) {
-            let index = self.driver_index(slot, lane);
+        let lanes = self.lanes_of(slot);
+        let regions = (0..lanes)
+            .chain(self.sub_lanes(slot).into_iter().map(|key| lanes + key))
+            .collect::<Vec<_>>();
+        for lane in regions {
             let mut budget = self.options.turn_budget;
-            let mut sink = ExitSink::new(exits);
+            let mut sink = ExitSink::with_sub_regions(exits);
             let now = self.now();
-            self.drivers[index].end_turn(&mut RegionTurn::new(now, &mut budget), true, &mut sink);
+            let Some(driver) = self.region_mut(slot, lane) else {
+                continue;
+            };
+            driver.end_turn(&mut RegionTurn::new(now, &mut budget), true, &mut sink);
             let buffers = sink.drain_routed().collect::<Vec<_>>();
             self.route_exits(slot, lane, buffers, arrival);
         }
@@ -1307,6 +1599,26 @@ impl FrameHarness {
     /// first, which would make the others stragglers behind the ticks their lineage's records keep. With
     /// [`HarnessOptions::deadlines_lane_by_lane`], each lane runs all of its passed deadlines before the next.
     fn run_deadlines(&mut self, slot: SlotId, arrival: AdmissionTime) {
+        self.run_lane_deadlines(slot, arrival);
+        // A sub-region ticks on its own driver's deadlines, after the lanes that feed it.
+        let lanes = self.lanes_of(slot);
+        let now = self.now();
+        for key in self.sub_lanes(slot) {
+            for _ in 0..MAX_DEADLINES {
+                let due = self
+                    .region_mut(slot, lanes + key)
+                    .and_then(|driver| driver.next_deadline())
+                    .is_some_and(|deadline| deadline <= now);
+                if self.failed.contains_key(&slot) || !due {
+                    break;
+                }
+                self.call(slot, lanes + key, Call::Advance, arrival);
+            }
+        }
+    }
+
+    /// Runs every passed deadline of the lanes of a region.
+    fn run_lane_deadlines(&mut self, slot: SlotId, arrival: AdmissionTime) {
         let now = self.now();
         if self.options.deadlines_lane_by_lane {
             for lane in 0..self.lanes_of(slot) {
@@ -1358,8 +1670,13 @@ impl FrameHarness {
         self.flush_paths();
         for slot in self.order.clone() {
             self.flush_paths();
-            for lane in 0..self.lanes_of(slot) {
+            let lanes = self.lanes_of(slot);
+            for lane in 0..lanes {
                 self.call(slot, lane, Call::Finish, now);
+            }
+            // Each sub-region finishes once every region that feeds it did.
+            for key in self.sub_lanes(slot) {
+                self.call(slot, lanes + key, Call::Finish, now);
             }
         }
         self.flush_paths();
@@ -1392,7 +1709,7 @@ impl FrameHarness {
         let mut result = Ok(());
         for (lane, message) in messages {
             let mut budget = self.options.turn_budget;
-            let mut sink = ExitSink::new(self.frame.slot(slot).map_or(0, |slot| slot.exits.len()));
+            let mut sink = ExitSink::with_sub_regions(self.frame.slot(slot).map_or(0, |slot| slot.exits.len()));
             let now = self.now();
             let index = self.driver_index(slot, lane);
             let outcome = self.drivers[index].control(&mut RegionTurn::new(now, &mut budget), message, &mut sink);
@@ -1407,11 +1724,38 @@ impl FrameHarness {
         result
     }
 
-    /// Publishes every region's telemetry.
+    /// Delivers a control message to a running sub-region of `slot`, and hands on what it wrote.
+    fn sub_control(
+        &mut self, slot: SlotId, key: u16, message: RegionControl,
+    ) -> Result<(), saluki_core::execution::RegionFailure> {
+        let lanes = self.lanes_of(slot);
+        let mut budget = self.options.turn_budget;
+        let mut sink = ExitSink::with_sub_regions(self.frame.slot(slot).map_or(0, |slot| slot.exits.len()));
+        let now = self.now();
+        let Some(driver) = self.region_mut(slot, lanes + key) else {
+            return Ok(());
+        };
+        let outcome = driver.control(&mut RegionTurn::new(now, &mut budget), message, &mut sink);
+        let buffers = sink.drain_routed().collect::<Vec<_>>();
+        let arrival = self.wall.now();
+        self.route_exits(slot, lanes + key, buffers, arrival);
+        outcome
+    }
+
+    /// Publishes every region's telemetry, and retires the sub-regions that releasing generations left unrouted.
     pub fn publish(&mut self) {
-        for driver in &mut self.drivers {
+        for driver in self.drivers.iter_mut().chain(self.sub_drivers.values_mut()) {
             driver.publish_telemetry();
         }
+        self.retire_sub_regions();
+    }
+
+    /// Returns the driver of the sub-region of state owner `node` in the slot named `slot`, if it runs.
+    pub fn sub_region(&self, slot: &str, node: &str) -> Option<&MetricRegionDriver> {
+        let slot = self.slot_named(slot);
+        let node: NodeId = node.parse().ok()?;
+        let key = self.sub_keys.get(&(slot, node))?;
+        self.sub_drivers.get(&(slot, *key))
     }
 
     /// Re-admits what a host emitted, at its output's admission point, with the host's clock, which never moves back.
@@ -1441,18 +1785,25 @@ impl FrameHarness {
             return;
         }
         let exits = self.frame.slot(slot).map_or(0, |slot| slot.exits.len());
-        let index = self.driver_index(slot, lane);
-        let finishing = matches!(call, Call::Finish);
+        let index = self.sender_index(slot, lane);
+        let on_lane = lane < self.lanes_of(slot);
+        let finishing = match call {
+            Call::Finish => Some(DrainPolicy::Shutdown),
+            Call::Retire => Some(DrainPolicy::Retire),
+            Call::Process(_) | Call::Advance => None,
+        };
         let mut call = Some(call);
         for _ in 0..MAX_DEADLINES {
             let mut budget = self.options.turn_budget;
-            let mut sink = ExitSink::new(exits);
+            let mut sink = ExitSink::with_sub_regions(exits);
             let now = self.now();
-            let driver = &mut self.drivers[index];
+            let Some(driver) = self.region_mut(slot, lane) else {
+                return;
+            };
             let (site, lost) = match &call {
                 Some(Call::Process(buffer)) => (PanicSite::Process, buffer.len() as u64),
                 Some(Call::Advance) => (PanicSite::AdvanceTime, 0),
-                Some(Call::Finish) => (PanicSite::Finish, 0),
+                Some(Call::Finish | Call::Retire) => (PanicSite::Finish, 0),
                 None => (PanicSite::Resume, 0),
             };
             let current = call.take();
@@ -1462,14 +1813,15 @@ impl FrameHarness {
                     Some(Call::Process(buffer)) => driver.process(&mut turn, buffer, &mut sink),
                     Some(Call::Advance) => driver.advance_time(&mut turn, &mut sink),
                     Some(Call::Finish) => driver.finish(&mut turn, &mut sink, DrainPolicy::Shutdown),
+                    Some(Call::Retire) => driver.finish(&mut turn, &mut sink, DrainPolicy::Retire),
                     None => driver.resume(&mut turn, &mut sink),
                 }
             }));
             if site == PanicSite::Resume {
                 self.resumes += 1;
             }
-            let events = take_time_events(&mut self.drivers[index]);
-            if !events.is_empty() {
+            let events = self.region_mut(slot, lane).map(take_time_events).unwrap_or_default();
+            if !events.is_empty() && on_lane {
                 if let Some(recorder) = &mut self.recorder {
                     recorder.report(index, &events);
                 }
@@ -1480,9 +1832,16 @@ impl FrameHarness {
                 Err(payload) => {
                     let lost = lost + sink.event_count() as u64;
                     let panic = RegionPanic::new(site, panic_message(&*payload), lost);
-                    match self.drivers[index].reset_after_panic(&panic) {
-                        PanicOutcome::Continue if finishing => {
-                            call = Some(Call::Finish);
+                    let outcome = match self.region_mut(slot, lane) {
+                        Some(driver) => driver.reset_after_panic(&panic),
+                        None => return,
+                    };
+                    match outcome {
+                        PanicOutcome::Continue if finishing.is_some() => {
+                            call = Some(match finishing {
+                                Some(DrainPolicy::Retire) => Call::Retire,
+                                _ => Call::Finish,
+                            });
                             continue;
                         }
                         PanicOutcome::Continue => {
@@ -1549,8 +1908,20 @@ impl FrameHarness {
         arrival: AdmissionTime,
     ) {
         let exits = self.frame.slot(slot).expect("the frame's slot").exits.clone();
-        let sender = self.driver_index(slot, lane);
+        let sender = self.sender_index(slot, lane);
+        let lanes = self.lanes_of(slot);
         for (exit, routed, buffer) in buffers {
+            // An internal exit leads to a sub-region of the slot, whose input it reaches at once, in write order.
+            if exit.get() >= exits.len() {
+                let key = u16::try_from(exit.get() - exits.len()).expect("a sub-region key");
+                assert!(
+                    self.sub_drivers.contains_key(&(slot, key)),
+                    "a region wrote to sub-region {}, which does not run",
+                    key
+                );
+                self.arrive(slot, lanes + key, buffer, arrival);
+                continue;
+            }
             let definition = &exits[exit.get()];
             let target = definition.target.clone();
             // Every buffer leaves stamped, with an entry exactly when it carries events to another slot or to an encode
@@ -1676,9 +2047,11 @@ impl FrameHarness {
             arrivals.0 += 1;
         }
         let index = self.driver_index(slot, lane);
+        let on_lane = lane < self.lanes_of(slot);
         let observed = self
             .recorder
             .as_mut()
+            .filter(|_| on_lane)
             .and_then(|recorder| recorder.observe(index, &self.frame, &buffer));
         self.call(slot, lane, Call::Process(buffer), arrival);
         if let Some(recorder) = &mut self.recorder {
@@ -1779,6 +2152,15 @@ impl FrameHarness {
         &self.drivers[self.driver_index(slot, lane)]
     }
 
+    /// Returns the boot slots of the boot plan's state owners, in slot order: the slots whose main region holds a state
+    /// owner from boot.
+    pub fn state_slots(&self) -> impl Iterator<Item = &Slot> {
+        self.frame
+            .slots()
+            .iter()
+            .filter(|slot| is_state_slot(&self.frame, slot))
+    }
+
     /// Returns the slot named `name`.
     ///
     /// # Panics
@@ -1804,6 +2186,8 @@ enum Call {
     Process(EventsBuffer),
     Advance,
     Finish,
+    /// A sub-region's finish once nothing routes to it.
+    Retire,
 }
 
 /// Returns the context a harness builds a kernel in: detached, with the host's state budgets.
@@ -1814,15 +2198,8 @@ fn context(budgets: &StateBudgets, node: &NodeId) -> KernelBuildContext {
 /// Returns the bindings of the state owners of a slot's candidate program, against the active one: a state owner of a
 /// lineage the active program has retains its instance, any other is new, and an active state owner whose lineage the
 /// candidate does not keep retires.
-fn state_bindings(active: &RegionProgram, candidate: &RegionProgram, from: GenerationId) -> Vec<StateBinding> {
-    let lineages = |program: &RegionProgram| {
-        program
-            .kernels()
-            .iter()
-            .filter_map(|kernel| kernel.lineage.as_ref().map(|lineage| lineage.key.clone()))
-            .collect::<Vec<_>>()
-    };
-    let (old, new) = (lineages(active), lineages(candidate));
+fn state_bindings(active: Option<&RegionProgram>, candidate: &RegionProgram, from: GenerationId) -> Vec<StateBinding> {
+    let (old, new) = (active.map(lineages).unwrap_or_default(), lineages(candidate));
     let mut bindings = new
         .iter()
         .map(|key| {
@@ -1856,6 +2233,46 @@ fn state_bindings(active: &RegionProgram, candidate: &RegionProgram, from: Gener
         );
     }
     bindings
+}
+
+/// Returns the lineages of a program's state owners, in its kernel order.
+fn lineages(program: &RegionProgram) -> Vec<LineageKey> {
+    program
+        .kernels()
+        .iter()
+        .filter_map(|kernel| kernel.lineage.as_ref().map(|lineage| lineage.key.clone()))
+        .collect()
+}
+
+/// Returns the retirements of every lineage of the program of a sub-region the candidate does not run.
+fn retirements_of(active: &RegionProgram, from: GenerationId) -> Vec<StateBinding> {
+    lineages(active)
+        .into_iter()
+        .map(|key| StateBinding::Retire {
+            node: key.node.clone(),
+            key,
+            from,
+        })
+        .collect()
+}
+
+/// Returns the admission points upstream of a state owner in any of `placements`: real points, never derived ones.
+fn state_points<'a>(placements: impl IntoIterator<Item = &'a Placement>) -> BTreeSet<AdmissionPointId> {
+    placements
+        .into_iter()
+        .flat_map(|placement| placement.slots())
+        .flat_map(|slot| &slot.regions)
+        .flat_map(|region| &region.upstream)
+        .filter(|point| !point.derived)
+        .map(|point| point.id)
+        .collect()
+}
+
+/// Returns `true` if `slot` is the boot slot of a state owner of the boot plan.
+pub(crate) fn is_state_slot(frame: &Frame, slot: &Slot) -> bool {
+    slot.nodes
+        .first()
+        .is_some_and(|node| frame.boot_output_points(node).is_some())
 }
 
 /// Returns the slots of a frame in an order in which every slot comes after the slots whose exits lead to it.
@@ -2391,10 +2808,21 @@ impl LaneRecorder {
     /// Records the lanes of the frame's first state slot on lanes, starting the replay with the boot plan's
     /// installation.
     fn new(harness: &FrameHarness, boot: &Plan) -> Option<Self> {
-        let slot = harness.frame.slots().iter().find(|slot| slot.is_isolation())?;
-        let SlotKind::Isolation { upstream, .. } = &slot.kind else {
-            return None;
-        };
+        let slot = harness
+            .frame
+            .slots()
+            .iter()
+            .find(|slot| is_state_slot(&harness.frame, slot))?;
+        let upstream = harness
+            .placement
+            .slot(slot.id)?
+            .regions
+            .iter()
+            .find(|region| region.key == RegionKey::Main)?
+            .upstream
+            .iter()
+            .map(|point| point.id)
+            .collect::<Vec<_>>();
         let lanes = (0..slot.lanes)
             .map(|lane| {
                 (
@@ -2771,7 +3199,7 @@ fn check_realized_lanes(
             .iter()
             .all(|input| matches!(input, crate::compile::FrameSource::Exit { .. }));
         let owners_partition = slot.nodes.iter().all(partitioned);
-        if slot.is_isolation() && fed_by_exits && owners_partition && slot.lanes != lanes.state {
+        if is_state_slot(frame, slot) && fed_by_exits && owners_partition && slot.lanes != lanes.state {
             return Err(format!(
                 "`{}` runs {} lanes, not the {} state lanes asked for",
                 slot.name, slot.lanes, lanes.state
@@ -2792,7 +3220,7 @@ fn check_realized_lanes(
     let isolation = frame
         .slots()
         .iter()
-        .filter(|slot| slot.is_isolation())
+        .filter(|slot| is_state_slot(frame, slot))
         .collect::<Vec<_>>();
     if lanes.state > 1 && !isolation.is_empty() && isolation.iter().all(|slot| slot.lanes == 1) {
         return Err(format!(
@@ -2824,10 +3252,11 @@ impl FrameHarness {
     /// Returns the sum of the counters named `names` over every lane of the frame's isolation slots, publishing first.
     fn lane_counters(&mut self, names: &[&str]) -> u64 {
         self.publish();
-        self.frame
+        let frame = &self.frame;
+        frame
             .slots()
             .iter()
-            .filter(|slot| slot.is_isolation())
+            .filter(|slot| is_state_slot(frame, slot))
             .flat_map(|slot| (0..slot.lanes).map(move |lane| (slot.name.as_str(), lane)))
             .flat_map(|(region, lane)| names.iter().map(move |name| (region, *name, lane)))
             .map(|(region, name, lane)| self.telemetry.lane_value(region, name, lane))

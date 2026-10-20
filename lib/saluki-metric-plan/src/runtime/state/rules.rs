@@ -265,6 +265,48 @@ impl WatermarkTracker {
         self.owner.as_ref().map_or(header.epoch, |owner| owner.epoch)
     }
 
+    /// Returns a tracker of other upstream points, which keeps what this one knows of every point it still tracks: a
+    /// point added has sent nothing yet.
+    ///
+    /// A state owner's region follows the upstream points of every live generation that runs it, which change when a
+    /// generation with other points is prepared or one is released. Over several clocks before and after, the state
+    /// owner's epoch carries over, with what it knew of each kept point's clock; a tracker that moves between one
+    /// clock and several starts counting its epochs anew, as a state owner whose upstream points change is cut.
+    pub fn with_upstream(&self, upstream: &[UpstreamPoint]) -> Self {
+        let mut tracker = Self::new(upstream);
+        let kept = tracker
+            .points
+            .iter()
+            .map(|(point, _)| self.index_of(*point))
+            .collect::<Vec<_>>();
+        for (index, old) in kept.iter().enumerate() {
+            if let Some(old) = *old {
+                tracker.points[index].1 = self.points[old].1;
+                tracker.finals[index] = self.finals[old].clone();
+            }
+        }
+        let remap = |clocks: &[Option<u32>]| {
+            kept.iter()
+                .map(|old| old.and_then(|old| clocks.get(old).copied().flatten()))
+                .collect::<Vec<_>>()
+        };
+        if let (Some(owner), Some(old)) = (tracker.owner.as_mut(), self.owner.as_ref()) {
+            owner.epoch = old.epoch;
+            owner.clocks = remap(&old.clocks);
+            owner.finals = old
+                .finals
+                .iter()
+                .map(|left| OwnerFinal {
+                    epoch: left.epoch,
+                    watermark: left.watermark,
+                    max_latest: left.max_latest,
+                    clocks: remap(&left.clocks),
+                })
+                .collect();
+        }
+        tracker
+    }
+
     /// Returns the index of an upstream point, if it is one.
     fn index_of(&self, point: AdmissionPointId) -> Option<usize> {
         match self.first {

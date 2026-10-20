@@ -52,7 +52,7 @@ use super::{
 use crate::{
     compile::CompiledPlan,
     install::{
-        diff::CutPlan,
+        diff::{cancel_lock_order, CutPlan},
         lifecycle::{GenerationState, LifecycleEvent},
     },
     limits::values::{CUT_ARM_ATTEMPTS, CUT_ARM_RETRY, CUT_MARGIN},
@@ -662,6 +662,7 @@ impl InstallerCore {
         Some(Action::CancelCut {
             generation: cut.installed.generation.id(),
             old: old.generation.clone(),
+            lock_order: cancel_lock_order(&self.frame, &old.placement, &cut.installed.placement),
         })
     }
 

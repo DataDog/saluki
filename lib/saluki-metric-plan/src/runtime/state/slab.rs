@@ -129,6 +129,11 @@ impl<T> Slab<T> {
     pub fn len(&self) -> usize {
         self.places.len() - self.free.len()
     }
+
+    /// Returns `true` if the slab holds no entry.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 #[cfg(test)]

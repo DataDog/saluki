@@ -197,11 +197,11 @@ fn every_tick_flushes_at_its_wall_clock_second_what_was_admitted_before_it() {
             (30_000, 1, &["c rate/10s [10:0, 20:0]"]),
         ])
     );
-    let frame = harness.frame();
-    let output_point = frame
-        .boot_output_points(&frame.slots()[0].nodes[0])
+    let output_point = harness
+        .frame()
+        .boot_output_points(&"dsd_agg".parse().unwrap())
         .and_then(|points| points.first().copied())
-        .expect("aggregation runs in an isolation slot");
+        .expect("aggregation is a boot state owner");
     assert!(harness
         .delivered()
         .iter()
@@ -840,10 +840,10 @@ fn branched_plan(two: bool, second: &str) -> Plan {
 }
 
 #[test]
-fn a_candidate_aggregates_each_branch_with_its_own_width_in_the_one_isolation_slot() {
-    // The second state owner runs in the boot plan's isolation slot, which the split's slot has an exit to, as a second
-    // entry over the same edge; the merge after both runs in the slot their exits lead to. Each flushes on its own
-    // width: `a.` metrics in 10-second buckets, the rest in 20-second ones.
+fn a_candidate_aggregates_each_branch_with_its_own_width_in_a_region_of_its_own() {
+    // The second state owner runs in a sub-region of the split's slot, which the split's main region feeds through an
+    // internal exit; the merge after both runs in the boot state owner's slot, which both exits lead to. Each flushes on
+    // its own width: `a.` metrics in 10-second buckets, the rest in 20-second ones.
     let boot = branched_plan(false, "20s");
     let candidate = branched_plan(true, "20s");
     let mut harness = panicking_harness(&boot, with_heartbeats());
@@ -852,14 +852,20 @@ fn a_candidate_aggregates_each_branch_with_its_own_width_in_the_one_isolation_sl
         "adding a state owner is a cut"
     );
     harness.commit();
-    let slot = harness.slot_named("dsd_agg");
-    let placed = harness.placement().slot(slot).expect("the isolation slot").clone();
-    assert_eq!(
-        placed.nodes,
-        vec!["dsd_agg".parse::<NodeId>().unwrap(), "second".parse().unwrap()]
-    );
-    assert_eq!(placed.entries.len(), 2, "one entry per state owner over the one edge");
-    assert_eq!(harness.driver("dsd_agg").lineages().len(), 2);
+    let second: NodeId = "second".parse().unwrap();
+    let (slot, region) = harness
+        .placement()
+        .region_of(&second)
+        .expect("the second state owner runs in a slot");
+    assert_eq!(region, crate::compile::RegionKey::State(second.clone()));
+    assert_ne!(slot, harness.slot_named("dsd_agg"));
+    let name = harness.frame().slot(slot).expect("the frame's slot").name.to_string();
+    let sub_region = harness
+        .sub_region(&name, "second")
+        .expect("the second state owner's sub-region runs");
+    assert_eq!(sub_region.state_owner(), Some(&second));
+    assert_eq!(sub_region.lineages().len(), 1);
+    assert_eq!(harness.driver("dsd_agg").lineages().len(), 1);
 
     harness.admit("src", t(3_000), vec![counter("a.c", 1.0), counter("b.c", 2.0)]);
     harness.admit("src", t(12_000), vec![counter("a.c", 3.0), counter("b.c", 4.0)]);
@@ -950,8 +956,6 @@ struct Direct {
     program: Arc<crate::compile::RegionProgram>,
     schedule: saluki_core::execution::ScheduleHandle,
     telemetry: RecordingTelemetry,
-    /// The generations the region reported failed, with why.
-    failures: Arc<std::sync::Mutex<Vec<(GenerationId, String)>>>,
 }
 
 impl Direct {
@@ -968,7 +972,7 @@ impl Direct {
         let slot = frame
             .slots()
             .iter()
-            .find(|slot| slot.is_isolation())
+            .find(|slot| crate::runtime::harness::is_state_slot(&frame, slot))
             .expect("the plan has an isolation slot")
             .clone();
         let generation: GenerationRef = Arc::new(GenerationToken::new(GenerationId::new(1)));
@@ -985,15 +989,9 @@ impl Direct {
             &telemetry,
         );
         let wall = HarnessClock::new(t(0));
-        let failures = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let reporter: crate::runtime::GenerationFailureReporter = {
-            let failures = Arc::clone(&failures);
-            Arc::new(move |generation, reason| failures.lock().unwrap().push((generation, reason.to_string())))
-        };
         let config = RegionConfig::for_slot(&slot, &telemetry)
             .with_schedule(Arc::clone(&schedule))
-            .with_wall_clock(Arc::new(wall.clone()))
-            .with_failure_reporter(reporter);
+            .with_wall_clock(Arc::new(wall.clone()));
         let mut driver = MetricRegionDriver::new(config, boot).unwrap();
         let start = Instant::now();
         driver.start(&mut RegionTurn::new(start, &mut Budget::unlimited()));
@@ -1010,7 +1008,6 @@ impl Direct {
             program,
             schedule,
             telemetry,
-            failures,
         }
     }
 
@@ -1126,6 +1123,7 @@ impl Direct {
                 RegionControl::Kernel(KernelControl {
                     target: KernelTarget::Stateful,
                     lane: None,
+                    sub_region: None,
                     message: Box::new(ContextSnapshot::default()),
                     reply,
                 }),
@@ -1404,95 +1402,6 @@ fn an_instance_a_drain_refers_to_keeps_its_place_until_the_drain_ends_and_a_late
         strings(&["f"]),
         "the old lineage still holds the batch that started its reset"
     );
-}
-
-#[test]
-fn a_snapshot_that_panics_in_one_instance_during_a_yielded_tick_drain_restarts_it_and_the_drain_resumes() {
-    // Generation 2, under an artifact's budget, aggregates `a.` metrics in the boot state owner and the rest in a
-    // second one, whose kernel panics when asked for a snapshot once it admitted a metric named `panic.snapshot`. The
-    // tick at 15 drains both, one context per call, the boot state owner first; while its flush yields, a snapshot
-    // panics in the second. The panic is charged to generation 2, whose time-driven output the second's state goes
-    // to: its instance restarts empty, its two points lost as invalid, and the generation asks once to be rolled back.
-    // The host ends the yielded call; the drain is due at once, and input waits. The next `advance_time` resumes the
-    // first state owner's flush where it stopped, emitting each of its gauges once, and the second has nothing left.
-    let swapped = |plan: Plan| {
-        let mut value = serde_json::to_value(plan).unwrap();
-        for node in value["nodes"].as_array_mut().unwrap() {
-            match node["id"].as_str() {
-                Some("dsd_agg") => node["op"] = json!("aggregate"),
-                Some("second") => node["op"] = json!(PANICKING),
-                _ => {}
-            }
-        }
-        Plan::from_value(value).unwrap()
-    };
-    let mut direct = Direct::with(&swapped(branched_plan(false, "20s")), panicking_registry());
-    let (second, compiled) =
-        direct.prepare_with(&swapped(branched_plan(true, "20s")), 2, PanicBudget::ARTIFACT, |_| {
-            Vec::new()
-        });
-    direct.publish(&second);
-    let names = ["a.x", "a.y", "a.z"];
-    let into_first = direct.header_of(
-        t(3_000),
-        0,
-        &second,
-        Some(entry_into(&compiled, direct.slot, "dsd_agg")),
-    );
-    direct.send(
-        into_first,
-        names.iter().map(|name| gauge(name, 1.0)).collect(),
-        Budget::unlimited(),
-    );
-    let into_second = direct.header_of(t(4_000), 0, &second, Some(entry_into(&compiled, direct.slot, "second")));
-    direct.send(
-        into_second,
-        vec![gauge("b.c", 1.0), gauge("b.panic.snapshot", 1.0)],
-        Budget::unlimited(),
-    );
-    let heartbeat = direct.header_of(t(15_000), 0, &second, None);
-    direct.send(heartbeat, Vec::new(), Budget::unlimited());
-
-    let (progress, mut emitted) = direct.advance(Duration::from_secs(15), one_context_per_call());
-    assert_eq!(progress, Progress::Yielded);
-    let snapshot = catch_unwind(AssertUnwindSafe(|| direct.snapshot()));
-    let payload = snapshot.expect_err("the second state owner's snapshot panics");
-    let message = crate::runtime::kernels::panic_message(&*payload);
-    let panic = saluki_core::execution::RegionPanic::new(saluki_core::execution::PanicSite::Control, message, 0);
-    assert!(matches!(
-        direct.driver.reset_after_panic(&panic),
-        saluki_core::execution::PanicOutcome::Continue
-    ));
-    let failures = direct.failures.lock().unwrap().clone();
-    assert_eq!(failures.len(), 1, "{:?}", failures);
-    assert_eq!(failures[0].0, second.id());
-    assert!(
-        failures[0].1.contains("panicked reading a snapshot"),
-        "{}",
-        failures[0].1
-    );
-    assert!(!direct.driver.accepts_input(), "the drain is left to complete");
-    assert!(
-        direct
-            .driver
-            .next_deadline()
-            .is_some_and(|deadline| deadline <= direct.start + Duration::from_secs(15)),
-        "the drain the panic ended is due at once"
-    );
-
-    let (mut progress, written) = direct.advance(Duration::from_secs(15), one_context_per_call());
-    emitted += written;
-    while progress == Progress::Yielded {
-        let (next, written) = direct.resume(Duration::from_secs(15), one_context_per_call());
-        progress = next;
-        emitted += written;
-    }
-    assert_eq!(emitted, 3, "each of the first state owner's gauges once");
-    assert!(direct.driver.accepts_input());
-    assert_eq!(direct.snapshot(), strings(&[]), "both state owners hold nothing");
-    direct.driver.publish_telemetry();
-    assert_eq!(direct.telemetry.loss("second", LossClass::Invalid), 2);
-    assert_eq!(direct.telemetry.loss("dsd_agg", LossClass::Invalid), 0);
 }
 
 #[test]
@@ -1787,11 +1696,7 @@ fn the_default_program_runs_through_its_isolation_slot_as_the_interpreter_runs_i
             },
         );
         assert!(
-            harness
-                .frame()
-                .slots()
-                .iter()
-                .any(|slot| slot.name.as_str() == "dsd_agg" && slot.is_isolation()),
+            harness.state_slots().any(|slot| slot.name.as_str() == "dsd_agg"),
             "aggregation runs in the isolation slot `dsd_agg`"
         );
         harness.admit("dsd_in", at(3), dogstatsd);
@@ -1855,14 +1760,14 @@ fn an_isolation_slots_bounds_hold_its_state_owners_state_at_its_top_level_and_on
     let program = &compiled.programs[0];
     let node: NodeId = "dsd_agg".parse().unwrap();
     assert_eq!(
-        super::kernel_accounting_in(slot, &node),
+        super::kernel_accounting_in(slot, program, &node),
         None,
         "the region stands for the native `dsd_agg`"
     );
     assert_eq!(
-        super::kernel_accounting_in(&frame.slots()[1], &"out".parse().unwrap()),
+        super::kernel_accounting_in(&frame.slots()[1], &compiled.programs[1], &"out".parse().unwrap()),
         Some("out".to_string()),
-        "a fused slot's kernels are accounted under their nodes"
+        "the kernels of a region without a state owner are accounted under their nodes"
     );
 
     let totals = |bounds: super::RegionBounds| {
@@ -1961,9 +1866,9 @@ fn an_artifacts_state_owner_at_the_native_context_limit_is_within_the_artifact_m
 }
 
 #[test]
-fn a_region_refuses_a_program_whose_kernels_do_not_fit_its_kind_of_slot_and_an_isolation_slot_needs_a_schedule() {
-    // Slot 0 is the isolation slot of `source -> aggregate -> emit`, and a fused slot of the filtered plan: each
-    // region refuses the other's program, before changing anything.
+fn a_region_holds_the_state_owner_its_programs_bring_with_a_schedule_and_one_state_owner_at_a_time() {
+    // Slot 0 holds the state owner of `source -> aggregate -> emit`, and runs a filter of the filtered plan. A region
+    // holds the state owner whose state steps its programs run, whatever slot it is: it needs the schedule then.
     let compile_slot0 = |plan: &Plan| {
         let registry = OperatorRegistry::native();
         let frame = Frame::compute(plan, &registry, &crate::testing::default_program_slot_name).unwrap();
@@ -1979,7 +1884,6 @@ fn a_region_refuses_a_program_whose_kernels_do_not_fit_its_kind_of_slot_and_an_i
     };
     let (isolation, state_program) = compile_slot0(&plan());
     let (fused, fused_program) = compile_slot0(&filtered_plan());
-    assert!(isolation.is_isolation() && !fused.is_isolation());
     let generation: GenerationRef = Arc::new(GenerationToken::new(GenerationId::new(1)));
     let boot = |program: &Arc<crate::compile::RegionProgram>| {
         let keys = program.kernels().iter().map(|kernel| &kernel.key);
@@ -1997,26 +1901,26 @@ fn a_region_refuses_a_program_whose_kernels_do_not_fit_its_kind_of_slot_and_an_i
     let error = MetricRegionDriver::new(RegionConfig::for_slot(&fused, &NoTelemetry), boot(&state_program))
         .unwrap_err()
         .to_string();
-    assert!(
-        error.contains("a step feeds the state owner `dsd_agg`, which runs only in an isolation slot"),
-        "{}",
-        error
+    assert!(error.contains("needs the topology's schedule"), "{}", error);
+    let driver = MetricRegionDriver::new(
+        RegionConfig::for_slot(&fused, &NoTelemetry).with_schedule(Arc::clone(&schedule)),
+        boot(&state_program),
+    )
+    .unwrap();
+    assert_eq!(
+        driver.state_owner().map(ToString::to_string).as_deref(),
+        Some("dsd_agg")
     );
-    let error = MetricRegionDriver::new(
+    let driver = MetricRegionDriver::new(
         RegionConfig::for_slot(&isolation, &NoTelemetry).with_schedule(Arc::clone(&schedule)),
         boot(&fused_program),
     )
-    .unwrap_err()
-    .to_string();
-    assert!(
-        error.contains("a stateless step runs in an isolation slot, which runs only state owners"),
-        "{}",
-        error
+    .unwrap();
+    assert_eq!(
+        driver.state_owner(),
+        None,
+        "a region holds no state owner its programs do not run"
     );
-    let error = MetricRegionDriver::new(RegionConfig::for_slot(&isolation, &NoTelemetry), boot(&state_program))
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("needs the topology's schedule"), "{}", error);
 
     // A region given the host's state budgets refuses a state owner's kernel built without them.
     let error = MetricRegionDriver::new(

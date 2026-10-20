@@ -24,28 +24,33 @@ pub fn kernel_accounting_name(node: &NodeId) -> String {
     node.local().to_string()
 }
 
-/// Returns the name, under the component of the isolation slot `region`, of the subcomponent a state owner's kernel is
-/// accounted under, or `None` if the kernel is accounted in the region's own group, with its bounds at the region's
-/// top level.
+/// Returns the name, under the component of `region`, a slot whose region holds a state owner, of the subcomponent a
+/// kernel is accounted under, or `None` if the kernel is accounted in the region's own group, with its bounds at the
+/// region's top level.
 ///
-/// An isolation slot named after the state owner it runs stands for that node's native component, as the isolation
-/// slot of aggregation stands for the native `dsd_agg` transform: its kernel keeps that component's resource group and
-/// bounds path, such as `dsd_agg.aggregate_context_limit`. Every other kernel is accounted under
-/// [`kernel_accounting_name`]. Fused slots account every kernel under [`kernel_accounting_name`], even one named
+/// A slot named after the state owner its region holds stands for that node's native component, as the slot of
+/// aggregation stands for the native `dsd_agg` transform: its kernel keeps that component's resource group and bounds
+/// path, such as `dsd_agg.aggregate_context_limit`. Every other kernel is accounted under [`kernel_accounting_name`].
+/// A slot whose region holds no state owner accounts every kernel under [`kernel_accounting_name`], even one named
 /// after the node it runs; [`kernel_accounting_in`] applies both rules.
 pub fn kernel_accounting_path(region: &str, node: &NodeId) -> Option<String> {
     (node.local().as_str() != region).then(|| kernel_accounting_name(node))
 }
 
-/// Returns the name, under the component of `slot`'s region, of the subcomponent the kernel of `node` is accounted
-/// under, or `None` if it is accounted in the region's own group: [`kernel_accounting_path`] in an isolation slot,
-/// and [`kernel_accounting_name`] in a fused one.
-pub fn kernel_accounting_in(slot: &Slot, node: &NodeId) -> Option<String> {
-    if slot.is_isolation() {
+/// Returns the name, under the component of `slot`'s region running `program`, of the subcomponent the kernel of
+/// `node` is accounted under, or `None` if it is accounted in the region's own group: [`kernel_accounting_path`] when
+/// the program holds a state owner, and [`kernel_accounting_name`] otherwise.
+pub fn kernel_accounting_in(slot: &Slot, program: &RegionProgram, node: &NodeId) -> Option<String> {
+    if holds_state(program) {
         kernel_accounting_path(slot.name.as_str(), node)
     } else {
         Some(kernel_accounting_name(node))
     }
+}
+
+/// Returns `true` if a region program holds a state owner: it has a kernel with a lineage.
+fn holds_state(program: &RegionProgram) -> bool {
+    program.kernels().iter().any(|kernel| kernel.lineage.is_some())
 }
 
 /// The memory one predicate of a decision holds.
@@ -76,8 +81,8 @@ struct PredicateBounds {
 /// the kernels, predicates, memos, and counts of a later generation that the boot program does not have, and lists
 /// that grow in later generations, are not accounted for.
 ///
-/// An isolation slot's bounds ([`for_slot`][Self::for_slot]) also hold one step of a drain of its state owners'
-/// time-driven output, which the region holds at once: at most [`DRAIN_STEP_EVENTS`][limits::values::DRAIN_STEP_EVENTS]
+/// The bounds of a region holding a state owner ([`for_slot`][Self::for_slot]) also hold one step of a drain of its
+/// state owner's time-driven output, which the region holds at once: at most [`DRAIN_STEP_EVENTS`][limits::values::DRAIN_STEP_EVENTS]
 /// events, and one context's whole expansion beyond them; and its state owner's kernel is accounted at the region's
 /// top level when the region is named after it ([`kernel_accounting_in`]). The bounds of a slot with keyed exits, into
 /// a state owner on several lanes, hold the routed buffer each such exit keeps open for each target lane, with room for
@@ -114,8 +119,8 @@ impl RegionBounds {
     }
 
     /// Returns the bounds of the region of `slot` running `program`, a program compiled from `plan`, on one of the
-    /// slot's lanes: those of [`new`][Self::new], with each kernel accounted as [`kernel_accounting_in`] says, for an
-    /// isolation slot one drain step, and the open routed buffers of its keyed exits.
+    /// slot's lanes: those of [`new`][Self::new], with each kernel accounted as [`kernel_accounting_in`] says, for a
+    /// program that holds a state owner one drain step, and the open routed buffers of its keyed exits.
     ///
     /// # Errors
     ///
@@ -124,8 +129,10 @@ impl RegionBounds {
     pub fn for_slot(
         plan: &Plan, registry: &OperatorRegistry, program: &RegionProgram, slot: &Slot,
     ) -> Result<Self, RegionError> {
-        let mut bounds = Self::accounted(plan, registry, program, |node| kernel_accounting_in(slot, node))?;
-        bounds.drains = slot.is_isolation();
+        let mut bounds = Self::accounted(plan, registry, program, |node| {
+            kernel_accounting_in(slot, program, node)
+        })?;
+        bounds.drains = holds_state(program);
         for exit in &slot.exits {
             if let ExitRouting::Keyed(groups) = &exit.routing {
                 let lanes = groups.lanes();
@@ -297,16 +304,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_an_isolation_slot_named_after_its_state_owner_accounts_it_in_its_own_group() {
+    fn only_a_slot_named_after_the_state_owner_its_region_holds_accounts_it_in_its_own_group() {
         // `dsd_agg` stands for the native transform of that name; `metrics_enrich` is a fused slot, in which host
         // enrichment's kernel keeps its own subcomponent.
         let plan = Plan::from_json(crate::testing::DEFAULT_PROGRAM_JSON).unwrap();
-        let frame = crate::compile::Frame::compute(
-            &plan,
-            &crate::operators::OperatorRegistry::native(),
-            &crate::testing::default_program_slot_name,
-        )
-        .unwrap();
+        let registry = crate::operators::OperatorRegistry::native();
+        let frame =
+            crate::compile::Frame::compute(&plan, &registry, &crate::testing::default_program_slot_name).unwrap();
+        let derived = crate::compile::DerivedPoints::for_plan(&frame, &plan, &registry);
+        let compiled = crate::compile::compile_unvalidated(&plan, &registry, &frame, &derived).unwrap();
         let slot = |name: &str| {
             frame
                 .slots()
@@ -316,19 +322,21 @@ mod tests {
                 .clone()
         };
         let node = |id: &str| id.parse::<NodeId>().unwrap();
-        assert_eq!(kernel_accounting_in(&slot("dsd_agg"), &node("dsd_agg")), None);
+        let accounting =
+            |slot: Slot, node: NodeId| kernel_accounting_in(&slot, &compiled.programs[slot.id.get()], &node);
+        assert_eq!(accounting(slot("dsd_agg"), node("dsd_agg")), None);
         // Any other state owner in it accounts under its own name.
         assert_eq!(
-            kernel_accounting_in(&slot("dsd_agg"), &node("second_agg")),
+            accounting(slot("dsd_agg"), node("second_agg")),
             Some("second_agg".to_string())
         );
         assert_eq!(
-            kernel_accounting_in(&slot("metrics_enrich"), &node("metrics_host_enrichment")),
+            accounting(slot("metrics_enrich"), node("metrics_host_enrichment")),
             Some("metrics_host_enrichment".to_string())
         );
-        // So does a node named like the fused slot it runs in.
+        // So does a node named like the slot without a state owner it runs in.
         assert_eq!(
-            kernel_accounting_in(&slot("metrics_enrich"), &node("metrics_enrich")),
+            accounting(slot("metrics_enrich"), node("metrics_enrich")),
             Some("metrics_enrich".to_string())
         );
     }

@@ -193,13 +193,7 @@ fn a_harness_refuses_a_frame_that_runs_none_of_the_state_lanes_it_was_asked_for(
         refused
     );
     let harness = harness_on(&kept(), lanes, DeliverySchedule::TraceOrder, HarnessOptions::default());
-    let isolation = harness
-        .frame()
-        .slots()
-        .iter()
-        .filter(|slot| slot.is_isolation())
-        .map(|slot| slot.lanes)
-        .collect::<Vec<_>>();
+    let isolation = harness.state_slots().map(|slot| slot.lanes).collect::<Vec<_>>();
     assert_eq!(isolation, vec![2]);
 }
 
@@ -1310,13 +1304,7 @@ fn a_lane_that_reaches_an_epoch_after_the_others_left_it_ticks_on_the_epochs_rec
         Tolerance::from_limits(),
     );
     assert_eq!(verdict, ReorderedVerdict::Equivalent);
-    let slot = harness
-        .frame()
-        .slots()
-        .iter()
-        .find(|slot| slot.is_isolation())
-        .map(|slot| slot.name.to_string())
-        .unwrap();
+    let slot = harness.state_slots().next().map(|slot| slot.name.to_string()).unwrap();
     let mut flushes = BTreeMap::new();
     for (lane, event) in harness.slot_time_events(&slot) {
         if let LaneTimeEvent::Ticked {
@@ -1374,10 +1362,8 @@ fn plain_shape() -> Shape {
 /// Returns the name of the isolation slot of a harness's frame.
 fn isolation_slot(harness: &FrameHarness) -> String {
     harness
-        .frame()
-        .slots()
-        .iter()
-        .find(|slot| slot.is_isolation())
+        .state_slots()
+        .next()
         .map(|slot| slot.name.to_string())
         .expect("the frame has an isolation slot")
 }
@@ -2228,7 +2214,7 @@ fn against_replay(harness: &mut FrameHarness, lanes: u16) -> Option<Result<(), S
 /// from its lineage's record, every lane that fired a tick of a lineage's record fired it at the record's flush time.
 fn check_lane_times(harness: &mut FrameHarness) -> Result<(), String> {
     let agreed = harness.ticks_resolved_apart() == 0;
-    let Some(slot) = harness.frame().slots().iter().find(|slot| slot.is_isolation()) else {
+    let Some(slot) = harness.state_slots().next() else {
         return Ok(());
     };
     let events = harness.slot_time_events(slot.name.as_str());
@@ -2682,7 +2668,7 @@ proptest! {
         }
         let lane_times = check_lane_times(&mut harness);
         prop_assert!(lane_times.is_ok(), "{:?}: {}", lanes, lane_times.unwrap_err());
-        let slot = harness.frame().slots().iter().find(|slot| slot.is_isolation()).map(|slot| slot.name.to_string());
+        let slot = harness.state_slots().next().map(|slot| slot.name.to_string());
         if let Some(slot) = slot {
             harness.publish();
             for lane in 0..state {

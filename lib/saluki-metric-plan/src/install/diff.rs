@@ -12,8 +12,8 @@ use saluki_core::execution::{AdmissionMode, AdmissionPointId, GenerationId};
 use super::core::StateBinding;
 use crate::{
     compile::{
-        Frame, KernelKey, LineageKey, MissingCapability, Placement, PlacementError, PlacementProblem, RegionProgram,
-        SlotId,
+        ClockId, Frame, KernelKey, LineageKey, MissingCapability, Placement, PlacementError, PlacementProblem,
+        RegionKey, RegionProgram, SlotId,
     },
     extension::TransitionClass,
     ir::{Edge, HostId, Node, NodeId, OutputDecl, OutputId, Plan, PortRef, RecipientId},
@@ -88,7 +88,8 @@ pub struct StateOwnerDiff {
     /// | opaque | keyed | `reject` |
     ///
     /// A state owner added or removed is cut, rather than started or stopped at a batch boundary, so that a renamed
-    /// state owner never emits two partial points for one bucket of one series.
+    /// state owner never emits two partial points for one bucket of one series. Once the two generations are placed,
+    /// a state owner kept whose region or upstream points differ between them is cut too ([`PlanDiff::place`]).
     pub class: TransitionClass,
 
     /// Whether the node keeps state in both plans, or only in one.
@@ -229,6 +230,26 @@ impl PlanDiff {
         self.state_owners.iter().map(|owner| owner.class).max()
     }
 
+    /// Classifies as `cut` every state owner kept with another class but `reject` whose region (slot, and region of the
+    /// slot), or whose set of upstream points, differs between the active generation's placement and the candidate's.
+    ///
+    /// An instance of state cannot move between regions, and a state owner whose upstream points changed has a
+    /// watermark over other inputs: its new lineage starts at a cut. An upstream point of a state owner downstream of
+    /// another is that one's derived point, which stays the same while the upstream state owner moves or changes its
+    /// own points, so a cut of the upstream state owner alone leaves it kept.
+    pub fn place(&mut self, active: &Placement, candidate: &Placement) {
+        for owner in &mut self.state_owners {
+            if owner.change != StateOwnerChange::Kept || owner.class != TransitionClass::Retain {
+                continue;
+            }
+            let moved = active.region_of(&owner.node) != candidate.region_of(&owner.node);
+            let resourced = upstream_ids(active, &owner.node) != upstream_ids(candidate, &owner.node);
+            if moved || resourced {
+                owner.class = TransitionClass::Cut;
+            }
+        }
+    }
+
     /// Returns the cut the installation needs, if it is a **cut installation**: some state owner's class is `cut`, and
     /// none is `reject`.
     ///
@@ -289,6 +310,44 @@ pub struct CutPlan {
 }
 
 impl CutPlan {
+    /// Returns the cut with its boundary: the state owners of `diff` the cut does not affect, kept in both
+    /// generations, that are upstream of an affected one in the active generation's placement or the candidate's,
+    /// through the derived points between them, in the order of the diff. Their bucket widths join the cut's, so that
+    /// its time lines up with their buckets, at which each makes its boundary flush.
+    pub fn with_boundary(mut self, diff: &PlanDiff, active: &Placement, candidate: &Placement) -> Self {
+        let affected = self.owners.iter().collect::<BTreeSet<_>>();
+        let mut upstream = BTreeSet::new();
+        for owner in &self.owners {
+            upstream.extend(owners_upstream(active, owner));
+            upstream.extend(owners_upstream(candidate, owner));
+        }
+        let boundary = diff
+            .state_owners
+            .iter()
+            .filter(|owner| {
+                owner.change == StateOwnerChange::Kept
+                    && !affected.contains(&owner.node)
+                    && upstream.contains(&owner.node)
+            })
+            .collect::<Vec<_>>();
+        self.widths.extend(
+            boundary
+                .iter()
+                .flat_map(|owner| [owner.widths.0, owner.widths.1])
+                .flatten(),
+        );
+        self.widths.sort_unstable();
+        self.widths.dedup();
+        self.unknown_widths.extend(
+            boundary
+                .iter()
+                .filter(|owner| owner.widths.0.is_none() || owner.widths.1.is_none())
+                .map(|owner| owner.node.clone()),
+        );
+        self.boundary = boundary.into_iter().map(|owner| owner.node.clone()).collect();
+        self
+    }
+
     /// Returns the admission points the cut is armed over, in ID order: the points upstream of every affected owner in
     /// either generation, through the derived points of state owners upstream of it (see
     /// [`Placement::admission_upstream`]).
@@ -335,6 +394,60 @@ impl CutPlan {
             }],
         })
     }
+}
+
+/// Returns every admission point of the frame in the order a cut's cancellation locks them: the points upstream of no
+/// state owner of the active generation or the candidate first, then those upstream of one, each in ID order.
+///
+/// A point's lock is held while its batches fan out, so taking the points upstream of state owners last holds them only
+/// for the check and the store, never while waiting for another point's lock.
+pub fn cancel_lock_order(frame: &Frame, active: &Placement, candidate: &Placement) -> Vec<AdmissionPointId> {
+    let state = [active, candidate]
+        .into_iter()
+        .flat_map(|placement| placement.slots())
+        .flat_map(|slot| &slot.regions)
+        .flat_map(|region| &region.upstream)
+        .filter(|point| !point.derived)
+        .map(|point| point.id)
+        .collect::<BTreeSet<_>>();
+    let mut points = frame.admission_point_ids().collect::<Vec<_>>();
+    points.sort_unstable();
+    let (state, other): (Vec<_>, Vec<_>) = points.into_iter().partition(|point| state.contains(point));
+    other.into_iter().chain(state).collect()
+}
+
+/// Returns the IDs of the points upstream of a state owner in a placement, real and derived: those of the region it
+/// runs in, or `None` if it runs in none.
+fn upstream_ids(placement: &Placement, node: &NodeId) -> Option<BTreeSet<AdmissionPointId>> {
+    let (slot, key) = placement.region_of(node)?;
+    let region = placement.slot(slot)?.regions.iter().find(|region| region.key == key)?;
+    Some(region.upstream.iter().map(|point| point.id).collect())
+}
+
+/// Returns the state owners upstream of `node` in a placement, through the derived points of each to the next: every
+/// state owner whose time-driven output reaches it.
+pub(crate) fn owners_upstream(placement: &Placement, node: &NodeId) -> BTreeSet<NodeId> {
+    let mut found = BTreeSet::new();
+    let mut pending = vec![node.clone()];
+    while let Some(owner) = pending.pop() {
+        let Some((slot, key)) = placement.region_of(&owner) else {
+            continue;
+        };
+        let Some(region) = placement
+            .slot(slot)
+            .and_then(|placed| placed.regions.iter().find(|region| region.key == key))
+        else {
+            continue;
+        };
+        for point in region.upstream.iter().filter(|point| point.derived) {
+            if let ClockId::Derived(upstream) = &point.clock {
+                if found.insert(upstream.clone()) {
+                    pending.push(upstream.clone());
+                }
+            }
+        }
+    }
+    found
 }
 
 /// Diffs a candidate plan against the active one.
@@ -572,11 +685,15 @@ fn edges_by_node(plan: &Plan) -> BTreeMap<&NodeId, BTreeSet<(PortRef, PortRef)>>
     edges
 }
 
-/// Which kernels one slot keeps, builds, and stops using when a candidate's program replaces the active one's.
+/// Which kernels one region of a slot keeps, builds, and stops using when a candidate's program replaces the active
+/// one's.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SlotKernels {
     /// The slot.
     pub slot: SlotId,
+
+    /// The region of the slot.
+    pub region: RegionKey,
 
     /// Whether the candidate's program is the active one's: equal fingerprints, so the region keeps running the
     /// program it has.
@@ -594,16 +711,17 @@ pub struct SlotKernels {
     pub release: Vec<KernelKey>,
 }
 
-/// Returns which kernels every slot reuses, builds, and releases when `candidate`'s programs replace `active`'s.
+/// Returns which kernels every region reuses, builds, and releases when `candidate`'s programs replace `active`'s, one
+/// per candidate program, in its order.
 ///
-/// Both are the programs of every slot of one frame, in slot order. Without an active generation, every kernel is
-/// built.
+/// Each is a list of programs of regions of one frame, such as the program of every slot's main region, in slot order;
+/// a candidate program replaces the active program of the same region of the same slot. Without an active generation,
+/// or for a region the active generation does not run, every kernel is built.
 pub fn kernel_reuse(active: Option<&[Arc<RegionProgram>]>, candidate: &[Arc<RegionProgram>]) -> Vec<SlotKernels> {
     candidate
         .iter()
-        .enumerate()
-        .map(|(index, program)| {
-            let old = active.and_then(|programs| programs.get(index));
+        .map(|program| {
+            let old = active.and_then(|programs| same_region(programs, program));
             let keys = |program: &RegionProgram| {
                 program
                     .kernels()
@@ -616,6 +734,7 @@ pub fn kernel_reuse(active: Option<&[Arc<RegionProgram>]>, candidate: &[Arc<Regi
             let (reuse, build) = new_keys.iter().cloned().partition(|key| old_keys.contains(key));
             SlotKernels {
                 slot: program.slot(),
+                region: program.region().clone(),
                 unchanged: old.is_some_and(|old| old.fingerprint() == program.fingerprint()),
                 reuse,
                 build,
@@ -625,46 +744,79 @@ pub fn kernel_reuse(active: Option<&[Arc<RegionProgram>]>, candidate: &[Arc<Regi
         .collect()
 }
 
-/// Returns how each slot binds the candidate's state owners to instances of their state, in slot order: one list per
-/// candidate program, empty for a program without state owners.
+/// Returns the program of `programs` for the region of the slot `program` is for, if there is one.
+fn same_region<'a>(programs: &'a [Arc<RegionProgram>], program: &RegionProgram) -> Option<&'a Arc<RegionProgram>> {
+    programs
+        .iter()
+        .find(|old| old.slot() == program.slot() && old.region() == program.region())
+}
+
+/// Returns the lineages of a program's state owners, in its kernel order.
+fn lineages(program: &RegionProgram) -> Vec<LineageKey> {
+    program
+        .kernels()
+        .iter()
+        .filter_map(|kernel| kernel.lineage.as_ref().map(|lineage| lineage.key.clone()))
+        .collect()
+}
+
+/// Returns how each region binds the candidate's state owners to instances of their state, one list per candidate
+/// program, in its order, empty for a program without state owners.
 ///
 /// A state owner's kernel names its lineage ([`ProgramKernel::lineage`][crate::compile::ProgramKernel::lineage]).
-/// `active` is the active generation with its programs, if one is active, and `cut` the affected owners of a cut
-/// installation ([`CutPlan::owners`]), empty otherwise. In each slot:
+/// `active` is the active generation with its programs, if one is active, `cut` the affected owners of a cut
+/// installation ([`CutPlan::owners`]), and `boundary` the cut's retained owners upstream of them
+/// ([`CutPlan::boundary`]), both empty otherwise. A candidate program's region is the active program's of the same
+/// region of the same slot, in which:
 ///
-/// - a state owner the cut does not affect, whose lineage the active program in the slot also has, binds the active
-///   generation's instance ([`StateBinding::Retain`]): its state carries over;
+/// - a state owner the cut does not affect, whose lineage the active program in the region also has, binds the active
+///   generation's instance ([`StateBinding::Retain`]): its state carries over; one upstream of an affected owner makes
+///   a boundary flush at the cut ([`StateBinding::Boundary`]);
 /// - every other state owner of the candidate binds a new, empty instance ([`StateBinding::New`]);
-/// - every lineage of the active program in the slot that belongs to an affected owner retires
+/// - every lineage of the active program in the region that belongs to an affected owner retires
 ///   ([`StateBinding::Retire`]): it makes its final flush at the cut. Only cut installations retire lineages.
 ///
 /// Bindings are listed in the candidate's kernel order, an affected owner's retirement right after its new binding,
-/// then the retirements of the affected owners the candidate leaves out, in the active program's kernel order.
+/// then the retirements of the affected owners the candidate leaves out, in the active program's kernel order. The
+/// retirements in regions the candidate runs no program for are [`retirements`]'.
 pub fn state_bindings(
     active: Option<(GenerationId, &[Arc<RegionProgram>])>, candidate: &[Arc<RegionProgram>], cut: &BTreeSet<NodeId>,
+    boundary: &BTreeSet<NodeId>,
 ) -> Vec<Vec<StateBinding>> {
-    let lineages = |program: &RegionProgram| {
-        program
-            .kernels()
-            .iter()
-            .filter_map(|kernel| kernel.lineage.as_ref().map(|lineage| lineage.key.clone()))
-            .collect::<Vec<_>>()
-    };
     candidate
         .iter()
-        .enumerate()
-        .map(|(index, program)| {
-            let old = active
-                .and_then(|(generation, programs)| programs.get(index).map(|program| (generation, lineages(program))));
-            bind_lineages(old, &lineages(program), cut)
+        .map(|program| {
+            let old = active.and_then(|(generation, programs)| {
+                same_region(programs, program).map(|program| (generation, lineages(program)))
+            });
+            bind_lineages(old, &lineages(program), cut, boundary)
         })
         .collect()
 }
 
-/// Returns the bindings of one slot, from the lineages of the candidate's state owners in the slot and the active
-/// generation with the lineages of its program in the slot, if there is one (see [`state_bindings`]).
+/// Returns the retirements of a cut installation in the regions of the active generation the candidate runs no program
+/// for, as when the cut removes the state owner of a sub-region, or moves it to another region: each region's program
+/// with the bindings that retire its affected lineages, for the regions that have any.
+pub fn retirements<'a>(
+    active: (GenerationId, &'a [Arc<RegionProgram>]), candidate: &[Arc<RegionProgram>], cut: &BTreeSet<NodeId>,
+) -> Vec<(&'a Arc<RegionProgram>, Vec<StateBinding>)> {
+    let (generation, programs) = active;
+    programs
+        .iter()
+        .filter(|program| same_region(candidate, program).is_none())
+        .map(|program| {
+            let bindings = bind_lineages(Some((generation, lineages(program))), &[], cut, &BTreeSet::new());
+            (program, bindings)
+        })
+        .filter(|(_, bindings)| !bindings.is_empty())
+        .collect()
+}
+
+/// Returns the bindings of one region, from the lineages of the candidate's state owners in the region and the active
+/// generation with the lineages of its program in the region, if there is one (see [`state_bindings`]).
 pub(super) fn bind_lineages(
     active: Option<(GenerationId, Vec<LineageKey>)>, candidate: &[LineageKey], cut: &BTreeSet<NodeId>,
+    boundary: &BTreeSet<NodeId>,
 ) -> Vec<StateBinding> {
     let mut bindings = Vec::new();
     let old = |node: &NodeId| {
@@ -686,6 +838,11 @@ pub(super) fn bind_lineages(
                     from,
                 });
             }
+            Some((from, old)) if old == key && boundary.contains(&key.node) => bindings.push(StateBinding::Boundary {
+                node,
+                key: key.clone(),
+                from,
+            }),
             Some((from, old)) if old == key => bindings.push(StateBinding::Retain {
                 node,
                 key: key.clone(),

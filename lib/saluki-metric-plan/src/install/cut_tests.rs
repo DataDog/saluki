@@ -601,8 +601,32 @@ fn state_owners_bind_the_active_instance_a_new_one_or_retire_the_old_one() {
     ];
     for (what, active, candidate, cut, expected) in cases {
         let active = active.map(|(generation, keys)| (g(generation), keys));
-        assert_eq!(bind_lineages(active, &candidate, &cut), expected, "{}", what);
+        assert_eq!(
+            bind_lineages(active, &candidate, &cut, &BTreeSet::new()),
+            expected,
+            "{}",
+            what
+        );
     }
+    // A retained lineage upstream of an affected owner keeps its instance, and makes a boundary flush at the cut.
+    let boundary = cut(&["agg"]);
+    assert_eq!(
+        bind_lineages(
+            Some((g(4), vec![key("agg", "10s"), key("agg_b", "60s")])),
+            &[key("agg", "10s"), key("agg_b", "30s")],
+            &cut(&["agg_b"]),
+            &boundary,
+        ),
+        vec![
+            StateBinding::Boundary {
+                node: id("agg"),
+                key: key("agg", "10s"),
+                from: g(4),
+            },
+            new("agg_b", "30s"),
+            retire("agg_b", "60s", 4),
+        ]
+    );
 }
 
 // The cut protocol.
@@ -1560,4 +1584,231 @@ fn a_revoked_artifact_the_default_program_cannot_replace_says_it_stays_active_an
     assert_eq!(host.summary(), "g4 | steady 4");
     assert_eq!(host.demo().0, ApplyState::Retired);
     assert_eq!(demo_error(&mut host), None);
+}
+
+// Cuts by node, over placed generations.
+
+/// A plan of `nodes` and `edges`, written as `from -> to`, emitting to `outputs`.
+fn placed_plan(nodes: Vec<Value>, edges: &[&str], outputs: &[&str]) -> Plan {
+    let edges = edges
+        .iter()
+        .map(|edge| {
+            let (from, to) = edge.split_once(" -> ").unwrap();
+            json!({"from": from, "to": to})
+        })
+        .collect::<Vec<_>>();
+    let outputs = outputs
+        .iter()
+        .map(|output| {
+            json!({"id": output, "accepts": {"kinds": "all", "timestamps": "mixed"},
+                   "recipients": [format!("out/{}", output)]})
+        })
+        .collect::<Vec<_>>();
+    Plan::from_value(json!({"ir_version": 1, "nodes": nodes, "edges": edges, "outputs": outputs})).unwrap()
+}
+
+fn placed_node(id: &str, op: &str, params: Value) -> Value {
+    json!({"id": id, "op": op, "params": params})
+}
+
+fn aggregation(window: &str) -> Value {
+    json!({
+        "window": window, "flush_interval": "1s", "context_limit": 1000, "counter_expiry": "5m",
+        "flush_open_windows": false, "histogram_aggregates": ["max", "count"], "histogram_percentiles": [],
+        "copy_to_distribution": false, "copy_to_distribution_prefix": "",
+    })
+}
+
+fn source(id: &str, binding: &str) -> Value {
+    match binding {
+        "dogstatsd" => placed_node(id, "source", json!({"binding": binding, "timestamps": "untimestamped"})),
+        _ => placed_node(id, "source", json!({"binding": binding})),
+    }
+}
+
+/// `src -> first -> second -> emit`: a chain of two aggregations.
+fn chain(first: &str, second: &str) -> Plan {
+    placed_plan(
+        vec![
+            source("src", "dogstatsd"),
+            placed_node("first", "aggregate", aggregation(first)),
+            placed_node("second", "aggregate", aggregation(second)),
+            placed_node("out", "emit", json!({"output": "a"})),
+        ],
+        &[
+            "src.metrics -> first.in",
+            "first.out -> second.in",
+            "second.out -> out.in",
+        ],
+        &["a"],
+    )
+}
+
+/// Compiles each plan into the frame of the first, with derived points assigned as one installer's are.
+fn placed(plans: &[&Plan]) -> (Frame, Vec<crate::compile::Placement>) {
+    let registry = OperatorRegistry::native();
+    let frame = Frame::compute(plans[0], &registry, &default_program_slot_name).unwrap();
+    let mut derived = crate::compile::DerivedPoints::new();
+    let placements = plans
+        .iter()
+        .map(|plan| {
+            derived.assign(&frame, &crate::compile::state_owners(plan, &registry));
+            crate::compile::compile_unvalidated(plan, &registry, &frame, &derived)
+                .unwrap()
+                .placement
+        })
+        .collect();
+    (frame, placements)
+}
+
+/// Returns the cut from `active` to `candidate`, both placed into the frame of `active`, with its boundary.
+fn placed_cut(active: &Plan, candidate: &Plan) -> (PlanDiff, Option<CutPlan>, Vec<AdmissionPointId>) {
+    let (_, placements) = placed(&[active, candidate]);
+    let mut changes = diff(active, candidate, &OperatorRegistry::native());
+    changes.place(&placements[0], &placements[1]);
+    let cut = changes
+        .cut()
+        .map(|cut| cut.with_boundary(&changes, &placements[0], &placements[1]));
+    let affected = cut
+        .as_ref()
+        .map(|cut| cut.affected_points(&placements[0], &placements[1]))
+        .unwrap_or_default();
+    (changes, cut, affected)
+}
+
+#[test]
+fn a_cut_through_a_chain_is_armed_over_the_points_upstream_of_the_upstream_owner_with_its_width() {
+    let secs = Duration::from_secs;
+    // The downstream owner cut alone: the upstream one is retained, makes a boundary flush, and its width joins the
+    // cut's; the cut is armed over the source's point, upstream of both through the upstream owner's derived point.
+    let (_, cut, affected) = placed_cut(&chain("10s", "30s"), &chain("10s", "1m"));
+    let cut = cut.expect("a changed width is a cut");
+    assert_eq!(cut.owners, vec![id("second")]);
+    assert_eq!(cut.boundary, vec![id("first")]);
+    assert_eq!(cut.widths, vec![secs(10), secs(30), secs(60)]);
+    assert_eq!(affected, vec![AdmissionPointId::new(0)]);
+
+    // The upstream owner cut alone: the downstream one keeps its lineage, and makes no boundary flush.
+    let (_, cut, affected) = placed_cut(&chain("10s", "1m"), &chain("5s", "1m"));
+    let cut = cut.expect("a changed width is a cut");
+    assert_eq!(cut.owners, vec![id("first")]);
+    assert!(cut.boundary.is_empty());
+    assert_eq!(cut.widths, vec![secs(5), secs(10)]);
+    assert_eq!(affected, vec![AdmissionPointId::new(0)]);
+}
+
+/// `dsd -> joined <- otlp -> agg`, or `dsd -> agg` and everything `otlp` admits dropped after a split, in the slot
+/// the boot frame routes it to.
+fn sourced(both: bool) -> Plan {
+    let mut nodes = vec![
+        source("dsd", "dogstatsd"),
+        source("otlp", "otlp"),
+        placed_node("agg", "aggregate", aggregation("10s")),
+        placed_node("out", "emit", json!({"output": "a"})),
+    ];
+    let mut edges = vec!["agg.out -> out.in"];
+    if both {
+        nodes.push(placed_node("joined", "merge", json!({"inputs": 2})));
+        edges.extend([
+            "dsd.metrics -> joined.0",
+            "otlp.metrics -> joined.1",
+            "joined.out -> agg.in",
+        ]);
+    } else {
+        nodes.extend([
+            placed_node("gate", "split", json!({"predicate": {"name": {"prefix": "a."}}})),
+            placed_node("rest", "drop", json!({})),
+            placed_node("others", "drop", json!({})),
+        ]);
+        edges.extend([
+            "dsd.metrics -> agg.in",
+            "otlp.metrics -> gate.in",
+            "gate.true -> rest.in",
+            "gate.false -> others.in",
+        ]);
+    }
+    placed_plan(nodes, &edges, &["a"])
+}
+
+/// `src -> by_name`, with `a.` names aggregated by `agg_a`, and the rest dropped, or aggregated by `agg_b`, whose output
+/// joins `agg_a`'s, fed after the split, or with the rest dropped and fed with a copy of `agg_a`'s output.
+fn split(agg_b: Option<bool>) -> Plan {
+    let mut nodes = vec![
+        source("src", "dogstatsd"),
+        placed_node("by_name", "split", json!({"predicate": {"name": {"prefix": "a."}}})),
+        placed_node("agg_a", "aggregate", aggregation("10s")),
+        placed_node("out_a", "emit", json!({"output": "a"})),
+    ];
+    let mut edges = vec!["src.metrics -> by_name.in", "by_name.true -> agg_a.in"];
+    match agg_b {
+        None => {
+            nodes.push(placed_node("rest", "drop", json!({})));
+            edges.extend(["by_name.false -> rest.in", "agg_a.out -> out_a.in"]);
+        }
+        Some(after_split) => {
+            nodes.extend([
+                placed_node("agg_b", "aggregate", aggregation("10s")),
+                placed_node("joined", "merge", json!({"inputs": 2})),
+            ]);
+            edges.extend([
+                "agg_a.out -> joined.0",
+                "agg_b.out -> joined.1",
+                "joined.out -> out_a.in",
+            ]);
+            if after_split {
+                edges.push("by_name.false -> agg_b.in");
+            } else {
+                nodes.extend([
+                    placed_node("rest", "drop", json!({})),
+                    placed_node("copy", "tee", json!({"ports": 2})),
+                ]);
+                edges.retain(|edge| *edge != "agg_a.out -> joined.0");
+                edges.extend([
+                    "by_name.false -> rest.in",
+                    "agg_a.out -> copy.in",
+                    "copy.0 -> joined.0",
+                    "copy.1 -> agg_b.in",
+                ]);
+            }
+        }
+    }
+    placed_plan(nodes, &edges, &["a"])
+}
+
+#[test]
+fn a_state_owner_whose_upstream_points_or_region_change_is_cut_though_its_contract_is_kept() {
+    // Re-sourced: `agg`'s parameters are the same, and its watermark loses `otlp`'s point.
+    let (changes, cut, _) = placed_cut(&sourced(true), &sourced(false));
+    let agg = changes
+        .state_owners
+        .iter()
+        .find(|owner| owner.node == id("agg"))
+        .unwrap();
+    assert_eq!(agg.class, TransitionClass::Cut);
+    assert_eq!(cut.map(|cut| cut.owners), Some(vec![id("agg")]));
+
+    // Moved: `agg_b`, fed after the split, runs in a sub-region of the split's slot; fed with `agg_a`'s output, in a
+    // sub-region of `agg_a`'s slot, another component, which an instance of its state cannot move to.
+    let boot = split(None);
+    let (_, placements) = placed(&[&boot, &split(Some(true)), &split(Some(false))]);
+    let after_split = placements[1].region_of(&id("agg_b")).unwrap();
+    let after_agg_a = placements[2].region_of(&id("agg_b")).unwrap();
+    assert_ne!(after_split.0, after_agg_a.0, "another slot");
+    assert_eq!(after_agg_a.1, crate::compile::RegionKey::State(id("agg_b")));
+    let mut changes = diff(&split(Some(true)), &split(Some(false)), &OperatorRegistry::native());
+    let agg_b = |changes: &PlanDiff| {
+        changes
+            .state_owners
+            .iter()
+            .find(|owner| owner.node == id("agg_b"))
+            .unwrap()
+            .class
+    };
+    assert_eq!(
+        agg_b(&changes),
+        TransitionClass::Retain,
+        "the plans alone keep its contract"
+    );
+    changes.place(&placements[1], &placements[2]);
+    assert_eq!(agg_b(&changes), TransitionClass::Cut);
 }

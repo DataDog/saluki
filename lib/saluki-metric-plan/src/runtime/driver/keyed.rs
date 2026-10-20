@@ -263,6 +263,23 @@ impl KeyedExit {
         self
     }
 
+    /// Forwards the progress of `points` from now on, keeping what the exit knows of every point it still forwards.
+    pub fn set_points(&mut self, points: Vec<AdmissionPointId>) {
+        let lanes = usize::from(self.groups.lanes());
+        let mut previous = std::mem::take(&mut self.points);
+        self.points = points
+            .into_iter()
+            .map(|point| match previous.iter().position(|kept| kept.point == point) {
+                Some(position) => previous.swap_remove(position),
+                None => PointProgress {
+                    point,
+                    last_call: None,
+                    sent: vec![None; lanes],
+                },
+            })
+            .collect();
+    }
+
     /// Returns the exit.
     pub fn exit(&self) -> ExitId {
         self.exit

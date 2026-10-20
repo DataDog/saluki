@@ -394,7 +394,12 @@ fn producer_lane_region(
     let exit = pre.exit_to(&FrameTarget::Slot(agg.id)).unwrap();
     assert_eq!(exit.routing, ExitRouting::One);
     let points = (0..u32::from(producers)).map(AdmissionPointId::new).collect::<Vec<_>>();
-    assert_eq!(exit.progress_points, points);
+    let progress = compiled.programs[pre.id.get()]
+        .progress()
+        .iter()
+        .find(|(to, _)| *to == crate::compile::StepExit::Slot(exit.index))
+        .map(|(_, points)| points.clone());
+    assert_eq!(progress, Some(points));
     let telemetry = RecordingTelemetry::default();
     let program = Arc::clone(&compiled.programs[pre.id.get()]);
     let mut config = RegionConfig::for_slot(pre, &telemetry);
@@ -601,6 +606,7 @@ async fn a_preparation_splits_into_one_per_lane_and_a_kernel_message_never_split
     let kernel = RegionControl::Kernel(KernelControl {
         target: KernelTarget::Stateful,
         lane: Some(1),
+        sub_region: None,
         message: Box::new(()),
         reply: Box::new(|_| {}),
     });

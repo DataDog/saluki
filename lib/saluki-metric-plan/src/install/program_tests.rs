@@ -293,7 +293,14 @@ fn the_unmodified_export_composes_back_to_the_same_plan_and_diffs_as_no_change()
 fn the_composed_plan_places_onto_the_boot_frame_exactly_as_the_boot_plan_does() {
     let plan = unified_plan();
     let frame = frame(&plan);
-    assert_eq!(frame.slots().iter().filter(|slot| slot.is_isolation()).count(), 1);
+    assert_eq!(
+        frame
+            .slots()
+            .iter()
+            .filter(|slot| crate::runtime::harness::is_state_slot(&frame, slot))
+            .count(),
+        1
+    );
 
     let composed = composed(exported()).unwrap();
     let boot_report = boot_report();

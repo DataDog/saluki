@@ -1351,13 +1351,13 @@ fn a_reset_while_a_tick_is_gated_drops_the_tick_and_the_first_flush_after_it_add
         replay
             .harness
             .telemetry()
-            .value("agg_region", crate::runtime::PLAN_STATE_TICK_GRACE_EXPIRED_TOTAL),
+            .value("agg", crate::runtime::PLAN_STATE_TICK_GRACE_EXPIRED_TOTAL),
         1
     );
 }
 
-/// Returns the trace of [`drains_that_flush_at_different_times_are_stamped_in_plan_order_of_their_state_owners`],
-/// whose `a.` counter is `a` and whose `b.` counter is `b`.
+/// Returns the trace of [`drains_that_flush_at_different_times_are_stamped_by_their_own_state_owners_clocks`], whose
+/// `a.` counter is `a` and whose `b.` counter is `b`.
 fn drains_at_different_times(a: &Metric, b: &Metric) -> Trace {
     let by_name_over = |window_a: &str, with_b: bool| {
         let mut plan = by_name(with_b, "10s");
@@ -1382,13 +1382,12 @@ fn drains_at_different_times(a: &Metric, b: &Metric) -> Trace {
 }
 
 #[test]
-fn drains_that_flush_at_different_times_are_stamped_in_plan_order_of_their_state_owners() {
-    // `agg_b` joins `agg_a` in the boot frame's isolation slot at a cut at 7200; `agg_a`'s window then changes to 5
-    // seconds at a cut at 7210, which gives it a new lineage, created after `agg_b`'s; and a third plan removes `agg_b`
-    // at a cut at 7220, during which input ends. At shutdown `agg_a` closes at 7221 and the retiring `agg_b` at the
-    // cut's 7220, both under generation 3. The output clock latches each stamp to the latest before it, so the order of
-    // the two drains decides `b.y`'s: in plan order, `agg_a` drains first, and `b.y` is latched to 7221, whatever order
-    // the region holds the lineages in.
+fn drains_that_flush_at_different_times_are_stamped_by_their_own_state_owners_clocks() {
+    // `agg_b` joins `agg_a`, in a sub-region of the split's slot, at a cut at 7200; `agg_a`'s window then changes to 5
+    // seconds at a cut at 7210, which gives it a new lineage; and a third plan removes `agg_b` at a cut at 7220, during
+    // which input ends. At shutdown `agg_a` closes at 7221 and the retiring `agg_b` at the cut's 7220, both under
+    // generation 3. Each state owner's output clock stamps only its own drains, so `b.y` keeps its flush time, 7220,
+    // whatever `agg_a` drained at.
     let trace = drains_at_different_times(&counter("a.x", 1.0), &counter("b.y", 1.0));
     let (run, replay) = Replay::run(&trace, false, t(7_190));
     let cuts = run
@@ -1406,8 +1405,8 @@ fn drains_that_flush_at_different_times_are_stamped_in_plan_order_of_their_state
         "a",
         &[
             (2, 7_210_000, "a.x rate/10s [7190:1, 7200:1]"),
+            (3, 7_220_000, "b.y rate/10s [7200:1, 7210:1]"),
             (3, 7_221_000, "a.x rate/5s [7210:1]"),
-            (3, 7_221_000, "b.y rate/10s [7200:1, 7210:1]"),
         ],
     );
 }
@@ -1415,13 +1414,11 @@ fn drains_that_flush_at_different_times_are_stamped_in_plan_order_of_their_state
 #[test]
 fn on_lanes_a_lanes_latch_stamps_its_drains_of_one_event_and_never_another_lanes() {
     // The trace above on the lanes the stage 6 traces run on: a state lane's latch takes the stamps of the drains that
-    // lane emits. With `a.` and `b.` on one state lane, it emits `agg_a`'s drain at 7221 first, in plan order, and
-    // latches `b.`'s to 7221, as the single latch does. On two, `b.`'s lane emits nothing of `agg_a`'s drain, so its
-    // latch stamps `b.`'s drain at its own flush time, the retiring owner's cut at 7220: within one event, the drains
-    // of two state owners of one slot flush at decreasing times, which per-lane latches stamp apart (6.7, as amended).
+    // lane emits, and `agg_b`, which runs in a sub-region on one lane, has an output clock of its own. Whichever state
+    // lane `b.` would hash to, `b.`'s drain keeps its own flush time, the retiring owner's cut at 7220.
     LANES.with(|lanes| lanes.set(Some(TRACE_LANES)));
     let state = TRACE_LANES.state;
-    for (b_lane, b_stamp) in [(0, 7_221_000), (1, 7_220_000)] {
+    for (b_lane, b_stamp) in [(0, 7_220_000), (1, 7_220_000)] {
         let a = counter_on_lane("a.x", 0, state, 1.0);
         let b = counter_on_lane("b.y", b_lane, state, 1.0);
         let (an, bn) = (name_of(&a), name_of(&b));
@@ -1431,14 +1428,14 @@ fn on_lanes_a_lanes_latch_stamps_its_drains_of_one_event_and_never_another_lanes
         let b_10s = format!("{} rate/10s [7200:1, 7210:1]", bn);
         let single = [
             (2, 7_210_000, a_10s.as_str()),
+            (3, 7_220_000, b_10s.as_str()),
             (3, 7_221_000, a_5s.as_str()),
-            (3, 7_221_000, b_10s.as_str()),
         ];
         assert_eq!(interpreted(&run, "a"), expected(&single), "the interpreter's `a`");
         let on_lanes = [
             (2, 7_210_000, a_10s.as_str()),
-            (3, 7_221_000, a_5s.as_str()),
             (3, b_stamp, b_10s.as_str()),
+            (3, 7_221_000, a_5s.as_str()),
         ];
         assert_eq!(
             framed(&replay.harness, "a"),
@@ -1697,10 +1694,8 @@ fn trace_l1_a_cut_crosses_each_state_lane_on_its_own_and_values_equal_one_lane()
     )
     .unwrap();
     let slot = harness
-        .frame()
-        .slots()
-        .iter()
-        .find(|slot| slot.is_isolation())
+        .state_slots()
+        .next()
         .map(|slot| slot.name.to_string())
         .expect("the frame has a state slot");
     let step = |harness: &mut LanedFrameHarness| {
@@ -1871,10 +1866,8 @@ fn trace_l2_a_reset_drains_every_state_lane_at_the_exact_final_old_epoch_waterma
     // skipped the tick at 3,602 holding `x` of the new epoch, which a lane whose window had closed would have fired.)
     let slot = replay
         .harness
-        .frame()
-        .slots()
-        .iter()
-        .find(|slot| slot.is_isolation())
+        .state_slots()
+        .next()
         .map(|slot| slot.name.to_string())
         .expect("the frame has a state slot");
     let old_ticks = |lane: u16| {
@@ -2051,10 +2044,8 @@ fn trace_l4_a_preparation_one_of_sixteen_state_lanes_refuses_is_aborted_in_every
     )
     .unwrap();
     let slot = harness
-        .frame()
-        .slots()
-        .iter()
-        .find(|slot| slot.is_isolation())
+        .state_slots()
+        .next()
         .map(|slot| slot.id)
         .expect("the frame has a state slot");
     harness.admit("src", t(95), vec![counter("c", 1.0)]);
@@ -2242,4 +2233,262 @@ fn trace_l7_a_revocation_while_armed_cancels_the_cut_over_every_producer_lane() 
         1
     );
     assert_eq!(framed(&replay.harness, "a"), interpreted(&run, "a"));
+}
+
+// Traces 16 to 19 of V7a, replayed: a state owner over two sources, a state owner added after enrichment, which runs in
+// a sub-region, and cuts through a chain of state owners.
+
+/// An untimestamped gauge.
+fn gauge(name: &'static str, value: f64) -> Metric {
+    Metric::gauge(Context::from_static_name(name), value)
+}
+
+/// `dsd -> joined <- otlp`, aggregated over `window` into `a`.
+fn two_sources(window: &str) -> Plan {
+    plan(
+        vec![
+            node(
+                "dsd",
+                "source",
+                json!({"binding": "dogstatsd", "timestamps": "untimestamped"}),
+            ),
+            node("otlp", "source", json!({"binding": "otlp"})),
+            node("joined", "merge", json!({"inputs": 2})),
+            node("agg", "aggregate", aggregation(window)),
+            node("out", "emit", json!({"output": "a"})),
+        ],
+        &[
+            "dsd.metrics -> joined.0",
+            "otlp.metrics -> joined.1",
+            "joined.out -> agg.in",
+            "agg.out -> out.in",
+        ],
+        &["a"],
+    )
+}
+
+#[test]
+fn trace_16_on_a_frame_a_state_owner_over_two_sources_flushes_at_the_earliest_of_their_watermarks() {
+    // The tick at 101 waits at the gate while `otlp` is at 95, `dsd`'s heartbeat at 101 leaves it there, and `otlp`'s
+    // heartbeat at 101 releases it at its second.
+    let trace = Trace::new()
+        .install(two_sources("10s"))
+        .admit(id("dsd"), t(95), vec![counter("c", 1.0)])
+        .heartbeat(id("otlp"), t(95))
+        .advance(t(101))
+        .heartbeat(id("dsd"), t(101));
+    let (run, replay) = Replay::run(&trace, false, t(91));
+    assert_delivered(&run, &replay, "a", &[]);
+    let trace = trace.heartbeat(id("otlp"), t(101));
+    let (run, replay) = Replay::run(&trace, false, t(91));
+    assert_delivered(&run, &replay, "a", &[(1, 101_000, "c rate/10s [90:1]")]);
+
+    // An idle source heartbeating every second keeps the ticks on time: each fires at its second, within the grace.
+    let trace = Trace::new()
+        .install(two_sources("10s"))
+        .admit(id("dsd"), ms(99_500), vec![counter("c", 1.0)])
+        .heartbeat(id("otlp"), t(100))
+        .advance(t(101))
+        .heartbeat(id("dsd"), t(101))
+        .heartbeat(id("otlp"), t(101))
+        .admit(id("dsd"), ms(110_500), vec![counter("c", 2.0)])
+        .heartbeat(id("otlp"), t(111))
+        .advance(t(111))
+        .heartbeat(id("dsd"), t(111));
+    let (run, replay) = Replay::run(&trace, false, t(91));
+    assert_delivered(
+        &run,
+        &replay,
+        "a",
+        &[(1, 101_000, "c rate/10s [90:1]"), (1, 111_000, "c rate/10s [100:0]")],
+    );
+}
+
+/// The default program's shape, `dsd -> dsd_agg -> joined <- otlp`, emitting everything `joined` carries to `a`, and a
+/// copy of it to `b`: as it is, or, with `again`, aggregated a second time, over a minute.
+fn aggregated_after(again: bool) -> Plan {
+    let mut nodes = vec![
+        node(
+            "dsd",
+            "source",
+            json!({"binding": "dogstatsd", "timestamps": "untimestamped"}),
+        ),
+        node("otlp", "source", json!({"binding": "otlp"})),
+        node("dsd_agg", "aggregate", aggregation("10s")),
+        node("joined", "merge", json!({"inputs": 2})),
+        node("t", "tee", json!({"ports": 2})),
+        node("out_a", "emit", json!({"output": "a"})),
+        node("out_b", "emit", json!({"output": "b"})),
+    ];
+    let mut edges = vec![
+        "dsd.metrics -> dsd_agg.in",
+        "dsd_agg.out -> joined.0",
+        "otlp.metrics -> joined.1",
+        "joined.out -> t.in",
+        "t.0 -> out_a.in",
+    ];
+    if again {
+        nodes.push(node("again", "aggregate", aggregation("1m")));
+        edges.extend(["t.1 -> again.in", "again.out -> out_b.in"]);
+    } else {
+        edges.push("t.1 -> out_b.in");
+    }
+    plan(nodes, &edges, &["a", "b"])
+}
+
+#[test]
+fn trace_17_on_a_frame_a_second_aggregation_after_the_first_runs_in_a_sub_region_and_follows_both() {
+    // `again`, added at a cut at 60, runs in a sub-region of the slot it receives from, over `otlp`'s point and
+    // `dsd_agg`'s derived point, which its region admits before the ticks it releases. What every output receives is
+    // what the interpreter delivers.
+    let trace = Trace::new()
+        .install(aggregated_after(false))
+        .admit(id("dsd"), t(5), vec![gauge("g", 1.0)])
+        .admit(id("otlp"), t(6), vec![gauge_at("o", 6, 10.0)])
+        .advance(t(11))
+        .install(aggregated_after(true))
+        .admit(id("dsd"), t(25), vec![gauge("g", 2.0)])
+        .advance(t(31))
+        .admit(id("otlp"), t(45), vec![gauge_at("o", 45, 20.0)])
+        .admit(id("dsd"), t(55), vec![gauge("g", 4.0)])
+        .advance(t(51))
+        .advance(t(61))
+        .admit(id("otlp"), t(65), vec![gauge_at("o", 65, 40.0)])
+        .admit(id("dsd"), t(75), vec![gauge("g", 8.0)])
+        .advance(t(71))
+        .advance(t(81))
+        .advance(t(121))
+        .advance(t(131))
+        .close();
+    let (run, replay) = Replay::run(&trace, true, t(1));
+    let again: NodeId = id("again");
+    let (slot, region) = replay
+        .harness
+        .placement()
+        .region_of(&again)
+        .expect("`again` runs in a slot");
+    assert_eq!(region, crate::compile::RegionKey::State(again.clone()));
+    let name = replay.harness.frame().slot(slot).expect("its slot").name.to_string();
+    assert!(
+        replay.harness.sub_region(&name, "again").is_some(),
+        "its sub-region runs"
+    );
+    assert_eq!(framed(&replay.harness, "a"), interpreted(&run, "a"));
+    assert_eq!(framed(&replay.harness, "b"), interpreted(&run, "b"));
+    assert!(
+        interpreted(&run, "b")
+            .iter()
+            .any(|(generation, _, record)| *generation == 2 && record.starts_with("g gauge")),
+        "`again` aggregates `dsd_agg`'s output: {:?}",
+        interpreted(&run, "b")
+    );
+}
+
+/// `src -> first -> second -> emit` to `a`: an aggregation over `first` whose output a second aggregation, over
+/// `second`, aggregates again.
+fn chain(first: &str, second: &str) -> Plan {
+    plan(
+        vec![
+            dogstatsd("untimestamped"),
+            node("first", "aggregate", aggregation(first)),
+            node("second", "aggregate", aggregation(second)),
+            node("out", "emit", json!({"output": "a"})),
+        ],
+        &[
+            "src.metrics -> first.in",
+            "first.out -> second.in",
+            "second.out -> out.in",
+        ],
+        &["a"],
+    )
+}
+
+#[test]
+fn trace_18_on_a_frame_a_chain_flushes_every_contribution_of_the_first_in_the_seconds_bucket() {
+    // With every source heartbeating at each tick, `second`'s tick at 61 waits for `first`'s at 61, admits its output,
+    // the bucket [50, 60), and then flushes [0, 60) with every one of `first`'s buckets in it.
+    let trace = Trace::new()
+        .install(chain("10s", "1m"))
+        .admit(src(), t(1), vec![gauge("g", 1.0)])
+        .advance(t(11))
+        .admit(src(), t(15), vec![gauge("g", 2.0)])
+        .advance(t(21))
+        .advance(t(31))
+        .advance(t(41))
+        .admit(src(), t(55), vec![gauge("g", 4.0)])
+        .advance(t(51))
+        .advance(t(61))
+        .advance(t(71))
+        .close();
+    let (run, replay) = Replay::run(&trace, true, t(1));
+    assert_delivered(&run, &replay, "a", &[(1, 61_000, "g gauge [0:1, 10:2, 50:4]")]);
+}
+
+/// The cut from `chain(old)` to `chain(new)`, installed with the latest stamp at 98.5, with gauges admitted on both
+/// sides of the cut.
+fn cut_through_chain(old: (&str, &str), new: (&str, &str)) -> Trace {
+    Trace::new()
+        .install(chain(old.0, old.1))
+        .admit(src(), t(85), vec![gauge("g", 1.0)])
+        .advance(t(91))
+        .admit(src(), t(95), vec![gauge("g", 2.0)])
+        .heartbeat(src(), ms(98_500))
+        .install(chain(new.0, new.1))
+        .advance(t(101))
+        .admit(src(), t(105), vec![gauge("g", 4.0)])
+        .advance(t(111))
+        .admit(src(), t(115), vec![gauge("g", 8.0)])
+        .advance(t(121))
+        .admit(src(), t(125), vec![gauge("g", 16.0)])
+        .advance(t(131))
+        .advance(t(151))
+        .advance(t(181))
+        .close()
+}
+
+#[test]
+fn trace_19_on_a_frame_a_cut_through_a_chain_delivers_every_point_once_under_the_expected_generation() {
+    // The regions start at 91, so that their first ticks run at the interpreter's first tick after it, at 101.
+    //
+    // Both cut, T = 120: `first`'s old lineage makes its final flush at 120 under generation 1, which `second`'s old
+    // lineage admits; it crosses at `first`'s first stamp of generation 2 and makes its own final flush at 120.
+    let (run, replay) = Replay::run(&cut_through_chain(("10s", "30s"), ("5s", "1m")), true, t(91));
+    assert_delivered(
+        &run,
+        &replay,
+        "a",
+        &[
+            (1, 101_000, "g gauge [80:1]"),
+            (1, 120_000, "g gauge [90:2, 100:4, 110:8]"),
+            (2, 181_000, "g gauge [125:16]"),
+        ],
+    );
+
+    // The upstream cut only, T = 100: `second` keeps its lineage, and buckets by timestamp what `first`'s old lineage
+    // sent before the cut and its new one after.
+    let (run, replay) = Replay::run(&cut_through_chain(("10s", "1m"), ("5s", "1m")), true, t(91));
+    assert_delivered(
+        &run,
+        &replay,
+        "a",
+        &[
+            (2, 121_000, "g gauge [80:1, 90:2, 105:4, 115:8]"),
+            (2, 181_000, "g gauge [125:16]"),
+        ],
+    );
+
+    // The downstream cut only, T = 120, which lines up with `first`'s width too: `first` keeps its lineage and makes a
+    // boundary flush at 120 under generation 1 once its watermark reaches it, so that its bucket [110, 120) reaches
+    // `second`'s old lineage, not its tick at 121, under generation 2.
+    let (run, replay) = Replay::run(&cut_through_chain(("10s", "30s"), ("10s", "1m")), true, t(91));
+    assert_delivered(
+        &run,
+        &replay,
+        "a",
+        &[
+            (1, 101_000, "g gauge [80:1]"),
+            (1, 120_000, "g gauge [90:2, 100:4, 110:8]"),
+            (2, 181_000, "g gauge [120:16]"),
+        ],
+    );
 }

@@ -15,7 +15,7 @@ use saluki_metrics::{test::TestRecorder, MetricsBuilder};
 
 use super::*;
 use crate::{
-    compile::{FrameHosts, FrameOptions, KeyGroups, LanePolicy, Slot, SlotKind},
+    compile::{FrameHosts, FrameOptions, KeyGroups, LanePolicy, Slot},
     operators::{LaneBinding, LaneCell},
     runtime::{state::lanes::SlotLanes, PlanTelemetry, PreparedKernel, StateBudgets},
 };
@@ -165,14 +165,15 @@ impl Lanes {
         let slot = frame
             .slots()
             .iter()
-            .find(|slot| slot.is_isolation())
-            .expect("the plan has an isolation slot")
+            .find(|slot| crate::runtime::harness::is_state_slot(&frame, slot))
+            .expect("the plan has a state owner's slot")
             .clone();
         assert_eq!(slot.lanes, p);
-        let SlotKind::Isolation { upstream, .. } = &slot.kind else {
-            unreachable!("an isolation slot")
-        };
-        let points = upstream.clone();
+        let points = compiled.programs[slot.id.get()]
+            .state_upstream()
+            .iter()
+            .map(|point| point.id)
+            .collect::<Vec<_>>();
         assert_eq!(points.len(), usize::from(d), "every point of the source is upstream");
         let entry = entry_into(&compiled, slot.id, "dsd_agg");
         let program = Arc::clone(&compiled.programs[slot.id.get()]);
@@ -201,13 +202,17 @@ impl Lanes {
         let cell = LaneCell::new();
         for lane in 0..p {
             let kernels = lanes.built(&program, &cell, lane);
-            let boot = PrepareRegion::new(
-                Arc::clone(&generation),
-                Arc::clone(&program),
-                kernels,
-                budget,
-                &NoTelemetry,
-            );
+            // The state owner's region publishes its own telemetry, such as its clock resets, with the kernels'.
+            let boot = {
+                let _local = metrics::set_default_local_recorder(&lanes.recorder);
+                PrepareRegion::new(
+                    Arc::clone(&generation),
+                    Arc::clone(&program),
+                    kernels,
+                    budget,
+                    &PlanTelemetry::new(MetricsBuilder::default()),
+                )
+            };
             let driver = lanes.driver(lane, boot);
             lanes.drivers.push(driver);
         }
@@ -248,7 +253,6 @@ impl Lanes {
         let failures = Arc::clone(&self.failures);
         let reporter: crate::runtime::GenerationFailureReporter =
             Arc::new(move |generation, reason| failures.lock().unwrap().push((generation, reason.to_string())));
-        // The slot's own telemetry, such as its clock resets, records with the kernels'.
         let config = {
             let _local = metrics::set_default_local_recorder(&self.recorder);
             RegionConfig::for_slot(&self.slot, &PlanTelemetry::new(MetricsBuilder::default()))

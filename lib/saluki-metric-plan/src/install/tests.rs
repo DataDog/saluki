@@ -846,7 +846,8 @@ fn invalid_and_unplaceable_candidates_are_rejected_and_the_active_generation_sta
         })]
     ));
 
-    // A state owner after enrichment would need an isolation slot the frame does not have there.
+    // A state owner after enrichment places, in a sub-region of the enrichment's slot; adding it is a cut, which locks
+    // admission points, and this frame readmits a host component's records, which a cut cannot lock.
     let late = edited(|value| {
         let mut aggregate = node_mut(value, "dsd_agg").clone();
         aggregate["id"] = json!("late_agg");
@@ -867,7 +868,7 @@ fn invalid_and_unplaceable_candidates_are_rejected_and_the_active_generation_sta
     else {
         panic!("{:?}", described(&actions))
     };
-    assert_eq!(error.capabilities(), vec![MissingCapability::Restart]);
+    assert_eq!(error.capabilities(), vec![MissingCapability::State]);
     assert_eq!(harness.core.status().live, vec![GenerationId::new(1)]);
 }
 
