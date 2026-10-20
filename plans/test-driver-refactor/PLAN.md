@@ -46,10 +46,11 @@ Each pull request checks off its own item.
     definitions. Its `build` hands the box over once and returns an error on a second build. Its memory bounds are
     empty.
   - Works with every `DriverOptions` setting. Sources only for now.
-- [ ] **4. F3: `synchronous_transform` entry point.**
+- [x] **4. F3: `synchronous_transform` entry point.**
   - `TestComponentDriver::synchronous_transform` and `DriverOptions::synchronous_transform` run a
     `SynchronousTransformBuilder` through a small adapter `Transform`. The adapter receives a buffer, calls
-    `transform_buffer`, dispatches the buffer to the default output, and stops when its input closes.
+    `transform_buffer`, dispatches the buffer to the default output, and stops when its input closes. A failed
+    dispatch stops it with the dispatch error.
   - The adapter accepts every event type, as `ChainedConfiguration` does. No conversion needs it yet; its consumers
     are follow-ups.
 - [ ] **5. F4: shutdown separate from the supervisor.**
