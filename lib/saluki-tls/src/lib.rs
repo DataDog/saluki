@@ -33,6 +33,13 @@ use tracing::debug;
 #[cfg(not(feature = "fips"))]
 use tracing::warn;
 
+use self::certificate_distrust::DistrustServerCertVerifier;
+
+mod certificate_distrust;
+
+#[cfg(test)]
+mod certificate_distrust_tests;
+
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util;
 
@@ -289,6 +296,7 @@ impl ClientTLSConfigBuilder {
     /// Sets the root certificate store to use for the client.
     ///
     /// Defaults to the "default" root certificate store initialized from the platform. (See [`load_platform_root_certificates`].)
+    /// Certificate verification excludes trust anchors with known compromised public keys.
     pub fn with_root_cert_store(mut self, store: RootCertStore) -> Self {
         self.root_cert_store = Some(store);
         self
@@ -317,8 +325,8 @@ impl ClientTLSConfigBuilder {
     /// # Errors
     ///
     /// If the default root cert store (see [`load_platform_root_certificates`]) hasn't been initialized, and a root
-    /// cert store hasn't been provided, or if the resulting configuration isn't FIPS compliant, an error will be
-    /// returned.
+    /// cert store hasn't been provided, if distrust removes every anchor from a nonempty store, or if the resulting
+    /// configuration isn't FIPS compliant, an error will be returned.
     pub fn build(self) -> Result<ClientConfig, GenericError> {
         let max_tls12_resumption_sessions = self
             .max_tls12_resumption_sessions
@@ -345,9 +353,17 @@ impl ClientTLSConfigBuilder {
                     .ok_or(generic_error!("Default TLS root certificate store not initialized."))
             })?;
 
-            ClientConfig::builder_with_protocol_versions(protocol_versions)
-                .with_root_certificates(root_cert_store)
-                .with_no_client_auth()
+            let builder = ClientConfig::builder_with_protocol_versions(protocol_versions);
+            if root_cert_store.is_empty() {
+                // Preserve empty-store configurations, which cannot authenticate any server.
+                builder.with_root_certificates(root_cert_store).with_no_client_auth()
+            } else {
+                let verifier = DistrustServerCertVerifier::new(root_cert_store, Arc::clone(builder.crypto_provider()))?;
+                builder
+                    .dangerous()
+                    .with_custom_certificate_verifier(Arc::new(verifier))
+                    .with_no_client_auth()
+            }
         };
 
         if let Some(path) = self.key_log_file_path {
