@@ -17,7 +17,7 @@ use saluki_core::{
     topology::BlueprintSnapshot,
 };
 use saluki_metric_plan::{
-    compile::Frame,
+    compile::{Frame, FrameTarget},
     limits,
     operators::{names, OperatorRegistry},
 };
@@ -86,6 +86,28 @@ fn heartbeats(registry: &AdmissionRegistry) -> Vec<(AdmissionPointId, Option<Dur
         .collect()
 }
 
+/// Returns the heartbeat every admission point of `frame` sends: every second toward the slot its route leads to, for a
+/// point routed to a slot, and none for a point the frame routes nowhere.
+fn expected_heartbeats(frame: &Frame) -> Vec<(AdmissionPointId, Option<Duration>, Vec<String>)> {
+    frame
+        .admission_points()
+        .iter()
+        .map(|point| match &point.route {
+            Some(FrameTarget::Slot(slot)) => (
+                point.id,
+                Some(limits::values::HEARTBEAT_PERIOD),
+                vec![frame.slot(*slot).expect("the route's slot").name.to_string()],
+            ),
+            Some(route) => panic!(
+                "point {} is routed to {:?}, which no test here expects",
+                point.id.get(),
+                route
+            ),
+            None => (point.id, None, Vec::new()),
+        })
+        .collect()
+}
+
 fn edges(snapshot: &BlueprintSnapshot) -> BTreeSet<(String, String)> {
     snapshot
         .edges()
@@ -95,15 +117,15 @@ fn edges(snapshot: &BlueprintSnapshot) -> BTreeSet<(String, String)> {
 }
 
 #[tokio::test]
-async fn every_admission_point_registers_for_cuts_and_none_sends_heartbeats_without_a_state_owner() {
-    // Every source of metrics but DogStatsD, whose aggregation is the one state owner.
+async fn every_admission_point_registers_for_cuts_and_every_routed_one_heartbeats_without_a_state_owner() {
+    // Every source of metrics but DogStatsD, whose aggregation is the one state owner of the default program: a later
+    // generation may place a state owner downstream of any routed point, so each heartbeats toward its route.
     let yaml = "data_plane: {dogstatsd: {enabled: false}, otlp: {enabled: true}, checks: {enabled: true}}";
     let (topology, frame, registry) = start(yaml, Options::new(MetricsPath::Plan, Aggregation::Native)).await;
     assert!(frame.admission_points().len() >= 3, "{:?}", frame.admission_points());
     assert!(aggregation_slot(&frame).is_none());
-    for (id, period, recipients) in heartbeats(&registry) {
-        assert_eq!((period, recipients.len()), (None, 0), "point {}", id.get());
-    }
+    assert!(frame.admission_points().iter().any(|point| point.route.is_some()));
+    assert_eq!(heartbeats(&registry), expected_heartbeats(&frame));
     topology.stop().await;
 
     // The registry does not keep the points of a stopped topology.
@@ -111,12 +133,12 @@ async fn every_admission_point_registers_for_cuts_and_none_sends_heartbeats_with
 }
 
 #[tokio::test]
-async fn aggregation_runs_as_a_kernel_in_the_dsd_agg_region_whose_upstream_point_heartbeats_only_toward_it() {
+async fn aggregation_runs_as_a_kernel_in_the_dsd_agg_region_and_every_routed_point_heartbeats_toward_its_route() {
     let options = Options::new(MetricsPath::Plan, Aggregation::Native);
     let (topology, frame, registry) = start("data_plane: {otlp: {enabled: true}}", options).await;
 
     // Aggregation is the `dsd_agg` region, a transform with the native component's ID; no fixed component runs it.
-    let slot = aggregation_slot(&frame).expect("aggregation runs in an isolation slot");
+    let slot = aggregation_slot(&frame).expect("aggregation runs in a state slot of its own");
     assert_eq!(slot.name.as_str(), "dsd_agg");
     assert!(frame
         .fixed()
@@ -141,21 +163,20 @@ async fn aggregation_runs_as_a_kernel_in_the_dsd_agg_region_whose_upstream_point
         edges
     );
 
-    // Only the DogStatsD source's point feeds a state owner: it heartbeats every second (the default flush interval is
-    // longer), toward the region that leads to aggregation, and not toward the DogStatsD taps.
+    // Every routed point heartbeats every second toward its route: the DogStatsD source's toward the region that leads
+    // to aggregation, and not toward the DogStatsD taps, and OTLP's toward enrichment.
     let dogstatsd = frame
         .admission_points()
         .iter()
         .find(|point| point.node.to_string() == "dsd_in")
         .expect("the frame admits DogStatsD metrics");
-    for (id, period, recipients) in heartbeats(&registry) {
-        if id == dogstatsd.id {
-            assert_eq!(period, Some(limits::values::HEARTBEAT_PERIOD));
-            assert_eq!(recipients, ["dsd_pre_aggregation"]);
-        } else {
-            assert_eq!((period, recipients.len()), (None, 0), "point {}", id.get());
-        }
-    }
+    let expected = expected_heartbeats(&frame);
+    assert!(expected.contains(&(
+        dogstatsd.id,
+        Some(limits::values::HEARTBEAT_PERIOD),
+        vec!["dsd_pre_aggregation".to_string()]
+    )));
+    assert_eq!(heartbeats(&registry), expected);
     topology.stop().await;
 }
 
@@ -173,7 +194,7 @@ async fn aggregations_kernel_draws_on_the_shared_budget_of_state_sized_by_the_na
     let boot = path.boot_topology();
     assert_eq!(boot.state_budgets.global().capacity(), 1_234);
     let slot = aggregation_slot(&boot.frame)
-        .expect("aggregation runs in an isolation slot")
+        .expect("aggregation runs in a state slot of its own")
         .id;
     let program = &boot.programs[slot.get()];
     let node = "dsd_agg".parse().unwrap();
@@ -184,7 +205,7 @@ async fn aggregations_kernel_draws_on_the_shared_budget_of_state_sized_by_the_na
     assert!(budget.global.shares_with(boot.state_budgets.global()));
     assert!(budget.node.shares_with(&boot.state_budgets.node(&node)));
 
-    // No kernel of a fused region draws on the budgets: only isolation slots run state owners.
+    // No kernel of a region without a state owner draws on the budgets.
     let mut kernels = 0;
     for fused in boot.programs.iter().filter(|program| program.slot() != slot) {
         for kernel in fused.kernels() {

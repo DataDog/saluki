@@ -15,7 +15,7 @@
 //!   every metric at [`ADMITTED_AT`] and flushes once, when its input ends, at [`FLUSHED_AT`], past every bucket, so
 //!   that what it emits does not depend on when a test runs; or with a transform that reads nothing until its gate
 //!   opens ([`Aggregation::Gated`]), or one that sends what the test feeds it ([`Aggregation::Scripted`]). The
-//!   plan-driven path runs aggregation as a stateful kernel in its `dsd_agg` isolation slot: clocked aggregation then
+//!   plan-driven path runs aggregation as a stateful kernel in its `dsd_agg` state slot: clocked aggregation then
 //!   puts the admission point of `dsd_in.metrics` on a wall clock that reads [`ADMITTED_AT`], the slot on one that
 //!   reads [`FLUSHED_AT`], and the flush interval at [`CLOCKED_FLUSH_INTERVAL`], so that the slot flushes once, when
 //!   its input ends, exactly as clocked native aggregation does. Gated and scripted aggregation replace the slot's
@@ -72,7 +72,7 @@ use saluki_core::{
 use saluki_error::{generic_error, GenericError};
 use saluki_metric_kernels::aggregate::{AggregateCore, AggregateParams, AggregateTelemetry};
 use saluki_metric_plan::{
-    compile::{EntryKey, Step},
+    compile::{EntryKey, Step, StepExit},
     equivalence::OutputPoints,
     ir::OutputId,
     operators::OperatorRegistry,
@@ -111,7 +111,7 @@ pub(super) const ADMITTED_AT: u64 = 1_800_000_005;
 /// [`ADMITTED_AT`] falls in, for any window, and of every timestamped value the tests send.
 pub(super) const FLUSHED_AT: u64 = 1_900_000_000;
 
-/// The flush interval clocked aggregation in an isolation slot runs with: longer than any test, so that it flushes only
+/// The flush interval clocked aggregation in a state slot runs with: longer than any test, so that it flushes only
 /// when its input ends.
 pub(super) const CLOCKED_FLUSH_INTERVAL: Duration = Duration::from_secs(3_600);
 
@@ -410,8 +410,10 @@ impl TestTopology {
         // their edges, so that the installer controls them.
         let mut hosts = BTreeSet::new();
         let mut isolated_aggregation = false;
-        // How the isolation slot of aggregation stamps its time-driven output, for a scripted stand-in.
+        // How the state slot of aggregation stamps its time-driven output, for a scripted stand-in.
         let mut aggregation_stamp = None;
+        // The exit of aggregation's slot its time-driven output leaves on, which a stand-in for the slot sends on.
+        let mut aggregation_exit = None;
         // The snapshot bridge, which `run.rs` runs beside the installer, answers the context dump API from the region
         // running aggregation; on lanes, the lanes' telemetry is published beside them.
         let mut bridge = None;
@@ -459,6 +461,7 @@ impl TestTopology {
                 }
                 if isolated_aggregation {
                     aggregation_stamp = Some(time_driven_stamp(metrics.boot_topology()));
+                    aggregation_exit = Some(time_driven_exit(metrics.boot_topology()));
                 }
                 if let Some(before_topology) = before_topology {
                     before_topology(metrics.boot_topology());
@@ -548,19 +551,20 @@ impl TestTopology {
                         .expect("a scripted transform declares what it replaces");
                     feeds.insert(format!("{}.metrics", id), feed);
                 }
-                // The kernel of aggregation in an isolation slot runs, clocked through its slot's clocks, unless gated
+                // The kernel of aggregation in a state slot runs, clocked through its slot's clocks, unless gated
                 // or scripted aggregation stands in for the slot's region.
                 ComponentType::Transform if id == DSD_AGG && isolated_aggregation => match aggregation {
                     Aggregation::Native | Aggregation::Clocked => {}
                     Aggregation::Gated => {
                         let gate = gates.get(DSD_AGG).cloned().expect("gated aggregation has a gate");
+                        let output = aggregation_exit.clone().expect("aggregation's slot has an exit");
                         blueprint
-                            .replace_transform(&id, GatedTransformBuilder::new(component, gate))
+                            .replace_transform(&id, GatedTransformBuilder::new(component, gate).on(output))
                             .expect("gated aggregation declares what it replaces");
                     }
                     Aggregation::Scripted => {
                         let (feed, batches, sent) = Feed::new();
-                        let output = first_output(component);
+                        let output = aggregation_exit.clone().expect("aggregation's slot has an exit");
                         let stamp = aggregation_stamp.clone();
                         blueprint
                             .replace_transform(
@@ -974,13 +978,18 @@ fn first_output(component: &ComponentSnapshot) -> OutputName {
         .unwrap_or(OutputName::Default)
 }
 
-/// Returns the header the isolation slot of aggregation stamps on its time-driven output in the boot generation: its
+/// Returns the header the state slot of aggregation stamps on its time-driven output in the boot generation: its
 /// output point, the boot generation, and the entry its `StateOutput` program leads to in the region after it, at
 /// [`FLUSHED_AT`].
 fn time_driven_stamp(boot: &BootTopology) -> BatchHeader {
-    let slot = aggregation_slot(&boot.frame).expect("aggregation runs in an isolation slot");
-    let Some(output_point) = slot.output_point(0) else {
-        unreachable!("aggregation's slot is an isolation slot");
+    let slot = aggregation_slot(&boot.frame).expect("aggregation runs in a state slot of its own");
+    let Some(&output_point) = slot
+        .nodes
+        .iter()
+        .find_map(|node| boot.frame.boot_output_points(node))
+        .and_then(|points| points.first())
+    else {
+        unreachable!("aggregation is a boot state owner");
     };
     let entry = boot.programs[slot.id.get()]
         .entries()
@@ -999,6 +1008,26 @@ fn time_driven_stamp(boot: &BootTopology) -> BatchHeader {
         generation: Some(boot.generation.clone()),
         entry: Some(entry),
     }
+}
+
+/// Returns the output of aggregation's state slot that its time-driven output leaves on in the boot generation: the
+/// exit its `StateOutput` program leads to, toward enrichment.
+fn time_driven_exit(boot: &BootTopology) -> OutputName {
+    let slot = aggregation_slot(&boot.frame).expect("aggregation runs in a state slot of its own");
+    let exit = boot.programs[slot.id.get()]
+        .entries()
+        .iter()
+        .filter(|entry| matches!(entry.key, EntryKey::StateOutput(_)))
+        .flat_map(|entry| &entry.steps)
+        .find_map(|step| match step {
+            Step::Exit {
+                exit: StepExit::Slot(exit),
+                ..
+            } => slot.exits.get(exit.get()),
+            _ => None,
+        })
+        .expect("aggregation's time-driven output leaves its slot");
+    OutputName::Given(exit.name.to_string().into())
 }
 
 /// Returns the events as one buffer, sized to them.
@@ -1213,6 +1242,12 @@ impl GatedTransformBuilder {
             output: first_output(replaced),
             gate,
         }
+    }
+
+    /// Sends what it reads on `output` rather than the first output.
+    fn on(mut self, output: OutputName) -> Self {
+        self.output = output;
+        self
     }
 }
 

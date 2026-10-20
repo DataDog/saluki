@@ -15,12 +15,15 @@
 //!   enrichment (`dsd_post_agg_filter_region`). A region host's outputs are its slot's exits, in order. Its input
 //!   holds what the input queues of the native components it replaces held together (see
 //!   [`region_input_capacity`]), so that a burst backs up to its source no sooner than natively.
-//! - **Isolation slots** run a state owner in a region host of its own: DogStatsD aggregation as a stateful kernel, in
-//!   `dsd_agg`, which keeps the native aggregation component's ID, health, resource group, and telemetry. Its region
-//!   reads the schedule, a wall clock, and the host's budgets of state, and works through flushes in bounded steps.
-//!   The admission points upstream of it send heartbeats toward it, and only toward it, so that its watermark advances
-//!   while they are idle; the bridge of [`snapshot_bridge`](super::snapshot_bridge) answers aggregation's context
-//!   snapshot requests from it.
+//! - **State slots**: the boot layout gives a boot state owner a slot of its own: DogStatsD aggregation as a stateful
+//!   kernel, in `dsd_agg`, which keeps the native aggregation component's ID, health, resource group, and telemetry,
+//!   and works through flushes in bounded steps; the bridge of [`snapshot_bridge`](super::snapshot_bridge) answers
+//!   aggregation's context snapshot requests from it. Any other state owner a generation runs, such as a second
+//!   aggregation after enrichment, runs in a **sub-region** of the slot placement gives it: a task inside the slot's
+//!   component, started when the first generation that has it is prepared and retired with the last, whose input
+//!   buffers the installer draws from the resource budget. Every region reads the schedule, a wall clock, and the
+//!   host's budgets of state, for the state owners its generations bring. Every routed admission point sends heartbeats
+//!   toward its route while it is idle, so that the watermark of any state owner downstream of it advances.
 //! - **Hosts** are fixed at boot, one encode host and one delivery host per fixed delivery host of the process
 //!   ([`FixedHosts`](super::resources::FixedHosts)): `dd_metrics_encode` and `dd_out`, `mrf_metrics_encode` and
 //!   `mrf_dd_out`, and, when a Cluster Agent endpoint resolves at boot, `af_metrics_encode` and `cluster_agent_out`.
@@ -52,7 +55,6 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     num::{NonZeroU16, NonZeroUsize},
     sync::Arc,
-    time::Duration,
 };
 
 use agent_data_plane_config::shared::SharedConfiguration;
@@ -70,8 +72,8 @@ use saluki_components::{
 use saluki_core::{
     accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder},
     execution::{
-        AdmissionClock, AdmissionPointConfig, AdmissionPointId, Budget, LaneContext, RegionHostBuilder, SourceClock,
-        SystemWallClock, WallClock, WorkKind, MIN_HEARTBEAT_PERIOD,
+        AdmissionClock, AdmissionPointConfig, Budget, LaneContext, RegionHostBuilder, SourceClock, SubRegionSpec,
+        SystemWallClock, WallClock, WorkKind,
     },
     support::SubsystemIdentifier,
     topology::{ComponentId, LaneEdge, TopologyBlueprint},
@@ -80,14 +82,14 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_metric_plan::{
     compile::{
         AdmissionPointInfo, ExitRouting, FixedComponent, Frame, FrameSource, FrameTarget, PointRouting, RegionProgram,
-        Slot, SlotId, SlotKind,
+        Slot, SlotId,
     },
     ir::{NativeComponentId, NodeId, Plan, Resources},
     limits,
     operators::{names, ConfiguredOperator, LaneBinding, LaneCell, OperatorRegistry},
     runtime::{
         build_kernels, kernel_accounting_in, state::lanes::SlotLanes, MetricRegionDriver, PanicBudget, PrepareRegion,
-        RegionBounds, RegionConfig, RoutingTelemetry,
+        RegionBounds, RegionConfig, RegionControl, RoutingTelemetry,
     },
 };
 use saluki_metrics::{Counter, Gauge};
@@ -109,7 +111,7 @@ use crate::cli::run::{autoscaling_failover_wired, mrf_metrics_endpoint};
 /// The slot holding the DogStatsD mapper is `dsd_pre_aggregation`, and the slot holding the enriched metrics (`metrics`,
 /// the last node of the enrichment chain: host tags when enabled, host enrichment otherwise) is `metrics_enrich`, so
 /// that its name does not depend on whether host tags are enabled. It keeps the native ID that the components feeding metrics enrichment have always been
-/// connected to. The isolation slot of DogStatsD aggregation is `dsd_agg`, the native aggregation transform's ID. A
+/// connected to. The state slot of DogStatsD aggregation is `dsd_agg`, the native aggregation transform's ID. A
 /// slot that R1's cost model cuts from one of them, so that a costly chain pipelines across regions, is named after the
 /// native component it starts with: `<first node>_region`, without the `_in` of a merge that starts it, such as
 /// `dsd_post_agg_filter_region`. A slot that the namespace prefix or the enrichment merge starts is named for the
@@ -315,7 +317,7 @@ impl<'a> PlanTopology<'a> {
     /// Registers the DogStatsD source's metrics output and keeps aggregation's context snapshot requests; returns the
     /// handle of aggregation's context snapshots.
     ///
-    /// Aggregation runs as a stateful kernel in the frame's `dsd_agg` isolation slot, whose region is added with the
+    /// Aggregation runs as a stateful kernel in the frame's `dsd_agg` state slot, whose region is added with the
     /// others (see [`finish`][Self::finish]): the snapshot requests are kept for the
     /// [snapshot bridge](ProgrammableMetrics::snapshot_bridge), which answers them from the region.
     ///
@@ -327,7 +329,7 @@ impl<'a> PlanTopology<'a> {
         self.sources.insert(format!("{}.metrics", ids::DSD_IN));
         if aggregation_slot(&self.boot.frame).is_none() {
             return Err(generic_error!(
-                "The DogStatsD pipeline is enabled, but the default program runs no aggregation in an isolation slot; \
+                "The DogStatsD pipeline is enabled, but the default program runs no aggregation in a state slot; \
                  this is a lowering bug."
             ));
         }
@@ -529,7 +531,7 @@ pub(super) fn add_regions(blueprint: &mut TopologyBlueprint, boot: &mut BootTopo
     let mut lane_stats = Vec::new();
     for slot in frame.slots() {
         let native = region_input_capacity(&boot.plan, &frame, &boot.outputs, slot, interconnect)?;
-        let capacity = lane_input_capacity(slot, native);
+        let capacity = lane_input_capacity(&frame, slot, native);
         let admission = if owner == Some(slot.id) { owned.take() } else { None };
         let stats = boot.lanes.lanes_on().then(|| {
             let routes = slot
@@ -567,12 +569,12 @@ pub(super) fn add_regions(blueprint: &mut TopologyBlueprint, boot: &mut BootTopo
 /// buffers per lane; the lanes of a state owner's slot, fed buffers routed per key of [`routed_buffer_events`] events
 /// each, `ceil(native × 1,024 / (lanes × events))` buffers per lane, so that the events allocated in its inputs, and
 /// the firm bound of its interconnects, keep their native totals, rounding aside.
-fn lane_input_capacity(slot: &Slot, native: NonZeroUsize) -> NonZeroUsize {
+fn lane_input_capacity(frame: &Frame, slot: &Slot, native: NonZeroUsize) -> NonZeroUsize {
     let lanes = usize::from(slot.lanes.max(1));
     if lanes == 1 {
         return native;
     }
-    let events = if slot.is_isolation() {
+    let events = if is_state_slot(frame, slot) {
         limits::routed_buffer_events(slot.lanes)
     } else {
         limits::values::BATCH_SIZE
@@ -617,8 +619,8 @@ fn lanes_own(boot: &BootTopology, point: &AdmissionPointInfo) -> bool {
 /// lane order, when the metrics path runs on lanes.
 ///
 /// Every lane's point shares one clock, `dsd_in`'s, so that the source has one latest admission time, one epoch, and
-/// one reset decision. A point that feeds a state owner stamps heartbeats while it is idle, every
-/// [`heartbeat_period`], and its lane forwards them; with several lanes, also
+/// one reset decision. Each lane's point stamps heartbeats while it is idle, every
+/// [`HEARTBEAT_PERIOD`][limits::values::HEARTBEAT_PERIOD], and its lane forwards them; with several lanes, also
 /// [`PROGRESS_PERIOD`][limits::values::PROGRESS_PERIOD] into each second it stamps nothing in, since a state lane's
 /// watermark is the minimum over the lanes' points, and a tick waits for it to reach the tick's second: an idle lane
 /// would otherwise hold every flush of the busy ones back by up to its period.
@@ -630,8 +632,8 @@ fn owned_lane_points(boot: &BootTopology) -> Option<(SlotId, Vec<AdmissionPointC
     let wall: Arc<dyn WallClock> = Arc::new(SystemWallClock);
     #[cfg(test)]
     let wall: Arc<dyn WallClock> = match &boot.state_admission_clock {
-        Some(clock) if point.feeds_state => Arc::new(clock.clone()),
-        _ => wall,
+        Some(clock) => Arc::new(clock.clone()),
+        None => wall,
     };
     let clock = SourceClock::named(
         AdmissionClock::with_wall_clock(limits::values::CLOCK_RESET_THRESHOLD, wall),
@@ -649,12 +651,10 @@ fn owned_lane_points(boot: &BootTopology) -> Option<(SlotId, Vec<AdmissionPointC
             )
             .with_registry(boot.admission.clone())
             .owned()
-            .with_source_clock(Arc::clone(&clock));
-            if point.feeds_state {
-                config = config.with_heartbeat(heartbeat_period(&boot.frame, &boot.programs, id));
-                if several {
-                    config = config.with_heartbeat_each_second(limits::values::PROGRESS_PERIOD);
-                }
+            .with_source_clock(Arc::clone(&clock))
+            .with_heartbeat(limits::values::HEARTBEAT_PERIOD);
+            if several {
+                config = config.with_heartbeat_each_second(limits::values::PROGRESS_PERIOD);
             }
             config
         })
@@ -775,7 +775,7 @@ fn state_owners(
                     error
                 )
             })?;
-            Ok((operator, kernel_accounting_in(slot, &node.id)))
+            Ok((operator, kernel_accounting_in(slot, program, &node.id)))
         })
         .collect::<Result<_, GenericError>>()
         .map(StateBounds)
@@ -794,7 +794,7 @@ fn state_owners(
 /// another component's
 /// nodes. The components the plan-driven topology still builds are not replaced, and their interconnects remain: the
 /// sources (the frame's fixed components), and the encoders and destinations of the outputs, which the `emit`s and the
-/// client telemetry tap's fan-out are lowered from. Aggregation, which runs in its isolation slot `dsd_agg`, is one of
+/// client telemetry tap's fan-out are lowered from. Aggregation, which runs in its state slot `dsd_agg`, is one of
 /// the components a region replaces.
 ///
 /// The capacity follows the boot program: later generations run in the same regions.
@@ -900,9 +900,10 @@ fn region_input_capacity(
 /// to the sender's lane; and the other edges spread whole buffers over the lanes. Every edge into a slot on one lane
 /// leads to that lane.
 ///
-/// Every admission point registers in the installer's admission registry. A point upstream of a state owner sends
-/// heartbeats while it is idle, every [`heartbeat_period`], to the component its route leads to and to no other, so
-/// that the state owner's watermark advances, while the DogStatsD taps on the same output keep their native traffic.
+/// Every admission point registers in the installer's admission registry. Every routed point sends heartbeats while it
+/// is idle, every [`HEARTBEAT_PERIOD`][limits::values::HEARTBEAT_PERIOD], to the component its route leads to and to no
+/// other, so that the watermark of any state owner a generation places downstream of it advances, while the DogStatsD
+/// taps on the same output keep their native traffic.
 /// On lanes, the DogStatsD source's points are its producer lanes', which stamp them and drive their heartbeats (see
 /// [`add_regions`]), so no dispatcher stamps them.
 pub(super) fn connect_frame(blueprint: &mut TopologyBlueprint, boot: &BootTopology) -> Result<(), GenericError> {
@@ -960,13 +961,7 @@ pub(super) fn connect_frame(blueprint: &mut TopologyBlueprint, boot: &BootTopolo
             limits::values::CLOCK_RESET_THRESHOLD,
         )
         .with_registry(boot.admission.clone());
-        if point.feeds_state {
-            let route = point.route.as_ref().ok_or_else(|| {
-                generic_error!(
-                    "Admission point `{}` feeds a state owner, but the frame routes it nowhere; this is a bug.",
-                    output
-                )
-            })?;
+        if let Some(route) = &point.route {
             let recipient = target_component(frame, &boot.outputs, route)?;
             let recipient = ComponentId::try_from(recipient.as_str()).map_err(|error| {
                 generic_error!(
@@ -977,7 +972,7 @@ pub(super) fn connect_frame(blueprint: &mut TopologyBlueprint, boot: &BootTopolo
                 )
             })?;
             config = config
-                .with_heartbeat(heartbeat_period(frame, &boot.programs, point.id))
+                .with_heartbeat(limits::values::HEARTBEAT_PERIOD)
                 .with_heartbeat_recipients([recipient]);
             #[cfg(test)]
             if let Some(clock) = &boot.state_admission_clock {
@@ -1028,26 +1023,8 @@ fn exit_routing<'f>(frame: &'f Frame, source: &FrameSource) -> Result<&'f ExitRo
         .ok_or_else(|| generic_error!("Region `{}` has no exit {}; this is a bug.", slot.name, exit))
 }
 
-/// Returns the heartbeat period of the admission point `point`: [`HEARTBEAT_PERIOD`][limits::values::HEARTBEAT_PERIOD],
-/// or the shortest flush interval of the boot program's state owners downstream of the point, if shorter, so that an
-/// idle point never delays a flush; at least [`MIN_HEARTBEAT_PERIOD`].
-///
-/// The period follows the boot program, as the frame does: a later generation whose state owners flush more often than
-/// that may close an idle bucket up to one period later than its flush interval, never wrongly.
-fn heartbeat_period(frame: &Frame, programs: &[Arc<RegionProgram>], point: AdmissionPointId) -> Duration {
-    frame
-        .slots()
-        .iter()
-        .filter(|slot| matches!(&slot.kind, SlotKind::Isolation { upstream, .. } if upstream.contains(&point)))
-        .filter_map(|slot| programs.get(slot.id.get()))
-        .flat_map(|program| program.kernels().iter())
-        .filter_map(|kernel| kernel.lineage.as_ref().map(|lineage| lineage.flush_interval))
-        .fold(limits::values::HEARTBEAT_PERIOD, Duration::min)
-        .max(MIN_HEARTBEAT_PERIOD)
-}
-
 /// Checks that the native pipelines built every fixed component of the frame, that the frame runs DogStatsD
-/// aggregation in its isolation slot exactly when the DogStatsD pipeline is enabled, and that the frame reads every
+/// aggregation in its state slot exactly when the DogStatsD pipeline is enabled, and that the frame reads every
 /// output that carries metrics into the metrics path.
 fn check_fixed_components(frame: &Frame, sources: &BTreeSet<String>, dogstatsd: bool) -> Result<(), GenericError> {
     let mut read = BTreeSet::new();
@@ -1068,14 +1045,14 @@ fn check_fixed_components(frame: &Frame, sources: &BTreeSet<String>, dogstatsd: 
     let aggregation = aggregation_slot(frame).map(|slot| slot.id);
     if dogstatsd && aggregation.is_none() {
         return Err(generic_error!(
-            "The DogStatsD pipeline is enabled, but the default program runs no aggregation in an isolation slot; this \
+            "The DogStatsD pipeline is enabled, but the default program runs no aggregation in a state slot; this \
              is a lowering bug."
         ));
     }
-    for slot in frame.slots().iter().filter(|slot| slot.is_isolation()) {
+    for slot in frame.slots().iter().filter(|slot| is_state_slot(frame, slot)) {
         if !dogstatsd || aggregation != Some(slot.id) {
             return Err(generic_error!(
-                "The default program runs `{}` in an isolation slot, which only DogStatsD aggregation runs in, with \
+                "The default program runs `{}` in a state slot, which only DogStatsD aggregation runs in, with \
                  the DogStatsD pipeline enabled; this is a lowering bug.",
                 slot.name
             ));
@@ -1123,7 +1100,7 @@ fn region_host(
                 slot.name
             )
         })?;
-    // An isolation slot accounts the state owner it is named after in its own group, with its bounds at its top level,
+    // A state slot accounts the state owner it is named after in its own group, with its bounds at its top level,
     // as the native component it stands for did, and bounds one drain step. Each lane holds a driver of its own.
     let bounds = RegionBounds::for_slot(&boot.plan, &boot.registry, &program, slot)?;
     let bounds = LaneRegionBounds::new(bounds, slot, state_owners(&boot.plan, &boot.registry, &program, slot)?);
@@ -1137,16 +1114,31 @@ fn region_host(
     let telemetry = boot.telemetry.clone();
     let failures = Arc::clone(&boot.failures);
     let leases = Arc::clone(&boot.leases);
-    // A state owner's region also reads the schedule, to tell which generation its flushes belong to, a wall clock, and
-    // the budgets of state its lineages draw on.
-    let state = slot.is_isolation().then(|| {
-        (
-            Arc::clone(&boot.schedule),
-            Arc::clone(&boot.wall_clock),
-            boot.state_budgets.clone(),
-        )
-    });
-    let isolation = state.is_some();
+    // A region that holds a state owner also reads the schedule, to tell which generation its flushes belong to, a wall
+    // clock, and the budgets of state its lineages draw on. Any slot's region may: a generation places a state owner
+    // in a slot's main region or in a sub-region of the slot.
+    let state = (
+        Arc::clone(&boot.schedule),
+        Arc::clone(&boot.wall_clock),
+        boot.state_budgets.clone(),
+    );
+    let state_slot = is_state_slot(&boot.frame, slot);
+    // A sub-region of the slot, which a generation's state owner runs in, is a driver of its own on one lane, built
+    // empty on the slot's coordinating task: the preparation that starts it brings its program and kernels.
+    let sub_region = {
+        let slot = slot.clone();
+        let telemetry = boot.telemetry.clone();
+        let failures = Arc::clone(&boot.failures);
+        let (schedule, wall_clock, budgets) = state.clone();
+        move |_: &SubRegionSpec, start: &RegionControl| -> Result<MetricRegionDriver, GenericError> {
+            let config = RegionConfig::for_slot(&slot, &telemetry)
+                .with_failure_reporter(Arc::clone(&failures))
+                .with_schedule(Arc::clone(&schedule))
+                .with_wall_clock(Arc::clone(&wall_clock))
+                .with_state_budgets(budgets.clone());
+            Ok(MetricRegionDriver::for_sub_region(config, start)?)
+        }
+    };
     // What a slot's lanes share: one record of the slot's lanes, and one cell per lineage of the boot program, which
     // every lane's instance of the lineage is built against.
     let shared = (slot.lanes > 1).then(|| {
@@ -1187,12 +1179,11 @@ fn region_host(
         if let Some((lanes, _)) = &shared {
             config = config.with_lane(lane, Arc::clone(lanes));
         }
-        if let Some((schedule, wall_clock, budgets)) = &state {
-            config = config
-                .with_schedule(Arc::clone(schedule))
-                .with_wall_clock(Arc::clone(wall_clock))
-                .with_state_budgets(budgets.clone());
-        }
+        let (schedule, wall_clock, budgets) = &state;
+        config = config
+            .with_schedule(Arc::clone(schedule))
+            .with_wall_clock(Arc::clone(wall_clock))
+            .with_state_budgets(budgets.clone());
         if let Some(driver) = lane_stats
             .as_ref()
             .and_then(|stats| stats.drivers.get(usize::from(lane.index)))
@@ -1202,7 +1193,7 @@ fn region_host(
                 routed_events: Counter::from_arc(Arc::clone(&driver.routed_events)),
                 progress: Counter::from_arc(Arc::clone(&driver.progress)),
             });
-            if state.is_some() {
+            if state_slot {
                 let mut lane_telemetry = telemetry.state_lane(slot_config.name.as_str(), lane.index);
                 lane_telemetry.contexts = Gauge::from_arc(Arc::clone(&driver.contexts));
                 config = config.with_state_lane_telemetry(lane_telemetry);
@@ -1224,9 +1215,10 @@ fn region_host(
             host = host.with_lane_stats(stats.lanes.clone());
         }
     }
-    // A flush emits what a state owner holds: an isolation slot works through it in bounded steps, between which it
-    // answers control messages and liveness probes.
-    let host = if isolation {
+    // A flush emits what a state owner holds: a boot state owner's slot, and every sub-region, works through it in
+    // bounded steps, between which it answers control messages and liveness probes.
+    let host = host.with_sub_regions(drain_step_budget(), sub_region);
+    let host = if state_slot {
         host.with_turn_budget(drain_step_budget())
     } else {
         host
@@ -1234,20 +1226,26 @@ fn region_host(
     Ok(host.with_bounds(bounds))
 }
 
-/// Returns the work budget of each call into an isolation slot's driver: one step of a flush.
+/// Returns the work budget of each call into the driver of a state slot or a sub-region: one step of a flush.
 fn drain_step_budget() -> Budget {
     Budget::unlimited()
         .with_limit(WorkKind::Events, limits::values::DRAIN_STEP_EVENTS)
         .with_limit(WorkKind::StateWork, limits::values::DRAIN_STEP_CONTEXTS)
 }
 
-/// Returns the isolation slot that runs DogStatsD aggregation, if the frame has one: it does exactly when DogStatsD is
+/// Returns `true` if the boot layout gave `slot` to a boot state owner, as it gives `dsd_agg` to DogStatsD
+/// aggregation: the slot runs on the state lanes, and its lanes hold shares of that state owner's state.
+pub(super) fn is_state_slot(frame: &Frame, slot: &Slot) -> bool {
+    slot.nodes.iter().any(|node| frame.boot_output_points(node).is_some())
+}
+
+/// Returns the state slot that runs DogStatsD aggregation, if the frame has one: it does exactly when DogStatsD is
 /// enabled.
 pub(super) fn aggregation_slot(frame: &Frame) -> Option<&Slot> {
     frame
         .slots()
         .iter()
-        .find(|slot| slot.is_isolation() && slot.nodes.iter().any(|node| node.to_string() == ids::DSD_AGG))
+        .find(|slot| is_state_slot(frame, slot) && slot.nodes.iter().any(|node| node.to_string() == ids::DSD_AGG))
 }
 
 /// Returns the component ID a fixed component runs as: its node's ID, as each source has its native component's ID.
@@ -1256,7 +1254,7 @@ fn component_id(fixed: &FixedComponent) -> String {
 }
 
 /// Returns the component output an admission point is: a source's port is its output of the same name, and the one
-/// port of a host component, which no default program has since aggregation runs in its isolation slot, its default
+/// port of a host component, which no default program has since aggregation runs in its state slot, its default
 /// output.
 pub(super) fn admission_output(frame: &Frame, node: &NodeId) -> Result<String, GenericError> {
     let fixed = frame

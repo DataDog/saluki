@@ -495,7 +495,7 @@ async fn the_plan_driven_topology_delivers_what_the_legacy_one_does_to_every_out
 }
 
 /// Runs the plan-driven path of a configuration's primary topology over the differential input, with aggregation as a
-/// stateful kernel in its isolation slot, clocked as native aggregation is (see [`Aggregation::Clocked`]).
+/// stateful kernel in its state slot, clocked as native aggregation is (see [`Aggregation::Clocked`]).
 async fn run_isolated(name: &str, yaml: &'static str) -> (Vec<Delivery>, BTreeSet<String>) {
     let system = layered_configuration_system(&layers(name, yaml)).await;
     let options = Options::new(MetricsPath::Plan, Aggregation::Clocked);
@@ -919,7 +919,7 @@ async fn each_gateway_selects_what_its_native_rules_select() {
     }
 }
 
-// Tick parity: native aggregation's flush ticks against the isolation slot's, on one wall clock.
+// Tick parity: native aggregation's flush ticks against the state slot's, on one wall clock.
 
 /// The configurations the tick parity runs: the defaults, histograms with a distribution copy, and counters that never
 /// expire with a context limit of two.
@@ -979,7 +979,7 @@ fn tick_script() -> Vec<TickStep> {
     ]
 }
 
-/// Runs the tick script through one path's topology of `yaml`, with the source's admission point, the isolation
+/// Runs the tick script through one path's topology of `yaml`, with the source's admission point, the state
 /// slot, and native aggregation all on one manual wall clock, on paused Tokio time, and returns what every output
 /// received.
 async fn run_ticks(yaml: &str, path: MetricsPath) -> (Vec<Delivery>, BTreeSet<String>) {
@@ -1147,7 +1147,7 @@ async fn assert_tick_parity(configurations: &[(&str, &str)], lanes: &str, feed: 
         );
         if let Err(mismatch) = compare(&expected, &output_points(&plan)) {
             panic!(
-                "{}: the isolation slot's ticks differ from native aggregation's:\n{}",
+                "{}: the state slot's ticks differ from native aggregation's:\n{}",
                 name, mismatch
             );
         }
@@ -1166,6 +1166,6 @@ async fn assert_tick_parity(configurations: &[(&str, &str)], lanes: &str, feed: 
             "{}: native aggregation flushed at its ticks",
             name
         );
-        assert!(flushes(&plan) >= 3, "{}: the isolation slot flushed at its ticks", name);
+        assert!(flushes(&plan) >= 3, "{}: the state slot flushed at its ticks", name);
     }
 }

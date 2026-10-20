@@ -1356,76 +1356,6 @@ fn refused() -> Vec<Refused> {
             authentic: true,
         },
         Refused {
-            // A second state owner with every parameter is valid, but in front of the main output: the policy region
-            // runs ahead of no isolation slot, so placement refuses it with the capability it lacks.
-            what: "a second aggregation after enrichment",
-            configs: |export, revision| {
-                let mut artifact = export.clone();
-                let node = json!({"id": "agg", "op": "aggregate", "params": {
-                    "window": "10s",
-                    "flush_interval": "10s",
-                    "context_limit": 1000,
-                    "counter_expiry": "5m",
-                    "flush_open_windows": false,
-                    "histogram_aggregates": ["max", "count"],
-                    "histogram_percentiles": [95],
-                    "copy_to_distribution": false,
-                    "copy_to_distribution_prefix": "",
-                }});
-                in_front_of_the_main_output(&mut artifact, node, "out");
-                vec![config(revision, &artifact)]
-            },
-            error: |_, _| {
-                "The candidate plan cannot run in the physical structure built at boot: node `agg`: it is a state \
-                 owner, which runs only in an isolation slot that the region its input comes from has an exit to, and \
-                 the topology built at boot has no such isolation slot for `metrics_enrich`: a new exit from a region \
-                 to an isolation slot requires stage 10 frame changes: the physical structure is built from the \
-                 default program at boot, so a restart does not add it."
-                    .to_string()
-            },
-            read: true,
-            authentic: true,
-        },
-        Refused {
-            // The one aggregation moved where the frame cannot run it: the policy region runs ahead of no isolation
-            // slot, so placement refuses it with the capability it lacks.
-            what: "the aggregation moved after enrichment",
-            configs: |export, revision| {
-                let mut artifact = export.clone();
-                let mut aggregation = nodes(&mut artifact)
-                    .iter()
-                    .find(|node| node["id"] == "dsd_agg")
-                    .expect("the export has aggregation")
-                    .clone();
-                // Aggregation's input goes straight on to what it fed, and aggregation runs in front of the main output.
-                let edges = edges(&mut artifact);
-                let fed = edges
-                    .iter()
-                    .find(|edge| edge["from"] == "dsd_agg.out")
-                    .expect("aggregation feeds a node")["to"]
-                    .clone();
-                edges.retain(|edge| edge["from"] != "dsd_agg.out");
-                edges
-                    .iter_mut()
-                    .find(|edge| edge["to"] == "dsd_agg.in")
-                    .expect("a node feeds aggregation")["to"] = fed;
-                nodes(&mut artifact).retain(|node| node["id"] != "dsd_agg");
-                aggregation["params"]["flush_interval"] = json!("10s");
-                in_front_of_the_main_output(&mut artifact, aggregation, "out");
-                vec![config(revision, &artifact)]
-            },
-            error: |_, _| {
-                "The candidate plan cannot run in the physical structure built at boot: node `dsd_agg`: it is a \
-                 state owner, which runs only in an isolation slot that the region its input comes from has an exit \
-                 to, and the topology built at boot has no such isolation slot for `metrics_enrich`: a new exit from \
-                 a region to an isolation slot requires stage 10 frame changes: the physical structure is built from \
-                 the default program at boot, so a restart does not add it."
-                    .to_string()
-            },
-            read: true,
-            authentic: true,
-        },
-        Refused {
             what: "a payload damaged in transit",
             configs: |export, revision| {
                 let mut config = config(revision, export);
@@ -2378,6 +2308,219 @@ async fn an_artifact_that_changes_aggregations_window_installs_at_a_cut_and_ever
             (1, 10, bucket(10), 2.0),
             (2, 30, bucket(30), 4.0),
         ]
+    );
+}
+
+// State owners in sub-regions.
+
+/// Returns aggregation's parameters with a window of `window`, flushing only at the end of input or at a cut, as
+/// clocked aggregation does.
+fn aggregation_params(window: &str) -> Value {
+    json!({
+        "window": window,
+        "flush_interval": "1h",
+        "context_limit": 1000,
+        "counter_expiry": "5m",
+        "flush_open_windows": false,
+        "histogram_aggregates": ["max", "count"],
+        "histogram_percentiles": [95],
+        "copy_to_distribution": false,
+        "copy_to_distribution_prefix": "",
+    })
+}
+
+/// Returns the export of the default program with a second aggregation, `agg`, in front of the main output: after
+/// enrichment, which runs in the `metrics_enrich` slot.
+fn second_aggregation(export: &Value) -> Value {
+    let mut artifact = export.clone();
+    let node = json!({"id": "agg", "op": "aggregate", "params": aggregation_params("10s")});
+    in_front_of_the_main_output(&mut artifact, node, "out");
+    artifact
+}
+
+/// Returns [`aggregation_over`] 10 seconds, with aggregation renamed `name`: a new lineage, which starts its state over.
+fn renamed_aggregation(status: &PlanStatus, name: &str) -> Value {
+    let mut artifact = aggregation_over(status, "10s");
+    for node in nodes(&mut artifact) {
+        if node["id"] == "dsd_agg" {
+            node["id"] = json!(name);
+        }
+    }
+    for edge in edges(&mut artifact) {
+        for end in ["from", "to"] {
+            let renamed = edge[end]
+                .as_str()
+                .and_then(|port| port.strip_prefix("dsd_agg."))
+                .map(|port| format!("{}.{}", name, port));
+            if let Some(renamed) = renamed {
+                edge[end] = json!(renamed);
+            }
+        }
+    }
+    artifact
+}
+
+/// Returns the region the active generation of `status` runs the state owner `node` in, as explain names it, with
+/// the slot whose component runs that region.
+fn state_region_of(status: &PlanStatus, node: &str) -> Option<(String, String)> {
+    let physical = status.active.as_ref()?.explain.physical.as_ref()?;
+    physical.slots.iter().find_map(|slot| {
+        slot.regions
+            .iter()
+            .find(|region| {
+                region
+                    .state_owner
+                    .as_ref()
+                    .is_some_and(|owner| owner.to_string() == node)
+            })
+            .map(|region| (slot.name.clone(), region.region.clone()))
+    })
+}
+
+/// Returns the gauges of `name` that `output` received, as `(generation, sequence number, value)`, sorted.
+fn gauges(deliveries: &[Delivery], output: &str, name: &str) -> Vec<(Option<u64>, usize, f64)> {
+    let mut gauges = Vec::new();
+    for delivery in deliveries.iter().filter(|delivery| delivery.output == output) {
+        for metric in delivery.metrics.iter().filter(|metric| metric.context().name() == name) {
+            let saluki_core::data_model::event::metric::MetricValues::Gauge(points) = metric.values() else {
+                panic!("`{}` leaves aggregation as a gauge: {:?}", name, metric.values());
+            };
+            for (_, value) in points {
+                gauges.push((delivery.generation, seq_of(metric), value));
+            }
+        }
+    }
+    gauges.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    gauges
+}
+
+#[tokio::test]
+async fn a_second_aggregation_after_enrichment_runs_in_a_sub_region_and_flushes_what_it_holds_at_the_end_of_input() {
+    use crate::programmable_metrics::test_topology::ADMITTED_AT;
+
+    let recorder = TestRecorder::default();
+    let _recorder = metrics::set_default_local_recorder(&recorder);
+    let (mut lifecycle, clock) = start_clocked(Options::new(MetricsPath::Plan, Aggregation::Clocked)).await;
+    let export = lifecycle.export.clone();
+    let mut sent = 0;
+    feed_counts(&mut lifecycle, 1, &mut sent).await;
+
+    // The second aggregation is a state owner of its own, which no slot of the boot layout runs: it runs in a
+    // sub-region of the slot its input comes from, `metrics_enrich`, beside the slot's own region.
+    lifecycle.deliver(vec![config(1, &second_aggregation(&export))]);
+    let installed = loop {
+        let status = lifecycle.status.load_full();
+        if active(&status) == Some(2) && status.installer.cut.is_none() {
+            break PlanStatus::clone(&status);
+        }
+        clock.set(AdmissionTime::from_unix_secs(clock.now().as_unix_secs() + 10));
+        feed_counts(&mut lifecycle, 1, &mut sent).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    };
+    assert_eq!(
+        state_region_of(&installed, "agg"),
+        Some(("metrics_enrich".to_string(), "state `agg`".to_string()))
+    );
+    assert_eq!(
+        state_region_of(&installed, "dsd_agg"),
+        Some(("dsd_agg".to_string(), "main".to_string()))
+    );
+
+    // Timestamped gauges take the passthrough around DogStatsD aggregation, and the second aggregation holds them
+    // until its input ends.
+    let gauge = |seq: usize| {
+        let tags = TagSet::from_iter([Tag::from(format!("seq:{}", seq))]);
+        Metric::gauge(Context::from_parts("agg.g", tags), (ADMITTED_AT + 1, seq as f64))
+    };
+    for seq in 0..3 {
+        lifecycle.topology.feed("dsd_in.metrics", vec![gauge(seq)]);
+    }
+    sent += 3;
+    wait_sent(&lifecycle.topology, sent).await;
+
+    // Each gauge arrives at the main output once, from the second aggregation's flush, under the generation that ran
+    // it; and the second aggregation reports its flush under its own name.
+    let deliveries = lifecycle.topology.stop().await;
+    assert_eq!(
+        gauges(&deliveries, MAIN, "agg.g"),
+        (0..3).map(|seq| (Some(2), seq, seq as f64)).collect::<Vec<_>>()
+    );
+    let reported = |name: &str| {
+        recorder
+            .counters()
+            .into_iter()
+            .filter(|(key, _)| {
+                key.name() == name
+                    && key
+                        .labels()
+                        .any(|label| label.key() == "component_id" && label.value() == "agg")
+            })
+            .map(|(_, count)| count)
+            .sum::<u64>()
+    };
+    assert_eq!(reported("aggregate_flushes_total"), 1);
+    assert!(reported("aggregate_flushed_total") >= 3);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "V7a: the generation of a second aggregation that a cut removes never retires: the lineage downstream of \
+            `dsd_agg` waits for `dsd_agg`'s new-generation stamp, which the new program no longer routes to it"]
+async fn a_second_aggregation_after_enrichment_retires_with_its_sub_region_when_a_later_program_drops_it() {
+    let mut harness = Lifecycle::start().await;
+    let export = harness.export.clone();
+    harness.deliver(vec![config(1, &second_aggregation(&export))]);
+    let installed = harness
+        .feed_until(|status| active(status) == Some(2) && live(status) == [2])
+        .await;
+    assert!(state_region_of(&installed, "agg").is_some());
+
+    // The later program drops it: its lineage ends at the cut, and its generation, the last that runs its sub-region,
+    // retires once its final flush is out.
+    harness.deliver(vec![config(2, &export)]);
+    let dropped = harness
+        .feed_until(|status| active(status) == Some(3) && live(status) == [3])
+        .await;
+    assert_eq!(state_region_of(&dropped, "agg"), None);
+    harness.finish().await;
+}
+
+#[tokio::test]
+async fn a_renamed_aggregation_runs_in_a_sub_region_and_installs_at_a_cut_where_its_state_starts_over() {
+    use crate::programmable_metrics::test_topology::ADMITTED_AT;
+
+    let (mut lifecycle, clock) = start_clocked(Options::new(MetricsPath::Plan, Aggregation::Clocked)).await;
+    let at = |relative: u64| AdmissionTime::from_unix_secs(ADMITTED_AT + relative);
+    let artifact = renamed_aggregation(&lifecycle.status.load(), "dsd_agg_v2");
+    let mut sent = 0;
+
+    // Three counts at 5 seconds past `B`, in the old lineage's bucket [0, 10).
+    feed_counts(&mut lifecycle, 3, &mut sent).await;
+
+    // A renamed aggregation is a new lineage: the old one ends at the cut, and the new one starts empty there, in a
+    // sub-region of the slot its input comes from, since the boot layout gave `dsd_agg` its slot. The cut is at 10,
+    // the first multiple of 10 seconds a second away from the latest stamp.
+    lifecycle.deliver(vec![config(1, &artifact)]);
+    let cut = armed_cut(&lifecycle).await;
+    assert_eq!((cut.generation, cut.at), (GenerationId::new(2), Some(at(5))));
+
+    // Two counts at 15, after the cut: the new lineage's, in [10, 20). Their stamps pass the only affected point.
+    clock.set(at(10));
+    feed_counts(&mut lifecycle, 2, &mut sent).await;
+    let installed = lifecycle
+        .status_where(|status| active(status) == Some(2) && status.installer.cut.is_none())
+        .await;
+    let (slot, region) = state_region_of(&installed, "dsd_agg_v2").expect("the renamed aggregation runs");
+    assert_ne!(slot, "dsd_agg");
+    assert_eq!(region, "state `dsd_agg_v2`");
+    assert_eq!(state_region_of(&installed, "dsd_agg"), None);
+
+    // Every count arrives once: the old lineage's at its final flush at the cut, under generation 1, and the new
+    // lineage's at the end of input, under generation 2.
+    let deliveries = lifecycle.topology.stop().await;
+    let bucket = |relative: i64| (ADMITTED_AT as i64 - 5 + relative) as u64;
+    assert_eq!(
+        aggregated_counts(&deliveries, MAIN, "agg.c"),
+        vec![(1, 10, bucket(0), 3.0), (2, 10, bucket(10), 2.0)]
     );
 }
 

@@ -167,21 +167,25 @@ fn timestamped(name: &'static str) -> Event {
 /// aggregation receives reaches the outputs at once: on the default output in place of the native component, or on a
 /// named one in place of aggregation's region, with the header the region before it stamped.
 struct ForwardingTransformBuilder {
-    outputs: [OutputDefinition<EventType>; 1],
+    outputs: Vec<OutputDefinition<EventType>>,
     output: Option<String>,
 }
 
 impl ForwardingTransformBuilder {
     fn new() -> Self {
         Self {
-            outputs: [OutputDefinition::default_output(EventType::Metric)],
+            outputs: vec![OutputDefinition::default_output(EventType::Metric)],
             output: None,
         }
     }
 
-    fn named(output: String) -> Self {
+    /// Declares the named `outputs`, and forwards on `output`, one of them.
+    fn named(outputs: Vec<String>, output: String) -> Self {
         Self {
-            outputs: [OutputDefinition::named_output(output.clone(), EventType::Metric)],
+            outputs: outputs
+                .into_iter()
+                .map(|name| OutputDefinition::named_output(name, EventType::Metric))
+                .collect(),
             output: Some(output),
         }
     }
@@ -251,9 +255,18 @@ fn replace_aggregation(blueprint: &mut TopologyBlueprint, aggregation: Aggregati
             .iter()
             .find(|component| &**component.id() == "dsd_agg")
             .expect("aggregation runs in its region");
-        let output = region.outputs()[0].name().to_string();
+        // It declares every exit of the region, and forwards toward enrichment, where aggregation's output goes.
+        let outputs = region
+            .outputs()
+            .iter()
+            .map(|output| output.name().to_string())
+            .collect::<Vec<_>>();
+        assert!(outputs.iter().any(|output| output == "metrics_enrich"), "{:?}", outputs);
         blueprint
-            .replace_transform("dsd_agg", ForwardingTransformBuilder::named(output))
+            .replace_transform(
+                "dsd_agg",
+                ForwardingTransformBuilder::named(outputs, "metrics_enrich".to_string()),
+            )
             .unwrap();
     }
 }

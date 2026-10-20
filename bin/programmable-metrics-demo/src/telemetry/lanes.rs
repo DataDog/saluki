@@ -132,7 +132,7 @@ impl LaneLayout {
             .iter()
             .map(|slot| SlotLayout {
                 name: slot.name.clone(),
-                role: if slot.isolation.is_some() {
+                role: if slot.state_slot {
                     LaneRole::State
                 } else if producer_slots.contains(&slot.name.as_str()) {
                     LaneRole::Producer
@@ -454,7 +454,7 @@ mod tests {
                     {"name": "dsd_agg", "lanes": 2, "nodes": [], "entries": [],
                      "exits": [{"index": 0, "name": "metrics_enrich", "to": "metrics_enrich", "idle": false,
                                 "routing": "spread"}],
-                     "isolation": {"output_point": 6, "output_points": [6, 7], "upstream": [0, 1]}},
+                     "state_slot": true},
                     {"name": "metrics_enrich", "lanes": 3, "nodes": [], "entries": [],
                      "exits": [{"index": 0, "name": "dd_metrics_encode",
                                 "to": "encode host dd_metrics_encode of dd_out", "idle": false}]}

@@ -12,7 +12,7 @@
 //!   (`Recorder::Port`). It also names the component each kernel
 //!   reports its own telemetry as, and the resource group each kernel's memory and CPU time are accounted to:
 //!   `<region>.<node>`, under the region's own, as a native component's sub-transforms are. A state owner in an
-//!   isolation slot named after it, as DogStatsD aggregation runs in `dsd_agg`, stands for the native component itself:
+//!   state slot named after it, as DogStatsD aggregation runs in `dsd_agg`, stands for the native component itself:
 //!   its kernel is accounted in the region's own group, and draws on the host's budgets of state.
 //! - [`InstallerTelemetry`] is what the installer publishes: the active generation, the active artifact's revision,
 //!   the live generations, the installations by outcome, the cut installations by how they ended and the refused
@@ -52,7 +52,7 @@ use saluki_metric_kernels::{
     tag_projection::{TagProjectionRules, ValueRules},
 };
 use saluki_metric_plan::{
-    compile::{Frame, RegionProgram, RewriteId, RewriteRecord, SlotId},
+    compile::{Frame, RegionKey, RegionProgram, RewriteId, RewriteRecord, SlotId},
     ir::{NativeComponentId, Node, NodeId, OutputId, Plan, PortName},
     operators::{
         decode_tag_filter_rules, decode_tag_value_rules, KernelBuildContext, OperatorRegistry, PlanValue, Recorder,
@@ -216,8 +216,8 @@ pub struct RegionTelemetry {
     topology: SubsystemIdentifier,
     accounting: Option<Accounting>,
     state_budgets: StateBudgets,
-    /// The isolation slots of the frame, by slot, with their region's name.
-    isolation: BTreeMap<SlotId, String>,
+    /// The name of each slot's region, by slot.
+    slot_names: BTreeMap<SlotId, String>,
 }
 
 impl RegionTelemetry {
@@ -228,7 +228,7 @@ impl RegionTelemetry {
             topology,
             accounting: None,
             state_budgets: StateBudgets::unlimited(),
-            isolation: BTreeMap::new(),
+            slot_names: BTreeMap::new(),
         }
     }
 
@@ -239,14 +239,14 @@ impl RegionTelemetry {
         self
     }
 
-    /// Builds the kernels of the isolation slots of `frame` with the budgets of state of `budgets`, which every lineage
-    /// of every state owner shares, and accounts each in its region's own group when the region is named after it.
+    /// Builds the kernels of every region that holds a state owner with the budgets of state of `budgets`, which every
+    /// lineage of every state owner shares, and accounts a state owner in its region's own group when a slot of `frame`
+    /// named after it runs it in its main region.
     pub fn with_state(mut self, budgets: StateBudgets, frame: &Frame) -> Self {
         self.state_budgets = budgets;
-        self.isolation = frame
+        self.slot_names = frame
             .slots()
             .iter()
-            .filter(|slot| slot.is_isolation())
             .map(|slot| (slot.id, slot.name.to_string()))
             .collect();
         self
@@ -257,7 +257,7 @@ impl RegionTelemetry {
         node_component(&self.topology, node)
     }
 
-    /// Registers the handles lane `lane` of the isolation slot `region` publishes its own telemetry to, its
+    /// Registers the handles lane `lane` of the state slot `region` publishes its own telemetry to, its
     /// `plan_lane_*` series (see [`PlanTelemetry::state_lane`]).
     pub fn state_lane(&self, region: &str, lane: u16) -> StateLaneTelemetry {
         self.plan.state_lane(region, lane)
@@ -267,10 +267,11 @@ impl RegionTelemetry {
     /// says, with its cache named as the node's role says, if it has one, and accounted to the resource group
     /// `<region>.<node>`, whose bounds `RegionBounds` declares under the same name.
     ///
-    /// A kernel of an isolation slot draws on the budgets of state ([`with_state`][Self::with_state]): the global
-    /// budget and its node's. If the slot is named after the kernel's node, as `dsd_agg` is after DogStatsD
-    /// aggregation, the region stands for the node's native component, and the kernel is accounted in the region's own
-    /// group (see `kernel_accounting_path`).
+    /// A kernel of a region that holds a state owner, the slot's main region or a sub-region of the slot, draws on the
+    /// budgets of state ([`with_state`][Self::with_state]): the global budget and its node's. If the slot is named
+    /// after a state owner its main region runs, as `dsd_agg` is after DogStatsD aggregation, the region stands for the
+    /// node's native component, and the kernel is accounted in the region's own group (see `kernel_accounting_path`).
+    /// A sub-region's kernels are accounted under the slot's region, as `<region>.<node>`, the sub-region's own group.
     pub fn kernel_context(&self, program: &RegionProgram, node: &NodeId) -> KernelBuildContext {
         self.kernel_context_in(program, node, LaneContext::ONE)
     }
@@ -286,6 +287,7 @@ impl RegionTelemetry {
             .iter()
             .find(|kernel| &kernel.key.node == node)
             .map_or("", |kernel| kernel.operator);
+        let holds_state = program.kernels().iter().any(|kernel| kernel.lineage.is_some());
         let context = KernelBuildContext::new(node.clone(), self.component(node));
         // A role may name the kernel's cache after the native one, which the remapper selects on.
         let context = match roles::of(node, operator).and_then(|role| role.cache_id) {
@@ -298,10 +300,15 @@ impl RegionTelemetry {
         } else {
             context.with_cache_gauges(GaugeMode::Summed)
         };
-        let isolation = self.isolation.get(&program.slot());
-        let context = match isolation {
-            Some(_) => context.with_state_budget(self.state_budgets.context_budget(node)),
-            None => context,
+        let context = if holds_state {
+            context.with_state_budget(self.state_budgets.context_budget(node))
+        } else {
+            context
+        };
+        // The slot's own name, when its main region holds a state owner, which the slot may be named after.
+        let state_slot = match program.region() {
+            RegionKey::Main if holds_state => self.slot_names.get(&program.slot()),
+            RegionKey::Main | RegionKey::State(_) => None,
         };
         let group = self.accounting.as_ref().and_then(|accounting| {
             let region = accounting.regions.get(program.slot().get())?.clone();
@@ -310,7 +317,7 @@ impl RegionTelemetry {
             } else {
                 region.child(lane_group_name(lane))
             };
-            let name = match isolation {
+            let name = match state_slot {
                 Some(region_name) => kernel_accounting_path(region_name, node),
                 None => Some(kernel_accounting_name(node)),
             };
@@ -391,7 +398,7 @@ pub const PLAN_LANE_ROUTED_EVENTS_TOTAL: &str = "plan_lane_routed_events_total";
 pub const PLAN_LANE_PROGRESS_TOTAL: &str = "plan_lane_progress_total";
 
 /// The name of the gauge of the contexts each state lane's state owners hold, tagged `component_id` and `lane`:
-/// registered for the lanes of an isolation slot whose program runs state owners.
+/// registered for the lanes of a state slot whose program runs state owners.
 pub const PLAN_LANE_CONTEXTS: &str = "plan_lane_contexts";
 
 /// How often [`LaneTelemetry`] publishes what the lanes measured.

@@ -875,7 +875,7 @@ impl Installing {
         let points = Points::start(boot.admission.clone(), &boot.schedule).await;
         path.installer.cut_points = CutPoints {
             every: CANCEL_ORDER.to_vec(),
-            affected: vec![AFFECTED],
+            routed: CANCEL_ORDER.to_vec(),
         };
         Self {
             metrics: path,
@@ -1063,6 +1063,7 @@ async fn the_installer_cancels_a_cut_before_any_point_stamped_it_and_counts_each
     let cancel = |generation: &GenerationRef| Action::CancelCut {
         generation: generation.id(),
         old: old.clone(),
+        lock_order: CANCEL_ORDER.to_vec(),
     };
     installing.perform(cancel(&new)).await;
     assert_eq!(steady_of(&schedule), Some(old.id()));
@@ -1249,6 +1250,8 @@ async fn a_preparation_hands_each_region_how_its_state_owners_bind_to_instances_
         build: Vec::new(),
         state,
         leases: Default::default(),
+        sub_region_keys: Vec::new(),
+        sub_regions: Vec::new(),
     };
 
     // A cut from a 10-second aggregation window to a 30-second one: the old window's instance retires at the cut, and

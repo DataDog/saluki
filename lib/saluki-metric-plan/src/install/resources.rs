@@ -62,7 +62,7 @@ use serde_json::{json, Value};
 use crate::{
     canonical::PlanHash,
     compile::{KernelKey, LeaseTable, SlotId},
-    ir::{HostBinding, HostId, OutputDecl, OutputId, Params, Plan, RecipientDecl, RecipientId, Resources},
+    ir::{HostBinding, HostId, NodeId, OutputDecl, OutputId, Params, Plan, RecipientDecl, RecipientId, Resources},
 };
 
 /// The revision of what resource transactions published: it grows with every transaction, and a host ignores a
@@ -241,6 +241,10 @@ pub enum CreditKey {
 
     /// A generation's new kernel instances in one slot, on every lane of the slot.
     Instances(GenerationId, SlotId),
+
+    /// The buffers of the sub-region of a state owner in one slot, held while any live generation runs it. The caller
+    /// tracks these itself: the core lists none (see the region host's sub-regions).
+    SubRegion(SlotId, NodeId),
 }
 
 impl fmt::Display for CreditKey {
@@ -261,6 +265,9 @@ impl fmt::Display for CreditKey {
                 generation.get(),
                 slot.get()
             ),
+            Self::SubRegion(slot, node) => {
+                write!(f, "the buffers of the sub-region of `{}` in slot {}", node, slot.get())
+            }
         }
     }
 }

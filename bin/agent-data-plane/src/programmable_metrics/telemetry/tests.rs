@@ -783,7 +783,7 @@ async fn on_lanes_each_lanes_kernels_are_accounted_in_resource_groups_of_their_o
 }
 
 #[tokio::test]
-async fn a_kernel_of_an_isolation_slot_named_after_its_node_is_accounted_in_its_regions_own_group_and_draws_on_state() {
+async fn a_state_owner_in_a_slot_named_after_it_is_accounted_in_its_regions_own_group_and_its_region_draws_on_state() {
     // How much a kernel's build allocates, at least, in the group its context names.
     const HELD: usize = 8 << 20;
     let registry = saluki_core::accounting::ComponentRegistry::default();
@@ -791,38 +791,44 @@ async fn a_kernel_of_an_isolation_slot_named_after_its_node_is_accounted_in_its_
     let cell = ConfigCell::new(config.clone());
     let mut path = programmable_metrics(&config, cell.live(), &registry).expect("a metrics pipeline is required");
     let boot = path.boot_topology();
-    // The `metrics_enrich` slot runs host enrichment's kernel. Run as an isolation slot named after the kernel's node,
-    // as the `dsd_agg` isolation slot is after aggregation's, the kernel stands for the slot's component, as
-    // aggregation's does in `dsd_agg`.
-    let slot = boot
-        .frame
-        .slots()
-        .iter()
-        .find(|slot| slot.name.as_str() == "metrics_enrich")
-        .expect("the frame has the `metrics_enrich` slot")
-        .id;
-    let program = Arc::clone(&boot.programs[slot.get()]);
-    let node = "metrics".parse::<NodeId>().unwrap();
-    let region = "topology.primary.transforms.metrics_enrich".to_string();
-    let own = format!("{}.metrics", region);
+    let slot_of = |name: &str| {
+        boot.frame
+            .slots()
+            .iter()
+            .find(|slot| slot.name.as_str() == name)
+            .unwrap_or_else(|| panic!("the frame has the `{}` slot", name))
+            .id
+    };
+    // `metrics_enrich` runs host enrichment's stateless kernel, `metrics`; `dsd_agg` runs aggregation, the state
+    // owner it is named after, which stands for the slot's component, as the native aggregation transform did.
+    let enrich = Arc::clone(&boot.programs[slot_of("metrics_enrich").get()]);
+    let aggregation = Arc::clone(&boot.programs[slot_of("dsd_agg").get()]);
+    let metrics = "metrics".parse::<NodeId>().unwrap();
+    let dsd_agg = "dsd_agg".parse::<NodeId>().unwrap();
+    let transforms = "topology.primary.transforms";
+    let enrich_own = format!("{}.metrics_enrich.metrics", transforms);
+    let aggregation_region = format!("{}.dsd_agg", transforms);
+    let aggregation_own = format!("{}.dsd_agg.dsd_agg", transforms);
 
-    // (the name of the isolation slot the program runs in, if it runs in one; the group its kernel is accounted in;
+    // (the program, its kernel, the name of the slot running it if renamed, the group its kernel is accounted in,
     // whether the kernel draws on the budgets of state)
     let cases = [
-        (None, &own, false),
-        (Some("metrics"), &region, true),
-        (Some("metrics_enrich"), &own, true),
+        (&enrich, &metrics, None, &enrich_own, false),
+        (&aggregation, &dsd_agg, None, &aggregation_region, true),
+        (&aggregation, &dsd_agg, Some("aggregation"), &aggregation_own, true),
     ];
-    for (isolation, group, stateful) in cases {
-        let what = format!("isolation slot {:?}", isolation);
+    for (program, node, renamed, group, stateful) in cases {
+        let what = format!("`{}` in slot {}, renamed {:?}", node, program.slot(), renamed);
         let mut telemetry = boot.telemetry.clone();
-        telemetry.isolation = isolation.map(|name| (slot, name.to_string())).into_iter().collect();
-        let context = telemetry.kernel_context(&program, &node);
+        if let Some(name) = renamed {
+            telemetry.slot_names.insert(program.slot(), name.to_string());
+        }
+        let context = telemetry.kernel_context(program, node);
         match context.state_budget() {
             Some(budget) => {
                 assert!(stateful, "{}", what);
                 assert!(budget.global.shares_with(boot.state_budgets.global()), "{}", what);
-                assert!(budget.node.shares_with(&boot.state_budgets.node(&node)), "{}", what);
+                assert!(budget.node.shares_with(&boot.state_budgets.node(node)), "{}", what);
             }
             None => assert!(!stateful, "{}", what),
         }
@@ -990,7 +996,8 @@ async fn aggregation_in_its_region_keeps_the_native_aggregation_components_serie
     assert!(!remapped.is_empty());
     assert_eq!(remapped, aggregator(render(get_datadog_agent_remappings(), &legacy)));
 
-    // The region's one output is named after the component it feeds, where the native transform had a default one.
+    // The region's outputs are named after what they feed, where the native transform had a default one: enrichment,
+    // and the client telemetry tap and each encode host, idle exits every slot has.
     let dsd_agg_outputs = |telemetry: &BTreeMap<Series, String>| {
         telemetry
             .keys()
@@ -1002,7 +1009,7 @@ async fn aggregation_in_its_region_keeps_the_native_aggregation_components_serie
             .collect::<BTreeSet<_>>()
     };
     assert_eq!(dsd_agg_outputs(&legacy), ["_default".to_string()].into_iter().collect());
-    assert_eq!(dsd_agg_outputs(&plan).len(), 1);
+    assert!(dsd_agg_outputs(&plan).contains("metrics_enrich"));
     assert!(!dsd_agg_outputs(&plan).contains("_default"));
 }
 

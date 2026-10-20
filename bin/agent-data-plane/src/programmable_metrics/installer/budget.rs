@@ -12,21 +12,34 @@
 //! acquires nothing twice, and releases a credit when the core says the creation it was acquired for ended. The
 //! ledger lives in the installer's state, outside the worker, so it survives a restart with the core.
 //!
+//! A sub-region a generation runs (a state owner's task inside its slot's component) holds its input's and its exits'
+//! buffers: its credit, [`CreditKey::SubRegion`], is acquired with the first preparation that runs it and released when
+//! the last generation that runs it retires, which the core does not track; its kernels are among its slot's instances.
+//!
 //! Admission follows the boot verification's mode: `Strict` refuses a credit that does not fit, naming it, and
 //! acquires nothing of the action's credits; `Permissive` warns and holds the credit without taking from the budget;
 //! without a verified limit (`Disabled`, or no limit), nothing is counted.
 
-use std::{collections::BTreeMap, num::NonZeroU8};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    num::{NonZeroU8, NonZeroUsize},
+};
 
 use saluki_app::accounting::{MemoryMode, VerifiedMemory};
 use saluki_components::{
     encoders::encode_host::lease_settings_bound_bytes,
     forwarders::delivery::{recipient_queue_bound, RecipientPolicy},
 };
-use saluki_core::execution::StateBudget;
+use saluki_core::{
+    data_model::event::Event,
+    execution::{GenerationId, StateBudget},
+    topology::EventsBuffer,
+};
 use saluki_metric_plan::{
+    compile::SlotId,
     install::{CreditKey, ResourceBounds},
-    ir::{HostBinding, HostId, OutputDecl, RecipientDecl},
+    ir::{HostBinding, HostId, NodeId, OutputDecl, RecipientDecl},
+    limits,
 };
 use tracing::warn;
 
@@ -70,6 +83,18 @@ impl ResourceBounds for AdpResourceBounds {
     }
 }
 
+/// The buffers a sub-region's input holds: as many as the input interconnect of the native component a state owner
+/// stands for, so that a burst backs up to the regions before it no sooner than it did natively.
+pub(super) const SUB_REGION_INPUT_BUFFERS: NonZeroUsize = NonZeroUsize::new(128).unwrap();
+
+/// Returns the bytes a sub-region of a slot with `exits` exits holds beside its kernels: one full events buffer per
+/// buffer of its input ([`SUB_REGION_INPUT_BUFFERS`]) and per exit, as the region host bounds a lane's.
+pub(super) fn sub_region_bytes(exits: usize) -> u64 {
+    let buffer = size_of::<EventsBuffer>() + size_of::<Event>() * limits::values::BATCH_SIZE;
+    let buffers = SUB_REGION_INPUT_BUFFERS.get().saturating_add(exits);
+    u64::try_from(buffers.saturating_mul(buffer)).unwrap_or(u64::MAX)
+}
+
 /// How much of the resource budget is granted and used, in bytes.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct BudgetUsage {
@@ -88,6 +113,8 @@ pub(super) struct ResourceBudget {
     mode: MemoryMode,
     /// Every credit held, with the bytes it took from the budget: zero for one held without being counted.
     held: BTreeMap<CreditKey, u64>,
+    /// The generations that run each sub-region, by slot and state owner: its credit is held while any of them lives.
+    sub_regions: BTreeMap<(SlotId, NodeId), BTreeSet<GenerationId>>,
 }
 
 impl ResourceBudget {
@@ -97,6 +124,7 @@ impl ResourceBudget {
             budget: None,
             mode: MemoryMode::Disabled,
             held: BTreeMap::new(),
+            sub_regions: BTreeMap::new(),
         }
     }
 
@@ -113,6 +141,7 @@ impl ResourceBudget {
             budget: Some(StateBudget::new(verified.headroom_bytes().saturating_add(boot_bytes))),
             mode: verified.mode,
             held: BTreeMap::new(),
+            sub_regions: BTreeMap::new(),
         };
         // The capacity covers the boot credits exactly, so acquiring them cannot fail.
         budget.acquire(boot).ok();
@@ -170,6 +199,31 @@ impl ResourceBudget {
         }
     }
 
+    /// Records that `generation` runs the sub-regions `regions`, whose credits ([`CreditKey::SubRegion`]) its
+    /// preparation acquired.
+    pub(super) fn run_sub_regions(
+        &mut self, generation: GenerationId, regions: impl IntoIterator<Item = (SlotId, NodeId)>,
+    ) {
+        for region in regions {
+            self.sub_regions.entry(region).or_default().insert(generation);
+        }
+    }
+
+    /// Records that `generation` retired, and releases the credit of every sub-region no live generation runs any more,
+    /// whose input is empty by then. Returns whether it released any.
+    pub(super) fn retired(&mut self, generation: GenerationId) -> bool {
+        let mut released = Vec::new();
+        self.sub_regions.retain(|(slot, node), users| {
+            users.remove(&generation);
+            if users.is_empty() {
+                released.push(CreditKey::SubRegion(*slot, node.clone()));
+            }
+            !users.is_empty()
+        });
+        self.release(&released);
+        !released.is_empty()
+    }
+
     /// Returns how much of the budget is granted and used.
     pub(super) fn usage(&self) -> BudgetUsage {
         BudgetUsage {
@@ -193,8 +247,8 @@ impl ResourceBudget {
 
 #[cfg(test)]
 mod tests {
-    use saluki_core::execution::{EntryId, GenerationId};
-    use saluki_metric_plan::{compile::SlotId, ir::HostId};
+    use saluki_core::execution::EntryId;
+    use saluki_metric_plan::ir::HostId;
 
     use super::*;
 
@@ -253,6 +307,27 @@ mod tests {
         // What fits is admitted.
         budget.acquire(&[(lease(1), 60), (instances, 40)]).unwrap();
         assert_eq!(budget.usage().used, 100);
+    }
+
+    #[test]
+    fn a_sub_regions_credit_is_held_until_the_last_generation_that_runs_it_retires() {
+        let mut budget = ResourceBudget::new(verified(MemoryMode::Strict, 1_000), &[]);
+        let region = (SlotId::new(2), "agg".parse::<NodeId>().unwrap());
+        let credit = CreditKey::SubRegion(region.0, region.1.clone());
+        // Two generations run it; the second's preparation acquires nothing more.
+        for generation in [2, 3] {
+            budget.acquire(&[(credit.clone(), 100)]).unwrap();
+            budget.run_sub_regions(GenerationId::new(generation), [region.clone()]);
+        }
+        assert_eq!(budget.usage().used, 100);
+        // A generation that runs no sub-region releases nothing.
+        assert!(!budget.retired(GenerationId::new(1)));
+        assert!(!budget.retired(GenerationId::new(2)));
+        assert_eq!(budget.held(), [credit]);
+        assert!(budget.retired(GenerationId::new(3)));
+        assert_eq!(budget.usage().used, 0);
+        assert!(budget.held().is_empty());
+        assert!(sub_region_bytes(4) > sub_region_bytes(0));
     }
 
     #[test]

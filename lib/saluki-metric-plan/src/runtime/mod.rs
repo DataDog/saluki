@@ -49,7 +49,7 @@ mod code;
 mod driver;
 pub use self::driver::{
     GenerationFailureReporter, KernelControl, KernelReply, KernelTarget, LanePreparation, MetricRegionDriver,
-    PrepareRegion, RegionConfig, RegionControl, RoutingTelemetry, StateRegionConfig,
+    PrepareRegion, RegionConfig, RegionControl, RoutingTelemetry, StateRegionConfig, SubRegionPreparation,
 };
 
 #[cfg(any(test, feature = "test-util"))]

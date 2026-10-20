@@ -598,7 +598,7 @@ impl World {
                     CreditKey::Recipient(host, _) | CreditKey::HostQueue(host) | CreditKey::Lease(host, ..) => {
                         Some(host.clone())
                     }
-                    CreditKey::Instances(..) => None,
+                    CreditKey::Instances(..) | CreditKey::SubRegion(..) => None,
                 };
                 // A refusal fails only the part of the host whose credit it refused: every other part is sent, with its
                 // credits acquired.

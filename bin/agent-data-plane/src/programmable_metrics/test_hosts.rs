@@ -712,6 +712,9 @@ fn handle_laned(
             RegionControl::Release => LaneEvent::Released { lane },
             RegionControl::Adopt { generation, .. } => LaneEvent::Adopted { lane, generation },
             RegionControl::Kernel(_) => unreachable!("a kernel control message never splits"),
+            RegionControl::Retire { .. } => {
+                unreachable!("a retirement goes to a sub-region, which no fake region runs")
+            }
         });
     }
     Ok(())
@@ -797,6 +800,7 @@ mod laned_tests {
             let control = KernelControl {
                 target: KernelTarget::Stateful,
                 lane,
+                sub_region: None,
                 message: Box::new(()),
                 reply: Box::new(move |message| {
                     let _ = answered.send(*message.downcast::<u16>().unwrap());

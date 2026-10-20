@@ -63,7 +63,7 @@
 //! Each step is idempotent by the schedule's value, and a restarted worker performs again the cut step the core has in
 //! flight ([`InstallerCore::resume_actions`]).
 //!
-//! When aggregation runs in an isolation slot, a second worker, the [snapshot bridge](super::snapshot_bridge), answers
+//! When aggregation runs in a state slot, a second worker, the [snapshot bridge](super::snapshot_bridge), answers
 //! the DogStatsD context dump API from that region.
 //!
 //! # Artifacts
@@ -134,8 +134,8 @@ use saluki_core::{
     components::ComponentContext,
     execution::{
         control_mailbox, AdmissionPointId, AdmissionRegistry, AdmissionSchedule, AdmissionTime, ControlMailbox,
-        ControlSender, GenerationId, GenerationRef, LaneContext, RetireNotifier, ScheduleHandle, SystemWallClock,
-        WallClock,
+        ControlSender, GenerationId, GenerationRef, LaneContext, RetireNotifier, ScheduleHandle, SubRegionKey,
+        SubRegionSpec, SystemWallClock, WallClock,
     },
     runtime::{InitializationError, Supervisable, SupervisorFuture},
     topology::{topology_identifier, ComponentId},
@@ -148,7 +148,7 @@ use saluki_metric_plan::{
     channel::{
         artifact_channel, ApplyStates, ArtifactProduct, ArtifactSnapshot, InstallerEnd, ProgramRuns, TransportEnd,
     },
-    compile::{compile, compile_unvalidated, Frame, LeaseTable, RegionProgram, SlotId},
+    compile::{compile, compile_unvalidated, AdmissionPointInfo, Frame, LeaseTable, RegionKey, RegionProgram, SlotId},
     compose::{compose, demanded_outputs, Approval, ComposeError, Composed, Composer, Demand},
     elaborate::elaborate_default,
     explain::Explain,
@@ -156,14 +156,14 @@ use saluki_metric_plan::{
     install::{
         Action, ArmCut, Candidate, CandidateId, CreditKey, CutDeferReason, CutPhase, GenerationState, InstallerConfig,
         InstallerCore, InstallerStatus, LeaseRef, Origin, Outcome, PendingReason, Prepare, PrepareOutcome, PrepareSite,
-        RecipientRef, Report, ResourcesRevision, RetirementReport, SlotPrepare, StateBinding,
+        RecipientRef, Report, ResourcesRevision, RetirementReport, SlotPrepare, StateBinding, SubRegionPrepare,
     },
     ir::{HostId, NodeId, OutputId, Plan, ReceivedArtifact},
     limits,
     operators::{LaneBinding, LaneCell, OperatorRegistry},
     runtime::{
         build_kernels, GenerationFailureReporter, LanePreparation, PanicBudget, PrepareRegion, RegionControl,
-        RegionError, StateBudgets,
+        RegionError, StateBudgets, SubRegionPreparation,
     },
     validate::ValidationReport,
 };
@@ -176,7 +176,7 @@ use tracing::{debug, error, info, warn};
 
 pub use self::hosts::HostWiring;
 use self::{
-    budget::{AdpResourceBounds, ResourceBudget},
+    budget::{sub_region_bytes, AdpResourceBounds, ResourceBudget, SUB_REGION_INPUT_BUFFERS},
     cut::{ArmOutcome, CancelOutcome, Polled},
     hosts::{next_host_event, wire_hosts, BootHosts, HostLink},
     status::{RecipientEntry, ResourcesView, RetiredRecipients},
@@ -248,11 +248,11 @@ pub struct BootTopology {
     /// limit of DogStatsD aggregation, and one per state owner.
     pub state_budgets: StateBudgets,
 
-    /// The wall clock isolation slots read for their tick gates, the time they close at when their input ends, and
+    /// The wall clock state slots read for their tick gates, the time they close at when their input ends, and
     /// their watermark lag: the operating system's.
     pub wall_clock: Arc<dyn WallClock>,
 
-    /// DogStatsD aggregation's context snapshot requests, when aggregation runs in an isolation slot: taken when the
+    /// DogStatsD aggregation's context snapshot requests, when aggregation runs in a state slot: taken when the
     /// DogStatsD pipeline is added, and answered by the [snapshot bridge](ProgrammableMetrics::snapshot_bridge).
     pub snapshots: Option<SnapshotBridgeState>,
 
@@ -625,7 +625,7 @@ impl ProgrammableMetrics {
         Arc::clone(&self.status)
     }
 
-    /// Returns the worker that answers DogStatsD aggregation's context snapshot requests from the isolation slot that
+    /// Returns the worker that answers DogStatsD aggregation's context snapshot requests from the state slot that
     /// runs aggregation, `dsd_agg`, or `None` if the topology has no DogStatsD pipeline.
     ///
     /// Call it once the topology is built: the topology takes the requests when it adds the DogStatsD pipeline.
@@ -1231,24 +1231,23 @@ struct Draining {
 /// The admission points of the frame, as cuts lock and poll them.
 #[derive(Clone, Debug)]
 struct CutPoints {
-    /// Every admission point, in the order a cancellation locks them: those that feed no state owner first.
+    /// Every admission point of the frame, in ID order: every lane's point of a point with lanes.
     every: Vec<AdmissionPointId>,
 
-    /// The admission points upstream of every isolation slot: those a cut of their state owners is armed over.
-    affected: Vec<AdmissionPointId>,
+    /// The admission points the frame routes somewhere, which heartbeat while they are idle, in ID order.
+    routed: Vec<AdmissionPointId>,
 }
 
 impl CutPoints {
     fn of(frame: &Frame) -> Self {
-        let isolation = frame
-            .slots()
-            .iter()
-            .filter(|slot| slot.is_isolation())
-            .map(|slot| slot.id)
-            .collect::<Vec<_>>();
         Self {
-            every: frame.cancel_lock_order(),
-            affected: frame.affected_points(&isolation),
+            every: frame.admission_point_ids().collect(),
+            routed: frame
+                .admission_points()
+                .iter()
+                .filter(|point| point.route.is_some())
+                .flat_map(AdmissionPointInfo::lane_ids)
+                .collect(),
         }
     }
 }
@@ -1445,6 +1444,12 @@ impl Installer {
                 // idle region would otherwise keep them until its next batch.
                 for region in &self.regions {
                     drop(region.send(RegionControl::Release));
+                }
+                // A sub-region no live generation runs any more has stopped routing input to it, and retires: its
+                // buffers return to the budget.
+                if self.budget.retired(generation) {
+                    let usage = self.budget.usage();
+                    self.telemetry.resource_budget(usage.granted, usage.used);
                 }
                 self.core.retired(generation)
             }
@@ -1767,7 +1772,11 @@ impl Installer {
             }
             Action::ArmCut(arm) => self.arm_cut(arm).await,
             Action::WatchCut { generation, at } => self.watch_cut(generation, at),
-            Action::CancelCut { generation, old } => self.cancel_cut(generation, old).await,
+            Action::CancelCut {
+                generation,
+                old,
+                lock_order,
+            } => self.cancel_cut(generation, old, lock_order).await,
             Action::FinalizeCut { generation } => self.finalize_cut(generation),
             Action::PrepareResources {
                 revision,
@@ -1872,13 +1881,13 @@ impl Installer {
         let (old, affected) = match &self.arming {
             Some(arming) if arming.generation == generation => (Some(arming.old), arming.affected.clone()),
             // A cut armed by an earlier run of the installer than the one that remembers it: its replaced generation
-            // is the one the schedule names, and it is armed over the points upstream of every isolation slot.
+            // is the one the schedule names, and it is armed over the points the core planned it over.
             _ => {
                 let old = match &**self.schedule.load() {
                     AdmissionSchedule::Cut { old, new, .. } if new.id() == generation => Some(old.id()),
                     _ => None,
                 };
-                (old, self.cut_points.affected.clone())
+                (old, self.cut_affected(generation))
             }
         };
         let overdue = self
@@ -1893,6 +1902,19 @@ impl Installer {
             next_poll: Instant::now(),
             overdue,
         });
+    }
+
+    /// Returns the admission points the cut of `generation` is armed over: those upstream of the state owners it
+    /// switches, in either generation, as the core planned them.
+    fn cut_affected(&self, generation: GenerationId) -> Vec<AdmissionPointId> {
+        if let Some(arming) = self.arming.as_ref().filter(|arming| arming.generation == generation) {
+            return arming.affected.clone();
+        }
+        if let Some(watched) = self.cut.as_ref().filter(|watched| watched.generation == generation) {
+            return watched.affected.clone();
+        }
+        // Every routed point: a cut waits for more points than it switches only to finalize, by a heartbeat at most.
+        self.cut_points.routed.clone()
     }
 
     /// Reports what a poll of the admission points found about the cut in flight to the core.
@@ -1922,11 +1944,11 @@ impl Installer {
     }
 
     /// Cancels the cut of `generation` (see [`cut::cancel`]), and reports the outcome to the core.
-    async fn cancel_cut(&mut self, generation: GenerationId, old: GenerationRef) {
+    async fn cancel_cut(&mut self, generation: GenerationId, old: GenerationRef, lock_order: Vec<AdmissionPointId>) {
         let outcome = cut::cancel(
             &self.admission,
             &self.schedule,
-            &self.cut_points.every,
+            &lock_order,
             generation,
             &old,
             limits::values::CUT_LOCK_TIMEOUT,
@@ -2056,13 +2078,29 @@ impl Installer {
         } = prepare;
         let id = generation.id();
         self.prepare_deadline = Some((id, Instant::now() + timeout));
-        // The credits the preparation adds, as the core lists them, are acquired before anything is sent: a refusal
-        // fails the preparation at the budget, and no region or host is sent its part.
+        // The sub-regions the generation runs, each of which holds its buffers while any live generation runs it.
+        let sub_regions = slots
+            .iter()
+            .flat_map(|slot| slot.sub_regions.iter().map(move |sub_region| (slot.slot, sub_region)))
+            .filter(|(_, sub_region)| sub_region.program.is_some())
+            .filter_map(|(slot, sub_region)| match &sub_region.region {
+                RegionKey::State(node) => Some((slot, node.clone())),
+                RegionKey::Main => None,
+            })
+            .collect::<Vec<_>>();
+        let mut admitted = admitted;
+        for (slot, node) in &sub_regions {
+            let exits = self.core.frame().slot(*slot).map_or(0, |slot| slot.exits.len());
+            admitted.push((CreditKey::SubRegion(*slot, node.clone()), sub_region_bytes(exits)));
+        }
+        // The credits the preparation adds, as the core lists them, and its sub-regions', are acquired before anything
+        // is sent: a refusal fails the preparation at the budget, and no region or host is sent its part.
         if let Err(refused) = self.budget.acquire(&admitted) {
             let actions = self.resource_paths.budget_refused(&mut self.core, id, refused);
             self.actions.extend(actions);
             return;
         }
+        self.budget.run_sub_regions(id, sub_regions);
         let usage = self.budget.usage();
         self.telemetry.resource_budget(usage.granted, usage.used);
         // A preparation the core replaced before it was sent gets the default program's budget: the regions'
@@ -2559,6 +2597,9 @@ fn blocking<R>(work: impl FnOnce() -> R) -> R {
 /// from the same specs and accounted under the lane's group, and the same bindings of state. Every lane's instance of
 /// a lineage the generation creates is built against one [`LaneCell`], so that the lanes share its record.
 ///
+/// The slot's main region also carries what each of its sub-regions prepares ([`sub_region_preparation`]), which the
+/// slot's host hands each, starting a sub-region that does not run.
+///
 /// # Errors
 ///
 /// Returns an error if a kernel fails to build.
@@ -2567,7 +2608,7 @@ fn region_preparation(
 ) -> Result<PrepareRegion, RegionError> {
     // Every part of the core's preparation of the slot is named, so that none is left behind: a region reuses the
     // instances it holds for the kernels the preparation does not list to build, whether or not the program is
-    // unchanged, and an isolation slot needs its bindings of state to carry, start, or retire its state owners' state.
+    // unchanged, and a state slot needs its bindings of state to carry, start, or retire its state owners' state.
     let SlotPrepare {
         slot: _,
         program,
@@ -2576,14 +2617,22 @@ fn region_preparation(
         build,
         state,
         leases,
+        sub_region_keys,
+        sub_regions,
     } = slot;
+    let sub_regions = sub_regions
+        .into_iter()
+        .map(|sub_region| sub_region_preparation(telemetry, generation, sub_region, budget, &leases, &sub_region_keys))
+        .collect::<Result<Vec<_>, RegionError>>()?;
     if lanes <= 1 {
         // Kernels are built off the data path, each in its own resource group under its region's.
         let kernels = build_kernels(&program, &build, |node| telemetry.kernel_context(&program, node))?;
         return Ok(
             PrepareRegion::new(generation.clone(), program, kernels, budget, telemetry)
                 .with_state_bindings(state)
-                .with_leases(leases),
+                .with_leases(leases)
+                .with_sub_region_keys(sub_region_keys)
+                .with_sub_regions(sub_regions),
         );
     }
 
@@ -2592,7 +2641,7 @@ fn region_preparation(
         .iter()
         .filter_map(|binding| match binding {
             StateBinding::New { node, .. } => Some((node.clone(), LaneCell::new())),
-            StateBinding::Retain { .. } | StateBinding::Retire { .. } => None,
+            StateBinding::Retain { .. } | StateBinding::Boundary { .. } | StateBinding::Retire { .. } => None,
         })
         .collect::<BTreeMap<_, _>>();
     let shares = (0..lanes)
@@ -2618,8 +2667,65 @@ fn region_preparation(
     Ok(
         PrepareRegion::new(generation.clone(), program, Vec::new(), budget, telemetry)
             .with_leases(leases)
-            .with_lanes(shares),
+            .with_lanes(shares)
+            .with_sub_region_keys(sub_region_keys)
+            .with_sub_regions(sub_regions),
     )
+}
+
+/// Returns what one sub-region of a slot prepares for `generation`: the program of its region, with the kernels it
+/// lacks, built here on its one lane, and how it binds its state owner, together with what the slot's host starts it
+/// with if it does not run ([`SubRegionSpec`]); or, for a region the generation does not run, only the retirements of
+/// the active generation's instances there at the generation's cut.
+///
+/// # Errors
+///
+/// Returns an error if a kernel fails to build.
+fn sub_region_preparation(
+    telemetry: &RegionTelemetry, generation: &GenerationRef, sub_region: SubRegionPrepare, budget: PanicBudget,
+    leases: &Arc<LeaseTable>, keys: &[(RegionKey, SubRegionKey)],
+) -> Result<SubRegionPreparation, RegionError> {
+    let SubRegionPrepare {
+        key,
+        region,
+        program,
+        unchanged: _,
+        reuse: _,
+        build,
+        state,
+    } = sub_region;
+    let Some(program) = program else {
+        return Ok(SubRegionPreparation::Retire { key, bindings: state });
+    };
+    // A state owner that starts a new instance is built even while an instance of its lineage retires there.
+    let mut build = build;
+    for binding in &state {
+        if let StateBinding::New { node, .. } = binding {
+            if let Some(kernel) = program.kernels().iter().find(|kernel| &kernel.key.node == node) {
+                if !build.contains(&kernel.key) {
+                    build.push(kernel.key.clone());
+                }
+            }
+        }
+    }
+    let kernels = build_kernels(&program, &build, |node| telemetry.kernel_context(&program, node))?;
+    // The sub-region's task is accounted under its slot's region as `<region>.<node>`, as its kernels are.
+    let name = match &region {
+        RegionKey::State(node) => node.to_string(),
+        RegionKey::Main => region.to_string(),
+    };
+    let prepare = PrepareRegion::new(generation.clone(), program, kernels, budget, telemetry)
+        .with_state_bindings(state)
+        .with_leases(Arc::clone(leases))
+        .with_sub_region_keys(keys.to_vec());
+    Ok(SubRegionPreparation::Run {
+        spec: SubRegionSpec {
+            key,
+            name,
+            input_buffers: SUB_REGION_INPUT_BUFFERS,
+        },
+        prepare: Box::new(prepare),
+    })
 }
 
 /// Polls the admission points once the next poll of the cut in flight is due, returning the cut's generation and what

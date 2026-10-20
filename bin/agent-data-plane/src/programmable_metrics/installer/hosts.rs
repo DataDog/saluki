@@ -680,6 +680,6 @@ impl Installer {
 fn credit_host(credit: &CreditKey) -> Option<&HostId> {
     match credit {
         CreditKey::Lease(host, ..) | CreditKey::Recipient(host, _) | CreditKey::HostQueue(host) => Some(host),
-        CreditKey::Instances(..) => None,
+        CreditKey::Instances(..) | CreditKey::SubRegion(..) => None,
     }
 }

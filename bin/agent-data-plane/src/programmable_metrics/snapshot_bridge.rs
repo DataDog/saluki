@@ -1,7 +1,7 @@
 //! The snapshot bridge: answers the DogStatsD context dump API from aggregation running in a region.
 //!
 //! Natively, the aggregation transform answers context snapshot requests itself, between batches. When aggregation runs
-//! as a stateful kernel in the `dsd_agg` isolation slot, no component holds the requests: the topology takes them when
+//! as a stateful kernel in the `dsd_agg` state slot, no component holds the requests: the topology takes them when
 //! it adds the DogStatsD pipeline ([`SnapshotBridgeState`]), and the [`SnapshotBridge`] worker hands each request to
 //! the region as a kernel control message, which every lineage of every state owner in the region answers in turn,
 //! between batches and between the steps of a flush. The requester sees what it sees natively: the contexts aggregation
@@ -121,8 +121,10 @@ async fn answer(region: &ControlSender<RegionControl>, pending: AggregateContext
     }
     let control = KernelControl {
         target: KernelTarget::Stateful,
-        // A region on one lane takes kernel control messages without naming a lane.
+        // A region on one lane takes kernel control messages without naming a lane; aggregation runs in its slot's
+        // main region, not in a sub-region.
         lane: None,
+        sub_region: None,
         message: Box::new(ContextSnapshot::default()),
         // The region calls the reply with the message once every lineage has added its contexts to it, and drops it
         // without calling it if it stops or a kernel panics, which fails the request as an owner that stops does.
@@ -155,6 +157,7 @@ async fn answer_on_lanes(
         let control = KernelControl {
             target: KernelTarget::Stateful,
             lane: Some(lane),
+            sub_region: None,
             message: Box::new(ContextSnapshot::default()),
             reply: Box::new(move |message| {
                 let Ok(snapshot) = message.downcast::<ContextSnapshot>() else {
