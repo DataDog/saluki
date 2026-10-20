@@ -59,6 +59,16 @@ the backport rejected all twelve. Both builds accepted the unaffected control. T
 validates the verifier change independently of root removal; release-platform testing
 is still required.
 
+## Security advisories
+
+Advisory scanners such as `cargo-deny` and `cargo audit` match RustSec advisories against
+crates.io packages, so they are not expected to report advisories for this path dependency.
+Until this backport is removed, check new
+[RustSec advisories for `rustls-webpki`](https://rustsec.org/packages/rustls-webpki.html) and
+[upstream releases](https://github.com/rustls/webpki/releases) by hand, and apply any fix that
+affects 0.103.13 here. Renovate also skips this directory through the `vendor` ignore in its
+`config:recommended` preset, so it does not propose updates for this crate either.
+
 ## Removal
 
 Remove the path override, workspace exclusion, this directory, and the standalone test
