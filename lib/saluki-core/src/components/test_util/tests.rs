@@ -5,7 +5,7 @@ use saluki_error::{generic_error, GenericError};
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 
-use super::TestComponentDriver;
+use super::{PrebuiltSource, TestComponentDriver};
 use crate::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use crate::components::{
     destinations::{Destination, DestinationBuilder, DestinationContext},
@@ -612,4 +612,49 @@ async fn wait_until_says_when_the_run_has_already_returned() {
     .expect("the transform's run should fail straight away");
 
     control.wait_until(|| false, || "the condition holds".to_string()).await;
+}
+
+#[tokio::test]
+async fn prebuilt_source_runs_with_the_driver_options() {
+    let source = PrebuiltSource::new(Box::new(TwoOutputSource), TwoOutputSourceBuilder::new().outputs);
+    let (control, mut outputs) = TestComponentDriver::options()
+        .with_component_id("prebuilt")
+        .source(source)
+        .await
+        .expect("source should build");
+    control.wait_until_ready().await;
+    assert_eq!(
+        control.component_context().to_string(),
+        "topology.test.sources.prebuilt"
+    );
+
+    let alt = outputs
+        .named_output("alt")
+        .next()
+        .await
+        .expect("alt output should receive a buffer");
+    assert_eq!(metric_names(alt), ["to_alt"]);
+
+    control
+        .shutdown()
+        .await
+        .expect("source should stop cleanly on shutdown");
+}
+
+#[tokio::test]
+async fn prebuilt_source_refuses_a_second_build() {
+    let builder = PrebuiltSource::new(Box::new(StuckSource), Vec::new());
+    builder
+        .build(BuildContext::test_source("prebuilt"))
+        .await
+        .map(drop)
+        .expect("the first build should hand the source over");
+
+    let Err(error) = builder.build(BuildContext::test_source("prebuilt")).await else {
+        panic!("a second build should be refused");
+    };
+    assert!(
+        error.to_string().contains("can only be built once"),
+        "unexpected error: {error:#}"
+    );
 }

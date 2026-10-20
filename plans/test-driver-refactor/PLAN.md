@@ -41,9 +41,10 @@ Each pull request checks off its own item.
     has already returned, as `wait_until_ready` does.
   - For updates that don't arrive on the input, such as a `Live<T>` change. Tests typically poll a `TestRecorder`
     counter.
-- [ ] **3. F2: pre-built source.**
-  - A `SourceBuilder` that wraps an already-built `Box<dyn Source + Send>` and its output definitions. Its `build`
-    hands the box over once and returns an error on a second build. Its memory bounds are empty.
+- [x] **3. F2: pre-built source.**
+  - `PrebuiltSource` is a `SourceBuilder` that wraps an already-built `Box<dyn Source + Send>` and its output
+    definitions. Its `build` hands the box over once and returns an error on a second build. Its memory bounds are
+    empty.
   - Works with every `DriverOptions` setting. Sources only for now.
 - [ ] **4. F3: `synchronous_transform` entry point.**
   - `TestComponentDriver::synchronous_transform` and `DriverOptions::synchronous_transform` run a
