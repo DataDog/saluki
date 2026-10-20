@@ -1380,3 +1380,58 @@ differential tests, the syntax crate's fixture tests, and the demo crate.
 nothing, is still a generation that builds no kernel (S0); elaboration does not leave nodes out, which would change the
 running default program's telemetry. V3's precise updates hold: a native policy change rebuilds only the kernels whose
 settings changed.
+
+## Version 2: V10 (names and a compatibility analysis)
+
+V10 was built in three commits: an additive half (`7b1e126d16`: operator reports, the telemetry contract, compatibility
+roles), a wiring half beside V6 (`64fe645ca9`: the `dsd_prefix_filter` rename, the catalog's contract, telemetry by
+name, validation findings, `keeps_identity` in the filter rewrites, ADP status's `telemetry`), and the deletions,
+recorded here.
+
+**What went** (amendment 199): the node namespace, `Namespace`, `NodeId::{reserved, policy, namespace, is_reserved}`,
+the `policy/` prefix in `NodeId`'s and `PortRef`'s grammar and schema, and every caller (normalization, export,
+elaboration's `node_ids` and `partial_emit`, the filter rewrites' `fresh_id`, the syntax crate's derived IDs, ADP's
+lowering annotations, installer notes, and the region input capacity's `replaced`); naming by namespace,
+`policy_<local>` components (`KernelBuildContext::detached`, the frame's `component_name`, ADP's `node_component`) and
+the shared `<region>.policy` accounting group (`kernel_accounting_name`, `kernel_accounting_path`); amendment 182's
+adoption (`the_aggregation`, and the `aggregation` parameter of `node_ids`); `single_aggregation` (amendment 169): the
+validation rule, `Rule::SingleAggregation`, `Catalog::single_aggregation`, `MemoryCatalog`'s member and
+`with_single_aggregation`, ADP's catalog opt-in, the plan crate's `without_single_aggregation` fixture, the export's
+catalog member, and the demo's reference flag, catalog filter, and rule entry.
+
+**What replaced it:** `NodeId::new(LocalId)`, serialized as the bare identifier. A plan document with a `policy/` node
+ID is refused by `NodeId`'s parser, with a message naming the change; the IR version stays 1, as the plan proposed,
+since elaborated plans are not stored. An artifact node's plan ID is its name, and a name equal to a source's is still
+refused (`ReservedSource`). A kernel reports as the transform named after its node and is accounted under
+`<region>.<node>`, except a state owner named after its isolation slot, which accounts at the slot's level by name
+alone. The region input capacity counts every node of the boot plan by its native component, the one the plan's
+provenance names or its own name. An older export's `single_aggregation` member is dropped with the other members the
+catalog does not read.
+
+**A choice:** the rewrite harness had told an author's nodes from native ones by the namespace. It now names an
+author's nodes `a_<local>` and gives every native filter of a random plan a telemetry contract entry
+(`contract_catalog`), so that R5a and R6 keep moving native filters only whole, as before, and `check_structure` still
+finds the native nodes by name.
+
+**Tests.** Turned around: the plan crate's one-aggregation tests became a program with three aggregations validating
+with no findings (`validate`), a second aggregation validating with no findings at each of five places and placing
+only on the timestamp split's passthrough branch (`install::program_tests`), and the installer core installing that one
+at a cut while refusing one after enrichment as unplaceable; `the_one_aggregation_keeps_the_default_programs_id_...`
+became `a_renamed_aggregation_is_a_new_lineage_that_starts_at_a_cut` (the old node `Removed`, the new one `Added`, both
+`cut`, and one `telemetry_contract` warning at `plan`). ADP's lifecycle case "a second aggregation" is now refused by
+placement after enrichment. The demo's preview test of a renamed aggregation expects the rename note and the contract
+warning; its second-aggregation preview test expects no findings; scenario S5c is refused by placement (the editor
+flags nothing), S5d's editor shows the contract warning, and S14a expects a cut (`Compiled::Warned`, then
+`plan_cuts_total{outcome="completed"}` grows) while S14b expects no cut from there. New: `NodeId` refusing `policy/`
+names, in a plan document too. `policy/` IDs in tests became bare names (`second_agg` where they would collide), the
+harness's `a_` names in the rewrite and normalization tests, and the canonical-form fixture's hash was recomputed with
+Python. Golden files regenerated: the plan schema (`NodeId` and `PortRef` without the prefix) and
+`artifact-like-policy.txt` (names only). Targeted runs passed: the plan crate's IR, validate, elaborate, compose,
+compile, install, explain, normalize, operators, export, and canonical tests (545); ADP's installer, lowering, API,
+telemetry, compatibility, and topology tests, differential included (225); the syntax crate's non-property suite
+(191); and the demo crate but traffic, loopback, and launcher (141). Not run: the release property tests (the rewrite
+harness's random plans now carry a contract) and `make demo-programmable-metrics-check` (S14's cut).
+
+**Results.** Every node reports under its own name, and the default program's names are the remapper's, so native
+series are unchanged; a program's added nodes report under theirs. A second aggregation validates anywhere and runs
+where the boot frame has an isolation slot for it; V7a lifts the frame's limit.

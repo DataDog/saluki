@@ -15,7 +15,7 @@ use saluki_metric_plan::{
     ir::{format_duration, ArtifactPortRef, ParamType, ValueType},
     limits::{self, LimitSpec, LimitValue},
     operators::{names, OperatorRegistry},
-    validate::{BindingClass, Catalog as _, Liveness, Rule, Severity},
+    validate::{BindingClass, Liveness, Rule, Severity},
 };
 use saluki_metric_plan_syntax::parse;
 use serde::Serialize;
@@ -71,9 +71,6 @@ pub struct HostReference {
 
     /// The configuration bindings a program may read, in name order.
     pub bindings: Vec<BindingEntry>,
-
-    /// Whether a program may hold at most one aggregation.
-    pub single_aggregation: bool,
 }
 
 /// An entry of the recipient directory.
@@ -519,11 +516,6 @@ const RULES: &[(Rule, &str, bool)] = &[
         false,
     ),
     (
-        Rule::SingleAggregation,
-        "A program holds at most one `aggregate`.",
-        false,
-    ),
-    (
         Rule::SplitWindow,
         "A `timestamp_split`'s window equals that of the aggregation it feeds.",
         false,
@@ -536,6 +528,12 @@ const RULES: &[(Rule, &str, bool)] = &[
     (
         Rule::PredicateCanMatch,
         "A `where`'s or `split`'s predicate can match something that reaches it.",
+        false,
+    ),
+    (
+        Rule::TelemetryContract,
+        "Every node ADP reads the Agent's series from by name is in the program, by that name and operator, such as \
+         the `aggregate` named `dsd_agg`; otherwise a warning names the series that will be absent.",
         false,
     ),
 ];
@@ -672,7 +670,6 @@ fn host_reference(export: &ExportBundle, labels: &RecipientLabels) -> HostRefere
                 value: binding.value.clone(),
             })
             .collect(),
-        single_aggregation: catalog.single_aggregation(),
     }
 }
 

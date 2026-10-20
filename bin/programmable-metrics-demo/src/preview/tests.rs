@@ -180,7 +180,7 @@ fn a_change_diffs_node_by_node_in_the_artifacts_terms() {
         })
         .collect::<Vec<_>>();
     // The `where` ends `let metrics` now, so it is the node `metrics`, which changes operator, and the host tags node
-    // before it is the artifact's `metrics_host_tags` (a `policy/` ID); the inline drop is the artifact's too: a `where`
+    // before it is the artifact's `metrics_host_tags`; the inline drop is the artifact's too: a `where`
     // drops what its `false` port leads to, which normalization keeps whichever way the predicate is written. The merge
     // feeds host tags, and the `tee` is fed by the split: both are the default program's nodes, with other edges.
     // Nothing else changes: a node is what it does, whatever feeds it, so the branches behind the `tee` are unchanged.
@@ -193,7 +193,7 @@ fn a_change_diffs_node_by_node_in_the_artifacts_terms() {
             vec!["edges"],
         ),
         (
-            "policy/metrics_host_tags",
+            "metrics_host_tags",
             Some("metrics_host_tags"),
             "host_tags",
             ChangeKind::Added,
@@ -214,7 +214,7 @@ fn a_change_diffs_node_by_node_in_the_artifacts_terms() {
             vec!["edges"],
         ),
         (
-            "policy/metrics_false",
+            "metrics_false",
             Some("metrics_false"),
             "drop",
             ChangeKind::Added,
@@ -225,10 +225,10 @@ fn a_change_diffs_node_by_node_in_the_artifacts_terms() {
     assert_eq!(
         preview.edges_added,
         [
-            "metrics_in.out -> policy/metrics_host_tags.in",
-            "policy/metrics_host_tags.out -> metrics.in",
+            "metrics_in.out -> metrics_host_tags.in",
+            "metrics_host_tags.out -> metrics.in",
             "metrics.true -> metrics_fanout.in",
-            "metrics.false -> policy/metrics_false.in",
+            "metrics.false -> metrics_false.in",
         ]
     );
     assert_eq!(
@@ -295,34 +295,21 @@ fn validation_findings_are_placed_at_the_artifact_nodes_they_are_about() {
 }
 
 #[test]
-fn an_aggregation_composes_and_validation_places_its_findings_at_its_node() {
-    // A state owner is no composition error: ADP composes it, and validation, then placement, judge it. The default
-    // program already has its one aggregation, so a second is refused, at its stage.
+fn a_second_aggregation_composes_and_validates_with_no_findings() {
+    // A state owner is no composition error, and a program may have any number of aggregations: the default program's
+    // keeps its name, so the host's telemetry contract is met too. Whether the frame can run it is ADP's placement's to
+    // say, which the editor does not run.
     let (plan, export) = fixture();
     let source = default_program_source(&export, &crate::compile::RecipientLabels::default());
     let source = with_stage_before_policy(&source, "aggregate(window: 10s) as rollup");
     let outcome = compile_against(&source, &plan, &export);
     assert!(outcome.ok);
-    assert!(!outcome.diagnostics.is_empty());
-    for diagnostic in &outcome.diagnostics {
-        assert_eq!(
-            (diagnostic.severity, diagnostic.origin),
-            (Severity::Error, Origin::Validation),
-            "{:#?}",
-            diagnostic
-        );
-        assert_eq!(
-            diagnostic.range.line,
-            line_of(&source, "as rollup"),
-            "{:#?}",
-            diagnostic
-        );
-    }
-    assert!(outcome
-        .diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.rule == Some("single_aggregation")));
-    assert!(outcome.preview.available && !outcome.preview.valid);
+    assert!(outcome.diagnostics.is_empty(), "{:#?}", outcome.diagnostics);
+    assert!(
+        outcome.preview.available && outcome.preview.valid,
+        "{:#?}",
+        outcome.preview
+    );
 }
 
 #[test]
@@ -427,7 +414,7 @@ fn with_node_renamed(plan: &Plan, from: &str, to: NodeId) -> Plan {
 
 /// Returns the plan ID of an artifact node that no node of the default program has.
 fn policy_id(local: &str) -> NodeId {
-    NodeId::policy(saluki_metric_plan::ir::LocalId::new(local).unwrap())
+    NodeId::new(saluki_metric_plan::ir::LocalId::new(local).unwrap())
 }
 
 #[test]
@@ -477,9 +464,10 @@ fn no_note_without_a_renamed_state_owner() {
 }
 
 #[test]
-fn renaming_the_one_aggregation_of_a_program_keeps_its_id_and_gets_no_note() {
-    // Composition gives a program's one aggregation the default program's ID whatever the artifact calls it, so its
-    // state carries over. The artifact is the export's, renamed directly, without the syntax.
+fn renaming_the_one_aggregation_of_a_program_is_a_note_and_a_telemetry_contract_warning() {
+    // A node's ID is its name, so a renamed aggregation is a new lineage, whose state starts over, and the host no
+    // longer reads the aggregator's series from it. The artifact is the export's, renamed directly, without the
+    // syntax.
     let (plan, export) = detached_fixture();
     let document = serde_json::to_string(&export.artifact.artifact).unwrap();
     let renamed = document
@@ -507,12 +495,22 @@ fn renaming_the_one_aggregation_of_a_program_keeps_its_id_and_gets_no_note() {
         in_effect: None,
     };
     let (findings, preview) = compose_preview(&parsed, &received, &context, &plan, &LineIndex::new(""));
-    assert!(preview.available, "{:?}\n{:?}", preview, findings);
+    assert!(preview.available && preview.valid, "{:?}\n{:?}", preview, findings);
     assert!(
-        !preview.notes.iter().any(|note| note.contains("renames")),
+        preview
+            .notes
+            .iter()
+            .any(|note| note.contains("renames the aggregation from `dsd_agg` to `agg`")),
         "{:?}",
         preview.notes
     );
+    let warnings = findings
+        .iter()
+        .filter(|finding| finding.rule == Some("telemetry_contract"))
+        .collect::<Vec<_>>();
+    assert_eq!(warnings.len(), 1, "{:?}", findings);
+    assert_eq!(warnings[0].severity, Severity::Warning);
+    assert!(warnings[0].message.contains("dsd_agg"), "{}", warnings[0].message);
 }
 
 #[test]

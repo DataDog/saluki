@@ -812,10 +812,10 @@ fn region_input_capacity(
         .chain(outputs.iter().map(|output| output.component.clone()))
         .collect::<BTreeSet<_>>();
     // The native component that a node of the region does the work of, if the region replaces it: the one lowering
-    // names for it, or the node's own.
+    // names for it in the plan's provenance, or the node's own name.
     let native_components = plan.provenance.as_ref().map(|provenance| &provenance.native_components);
     let replaced = |node: &NodeId| {
-        let node = &plan.node(node).filter(|found| found.id.is_reserved())?.id;
+        let node = &plan.node(node)?.id;
         let component = native_components
             .and_then(|components| components.get(node))
             .map_or_else(|| node.local().as_str(), NativeComponentId::as_str);

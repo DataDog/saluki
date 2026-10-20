@@ -375,27 +375,24 @@ fn structure_only_an_artifact_asks_for_is_unsupported_until_stage_10() {
     let plan = bound(|value| {
         value["provenance"] = json!({"artifact": {"revision": 7, "hash": hash}});
         let mut aggregate = node_mut(value, "dsd_agg").clone();
-        aggregate["id"] = json!("policy/agg");
+        aggregate["id"] = json!("second_agg");
         value["nodes"].as_array_mut().unwrap().push(aggregate);
         for edge in value["edges"].as_array_mut().unwrap() {
             if edge["from"] == "metrics.out" {
-                edge["from"] = json!("policy/agg.out");
+                edge["from"] = json!("second_agg.out");
             }
         }
         value["edges"]
             .as_array_mut()
             .unwrap()
-            .push(json!({"from": "metrics.out", "to": "policy/agg.in"}));
+            .push(json!({"from": "metrics.out", "to": "second_agg.in"}));
     });
-    // A host that runs one aggregation per program rejects it at validation; placement's own refusal is the one
-    // without that restriction.
-    let catalog = crate::testing::without_single_aggregation(default_program_resources_catalog());
-    let (problems, capabilities) = unplaceable(&plan, &catalog);
+    let (problems, capabilities) = unplaceable(&plan, &default_program_resources_catalog());
     assert_eq!(capabilities, vec![MissingCapability::FrameChanges]);
     assert_eq!(
         problems,
         vec![
-            "node `policy/agg`: it is a state owner, which runs only in an isolation slot that the region its input \
+            "node `second_agg`: it is a state owner, which runs only in an isolation slot that the region its input \
               comes from has an exit to, and the topology built at boot has no such isolation slot for \
               `metrics_enrich`: a new exit from a region to an isolation slot requires stage 10 frame changes: the \
               physical structure is built from the default program at boot, so a restart does not add it"

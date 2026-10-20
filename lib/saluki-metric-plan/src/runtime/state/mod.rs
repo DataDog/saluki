@@ -172,7 +172,7 @@ mod tests {
     fn lineages_of_one_node_share_its_budget_and_every_node_shares_the_global_one() {
         let budgets = StateBudgets::new(3);
         let agg: NodeId = "dsd_agg".parse().unwrap();
-        let policy: NodeId = "policy/agg".parse().unwrap();
+        let policy: NodeId = "second_agg".parse().unwrap();
 
         let first = budgets.context_budget(&agg);
         let second = budgets.context_budget(&agg);

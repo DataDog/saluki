@@ -373,7 +373,7 @@ fn roles_are_keyed_by_name_and_operator() {
     );
     assert_eq!(role("metrics_routing_filter_01", names::SPLIT), None);
     assert_eq!(role("dsd_prefix_filter", names::TAG_PROJECTION), None);
-    assert_eq!(role("policy/dsd_post_agg_filter", names::SPLIT), None);
+    assert_eq!(role("post_agg_filter", names::SPLIT), None);
     assert_eq!(
         roles::of(&"dsd_tag_filterlist".parse().unwrap(), names::TAG_PROJECTION).and_then(|role| role.cache_id),
         Some("tag_filterlist/context_cache")

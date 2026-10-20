@@ -30,7 +30,7 @@ pub(crate) const WHERE_OPERATOR: &str = names::SPLIT;
 /// `parent` is an identifier and `suffix` an identifier or a decimal index, as every caller in this module passes;
 /// anything else is a bug.
 pub(crate) fn join(parent: &str, suffix: &str) -> ArtifactNodeId {
-    let parent = NodeId::reserved(LocalId::new(parent).expect("derived IDs extend identifiers"));
+    let parent = NodeId::new(LocalId::new(parent).expect("derived IDs extend identifiers"));
     let suffix = PortName::new(suffix).expect("derived ID suffixes are identifiers or indices");
     ArtifactNodeId::new(derived_terminal_id(&parent, &suffix).local().as_str())
         .expect("a derived ID is never the reserved `input` node's name, since it contains an underscore")

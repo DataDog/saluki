@@ -123,7 +123,7 @@ fn a_binding_and_the_same_literal_elaborate_to_one_hash() {
     assert_eq!(written.hash().unwrap(), program.hash().unwrap());
 
     // Only the annotation says which values came from bindings.
-    let tags_node = NodeId::reserved("metrics".parse().unwrap());
+    let tags_node = NodeId::new("metrics".parse().unwrap());
     assert_eq!(
         program.bindings.of(&tags_node).last(),
         Some(&BindingUse {
@@ -137,7 +137,7 @@ fn a_binding_and_the_same_literal_elaborate_to_one_hash() {
         .of(&tags_node)
         .iter()
         .all(|found| found.binding.as_str() != "host.tags"));
-    let gateway = NodeId::reserved("af_metrics_gateway".parse().unwrap());
+    let gateway = NodeId::new("af_metrics_gateway".parse().unwrap());
     assert_eq!(
         program
             .bindings

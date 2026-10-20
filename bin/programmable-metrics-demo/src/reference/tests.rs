@@ -322,7 +322,6 @@ fn the_host_side_lists_the_inputs_the_directory_and_which_bindings_a_program_may
         "{:?}",
         host.inputs
     );
-    assert!(host.single_aggregation);
     let primary = host
         .recipients
         .iter()

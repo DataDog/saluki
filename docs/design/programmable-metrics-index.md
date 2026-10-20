@@ -40,11 +40,12 @@ recipients are live resources (stage 7), declared by configuration. The path run
 | V2 | Resources artifacts removed (amendment 192) | `06e7301501` |
 | V3 | Native configuration lowers to literals; bindings are facts and signals (amendment 196) | `e6599d63f3` |
 | V4, V5 | Programs are whole and a snapshot holds one program document: scopes, `base`, staleness, fingerprints, and splicing removed (amendment 197) | `53cd99b576` |
-| V6 | Elaboration as a phase: one pass to the core program, which installs and has the one hash (amendment 198) | (V6 commit) |
+| V6 | Elaboration as a phase: one pass to the core program, which installs and has the one hash (amendment 198) | `9fb3990648` |
+| V10 | Names and a compatibility analysis: every node reports under its name, the telemetry contract as warnings, any number of aggregations, a renamed aggregation is a new lineage; the node namespace, `single_aggregation`, and the adoption of `dsd_agg` removed (amendment 199) | `7b1e126d16`, `64fe645ca9`, (V10 commit) |
 | Pipeline syntax | Programs written as streaming queries, a printer that writes any program as a person would, normalization and registry defaults (amendments 193, 194), and the demo moved to it | `0cbc6677d3` to `d35c5f8453` |
 
 Stage 8 (the production Remote Config channel) was skipped on purpose, and stage 10 (measured extensions) is not
-started. **Current work is version 2**, from step V10; a new session starts at its
+started. **Current work is version 2**, from step V7a; a new session starts at its
 [handoff](programmable-metrics-v2.md#handing-off). Current state, in detail: [status: where things
 stand](programmable-metrics-status.md#where-things-stand).
 

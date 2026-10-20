@@ -13,35 +13,28 @@ use crate::{
     compile::{
         DecisionMemo, ExitRouting, ExitSet, ExitSetCounts, RegionProgram, SharedPredicate, Slot, COUNTED_EXIT_SETS,
     },
-    ir::{Namespace, NodeId, Plan},
+    ir::{NodeId, Plan},
     limits,
     operators::{ConfiguredOperator, OperatorRegistry, MAX_HISTOGRAM_SERIES},
 };
 
 /// Returns the name, under its region's component, of the subcomponent whose bounds and resource group a kernel's
-/// node is accounted under: the node's local identifier for a reserved node, and `policy` for every node in the policy
-/// namespace, which share one.
+/// node is accounted under: the node's ID.
 pub fn kernel_accounting_name(node: &NodeId) -> String {
-    match node.namespace() {
-        Namespace::Reserved => node.local().to_string(),
-        Namespace::Policy => "policy".to_string(),
-    }
+    node.local().to_string()
 }
 
 /// Returns the name, under the component of the isolation slot `region`, of the subcomponent a state owner's kernel is
 /// accounted under, or `None` if the kernel is accounted in the region's own group, with its bounds at the region's
 /// top level.
 ///
-/// An isolation slot named after the reserved state owner it runs stands for that node's native component, as the
-/// isolation slot of aggregation stands for the native `dsd_agg` transform: its kernel keeps that component's resource
-/// group and bounds path, such as `dsd_agg.aggregate_context_limit`. Every other kernel is accounted under
+/// An isolation slot named after the state owner it runs stands for that node's native component, as the isolation
+/// slot of aggregation stands for the native `dsd_agg` transform: its kernel keeps that component's resource group and
+/// bounds path, such as `dsd_agg.aggregate_context_limit`. Every other kernel is accounted under
 /// [`kernel_accounting_name`]. Fused slots account every kernel under [`kernel_accounting_name`], even one named
 /// after the node it runs; [`kernel_accounting_in`] applies both rules.
 pub fn kernel_accounting_path(region: &str, node: &NodeId) -> Option<String> {
-    match node.namespace() {
-        Namespace::Reserved if node.local().as_str() == region => None,
-        _ => Some(kernel_accounting_name(node)),
-    }
+    (node.local().as_str() != region).then(|| kernel_accounting_name(node))
 }
 
 /// Returns the name, under the component of `slot`'s region, of the subcomponent the kernel of `node` is accounted
@@ -324,15 +317,16 @@ mod tests {
         };
         let node = |id: &str| id.parse::<NodeId>().unwrap();
         assert_eq!(kernel_accounting_in(&slot("dsd_agg"), &node("dsd_agg")), None);
+        // Any other state owner in it accounts under its own name.
         assert_eq!(
-            kernel_accounting_in(&slot("dsd_agg"), &node("policy/dsd_agg")),
-            Some("policy".to_string())
+            kernel_accounting_in(&slot("dsd_agg"), &node("second_agg")),
+            Some("second_agg".to_string())
         );
         assert_eq!(
             kernel_accounting_in(&slot("metrics_enrich"), &node("metrics_host_enrichment")),
             Some("metrics_host_enrichment".to_string())
         );
-        // So does a reserved node named like the fused slot it runs in.
+        // So does a node named like the fused slot it runs in.
         assert_eq!(
             kernel_accounting_in(&slot("metrics_enrich"), &node("metrics_enrich")),
             Some("metrics_enrich".to_string())
@@ -340,13 +334,13 @@ mod tests {
     }
 
     #[test]
-    fn a_kernel_is_accounted_in_its_region_only_when_the_region_is_named_after_its_reserved_node() {
+    fn a_kernel_is_accounted_in_its_region_only_when_the_region_is_named_after_its_node() {
         // (region, node, subcomponent)
         let cases = [
             ("dsd_agg", "dsd_agg", None),
             ("dsd_pre_aggregation", "dsd_enrich", Some("dsd_enrich")),
-            ("dsd_agg", "policy/dsd_agg", Some("policy")),
-            ("dsd_agg", "policy/agg", Some("policy")),
+            ("dsd_agg", "agg", Some("agg")),
+            ("dsd_agg", "second_agg", Some("second_agg")),
         ];
         for (region, node, expected) in cases {
             let node: NodeId = node.parse().unwrap();

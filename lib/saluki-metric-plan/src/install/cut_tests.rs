@@ -443,23 +443,23 @@ fn state_owners_are_classified_with_their_lineages_and_widths() {
     // An added aggregation is a cut: its lineage starts at the cut.
     let added = edited(|value| {
         let mut aggregation = node_mut(value, "dsd_agg").clone();
-        aggregation["id"] = json!("policy/agg");
+        aggregation["id"] = json!("agg");
         value["nodes"].as_array_mut().unwrap().push(aggregation);
     });
     let changes = diff(&boot_plan(), &added, &registry);
-    let aggregation = owner(&changes, "policy/agg");
+    let aggregation = owner(&changes, "agg");
     assert_eq!(
         (aggregation.class, aggregation.change, aggregation.widths),
         (TransitionClass::Cut, StateOwnerChange::Added, (None, secs(10)))
     );
     assert!(aggregation.lineage.0.is_none() && aggregation.lineage.1.is_some());
     assert_eq!(owner(&changes, "dsd_agg").class, TransitionClass::Retain);
-    assert_eq!(changes.cut().unwrap().owners, vec![id("policy/agg")]);
+    assert_eq!(changes.cut().unwrap().owners, vec![id("agg")]);
 
     // A removed one is a cut too, listed after the candidate's: its lineage ends at the cut.
     let changes = diff(&added, &boot_plan(), &registry);
     let aggregation = changes.state_owners.last().unwrap();
-    assert_eq!(aggregation.node, id("policy/agg"));
+    assert_eq!(aggregation.node, id("agg"));
     assert_eq!(
         (aggregation.class, aggregation.change, aggregation.widths),
         (TransitionClass::Cut, StateOwnerChange::Removed, (secs(10), None))
@@ -569,16 +569,16 @@ fn state_owners_bind_the_active_instance_a_new_one_or_retire_the_old_one() {
         (
             "an added owner",
             Some((2, vec![key("agg", "10s")])),
-            vec![key("agg", "10s"), key("policy/agg", "10s")],
-            cut(&["policy/agg"]),
-            vec![retain("agg", "10s", 2), new("policy/agg", "10s")],
+            vec![key("agg", "10s"), key("second_agg", "10s")],
+            cut(&["second_agg"]),
+            vec![retain("agg", "10s", 2), new("second_agg", "10s")],
         ),
         (
             "a removed owner",
-            Some((2, vec![key("agg", "10s"), key("policy/agg", "10s")])),
+            Some((2, vec![key("agg", "10s"), key("second_agg", "10s")])),
             vec![key("agg", "10s")],
-            cut(&["policy/agg"]),
-            vec![retain("agg", "10s", 2), retire("policy/agg", "10s", 2)],
+            cut(&["second_agg"]),
+            vec![retain("agg", "10s", 2), retire("second_agg", "10s", 2)],
         ),
         (
             // A width restored while the lineage of that width still retires: the new lineage has the same key as the

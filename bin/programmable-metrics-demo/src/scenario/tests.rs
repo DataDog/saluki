@@ -326,7 +326,6 @@ fn the_scenario_edits_compose_as_the_check_expects() {
             "duplicate_contribution",
         ),
         ("S5b", edits::two_hosts(&source).unwrap(), TWO_HOSTS[0]),
-        ("S5c", edits::second_aggregation(&source).unwrap(), "single_aggregation"),
         ("S5e", edits::policy_binding(&source).unwrap(), POLICY_BINDING[0]),
     ];
     for (id, edited, fragment) in flagged {
@@ -344,26 +343,27 @@ fn the_scenario_edits_compose_as_the_check_expects() {
         );
     }
 
-    // S5c's finding is at the second aggregation's line: the last `aggregate`, as the default program has its own.
-    let edited = edits::second_aggregation(&source).unwrap();
-    let (outcome, _) = compile(&edited, Some(&context));
-    let line = edited[..edited.rfind("aggregate(window: 10s").unwrap()]
-        .matches('\n')
-        .count()
-        + 1;
-    let at = outcome
-        .diagnostics
-        .iter()
-        .find(|diagnostic| diagnostic.rule == Some("single_aggregation"))
-        .expect("the second aggregation is flagged");
-    assert_eq!(at.range.line, line, "{:#?}", at);
+    // S5c: a second aggregation after enrichment is valid and publishable, and the default program's keeps its name.
+    // The editor does not place plans, so it flags nothing, and ADP's placement refuses it.
+    let (outcome, compiled) = compile(&edits::second_aggregation(&source).unwrap(), Some(&context));
+    assert!(compiled.is_some(), "S5c: publishable");
+    assert!(outcome.diagnostics.is_empty(), "S5c: {:#?}", outcome.diagnostics);
 
-    // S5d: the one aggregation moved after enrichment is publishable. The editor does not place plans, so it flags
-    // nothing, and ADP's placement refuses it.
+    // S5d: the one aggregation moved after enrichment is publishable. It is no longer named `dsd_agg`, so the editor
+    // warns of the host's telemetry contract, and ADP's placement refuses it.
     let edited = edits::aggregation_after_enrichment(&source).unwrap();
     let (outcome, compiled) = compile(&edited, Some(&context));
     assert!(compiled.is_some(), "S5d: publishable");
-    assert!(outcome.diagnostics.is_empty(), "S5d: {:#?}", outcome.diagnostics);
+    assert_eq!(
+        outcome
+            .diagnostics
+            .iter()
+            .map(|diagnostic| (diagnostic.severity, diagnostic.rule))
+            .collect::<Vec<_>>(),
+        [(crate::checks::Severity::Warning, Some("telemetry_contract"))],
+        "S5d: {:#?}",
+        outcome.diagnostics
+    );
     assert!(
         outcome.preview.reason.contains("not placed"),
         "{}",
@@ -426,12 +426,32 @@ fn the_scenario_edits_compose_as_the_check_expects() {
         outcome.diagnostics
     );
 
-    // S14a: the aggregation renamed does what the default program does.
+    // S14a: the aggregation renamed is another node, so the plan changes, and the editor warns that the host reads the
+    // aggregator's series from a node named `dsd_agg`, and notes that its state will not carry over.
     let (outcome, _) = compile(&edits::rename_aggregation(&source).unwrap(), Some(&context));
-    assert!(
-        outcome.diagnostics.is_empty() && outcome.preview.unchanged,
+    assert_eq!(
+        outcome
+            .diagnostics
+            .iter()
+            .map(|diagnostic| (diagnostic.severity, diagnostic.rule))
+            .collect::<Vec<_>>(),
+        [(crate::checks::Severity::Warning, Some("telemetry_contract"))],
         "S14a: {:#?}",
         outcome
+    );
+    assert!(
+        outcome.preview.valid && !outcome.preview.unchanged,
+        "S14a: {:#?}",
+        outcome
+    );
+    assert!(
+        outcome
+            .preview
+            .notes
+            .iter()
+            .any(|note| note.contains("renames the aggregation")),
+        "S14a: {:#?}",
+        outcome.preview.notes
     );
 }
 

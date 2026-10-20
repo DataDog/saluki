@@ -1,5 +1,5 @@
 //! Whole programs over the default program: one artifact edits pre-aggregation, aggregation, and the policy region
-//! together, and its host's restriction to one aggregation per program.
+//! together, and adds a second aggregation.
 //!
 //! The plan is the default-program fixture (`fixtures/default-program.json`). Artifacts are edits of its export,
 //! written by hand as changes to its JSON document, composed with the real composer ([`compose`]), classified with the
@@ -34,7 +34,7 @@ use crate::{
     operators::OperatorRegistry,
     runtime::harness::FrameHarness,
     testing::{catalog_for, default_program_slot_name, DEFAULT_PROGRAM_JSON, DEFAULT_PROGRAM_SOURCES},
-    validate::{Location, MemoryCatalog, Rule, ValidationReport, Validator},
+    validate::{MemoryCatalog, Rule, ValidationReport, Validator},
 };
 
 fn id(id: &str) -> NodeId {
@@ -77,8 +77,8 @@ fn unified_plan() -> Plan {
     unified_with(|_| {})
 }
 
-/// The host's catalog for the default program `lowered`, as lowering writes it: the fixtures' catalog, which declares
-/// one aggregation per program, with every binding's value, as composition needs.
+/// The host's catalog for the default program `lowered`, as lowering writes it: the fixtures' catalog, with every
+/// binding's value, as composition needs.
 fn unified_catalog(lowered: &Plan) -> MemoryCatalog {
     catalog_for(lowered)
 }
@@ -260,15 +260,10 @@ fn the_unmodified_export_composes_back_to_the_same_plan_and_diffs_as_no_change()
 
     assert_eq!(diff(&plan, &composed.plan, &registry()).nodes.len(), plan.nodes.len());
 
-    // Every node of the program, aggregation included, keeps its reserved ID.
+    // Every node of the program, aggregation included, keeps its ID.
     assert_eq!(composed.ids.len(), plan.nodes.len() - DEFAULT_PROGRAM_SOURCES.len());
     for (artifact_node, node) in &composed.ids {
-        assert_eq!(
-            *node,
-            NodeId::reserved(artifact_node.to_local_id()),
-            "`{}`",
-            artifact_node
-        );
+        assert_eq!(*node, NodeId::new(artifact_node.to_local_id()), "`{}`", artifact_node);
     }
     assert_eq!(composed.plan.node(&id("dsd_agg")), plan.node(&id("dsd_agg")));
 
@@ -326,7 +321,7 @@ fn a_routing_only_edit_composes_validates_places_and_retains_aggregation_with_no
     let plan = unified_plan();
     let composed = composed(edited(route)).unwrap();
     assert!(composed.report.findings().is_empty(), "{}", composed.report);
-    assert_eq!(plan_id(&composed, "drop_debug"), "policy/drop_debug");
+    assert_eq!(plan_id(&composed, "drop_debug"), "drop_debug");
     // Everything ahead of the new split is the default program's node, unchanged.
     for node in [
         "dsd_enrich",
@@ -355,7 +350,7 @@ fn a_routing_only_edit_composes_validates_places_and_retains_aggregation_with_no
     assert_eq!(aggregation.lineage.0, aggregation.lineage.1);
     assert_eq!(changes.cut(), None);
     let changed = changes.changes().map(|node| node.id.to_string()).collect::<Vec<_>>();
-    assert!(changed.contains(&"policy/drop_debug".to_string()), "{:?}", changed);
+    assert!(changed.contains(&"drop_debug".to_string()), "{:?}", changed);
     assert!(!changed.iter().any(|node| node.starts_with("dsd_")), "{:?}", changed);
 }
 
@@ -388,103 +383,51 @@ fn rename_node(document: &mut Value, from: &str, to: &str) {
 }
 
 #[test]
-fn the_one_aggregation_keeps_the_default_programs_id_and_lineage_whatever_the_artifact_calls_it() {
+fn a_renamed_aggregation_is_a_new_lineage_that_starts_at_a_cut() {
     let plan = unified_plan();
-    let aggregation = |composed: &Composed| {
-        let changes = diff(&plan, &composed.plan, &registry());
-        let owner = changes
+    let owner = |composed: &Composed, node: &str| {
+        diff(&plan, &composed.plan, &registry())
             .state_owners
             .iter()
-            .find(|owner| owner.node == id("dsd_agg"))
-            .cloned();
-        (owner.map(|owner| (owner.class, owner.change)), changes.cut().is_some())
+            .find(|owner| owner.node == id(node))
+            .map(|owner| (owner.class, owner.change))
+    };
+    let contract_warnings = |composed: &Composed| {
+        composed
+            .report
+            .findings()
+            .iter()
+            .filter(|finding| finding.rule == Rule::TelemetryContract)
+            .map(|finding| finding.location.to_string())
+            .collect::<Vec<_>>()
     };
 
-    // Renamed and otherwise unmodified, the aggregation is the default program's node: the composed plan is the
-    // default program, and the diff keeps aggregation's lineage with no cut.
+    // A node's ID is its name: renamed and otherwise unmodified, the aggregation is another node. The default
+    // program's ends its lineage at a cut, and the renamed one starts its own there, with no state.
     let renamed = composed(edited(|document| rename_node(document, "dsd_agg", "agg"))).unwrap();
-    assert!(renamed.report.findings().is_empty(), "{}", renamed.report);
-    assert_eq!(plan_id(&renamed, "agg"), "dsd_agg");
-    assert_eq!(renamed.plan.hash().unwrap(), plan.hash().unwrap());
+    assert!(renamed.report.is_valid(), "{}", renamed.report);
+    assert_eq!(plan_id(&renamed, "agg"), "agg");
+    assert!(renamed.plan.node(&id("dsd_agg")).is_none());
     assert_eq!(
-        aggregation(&renamed),
-        (Some((TransitionClass::Retain, StateOwnerChange::Kept)), false)
+        owner(&renamed, "dsd_agg"),
+        Some((TransitionClass::Cut, StateOwnerChange::Removed))
     );
-
-    // Renamed and widened: still `dsd_agg`, and a new width is a cut, as without the rename.
-    let widened = composed(edited(|document| {
-        widen(document);
-        rename_node(document, "dsd_agg", "agg");
-    }))
-    .unwrap();
-    assert!(widened.report.findings().is_empty(), "{}", widened.report);
-    assert_eq!(plan_id(&widened, "agg"), "dsd_agg");
-    let plain = composed(edited(widen)).unwrap();
-    assert_eq!(aggregation(&widened), aggregation(&plain));
-    assert!(aggregation(&widened).1, "a new width is a cut");
-
-    // Renamed and fed otherwise, through a new split ahead of it: still `dsd_agg`, doing what the default program's
-    // node does, whatever feeds it; its lineage parameters are unchanged, so it keeps its state, with no cut.
-    let refed = composed(edited(|document| {
-        rename_node(document, "dsd_agg", "agg");
-        add_nodes(
-            document,
-            &[
-                json!({"id": "drop_debug", "op": "split",
-                       "params": {"predicate": {"name": {"prefix": "debug."}}}}),
-                json!({"id": "drop_debug_true", "op": "drop"}),
-            ],
-        );
-        replace_edge(
-            document,
-            "dsd_tag_filterlist.out",
-            "agg.in",
-            &[
-                ("dsd_tag_filterlist.out", "drop_debug.in"),
-                ("drop_debug.true", "drop_debug_true.in"),
-                ("drop_debug.false", "agg.in"),
-            ],
-        );
-    }))
-    .unwrap();
-    assert!(refed.report.findings().is_empty(), "{}", refed.report);
-    assert_eq!(plan_id(&refed, "agg"), "dsd_agg");
-    assert_eq!(refed.plan.node(&id("dsd_agg")), plan.node(&id("dsd_agg")));
     assert_eq!(
-        aggregation(&refed),
-        (Some((TransitionClass::Retain, StateOwnerChange::Kept)), false)
+        owner(&renamed, "agg"),
+        Some((TransitionClass::Cut, StateOwnerChange::Added))
     );
+    assert!(diff(&plan, &renamed.plan, &registry()).cut().is_some());
+    // The host reads the aggregator's series from the node named `dsd_agg`, so validation warns that they will be
+    // absent.
+    assert_eq!(contract_warnings(&renamed), ["plan"]);
 
-    // A host that does not restrict programs to one aggregation places the renamed node in the artifact's namespace,
-    // as a new state owner.
-    let mut document = serde_json::to_value(unified_catalog(&lowered())).unwrap();
-    document.as_object_mut().unwrap().remove("single_aggregation");
-    let catalog = serde_json::from_value::<MemoryCatalog>(document).unwrap();
-    let artifact = received(edited(|document| rename_node(document, "dsd_agg", "agg")));
-    let unrestricted = compose(&plan, &artifact, &approval(1), &catalog, &registry()).unwrap();
-    assert_eq!(plan_id(&unrestricted, "agg"), "policy/agg");
-
-    // With two aggregations, neither takes the reserved ID in place of its own, and validation refuses the second.
-    let two = composed(edited(|document| {
-        rename_node(document, "dsd_agg", "agg");
-        let mut second = node_mut(document, "agg").clone();
-        second["id"] = json!("late_agg");
-        document["nodes"].as_array_mut().unwrap().push(second);
-        replace_edge(
-            document,
-            "metrics.out",
-            "metrics_fanout.in",
-            &[("metrics.out", "late_agg.in"), ("late_agg.out", "metrics_fanout.in")],
-        );
-    }))
-    .unwrap();
-    assert_eq!(plan_id(&two, "agg"), "policy/agg");
-    assert_eq!(plan_id(&two, "late_agg"), "policy/late_agg");
-    assert!(
-        two.report.errors().any(|error| error.rule == Rule::SingleAggregation),
-        "{}",
-        two.report
+    // Named `dsd_agg` again, it is the default program's node, with its lineage and no cut.
+    let unmodified = composed(exported()).unwrap();
+    assert_eq!(
+        owner(&unmodified, "dsd_agg"),
+        Some((TransitionClass::Retain, StateOwnerChange::Kept))
     );
+    assert!(contract_warnings(&unmodified).is_empty());
 }
 
 // 5 and 6. Installation through the installer core.
@@ -885,11 +828,11 @@ fn a_width_and_routing_edit_installs_as_one_generation_through_one_cut_with_the_
     // The one generation has both changes, the filter in normal form, keeping its `true` port.
     let plan = host.active_plan();
     assert_eq!(window(&plan, "dsd_agg"), Some(json!("30s")));
-    assert!(plan.node(&id("policy/drop_debug")).is_some());
+    assert!(plan.node(&id("drop_debug")).is_some());
     assert!(plan
         .edges
         .iter()
-        .any(|edge| edge.from.to_string() == "policy/drop_debug.true" && edge.to.to_string() == "metrics_fanout.in"));
+        .any(|edge| edge.from.to_string() == "drop_debug.true" && edge.to.to_string() == "metrics_fanout.in"));
     assert_eq!(host.demo().1, Some(2));
 }
 
@@ -1009,7 +952,7 @@ fn described(record: &crate::runtime::harness::DeliveredRecord) -> String {
     )
 }
 
-// 7. One aggregation at most.
+// 7. A second aggregation, wherever the frame can run it.
 
 /// An artifact with a copy of `dsd_agg` named `id`, spliced in place of the artifact edge `from -> to`.
 fn second_aggregation(id: &str, from: &str, to: &str) -> Value {
@@ -1051,14 +994,6 @@ fn no_isolation_slot(node: &str, region: &str) -> String {
     )
 }
 
-/// The message of the `single_aggregation` finding at the second aggregation `node`.
-fn second_one(node: &str) -> String {
-    format!(
-        "a program has at most one aggregation; `{}` is a second one (`dsd_agg` is the first)",
-        node
-    )
-}
-
 /// Where a second aggregation goes, as (what, the artifact edge it is spliced into).
 const SECOND_AGGREGATIONS: [(&str, (&str, &str)); 5] = [
     (
@@ -1081,157 +1016,75 @@ const SECOND_AGGREGATIONS: [(&str, (&str, &str)); 5] = [
 ];
 
 #[test]
-fn a_second_aggregation_is_rejected_by_validation_wherever_it_is_at_its_node() {
-    for (what, (from, to)) in SECOND_AGGREGATIONS {
-        let composed = composed(second_aggregation("late_agg", from, to)).unwrap();
-        // The one error is the second aggregation's, at its node, which an editor marks at the node's line.
-        let errors = composed.report.errors().collect::<Vec<_>>();
-        assert_eq!(errors.len(), 1, "{}: {}", what, composed.report);
-        assert_eq!(errors[0].rule, Rule::SingleAggregation, "{}", what);
-        assert_eq!(errors[0].rule.as_str(), "single_aggregation");
-        assert_eq!(
-            errors[0].location,
-            Location::Node {
-                id: id("policy/late_agg"),
-                port: None
-            },
-            "{}",
-            what
-        );
-        assert_eq!(errors[0].message, second_one("policy/late_agg"), "{}", what);
-        assert_eq!(
-            outcome(Ok(composed)),
-            format!(
-                "invalid: error[single_aggregation] node `policy/late_agg`: {}\n",
-                second_one("policy/late_agg")
-            ),
-            "{}",
-            what
-        );
-    }
-
-    // The default program's aggregation is the first, wherever the artifact lists its own: the one it adds is the one
-    // reported, even ahead of it in plan order.
-    let ahead = composed(edited(|document| {
-        let mut aggregation = node_mut(document, "dsd_agg").clone();
-        aggregation["id"] = json!("early_agg");
-        document["nodes"].as_array_mut().unwrap().insert(0, aggregation);
-        replace_edge(
-            document,
-            "dsd_no_agg_split.passthrough",
-            "dsd_post_agg_filter_in.1",
-            &[
-                ("dsd_no_agg_split.passthrough", "early_agg.in"),
-                ("early_agg.out", "dsd_post_agg_filter_in.1"),
-            ],
-        );
-    }))
-    .unwrap();
-    let errors = ahead.report.errors().map(ToString::to_string).collect::<Vec<_>>();
-    assert_eq!(errors.len(), 1, "{}", ahead.report);
-    assert_eq!(
-        errors,
-        [format!(
-            "error[single_aggregation] node `policy/early_agg`: {}",
-            second_one("policy/early_agg")
-        )]
-    );
-}
-
-#[test]
-fn a_second_aggregation_beside_a_widened_one_is_the_one_reported_wherever_it_is_listed() {
-    // A width change modifies the default program's aggregation; an aggregation the artifact adds, listed ahead of it,
-    // is still the second one: the first is the one with a reserved ID. (Elaboration puts the nodes in canonical order,
-    // so where the artifact lists a node never matters.)
-    let composed = composed(edited(|document| {
-        widen(document);
-        let mut aggregation = node_mut(document, "dsd_agg").clone();
-        aggregation["id"] = json!("early_agg");
-        document["nodes"].as_array_mut().unwrap().insert(0, aggregation);
-        replace_edge(
-            document,
-            "dsd_no_agg_split.passthrough",
-            "dsd_post_agg_filter_in.1",
-            &[
-                ("dsd_no_agg_split.passthrough", "early_agg.in"),
-                ("early_agg.out", "dsd_post_agg_filter_in.1"),
-            ],
-        );
-    }))
-    .unwrap();
-    assert_eq!(plan_id(&composed, "dsd_agg"), "dsd_agg");
-    assert_eq!(plan_id(&composed, "early_agg"), "policy/early_agg");
-    let errors = composed.report.errors().map(ToString::to_string).collect::<Vec<_>>();
-    assert_eq!(
-        errors,
-        [format!(
-            "error[single_aggregation] node `policy/early_agg`: {}",
-            second_one("policy/early_agg")
-        )]
-    );
-}
-
-/// The fixtures' catalog for the default program, without the restriction to one aggregation.
-fn catalog_of_any_aggregations() -> MemoryCatalog {
-    crate::testing::without_single_aggregation(unified_catalog(&lowered()))
-}
-
-#[test]
-fn placement_alone_would_run_a_second_aggregation_on_the_other_branch_of_the_timestamp_split() {
-    // Why the rule is needed: without it, placement rejects a second aggregation where the frame has no isolation slot
-    // for it, but runs one on the timestamp split's other branch, whose region has an exit to the one isolation slot,
-    // which runs a state owner of each branch by design.
-    let plan = unified_plan();
-    let catalog = catalog_of_any_aggregations();
-    assert!(!crate::validate::Catalog::single_aggregation(&catalog));
+fn a_second_aggregation_validates_and_places_wherever_the_frame_can_run_it() {
+    // A program may have any number of aggregations. Placement runs a second one on the timestamp split's other
+    // branch, whose region has an exit to the one isolation slot, which runs a state owner of each branch by design,
+    // and refuses one where the frame has no isolation slot for it.
     let expected = [
-        no_isolation_slot("policy/late_agg", "metrics_enrich"),
-        no_isolation_slot("policy/late_agg", "dsd_agg"),
+        no_isolation_slot("late_agg", "metrics_enrich"),
+        no_isolation_slot("late_agg", "dsd_agg"),
         // The second takes the first's place in the pre-aggregation region's exit, so the first is the one without an
         // isolation slot it can reach.
         no_isolation_slot("dsd_agg", "dsd_post_agg_filter_region"),
         "places".to_string(),
-        no_isolation_slot("policy/late_agg", "metrics_enrich"),
+        no_isolation_slot("late_agg", "metrics_enrich"),
     ];
     for ((what, (from, to)), expected) in SECOND_AGGREGATIONS.into_iter().zip(expected) {
-        let document = second_aggregation("late_agg", from, to);
-        let composed = compose(&plan, &received(document), &approval(1), &catalog, &registry());
-        assert!(
-            composed.as_ref().is_ok_and(|composed| composed.report.is_valid()),
-            "{}",
-            what
-        );
-        assert_eq!(outcome(composed), expected, "{}", what);
+        let composed = composed(second_aggregation("late_agg", from, to)).unwrap();
+        // The default program's aggregation keeps its name, so the host's telemetry contract is met: no findings.
+        assert!(composed.report.findings().is_empty(), "{}: {}", what, composed.report);
+        assert_eq!(plan_id(&composed, "late_agg"), "late_agg", "{}", what);
+        assert_eq!(outcome(Ok(composed)), expected, "{}", what);
     }
 }
 
 #[test]
-fn the_installer_core_rejects_a_second_aggregation_even_where_placement_would_run_it() {
-    let rejection = format!(
-        "the plan is not valid: error[single_aggregation] node `policy/late_agg`: {}",
-        second_one("policy/late_agg")
+fn the_installer_core_installs_a_second_aggregation_where_placement_runs_it_starting_its_lineage_at_a_cut() {
+    let mut host = Host::new();
+    let performed = host.deliver(
+        1,
+        second_aggregation("late_agg", "dsd_no_agg_split.passthrough", "dsd_post_agg_filter_in.1"),
     );
-    for (from, to) in [
-        ("dsd_no_agg_split.passthrough", "dsd_post_agg_filter_in.1"),
-        ("metrics.out", "metrics_fanout.in"),
-    ] {
-        let mut host = Host::new();
-        let performed = host.deliver(1, second_aggregation("late_agg", from, to));
-        assert_eq!(performed, [format!("candidate 2: rejected ({})", rejection)]);
-        assert_eq!(
-            host.demo(),
-            (crate::channel::ApplyState::Rejected, None, Some(rejection.clone()))
-        );
-        assert_eq!(host.core.status().live, vec![GenerationId::new(1)]);
-        assert!(host.arming.is_none());
-    }
+    assert_eq!(
+        performed.last().map(String::as_str),
+        Some("candidate 2 generation 2: pending"),
+        "{:?}",
+        performed
+    );
+    let performed = host.acknowledge();
+    assert_eq!(
+        performed,
+        strings(&[
+            "candidate 2 generation 2: prepared",
+            &format!("arm the cut of 2 over [{:?}]", dogstatsd_point()),
+        ])
+    );
+    let performed = host.run_cut(1_700_000_130);
+    assert!(
+        performed.contains(&"candidate 2 generation 2: active".to_string()),
+        "{:?}",
+        performed
+    );
+    let plan = host.active_plan();
+    assert!(plan.node(&id("late_agg")).is_some() && plan.node(&id("dsd_agg")).is_some());
+
+    // Where the frame cannot run it, the candidate is refused as unplaceable, and the running generation stays.
+    let mut host = Host::new();
+    let performed = host.deliver(1, second_aggregation("late_agg", "metrics.out", "metrics_fanout.in"));
+    assert_eq!(performed.len(), 1, "{:?}", performed);
+    assert!(
+        performed[0].starts_with("candidate 2: rejected (") && performed[0].contains("node `late_agg`"),
+        "{:?}",
+        performed
+    );
+    assert_eq!(host.core.status().live, vec![GenerationId::new(1)]);
+    assert!(host.arming.is_none());
 }
 
 #[test]
 fn the_one_aggregation_fed_by_the_otlp_input_has_no_isolation_slot_in_the_boot_frame() {
     // OTLP's records reach the enrichment region, whose region has no exit to an isolation slot: the one aggregation
-    // cannot be fed by them, whether it is fed by them as well or moved to their path. A second aggregation there is
-    // the validation rule's (above).
+    // cannot be fed by them, whether it is fed by them as well or moved to their path, nor can a second one (above).
 
     // The one aggregation fed by OTLP too, through a merge ahead of it.
     let merged = composed(edited(|document| {
@@ -1264,7 +1117,7 @@ fn the_one_aggregation_fed_by_the_otlp_input_has_no_isolation_slot_in_the_boot_f
     assert_eq!(
         outcome(merged),
         "unplaceable [FrameChanges]: The candidate plan cannot run in the physical structure built at boot: node \
-         `policy/agg_in`: it joins records from the regions `dsd_no_agg_split_region`, `metrics_enrich`, and no one of \
+         `agg_in`: it joins records from the regions `dsd_no_agg_split_region`, `metrics_enrich`, and no one of \
          them receives from all the others: connecting regions in a new way requires stage 10 frame changes: the \
          physical structure is built from the default program at boot, so a restart does not add it."
     );

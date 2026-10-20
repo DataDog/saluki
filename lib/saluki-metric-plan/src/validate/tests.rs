@@ -375,15 +375,6 @@ fn structure_rules() {
             ),
             vec![(UniqueSources, "node `src2`")],
         ),
-        (
-            "policy-namespace nodes are valid",
-            plan(
-                vec![otlp("src"), a("policy/t", "tee", json!({"ports": 1})), emit("e", "a")],
-                &["src.metrics -> policy/t.in", "policy/t.0 -> e.in"],
-                &["a"],
-            ),
-            vec![],
-        ),
     ];
     for (name, value, expected) in cases {
         assert_findings(name, &validate(&value), &expected);
@@ -1408,103 +1399,31 @@ fn state_rules() {
 }
 
 #[test]
-fn a_host_that_runs_one_aggregation_per_program_rejects_every_other_one_at_its_node() {
-    use Rule::*;
-
-    let registry = crate::operators::OperatorRegistry::native();
-    // Three state owners fed by one source, each delivering to its own output. (Which one is the first when an artifact
-    // adds one beside the default program's is the reserved ID's: `install::unified_scope_tests`.)
-    let three_owners = |_: bool| {
-        let first = aggregate("agg_1");
-        plan(
-            vec![
-                otlp("src"),
-                tee("t", 3),
-                first,
-                aggregate("agg_2"),
-                aggregate("agg_3"),
-                emit("e1", "a"),
-                emit("e2", "b"),
-                emit("e3", "shared_1"),
-            ],
-            &[
-                "src.metrics -> t.in",
-                "t.0 -> agg_1.in",
-                "t.1 -> agg_2.in",
-                "t.2 -> agg_3.in",
-                "agg_1.out -> e1.in",
-                "agg_2.out -> e2.in",
-                "agg_3.out -> e3.in",
-            ],
-            &["a", "b", "shared_1"],
-        )
-    };
-    let validate_with = |value: &Value, catalog: &MemoryCatalog| {
-        Validator::new(&registry, catalog).validate(&Plan::from_value(value.clone()).unwrap())
-    };
-    let single = test_catalog().with_single_aggregation();
-
-    // Without the restriction, any number of state owners is valid, as placement decides where each runs.
-    let unrestricted = validate_with(&three_owners(false), &test_catalog());
-    assert!(
-        !unrestricted
-            .findings()
-            .iter()
-            .any(|finding| finding.rule == SingleAggregation),
-        "{}",
-        unrestricted
+fn a_program_may_have_any_number_of_aggregations() {
+    // Three state owners fed by one source, each delivering to its own output: placement decides where each runs.
+    let three_owners = plan(
+        vec![
+            otlp("src"),
+            tee("t", 3),
+            aggregate("agg_1"),
+            aggregate("agg_2"),
+            aggregate("agg_3"),
+            emit("e1", "a"),
+            emit("e2", "b"),
+            emit("e3", "shared_1"),
+        ],
+        &[
+            "src.metrics -> t.in",
+            "t.0 -> agg_1.in",
+            "t.1 -> agg_2.in",
+            "t.2 -> agg_3.in",
+            "agg_1.out -> e1.in",
+            "agg_2.out -> e2.in",
+            "agg_3.out -> e3.in",
+        ],
+        &["a", "b", "shared_1"],
     );
-
-    // With it, every state owner after the first is an error at its node, naming the first.
-    let report = validate_with(&three_owners(false), &single);
-    let found = report
-        .findings()
-        .iter()
-        .filter(|finding| finding.rule == SingleAggregation)
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
-    assert_eq!(
-        found,
-        [
-            "error[single_aggregation] node `agg_2`: a program has at most one aggregation; `agg_2` is a second one \
-             (`agg_1` is the first)",
-            "error[single_aggregation] node `agg_3`: a program has at most one aggregation; `agg_3` is a second one \
-             (`agg_1` is the first)",
-        ]
-    );
-    assert!(!report.is_valid());
-
-    // One state owner, or none, is valid; a state owner whose parameters are invalid is not counted.
-    let one = plan(
-        vec![otlp("src"), aggregate("agg"), emit("e", "a")],
-        &["src.metrics -> agg.in", "agg.out -> e.in"],
-        &["a"],
-    );
-    assert_findings("one aggregation", &validate_with(&one, &single), &[]);
-    let mut unconfigured = three_owners(false);
-    for node in unconfigured["nodes"].as_array_mut().unwrap() {
-        if node["id"] == "agg_2" || node["id"] == "agg_3" {
-            node["params"] = json!({});
-        }
-    }
-    let report = validate_with(&unconfigured, &single);
-    assert!(
-        !report
-            .findings()
-            .iter()
-            .any(|finding| finding.rule == SingleAggregation),
-        "{}",
-        report
-    );
-
-    // The catalog's document says so, and reads back; a catalog that does not leaves the member out.
-    let document = serde_json::to_value(&single).unwrap();
-    assert_eq!(document["single_aggregation"], json!(true));
-    assert_eq!(serde_json::from_value::<MemoryCatalog>(document).unwrap(), single);
-    assert!(serde_json::to_value(test_catalog())
-        .unwrap()
-        .get("single_aggregation")
-        .is_none());
+    assert_findings("three aggregations", &validate(&three_owners), &[]);
 }
 
 #[test]

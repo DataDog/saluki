@@ -132,10 +132,7 @@ use snafu::Snafu;
 use super::{resolve, Role};
 use crate::{
     canonical::PlanHash,
-    ir::{
-        HostId, Namespace, NativeComponentId, NodeId, OperatorName, OutputDecl, OutputId, Params, Plan, PortName,
-        PortRef,
-    },
+    ir::{HostId, NativeComponentId, NodeId, OperatorName, OutputDecl, OutputId, Params, Plan, PortName, PortRef},
     operators::{decision_cost, names, Boundary, OperatorRegistry, SourceBinding, StateContract, METRICS_PORT},
     validate::graph::{emit_output, Graph},
 };
@@ -1514,12 +1511,9 @@ fn too_large(what: &'static str) -> FrameError {
     }
 }
 
-/// Returns the component name of a fixed node: its local ID, prefixed with `policy_` in the policy namespace.
+/// Returns the component name of a fixed node: its ID.
 fn component_name(node: &NodeId) -> String {
-    match node.namespace() {
-        Namespace::Reserved => node.local().to_string(),
-        Namespace::Policy => format!("policy_{}", node.local()),
-    }
+    node.local().to_string()
 }
 
 /// Rejects nodes that no region runs in this stage.

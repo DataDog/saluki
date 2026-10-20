@@ -55,7 +55,7 @@ use crate::{
         RecipientName,
     },
     normalize::{normalize_artifact, normalize_params, normalize_plan},
-    operators::{names, OperatorRegistry, StateContract},
+    operators::{names, OperatorRegistry},
     validate::{Catalog, ValidationReport, Validator},
 };
 
@@ -70,9 +70,8 @@ pub struct Elaborated {
     /// rejected.
     pub report: ValidationReport,
 
-    /// Which plan node each artifact node became: its reserved ID, the policy namespace, or the default program's one
-    /// aggregation's ID (amendment 182). A node elaboration adds, such as the nodes of a partly available `emit`, has
-    /// none. Empty for the default program.
+    /// Which plan node each artifact node became: the node of its ID, since a node's ID is its name. A node elaboration
+    /// adds, such as the nodes of a partly available `emit`, has none. Empty for the default program.
     pub ids: BTreeMap<ArtifactNodeId, NodeId>,
 
     /// Which literal of the core plan came from which binding: an annotation explain prints, not part of the hash.
@@ -178,11 +177,8 @@ pub fn elaborate_default(lowered: &Plan, catalog: &dyn Catalog, registry: &Opera
 ///
 /// 1. The artifact is put in [normal form](crate::normalize), as native lowering writes the default program, and its
 ///    blob references are replaced with their content.
-/// 2. Each artifact node's plan ID is the reserved ID of the default program's non-source node with the same local ID,
-///    or its local ID in the policy namespace; where the catalog runs at most one aggregation per program
-///    ([`Catalog::single_aggregation`]), the artifact's one state owner takes the reserved ID of the default program's
-///    one state owner, whatever the artifact calls it (amendment 182, until V10). A local ID equal to a source node's
-///    is refused ([`ComposeError::ReservedSource`]).
+/// 2. Each artifact node's plan ID is its name, the artifact's ID for it. A name equal to a source node's is refused
+///    ([`ComposeError::ReservedSource`]). A renamed node is another node: a renamed aggregation starts a new lineage.
 /// 3. An edge from `input.<name>` leaves the port of the source whose `binding` is `<name>` ([`sources`]); a name no
 ///    source has is refused ([`ComposeError::UnknownSource`]).
 /// 4. An `emit` to recipients is addressed to the output with exactly their recipients; an `emit` to an output must
@@ -226,11 +222,7 @@ pub fn elaborate(
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let aggregation = catalog
-        .single_aggregation()
-        .then(|| the_aggregation(default_plan, artifact, &inlined, &program, catalog, registry))
-        .flatten();
-    let ids = node_ids(default_plan, artifact, &program, aggregation)?;
+    let ids = node_ids(default_plan, artifact, &program)?;
     let mut edges = artifact
         .edges
         .iter()
@@ -646,7 +638,7 @@ fn partial_emit(id: &NodeId, output: OutputId, taken: &mut BTreeSet<NodeId>) -> 
                 format!("{}{}_{}", base, suffix, attempt)
             };
             let node = LocalId::new(candidate)
-                .map(NodeId::policy)
+                .map(NodeId::new)
                 .expect("a derived local ID is an identifier");
             if taken.insert(node.clone()) {
                 return node;
@@ -671,78 +663,24 @@ fn partial_emit(id: &NodeId, output: OutputId, taken: &mut BTreeSet<NodeId>) -> 
     (delivered, dropped)
 }
 
-/// Returns the artifact's one state owner and the reserved ID it takes, for a host that runs at most one aggregation
-/// per program: when the artifact has exactly one state owner, the default program has exactly one among `program`, its
-/// non-source nodes, and no artifact node has that one's local ID, the artifact's state owner is the default program's,
-/// whatever it is called.
-///
-/// So a program's one aggregation keeps the default program's ID (`dsd_agg`, say), and with it its lineage, its
-/// isolation slot's series, and its telemetry, when an author renames it or writes the program from scratch. Whether
-/// its state is kept is then decided as for any node with that ID: by its operation and its lineage parameters.
-///
-/// A node whose operator does not configure, with its bindings resolved from the catalog, is not counted: validation
-/// reports it.
-fn the_aggregation<'a>(
-    default_plan: &Plan, artifact: &'a PolicyArtifact, inlined: &[Params], program: &BTreeSet<NodeId>,
-    catalog: &dyn Catalog, registry: &OperatorRegistry,
-) -> Option<(&'a ArtifactNodeId, NodeId)> {
-    let owns_state = |op: &OperatorName, params: &Params| {
-        registry
-            .configure(op.as_str(), params)
-            .is_ok_and(|configured| matches!(configured.contract().state, StateContract::Keyed(_)))
-    };
-    let region_owners = default_plan
-        .nodes
-        .iter()
-        .filter(|node| program.contains(&node.id) && owns_state(&node.op, &node.params))
-        .collect::<Vec<_>>();
-    let artifact_owners = artifact
-        .nodes
-        .iter()
-        .zip(inlined)
-        .filter(|(node, params)| {
-            resolve_bindings((*params).clone(), catalog, &node.id).is_ok_and(|params| owns_state(&node.op, &params))
-        })
-        .collect::<Vec<_>>();
-    let ([region_owner], [(artifact_owner, _)]) = (&region_owners[..], &artifact_owners[..]) else {
-        return None;
-    };
-    let taken = artifact
-        .nodes
-        .iter()
-        .any(|node| node.id.as_str() == region_owner.id.local().as_str());
-    (!taken).then(|| (&artifact_owner.id, region_owner.id.clone()))
-}
-
-/// Assigns every artifact node its plan ID: the reserved ID of a node of `program`, the default program's non-source
-/// nodes, with the same local ID, or its local ID in the policy namespace. `aggregation`, if given, is the artifact's
-/// one state owner and the reserved ID it takes instead ([`the_aggregation`]).
+/// Assigns every artifact node its plan ID: its name. `program` is the default program's non-source nodes; any other
+/// node of the default program is a source, whose ID no artifact node may take.
 ///
 /// # Errors
 ///
 /// Returns an error if two artifact nodes have the same ID, or one has the ID of one of the default program's sources.
 fn node_ids<'a>(
     default_plan: &Plan, artifact: &'a PolicyArtifact, program: &BTreeSet<NodeId>,
-    aggregation: Option<(&'a ArtifactNodeId, NodeId)>,
 ) -> Result<BTreeMap<&'a ArtifactNodeId, NodeId>, ComposeError> {
     let mut ids = BTreeMap::new();
     for node in &artifact.nodes {
-        let reserved = NodeId::reserved(node.id.to_local_id());
-        // A source's ID is refused even for the adopted aggregation, whose plan ID would not collide: the artifact's
-        // ID names the source, whatever plan ID the node takes.
-        if !program.contains(&reserved) && default_plan.node(&reserved).is_some() {
+        let id = NodeId::new(node.id.to_local_id());
+        if !program.contains(&id) && default_plan.node(&id).is_some() {
             return Err(ComposeError::ReservedSource {
                 node: node.id.clone(),
-                reserved,
+                reserved: id,
             });
         }
-        let id = if let Some((_, id)) = aggregation.as_ref().filter(|(owner, _)| **owner == node.id) {
-            id.clone()
-        } else if program.contains(&reserved) {
-            reserved
-        } else {
-            NodeId::policy(node.id.to_local_id())
-        };
         if ids.insert(&node.id, id).is_some() {
             return Err(ComposeError::Malformed {
                 message: format!("more than one node has the ID `{}`; give each node its own ID", node.id),

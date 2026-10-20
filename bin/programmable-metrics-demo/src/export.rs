@@ -347,11 +347,6 @@ fn known_catalog_members(catalog: Value, labels: &mut BTreeMap<OutputId, String>
                     .collect();
                 kept.insert(member, Value::Object(entries));
             }
-            // Whether ADP runs at most one aggregation per program, which validation then checks, and whether a
-            // published program may bind only facts and signals, which composition then checks.
-            ("single_aggregation", value) | ("detached_programs", value) => {
-                kept.insert(member, value);
-            }
             // The nodes ADP reads series from by name, which validation warns about a program lacking: a contract a
             // newer ADP writes that does not read is left out, losing only the warnings.
             ("telemetry_contract", value) if serde_json::from_value::<TelemetryContract>(value.clone()).is_ok() => {
@@ -405,8 +400,9 @@ pub(crate) mod tests {
 
     #[test]
     fn the_demo_export_reads_with_its_catalog_and_labels() {
+        // The fixture is an older ADP's, whose catalog still says it runs one aggregation per program: the member is
+        // left out.
         let export = demo_export();
-        assert!(export.catalog.single_aggregation());
         assert_eq!(
             export.ir_versions,
             Some(IrVersions {

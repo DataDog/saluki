@@ -196,8 +196,6 @@ rules! {
     DuplicateContribution => "duplicate_contribution", Error;
     /// The duplicate analysis completes within its work limit.
     DuplicateAnalysisLimit => "duplicate_analysis_limit", Error;
-    /// A plan has at most one state owner, one aggregation, if the host runs at most one per program.
-    SingleAggregation => "single_aggregation", Error;
     /// A plan's state owners use at most one bucket width above 60 seconds, so that its widths line up at least every
     /// max(60 s, largest width).
     WidthsAboveSixty => "widths_above_sixty", Error;

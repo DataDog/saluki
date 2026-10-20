@@ -188,7 +188,6 @@ const CATALOG_MEMBERS: &[&str] = &[
     "outputs",
     "bindings",
     "state_budget",
-    "single_aggregation",
     "telemetry_contract",
     "recipients",
 ];
@@ -281,8 +280,8 @@ fn known_catalog_members(catalog: Value, labels: &mut BTreeMap<OutputId, String>
 /// Exports a lowered plan, the default program, as an artifact, with the host's catalog and output labels.
 ///
 /// `plan` is the default program as lowered, with its bindings resolved; the export strips the resolved values, and
-/// writes reserved node IDs as the artifact's local IDs, so that composing the unmodified
-/// export back reproduces the default program. The catalog and labels are carried as given; the bundle has no
+/// writes each node's ID as the artifact's, so that composing the unmodified export back reproduces the default
+/// program. The catalog and labels are carried as given; the bundle has no
 /// annotations, which the host adds if it has any ([`ExportBundle::annotations`]).
 ///
 /// # Errors
@@ -335,7 +334,7 @@ pub fn export_as(
     };
     if let Some(plan) = &eliminated {
         for node in &mut nodes {
-            let id = NodeId::reserved(node.id.to_local_id());
+            let id = NodeId::new(node.id.to_local_id());
             let Some(lowered) = plan.node(&id) else { continue };
             node.params = normalize_params(&node.op, &unresolved(&lowered.params));
             if let Some(to) = recipients_of_output(plan, catalog, &node.params) {

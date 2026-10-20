@@ -38,8 +38,8 @@ ADP's artifact channel and given its headless check in stage 5, and extended in 
 - Policy artifacts arrive through a local development stub of the artifact channel, one program document at a time:
   a whole program over the metrics path after its sources (DogStatsD processing, aggregation, enrichment, and the policy
   region), with one source for each metrics source and no scopes (amendment 197; stage 9's two scopes became one in
-  amendment 168). A snapshot holds one config. A program has at most one aggregation (`single_aggregation`, amendment
-  169, until V10). The privileged API serves the status, export, plan, explain, and default program.
+  amendment 168). A snapshot holds one config. A node's ID is its name, every node reports under it, and a program may
+  have any number of aggregations, placed wherever the boot frame can run them (V10, amendment 199). The privileged API serves the status, export, plan, explain, and default program.
 - Outputs and recipients are resources of hosts fixed at boot (stage 7): one encode host and one delivery host per
   fixed delivery host, `dd_out`'s, the failover pair (idle until failover is enabled), and the Cluster Agent pair when
   its endpoint resolves at boot. Each output runs as a lease of its encode host and each recipient as an I/O loop of
@@ -63,8 +63,9 @@ ADP's artifact channel and given its headless check in stage 5, and extended in 
   language reference page, recipes, and scenarios use it.
 - **Version 2 is under way** ([version 2 simplifications](programmable-metrics-v2.md)): the premise is now that native
   configuration is a front end and the program is the system, and the machinery of coexistence is being removed step
-  by step. V2 (resources artifacts), V3 (native configuration lowers to literals), V4 (programs are whole), and V5 (one program
-  document) are done; V6 (elaboration as a phase) is next. The plan's
+  by step. V2 (resources artifacts), V3 (native configuration lowers to literals), V4 (programs are whole), V5 (one program
+  document), V6 (elaboration as a phase), and V10 (names and a compatibility analysis) are done; V7a (state owners in
+  any region) is next. The plan's
   [handoff](programmable-metrics-v2.md#handing-off) says how to continue.
 - DogStatsD processing runs on **lanes** (stage 9), tasks inside one component, fixed at boot: `dsd_pre_aggregation`
   runs a producer lane per decoder, each the only stamper of its own admission point; `dsd_agg` runs state lanes, each
@@ -125,9 +126,10 @@ since the repository sets `commit.gpgsign=true`). No CI pipeline has run on the 
 | `06e7301501`, `6973a3e8d8` | V2 | Resources artifacts removed (amendment 192). |
 | `e6599d63f3` | V3 | Native configuration lowers to literals; bindings are facts and signals (amendment 196). |
 | `53cd99b576` | V4, V5 | Programs are whole and a snapshot holds one program document: scopes, `base`, staleness, fingerprints, and splicing removed (amendment 197). |
-| (V6 commit) | V6 | Elaboration as a phase: one pass from the program as written to the core program, which installs, has the one hash, and explain shows (amendment 198). |
+| `9fb3990648` | V6 | Elaboration as a phase: one pass from the program as written to the core program, which installs, has the one hash, and explain shows (amendment 198). |
+| `7b1e126d16`, `64fe645ca9`, (V10 commit) | V10 | Names and a compatibility analysis: operators describe what they report, the telemetry contract as validation warnings and a status section, every node reporting under its name; the node namespace, `single_aggregation`, and the adoption of `dsd_agg` removed (amendment 199). |
 
-**Next.** The [version 2 simplifications](programmable-metrics-v2.md), from V10, come first. Beside them, the stage 9
+**Next.** The [version 2 simplifications](programmable-metrics-v2.md), from V7a, come first. Beside them, the stage 9
 gate on a Linux host with at least 20 homogeneous cores (plan 8.5,
 [Q2](programmable-metrics-stages-7-and-9.md#12-open-questions)): its items 1 to 4, with the per-buffer cost of lanes as
 the risk to watch (plan 8.6), M2's rerun for O4's choice, M4 at P = 8, and the allocator setting measured beside it
@@ -337,9 +339,10 @@ change at a time):
 - **Widen the window**: set `window` of both `dsd_no_agg_split` and `dsd_agg` to the same literal, such as `10s`
   (amendment 83). It installs at a cut, the first shared boundary at least 1 s after arming (`plan_cuts_total`); routing
   in the same program takes effect at that boundary too. **Revoke** reverts both.
-- **Rename the aggregation**: `node dsd_agg = ` to `node agg = `, and the edge into it. It composes to the plan
-  running, which it adopts with no new generation: a program's one aggregation is the aggregation, whatever its name
-  (amendment 182). With a routing change too, it makes a generation and no cut.
+- **Rename the aggregation**: `let dsd_agg = ` to `let agg = `, and its uses. A node's ID is its name, so `agg` is a
+  new lineage: the generation installs at a cut, where `dsd_agg`'s state ends and `agg`'s starts empty. The editor
+  notes that its state will not carry over, and warns (`telemetry_contract`) that the Agent reads the aggregator's
+  series from a node named `dsd_agg`, which the program no longer has (amendment 199).
 - **Add a destination and route a family to it**: under the default program, **Add destination** sends it everything.
   Under a published program its column, and a note beside the editor, read "declared, not addressed"; load the
   default program again (the main `emit` now names it too), or add a branch to your program, `-> to_d`, and define it
@@ -359,8 +362,8 @@ change at a time):
   the recipients that are gone. A destination added again is a new one, on a new port with a new URL: a program
   written for the old URL does not deliver to it until it names the new one.
 - **Guardrails**: a second `-> emit to [...]` branch with the main `emit`'s recipients (`duplicate_contribution`),
-  `emit to [primary, mrf]` (two delivery hosts), a second full `aggregate`, the one aggregation moved after enrichment
-  (refused by placement, which the editor does not run), `histogram_percentiles:
+  `emit to [primary, mrf]` (two delivery hosts), a second full `aggregate` after enrichment and the one aggregation
+  moved there (both refused by placement, which the editor does not run), `histogram_percentiles:
   config("metrics_encoding.histogram.percentiles")` in `dsd_agg` (a policy binding, refused in a published program),
   and `emit to [team_z]` (an unknown recipient, held `pending`). ADP rejects or holds each while the previous generation keeps running. **Revoke** restores the
   default program.
@@ -398,7 +401,7 @@ lane (`plan_lane_misrouted_total` above 0) fails the check.
 | S2 | The recipe: team B's URL out of the main `emit`, and `to_team_b` sending `demo.checkout.*` to it. | The editor says ADP adds implied outputs; ADP adds them (`implied_metrics_policy_0_...` for `[primary, team C]`, `implied_to_team_b_true_...` for team B) and installs; team B receives checkout only; compiled again, the editor composes the plan ADP runs. |
 | S3a, S3b | S2's route widened with `or tag("team") == "platform"`; then, on the default program as loaded, `split(tag("team") == "checkout")` ahead of the `tee`, `true` to team B only. | Team B also receives the platform family; then exclusive routing: checkout reaches team B and neither the primary endpoint nor team C. |
 | S4a to S4c | The failover gateway gains `and name in ["demo.checkout.requests"]`; then `failover_metrics: true` in the file; then `false`. | Nothing mirrored while failover is off; with it on, the failover endpoint receives that family alone, with no new revision (a signal read live); off again, nothing. |
-| S5a to S5f | A duplicate branch to the main `emit`'s recipients; `emit to [primary, mrf]`; a second, full `aggregate`; the aggregation moved after enrichment; a policy binding (the aggregation's percentiles bound to `config("metrics_encoding.histogram.percentiles")`); `emit to [team_z]`. | Rejected, each naming the problem (`duplicate_contribution`; "more than one delivery host"; `single_aggregation`; placement's "runs only in an isolation slot"; "a native policy setting"), and the last held `pending` ("waiting for recipient `team_z`"), while S4's generation keeps running. The editor flags each, but S5d, which needs placement. |
+| S5a to S5f | A duplicate branch to the main `emit`'s recipients; `emit to [primary, mrf]`; a second, full `aggregate` after enrichment; the aggregation moved after enrichment; a policy binding (the aggregation's percentiles bound to `config("metrics_encoding.histogram.percentiles")`); `emit to [team_z]`. | Rejected, each naming the problem (`duplicate_contribution`; "more than one delivery host"; placement's "runs only in an isolation slot" for both; "a native policy setting"), and the last held `pending` ("waiting for recipient `team_z`"), while S4's generation keeps running. The editor flags each, but S5c and S5d, which need placement. |
 | S6 | Revoke (an empty snapshot). | The default program, the boot plan, again; it adopts the running generation only when that one is the default program as written (since amendment 191 the generations before it were built from programs without what does nothing, so S6 makes a generation; the check accepts either). |
 | S8a, S8b | Add destination D under the default program; remove it. | D receives every family, canaries included (dual shipping); removed, its recipient drains and retires, its intake stops, and the others are unchanged. |
 | S9a to S9c | Publish the recipe again; add destination E; route `team:platform` to E. | E is declared (in ADP's directory) and not addressed, and receives nothing, until the program routes to it; then it receives the platform family alone. |
@@ -409,7 +412,7 @@ lane (`plan_lane_misrouted_total` above 0) fails the check.
 | S12b | Canary-only traffic until a state lane is empty for two windows, then probe counters one at a time. | A counter first seen in a state lane that was empty at ticks arrives as one point at its bucket, with no zero before it (fixture X1 end to end); every probe once. |
 | S13a | `window: 30s` on `dsd_no_agg_split` and `dsd_agg` in the default program. | Installs at a cut at a multiple of 30 s; every state lane crosses (`plan_lane_crossings_total{kind:cut}`); the last 10 s bucket and the first 30 s bucket each balance, whole. |
 | S13b | Revoke (an empty snapshot). | The cut back to 10 s, with the same checks. |
-| S14a, S14b | `dsd_agg` renamed `agg`; then renamed with `demo.debug.*` dropped. | The rename does what the plan running does: a generation with no cut (it leaves out what does nothing, which the default program running has; it adopted the running generation before amendment 191); with the routing change, a new generation and still no cut (`plan_cuts_total` unchanged for every outcome), the state lanes counting events under `component_id:dsd_agg`. |
+| S14a, S14b | `dsd_agg` renamed `agg`; then renamed with `demo.debug.*` dropped. | The rename is a new lineage: the editor warns of the telemetry contract (`dsd_agg` is gone), and the generation installs at a cut (`plan_cuts_total{outcome="completed"}` grows), across which the canary check balances; with the routing change, a new generation and no cut (`plan_cuts_total` unchanged for every outcome), the state lanes of the `dsd_agg` slot counting events. Before V10, the rename adopted the running aggregation's ID and made no cut (amendment 182). |
 
 Before this phase, S8 to S11 declared team D with a resources artifact and S14 routed to it on the post-aggregation
 lanes; version 2's step V2 then removed resources artifacts altogether.
@@ -640,11 +643,13 @@ and gives the dependency direction. This section is the orientation that layout 
    point and state lane (since stage 9; one point before it).
 5. The physical frame is fixed at boot. Candidates place into it; anything needing a new slot, edge, output, or host
    component is a capability error (stage 7).
-6. Native component IDs and series survive (slot names, `component_id` tags, accounting paths under the slot); only the
-   fused components' own component series go.
+6. A node reports under its name (its `component_id`, and its accounting path `<slot>.<node>` under the slot); native
+   names survive only in the remapper's table and in the default program's names for the nodes the telemetry contract
+   lists (V10). Slots keep native IDs; only the fused components' own component series go.
 7. Panic budgets cover artifact nodes only. A panic under the default program fails the component, as natively.
 8. Rewrites never increase capacity loss under the interpreter's delivery order, which is the oracle (one pass per
-   trace event, in topological order). Native filters move only whole (R5a, R6); R5b is emission suppression.
+   trace event, in topological order). Filters the telemetry contract names move only whole (R5a, R6); R5b is
+   emission suppression.
 9. Artifacts emit only to outputs they declare; host components never come from artifacts; only composition writes
    provenance; revisions strictly increase (one mark for the one program document).
 10. A region's input holds as many buffers as the queues it replaces and their in-flight buffers did.
@@ -755,7 +760,8 @@ default program has one scope, `metrics`, fed by one input per metrics source th
 `otlp`, `checks`, `liveness`, `trace_sampler`, each declared with the kinds and timestamps its source produces), with
 no exits, in place of `post_enrich` and `dogstatsd_pre_aggregation`; the export route took `?scope=metrics` (removed in V4); one
 artifact changes routing and aggregation together, and an artifact that changes both installs as one change at the
-width change's cut; a program has at most one aggregation (`single_aggregation`, at the second one's node).
+width change's cut; a program has at most one aggregation (`single_aggregation`, at the second one's node; removed in
+V10).
 **Not release-noted:** an artifact of either former scope is rejected as of an unknown scope; a combined artifact's
 routing takes effect from the cut's boundary for every source; the status route's `scopes` has the one entry
 `metrics`; the export's catalog document carries `single_aggregation: true`; an artifact that changes aggregation's
@@ -781,7 +787,7 @@ the default program with its hash, though its artifact document, and so its arti
   runs degraded if it is in effect, until it is republished.
 - An artifact's one aggregation keeps the ID `dsd_agg`, and its `component_id:dsd_agg` series, whatever the artifact
   calls it; its state carries over as for an edit of `dsd_agg`, while its window and other lineage parameters are
-  unchanged.
+  unchanged. (V10 removed this: a renamed aggregation is a new lineage, at a cut.)
 - The demo's editor hides the `base` line and prints ADP's notes as comments, with the recipient directory above the
   policy `tee`, in place of its fixed section comments.
 
@@ -926,6 +932,34 @@ amendment 197):
 - Validation reports on the program as written, with its bindings resolved, so a `split` on a signal that is off is not
   reported as a predicate that can never match. Compilation may fold such a split (R3) once another rewrite has applied.
 
+**Version 2's step V10: names and a compatibility analysis** (`7b1e126d16`, `64fe645ca9`, and the deletions; **not
+release-noted**; amendment 199):
+
+- A node's ID is its name. The `policy/` namespace is gone: a program's nodes keep the names its `let`s give them, and a
+  plan document with a `policy/` node ID is refused ("node IDs have no namespace since version 2 of
+  programmable metrics: a node's ID is its name, written without the `policy/` prefix").
+- Every node reports under its own name, as a transform: a node a program adds reports its component series as
+  `component_id:<name>`, where it reported as `policy_<name>` or not at all, and its kernel is accounted under
+  `<slot>.<name>`, where every added node shared `<slot>.policy`. A tag projection a program adds names its memo
+  `<name>/tag_filterlist/context_cache`; `dsd_tag_filterlist` keeps the native `tag_filterlist/context_cache`.
+- The DogStatsD prefix filter's nodes are renamed: its `split` is `dsd_prefix_filter` (was
+  `dsd_prefix_filter_blocklist`), its drop `dsd_prefix_filter_false`, and the namespace prefix
+  `dsd_prefix_filter_namespace_prefix`, in the default program, its export, explain, status's `program.differs`, and
+  `plan_node_events_total` and `plan_loss_total`. The native series are unchanged.
+- The telemetry contract: the remapper's component-scoped rules that the default program meets, which ADP's catalog
+  carries and its export's catalog document writes (`telemetry_contract`). Validation warns (`telemetry_contract`) about
+  each node of the contract a program lacks or runs as another operator, listing the Agent's series it loses, such as
+  "`aggregator.flush`, ... will be absent: no node is named `dsd_agg`"; the editor shows the warning at the line, and
+  explain with the other findings. The status route gains `telemetry`: for each series of the contract, the node of
+  the active plan that reports it, or why none does.
+- Renaming an aggregation is a new lineage: the generation installs at a cut, where the old aggregation's state ends
+  and the renamed one starts empty (amendment 182's adoption of `dsd_agg` is gone, decided by the owner). The demo's
+  editor says so, and S14 checks the cut.
+- A program may have any number of aggregations: `single_aggregation` is gone, from validation and from the catalog
+  and its document (an older export's `single_aggregation: true` is ignored). A second aggregation places wherever the
+  boot frame can run it, which is the timestamp split's passthrough branch today; elsewhere placement refuses it as
+  needing stage 10 frame changes, as it refuses the one aggregation moved there.
+
 **Telemetry** (all release-noted): the fused components' and gateways' component, health, and task series are gone;
 `metrics_enrich` and `dsd_agg` report sent counts per output instead of `_default`; accounting paths nest under the
 slot; `dsd_agg` no longer counts sent metrics twice, no longer emits what R5b suppresses, and counts one extra flush
@@ -1049,7 +1083,7 @@ the local `--test-threads 4` in the gate (see [Environment notes](#environment-n
 | **R1's cost model** (P9.7) | Kept, off whenever lanes are on (plan 8.5, P9.7). Two decisions, which Z3's reading conflated: (1) the defaults profile's lead of `lanes.mode: off` on two workers (1.081 and 1.050 of legacy in two paired runs against 0.986 and 1.023 on `{1, 1, 1}`; CPU per metric 0.961 and 0.975 against 1.046 and 1.017) is the lane runtime's cost at one lane per slot, since R1 cuts no slot in that profile: as built since the stage 9 review, `auto` runs the layout without lanes wherever every count comes to one; (2) R1's own evidence is the mapper profile, where it places `dsd_prefix_filter_region`: equal at one and two workers (1.003 against 0.994 at W = 2), lanes ahead from four. Amendment 122 and the withdrawal of 47 wait. | (1) Accept `auto`'s layout without lanes at one lane per slot, or revert it with a release note that such hosts run the lane runtime. (2) Run the mapper and gateways profiles at W = 1 to 3 on the gate host, `lanes.mode: off` with and without R1's pipelining; if pipelining does not lead, delete R1 as plan 5.10 lists. |
 | **O4's queue and O5's size** | O4's shared queue is provisional (per-decoder queues measured higher at one and two decoders on macOS); O5's front cache has 4,096 slots per decoder, where 16,384 cost 25 to 30% less per resolution in a paired timing. | Rerun M2 on the gate host before recording O4's choice; size O5 from the hit share at lading's distributions. |
 | **`make check-deny`** | Fails on `RUSTSEC-2024-0449` (`unsafe-libyaml` unmaintained, through `serde_yaml` in `agent-data-plane-config-system`, `datadog-agent-config-overlay-model`, and `antithesis-intake`): the advisory database has it now, and `main`'s `Cargo.lock` at the merge base already holds `unsafe-libyaml` 0.2.11. | An exception in `deny.toml`, or a move off `serde_yaml`. |
-| **One scope, one aggregation** (amendments 168 and 169) | The default program has one scope, `metrics`, over the whole metrics path, and a program at most one aggregation (`single_aggregation`, declared by ADP's catalog). After a width change, every lossy node fed by the timestamp split or aggregation (eight in the fixtures) carries the artifact's provenance, so its loss is attributed to the artifact. Composition puts an artifact's edges in the default program's order. | Accept both, or narrow the scope again; lift the one-aggregation rule once the demo and the operator surfaces handle several. |
+| **One scope, one aggregation** (amendments 168 and 169) | The default program has one scope, `metrics`, over the whole metrics path, and a program at most one aggregation (`single_aggregation`, declared by ADP's catalog). After a width change, every lossy node fed by the timestamp split or aggregation (eight in the fixtures) carries the artifact's provenance, so its loss is attributed to the artifact. Composition puts an artifact's edges in the default program's order. | Accept both, or narrow the scope again. (The one-aggregation rule went in V10, amendment 199; scopes in V4.) |
 | **Programs replace native policy** (decided by the owner on 2026-10-14; amendment 170) | Decided: a published program owns its policy settings as literals and binds only facts and signals; native policy configuration only feeds the default program, which runs when no artifact is published; status says when native policy settings are not applied; machinery for native compatibility stays in lowering. See the [direction](programmable-metrics-next.md#direction-programs-replace-native-policy) and the [design](programmable-metrics-detached-programs.md), built in phases 1 and 2. | Nothing for the decision; the design's open questions were decided (no configuration-declared recipients; no node provenance). |
 | **Detached programs, phase 2** (owner’s decisions of 2026-10-14; amendments 183 to 188) | Committed (`7f9d67a033`): no node provenance (a plan-level `native_components` annotation keeps the boot layout, a deviation), adoption on the unchanged generation ID, implied outputs on `dd_out` for native recipients only (Cluster Agent and declared recipients refused, a deviation), the detached export's base equal to the bound one, and `program` without `partly_applied`. See [phase 2 as built](programmable-metrics-detached-programs.md#106-phase-2-as-built). | Confirm the deviations, and the release notes, which are not written yet. |
 | **Detached programs, phase 3: the demo** (owner’s decisions of 2026-10-14) | Committed (`c9e27cea81`): teams B and C as ordinary additional endpoints, **Add destination** and **Remove** through the standalone reload, no resources artifacts in the demo, the scenarios reworked (S2 is the recipe, S8 to S11 destinations and a native change, S14 the renamed aggregation), and one installer-core fix (a refused revision's acknowledgment is kept, amendment 190); after the review, an `emit` that
@@ -1057,8 +1091,8 @@ loses some of its recipients keeps delivering to the others (amendment 189, deci
 editor validates against stand-ins for the outputs ADP adds. No release note for `experimental.standalone_config_reload`: it changes only standalone mode, which is not for production, and it is documented in the configuration reference. The demo's export fixture stays a bound export, which the export reader's and editor's tests use; the demo's composition tests use a detached export with a directory. See [the demo as built](programmable-metrics-detached-programs.md#85-the-demo-as-built). | Confirm amendment 189, the release-note decision, and the acknowledgment fix. |
 | **What does nothing, left out** (requested by the owner on 2026-10-15; amendment 191; installation as written decided after review) | Committed (`b1be5f7b72`): the detached export leaves out identity nodes and constant splits, by one pass the editor's diff and `program.differs` share, and notes them; the bound default program is unchanged. The installer compares plans as written, so publishing the shorter export over the default program is a generation that builds no kernel and makes no cut, and the plan running is the program as published. Under it the left-out nodes' telemetry is absent: the Agent's `aggregator.filtered_tags_cache_miss` stops counting the tag filterlist memo's lookups (with no rules), the only change the Agent sees; installer-set size gauges read zero. See [what does nothing, as built](programmable-metrics-detached-programs.md#107-what-does-nothing-as-built). | Accept the `aggregator.filtered_tags_cache_miss` change, or keep a tag filterlist with no rules in the export. |
 | **The pipeline syntax's two whitespace rules** (built 2026-10-16) | Statements have no separators, so an operator's arguments must follow its name directly (`op(...)`; after a space, `(` starts a tuple), and an `as` or stream name that could continue a stage starts a statement only at the start of a line. The printer always writes both forms. | Accept, or make line breaks end statements, which would retire both rules for one. |
-| **Normalized filter drops are renamed** (amendment 193) | Normalization moves the two DogStatsD filters' drops from their `true` port to `false`, so the derived terminals are `dsd_prefix_filter_false` and `dsd_post_agg_filter_false`. Native series are unchanged (they report as `dsd_prefix_filter` through the telemetry profiles); the program-mode `plan_node_events_total` and `plan_loss_total` series see the new names. | Accept. |
-| **Names in printed programs** (decided by the owner on 2026-10-16) | Decided: if something needs a specific name, a `let` gives it. `fork` is removed (reuse is the one way to fan out), the printer names nodes with `let` and keeps `as` for sinks with IDs of their own, and native lowering gives the silent nodes it invented the IDs the syntax derives (`metrics_in`, `metrics`, `metrics_fanout`, ...), keeping the IDs whose native telemetry identity matters (`dsd_agg`, `dsd_enrich`, the routing filters and gateways, ...). Native series are unchanged; the telemetry profile table is keyed by the new IDs. | Nothing. |
+| **Normalized filter drops are renamed** (amendment 193) | Normalization moves the two DogStatsD filters' drops from their `true` port to `false`, so the derived terminals are `dsd_prefix_filter_false` and `dsd_post_agg_filter_false`. Native series are unchanged (since V10 the prefix filter's `split` is itself named `dsd_prefix_filter`); the program-mode `plan_node_events_total` and `plan_loss_total` series see the new names. | Accept. |
+| **Names in printed programs** (decided by the owner on 2026-10-16) | Decided: if something needs a specific name, a `let` gives it. `fork` is removed (reuse is the one way to fan out), the printer names nodes with `let` and keeps `as` for sinks with IDs of their own, and native lowering gives the silent nodes it invented the IDs the syntax derives (`metrics_in`, `metrics`, `metrics_fanout`, ...), keeping the IDs whose native telemetry identity matters (`dsd_agg`, `dsd_enrich`, the routing filters and gateways, ...). Native series are unchanged; since V10 the telemetry contract reads them by those IDs. | Nothing. |
 | **The specification's Vale errors** | The specification, which only its author edits, adds 12 errors to `make check-docs`, a CI job (see [Environment notes](#environment-notes)). | Before CI runs: add the 11 flagged words to the Vale vocabulary, and edit or exempt the hyphenated `Exactly-once`. |
 
 ## Spec amendments index
@@ -1169,14 +1203,15 @@ the shutdown row, the expiry row, and the timestamped row.
 
 Totals: kinds C 49, D 26, N 9, L 3; themes STA 20, ART 16, NAT 12, INS 9, IR 8, VER 8, FRM 7, TEL 4, EXE 3.
 
-Amendments 88 to 192 and 195 to 198 are in [the stages 7 and 9 plan's section
+Amendments 88 to 192 and 195 to 199 are in [the stages 7 and 9 plan's section
 10](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments): 88 to 107 from its stage 7 design, 108 to 128
 from its stage 9 design, 129 to 138 from stage 7's parts and integration, 139 and 140 from stage 9's foundations (P9.F),
 141 to 162 from stage 9's parts and integration, 163 to 167 from stage 9's review, 168 and 169 from the one-scope
 change after stage 9, 170 to 182 from the detached-programs design, 183 to 188 from its phase 2, 189 and 190 from its
 phase 3, 191 from leaving out what does nothing, 192 from version 2's step V2, 195 from version 2's design for
-many aggregations, 196 from its step V3, 197 from its steps V4 and V5, and 198 from its step V6. 193 and 194 come from
-the [pipeline syntax](programmable-metrics-pipeline-syntax.md) and are indexed below only. The next is 199.
+many aggregations, 196 from its step V3, 197 from its steps V4 and V5, 198 from its step V6, and 199 from its step
+V10. 193 and 194 come from the [pipeline syntax](programmable-metrics-pipeline-syntax.md) and are indexed below only.
+The next is 200.
 Stage 7's:
 
 | # | Short title | Theme | Kind | Owner |
@@ -1272,7 +1307,7 @@ After stage 9, the one-scope change:
 | # | Short title | Theme | Kind | Owner |
 |---|---|---|---|---|
 | 168 | One scope over the whole metrics path | ART | D | yes: accept one scope, and its loss attribution after a width change |
-| 169 | At most one aggregation per program | IR | D | yes: accept the restriction for now |
+| 169 | At most one aggregation per program (withdrawn by 199) | IR | D | yes: accept the restriction for now |
 
 After stage 9, detached programs ([design](programmable-metrics-detached-programs.md); built in phases 1 and 2 but 177,
 which was dropped):
@@ -1291,7 +1326,7 @@ which was dropped):
 | 179 | Outputs for recipient sets | EXE | D | no |
 | 180 | Recipients are available apart from failover requests | NAT | D | no |
 | 181 | Published programs bind only facts and signals | IR | D | no |
-| 182 | One aggregation is the aggregation | STA | D | no |
+| 182 | One aggregation is the aggregation (its adoption withdrawn by 199) | STA | D | no |
 
 After detached programs, phase 2 (built, not committed):
 
@@ -1343,6 +1378,12 @@ After version 2's step V6 (built, not committed):
 | # | Short title | Theme | Kind | Owner |
 |---|---|---|---|---|
 | 198 | Elaboration: one pass to the core program, which installs, with one hash; a binding and its value are one parameter | IR | D | version 2, decided by the owner (2026-10-19, V4 to V6 plan question 8) |
+
+After version 2's step V10 (built, not committed):
+
+| # | Short title | Theme | Kind | Owner |
+|---|---|---|---|---|
+| 199 | Identity by name, compatibility as an analysis: no node namespace, every node reports under its name, the telemetry contract as warnings, any number of aggregations, a renamed state owner is a new lineage | TEL | D | version 2, decided by the owner (2026-10-19: accept the rename cut) |
 
 Wording proposed for adoption: amendment 49 ("under the reference interpreter's delivery order"), 51 ("a maximal
 group of `split` and `tee` operators joined directly by edges within one region"), and 52 ("operator parameters,

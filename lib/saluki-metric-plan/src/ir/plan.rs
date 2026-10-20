@@ -604,7 +604,7 @@ mod tests {
                  "params": {"predicate": {"intake_name": {"matches": {
                     "values": {"config": "dogstatsd.metric_filter.values"},
                     "prefix": {"config": "dogstatsd.metric_filter.match_prefix"}}}}}},
-                {"id": "policy/drop_debug", "op": "drop"}
+                {"id": "drop_debug", "op": "drop"}
             ],
             "edges": [{"from": "dsd_in.metrics", "to": "dsd_enrich.in"}],
             "outputs": [{"id": "dd_metrics_encode", "accepts": {"kinds": "all", "timestamps": "mixed"},
@@ -643,16 +643,16 @@ mod tests {
         assert_eq!(
             provenance
                 .native_components
-                .get(&NodeId::reserved(LocalId::new("dsd_in").unwrap())),
+                .get(&NodeId::new(LocalId::new("dsd_in").unwrap())),
             Some(&NativeComponentId::new("dsd_in").unwrap())
         );
-        assert!(!plan.nodes[2].id.is_reserved());
+        assert_eq!(plan.nodes[2].id.to_string(), "drop_debug");
         assert_eq!(plan.edges[0].from.to_string(), "dsd_in.metrics");
         let output = plan.output(&OutputId::new("dd_metrics_encode").unwrap()).unwrap();
         assert_eq!(output.accepts.kinds, KindSet::ALL);
         assert_eq!(output.accepts.timestamps, TimestampForm::Mixed);
         assert_eq!(output.delivery, DeliveryPolicy::Native);
-        assert!(plan.node(&NodeId::reserved(LocalId::new("dsd_in").unwrap())).is_some());
+        assert!(plan.node(&NodeId::new(LocalId::new("dsd_in").unwrap())).is_some());
 
         // Serialization writes the normalized form, which leaves out the default delivery policy.
         let mut normalized = value.clone();

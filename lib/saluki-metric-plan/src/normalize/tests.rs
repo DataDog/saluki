@@ -303,9 +303,9 @@ fn split_plan(predicate: Value, on_true: (&str, &str), on_false: (&str, &str)) -
             terminal(on_false),
         ],
         &[
-            "dsd.metrics -> policy/s.in",
-            &format!("policy/s.true -> policy/{}.in", on_true.0),
-            &format!("policy/s.false -> policy/{}.in", on_false.0),
+            "dsd.metrics -> a_s.in",
+            &format!("a_s.true -> a_{}.in", on_true.0),
+            &format!("a_s.false -> a_{}.in", on_false.0),
         ],
         &["o0"],
     )
@@ -320,16 +320,16 @@ fn a_split_that_drops_its_true_port_is_turned_and_its_derived_terminals_renamed(
     );
     let normal = normalize_plan(&plan);
     assert_eq!(
-        normal.node(&"policy/s".parse().unwrap()).unwrap().params,
+        normal.node(&"a_s".parse().unwrap()).unwrap().params,
         params(json!({"predicate": {"not": {"name": {"eq": "a"}}}}))
     );
     // The edges keep their order and swap ports, and the drop and the emit trade derived IDs.
     assert_eq!(
         edges_of(&normal),
         [
-            "dsd.metrics -> policy/s.in",
-            "policy/s.false -> policy/s_false.in",
-            "policy/s.true -> policy/s_true.in",
+            "dsd.metrics -> a_s.in",
+            "a_s.false -> a_s_false.in",
+            "a_s.true -> a_s_true.in",
         ]
     );
     let ops = normal
@@ -341,9 +341,9 @@ fn a_split_that_drops_its_true_port_is_turned_and_its_derived_terminals_renamed(
         ops,
         [
             ("dsd".to_string(), "source".to_string()),
-            ("policy/s".to_string(), "split".to_string()),
-            ("policy/s_false".to_string(), "drop".to_string()),
-            ("policy/s_true".to_string(), "emit".to_string()),
+            ("a_s".to_string(), "split".to_string()),
+            ("a_s_false".to_string(), "drop".to_string()),
+            ("a_s_true".to_string(), "emit".to_string()),
         ]
     );
     Case::of(normal.clone(), Vec::new()).expect("the normal form validates");
@@ -359,15 +359,15 @@ fn turning_a_split_removes_a_double_negation_and_keeps_names_that_are_not_derive
     );
     let normal = normalize_plan(&plan);
     assert_eq!(
-        normal.node(&"policy/s".parse().unwrap()).unwrap().params,
+        normal.node(&"a_s".parse().unwrap()).unwrap().params,
         params(json!({"predicate": {"has_tag": "debug"}}))
     );
     assert_eq!(
         edges_of(&normal),
         [
-            "dsd.metrics -> policy/s.in",
-            "policy/s.false -> policy/debug_drop.in",
-            "policy/s.true -> policy/kept.in",
+            "dsd.metrics -> a_s.in",
+            "a_s.false -> a_debug_drop.in",
+            "a_s.true -> a_kept.in",
         ]
     );
     assert_eq!(harness::ids(&normal), harness::ids(&plan));
@@ -378,10 +378,7 @@ fn turning_a_split_removes_a_double_negation_and_keeps_names_that_are_not_derive
         ("s_true", names::DROP),
         ("kept", names::EMIT),
     ));
-    assert_eq!(
-        harness::ids(&normal),
-        ["dsd", "policy/s", "policy/s_false", "policy/kept"]
-    );
+    assert_eq!(harness::ids(&normal), ["dsd", "a_s", "a_s_false", "a_kept"]);
 }
 
 #[test]
@@ -401,10 +398,10 @@ fn a_rename_that_would_take_another_nodes_id_is_not_made() {
             harness::emit("out", "o0"),
         ],
         &[
-            "dsd.metrics -> policy/s.in",
-            "policy/s.true -> policy/s_true.in",
-            "policy/s.false -> policy/s_false.in",
-            "policy/s_false.out -> policy/out.in",
+            "dsd.metrics -> a_s.in",
+            "a_s.true -> a_s_true.in",
+            "a_s.false -> a_s_false.in",
+            "a_s_false.out -> a_out.in",
         ],
         &["o0"],
     );
@@ -412,10 +409,7 @@ fn a_rename_that_would_take_another_nodes_id_is_not_made() {
     assert_eq!(harness::ids(&normal), harness::ids(&plan));
     assert_eq!(
         edges_of(&normal)[1..3],
-        [
-            "policy/s.false -> policy/s_true.in",
-            "policy/s.true -> policy/s_false.in"
-        ]
+        ["a_s.false -> a_s_true.in", "a_s.true -> a_s_false.in"]
     );
     Case::of(normal.clone(), Vec::new()).expect("the normal form validates");
     assert_eq!(normalize_plan(&normal), normal);
@@ -723,21 +717,21 @@ fn complementary_filters_stay_complementary_when_one_is_turned() {
                 harness::emit("out", "o0"),
             ],
             &[
-                "dsd.metrics -> policy/t.in",
-                "policy/t.0 -> policy/a.in",
-                "policy/t.1 -> policy/b.in",
-                "policy/a.true -> policy/m.0",
-                "policy/a.false -> policy/a_false.in",
-                "policy/b.true -> policy/b_true.in",
-                "policy/b.false -> policy/m.1",
-                "policy/m.out -> policy/out.in",
+                "dsd.metrics -> a_t.in",
+                "a_t.0 -> a_a.in",
+                "a_t.1 -> a_b.in",
+                "a_a.true -> a_m.0",
+                "a_a.false -> a_a_false.in",
+                "a_b.true -> a_b_true.in",
+                "a_b.false -> a_m.1",
+                "a_m.out -> a_out.in",
             ],
             &["o0"],
         );
         Case::of(plan.clone(), Vec::new()).unwrap_or_else(|error| panic!("{}: {}", predicate, error));
         let normal = normalize_plan(&plan);
         assert!(
-            harness::ids(&normal).contains(&"policy/b_false".to_string()),
+            harness::ids(&normal).contains(&"a_b_false".to_string()),
             "{}",
             predicate
         );

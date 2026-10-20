@@ -350,15 +350,15 @@ fn dropping(default: &Plan, name: &str, revision: u64, hash: PlanHash) -> Plan {
         .iter_mut()
         .find(|edge| edge["to"] == "metrics_fanout_0.in")
         .expect("the main output is emitted by the policy tee");
-    main["to"] = json!("policy/drop.in");
-    edges.push(json!({"from": "policy/drop.true", "to": "policy/drop_true.in"}));
-    edges.push(json!({"from": "policy/drop.false", "to": "metrics_fanout_0.in"}));
+    main["to"] = json!("drop.in");
+    edges.push(json!({"from": "drop.true", "to": "drop_true.in"}));
+    edges.push(json!({"from": "drop.false", "to": "metrics_fanout_0.in"}));
     let nodes = value["nodes"].as_array_mut().unwrap();
     nodes.push(json!({
-        "id": "policy/drop", "op": "split",
+        "id": "drop", "op": "split",
         "params": {"predicate": {"intake_name": {"matches": {"prefix": false, "values": [name]}}}}
     }));
-    nodes.push(json!({"id": "policy/drop_true", "op": "drop"}));
+    nodes.push(json!({"id": "drop_true", "op": "drop"}));
     Plan::from_value(value).expect("the artifact's plan is a plan")
 }
 
@@ -719,7 +719,7 @@ async fn an_artifact_installs_and_its_revocation_restores_the_default_program_at
         .graph
         .nodes
         .iter()
-        .any(|node| node.id.to_string() == "policy/drop"));
+        .any(|node| node.id.to_string() == "drop"));
 
     // What the installer reports through the channel is its status summary: generation 2 is active.
     let transport = harness.transport.as_ref().unwrap();
@@ -789,14 +789,14 @@ async fn a_failed_artifact_rolls_back_to_last_known_good_and_a_stale_revision_is
     // with one schedule store, and the next batch runs the default program again.
     harness.fail(
         2,
-        "it exceeded its panic budget, with 4 panics, the last in node `policy/drop`",
+        "it exceeded its panic budget, with 4 panics, the last in node `drop`",
     );
     let rolled_back = harness.status_where(|status| active(status) == Some(1)).await;
     assert_eq!(
         record(&rolled_back, 2),
         Some((
             GenerationState::Failed,
-            Some("it exceeded its panic budget, with 4 panics, the last in node `policy/drop`".to_string())
+            Some("it exceeded its panic budget, with 4 panics, the last in node `drop`".to_string())
         ))
     );
     assert!(matches!(
@@ -1418,11 +1418,7 @@ async fn an_exported_artifact_installs_follows_configuration_and_rolls_back_thro
     );
     assert_eq!(active_revision(&recomposed), Some(2));
     let plan = serde_json::to_string(&*recomposed.active.as_ref().unwrap().plan).unwrap();
-    assert!(
-        !plan.contains("\"blocked\"") && plan.contains("policy/drop"),
-        "{}",
-        plan
-    );
+    assert!(!plan.contains("\"blocked\"") && plan.contains("drop"), "{}", plan);
     let program = recomposed.apply_states.status.program.as_ref().unwrap();
     assert_eq!(
         (program.runs, program.native_policy),
@@ -1634,7 +1630,7 @@ async fn the_shorter_detached_export_over_the_default_program_builds_no_kernel_a
     let running = installed.active.as_ref().unwrap();
     for node in bundle.omitted.keys() {
         assert!(
-            running.plan.node(&NodeId::reserved(node.to_local_id())).is_none(),
+            running.plan.node(&NodeId::new(node.to_local_id())).is_none(),
             "{} runs",
             node
         );

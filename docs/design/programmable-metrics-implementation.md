@@ -939,7 +939,8 @@ A plan is a DAG serialized as JSON (`deny_unknown_fields`). The schema is genera
   `^[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}$` (no trailing or doubled underscores), serialized as `local` or
   `policy/local`. Reserved IDs derive from native component IDs. Identity strings for telemetry use the serialized
   form; accounting groups exist only for reserved nodes, and all policy-namespace nodes of a slot share one `policy`
-  group.
+  group. (Version 2's step V10 removed the namespace: a node's ID is its name, which it reports and is accounted
+  under; amendment 199.)
 - **Ports** come from the operator and its parameters (`tee` has `ports: n`, `split` has `true`/`false`, `merge` has
   `inputs: n`). Every input and output port has exactly one edge; fan-in exists only through `merge`. Inline terminal
   IDs come from one function, `derived_terminal_id(parent, port)`, shared by lowering and the syntax.
@@ -1892,8 +1893,9 @@ later stages use (`AdpCatalog::to_document`, `NativeOutputs::routing_groups`) st
   (amendment 13). A fingerprint is the digest of `{"encoder": .., "forwarder": .., "recipients": [..]}`, where the
   encoder part names the encoder variant and its endpoint routing (`all_except`, `only`, the failover override, or
   `v2_series_only`); encoder tuning is not part of it.
-- `telemetry_profiles.rs` maps (reserved node ID, operator) to `NativeTelemetry { component_id, component_type,
-  profile }`, outside the IR; `{i}` patterns cover routing groups. Profiles list the native metrics a node keeps
+- (Version 2's step V10 replaced telemetry profiles with operators' reports, ADP's roles by name, and the telemetry
+  contract; amendment 199.) `telemetry_profiles.rs` maps (reserved node ID, operator) to `NativeTelemetry {
+  component_id, component_type, profile }`, outside the IR; `{i}` patterns cover routing groups. Profiles list the native metrics a node keeps
   (`ListenerFilterlist`, `TimestampSplit`, `TagFilterlist`, `PostAggregateFilter`, `EndpointAllowlist`), or are `Host`
   (the component reports its own, for sources and aggregation), `Mapper` (caches named after the component), or
   `Silent`. The gateways are listed in their stage 4 form only, a `split` with a `_true` emit (the encoder's identity)

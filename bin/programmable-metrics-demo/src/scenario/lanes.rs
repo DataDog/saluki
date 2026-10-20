@@ -22,12 +22,13 @@
 //!   after it balance, each bucket whole at its start.
 //! - **S13b**: revoking the artifact brings 10-second buckets back at the next cut, with the same checks. A revoke
 //!   undoes everything the artifact changed, routing included, so the routing steps come after it.
-//! - **S14a**: the default program with its aggregation renamed `agg`: a program's one aggregation is the aggregation
-//!   whatever its name, so it does what the plan running does. It leaves out what does nothing as configured, which
-//!   the default program running has, so it is a new generation, which builds no kernel and makes no cut.
+//! - **S14a**: the default program with its aggregation renamed `agg`. A node's ID is its name, so `agg` is a new
+//!   lineage: the generation installs at a cut (`plan_cuts_total{outcome="completed"}`), where `dsd_agg`'s lineage
+//!   ends and `agg`'s starts, and the canary check balances across it, as across any cut. The editor warns that the
+//!   host's telemetry contract reads the aggregator's series from a node named `dsd_agg`, which the program lacks.
 //! - **S14b**: the renamed aggregation with `demo.debug.*` dropped ahead of the policy: a new generation, which keeps
-//!   the aggregation's state on every state lane: no cut is armed, completed, or given up
-//!   (`plan_cuts_total`), and the state lanes go on counting events under `component_id:dsd_agg`.
+//!   `agg`'s state on every state lane: no cut is armed, completed, or given up (`plan_cuts_total`), and the state
+//!   lanes of the slot `dsd_agg` go on counting events.
 //!
 //! The second launch's counters expire one second after their last update (`dogstatsd_expiry_seconds: 1`), rather
 //! than never, as the first launch's do (`0`): an aggregation keeps a counter without expiry forever, so a state lane
@@ -255,24 +256,42 @@ impl Runner {
         self.whole_run_canary().await
     }
 
-    /// S14a and S14b: the aggregation renamed, alone and with a routing change, keeps its state: no cut.
+    /// S14a and S14b: the aggregation renamed is a new lineage, which starts at a cut; renamed, with a routing change,
+    /// it keeps its state: no cut.
     async fn rename_steps(&mut self, source: &str) -> Result<(), GenericError> {
-        let cuts_of = |state: &Value| CUT_OUTCOMES.map(|outcome| cuts(state, outcome));
-        let state = self.state().await?;
-        let before = cuts_of(&state);
-        let events_before = lane_values(&state, "plan_lane_events_total", STATE_SLOT, None);
         let renamed = edits::rename_aggregation(source)?;
-        self.step(
+        let completed = cuts(&self.state().await?, "completed");
+        let published = Instant::now();
+        let target = Target {
+            ack_timeout: Self::cut_timeout(self.window_s, self.window_s),
+        };
+        let title = "rename the aggregation agg: a new lineage, at a cut";
+        self.step_in(
+            target,
             "S14a",
-            "rename the aggregation agg: a generation that keeps its state",
+            title,
             renamed.clone(),
-            Compiled::Clean { unchanged: true },
+            Compiled::Warned {
+                fragment: "telemetry_contract",
+            },
             Installed::Active {
                 new_generation: true,
                 routing: Some(default_routing()),
             },
         )
         .await?;
+        let seen_s = self
+            .wait_cut(completed, published, target.ack_timeout)
+            .await
+            .with_error_context(|| format!("S14a ({}) failed", title))?;
+        if let Some(step) = self.report.steps.last_mut() {
+            step.outcome = format!("{}; cut seen at {}", step.outcome, seen_s);
+        }
+
+        let cuts_of = |state: &Value| CUT_OUTCOMES.map(|outcome| cuts(state, outcome));
+        let state = self.state().await?;
+        let before = cuts_of(&state);
+        let events_before = lane_values(&state, "plan_lane_events_total", STATE_SLOT, None);
         let no_debug = ["primary", "team-b", "team-c"]
             .into_iter()
             .fold(default_routing(), |routing, intake| {
@@ -282,7 +301,9 @@ impl Runner {
             "S14b",
             "renamed, with demo.debug.* dropped: a new generation, no cut",
             edits::drop_debug(&renamed)?,
-            Compiled::Clean { unchanged: false },
+            Compiled::Warned {
+                fragment: "telemetry_contract",
+            },
             Installed::Active {
                 new_generation: true,
                 routing: Some(no_debug),
@@ -293,8 +314,8 @@ impl Runner {
         let after = cuts_of(&state);
         if after != before {
             return Err(generic_error!(
-                "S14b: renaming the aggregation changed plan_cuts_total (completed, cancelled, not_armed) from {:?} to \
-                 {:?}: its state was cut.",
+                "S14b: a routing change of the renamed aggregation's program changed plan_cuts_total (completed, \
+                 cancelled, not_armed) from {:?} to {:?}: its state was cut.",
                 before,
                 after
             ));
@@ -306,7 +327,7 @@ impl Runner {
             .count();
         if grown == 0 {
             return Err(generic_error!(
-                "S14b: no state lane of `{}` counted events since the aggregation was renamed: {:?}, before {:?}.",
+                "S14b: no state lane of `{}` counted events since the routing change: {:?}, before {:?}.",
                 STATE_SLOT,
                 events,
                 events_before

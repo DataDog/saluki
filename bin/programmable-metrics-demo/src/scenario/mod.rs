@@ -27,10 +27,10 @@
 //!   (S4b, `multi_region_failover.failover_metrics` in the configuration file, a signal the program reads live) and
 //!   stops when it turns off (S4c).
 //! - **S5**: guardrails, each published anyway and refused while S4's generation keeps running: a duplicate branch to
-//!   the main `emit`'s recipients, an `emit` to recipients of two delivery hosts, a second aggregation, the aggregation
-//!   moved after enrichment (refused by placement, which the editor does not run), a binding of a policy setting, which
-//!   ADP does not declare (policy settings are literals, never bindings), each rejected; and an `emit` to a recipient
-//!   ADP does not know, held `pending`.
+//!   the main `emit`'s recipients, an `emit` to recipients of two delivery hosts, a second aggregation after enrichment
+//!   and the aggregation moved there (both refused by placement, which the editor does not run), a binding of a policy
+//!   setting, which ADP does not declare (policy settings are literals, never bindings), each rejected; and an `emit` to
+//!   a recipient ADP does not know, held `pending`.
 //! - **S6**: revoking (an empty snapshot) brings the default program back, the boot plan again.
 //!
 //! Then destinations come and go while ADP runs ([`destinations`]): ADP re-reads its configuration file, which the demo
@@ -74,8 +74,8 @@
 //!
 //! Lane counts are fixed when ADP boots, so S12 to S14 run in a second launch of ADP, its metrics path on lanes, with
 //! 10-second windows ([`run_lanes`]; see [`lanes`]): the frame on the lanes asked for, a counter whose state lane is
-//! empty at a tick, a width change of aggregation with per-lane crossings, and the aggregation renamed, which keeps its
-//! state. With longer windows, a family counts as arriving for a window longer ([`present_ms`]), and the endpoints must
+//! empty at a tick, a width change of aggregation with per-lane crossings, and the aggregation renamed, a new lineage
+//! that starts at a cut. With longer windows, a family counts as arriving for a window longer ([`present_ms`]), and the endpoints must
 //! hold what a step says for one window ([`Runner::stable`]).
 //!
 //! The steps are timed: compile, publish to acknowledgment, and publish to the endpoints showing the change. The
@@ -727,6 +727,11 @@ enum Compiled {
     /// An error whose message (or validation rule) has this fragment.
     Flagged { fragment: &'static str },
 
+    /// Warnings only, one of whose messages (or validation rules) has this fragment, and a valid plan diff that is not
+    /// empty: ADP installs the program, as it does one whose aggregation is renamed, of whose series the host's
+    /// telemetry contract warns.
+    Warned { fragment: &'static str },
+
     /// An artifact, with findings or without: what refuses it is ADP's placement, which the editor does not run.
     Unplaced,
 
@@ -746,11 +751,9 @@ const TWO_HOSTS: &[&str] = &["more than one delivery host"];
 /// binding is one the host does not declare.
 const POLICY_BINDING: &[&str] = &["which is not a configuration binding the host declares"];
 
-/// The fragment of ADP's refusal of a second aggregation: the validation rule that a program has at most one.
-const SECOND_AGGREGATION: &[&str] = &["single_aggregation"];
-
-/// The fragment of ADP's refusal of the aggregation moved after enrichment: placement refuses it with the capability it
-/// lacks, since a state owner runs only in an isolation slot, and none is behind enrichment.
+/// The fragment of ADP's refusal of an aggregation after enrichment, the one moved there or a second one: placement
+/// refuses it with the capability it lacks, since a state owner runs only in an isolation slot, and none is behind
+/// enrichment.
 const AGGREGATION_OUTSIDE_ITS_SLOT: &[&str] = &["runs only in an isolation slot"];
 
 /// How long ADP may take to acknowledge a step's artifact.
@@ -1028,9 +1031,9 @@ impl Runner {
             ),
             (
                 "S5c",
-                "guardrail: a second aggregation",
+                "guardrail: a second aggregation after enrichment",
                 edits::second_aggregation(&source)?,
-                SECOND_AGGREGATION,
+                AGGREGATION_OUTSIDE_ITS_SLOT,
             ),
             (
                 "S5d",
@@ -1046,7 +1049,7 @@ impl Runner {
             ),
         ];
         for (id, title, source, fragments) in guardrails {
-            // The editor does not place plans, so it may not flag the aggregation moved after enrichment.
+            // The editor does not place plans, so it may not flag an aggregation after enrichment.
             let compiled = if fragments == AGGREGATION_OUTSIDE_ITS_SLOT {
                 Compiled::Unplaced
             } else {
@@ -1246,6 +1249,29 @@ impl Runner {
                         "The editor did not say that ADP holds the program pending for `{}`: {}",
                         fragment,
                         messages()
+                    ));
+                }
+            }
+            Compiled::Warned { fragment } => {
+                let warned = diagnostics.iter().all(|diagnostic| diagnostic["severity"] == "warning")
+                    && diagnostics.iter().any(|diagnostic| {
+                        diagnostic["message"]
+                            .as_str()
+                            .is_some_and(|message| message.contains(fragment))
+                            || diagnostic["rule"] == fragment
+                    });
+                if !warned {
+                    return Err(generic_error!(
+                        "The editor did not warn of `{}` alone: {}",
+                        fragment,
+                        messages()
+                    ));
+                }
+                let preview = &outcome["preview"];
+                if preview["available"] != true || preview["valid"] != true || preview["unchanged"] != false {
+                    return Err(generic_error!(
+                        "The editor has no valid plan diff that changes the plan: {}",
+                        preview
                     ));
                 }
             }

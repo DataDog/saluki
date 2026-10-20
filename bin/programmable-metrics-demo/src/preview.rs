@@ -552,11 +552,10 @@ pub fn compose_preview(
 /// an aggregation, that `before` has and `after` does not, paired, in plan order, with one of the same operator that
 /// `after` has and `before` does not.
 ///
-/// Kernel reuse and state retention match nodes by plan ID, so such a node's state does not carry over. The plans are
-/// compared rather than the artifacts, since composition decides the plan IDs: an artifact's one aggregation takes the
-/// default program's ID whatever the artifact calls it, on a host that runs one aggregation per program, so renaming
-/// it there loses nothing and gets no note. `artifact_node` names a plan node of `after` as the artifact writes it; a
-/// node of `before` is named by its local ID, which is the ID its artifact, or the default program, gives it.
+/// Kernel reuse and state retention match nodes by plan ID, which is the node's name, so such a node's state does not
+/// carry over: a renamed state owner is a new lineage, which starts at a cut. `artifact_node` names a plan node of
+/// `after` as the artifact writes it; a node of `before` is named by its ID, which its artifact, or the default
+/// program, gives it.
 pub(crate) fn renamed_state_owners(
     before: &Plan, after: &Plan, registry: &OperatorRegistry, artifact_node: impl Fn(&NodeId) -> Option<String>,
 ) -> Vec<String> {

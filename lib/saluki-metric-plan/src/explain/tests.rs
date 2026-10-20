@@ -373,18 +373,18 @@ fn artifact_bounds_are_enforced_and_reported_per_revision() {
         "provenance": {"artifact": {"revision": 7, "hash": hash}},
         "nodes": [
             {"id": "src", "op": "source", "params": {"binding": "otlp"}},
-            {"id": "policy/t", "op": "tee", "params": {"ports": 2}},
-            {"id": "policy/s", "op": "split", "params": {"predicate": {"any": [{"has_tag": "a"}, {"has_tag": "b"}]}}},
-            {"id": "policy/e1", "op": "emit", "params": {"output": "dd_metrics_encode"}},
-            {"id": "policy/d1", "op": "drop"},
-            {"id": "policy/d2", "op": "drop"}
+            {"id": "t", "op": "tee", "params": {"ports": 2}},
+            {"id": "s", "op": "split", "params": {"predicate": {"any": [{"has_tag": "a"}, {"has_tag": "b"}]}}},
+            {"id": "e1", "op": "emit", "params": {"output": "dd_metrics_encode"}},
+            {"id": "d1", "op": "drop"},
+            {"id": "d2", "op": "drop"}
         ],
         "edges": [
-            {"from": "src.metrics", "to": "policy/t.in"},
-            {"from": "policy/t.0", "to": "policy/s.in"},
-            {"from": "policy/t.1", "to": "policy/d2.in"},
-            {"from": "policy/s.true", "to": "policy/e1.in"},
-            {"from": "policy/s.false", "to": "policy/d1.in"}
+            {"from": "src.metrics", "to": "t.in"},
+            {"from": "t.0", "to": "s.in"},
+            {"from": "t.1", "to": "d2.in"},
+            {"from": "s.true", "to": "e1.in"},
+            {"from": "s.false", "to": "d1.in"}
         ],
         "outputs": [{"id": "dd_metrics_encode", "accepts": {"kinds": "all", "timestamps": "mixed"},
                      "recipients": ["dd_out/primary/0"], "delivery": "native"}]
@@ -553,15 +553,15 @@ mod physical {
     }
 
     /// A sample artifact-like plan: the stage 4 default program with its policy region edited as an author edits the
-    /// export, every new node in the policy namespace with the artifact's provenance.
+    /// export, every new node with the artifact's provenance.
     ///
-    /// - Each of the policy fan-out's five ports first drops metrics tagged `debug` (`policy/no_debug_<port>`), the
+    /// - Each of the policy fan-out's five ports first drops metrics tagged `debug` (`no_debug_<port>`), the
     ///   same filter written once per destination: R6 hoists one copy above the fan-out.
-    /// - The primary output's path strips `user_id` tags (`policy/strip_user`, a tag projection) and then keeps only
-    ///   `checkout.*` and `requests.count` (`policy/only_known`), whose predicate reads only the name: R5a moves the
+    /// - The primary output's path strips `user_id` tags (`strip_user`, a tag projection) and then keeps only
+    ///   `checkout.*` and `requests.count` (`only_known`), whose predicate reads only the name: R5a moves the
     ///   filter above the projection, which then projects only what is kept, and R7 writes its exact match before its
     ///   prefix match.
-    /// - The Multi-Region Failover path passes a canary switch left on (`policy/canary`, `const(true)`, whose `false`
+    /// - The Multi-Region Failover path passes a canary switch left on (`canary`, `const(true)`, whose `false`
     ///   port drops): R3 folds it and removes the drop.
     fn artifact_like_plan() -> Plan {
         let hash = "sha256:00000000000000000000000000000000000000000000000000000000000000a1";
@@ -583,21 +583,21 @@ mod physical {
         let mut nodes = Vec::new();
         let mut edges = Vec::new();
         for (port, target) in targets.iter().enumerate() {
-            let filter = format!("policy/no_debug_{}", port);
+            let filter = format!("no_debug_{}", port);
             nodes.push(node(&filter, "split", json!({"predicate": {"has_tag": "debug"}})));
             nodes.push(node(&format!("{}_dropped", filter), "drop", json!({})));
             edges.push(edge(format!("metrics_fanout.{}", port), format!("{}.in", filter)));
             edges.push(edge(format!("{}.true", filter), format!("{}_dropped.in", filter)));
             let next = match port {
-                0 => "policy/strip_user".to_string(),
-                3 => "policy/canary".to_string(),
+                0 => "strip_user".to_string(),
+                3 => "canary".to_string(),
                 _ => target.to_string(),
             };
             edges.push(edge(format!("{}.false", filter), format!("{}.in", next)));
         }
         nodes.extend([
             node(
-                "policy/strip_user",
+                "strip_user",
                 "tag_projection",
                 json!({
                     "rules": [{"metric_name": "checkout.latency", "action": "exclude", "tags": ["user_id"]}],
@@ -606,26 +606,20 @@ mod physical {
                 }),
             ),
             node(
-                "policy/only_known",
+                "only_known",
                 "split",
                 json!({"predicate": {"any": [{"name": {"prefix": "checkout."}}, {"name": {"eq": "requests.count"}}]}}),
             ),
-            node("policy/only_known_dropped", "drop", json!({})),
-            node("policy/canary", "split", json!({"predicate": {"const": true}})),
-            node("policy/canary_dropped", "drop", json!({})),
+            node("only_known_dropped", "drop", json!({})),
+            node("canary", "split", json!({"predicate": {"const": true}})),
+            node("canary_dropped", "drop", json!({})),
         ]);
         edges.extend([
-            edge("policy/strip_user.out".to_string(), "policy/only_known.in".to_string()),
-            edge("policy/only_known.true".to_string(), "metrics_fanout_0.in".to_string()),
-            edge(
-                "policy/only_known.false".to_string(),
-                "policy/only_known_dropped.in".to_string(),
-            ),
-            edge("policy/canary.true".to_string(), "mrf_metrics_gateway.in".to_string()),
-            edge(
-                "policy/canary.false".to_string(),
-                "policy/canary_dropped.in".to_string(),
-            ),
+            edge("strip_user.out".to_string(), "only_known.in".to_string()),
+            edge("only_known.true".to_string(), "metrics_fanout_0.in".to_string()),
+            edge("only_known.false".to_string(), "only_known_dropped.in".to_string()),
+            edge("canary.true".to_string(), "mrf_metrics_gateway.in".to_string()),
+            edge("canary.false".to_string(), "canary_dropped.in".to_string()),
         ]);
 
         // The fan-out's ports now lead to the new filters.
@@ -733,16 +727,11 @@ mod physical {
                 (RewriteId::R5b, true),
             ]
         );
-        assert_eq!(logical[0].2, strings(&["policy/canary", "policy/canary_dropped"]));
-        assert_eq!(logical[3].2, strings(&["policy/only_known"]));
+        assert_eq!(logical[0].2, strings(&["canary", "canary_dropped"]));
+        assert_eq!(logical[3].2, strings(&["only_known"]));
 
         let rewritten = &compiled.plan;
-        for removed in [
-            "policy/canary",
-            "policy/canary_dropped",
-            "policy/no_debug_0",
-            "policy/no_debug_4_dropped",
-        ] {
+        for removed in ["canary", "canary_dropped", "no_debug_0", "no_debug_4_dropped"] {
             assert!(
                 rewritten.node(&removed.parse().unwrap()).is_none(),
                 "`{}` stays",
@@ -756,10 +745,10 @@ mod physical {
                 .any(|edge| edge.from.to_string() == from && edge.to.to_string() == to)
         };
         assert!(edge("metrics_fanout.3", "mrf_metrics_gateway.in"));
-        assert!(edge("metrics_fanout.0", "policy/only_known.in"));
-        assert!(edge("policy/only_known.true", "policy/strip_user.in"));
-        assert!(edge("policy/strip_user.out", "metrics_fanout_0.in"));
-        let only_known = rewritten.node(&"policy/only_known".parse().unwrap()).unwrap();
+        assert!(edge("metrics_fanout.0", "only_known.in"));
+        assert!(edge("only_known.true", "strip_user.in"));
+        assert!(edge("strip_user.out", "metrics_fanout_0.in"));
+        let only_known = rewritten.node(&"only_known".parse().unwrap()).unwrap();
         assert_eq!(
             only_known.params.get("predicate"),
             Some(&json!({"any": [{"name": {"eq": "requests.count"}}, {"name": {"prefix": "checkout."}}]}))

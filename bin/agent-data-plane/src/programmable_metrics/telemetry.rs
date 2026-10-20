@@ -53,7 +53,7 @@ use saluki_metric_kernels::{
 };
 use saluki_metric_plan::{
     compile::{Frame, RegionProgram, RewriteId, RewriteRecord, SlotId},
-    ir::{Namespace, NativeComponentId, Node, NodeId, OutputId, Plan, PortName},
+    ir::{NativeComponentId, Node, NodeId, OutputId, Plan, PortName},
     operators::{
         decode_tag_filter_rules, decode_tag_value_rules, KernelBuildContext, OperatorRegistry, PlanValue, Recorder,
         ReportedSeries, SeriesKind,
@@ -160,15 +160,11 @@ impl InstallOutcome {
     }
 }
 
-/// Returns the component a node reports its telemetry as, in the given topology: a transform named after the node
-/// (`<local>` for a reserved node, `policy_<local>` for a node in the policy namespace).
+/// Returns the component a node reports its telemetry as, in the given topology: a transform named after the node, by
+/// its ID.
 fn node_component(topology: &SubsystemIdentifier, node: &NodeId) -> ComponentContext {
-    let name = match node.namespace() {
-        Namespace::Reserved => node.local().to_string(),
-        Namespace::Policy => format!("policy_{}", node.local()),
-    };
-    // Local identifiers start with a letter and never end with an underscore, so they are valid component IDs.
-    let component_id = ComponentId::try_from(name.as_str()).expect("node identifiers are valid component IDs");
+    // Identifiers start with a letter and never end with an underscore, so they are valid component IDs.
+    let component_id = ComponentId::try_from(node.local().as_str()).expect("node identifiers are valid component IDs");
     ComponentContext::transform(topology, component_id)
 }
 
@@ -256,8 +252,7 @@ impl RegionTelemetry {
         self
     }
 
-    /// Returns the component a node reports its telemetry as: a transform named after the node (`<local>` for a
-    /// reserved node, `policy_<local>` for a node in the policy namespace).
+    /// Returns the component a node reports its telemetry as: a transform named after the node, by its ID.
     pub fn component(&self, node: &NodeId) -> ComponentContext {
         node_component(&self.topology, node)
     }
@@ -269,8 +264,8 @@ impl RegionTelemetry {
     }
 
     /// Returns the context to build the kernel of `node`, of `program`, in: reported as [`component`][Self::component]
-    /// says, with its cache named as the node's role says, if it has one, and accounted to the resource group `<region>.<node>` (`<region>.policy` for a node in the policy
-    /// namespace), whose bounds `RegionBounds` declares under the same name.
+    /// says, with its cache named as the node's role says, if it has one, and accounted to the resource group
+    /// `<region>.<node>`, whose bounds `RegionBounds` declares under the same name.
     ///
     /// A kernel of an isolation slot draws on the budgets of state ([`with_state`][Self::with_state]): the global
     /// budget and its node's. If the slot is named after the kernel's node, as `dsd_agg` is after DogStatsD

@@ -20,9 +20,10 @@
 //!   what every rewrite keeps (outputs, `emit`s, native nodes), that the rewritten plan compiles into the frame, and
 //!   that the records describe the plan they produced.
 //!
-//! Routing and filter nodes are an artifact's, in the policy namespace, except filters a plan's parameters mark native;
-//! kernels, timestamp splits, sources, and hosts are native nodes, with reserved IDs, each a native component of its
-//! own, so that R1 may cut between any two of them.
+//! Routing and filter nodes are an author's, named `a_<local>`, except filters a plan's parameters mark native; kernels,
+//! timestamp splits, sources, and hosts are native nodes, named `<local>`, each a native component of its own, so that
+//! R1 may cut between any two of them. A native filter is one the host's telemetry contract names
+//! ([`contract_catalog`]), so rewrites move it only whole.
 
 use std::{collections::BTreeSet, sync::OnceLock};
 
@@ -261,18 +262,39 @@ pub(crate) fn registry() -> &'static OperatorRegistry {
 
 // Plans.
 
-/// Returns the identifier of a node: in the policy namespace for an artifact node, reserved for a native one.
+/// The prefix of an author's node's ID, which tells it from a native node's.
+const AUTHORED: &str = "a_";
+
+/// Returns the identifier of a node: `a_<local>` for an author's node, `<local>` for a native one.
 pub(crate) fn node_id(local: &str, native: bool) -> String {
     if native {
         local.to_string()
     } else {
-        format!("policy/{}", local)
+        format!("{}{}", AUTHORED, local)
     }
 }
 
-/// A native node, with a reserved ID, or an artifact's, in the policy namespace.
+/// Returns `true` if `id` names a native node, as [`node_id`] writes it.
+fn is_native(id: &NodeId) -> bool {
+    !id.local().as_str().starts_with(AUTHORED)
+}
+
+/// A native node, named `<local>`, or an author's, named `a_<local>`.
 pub(crate) fn node(local: &str, op: &str, params: Value, native: bool) -> Value {
     json!({"id": node_id(local, native), "op": op, "params": params})
+}
+
+/// Returns [`catalog`] with a telemetry contract that names every native filter of `plan`, a `split` [`node_id`] names
+/// as native: a host's, whose filters rewrites move only whole.
+pub(crate) fn contract_catalog(plan: &Plan) -> MemoryCatalog {
+    let filters = plan
+        .nodes
+        .iter()
+        .filter(|node| node.op.as_str() == names::SPLIT && is_native(&node.id))
+        .map(|node| (node.id.to_string(), names::SPLIT))
+        .collect::<Vec<_>>();
+    let filters = filters.iter().map(|(id, op)| (id.as_str(), *op)).collect::<Vec<_>>();
+    catalog_with_contract(&filters)
 }
 
 /// Builds a plan from nodes, edges written as `from.port -> to.port`, and the outputs it declares, in the harness's
@@ -885,15 +907,15 @@ pub(crate) fn random_plan(shape: &Shape, params: &PlanParams) -> (Plan, Vec<Node
             node("in", names::MERGE, json!({"inputs": 2}), false),
         ],
         edges: vec![
-            ("dsd.metrics".to_string(), "policy/in.0".to_string()),
-            ("otlp.metrics".to_string(), "policy/in.1".to_string()),
+            ("dsd.metrics".to_string(), "a_in.0".to_string()),
+            ("otlp.metrics".to_string(), "a_in.1".to_string()),
         ],
         outputs: Vec::new(),
         opaque: Vec::new(),
         position: 0,
         fenced: false,
     };
-    builder.build(shape, "policy/in.out");
+    builder.build(shape, "a_in.out");
     (plan_of(builder.nodes, &builder.edges, &builder.outputs), builder.opaque)
 }
 
@@ -1035,13 +1057,15 @@ impl Case {
         Self::of(plan, opaque)
     }
 
-    /// Validates and frames `plan`, whose opaque hosts are `opaque`.
+    /// Validates and frames `plan`, whose opaque hosts are `opaque`, against a catalog whose telemetry contract names
+    /// its native filters ([`contract_catalog`]).
     ///
     /// # Errors
     ///
     /// Returns what is wrong if the plan does not validate or its frame cannot be computed.
     pub fn of(plan: Plan, opaque: Vec<NodeId>) -> Result<Self, String> {
-        Self::of_in(plan, opaque, &catalog())
+        let catalog = contract_catalog(&plan);
+        Self::of_in(plan, opaque, &catalog)
     }
 
     /// Validates `plan`, whose opaque hosts are `opaque`, against `catalog`, and frames it.
@@ -1217,7 +1241,7 @@ impl Case {
             params
         };
         for node in &self.plan.nodes {
-            if !node.id.is_reserved() {
+            if !is_native(&node.id) {
                 continue;
             }
             match rewritten.node(&node.id) {
@@ -1370,8 +1394,8 @@ mod tests {
                     node("e", names::EMIT, json!({"output": "o0"}), false),
                 ],
                 &[
-                    ("src.metrics".into(), "policy/k.in".into()),
-                    ("policy/k.out".into(), "policy/e.in".into()),
+                    ("src.metrics".into(), "a_k.in".into()),
+                    ("a_k.out".into(), "a_e.in".into()),
                 ],
                 &["o0".to_string()],
             )
@@ -1390,7 +1414,7 @@ mod tests {
             .map(|record| record.metric.context().name().to_string())
             .collect::<Vec<_>>();
         assert_eq!(names, vec!["kept"]);
-        let loss = run.loss(&"policy/k".parse().unwrap()).loss(LossClass::Policy);
+        let loss = run.loss(&"a_k".parse().unwrap()).loss(LossClass::Policy);
         assert_eq!((loss.events, loss.points), (1, 2));
     }
 }

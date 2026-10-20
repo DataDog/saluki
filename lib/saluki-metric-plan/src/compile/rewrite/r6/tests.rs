@@ -5,8 +5,8 @@ use super::*;
 use crate::{
     compile::rewrite::{
         harness::{
-            arb_plan_params, arb_shape, arb_trace, catalog_with_contract, drop, edges, emit, ids, node, plan, sample,
-            sorted, source, split, Case, TEST_KEEP,
+            arb_plan_params, arb_shape, arb_trace, catalog, catalog_with_contract, drop, edges, emit, ids, node, plan,
+            sample, sorted, source, split, Case, TEST_KEEP,
         },
         r5a::R5a,
         Optimized, RewriteOutcome, RewriteRecord,
@@ -35,10 +35,10 @@ fn guarded(a: (Value, Value, &str), b: (Value, Value, &str)) -> Plan {
     let (a_filter, a_drop, a_dropped) = a;
     let (b_filter, b_drop, b_dropped) = b;
     let kept = |dropped: &str| if dropped == "true" { "false" } else { "true" };
-    let a_kept = format!("policy/a.{} -> policy/ea.in", kept(a_dropped));
-    let b_kept = format!("policy/b.{} -> policy/eb.in", kept(b_dropped));
-    let a_dropped = format!("policy/a.{} -> policy/a_drop.in", a_dropped);
-    let b_dropped = format!("policy/b.{} -> policy/b_drop.in", b_dropped);
+    let a_kept = format!("a_a.{} -> a_ea.in", kept(a_dropped));
+    let b_kept = format!("a_b.{} -> a_eb.in", kept(b_dropped));
+    let a_dropped = format!("a_a.{} -> a_a_drop.in", a_dropped);
+    let b_dropped = format!("a_b.{} -> a_b_drop.in", b_dropped);
     plan(
         vec![
             source("src", "otlp"),
@@ -51,11 +51,11 @@ fn guarded(a: (Value, Value, &str), b: (Value, Value, &str)) -> Plan {
             emit("eb", "o1"),
         ],
         &[
-            "src.metrics -> policy/t.in",
-            "policy/t.0 -> policy/a.in",
+            "src.metrics -> a_t.in",
+            "a_t.0 -> a_a.in",
             &a_dropped,
             &a_kept,
-            "policy/t.1 -> policy/b.in",
+            "a_t.1 -> a_b.in",
             &b_dropped,
             &b_kept,
         ],
@@ -81,23 +81,16 @@ fn a_drop_every_port_of_a_tee_applies_is_hoisted_above_it() {
     assert_eq!(
         edges(&optimized.plan),
         sorted(&[
-            "src.metrics -> policy/a_r6h0.in",
-            "policy/a_r6h0.true -> policy/t.in",
-            "policy/a_r6h0.false -> policy/a_drop_r6h0.in",
-            "policy/t.0 -> policy/ea.in",
-            "policy/t.1 -> policy/eb.in",
+            "src.metrics -> a_a_r6h0.in",
+            "a_a_r6h0.true -> a_t.in",
+            "a_a_r6h0.false -> a_a_drop_r6h0.in",
+            "a_t.0 -> a_ea.in",
+            "a_t.1 -> a_eb.in",
         ])
     );
     assert_eq!(
         ids(&optimized.plan),
-        vec![
-            "src",
-            "policy/a_r6h0",
-            "policy/a_drop_r6h0",
-            "policy/t",
-            "policy/ea",
-            "policy/eb"
-        ]
+        vec!["src", "a_a_r6h0", "a_a_drop_r6h0", "a_t", "a_ea", "a_eb"]
     );
 
     let records = applied(&optimized);
@@ -107,13 +100,13 @@ fn a_drop_every_port_of_a_tee_applies_is_hoisted_above_it() {
     assert_eq!(
         record.nodes,
         vec![
-            id("policy/t"),
-            id("policy/a"),
-            id("policy/a_drop"),
-            id("policy/b"),
-            id("policy/b_drop"),
-            id("policy/a_r6h0"),
-            id("policy/a_drop_r6h0"),
+            id("a_t"),
+            id("a_a"),
+            id("a_a_drop"),
+            id("a_b"),
+            id("a_b_drop"),
+            id("a_a_r6h0"),
+            id("a_a_drop_r6h0"),
         ]
     );
     assert_eq!(
@@ -123,13 +116,13 @@ fn a_drop_every_port_of_a_tee_applies_is_hoisted_above_it() {
             .map(|effect| (effect.node.to_string(), effect.change))
             .collect::<Vec<_>>(),
         vec![
-            ("policy/t".to_string(), TelemetryChange::Changed),
-            ("policy/a".to_string(), TelemetryChange::Removed),
-            ("policy/a_drop".to_string(), TelemetryChange::Removed),
-            ("policy/b".to_string(), TelemetryChange::Removed),
-            ("policy/b_drop".to_string(), TelemetryChange::Removed),
-            ("policy/a_r6h0".to_string(), TelemetryChange::Added),
-            ("policy/a_drop_r6h0".to_string(), TelemetryChange::Added),
+            ("a_t".to_string(), TelemetryChange::Changed),
+            ("a_a".to_string(), TelemetryChange::Removed),
+            ("a_a_drop".to_string(), TelemetryChange::Removed),
+            ("a_b".to_string(), TelemetryChange::Removed),
+            ("a_b_drop".to_string(), TelemetryChange::Removed),
+            ("a_a_r6h0".to_string(), TelemetryChange::Added),
+            ("a_a_drop_r6h0".to_string(), TelemetryChange::Added),
         ]
     );
     assert!(!record.capacity_rule);
@@ -166,11 +159,11 @@ fn a_drop_some_port_does_not_apply_stays_below_the_tee() {
     ];
     for (what, a, b) in cases {
         let mut plan = guarded(a, b);
-        // The named filter's nodes are named without the policy prefix.
+        // The named filter's nodes are native, named without the author's prefix.
         for edge in &mut plan.edges {
             for port in [&mut edge.from, &mut edge.to] {
                 if plan.nodes.iter().all(|node| node.id != port.node) {
-                    port.node = port.node.local().to_string().parse().unwrap();
+                    port.node = port.node.local().as_str()["a_".len()..].parse().unwrap();
                 }
             }
         }
@@ -181,7 +174,7 @@ fn a_drop_some_port_does_not_apply_stays_below_the_tee() {
         assert_eq!(optimized.plan, case.plan, "{}", what);
         if what.starts_with("a filter the telemetry contract names") {
             // Without the contract, nothing reads the filter's series by its name, and it is hoisted.
-            let (_, optimized) = r6(plan);
+            let optimized = Case::of_in(plan, Vec::new(), &catalog()).unwrap().optimize(&[&R6]);
             assert_eq!(applied(&optimized).len(), 1, "{}: {:?}", what, optimized.records);
         }
     }
@@ -199,11 +192,11 @@ fn a_port_without_a_filter_keeps_the_drop_below() {
             emit("eb", "o1"),
         ],
         &[
-            "src.metrics -> policy/t.in",
-            "policy/t.0 -> policy/a.in",
-            "policy/a.false -> policy/a_drop.in",
-            "policy/a.true -> policy/ea.in",
-            "policy/t.1 -> policy/eb.in",
+            "src.metrics -> a_t.in",
+            "a_t.0 -> a_a.in",
+            "a_a.false -> a_a_drop.in",
+            "a_a.true -> a_ea.in",
+            "a_t.1 -> a_eb.in",
         ],
         &["o0", "o1"],
     ));
@@ -224,11 +217,11 @@ fn equal_filter_operators_are_hoisted_and_a_binding_differs_from_its_value() {
                 emit("eb", "o1"),
             ],
             &[
-                "src.metrics -> policy/t.in",
-                "policy/t.0 -> policy/a.in",
-                "policy/a.out -> policy/ea.in",
-                "policy/t.1 -> policy/b.in",
-                "policy/b.out -> policy/eb.in",
+                "src.metrics -> a_t.in",
+                "a_t.0 -> a_a.in",
+                "a_a.out -> a_ea.in",
+                "a_t.1 -> a_b.in",
+                "a_b.out -> a_eb.in",
             ],
             &["o0", "o1"],
         )
@@ -238,10 +231,10 @@ fn equal_filter_operators_are_hoisted_and_a_binding_differs_from_its_value() {
     assert_eq!(
         edges(&optimized.plan),
         sorted(&[
-            "src.metrics -> policy/a_r6h0.in",
-            "policy/a_r6h0.out -> policy/t.in",
-            "policy/t.0 -> policy/ea.in",
-            "policy/t.1 -> policy/eb.in",
+            "src.metrics -> a_a_r6h0.in",
+            "a_a_r6h0.out -> a_t.in",
+            "a_t.0 -> a_ea.in",
+            "a_t.1 -> a_eb.in",
         ])
     );
     case.check_structure(&optimized).unwrap();
@@ -283,15 +276,15 @@ fn r5a_brings_filters_up_to_a_tee_and_r6_hoists_them() {
                 emit("eb", "o1"),
             ],
             &[
-                "src.metrics -> policy/t.in",
-                "policy/t.0 -> pa.in",
-                "pa.out -> policy/a.in",
-                "policy/a.false -> policy/a_drop.in",
-                "policy/a.true -> policy/ea.in",
-                "policy/t.1 -> pb.in",
-                "pb.out -> policy/b.in",
-                "policy/b.false -> policy/b_drop.in",
-                "policy/b.true -> policy/eb.in",
+                "src.metrics -> a_t.in",
+                "a_t.0 -> pa.in",
+                "pa.out -> a_a.in",
+                "a_a.false -> a_a_drop.in",
+                "a_a.true -> a_ea.in",
+                "a_t.1 -> pb.in",
+                "pb.out -> a_b.in",
+                "a_b.false -> a_b_drop.in",
+                "a_b.true -> a_eb.in",
             ],
             &["o0", "o1"],
         ),
@@ -302,13 +295,13 @@ fn r5a_brings_filters_up_to_a_tee_and_r6_hoists_them() {
     assert_eq!(
         edges(&optimized.plan),
         sorted(&[
-            "src.metrics -> policy/a_r6h0.in",
-            "policy/a_r6h0.true -> policy/t.in",
-            "policy/a_r6h0.false -> policy/a_drop_r6h0.in",
-            "policy/t.0 -> pa.in",
-            "pa.out -> policy/ea.in",
-            "policy/t.1 -> pb.in",
-            "pb.out -> policy/eb.in",
+            "src.metrics -> a_a_r6h0.in",
+            "a_a_r6h0.true -> a_t.in",
+            "a_a_r6h0.false -> a_a_drop_r6h0.in",
+            "a_t.0 -> pa.in",
+            "pa.out -> a_ea.in",
+            "a_t.1 -> pb.in",
+            "pb.out -> a_eb.in",
         ])
     );
     assert_eq!(

@@ -89,8 +89,7 @@ function renderHost(host, missing) {
     .join("");
   const head = "<thead><tr><th>Binding</th><th>Kind</th><th>Type</th><th>Now</th></tr></thead>";
   return `
-    <p>The program replaces the default program whole.
-      ${host.single_aggregation ? "It may hold at most one <code>aggregate</code>." : ""}</p>
+    <p>The program replaces the default program whole.</p>
     <h3>Sources</h3>
     <p>${inputs}. Each is a stream a pipeline may start from, as <code>dogstatsd | ...</code>; a source no pipeline
       reads receives nothing.</p>

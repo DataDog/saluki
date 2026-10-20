@@ -213,11 +213,6 @@ async fn every_configuration_of_the_matrix_lowers_to_a_valid_plan() {
         assert_eq!(Plan::from_json(&json).unwrap(), lowered.plan, "{}", name);
         let again = self::lowered(yaml).await;
         assert_eq!(again.plan.hash().unwrap(), lowered.plan.hash().unwrap(), "{}", name);
-
-        // Every node is reserved, and reports under its name.
-        for node in &lowered.plan.nodes {
-            assert!(node.id.is_reserved(), "{}: node `{}` is not reserved", name, node.id);
-        }
     }
 }
 
@@ -1129,8 +1124,6 @@ async fn the_sources_come_first_one_per_source_the_program_has() {
             .node(&node_id(ids::DSD_IN))
             .map(|source| source.params.get("timestamps").unwrap().as_str().unwrap().to_string());
         assert_eq!(timestamps.as_deref(), dogstatsd, "{:?}", yaml);
-        assert!(lowered.catalog.single_aggregation());
-        assert!(lowered.catalog.to_document().single_aggregation());
     }
 }
 

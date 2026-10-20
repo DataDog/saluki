@@ -4024,6 +4024,21 @@ After detached programs, phase 2 ([as built](programmable-metrics-detached-progr
      program's core hash, which equals `active_plan_hash` exactly when the default program or a program that elaborates
      to it runs. Validation reports on the program as written, with its bindings resolved, so what a signal's value
      decides is not reported as if the author had written it. The explain document is version 4.
+199. **Identity by name, compatibility as an analysis** (TEL, D; builds amendment 195's half for version 2's step V10;
+     withdraws amendment 169, amendment 182's adoption of a reserved ID, and the specification's statement that artifact
+     nodes live in a namespace of their own; version 2's step V10, 2026-10-20). A node's ID is its name, with no
+     namespace: lowering names the default program's nodes, and a program's `let`s name its own. A plan document with a
+     `policy/` node ID is refused with a message naming the change; the IR version is unchanged, since elaborated plans
+     are not stored. Every node reports its telemetry under its name, as a transform, and is accounted under
+     `<region>.<node>`, but a state owner named after its isolation slot, which keeps the slot's level
+     (`dsd_agg.aggregate_context_limit`). Each operator describes the series its kernel records; the host adds, by name
+     and operator, the series a node reports for its role (the DogStatsD prefix filter's, the post-aggregation filter's,
+     the routing filters', and the tag filterlist's, with its native cache ID). The host's telemetry contract is the
+     remapper's component-scoped rules that the default program meets; validation warns (`telemetry_contract`) about
+     each node of the contract a program lacks or runs as another operator, listing the series it loses, status reports
+     the contract against the active plan, and rewrites move a filter the contract names only whole. A program may have
+     any number of aggregations, placed wherever the frame can run them. Renaming a state owner starts a new lineage:
+     the old one ends and the new one starts at a cut (decided by the owner, 2026-10-19).
 
 ## 11. Risks
 

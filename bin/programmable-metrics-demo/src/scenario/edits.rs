@@ -646,7 +646,7 @@ pub fn route_platform_to(source: &str, url: &str) -> Result<String, GenericError
 }
 
 /// S14: renames the aggregation, [`AGGREGATION_NODE`], to [`RENAMED_AGGREGATION`]: the `let` that names it and every
-/// reference to it. A program's one aggregation is the aggregation whatever its name, so its state carries over.
+/// reference to it. A node's ID is its name, so the renamed aggregation is a new lineage, which starts at a cut.
 pub fn rename_aggregation(source: &str) -> Result<String, GenericError> {
     rename(source, AGGREGATION_NODE, RENAMED_AGGREGATION)
 }
@@ -665,8 +665,9 @@ pub fn width_change(source: &str, width: &str) -> Result<String, GenericError> {
     Ok(edited)
 }
 
-/// S5, a second aggregation: an aggregation with every parameter, in front of the policy. ADP runs at most one
-/// aggregation per program, so validation rejects it at its node, as the editor shows.
+/// S5, a second aggregation: an aggregation with every parameter, in front of the policy. A program may have any number
+/// of aggregations, but the frame runs one only in its isolation slot, which enrichment has no exit to, so ADP refuses
+/// it when it places the plan, which the editor does not.
 pub fn second_aggregation(source: &str) -> Result<String, GenericError> {
     append_to_metrics(
         source,
@@ -678,11 +679,11 @@ pub fn second_aggregation(source: &str) -> Result<String, GenericError> {
 
 /// S5, the aggregation moved after enrichment: DogStatsD aggregation's stage moves to the end of `let metrics`, and
 /// what fed it feeds what it fed. It ends `let metrics` there, so it is the node `metrics` and the policy's tee keeps
-/// its ID; a program's one aggregation takes the default program's ID whatever the program calls it. The aggregation ends the `let` [`AGGREGATION_NODE`]; once
-/// it is gone, the stage before it ends the `let`, which takes that stage's ID as its name so that the stage keeps it,
-/// or, when the `let` has no other stage, the `let` goes and its uses read what it read. The program still has one
-/// aggregation, but the frame runs it only in its isolation slot, which enrichment has no exit to, so ADP refuses it
-/// when it places the plan.
+/// its ID; no node is named `dsd_agg` any more, which the editor warns about (`telemetry_contract`). The aggregation
+/// ends the `let` [`AGGREGATION_NODE`]; once it is gone, the stage before it ends the `let`, which takes that stage's
+/// ID as its name so that the stage keeps it, or, when the `let` has no other stage, the `let` goes and its uses read
+/// what it read. The program still has one aggregation, but the frame runs it only in its isolation slot, which
+/// enrichment has no exit to, so ADP refuses it when it places the plan.
 pub fn aggregation_after_enrichment(source: &str) -> Result<String, GenericError> {
     const OP: &str = "aggregate";
     let op = stage(source, OP).ok_or_else(|| generic_error!("The default program has no `{}` stage.", OP))?;

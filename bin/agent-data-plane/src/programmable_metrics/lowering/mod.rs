@@ -106,8 +106,8 @@ use saluki_metric_plan::{
     canonical::MAX_SAFE_INTEGER,
     compose::Demand,
     ir::{
-        derived_terminal_id, format_duration, BindingName, Edge, Namespace, NativeComponentId, Node, NodeId,
-        OperatorName, ParamName, ParamType, ParamValue, Params, Plan, PlanProvenance, PortName, PortRef, IR_VERSION,
+        derived_terminal_id, format_duration, BindingName, Edge, NativeComponentId, Node, NodeId, OperatorName,
+        ParamName, ParamType, ParamValue, Params, Plan, PlanProvenance, PortName, PortRef, IR_VERSION,
     },
     normalize::normalize_plan,
     operators::{
@@ -151,7 +151,7 @@ mod types {
     pub const HISTOGRAM_PERCENTILES: ParamType = ParamType::List(&ParamType::Integer { min: 0, max: 100 });
 }
 
-/// The reserved node IDs of the default program.
+/// The node IDs of the default program.
 ///
 /// A node reports under its name, so a node whose series the remapper reads keeps its native component's name, such as
 /// `dsd_prefix_filter` and `dsd_agg` (the host's telemetry contract, `compatibility`, lists them). The others have the
@@ -584,9 +584,7 @@ impl Lowering {
         let mut annotations = program.annotations;
         for node in &plan.nodes {
             if let Some(note) = annotation(node.id.local().as_str(), node.op.as_str()) {
-                if node.id.namespace() == Namespace::Reserved {
-                    annotations.insert(node.id.clone(), note.to_string());
-                }
+                annotations.insert(node.id.clone(), note.to_string());
             }
         }
         Ok(Lowered {
@@ -748,7 +746,7 @@ fn port(name: &str) -> PortName {
     PortName::new(name).expect("default-program port names are valid")
 }
 
-/// Returns the reserved node ID `local`.
+/// Returns the default program's node ID `local`.
 fn node_id(local: &str) -> NodeId {
     local.parse().expect("default-program node IDs are identifiers")
 }

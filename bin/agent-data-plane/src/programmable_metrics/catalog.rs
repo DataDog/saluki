@@ -121,9 +121,6 @@ impl AdpCatalog {
         for (name, recipient) in &self.directory {
             catalog = catalog.with_recipient(name.clone(), recipient.clone());
         }
-        if Catalog::single_aggregation(self) {
-            catalog = catalog.with_single_aggregation();
-        }
         if let Some(contract) = &self.telemetry_contract {
             catalog = catalog.with_telemetry_contract(contract.clone());
         }
@@ -145,12 +142,6 @@ impl Catalog for AdpCatalog {
 
     fn state_budget(&self) -> Option<u64> {
         self.state_budget
-    }
-
-    fn single_aggregation(&self) -> bool {
-        // One aggregation per program, for now: the frame has one isolation slot, which placement lets run a state
-        // owner of each branch of a split ahead of it, and the demo and the operator surfaces assume one.
-        true
     }
 
     fn telemetry_contract(&self) -> Option<&TelemetryContract> {

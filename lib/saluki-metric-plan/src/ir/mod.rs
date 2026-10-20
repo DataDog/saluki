@@ -24,8 +24,8 @@ pub(crate) use self::document::parse_document;
 mod id;
 pub use self::id::{
     derived_terminal_id, is_identifier, ArtifactNodeId, ArtifactPortRef, BindingName, CredentialRef, HostId, IdError,
-    InputName, LocalId, Namespace, NativeComponentId, NodeId, OperatorName, OutputId, ParamName, PortName, PortRef,
-    RecipientId, RecipientName, RoleName, SignalName, IDENTIFIER_PATTERN, MAX_IDENTIFIER_LEN, SCOPE_INPUT_NODE,
+    InputName, LocalId, NativeComponentId, NodeId, OperatorName, OutputId, ParamName, PortName, PortRef, RecipientId,
+    RecipientName, RoleName, SignalName, IDENTIFIER_PATTERN, MAX_IDENTIFIER_LEN, SCOPE_INPUT_NODE,
 };
 
 mod operand;

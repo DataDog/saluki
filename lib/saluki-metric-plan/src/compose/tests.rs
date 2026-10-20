@@ -243,7 +243,7 @@ fn unmodified_exports_of_the_default_programs_compose_back_to_them() {
         for artifact_node in &fixture.export.artifact.nodes {
             assert_eq!(
                 composed.ids[&artifact_node.id],
-                NodeId::reserved(artifact_node.id.to_local_id()),
+                NodeId::new(artifact_node.id.to_local_id()),
                 "{}",
                 name
             );
@@ -253,7 +253,7 @@ fn unmodified_exports_of_the_default_programs_compose_back_to_them() {
 
 /// What composing an accepted edit gives.
 struct Accepted {
-    /// Every artifact node placed in the policy namespace, and the plan node it became.
+    /// Every artifact node the default program does not have, and the plan node it became.
     policy: &'static [(&'static str, &'static str)],
 
     /// Every node the diff against the default program does not list as unchanged, with how it lists it.
@@ -300,15 +300,15 @@ fn edits_of_the_export_compose_with_their_plan_ids() {
             },
             Accepted {
                 policy: &[
-                    ("team_b", "policy/team_b"),
-                    ("team_b_true", "policy/team_b_true"),
-                    ("team_b_false", "policy/team_b_false"),
+                    ("team_b", "team_b"),
+                    ("team_b_true", "team_b_true"),
+                    ("team_b_false", "team_b_false"),
                 ],
                 diff: &[
                     ("metrics_fanout", "changed edges"),
-                    ("policy/team_b", "added"),
-                    ("policy/team_b_true", "added"),
-                    ("policy/team_b_false", "added"),
+                    ("team_b", "added"),
+                    ("team_b_true", "added"),
+                    ("team_b_false", "added"),
                     ("metrics_routing_filter_0", "removed"),
                     ("metrics_routing_filter_0_true", "removed"),
                     ("metrics_routing_filter_0_false", "removed"),
@@ -335,14 +335,11 @@ fn edits_of_the_export_compose_with_their_plan_ids() {
                 // Every drop after the new filter now drops what is left after it, but does what it did: only the new
                 // nodes change. The filter composes in normal form, `split(not p)` keeping its `true` port, so its
                 // drop, named for its `true` port, is renamed for its `false` port.
-                policy: &[
-                    ("drop_debug", "policy/drop_debug"),
-                    ("drop_debug_false", "policy/drop_debug_false"),
-                ],
+                policy: &[("drop_debug", "drop_debug"), ("drop_debug_false", "drop_debug_false")],
                 diff: &[
                     ("metrics", "changed edges"),
-                    ("policy/drop_debug", "added"),
-                    ("policy/drop_debug_false", "added"),
+                    ("drop_debug", "added"),
+                    ("drop_debug_false", "added"),
                     ("metrics_fanout", "changed edges"),
                 ],
             },
@@ -358,12 +355,12 @@ fn edits_of_the_export_compose_with_their_plan_ids() {
                 push_edge(document, "metrics_routing_filter_0.false", "discard.in");
             },
             Accepted {
-                policy: &[("discard", "policy/discard")],
+                policy: &[("discard", "discard")],
                 diff: &[
                     ("metrics_fanout", "changed edges"),
                     ("metrics_routing_filter_0", "changed edges"),
                     ("metrics_routing_filter_0_false", "changed edges"),
-                    ("policy/discard", "added"),
+                    ("discard", "added"),
                     ("metrics_fanout_0", "removed"),
                 ],
             },
@@ -449,12 +446,11 @@ fn edits_of_the_export_compose_with_their_plan_ids() {
         assert!(composed.report.is_valid(), "{}:\n{}", what, composed.report);
         assert!(!composed.stale_review, "{}", what);
 
-        // Every artifact node keeps the reserved ID of the default program's node with its local ID, if there is one;
-        // the others are placed in the policy namespace.
+        // Every artifact node's plan ID is its name; those the default program does not have are the artifact's own.
         let policy = composed
             .ids
             .iter()
-            .filter(|(_, id)| !id.is_reserved())
+            .filter(|(_, id)| fixture.plan.node(id).is_none())
             .map(|(local, id)| (local.to_string(), id.to_string()))
             .collect::<Vec<_>>();
         let mut expected_policy = expected
@@ -465,9 +461,7 @@ fn edits_of_the_export_compose_with_their_plan_ids() {
         expected_policy.sort();
         assert_eq!(policy, expected_policy, "{}", what);
         for (local, id) in &composed.ids {
-            if id.is_reserved() {
-                assert_eq!(*id, NodeId::reserved(local.to_local_id()), "{}", what);
-            }
+            assert_eq!(*id, NodeId::new(local.to_local_id()), "{}", what);
         }
         assert_eq!(
             composed.plan.provenance.as_ref().unwrap().artifact,
@@ -645,7 +639,7 @@ fn a_state_owner_composes_with_the_artifacts_provenance_whatever_its_parameters(
         push_edge(&mut document, "metrics.out", "agg.in");
         let composed = fixture.compose(document, &approval(1)).unwrap();
         let id = &composed.ids[&"agg".parse::<ArtifactNodeId>().unwrap()];
-        assert_eq!(id.to_string(), "policy/agg");
+        assert_eq!(id.to_string(), "agg");
         assert!(composed.plan.node(id).is_some());
     }
 }
@@ -827,7 +821,7 @@ fn an_artifact_whose_nodes_declare_more_memory_than_the_limit_is_invalid() {
             .map(|bytes| {
                 (
                     Location::Node {
-                        id: "policy/mapper".parse().unwrap(),
+                        id: "mapper".parse().unwrap(),
                         port: None,
                     },
                     format!(
@@ -1303,7 +1297,7 @@ fn explains(error: &ComposeError, artifact: &PolicyArtifact, fixture: &Fixture) 
     let known = sources(&fixture.plan);
     match error {
         ComposeError::ReservedSource { node: id, reserved } => (node(id).is_some()
-            && *reserved == NodeId::reserved(id.to_local_id())
+            && *reserved == NodeId::new(id.to_local_id())
             && fixture.is_source(reserved))
         .then_some("a node has the ID of a source"),
         ComposeError::UnknownSource { name, known: listed } => {
@@ -1365,7 +1359,7 @@ proptest! {
 
         // Kept nodes are the default program's, and so is a kept drop behind a `split` of the artifact's, which drops
         // another stream than native configuration does: a node is what it does, whatever feeds it. Every other node of
-        // the tree is the artifact's own, in the policy namespace.
+        // the tree is the artifact's own.
         let replaced = after_enrichment(&fixture.export.artifact);
         let kept_nodes = kept
             .iter()
@@ -1382,10 +1376,10 @@ proptest! {
         for node in &received.artifact.nodes {
             let id = &composed.ids[&node.id];
             if kept_nodes.contains(&node.id.to_string()) || before.contains(&node.id.to_string()) {
-                prop_assert_eq!(id, &NodeId::reserved(node.id.to_local_id()));
+                prop_assert_eq!(id, &NodeId::new(node.id.to_local_id()));
                 prop_assert_eq!(composed.plan.node(id), fixture.core.node(id));
             } else {
-                prop_assert_eq!(id.to_string(), format!("policy/{}", node.id));
+                prop_assert_eq!(id.to_string(), format!("{}", node.id));
             }
         }
 
@@ -1393,7 +1387,7 @@ proptest! {
         let diff = diff(&fixture.core, &composed.plan, &registry);
         for change in diff.changes() {
             let local = change.id.local().to_string();
-            if change.id.is_reserved() && !replaced.contains(&local) {
+            if fixture.core.node(&change.id).is_some() && !replaced.contains(&local) {
                 prop_assert_eq!(local, ENRICHED);
                 prop_assert_eq!(
                     &change.change,
@@ -1420,7 +1414,7 @@ proptest! {
         let reserved_source = artifact
             .nodes
             .iter()
-            .any(|node| fixture.is_source(&NodeId::reserved(node.id.to_local_id())));
+            .any(|node| fixture.is_source(&NodeId::new(node.id.to_local_id())));
         match compose(&fixture.plan, &received, &approval(4), &fixture.catalog, &registry) {
             Err(error) => {
                 prop_assert!(explains(&error, artifact, &fixture).is_some(), "{:?}: {}", edits, error);
@@ -1557,7 +1551,7 @@ fn the_unmodified_detached_export_composes_to_what_the_default_program_does_in_i
             composed
                 .ids
                 .iter()
-                .all(|(local, id)| *id == NodeId::reserved(local.to_local_id())),
+                .all(|(local, id)| *id == NodeId::new(local.to_local_id())),
             "{}",
             name
         );
@@ -1809,12 +1803,12 @@ fn an_emit_in_effect_delivers_to_its_recipients_that_remain_and_counts_what_the_
     let id = |id: &str| id.parse::<NodeId>().unwrap();
     let op = |node: &str| composed.plan.node(&id(node)).unwrap().op.as_str().to_string();
     assert_eq!(op("metrics_fanout_0"), names::TEE);
-    assert_eq!(op("policy/metrics_fanout_0_delivered"), names::EMIT);
-    assert_eq!(op("policy/metrics_fanout_0_missing"), names::DROP);
+    assert_eq!(op("metrics_fanout_0_delivered"), names::EMIT);
+    assert_eq!(op("metrics_fanout_0_missing"), names::DROP);
     assert_eq!(
         composed
             .plan
-            .node(&id("policy/metrics_fanout_0_delivered"))
+            .node(&id("metrics_fanout_0_delivered"))
             .unwrap()
             .params
             .get("output"),
@@ -1827,8 +1821,8 @@ fn an_emit_in_effect_delivers_to_its_recipients_that_remain_and_counts_what_the_
         .map(|edge| format!("{} -> {}", edge.from, edge.to))
         .collect::<Vec<_>>();
     for edge in [
-        "metrics_fanout_0.0 -> policy/metrics_fanout_0_delivered.in",
-        "metrics_fanout_0.1 -> policy/metrics_fanout_0_missing.in",
+        "metrics_fanout_0.0 -> metrics_fanout_0_delivered.in",
+        "metrics_fanout_0.1 -> metrics_fanout_0_missing.in",
     ] {
         assert!(edges.iter().any(|found| found == edge), "{} in {:?}", edge, edges);
     }
@@ -1843,7 +1837,7 @@ fn an_emit_in_effect_delivers_to_its_recipients_that_remain_and_counts_what_the_
           recipient `https://gone.example.com`; the `emit` still delivers to [primary]"
         ]
     );
-    assert_eq!(dropped[0].nodes, [id("policy/metrics_fanout_0_missing")]);
+    assert_eq!(dropped[0].nodes, [id("metrics_fanout_0_missing")]);
     // The artifact's emit's plan ID is the `tee` that took its place.
     assert_eq!(
         composed.ids[&"metrics_fanout_0".parse::<ArtifactNodeId>().unwrap()],

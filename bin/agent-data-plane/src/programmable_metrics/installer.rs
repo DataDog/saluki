@@ -1098,7 +1098,7 @@ pub(super) fn export_annotations(bundle: &ExportBundle, nodes: &BTreeMap<NodeId,
         .iter()
         .filter(|(_, why)| **why != Omission::Unreachable)
         .map(|(node, _)| {
-            let note = nodes.get(&NodeId::reserved(node.to_local_id())).map(String::as_str);
+            let note = nodes.get(&NodeId::new(node.to_local_id())).map(String::as_str);
             // A node the table does not know is named by its ID, rather than left out of the line.
             omitted_name(node.as_str(), note).unwrap_or((usize::MAX, format!("`{}`", node)))
         })
@@ -1113,7 +1113,7 @@ pub(super) fn export_annotations(bundle: &ExportBundle, nodes: &BTreeMap<NodeId,
         .nodes
         .iter()
         .filter_map(|node| {
-            let note = nodes.get(&NodeId::reserved(node.id.to_local_id()))?;
+            let note = nodes.get(&NodeId::new(node.id.to_local_id()))?;
             Some((node.id.clone(), note.clone()))
         })
         .collect();

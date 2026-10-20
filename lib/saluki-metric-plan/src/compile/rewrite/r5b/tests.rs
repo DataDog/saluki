@@ -108,7 +108,7 @@ fn below_aggregation(between: Vec<(Value, &str, &str)>, predicate: Value) -> Pla
     edges.extend([
         format!("{} -> f.in", previous),
         "f.true -> f_drop.in".to_string(),
-        "f.false -> policy/e.in".to_string(),
+        "f.false -> a_e.in".to_string(),
     ]);
     plan(nodes, &edges.iter().map(String::as_str).collect::<Vec<_>>(), &["o0"])
 }
@@ -331,8 +331,8 @@ fn nothing_is_pushed_past_a_copy_or_a_split_that_is_not_a_filter() {
             "agg.out -> t.in",
             "t.0 -> f.in",
             "f.true -> f_drop.in",
-            "f.false -> policy/e0.in",
-            "t.1 -> policy/e1.in",
+            "f.false -> a_e0.in",
+            "t.1 -> a_e1.in",
         ],
         &["o0", "o1"],
     );
@@ -348,15 +348,15 @@ fn nothing_is_pushed_past_a_copy_or_a_split_that_is_not_a_filter() {
         &[
             "src.metrics -> agg.in",
             "agg.out -> r.in",
-            "r.true -> policy/e0.in",
-            "r.false -> policy/e1.in",
+            "r.true -> a_e0.in",
+            "r.false -> a_e1.in",
         ],
         &["o0", "o1"],
     );
     // Straight to an output.
     let direct = plan(
         vec![dogstatsd(), aggregate(), emit("e0", "o0")],
-        &["src.metrics -> agg.in", "agg.out -> policy/e0.in"],
+        &["src.metrics -> agg.in", "agg.out -> a_e0.in"],
         &["o0"],
     );
     for (what, plan, reason) in [
@@ -370,11 +370,7 @@ fn nothing_is_pushed_past_a_copy_or_a_split_that_is_not_a_filter() {
             routed,
             "`r`, below it before any filter, routes records between its ports",
         ),
-        (
-            "an emit",
-            direct,
-            "`policy/e0`, below it before any filter, ends the path",
-        ),
+        ("an emit", direct, "`a_e0`, below it before any filter, ends the path"),
     ] {
         let analysis = analyze_plan(&plan, registry(), &harness::catalog());
         assert!(analysis.sites.is_empty(), "{}", what);
@@ -488,14 +484,14 @@ fn filtered(above: bool, context_limit: u64) -> Plan {
             "src.metrics -> f.in",
             "f.true -> f_drop.in",
             "f.false -> agg.in",
-            "agg.out -> policy/e.in",
+            "agg.out -> a_e.in",
         ]
     } else {
         &[
             "src.metrics -> agg.in",
             "agg.out -> f.in",
             "f.true -> f_drop.in",
-            "f.false -> policy/e.in",
+            "f.false -> a_e.in",
         ]
     };
     plan(nodes, edges, &["o0"])

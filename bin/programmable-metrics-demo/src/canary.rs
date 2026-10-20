@@ -36,9 +36,9 @@ const WINDOWED_OPERATORS: [&str; 2] = ["aggregate", "timestamp_split"];
 
 /// Returns the widths, in whole seconds, that an artifact's aggregations (and the timestamp splits ahead of them) set
 /// with a literal window: the bucket widths the artifact gives the canary. The default program holds DogStatsD
-/// aggregation, and ADP runs at most one aggregation, so an artifact's window is the canary's. A window that
-/// refers to the configuration, which is the configured window, and one that is not a whole number of seconds are left
-/// out.
+/// aggregation, which the canary goes through, so the windows of an artifact's aggregations are the canary's. A window
+/// that refers to the configuration, which is the configured window, and one that is not a whole number of seconds are
+/// left out.
 pub fn artifact_widths(artifact: &Value) -> Vec<u64> {
     artifact["nodes"]
         .as_array()

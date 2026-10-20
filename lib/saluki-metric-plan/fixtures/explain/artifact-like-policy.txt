@@ -2,7 +2,7 @@ explain_version 4
 
 plan
   ir_version 1
-  hash sha256:3c6dc159f7959d13f703da476ce9eb1072f8692b574d447955d55eff6f94814a
+  hash sha256:9224e98372a0f4716d35fb48870755c5d8e068f50bcdc7149024a9ad8135c970
   artifact revision 1 sha256:00000000000000000000000000000000000000000000000000000000000000a1
   valid: 0 errors, 0 warnings
 
@@ -109,17 +109,17 @@ nodes (49)
   metrics_fanout: tee [synchronous, state none]
     param ports = 5
     in in <- metrics.out, accepts every kind (mixed timestamps)
-    out 0 -> policy/no_debug_0.in, carries every kind (mixed timestamps)
-    out 1 -> policy/no_debug_1.in, carries every kind (mixed timestamps)
-    out 2 -> policy/no_debug_2.in, carries every kind (mixed timestamps)
-    out 3 -> policy/no_debug_3.in, carries every kind (mixed timestamps)
-    out 4 -> policy/no_debug_4.in, carries every kind (mixed timestamps)
+    out 0 -> no_debug_0.in, carries every kind (mixed timestamps)
+    out 1 -> no_debug_1.in, carries every kind (mixed timestamps)
+    out 2 -> no_debug_2.in, carries every kind (mixed timestamps)
+    out 3 -> no_debug_3.in, carries every kind (mixed timestamps)
+    out 4 -> no_debug_4.in, carries every kind (mixed timestamps)
   metrics_fanout_0: emit [synchronous, state none]
     param output = "dd_metrics_encode"
-    in in <- policy/only_known.true, accepts every kind (mixed timestamps)
+    in in <- only_known.true, accepts every kind (mixed timestamps)
   metrics_routing_filter_0: split [synchronous, state none]
     param predicate = {"any":[{"intake_name":{"eq":"checkout.requests"}},{"intake_name":{"prefix":"checkout."}}]}
-    in in <- policy/no_debug_1.false, accepts every kind (mixed timestamps)
+    in in <- no_debug_1.false, accepts every kind (mixed timestamps)
     out true -> metrics_routing_filter_0_true.in, carries every kind (mixed timestamps)
     out false -> metrics_routing_filter_0_false.in, carries every kind (mixed timestamps)
   metrics_routing_filter_0_true: emit [synchronous, state none]
@@ -130,7 +130,7 @@ nodes (49)
     in in <- metrics_routing_filter_0.false, accepts every kind (mixed timestamps)
   metrics_routing_filter_1: split [synchronous, state none]
     param predicate = {"intake_name":{"prefix":"catalog."}}
-    in in <- policy/no_debug_2.false, accepts every kind (mixed timestamps)
+    in in <- no_debug_2.false, accepts every kind (mixed timestamps)
     out true -> metrics_routing_filter_1_true.in, carries every kind (mixed timestamps)
     out false -> metrics_routing_filter_1_false.in, carries every kind (mixed timestamps)
   metrics_routing_filter_1_true: emit [synchronous, state none]
@@ -143,7 +143,7 @@ nodes (49)
     param predicate = {"all":[{"flag":{"config":"multi_region_failover.enabled","resolved":true}},{"flag":{"config":"multi_region_failover.metric_mirroring.enabled","resolved":true}}]}
     binding predicate.all[0].flag <- multi_region_failover.enabled = true
     binding predicate.all[1].flag <- multi_region_failover.metric_mirroring.enabled = true
-    in in <- policy/canary.true, accepts every kind (mixed timestamps)
+    in in <- canary.true, accepts every kind (mixed timestamps)
     out true -> mrf_metrics_gateway_true.in, carries every kind (mixed timestamps)
     out false -> mrf_metrics_gateway_false.in, carries every kind (mixed timestamps)
   mrf_metrics_gateway_true: emit [synchronous, state none]
@@ -155,7 +155,7 @@ nodes (49)
   af_metrics_gateway: split [synchronous, state none]
     param predicate = {"all":[{"kind_in":["counter","rate","gauge","set"]},{"flag":{"config":"autoscaling_failover.enabled","resolved":true}},{"name":{"eq":"requests.count"}}]}
     binding predicate.all[1].flag <- autoscaling_failover.enabled = true
-    in in <- policy/no_debug_4.false, accepts every kind (mixed timestamps)
+    in in <- no_debug_4.false, accepts every kind (mixed timestamps)
     out true -> af_metrics_gateway_true.in, carries counter, rate, gauge, set (mixed timestamps)
     out false -> af_metrics_gateway_false.in, carries every kind (mixed timestamps)
   af_metrics_gateway_true: emit [synchronous, state none]
@@ -164,69 +164,69 @@ nodes (49)
   af_metrics_gateway_false: drop [synchronous, state none]
     loss policy
     in in <- af_metrics_gateway.false, accepts every kind (mixed timestamps)
-  policy/no_debug_0: split [synchronous, state none]
+  no_debug_0: split [synchronous, state none]
     param predicate = {"has_tag":"debug"}
     in in <- metrics_fanout.0, accepts every kind (mixed timestamps)
-    out true -> policy/no_debug_0_dropped.in, carries every kind (mixed timestamps)
-    out false -> policy/strip_user.in, carries every kind (mixed timestamps)
-  policy/no_debug_0_dropped: drop [synchronous, state none]
+    out true -> no_debug_0_dropped.in, carries every kind (mixed timestamps)
+    out false -> strip_user.in, carries every kind (mixed timestamps)
+  no_debug_0_dropped: drop [synchronous, state none]
     loss policy
-    in in <- policy/no_debug_0.true, accepts every kind (mixed timestamps)
-  policy/no_debug_1: split [synchronous, state none]
+    in in <- no_debug_0.true, accepts every kind (mixed timestamps)
+  no_debug_1: split [synchronous, state none]
     param predicate = {"has_tag":"debug"}
     in in <- metrics_fanout.1, accepts every kind (mixed timestamps)
-    out true -> policy/no_debug_1_dropped.in, carries every kind (mixed timestamps)
+    out true -> no_debug_1_dropped.in, carries every kind (mixed timestamps)
     out false -> metrics_routing_filter_0.in, carries every kind (mixed timestamps)
-  policy/no_debug_1_dropped: drop [synchronous, state none]
+  no_debug_1_dropped: drop [synchronous, state none]
     loss policy
-    in in <- policy/no_debug_1.true, accepts every kind (mixed timestamps)
-  policy/no_debug_2: split [synchronous, state none]
+    in in <- no_debug_1.true, accepts every kind (mixed timestamps)
+  no_debug_2: split [synchronous, state none]
     param predicate = {"has_tag":"debug"}
     in in <- metrics_fanout.2, accepts every kind (mixed timestamps)
-    out true -> policy/no_debug_2_dropped.in, carries every kind (mixed timestamps)
+    out true -> no_debug_2_dropped.in, carries every kind (mixed timestamps)
     out false -> metrics_routing_filter_1.in, carries every kind (mixed timestamps)
-  policy/no_debug_2_dropped: drop [synchronous, state none]
+  no_debug_2_dropped: drop [synchronous, state none]
     loss policy
-    in in <- policy/no_debug_2.true, accepts every kind (mixed timestamps)
-  policy/no_debug_3: split [synchronous, state none]
+    in in <- no_debug_2.true, accepts every kind (mixed timestamps)
+  no_debug_3: split [synchronous, state none]
     param predicate = {"has_tag":"debug"}
     in in <- metrics_fanout.3, accepts every kind (mixed timestamps)
-    out true -> policy/no_debug_3_dropped.in, carries every kind (mixed timestamps)
-    out false -> policy/canary.in, carries every kind (mixed timestamps)
-  policy/no_debug_3_dropped: drop [synchronous, state none]
+    out true -> no_debug_3_dropped.in, carries every kind (mixed timestamps)
+    out false -> canary.in, carries every kind (mixed timestamps)
+  no_debug_3_dropped: drop [synchronous, state none]
     loss policy
-    in in <- policy/no_debug_3.true, accepts every kind (mixed timestamps)
-  policy/no_debug_4: split [synchronous, state none]
+    in in <- no_debug_3.true, accepts every kind (mixed timestamps)
+  no_debug_4: split [synchronous, state none]
     param predicate = {"has_tag":"debug"}
     in in <- metrics_fanout.4, accepts every kind (mixed timestamps)
-    out true -> policy/no_debug_4_dropped.in, carries every kind (mixed timestamps)
+    out true -> no_debug_4_dropped.in, carries every kind (mixed timestamps)
     out false -> af_metrics_gateway.in, carries every kind (mixed timestamps)
-  policy/no_debug_4_dropped: drop [synchronous, state none]
+  no_debug_4_dropped: drop [synchronous, state none]
     loss policy
-    in in <- policy/no_debug_4.true, accepts every kind (mixed timestamps)
-  policy/strip_user: tag_projection [synchronous, state none]
+    in in <- no_debug_4.true, accepts every kind (mixed timestamps)
+  strip_user: tag_projection [synchronous, state none]
     loss policy
     param cache_capacity = 1000
     param rules = [{"action":"exclude","metric_name":"checkout.latency","tags":["user_id"]}]
     param value_rules = []
-    in in <- policy/no_debug_0.false, accepts every kind (mixed timestamps)
-    out out -> policy/only_known.in, carries every kind (mixed timestamps)
-  policy/only_known: split [synchronous, state none]
+    in in <- no_debug_0.false, accepts every kind (mixed timestamps)
+    out out -> only_known.in, carries every kind (mixed timestamps)
+  only_known: split [synchronous, state none]
     param predicate = {"any":[{"name":{"prefix":"checkout."}},{"name":{"eq":"requests.count"}}]}
-    in in <- policy/strip_user.out, accepts every kind (mixed timestamps)
+    in in <- strip_user.out, accepts every kind (mixed timestamps)
     out true -> metrics_fanout_0.in, carries every kind (mixed timestamps)
-    out false -> policy/only_known_dropped.in, carries every kind (mixed timestamps)
-  policy/only_known_dropped: drop [synchronous, state none]
+    out false -> only_known_dropped.in, carries every kind (mixed timestamps)
+  only_known_dropped: drop [synchronous, state none]
     loss policy
-    in in <- policy/only_known.false, accepts every kind (mixed timestamps)
-  policy/canary: split [synchronous, state none]
+    in in <- only_known.false, accepts every kind (mixed timestamps)
+  canary: split [synchronous, state none]
     param predicate = {"const":true}
-    in in <- policy/no_debug_3.false, accepts every kind (mixed timestamps)
+    in in <- no_debug_3.false, accepts every kind (mixed timestamps)
     out true -> mrf_metrics_gateway.in, carries every kind (mixed timestamps)
-    out false -> policy/canary_dropped.in, carries nothing (mixed timestamps)
-  policy/canary_dropped: drop [synchronous, state none]
+    out false -> canary_dropped.in, carries nothing (mixed timestamps)
+  canary_dropped: drop [synchronous, state none]
     loss policy
-    in in <- policy/canary.false, accepts every kind (mixed timestamps)
+    in in <- canary.false, accepts every kind (mixed timestamps)
 
 edges (49)
   dsd_in.metrics -> dsd_enrich.in: counter, gauge, set, histogram, distribution (mixed timestamps)
@@ -258,26 +258,26 @@ edges (49)
   mrf_metrics_gateway.false -> mrf_metrics_gateway_false.in: every kind (mixed timestamps)
   af_metrics_gateway.true -> af_metrics_gateway_true.in: counter, rate, gauge, set (mixed timestamps)
   af_metrics_gateway.false -> af_metrics_gateway_false.in: every kind (mixed timestamps)
-  metrics_fanout.0 -> policy/no_debug_0.in: every kind (mixed timestamps)
-  policy/no_debug_0.true -> policy/no_debug_0_dropped.in: every kind (mixed timestamps)
-  policy/no_debug_0.false -> policy/strip_user.in: every kind (mixed timestamps)
-  metrics_fanout.1 -> policy/no_debug_1.in: every kind (mixed timestamps)
-  policy/no_debug_1.true -> policy/no_debug_1_dropped.in: every kind (mixed timestamps)
-  policy/no_debug_1.false -> metrics_routing_filter_0.in: every kind (mixed timestamps)
-  metrics_fanout.2 -> policy/no_debug_2.in: every kind (mixed timestamps)
-  policy/no_debug_2.true -> policy/no_debug_2_dropped.in: every kind (mixed timestamps)
-  policy/no_debug_2.false -> metrics_routing_filter_1.in: every kind (mixed timestamps)
-  metrics_fanout.3 -> policy/no_debug_3.in: every kind (mixed timestamps)
-  policy/no_debug_3.true -> policy/no_debug_3_dropped.in: every kind (mixed timestamps)
-  policy/no_debug_3.false -> policy/canary.in: every kind (mixed timestamps)
-  metrics_fanout.4 -> policy/no_debug_4.in: every kind (mixed timestamps)
-  policy/no_debug_4.true -> policy/no_debug_4_dropped.in: every kind (mixed timestamps)
-  policy/no_debug_4.false -> af_metrics_gateway.in: every kind (mixed timestamps)
-  policy/strip_user.out -> policy/only_known.in: every kind (mixed timestamps)
-  policy/only_known.true -> metrics_fanout_0.in: every kind (mixed timestamps)
-  policy/only_known.false -> policy/only_known_dropped.in: every kind (mixed timestamps)
-  policy/canary.true -> mrf_metrics_gateway.in: every kind (mixed timestamps)
-  policy/canary.false -> policy/canary_dropped.in: nothing (mixed timestamps)
+  metrics_fanout.0 -> no_debug_0.in: every kind (mixed timestamps)
+  no_debug_0.true -> no_debug_0_dropped.in: every kind (mixed timestamps)
+  no_debug_0.false -> strip_user.in: every kind (mixed timestamps)
+  metrics_fanout.1 -> no_debug_1.in: every kind (mixed timestamps)
+  no_debug_1.true -> no_debug_1_dropped.in: every kind (mixed timestamps)
+  no_debug_1.false -> metrics_routing_filter_0.in: every kind (mixed timestamps)
+  metrics_fanout.2 -> no_debug_2.in: every kind (mixed timestamps)
+  no_debug_2.true -> no_debug_2_dropped.in: every kind (mixed timestamps)
+  no_debug_2.false -> metrics_routing_filter_1.in: every kind (mixed timestamps)
+  metrics_fanout.3 -> no_debug_3.in: every kind (mixed timestamps)
+  no_debug_3.true -> no_debug_3_dropped.in: every kind (mixed timestamps)
+  no_debug_3.false -> canary.in: every kind (mixed timestamps)
+  metrics_fanout.4 -> no_debug_4.in: every kind (mixed timestamps)
+  no_debug_4.true -> no_debug_4_dropped.in: every kind (mixed timestamps)
+  no_debug_4.false -> af_metrics_gateway.in: every kind (mixed timestamps)
+  strip_user.out -> only_known.in: every kind (mixed timestamps)
+  only_known.true -> metrics_fanout_0.in: every kind (mixed timestamps)
+  only_known.false -> only_known_dropped.in: every kind (mixed timestamps)
+  canary.true -> mrf_metrics_gateway.in: every kind (mixed timestamps)
+  canary.false -> canary_dropped.in: nothing (mixed timestamps)
 
 outputs (6)
   dsd_client_telemetry
@@ -324,30 +324,30 @@ bounds (8)
 findings (0)
 
 rewrites (7)
-  R3 applied: policy/canary, policy/canary_dropped
-    justification constant: the predicate of `policy/canary` is the constant `true`, so every record leaves by `true`, and `false` carries nothing; the split becomes an edge from `policy/no_debug_3.false` to `mrf_metrics_gateway.in`; unreachable: `policy/canary_dropped` receives records only through `policy/canary.false`, so nothing reaches it; exits stay: no source, fence, stateful or dynamic operator, or declared output is removed; capacity: not relied on; every port left carries what it carried, in the same order, so the plan delivers, and under any capacity bound refuses, exactly what it did
-    telemetry removed policy/canary: `plan_node_events_total{component_id:policy/canary}` for ports `true` and `false`: the split is folded, and what its live port counted is counted at no node
-    telemetry removed policy/canary_dropped: `plan_loss_total{component_id:policy/canary_dropped, class:policy}`, zero before: nothing reaches it
-  R5a applied: policy/strip_user, policy/only_known, policy/only_known_dropped
-    justification reads and writes: `policy/only_known` (a `split` whose `false` port leads to `policy/only_known_dropped`) reads {name}, and for {counter, rate, gauge, set, histogram, distribution} `policy/strip_user` (`tag_projection`) writes {tags, origin_tags} and keeps the kind; every consumer: `policy/strip_user` has one output port, and it leads to the filter; stateless: `policy/strip_user` is a synchronous map, keeps no state, reads no signal, and is order-independent; moved `policy/only_known` whole above `policy/strip_user`
-    telemetry changed policy/strip_user: `plan_node_events_total` and the kernel's own series count only the records the filter keeps, since the filter now runs first
-  R6 applied: metrics_fanout, policy/no_debug_0, policy/no_debug_0_dropped, policy/no_debug_1, policy/no_debug_1_dropped, policy/no_debug_2, policy/no_debug_2_dropped, policy/no_debug_3, policy/no_debug_3_dropped, policy/no_debug_4, policy/no_debug_4_dropped, policy/no_debug_0_r6h0, policy/no_debug_0_dropped_r6h0
-    justification equivalent on all paths: each of the 5 ports of `metrics_fanout` leads directly to a filter, `policy/no_debug_0` (a `split` whose `true` port leads to `policy/no_debug_0_dropped`), `policy/no_debug_1` (a `split` whose `true` port leads to `policy/no_debug_1_dropped`), `policy/no_debug_2` (a `split` whose `true` port leads to `policy/no_debug_2_dropped`), `policy/no_debug_3` (a `split` whose `true` port leads to `policy/no_debug_3_dropped`), `policy/no_debug_4` (a `split` whose `true` port leads to `policy/no_debug_4_dropped`), and they remove the same records (drop condition {"has_tag":"debug"} in canonical form); nothing between: the filters are the `tee`'s direct targets; hoisted one copy, `policy/no_debug_0_r6h0`, above `metrics_fanout`, and removed the per-port filters, which would pass everything below it
+  R3 applied: canary, canary_dropped
+    justification constant: the predicate of `canary` is the constant `true`, so every record leaves by `true`, and `false` carries nothing; the split becomes an edge from `no_debug_3.false` to `mrf_metrics_gateway.in`; unreachable: `canary_dropped` receives records only through `canary.false`, so nothing reaches it; exits stay: no source, fence, stateful or dynamic operator, or declared output is removed; capacity: not relied on; every port left carries what it carried, in the same order, so the plan delivers, and under any capacity bound refuses, exactly what it did
+    telemetry removed canary: `plan_node_events_total{component_id:canary}` for ports `true` and `false`: the split is folded, and what its live port counted is counted at no node
+    telemetry removed canary_dropped: `plan_loss_total{component_id:canary_dropped, class:policy}`, zero before: nothing reaches it
+  R5a applied: strip_user, only_known, only_known_dropped
+    justification reads and writes: `only_known` (a `split` whose `false` port leads to `only_known_dropped`) reads {name}, and for {counter, rate, gauge, set, histogram, distribution} `strip_user` (`tag_projection`) writes {tags, origin_tags} and keeps the kind; every consumer: `strip_user` has one output port, and it leads to the filter; stateless: `strip_user` is a synchronous map, keeps no state, reads no signal, and is order-independent; moved `only_known` whole above `strip_user`
+    telemetry changed strip_user: `plan_node_events_total` and the kernel's own series count only the records the filter keeps, since the filter now runs first
+  R6 applied: metrics_fanout, no_debug_0, no_debug_0_dropped, no_debug_1, no_debug_1_dropped, no_debug_2, no_debug_2_dropped, no_debug_3, no_debug_3_dropped, no_debug_4, no_debug_4_dropped, no_debug_0_r6h0, no_debug_0_dropped_r6h0
+    justification equivalent on all paths: each of the 5 ports of `metrics_fanout` leads directly to a filter, `no_debug_0` (a `split` whose `true` port leads to `no_debug_0_dropped`), `no_debug_1` (a `split` whose `true` port leads to `no_debug_1_dropped`), `no_debug_2` (a `split` whose `true` port leads to `no_debug_2_dropped`), `no_debug_3` (a `split` whose `true` port leads to `no_debug_3_dropped`), `no_debug_4` (a `split` whose `true` port leads to `no_debug_4_dropped`), and they remove the same records (drop condition {"has_tag":"debug"} in canonical form); nothing between: the filters are the `tee`'s direct targets; hoisted one copy, `no_debug_0_r6h0`, above `metrics_fanout`, and removed the per-port filters, which would pass everything below it
     telemetry changed metrics_fanout: `plan_node_events_total`: every port counts only the records the hoisted filter keeps
-    telemetry removed policy/no_debug_0: `plan_node_events_total`: the hoisted filter `policy/no_debug_0_r6h0` reports its counts
-    telemetry removed policy/no_debug_0_dropped: `plan_loss_total`: the hoisted drop counts each removed record once
-    telemetry removed policy/no_debug_1: `plan_node_events_total`: the hoisted filter `policy/no_debug_0_r6h0` reports its counts
-    telemetry removed policy/no_debug_1_dropped: `plan_loss_total`: the hoisted drop counts each removed record once
-    telemetry removed policy/no_debug_2: `plan_node_events_total`: the hoisted filter `policy/no_debug_0_r6h0` reports its counts
-    telemetry removed policy/no_debug_2_dropped: `plan_loss_total`: the hoisted drop counts each removed record once
-    telemetry removed policy/no_debug_3: `plan_node_events_total`: the hoisted filter `policy/no_debug_0_r6h0` reports its counts
-    telemetry removed policy/no_debug_3_dropped: `plan_loss_total`: the hoisted drop counts each removed record once
-    telemetry removed policy/no_debug_4: `plan_node_events_total`: the hoisted filter `policy/no_debug_0_r6h0` reports its counts
-    telemetry removed policy/no_debug_4_dropped: `plan_loss_total`: the hoisted drop counts each removed record once
-    telemetry added policy/no_debug_0_r6h0: `plan_node_events_total`: the per-port counts of the hoisted filter
-    telemetry added policy/no_debug_0_dropped_r6h0: `plan_loss_total`: the policy loss of the hoisted filter
-  R7 applied: policy/only_known
-    justification operands pure: every leaf of the predicate of `policy/only_known` reads only the event and the plan's parameters, and its operator reads no signals; order: 1 junction reordered by the static cost order (const, kind_in, flag and is_empty, exact matches, prefix matches, tag scans), so the operand cheapest to decide is evaluated first; the canonical form, and with it R2 and the duplicate analysis, is unchanged; capacity: not relied on, and no record is routed differently
+    telemetry removed no_debug_0: `plan_node_events_total`: the hoisted filter `no_debug_0_r6h0` reports its counts
+    telemetry removed no_debug_0_dropped: `plan_loss_total`: the hoisted drop counts each removed record once
+    telemetry removed no_debug_1: `plan_node_events_total`: the hoisted filter `no_debug_0_r6h0` reports its counts
+    telemetry removed no_debug_1_dropped: `plan_loss_total`: the hoisted drop counts each removed record once
+    telemetry removed no_debug_2: `plan_node_events_total`: the hoisted filter `no_debug_0_r6h0` reports its counts
+    telemetry removed no_debug_2_dropped: `plan_loss_total`: the hoisted drop counts each removed record once
+    telemetry removed no_debug_3: `plan_node_events_total`: the hoisted filter `no_debug_0_r6h0` reports its counts
+    telemetry removed no_debug_3_dropped: `plan_loss_total`: the hoisted drop counts each removed record once
+    telemetry removed no_debug_4: `plan_node_events_total`: the hoisted filter `no_debug_0_r6h0` reports its counts
+    telemetry removed no_debug_4_dropped: `plan_loss_total`: the hoisted drop counts each removed record once
+    telemetry added no_debug_0_r6h0: `plan_node_events_total`: the per-port counts of the hoisted filter
+    telemetry added no_debug_0_dropped_r6h0: `plan_loss_total`: the policy loss of the hoisted filter
+  R7 applied: only_known
+    justification operands pure: every leaf of the predicate of `only_known` reads only the event and the plan's parameters, and its operator reads no signals; order: 1 junction reordered by the static cost order (const, kind_in, flag and is_empty, exact matches, prefix matches, tag scans), so the operand cheapest to decide is evaluated first; the canonical form, and with it R2 and the duplicate analysis, is unchanged; capacity: not relied on, and no record is routed differently
   R5b applied: dsd_agg, dsd_post_agg_filter
     justification path: `dsd_agg` feeds the filter `dsd_post_agg_filter` through `dsd_post_agg_filter_in`, which neither copies nor changes what it reads; reads: the filter reads {name, kind}, all known when a record is built; kinds: `dsd_agg` judges the records it emits of {rate, gauge, set, distribution} with the filter's predicate, as the filter receives them, and skips those its `false` port would drop; the filter stays for every other record, and state is unchanged, so every output is the same on every trace
     telemetry changed dsd_agg: it sends fewer records downstream: none that `dsd_post_agg_filter` drops, which count in `dsd_post_agg_filter`'s own series of its `false` port and its policy loss, as if it had received them
@@ -355,7 +355,7 @@ rewrites (7)
     telemetry changed dsd_post_agg_filter: `plan_node_events_total{component_id:dsd_post_agg_filter}` of its input counts fewer records: those `dsd_agg` suppresses
   R3 applied: mrf_metrics_gateway
     justification The predicate is constant given the resolved values of `multi_region_failover.enabled` and `multi_region_failover.metric_mirroring.enabled`: it is true for every event, so the compiled decision sends every metric to the `true` port without evaluating it. The plan keeps the node, and its `false` port's exit stays, idle; a new value of a binding changes only the next generation's program.
-  R4 applied: policy/no_debug_0_r6h0, metrics_fanout, metrics_routing_filter_0, metrics_routing_filter_1, mrf_metrics_gateway, af_metrics_gateway, policy/only_known
+  R4 applied: no_debug_0_r6h0, metrics_fanout, metrics_routing_filter_0, metrics_routing_filter_1, mrf_metrics_gateway, af_metrics_gateway, only_known
     justification The decision's predicates read only `name`, `tags`, and `kind`, which are context fields or the kind, and evaluating them is estimated to cost 87 ns per event, at least the 25 ns from which a lookup that hits saves several times what one that misses adds. Regions memoize the decision's exit set per context identity plus kind, in a direct-mapped memo of 4096 entries that belongs to one generation's program and evicts without allocating. Keying by the 64-bit context identity treats colliding contexts as one, as native aggregation does.
 
 frame
@@ -419,7 +419,7 @@ frame
       exit 5 mrf_metrics_encode -> output mrf_metrics_encode, idle
       exit 6 af_metrics_encode -> output af_metrics_encode, idle
     metrics_enrich (estimated 105 ns per event)
-      nodes metrics_in, metrics_host_enrichment, metrics, policy/no_debug_0_r6h0, policy/no_debug_0_dropped_r6h0, metrics_fanout, metrics_fanout_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false, policy/only_known, policy/only_known_dropped, policy/strip_user
+      nodes metrics_in, metrics_host_enrichment, metrics, no_debug_0_r6h0, no_debug_0_dropped_r6h0, metrics_fanout, metrics_fanout_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false, only_known, only_known_dropped, strip_user
       admission point 1: otlp_in.metrics -> metrics_in.1
       admission point 2: checks_ipc_in.metrics -> metrics_in.2
       admission point 3: liveness_in.metrics -> metrics_in.3
@@ -511,27 +511,27 @@ fusion (34)
 segments (6)
   admission point 0 dsd_in.metrics (admit)
     slots dsd_pre_aggregation, dsd_prefix_filter_region, dsd_no_agg_split_region, dsd_post_agg_filter_region, metrics_enrich
-    nodes dsd_enrich, dsd_prefix_filter_namespace_prefix, dsd_prefix_filter, dsd_prefix_filter_false, dsd_no_agg_split, dsd_tag_filterlist, dsd_post_agg_filter_in, dsd_post_agg_filter, dsd_post_agg_filter_false, dsd_post_agg_filter_fanout, dsd_post_agg_filter_fanout_0, metrics_in, metrics_host_enrichment, metrics, policy/no_debug_0_r6h0, policy/no_debug_0_dropped_r6h0, metrics_fanout, metrics_fanout_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false, policy/only_known, policy/only_known_dropped, policy/strip_user
+    nodes dsd_enrich, dsd_prefix_filter_namespace_prefix, dsd_prefix_filter, dsd_prefix_filter_false, dsd_no_agg_split, dsd_tag_filterlist, dsd_post_agg_filter_in, dsd_post_agg_filter, dsd_post_agg_filter_false, dsd_post_agg_filter_fanout, dsd_post_agg_filter_fanout_0, metrics_in, metrics_host_enrichment, metrics, no_debug_0_r6h0, no_debug_0_dropped_r6h0, metrics_fanout, metrics_fanout_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false, only_known, only_known_dropped, strip_user
     ends dsd_agg, output af_metrics_encode, output dd_metrics_encode, output dsd_client_telemetry, output metrics_routing_encode_0, output metrics_routing_encode_1, output mrf_metrics_encode
   admission point 1 otlp_in.metrics (admit)
     slots metrics_enrich
-    nodes metrics_in, metrics_host_enrichment, metrics, policy/no_debug_0_r6h0, policy/no_debug_0_dropped_r6h0, metrics_fanout, metrics_fanout_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false, policy/only_known, policy/only_known_dropped, policy/strip_user
+    nodes metrics_in, metrics_host_enrichment, metrics, no_debug_0_r6h0, no_debug_0_dropped_r6h0, metrics_fanout, metrics_fanout_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false, only_known, only_known_dropped, strip_user
     ends output af_metrics_encode, output dd_metrics_encode, output metrics_routing_encode_0, output metrics_routing_encode_1, output mrf_metrics_encode
   admission point 2 checks_ipc_in.metrics (admit)
     slots metrics_enrich
-    nodes metrics_in, metrics_host_enrichment, metrics, policy/no_debug_0_r6h0, policy/no_debug_0_dropped_r6h0, metrics_fanout, metrics_fanout_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false, policy/only_known, policy/only_known_dropped, policy/strip_user
+    nodes metrics_in, metrics_host_enrichment, metrics, no_debug_0_r6h0, no_debug_0_dropped_r6h0, metrics_fanout, metrics_fanout_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false, only_known, only_known_dropped, strip_user
     ends output af_metrics_encode, output dd_metrics_encode, output metrics_routing_encode_0, output metrics_routing_encode_1, output mrf_metrics_encode
   admission point 3 liveness_in.metrics (admit)
     slots metrics_enrich
-    nodes metrics_in, metrics_host_enrichment, metrics, policy/no_debug_0_r6h0, policy/no_debug_0_dropped_r6h0, metrics_fanout, metrics_fanout_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false, policy/only_known, policy/only_known_dropped, policy/strip_user
+    nodes metrics_in, metrics_host_enrichment, metrics, no_debug_0_r6h0, no_debug_0_dropped_r6h0, metrics_fanout, metrics_fanout_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false, only_known, only_known_dropped, strip_user
     ends output af_metrics_encode, output dd_metrics_encode, output metrics_routing_encode_0, output metrics_routing_encode_1, output mrf_metrics_encode
   admission point 4 trace_sampler.metrics (admit)
     slots metrics_enrich
-    nodes metrics_in, metrics_host_enrichment, metrics, policy/no_debug_0_r6h0, policy/no_debug_0_dropped_r6h0, metrics_fanout, metrics_fanout_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false, policy/only_known, policy/only_known_dropped, policy/strip_user
+    nodes metrics_in, metrics_host_enrichment, metrics, no_debug_0_r6h0, no_debug_0_dropped_r6h0, metrics_fanout, metrics_fanout_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false, only_known, only_known_dropped, strip_user
     ends output af_metrics_encode, output dd_metrics_encode, output metrics_routing_encode_0, output metrics_routing_encode_1, output mrf_metrics_encode
   output point 5 dsd_agg.out (time-driven)
     slots dsd_post_agg_filter_region, metrics_enrich
-    nodes dsd_post_agg_filter_in, dsd_post_agg_filter, dsd_post_agg_filter_false, dsd_post_agg_filter_fanout, dsd_post_agg_filter_fanout_0, metrics_in, metrics_host_enrichment, metrics, policy/no_debug_0_r6h0, policy/no_debug_0_dropped_r6h0, metrics_fanout, metrics_fanout_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false, policy/only_known, policy/only_known_dropped, policy/strip_user
+    nodes dsd_post_agg_filter_in, dsd_post_agg_filter, dsd_post_agg_filter_false, dsd_post_agg_filter_fanout, dsd_post_agg_filter_fanout_0, metrics_in, metrics_host_enrichment, metrics, no_debug_0_r6h0, no_debug_0_dropped_r6h0, metrics_fanout, metrics_fanout_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false, only_known, only_known_dropped, strip_user
     ends output af_metrics_encode, output dd_metrics_encode, output dsd_client_telemetry, output metrics_routing_encode_0, output metrics_routing_encode_1, output mrf_metrics_encode
 
 output bindings (6)

@@ -117,18 +117,15 @@ fn a_new_program_to_an_undeclared_output_is_refused_and_the_one_in_effect_drops_
         ComposeOutcome::Degraded(vec![DroppedEmits {
             target: DropTarget::Output(output("b")),
             reason: DropReason::Removed,
-            // The default program no longer has the node, so the artifact's is placed in the policy namespace.
-            nodes: vec![node_id("policy/emit_b")],
+            // The default program no longer has the node, so the artifact's is a node of its own.
+            nodes: vec![node_id("emit_b")],
         }])
     );
     assert_eq!(
         composed.notes().as_deref(),
         Some("output `b` is no longer declared; its emits are dropped until it returns")
     );
-    assert_eq!(
-        composed.plan.node(&node_id("policy/emit_b")).unwrap().op.as_str(),
-        names::DROP
-    );
+    assert_eq!(composed.plan.node(&node_id("emit_b")).unwrap().op.as_str(), names::DROP);
 
     // The output returns: the next composition restores the emit, as written.
     let restored = compose_into(&artifact, &program(&["a", "b"]), true).unwrap();

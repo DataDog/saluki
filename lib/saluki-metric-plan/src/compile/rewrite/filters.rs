@@ -7,14 +7,13 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    fmt::Write as _,
     str::FromStr,
 };
 
 use serde_json::{json, Value};
 
 use crate::{
-    ir::{Edge, Namespace, Node, NodeId, Plan, PortName, PortRef, MAX_IDENTIFIER_LEN},
+    ir::{Edge, Node, NodeId, Plan, PortName, PortRef, MAX_IDENTIFIER_LEN},
     model::{Field, FieldSet, Kind, KindSet, PortType},
     operators::{
         names, Boundary, Cardinality, ConfiguredOperator, OrderContract, PerKind, StateContract, TimestampMap,
@@ -188,8 +187,8 @@ impl Filter {
         }
     }
 
-    /// Describes the filter for a justification, such as ``policy/f` (a `split` whose `false` port leads to
-    /// `policy/f_drop`)`.
+    /// Describes the filter for a justification, such as ``f` (a `split` whose `false` port leads to
+    /// `f_drop`)`.
     pub fn describe(&self, graph: &Graph<'_>) -> String {
         let id = graph.id(self.node);
         match &self.form {
@@ -469,20 +468,15 @@ impl Edit {
         self.plan
     }
 
-    /// Returns a node ID that no node of the plan has, in the namespace of `base`, derived from it: `<base>_<tag><n>`,
-    /// with `base` shortened if the identifier would be too long.
+    /// Returns a node ID that no node of the plan has, derived from `base`: `<base>_<tag><n>`, with `base` shortened if
+    /// the identifier would be too long.
     pub fn fresh_id(&mut self, base: &NodeId, tag: &str) -> Option<NodeId> {
         let local = base.local().to_string();
         (0u32..).find_map(|n| {
             let suffix = format!("_{}{}", tag, n);
             let keep = MAX_IDENTIFIER_LEN.saturating_sub(suffix.len()).min(local.len());
             let stem = local[..keep].trim_end_matches('_');
-            let mut candidate = String::new();
-            if base.namespace() == Namespace::Policy {
-                candidate.push_str("policy/");
-            }
-            let _ = write!(candidate, "{}{}", stem, suffix);
-            let id = NodeId::from_str(&candidate).ok()?;
+            let id = NodeId::from_str(&format!("{}{}", stem, suffix)).ok()?;
             self.taken.insert(id.clone()).then_some(id)
         })
     }

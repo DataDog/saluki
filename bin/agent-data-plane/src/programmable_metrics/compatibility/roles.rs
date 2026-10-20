@@ -123,8 +123,7 @@ fn match_pattern(pattern: &str, name: &str) -> Option<Option<String>> {
 
 /// Returns the role of the node `node` running `operator`, if it has one.
 ///
-/// A role is keyed by the node's name as the plan writes it: a node in the policy namespace, written `policy/<name>`,
-/// has none.
+/// A role is keyed by the node's name and operator: a node named as the role says, running another operator, has none.
 pub fn of(node: &NodeId, operator: &str) -> Option<&'static Role> {
     let name = node.to_string();
     ROLES

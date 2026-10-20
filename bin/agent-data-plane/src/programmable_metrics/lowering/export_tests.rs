@@ -483,7 +483,7 @@ async fn the_export_notes_what_each_node_and_binding_of_the_default_program_is()
         .iter()
         .map(|(node, note)| (node.as_str(), note.as_str()))
         .collect::<Vec<_>>();
-    // Every reserved node lowering notes, in ID order, and each routing filter with its endpoints; terminals and
+    // Every node lowering notes, in ID order, and each routing filter with its endpoints; terminals and
     // sources have no note.
     assert_eq!(
         nodes,

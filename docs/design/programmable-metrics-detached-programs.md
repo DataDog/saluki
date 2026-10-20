@@ -337,6 +337,8 @@ it; the plan crate's fixtures do not, so its tests of bound artifacts keep runni
 
 ## 7. Step 4: one aggregation is the aggregation
 
+(Version 2's step V10 removed this adoption: a renamed aggregation is a new lineage, at a cut; amendment 199.)
+
 **Today.** Composition's `node_ids` (`compose.rs`) gives an artifact node its plan ID: the reserved ID when its local ID
 is a member of the scope's region, else `policy/<local>`. The installer's diff (`install/diff.rs`) keys a state
 owner's lineage by `LineageKey { node, contract }` (`compile/program.rs`), and `bind_lineages` retains state only for an

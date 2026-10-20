@@ -212,14 +212,11 @@ pub const DEFAULT_PROGRAM_SOURCES: [(&str, &str, SourceBinding); 5] = [
 ];
 
 /// Returns the catalog the host would declare for the default program: its outputs, the configuration bindings that
-/// lowering uses with their types and liveness, that the host runs at most one aggregation per program, and its
-/// telemetry contract ([`default_program_contract`]).
+/// lowering uses with their types and liveness, and its telemetry contract ([`default_program_contract`]).
 ///
 /// Binding names, types, and liveness are those of the host's binding registry, whose tests check that they agree.
 pub fn default_program_catalog() -> MemoryCatalog {
-    catalog_outputs_and_bindings()
-        .with_single_aggregation()
-        .with_telemetry_contract(default_program_contract())
+    catalog_outputs_and_bindings().with_telemetry_contract(default_program_contract())
 }
 
 /// Returns the telemetry contract the host declares for the default program: each series its remapper reads by node
@@ -388,16 +385,6 @@ pub fn catalog_for(plan: &Plan) -> MemoryCatalog {
         );
     }
     catalog
-}
-
-/// Returns `catalog` without the restriction to one aggregation per program, for tests of what placement and the
-/// runtime do with several state owners, which the plan crate supports.
-pub fn without_single_aggregation(catalog: MemoryCatalog) -> MemoryCatalog {
-    let mut document = serde_json::to_value(catalog).expect("catalogs are written as documents");
-    if let Some(members) = document.as_object_mut() {
-        members.remove("single_aggregation");
-    }
-    serde_json::from_value(document).expect("the catalog document reads back")
 }
 
 /// The outputs and bindings of [`default_program_catalog`].

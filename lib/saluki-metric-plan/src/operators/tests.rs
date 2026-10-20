@@ -1210,36 +1210,34 @@ fn kernel_specs_build_kernels() {
             .push(context.component().component_id().to_string());
         Ok(Box::new(Passthrough) as Box<dyn Kernel>)
     });
-    let reserved = KernelBuildContext::detached(&"dsd_tag_filterlist".parse().unwrap());
-    let policy = KernelBuildContext::detached(&"policy/my_filter".parse().unwrap());
+    let lowered = KernelBuildContext::detached(&"dsd_tag_filterlist".parse().unwrap());
+    let authored = KernelBuildContext::detached(&"my_filter".parse().unwrap());
     let in_topology = KernelBuildContext::new(
-        "policy/my_filter".parse().unwrap(),
+        "my_filter".parse().unwrap(),
         ComponentContext::transform(
             &SubsystemIdentifier::from_segments(["topology", "primary"]),
             ComponentId::try_from("metrics_enrich").unwrap(),
         ),
     );
-    assert!(spec.build(&reserved).is_ok());
-    assert!(spec.clone().build(&policy).is_ok());
+    assert!(spec.build(&lowered).is_ok());
+    assert!(spec.clone().build(&authored).is_ok());
     assert!(spec.build(&in_topology).is_ok());
+    // Every node reports under its own name, whoever wrote it.
     assert_eq!(
         *built_for.lock().unwrap(),
-        vec!["dsd_tag_filterlist", "policy_my_filter", "metrics_enrich"]
+        vec!["dsd_tag_filterlist", "my_filter", "metrics_enrich"]
     );
-    assert_eq!(policy.node().to_string(), "policy/my_filter");
-    assert_eq!(policy.component().component_type(), ComponentType::Transform);
-    assert_eq!(
-        policy.component().identity().to_string(),
-        "plan.transforms.policy_my_filter"
-    );
-    assert_eq!(in_topology.node(), policy.node());
+    assert_eq!(authored.node().to_string(), "my_filter");
+    assert_eq!(authored.component().component_type(), ComponentType::Transform);
+    assert_eq!(authored.component().identity().to_string(), "plan.transforms.my_filter");
+    assert_eq!(in_topology.node(), authored.node());
 
     let failing = KernelSpec::new(|_| {
         Err(KernelBuildError {
             message: "the pattern `(` does not compile".to_string(),
         })
     });
-    let error = failing.build(&reserved).err().unwrap();
+    let error = failing.build(&lowered).err().unwrap();
     assert_eq!(
         error.to_string(),
         "Failed to build the kernel: the pattern `(` does not compile"
@@ -1450,7 +1448,7 @@ fn every_kernel_factory_builds_inside_a_current_thread_tokio_context() {
     for (op, value) in samples() {
         let configured = configure(op, value.clone());
         let Some(spec) = configured.kernel() else { continue };
-        for node in ["dsd_node", "policy/node"] {
+        for node in ["dsd_node", "node"] {
             let context = KernelBuildContext::detached(&node.parse().unwrap());
             if let Err(error) = spec.build(&context) {
                 panic!("{} {} built for {}: {}", op, value, node, error);
@@ -1642,7 +1640,7 @@ fn kernels_are_built_from_their_nodes_parameters() {
 }
 
 #[test]
-fn kernels_report_native_telemetry_under_the_component_they_are_built_for() {
+fn kernels_report_their_telemetry_under_the_name_of_the_node_they_are_built_for() {
     let runtime = runtime();
     let _context = runtime.enter();
     let recorder = saluki_metrics::test::TestRecorder::default();
@@ -1662,18 +1660,15 @@ fn kernels_report_native_telemetry_under_the_component_they_are_built_for() {
         Some(1)
     );
 
-    // Tag projection's rule telemetry, and its memo, named after its component unless the host names it otherwise.
+    // Tag projection's rule telemetry, and its memo, named after its node unless the host names it otherwise, whoever
+    // named the node.
     for (node, component, memo) in [
         (
             "dsd_tag_filterlist",
             "dsd_tag_filterlist",
             "dsd_tag_filterlist/tag_filterlist/context_cache",
         ),
-        (
-            "policy/projection",
-            "policy_projection",
-            "policy_projection/tag_filterlist/context_cache",
-        ),
+        ("projection", "projection", "projection/tag_filterlist/context_cache"),
     ] {
         run_kernel(
             "tag_projection",

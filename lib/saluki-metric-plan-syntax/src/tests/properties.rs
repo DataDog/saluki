@@ -964,7 +964,7 @@ impl TreeBuilder {
         let from = format!("{}.{}", parent, port);
         let terminal = |builder: &mut Self, inline: bool| {
             if inline {
-                let parent = NodeId::reserved(LocalId::new(parent).unwrap());
+                let parent = NodeId::new(LocalId::new(parent).unwrap());
                 derived_terminal_id(&parent, &PortName::new(port).unwrap()).to_string()
             } else {
                 builder.fresh()

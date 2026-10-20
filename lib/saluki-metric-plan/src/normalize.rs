@@ -67,15 +67,15 @@ pub fn normalize_artifact_with_renames(
         node.params = normalize_params_with(&node.op, &node.params, Some(&artifact.blobs));
     }
 
-    // Rule 4, over the artifact's graph, with each artifact node standing for the reserved node of its local ID, as
-    // composition makes it.
+    // Rule 4, over the artifact's graph, with each artifact node standing for the plan node of its ID, as composition
+    // makes it.
     let ids = normalized
         .nodes
         .iter()
-        .map(|node| NodeId::reserved(node.id.to_local_id()))
+        .map(|node| NodeId::new(node.id.to_local_id()))
         .collect::<Vec<_>>();
     let end = |port: &ArtifactPortRef| match port {
-        ArtifactPortRef::Node { node, port } => Some(PortRef::new(NodeId::reserved(node.to_local_id()), port.clone())),
+        ArtifactPortRef::Node { node, port } => Some(PortRef::new(NodeId::new(node.to_local_id()), port.clone())),
         ArtifactPortRef::Input(_) => None,
     };
     let edges = normalized
@@ -102,7 +102,7 @@ pub fn normalize_artifact_with_renames(
     let renamed = |id: &ArtifactNodeId| {
         flips
             .renames
-            .get(&NodeId::reserved(id.to_local_id()))
+            .get(&NodeId::new(id.to_local_id()))
             .and_then(|new| ArtifactNodeId::new(new.local().as_str()).ok())
     };
     for flip in &flips.splits {

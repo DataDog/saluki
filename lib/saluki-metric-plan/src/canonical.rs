@@ -491,18 +491,18 @@ mod tests {
         let input = r#"{
             "ir_version": 1,
             "nodes": [
-                {"op": "split", "id": "policy/drop_debug",
+                {"op": "split", "id": "drop_debug",
                  "params": {"predicate": {"name": {"prefix": "demo.debug."}}}},
                 {"id": "dd_metrics_encode_emit", "op": "emit", "params": {"output": "dd_metrics_encode"}}
             ],
-            "edges": [{"to": "policy/drop_debug.in", "from": "metrics_policy.0"}],
+            "edges": [{"to": "drop_debug.in", "from": "metrics_policy.0"}],
             "outputs": [{"id": "dd_metrics_encode", "accepts": {"timestamps": "mixed", "kinds": "all"},
                          "recipients": ["dd_out/primary"], "delivery": "native",
                          "fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000"}]
         }"#;
         let expected = concat!(
-            r#"{"edges":[{"from":"metrics_policy.0","to":"policy/drop_debug.in"}],"ir_version":1,"#,
-            r#""nodes":[{"id":"policy/drop_debug","op":"split","#,
+            r#"{"edges":[{"from":"metrics_policy.0","to":"drop_debug.in"}],"ir_version":1,"#,
+            r#""nodes":[{"id":"drop_debug","op":"split","#,
             r#""params":{"predicate":{"name":{"prefix":"demo.debug."}}}},"#,
             r#"{"id":"dd_metrics_encode_emit","op":"emit","params":{"output":"dd_metrics_encode"}}],"#,
             r#""outputs":[{"accepts":{"kinds":"all","timestamps":"mixed"},"delivery":"native","#,
@@ -516,7 +516,7 @@ mod tests {
     }
 
     const CROSS_IMPLEMENTATION_FIXTURE_HASH: &str =
-        "sha256:32f1e3297bda99263f865eadd86db10d29d9ca07ef16082f9d1359cfa9108dd8";
+        "sha256:9ef6a27587c82d87341ede075adab17454645d950a983a19d73faa5017b5dd2d";
 
     #[test]
     fn plan_hashes_round_trip_through_strings() {

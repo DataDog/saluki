@@ -274,68 +274,34 @@ impl ArtifactNodeId {
     }
 }
 
-/// The namespace a node identifier belongs to.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum Namespace {
-    /// Identifiers assigned by lowering native configuration. They derive from native component identifiers.
-    Reserved,
+const NODE_ID_PATTERN: &str = "^[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}$";
 
-    /// Identifiers of nodes added by a policy artifact, which can therefore never collide with reserved ones.
-    Policy,
-}
+/// The prefix node IDs had when artifact nodes were in a namespace of their own, which plans no longer accept.
+const REMOVED_POLICY_PREFIX: &str = "policy/";
 
-const POLICY_PREFIX: &str = "policy/";
-const NODE_ID_PATTERN: &str = "^(?:policy/)?[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}$";
-
-/// The identifier of a node: a namespace and a local identifier.
+/// The identifier of a node: its name, which `let` gives in a program and lowering gives in the default program.
 ///
-/// Serialized as the local identifier alone for the reserved namespace, and as `policy/<local>` for the policy
-/// namespace.
+/// A node's ID is also its telemetry identity: its kernel reports under it. Serialized as the identifier.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct NodeId {
-    namespace: Namespace,
     local: LocalId,
 }
 
 impl NodeId {
-    /// Creates a node identifier in the reserved namespace.
-    pub fn reserved(local: LocalId) -> Self {
-        Self {
-            namespace: Namespace::Reserved,
-            local,
-        }
+    /// Creates a node identifier.
+    pub fn new(local: LocalId) -> Self {
+        Self { local }
     }
 
-    /// Creates a node identifier in the policy namespace.
-    pub fn policy(local: LocalId) -> Self {
-        Self {
-            namespace: Namespace::Policy,
-            local,
-        }
-    }
-
-    /// Returns the namespace.
-    pub fn namespace(&self) -> Namespace {
-        self.namespace
-    }
-
-    /// Returns the local identifier.
+    /// Returns the identifier.
     pub fn local(&self) -> &LocalId {
         &self.local
-    }
-
-    /// Returns `true` if this identifier is in the reserved namespace.
-    pub fn is_reserved(&self) -> bool {
-        self.namespace == Namespace::Reserved
     }
 }
 
 impl fmt::Display for NodeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.namespace {
-            Namespace::Reserved => write!(f, "{}", self.local),
-            Namespace::Policy => write!(f, "{}{}", POLICY_PREFIX, self.local),
-        }
+        write!(f, "{}", self.local)
     }
 }
 
@@ -343,22 +309,24 @@ impl FromStr for NodeId {
     type Err = IdError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let (namespace, local) = match value.strip_prefix(POLICY_PREFIX) {
-            Some(local) => (Namespace::Policy, local),
-            None => (Namespace::Reserved, value),
-        };
-        if !is_identifier(local) {
+        if value.starts_with(REMOVED_POLICY_PREFIX) {
             return Err(invalid(
                 "node ID",
                 value,
-                "node IDs are an identifier, optionally prefixed with `policy/`; identifiers start with a lowercase \
-                 ASCII letter and contain only lowercase letters, digits, and single underscores between them, up to \
-                 63 characters",
+                "node IDs have no namespace since version 2 of programmable metrics: a node's ID is its name, written \
+                 without the `policy/` prefix",
+            ));
+        }
+        if !is_identifier(value) {
+            return Err(invalid(
+                "node ID",
+                value,
+                "node IDs are identifiers, which start with a lowercase ASCII letter and contain only lowercase \
+                 letters, digits, and single underscores between them, up to 63 characters",
             ));
         }
         Ok(Self {
-            namespace,
-            local: LocalId(local.to_string()),
+            local: LocalId(value.to_string()),
         })
     }
 }
@@ -366,8 +334,8 @@ impl FromStr for NodeId {
 string_serde!(
     NodeId,
     NODE_ID_PATTERN,
-    (POLICY_PREFIX.len() + MAX_IDENTIFIER_LEN) as u32,
-    "A node ID: an identifier, prefixed with `policy/` for nodes in the policy namespace."
+    MAX_IDENTIFIER_LEN as u32,
+    "A node ID: an identifier, the node's name."
 );
 
 const PORT_NAME_PATTERN: &str = "^(?:[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}|0|[1-9][0-9]{0,3})$";
@@ -448,7 +416,7 @@ string_serde!(
 );
 
 const PORT_REF_PATTERN: &str =
-    "^(?:policy/)?[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}\\.(?:[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}|0|[1-9][0-9]{0,3})$";
+    "^[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}\\.(?:[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}|0|[1-9][0-9]{0,3})$";
 
 /// A reference to one port of one node, serialized as `<node>.<port>`.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -494,7 +462,7 @@ impl FromStr for PortRef {
 string_serde!(
     PortRef,
     PORT_REF_PATTERN,
-    (POLICY_PREFIX.len() + MAX_IDENTIFIER_LEN + 1 + MAX_IDENTIFIER_LEN) as u32,
+    (MAX_IDENTIFIER_LEN + 1 + MAX_IDENTIFIER_LEN) as u32,
     "A port reference: `<node>.<port>`."
 );
 
@@ -503,7 +471,6 @@ const ARTIFACT_PORT_REF_PATTERN: &str =
 
 /// A reference to a port within a policy artifact, serialized as `input.<name>` or `<node>.<port>`.
 ///
-/// Artifact nodes are named by local identifiers, because composing the artifact into a plan decides their namespace.
 /// The host's sources are named by the `binding` of their `source` nodes: an edge leaves a source as
 /// `input.dogstatsd`. Whether the host has the source is checked when the artifact is composed into a plan.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -753,7 +720,7 @@ string_serde!(
 ///
 /// Surface syntax lets a port lead directly to a terminal, as in `true -> emit my_output` or `false -> drop`, without
 /// naming the terminal node. Every producer of plans derives those names with this one function, so the same plan
-/// always gets the same node identifiers. The result is in the parent's namespace.
+/// always gets the same node identifiers.
 ///
 /// The identifier is `<parent>_<port>`. When that would be longer than an identifier may be, it is shortened to a
 /// prefix of it followed by `_` and eight hexadecimal digits of a SHA-256 digest of the full `<parent>_<port>`, so
@@ -780,15 +747,13 @@ pub fn derived_terminal_id(parent: &NodeId, port: &PortName) -> NodeId {
     };
 
     debug_assert!(is_identifier(&local), "derived terminal IDs are identifiers: {}", local);
-    NodeId {
-        namespace: parent.namespace(),
-        local: LocalId(local),
-    }
+    NodeId { local: LocalId(local) }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ir::Plan;
 
     #[test]
     fn identifier_grammar() {
@@ -829,46 +794,54 @@ mod tests {
     }
 
     #[test]
-    fn node_ids_parse_their_namespace() {
-        // (serialized, namespace, local); `None` means invalid.
-        let cases: &[(&str, Option<(Namespace, &str)>)] = &[
-            ("dsd_in", Some((Namespace::Reserved, "dsd_in"))),
-            ("policy/my_filter", Some((Namespace::Policy, "my_filter"))),
-            ("policy/policy", Some((Namespace::Policy, "policy"))),
-            ("policy", Some((Namespace::Reserved, "policy"))),
-            // Only the policy namespace has a prefix, and the local part must still be an identifier.
-            ("reserved/dsd_in", None),
-            ("policy/", None),
-            ("policy/Bad", None),
-            ("policy/policy/a", None),
-            ("Policy/a", None),
-            ("/a", None),
-            ("a_", None),
+    fn node_ids_are_identifiers() {
+        // (serialized, valid)
+        let cases: &[(&str, bool)] = &[
+            ("dsd_in", true),
+            ("policy", true),
+            ("my_filter", true),
+            ("reserved/dsd_in", false),
+            ("Policy/a", false),
+            ("/a", false),
+            ("a_", false),
         ];
 
-        for (serialized, expected) in cases {
+        for (serialized, valid) in cases {
             let parsed = serialized.parse::<NodeId>();
-            match expected {
-                Some((namespace, local)) => {
-                    let id = parsed.unwrap_or_else(|e| panic!("{:?} should parse: {}", serialized, e));
-                    assert_eq!(id.namespace(), *namespace, "{:?}", serialized);
-                    assert_eq!(id.local().as_str(), *local, "{:?}", serialized);
-                    assert_eq!(id.to_string(), *serialized, "round trip of {:?}", serialized);
-                }
-                None => assert!(parsed.is_err(), "{:?} should be rejected", serialized),
+            if *valid {
+                let id = parsed.unwrap_or_else(|e| panic!("{:?} should parse: {}", serialized, e));
+                assert_eq!(id.local().as_str(), *serialized);
+                assert_eq!(id.to_string(), *serialized, "round trip of {:?}", serialized);
+            } else {
+                assert!(parsed.is_err(), "{:?} should be rejected", serialized);
             }
         }
     }
 
     #[test]
+    fn node_ids_in_the_removed_policy_namespace_are_refused_naming_the_change() {
+        for serialized in ["policy/my_filter", "policy/", "policy/policy/a"] {
+            let error = serialized.parse::<NodeId>().unwrap_err().to_string();
+            assert!(error.contains("without the `policy/` prefix"), "{}", error);
+        }
+        let error = serde_json::from_value::<Plan>(serde_json::json!({
+            "ir_version": 1,
+            "nodes": [{"id": "policy/drop_debug", "op": "drop"}],
+            "edges": [],
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("Invalid node ID `policy/drop_debug`"), "{}", error);
+        assert!(error.contains("no namespace"), "{}", error);
+        assert!("policy/routing.true".parse::<PortRef>().is_err());
+    }
+
+    #[test]
     fn node_ids_serialize_as_strings() {
-        let id = NodeId::policy(LocalId::new("drop_debug").unwrap());
+        let id = NodeId::new(LocalId::new("drop_debug").unwrap());
+        assert_eq!(serde_json::to_value(&id).unwrap(), serde_json::json!("drop_debug"));
         assert_eq!(
-            serde_json::to_value(&id).unwrap(),
-            serde_json::json!("policy/drop_debug")
-        );
-        assert_eq!(
-            serde_json::from_value::<NodeId>(serde_json::json!("policy/drop_debug")).unwrap(),
+            serde_json::from_value::<NodeId>(serde_json::json!("drop_debug")).unwrap(),
             id
         );
 
@@ -906,10 +879,10 @@ mod tests {
 
     #[test]
     fn port_refs_split_at_the_first_period() {
-        let port = "policy/routing.true".parse::<PortRef>().unwrap();
-        assert_eq!(port.node, NodeId::policy(LocalId::new("routing").unwrap()));
+        let port = "routing.true".parse::<PortRef>().unwrap();
+        assert_eq!(port.node, NodeId::new(LocalId::new("routing").unwrap()));
         assert_eq!(port.port.as_str(), "true");
-        assert_eq!(port.to_string(), "policy/routing.true");
+        assert_eq!(port.to_string(), "routing.true");
 
         let port = "metrics_policy.0".parse::<PortRef>().unwrap();
         assert_eq!(port.port.as_index(), Some(0));
@@ -932,7 +905,7 @@ mod tests {
                 port: PortName::new("in").unwrap(),
             }
         );
-        // Artifact nodes are local: a namespace prefix is not allowed.
+        // Node IDs have no namespace.
         assert!("policy/x.in".parse::<ArtifactPortRef>().is_err());
         // A source is named, never numbered.
         assert!("input.0".parse::<ArtifactPortRef>().is_err());
@@ -988,33 +961,27 @@ mod tests {
 
     #[test]
     fn derived_terminal_ids_join_parent_and_port() {
-        let parent = NodeId::reserved(LocalId::new("metrics_routing_filter_0").unwrap());
+        let parent = NodeId::new(LocalId::new("metrics_routing_filter_0").unwrap());
         let id = derived_terminal_id(&parent, &PortName::new("true").unwrap());
         assert_eq!(id.to_string(), "metrics_routing_filter_0_true");
 
-        let parent = NodeId::policy(LocalId::new("fanout").unwrap());
+        let parent = NodeId::new(LocalId::new("fanout").unwrap());
         let id = derived_terminal_id(&parent, &PortName::index(2).unwrap());
-        assert_eq!(id.to_string(), "policy/fanout_2", "the parent's namespace is kept");
+        assert_eq!(id.to_string(), "fanout_2");
     }
 
     #[test]
     fn long_derived_terminal_ids_are_shortened_with_a_digest() {
         let long = format!("a{}", "b".repeat(MAX_IDENTIFIER_LEN - 1));
-        let parent = NodeId::reserved(LocalId::new(long.clone()).unwrap());
+        let parent = NodeId::new(LocalId::new(long.clone()).unwrap());
         let on_true = derived_terminal_id(&parent, &PortName::new("true").unwrap());
         let on_false = derived_terminal_id(&parent, &PortName::new("false").unwrap());
 
-        // Reserved IDs must not change between releases. The expected IDs were computed independently, with Python:
+        // Derived IDs must not change between releases. The expected IDs were computed independently, with Python:
         // `full[:54] + "_" + hashlib.sha256(full.encode()).hexdigest()[:8]` for `full = "a" + "b" * 62 + "_true"`, and
         // likewise for `_false`.
         assert_eq!(on_true.to_string(), format!("a{}_3c6e0fb7", "b".repeat(53)));
         assert_eq!(on_false.to_string(), format!("a{}_08eae15a", "b".repeat(53)));
-        // The digest covers the local identifier only, so the namespace never changes it.
-        let policy = derived_terminal_id(
-            &NodeId::policy(LocalId::new(long.clone()).unwrap()),
-            &PortName::new("true").unwrap(),
-        );
-        assert_eq!(policy.to_string(), format!("policy/a{}_3c6e0fb7", "b".repeat(53)));
 
         for id in [&on_true, &on_false] {
             let local = id.local().as_str();
@@ -1025,7 +992,7 @@ mod tests {
         assert_ne!(on_true, on_false, "the digest keeps distinct ports distinct");
 
         // Shortening never leaves a doubled underscore where the prefix is cut.
-        let parent = NodeId::reserved(LocalId::new(format!("{}_{}", "a".repeat(53), "b".repeat(9))).unwrap());
+        let parent = NodeId::new(LocalId::new(format!("{}_{}", "a".repeat(53), "b".repeat(9))).unwrap());
         let id = derived_terminal_id(&parent, &PortName::new("true").unwrap());
         assert!(is_identifier(id.local().as_str()), "{}", id);
         assert!(id.local().as_str().starts_with(&format!("{}_", "a".repeat(53))));

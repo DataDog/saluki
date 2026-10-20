@@ -1348,7 +1348,7 @@ fn refused() -> Vec<Refused> {
                 vec![config(revision, &artifact)]
             },
             error: |_, _| {
-                "the plan is not valid: error[valid_parameters] node `policy/agg`: `aggregate` parameter `window`: \
+                "the plan is not valid: error[valid_parameters] node `agg`: `aggregate` parameter `window`: \
                  missing required parameter"
                     .to_string()
             },
@@ -1356,9 +1356,9 @@ fn refused() -> Vec<Refused> {
             authentic: true,
         },
         Refused {
-            // A second state owner with every parameter: ADP runs one aggregation per program, so validation refuses
-            // it at its node, wherever it is.
-            what: "a second aggregation",
+            // A second state owner with every parameter is valid, but in front of the main output: the policy region
+            // runs ahead of no isolation slot, so placement refuses it with the capability it lacks.
+            what: "a second aggregation after enrichment",
             configs: |export, revision| {
                 let mut artifact = export.clone();
                 let node = json!({"id": "agg", "op": "aggregate", "params": {
@@ -1376,8 +1376,11 @@ fn refused() -> Vec<Refused> {
                 vec![config(revision, &artifact)]
             },
             error: |_, _| {
-                "the plan is not valid: error[single_aggregation] node `policy/agg`: a program has at most one \
-                 aggregation; `policy/agg` is a second one (`dsd_agg` is the first)"
+                "The candidate plan cannot run in the physical structure built at boot: node `agg`: it is a state \
+                 owner, which runs only in an isolation slot that the region its input comes from has an exit to, and \
+                 the topology built at boot has no such isolation slot for `metrics_enrich`: a new exit from a region \
+                 to an isolation slot requires stage 10 frame changes: the physical structure is built from the \
+                 default program at boot, so a restart does not add it."
                     .to_string()
             },
             read: true,
@@ -1809,7 +1812,7 @@ async fn an_artifact_that_panics_falls_back_to_last_known_good_and_then_to_the_d
     let mut lost = BTreeSet::new();
     // Whether a batch lost to a panic in the artifact's node still reaches the tap; the first artifact, which differs
     // only in what it panics on, runs where the second does.
-    let tapped = tap_apart_from(&installed, "policy/faulty");
+    let tapped = tap_apart_from(&installed, "faulty");
 
     // Within its panic budget, the second artifact's generation survives each panic: the region loses the batch that
     // panicked, as a native component's restart would, rebuilds its kernels, and processes the next batch.
@@ -1822,7 +1825,7 @@ async fn an_artifact_that_panics_falls_back_to_last_known_good_and_then_to_the_d
     // generation kept as last-known-good, which runs the first artifact. The process keeps running.
     lost.insert(harness.feed(&[KEPT, PANIC_B]));
     let rolled_back = harness.status_where(|status| active(status) == Some(2)).await;
-    let reason = "it exceeded its panic budget, with 4 panics, the last in node `policy/faulty`";
+    let reason = "it exceeded its panic budget, with 4 panics, the last in node `faulty`";
     assert_eq!(
         record(&rolled_back, 3),
         Some((GenerationState::Failed, Some(reason.to_string())))
@@ -1836,7 +1839,7 @@ async fn an_artifact_that_panics_falls_back_to_last_known_good_and_then_to_the_d
         (active_revision(&rolled_back), rolled_back.installer.revision_high_water),
         (Some(1), Some(2))
     );
-    assert_eq!(tap_apart_from(&rolled_back, "policy/faulty"), tapped);
+    assert_eq!(tap_apart_from(&rolled_back, "faulty"), tapped);
     // The first artifact passes what the second panicked on.
     assert_eq!(harness.send_names(&[KEPT, PANIC_B]).await, Some(2));
 
@@ -1999,7 +2002,7 @@ async fn a_native_node_that_panics_beside_an_artifact_is_the_programs_and_charge
         Some((ApplyState::Active, Some(1), Some(2)))
     );
     // Both nodes run in one region, so the tap runs apart from both or from neither.
-    let tapped = tap_apart_from(&running, "policy/faulty");
+    let tapped = tap_apart_from(&running, "faulty");
     assert_eq!(tap_apart_from(&running, "native_fault"), tapped);
 
     // Every batch arrived exactly once, as the artifact delivers it, but the two lost to panics, which no output

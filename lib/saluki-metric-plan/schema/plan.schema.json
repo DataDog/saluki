@@ -345,11 +345,11 @@
       "additionalProperties": false
     },
     "NodeId": {
-      "description": "A node ID: an identifier, prefixed with `policy/` for nodes in the policy namespace.",
+      "description": "A node ID: an identifier, the node's name.",
       "type": "string",
-      "maxLength": 70,
+      "maxLength": 63,
       "minLength": 1,
-      "pattern": "^(?:policy/)?[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}$"
+      "pattern": "^[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}$"
     },
     "OperatorName": {
       "description": "An operator name.",
@@ -537,9 +537,9 @@
     "PortRef": {
       "description": "A port reference: `<node>.<port>`.",
       "type": "string",
-      "maxLength": 134,
+      "maxLength": 127,
       "minLength": 1,
-      "pattern": "^(?:policy/)?[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}\\.(?:[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}|0|[1-9][0-9]{0,3})$"
+      "pattern": "^[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}\\.(?:[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}|0|[1-9][0-9]{0,3})$"
     },
     "PortType": {
       "description": "The type of the records a port carries: their kinds and their timestamp form.",

@@ -87,7 +87,7 @@ remove both, so that a program may aggregate wherever and as often as it means t
 
 ### Where the limit is
 
-From the most superficial to the most basic:
+From the most superficial to the most basic (V10 removed the first two; V7a removes the third):
 
 1. **A validation rule.** `single_aggregation` (amendment 169, `validate/state.rs`), which ADP's catalog turns on.
    Placement alone accepts a second `aggregate` on the timestamp split's passthrough branch, in the one isolation slot.
@@ -143,12 +143,13 @@ places wherever the frame can run it, which is the passthrough branch today.
 `dsd_agg`, or with a `dsd_agg` of the wrong operator, gets the warnings; the differential tests against native mode
 compare remapped output, unchanged.
 
-**Visible change:** a node an author adds reports component series under its name, where today it reports none. List
-it with the status document's changes users can see when V10 is built.
+**Visible change:** a node an author adds reports component series under its name, where before V10 it reported none;
+the status document's [changes users can see](programmable-metrics-status.md#changes-users-can-see) lists it with the
+rest of V10's.
 
-**Owner question:** with identity by name, renaming an aggregation is a new lineage, a cut that starts its state over.
-Amendment 182 retained state across a rename. Accept the cut, or key a lineage by the elaborated program's structure
-rather than its name, which V6 would have to define.
+**Owner question, decided** (2026-10-19): with identity by name, renaming an aggregation is a new lineage, a cut that
+starts its state over, where amendment 182 retained state across a rename. The owner accepted the cut, rather than
+keying a lineage by the elaborated program's structure (amendment 199).
 
 ### V7a: state owners in any region
 
@@ -203,8 +204,7 @@ for N5's shedding.
 what does nothing and in addressing emits to recipients; V6's elaboration may make one of them the only form.
 `program.differs` names default-program nodes; V4 kept it.
 
-**Left by V4 and V5, for later:** node IDs in an artifact are still `policy/<local>` and a node named `dsd_agg` still
-adopts the reserved ID, until V10. Scope declarations, `base`, and `scope` are gone (a document that has one is refused
+**Left by V4 and V5, for later:** scope declarations, `base`, and `scope` are gone (a document that has one is refused
 by name), and `exit` stays a reserved word with no use. (The split between an unmodified export's `Plan::hash` and the
 default program's is resolved by V6.)
 
@@ -217,6 +217,13 @@ bindings resolved, while compilation and kernels read the core plan; compilation
 (R3) once another rewrite has applied. The export keeps its two forms; `compose` and `Composed` are names for
 `elaborate` and `Elaborated`.
 
+**Left by V10, for later:** the telemetry contract now exists, so the core form could leave out what does nothing (V6's
+item above) and say, through the contract's warnings, which series that loses; nothing does yet. The rewrite harness
+tells an author's nodes from native ones by name (`a_<local>`) and gives every native filter a contract entry, so that
+R5a and R6 move it only whole, as the namespace did. The release notes written before version 2 still say that a
+program has at most one aggregation (and name the `metrics` scope); they were never shipped, and are rewritten when
+version 2's notes are.
+
 | Step | State | Commit |
 |---|---|---|
 | V1 | not started (V2 went first: opaque hosts carry about 50 tests of the frame and the interpreter's re-admission, which V7 and V8 rework anyway) | |
@@ -224,12 +231,12 @@ bindings resolved, while compilation and kernels read the core plan; compilation
 | V3 | done: amendment 196 | `e6599d63f3` |
 | V4 | done: amendment 197 | `53cd99b576` |
 | V5 | done: amendment 197 | `53cd99b576` |
-| V6 | done: amendment 198 | (V6 commit) |
+| V6 | done: amendment 198 | `9fb3990648` |
 | V7a | not started | |
 | V7b | not started | |
 | V8 | not started | |
 | V9 | not started | |
-| V10 | not started | |
+| V10 | done: amendment 199 | `7b1e126d16` (additive), `64fe645ca9` (wiring), (V10 commit) (deletions) |
 
 ## Handing off
 
@@ -280,39 +287,44 @@ document's [changes users can see](programmable-metrics-status.md#changes-users-
 and a section of the [log](programmable-metrics-log.md) saying what went, what replaced it, how the tests moved, and
 the results.
 
-### The next step: V10
+### The next step: V7a
 
-**Names and a compatibility analysis** ([telemetry contracts as an analysis](#v10-telemetry-contracts-as-an-analysis)).
-V10's additive half is committed (`7b1e126d16`: operator reports, the telemetry contract, compatibility roles); the
-wiring half (the `dsd_prefix_filter` rename in lowering, the catalog's telemetry contract, telemetry by name, validation
-findings, `keeps_identity` in the filter rewrites) runs beside V6. What remains is the deletion half: node IDs are
-names, and what only native identity needed goes.
+**State owners in any region** ([state owners in any region](#v7a-state-owners-in-any-region)), with its four design
+items. V10 left every state owner valid wherever it is: a second aggregation validates, carries its own name and
+telemetry, and starts its own lineage, but placement still runs one only in an isolation slot of the boot frame (the
+timestamp split's passthrough branch today), and refuses one after enrichment, after another aggregation, or over a
+second source with `MissingCapability::FrameChanges`.
 
-Where to start:
+The design, as planned:
 
-- `lib/saluki-metric-plan/src/ir/id.rs`: `Namespace`, `NodeId::{reserved, policy, namespace, is_reserved}`, and the
-  `policy/` prefix go; `NodeId::new(LocalId)` replaces them, serialized as the bare identifier, and `Plan::from_json`
-  refuses `policy/x` with a message naming the change. Callers: `normalize.rs`, `export.rs`, `elaborate.rs` (`node_ids`,
-  `partial_emit`), `ir/plan.rs`, the syntax crate's `ids.rs`, `compile/rewrite/{harness.rs, filters.rs}`, ADP
-  `lowering/mod.rs`, `installer.rs`, and `topology.rs` (which asks the plan's `native_components` instead).
-- `lib/saluki-metric-plan/src/elaborate.rs`: amendment 182's adoption (`the_aggregation`, and the `aggregation`
-  parameter of `node_ids`) goes; a renamed aggregation is a new lineage, removed and added at a cut.
-- `single_aggregation` (amendment 169): `validate/state.rs`, `Rule::SingleAggregation`, `Catalog::single_aggregation`,
-  `MemoryCatalog`'s member and `with_single_aggregation`, ADP `catalog.rs`, the plan crate's `testing`, and the demo's
-  `export.rs`, `reference.rs`, and `scenario/`. A stale `single_aggregation` key in a catalog document is ignored.
-- Naming by namespace: `operators/mod.rs` (`detached`), `compile/frame.rs` (`component_name`), `runtime/bounds.rs`
-  (`kernel_accounting_name`, `kernel_accounting_path`), and ADP `telemetry.rs` (`component`): a node reports under its
-  ID as a transform and accounts under `<region>.<node>`.
-- ADP status gains `telemetry: ContractReport` for the active plan; the `#[allow(dead_code, unused_imports)]` on `mod
-  compatibility` goes.
-- Tests that invert: `install/program_tests.rs`'s `the_one_aggregation_keeps_the_default_programs_id_and_lineage_...`
-  becomes a test that a renamed aggregation starts a new lineage at a cut, and ADP's lifecycle tests likewise; `policy/`
-  in the rewrite, explain, normalize, compose, and install tests, and in the demo's `preview/tests.rs` and
-  `scenario/destinations.rs`.
+- **Regions.** A boot state owner keeps its slot, so the default program's layout, lanes, telemetry, and N1's baseline
+  are unchanged. Any other state owner runs in a **sub-region**: a task inside the component of the slot placement
+  gives it, like a lane (its own driver, input channel, control queue, and resource group `<slot>.<node>`), fed through
+  an internal exit, created when a generation that has it prepares and retired with the last such generation. Within a
+  slot, placement partitions nodes into regions in topological order, edges going only to higher regions.
+- **Watermark over several sources.** The minimum over the owner's upstream points; every routed admission point
+  heartbeats every second, so an idle source never delays a tick; resets per clock (the one-point rule for a clock of
+  one point, the reset window for one of several lanes).
+- **Chains.** A state owner's output is a derived point with its own output clock (one per owner, not per slot); a
+  downstream owner admits a derived batch before the ticks its header releases; an upstream owner heartbeats its
+  output point at every tick. A retained owner upstream of a cut owner makes a boundary flush at the cut's time, and
+  the cut lines up with its width.
+- **Cuts keyed by node.** `CutPlan` drops `slots()`; its affected points are those upstream of every affected owner in
+  either generation, through derived points; a state owner whose region or upstream points change is cut; heartbeats
+  and lock order stop reading `feeds_state`.
+- **Lanes.** Unchanged: a boot state slot keeps its state lanes; a sub-region runs on one lane. With lanes on, a state
+  owner fed by an owner on several lanes, or over several clocks one of which has several points, is refused, each
+  liftable later.
 
-V6 left the core plan as V10's input: node IDs are resolved in one place (`elaborate::node_ids`), and kernel keys and
-the plan diff read the core plan's parameters directly. Then V7a ([state owners in any
-region](#v7a-state-owners-in-any-region)).
+Where it lands: `compile/{frame,placement,program}.rs` (`SlotKind`, `Slot::is_isolation`, `feeds_state`,
+`state_upstream`, and the frame's state-owner errors go; per-generation region placements with upstream points),
+`runtime/code.rs` (the `isolation` check becomes "state steps for at most one node"), `runtime/{driver.rs,
+driver/isolation.rs, state/rules.rs}` (per-node output clocks, the watermark over clocks, boundary flushes), the
+interpreter (`interpret/{mod,program,state}.rs`, the oracle), `install/{diff,core}.rs` (cuts by node, derived points),
+`saluki-core`'s region host (sub-regions), and ADP's `topology.rs`, `telemetry.rs`, and `installer.rs` (heartbeats on
+every point, sub-region budgets). The new transition traces each run in the interpreter and on a frame harness with
+sub-regions: two sources, a second aggregation after enrichment, a chain in steady state, and cuts through a chain.
+Status invariants 4 and 5 lose their state clauses.
 
 ### Also deferred by the owner
 

@@ -76,7 +76,6 @@ fn the_default_program_exports_as_the_derived_artifact() {
             "input.trace_sampler -> metrics_in.4",
         ]
     );
-    assert!(catalog.single_aggregation());
 
     // The bundle is written as the protocol describes it, and reads back.
     let document = serde_json::to_value(&bundle).unwrap();
@@ -88,7 +87,6 @@ fn the_default_program_exports_as_the_derived_artifact() {
     assert_eq!(document["export_version"], json!(2));
     assert_eq!(document["labels"], json!({"dd_metrics_encode": "Primary"}));
     assert_eq!(document["catalog"], serde_json::to_value(&catalog).unwrap());
-    assert_eq!(document["catalog"]["single_aggregation"], json!(true));
     assert_eq!(serde_json::from_value::<ExportBundle>(document).unwrap(), bundle);
 
     // Labels are left out when there are none.
@@ -358,8 +356,8 @@ fn programs_that_cannot_be_written_as_artifacts_are_not_exported() {
             "local ID that artifact nodes cannot have",
         ),
         (
-            "two nodes with one local ID",
-            |plan| rename(plan, "metrics_fanout_0", "policy/metrics_fanout"),
+            "two nodes with one ID",
+            |plan| rename(plan, "metrics_fanout_0", "metrics_fanout"),
             "the local ID `metrics_fanout`",
         ),
     ];

@@ -48,7 +48,7 @@ use snafu::Snafu;
 
 use crate::{
     extension::TransitionClass,
-    ir::{decode_params, DecodedParams, Namespace, NodeId, ParamError, ParamSpec, Params},
+    ir::{decode_params, DecodedParams, NodeId, ParamError, ParamSpec, Params},
     model::PortType,
 };
 
@@ -454,15 +454,11 @@ impl KernelBuildContext {
 
     /// Creates a context for building the kernel of `node` outside any topology.
     ///
-    /// The kernel is reported as a transform named after the node, `<local>` for a reserved node and `policy_<local>`
-    /// for a node in the policy namespace, in a topology named `plan`.
+    /// The kernel is reported as a transform named after the node, by its ID, in a topology named `plan`.
     pub fn detached(node: &NodeId) -> Self {
-        let name = match node.namespace() {
-            Namespace::Reserved => node.local().to_string(),
-            Namespace::Policy => format!("policy_{}", node.local()),
-        };
-        // Local identifiers start with a letter and never end with an underscore, so they are valid component IDs.
-        let component_id = ComponentId::try_from(name.as_str()).expect("node identifiers are valid component IDs");
+        // Identifiers start with a letter and never end with an underscore, so they are valid component IDs.
+        let component_id =
+            ComponentId::try_from(node.local().as_str()).expect("node identifiers are valid component IDs");
         let topology = SubsystemIdentifier::from_segments([DETACHED_TOPOLOGY]);
         Self::new(node.clone(), ComponentContext::transform(&topology, component_id))
     }
