@@ -5,7 +5,7 @@ services that the Agent queries. This crate provides those pieces, so that each 
 truly its own.</p>
 <h2 id="conventions"><a class="doc-anchor" href="#conventions">§</a>Conventions</h2>
 <p>Constructors don’t spawn tasks. Long-running work is returned as a
-<a href="../saluki_core/runtime/supervisable/trait.Supervisable.html" title="trait saluki_core::runtime::supervisable::Supervisable"><code>Supervisable</code></a> worker or <a href="../saluki_core/runtime/supervisor/struct.Supervisor.html" title="struct saluki_core::runtime::supervisor::Supervisor"><code>Supervisor</code></a> for
+[<code>Supervisable</code>][saluki_core::runtime::Supervisable] worker or [<code>Supervisor</code>][saluki_core::runtime::Supervisor] for
 the caller to place in its supervision tree.</p>
 <p><a href="remote_agent/struct.RemoteAgentBootstrap.html" title="struct datadog_agent_runtime::remote_agent::RemoteAgentBootstrap"><code>RemoteAgentBootstrap</code></a> is the one exception for now. Registration has to
 finish before the supervision tree exists, so <a href="remote_agent/struct.RemoteAgentBootstrap.html#method.new" title="associated function datadog_agent_runtime::remote_agent::RemoteAgentBootstrap::new"><code>RemoteAgentBootstrap::new</code></a>
