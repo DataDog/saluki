@@ -70,7 +70,7 @@ fn assert_matches_interpreter(harness: &mut FrameHarness, plan: &Plan, run: &cra
     }
     for node in harness.drops_in_slots(plan) {
         assert_eq!(
-            harness.telemetry().loss(&node.to_string(), LossClass::Policy),
+            harness.telemetry().drop_loss(&node.to_string(), LossClass::Policy),
             run.loss(&node).loss(LossClass::Policy).points,
             "policy loss of `{}`",
             node
@@ -862,11 +862,19 @@ proptest! {
         cuts.sort_unstable();
         let batches = batches(&metrics, &cuts);
         let install = install.map(|index| index.index(batches.len()));
+        // Batch `position` is admitted in second `1_000 + position`, but with `hold`, the batch after `install` shares
+        // batch `install`'s second: it overtakes what batch `install` sends between regions, so that a host below
+        // re-admits that after it, and an admission point's clock, which never goes back, stamps both alike, as the
+        // interpreter, which runs each batch whole, stamps them.
+        let admitted_at = |position: usize| {
+            let overtakes = hold && install.is_some_and(|install| install + 1 == position);
+            AdmissionTime::from_unix_secs(1_000 + position as u64 - u64::from(overtakes))
+        };
 
         // The interpreter: the second plan installed after batch `install`, if any.
         let mut trace = Trace::new().install(first.clone());
         for (position, (source, batch)) in batches.iter().enumerate() {
-            trace = trace.admit(id(source), AdmissionTime::from_unix_secs(1_000 + position as u64), batch.clone());
+            trace = trace.admit(id(source), admitted_at(position), batch.clone());
             if install == Some(position) {
                 trace = trace.install(second.clone());
             }
@@ -884,6 +892,7 @@ proptest! {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
         let _guard = runtime.enter();
         let mut harness = FrameHarness::new(&first, &first_report, registry);
+        let first_drops = harness.drops_in_slots(&first);
         let mut plan = &first;
         for (position, (source, batch)) in batches.into_iter().enumerate() {
             if install == Some(position) {
@@ -892,7 +901,7 @@ proptest! {
             if install == Some(position) && hold {
                 harness.hold_between_slots();
             }
-            harness.admit(source, AdmissionTime::from_unix_secs(1_000 + position as u64), batch);
+            harness.admit(source, admitted_at(position), batch);
             if install.is_some_and(|install| install + 1 == position) {
                 harness.release();
             }
@@ -909,11 +918,12 @@ proptest! {
         if let Err(mismatch) = compare(&OutputPoints::from_run(&run), harness.outputs()) {
             prop_assert!(false, "region drivers differ from the interpreter:\n{}", mismatch);
         }
-        // Without an install, every drop's policy loss matches; with one, the counters of a drop add up over both
-        // generations, as the interpreter's do.
-        for node in harness.drops_in_slots(plan) {
+        // Without an install, every drop's policy loss matches; with one, the counters of a drop that runs in a slot in
+        // both generations add up over both, as the interpreter's do. A drop that one generation's rewrites remove,
+        // as R5a and R6 remove the filters they copy, reports that generation's loss through other drops.
+        for node in harness.drops_in_slots(plan).into_iter().filter(|node| first_drops.contains(node)) {
             prop_assert_eq!(
-                harness.telemetry().loss(&node.to_string(), LossClass::Policy),
+                harness.telemetry().drop_loss(&node.to_string(), LossClass::Policy),
                 run.loss(&node).loss(LossClass::Policy).points,
                 "policy loss of `{}`", node
             );
@@ -1131,7 +1141,7 @@ proptest! {
             }
             for node in harness.drops_in_slots(&plan) {
                 prop_assert_eq!(
-                    harness.telemetry().loss(&node.to_string(), LossClass::Policy),
+                    harness.telemetry().drop_loss(&node.to_string(), LossClass::Policy),
                     run.loss(&node).loss(LossClass::Policy).points,
                     "policy loss of `{}` with {}", node, configuration
                 );

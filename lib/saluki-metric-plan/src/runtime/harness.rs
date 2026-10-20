@@ -124,6 +124,22 @@ impl RecordingTelemetry {
         self.value(component, &format!("class:{}", loss_class_name(class)))
     }
 
+    /// Returns the points the `drop` node `drop` lost in `class`, with those of the drops R5a copied from it: R5a's
+    /// copies of a filter report the loss of what they remove under their own names, `<drop>_r5a<n>`, and so do copies
+    /// of copies.
+    pub fn drop_loss(&self, drop: &str, class: LossClass) -> u64 {
+        let (tag, copies) = (format!("class:{}", loss_class_name(class)), format!("{}_r5a", drop));
+        self.counters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|((component, counter_tag), _)| {
+                *counter_tag == tag && (component == drop || component.starts_with(&copies))
+            })
+            .map(|(_, counter)| counter.load(Ordering::Relaxed))
+            .sum()
+    }
+
     /// Returns the events `node` sent on `port`.
     pub fn port_events(&self, node: &str, port: &str) -> u64 {
         self.value(node, &format!("port:{}", port))
