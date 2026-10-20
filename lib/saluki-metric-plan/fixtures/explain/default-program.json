@@ -2,7 +2,7 @@
   "explain_version": 4,
   "plan": {
     "ir_version": 1,
-    "hash": "sha256:55cabe6395b26e4c7c2e3f4b352f0c29432d8d7772d811fa84b32cb3febb7951",
+    "hash": "sha256:1798b3175c20bd63fbb7dd6e690ef845e46d5dcba2076166c9f7d0554a63e52a",
     "provenance": {
       "native_components": {
         "af_metrics_gateway_false": "af_metrics_gateway",
@@ -11,9 +11,8 @@
         "dsd_post_agg_filter_fanout": "dsd_client_telemetry_out",
         "dsd_post_agg_filter_fanout_0": "dsd_client_telemetry_out",
         "dsd_post_agg_filter_in": "dsd_post_agg_filter",
-        "dsd_prefix_filter_blocklist": "dsd_prefix_filter",
-        "dsd_prefix_filter_blocklist_false": "dsd_prefix_filter",
-        "dsd_prefix_filter_blocklist_namespace_prefix": "dsd_prefix_filter",
+        "dsd_prefix_filter_false": "dsd_prefix_filter",
+        "dsd_prefix_filter_namespace_prefix": "dsd_prefix_filter",
         "metrics": "metrics_enrich",
         "metrics_fanout": "metrics_enrich",
         "metrics_fanout_0": "dd_metrics_encode",
@@ -216,12 +215,12 @@
               ],
               "timestamps": "mixed"
             },
-            "to": "dsd_prefix_filter_blocklist_namespace_prefix.in"
+            "to": "dsd_prefix_filter_namespace_prefix.in"
           }
         ]
       },
       {
-        "id": "dsd_prefix_filter_blocklist_namespace_prefix",
+        "id": "dsd_prefix_filter_namespace_prefix",
         "op": "namespace_prefix",
         "boundary": "synchronous",
         "state": "none",
@@ -257,12 +256,12 @@
               ],
               "timestamps": "mixed"
             },
-            "to": "dsd_prefix_filter_blocklist.in"
+            "to": "dsd_prefix_filter.in"
           }
         ]
       },
       {
-        "id": "dsd_prefix_filter_blocklist",
+        "id": "dsd_prefix_filter",
         "op": "split",
         "boundary": "synchronous",
         "state": "none",
@@ -284,7 +283,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "from": "dsd_prefix_filter_blocklist_namespace_prefix.out"
+            "from": "dsd_prefix_filter_namespace_prefix.out"
           }
         ],
         "outputs": [
@@ -314,7 +313,7 @@
               ],
               "timestamps": "mixed"
             },
-            "to": "dsd_prefix_filter_blocklist_false.in"
+            "to": "dsd_prefix_filter_false.in"
           }
         ]
       },
@@ -335,7 +334,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "from": "dsd_prefix_filter_blocklist.true"
+            "from": "dsd_prefix_filter.true"
           }
         ],
         "outputs": [
@@ -692,7 +691,7 @@
         "outputs": []
       },
       {
-        "id": "dsd_prefix_filter_blocklist_false",
+        "id": "dsd_prefix_filter_false",
         "op": "drop",
         "boundary": "synchronous",
         "state": "none",
@@ -708,7 +707,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "from": "dsd_prefix_filter_blocklist.false"
+            "from": "dsd_prefix_filter.false"
           }
         ],
         "outputs": []
@@ -1359,7 +1358,7 @@
       },
       {
         "from": "dsd_enrich.out",
-        "to": "dsd_prefix_filter_blocklist_namespace_prefix.in",
+        "to": "dsd_prefix_filter_namespace_prefix.in",
         "port_type": {
           "kinds": [
             "counter",
@@ -1372,8 +1371,8 @@
         }
       },
       {
-        "from": "dsd_prefix_filter_blocklist_namespace_prefix.out",
-        "to": "dsd_prefix_filter_blocklist.in",
+        "from": "dsd_prefix_filter_namespace_prefix.out",
+        "to": "dsd_prefix_filter.in",
         "port_type": {
           "kinds": [
             "counter",
@@ -1386,7 +1385,7 @@
         }
       },
       {
-        "from": "dsd_prefix_filter_blocklist.true",
+        "from": "dsd_prefix_filter.true",
         "to": "dsd_no_agg_split.in",
         "port_type": {
           "kinds": [
@@ -1523,8 +1522,8 @@
         }
       },
       {
-        "from": "dsd_prefix_filter_blocklist.false",
-        "to": "dsd_prefix_filter_blocklist_false.in",
+        "from": "dsd_prefix_filter.false",
+        "to": "dsd_prefix_filter_false.in",
         "port_type": {
           "kinds": [
             "counter",

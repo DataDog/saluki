@@ -2,7 +2,7 @@ explain_version 4
 
 plan
   ir_version 1
-  hash sha256:bb5566de2d9d6f8e5825e5ec41c6b39f9e80e18ea3dce89be9e101f3f94c8d3a
+  hash sha256:369472b45d9390d310eb6eb66263cd3cff1976ed223001d978d6fab7b2d5ba9f
   valid: 0 errors, 0 warnings
 
 nodes (30)
@@ -27,23 +27,23 @@ nodes (30)
     param profiles = [{"mappings":[{"match":"raw.requests.*","match_type":"wildcard","name":"mapped.requests","tags":[{"name":"route","value":"$1"}]}],"name":"checkout","prefix":"raw."}]
     param string_interner_bytes = 65536
     in in <- dsd_in.metrics, accepts every kind (mixed timestamps)
-    out out -> dsd_prefix_filter_blocklist_namespace_prefix.in, carries counter, gauge, set, histogram, distribution (mixed timestamps)
-  dsd_prefix_filter_blocklist_namespace_prefix: namespace_prefix [synchronous, state none]
+    out out -> dsd_prefix_filter_namespace_prefix.in, carries counter, gauge, set, histogram, distribution (mixed timestamps)
+  dsd_prefix_filter_namespace_prefix: namespace_prefix [synchronous, state none]
     param exclusions = ["internal.","system."]
     param namespace = "tenant"
     in in <- dsd_enrich.out, accepts every kind (mixed timestamps)
-    out out -> dsd_prefix_filter_blocklist.in, carries counter, gauge, set, histogram, distribution (mixed timestamps)
-  dsd_prefix_filter_blocklist: split [synchronous, state none]
+    out out -> dsd_prefix_filter.in, carries counter, gauge, set, histogram, distribution (mixed timestamps)
+  dsd_prefix_filter: split [synchronous, state none]
     param predicate = {"not":{"intake_name":{"eq":"tenant.raw.blocked"}}}
-    in in <- dsd_prefix_filter_blocklist_namespace_prefix.out, accepts every kind (mixed timestamps)
+    in in <- dsd_prefix_filter_namespace_prefix.out, accepts every kind (mixed timestamps)
     out true -> dsd_no_agg_split.in, carries counter, gauge, set, histogram, distribution (mixed timestamps)
-    out false -> dsd_prefix_filter_blocklist_false.in, carries counter, gauge, set, histogram, distribution (mixed timestamps)
-  dsd_prefix_filter_blocklist_false: drop [synchronous, state none]
+    out false -> dsd_prefix_filter_false.in, carries counter, gauge, set, histogram, distribution (mixed timestamps)
+  dsd_prefix_filter_false: drop [synchronous, state none]
     loss policy
-    in in <- dsd_prefix_filter_blocklist.false, accepts every kind (mixed timestamps)
+    in in <- dsd_prefix_filter.false, accepts every kind (mixed timestamps)
   dsd_no_agg_split: timestamp_split [synchronous, state none]
     param window = "10s"
-    in in <- dsd_prefix_filter_blocklist.true, accepts every kind (mixed timestamps)
+    in in <- dsd_prefix_filter.true, accepts every kind (mixed timestamps)
     out default -> dsd_tag_filterlist.in, carries counter, gauge, set, histogram, distribution (untimestamped)
     out passthrough -> dsd_post_agg_filter_in.1, carries rate, gauge, set, histogram, distribution (timestamped)
   dsd_tag_filterlist: tag_projection [synchronous, state none]
@@ -159,10 +159,10 @@ nodes (30)
 
 edges (30)
   dsd_in.metrics -> dsd_enrich.in: counter, gauge, set, histogram, distribution (mixed timestamps)
-  dsd_enrich.out -> dsd_prefix_filter_blocklist_namespace_prefix.in: counter, gauge, set, histogram, distribution (mixed timestamps)
-  dsd_prefix_filter_blocklist_namespace_prefix.out -> dsd_prefix_filter_blocklist.in: counter, gauge, set, histogram, distribution (mixed timestamps)
-  dsd_prefix_filter_blocklist.false -> dsd_prefix_filter_blocklist_false.in: counter, gauge, set, histogram, distribution (mixed timestamps)
-  dsd_prefix_filter_blocklist.true -> dsd_no_agg_split.in: counter, gauge, set, histogram, distribution (mixed timestamps)
+  dsd_enrich.out -> dsd_prefix_filter_namespace_prefix.in: counter, gauge, set, histogram, distribution (mixed timestamps)
+  dsd_prefix_filter_namespace_prefix.out -> dsd_prefix_filter.in: counter, gauge, set, histogram, distribution (mixed timestamps)
+  dsd_prefix_filter.false -> dsd_prefix_filter_false.in: counter, gauge, set, histogram, distribution (mixed timestamps)
+  dsd_prefix_filter.true -> dsd_no_agg_split.in: counter, gauge, set, histogram, distribution (mixed timestamps)
   dsd_no_agg_split.default -> dsd_tag_filterlist.in: counter, gauge, set, histogram, distribution (untimestamped)
   dsd_tag_filterlist.out -> dsd_agg.in: counter, gauge, set, histogram, distribution (untimestamped)
   dsd_agg.out -> dsd_post_agg_filter_in.0: rate, gauge, set, distribution (timestamped)
@@ -268,8 +268,8 @@ frame
       exit 5 mrf_metrics_encode -> output mrf_metrics_encode, idle
       exit 6 af_metrics_encode -> output af_metrics_encode, idle
     dsd_prefix_filter_region (estimated 110 ns per event)
-      nodes dsd_prefix_filter_blocklist_namespace_prefix, dsd_prefix_filter_blocklist, dsd_prefix_filter_blocklist_false
-      entry 0: dsd_enrich.out -> dsd_prefix_filter_blocklist_namespace_prefix.in
+      nodes dsd_prefix_filter_namespace_prefix, dsd_prefix_filter, dsd_prefix_filter_false
+      entry 0: dsd_enrich.out -> dsd_prefix_filter_namespace_prefix.in
       exit 0 dsd_no_agg_split_region -> dsd_no_agg_split_region, progress of admission points 0
       exit 1 dsd_client_telemetry -> output dsd_client_telemetry, idle
       exit 2 dd_metrics_encode -> output dd_metrics_encode, idle
@@ -279,7 +279,7 @@ frame
       exit 6 af_metrics_encode -> output af_metrics_encode, idle
     dsd_no_agg_split_region (estimated 25 ns per event)
       nodes dsd_no_agg_split, dsd_tag_filterlist
-      entry 0: dsd_prefix_filter_blocklist.true -> dsd_no_agg_split.in
+      entry 0: dsd_prefix_filter.true -> dsd_no_agg_split.in
       exit 0 dsd_agg -> dsd_agg, progress of admission points 0
       exit 1 dsd_post_agg_filter_region -> dsd_post_agg_filter_region
       exit 2 dsd_client_telemetry -> output dsd_client_telemetry, idle
@@ -372,10 +372,10 @@ frame
 
 fusion (30)
   dsd_in.metrics -> dsd_enrich.in: fence (`dsd_in` is an io_host, a fence that fusion never crosses)
-  dsd_enrich.out -> dsd_prefix_filter_blocklist_namespace_prefix.in: pipelined (fusing would make one region cost more than 110 ns per event, the cost model's budget: slots `dsd_pre_aggregation` and `dsd_prefix_filter_region` pipeline)
-  dsd_prefix_filter_blocklist_namespace_prefix.out -> dsd_prefix_filter_blocklist.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_prefix_filter_region`)
-  dsd_prefix_filter_blocklist.false -> dsd_prefix_filter_blocklist_false.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_prefix_filter_region`)
-  dsd_prefix_filter_blocklist.true -> dsd_no_agg_split.in: pipelined (fusing would make one region cost more than 110 ns per event, the cost model's budget: slots `dsd_prefix_filter_region` and `dsd_no_agg_split_region` pipeline)
+  dsd_enrich.out -> dsd_prefix_filter_namespace_prefix.in: pipelined (fusing would make one region cost more than 110 ns per event, the cost model's budget: slots `dsd_pre_aggregation` and `dsd_prefix_filter_region` pipeline)
+  dsd_prefix_filter_namespace_prefix.out -> dsd_prefix_filter.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_prefix_filter_region`)
+  dsd_prefix_filter.false -> dsd_prefix_filter_false.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_prefix_filter_region`)
+  dsd_prefix_filter.true -> dsd_no_agg_split.in: pipelined (fusing would make one region cost more than 110 ns per event, the cost model's budget: slots `dsd_prefix_filter_region` and `dsd_no_agg_split_region` pipeline)
   dsd_no_agg_split.default -> dsd_tag_filterlist.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_no_agg_split_region`)
   dsd_tag_filterlist.out -> dsd_agg.in: isolation (the edge enters or leaves the isolation slot `dsd_agg`, which runs its state owner alone)
   dsd_agg.out -> dsd_post_agg_filter_in.0: isolation (the edge enters or leaves the isolation slot `dsd_agg`, which runs its state owner alone)
@@ -405,7 +405,7 @@ fusion (30)
 segments (10)
   admission point 0 dsd_in.metrics (admit)
     slots dsd_pre_aggregation, dsd_prefix_filter_region, dsd_no_agg_split_region, dsd_post_agg_filter_region, metrics_enrich
-    nodes dsd_enrich, dsd_prefix_filter_blocklist_namespace_prefix, dsd_prefix_filter_blocklist, dsd_prefix_filter_blocklist_false, dsd_no_agg_split, dsd_tag_filterlist, dsd_post_agg_filter_in, dsd_post_agg_filter, dsd_post_agg_filter_false, dsd_post_agg_filter_fanout, dsd_post_agg_filter_fanout_0, metrics_in, metrics_host_enrichment, metrics, metrics_fanout, metrics_fanout_0
+    nodes dsd_enrich, dsd_prefix_filter_namespace_prefix, dsd_prefix_filter, dsd_prefix_filter_false, dsd_no_agg_split, dsd_tag_filterlist, dsd_post_agg_filter_in, dsd_post_agg_filter, dsd_post_agg_filter_false, dsd_post_agg_filter_fanout, dsd_post_agg_filter_fanout_0, metrics_in, metrics_host_enrichment, metrics, metrics_fanout, metrics_fanout_0
     ends af_metrics_gateway, dsd_agg, metrics_routing_filter_0, metrics_routing_filter_1, mrf_metrics_gateway, output dd_metrics_encode, output dsd_client_telemetry
   admission point 1 otlp_in.metrics (admit)
     slots metrics_enrich

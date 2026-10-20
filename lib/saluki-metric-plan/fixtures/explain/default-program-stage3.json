@@ -2,7 +2,7 @@
   "explain_version": 4,
   "plan": {
     "ir_version": 1,
-    "hash": "sha256:bb5566de2d9d6f8e5825e5ec41c6b39f9e80e18ea3dce89be9e101f3f94c8d3a",
+    "hash": "sha256:369472b45d9390d310eb6eb66263cd3cff1976ed223001d978d6fab7b2d5ba9f",
     "provenance": {
       "native_components": {
         "af_metrics_gateway_false": "af_metrics_gateway",
@@ -11,9 +11,8 @@
         "dsd_post_agg_filter_fanout": "dsd_client_telemetry_out",
         "dsd_post_agg_filter_fanout_0": "dsd_client_telemetry_out",
         "dsd_post_agg_filter_in": "dsd_post_agg_filter",
-        "dsd_prefix_filter_blocklist": "dsd_prefix_filter",
-        "dsd_prefix_filter_blocklist_false": "dsd_prefix_filter",
-        "dsd_prefix_filter_blocklist_namespace_prefix": "dsd_prefix_filter",
+        "dsd_prefix_filter_false": "dsd_prefix_filter",
+        "dsd_prefix_filter_namespace_prefix": "dsd_prefix_filter",
         "metrics": "metrics_enrich",
         "metrics_fanout": "metrics_enrich",
         "metrics_fanout_0": "dd_metrics_encode",
@@ -216,12 +215,12 @@
               ],
               "timestamps": "mixed"
             },
-            "to": "dsd_prefix_filter_blocklist_namespace_prefix.in"
+            "to": "dsd_prefix_filter_namespace_prefix.in"
           }
         ]
       },
       {
-        "id": "dsd_prefix_filter_blocklist_namespace_prefix",
+        "id": "dsd_prefix_filter_namespace_prefix",
         "op": "namespace_prefix",
         "boundary": "synchronous",
         "state": "none",
@@ -257,12 +256,12 @@
               ],
               "timestamps": "mixed"
             },
-            "to": "dsd_prefix_filter_blocklist.in"
+            "to": "dsd_prefix_filter.in"
           }
         ]
       },
       {
-        "id": "dsd_prefix_filter_blocklist",
+        "id": "dsd_prefix_filter",
         "op": "split",
         "boundary": "synchronous",
         "state": "none",
@@ -284,7 +283,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "from": "dsd_prefix_filter_blocklist_namespace_prefix.out"
+            "from": "dsd_prefix_filter_namespace_prefix.out"
           }
         ],
         "outputs": [
@@ -314,12 +313,12 @@
               ],
               "timestamps": "mixed"
             },
-            "to": "dsd_prefix_filter_blocklist_false.in"
+            "to": "dsd_prefix_filter_false.in"
           }
         ]
       },
       {
-        "id": "dsd_prefix_filter_blocklist_false",
+        "id": "dsd_prefix_filter_false",
         "op": "drop",
         "boundary": "synchronous",
         "state": "none",
@@ -335,7 +334,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "from": "dsd_prefix_filter_blocklist.false"
+            "from": "dsd_prefix_filter.false"
           }
         ],
         "outputs": []
@@ -357,7 +356,7 @@
               "kinds": "all",
               "timestamps": "mixed"
             },
-            "from": "dsd_prefix_filter_blocklist.true"
+            "from": "dsd_prefix_filter.true"
           }
         ],
         "outputs": [
@@ -1233,7 +1232,7 @@
       },
       {
         "from": "dsd_enrich.out",
-        "to": "dsd_prefix_filter_blocklist_namespace_prefix.in",
+        "to": "dsd_prefix_filter_namespace_prefix.in",
         "port_type": {
           "kinds": [
             "counter",
@@ -1246,8 +1245,8 @@
         }
       },
       {
-        "from": "dsd_prefix_filter_blocklist_namespace_prefix.out",
-        "to": "dsd_prefix_filter_blocklist.in",
+        "from": "dsd_prefix_filter_namespace_prefix.out",
+        "to": "dsd_prefix_filter.in",
         "port_type": {
           "kinds": [
             "counter",
@@ -1260,8 +1259,8 @@
         }
       },
       {
-        "from": "dsd_prefix_filter_blocklist.false",
-        "to": "dsd_prefix_filter_blocklist_false.in",
+        "from": "dsd_prefix_filter.false",
+        "to": "dsd_prefix_filter_false.in",
         "port_type": {
           "kinds": [
             "counter",
@@ -1274,7 +1273,7 @@
         }
       },
       {
-        "from": "dsd_prefix_filter_blocklist.true",
+        "from": "dsd_prefix_filter.true",
         "to": "dsd_no_agg_split.in",
         "port_type": {
           "kinds": [
@@ -1919,15 +1918,15 @@
         "name": "dsd_prefix_filter_region",
         "cost": 110,
         "nodes": [
-          "dsd_prefix_filter_blocklist_namespace_prefix",
-          "dsd_prefix_filter_blocklist",
-          "dsd_prefix_filter_blocklist_false"
+          "dsd_prefix_filter_namespace_prefix",
+          "dsd_prefix_filter",
+          "dsd_prefix_filter_false"
         ],
         "entries": [
           {
             "key": "entry 0",
             "from": "dsd_enrich.out",
-            "input": "dsd_prefix_filter_blocklist_namespace_prefix.in"
+            "input": "dsd_prefix_filter_namespace_prefix.in"
           }
         ],
         "exits": [
@@ -1988,7 +1987,7 @@
         "entries": [
           {
             "key": "entry 0",
-            "from": "dsd_prefix_filter_blocklist.true",
+            "from": "dsd_prefix_filter.true",
             "input": "dsd_no_agg_split.in"
           }
         ],
@@ -2487,24 +2486,24 @@
       },
       {
         "from": "dsd_enrich.out",
-        "to": "dsd_prefix_filter_blocklist_namespace_prefix.in",
+        "to": "dsd_prefix_filter_namespace_prefix.in",
         "decision": "pipelined",
         "reason": "fusing would make one region cost more than 110 ns per event, the cost model's budget: slots `dsd_pre_aggregation` and `dsd_prefix_filter_region` pipeline"
       },
       {
-        "from": "dsd_prefix_filter_blocklist_namespace_prefix.out",
-        "to": "dsd_prefix_filter_blocklist.in",
+        "from": "dsd_prefix_filter_namespace_prefix.out",
+        "to": "dsd_prefix_filter.in",
         "decision": "fused",
         "reason": "both nodes are synchronous and nothing separates them: slot `dsd_prefix_filter_region`"
       },
       {
-        "from": "dsd_prefix_filter_blocklist.false",
-        "to": "dsd_prefix_filter_blocklist_false.in",
+        "from": "dsd_prefix_filter.false",
+        "to": "dsd_prefix_filter_false.in",
         "decision": "fused",
         "reason": "both nodes are synchronous and nothing separates them: slot `dsd_prefix_filter_region`"
       },
       {
-        "from": "dsd_prefix_filter_blocklist.true",
+        "from": "dsd_prefix_filter.true",
         "to": "dsd_no_agg_split.in",
         "decision": "pipelined",
         "reason": "fusing would make one region cost more than 110 ns per event, the cost model's budget: slots `dsd_prefix_filter_region` and `dsd_no_agg_split_region` pipeline"
@@ -2667,9 +2666,9 @@
         "mode": "admit",
         "nodes": [
           "dsd_enrich",
-          "dsd_prefix_filter_blocklist_namespace_prefix",
-          "dsd_prefix_filter_blocklist",
-          "dsd_prefix_filter_blocklist_false",
+          "dsd_prefix_filter_namespace_prefix",
+          "dsd_prefix_filter",
+          "dsd_prefix_filter_false",
           "dsd_no_agg_split",
           "dsd_tag_filterlist",
           "dsd_post_agg_filter_in",

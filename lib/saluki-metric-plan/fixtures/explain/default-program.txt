@@ -2,7 +2,7 @@ explain_version 4
 
 plan
   ir_version 1
-  hash sha256:55cabe6395b26e4c7c2e3f4b352f0c29432d8d7772d811fa84b32cb3febb7951
+  hash sha256:1798b3175c20bd63fbb7dd6e690ef845e46d5dcba2076166c9f7d0554a63e52a
   valid: 0 errors, 0 warnings
 
 nodes (34)
@@ -27,20 +27,20 @@ nodes (34)
     param profiles = [{"mappings":[{"match":"raw.requests.*","match_type":"wildcard","name":"mapped.requests","tags":[{"name":"route","value":"$1"}]}],"name":"checkout","prefix":"raw."}]
     param string_interner_bytes = 65536
     in in <- dsd_in.metrics, accepts every kind (mixed timestamps)
-    out out -> dsd_prefix_filter_blocklist_namespace_prefix.in, carries counter, gauge, set, histogram, distribution (mixed timestamps)
-  dsd_prefix_filter_blocklist_namespace_prefix: namespace_prefix [synchronous, state none]
+    out out -> dsd_prefix_filter_namespace_prefix.in, carries counter, gauge, set, histogram, distribution (mixed timestamps)
+  dsd_prefix_filter_namespace_prefix: namespace_prefix [synchronous, state none]
     param exclusions = ["internal.","system."]
     param namespace = "tenant"
     in in <- dsd_enrich.out, accepts every kind (mixed timestamps)
-    out out -> dsd_prefix_filter_blocklist.in, carries counter, gauge, set, histogram, distribution (mixed timestamps)
-  dsd_prefix_filter_blocklist: split [synchronous, state none]
+    out out -> dsd_prefix_filter.in, carries counter, gauge, set, histogram, distribution (mixed timestamps)
+  dsd_prefix_filter: split [synchronous, state none]
     param predicate = {"not":{"intake_name":{"eq":"tenant.raw.blocked"}}}
-    in in <- dsd_prefix_filter_blocklist_namespace_prefix.out, accepts every kind (mixed timestamps)
+    in in <- dsd_prefix_filter_namespace_prefix.out, accepts every kind (mixed timestamps)
     out true -> dsd_no_agg_split.in, carries counter, gauge, set, histogram, distribution (mixed timestamps)
-    out false -> dsd_prefix_filter_blocklist_false.in, carries counter, gauge, set, histogram, distribution (mixed timestamps)
+    out false -> dsd_prefix_filter_false.in, carries counter, gauge, set, histogram, distribution (mixed timestamps)
   dsd_no_agg_split: timestamp_split [synchronous, state none]
     param window = "10s"
-    in in <- dsd_prefix_filter_blocklist.true, accepts every kind (mixed timestamps)
+    in in <- dsd_prefix_filter.true, accepts every kind (mixed timestamps)
     out default -> dsd_tag_filterlist.in, carries counter, gauge, set, histogram, distribution (untimestamped)
     out passthrough -> dsd_post_agg_filter_in.1, carries rate, gauge, set, histogram, distribution (timestamped)
   dsd_tag_filterlist: tag_projection [synchronous, state none]
@@ -84,9 +84,9 @@ nodes (34)
   dsd_post_agg_filter_false: drop [synchronous, state none]
     loss policy
     in in <- dsd_post_agg_filter.false, accepts every kind (mixed timestamps)
-  dsd_prefix_filter_blocklist_false: drop [synchronous, state none]
+  dsd_prefix_filter_false: drop [synchronous, state none]
     loss policy
-    in in <- dsd_prefix_filter_blocklist.false, accepts every kind (mixed timestamps)
+    in in <- dsd_prefix_filter.false, accepts every kind (mixed timestamps)
   metrics_in: merge [synchronous, state none]
     param inputs = 5
     in 0 <- dsd_post_agg_filter_fanout.1, accepts every kind (mixed timestamps)
@@ -167,9 +167,9 @@ nodes (34)
 edges (34)
   checks_ipc_in.metrics -> metrics_in.2: counter, rate, gauge, histogram (mixed timestamps)
   dsd_in.metrics -> dsd_enrich.in: counter, gauge, set, histogram, distribution (mixed timestamps)
-  dsd_enrich.out -> dsd_prefix_filter_blocklist_namespace_prefix.in: counter, gauge, set, histogram, distribution (mixed timestamps)
-  dsd_prefix_filter_blocklist_namespace_prefix.out -> dsd_prefix_filter_blocklist.in: counter, gauge, set, histogram, distribution (mixed timestamps)
-  dsd_prefix_filter_blocklist.true -> dsd_no_agg_split.in: counter, gauge, set, histogram, distribution (mixed timestamps)
+  dsd_enrich.out -> dsd_prefix_filter_namespace_prefix.in: counter, gauge, set, histogram, distribution (mixed timestamps)
+  dsd_prefix_filter_namespace_prefix.out -> dsd_prefix_filter.in: counter, gauge, set, histogram, distribution (mixed timestamps)
+  dsd_prefix_filter.true -> dsd_no_agg_split.in: counter, gauge, set, histogram, distribution (mixed timestamps)
   dsd_no_agg_split.default -> dsd_tag_filterlist.in: counter, gauge, set, histogram, distribution (untimestamped)
   dsd_tag_filterlist.out -> dsd_agg.in: counter, gauge, set, histogram, distribution (untimestamped)
   dsd_agg.out -> dsd_post_agg_filter_in.0: rate, gauge, set, distribution (timestamped)
@@ -179,7 +179,7 @@ edges (34)
   dsd_post_agg_filter_fanout.0 -> dsd_post_agg_filter_fanout_0.in: rate, gauge, set, histogram, distribution (timestamped)
   dsd_post_agg_filter_fanout.1 -> metrics_in.0: rate, gauge, set, histogram, distribution (timestamped)
   dsd_post_agg_filter.false -> dsd_post_agg_filter_false.in: rate, gauge, set (timestamped)
-  dsd_prefix_filter_blocklist.false -> dsd_prefix_filter_blocklist_false.in: counter, gauge, set, histogram, distribution (mixed timestamps)
+  dsd_prefix_filter.false -> dsd_prefix_filter_false.in: counter, gauge, set, histogram, distribution (mixed timestamps)
   liveness_in.metrics -> metrics_in.3: gauge (timestamped)
   otlp_in.metrics -> metrics_in.1: counter, rate, gauge, distribution (mixed timestamps)
   trace_sampler.metrics -> metrics_in.4: counter, gauge (untimestamped)
