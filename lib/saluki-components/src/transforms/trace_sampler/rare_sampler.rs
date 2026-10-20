@@ -266,7 +266,7 @@ mod tests {
     use std::time::Duration;
 
     use saluki_common::collections::FastHashMap;
-    use saluki_core::data_model::event::trace::{AttributeValue, Span as DdSpan, Trace};
+    use saluki_core::data_model::event::trace::{AttributeValue, Span as DdSpan, Trace, TraceIngestInfo};
     use stringtheory::MetaString;
 
     use super::super::telemetry::SamplerCounters;
@@ -310,7 +310,7 @@ mod tests {
     }
 
     fn make_trace(spans: Vec<DdSpan>) -> Trace {
-        Trace::new(spans)
+        Trace::new(spans, TraceIngestInfo::Datadog)
     }
 
     #[test]

@@ -533,7 +533,7 @@ mod tests {
     use datadog_agent_apm::semantics::{test_util::registry_json, Registry};
     use proptest::prelude::*;
     use saluki_common::collections::FastHashMap;
-    use saluki_core::data_model::event::trace::{AttributeValue, Span};
+    use saluki_core::data_model::event::trace::{AttributeValue, Span, TraceIngestInfo};
     use saluki_core::data_model::event::trace_stats::ClientGroupedStats;
     use saluki_core::data_model::event::trace_stats::ClientStatsBucket;
 
@@ -645,7 +645,9 @@ mod tests {
             Some(meta),
         );
         let mut input = EventsBuffer::default();
-        assert!(input.try_push(Event::Trace(Trace::new(vec![span]))).is_none());
+        assert!(input
+            .try_push(Event::Trace(Trace::new(vec![span], TraceIngestInfo::Datadog)))
+            .is_none());
 
         let mut dispatcher = Dispatcher::new(component_context.clone());
         dispatcher.add_output(OutputName::Default).expect("add default output");
@@ -708,7 +710,7 @@ mod tests {
         };
 
         let span = make_test_span("test-service", "test-operation", "test-resource");
-        let trace = Trace::new(vec![span]);
+        let trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
 
         transform.process_trace(&trace);
 
@@ -748,7 +750,7 @@ mod tests {
         )
         .with_attributes(attrs);
 
-        let trace = Trace::new(vec![span]);
+        let trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
         transform.process_trace(&trace);
 
         let stats = transform.concentrator.flush(now + BUCKET_DURATION_NS * 2, true);
@@ -770,7 +772,7 @@ mod tests {
 
         // Add a span
         let span = make_top_level_span(aligned_now, 1, 50, 5, "A1", "resource1", 0, None);
-        let trace = Trace::new(vec![span]);
+        let trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
 
         let payload_key = PayloadAggregationKey {
             env: MetaString::from("test"),
@@ -811,7 +813,7 @@ mod tests {
         metrics.insert(MetaString::from(METRIC_PARTIAL_VERSION), 830604.0);
 
         let span = test_span(aligned_now, 1, 0, 50, 5, "A1", "resource1", 0, None, Some(metrics));
-        let trace = Trace::new(vec![span]);
+        let trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
 
         let payload_key = PayloadAggregationKey {
             env: MetaString::from("test"),
@@ -1284,7 +1286,7 @@ mod tests {
         // Test with no process tags
         {
             let span = Span::default();
-            let trace = Trace::new(vec![span]);
+            let trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
             let process_tags = extract_process_tags(&trace);
             assert!(process_tags.is_empty(), "Should be empty when no _dd.tags.process");
         }
@@ -1297,7 +1299,7 @@ mod tests {
                 AttributeValue::String(MetaString::from("a:1,b:2,c:3")),
             );
             let span = Span::default().with_attributes(attrs);
-            let trace = Trace::new(vec![span]);
+            let trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
             let process_tags = extract_process_tags(&trace);
             assert_eq!(process_tags, "a:1,b:2,c:3");
         }
@@ -1310,7 +1312,7 @@ mod tests {
                 AttributeValue::String(MetaString::from("")),
             );
             let span = Span::default().with_attributes(attrs);
-            let trace = Trace::new(vec![span]);
+            let trace = Trace::new(vec![span], TraceIngestInfo::Datadog);
             let process_tags = extract_process_tags(&trace);
             assert!(
                 process_tags.is_empty(),
@@ -1320,7 +1322,7 @@ mod tests {
 
         // Test with empty trace
         {
-            let trace = Trace::new(vec![]);
+            let trace = Trace::new(vec![], TraceIngestInfo::Datadog);
             let process_tags = extract_process_tags(&trace);
             assert!(process_tags.is_empty(), "Should be empty when trace has no spans");
         }
@@ -1593,7 +1595,7 @@ mod tests {
         );
         let root_span = Span::new("svc", "op", "res", "web", 1, 0, now, 1_000_000, 0).with_attributes(attrs);
 
-        let mut trace = Trace::new(vec![root_span]);
+        let mut trace = Trace::new(vec![root_span], TraceIngestInfo::Datadog);
         // Simulate OTLP resource extraction: payload.app_version comes from resource attrs only.
         trace.payload.app_version = MetaString::from("resource-v1");
 

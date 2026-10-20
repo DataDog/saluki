@@ -1882,6 +1882,30 @@ mod tests {
     }
 
     #[test]
+    fn otlp_receiver_and_apm_probabilistic_sampling_percentages_translate_independently() {
+        // Unset, the OTLP receiver keeps every trace while the APM probabilistic sampler stays disabled at 0%.
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert_eq!(
+            config.domains.otlp.traces.probabilistic_sampler_sampling_percentage,
+            100.0
+        );
+        assert!(!config.domains.traces.probabilistic_sampler.enabled);
+        assert_eq!(config.domains.traces.probabilistic_sampler.sampling_percentage, 0.0);
+
+        let (config, errors) = translate_explicit(json!({
+            "otlp_config": { "traces": { "probabilistic_sampler": { "sampling_percentage": 25.0 } } },
+            "apm_config": { "probabilistic_sampler": { "sampling_percentage": 40.0 } }
+        }));
+        assert!(errors.is_none());
+        assert_eq!(
+            config.domains.otlp.traces.probabilistic_sampler_sampling_percentage,
+            25.0
+        );
+        assert_eq!(config.domains.traces.probabilistic_sampler.sampling_percentage, 40.0);
+    }
+
+    #[test]
     fn apm_config_max_catalog_entries_translates_and_rejects_negative() {
         let (config, errors) = translate_explicit(json!({
             "apm_config": { "max_catalog_entries": 100 }

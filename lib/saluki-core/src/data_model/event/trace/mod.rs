@@ -116,6 +116,25 @@ pub struct PayloadFields {
     pub client_dropped_p0s_weight: f64,
 }
 
+/// The protocol a trace chunk was ingested through.
+///
+/// Set once when the trace is constructed. Span attributes can be rewritten or removed downstream, so they cannot
+/// reliably identify the input protocol.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TraceIngestInfo {
+    /// Received in a Datadog tracer payload.
+    Datadog,
+
+    /// Translated from OTLP.
+    Otlp {
+        /// The OTLP receiver's configured sampling rate, normalized to `(0, 1]`.
+        ///
+        /// This is the receiver's configuration, not an estimate of sampling performed upstream of it. The value is
+        /// not validated here; the producer normalizes it.
+        receiver_sampling_rate: f64,
+    },
+}
+
 /// A trace event.
 ///
 /// A trace is a collection of spans that represent a distributed trace.
@@ -141,16 +160,16 @@ pub struct Trace {
     pub sampling_mechanism: u32,
     /// Identifier of the component that made the final sampling decision.
     pub decision_maker: Option<MetaString>,
-    /// Effective OTLP sampling rate (`_dd.otlp_sr`), if set.
-    pub otlp_sampling_rate: Option<f64>,
+    /// The protocol this trace was ingested through.
+    ingest_info: TraceIngestInfo,
 }
 
 impl Trace {
-    /// Creates a new `Trace` with the given spans.
+    /// Creates a new `Trace` with the given spans, ingested through the protocol described by `ingest_info`.
     ///
-    /// All unified fields default to empty / zero. Callers should set them
+    /// All other unified fields default to empty / zero. Callers should set them
     /// directly after construction.
-    pub fn new(spans: Vec<Span>) -> Self {
+    pub fn new(spans: Vec<Span>, ingest_info: TraceIngestInfo) -> Self {
         Self {
             spans,
             trace_id_high: 0,
@@ -162,8 +181,15 @@ impl Trace {
             dropped_trace: false,
             sampling_mechanism: 0,
             decision_maker: None,
-            otlp_sampling_rate: None,
+            ingest_info,
         }
+    }
+
+    /// Returns the protocol this trace was ingested through.
+    ///
+    /// Fixed at construction, so later changes to spans or attributes cannot reclassify the trace.
+    pub fn ingest_info(&self) -> TraceIngestInfo {
+        self.ingest_info
     }
 
     /// Returns a reference to the spans in this trace.

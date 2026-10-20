@@ -18,7 +18,7 @@ use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{transforms::*, BuildContext},
     data_model::event::{
-        trace::{AttributeValue, Span, Trace},
+        trace::{AttributeValue, Span, Trace, TraceIngestInfo},
         Event, EventType,
     },
     topology::{EventsBuffer, OutputDefinition},
@@ -44,7 +44,7 @@ use self::probabilistic::PROB_RATE_KEY;
 use self::telemetry::{DecisionWindow, WINDOW};
 use crate::common::datadog::{
     compute_top_level, get_root_span_index, get_trace_env, sample_by_rate, DECISION_MAKER_MANUAL,
-    DECISION_MAKER_PROBABILISTIC, OTEL_TRACE_ID_META_KEY, SAMPLING_PRIORITY_METRIC_KEY, TAG_DECISION_MAKER, TAG_ORIGIN,
+    DECISION_MAKER_PROBABILISTIC, SAMPLING_PRIORITY_METRIC_KEY, TAG_DECISION_MAKER, TAG_ORIGIN,
 };
 use crate::common::otlp::traces::normalize::normalize_tag_value_into_unchecked;
 
@@ -56,14 +56,6 @@ const PRIORITY_USER_KEEP: i32 = 2;
 // Single Span Sampling and Analytics Events keys
 const KEY_SPAN_SAMPLING_MECHANISM: &str = "_dd.span_sampling.mechanism";
 const KEY_ANALYZED_SPANS: &str = "_dd.analyzed";
-
-fn normalize_sampling_rate(rate: f64) -> f64 {
-    if rate <= 0.0 || rate >= 1.0 {
-        1.0
-    } else {
-        rate
-    }
-}
 
 /// Configuration for the trace sampler transform.
 #[derive(Debug)]
@@ -84,7 +76,6 @@ pub struct TraceSamplerConfiguration {
     rare_sampler_tps: f64,
     rare_sampler_cooldown_secs: f64,
     rare_sampler_cardinality: usize,
-    otlp_sampling_rate: f64,
     compute_top_level_by_span_kind: bool,
     analyzed_spans_by_service: HashMap<String, HashMap<String, f64>>,
     analyzed_rate_by_service: HashMap<String, f64>,
@@ -100,7 +91,6 @@ impl TraceSamplerConfiguration {
     /// The OTLP trace settings live in their own domain, so they arrive as a separate slice rather
     /// than through the traces domain.
     pub fn from_configuration(traces: &domains::traces::Domain, otlp_traces: &domains::otlp::Traces) -> Self {
-        let otlp_sampling_rate = normalize_sampling_rate(otlp_traces.probabilistic_sampler_sampling_percentage / 100.0);
         if !traces.analyzed_rate_by_service.is_empty() {
             warn!("analyzed_rate_by_service is deprecated, please use analyzed_spans instead");
         }
@@ -122,7 +112,6 @@ impl TraceSamplerConfiguration {
             rare_sampler_tps: traces.rare_sampler.tps,
             rare_sampler_cooldown_secs: traces.rare_sampler.cooldown,
             rare_sampler_cardinality: traces.rare_sampler.cardinality,
-            otlp_sampling_rate,
             compute_top_level_by_span_kind: otlp_traces.enable_compute_top_level_by_span_kind,
             analyzed_spans_by_service: traces.analyzed_spans_by_service.clone(),
             analyzed_rate_by_service: traces.analyzed_rate_by_service.clone(),
@@ -158,7 +147,6 @@ impl TraceSamplerConfiguration {
                 self.probabilistic_hash_seed,
                 self.probabilistic_full_trace_id,
             ),
-            otlp_sampling_rate: self.otlp_sampling_rate,
             error_sampler: errors::ErrorsSampler::new(self.errors_per_second, self.extra_sample_rate),
             priority_sampler: priority_sampler::PrioritySampler::new(
                 self.default_env.clone(),
@@ -260,7 +248,6 @@ pub struct TraceSampler {
     error_sampling_enabled: bool,
     probabilistic_sampler_enabled: bool,
     probabilistic: probabilistic::ProbabilisticSampler,
-    otlp_sampling_rate: f64,
     compute_top_level_by_span_kind: bool,
     error_sampler: errors::ErrorsSampler,
     priority_sampler: priority_sampler::PrioritySampler,
@@ -391,17 +378,6 @@ impl TraceSampler {
             .sample(trace_id_high, trace_id_low, self.sampling_rate)
     }
 
-    fn is_otlp_trace(&self, trace: &Trace, root_span_idx: usize) -> bool {
-        trace
-            .spans()
-            .get(root_span_idx)
-            .map(|span| {
-                span.attributes
-                    .contains_key(&MetaString::from_static(OTEL_TRACE_ID_META_KEY))
-            })
-            .unwrap_or(false)
-    }
-
     /// Returns `true` if the trace contains a span with an error.
     fn trace_contains_error(&self, trace: &Trace, consider_exception_span_events: bool) -> bool {
         trace.spans().iter().any(|span| {
@@ -431,14 +407,17 @@ impl TraceSampler {
     ///
     /// See: https://github.com/DataDog/datadog-agent/blob/be33ac1490c4a34602cbc65a211406b73ad6d00b/pkg/trace/api/otlp.go#L561-L585
     fn otlp_pre_sample(&mut self, trace: &mut Trace, root_span_idx: usize) -> Option<(i32, &'static str)> {
-        if self.probabilistic_sampler_enabled || !self.is_otlp_trace(trace, root_span_idx) {
+        let TraceIngestInfo::Otlp { receiver_sampling_rate } = trace.ingest_info() else {
+            return None;
+        };
+        if self.probabilistic_sampler_enabled {
             return None;
         }
         let (priority, dm) = if let Some(user_priority) = self.get_user_priority(trace, root_span_idx) {
             (user_priority, DECISION_MAKER_MANUAL)
         } else {
             let root_trace_id = trace.trace_id_low;
-            if sample_by_rate(root_trace_id, self.otlp_sampling_rate) {
+            if sample_by_rate(root_trace_id, receiver_sampling_rate) {
                 (PRIORITY_AUTO_KEEP, DECISION_MAKER_PROBABILISTIC)
             } else {
                 (PRIORITY_AUTO_DROP, DECISION_MAKER_PROBABILISTIC)
@@ -471,7 +450,6 @@ impl TraceSampler {
         if retained > 0 {
             trace.dropped_trace = false;
             trace.priority = Some(PRIORITY_USER_KEEP);
-            trace.otlp_sampling_rate = Some(self.sampling_rate);
             true
         } else {
             false
@@ -614,7 +592,7 @@ impl TraceSampler {
             if self.priority_sampler.sample(now, trace, root_span_idx, priority, 0.0) {
                 return SamplerOutcome::new(true, priority, "", Some(root_span_idx), sampler_name, true);
             }
-        } else if self.is_otlp_trace(trace, root_span_idx) {
+        } else if let TraceIngestInfo::Otlp { receiver_sampling_rate } = trace.ingest_info() {
             // Rare check mirrors agent behavior: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L1129-L1140
             if rare {
                 sampler_name = telemetry::SamplerName::Rare;
@@ -626,7 +604,7 @@ impl TraceSampler {
             sampler_name = telemetry::SamplerName::Probabilistic;
             // some sampling happens upstream in the otlp receiver in the agent: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/api/otlp.go#L572
             let root_trace_id = trace.trace_id_low;
-            if sample_by_rate(root_trace_id, self.otlp_sampling_rate) {
+            if sample_by_rate(root_trace_id, receiver_sampling_rate) {
                 if let Some(root_span) = trace.spans_mut().get_mut(root_span_idx) {
                     root_span.attributes.remove(PROB_RATE_KEY);
                 }
@@ -718,7 +696,7 @@ impl TraceSampler {
     fn apply_sampling_metadata(
         &self, trace: &mut Trace, keep: bool, priority: i32, decision_maker: &'static str, root_span_idx: usize,
     ) {
-        let is_otlp = self.is_otlp_trace(trace, root_span_idx);
+        let is_otlp = matches!(trace.ingest_info(), TraceIngestInfo::Otlp { .. });
         // Chunk-level decision maker: the sampler's value when it decided, otherwise the first
         // carrier promoted during backfill (falling back to the root's own tag).
         let promoted_decision_maker = if decision_maker.is_empty() {
@@ -762,11 +740,6 @@ impl TraceSampler {
         trace.dropped_trace = !keep;
         trace.priority = Some(priority);
         trace.decision_maker = if priority > 0 { decision_maker_meta } else { None };
-        trace.otlp_sampling_rate = Some(if is_otlp {
-            self.otlp_sampling_rate
-        } else {
-            self.sampling_rate
-        });
     }
 
     fn process_trace(&mut self, trace: &mut Trace) -> bool {
@@ -891,10 +864,18 @@ mod tests {
 
     use datadog_agent_apm::sampling::test_util::TestSamplingPublisher;
     use saluki_core::components::test_util::TestComponentDriver;
-    use saluki_core::data_model::event::trace::{AttributeValue, Span as DdSpan, Trace};
+    use saluki_core::data_model::event::trace::{AttributeValue, Span as DdSpan, Trace, TraceIngestInfo};
 
     use super::*;
+    use crate::common::datadog::OTEL_TRACE_ID_META_KEY;
+
     const PRIORITY_USER_DROP: i32 = -1;
+
+    // Deterministic receiver sampling decisions at a rate of 0.5, from the Go trace agent's `TestCreateChunks`:
+    // https://github.com/DataDog/datadog-agent/blob/c6f7e0bc2d5744601a10f231751948ac7a4ee781/pkg/trace/api/otlp_test.go#L740-L810
+    const OTLP_TEST_RECEIVER_SAMPLING_RATE: f64 = 0.5;
+    const OTLP_RECEIVER_KEPT_TRACE_ID: u64 = 123;
+    const OTLP_RECEIVER_DROPPED_TRACE_ID: u64 = 1237892138897;
 
     fn create_test_sampler() -> TraceSampler {
         TraceSampler {
@@ -903,7 +884,6 @@ mod tests {
             error_tracking_standalone: false,
             probabilistic_sampler_enabled: true,
             probabilistic: probabilistic::ProbabilisticSampler::new(0, false),
-            otlp_sampling_rate: 1.0,
             error_sampler: errors::ErrorsSampler::new(10.0, 1.0),
             priority_sampler: priority_sampler::PrioritySampler::new(MetaString::from("agent-env"), 1.0, 10.0, 5000),
             no_priority_sampler: score_sampler::NoPrioritySampler::new(10.0, 1.0),
@@ -960,7 +940,13 @@ mod tests {
     }
 
     fn create_test_trace(spans: Vec<DdSpan>) -> Trace {
-        Trace::new(spans)
+        Trace::new(spans, TraceIngestInfo::Datadog)
+    }
+
+    fn create_otlp_test_trace(spans: Vec<DdSpan>, receiver_sampling_rate: f64, trace_id_low: u64) -> Trace {
+        let mut trace = Trace::new(spans, TraceIngestInfo::Otlp { receiver_sampling_rate });
+        trace.trace_id_low = trace_id_low;
+        trace
     }
 
     fn create_span_with_parent_and_service(
@@ -1993,14 +1979,12 @@ mod tests {
         let mut sampler = create_test_sampler();
         sampler.probabilistic_sampler_enabled = false;
         sampler.error_sampling_enabled = false;
-        sampler.otlp_sampling_rate = 0.0;
 
-        let mut span = create_top_level_span(1);
-        span.attributes.insert(
-            MetaString::from_static(OTEL_TRACE_ID_META_KEY),
-            AttributeValue::String(MetaString::from("00000000000000000000000000000001")),
+        let mut trace = create_otlp_test_trace(
+            vec![create_top_level_span(1)],
+            OTLP_TEST_RECEIVER_SAMPLING_RATE,
+            OTLP_RECEIVER_DROPPED_TRACE_ID,
         );
-        let mut trace = create_test_trace(vec![span]);
 
         let SamplerOutcome { keep, priority, .. } = sampler.run_samplers(&mut trace);
         assert!(!keep);
@@ -2018,14 +2002,12 @@ mod tests {
         let mut sampler = create_sampler_with_rare_enabled();
         sampler.probabilistic_sampler_enabled = false;
         sampler.error_sampling_enabled = false;
-        sampler.otlp_sampling_rate = 0.0;
 
-        let mut span = create_top_level_span(1);
-        span.attributes.insert(
-            MetaString::from_static(OTEL_TRACE_ID_META_KEY),
-            AttributeValue::String(MetaString::from("00000000000000000000000000000001")),
+        let mut trace = create_otlp_test_trace(
+            vec![create_top_level_span(1)],
+            OTLP_TEST_RECEIVER_SAMPLING_RATE,
+            OTLP_RECEIVER_DROPPED_TRACE_ID,
         );
-        let mut trace = create_test_trace(vec![span]);
 
         let SamplerOutcome {
             keep,
@@ -2223,20 +2205,14 @@ mod tests {
     // priority/dm before runSamplersV1, so ETS sees those values even when it
     // short-circuits. See: pkg/trace/api/otlp.go#L561-L585.
 
-    fn create_otlp_test_span(span_id: u64, error: i32) -> DdSpan {
-        let mut attrs = saluki_common::collections::FastHashMap::default();
-        attrs.insert(
-            MetaString::from_static(OTEL_TRACE_ID_META_KEY),
-            AttributeValue::String(MetaString::from("0000000000000000deadbeefcafebabe")),
-        );
-        create_test_span(span_id, error).with_attributes(attrs)
+    fn create_receiver_kept_otlp_test_trace(spans: Vec<DdSpan>) -> Trace {
+        create_otlp_test_trace(spans, OTLP_TEST_RECEIVER_SAMPLING_RATE, OTLP_RECEIVER_KEPT_TRACE_ID)
     }
 
     fn create_sampler_with_ets_legacy() -> TraceSampler {
         TraceSampler {
             error_tracking_standalone: true,
             probabilistic_sampler_enabled: false,
-            otlp_sampling_rate: 1.0,
             ..create_test_sampler()
         }
     }
@@ -2247,8 +2223,8 @@ mod tests {
     fn ets_otlp_non_error_gets_presample_priority_and_dm() {
         let mut sampler = create_sampler_with_ets_legacy();
 
-        let span = create_otlp_test_span(1, 0); // no error
-        let mut trace = create_test_trace(vec![span]);
+        let span = create_test_span(1, 0); // no error
+        let mut trace = create_receiver_kept_otlp_test_trace(vec![span]);
 
         let SamplerOutcome {
             keep,
@@ -2269,8 +2245,8 @@ mod tests {
     fn ets_otlp_error_gets_presample_priority_and_dm() {
         let mut sampler = create_sampler_with_ets_legacy();
 
-        let span = create_otlp_test_span(1, 1); // error=1
-        let mut trace = create_test_trace(vec![span]);
+        let span = create_test_span(1, 1); // error=1
+        let mut trace = create_receiver_kept_otlp_test_trace(vec![span]);
 
         let SamplerOutcome {
             keep,
@@ -2283,6 +2259,23 @@ mod tests {
         assert_eq!(dm, DECISION_MAKER_PROBABILISTIC, "OTLP pre-sampling sets dm=-9");
     }
 
+    /// ETS + OTLP trace dropped by the receiver rate (legacy sampler path): a drop is not stamped with a decision maker.
+    #[test]
+    fn ets_otlp_receiver_drop_gets_drop_priority_and_no_dm() {
+        let mut sampler = create_sampler_with_ets_legacy();
+
+        let mut trace = create_otlp_test_trace(
+            vec![create_test_span(1, 0)],
+            OTLP_TEST_RECEIVER_SAMPLING_RATE,
+            OTLP_RECEIVER_DROPPED_TRACE_ID,
+        );
+
+        assert!(sampler.process_trace(&mut trace), "ETS forwards non-error traces");
+        assert!(trace.dropped_trace);
+        assert_eq!(trace.priority, Some(PRIORITY_AUTO_DROP));
+        assert_eq!(trace.decision_maker, None);
+    }
+
     /// ETS + OTLP + probabilistic_sampler_enabled=true: `OTLPReceiver` defers, no pre-sampling.
     /// DDA's `OTLPReceiver` sets PriorityNone and skips when ProbabilisticSamplerEnabled.
     #[test]
@@ -2290,8 +2283,8 @@ mod tests {
         let mut sampler = create_sampler_with_ets_legacy();
         sampler.probabilistic_sampler_enabled = true; // override to prob path
 
-        let span = create_otlp_test_span(1, 0); // no error
-        let mut trace = create_test_trace(vec![span]);
+        let span = create_test_span(1, 0); // no error
+        let mut trace = create_receiver_kept_otlp_test_trace(vec![span]);
 
         let SamplerOutcome {
             keep,
@@ -2331,12 +2324,12 @@ mod tests {
     fn ets_otlp_user_priority_gets_manual_dm() {
         let mut sampler = create_sampler_with_ets_legacy();
 
-        let mut span = create_otlp_test_span(1, 0);
+        let mut span = create_test_span(1, 0);
         span.attributes.insert(
             MetaString::from(SAMPLING_PRIORITY_METRIC_KEY),
             AttributeValue::Float(2.0),
         ); // UserKeep
-        let mut trace = create_test_trace(vec![span]);
+        let mut trace = create_receiver_kept_otlp_test_trace(vec![span]);
 
         let SamplerOutcome {
             keep,
@@ -2347,6 +2340,104 @@ mod tests {
         assert!(!keep, "ETS drops non-error traces regardless of user priority");
         assert_eq!(priority, PRIORITY_USER_KEEP, "user priority is preserved");
         assert_eq!(dm, DECISION_MAKER_MANUAL, "user-set priority gets dm=-4");
+    }
+
+    // ── Ingest information tests ────────────────────────────────────────────────
+    // Regression tests: the sampler once classified a trace as OTLP by the `otel.trace_id` attribute on its root
+    // span. Removing that attribute, or filtering out the original root, sent OTLP traces down the native path, and
+    // a native trace carrying the attribute was sampled at the OTLP receiver rate. Classification now uses the
+    // ingest information fixed when the trace is constructed.
+
+    #[test]
+    fn otlp_receiver_sampling_does_not_depend_on_span_attributes_or_root() {
+        let mut sampler = create_test_sampler();
+        sampler.probabilistic_sampler_enabled = false;
+
+        let span_sets = [
+            ("rooted", vec![create_test_span(1, 0)]),
+            (
+                "original root removed",
+                vec![
+                    create_test_span(2, 0).with_parent_id(1),
+                    create_test_span(3, 0).with_parent_id(2),
+                ],
+            ),
+        ];
+        let cases = [
+            (
+                OTLP_RECEIVER_KEPT_TRACE_ID,
+                true,
+                PRIORITY_AUTO_KEEP,
+                DECISION_MAKER_PROBABILISTIC,
+            ),
+            (OTLP_RECEIVER_DROPPED_TRACE_ID, false, PRIORITY_AUTO_DROP, ""),
+        ];
+        for (name, spans) in &span_sets {
+            for (trace_id, want_keep, want_priority, want_dm) in cases {
+                let mut trace = create_otlp_test_trace(spans.clone(), OTLP_TEST_RECEIVER_SAMPLING_RATE, trace_id);
+
+                let SamplerOutcome {
+                    keep,
+                    priority,
+                    decision_maker,
+                    ..
+                } = sampler.run_samplers(&mut trace);
+                assert_eq!(keep, want_keep, "{name}, trace ID {trace_id}");
+                assert_eq!(priority, want_priority, "{name}, trace ID {trace_id}");
+                assert_eq!(decision_maker, want_dm, "{name}, trace ID {trace_id}");
+            }
+        }
+    }
+
+    #[test]
+    fn native_trace_with_otel_trace_id_attribute_is_not_sampled_as_otlp() {
+        let spoofed_trace = || {
+            let mut span = create_top_level_span(1);
+            span.attributes.insert(
+                MetaString::from_static(OTEL_TRACE_ID_META_KEY),
+                AttributeValue::String(MetaString::from("0000000000000000000000000000007b")),
+            );
+            let mut trace = create_test_trace(vec![span]);
+            trace.trace_id_low = OTLP_RECEIVER_KEPT_TRACE_ID;
+            trace
+        };
+
+        // Legacy path: the no-priority sampler decides, not the OTLP receiver rate.
+        let mut sampler = create_test_sampler();
+        sampler.probabilistic_sampler_enabled = false;
+        let SamplerOutcome { decision_maker, .. } = sampler.run_samplers(&mut spoofed_trace());
+        assert_eq!(decision_maker, "");
+        let decisions = sampler.telemetry.snapshot_decisions();
+        let (key, _) = decisions.iter().next().unwrap();
+        assert_eq!(key.sampler, telemetry::SamplerName::NoPriority);
+
+        // Error tracking standalone: no OTLP pre-sampling priority or decision maker.
+        let mut sampler = create_sampler_with_ets_legacy();
+        let SamplerOutcome {
+            keep,
+            priority,
+            decision_maker,
+            ..
+        } = sampler.run_samplers(&mut spoofed_trace());
+        assert!(!keep);
+        assert_eq!(priority, PRIORITY_AUTO_DROP);
+        assert_eq!(decision_maker, "");
+    }
+
+    #[test]
+    fn probabilistic_decision_maker_placement_follows_ingest_info() {
+        // The APM probabilistic sampler is enabled at a rate of 1.0, so both traces are kept by it. The OTLP trace
+        // carries no `otel.trace_id` attribute but still gets its decision maker on the chunk only.
+        let mut sampler = create_test_sampler();
+
+        let mut otlp = create_receiver_kept_otlp_test_trace(vec![create_test_span(1, 0)]);
+        assert!(sampler.process_trace(&mut otlp));
+        assert_eq!(otlp.decision_maker.as_deref(), Some(DECISION_MAKER_PROBABILISTIC));
+        assert!(!otlp.spans()[0].attributes.contains_key(TAG_DECISION_MAKER));
+
+        let mut native = create_test_trace(vec![create_test_span(1, 0)]);
+        assert!(sampler.process_trace(&mut native));
+        assert_eq!(native.decision_maker.as_deref(), Some(DECISION_MAKER_PROBABILISTIC));
     }
 
     #[test]

@@ -1,0 +1,13 @@
+fixes:
+  - |
+    Fix the sampling rate reported in ``_dd.otlp_sr`` on OTLP traces. It now reports the normalized OTLP receiver rate
+    from ``otlp_config.traces.probabilistic_sampler.sampling_percentage``, including for traces kept by the APM
+    probabilistic sampler, single span sampling, or error tracking standalone, and for analyzed events. A NaN
+    percentage reports ``1.00``, like other values outside 0 to 100.
+  - |
+    Fix trace sampling when span attributes are rewritten or spans are filtered before sampling. Sampling now depends
+    on the protocol that received the trace, not on span attributes: OTLP traces are sampled as OTLP traces, and
+    traces received over the native Datadog protocol with an ``otel.trace_id`` tag are not.
+  - |
+    Stop adding ``_dd.otlp_sr`` and an ``otlp-`` tracer version prefix to traces received over the native Datadog
+    protocol.
