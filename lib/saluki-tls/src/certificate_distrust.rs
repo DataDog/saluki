@@ -1,7 +1,11 @@
 //! Rejects compromised public keys in presented server certificates and configured trust anchors.
 //!
+//! The upstream WebPKI fix requires an AWS-LC version outside the current FIPS dependency constraints.
+//! Remove this wrapper when the upstream fix is compatible with the approved crypto dependencies.
+//!
 //! This check is deliberately conservative: a blocked certificate anywhere in the presented chain rejects
-//! the connection, even if path building could ignore it or find an alternative valid path.
+//! the connection, even if path building could ignore it or find an alternative valid path. Every presented
+//! certificate must also parse successfully, including unused certificates.
 
 use std::sync::Arc;
 
@@ -17,6 +21,7 @@ use rustls::{
 };
 use saluki_error::{generic_error, GenericError};
 
+// Compare public keys to also reject reissued and cross-signed certificates using the same keys.
 // These fixed, complete DER SPKIs have a two-byte SEQUENCE header followed by 118 bytes of contents.
 // See data/distrusted/README.md for provenance and encoding.
 const DISTRUSTED_SPKIS: &[&[u8; 120]] = &[

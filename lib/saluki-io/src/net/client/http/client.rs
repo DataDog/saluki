@@ -371,6 +371,7 @@ impl HttpClientBuilder {
         let connector = self.connector_builder.build(tls_config)?;
         let tls_handshake_timeout = connector.tls_handshake_timeout();
         // The inner connector verifies HTTPS proxies; this separate config verifies destinations through CONNECT.
+        // Keep native roots and verification enabled here even if the inner connector uses an insecure local config.
         let proxy_tls_config = ClientTLSConfigBuilder::new()
             .with_root_cert_store(load_platform_root_certificates_inner()?)
             .build()?;
