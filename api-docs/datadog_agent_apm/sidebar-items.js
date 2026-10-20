@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["semantics"]};
+window.SIDEBAR_ITEMS = {"mod":["sampling","semantics"]};
