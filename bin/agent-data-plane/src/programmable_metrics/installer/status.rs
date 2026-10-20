@@ -1,5 +1,5 @@
 //! The resources section of the installer's status: what the default program delivers through, as the control
-//! surface serves it.
+//! surface serves it; and the status route's document, with the telemetry contract's series the active plan reports.
 
 use std::collections::BTreeMap;
 use std::{
@@ -13,11 +13,15 @@ use saluki_metric_plan::{
     extension::DeliveryPolicy,
     install::{LeaseState, RecipientRef, RecipientState, ResourceTable, RetirementReport},
     ir::{HostId, PayloadClasses},
+    validate::Unmet,
 };
 use serde::Serialize;
 
 use super::budget::BudgetUsage;
-use crate::programmable_metrics::resources::{specs::delivery_ref, spelled_endpoint, FixedHosts, NativeResources};
+use crate::programmable_metrics::{
+    compatibility,
+    resources::{specs::delivery_ref, spelled_endpoint, FixedHosts, NativeResources},
+};
 
 /// What the default program delivers through: the delivery hosts, the outputs, the recipients, and the resource
 /// budget.
@@ -149,8 +153,8 @@ pub struct RecipientView {
     pub delivery: DeliveryPolicy,
 }
 
-/// The status route's document: the apply states, as a poll reports them, and the recipient incarnations, which only
-/// this route lists, as `recipients`.
+/// The status route's document: the apply states, as a poll reports them, the recipient incarnations, which only this
+/// route lists, as `recipients`, and the telemetry contract's series, as `telemetry`.
 #[derive(Serialize)]
 pub struct StatusDocument<'a> {
     /// The apply states, whose members are the document's own.
@@ -159,6 +163,11 @@ pub struct StatusDocument<'a> {
 
     /// The recipient incarnations.
     pub recipients: &'a [RecipientEntry],
+
+    /// The series the remapper reads by node name, and which the active plan reports; absent while no generation is
+    /// active.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<TelemetryView>,
 }
 
 impl<'a> StatusDocument<'a> {
@@ -167,6 +176,75 @@ impl<'a> StatusDocument<'a> {
         Self {
             apply_states: &status.apply_states,
             recipients: &status.recipients,
+            telemetry: status
+                .active
+                .as_ref()
+                .map(|active| TelemetryView::of(&status.default_program, &active.plan)),
+        }
+    }
+}
+
+/// Which series of the telemetry contract the active plan reports: for each series the remapper reads from a node of
+/// the default program by its name, the node producing it, or why none does.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct TelemetryView {
+    /// The series the active plan reports, each with its node.
+    pub met: Vec<MetSeries>,
+
+    /// The series the active plan does not report, each with why.
+    pub unmet: Vec<UnmetSeries>,
+}
+
+/// A series of the telemetry contract the active plan reports.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct MetSeries {
+    /// The series, as the remapper produces it.
+    pub series: String,
+
+    /// The node reporting it.
+    pub node: String,
+}
+
+/// A series of the telemetry contract the active plan does not report.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct UnmetSeries {
+    /// The series, as the remapper produces it.
+    pub series: String,
+
+    /// The node the remapper reads it from.
+    pub node: String,
+
+    /// Why the plan does not report it: it has no node of that name, or the node runs another operator.
+    pub reason: String,
+}
+
+impl TelemetryView {
+    /// Returns which series of the contract `default_program` meets the plan `active` reports.
+    fn of(default_program: &saluki_metric_plan::ir::Plan, active: &saluki_metric_plan::ir::Plan) -> Self {
+        let report = compatibility::report(active, &compatibility::of_default(default_program));
+        Self {
+            met: report
+                .met
+                .into_iter()
+                .map(|(series, node)| MetSeries {
+                    series,
+                    node: node.to_string(),
+                })
+                .collect(),
+            unmet: report
+                .unmet
+                .into_iter()
+                .map(|(series, unmet)| UnmetSeries {
+                    series,
+                    node: unmet.node().to_string(),
+                    reason: match &unmet {
+                        Unmet::NoNode { node } => format!("no node is named `{}`", node),
+                        Unmet::WrongOperator { operator, expected, .. } => {
+                            format!("the node runs `{}`, not `{}`", operator, expected)
+                        }
+                    },
+                })
+                .collect(),
         }
     }
 }

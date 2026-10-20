@@ -863,11 +863,11 @@ async fn region_bounds_are_their_kernels_native_bounds_and_their_buffers_and_the
             0,
             &[
                 ("dsd_enrich", "dsd_enrich"),
-                ("dsd_prefix_filter_blocklist_namespace_prefix", "dsd_prefix_filter"),
+                ("dsd_prefix_filter_namespace_prefix", "dsd_prefix_filter"),
                 ("dsd_no_agg_split", "dsd_no_agg_split"),
                 ("dsd_tag_filterlist", "dsd_tag_filterlist"),
             ],
-            &["dsd_prefix_filter_blocklist"],
+            &["dsd_prefix_filter"],
         ),
         (
             "metrics_enrich",

@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use saluki_core::{accounting::ComponentRegistry, components::ComponentType};
+use saluki_core::accounting::ComponentRegistry;
 use saluki_metric_plan::{
     compile::{compile, Frame, RewriteId},
     ir::Plan,
@@ -22,7 +22,6 @@ use crate::{
     config::remote_agent_client_configuration,
     programmable_metrics::{
         bindings,
-        telemetry_profiles::{native_telemetry, NativeTelemetry, TelemetryProfile},
         test_support::{
             configuration, configuration_error, environment_provider, facts, layered_configuration,
             layered_configuration_system,
@@ -215,21 +214,9 @@ async fn every_configuration_of_the_matrix_lowers_to_a_valid_plan() {
         let again = self::lowered(yaml).await;
         assert_eq!(again.plan.hash().unwrap(), lowered.plan.hash().unwrap(), "{}", name);
 
-        // Every node is reserved, stands for a native component (its own, unless the plan's provenance names
-        // another), and has that component's telemetry identity, which follows from its ID and operator alone.
-        let components = lowered
-            .plan
-            .provenance
-            .as_ref()
-            .map(|provenance| &provenance.native_components);
+        // Every node is reserved, and reports under its name.
         for node in &lowered.plan.nodes {
             assert!(node.id.is_reserved(), "{}: node `{}` is not reserved", name, node.id);
-            let component = components
-                .and_then(|components| components.get(&node.id))
-                .map_or_else(|| node.id.local().to_string(), ToString::to_string);
-            let telemetry = native_telemetry(&node.id, node.op.as_str())
-                .unwrap_or_else(|| panic!("{}: node `{}` has no telemetry profile", name, node.id));
-            assert_eq!(telemetry.component_id, component, "{}: `{}`", name, node.id);
         }
     }
 }
@@ -386,8 +373,8 @@ async fn branches_exist_only_when_native_wiring_builds_them() {
         let dogstatsd = present.contains(&"dsd_in");
         for id in [
             "dsd_enrich",
-            "dsd_prefix_filter_blocklist_namespace_prefix",
-            "dsd_prefix_filter_blocklist",
+            "dsd_prefix_filter_namespace_prefix",
+            "dsd_prefix_filter",
             "dsd_tag_filterlist",
             "dsd_agg",
             "dsd_post_agg_filter",
@@ -430,18 +417,18 @@ async fn live_inputs_change_only_the_parameters_bound_to_them() {
         (
             "an entry for the listener filterlist",
             "metric_filterlist: [tenant.raw.blocked, tenant.checkout.latency.max, tenant.other]",
-            &["dsd_prefix_filter_blocklist.predicate"],
+            &["dsd_prefix_filter.predicate"],
         ),
         // One that names a histogram statistic's series reaches the post-aggregation filter too.
         (
             "an entry naming a histogram statistic",
             "metric_filterlist: [tenant.raw.blocked, tenant.checkout.latency.max, tenant.checkout.latency.count]",
-            &["dsd_prefix_filter_blocklist.predicate", "dsd_post_agg_filter.predicate"],
+            &["dsd_prefix_filter.predicate", "dsd_post_agg_filter.predicate"],
         ),
         (
             "the filterlist match mode",
             "metric_filterlist_match_prefix: true",
-            &["dsd_prefix_filter_blocklist.predicate", "dsd_post_agg_filter.predicate"],
+            &["dsd_prefix_filter.predicate", "dsd_post_agg_filter.predicate"],
         ),
         (
             "the tag filterlist",
@@ -675,13 +662,13 @@ async fn parameters_are_native_configuration_converted_into_plan_values() {
         (mapper, "dsd_enrich", "cache_size", json!(0)),
         (
             mapper,
-            "dsd_prefix_filter_blocklist_namespace_prefix",
+            "dsd_prefix_filter_namespace_prefix",
             "namespace",
             json!("tenant."),
         ),
         (
             mapper,
-            "dsd_prefix_filter_blocklist_namespace_prefix",
+            "dsd_prefix_filter_namespace_prefix",
             "exclusions",
             json!(["internal."]),
         ),
@@ -714,7 +701,7 @@ async fn parameters_are_native_configuration_converted_into_plan_values() {
         // The legacy blocklist applies while `metric_filterlist` is empty, as translation resolves it, by prefix.
         (
             legacy_blocklist,
-            "dsd_prefix_filter_blocklist",
+            "dsd_prefix_filter",
             "predicate",
             json!({"not": {"intake_name": {"prefix": "blocked.metric"}}}),
         ),
@@ -793,12 +780,12 @@ async fn policy_settings_come_from_the_snapshot_native_components_read_them_from
     };
     // The filterlist follows the current configuration.
     assert_eq!(
-        param(ids::DSD_PREFIX_FILTER_BLOCKLIST, "predicate"),
+        param(ids::DSD_PREFIX_FILTER, "predicate"),
         Some(json!({"not": {"intake_name": {"in": ["h.min", "h.max"]}}}))
     );
     // The namespace keeps the startup configuration.
     assert_eq!(
-        param(ids::DSD_PREFIX_FILTER_BLOCKLIST_NAMESPACE_PREFIX, "namespace"),
+        param(ids::DSD_PREFIX_FILTER_NAMESPACE_PREFIX, "namespace"),
         Some(json!("old"))
     );
     // The post-aggregation filter takes the filterlist from the current configuration and the statistics from startup:
@@ -1207,7 +1194,7 @@ async fn the_default_program_is_lowered_in_normal_form() {
             .map(|edge| edge.to.to_string())
             .unwrap_or_else(|| panic!("an edge leaves `{}`", from))
     };
-    for filter in [ids::DSD_PREFIX_FILTER_BLOCKLIST, ids::DSD_POST_AGG_FILTER] {
+    for filter in [ids::DSD_PREFIX_FILTER, ids::DSD_POST_AGG_FILTER] {
         let drop = format!("{}_false", filter);
         assert_eq!(target(&format!("{}.false", filter)), format!("{}.in", drop));
         assert_eq!(plan.node(&node_id(&drop)).unwrap().op.as_str(), names::DROP);
@@ -1218,8 +1205,8 @@ async fn the_default_program_is_lowered_in_normal_form() {
     // The native filter components still answer for their drops.
     let components = &plan.provenance.as_ref().unwrap().native_components;
     assert_eq!(
-        components[&node_id("dsd_prefix_filter_blocklist_false")].as_str(),
-        super::components::DSD_PREFIX_FILTER
+        components[&node_id("dsd_prefix_filter_false")].as_str(),
+        ids::DSD_PREFIX_FILTER
     );
     assert_eq!(
         components[&node_id("dsd_post_agg_filter_false")].as_str(),
@@ -1334,25 +1321,12 @@ async fn the_enrichment_chain_is_named_as_the_syntax_derives_it_in_every_configu
         }
         assert_eq!(target("metrics.out").as_deref(), Some("metrics_fanout.in"), "{}", name);
 
-        // Every node of the chain reports as metrics enrichment, as its provenance records.
+        // Every node of the chain stands for metrics enrichment, as its provenance records.
         let native_components = &plan.provenance.as_ref().unwrap().native_components;
         for id in ["metrics_in", "metrics_host_enrichment", "metrics", "metrics_fanout"] {
             let Some(node) = plan.node(&id.parse().unwrap()) else {
                 continue;
             };
-            let telemetry = native_telemetry(&node.id, node.op.as_str())
-                .unwrap_or_else(|| panic!("{}: `{}` has a native identity", name, id));
-            assert_eq!(
-                telemetry,
-                NativeTelemetry {
-                    component_id: components::METRICS_ENRICH.to_string(),
-                    component_type: ComponentType::Transform,
-                    profile: TelemetryProfile::Silent,
-                },
-                "{}: `{}`",
-                name,
-                id
-            );
             assert_eq!(
                 native_components.get(&node.id).map(|native| native.as_str()),
                 Some(components::METRICS_ENRICH),

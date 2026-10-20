@@ -1574,7 +1574,7 @@ fn a_native_policy_change_after_publishing_leaves_the_program_its_own_value() {
     // published program composed again against it.
     let mut changed = serde_json::to_value(&plan).unwrap();
     for node in changed["nodes"].as_array_mut().unwrap() {
-        if node["id"] == "dsd_prefix_filter_blocklist" {
+        if node["id"] == "dsd_prefix_filter" {
             node["params"]["predicate"] = json!({"not": {"intake_name": {"eq": "tenant.raw.other"}}});
         }
     }
@@ -1584,7 +1584,7 @@ fn a_native_policy_change_after_publishing_leaves_the_program_its_own_value() {
 
     // The program owns its filterlist: the node is the program's, with the value it was published with, as the
     // detached export writes it in normal form.
-    let filter = &composed.ids[&"dsd_prefix_filter_blocklist".parse::<ArtifactNodeId>().unwrap()];
+    let filter = &composed.ids[&"dsd_prefix_filter".parse::<ArtifactNodeId>().unwrap()];
     let node = composed.plan.node(filter).unwrap();
     assert_eq!(
         node.params.get("predicate").unwrap(),
@@ -1603,7 +1603,7 @@ fn a_native_policy_change_after_publishing_leaves_the_program_its_own_value() {
     // Status compares core plans: the default program's, and the one running.
     let changed_core = elaborate_default(&changed, &changed_catalog, &registry).plan;
     let differs = crate::export::node_differences(&changed_core, &composed.plan, &every(&changed_core), &registry);
-    assert_eq!(differs, ["dsd_prefix_filter_blocklist".parse::<NodeId>().unwrap()]);
+    assert_eq!(differs, ["dsd_prefix_filter".parse::<NodeId>().unwrap()]);
     let before = compose(&plan, &received, &approval(1), &catalog, &registry).unwrap();
     let core = elaborate_default(&plan, &catalog, &registry).plan;
     assert!(crate::export::node_differences(&core, &before.plan, &every(&core), &registry).is_empty());

@@ -1132,13 +1132,13 @@ fn the_default_program_resugars_into_lets_named_for_its_streams() {
         outline(&with_drops_on(
             &default_export(),
             "true",
-            Some(&["dsd_prefix_filter_blocklist", "dsd_post_agg_filter"])
+            Some(&["dsd_prefix_filter", "dsd_post_agg_filter"])
         )),
         [
             "let dsd_enrich = dogstatsd | dogstatsd_mapper(...)",
-            "let dsd_prefix_filter_blocklist = dsd_enrich | namespace_prefix(...) | split(...)",
-            "dsd_prefix_filter_blocklist.true | drop",
-            "let dsd_no_agg_split = dsd_prefix_filter_blocklist.false | timestamp_split(...)",
+            "let dsd_prefix_filter = dsd_enrich | namespace_prefix(...) | split(...)",
+            "dsd_prefix_filter.true | drop",
+            "let dsd_no_agg_split = dsd_prefix_filter.false | timestamp_split(...)",
             "let dsd_tag_filterlist = dsd_no_agg_split.default | tag_projection(...)",
             "let dsd_agg = dsd_tag_filterlist | aggregate(...)",
             "let dsd_post_agg_filter = (dsd_agg, dsd_no_agg_split.passthrough) | split(...)",
@@ -1236,8 +1236,8 @@ fn the_normalized_default_program_has_the_designed_shape() {
         outline(&default_export()),
         [
             "let dsd_enrich = dogstatsd | dogstatsd_mapper(...)",
-            "let dsd_prefix_filter_blocklist = dsd_enrich | namespace_prefix(...) | where ...",
-            "let dsd_no_agg_split = dsd_prefix_filter_blocklist | timestamp_split(...)",
+            "let dsd_prefix_filter = dsd_enrich | namespace_prefix(...) | where ...",
+            "let dsd_no_agg_split = dsd_prefix_filter | timestamp_split(...)",
             "let dsd_tag_filterlist = dsd_no_agg_split.default | tag_projection(...)",
             "let dsd_agg = dsd_tag_filterlist | aggregate(...)",
             "let dsd_post_agg_filter = (dsd_agg, dsd_no_agg_split.passthrough) | where ...",

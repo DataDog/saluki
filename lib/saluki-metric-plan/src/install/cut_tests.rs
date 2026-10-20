@@ -52,7 +52,7 @@ fn strings(list: &[&str]) -> Vec<String> {
 
 /// Returns the listener filterlist of a plan made by [`program`], or of the boot plan.
 fn listener(plan: &Plan) -> String {
-    plan.node(&id("dsd_prefix_filter_blocklist"))
+    plan.node(&id("dsd_prefix_filter"))
         .and_then(|node| node.params.get("predicate"))
         .and_then(|predicate| predicate.pointer("/not/intake_name/eq"))
         .and_then(Value::as_str)

@@ -61,17 +61,12 @@ fn unconfigured() -> Value {
     resolve(&mut plan, "dsd_enrich", &["profiles"], json!([]));
     resolve(
         &mut plan,
-        "dsd_prefix_filter_blocklist_namespace_prefix",
+        "dsd_prefix_filter_namespace_prefix",
         &["namespace"],
         json!(""),
     );
     // A filterlist with nothing in it keeps everything.
-    resolve(
-        &mut plan,
-        "dsd_prefix_filter_blocklist",
-        &["predicate"],
-        json!({"const": true}),
-    );
+    resolve(&mut plan, "dsd_prefix_filter", &["predicate"], json!({"const": true}));
     resolve(&mut plan, "dsd_tag_filterlist", &["rules"], json!([]));
     resolve(&mut plan, "dsd_tag_filterlist", &["value_rules"], json!([]));
     resolve(&mut plan, "dsd_post_agg_filter", &["predicate"], json!({"const": true}));
@@ -109,8 +104,8 @@ fn an_unconfigured_default_program_loses_every_native_feature_that_does_nothing_
         omitted(&eliminated),
         [
             // Constant splits first, with what only their dead ports reach, in plan order.
-            ("dsd_prefix_filter_blocklist", Omission::ConstantSplit),
-            ("dsd_prefix_filter_blocklist_false", Omission::Unreachable),
+            ("dsd_prefix_filter", Omission::ConstantSplit),
+            ("dsd_prefix_filter_false", Omission::Unreachable),
             ("dsd_post_agg_filter", Omission::ConstantSplit),
             ("dsd_post_agg_filter_false", Omission::Unreachable),
             // An endpoint routing group with neither names nor prefixes forwards nothing: its `emit` goes, and its
@@ -119,7 +114,7 @@ fn an_unconfigured_default_program_loses_every_native_feature_that_does_nothing_
             ("metrics_routing_filter_0_true", Omission::Unreachable),
             // Then the nodes that pass every record through unchanged.
             ("dsd_enrich", Omission::Identity),
-            ("dsd_prefix_filter_blocklist_namespace_prefix", Omission::Identity),
+            ("dsd_prefix_filter_namespace_prefix", Omission::Identity),
             ("dsd_tag_filterlist", Omission::Identity),
             ("metrics_host_enrichment", Omission::Identity),
         ]
@@ -183,12 +178,12 @@ fn a_constant_split_whose_dead_port_reaches_a_state_owner_stays() {
         .as_array_mut()
         .unwrap()
         .iter_mut()
-        .find(|node| node["id"] == "dsd_prefix_filter_blocklist")
+        .find(|node| node["id"] == "dsd_prefix_filter")
         .unwrap();
     blocklist["params"]["predicate"] = json!({"const": false});
     let plan = Plan::from_value(plan).unwrap();
     let eliminated = without_facts(&plan);
-    for node in ["dsd_prefix_filter_blocklist", "dsd_no_agg_split", "dsd_agg"] {
+    for node in ["dsd_prefix_filter", "dsd_no_agg_split", "dsd_agg"] {
         assert!(eliminated.plan.node(&id(node)).is_some(), "{} was left out", node);
     }
 }

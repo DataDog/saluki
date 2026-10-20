@@ -96,9 +96,9 @@
       "lanes": 2,
       "nodes": [
         "dsd_enrich",
-        "dsd_prefix_filter_blocklist_namespace_prefix",
-        "dsd_prefix_filter_blocklist",
-        "dsd_prefix_filter_blocklist_false",
+        "dsd_prefix_filter_namespace_prefix",
+        "dsd_prefix_filter",
+        "dsd_prefix_filter_false",
         "dsd_no_agg_split",
         "dsd_tag_filterlist"
       ],
@@ -393,24 +393,24 @@
     },
     {
       "from": "dsd_enrich.out",
-      "to": "dsd_prefix_filter_blocklist_namespace_prefix.in",
+      "to": "dsd_prefix_filter_namespace_prefix.in",
       "decision": "fused",
       "reason": "both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`"
     },
     {
-      "from": "dsd_prefix_filter_blocklist_namespace_prefix.out",
-      "to": "dsd_prefix_filter_blocklist.in",
+      "from": "dsd_prefix_filter_namespace_prefix.out",
+      "to": "dsd_prefix_filter.in",
       "decision": "fused",
       "reason": "both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`"
     },
     {
-      "from": "dsd_prefix_filter_blocklist.false",
-      "to": "dsd_prefix_filter_blocklist_false.in",
+      "from": "dsd_prefix_filter.false",
+      "to": "dsd_prefix_filter_false.in",
       "decision": "fused",
       "reason": "both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`"
     },
     {
-      "from": "dsd_prefix_filter_blocklist.true",
+      "from": "dsd_prefix_filter.true",
       "to": "dsd_no_agg_split.in",
       "decision": "fused",
       "reason": "both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`"
@@ -598,9 +598,9 @@
       "mode": "admit",
       "nodes": [
         "dsd_enrich",
-        "dsd_prefix_filter_blocklist_namespace_prefix",
-        "dsd_prefix_filter_blocklist",
-        "dsd_prefix_filter_blocklist_false",
+        "dsd_prefix_filter_namespace_prefix",
+        "dsd_prefix_filter",
+        "dsd_prefix_filter_false",
         "dsd_no_agg_split",
         "dsd_tag_filterlist",
         "dsd_post_agg_filter_in",

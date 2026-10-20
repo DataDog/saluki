@@ -464,7 +464,7 @@ fn plan_diffs_are_summarized_by_kind_of_change() {
 #[test]
 fn acknowledgments_are_found_by_product_and_revision_and_status_says_which_program_runs() {
     let status = Status::read(json!({
-        "program": {"runs": "published", "native_policy": "not_applied", "differs": ["dsd_prefix_filter_blocklist"]},
+        "program": {"runs": "published", "native_policy": "not_applied", "differs": ["dsd_prefix_filter"]},
         "config_states": [
             {"id": "demo", "revision": 2, "state": "pending", "error": "waiting for recipient `team_z`: ..."},
             {"product": "policy", "id": "demo", "revision": 3, "state": "active"}
@@ -477,11 +477,7 @@ fn acknowledgments_are_found_by_product_and_revision_and_status_says_which_progr
     assert!(settled(status.acknowledgment(POLICY_PRODUCT, 3).unwrap()));
     assert_eq!(
         (status.runs(), status.native_policy(), status.differs()),
-        (
-            Some("published"),
-            Some("not_applied"),
-            vec!["dsd_prefix_filter_blocklist"]
-        )
+        (Some("published"), Some("not_applied"), vec!["dsd_prefix_filter"])
     );
     // An ADP that does not say which program runs says nothing of it.
     let silent = Status::read(json!({}));

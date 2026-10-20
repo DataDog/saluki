@@ -5,8 +5,8 @@ use super::*;
 use crate::{
     compile::rewrite::{
         harness::{
-            arb_plan_params, arb_shape, arb_trace, drop, edges, emit, ids, node, plan, sample, sorted, source, split,
-            Case, TEST_KEEP,
+            arb_plan_params, arb_shape, arb_trace, catalog_with_contract, drop, edges, emit, ids, node, plan, sample,
+            sorted, source, split, Case, TEST_KEEP,
         },
         r5a::R5a,
         Optimized, RewriteOutcome, RewriteRecord,
@@ -159,14 +159,14 @@ fn a_drop_some_port_does_not_apply_stays_below_the_tee() {
             (tag("b", "env", false), drop("b_drop", false), "true"),
         ),
         (
-            "a native filter, whose series a copy would not carry",
+            "a filter the telemetry contract names, whose series a copy would not report",
             (tag("a", "env", false), drop("a_drop", false), "false"),
             (tag("b", "env", true), drop("b_drop", true), "false"),
         ),
     ];
     for (what, a, b) in cases {
         let mut plan = guarded(a, b);
-        // The native filter's nodes are named without the policy prefix.
+        // The named filter's nodes are named without the policy prefix.
         for edge in &mut plan.edges {
             for port in [&mut edge.from, &mut edge.to] {
                 if plan.nodes.iter().all(|node| node.id != port.node) {
@@ -174,9 +174,16 @@ fn a_drop_some_port_does_not_apply_stays_below_the_tee() {
                 }
             }
         }
-        let (case, optimized) = r6(plan);
+        let named = catalog_with_contract(&[("b", "split")]);
+        let case = Case::of_in(plan.clone(), Vec::new(), &named).unwrap();
+        let optimized = case.optimize(&[&R6]);
         assert!(optimized.records.is_empty(), "{}: {:?}", what, optimized.records);
         assert_eq!(optimized.plan, case.plan, "{}", what);
+        if what.starts_with("a filter the telemetry contract names") {
+            // Without the contract, nothing reads the filter's series by its name, and it is hoisted.
+            let (_, optimized) = r6(plan);
+            assert_eq!(applied(&optimized).len(), 1, "{}: {:?}", what, optimized.records);
+        }
     }
 }
 

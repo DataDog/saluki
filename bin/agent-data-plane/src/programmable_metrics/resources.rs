@@ -80,7 +80,7 @@ use saluki_metric_plan::{
 use serde_json::json;
 
 use self::params::{encode_encoder, encode_host_settings, encode_protocol};
-use super::{host_facts::HostFacts, telemetry_profiles::lease_telemetry};
+use super::{host_facts::HostFacts, telemetry::lease_telemetry};
 use crate::{
     cli::run::{main_metrics_encoder, routing_group_encoder},
     config::DataPlaneConfiguration,

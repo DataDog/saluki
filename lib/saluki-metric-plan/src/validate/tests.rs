@@ -1728,3 +1728,50 @@ fn copies_to_outputs_without_a_recipient_in_common_are_no_duplicate_even_beside_
     assert_eq!(duplicates(&plan_to("both", "to_b")), 1);
     assert_eq!(duplicates(&plan_to("to_b", "to_b")), 1);
 }
+
+#[test]
+fn a_catalogs_telemetry_contract_warns_about_each_node_it_names_that_a_plan_lacks_or_runs_otherwise() {
+    use crate::testing::{default_program_catalog, default_program_contract, DEFAULT_PROGRAM_JSON};
+
+    let registry = OperatorRegistry::native();
+    let catalog = default_program_catalog();
+    let default = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
+    let report = Validator::new(&registry, &catalog).validate(&default);
+    assert!(report.findings().is_empty(), "{}", report);
+    let named = default_program_contract()
+        .entries
+        .into_iter()
+        .map(|entry| entry.node)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(report.contract_nodes(), &named);
+
+    // The prefix filter's `split` as a `tee`, and aggregation renamed: one warning each, at the node and at the plan.
+    let mut value = serde_json::to_value(&default).unwrap();
+    for node in value["nodes"].as_array_mut().unwrap() {
+        match node["id"].as_str().unwrap() {
+            "dsd_agg" => node["id"] = json!("other_agg"),
+            "dsd_prefix_filter" => node["op"] = json!("tee"),
+            _ => {}
+        }
+    }
+    let changed = serde_json::to_string(&value)
+        .unwrap()
+        .replace("\"dsd_agg.", "\"other_agg.");
+    let changed = Plan::from_json(&changed).unwrap();
+    let report = Validator::new(&registry, &catalog).validate(&changed);
+    let warnings = report
+        .warnings()
+        .filter(|finding| finding.rule == Rule::TelemetryContract)
+        .map(|finding| finding.location.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(warnings, ["plan", "node `dsd_prefix_filter`"], "{}", report);
+    assert!(!report.contract_nodes().contains(&"dsd_agg".parse().unwrap()));
+
+    // Without a contract, nothing is read by name.
+    let report = Validator::new(&registry, &MemoryCatalog::new()).validate(&default);
+    assert!(report.contract_nodes().is_empty());
+    assert!(report
+        .findings()
+        .iter()
+        .all(|finding| finding.rule != Rule::TelemetryContract));
+}

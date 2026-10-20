@@ -600,7 +600,7 @@ mod tests {
             "ir_version": 1,
             "nodes": [
                 {"id": "dsd_in", "op": "source", "params": {"binding": "dogstatsd", "timestamps": "mixed"}},
-                {"id": "dsd_prefix_filter_blocklist", "op": "split",
+                {"id": "dsd_prefix_filter", "op": "split",
                  "params": {"predicate": {"intake_name": {"matches": {
                     "values": {"config": "dogstatsd.metric_filter.values"},
                     "prefix": {"config": "dogstatsd.metric_filter.match_prefix"}}}}}},

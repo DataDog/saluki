@@ -6,7 +6,9 @@ use saluki_components::forwarders::delivery::RecipientProtocol;
 use saluki_metric_plan::{
     ir::{BindingName, HostId, OutputDecl, OutputId, RecipientDecl, RecipientId, RecipientName, ValueType},
     model::{Kind, PortType},
-    validate::{Catalog, CatalogBinding, CatalogOutput, CatalogRecipient, HostSchema, MemoryCatalog},
+    validate::{
+        Catalog, CatalogBinding, CatalogOutput, CatalogRecipient, HostSchema, MemoryCatalog, TelemetryContract,
+    },
 };
 
 use super::{
@@ -19,7 +21,8 @@ use super::{
 use crate::config::DataPlaneConfiguration;
 
 /// ADP's catalog: the outputs, native and declared, every configuration binding of the registry with its class and
-/// current value, the recipient directory, the budget of state every state owner shares, that a program runs at most one aggregation, and the delivery hosts with the schemas of their parameters.
+/// current value, the recipient directory, the budget of state every state owner shares, that a program runs at most
+/// one aggregation, the telemetry contract, and the delivery hosts with the schemas of their parameters.
 ///
 /// Bindings are resolved when the catalog is built, `Startup` bindings from the startup configuration and `Live` ones
 /// from the current configuration, so the catalog carries the same values lowering writes into plans. A binding the
@@ -38,6 +41,8 @@ pub struct AdpCatalog {
     hosts: FixedHosts,
     /// The sets of recipients lowering added no implied output for, each with why.
     refused_demand: BTreeMap<Vec<RecipientId>, String>,
+    /// The nodes the remapper reads native series from by name, as the default program has them.
+    telemetry_contract: Option<TelemetryContract>,
 }
 
 impl AdpCatalog {
@@ -87,7 +92,15 @@ impl AdpCatalog {
             state_budget,
             hosts,
             refused_demand: resources.refused_demand.clone(),
+            telemetry_contract: None,
         }
+    }
+
+    /// Declares the telemetry contract: what the remapper reads by name from the nodes of a plan, as the default program
+    /// meets it ([`compatibility::contract`](super::compatibility::contract)).
+    pub fn with_telemetry_contract(mut self, contract: TelemetryContract) -> Self {
+        self.telemetry_contract = Some(contract);
+        self
     }
 
     /// Returns how many contexts the state owners of every generation hold together at most: native DogStatsD
@@ -110,6 +123,9 @@ impl AdpCatalog {
         }
         if Catalog::single_aggregation(self) {
             catalog = catalog.with_single_aggregation();
+        }
+        if let Some(contract) = &self.telemetry_contract {
+            catalog = catalog.with_telemetry_contract(contract.clone());
         }
         match self.state_budget {
             Some(capacity) => catalog.with_state_budget(capacity),
@@ -135,6 +151,10 @@ impl Catalog for AdpCatalog {
         // One aggregation per program, for now: the frame has one isolation slot, which placement lets run a state
         // owner of each branch of a split ahead of it, and the demo and the operator surfaces assume one.
         true
+    }
+
+    fn telemetry_contract(&self) -> Option<&TelemetryContract> {
+        self.telemetry_contract.as_ref()
     }
 
     fn recipient(&self, name: &RecipientName) -> Option<&CatalogRecipient> {

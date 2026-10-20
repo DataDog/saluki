@@ -176,7 +176,7 @@ fn an_unmodified_export_diffs_as_no_change_and_the_detached_one_only_by_what_it_
     let mut value = serde_json::from_str::<Value>(DEFAULT_PROGRAM_JSON).unwrap();
     // An empty metric filterlist, which does nothing, and which the detached export leaves out.
     for node in value["nodes"].as_array_mut().unwrap() {
-        if node["id"] == "dsd_prefix_filter_blocklist" {
+        if node["id"] == "dsd_prefix_filter" {
             node["params"]["predicate"] = crate::testing::listener_filterlist(json!([]));
         }
     }
@@ -196,10 +196,6 @@ fn an_unmodified_export_diffs_as_no_change_and_the_detached_one_only_by_what_it_
         .filter(|node| node.change == NodeChange::Removed)
         .map(|node| node.id.to_string())
         .collect::<Vec<_>>();
-    assert!(
-        removed.contains(&"dsd_prefix_filter_blocklist".to_string()),
-        "{:?}",
-        removed
-    );
+    assert!(removed.contains(&"dsd_prefix_filter".to_string()), "{:?}", removed);
     assert!(diff_operations(&plan, &detached, &registry).is_empty());
 }

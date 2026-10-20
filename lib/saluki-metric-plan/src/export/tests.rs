@@ -13,7 +13,7 @@ use crate::validate::Catalog;
 const DEFAULT_PROGRAM_EXPORT_JSON: &str = include_str!("../../fixtures/export/default-program.json");
 
 /// The program hash of [`DEFAULT_PROGRAM_EXPORT_JSON`].
-const DEFAULT_PROGRAM_EXPORT_HASH: &str = "sha256:37700408621e62e7d590388eefd84ba9ef9d9ed9b6a72b6a5337113b8bb4dfc6";
+const DEFAULT_PROGRAM_EXPORT_HASH: &str = "sha256:9d2e20e85139e30dceeed6470c66ccc57e42c4c6655a2341ac1493fb02b36b7b";
 
 fn default_program() -> Plan {
     Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap()

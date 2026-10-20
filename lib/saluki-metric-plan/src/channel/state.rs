@@ -246,7 +246,7 @@ mod tests {
                 program: Some(ProgramStatus {
                     runs: ProgramRuns::Published,
                     native_policy: NativePolicy::NotApplied,
-                    differs: vec!["dsd_prefix_filter_blocklist".parse().unwrap()],
+                    differs: vec!["dsd_prefix_filter".parse().unwrap()],
                 }),
             },
             config_states: vec![ConfigAcknowledgment {
@@ -270,7 +270,7 @@ mod tests {
             "stale_review": false,
             "degraded": null,
             "live_generations": 2,
-            "program": {"runs": "published", "native_policy": "not_applied", "differs": ["dsd_prefix_filter_blocklist"]},
+            "program": {"runs": "published", "native_policy": "not_applied", "differs": ["dsd_prefix_filter"]},
             "config_states": [{
                 "product": "policy", "id": "demo", "version": 7, "revision": 7, "artifact_hash": HASH,
                 "state": "active", "generation": 12, "cut_at": null, "error": null

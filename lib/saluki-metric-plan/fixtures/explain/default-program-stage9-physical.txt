@@ -13,7 +13,7 @@ frame
       admission point 5 metrics (admit) -> metrics_enrich, spread
   slots (3)
     dsd_pre_aggregation (estimated 200 ns per event), 2 lanes
-      nodes dsd_enrich, dsd_prefix_filter_blocklist_namespace_prefix, dsd_prefix_filter_blocklist, dsd_prefix_filter_blocklist_false, dsd_no_agg_split, dsd_tag_filterlist
+      nodes dsd_enrich, dsd_prefix_filter_namespace_prefix, dsd_prefix_filter, dsd_prefix_filter_false, dsd_no_agg_split, dsd_tag_filterlist
       admission point 0: dsd_in.metrics -> dsd_enrich.in
       admission point 1: dsd_in.metrics -> dsd_enrich.in
       exit 0 dsd_agg -> dsd_agg, keyed (key groups 0 to 127 on lane 0, 128 to 255 on lane 1), progress of admission points 0, 1
@@ -59,10 +59,10 @@ frame
 
 fusion (34)
   dsd_in.metrics -> dsd_enrich.in: fence (`dsd_in` is an io_host, a fence that fusion never crosses)
-  dsd_enrich.out -> dsd_prefix_filter_blocklist_namespace_prefix.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`)
-  dsd_prefix_filter_blocklist_namespace_prefix.out -> dsd_prefix_filter_blocklist.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`)
-  dsd_prefix_filter_blocklist.false -> dsd_prefix_filter_blocklist_false.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`)
-  dsd_prefix_filter_blocklist.true -> dsd_no_agg_split.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`)
+  dsd_enrich.out -> dsd_prefix_filter_namespace_prefix.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`)
+  dsd_prefix_filter_namespace_prefix.out -> dsd_prefix_filter.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`)
+  dsd_prefix_filter.false -> dsd_prefix_filter_false.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`)
+  dsd_prefix_filter.true -> dsd_no_agg_split.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`)
   dsd_no_agg_split.default -> dsd_tag_filterlist.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_pre_aggregation`)
   dsd_tag_filterlist.out -> dsd_agg.in: isolation (the edge enters or leaves the isolation slot `dsd_agg`, which runs its state owner alone)
   dsd_agg.out -> dsd_post_agg_filter_in.0: isolation (the edge enters or leaves the isolation slot `dsd_agg`, which runs its state owner alone)
@@ -96,7 +96,7 @@ fusion (34)
 segments (6)
   admission points 0 to 1 dsd_in.metrics (admit)
     slots dsd_pre_aggregation, metrics_enrich
-    nodes dsd_enrich, dsd_prefix_filter_blocklist_namespace_prefix, dsd_prefix_filter_blocklist, dsd_prefix_filter_blocklist_false, dsd_no_agg_split, dsd_tag_filterlist, dsd_post_agg_filter_in, dsd_post_agg_filter, dsd_post_agg_filter_false, dsd_post_agg_filter_fanout, dsd_post_agg_filter_fanout_0, metrics_in, metrics_host_enrichment, metrics, metrics_fanout, metrics_fanout_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false
+    nodes dsd_enrich, dsd_prefix_filter_namespace_prefix, dsd_prefix_filter, dsd_prefix_filter_false, dsd_no_agg_split, dsd_tag_filterlist, dsd_post_agg_filter_in, dsd_post_agg_filter, dsd_post_agg_filter_false, dsd_post_agg_filter_fanout, dsd_post_agg_filter_fanout_0, metrics_in, metrics_host_enrichment, metrics, metrics_fanout, metrics_fanout_0, metrics_routing_filter_0, metrics_routing_filter_0_true, metrics_routing_filter_0_false, metrics_routing_filter_1, metrics_routing_filter_1_true, metrics_routing_filter_1_false, mrf_metrics_gateway, mrf_metrics_gateway_true, mrf_metrics_gateway_false, af_metrics_gateway, af_metrics_gateway_true, af_metrics_gateway_false
     ends dsd_agg, output af_metrics_encode, output dd_metrics_encode, output dsd_client_telemetry, output metrics_routing_encode_0, output metrics_routing_encode_1, output mrf_metrics_encode
   admission point 2 otlp_in.metrics (admit)
     slots metrics_enrich

@@ -20,6 +20,7 @@ use saluki_core::{
 use saluki_metric_plan::{
     compile::{RewriteId, RewriteOutcome, RewriteRecord},
     ir::NodeId,
+    operators::{names, OperatorRegistry, Recorder, ReportedSeries},
 };
 use saluki_metrics::test::TestRecorder;
 
@@ -28,7 +29,6 @@ use super::{
 };
 use crate::{
     programmable_metrics::{
-        telemetry_profiles::TelemetryProfile,
         test_intake::{Intake, ZSTD},
         test_support::{configuration, layered_configuration_system, programmable_metrics, ConfigCell},
         test_topology::{Aggregation, Encoders, MetricsPath, Options, Recipients, TestTopology},
@@ -699,10 +699,7 @@ async fn each_fused_kernel_is_accounted_in_a_resource_group_of_its_own_under_its
     let group = |region: &str, node: &str| format!("topology.primary.transforms.{}.{}", region, node);
     let kernels = [
         ("dsd_pre_aggregation", "dsd_enrich"),
-        (
-            "dsd_prefix_filter_region",
-            "dsd_prefix_filter_blocklist_namespace_prefix",
-        ),
+        ("dsd_prefix_filter_region", "dsd_prefix_filter_namespace_prefix"),
         ("dsd_prefix_filter_region", "dsd_no_agg_split"),
         ("dsd_prefix_filter_region", "dsd_tag_filterlist"),
         ("metrics_enrich", "metrics"),
@@ -956,6 +953,16 @@ fn the_installer_reports_every_cut_outcome_from_creation() {
     assert_eq!(cuts("cancel_refused"), None, "a refusal is no outcome of a cut");
 }
 
+/// The series an `aggregate` node's kernel records: the native aggregation component's.
+fn aggregate_kernel_series() -> impl Iterator<Item = &'static ReportedSeries> {
+    OperatorRegistry::native()
+        .get(names::AGGREGATE)
+        .unwrap()
+        .reports()
+        .iter()
+        .filter(|series| series.recorder == Recorder::Kernel)
+}
+
 #[tokio::test]
 async fn aggregation_in_its_region_keeps_the_native_aggregation_components_series_and_what_they_remap_to() {
     let legacy = telemetry(MetricsPath::Legacy, CONFIG).await;
@@ -963,7 +970,7 @@ async fn aggregation_in_its_region_keeps_the_native_aggregation_components_serie
     let plan = telemetry_with(options, CONFIG).await;
 
     // The aggregation kernel reports every series of the native component, with the native values.
-    for metric in TelemetryProfile::Aggregation.metrics() {
+    for metric in aggregate_kernel_series() {
         let mut labels = vec!["component_id:dsd_agg", "component_type:transform"];
         labels.extend(metric.tags);
         let series = series(metric.name, &labels);
@@ -1022,7 +1029,7 @@ async fn telemetry_on_lanes(config: &str, lanes: &str, producer_lanes: usize) ->
 async fn assert_aggregation_telemetry_on_lanes_is_native(lanes: &str, producer_lanes: usize) {
     let legacy = telemetry(MetricsPath::Legacy, CONFIG).await;
     let plan = telemetry_on_lanes(CONFIG, lanes, producer_lanes).await;
-    for metric in TelemetryProfile::Aggregation.metrics() {
+    for metric in aggregate_kernel_series() {
         let mut labels = vec!["component_id:dsd_agg", "component_type:transform"];
         labels.extend(metric.tags);
         let series = series(metric.name, &labels);
@@ -1543,7 +1550,7 @@ fn a_plan_gauge_of_a_node_the_running_plan_leaves_out_reads_zero() {
     let mut without = plan.clone();
     without
         .nodes
-        .retain(|node| !["dsd_prefix_filter_blocklist", "dsd_tag_filterlist"].contains(&node.id.local().as_str()));
+        .retain(|node| !["dsd_prefix_filter", "dsd_tag_filterlist"].contains(&node.id.local().as_str()));
     telemetry.set_plan_gauges(&without);
     let reported = recorded(&recorder);
     assert_eq!(value(&reported, "metric_filterlist_size", &prefix_filter), "gauge 0");

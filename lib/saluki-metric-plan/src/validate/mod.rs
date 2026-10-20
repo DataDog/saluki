@@ -33,6 +33,9 @@
 //!   wherever the default program is within them.
 //! - **Programs:** a program holds no host-owned operator, which only native configuration places (an operator says
 //!   whether a program may hold it, [`OperatorDef::authorable`][crate::operators::OperatorDef::authorable]).
+//! - **Telemetry contract:** every node the host reads series from by name ([`Catalog::telemetry_contract`]) is in the
+//!   plan, running the operator that reports them, or validation warns that the series will be absent (see
+//!   [`contract`]).
 //!
 //! # Duplicate analysis
 //!
@@ -55,7 +58,10 @@
 //! its square in comparisons of pairs of paths in the whole plan, each a few word operations, since predicates are
 //! compared by number rather than by text. A plan beyond either bound is reported as `duplicate_analysis_limit`.
 
-use std::{collections::BTreeMap, fmt};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
 
 use crate::{
     ir::{ArtifactRevision, NodeId, OutputId, Plan, PortName, PortRef},
@@ -361,6 +367,9 @@ pub struct ValidationReport {
     /// What the default program has, which raises a program's limits to it: kept so that a rewritten plan is checked
     /// against the same limits.
     baseline: Option<bounds::Baseline>,
+    /// The nodes of the plan the catalog's telemetry contract names, running the operator it expects: kept so that
+    /// rewrites of the plan know them.
+    contract_nodes: BTreeSet<NodeId>,
 }
 
 impl ValidationReport {
@@ -385,6 +394,15 @@ impl ValidationReport {
     /// the plan has a cycle.
     pub fn bounds(&self) -> &[BoundMeasure] {
         &self.bounds
+    }
+
+    /// Returns the nodes of the plan that the catalog's telemetry contract names, each running the operator the
+    /// contract expects: the host reads series from them by name. None without a contract.
+    ///
+    /// A rewrite moves a filter with one of these nodes only whole, keeping its name: a copy, under another name, would
+    /// not report the series.
+    pub fn contract_nodes(&self) -> &BTreeSet<NodeId> {
+        &self.contract_nodes
     }
 
     /// Returns every finding, in the order validation found them.
@@ -481,6 +499,16 @@ impl<'a> Validator<'a> {
         }
         let baseline = report.baseline.clone();
         bounds::check(&graph, &programs, baseline.as_ref(), &mut report);
+        if let Some(contract) = self.catalog.telemetry_contract() {
+            report.contract_nodes = contract::check(plan, contract)
+                .met
+                .into_iter()
+                .map(|(_, node)| node)
+                .collect();
+            for finding in contract::findings(plan, contract) {
+                report.push(finding);
+            }
+        }
 
         report
     }
@@ -490,10 +518,12 @@ impl<'a> Validator<'a> {
 ///
 /// Rewrites never change a plan's outputs, its resources, or the configuration bindings an operator's parameters
 /// use, which are what the catalog checks: so every check but those runs, as [`Validator::validate`] runs it, and the
-/// report carries the rewritten plan's port types and bounds.
+/// report carries the rewritten plan's port types and bounds. It keeps the prior report's contract nodes: rewrites move
+/// those only whole, under their names.
 pub(crate) fn revalidate(registry: &OperatorRegistry, plan: &Plan, prior: &ValidationReport) -> ValidationReport {
     let mut report = ValidationReport {
         baseline: prior.baseline.clone(),
+        contract_nodes: prior.contract_nodes.clone(),
         ..ValidationReport::default()
     };
     let graph = graph::Graph::build(plan, registry, &mut report);

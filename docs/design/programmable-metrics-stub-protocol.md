@@ -77,7 +77,7 @@ Request body:
   "not_applied", "differs": ["<node>", ...]}`, left out while no generation is active. A published program owns its
   policy settings, so native ones are not applied to it; `differs` lists the nodes of the default program, by name,
   whose parameters come from native policy settings and that the running program does not run as the default program
-  writes them now (none for the default program), such as `dsd_prefix_filter_blocklist` after `metric_filterlist`
+  writes them now (none for the default program), such as `dsd_prefix_filter` after `metric_filterlist`
   changes (version 2's step V3; before, it listed binding names).
 - `status.stale_review` is `true` when the active artifact's `approved_against.active_plan_hash` (section 2) differs
   from the active plan hash it was prepared against, or, for a delivery that acknowledged the current state, from the

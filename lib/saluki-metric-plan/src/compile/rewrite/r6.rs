@@ -11,8 +11,9 @@
 //! - **Nothing between.** The filters are the `tee`'s direct targets, so nothing between the `tee` and a filter
 //!   changes what the filter reads. R5a, which runs before R6 in every pass, moves a filter up to the `tee` across the
 //!   operators it commutes with.
-//! - **Native filters stay.** A host reports native series under a reserved node's ID; hoisting replaces the per-path
-//!   filters by a new node, so no filter with a reserved ID is hoisted.
+//! - **Filters the telemetry contract names stay.** A host reads series from a node of its telemetry contract by the
+//!   node's name; hoisting replaces the per-path filters by a new node, so no filter with a node the contract names
+//!   ([`ValidationReport::contract_nodes`]) is hoisted.
 //! - **The frame is fixed.** The hoisted filter runs where the `tee`'s input runs; the pipeline checks that the
 //!   rewritten plan places into the boot frame.
 //! - **Dynamic operators** are never moved, and no drop moves across one: a dynamic filter or `tee` is left alone.
@@ -50,14 +51,14 @@ impl Rewrite for R6 {
             return None;
         }
         (0..graph.nodes.len())
-            .filter_map(|tee| guarded(&graph, tee).map(|filters| (tee, filters)))
+            .filter_map(|tee| guarded(&graph, ctx.report(), tee).map(|filters| (tee, filters)))
             .filter_map(|(tee, filters)| hoist(plan, &graph, tee, &filters))
             .find(|rewritten| !ctx.is_rejected(RewriteId::R6, &rewritten.nodes))
     }
 }
 
 /// Returns the filter on every port of the `tee` at `tee`, in port order, if R6's obligations hold for them.
-fn guarded(graph: &Graph<'_>, tee: usize) -> Option<Vec<Filter>> {
+fn guarded(graph: &Graph<'_>, report: &ValidationReport, tee: usize) -> Option<Vec<Filter>> {
     let op = graph.op(tee)?;
     if op.name() != names::TEE || op.contract().is_dynamic() {
         return None;
@@ -65,7 +66,8 @@ fn guarded(graph: &Graph<'_>, tee: usize) -> Option<Vec<Filter>> {
     let filters = (0..op.ports().outputs.len())
         .map(|port| {
             let (target, _) = graph.target(tee, port)?;
-            Filter::at(graph, target).filter(|filter| !filter.is_native(graph) && !filter.is_dynamic(graph))
+            Filter::at(graph, target)
+                .filter(|filter| !filter.keeps_identity(graph, report) && !filter.is_dynamic(graph))
         })
         .collect::<Option<Vec<_>>>()?;
     let first = filters.first()?;

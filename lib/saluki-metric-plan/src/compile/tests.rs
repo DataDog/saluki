@@ -121,9 +121,9 @@ const PRE_AGGREGATION: [(&str, &[&str]); 3] = [
     (
         "dsd_prefix_filter_region",
         &[
-            "dsd_prefix_filter_blocklist_namespace_prefix",
-            "dsd_prefix_filter_blocklist",
-            "dsd_prefix_filter_blocklist_false",
+            "dsd_prefix_filter_namespace_prefix",
+            "dsd_prefix_filter",
+            "dsd_prefix_filter_false",
         ],
     ),
     ("dsd_no_agg_split_region", &["dsd_no_agg_split", "dsd_tag_filterlist"]),
@@ -504,18 +504,15 @@ fn the_default_programs_fusion_decisions_name_each_edges_fence_or_slot() {
     // The cost model cuts the pre-aggregation chain between native components: the mapper (65 ns per event) and the
     // namespace prefix with its filterlist (110 ns) would cost more than the budget together.
     assert_eq!(
-        verdict("dsd_enrich.out", "dsd_prefix_filter_blocklist_namespace_prefix.in"),
+        verdict("dsd_enrich.out", "dsd_prefix_filter_namespace_prefix.in"),
         pipelined(0, 1)
     );
     assert_eq!(
-        verdict(
-            "dsd_prefix_filter_blocklist.false",
-            "dsd_prefix_filter_blocklist_false.in"
-        ),
+        verdict("dsd_prefix_filter.false", "dsd_prefix_filter_false.in"),
         fused(1)
     );
     assert_eq!(
-        verdict("dsd_prefix_filter_blocklist.true", "dsd_no_agg_split.in"),
+        verdict("dsd_prefix_filter.true", "dsd_no_agg_split.in"),
         pipelined(1, 2)
     );
     assert_eq!(verdict("dsd_no_agg_split.default", "dsd_tag_filterlist.in"), fused(2));
@@ -1191,17 +1188,12 @@ fn the_default_programs_entries_and_exits_follow_its_edges() {
             0,
             0,
             "dsd_enrich.out",
-            "dsd_prefix_filter_blocklist_namespace_prefix.in"
+            "dsd_prefix_filter_namespace_prefix.in"
         )]
     );
     assert_eq!(
         entries(2),
-        vec![from_region(
-            1,
-            0,
-            "dsd_prefix_filter_blocklist.true",
-            "dsd_no_agg_split.in"
-        )]
+        vec![from_region(1, 0, "dsd_prefix_filter.true", "dsd_no_agg_split.in")]
     );
     // Aggregation's isolation slot: from the pipeline's last region.
     assert_eq!(
@@ -1331,7 +1323,7 @@ fn live_parameter_changes_place_like_the_boot_plan() {
     let boot = stage3_default_program();
     let frame = frame_of(&boot);
     let plan = edited(|value| {
-        node_mut(value, "dsd_prefix_filter_blocklist")["params"]["predicate"] =
+        node_mut(value, "dsd_prefix_filter")["params"]["predicate"] =
             crate::testing::listener_filterlist(json!(["tenant.raw.blocked", "tenant.raw.other"]));
     });
     assert_eq!(placed(&plan, &frame).unwrap(), placed(&boot, &frame).unwrap());
@@ -1607,11 +1599,7 @@ fn the_pre_aggregation_programs_map_split_and_hand_each_batch_to_the_next_region
         kernels,
         vec![
             vec![("dsd_enrich".to_string(), "dogstatsd_mapper", 1)],
-            vec![(
-                "dsd_prefix_filter_blocklist_namespace_prefix".to_string(),
-                "namespace_prefix",
-                1
-            )],
+            vec![("dsd_prefix_filter_namespace_prefix".to_string(), "namespace_prefix", 1)],
             vec![
                 ("dsd_no_agg_split".to_string(), "timestamp_split", 2),
                 ("dsd_tag_filterlist".to_string(), "tag_projection", 1),
@@ -1621,7 +1609,7 @@ fn the_pre_aggregation_programs_map_split_and_hand_each_batch_to_the_next_region
     assert_eq!(
         decision_nodes(&programs[1]),
         vec![(
-            "dsd_prefix_filter_blocklist".to_string(),
+            "dsd_prefix_filter".to_string(),
             vec!["true".to_string(), "false".to_string()],
             true
         )]
@@ -1650,10 +1638,10 @@ fn the_pre_aggregation_programs_map_split_and_hand_each_batch_to_the_next_region
             // The listener filterlist drops in place: its `false` port leads to the `drop`.
             (
                 EntryKey::Region(EntryId::new(0)),
-                "dsd_prefix_filter_blocklist_namespace_prefix.in".to_string(),
+                "dsd_prefix_filter_namespace_prefix.in".to_string(),
                 vec![
                     map(0, 0),
-                    decide(0, 0, vec![to(1), Route::Drop(id("dsd_prefix_filter_blocklist_false"))]),
+                    decide(0, 0, vec![to(1), Route::Drop(id("dsd_prefix_filter_false"))]),
                     to_next(1, 0),
                 ],
                 2
@@ -1971,7 +1959,7 @@ fn fingerprints_and_kernel_keys_change_only_with_what_they_cover() {
 
     // A live change of the listener filterlist changes only the program of the region running it, and no kernel.
     let filtered = edited(|value| {
-        node_mut(value, "dsd_prefix_filter_blocklist")["params"]["predicate"] =
+        node_mut(value, "dsd_prefix_filter")["params"]["predicate"] =
             crate::testing::listener_filterlist(json!(["tenant.raw.blocked", "tenant.raw.other"]));
     });
     let after = compiled(&filtered, &frame);

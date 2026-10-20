@@ -48,8 +48,8 @@ fn the_default_programs_export_prints_with_a_let_for_each_named_stream_and_no_as
         statements,
         [
             "  let dsd_enrich = dogstatsd",
-            "  let dsd_prefix_filter_blocklist = dsd_enrich",
-            "  let dsd_no_agg_split = dsd_prefix_filter_blocklist | timestamp_split(10s)",
+            "  let dsd_prefix_filter = dsd_enrich",
+            "  let dsd_no_agg_split = dsd_prefix_filter | timestamp_split(10s)",
             "  let dsd_tag_filterlist = dsd_no_agg_split.default",
             "  let dsd_agg = dsd_tag_filterlist | aggregate(window: 10s)",
             "  let dsd_post_agg_filter = (dsd_agg, dsd_no_agg_split.passthrough)",
@@ -169,7 +169,7 @@ fn the_default_program_prints_from_its_sources_through_aggregation_and_enrichmen
             Plan::from_json(NO_AGGREGATION_PIPELINE_OFF_JSON).unwrap(),
             &[
                 "\n  let dsd_enrich = dogstatsd\n",
-                "\n  let dsd_tag_filterlist = dsd_prefix_filter_blocklist\n",
+                "\n  let dsd_tag_filterlist = dsd_prefix_filter\n",
                 "\n  let dsd_post_agg_filter = dsd_agg\n    | where not (kind in",
             ][..],
         ),

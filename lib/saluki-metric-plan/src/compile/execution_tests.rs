@@ -630,7 +630,7 @@ fn compiled_programs_deliver_what_the_interpreter_delivers() {
             panic!("compiled programs differ from the interpreter:\n{}", mismatch);
         }
         for node in [
-            "dsd_prefix_filter_blocklist_false",
+            "dsd_prefix_filter_false",
             "dsd_post_agg_filter_false",
             "metrics_routing_filter_0_false",
             "metrics_routing_filter_1_false",
@@ -780,7 +780,7 @@ fn compiled_programs_on_lanes_deliver_what_the_interpreter_delivers_and_keep_eac
                     lanes, mismatch
                 );
             }
-            for node in ["dsd_prefix_filter_blocklist_false", "dsd_post_agg_filter_false"] {
+            for node in ["dsd_prefix_filter_false", "dsd_post_agg_filter_false"] {
                 assert_eq!(
                     executor.loss.get(&id(node)).copied().unwrap_or_default(),
                     run.loss(&id(node)).loss(LossClass::Policy),

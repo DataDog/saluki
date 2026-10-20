@@ -10,7 +10,9 @@ use crate::{
     ir::{BindingName, HostId, NativeComponentId, NodeId, OutputDecl, OutputId, ParamType, Plan, RecipientId},
     model::{Kind, KindSet, PortType, TimestampForm},
     operators::SourceBinding,
-    validate::{BindingClass, Catalog, CatalogBinding, CatalogOutput, Liveness, MemoryCatalog},
+    validate::{
+        BindingClass, Catalog, CatalogBinding, CatalogOutput, ContractEntry, Liveness, MemoryCatalog, TelemetryContract,
+    },
 };
 
 /// The default program with every optional branch wired (host tags, two endpoint routing groups, multi-region
@@ -20,7 +22,7 @@ use crate::{
 /// findings against [`default_program_catalog`].
 pub const DEFAULT_PROGRAM_JSON: &str = include_str!("../../fixtures/default-program.json");
 
-/// Returns the predicate of the default-program fixtures' listener filterlist (`dsd_prefix_filter_blocklist`) for the
+/// Returns the predicate of the default-program fixtures' listener filterlist (`dsd_prefix_filter`) for the
 /// filterlist `values`, a JSON list of names, in normal form, as lowering writes it: a filterlist with nothing in it
 /// keeps everything.
 pub fn listener_filterlist(values: Value) -> Value {
@@ -144,7 +146,7 @@ pub fn default_program_slot_name(nodes: &[NodeId]) -> Result<NativeComponentId, 
         "metrics_enrich".to_string()
     } else {
         let first = match nodes.first().map_or("slot", |node| node.local().as_str()) {
-            "dsd_prefix_filter_blocklist_namespace_prefix" => "dsd_prefix_filter",
+            "dsd_prefix_filter_namespace_prefix" => "dsd_prefix_filter",
             "metrics_in" => "metrics_enrich",
             first => first.strip_suffix("_in").unwrap_or(first),
         };
@@ -210,12 +212,144 @@ pub const DEFAULT_PROGRAM_SOURCES: [(&str, &str, SourceBinding); 5] = [
 ];
 
 /// Returns the catalog the host would declare for the default program: its outputs, the configuration bindings that
-/// lowering uses with their types and liveness, and that the host runs at most one aggregation per program.
+/// lowering uses with their types and liveness, that the host runs at most one aggregation per program, and its
+/// telemetry contract ([`default_program_contract`]).
 ///
 /// Binding names, types, and liveness are those of the host's binding registry, whose tests check that they agree.
 pub fn default_program_catalog() -> MemoryCatalog {
-    catalog_outputs_and_bindings().with_single_aggregation()
+    catalog_outputs_and_bindings()
+        .with_single_aggregation()
+        .with_telemetry_contract(default_program_contract())
 }
+
+/// Returns the telemetry contract the host declares for the default program: each series its remapper reads by node
+/// name, with the node, its operator, and the series the node reports, one entry per series.
+///
+/// These are the series of the host's contract, whose tests check that they agree.
+pub fn default_program_contract() -> TelemetryContract {
+    let entries = CONTRACT.iter().map(|(series, node, operator, reports)| ContractEntry {
+        series: series.to_string(),
+        node: node.parse().expect("contract nodes are node IDs"),
+        operator: operator.parse().expect("contract operators are operator names"),
+        reports: reports.to_string(),
+    });
+    TelemetryContract {
+        entries: entries.collect(),
+    }
+}
+
+/// Returns the telemetry contract the host declares for a default program `plan` that it lowered: the entries of
+/// [`default_program_contract`] whose node the plan has, as a host builds its contract from the default program a
+/// configuration lowers to. So the default program with the no-aggregation pipeline off has none of the
+/// `dsd_no_agg_split`.
+pub fn default_program_contract_of(plan: &Plan) -> TelemetryContract {
+    let mut contract = default_program_contract();
+    contract.entries.retain(|entry| plan.node(&entry.node).is_some());
+    contract
+}
+
+/// The entries of [`default_program_contract`]: the series, its node and operator, and the series the node reports.
+const CONTRACT: [(&str, &str, &str, &str); 17] = {
+    [
+        (
+            "aggregator.dogstatsd_contexts_by_mtype",
+            "dsd_agg",
+            "aggregate",
+            "aggregate_active_contexts_by_type",
+        ),
+        (
+            "aggregator.dogstatsd_contexts_bytes_by_mtype",
+            "dsd_agg",
+            "aggregate",
+            "aggregate_active_contexts_bytes_by_type",
+        ),
+        (
+            "aggregator.processed",
+            "dsd_agg",
+            "aggregate",
+            "component_events_received_total",
+        ),
+        ("aggregator.flush", "dsd_agg", "aggregate", "aggregate_flushed_total"),
+        (
+            "aggregator.number_of_flush",
+            "dsd_agg",
+            "aggregate",
+            "aggregate_flushes_total",
+        ),
+        (
+            "no_aggregation.processed",
+            "dsd_no_agg_split",
+            "timestamp_split",
+            "aggregate_passthrough_metrics_total",
+        ),
+        (
+            "no_aggregation.flush",
+            "dsd_no_agg_split",
+            "timestamp_split",
+            "aggregate_passthrough_flushes_total",
+        ),
+        (
+            "dogstatsd.listener_filtered_points",
+            "dsd_prefix_filter",
+            "split",
+            "dogstatsd_listener_filtered_points_total",
+        ),
+        (
+            "filterlist.size",
+            "dsd_prefix_filter",
+            "split",
+            "metric_filterlist_size",
+        ),
+        (
+            "filterlist.updates",
+            "dsd_prefix_filter",
+            "split",
+            "metric_filterlist_updates_total",
+        ),
+        (
+            "aggregator.dogstatsd_filtered_metrics",
+            "dsd_post_agg_filter",
+            "split",
+            "dogstatsd_post_aggregate_filtered_metrics_total",
+        ),
+        (
+            "tag_filterlist.size",
+            "dsd_tag_filterlist",
+            "tag_projection",
+            "tag_filterlist_size",
+        ),
+        (
+            "tag_filterlist.updates",
+            "dsd_tag_filterlist",
+            "tag_projection",
+            "tag_filterlist_updates_total",
+        ),
+        (
+            "aggregator.filtered_tags",
+            "dsd_tag_filterlist",
+            "tag_projection",
+            "tag_filterlist_tags_filtered_total",
+        ),
+        (
+            "aggregator.filtered_tags_cache_hit",
+            "dsd_tag_filterlist",
+            "tag_projection",
+            "cache_hits_total",
+        ),
+        (
+            "aggregator.filtered_tags_cache_miss",
+            "dsd_tag_filterlist",
+            "tag_projection",
+            "cache_misses_total",
+        ),
+        (
+            "aggregator.filtered_tags_cache_evict",
+            "dsd_tag_filterlist",
+            "tag_projection",
+            "cache_items_evicted_total",
+        ),
+    ]
+};
 
 /// Returns the host's catalog of a default program: the fixtures' catalog, with every binding the program resolves
 /// carrying the value it resolves to, as a host's catalog carries the values lowering writes.
@@ -239,7 +373,7 @@ pub fn catalog_for(plan: &Plan) -> MemoryCatalog {
     for node in &plan.nodes {
         node.params.iter().for_each(|(_, value)| collect(value, &mut found));
     }
-    let mut catalog = default_program_catalog();
+    let mut catalog = default_program_catalog().with_telemetry_contract(default_program_contract_of(plan));
     for (name, value) in found {
         let declared = catalog
             .binding(&name)

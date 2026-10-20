@@ -1043,7 +1043,7 @@ fn bench_memo_misses(c: &mut Criterion) {
         .unwrap()
         .id;
     for (name, root, memoized) in [
-        ("listener_filterlist", "dsd_prefix_filter_blocklist", false),
+        ("listener_filterlist", "dsd_prefix_filter", false),
         ("policy_region", "metrics_fanout", true),
     ] {
         let (slot, decision) = program.decision(root);

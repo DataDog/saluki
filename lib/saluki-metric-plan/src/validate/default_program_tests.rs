@@ -15,7 +15,9 @@ use crate::{
     model::{EventView, Field, Kind, KindSet, PortType, TimestampForm},
     operators::{names, Boundary, ConfiguredOperator, PortRelation, SourceBinding},
     predicate::{CompiledPredicate, NoBindings, Predicate},
-    testing::{default_program_catalog, DEFAULT_PROGRAM_JSON, NO_AGGREGATION_PIPELINE_OFF_JSON},
+    testing::{
+        default_program_catalog, default_program_contract_of, DEFAULT_PROGRAM_JSON, NO_AGGREGATION_PIPELINE_OFF_JSON,
+    },
 };
 
 const SPECIFICATION: &str = include_str!("../../../../docs/design/programmable-metrics.md");
@@ -37,7 +39,8 @@ impl Fixture {
 
     fn from_plan(plan: Plan) -> Self {
         let registry = OperatorRegistry::native();
-        let catalog = default_program_catalog();
+        // The host's contract is that of the default program it lowers.
+        let catalog = default_program_catalog().with_telemetry_contract(default_program_contract_of(&plan));
         let report = Validator::new(&registry, &catalog).validate(&plan);
         Self { plan, report }
     }
@@ -117,7 +120,7 @@ fn the_default_program_has_the_native_port_types() {
     let fixture = Fixture::load(DEFAULT_PROGRAM_JSON);
     let expected = [
         ("dsd_in.metrics", port_type(&dogstatsd, Mixed)),
-        ("dsd_prefix_filter_blocklist.true", port_type(&dogstatsd, Mixed)),
+        ("dsd_prefix_filter.true", port_type(&dogstatsd, Mixed)),
         ("dsd_no_agg_split.default", port_type(&dogstatsd, Untimestamped)),
         // Timestamped counters bypass aggregation as rates.
         (
@@ -276,32 +279,29 @@ const COVERAGE: &[CoverageCheck] = &[
         "DogStatsD mapping, prefix and listener filtering, tag filterlist",
         |f| {
             assert_eq!(f.op("dsd_enrich").name(), names::DOGSTATSD_MAPPER);
+            assert_eq!(f.target("dsd_enrich.out"), "dsd_prefix_filter_namespace_prefix.in");
             assert_eq!(
-                f.target("dsd_enrich.out"),
-                "dsd_prefix_filter_blocklist_namespace_prefix.in"
-            );
-            assert_eq!(
-                f.op("dsd_prefix_filter_blocklist_namespace_prefix").name(),
+                f.op("dsd_prefix_filter_namespace_prefix").name(),
                 names::NAMESPACE_PREFIX
             );
             // The listener filterlist matches the intake name after prefixing, and drops what matches: in normal
             // form, its split keeps what does not match.
             assert_eq!(
-                f.target("dsd_prefix_filter_blocklist_namespace_prefix.out"),
-                "dsd_prefix_filter_blocklist.in"
+                f.target("dsd_prefix_filter_namespace_prefix.out"),
+                "dsd_prefix_filter.in"
             );
-            let Predicate::Not(matched) = f.predicate("dsd_prefix_filter_blocklist") else {
+            let Predicate::Not(matched) = f.predicate("dsd_prefix_filter") else {
                 panic!("the listener filterlist keeps what it does not match");
             };
             assert!(matches!(*matched, Predicate::IntakeName(_)));
-            assert_eq!(f.op("dsd_prefix_filter_blocklist_false").name(), names::DROP);
+            assert_eq!(f.op("dsd_prefix_filter_false").name(), names::DROP);
             let tags = f.op("dsd_tag_filterlist");
             assert_eq!(tags.name(), names::TAG_PROJECTION);
             assert!(tags.contract().writes.get(Kind::Gauge).is_empty());
             for operator in [
                 "dsd_enrich",
-                "dsd_prefix_filter_blocklist_namespace_prefix",
-                "dsd_prefix_filter_blocklist",
+                "dsd_prefix_filter_namespace_prefix",
+                "dsd_prefix_filter",
                 "dsd_tag_filterlist",
             ] {
                 assert_eq!(

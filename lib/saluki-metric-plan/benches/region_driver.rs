@@ -282,7 +282,7 @@ impl PreAggregationBaseline {
             mapper: kernel_of(program("dsd_pre_aggregation"), "dsd_enrich"),
             prefix: kernel_of(
                 program("dsd_prefix_filter_region"),
-                "dsd_prefix_filter_blocklist_namespace_prefix",
+                "dsd_prefix_filter_namespace_prefix",
             ),
             split: kernel_of(program("dsd_no_agg_split_region"), "dsd_no_agg_split"),
             tags: kernel_of(program("dsd_no_agg_split_region"), "dsd_tag_filterlist"),

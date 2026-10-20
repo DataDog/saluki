@@ -20,7 +20,7 @@ use saluki_metric_kernels::{
     prefix::NamespacePrefix as NamespacePrefixKernel,
     tag_projection::{
         ContextMemo, TagProjection as TagProjectionKernel, TagProjectionRules, TagProjectionTelemetry, ValueRules,
-        CONTEXT_CACHE_ENTRY_BYTES, NATIVE_CONTEXT_CACHE_ID,
+        CONTEXT_CACHE_ENTRY_BYTES,
     },
     timestamp_split::{TimestampSplit as TimestampSplitKernel, TimestampSplitTelemetry},
 };
@@ -32,7 +32,7 @@ use super::{
     ports::{InputPort, KindMap, OutputPort, PortMapping, Ports, TimestampMap, IN},
     reports,
     support::{check_bucket_width, error, error_chain, unresolved},
-    KernelBuildContext, KernelBuildError, KernelSpec, OperatorDef, ReportedSeries,
+    KernelBuildError, KernelSpec, OperatorDef, ReportedSeries,
 };
 use crate::{
     canonical::MAX_SAFE_INTEGER,
@@ -592,9 +592,10 @@ const PROJECTED: KindSet = KindSet::of(&[Kind::Counter, Kind::Distribution]);
 /// apply to tags and origin tags alike.
 ///
 /// Its kernel is [`TagProjectionKernel`], with a context memo of `cache_capacity` entries and the native tag filterlist
-/// telemetry, reported under the component it is built for. The memo of a reserved node, which stands for the native
-/// component, reports under the native memo's identifier, `tag_filterlist/context_cache`; that of a policy node under
-/// `<component>/tag_filterlist/context_cache`.
+/// telemetry, reported under the component it is built for. Its memo reports under the identifier the build context
+/// gives it, `<component>/tag_filterlist/context_cache` unless the host names it otherwise
+/// ([`KernelBuildContext::cache_id`](super::KernelBuildContext::cache_id)), as a host names the memo of the node standing for the native tag filterlist
+/// after the native memo.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TagProjection;
 
@@ -702,7 +703,7 @@ impl OperatorDef for TagProjection {
                 Ok(Box::new(TagProjectionKernel::with_shared_rules(
                     Arc::clone(rules),
                     Some(ContextMemo::for_kernel(
-                        &tag_projection_memo_id(context),
+                        &context.cache_id(CONTEXT_CACHE),
                         capacity,
                         context.cache_gauges(),
                     )),
@@ -713,14 +714,5 @@ impl OperatorDef for TagProjection {
     }
 }
 
-/// Returns the identifier the context memo of a `tag_projection` kernel reports under.
-///
-/// A reserved node stands for the native component, so its memo keeps the native memo's identifier, which is not
-/// scoped to a component. A node in the policy namespace has its own, named after the component it is built for.
-fn tag_projection_memo_id(context: &KernelBuildContext) -> String {
-    if context.node().is_reserved() {
-        NATIVE_CONTEXT_CACHE_ID.to_string()
-    } else {
-        format!("{}/tag_filterlist/context_cache", context.component().component_id())
-    }
-}
+/// The identifier of a `tag_projection` kernel's context memo, under its component.
+const CONTEXT_CACHE: &str = "tag_filterlist/context_cache";

@@ -468,7 +468,7 @@ async fn a_configuration_change_installs_a_new_generation_and_the_old_one_retire
         counter(
             &recorder,
             "plan_node_events_total",
-            &[("component_id", "dsd_prefix_filter_blocklist"), ("port", "false")]
+            &[("component_id", "dsd_prefix_filter"), ("port", "false")]
         ),
         Some(1)
     );
@@ -476,10 +476,7 @@ async fn a_configuration_change_installs_a_new_generation_and_the_old_one_retire
         counter(
             &recorder,
             "plan_loss_total",
-            &[
-                ("component_id", "dsd_prefix_filter_blocklist_false"),
-                ("class", "policy")
-            ]
+            &[("component_id", "dsd_prefix_filter_false"), ("class", "policy")]
         ),
         Some(1)
     );
@@ -827,7 +824,7 @@ async fn a_native_policy_change_installs_a_generation_that_rebuilds_only_the_ker
     // Each change of a native policy setting, from the same boot configuration: the node it changes, and whether that
     // node runs as a kernel of its own (a `split` is a decision of its slot's program, which has no kernel to build).
     let changes = [
-        ("metric_filterlist: [blocked]", "dsd_prefix_filter_blocklist", false),
+        ("metric_filterlist: [blocked]", "dsd_prefix_filter", false),
         (
             "metric_tag_filterlist: [{metric_name: checkout.latency, action: exclude, tags: [user_id]}]",
             "dsd_tag_filterlist",

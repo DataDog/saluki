@@ -243,7 +243,7 @@ fn check_default_program_outputs(what: &str, run: &RunOutput) {
     // The policy loss: the listener filterlist's drop, the post-aggregation filter's, and what each gateway does not
     // forward. Every record dropped here has one point.
     for (node, events) in [
-        ("dsd_prefix_filter_blocklist_false", 1),
+        ("dsd_prefix_filter_false", 1),
         ("dsd_post_agg_filter_false", 1),
         ("metrics_routing_filter_0_false", 13),
         ("metrics_routing_filter_1_false", 14),

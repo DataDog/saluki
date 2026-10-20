@@ -189,6 +189,7 @@ const CATALOG_MEMBERS: &[&str] = &[
     "bindings",
     "state_budget",
     "single_aggregation",
+    "telemetry_contract",
     "recipients",
 ];
 

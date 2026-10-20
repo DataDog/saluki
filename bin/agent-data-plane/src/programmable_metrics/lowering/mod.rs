@@ -65,7 +65,7 @@
 //! The program is written in [normal form](saluki_metric_plan::normalize), as composition reads every artifact.
 //! Lowering builds each filter as its native component decides, a `split` on what the filterlist matches whose `true`
 //! port drops, and normalization turns it into a `split` on the negation whose `false` port drops, renaming the drop
-//! from `<split>_true` to `<split>_false`: the listener filterlist's drop is `dsd_prefix_filter_blocklist_false`, and
+//! from `<split>_true` to `<split>_false`: the listener filterlist's drop is `dsd_prefix_filter_false`, and
 //! the post-aggregation filter's `dsd_post_agg_filter_false`. Every parameter is written, defaults included, and every
 //! literal set match as the string match it is: a filterlist with nothing in it is a `split` on `true`, which keeps
 //! every metric. The node stays: the program's structure never depends on a setting's value.
@@ -120,6 +120,7 @@ use serde_json::{json, Value};
 use super::{
     bindings::{self, Snapshots},
     catalog::AdpCatalog,
+    compatibility,
     host_facts::{host_tags_enabled, HostFacts},
     resources::{
         cluster_agent_forwarder, routing_groups, spelled_endpoint, Demanded, FixedHosts, NativeOutputs,
@@ -152,11 +153,12 @@ mod types {
 
 /// The reserved node IDs of the default program.
 ///
-/// A node whose native telemetry identity matters keeps its native component's ID, or one derived from it, such as
-/// `dsd_prefix_filter_blocklist` and `dsd_agg`. The others have the IDs the pipeline syntax derives for their place in
-/// the program (`let dsd_prefix_filter_blocklist = dsd_enrich | namespace_prefix(...) | where ...`, and
-/// `let metrics = (...) | host_enrichment | host_tags`, used once per output branch), so that the program prints
-/// without naming them; so which enrichment node is `metrics` follows the startup configuration. The telemetry profiles map each node to the native component it stands for
+/// A node reports under its name, so a node whose series the remapper reads keeps its native component's name, such as
+/// `dsd_prefix_filter` and `dsd_agg` (the host's telemetry contract, `compatibility`, lists them). The others have the
+/// IDs the pipeline syntax derives for their place in the program (`let dsd_prefix_filter = dsd_enrich |
+/// namespace_prefix(...) | where ...`, and `let metrics = (...) | host_enrichment | host_tags`, used once per output
+/// branch), so that the program prints without naming them; so which enrichment node is `metrics` follows the startup
+/// configuration. The plan's provenance maps each node to the native component it stands for, for the boot layout
 /// ([`components`](super::components) where no node has that component's ID).
 pub mod ids {
     /// The DogStatsD source.
@@ -164,9 +166,10 @@ pub mod ids {
     /// The DogStatsD mapper.
     pub const DSD_ENRICH: &str = "dsd_enrich";
     /// The namespace prefix of the DogStatsD prefix filter, the first stage of the listener filterlist's pipeline.
-    pub const DSD_PREFIX_FILTER_BLOCKLIST_NAMESPACE_PREFIX: &str = "dsd_prefix_filter_blocklist_namespace_prefix";
-    /// The listener filterlist of the DogStatsD prefix filter.
-    pub const DSD_PREFIX_FILTER_BLOCKLIST: &str = "dsd_prefix_filter_blocklist";
+    pub const DSD_PREFIX_FILTER_NAMESPACE_PREFIX: &str = "dsd_prefix_filter_namespace_prefix";
+    /// The listener filterlist of the DogStatsD prefix filter, which the namespace prefix and its `drop` are named
+    /// after, as the native prefix filter they stand for is.
+    pub const DSD_PREFIX_FILTER: &str = "dsd_prefix_filter";
     /// The no-aggregation timestamp split.
     pub const DSD_NO_AGG_SPLIT: &str = "dsd_no_agg_split";
     /// The tag filterlist.
@@ -209,8 +212,6 @@ pub mod ids {
 
 /// The native components that nodes of the default program stand for, where no node has the component's ID.
 pub mod components {
-    /// The DogStatsD prefix filter: the namespace prefix and the listener filterlist.
-    pub const DSD_PREFIX_FILTER: &str = "dsd_prefix_filter";
     /// Metrics enrichment: its fan-in, host enrichment, host tags, and the fan-out to the outputs.
     pub const METRICS_ENRICH: &str = "metrics_enrich";
 }
@@ -238,12 +239,12 @@ const ANNOTATIONS: &[(&str, &str, &str)] = &[
         "DogStatsD mapper: renames and tags by `dogstatsd_mapper_profiles`",
     ),
     (
-        ids::DSD_PREFIX_FILTER_BLOCKLIST_NAMESPACE_PREFIX,
+        ids::DSD_PREFIX_FILTER_NAMESPACE_PREFIX,
         names::NAMESPACE_PREFIX,
         "Namespace prefix, from `statsd_metric_namespace`, except blocklisted names",
     ),
     (
-        ids::DSD_PREFIX_FILTER_BLOCKLIST,
+        ids::DSD_PREFIX_FILTER,
         names::SPLIT,
         "Metric filterlist, from `metric_filterlist`: matches drop",
     ),
@@ -328,15 +329,11 @@ fn annotation(local: &str, operator: &str) -> Option<&'static str> {
 const OMITTED: &[(&str, &str, &str)] = &[
     (ids::DSD_ENRICH, names::DOGSTATSD_MAPPER, "mapper (no profiles)"),
     (
-        ids::DSD_PREFIX_FILTER_BLOCKLIST_NAMESPACE_PREFIX,
+        ids::DSD_PREFIX_FILTER_NAMESPACE_PREFIX,
         names::NAMESPACE_PREFIX,
         "namespace prefix (none)",
     ),
-    (
-        ids::DSD_PREFIX_FILTER_BLOCKLIST,
-        names::SPLIT,
-        "metric filterlist (empty)",
-    ),
+    (ids::DSD_PREFIX_FILTER, names::SPLIT, "metric filterlist (empty)"),
     (ids::DSD_TAG_FILTERLIST, names::TAG_PROJECTION, "tag filterlist (empty)"),
     (
         ids::DSD_POST_AGG_FILTER_IN,
@@ -581,7 +578,9 @@ impl Lowering {
         // a program parsed back from that export unchanged, are the same document.
         let plan = normalize_plan(&plan);
 
-        let catalog = AdpCatalog::new(&resolved, snapshots, self.hosts);
+        // The remapper reads native series from the nodes of the default program by name: every program is held to it.
+        let catalog =
+            AdpCatalog::new(&resolved, snapshots, self.hosts).with_telemetry_contract(compatibility::of_default(&plan));
         let mut annotations = program.annotations;
         for node in &plan.nodes {
             if let Some(note) = annotation(node.id.local().as_str(), node.op.as_str()) {
@@ -896,10 +895,10 @@ impl<'a> Program<'a> {
             )?,
         });
         let prefix = self.policy_node(
-            ids::DSD_PREFIX_FILTER_BLOCKLIST_NAMESPACE_PREFIX,
+            ids::DSD_PREFIX_FILTER_NAMESPACE_PREFIX,
             names::NAMESPACE_PREFIX,
             params,
-            components::DSD_PREFIX_FILTER,
+            ids::DSD_PREFIX_FILTER,
         );
         self.edge(PortRef::new(mapper, port("out")), &prefix, "in");
 
@@ -916,19 +915,13 @@ impl<'a> Program<'a> {
             "prefix": match_prefix,
         }}});
         let blocklist = self.policy_node(
-            ids::DSD_PREFIX_FILTER_BLOCKLIST,
+            ids::DSD_PREFIX_FILTER,
             names::SPLIT,
             json!({"predicate": predicate}),
-            components::DSD_PREFIX_FILTER,
+            ids::DSD_PREFIX_FILTER,
         );
         self.edge(PortRef::new(prefix, port("out")), &blocklist, "in");
-        self.terminal(
-            &blocklist,
-            "true",
-            names::DROP,
-            Value::Null,
-            components::DSD_PREFIX_FILTER,
-        );
+        self.terminal(&blocklist, "true", names::DROP, Value::Null, ids::DSD_PREFIX_FILTER);
         let kept = PortRef::new(blocklist, port("false"));
 
         let aggregation = &dogstatsd.aggregation;

@@ -1063,7 +1063,7 @@ fn normalized_export() -> PolicyArtifact {
 /// and their drop terminals renamed, in canonical order.
 fn native_export() -> PolicyArtifact {
     let mut document = crate::tests::default_export_document();
-    let flipped = ["dsd_prefix_filter_blocklist", "dsd_post_agg_filter"];
+    let flipped = ["dsd_prefix_filter", "dsd_post_agg_filter"];
     for node in document["nodes"].as_array_mut().unwrap() {
         let id = node["id"].as_str().unwrap().to_string();
         if flipped.contains(&id.as_str()) {
@@ -1121,8 +1121,8 @@ fn export_where(export: &PolicyArtifact, value: &str, as_id: Option<&str>) -> St
 /// <!-- vale off -->
 /// ```text
 /// let dsd_enrich = dogstatsd | dogstatsd_mapper(...)
-/// let dsd_prefix_filter_blocklist = dsd_enrich | namespace_prefix(...) | where not ...
-/// let dsd_no_agg_split = dsd_prefix_filter_blocklist | timestamp_split(...)
+/// let dsd_prefix_filter = dsd_enrich | namespace_prefix(...) | where not ...
+/// let dsd_no_agg_split = dsd_prefix_filter | timestamp_split(...)
 /// let dsd_tag_filterlist = dsd_no_agg_split.default | tag_projection(...)
 /// let dsd_agg = dsd_tag_filterlist | aggregate(...)
 /// let dsd_post_agg_filter = (dsd_agg, dsd_no_agg_split.passthrough) | where not ...
@@ -1142,20 +1142,20 @@ fn default_program_tree(export: &PolicyArtifact) -> Program {
             vec![op_with("dogstatsd_mapper", export_params(export, "dsd_enrich"), None)],
         ),
         let_(
-            "dsd_prefix_filter_blocklist",
+            "dsd_prefix_filter",
             reference("dsd_enrich"),
             vec![
                 op_with(
                     "namespace_prefix",
-                    export_params(export, "dsd_prefix_filter_blocklist_namespace_prefix"),
+                    export_params(export, "dsd_prefix_filter_namespace_prefix"),
                     None,
                 ),
-                export_where(export, "dsd_prefix_filter_blocklist", None),
+                export_where(export, "dsd_prefix_filter", None),
             ],
         ),
         let_(
             "dsd_no_agg_split",
-            reference("dsd_prefix_filter_blocklist"),
+            reference("dsd_prefix_filter"),
             vec![op_with(
                 "timestamp_split",
                 export_params(export, "dsd_no_agg_split"),
@@ -1235,7 +1235,7 @@ fn the_default_program_lowers_to_its_normalized_export_with_the_native_ids() {
 
     for native in [
         "dsd_no_agg_split",
-        "dsd_prefix_filter_blocklist_false",
+        "dsd_prefix_filter_false",
         "dsd_agg",
         "dsd_post_agg_filter_in",
         "dsd_post_agg_filter",
@@ -1284,21 +1284,21 @@ fn default_program_core_tree(export: &PolicyArtifact) -> Program {
             vec![op_with("dogstatsd_mapper", export_params(export, "dsd_enrich"), None)],
         ),
         let_(
-            "dsd_prefix_filter_blocklist",
+            "dsd_prefix_filter",
             reference("dsd_enrich"),
             vec![
                 op_with(
                     "namespace_prefix",
-                    export_params(export, "dsd_prefix_filter_blocklist_namespace_prefix"),
+                    export_params(export, "dsd_prefix_filter_namespace_prefix"),
                     None,
                 ),
-                split("dsd_prefix_filter_blocklist"),
+                split("dsd_prefix_filter"),
             ],
         ),
-        run(Head::Ref(rp("dsd_prefix_filter_blocklist", "true")), vec![], drop_()),
+        run(Head::Ref(rp("dsd_prefix_filter", "true")), vec![], drop_()),
         let_(
             "dsd_no_agg_split",
-            Head::Ref(rp("dsd_prefix_filter_blocklist", "false")),
+            Head::Ref(rp("dsd_prefix_filter", "false")),
             vec![op_with(
                 "timestamp_split",
                 export_params(export, "dsd_no_agg_split"),
@@ -1411,12 +1411,8 @@ fn the_default_program_with_fewer_lets_derives_its_ids_from_the_others() {
             reference("dogstatsd"),
             vec![
                 op_with("dogstatsd_mapper", params("dsd_enrich"), None),
-                op_with(
-                    "namespace_prefix",
-                    params("dsd_prefix_filter_blocklist_namespace_prefix"),
-                    None,
-                ),
-                export_where(&export, "dsd_prefix_filter_blocklist", None),
+                op_with("namespace_prefix", params("dsd_prefix_filter_namespace_prefix"), None),
+                export_where(&export, "dsd_prefix_filter", None),
                 op_with("timestamp_split", params("dsd_no_agg_split"), None),
             ],
         ),

@@ -974,17 +974,17 @@ fn default_program() -> Program {
             ),
         ),
         let_(
-            "dsd_prefix_filter_blocklist",
+            "dsd_prefix_filter",
             pipeline(
                 head("dsd_enrich"),
                 vec![
                     op(
                         "namespace_prefix",
-                        node_params("dsd_prefix_filter_blocklist_namespace_prefix"),
+                        node_params("dsd_prefix_filter_namespace_prefix"),
                         Some("namespace"),
                         None,
                     ),
-                    where_stage(predicate("dsd_prefix_filter_blocklist"), None),
+                    where_stage(predicate("dsd_prefix_filter"), None),
                 ],
                 None,
             ),
@@ -992,7 +992,7 @@ fn default_program() -> Program {
         let_(
             "dsd_no_agg_split",
             pipeline(
-                head("dsd_prefix_filter_blocklist"),
+                head("dsd_prefix_filter"),
                 vec![op(
                     "timestamp_split",
                     node_params("dsd_no_agg_split"),
@@ -1099,11 +1099,11 @@ fn the_default_program_reads_as_a_person_would_write_it() {
         string_interner_bytes: 65536,
       )
 
-  let dsd_prefix_filter_blocklist = dsd_enrich
+  let dsd_prefix_filter = dsd_enrich
     | namespace_prefix("tenant", exclusions: ["internal.", "system."])
     | where intake_name != "tenant.raw.blocked"
 
-  let dsd_no_agg_split = dsd_prefix_filter_blocklist | timestamp_split(10s)
+  let dsd_no_agg_split = dsd_prefix_filter | timestamp_split(10s)
 
   let dsd_tag_filterlist = dsd_no_agg_split.default
     | tag_projection(

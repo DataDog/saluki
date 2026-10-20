@@ -125,7 +125,7 @@ fn recipient_decl(id: &RecipientId, host: &str, v3: bool) -> Value {
 /// Lowers a configuration into the default program: its outputs bound as at boot, and its resources declared.
 fn lowered(config: &Config) -> Plan {
     let mut value = serde_json::from_str::<Value>(DEFAULT_PROGRAM_JSON).unwrap();
-    node_mut(&mut value, "dsd_prefix_filter_blocklist")["params"]["predicate"] =
+    node_mut(&mut value, "dsd_prefix_filter")["params"]["predicate"] =
         crate::testing::listener_filterlist(json!([config.listener]));
     let mut recipients = vec![recipient_decl(&primary(), "dd_out", false)];
     if config.groups.contains(&0) {
@@ -232,7 +232,7 @@ impl Composer for NoComposer {
 
 /// Returns the listener filterlist of a plan.
 fn listener(plan: &Plan) -> String {
-    plan.node(&"dsd_prefix_filter_blocklist".parse().unwrap())
+    plan.node(&"dsd_prefix_filter".parse().unwrap())
         .and_then(|node| node.params.get("predicate"))
         .and_then(|predicate| predicate.pointer("/not/intake_name/eq"))
         .and_then(Value::as_str)

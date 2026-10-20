@@ -329,6 +329,9 @@ const DETACHED_TOPOLOGY: &str = "plan";
 ///
 /// A host that runs a slot on several lanes builds an instance of each kernel per lane, under one identity, and says so
 /// with [`with_cache_gauges`][Self::with_cache_gauges]: the instances' caches then sum their gauges.
+///
+/// A kernel names its caches through [`cache_id`][Self::cache_id]: under its component, unless the host gives the node
+/// another identifier ([`with_cache_id`][Self::with_cache_id]), such as the native cache's that a reader selects on.
 #[derive(Clone)]
 pub struct KernelBuildContext {
     node: NodeId,
@@ -337,6 +340,7 @@ pub struct KernelBuildContext {
     state_budget: Option<ContextBudget>,
     lanes: Option<LaneBinding>,
     cache_gauges: GaugeMode,
+    cache_id: Option<String>,
 }
 
 impl fmt::Debug for KernelBuildContext {
@@ -348,6 +352,7 @@ impl fmt::Debug for KernelBuildContext {
             .field("state_budget", &self.state_budget)
             .field("lanes", &self.lanes)
             .field("cache_gauges", &self.cache_gauges)
+            .field("cache_id", &self.cache_id)
             .finish()
     }
 }
@@ -362,6 +367,7 @@ impl KernelBuildContext {
             state_budget: None,
             lanes: None,
             cache_gauges: GaugeMode::Set,
+            cache_id: None,
         }
     }
 
@@ -413,6 +419,23 @@ impl KernelBuildContext {
     pub fn with_cache_gauges(mut self, gauges: GaugeMode) -> Self {
         self.cache_gauges = gauges;
         self
+    }
+
+    /// Names the kernel's cache `id`, in place of the identifier scoped to its component (see
+    /// [`cache_id`][Self::cache_id]): a host gives it to a node whose cache a reader selects on by that identifier.
+    pub fn with_cache_id(mut self, id: impl Into<String>) -> Self {
+        self.cache_id = Some(id.into());
+        self
+    }
+
+    /// Returns the identifier the kernel's cache reports under: the one the host gave it
+    /// ([`with_cache_id`][Self::with_cache_id]), or `<component>/<default>`, scoped to the component the kernel is
+    /// built for.
+    pub fn cache_id(&self, default: &str) -> String {
+        match &self.cache_id {
+            Some(id) => id.clone(),
+            None => format!("{}/{}", self.component.component_id(), default),
+        }
     }
 
     /// Returns how the kernel's caches and context resolvers report their gauges (see

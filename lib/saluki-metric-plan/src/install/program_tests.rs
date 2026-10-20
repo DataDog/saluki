@@ -1298,9 +1298,9 @@ fn unconfigured_plan() -> Plan {
     lowered_with(|value| {
         let mut set = |node: &str, param: &str, literal: Value| node_mut(value, node)["params"][param] = literal;
         set("dsd_enrich", "profiles", json!([]));
-        set("dsd_prefix_filter_blocklist_namespace_prefix", "namespace", json!(""));
+        set("dsd_prefix_filter_namespace_prefix", "namespace", json!(""));
         set(
-            "dsd_prefix_filter_blocklist",
+            "dsd_prefix_filter",
             "predicate",
             crate::testing::listener_filterlist(json!([])),
         );
@@ -1334,10 +1334,10 @@ fn with_filterlist(document: &mut Value, values: &[&str]) {
     add_nodes(
         document,
         &[
-            json!({"id": "dsd_prefix_filter_blocklist", "op": "split",
+            json!({"id": "dsd_prefix_filter", "op": "split",
                    "params": {"predicate": {"not": {"intake_name": {"matches": {
                        "values": values, "prefix": false}}}}}}),
-            json!({"id": "dsd_prefix_filter_blocklist_false", "op": "drop"}),
+            json!({"id": "dsd_prefix_filter_false", "op": "drop"}),
         ],
     );
     replace_edge(
@@ -1345,12 +1345,9 @@ fn with_filterlist(document: &mut Value, values: &[&str]) {
         "input.dogstatsd",
         "dsd_no_agg_split.in",
         &[
-            ("input.dogstatsd", "dsd_prefix_filter_blocklist.in"),
-            (
-                "dsd_prefix_filter_blocklist.false",
-                "dsd_prefix_filter_blocklist_false.in",
-            ),
-            ("dsd_prefix_filter_blocklist.true", "dsd_no_agg_split.in"),
+            ("input.dogstatsd", "dsd_prefix_filter.in"),
+            ("dsd_prefix_filter.false", "dsd_prefix_filter_false.in"),
+            ("dsd_prefix_filter.true", "dsd_no_agg_split.in"),
         ],
     );
 }
@@ -1366,9 +1363,9 @@ fn the_shorter_detached_export_over_the_default_program_is_a_commit_that_builds_
             "dsd_enrich",
             "dsd_post_agg_filter",
             "dsd_post_agg_filter_false",
-            "dsd_prefix_filter_blocklist",
-            "dsd_prefix_filter_blocklist_false",
-            "dsd_prefix_filter_blocklist_namespace_prefix",
+            "dsd_prefix_filter",
+            "dsd_prefix_filter_false",
+            "dsd_prefix_filter_namespace_prefix",
             "dsd_tag_filterlist",
             "metrics_host_enrichment",
         ]
@@ -1408,7 +1405,7 @@ fn the_shorter_detached_export_over_the_default_program_is_a_commit_that_builds_
     );
     assert!(host.arming.is_none() && host.core.cut_in_flight().is_none());
     // The plan running is the program as published: the nodes it leaves out are gone.
-    assert!(host.active_plan().node(&id("dsd_prefix_filter_blocklist")).is_none());
+    assert!(host.active_plan().node(&id("dsd_prefix_filter")).is_none());
 
     // An edit of it changes only the program of the slot it edits: putting the filterlist back with an entry.
     let mut filtered = document.clone();
@@ -1502,7 +1499,7 @@ fn a_published_program_without_a_node_that_does_nothing_follows_no_setting_until
     // The filterlist set natively: the program, which has none, no longer does what the default program does.
     let changed = lowered_with(|value| {
         *value = serde_json::to_value(&plan).unwrap();
-        node_mut(value, "dsd_prefix_filter_blocklist")["params"]["predicate"] =
+        node_mut(value, "dsd_prefix_filter")["params"]["predicate"] =
             json!({"not": {"intake_name": {"eq": "tenant.raw.blocked"}}});
     });
     let changed_catalog = unified_catalog(&changed);
@@ -1510,6 +1507,6 @@ fn a_published_program_without_a_node_that_does_nothing_follows_no_setting_until
     let default = core(&changed);
     assert_eq!(
         crate::export::node_differences(&default, &recomposed.plan, &every(&default), &registry),
-        ["dsd_prefix_filter_blocklist".parse::<NodeId>().unwrap()]
+        ["dsd_prefix_filter".parse::<NodeId>().unwrap()]
     );
 }

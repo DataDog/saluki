@@ -433,9 +433,9 @@ async fn the_detached_export_names_what_it_leaves_out_in_one_note_in_program_ord
             ("dsd_enrich", Identity),
             ("dsd_post_agg_filter", ConstantSplit),
             ("dsd_post_agg_filter_false", Unreachable),
-            ("dsd_prefix_filter_blocklist", ConstantSplit),
-            ("dsd_prefix_filter_blocklist_false", Unreachable),
-            ("dsd_prefix_filter_blocklist_namespace_prefix", Identity),
+            ("dsd_prefix_filter", ConstantSplit),
+            ("dsd_prefix_filter_false", Unreachable),
+            ("dsd_prefix_filter_namespace_prefix", Identity),
             ("dsd_tag_filterlist", Identity),
             ("metrics", Identity),
             ("metrics_in", Identity),
@@ -514,11 +514,11 @@ async fn the_export_notes_what_each_node_and_binding_of_the_default_program_is()
             ),
             ("dsd_post_agg_filter_in", "Aggregated and timestamped points rejoin"),
             (
-                "dsd_prefix_filter_blocklist",
+                "dsd_prefix_filter",
                 "Metric filterlist, from `metric_filterlist`: matches drop"
             ),
             (
-                "dsd_prefix_filter_blocklist_namespace_prefix",
+                "dsd_prefix_filter_namespace_prefix",
                 "Namespace prefix, from `statsd_metric_namespace`, except blocklisted names"
             ),
             (

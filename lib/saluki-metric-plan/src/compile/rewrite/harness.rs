@@ -320,6 +320,20 @@ pub(crate) fn catalog() -> MemoryCatalog {
     )
 }
 
+/// Returns [`catalog`] with a telemetry contract that reads a series from each of `nodes`, written `(id, operator)`: a
+/// host's, whose filters rewrites move only whole.
+pub(crate) fn catalog_with_contract(nodes: &[(&str, &str)]) -> MemoryCatalog {
+    let entries = nodes.iter().map(|(node, operator)| crate::validate::ContractEntry {
+        series: format!("{}.series", node),
+        node: node.parse().expect("valid node ID"),
+        operator: operator.parse().expect("valid operator name"),
+        reports: "series".to_string(),
+    });
+    catalog().with_telemetry_contract(crate::validate::TelemetryContract {
+        entries: entries.collect(),
+    })
+}
+
 /// Builds a plan in the harness's conventions from nodes, edges written as `from -> to`, and its outputs.
 pub(crate) fn plan(nodes: Vec<Value>, edges: &[&str], outputs: &[&str]) -> Plan {
     let edges = edges
@@ -1027,7 +1041,16 @@ impl Case {
     ///
     /// Returns what is wrong if the plan does not validate or its frame cannot be computed.
     pub fn of(plan: Plan, opaque: Vec<NodeId>) -> Result<Self, String> {
-        let report = Validator::new(registry(), &catalog()).validate(&plan);
+        Self::of_in(plan, opaque, &catalog())
+    }
+
+    /// Validates `plan`, whose opaque hosts are `opaque`, against `catalog`, and frames it.
+    ///
+    /// # Errors
+    ///
+    /// Returns what is wrong if the plan does not validate or its frame cannot be computed.
+    pub fn of_in(plan: Plan, opaque: Vec<NodeId>, catalog: &MemoryCatalog) -> Result<Self, String> {
+        let report = Validator::new(registry(), catalog).validate(&plan);
         if !report.is_valid() {
             return Err(format!("the plan is invalid:\n{}", report));
         }

@@ -1387,9 +1387,7 @@ async fn an_exported_artifact_installs_follows_configuration_and_rolls_back_thro
     // A native policy change does not reach the published program, which owns its policy: composed again against the
     // new default program, its filterlist keeps the value it was published with, so the plan does what generation 3
     // does, and nothing is built: no generation. Status says the program no longer follows the setting.
-    let filter = "dsd_prefix_filter_blocklist"
-        .parse::<saluki_metric_plan::ir::LocalId>()
-        .unwrap();
+    let filter = "dsd_prefix_filter".parse::<saluki_metric_plan::ir::LocalId>().unwrap();
     harness
         .stream
         .send(update("metric_filterlist", json!(["blocked"])))
@@ -1504,9 +1502,7 @@ async fn a_native_policy_change_under_a_published_detached_program_changes_nothi
         .status_where(|status| ack(status).is_some_and(|(state, ..)| state == ApplyState::Active))
         .await;
     assert_eq!(active(&adopted), Some(2));
-    let filter = "dsd_prefix_filter_blocklist"
-        .parse::<saluki_metric_plan::ir::LocalId>()
-        .unwrap();
+    let filter = "dsd_prefix_filter".parse::<saluki_metric_plan::ir::LocalId>().unwrap();
 
     // The filterlist changes natively. The program owns its filterlist, which it wrote as a literal: composed again,
     // it does what generation 2 does, so it keeps running generation 2, with nothing prepared, and its plan keeps the

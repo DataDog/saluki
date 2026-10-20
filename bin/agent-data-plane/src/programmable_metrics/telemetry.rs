@@ -1,23 +1,29 @@
-//! Telemetry of the plan-driven metrics path, under the native identities of the nodes it runs.
+//! Telemetry of the plan-driven metrics path, under the names of the nodes it runs.
+//!
+//! A node reports under its name, as a transform. What it reports beside the component series every node has is what
+//! its operator describes ([`OperatorDef::reports`][reports]) and, for a node with a [role](super::compatibility::roles),
+//! what the role adds: the native series of the filter it stands for, which the remapper reads by the node's name.
+//! Each series says who records it ([`Recorder`]).
 //!
 //! Regions and the installer register their metrics here, off the data path:
 //!
 //! - [`RegionTelemetry`] is what regions publish to: the plan-level counters, `plan_node_events_total` and
-//!   `plan_loss_total`, and the native metrics that a node's [telemetry profile](super::telemetry_profiles) says the
-//!   region host counts on a port of the node (`MetricSource::PortEvents`). It also names the component each kernel
+//!   `plan_loss_total`, and the series a node reports that the region host counts on a port of the node
+//!   (`Recorder::Port`). It also names the component each kernel
 //!   reports its own telemetry as, and the resource group each kernel's memory and CPU time are accounted to:
 //!   `<region>.<node>`, under the region's own, as a native component's sub-transforms are. A state owner in an
 //!   isolation slot named after it, as DogStatsD aggregation runs in `dsd_agg`, stands for the native component itself:
 //!   its kernel is accounted in the region's own group, and draws on the host's budgets of state.
 //! - [`InstallerTelemetry`] is what the installer publishes: the active generation, the active artifact's revision,
 //!   the live generations, the installations by outcome, the cut installations by how they ended and the refused
-//!   cancellations of cuts, and the rewrites applied in compiling the active generation, and the native metrics that
-//!   telemetry profiles say the installer records from the plan a generation runs (`MetricSource::ListLength`,
-//!   `MatcherEntries`, `TagProjectionRules`, and `ParamChanges`).
+//!   cancellations of cuts, and the rewrites applied in compiling the active generation, and the series nodes report
+//!   that the installer records from the plan a generation runs (`Recorder::Plan`).
 //! - [`LaneTelemetry`] publishes what the lanes of each slot measure of their own work, once a second, per
 //!   `component_id` and `lane`: the `plan_lane_*` series. Lanes are fixed at boot, so these series are bounded by the
 //!   lanes of each slot. A kernel of a slot on several lanes is accounted to `<region>.lane_<i>.<node>`, under the
 //!   lane's own group.
+//!
+//! [reports]: saluki_metric_plan::operators::OperatorDef::reports
 
 use std::{
     collections::BTreeMap,
@@ -40,14 +46,18 @@ use saluki_core::{
     support::SubsystemIdentifier,
     topology::ComponentId,
 };
+use saluki_error::{generic_error, GenericError};
 use saluki_metric_kernels::{
     matcher::SortedSetMatcher,
     tag_projection::{TagProjectionRules, ValueRules},
 };
 use saluki_metric_plan::{
     compile::{Frame, RegionProgram, RewriteId, RewriteRecord, SlotId},
-    ir::{Namespace, Node, NodeId, Plan, PortName},
-    operators::{decode_tag_filter_rules, decode_tag_value_rules, KernelBuildContext, OperatorRegistry},
+    ir::{Namespace, NativeComponentId, Node, NodeId, OutputId, Plan, PortName},
+    operators::{
+        decode_tag_filter_rules, decode_tag_value_rules, KernelBuildContext, OperatorRegistry, PlanValue, Recorder,
+        ReportedSeries, SeriesKind,
+    },
     predicate::{Predicate, StringMatch},
     runtime::{
         kernel_accounting_name, kernel_accounting_path, PlanTelemetry, RegisterTelemetry, StateBudgets,
@@ -56,7 +66,7 @@ use saluki_metric_plan::{
 };
 use saluki_metrics::{Counter, Gauge, MetricsBuilder};
 
-use super::telemetry_profiles::{native_telemetry, MetricSource, NativeMetric, NativeMetricKind, NativeTelemetry};
+use super::compatibility::roles;
 
 /// The name of the gauge of the active generation's identifier.
 pub const PLAN_ACTIVE_GENERATION: &str = "plan_active_generation";
@@ -150,15 +160,49 @@ impl InstallOutcome {
     }
 }
 
-/// Returns the component context a native identity reports as, in the given topology.
-fn native_context(topology: &SubsystemIdentifier, native: &NativeTelemetry) -> Option<ComponentContext> {
-    let component_id = ComponentId::try_from(native.component_id.as_str()).ok()?;
-    Some(ComponentContext::new(topology, component_id, native.component_type))
+/// Returns the component a node reports its telemetry as, in the given topology: a transform named after the node
+/// (`<local>` for a reserved node, `policy_<local>` for a node in the policy namespace).
+fn node_component(topology: &SubsystemIdentifier, node: &NodeId) -> ComponentContext {
+    let name = match node.namespace() {
+        Namespace::Reserved => node.local().to_string(),
+        Namespace::Policy => format!("policy_{}", node.local()),
+    };
+    // Local identifiers start with a letter and never end with an underscore, so they are valid component IDs.
+    let component_id = ComponentId::try_from(name.as_str()).expect("node identifiers are valid component IDs");
+    ComponentContext::transform(topology, component_id)
 }
 
-/// Returns the metrics builder of a native identity, with its `component_id` and `component_type` labels.
-fn native_builder(topology: &SubsystemIdentifier, native: &NativeTelemetry) -> Option<MetricsBuilder> {
-    native_context(topology, native).map(|context| MetricsBuilder::from_component_context(&context))
+/// Returns every series the node `node` running `operator` reports beside the component series every node has: its
+/// operator's, then its role's.
+pub(super) fn reported(node: &NodeId, operator: &str) -> impl Iterator<Item = &'static ReportedSeries> {
+    let described = OperatorRegistry::native()
+        .get(operator)
+        .map_or(&[][..], |def| def.reports());
+    let role = roles::of(node, operator).map_or(&[][..], |role| role.series);
+    described.iter().chain(role)
+}
+
+/// Returns the identity a lease's encoder telemetry reports under, with `component_type:encoder`: its output's
+/// identifier.
+///
+/// A native output's identifier is the component ID of the encoder that served it natively (`dd_metrics_encode`,
+/// `metrics_routing_encode_<i>`, `mrf_metrics_encode`, `af_metrics_encode`), so its encoder series continue across
+/// the move into an encode host and across rebinding, summed over a lease's builder shards. A declared output reports
+/// under `resources_<name>`. A routing group's series follow its position, not its key: after a group is removed, the
+/// next one continues under the removed one's identity.
+///
+/// # Errors
+///
+/// Returns an error if the identifier is not a component ID, which only a declared output named against the
+/// validation rules can be.
+pub fn lease_telemetry(output: &OutputId) -> Result<NativeComponentId, GenericError> {
+    NativeComponentId::new(output.as_str()).map_err(|error| {
+        generic_error!(
+            "Output `{}` cannot report encoder telemetry under its identifier: {}",
+            output,
+            error
+        )
+    })
 }
 
 /// Where the kernels of the regions are accounted: the component registry, and each region's identity, in slot order.
@@ -212,22 +256,10 @@ impl RegionTelemetry {
         self
     }
 
-    /// Returns the component a node running `operator` reports its telemetry as: the native component it stands for,
-    /// if its telemetry profile names one, and otherwise a transform named after the node (`<local>` for a reserved
-    /// node, `policy_<local>` for a node in the policy namespace).
-    pub fn component(&self, node: &NodeId, operator: &str) -> ComponentContext {
-        if let Some(context) =
-            native_telemetry(node, operator).and_then(|native| native_context(&self.topology, &native))
-        {
-            return context;
-        }
-        let name = match node.namespace() {
-            Namespace::Reserved => node.local().to_string(),
-            Namespace::Policy => format!("policy_{}", node.local()),
-        };
-        // Local identifiers start with a letter and never end with an underscore, so they are valid component IDs.
-        let component_id = ComponentId::try_from(name.as_str()).expect("node identifiers are valid component IDs");
-        ComponentContext::transform(&self.topology, component_id)
+    /// Returns the component a node reports its telemetry as: a transform named after the node (`<local>` for a
+    /// reserved node, `policy_<local>` for a node in the policy namespace).
+    pub fn component(&self, node: &NodeId) -> ComponentContext {
+        node_component(&self.topology, node)
     }
 
     /// Registers the handles lane `lane` of the isolation slot `region` publishes its own telemetry to, its
@@ -237,7 +269,7 @@ impl RegionTelemetry {
     }
 
     /// Returns the context to build the kernel of `node`, of `program`, in: reported as [`component`][Self::component]
-    /// says, and accounted to the resource group `<region>.<node>` (`<region>.policy` for a node in the policy
+    /// says, with its cache named as the node's role says, if it has one, and accounted to the resource group `<region>.<node>` (`<region>.policy` for a node in the policy
     /// namespace), whose bounds `RegionBounds` declares under the same name.
     ///
     /// A kernel of an isolation slot draws on the budgets of state ([`with_state`][Self::with_state]): the global
@@ -259,7 +291,12 @@ impl RegionTelemetry {
             .iter()
             .find(|kernel| &kernel.key.node == node)
             .map_or("", |kernel| kernel.operator);
-        let context = KernelBuildContext::new(node.clone(), self.component(node, operator));
+        let context = KernelBuildContext::new(node.clone(), self.component(node));
+        // A role may name the kernel's cache after the native one, which the remapper selects on.
+        let context = match roles::of(node, operator).and_then(|role| role.cache_id) {
+            Some(cache_id) => context.with_cache_id(cache_id),
+            None => context,
+        };
         // Every lane builds the kernel under the same identity, so its caches sum their gauges over the lanes.
         let context = if lane.is_only() {
             context
@@ -298,15 +335,12 @@ impl RegionTelemetry {
 impl RegisterTelemetry for RegionTelemetry {
     fn port_events(&self, node: &NodeId, operator: &'static str, port: &PortName) -> Vec<Counter> {
         let mut counters = self.plan.port_events(node, operator, port);
-        let Some(native) = native_telemetry(node, operator) else {
-            return counters;
-        };
-        let Some(builder) = native_builder(&self.topology, &native) else {
-            return counters;
-        };
-        for metric in native.profile.metrics() {
-            if matches!(metric.source, MetricSource::PortEvents(counted) if counted == port.as_str()) {
-                counters.push(builder.register_counter_with_tags(metric.name, metric.tags.iter().copied()));
+        let mut builder = None;
+        for series in reported(node, operator) {
+            if matches!(series.recorder, Recorder::Port(counted) if counted == port.as_str()) {
+                let builder =
+                    builder.get_or_insert_with(|| MetricsBuilder::from_component_context(&self.component(node)));
+                counters.push(builder.register_counter_with_tags(series.name, series.tags.iter().copied()));
             }
         }
         counters
@@ -573,8 +607,9 @@ impl Supervisable for LaneTelemetry {
     }
 }
 
-/// The identity of one native metric the installer records: its name, and its labels and tags.
-type NativeKey = (&'static str, String, &'static str, &'static [&'static str]);
+/// The identity of one series a node reports that the installer records: its name, its node's component, and its
+/// tags.
+type SeriesKey = (&'static str, String, &'static [&'static str]);
 
 /// What the installer publishes: plan-level gauges and counters, and the native metrics it records from bindings.
 ///
@@ -589,10 +624,10 @@ pub struct InstallerTelemetry {
     cuts: Vec<(CutOutcome, Counter)>,
     cut_cancellations_refused: Counter,
     rewrites: Vec<(RewriteId, Gauge)>,
-    native_gauges: BTreeMap<NativeKey, Gauge>,
+    series_gauges: BTreeMap<SeriesKey, Gauge>,
     /// The node each native gauge the installer sets from a plan was last set for.
-    plan_gauge_nodes: BTreeMap<NativeKey, NodeId>,
-    native_counters: BTreeMap<NativeKey, Counter>,
+    plan_gauge_nodes: BTreeMap<SeriesKey, NodeId>,
+    series_counters: BTreeMap<SeriesKey, Counter>,
     budget_granted: Gauge,
     budget_used: Gauge,
     live_leases: BTreeMap<String, Gauge>,
@@ -631,9 +666,9 @@ impl InstallerTelemetry {
             cut_cancellations_refused: builder.register_counter(PLAN_CUT_CANCELLATIONS_REFUSED_TOTAL),
             rewrites: Vec::new(),
             topology,
-            native_gauges: BTreeMap::new(),
+            series_gauges: BTreeMap::new(),
             plan_gauge_nodes: BTreeMap::new(),
-            native_counters: BTreeMap::new(),
+            series_counters: BTreeMap::new(),
             budget_granted: builder.register_gauge_with_tags(PLAN_RESOURCE_BUDGET_BYTES, [("state", "granted")]),
             budget_used: builder.register_gauge_with_tags(PLAN_RESOURCE_BUDGET_BYTES, [("state", "used")]),
             live_leases: BTreeMap::new(),
@@ -725,10 +760,11 @@ impl InstallerTelemetry {
             .set(revision.map_or(0.0, |revision| revision as f64));
     }
 
-    /// Sets the native gauges the installer records from the plan of a generation, as the generation is installed:
-    /// the length of a list a `split` matches names against (`ListLength`), the entries a name matcher keeps for it
-    /// (`MatcherEntries`), and the rules a tag filterlist puts in effect (`TagProjectionRules`). It also registers, at
-    /// zero, the native counters region hosts count on a node's ports (`PortEvents`), as a native component registers
+    /// Sets the gauges nodes report that the installer records from the plan of a generation, as the generation is
+    /// installed: the length of a list a `split` matches names against (`ListLength`), the entries a name matcher keeps
+    /// for it (`MatcherEntries`), and the rules a tag filterlist puts in effect (`TagProjectionRules`). It also
+    /// registers, at zero, the counters region hosts count on a node's ports (`Recorder::Port`), as a native component
+    /// registers
     /// its own when it is built: compiling folds a filter whose list is empty (R3), so no region counts its ports, and
     /// the series would otherwise be missing while it does nothing.
     ///
@@ -737,113 +773,95 @@ impl InstallerTelemetry {
     /// empty list and no rules imply, rather than keep the value of a generation that no longer runs.
     pub fn set_plan_gauges(&mut self, plan: &Plan) {
         for node in &plan.nodes {
-            let Some(native) = native_telemetry(&node.id, node.op.as_str()) else {
-                continue;
-            };
-            for metric in native.profile.metrics() {
-                let value = match metric.source {
-                    MetricSource::ListLength => {
+            for series in reported(&node.id, node.op.as_str()) {
+                let value = match series.recorder {
+                    Recorder::Plan(PlanValue::ListLength) => {
                         intake_name_matches(node).map(|matches| matches.iter().map(|(values, _)| values.len()).sum())
                     }
-                    MetricSource::MatcherEntries { prefixes } => intake_name_matches(node).map(|matches| {
-                        let entries = matches
-                            .iter()
-                            .filter(|(_, prefix)| *prefix == prefixes)
-                            .flat_map(|(values, _)| values.iter().map(String::as_str));
-                        SortedSetMatcher::new(entries, prefixes).len()
-                    }),
-                    MetricSource::TagProjectionRules => tag_projection_rule_count(node),
-                    MetricSource::PortEvents(_) => {
-                        if metric.kind == NativeMetricKind::Counter {
-                            self.native_counter(&native, metric);
+                    Recorder::Plan(PlanValue::MatcherEntries { prefixes }) => {
+                        intake_name_matches(node).map(|matches| {
+                            let entries = matches
+                                .iter()
+                                .filter(|(_, prefix)| *prefix == prefixes)
+                                .flat_map(|(values, _)| values.iter().map(String::as_str));
+                            SortedSetMatcher::new(entries, prefixes).len()
+                        })
+                    }
+                    Recorder::Plan(PlanValue::TagProjectionRules) => tag_projection_rule_count(node),
+                    Recorder::Port(_) => {
+                        if series.kind == SeriesKind::Counter {
+                            self.series_counter(&node.id, series);
                         }
                         None
                     }
                     _ => None,
                 };
-                if let (Some(value), NativeMetricKind::Gauge) = (value, metric.kind) {
-                    if let Some(gauge) = self.native_gauge(&native, metric) {
-                        gauge.set(value as f64);
-                        self.plan_gauge_nodes
-                            .insert(Self::native_key(&native, metric), node.id.clone());
-                    }
+                if let (Some(value), SeriesKind::Gauge) = (value, series.kind) {
+                    self.series_gauge(&node.id, series).set(value as f64);
+                    let key = self.series_key(&node.id, series);
+                    self.plan_gauge_nodes.insert(key, node.id.clone());
                 }
             }
         }
         for (key, node) in &self.plan_gauge_nodes {
             if plan.node(node).is_none() {
-                if let Some(gauge) = self.native_gauges.get(key) {
+                if let Some(gauge) = self.series_gauges.get(key) {
                     gauge.set(0.0);
                 }
             }
         }
     }
 
-    /// Registers, at zero, every counter of configuration changes (`ParamChanges`) the nodes of the boot plan keep,
+    /// Registers, at zero, every counter of configuration changes (`ParamChanges`) the nodes of the boot plan report,
     /// as the native components register theirs when they are built: the series are reported before the first change.
     pub fn register_change_counters(&mut self, plan: &Plan) {
         for node in &plan.nodes {
-            let Some(native) = native_telemetry(&node.id, node.op.as_str()) else {
-                continue;
-            };
-            for metric in native.profile.metrics() {
-                if metric.source == MetricSource::ParamChanges && metric.kind == NativeMetricKind::Counter {
-                    self.native_counter(&native, metric);
+            for series in reported(&node.id, node.op.as_str()) {
+                if series.recorder == Recorder::Plan(PlanValue::ParamChanges) && series.kind == SeriesKind::Counter {
+                    self.series_counter(&node.id, series);
                 }
             }
         }
     }
 
     /// Counts a configuration change, after which `current` was lowered where `previous` was before: for each node of
-    /// `current` whose profile counts changes of its parameters (`ParamChanges`), once if the change changed them.
+    /// `current` that reports changes of its parameters (`ParamChanges`), once if the change changed them.
     pub fn count_param_changes(&mut self, previous: &Plan, current: &Plan) {
         for node in &current.nodes {
-            let Some(native) = native_telemetry(&node.id, node.op.as_str()) else {
+            if previous.node(&node.id).map(|before| &before.params) == Some(&node.params) {
                 continue;
-            };
-            let changed = previous.node(&node.id).map(|before| &before.params) != Some(&node.params);
-            for metric in native.profile.metrics() {
-                if metric.source != MetricSource::ParamChanges {
-                    continue;
-                }
-                if changed && metric.kind == NativeMetricKind::Counter {
-                    if let Some(counter) = self.native_counter(&native, metric) {
-                        counter.increment(1);
-                    }
+            }
+            for series in reported(&node.id, node.op.as_str()) {
+                if series.recorder == Recorder::Plan(PlanValue::ParamChanges) && series.kind == SeriesKind::Counter {
+                    self.series_counter(&node.id, series).increment(1);
                 }
             }
         }
     }
 
-    fn native_key(native: &NativeTelemetry, metric: &'static NativeMetric) -> NativeKey {
-        (
-            metric.name,
-            native.component_id.clone(),
-            native.component_type.as_str(),
-            metric.tags,
-        )
+    fn series_key(&self, node: &NodeId, series: &'static ReportedSeries) -> SeriesKey {
+        let component = node_component(&self.topology, node);
+        (series.name, component.component_id().to_string(), series.tags)
     }
 
-    /// Returns the gauge of a native metric under a node's native identity, registering it the first time.
-    fn native_gauge(&mut self, native: &NativeTelemetry, metric: &'static NativeMetric) -> Option<&Gauge> {
-        let key = Self::native_key(native, metric);
-        if !self.native_gauges.contains_key(&key) {
-            let builder = native_builder(&self.topology, native)?;
-            let gauge = builder.register_gauge_with_tags(metric.name, metric.tags.iter().copied());
-            self.native_gauges.insert(key.clone(), gauge);
-        }
-        self.native_gauges.get(&key)
+    /// Returns the gauge of a series under its node's name, registering it the first time.
+    fn series_gauge(&mut self, node: &NodeId, series: &'static ReportedSeries) -> &Gauge {
+        let key = self.series_key(node, series);
+        let topology = &self.topology;
+        self.series_gauges.entry(key).or_insert_with(|| {
+            MetricsBuilder::from_component_context(&node_component(topology, node))
+                .register_gauge_with_tags(series.name, series.tags.iter().copied())
+        })
     }
 
-    /// Returns the counter of a native metric under a node's native identity, registering it the first time.
-    fn native_counter(&mut self, native: &NativeTelemetry, metric: &'static NativeMetric) -> Option<&Counter> {
-        let key = Self::native_key(native, metric);
-        if !self.native_counters.contains_key(&key) {
-            let builder = native_builder(&self.topology, native)?;
-            let counter = builder.register_counter_with_tags(metric.name, metric.tags.iter().copied());
-            self.native_counters.insert(key.clone(), counter);
-        }
-        self.native_counters.get(&key)
+    /// Returns the counter of a series under its node's name, registering it the first time.
+    fn series_counter(&mut self, node: &NodeId, series: &'static ReportedSeries) -> &Counter {
+        let key = self.series_key(node, series);
+        let topology = &self.topology;
+        self.series_counters.entry(key).or_insert_with(|| {
+            MetricsBuilder::from_component_context(&node_component(topology, node))
+                .register_counter_with_tags(series.name, series.tags.iter().copied())
+        })
     }
 }
 

@@ -6,15 +6,15 @@ use crate::{
     compile::{
         rewrite::{
             harness::{
-                arb_plan_params, arb_shape, arb_trace, drop, edges, emit, ids, node, plan, registry, sample, sorted,
-                source, split, Case, TEST_KEEP, TEST_SHED, TEST_SIGNAL_MAP,
+                arb_plan_params, arb_shape, arb_trace, catalog, catalog_with_contract, drop, edges, emit, ids, node,
+                plan, registry, sample, sorted, source, split, Case, TEST_KEEP, TEST_SHED, TEST_SIGNAL_MAP,
             },
             run_pipeline, Optimized, RewriteOutcome, RewriteRecord,
         },
         Frame,
     },
     operators::{names, OperatorRegistry},
-    validate::Validator,
+    validate::{MemoryCatalog, Validator},
 };
 
 fn prefix(id: &str) -> Value {
@@ -38,7 +38,12 @@ fn tag_projection(id: &str) -> Value {
 
 /// Runs R5a alone to a fixed point over a valid plan, framed by itself.
 fn r5a(plan: Plan) -> (Case, Optimized) {
-    let case = Case::of(plan, Vec::new()).unwrap();
+    r5a_in(plan, &catalog())
+}
+
+/// Runs R5a alone to a fixed point over a plan valid against `catalog`, framed by itself.
+fn r5a_in(plan: Plan, catalog: &MemoryCatalog) -> (Case, Optimized) {
+    let case = Case::of_in(plan, Vec::new(), catalog).unwrap();
     let optimized = case.optimize(&[&R5a]);
     assert!(optimized.converged);
     (case, optimized)
@@ -478,8 +483,9 @@ fn compiling_a_plan_records_r5a_for_explain() {
 }
 
 #[test]
-fn native_filters_move_only_whole() {
-    // Below a merge, a native filter would have to be copied; below tag projection, partly pushed.
+fn filters_the_telemetry_contract_names_move_only_whole() {
+    // Below a merge, a filter the contract names would have to be copied; below tag projection, partly pushed.
+    let named = catalog_with_contract(&[("f", names::SPLIT)]);
     let merged = plan(
         vec![
             node(
@@ -503,8 +509,11 @@ fn native_filters_move_only_whole() {
         ],
         &["o0"],
     );
-    let (_, optimized) = r5a(merged);
+    let (_, optimized) = r5a_in(merged.clone(), &named);
     assert!(optimized.records.is_empty(), "{:?}", optimized.records);
+    // A filter the contract does not name is copied: no host reads its series by its name.
+    let (_, optimized) = r5a(merged);
+    assert_eq!(applied(&optimized).len(), 1, "{:?}", optimized.records);
 
     let projected = plan(
         vec![
@@ -522,10 +531,10 @@ fn native_filters_move_only_whole() {
         ],
         &["o0"],
     );
-    let (_, optimized) = r5a(projected);
+    let (_, optimized) = r5a_in(projected, &named);
     assert!(optimized.records.is_empty(), "{:?}", optimized.records);
 
-    // Moving whole keeps a native filter's ID and counts, so it applies.
+    // Moving whole keeps the filter's name and counts, so it applies.
     let moved = plan(
         vec![
             source("src", "otlp"),
@@ -542,7 +551,7 @@ fn native_filters_move_only_whole() {
         ],
         &["o0"],
     );
-    let (case, optimized) = r5a(moved);
+    let (case, optimized) = r5a_in(moved, &named);
     assert_eq!(applied(&optimized).len(), 1);
     assert!(edges(&optimized.plan).contains(&"src.metrics -> f.in".to_string()));
     case.check_structure(&optimized).unwrap();

@@ -49,7 +49,7 @@ pub(super) fn node_mut<'a>(value: &'a mut Value, id: &str) -> &'a mut Value {
 /// The default program with the listener filterlist set to `values`, a live change.
 fn filtered(values: &[&str]) -> Plan {
     edited(|value| {
-        node_mut(value, "dsd_prefix_filter_blocklist")["params"]["predicate"] =
+        node_mut(value, "dsd_prefix_filter")["params"]["predicate"] =
             crate::testing::listener_filterlist(json!(values));
     })
 }
@@ -171,7 +171,7 @@ fn a_live_change_diffs_as_one_changed_node() {
     assert_eq!(
         changed,
         vec![(
-            "dsd_prefix_filter_blocklist".to_string(),
+            "dsd_prefix_filter".to_string(),
             NodeChange::Changed {
                 operator: false,
                 params: true,
@@ -311,7 +311,7 @@ fn kernel_reuse_keeps_every_kernel_whose_key_is_unchanged() {
     // in its isolation slot, none in the post-aggregation filter's region, and host enrichment with host tags.
     let unchanged = [
         vec!["dsd_enrich"],
-        vec!["dsd_prefix_filter_blocklist_namespace_prefix"],
+        vec!["dsd_prefix_filter_namespace_prefix"],
         vec!["dsd_agg"],
         Vec::new(),
         vec!["metrics_host_enrichment", "metrics"],

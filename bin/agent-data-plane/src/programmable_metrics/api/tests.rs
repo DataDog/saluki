@@ -117,6 +117,13 @@ async fn the_status_route_serves_the_status_summary_and_acknowledgments_as_the_s
             "state": "live",
         }])
     );
+    // The default program reports every series of the telemetry contract.
+    let telemetry = body.as_object_mut().unwrap().remove("telemetry").unwrap();
+    assert_eq!(telemetry["unmet"], json!([]));
+    assert!(telemetry["met"]
+        .as_array()
+        .unwrap()
+        .contains(&json!({"series": "aggregator.flush", "node": "dsd_agg"})));
     // Every other member is the apply states', as a poll reports them.
     body.as_object_mut().unwrap().remove("recipients");
     assert_eq!(body, serde_json::to_value(&status.apply_states).unwrap());

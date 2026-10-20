@@ -20,7 +20,7 @@ use saluki_metric_plan::{
     canonical::PlanHash,
     export::{program_hash, Annotations, ExportForm},
     ir::{BindingName, OutputId, ReceivedArtifact, RecipientName},
-    validate::{Catalog as _, CatalogRecipient, Liveness, MemoryCatalog},
+    validate::{Catalog as _, CatalogRecipient, Liveness, MemoryCatalog, TelemetryContract},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -352,6 +352,11 @@ fn known_catalog_members(catalog: Value, labels: &mut BTreeMap<OutputId, String>
             ("single_aggregation", value) | ("detached_programs", value) => {
                 kept.insert(member, value);
             }
+            // The nodes ADP reads series from by name, which validation warns about a program lacking: a contract a
+            // newer ADP writes that does not read is left out, losing only the warnings.
+            ("telemetry_contract", value) if serde_json::from_value::<TelemetryContract>(value.clone()).is_ok() => {
+                kept.insert(member, value);
+            }
             _ => {}
         }
     }
@@ -383,6 +388,19 @@ pub(crate) mod tests {
 
     pub(crate) fn demo_export() -> ExportBundle {
         ExportBundle::from_value(serde_json::from_str(DEMO_EXPORT).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn the_catalogs_telemetry_contract_is_read_when_it_reads() {
+        let mut document = serde_json::from_str::<Value>(DEMO_EXPORT).unwrap();
+        let entry = serde_json::json!({"series": "aggregator.flush", "node": "dsd_agg", "operator": "aggregate",
+                                       "reports": "aggregate_flushed_total"});
+        document["catalog"]["telemetry_contract"] = serde_json::json!({"entries": [entry]});
+        let export = ExportBundle::from_value(document.clone()).unwrap();
+        assert_eq!(export.catalog.telemetry_contract().unwrap().entries.len(), 1);
+        document["catalog"]["telemetry_contract"]["entries"][0]["future_member"] = serde_json::json!(1);
+        let export = ExportBundle::from_value(document).unwrap();
+        assert!(export.catalog.telemetry_contract().is_none());
     }
 
     #[test]

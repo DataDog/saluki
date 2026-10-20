@@ -10,13 +10,14 @@
 //!   settings, and recipient protocols;
 //! - [`credentials`]: the credentials recipients send with, resolved from their references;
 //! - [`catalog`]: the plan crate's catalog over the bindings, the outputs, and the delivery hosts;
-//! - [`telemetry_profiles`]: the native telemetry identity of each reserved node and each lease, outside the IR;
+//! - [`compatibility`]: the telemetry contract, the nodes the remapper reads native series from by name, and the roles
+//!   that give those nodes their native series;
 //! - [`lowering`]: native configuration into the default program;
 //! - [`lanes`]: how many lanes the slots of the metrics path run on, fixed at boot;
 //! - [`topology`]: the metrics path of the topology, built from the default program's physical frame;
 //! - [`installer`]: booting the metrics path, and installing a new generation of the plan whenever a configuration
 //!   change or a program changes it, with the resources its delivery hosts run;
-//! - [`telemetry`]: what regions and the installer publish, under the native identities of the nodes;
+//! - [`telemetry`]: what regions and the installer publish, under the names of the nodes;
 //! - [`snapshot_bridge`]: the worker that answers DogStatsD aggregation's context snapshot requests from the region
 //!   that runs it, when aggregation runs as a stateful kernel;
 //! - [`channel_stub`]: the local development stub of the artifact channel, which polls a stub server for policy and
@@ -27,8 +28,6 @@ pub mod api;
 pub mod bindings;
 pub mod catalog;
 pub mod channel_stub;
-// Not yet called outside its tests: V10's second half wires it into the catalog and status.
-#[allow(dead_code, unused_imports)]
 pub mod compatibility;
 pub mod credentials;
 pub mod host_facts;
@@ -38,7 +37,6 @@ pub mod lowering;
 pub mod resources;
 pub mod snapshot_bridge;
 pub mod telemetry;
-pub mod telemetry_profiles;
 pub mod topology;
 
 #[cfg(test)]

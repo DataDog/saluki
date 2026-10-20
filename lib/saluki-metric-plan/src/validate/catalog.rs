@@ -1,11 +1,12 @@
-//! The catalog of what the host declares: outputs, configuration bindings, its state budget, and whether it runs at
-//! most one aggregation per program.
+//! The catalog of what the host declares: outputs, configuration bindings, its state budget, whether it runs at most
+//! one aggregation per program, and what it reads by name from the nodes of a plan.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::TelemetryContract;
 use crate::{
     ir::{
         BindingName, HostId, OutputDecl, OutputId, ParamSpec, ParamType, RecipientDecl, RecipientId, RecipientName,
@@ -151,6 +152,15 @@ pub trait Catalog {
         false
     }
 
+    /// Returns what the host reads by name from the nodes of a plan, if it reads anything.
+    ///
+    /// Validation warns about each node of the contract a plan lacks or runs as another operator
+    /// (`telemetry_contract`), and rewrites move a filter the contract names only whole (see
+    /// [`contract`](super::contract)). The default reads nothing.
+    fn telemetry_contract(&self) -> Option<&TelemetryContract> {
+        None
+    }
+
     /// Returns the recipient directory's entry for `name`, if the host's directory has it.
     ///
     /// The default has no directory.
@@ -232,9 +242,10 @@ impl BindingResolver for dyn Catalog + '_ {
 /// the output's `accepts` and `recipients`; `bindings`, from binding name to the binding's `type` (a [`ValueType`]),
 /// `liveness` (`live` or `startup`), `class` (`fact` or `signal`), and optional `value`; `recipients`, the host's
 /// recipient directory, from recipient name to the entry's `recipients`, `host`, `endpoint`, and `source`;
-/// `state_budget`, the host's state budget; and `single_aggregation`, `true` when the host runs at most one aggregation
-/// per program. A host exports its catalog in this form, so that plans can be validated and previewed away from it. It declares no delivery host: an export
-/// leaves host settings out.
+/// `state_budget`, the host's state budget; `single_aggregation`, `true` when the host runs at most one aggregation
+/// per program; and `telemetry_contract`, what the host reads by name from the nodes of a plan. A host exports its
+/// catalog in this form, so that plans can be validated and previewed away from it. It declares no delivery host: an
+/// export leaves host settings out.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MemoryCatalog {
@@ -252,6 +263,9 @@ pub struct MemoryCatalog {
 
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     recipients: BTreeMap<RecipientName, CatalogRecipient>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    telemetry_contract: Option<TelemetryContract>,
 }
 
 impl MemoryCatalog {
@@ -304,6 +318,12 @@ impl MemoryCatalog {
         self
     }
 
+    /// Declares what the host reads by name from the nodes of a plan.
+    pub fn with_telemetry_contract(mut self, contract: TelemetryContract) -> Self {
+        self.telemetry_contract = Some(contract);
+        self
+    }
+
     /// Returns every configuration binding the catalog declares, by name, in name order.
     pub fn bindings(&self) -> impl Iterator<Item = (&BindingName, &CatalogBinding)> {
         self.bindings.iter()
@@ -336,6 +356,10 @@ impl Catalog for MemoryCatalog {
 
     fn single_aggregation(&self) -> bool {
         self.single_aggregation
+    }
+
+    fn telemetry_contract(&self) -> Option<&TelemetryContract> {
+        self.telemetry_contract.as_ref()
     }
 
     fn recipient(&self, name: &RecipientName) -> Option<&CatalogRecipient> {
@@ -421,6 +445,15 @@ mod tests {
                 .with_state_budget(1000),
             catalog
         );
+        // The telemetry contract round-trips.
+        let mut contracted = document();
+        contracted["telemetry_contract"] = json!({"entries": [{
+            "series": "aggregator.flush", "node": "dsd_agg", "operator": "aggregate",
+            "reports": "aggregate_flushed_total",
+        }]});
+        let catalog: MemoryCatalog = serde_json::from_value(contracted.clone()).unwrap();
+        assert_eq!(catalog.telemetry_contract().unwrap().entries.len(), 1);
+        assert_eq!(serde_json::to_value(&catalog).unwrap(), contracted);
         let mut scoped = document();
         scoped["scopes"] = json!({"post_enrich": {"metrics": {"kinds": "all", "timestamps": "mixed"}}});
         assert!(serde_json::from_value::<MemoryCatalog>(scoped).is_err());

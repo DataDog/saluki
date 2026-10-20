@@ -140,7 +140,7 @@ const EXAMPLE: &str = r#"policy {
   let dsd_no_agg_split = dogstatsd
     | dogstatsd_mapper(profiles: [], cache_size: 1000) as dsd_enrich
     | namespace_prefix("tenant", exclusions: ["internal.", "system."]) as dsd_prefix_filter
-    | where intake_name != "tenant.raw.blocked" as dsd_prefix_filter_blocklist
+    | where intake_name != "tenant.raw.blocked" as dsd_prefix_filter
     | timestamp_split(10s)
 
   let dsd_agg = dsd_no_agg_split.default
@@ -203,7 +203,7 @@ fn the_example_program_parses() {
         blocklist.predicate,
         json!({"not": {"intake_name": {"eq": "tenant.raw.blocked"}}})
     );
-    assert_eq!(id_text(&blocklist.id).as_deref(), Some("dsd_prefix_filter_blocklist"));
+    assert_eq!(id_text(&blocklist.id).as_deref(), Some("dsd_prefix_filter"));
     let split = op(&stages[3]);
     assert_eq!(split.op.as_str(), "timestamp_split");
     assert_eq!(split.params.get("window"), Some(&json!("10s")));

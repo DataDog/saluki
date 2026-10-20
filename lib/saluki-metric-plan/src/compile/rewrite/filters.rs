@@ -157,14 +157,17 @@ impl Filter {
         std::iter::once(self.node).chain(self.drop()).collect()
     }
 
-    /// Returns `true` if one of the filter's nodes has a reserved ID, outside the policy namespace.
+    /// Returns `true` if one of the filter's nodes is one the host's telemetry contract names
+    /// ([`ValidationReport::contract_nodes`]).
     ///
-    /// A host reports native series under a reserved node's ID, as long as its operator is the one the series are for,
-    /// such as the native filtered-metrics counter of a filterlist, which counts what one port of its `split` carries.
-    /// A copy of the filter would not carry them, so native filters are only ever moved whole, keeping their IDs and
-    /// their counts. That holds whoever wrote the node: a program that edits a filterlist's values keeps its series.
-    pub fn is_native(&self, graph: &Graph<'_>) -> bool {
-        self.nodes().into_iter().any(|node| graph.id(node).is_reserved())
+    /// The host reads series from such a node by its name, such as the filtered-metrics counter of a filterlist, which
+    /// counts what one port of its `split` carries. A copy of the filter, under another name, would not report them, so
+    /// such a filter is only ever moved whole, keeping its name and its counts. That holds whoever wrote the node: a
+    /// program that edits a filterlist's values keeps its series. Any other filter may be copied.
+    pub fn keeps_identity(&self, graph: &Graph<'_>, report: &ValidationReport) -> bool {
+        self.nodes()
+            .into_iter()
+            .any(|node| report.contract_nodes().contains(graph.id(node)))
     }
 
     /// Returns `true` if the filter reads a host signal, which makes it dynamic: it is never moved.

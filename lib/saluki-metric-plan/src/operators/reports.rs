@@ -172,6 +172,7 @@ pub(super) const TAG_PROJECTION: &[ReportedSeries] = {
         ReportedSeries::counter("cache_items_inserted_total", Cache),
         ReportedSeries::counter("cache_items_removed_total", Cache),
         ReportedSeries::counter("cache_items_evicted_total", Cache),
+        ReportedSeries::counter("cache_items_expired_total", Cache),
     ]
 };
 

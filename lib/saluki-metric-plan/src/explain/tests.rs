@@ -150,10 +150,10 @@ fn the_default_programs_explain_describes_its_graph() {
         ]
     );
     assert_eq!(gateway.params["predicate"], json!({"const": true}));
-    let blocklist = node(&explain, "dsd_prefix_filter_blocklist");
+    let blocklist = node(&explain, "dsd_prefix_filter");
     assert!(blocklist.bindings.is_empty());
     assert_eq!(blocklist.loss, Vec::<String>::new());
-    assert_eq!(node(&explain, "dsd_prefix_filter_blocklist_false").loss, vec!["policy"]);
+    assert_eq!(node(&explain, "dsd_prefix_filter_false").loss, vec!["policy"]);
 
     // Port types per edge, derived by hand: aggregation turns counters into rates and histograms into rates, gauges,
     // and distributions, all timestamped; the timestamp split's passthrough port carries timestamped points, with
@@ -212,14 +212,14 @@ fn the_default_programs_explain_summarizes_every_nodes_contract() {
         ("trace_sampler", "source", "io_host", "none", NONE),
         ("dsd_enrich", "dogstatsd_mapper", SYNC, "none", NONE),
         (
-            "dsd_prefix_filter_blocklist_namespace_prefix",
+            "dsd_prefix_filter_namespace_prefix",
             "namespace_prefix",
             SYNC,
             "none",
             NONE,
         ),
-        ("dsd_prefix_filter_blocklist", "split", SYNC, "none", NONE),
-        ("dsd_prefix_filter_blocklist_false", "drop", SYNC, "none", POLICY),
+        ("dsd_prefix_filter", "split", SYNC, "none", NONE),
+        ("dsd_prefix_filter_false", "drop", SYNC, "none", POLICY),
         ("dsd_no_agg_split", "timestamp_split", SYNC, "none", NONE),
         ("dsd_tag_filterlist", "tag_projection", SYNC, "none", POLICY),
         (
@@ -339,7 +339,7 @@ fn explain_describes_invalid_plans_with_their_findings() {
     }))
     .unwrap();
     let registry = OperatorRegistry::native();
-    let report = Validator::new(&registry, &default_program_catalog()).validate(&plan);
+    let report = Validator::new(&registry, &crate::validate::MemoryCatalog::new()).validate(&plan);
     let explain = Explain::of(&plan, &registry, &report);
 
     assert!(!explain.plan.valid);
@@ -892,7 +892,7 @@ mod physical {
             pipelined,
             strings(&[
                 "dsd_enrich.out",
-                "dsd_prefix_filter_blocklist.true",
+                "dsd_prefix_filter.true",
                 "dsd_post_agg_filter_fanout.1"
             ])
         );
@@ -968,9 +968,9 @@ mod physical {
         );
         let mut nodes = ids(&[
             "dsd_enrich",
-            "dsd_prefix_filter_blocklist_namespace_prefix",
-            "dsd_prefix_filter_blocklist",
-            "dsd_prefix_filter_blocklist_false",
+            "dsd_prefix_filter_namespace_prefix",
+            "dsd_prefix_filter",
+            "dsd_prefix_filter_false",
             "dsd_no_agg_split",
             "dsd_tag_filterlist",
         ]);

@@ -669,13 +669,13 @@ fn the_detached_export_of_the_default_program_is_in_normal_form() {
             .map(|edge| edge.to.to_string())
             .unwrap_or_else(|| panic!("an edge leaves `{}`", from))
     };
-    for filter in ["dsd_prefix_filter_blocklist", "dsd_post_agg_filter"] {
+    for filter in ["dsd_prefix_filter", "dsd_post_agg_filter"] {
         let drop = format!("{}_false", filter);
         assert_eq!(target(&format!("{}.false", filter)), format!("{}.in", drop));
         assert_eq!(node(&drop).op.as_str(), names::DROP);
     }
     assert_eq!(
-        node("dsd_prefix_filter_blocklist").params,
+        node("dsd_prefix_filter").params,
         params(json!({"predicate": {"not": {"intake_name": {"eq": "tenant.raw.blocked"}}}}))
     );
     assert_eq!(

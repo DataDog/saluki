@@ -557,8 +557,13 @@ fn grouped_plan(nodes: &[(&str, &str, Value)], edges: &[(&str, &str)]) -> Plan {
 }
 
 fn compiled(plan: &Plan) -> Result<crate::compile::CompiledPlan, CompileError> {
+    compiled_in(plan, MemoryCatalog::new())
+}
+
+/// Compiles `plan` as [`compiled`] does, validated against `catalog` with the output `out`.
+fn compiled_in(plan: &Plan, catalog: MemoryCatalog) -> Result<crate::compile::CompiledPlan, CompileError> {
     let registry = OperatorRegistry::native();
-    let catalog = MemoryCatalog::new().with_output(
+    let catalog = catalog.with_output(
         OutputId::new("out").unwrap(),
         CatalogOutput {
             accepts: PortType::ANY,
@@ -705,7 +710,8 @@ fn splits_and_tees_joined_by_edges_are_one_decision_and_a_map_ends_it() {
 
 #[test]
 fn a_merge_ends_a_decision() {
-    // `s`'s ports join again in `m`, and `k` follows: a decision is a tree, so `k` is a decision of its own.
+    // `s`'s ports join again in `m`, and `k` follows: a decision is a tree, so `k` is a decision of its own. The host
+    // reads series from `k` by name, so R5a does not copy it into the merge's inputs.
     let plan = grouped_plan(
         &[
             ("s", "split", json!({"predicate": {"name": {"eq": "a"}}})),
@@ -723,7 +729,15 @@ fn a_merge_ends_a_decision() {
             ("k.false", "d.in"),
         ],
     );
-    let compiled = compiled(&plan).unwrap();
+    let contract = crate::validate::TelemetryContract {
+        entries: vec![crate::validate::ContractEntry {
+            series: "k.series".to_string(),
+            node: id("k"),
+            operator: "split".parse().unwrap(),
+            reports: "series".to_string(),
+        }],
+    };
+    let compiled = compiled_in(&plan, MemoryCatalog::new().with_telemetry_contract(contract)).unwrap();
     let decisions = compiled.programs[0].decisions();
     assert_eq!(
         decisions.iter().map(nodes_of).collect::<Vec<_>>(),
@@ -905,7 +919,7 @@ fn the_default_programs_decisions_are_its_filters_its_fan_outs_and_its_gateways(
         vec![
             (
                 "dsd_prefix_filter_region".to_string(),
-                strings(&["dsd_prefix_filter_blocklist"]),
+                strings(&["dsd_prefix_filter"]),
                 false
             ),
             (

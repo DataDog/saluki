@@ -32,10 +32,11 @@
 //!   copy each, since every branch's records reach it; the merge changes nothing, so this always holds for every
 //!   kind. An input of whose kinds the filter can remove nothing keeps its edge, without a copy. Only a `merge` is
 //!   crossed this way: for another operator with several inputs, filtering each input need not filter its output.
-//! - **Native filters move only whole.** A host reports native series under a reserved node's ID, such as a
-//!   filterlist's filtered-metrics counter on one port of its `split`; copies would not carry them. A filter with a
-//!   reserved ID is therefore never copied (neither across a merge nor partially): it is only moved, whole, keeping
-//!   its ID and its counts exactly.
+//! - **Filters the telemetry contract names move only whole.** A host reads series from a node of its telemetry
+//!   contract by the node's name, such as a filterlist's filtered-metrics counter on one port of its `split`; copies,
+//!   under other names, would not report them. A filter with a node the contract names
+//!   ([`ValidationReport::contract_nodes`]) is therefore never copied (neither across a merge nor partially): it is
+//!   only moved, whole, keeping its name and its counts exactly. Any other filter may be copied.
 //! - **The frame is fixed.** The pipeline checks that the rewritten plan places into the boot frame, with every
 //!   kernel in the slot it ran in before, and skips the application, recording why, if it does not.
 //! - **Dynamic operators** are never moved, and no filter moves across one.
@@ -142,7 +143,7 @@ impl Site {
         let push = if commuting == reaching {
             if inputs == 1 {
                 Push::Whole
-            } else if filter.is_native(graph) {
+            } else if filter.keeps_identity(graph, report) {
                 return None;
             } else {
                 // `uncrossable` admits several inputs only for a `merge`. A copy goes only on the inputs whose records
@@ -169,7 +170,7 @@ impl Site {
             else {
                 return None;
             };
-            if inputs != 1 || filter.is_native(graph) {
+            if inputs != 1 || filter.keeps_identity(graph, report) {
                 return None;
             }
             let raw = graph.nodes[filter.node].node.params.get("predicate")?;

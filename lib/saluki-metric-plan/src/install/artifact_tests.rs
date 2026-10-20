@@ -42,7 +42,7 @@ const PANICS: &str = "3 panics in 60 seconds";
 /// post-aggregation filter.
 pub(super) fn program(listener: &str, post_aggregation: &str) -> Plan {
     edited(|value| {
-        node_mut(value, "dsd_prefix_filter_blocklist")["params"]["predicate"] =
+        node_mut(value, "dsd_prefix_filter")["params"]["predicate"] =
             crate::testing::listener_filterlist(json!([listener]));
         node_mut(value, "dsd_post_agg_filter")["params"]["predicate"] =
             crate::testing::post_aggregate_filter(json!([post_aggregation]));
@@ -1776,7 +1776,7 @@ fn a_cut_serving_an_artifact_of_a_failed_generation_is_dropped_as_a_preparation_
         let mut host = Host::new();
         host.harness.core.classify_cuts_with(|active: &Plan, candidate: &Plan| {
             let post_aggregation = |plan: &Plan| filter_name(plan, "dsd_post_agg_filter", "/not/all/1/intake_name/eq");
-            let listener = filter_name(candidate, "dsd_prefix_filter_blocklist", "/not/intake_name/eq");
+            let listener = filter_name(candidate, "dsd_prefix_filter", "/not/intake_name/eq");
             if post_aggregation(active) == post_aggregation(candidate) || !listener.starts_with("cut") {
                 return None;
             }

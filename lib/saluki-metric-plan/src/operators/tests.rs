@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Mutex},
+};
 
 use saluki_core::{
     accounting::ComponentRegistry,
@@ -1659,13 +1662,12 @@ fn kernels_report_native_telemetry_under_the_component_they_are_built_for() {
         Some(1)
     );
 
-    // Tag projection's rule telemetry, and its memo: a reserved node's memo keeps the native identifier, and a policy
-    // node's is named after its component.
+    // Tag projection's rule telemetry, and its memo, named after its component unless the host names it otherwise.
     for (node, component, memo) in [
         (
             "dsd_tag_filterlist",
             "dsd_tag_filterlist",
-            "tag_filterlist/context_cache",
+            "dsd_tag_filterlist/tag_filterlist/context_cache",
         ),
         (
             "policy/projection",
@@ -1704,6 +1706,103 @@ fn kernels_report_native_telemetry_under_the_component_they_are_built_for() {
             node
         );
     }
+}
+
+/// One registered series: its kind, name, and labels, sorted.
+type Registered = (&'static str, String, Vec<(String, String)>);
+
+/// Returns the series registered in `recorder` labeled `label` with `value`, counters and gauges alike.
+fn registered(recorder: &saluki_metrics::test::TestRecorder, label: &str, value: &str) -> BTreeSet<Registered> {
+    let counters = recorder.counters().into_iter().map(|(key, _)| ("counter", key));
+    let gauges = recorder.gauges().into_iter().map(|(key, _)| ("gauge", key));
+    let histograms = recorder.histogram_keys().into_iter().map(|key| ("histogram", key));
+    counters
+        .chain(gauges)
+        .chain(histograms)
+        .filter(|(_, key)| key.labels().any(|l| l.key() == label && l.value() == value))
+        .map(|(kind, key)| {
+            let mut labels = key
+                .labels()
+                .map(|l| (l.key().to_string(), l.value().to_string()))
+                .collect::<Vec<_>>();
+            labels.sort();
+            (kind, key.name().to_string(), labels)
+        })
+        .collect()
+}
+
+/// Returns what `series` says is registered, labeled with `scope` (such as the node's component).
+fn described<'a>(series: impl Iterator<Item = &'a ReportedSeries>, scope: &[(&str, &str)]) -> BTreeSet<Registered> {
+    series
+        .map(|series| {
+            let kind = match series.kind {
+                SeriesKind::Counter => "counter",
+                SeriesKind::Gauge => "gauge",
+            };
+            let mut labels = scope
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect::<Vec<_>>();
+            for tag in series.tags {
+                let (key, value) = tag.split_once(':').unwrap();
+                labels.push((key.to_string(), value.to_string()));
+            }
+            labels.sort();
+            (kind, series.name.to_string(), labels)
+        })
+        .collect()
+}
+
+/// Every kernel registers exactly the series its operator reports that kernels record, under its node's name, and its
+/// cache's counters under the identifier its build context gives the cache, whatever the node is called: no other
+/// series reports under the node's name, not even one that would stay zero. A cache's gauges depend on the host's gauge
+/// mode and are not listed.
+#[test]
+fn every_kernel_registers_exactly_the_series_its_operator_reports_under_its_nodes_name() {
+    let runtime = runtime();
+    let _context = runtime.enter();
+    let mut checked = Vec::new();
+    for (op, params) in samples() {
+        let configured = configure(op, params);
+        if configured.reports().is_empty() || checked.contains(&op) {
+            continue;
+        }
+        checked.push(op);
+        for cache_id in [None, Some("native/context_cache")] {
+            let recorder = saluki_metrics::test::TestRecorder::default();
+            let _local = metrics::set_default_local_recorder(&recorder);
+            let node = "some_node";
+            let context = KernelBuildContext::detached(&node.parse().unwrap());
+            let context = match cache_id {
+                Some(id) => context.with_cache_id(id),
+                None => context,
+            };
+            let _kernel = configured.kernel().unwrap().build(&context).unwrap();
+
+            let reports = configured.reports();
+            let kernel = described(
+                reports.iter().filter(|series| series.recorder == Recorder::Kernel),
+                &[("component_id", node), ("component_type", "transform")],
+            );
+            assert!(!kernel.is_empty(), "`{}` reports kernel series", op);
+            assert_eq!(registered(&recorder, "component_id", node), kernel, "`{}`", op);
+
+            let cache = context.cache_id("tag_filterlist/context_cache");
+            let expected = described(
+                reports.iter().filter(|series| series.recorder == Recorder::Cache),
+                &[("cache_id", &cache)],
+            );
+            let counters = registered(&recorder, "cache_id", &cache)
+                .into_iter()
+                .filter(|(kind, _, _)| *kind == "counter")
+                .collect::<BTreeSet<_>>();
+            assert_eq!(counters, expected, "`{}`: the cache `{}`", op, cache);
+        }
+    }
+    assert_eq!(
+        checked,
+        [names::TIMESTAMP_SPLIT, names::TAG_PROJECTION, names::AGGREGATE]
+    );
 }
 
 #[test]

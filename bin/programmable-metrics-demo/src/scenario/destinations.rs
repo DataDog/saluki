@@ -26,7 +26,7 @@ const RETIRE_TIMEOUT: Duration = Duration::from_secs(75);
 
 /// The node of the default program that `metric_filterlist` sets: what ADP's status lists as differing when the
 /// filterlist changes under a published program.
-const FILTERLIST_NODE: &str = "dsd_prefix_filter_blocklist";
+const FILTERLIST_NODE: &str = "dsd_prefix_filter";
 
 /// An added destination, as `POST /api/destinations` answers.
 #[derive(Clone, Debug)]

@@ -11,7 +11,7 @@
 //! | `source` nodes | the source component (`trace_sampler` is a transform); port `metrics` is its `metrics` output |
 //! | `emit` nodes | the component of the output they name: its encoder, or the tap `dsd_client_telemetry_out` |
 //! | `dsd_enrich` (mapper kernel) | the `dsd_enrich` chain |
-//! | `dsd_prefix_filter_blocklist_namespace_prefix` (prefix), `dsd_prefix_filter_blocklist` (split) and its `drop` | `dsd_prefix_filter` |
+//! | `dsd_prefix_filter_namespace_prefix` (prefix), `dsd_prefix_filter` (split) and its `drop` | `dsd_prefix_filter` |
 //! | `dsd_no_agg_split` (timestamp split) | `dsd_no_agg_split`; port `passthrough` is its `passthrough` output |
 //! | `dsd_tag_filterlist` (tag projection) | `dsd_tag_filterlist` |
 //! | `dsd_agg` (aggregation, opaque) | `dsd_agg` |
@@ -123,9 +123,9 @@ fn legacy(node: &Node, outputs: &NativeOutputs) -> Legacy {
     }
     match id.as_str() {
         "dsd_enrich" | "dsd_no_agg_split" | "dsd_tag_filterlist" | "dsd_agg" => component(&id, Transform),
-        "dsd_prefix_filter_blocklist_namespace_prefix"
-        | "dsd_prefix_filter_blocklist"
-        | "dsd_prefix_filter_blocklist_false" => component("dsd_prefix_filter", Transform),
+        "dsd_prefix_filter_namespace_prefix" | "dsd_prefix_filter" | "dsd_prefix_filter_false" => {
+            component("dsd_prefix_filter", Transform)
+        }
         "dsd_post_agg_filter" | "dsd_post_agg_filter_false" => component("dsd_post_agg_filter", Transform),
         "metrics_host_enrichment" | "metrics" => component("metrics_enrich", Transform),
         _ => panic!("node `{}` ({}) is not in the mapping table", id, op),
@@ -387,7 +387,7 @@ async fn every_lowered_node_has_a_legacy_counterpart_by_the_mapping_table() {
     let component = |id: &str, ty| Legacy::Component(id.to_string(), ty);
     let cases = [
         (
-            node("dsd_prefix_filter_blocklist", names::SPLIT, json!({})),
+            node("dsd_prefix_filter", names::SPLIT, json!({})),
             component("dsd_prefix_filter", ComponentType::Transform),
         ),
         (node("dsd_post_agg_filter_in", names::MERGE, json!({})), Legacy::FanIn),

@@ -133,7 +133,7 @@ pub fn slot_name(nodes: &[NodeId]) -> Result<NativeComponentId, String> {
             .local()
             .as_str();
         let first = match first {
-            ids::DSD_PREFIX_FILTER_BLOCKLIST_NAMESPACE_PREFIX => components::DSD_PREFIX_FILTER,
+            ids::DSD_PREFIX_FILTER_NAMESPACE_PREFIX => ids::DSD_PREFIX_FILTER,
             ids::METRICS_IN => components::METRICS_ENRICH,
             first => first.strip_suffix("_in").unwrap_or(first),
         };
