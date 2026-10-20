@@ -1,0 +1,4 @@
+security:
+  - |
+    Reject server certificate chains containing compromised eMudhra public keys,
+    even when their issuing roots remain trusted, for direct and proxied HTTPS connections.
