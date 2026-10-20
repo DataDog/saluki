@@ -7,7 +7,7 @@
 //! between. Programs bind instances by their index here: a `retain` transition binds the same instance in the new
 //! program, and a `cut` gives the new program a new instance while the old one retires.
 //!
-//! Inside a reset window ([`SlotTime`]) a lineage has one instance per open epoch of its source clock: the one its
+//! Inside a reset window ([`SlotTime`]) a lineage has one instance per open epoch of its upstream points: the one its
 //! generations bind, holding the oldest epoch's data, and one created for each newer epoch's first data, which stands
 //! beside it until the window closes and the lineage continues in the newest epoch.
 
@@ -19,13 +19,14 @@ use std::{
 
 use saluki_core::{
     data_model::event::metric::Metric,
-    execution::{AdmissionPointId, AdmissionTime, GenerationRef, Kernel},
+    execution::{AdmissionPointId, AdmissionTime, GenerationId, GenerationRef, Kernel},
 };
 
 use crate::{
-    compile::LineageKey,
+    compile::{LineageKey, UpstreamPoint},
     equivalence::{Admission, BucketCandidates, ContextIdentity, MetadataIdentity, Point, PointKind, PointValue},
-    runtime::state::rules::{ResetWindow, RetiringRefs, WatermarkTracker},
+    ir::NodeId,
+    runtime::state::rules::{BoundaryRefs, ResetWindow, RetiringRefs, WatermarkTracker},
 };
 
 /// The generations a lineage retires between, both held for as long as it retires: the one it served, whose program
@@ -34,6 +35,15 @@ use crate::{
 pub(super) struct Retiring {
     pub owner: GenerationRef,
     pub by: GenerationRef,
+}
+
+/// The boundary flush a retained lineage owes a cut of a state owner downstream of it: at the cut's time, under the
+/// generation it served.
+pub(super) struct Boundary {
+    pub served: GenerationRef,
+    pub at: AdmissionTime,
+    /// The generation of the cut, which cancelling it withdraws the boundary flush with.
+    pub by: GenerationId,
 }
 
 /// One instance of an isolated state owner's state.
@@ -55,6 +65,9 @@ pub(super) struct Instance {
 
     /// The generations it retires between, while a cut replaces its lineage.
     pub retiring: Option<Retiring>,
+
+    /// The boundary flush it owes, while a cut of a state owner downstream of it is armed and it has not made it.
+    pub boundary: Option<Boundary>,
 
     /// Whether the instance made its final flush at a cut: it holds nothing, and never ticks or flushes again.
     pub retired: bool,
@@ -79,14 +92,15 @@ pub(super) struct Instance {
 
 impl Instance {
     /// Creates the instance of a new lineage, which has seen nothing.
-    pub fn new(key: LineageKey, kernel: Box<dyn Kernel>, upstream: &[AdmissionPointId]) -> Self {
+    pub fn new(key: LineageKey, kernel: Box<dyn Kernel>, upstream: &[UpstreamPoint]) -> Self {
         Self {
             key,
             kernel,
-            tracker: WatermarkTracker::of_one_clock(upstream.iter().copied()),
+            tracker: WatermarkTracker::new(upstream),
             gated: None,
             last_flush: None,
             retiring: None,
+            boundary: None,
             retired: false,
             epoch: 0,
             primary: None,
@@ -107,14 +121,10 @@ impl Instance {
         !self.retired && !self.reset_retiring && self.primary.is_none()
     }
 
-    /// Returns the watermark the instance's flushes run by: of its own epoch when its upstream points share one clock,
-    /// so that inside a reset window an epoch's instance is closed only by that epoch's stamps.
-    pub fn watermark(&self, one_clock: bool) -> Option<AdmissionTime> {
-        if one_clock {
-            self.tracker.watermark_in(self.epoch)
-        } else {
-            self.tracker.watermark()
-        }
+    /// Returns the watermark the instance's flushes run by: of its own epoch, so that inside a reset window an epoch's
+    /// instance is closed only by that epoch's stamps.
+    pub fn watermark(&self) -> Option<AdmissionTime> {
+        self.tracker.watermark_in(self.epoch)
     }
 
     /// Returns the generations the instance retires between, for the shared rules.
@@ -125,18 +135,30 @@ impl Instance {
         })
     }
 
+    /// Returns the boundary flush the instance owes, for the shared rules.
+    pub fn boundary_refs(&self) -> Option<BoundaryRefs<'_>> {
+        self.boundary.as_ref().map(|boundary| BoundaryRefs {
+            served: &boundary.served,
+            at: boundary.at,
+        })
+    }
+
     /// Returns `true` if the instance observes the stamps of `point`: if the point is upstream of it.
     pub fn observes(&self, point: AdmissionPointId) -> bool {
         !self.retired && self.tracker.upstream().any(|upstream| upstream == point)
     }
 
-    /// Returns the key of the output clock the instance stamps its time-driven output by: the admission points
-    /// upstream of it, in ID order, which an isolation slot is defined by.
+    /// Returns the state owner whose state the instance holds, whose output clock stamps its time-driven output.
+    pub fn node(&self) -> &NodeId {
+        &self.key.node
+    }
+
+    /// Returns the key of the [time](SlotTime) the instance's reset windows follow: the admission points upstream of
+    /// it, in ID order.
     ///
-    /// The interpreter knows no frame: a frame computed from a plan with two state owners fed by the same points runs
-    /// them in two isolation slots, each with an output clock of its own, where the interpreter latches their stamps on
-    /// one. A state owner a later plan adds runs in the boot frame's isolation slot, whose clock it shares, as here.
-    pub fn output_clock(&self) -> Vec<AdmissionPointId> {
+    /// Every lineage of every state owner fed by the same points follows one window, as one region's lanes do: a state
+    /// owner a later plan adds starts from the progress of those points so far.
+    pub fn slot_key(&self) -> Vec<AdmissionPointId> {
         self.tracker.upstream().collect()
     }
 }
@@ -210,18 +232,15 @@ impl EntryCandidates {
     }
 }
 
-/// The time of one isolation slot, as a region keeps it: the progress of the admission points upstream of the slot's
-/// state owners, and its reset window.
+/// The time of the state owners fed by one set of points, as a region keeps it: the progress of those points, and the
+/// reset window, over the epochs of the points' clocks or, over several clocks, of the state owners
+/// ([`WatermarkTracker::epoch_of`]).
 pub(super) struct SlotTime {
-    /// The progress of the slot's upstream points, which every instance of the slot also keeps.
+    /// The progress of the upstream points, which every instance fed by them also keeps.
     pub tracker: WatermarkTracker,
 
-    /// The slot's reset window.
+    /// The reset window.
     pub window: ResetWindow,
-
-    /// Whether every upstream point stamps by one clock, the lanes of one source: only then does a reset run as a
-    /// window, since points of independent clocks never all switch to one epoch.
-    pub one_clock: bool,
 }
 
 /// The instances of every lineage of the run, by index.

@@ -11,7 +11,7 @@
 //! - Operators with a [kernel][crate::operators::KernelSpec] run it, with an unlimited budget. Every synchronous native
 //!   operator other than the routing operators has one, extracted from its native component.
 //! - State owners behind an isolation fence ([`Boundary::Isolated`][crate::operators::Boundary]), such as
-//!   aggregation, run their stateful kernels as an isolation slot runs them: see
+//!   aggregation, run their stateful kernels as the region of a state owner runs them: see
 //!   [isolated state owners](#isolated-state-owners).
 //! - Opaque hosts run through an [`OpaqueHostAdapter`] registered per node, whose output is **re-admitted** downstream.
 //! - Sources are where `admit` events enter.
@@ -87,7 +87,10 @@
 //! instance, or on its drained one, empty. A retiring lineage inside a window crosses at its close; its cut finalizes
 //! once every point passed it, as the installer does, and the program the lineage served stays live until its final
 //! flush. With one lane the window opens and closes on one header, which is a reset at one point. A state
-//! owner over points of several clocks keeps the one-point rule at each of them: a reset drains everything it holds.
+//! owner over points of several clocks (several sources, or a source and the derived point of a state owner upstream)
+//! keeps the one-point rule at each point: a reset at any of them drains everything it holds and starts the state
+//! owner's next epoch, which every later batch belongs to (the shared rules' [clocks][tracker]), so
+//! that an owner over `k` sources drains up to `k` times for one jump of the wall clock.
 //!
 //! # Candidate mode
 //!
@@ -106,9 +109,10 @@
 //! # Watermarks
 //!
 //! There are no queues, so every state owner sees every stamp at its upstream admission points at once, and its
-//! watermark is the earliest of the latest admission times of the admission points upstream of it: sources, and the
-//! outputs of opaque hosts, which re-admit. An admission point that has admitted nothing holds the watermark back.
-//! Opaque hosts receive their watermark at every tick.
+//! watermark is the earliest of the latest admission times of the admission points upstream of it: sources, the
+//! outputs of opaque hosts, which re-admit, and the **derived points** of the isolated state owners upstream, whose
+//! output is a point of its own ([chains](#chains)). An admission point that has admitted nothing holds the watermark
+//! back. Opaque hosts receive their watermark at every tick.
 //!
 //! # Capacity
 //!
@@ -148,10 +152,35 @@
 //! - Every lineage of every state owner draws its contexts from one state budget
 //!   ([`Interpreter::with_state_budget`]), and every lineage of one node from that node's.
 //!
-//! Every isolated state owner fed by the same admission points stamps its time-driven output by one output clock, as
-//! the isolation slot that runs every state owner over a point in a host does: a slot's latch is one, whichever of its
-//! state owners flushed last. The frame gives each state owner of a boot plan a slot of its own, so a region compared
-//! with the interpreter over a boot plan with several state owners over one point latches each owner apart.
+//! Every isolated state owner stamps its time-driven output by an output clock of its own, at its derived point, as
+//! the region that runs it does, whichever of its lineages flushed: two state owners over one point stamp apart.
+//!
+//! # Chains
+//!
+//! An isolated state owner `X` upstream of another, `Y`, is one point of `Y`'s watermark: `X`'s derived point, which
+//! `X`'s output clock stamps. `X`'s output at flush time `F` holds buckets that ended by `F`, so `Y` admits it before
+//! the ticks its stamp releases, the opposite of a source's order:
+//!
+//! - A batch of `X`'s output that reaches `Y` waits for the pass that made it to end. `Y` then observes the stamp,
+//!   which runs what it makes due before admission (a reset window's opening or close, a final retirement), admits the
+//!   batch, and only then counts the stamp's time ([`observe_after`][observe_after]), which may release a boundary
+//!   flush and gated ticks.
+//! - After every tick that fires, `X` stamps its progress at its derived point, a header without records at the flush
+//!   time under the drain's generation, unless another lineage of `X` still retires at a cut: its final flush must
+//!   reach `Y` first. A skipped tick stamps nothing, so `Y` lags `X` by up to `X`'s flush interval.
+//! - A clock reset upstream of `X` drains `X` and starts a new epoch of its output clock, which `Y` sees as a reset of
+//!   `X`'s point at `X`'s next stamp.
+//! - A cut lines up with the widths of the lineages that start and end and of every retained lineage upstream of one
+//!   of them, and is armed over the admission points upstream of them all, through derived points. Each such retained
+//!   lineage owes the cut a **boundary flush**: once its watermark reaches the cut's time `T` (before the source batch
+//!   that raised it, after a derived one), it flushes at `T` under the generation it served, which closes exactly the
+//!   buckets ending by `T`, and every drain of it until then is of that generation
+//!   ([`stamping_generation`][crate::runtime::state::rules::stamping_generation]'s rule 2). A retiring lineage of `Y`
+//!   crosses at `X`'s first stamp of the new generation, which may follow the cut's finalization: the program it served
+//!   stays live until then.
+//!
+//! [tracker]: crate::runtime::state::rules::WatermarkTracker#clocks
+//! [observe_after]: crate::runtime::state::rules::WatermarkTracker::observe_after
 //!
 //! # Opaque hosts and segments
 //!
@@ -178,9 +207,11 @@
 //! unchanged. State owners correspond by node ID, and each one's transition is classified by contract, as the installer
 //! classifies it:
 //!
-//! - **`retain`**: a state owner whose lineage the new plan keeps, whatever its other parameters, keeps its instance
-//!   and its state; time-driven output then flows through the newest generation that binds it.
-//! - **`cut`**: a lineage the new plan changes (a changed window), adds, or removes. The installation **arms a cut** at
+//! - **`retain`**: a state owner whose lineage the new plan keeps, whatever its other parameters, over the same
+//!   upstream points, keeps its instance and its state; time-driven output then flows through the newest generation
+//!   that binds it.
+//! - **`cut`**: a lineage the new plan changes (a changed window), adds, or removes, or whose upstream points it
+//!   changes (its watermark's inputs changed). The installation **arms a cut** at
 //!   `T`, the first instant at least the [cut margin][crate::limits::values::CUT_MARGIN] after the latest of the
 //!   affected admission points' latest stamps and the last tick's clock that is a multiple of the least common
 //!   multiple of the widths involved, which must be at most
@@ -209,8 +240,8 @@
 //! - State owners outside an isolation fence, such as aggregation in its host component, keep their earlier rules:
 //!   they carry over only unchanged, a clock reset upstream of one is not supported, and no cut is armed while a plan
 //!   has one.
-//! - A clock reset at one of several admission points of different clocks upstream of a state owner drains everything
-//!   it holds, as a reset at its only point does: the frame runs no state owner over points of several clocks.
+//! - A state owner that keeps its lineage and its upstream points but that the installer places in another slot is cut
+//!   there and retained here: the interpreter knows no frame.
 //! - A gated tick does not fire before a batch an opaque host re-admits upstream of it: it fires at the next stamp of a
 //!   source, or the next `advance`.
 //!
@@ -222,7 +253,7 @@
 
 use std::{
     any::Any,
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fmt,
     num::NonZeroU64,
     sync::Arc,
@@ -271,7 +302,7 @@ use self::program::{AdmissionPoints, Exec, PrepareError, Program, Stamp};
 pub mod replay;
 
 mod state;
-use self::state::{CutInFlight, Instance, Instances, Retiring, SlotTime};
+use self::state::{Boundary, CutInFlight, Instance, Instances, Retiring, SlotTime};
 
 mod trace;
 pub use self::trace::{SignalValue, Trace, TraceEvent};
@@ -875,12 +906,13 @@ impl Pending {
         }
     }
 
-    /// Takes the batches waiting at a node: input port by input port, and in arrival order within each port.
-    fn take(&mut self, node: usize) -> Vec<Batch> {
+    /// Takes the batches waiting at a node, each with its input port: input port by input port, and in arrival order
+    /// within each port.
+    fn take(&mut self, node: usize) -> Vec<(usize, Batch)> {
         let mut batches = std::mem::take(&mut self.batches[node]);
         // A stable sort, so that each port keeps its arrival order.
         batches.sort_by_key(|(port, _)| *port);
-        batches.into_iter().map(|(_, batch)| batch).collect()
+        batches
     }
 
     /// Returns a node that still has batches waiting, if any does.
@@ -894,6 +926,9 @@ impl Pending {
 enum DrainKind {
     /// A flush tick.
     Tick,
+
+    /// The boundary flush a retained lineage owes a cut downstream of it: a flush at the cut's time.
+    Boundary,
 
     /// A clock reset's drain: a flush at the pre-reset watermark, then everything held.
     Reset,
@@ -913,6 +948,25 @@ struct Drain {
     flush: Option<AdmissionTime>,
     stamp_at: AdmissionTime,
     generation: GenerationRef,
+}
+
+/// One stamp of a state owner's output clock at its derived point, which the isolated state owners downstream observe
+/// once the pass that made it is over: its header, and the batches of the time-driven output it stamped that reached
+/// them, each with the generation whose plan carried it, which they admit after observing it and before the ticks it
+/// releases. A progress stamp, after a fired tick, carries no batch.
+struct DerivedStamp {
+    header: BatchHeader,
+    held: Vec<(GenerationId, Delivery)>,
+}
+
+impl DerivedStamp {
+    /// Returns `true` if `header` is this stamp's.
+    fn stamped(&self, header: &BatchHeader) -> bool {
+        self.header.admission_point == header.admission_point
+            && self.header.admitted_at == header.admitted_at
+            && self.header.epoch == header.epoch
+            && self.header.generation_id() == header.generation_id()
+    }
 }
 
 /// An installation waiting for the cut in flight to finish: the position of its `install` event, and its plan,
@@ -966,11 +1020,18 @@ struct Run<'r, 'a> {
     schedule: Option<AdmissionSchedule>,
     instances: Instances,
     budgets: StateBudgets,
-    /// The output clocks of the isolated state owners, by the admission points upstream of them, in ID order: every
-    /// lineage of every state owner fed by the same points shares one, as the isolation slot running them does.
-    output_clocks: BTreeMap<Vec<AdmissionPointId>, OutputClock>,
-    /// The time of each isolation slot, by the same key: its points' progress and its reset window.
+    /// The output clocks of the isolated state owners, by node: every lineage of one state owner shares one, as the
+    /// region running it does.
+    output_clocks: BTreeMap<NodeId, OutputClock>,
+    /// The time of the state owners fed by each set of admission points, by those points in ID order: their progress
+    /// and reset window.
     slots: BTreeMap<Vec<AdmissionPointId>, SlotTime>,
+    /// The stamps at derived points that the isolated state owners downstream have not observed yet, in stamp order.
+    derived: VecDeque<DerivedStamp>,
+    /// Whether the derived stamps are being observed: drains that run meanwhile add theirs to the end.
+    settling: bool,
+    /// Whether the batches of a derived stamp are being admitted, which the state owners they reach admit at once.
+    admitting_derived: bool,
     cut: Option<CutInFlight>,
     /// The generations a finalized cut replaced whose programs stay live while a lineage they served still retires
     /// inside a reset window: its final flush runs through the program it served.
@@ -1001,6 +1062,9 @@ impl<'r, 'a> Run<'r, 'a> {
                 .map_or_else(StateBudgets::unlimited, StateBudgets::new),
             output_clocks: BTreeMap::new(),
             slots: BTreeMap::new(),
+            derived: VecDeque::new(),
+            settling: false,
+            admitting_derived: false,
             cut: None,
             replaced: BTreeSet::new(),
             queued: None,
@@ -1238,9 +1302,9 @@ impl<'r, 'a> Run<'r, 'a> {
         pending.add(initial);
         for position in 0..program.order.len() {
             let node = program.order[position];
-            for batch in pending.take(node) {
+            for (port, batch) in pending.take(node) {
                 let more = with_exec(program, node, |program, exec| {
-                    self.run_node(program, node, exec, batch, now)
+                    self.run_node(program, node, port, exec, batch, now)
                 })?;
                 pending.add(more);
             }
@@ -1259,10 +1323,19 @@ impl<'r, 'a> Run<'r, 'a> {
         }
     }
 
-    /// Runs one node, whose execution state is `exec`, over one batch, and returns the deliveries it causes.
+    /// Runs one node, whose execution state is `exec`, over one batch that entered its input port `port`, and returns
+    /// the deliveries it causes.
+    ///
+    /// A batch of a derived point reaching an isolated state owner that observes the point waits for the pass to end:
+    /// the state owner observes the stamp first, and admits the batch before the ticks the stamp releases
+    /// ([`settle`][Self::settle]).
     fn run_node(
-        &mut self, program: &Program, node: usize, exec: &mut Exec, batch: Batch, now: AdmissionTime,
+        &mut self, program: &Program, node: usize, port: usize, exec: &mut Exec, batch: Batch, now: AdmissionTime,
     ) -> Result<Queue, InterpretErrorKind> {
+        let batch = match self.hold(program, node, port, exec, batch) {
+            Some(batch) => batch,
+            None => return Ok(Queue::new()),
+        };
         let Batch { header, metrics, tags } = batch;
         let ports = port_count(program, node);
         let id = &program.nodes[node].id;
@@ -1455,6 +1528,37 @@ impl<'r, 'a> Run<'r, 'a> {
         Ok(queue)
     }
 
+    /// Holds a batch of a derived point that reached an isolated state owner observing the point, with the stamp that
+    /// made it, or gives it back to run now: at `close`, every drain runs in one pass, and while a stamp's batches are
+    /// admitted.
+    fn hold(&mut self, program: &Program, node: usize, port: usize, exec: &Exec, batch: Batch) -> Option<Batch> {
+        let Exec::State {
+            instance: Some(bound), ..
+        } = exec
+        else {
+            return Some(batch);
+        };
+        let Some(point) = batch.header.admission_point else {
+            return Some(batch);
+        };
+        let observes = self
+            .instances
+            .get(*bound)
+            .is_some_and(|instance| instance.observes(point) && instance.tracker.is_derived(point));
+        if self.closed || self.admitting_derived || !observes {
+            return Some(batch);
+        }
+        match self.derived.iter_mut().rev().find(|stamp| stamp.stamped(&batch.header)) {
+            Some(stamp) => {
+                stamp
+                    .held
+                    .push((program.generation.id(), Delivery { node, port, batch }));
+                None
+            }
+            None => Some(batch),
+        }
+    }
+
     /// Returns the instance of the lineage bound at `bound` that admits a batch with `header`: the bound one, or,
     /// inside a reset window, the lineage's instance of the batch's epoch, which the batch's first data of that epoch
     /// creates, empty, from the lineage's kernel spec, with the lineage's cut. Returns `None` for a batch of an epoch
@@ -1468,24 +1572,25 @@ impl<'r, 'a> Run<'r, 'a> {
                 message: format!("node `{}` binds instance {}, which is gone", id, bound),
             });
         };
-        let Some(slot) = self.slots.get(&instance.output_clock()).filter(|slot| slot.one_clock) else {
+        let Some(slot) = self.slots.get(&instance.slot_key()) else {
             return Ok(Some(bound));
         };
-        if instance.epoch == header.epoch {
+        let epoch = slot.tracker.epoch_of(header);
+        if instance.epoch == epoch {
             return Ok(Some(bound));
         }
         let existing = self.instances.indices().into_iter().find(|&index| {
             self.instances
                 .get(index)
-                .is_some_and(|other| !other.retired && other.root(index) == bound && other.epoch == header.epoch)
+                .is_some_and(|other| !other.retired && other.root(index) == bound && other.epoch == epoch)
         });
         if existing.is_some() {
             return Ok(existing);
         }
-        if !slot.window.holds(header.epoch) {
+        if !slot.window.holds(epoch) {
             return Ok(None);
         }
-        let reset_retiring = slot.window.is_open() && header.epoch != slot.window.target();
+        let reset_retiring = slot.window.is_open() && epoch != slot.window.target();
         let kernel =
             program::build_state_kernel(id, spec, self.budgets.context_budget(id)).map_err(|error| match error {
                 PrepareError::Fatal(kind) => kind,
@@ -1500,8 +1605,9 @@ impl<'r, 'a> Run<'r, 'a> {
             gated: None,
             last_flush: None,
             retiring: instance.retiring.clone(),
+            boundary: None,
             retired: false,
-            epoch: header.epoch,
+            epoch,
             primary: Some(bound),
             reset_retiring,
             width: instance.width,
@@ -1845,6 +1951,8 @@ impl<'h> KernelCall<'h> {
 
 #[cfg(test)]
 mod bucket_tests;
+#[cfg(test)]
+mod chain_tests;
 #[cfg(test)]
 mod compatibility_tests;
 #[cfg(test)]

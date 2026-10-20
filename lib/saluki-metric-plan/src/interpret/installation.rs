@@ -10,14 +10,14 @@ use saluki_core::execution::{
 use super::{
     internal, lineage_key, local,
     program::{build_kernel, build_state_kernel},
-    CutInFlight, Exec, InstallOutcome, InstallRejection, Instance, InterpretErrorKind, LocalWork, PrepareError,
-    Program, Queue, Queued, Retiring, Run, SlotTime, Transition,
+    Boundary, CutInFlight, Exec, InstallOutcome, InstallRejection, Instance, InterpretErrorKind, LocalWork,
+    PrepareError, Program, Queue, Queued, Retiring, Run, SlotTime, Transition,
 };
 use crate::{
     extension::TransitionClass,
-    ir::Plan,
+    ir::{NodeId, Plan},
     limits,
-    runtime::state::rules::{cut_time, lcm_secs, ResetWindow, WatermarkTracker},
+    runtime::state::rules::{cut_time, lcm_secs, ResetWindow},
     validate::Validator,
 };
 
@@ -161,18 +161,10 @@ impl Run<'_, '_> {
                             return Err(internal(&format!("state owner `{}` binds no instance", node.id)));
                         };
                         let key = lineage_key(&node.id, &node.op)?;
-                        if class == TransitionClass::Retain && instance.key == key {
-                            let upstream = instance.tracker.upstream().collect::<Vec<_>>();
-                            if upstream != new.upstream[to] {
-                                return unsupported(
-                                    format!(
-                                        "changing the admission points upstream of state owner `{}` while it keeps \
-                                         its state",
-                                        node.id
-                                    ),
-                                    10,
-                                );
-                            }
+                        // A state owner whose upstream points change is cut: its watermark's inputs changed.
+                        let upstream = instance.tracker.upstream().collect::<Vec<_>>();
+                        let resourced = new.state_upstream[to].iter().map(|point| point.id).ne(upstream);
+                        if class == TransitionClass::Retain && instance.key == key && !resourced {
                             transition.retained.push((to, index));
                         } else {
                             transition.added.push(to);
@@ -286,55 +278,53 @@ impl Run<'_, '_> {
                 };
                 let kernel = build_state_kernel(&node.id, spec, self.budgets.context_budget(&node.id))?;
                 let key = lineage_key(&node.id, &node.op)?;
-                let upstream = &program.upstream[position];
-                let mut instance = Instance::new(key, kernel, upstream);
+                let mut instance = Instance::new(key, kernel, &program.state_upstream[position]);
                 instance.width = node.bucket_width();
                 instance.admitted = self.interpreter.candidates.then(Default::default);
-                // An isolation slot keeps one watermark over its upstream points, which a new lineage starts from, and
-                // a lineage starts in the slot's newest epoch: inside a reset window, its target.
-                match self.slots.get(upstream.as_slice()) {
+                // The state owners fed by the same points keep one watermark over them, which a new lineage starts
+                // from, and a lineage starts in their newest epoch: inside a reset window, its target. Over one clock
+                // that no state owner follows yet, it is the clock's.
+                let upstream = instance.slot_key();
+                match self.slots.get(&upstream) {
                     Some(slot) => {
                         instance.tracker = slot.tracker.clone();
-                        if slot.one_clock {
-                            instance.epoch = slot.window.target();
-                        }
+                        instance.epoch = slot.window.target();
                     }
-                    None => {
-                        if let Some(tracker) = self.slot_tracker(upstream) {
-                            instance.tracker = tracker.clone();
-                        }
-                        if self.points.one_clock(upstream) {
-                            instance.epoch = upstream.first().map_or(0, |point| self.points.clock_epoch(*point));
-                        }
+                    None if instance.tracker.is_one_clock() => {
+                        instance.epoch = upstream.first().map_or(0, |point| self.point_epoch(*point));
                     }
+                    None => {}
                 }
                 Ok((position, instance))
             })
             .collect()
     }
 
-    /// Returns the progress of the admission points `upstream` as an isolation slot fed by them keeps it: the tracker
-    /// of an instance fed by exactly those points that has not retired, if there is one.
-    fn slot_tracker(&self, upstream: &[AdmissionPointId]) -> Option<&WatermarkTracker> {
-        let upstream = upstream.iter().copied().collect::<BTreeSet<_>>();
-        self.instances
-            .indices()
-            .into_iter()
-            .filter_map(|index| self.instances.get(index))
-            .find(|instance| !instance.retired && instance.tracker.upstream().collect::<BTreeSet<_>>() == upstream)
-            .map(|instance| &instance.tracker)
+    /// Returns the epoch of the clock that stamps `point`: a source's, or for a state owner's derived point, its output
+    /// clock's.
+    fn point_epoch(&self, point: AdmissionPointId) -> u32 {
+        match self.derived_owner(point) {
+            Some(node) => self.output_clocks.get(&node).map_or(0, |clock| clock.epoch()),
+            None => self.points.clock_epoch(point),
+        }
+    }
+
+    /// Returns the state owner whose derived point `point` is, if it is one in a live plan.
+    fn derived_owner(&self, point: AdmissionPointId) -> Option<NodeId> {
+        self.programs.values().find_map(|program| {
+            let position = program.derived.iter().position(|derived| *derived == Some(point))?;
+            Some(program.nodes[position].id.clone())
+        })
     }
 
     /// Binds the candidate's isolated state owners: retained lineages to their instances, new ones to new instances.
     pub(super) fn bind(&mut self, program: &mut Program, transition: &Transition, lineages: Vec<(usize, Instance)>) {
         for (_, instance) in &lineages {
-            let key = instance.output_clock();
+            let key = instance.slot_key();
             if !self.slots.contains_key(&key) {
-                let one_clock = self.points.one_clock(&key);
                 let slot = SlotTime {
                     tracker: instance.tracker.clone(),
                     window: ResetWindow::new(instance.epoch),
-                    one_clock,
                 };
                 self.slots.insert(key, slot);
             }
@@ -435,26 +425,50 @@ impl Run<'_, '_> {
                 stage: 10,
             });
         }
+        // The admission points whose stamps decide which lineage data reaches: those upstream of the lineages that
+        // start or end, through the derived points of the state owners upstream of them, in either plan. A retained
+        // lineage among those owes the cut a boundary flush, so the cut lines up with its width too.
+        let starting = old
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| {
+                node.instance().is_some_and(|bound| {
+                    transition.retiring.iter().any(|&index| {
+                        self.instances
+                            .get(index)
+                            .is_some_and(|instance| instance.root(index) == bound)
+                    })
+                })
+            })
+            .map(|(node, _)| node)
+            .collect::<Vec<_>>();
+        let (mut affected, mut derived, mut upstream) = upstream_through(old, starting);
+        let (new_affected, new_derived, new_upstream) = upstream_through(&program, transition.added.iter().copied());
+        affected.extend(new_affected);
+        derived.extend(new_derived);
+        upstream.extend(new_upstream);
+        let boundary_owners = transition
+            .retained
+            .iter()
+            .filter(|(to, _)| upstream.contains(&program.nodes[*to].id))
+            .copied()
+            .collect::<Vec<_>>();
+        let mut widths = transition.widths.clone();
+        widths.extend(
+            boundary_owners
+                .iter()
+                .filter_map(|(to, _)| program.nodes[*to].bucket_width()),
+        );
+
         let old = old.generation.clone();
-        let lcm = match lcm_secs(&transition.widths) {
+        let lcm = match lcm_secs(&widths) {
             Ok(lcm) => lcm,
             Err(source) => {
                 self.reject(position, InstallRejection::CutWidths { source });
                 return Ok(());
             }
         };
-
-        // The admission points whose stamps decide which lineage data reaches: those upstream of the lineages that
-        // start or end.
-        let mut affected = BTreeSet::new();
-        for &index in &transition.retiring {
-            if let Some(instance) = self.instances.get(index) {
-                affected.extend(instance.tracker.upstream());
-            }
-        }
-        for (_, instance) in &lineages {
-            affected.extend(instance.tracker.upstream());
-        }
         // From the clock each point stamps by, which a reset at another lane of its source may have moved on.
         let now = affected
             .iter()
@@ -466,7 +480,8 @@ impl Run<'_, '_> {
             replaces: old.id(),
             epochs: affected
                 .iter()
-                .map(|&point| (point, self.points.clock_epoch(point)))
+                .chain(&derived)
+                .map(|&point| (point, self.point_epoch(point)))
                 .collect(),
         };
         let new = program.generation.clone();
@@ -488,6 +503,15 @@ impl Run<'_, '_> {
                 instance.retiring = Some(Retiring {
                     owner: old.clone(),
                     by: new.clone(),
+                });
+            }
+        }
+        for (_, index) in boundary_owners {
+            if let Some(instance) = self.instances.get_mut(index) {
+                instance.boundary = Some(Boundary {
+                    served: old.clone(),
+                    at,
+                    by: new.id(),
                 });
             }
         }
@@ -549,6 +573,13 @@ impl Run<'_, '_> {
                 {
                     instance.retiring = None;
                 }
+                if instance
+                    .boundary
+                    .as_ref()
+                    .is_some_and(|boundary| boundary.by == cut.new.id())
+                {
+                    instance.boundary = None;
+                }
             }
         }
         self.free_unbound();
@@ -578,17 +609,24 @@ impl Run<'_, '_> {
         let Some(cut) = self.cut.take() else {
             return Ok(());
         };
-        // Every retiring lineage that ticks has crossed: every point upstream of it is among the affected ones, and
-        // each stamped the new generation, which the lineage saw. One that has not would lose its state, so it retires
-        // here. A lineage inside a reset window, whose instances do not tick, crosses at the window's close.
+        // Every retiring lineage that ticks over admission points only has crossed: every point upstream of it is among
+        // the affected ones, and each stamped the new generation, which the lineage saw. One that has not would lose
+        // its state, so it retires here. A lineage inside a reset window, whose instances do not tick, crosses at the
+        // window's close, and one downstream of another state owner at that state owner's first stamp of the new
+        // generation, which follows its last of the old: the program each served stays live until then.
         let behind = self
             .instances
             .indices()
             .into_iter()
             .filter(|&index| {
-                self.instances
-                    .get(index)
-                    .is_some_and(|instance| instance.ticks() && instance.retiring.is_some())
+                self.instances.get(index).is_some_and(|instance| {
+                    instance.ticks()
+                        && instance.retiring.is_some()
+                        && !instance
+                            .tracker
+                            .upstream()
+                            .any(|point| instance.tracker.is_derived(point))
+                })
             })
             .collect::<Vec<_>>();
         debug_assert!(
@@ -605,9 +643,11 @@ impl Run<'_, '_> {
         self.start_queued()
     }
 
-    /// Retires the programs of replaced generations that no lineage still retires under: each lineage a reset window
-    /// held when its cut finalized has made its final flush.
-    fn release_replaced(&mut self) -> Result<(), InterpretErrorKind> {
+    /// Retires the programs of replaced generations that no lineage still retires under, or owes a boundary flush
+    /// under: each lineage a reset window held when its cut finalized, or that a state owner upstream had not yet
+    /// switched, has made its final flush, and each lineage whose watermark had not reached the cut's time, through a
+    /// derived point, its boundary flush.
+    pub(super) fn release_replaced(&mut self) -> Result<(), InterpretErrorKind> {
         let released = self
             .replaced
             .iter()
@@ -616,10 +656,14 @@ impl Run<'_, '_> {
                 !self.instances.indices().into_iter().any(|index| {
                     self.instances.get(index).is_some_and(|instance| {
                         !instance.retired
-                            && instance
+                            && (instance
                                 .retiring
                                 .as_ref()
                                 .is_some_and(|retiring| retiring.owner.id() == generation)
+                                || instance
+                                    .boundary
+                                    .as_ref()
+                                    .is_some_and(|boundary| boundary.served.id() == generation))
                     })
                 })
             })
@@ -651,4 +695,40 @@ impl Run<'_, '_> {
             }
         }
     }
+}
+
+/// Returns what lies upstream of the given isolated state owners of `program`, through the derived points of the
+/// isolated state owners upstream of them: the admission points, the derived points passed, and the state owners whose
+/// derived points they are.
+fn upstream_through<I>(
+    program: &Program, owners: I,
+) -> (BTreeSet<AdmissionPointId>, BTreeSet<AdmissionPointId>, BTreeSet<NodeId>)
+where
+    I: IntoIterator<Item = usize>,
+{
+    let (mut points, mut derived, mut upstream) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+    let mut pending = owners.into_iter().collect::<Vec<_>>();
+    let mut visited = BTreeSet::new();
+    while let Some(owner) = pending.pop() {
+        if !visited.insert(owner) {
+            continue;
+        }
+        for point in &program.state_upstream[owner] {
+            let feeder = point
+                .derived
+                .then(|| program.derived.iter().position(|derived| *derived == Some(point.id)))
+                .flatten();
+            match feeder {
+                Some(feeder) => {
+                    derived.insert(point.id);
+                    upstream.insert(program.nodes[feeder].id.clone());
+                    pending.push(feeder);
+                }
+                None => {
+                    points.insert(point.id);
+                }
+            }
+        }
+    }
+    (points, derived, upstream)
 }

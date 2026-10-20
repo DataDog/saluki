@@ -76,6 +76,11 @@ pub mod values {
     /// is the minimum over several points, so one idle lane would hold back the ticks of busy ones by up to this
     /// period while data arrives: their points also heartbeat [`PROGRESS_PERIOD`] into each second they stamp nothing
     /// in, which bounds that lag by the progress throttle.
+    ///
+    /// Every routed admission point heartbeats at this period, whichever state owners it feeds: aggregation's flush
+    /// interval is at least one second, so no shorter period is needed. A state owner's derived point does not
+    /// heartbeat: the state owner stamps its progress there after every fired tick, so a state owner downstream of it
+    /// lags by up to its flush interval, and flushes at the watermark once the grace ends.
     pub const HEARTBEAT_PERIOD: Duration = Duration::from_secs(1);
 
     /// The backward wall-clock jump that resets an admission clock.
@@ -461,9 +466,9 @@ pub const HEARTBEAT_PERIOD: LimitSpec = LimitSpec {
     name: "heartbeat_period",
     default: LimitValue::Duration(values::HEARTBEAT_PERIOD),
     source: LimitSource::Fixed,
-    description: "Longest an idle admission point waits before sending a heartbeat. The effective period is the \
-                  smaller of this and the smallest flush interval of the state owners downstream, so idle sources \
-                  never delay a flush.",
+    description: "Longest an idle admission point waits before sending a heartbeat. Every routed admission point \
+                  heartbeats at this period; flush intervals are at least one second, so idle sources never delay a \
+                  flush. A state owner's output point carries its progress after each flush tick instead.",
 };
 
 /// The backward wall-clock jump that resets an admission clock.

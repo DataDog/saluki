@@ -12,6 +12,7 @@ use saluki_metric_kernels::aggregate::ContextBudget;
 
 use super::{host::OpaqueHostAdapter, InstallRejection, InterpretErrorKind};
 use crate::{
+    compile::{ClockId, UpstreamPoint},
     ir::{NodeId, OutputId, ParamValue, Plan, PortName, PortRef},
     model::PortType,
     operators::{
@@ -253,17 +254,6 @@ impl AdmissionPoints {
             .and_then(|source| source.latest)
     }
 
-    /// Returns `true` if every point of `ids` stamps by one clock: they are lanes of one port.
-    pub fn one_clock(&self, ids: &[AdmissionPointId]) -> bool {
-        let mut sources = ids
-            .iter()
-            .map(|id| self.clocks.get(id.get() as usize).map(|clock| clock.source));
-        match sources.next() {
-            Some(first) => first.is_some() && sources.all(|source| source == first),
-            None => false,
-        }
-    }
-
     /// Returns the epoch of the clock a point stamps by, which a reset at another lane of its port may have moved past
     /// the point's last stamp: the epoch a cut's boundary records for the point.
     pub fn clock_epoch(&self, id: AdmissionPointId) -> u32 {
@@ -402,8 +392,16 @@ pub(super) struct Program {
     /// For each node and output port, the port type validation computed for it.
     pub port_types: Vec<Vec<Option<PortType>>>,
 
-    /// For each state owner, the admission points upstream of it within its segment, in ID order.
+    /// For each state owner, the admission points upstream of it within its segment, in ID order, through isolated
+    /// state owners: what a state owner that is not isolated, which keeps the earlier rules, reads.
     pub upstream: Vec<Vec<AdmissionPointId>>,
+
+    /// For each isolated state owner, the points its watermark is made of, in ID order: the admission points upstream
+    /// of it within its segment, up to the isolated state owners upstream, each of which is one derived point.
+    pub state_upstream: Vec<Vec<UpstreamPoint>>,
+
+    /// For each isolated state owner, its derived point, which its output clock stamps its time-driven output at.
+    pub derived: Vec<Option<AdmissionPointId>>,
 
     /// The outputs the plan declares.
     pub outputs: Vec<OutputId>,
@@ -498,7 +496,7 @@ impl Program {
             .chain((0..nodes.len()).filter(is_emit))
             .collect::<Vec<_>>();
 
-        let points = nodes
+        let groups = nodes
             .iter()
             .map(|node| {
                 let admits = matches!(node.exec, Exec::Source | Exec::Host(_));
@@ -516,6 +514,16 @@ impl Program {
             })
             .collect::<Vec<_>>();
 
+        // An isolated state owner's output is a point of its own, kept by node across generations.
+        let derived = nodes
+            .iter()
+            .map(|node| {
+                let port = node.op.ports().outputs.first().map(|port| port.name.clone())?;
+                node.is_isolated().then(|| points.group(&node.id, &port, 1).first)
+            })
+            .collect::<Vec<_>>();
+        let points = groups;
+
         let port_types = nodes
             .iter()
             .map(|node| {
@@ -529,12 +537,18 @@ impl Program {
             .collect();
 
         let upstream = (0..nodes.len())
-            .map(|node| {
-                if nodes[node].is_stateful() {
-                    upstream_points(node, &feeders, &points)
-                } else {
-                    Vec::new()
-                }
+            .map(|node| match nodes[node].is_stateful() {
+                true => upstream_points(node, &nodes, &feeders, &points, None)
+                    .into_iter()
+                    .map(|point| point.id)
+                    .collect(),
+                false => Vec::new(),
+            })
+            .collect();
+        let state_upstream = (0..nodes.len())
+            .map(|node| match nodes[node].is_isolated() {
+                true => upstream_points(node, &nodes, &feeders, &points, Some(&derived)),
+                false => Vec::new(),
             })
             .collect();
 
@@ -548,6 +562,8 @@ impl Program {
             points,
             port_types,
             upstream,
+            state_upstream,
+            derived,
             outputs: plan.outputs.iter().map(|output| output.id.clone()).collect(),
         })
     }
@@ -702,21 +718,38 @@ fn topological_order(targets: &[Vec<Option<Endpoint>>]) -> Vec<usize> {
     order
 }
 
-/// Returns the admission points upstream of `owner`: every lane of every source or opaque host output from which a path
-/// reaches it without crossing another opaque host. An opaque host re-admits, so points beyond it belong to another
-/// segment.
+/// Returns the points upstream of `owner`, in ID order: every lane of every source or opaque host output from which a
+/// path reaches it without crossing another opaque host, each stamped by its node's clock. An opaque host re-admits, so
+/// points beyond it belong to another segment.
+///
+/// With `derived`, the derived points of the isolated state owners, a path also stops at an isolated state owner,
+/// whose derived point it reaches instead, stamped by the state owner's output clock: the points of an isolated state
+/// owner's watermark.
 fn upstream_points(
-    owner: usize, feeders: &[Vec<Option<Endpoint>>], points: &[Vec<Option<PointGroup>>],
-) -> Vec<AdmissionPointId> {
-    let mut found = BTreeSet::new();
+    owner: usize, nodes: &[ProgramNode], feeders: &[Vec<Option<Endpoint>>], points: &[Vec<Option<PointGroup>>],
+    derived: Option<&[Option<AdmissionPointId>]>,
+) -> Vec<UpstreamPoint> {
+    let mut found = BTreeMap::new();
     let mut visited = BTreeSet::new();
     let mut pending = feeders[owner].iter().flatten().copied().collect::<Vec<_>>();
     while let Some((node, port)) = pending.pop() {
+        if let Some(point) = derived.and_then(|derived| derived[node]) {
+            found
+                .entry(point)
+                .or_insert((ClockId::Derived(nodes[node].id.clone()), true));
+            continue;
+        }
         if let Some(group) = points[node][port] {
-            found.extend(group.ids());
+            let clock = ClockId::Source(nodes[node].id.clone());
+            for point in group.ids() {
+                found.entry(point).or_insert((clock.clone(), false));
+            }
         } else if visited.insert(node) {
             pending.extend(feeders[node].iter().flatten().copied());
         }
     }
-    found.into_iter().collect()
+    found
+        .into_iter()
+        .map(|(id, (clock, derived))| UpstreamPoint { id, clock, derived })
+        .collect()
 }

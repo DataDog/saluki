@@ -150,7 +150,7 @@ const LANES: u16 = 3;
 
 /// Runs a trace through the interpreter, and runs it again with its source's stamps spread over [`LANES`] lanes,
 /// requiring both runs to deliver and decide the same: the expectations written for one point hold on lanes too.
-fn interpreter_run(trace: Trace, heartbeats_at_ticks: bool) -> RunOutput {
+pub(super) fn interpreter_run(trace: Trace, heartbeats_at_ticks: bool) -> RunOutput {
     let registry = OperatorRegistry::native();
     let catalog = catalog();
     let run = |trace: &Trace, lanes: u16| {
@@ -188,12 +188,12 @@ fn interpreter_run(trace: Trace, heartbeats_at_ticks: bool) -> RunOutput {
 }
 
 /// Runs a trace in which sources heartbeat only where the trace says.
-fn run_queued(trace: Trace) -> RunOutput {
+pub(super) fn run_queued(trace: Trace) -> RunOutput {
     interpreter_run(trace, false)
 }
 
 /// Runs a trace in which every source heartbeats at each tick, so that every tick fires at once.
-fn run_with_heartbeats(trace: Trace) -> RunOutput {
+pub(super) fn run_with_heartbeats(trace: Trace) -> RunOutput {
     interpreter_run(trace, true)
 }
 
@@ -675,7 +675,7 @@ fn trace_13_a_retain_after_the_cut_flushes_the_old_lineage_under_the_generation_
 }
 
 /// `dsd -> merge <- otlp`, aggregated over `window` into `a`: one state owner with two upstream admission points.
-fn two_sources(window: &str) -> Plan {
+pub(super) fn two_sources(window: &str) -> Plan {
     two_sources_with(aggregation(window))
 }
 
@@ -1084,11 +1084,11 @@ fn a_retain_whose_parameters_do_not_build_its_kernel_is_rejected_as_a_first_inst
 }
 
 #[test]
-fn state_owners_over_one_admission_point_stamp_their_output_by_one_clock() {
+fn state_owners_over_one_admission_point_stamp_their_output_by_clocks_of_their_own() {
     // `src -> tee -> {agg_a, agg_b}`; the second plan changes `agg_b` to 30 seconds (T = 120) and retains `agg_a`. The
     // tick at 111 waits at the gate for both, and the stamp at 121 crosses: `agg_b`'s old lineage makes its final
-    // flush at 120, and then `agg_a`'s released tick flushes at 111, stamped no earlier than 120, as the isolation slot
-    // that runs both state owners stamps its output.
+    // flush at 120, and then `agg_a`'s released tick flushes at 111, stamped at 111 by `agg_a`'s own output clock,
+    // which `agg_b`'s stamp at 120 does not move: every state owner runs in a region of its own.
     let tee = |window_b: &str| {
         plan(
             vec![
@@ -1120,7 +1120,7 @@ fn state_owners_over_one_admission_point_stamp_their_output_by_one_clock() {
     );
     assert_eq!(installs(&run), outcomes(&[(0, "active 1"), (2, "cut 2 at 120000")]));
     assert_eq!(delivered(&run, "b"), expected(&[(1, 120_000, "x rate/10s [90:1]")]));
-    assert_eq!(delivered(&run, "a"), expected(&[(2, 120_000, "x rate/10s [90:1]")]));
+    assert_eq!(delivered(&run, "a"), expected(&[(2, 111_000, "x rate/10s [90:1]")]));
 }
 
 #[test]

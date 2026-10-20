@@ -1067,3 +1067,169 @@ fn a_tick_decided_at_a_shared_second_is_the_tick_decided_at_the_wall_clocks() {
         TickDecision::Skip
     );
 }
+
+/// An upstream point of `clock`, derived if `derived`.
+fn upstream(id: AdmissionPointId, clock: &str, derived: bool) -> UpstreamPoint {
+    let node = clock.parse().unwrap();
+    UpstreamPoint {
+        id,
+        clock: match derived {
+            true => crate::compile::ClockId::Derived(node),
+            false => crate::compile::ClockId::Source(node),
+        },
+        derived,
+    }
+}
+
+#[test]
+fn a_tracker_groups_its_points_by_clock_and_keeps_the_clocks_epochs_over_one() {
+    let lanes = WatermarkTracker::new(&[upstream(A, "dsd", false), upstream(B, "dsd", false)]);
+    assert!(lanes.is_one_clock());
+    assert_eq!(lanes, WatermarkTracker::of_one_clock([A, B]));
+    assert_eq!(
+        lanes.epoch_of(&stamped(A, 10, 3, 1)),
+        3,
+        "over one clock, a header's epoch is its own"
+    );
+
+    let sources = WatermarkTracker::new(&[upstream(A, "dsd", false), upstream(B, "otlp", false)]);
+    assert!(!sources.is_one_clock());
+    assert_eq!(
+        sources.epoch_of(&stamped(A, 10, 3, 1)),
+        0,
+        "over several, the state owner's"
+    );
+    assert!(!sources.is_derived(A));
+}
+
+#[test]
+fn over_several_clocks_a_reset_at_any_point_starts_the_state_owners_next_epoch_and_closes_the_window_at_once() {
+    let mut tracker = WatermarkTracker::new(&[upstream(A, "dsd", false), upstream(B, "otlp", false)]);
+    let mut window = ResetWindow::default();
+    assert_eq!(step(&mut tracker, &mut window, stamped(A, 100, 0, 1)), WindowStep::None);
+    assert_eq!(step(&mut tracker, &mut window, stamped(B, 110, 0, 1)), WindowStep::None);
+    assert_eq!(tracker.watermark_in(0), Some(secs(100)));
+
+    // `dsd` resets: the state owner's epoch 0 closes at the watermark before the reset, and every header from then on,
+    // `otlp`'s in its clock's epoch 0 too, belongs to epoch 1.
+    assert_eq!(
+        step(&mut tracker, &mut window, stamped(A, 5, 1, 1)),
+        WindowStep::Closed {
+            epochs: vec![(0, Some(secs(100)))]
+        }
+    );
+    assert!(!window.is_open());
+    assert_eq!(window.target(), 1);
+    assert_eq!(tracker.epoch_of(&stamped(B, 111, 0, 1)), 1);
+    assert_eq!(tracker.watermark_in(1), Some(secs(5)));
+    assert_eq!(tracker.max_latest_in(0), Some(secs(110)));
+    assert_eq!(tracker.max_latest_in(1), Some(secs(110)));
+    assert!(tracker.switched_epoch(1) && tracker.switched_epoch(0) && !tracker.switched_epoch(2));
+    assert_eq!(step(&mut tracker, &mut window, stamped(B, 111, 0, 1)), WindowStep::None);
+
+    // `otlp` resets in turn: a second drain, at the watermark of epoch 1.
+    assert_eq!(
+        step(&mut tracker, &mut window, stamped(B, 7, 1, 1)),
+        WindowStep::Closed {
+            epochs: vec![(1, Some(secs(5)))]
+        }
+    );
+    assert_eq!(window.target(), 2);
+    assert_eq!(tracker.watermark_in(2), Some(secs(5)));
+    assert_eq!(tracker.watermark_in(0), Some(secs(100)), "the epochs left are kept");
+}
+
+#[test]
+fn over_several_clocks_the_publication_epoch_is_the_one_whose_clock_epochs_the_cut_recorded() {
+    let mut tracker = WatermarkTracker::new(&[upstream(A, "dsd", false), upstream(B, "otlp", false)]);
+    tracker.observe(&stamped(A, 100, 0, 1));
+    let published = cut(120, &[(A, 0), (B, 0)]);
+    assert!(
+        tracker.is_publication_epoch(&published, 0),
+        "a point that sent nothing in it counts as being there"
+    );
+    tracker.observe(&stamped(B, 100, 0, 1));
+    assert!(tracker.is_publication_epoch(&published, 0));
+    tracker.observe(&stamped(A, 5, 1, 1));
+    assert!(
+        !tracker.is_publication_epoch(&published, 1),
+        "`dsd` is in its clock's epoch 1 in it"
+    );
+    assert!(tracker.is_publication_epoch(&published, 0), "epoch 0 is kept");
+    assert!(
+        !tracker.is_publication_epoch(&published, 7),
+        "an epoch the tracker does not know"
+    );
+    assert!(tracker.is_publication_epoch(&cut(120, &[(A, 1), (B, 0)]), 1));
+}
+
+#[test]
+fn a_derived_points_time_counts_once_its_batch_was_admitted() {
+    let derived = AdmissionPointId::new(9);
+    let mut tracker = WatermarkTracker::new(&[upstream(A, "dsd", false), upstream(derived, "agg", true)]);
+    assert!(tracker.is_derived(derived) && !tracker.is_derived(A));
+    tracker.observe(&stamped(A, 30, 0, 1));
+    assert_eq!(tracker.observe(&stamped(derived, 10, 0, 1)), Observation::Ok);
+    assert_eq!(
+        tracker.watermark(),
+        Some(secs(10)),
+        "the first header of an epoch counts at once"
+    );
+
+    // Within the epoch, `observe` records the header's generation but not its time, which `observe_after` raises.
+    assert_eq!(tracker.observe(&stamped(derived, 20, 0, 2)), Observation::Ok);
+    assert_eq!(tracker.watermark(), Some(secs(10)));
+    assert_eq!(
+        tracker.progress(derived).unwrap().max_generation,
+        Some(GenerationId::new(2))
+    );
+    tracker.observe_after(&stamped(derived, 20, 0, 2));
+    assert_eq!(tracker.watermark(), Some(secs(20)));
+
+    // A source's header counts at once, and `observe_after` of it changes nothing.
+    tracker.observe(&stamped(A, 40, 0, 1));
+    tracker.observe_after(&stamped(A, 50, 0, 1));
+    assert_eq!(tracker.progress(A).unwrap().latest, secs(40));
+
+    // A derived point's reset restarts its progress from the header, at once, in the state owner's next epoch.
+    assert!(matches!(
+        tracker.observe(&stamped(derived, 5, 1, 2)),
+        Observation::EpochSwitched { pre: Some(_), .. }
+    ));
+    assert_eq!(tracker.watermark(), Some(secs(5)));
+    assert_eq!(tracker.epoch_of(&stamped(derived, 5, 1, 2)), 1);
+}
+
+#[test]
+fn a_lineage_that_owes_a_boundary_flush_drains_under_the_generation_it_served() {
+    let old = generation(1);
+    let new = generation(2);
+    let cutting = AdmissionSchedule::Cut {
+        old: old.clone(),
+        new: new.clone(),
+        at: secs(120),
+    };
+    let boundary = BoundaryRefs {
+        served: &old,
+        at: secs(120),
+    };
+    // Once every point switched, the schedule's rule would choose the new generation, which binds the retained
+    // lineage too; the boundary flush, and every drain before it, stays with the old.
+    let both = |_: GenerationId| true;
+    let switched = |_: GenerationId| true;
+    let rule_3 = stamping_generation(&cutting, both, switched, None, None).map(|generation| generation.id());
+    assert_eq!(rule_3, Some(GenerationId::new(2)));
+    let rule_2 = stamping_generation(&cutting, both, switched, None, Some(boundary)).map(|generation| generation.id());
+    assert_eq!(rule_2, Some(GenerationId::new(1)));
+
+    // A retiring lineage whose replacement is armed keeps rule 1.
+    let armed = generation(3);
+    armed.set_cut(cut(120, &[(A, 0)])).unwrap();
+    let served = generation(4);
+    let retiring = RetiringRefs {
+        owner: &served,
+        by: &armed,
+    };
+    let rule_1 = stamping_generation(&cutting, both, switched, Some(retiring), Some(boundary));
+    assert_eq!(rule_1.map(|generation| generation.id()), Some(GenerationId::new(4)));
+}

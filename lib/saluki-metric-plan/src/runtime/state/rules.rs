@@ -1,4 +1,4 @@
-//! The time rules of state owners, shared by the region driver of an isolation slot and the reference interpreter.
+//! The time rules of state owners, shared by the region driver of a state owner's region and the reference interpreter.
 //!
 //! Everything here is pure: no clock is read, nothing is awaited, and nothing is shared. Both hosts of a state owner,
 //! the region that runs it in production and the interpreter that is its oracle, decide with these functions, so that
@@ -13,7 +13,9 @@
 //! timer, which decides *when* a flush runs; `F` decides *what* it closes.
 //!
 //! - [`WatermarkTracker`] keeps the progress of every admission point upstream of a state owner, from the headers that
-//!   reach it, and derives `W`, clock resets, and whether every upstream point has switched to a generation.
+//!   reach it, and derives `W`, clock resets, and whether every upstream point has switched to a generation. The
+//!   upstream points may be of several clocks (sources, and the derived points of state owners upstream), which reset
+//!   apart.
 //! - [`TickGate`] decides each flush tick: fire at the tick's wall-clock second once `W` has reached it, or wait for
 //!   it at most a grace, then fire at `W`.
 //! - [`lcm_secs`] and [`cut_time`] give the time a cut between bucket widths takes effect at;
@@ -21,7 +23,7 @@
 //! - [`stamping_generation`] decides the generation of a drain's time-driven output, and [`OutputClock`] stamps it.
 //! - [`shutdown_time`] is the time a state owner closes at when its input ends.
 
-use std::{num::NonZeroU64, time::Duration};
+use std::{collections::BTreeSet, num::NonZeroU64, time::Duration};
 
 use saluki_core::execution::{
     AdmissionPointId, AdmissionSchedule, AdmissionTime, BatchHeader, CutBoundary, GenerationId, GenerationRef,
@@ -102,6 +104,30 @@ pub enum Observation {
 /// have a watermark of their own ([`watermark_in`][Self::watermark_in]): what a [reset window][ResetWindow] drains
 /// them at.
 ///
+/// # Clocks
+///
+/// The points of one clock reset together ([`UpstreamPoint::clock`]): the lanes of one source, or the derived point of
+/// a state owner upstream. A tracker groups its points by clock, and its **epochs**, which the instances of the state
+/// owner's state hold data of and a [reset window][ResetWindow] steps through, are those of the state owner:
+///
+/// - over one clock, its epochs are the clock's: a header's epoch is the one it carries, and a reset in a clock of
+///   several points opens a window that closes once every point switched;
+/// - over several clocks, its epochs count the resets at any point: each [epoch switch][Observation::EpochSwitched] of
+///   a point starts the next, which every header belongs to from then on, so a window opens and closes on the header
+///   that switched, the one-point rule at each clock. The tracker keeps, for each of the last [`MAX_OPEN_EPOCHS`]
+///   epochs it left, the watermark and latest time at the switch, and each point's clock epoch during it.
+///
+/// Placement refuses a state owner over several clocks one of which has several points (lanes); a tracker of one runs
+/// the one-point rule at each of that clock's points.
+///
+/// # Derived points
+///
+/// A derived point's batch holds buckets that closed before its stamp, so a state owner admits it before the ticks
+/// its header releases. [`observe`][Self::observe] of a derived point's header therefore records its epoch and
+/// generation but not its time, within an epoch, and [`observe_after`][Self::observe_after], once the batch was
+/// admitted, raises the point's latest time: whatever a host decides between the two by the watermark, such as the
+/// ticks the header releases, reads the watermark as it was before the header.
+///
 /// A point is found by its ID in constant time when the upstream points' IDs follow one another, as the lane points of
 /// one source do, and by binary search otherwise.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -113,6 +139,50 @@ pub struct WatermarkTracker {
     /// Per point, in the order of `points`, the final latest admission time it recorded in each earlier epoch it left,
     /// oldest first.
     finals: Vec<Vec<(u32, AdmissionTime)>>,
+    /// Per point, in the order of `points`, whether it is a derived point.
+    derived: Vec<bool>,
+    /// Over several clocks, the state owner's epochs; `None` over one clock, whose epochs are the clock's.
+    owner: Option<OwnerEpochs>,
+}
+
+/// The epochs of a state owner over several clocks, which count the resets at any of its points.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct OwnerEpochs {
+    /// The current epoch.
+    epoch: u32,
+
+    /// Per point, its clock's epoch during the current epoch, once the point sent anything in it.
+    clocks: Vec<Option<u32>>,
+
+    /// The epochs left, oldest first, at most [`MAX_OPEN_EPOCHS`].
+    finals: Vec<OwnerFinal>,
+}
+
+/// What a tracker over several clocks knew when it left one of the state owner's epochs.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct OwnerFinal {
+    epoch: u32,
+    watermark: Option<AdmissionTime>,
+    max_latest: Option<AdmissionTime>,
+    clocks: Vec<Option<u32>>,
+}
+
+impl OwnerEpochs {
+    /// Returns the clock epochs of the points during `epoch`, if it is the current one or one the tracker keeps.
+    fn clocks_in(&self, epoch: u32) -> Option<&[Option<u32>]> {
+        if epoch == self.epoch {
+            return Some(&self.clocks);
+        }
+        self.finals
+            .iter()
+            .find(|left| left.epoch == epoch)
+            .map(|left| left.clocks.as_slice())
+    }
+
+    /// Returns what the tracker knew when it left `epoch`, if it keeps it.
+    fn left(&self, epoch: u32) -> Option<&OwnerFinal> {
+        self.finals.iter().find(|left| left.epoch == epoch)
+    }
 }
 
 /// Where one point stands toward one epoch.
@@ -129,16 +199,30 @@ enum InEpoch {
 }
 
 impl WatermarkTracker {
-    /// Creates a tracker of a state owner's upstream points, none of which has sent anything.
+    /// Creates a tracker of a state owner's upstream points, none of which has sent anything, grouped by the clock that
+    /// stamps each (see [clocks](#clocks)).
     ///
     /// A tracker of no point has no watermark, and has trivially switched to every generation.
     pub fn new(upstream: &[UpstreamPoint]) -> Self {
-        // The points' clocks group them for their resets.
-        Self::of_one_clock(upstream.iter().map(|point| point.id))
+        let mut tracker = Self::of_one_clock(upstream.iter().map(|point| point.id));
+        for point in upstream.iter().filter(|point| point.derived) {
+            if let Some(index) = tracker.index_of(point.id) {
+                tracker.derived[index] = true;
+            }
+        }
+        let clocks = upstream.iter().map(|point| &point.clock).collect::<BTreeSet<_>>();
+        if clocks.len() > 1 {
+            tracker.owner = Some(OwnerEpochs {
+                epoch: 0,
+                clocks: vec![None; tracker.points.len()],
+                finals: Vec::new(),
+            });
+        }
+        tracker
     }
 
     /// Creates a tracker of upstream admission points all stamped by one clock, as the lanes of one source's point
-    /// are, none of which has sent anything.
+    /// are, none of which has sent anything and none of which is derived.
     ///
     /// A tracker of no point has no watermark, and has trivially switched to every generation.
     pub fn of_one_clock<I>(upstream: I) -> Self
@@ -155,7 +239,30 @@ impl WatermarkTracker {
                 .all(|(index, (point, _))| u64::from(point.get()) == u64::from(*first) + index as u64)
         });
         let finals = vec![Vec::new(); points.len()];
-        Self { points, first, finals }
+        let derived = vec![false; points.len()];
+        Self {
+            points,
+            first,
+            finals,
+            derived,
+            owner: None,
+        }
+    }
+
+    /// Returns `true` if every upstream point is stamped by one clock: the tracker's epochs are the clock's.
+    pub fn is_one_clock(&self) -> bool {
+        self.owner.is_none()
+    }
+
+    /// Returns `true` if `point` is an upstream point that is derived: a state owner's output point.
+    pub fn is_derived(&self, point: AdmissionPointId) -> bool {
+        self.index_of(point).is_some_and(|index| self.derived[index])
+    }
+
+    /// Returns the state owner's epoch a header the tracker has observed belongs to: the epoch it carries over one
+    /// clock, the current one over several (see [clocks](#clocks)).
+    pub fn epoch_of(&self, header: &BatchHeader) -> u32 {
+        self.owner.as_ref().map_or(header.epoch, |owner| owner.epoch)
     }
 
     /// Returns the index of an upstream point, if it is one.
@@ -196,6 +303,9 @@ impl WatermarkTracker {
                     latest: admitted_at,
                     max_generation: generation,
                 });
+                if let Some(owner) = &mut self.owner {
+                    owner.clocks[index].get_or_insert(header.epoch);
+                }
                 return Observation::Ok;
             }
             Some(known) => known,
@@ -213,10 +323,27 @@ impl WatermarkTracker {
             // A newer epoch is a reset; the point's timeline restarts from this header. The watermark before it is
             // what the state owner knew before the header.
             let pre = self.watermark();
+            let max_latest = self.max_latest();
             let finals = &mut self.finals[index];
             finals.push((known.epoch, known.latest));
             if finals.len() > MAX_OPEN_EPOCHS as usize {
                 finals.remove(0);
+            }
+            if let Some(owner) = &mut self.owner {
+                // Over several clocks, a reset at any point starts the state owner's next epoch.
+                let mut clocks = owner.clocks.clone();
+                clocks[index] = Some(header.epoch);
+                let left = std::mem::replace(&mut owner.clocks, clocks);
+                owner.finals.push(OwnerFinal {
+                    epoch: owner.epoch,
+                    watermark: pre,
+                    max_latest,
+                    clocks: left,
+                });
+                if owner.finals.len() > MAX_OPEN_EPOCHS as usize {
+                    owner.finals.remove(0);
+                }
+                owner.epoch = owner.epoch.wrapping_add(1);
             }
             Observation::EpochSwitched {
                 point,
@@ -235,15 +362,42 @@ impl WatermarkTracker {
             // Release builds drop the batch: its timeline is one this point already closed.
             return Observation::Fault;
         };
+        let derived = self.derived[index];
         let progress = self.points[index].1.as_mut().expect("the point has sent a header");
         if observation == Observation::Ok {
-            progress.latest = progress.latest.max(admitted_at);
+            // A derived point's time counts once its batch was admitted (`observe_after`).
+            if !derived {
+                progress.latest = progress.latest.max(admitted_at);
+            }
         } else {
             progress.epoch = header.epoch;
             progress.latest = admitted_at;
         }
         progress.max_generation = progress.max_generation.max(generation);
         observation
+    }
+
+    /// Observes a header of a derived point again once its batch was admitted, after [`observe`][Self::observe]
+    /// observed it: raises the point's latest time to the header's, which `observe` left where it was. A host then
+    /// runs what the raised watermark releases, such as gated ticks.
+    ///
+    /// The first header of a derived point, or of a new epoch of it, counts at once in `observe`: the epoch's progress
+    /// starts there, and no tick of the epoch is gated yet. A header of any other point, or one `observe` did not
+    /// accept, changes nothing.
+    pub fn observe_after(&mut self, header: &BatchHeader) {
+        let (Some(admitted_at), Some(point)) = (header.admitted_at, header.admission_point) else {
+            return;
+        };
+        let Some(index) = self.index_of(point).filter(|index| self.derived[*index]) else {
+            return;
+        };
+        if let Some(progress) = self.points[index]
+            .1
+            .as_mut()
+            .filter(|progress| progress.epoch == header.epoch)
+        {
+            progress.latest = progress.latest.max(admitted_at);
+        }
     }
 
     /// Returns the watermark: the earliest latest admission time over the upstream points, or `None` while any of them
@@ -301,10 +455,23 @@ impl WatermarkTracker {
     /// Returns `true` if `epoch` is the epoch every upstream point the cut records had when the cut was published: the
     /// rule [`in_publication_epoch`][Self::in_publication_epoch] applies to the instances holding data of `epoch`,
     /// whatever epoch the points are in now, as a reset window draining them needs.
+    ///
+    /// Over several clocks, `epoch` is the state owner's: it is the publication epoch if each point the cut records
+    /// was in the clock epoch the cut records for it during `epoch`, a point that sent nothing in it counting as being
+    /// there, and it is not if the tracker no longer keeps `epoch`.
     pub fn is_publication_epoch(&self, cut: &CutBoundary, epoch: u32) -> bool {
-        self.points
-            .iter()
-            .all(|(point, _)| cut.epoch_of(*point).is_none_or(|published| published == epoch))
+        match &self.owner {
+            None => self
+                .points
+                .iter()
+                .all(|(point, _)| cut.epoch_of(*point).is_none_or(|published| published == epoch)),
+            Some(owner) => owner.clocks_in(epoch).is_some_and(|clocks| {
+                self.points.iter().zip(clocks).all(|((point, _), clock)| {
+                    cut.epoch_of(*point)
+                        .is_none_or(|published| clock.is_none_or(|clock| clock == published))
+                })
+            }),
+        }
     }
 
     /// Returns where the point at `index` stands toward `epoch`.
@@ -332,7 +499,16 @@ impl WatermarkTracker {
     /// A point that went past `epoch` without stamping in it, or whose final time there the tracker no longer keeps, is
     /// left out of the minimum; with no point left, there is no watermark. With one point, this is the watermark of its
     /// current epoch.
+    ///
+    /// Over several clocks, `epoch` is the state owner's: the watermark for the current one, and for an earlier one
+    /// the tracker keeps, the watermark when it left it.
     pub fn watermark_in(&self, epoch: u32) -> Option<AdmissionTime> {
+        if let Some(owner) = &self.owner {
+            return match owner.epoch == epoch {
+                true => self.watermark(),
+                false => owner.left(epoch).and_then(|left| left.watermark),
+            };
+        }
         let mut earliest = None;
         for index in 0..self.points.len() {
             match self.in_epoch(index, epoch) {
@@ -349,6 +525,12 @@ impl WatermarkTracker {
     /// Returns the latest admission time any upstream point stamped in `epoch`, as far as the tracker knows: the close
     /// time of the instances holding data of `epoch` at shutdown, with the wall clock.
     pub fn max_latest_in(&self, epoch: u32) -> Option<AdmissionTime> {
+        if let Some(owner) = &self.owner {
+            return match owner.epoch == epoch {
+                true => self.max_latest(),
+                false => owner.left(epoch).and_then(|left| left.max_latest),
+            };
+        }
         (0..self.points.len())
             .filter_map(|index| match self.in_epoch(index, epoch) {
                 InEpoch::At(latest) => Some(latest),
@@ -358,8 +540,12 @@ impl WatermarkTracker {
     }
 
     /// Returns `true` if every upstream point's current epoch is `epoch` or newer: every point has switched to it, so a
-    /// reset window into it closes.
+    /// reset window into it closes. Over several clocks, `epoch` is the state owner's, which every point switches to
+    /// at once.
     pub fn switched_epoch(&self, epoch: u32) -> bool {
+        if let Some(owner) = &self.owner {
+            return owner.epoch == epoch || epoch_newer(owner.epoch, epoch);
+        }
         self.points.iter().all(|(_, progress)| {
             progress.is_some_and(|progress| progress.epoch == epoch || epoch_newer(progress.epoch, epoch))
         })
@@ -456,11 +642,14 @@ impl ResetWindow {
 
     /// Steps the lane's window with one header, which `tracker` has observed, and says what the header did.
     ///
+    /// The window's epochs are the tracker's ([`WatermarkTracker::epoch_of`]): over several clocks, the state owner's,
+    /// so that a reset at any point opens a window and closes it on the same header.
+    ///
     /// Epochs follow one another, one per reset of the clock, so a header more than one epoch newer than the lane's
     /// newest holds every epoch in between open too: a point that skipped one, because the clock reset twice while it
     /// was blocked, says nothing of the others, whose batches of that epoch may still be on their way.
     pub fn step(&mut self, tracker: &WatermarkTracker, header: &BatchHeader) -> WindowStep {
-        let epoch = header.epoch;
+        let epoch = tracker.epoch_of(header);
         let mut overflowed = Vec::new();
         let opened = epoch_newer(epoch, self.target).then(|| {
             let older = self.target;
@@ -765,6 +954,12 @@ pub struct RetiringRefs<'a> {
 
 /// The boundary flush of a retained lineage upstream of a state owner a cut affects: the flush at the cut's time that
 /// closes exactly the buckets ending by it, under the generation the lineage served.
+///
+/// A host marks such a lineage when it arms the cut, and passes these while the mark stands: from then until the
+/// boundary flush, everything the lineage holds was stamped before the cut's time, or before a reset, so of the
+/// generation it served. Once its watermark reaches the cut's time, before the batch that raised it is admitted (for a
+/// derived point's batch, after it), the lineage flushes at the cut's time, which is on its bucket boundaries since the
+/// cut lines up with its width, and the mark ends. A reset drain while it stands empties the lineage and ends it too.
 #[derive(Clone, Copy, Debug)]
 pub struct BoundaryRefs<'a> {
     /// The generation the lineage served before the cut.
@@ -777,7 +972,8 @@ pub struct BoundaryRefs<'a> {
 /// Returns the generation a drain of one lineage is stamped with, decided when the drain starts.
 ///
 /// 1. A retiring lineage whose replacement's cut is armed drains under the generation it served.
-/// 2. A boundary flush drains under the generation the lineage served.
+/// 2. A lineage that owes a boundary flush ([`BoundaryRefs`]) drains under the generation it served: the boundary
+///    flush itself, and any drain before it, a reset's or the end of input's, since all it holds is of that generation.
 /// 3. Otherwise the candidates come from the schedule: its generation when steady; during a cut, the new generation
 ///    first once every upstream point has switched to it (`switched`), and the old one first before. The first
 ///    candidate whose program binds the lineage (`binds`) is the drain's.
@@ -818,12 +1014,13 @@ pub fn shutdown_time(max_latest: Option<AdmissionTime>, wall: AdmissionTime) -> 
     max_latest.map_or(wall, |latest| latest.max(wall))
 }
 
-/// Stamps the time-driven output of an isolation slot: what its state owners emit at flush ticks, clock resets,
-/// retirements, and shutdown.
+/// Stamps the time-driven output of one state owner: what its lineages emit at flush ticks, boundary flushes, clock
+/// resets, retirements, and shutdown, and the header-only batch that carries its progress after each fired tick.
 ///
-/// The output is stamped as if the slot's output were an admission point of its own: its admission time is the
+/// The output is stamped at the state owner's derived point, an admission point of its own: its admission time is the
 /// flush time, never less than the previous stamp of the same epoch, so that a state owner downstream sees admission
-/// times that only grow within an epoch; its epoch counts the slot's clock resets.
+/// times that only grow within an epoch; its epoch counts the state owner's clock resets, at any of its upstream
+/// points. Every state owner has one, whichever of its lineages flushed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OutputClock {
     point: AdmissionPointId,
@@ -832,7 +1029,7 @@ pub struct OutputClock {
 }
 
 impl OutputClock {
-    /// Creates the clock of a slot whose output point is `point`, in epoch 0, having stamped nothing.
+    /// Creates the clock of a state owner whose derived point is `point`, in epoch 0, having stamped nothing.
     pub const fn new(point: AdmissionPointId) -> Self {
         Self {
             point,
@@ -841,12 +1038,12 @@ impl OutputClock {
         }
     }
 
-    /// Returns the slot's output point.
+    /// Returns the state owner's derived point.
     pub const fn point(&self) -> AdmissionPointId {
         self.point
     }
 
-    /// Returns the current epoch: the number of clock resets the slot ran, wrapping.
+    /// Returns the current epoch: the number of clock resets the state owner ran, wrapping.
     pub const fn epoch(&self) -> u32 {
         self.epoch
     }
