@@ -51,11 +51,11 @@ abbreviated `...`):
 policy metrics {
   let dsd_enrich = dogstatsd | dogstatsd_mapper(profiles: ..., cache_size: ..., string_interner_bytes: ...)
 
-  let dsd_prefix_filter_blocklist = dsd_enrich
+  let dsd_prefix_filter = dsd_enrich
     | namespace_prefix(config.dogstatsd.prefix_filter.metric_namespace, exclusions: ...)
     | where not intake_name matches(values: ..., prefix: ...)
 
-  let dsd_no_agg_split = dsd_prefix_filter_blocklist | timestamp_split(config.dogstatsd.aggregation.window_duration_seconds)
+  let dsd_no_agg_split = dsd_prefix_filter | timestamp_split(config.dogstatsd.aggregation.window_duration_seconds)
 
   let dsd_tag_filterlist = dsd_no_agg_split.default | tag_projection(rules: ..., value_rules: ..., cache_capacity: ...)
 
@@ -346,7 +346,7 @@ Built on 2026-10-16, in this order:
 What changed from the plan:
 
 - **Telemetry.** Normalization moves the two DogStatsD filters' drops from `true` to `false`, so their derived
-  terminals are now `dsd_prefix_filter_blocklist_false` and `dsd_post_agg_filter_false`. Native series still report
+  terminals are now `dsd_prefix_filter_false` and `dsd_post_agg_filter_false`. Native series still report
   under the native component (`dsd_prefix_filter`, through the telemetry profiles), and the profiles count drops on
   `false`; only the program-mode `plan_*` series, keyed by node ID, see the new names.
 - **Composition** puts an artifact's nodes in the default program's order, as it already did for edges, so a printed

@@ -83,13 +83,6 @@ fn policy_lists(index: usize) -> (Vec<String>, Vec<String>) {
     )
 }
 
-fn fingerprint(output: &str) -> String {
-    let hash = output
-        .bytes()
-        .fold(0u64, |hash, byte| hash.wrapping_mul(31).wrapping_add(u64::from(byte)));
-    format!("sha256:{:064x}", hash)
-}
-
 /// The policy region of `policies` routing policies, with every node in one region, and its validation catalog.
 fn policy_plan(policies: usize) -> (Plan, MemoryCatalog) {
     // Every node but the source stands for one native component, `policy`.
@@ -126,7 +119,7 @@ fn policy_plan(policies: usize) -> (Plan, MemoryCatalog) {
     let accepts = json!({"kinds": "all", "timestamps": "mixed"});
     let plan_outputs = outputs
         .iter()
-        .map(|output| json!({"id": output, "accepts": accepts, "fingerprint": fingerprint(output)}))
+        .map(|output| json!({"id": output, "accepts": accepts}))
         .collect::<Vec<_>>();
     let components = nodes
         .iter()
@@ -143,7 +136,6 @@ fn policy_plan(policies: usize) -> (Plan, MemoryCatalog) {
             OutputId::new(output.as_str()).unwrap(),
             CatalogOutput {
                 accepts: PortType::ANY,
-                fingerprint: fingerprint(output).parse().unwrap(),
                 recipients: Vec::new(),
             },
         )
@@ -555,14 +547,13 @@ fn default_program_with(policies: usize) -> (Plan, MemoryCatalog) {
         ]);
         let accepts = json!({"kinds": "all", "timestamps": "mixed"});
         value["outputs"].as_array_mut().unwrap().push(json!({
-            "id": output, "accepts": accepts, "fingerprint": fingerprint(&output), "recipients": [recipient],
+            "id": output, "accepts": accepts, "recipients": [recipient],
             "delivery": "native"
         }));
         catalog = catalog.with_output(
             OutputId::new(output.as_str()).unwrap(),
             CatalogOutput {
                 accepts: PortType::ANY,
-                fingerprint: fingerprint(&output).parse().unwrap(),
                 recipients: vec![RecipientId::new(recipient).unwrap()],
             },
         );

@@ -226,8 +226,7 @@ Export bundle:
 - The default program has one source per metrics source the configuration enables, each named after its source's
   binding and carrying what the source produces (`dogstatsd`, `otlp`, `checks`, `liveness`, `trace_sampler`): its
   artifact covers every node after the sources, aggregation included, and reads each source as `input.<name>`. The
-  catalog document's `single_aggregation: true` says that a program has at most one aggregation, which validation then
-  checks (`single_aggregation`).
+  catalog document carries the telemetry contract (`telemetry_contract`), against which validation warns.
 - The default program is served so that a client can compose an artifact the way ADP will (the plan crate's
   `compose::compose` takes the default program, which neither the export nor `/plan`, possibly composed, carries) and
   diff it against `/plan`. A client that fetches the export and the default program separately checks that the default
