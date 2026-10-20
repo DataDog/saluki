@@ -1435,3 +1435,52 @@ harness's random plans now carry a contract) and `make demo-programmable-metrics
 **Results.** Every node reports under its own name, and the default program's names are the remapper's, so native
 series are unchanged; a program's added nodes report under theirs. A second aggregation validates anywhere and runs
 where the boot frame has an isolation slot for it; V7a lifts the frame's limit.
+
+## Version 2: V7a (state owners in any region)
+
+V7a was built in parallel parts on an interfaces commit (`09129a6a71`), from the plan's Part 2 and the owner's answers to
+its questions (2026-10-20): P1 the oracle (`305aa1c109`), P2 placement and compile (`0e793ba586`), P3 sub-regions in
+the region host (`saluki-core`, before the interfaces), P4 the runtime and the installer's cuts (`6813323ddd`), P5
+ADP (`546d5a2e0f`), with `12b073e2b9` rebasing the parts onto V10, and a documents commit, recorded here.
+
+**What went** (amendments 200 and 201): `SlotKind` and `Slot::{is_isolation, output_point}`, `AdmissionPointInfo::feeds_state`
+as a placement input, the frame's `state_upstream`, `paths_to`, and `FrameError::{StateOwnerPoints, StateOwnerPaths}`,
+the frame's stage 10 refusal of a state owner outside a boot isolation slot, `Frame::{affected_points,
+cancel_lock_order}`, `CutPlan::slots`, the `isolation` flag in `runtime/code.rs`, the transitional `RegionConfig`
+`upstream`, `progress`, and `state_telemetry`, `MetricRegionDriver.state_node`, ADP's `heartbeat_period` and its
+`feeds_state` branches, and `CutPoints::of(frame)`. One test went with the thing it tested: a snapshot that panics in one
+of two owners of one region during a yielded drain, since a region now holds one owner.
+
+**What replaced it:**
+
+- **Regions.** Placement no longer distinguishes isolated nodes: a state owner places as any synchronous node and each
+  slot's nodes are partitioned into regions (`RegionPlacement`, `RegionKey::{Main, State(node)}`), edges going only to
+  later regions. A region holds at most one state owner, and `RegionProgram` per region carries its upstream points,
+  progress exits, and output points; `StepExit::Region` writes to an internal exit.
+- **Sub-regions** (`saluki-core` `subregion.rs`). A task inside a component with its own driver, input, control queue,
+  and resource group, started by the control message that names it (before the prepare is acknowledged) and retired
+  when no driver routes to it. ADP builds one per placed owner, with 128 input buffers and one per slot exit drawn from
+  the post-boot budget. State telemetry registers under the owner's node name.
+- **Time.** `WatermarkTracker::new(&[UpstreamPoint])` groups points by clock, an owner has one `OutputClock`, derived
+  points are admitted before their header's ticks, an owner sends tick progress at its derived point, and
+  `stamping_generation` takes `BoundaryRefs` for the boundary flush of a kept upstream owner at a cut.
+- **Cuts by node.** `DerivedPoints` allocates each owner's output points, held while a live generation has the owner;
+  `PlanDiff::place` classifies a retained owner whose region or upstream point IDs differ as cut; `CutPlan::boundary`
+  names the kept owners upstream of an affected one; `install::cancel_lock_order` puts points upstream of an owner last.
+- **Explain** lists regions with upstream points, derived points, and internal exits.
+
+**Choices.** Re-sourcing compares the region's direct upstream IDs, derived points included: X re-sourced cuts X and
+leaves Y, fed by X's derived point, kept, which is exact. A region's watermark follows the union of every live
+generation's upstream points. A batch from a point an owner does not follow, whose entry reaches no state step, passes
+through. A cut after enrichment is refused where the frame readmits host records (`CutPlan::check_frame`).
+
+**Tests.** The interpreter and the runtime replay four new traces (16 to 19: two sources, an aggregation after
+enrichment, a chain in steady state, and cuts through a chain, both cut, upstream cut, and downstream cut with the
+boundary flush); `install::cut_tests` gains a chain armed through derived points and an owner cut for a changed region
+or upstream. `transition_tests` expects one output clock per owner. Placement's and ADP's tests that refused a second
+aggregation after enrichment now install it. Verified in the parts: `cargo check --workspace --tests`, the plan crate's
+`compile`, `runtime`, `install`, and `interpret` tests, and ADP's `topology::` tests, with clippy and `make fmt`.
+Not run: the release property tests, ADP suites other than `topology::`, and the demo check.
+
+**Left for later:** sub-region buffer credits (kernel credits merge into the slot's, over-counting for a slot with several lanes),
+the reason explain gives for cutting a moved owner, the 128-buffer size to confirm against N1, and R1, lanes, and V7b to V9.

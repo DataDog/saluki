@@ -75,7 +75,7 @@ leaves the demo the same shape, ideally simpler.
 V1 and V2 are contained and come first. V3 to V6 are the core of the work: together they turn composition into
 elaboration of a whole program. V10 follows V6 and comes before the runtime half, so that no runtime step has to carry
 native identities. V7a is the semantic half of the runtime work and does not wait for N1; V7b, V8, and V9 are its
-performance half and follow the N1 measurements. Amendment 195 records V10 and V7a; [many
+performance half and follow the N1 measurements. Amendment 195 records V10 and V7a (200 and 201 record V7a as built); [many
 aggregations](#many-aggregations) is their design.
 
 ## Many aggregations
@@ -166,20 +166,25 @@ interleaved flush are V7b, which waits for N1.
   cuts and lineages keyed by node, not by slot ([N2 and N3](programmable-metrics-next.md#n2-and-n3-one-region-from-decode-to-encode-with-an-interleaved-flush),
   item 3).
 
-### Design items
+### Design items, resolved
 
-Each needs design before V7a is built:
+Decided by the owner (2026-10-20, amendments 200 and 201):
 
-1. **A watermark over several sources.** A state owner's watermark comes from one source clock today. An aggregation fed
-   by two sources needs one from both, such as the smaller of the two, with the clock-reset and idle-source rules
-   (`limits.rs`) restated for it.
-2. **Chained state owners.** An aggregation fed by another takes its admission time and watermark from the first one's
-   time-driven output. A cut through the chain must stay exact: both owners switch at bucket boundaries they share.
-3. **Regions made at installation.** Today a frame change is a capability error. A region for a new state owner starts
-   with the generation that has it, is retired with the last generation that has it, and is placed where the cut
-   protocol arms its admission points.
-4. **Lanes for several state owners.** Each owner partitions its own state by key; with lanes opt-in after V7b this can
-   wait, but V7a must not make it harder.
+1. **A watermark over several sources: resolved.** The watermark is the minimum over the owner's upstream points, each
+   with its clock. Every routed point heartbeats every second, so an idle source never delays a tick. A clock reset is
+   the one-point rule in a clock of one point and the reset window in a clock of several; the owner's epoch counts
+   resets at any point.
+2. **Chained state owners: resolved.** An owner's output is a derived admission point with one output clock per owner,
+   which the next owner admits before the ticks its header releases; an owner heartbeats it at every tick. A cut stays
+   exact because plan-wide widths share a boundary, and when an upstream owner is kept while a downstream one is cut,
+   the upstream owner makes a boundary flush at the cut's time `T`, under the generation it served.
+3. **Regions made at installation: resolved.** A state owner outside the boot plan's state slots runs in a sub-region
+   inside an existing component, made at installation: it starts with the first generation that has the owner and
+   retires with the last. Its buffers draw on the post-boot budget (128 input buffers, and one per slot exit, ADP's
+   choice). A moved or re-sourced owner is cut.
+4. **Lanes for several state owners: resolved.** A sub-region runs on one lane. With lanes on, two shapes are refused:
+   an owner fed by an owner on several lanes, and an owner over several clocks one of which has several points. Both
+   are liftable later.
 
 ## How each step is validated
 
@@ -232,7 +237,7 @@ version 2's notes are.
 | V4 | done: amendment 197 | `53cd99b576` |
 | V5 | done: amendment 197 | `53cd99b576` |
 | V6 | done: amendment 198 | `9fb3990648` |
-| V7a | not started | |
+| V7a | done: amendments 200 and 201 | (V7a commit) |
 | V7b | not started | |
 | V8 | not started | |
 | V9 | not started | |
@@ -250,7 +255,7 @@ How a new session continues this work. The state is the branch's last commit; th
 - Commit locally with `git commit --no-gpg-sign`, one commit per step (code), then one for documents if needed. Do not
   push unless the owner asks for that push.
 - Do not edit the [specification](programmable-metrics.md); propose changes as numbered amendments. The next amendment
-  is **199**: add it to the [stages 7 and 9
+  is **202**: add it to the [stages 7 and 9
   amendments](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments) and to the [status amendments
   index](programmable-metrics-status.md#spec-amendments-index).
 - Do not touch `architecture-experiment/` or `.claude/`, and add no CI jobs.
@@ -287,44 +292,21 @@ document's [changes users can see](programmable-metrics-status.md#changes-users-
 and a section of the [log](programmable-metrics-log.md) saying what went, what replaced it, how the tests moved, and
 the results.
 
-### The next step: V7a
+### What is left
 
-**State owners in any region** ([state owners in any region](#v7a-state-owners-in-any-region)), with its four design
-items. V10 left every state owner valid wherever it is: a second aggregation validates, carries its own name and
-telemetry, and starts its own lineage, but placement still runs one only in an isolation slot of the boot frame (the
-timestamp split's passthrough branch today), and refuses one after enrichment, after another aggregation, or over a
-second source with `MissingCapability::FrameChanges`.
+Version 2's in-scope steps are done: V2 to V7a and V10. What remains is V7b, V8, V9, and V1, gated on the N1
+measurements and on the lanes decision. A new session starts from the log's V7a section and the status document's
+[changes users can see](programmable-metrics-status.md#changes-users-can-see).
 
-The design, as planned:
+**Left by V7a, for later:**
 
-- **Regions.** A boot state owner keeps its slot, so the default program's layout, lanes, telemetry, and N1's baseline
-  are unchanged. Any other state owner runs in a **sub-region**: a task inside the component of the slot placement
-  gives it, like a lane (its own driver, input channel, control queue, and resource group `<slot>.<node>`), fed through
-  an internal exit, created when a generation that has it prepares and retired with the last such generation. Within a
-  slot, placement partitions nodes into regions in topological order, edges going only to higher regions.
-- **Watermark over several sources.** The minimum over the owner's upstream points; every routed admission point
-  heartbeats every second, so an idle source never delays a tick; resets per clock (the one-point rule for a clock of
-  one point, the reset window for one of several lanes).
-- **Chains.** A state owner's output is a derived point with its own output clock (one per owner, not per slot); a
-  downstream owner admits a derived batch before the ticks its header releases; an upstream owner heartbeats its
-  output point at every tick. A retained owner upstream of a cut owner makes a boundary flush at the cut's time, and
-  the cut lines up with its width.
-- **Cuts keyed by node.** `CutPlan` drops `slots()`; its affected points are those upstream of every affected owner in
-  either generation, through derived points; a state owner whose region or upstream points change is cut; heartbeats
-  and lock order stop reading `feeds_state`.
-- **Lanes.** Unchanged: a boot state slot keeps its state lanes; a sub-region runs on one lane. With lanes on, a state
-  owner fed by an owner on several lanes, or over several clocks one of which has several points, is refused, each
-  liftable later.
-
-Where it lands: `compile/{frame,placement,program}.rs` (`SlotKind`, `Slot::is_isolation`, `feeds_state`,
-`state_upstream`, and the frame's state-owner errors go; per-generation region placements with upstream points),
-`runtime/code.rs` (the `isolation` check becomes "state steps for at most one node"), `runtime/{driver.rs,
-driver/isolation.rs, state/rules.rs}` (per-node output clocks, the watermark over clocks, boundary flushes), the
-interpreter (`interpret/{mod,program,state}.rs`, the oracle), `install/{diff,core}.rs` (cuts by node, derived points),
-`saluki-core`'s region host (sub-regions), and ADP's `topology.rs`, `telemetry.rs`, and `installer.rs` (heartbeats on
-every point, sub-region budgets). The new transition traces each run in the interpreter and on a frame harness with
-sub-regions: two sources, a second aggregation after enrichment, a chain in steady state, and cuts through a chain.
-Status invariants 4 and 5 lose their state clauses.
+- **Sub-region buffer credits.** A sub-region's kernel credits merge into its slot's instances, which over-counts for a slot
+  with several lanes; its input buffers draw on the post-boot budget but are not credited under a key of their own, released
+  when the last generation with the node retires.
+- **Explain of why an owner is cut.** Explain shows regions, upstream points, and internal exits, but not why a moved
+  or re-sourced owner is cut.
+- **The 128-buffer input size** of a sub-region is ADP's choice; confirm it against N1.
+- **Untouched:** R1 and its cost model, lanes, and V7b to V9.
 
 ### Also deferred by the owner
 

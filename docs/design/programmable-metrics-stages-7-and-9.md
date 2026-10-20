@@ -4039,6 +4039,28 @@ After detached programs, phase 2 ([as built](programmable-metrics-detached-progr
      the contract against the active plan, and rewrites move a filter the contract names only whole. A program may have
      any number of aggregations, placed wherever the frame can run them. Renaming a state owner starts a new lineage:
      the old one ends and the new one starts at a cut (decided by the owner, 2026-10-19).
+200. **Regions made at installation** (FRM, D; builds amendment 195's V7a half for version 2's step V7a; revises
+     status invariants 4 and 5; version 2's step V7a, 2026-10-20). A state owner runs in a region of its own: a boot
+     state owner in its boot slot, as before; any other in a sub-region, a task inside the component of the slot that
+     placement puts it in, with its own driver, input channel, control queue, and resource group `<slot>.<node>`, fed
+     through an internal exit. A sub-region is created when the first generation that has the owner prepares, before
+     the commit or any arming, and retires when the last such generation is released. Its buffers (128 input buffers,
+     and one per slot exit) draw on the budget for things created after boot, so preparation can be rejected like a
+     lease. No slot kind owns state: placement partitions a slot's nodes into regions in topological order, edges going
+     only to later regions. Cuts, lineages, state telemetry, and output points are keyed by node. A state owner whose
+     slot or upstream points change between generations is a new lineage, cut where a retained one would otherwise
+     keep running. Every routed admission point heartbeats at one second. With lanes on, a sub-region runs on one lane,
+     and two shapes are refused, each liftable later: an owner fed by an owner on several lanes, and an owner over
+     several clocks one of which has several points.
+201. **Time across several sources and chains** (STA, D; version 2's step V7a, 2026-10-20). A state owner's watermark is
+     the minimum over its upstream points, grouped by clock: a reset in a clock of one point is the one-point rule, in a
+     clock of several the reset window, and the owner's epoch counts resets at any point. A state owner's time-driven
+     output is a derived admission point with its own output clock, one per owner. A downstream owner admits a derived
+     batch before the ticks its header releases, since the batch holds buckets closed before its stamp, and an upstream
+     owner sends a header-only batch at its derived point after each tick that fires. When an upstream owner is kept
+     and a downstream one is cut, the upstream owner makes a boundary flush at the cut's time `T`, under the
+     generation it served; this adds one flush to it, and the cut lines up with its width. Two aggregations over one
+     point, which shared a slot's one output clock, now stamp by owner.
 
 ## 11. Risks
 

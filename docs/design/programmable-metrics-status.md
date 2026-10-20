@@ -33,13 +33,15 @@ ADP's artifact channel and given its headless check in stage 5, and extended in 
   `cfg(test)`, as a differential reference, so there is no production switch back to it.
 - Configuration changes, policy artifacts, and aggregation changes install live as generations: stateless ones with a
   prepare barrier and one schedule store, aggregation changes whose bucket width changes at a cut.
-- DogStatsD aggregation runs as a stateful kernel in the `dsd_agg` isolation slot, bucketing by admission time and
-  closing buckets by watermark.
+- DogStatsD aggregation runs as a stateful kernel in the `dsd_agg` slot (the boot state slot), bucketing by admission time
+  and closing buckets by watermark. A state owner needs no isolation slot (V7a, amendments 200 and 201): any aggregation
+  runs in a region of its own, after enrichment, chained after another, or over several sources, in a sub-region of a
+  slot's component when the boot frame has no slot for it.
 - Policy artifacts arrive through a local development stub of the artifact channel, one program document at a time:
   a whole program over the metrics path after its sources (DogStatsD processing, aggregation, enrichment, and the policy
   region), with one source for each metrics source and no scopes (amendment 197; stage 9's two scopes became one in
   amendment 168). A snapshot holds one config. A node's ID is its name, every node reports under it, and a program may
-  have any number of aggregations, placed wherever the boot frame can run them (V10, amendment 199). The privileged API serves the status, export, plan, explain, and default program.
+  have any number of aggregations, placed wherever its inputs allow (V10, amendment 199; V7a, amendment 200). The privileged API serves the status, export, plan, explain, and default program.
 - Outputs and recipients are resources of hosts fixed at boot (stage 7): one encode host and one delivery host per
   fixed delivery host, `dd_out`'s, the failover pair (idle until failover is enabled), and the Cluster Agent pair when
   its endpoint resolves at boot. Each output runs as a lease of its encode host and each recipient as an I/O loop of
@@ -64,8 +66,8 @@ ADP's artifact channel and given its headless check in stage 5, and extended in 
 - **Version 2 is under way** ([version 2 simplifications](programmable-metrics-v2.md)): the premise is now that native
   configuration is a front end and the program is the system, and the machinery of coexistence is being removed step
   by step. V2 (resources artifacts), V3 (native configuration lowers to literals), V4 (programs are whole), V5 (one program
-  document), V6 (elaboration as a phase), and V10 (names and a compatibility analysis) are done; V7a (state owners in
-  any region) is next. The plan's
+  document), V6 (elaboration as a phase), V10 (names and a compatibility analysis), and V7a (state owners in any region) are done;
+  V7b, V8, V9, and V1 wait on the N1 measurements and the lanes decision. The plan's
   [handoff](programmable-metrics-v2.md#handing-off) says how to continue.
 - DogStatsD processing runs on **lanes** (stage 9), tasks inside one component, fixed at boot: `dsd_pre_aggregation`
   runs a producer lane per decoder, each the only stamper of its own admission point; `dsd_agg` runs state lanes, each
@@ -127,6 +129,7 @@ since the repository sets `commit.gpgsign=true`). No CI pipeline has run on the 
 | `e6599d63f3` | V3 | Native configuration lowers to literals; bindings are facts and signals (amendment 196). |
 | `53cd99b576` | V4, V5 | Programs are whole and a snapshot holds one program document: scopes, `base`, staleness, fingerprints, and splicing removed (amendment 197). |
 | `9fb3990648` | V6 | Elaboration as a phase: one pass from the program as written to the core program, which installs, has the one hash, and explain shows (amendment 198). |
+| (V7a commit) | V7a | State owners in any region: a sub-region for a state owner placement puts outside the boot state slots, made at installation and retired with its last generation; a watermark over several sources, chained owners with derived points and boundary flushes, cuts and telemetry by node, heartbeats on every routed point (amendments 200 and 201). |
 | `7b1e126d16`, `64fe645ca9`, (V10 commit) | V10 | Names and a compatibility analysis: operators describe what they report, the telemetry contract as validation warnings and a status section, every node reporting under its name; the node namespace, `single_aggregation`, and the adoption of `dsd_agg` removed (amendment 199). |
 
 **Next.** The [version 2 simplifications](programmable-metrics-v2.md), from V7a, come first. Beside them, the stage 9
@@ -639,10 +642,12 @@ and gives the dependency direction. This section is the orientation that layout 
 2. A commit is one store of the schedule; every point switches at its next stamp.
 3. A cut's instant `T` is on the new generation's token before publication. A cut can be cancelled only until some
    point stamps the new generation.
-4. State owners run only in isolation slots, each fed by the admission points of one source clock, one path per
-   point and state lane (since stage 9; one point before it).
-5. The physical frame is fixed at boot. Candidates place into it; anything needing a new slot, edge, output, or host
-   component is a capability error (stage 7).
+4. A state owner runs in a region of its own, in its boot slot or in a sub-region of the slot placement gives it, and
+   owns its ticks, watermark, drains, and cuts. Its watermark is the minimum over its upstream admission points, by
+   clock; its output is a derived point with an output clock of its own (V7a, amendments 200 and 201).
+5. The physical frame's slots, edges, outputs, and host components are fixed at boot, and candidates place into them;
+   anything needing a new one is a capability error (stage 7). State owners are the exception: a sub-region is made at
+   installation and retired with its last generation.
 6. A node reports under its name (its `component_id`, and its accounting path `<slot>.<node>` under the slot); native
    names survive only in the remapper's table and in the default program's names for the nodes the telemetry contract
    lists (V10). Slots keep native IDs; only the fused components' own component series go.
@@ -655,7 +660,7 @@ and gives the dependency direction. This section is the orientation that layout 
 10. A region's input holds as many buffers as the queues it replaces and their in-flight buffers did.
 11. Dead legacy code goes behind `cfg(test)`, never `#[allow(dead_code)]`.
 
-**Names worth knowing.** Slots keep native IDs: `dsd_pre_aggregation`, `dsd_agg` (the isolation slot), and
+**Names worth knowing.** Slots keep native IDs: `dsd_pre_aggregation`, `dsd_agg` (the boot state slot), and
 `metrics_enrich`; with `lanes.mode: off`, a chain R1 cuts gets `<first node>_region` slots such as
 `dsd_prefix_filter_region`, `dsd_no_agg_split_region`, and `dsd_post_agg_filter_region`; on lanes (the default) fusion
 is maximal between fences and there are none. A slot on lanes stays one component; its lanes account under
@@ -960,6 +965,28 @@ release-noted**; amendment 199):
   boot frame can run it, which is the timestamp split's passthrough branch today; elsewhere placement refuses it as
   needing stage 10 frame changes, as it refuses the one aggregation moved there.
 
+**Version 2's step V7a: state owners in any region** ((V7a commit); **not release-noted**; amendments 200 and 201):
+
+- Explain shows regions where it showed an isolation slot: for each slot that runs a state owner, its regions, the
+  owner, the points upstream of it (each with its clock, and whether it is another owner's derived point), the derived
+  points that stamp its output, and the internal exits to later regions. A point's `feeds_state` marks a point
+  upstream of any state owner.
+- State telemetry registers under the owner's node name, not the slot's: a second aggregation reports its `aggregate_*` series under its
+  own name, and a sub-region's component series and resource group are
+  `<slot>.<node>`.
+- An aggregation after enrichment, after another aggregation, or over two sources installs and delivers, where
+  placement refused it. A chained owner admits its upstream owner's output, so its buckets close up to one flush
+  interval later, never inexactly.
+- Renaming or moving an aggregation cuts: a state owner whose slot or upstream points change starts a new lineage at a
+  cut. Explain does not yet say why. A cut of a downstream owner adds one flush (and one `aggregate_flushes_total`) to
+  a kept upstream owner, at the cut's time.
+- Every routed admission point sends a header-only heartbeat about once a second when idle, where only points feeding
+  an isolation slot did; an idle source never delays a tick.
+- A sub-region draws 128 input buffers, and one per slot exit, from the budget for things created after boot, so an
+  install can be rejected for lack of it. Two shapes are refused with lanes on: an owner fed by an owner on several
+  lanes, and an owner over several clocks one of which has several points. Both run with lanes off, the demo's and
+  production's setting at two workers.
+
 **Telemetry** (all release-noted): the fused components' and gateways' component, health, and task series are gone;
 `metrics_enrich` and `dsd_agg` report sent counts per output instead of `_default`; accounting paths nest under the
 slot; `dsd_agg` no longer counts sent metrics twice, no longer emits what R5b suppresses, and counts one extra flush
@@ -1203,15 +1230,15 @@ the shutdown row, the expiry row, and the timestamped row.
 
 Totals: kinds C 49, D 26, N 9, L 3; themes STA 20, ART 16, NAT 12, INS 9, IR 8, VER 8, FRM 7, TEL 4, EXE 3.
 
-Amendments 88 to 192 and 195 to 199 are in [the stages 7 and 9 plan's section
+Amendments 88 to 192 and 195 to 201 are in [the stages 7 and 9 plan's section
 10](programmable-metrics-stages-7-and-9.md#10-proposed-spec-amendments): 88 to 107 from its stage 7 design, 108 to 128
 from its stage 9 design, 129 to 138 from stage 7's parts and integration, 139 and 140 from stage 9's foundations (P9.F),
 141 to 162 from stage 9's parts and integration, 163 to 167 from stage 9's review, 168 and 169 from the one-scope
 change after stage 9, 170 to 182 from the detached-programs design, 183 to 188 from its phase 2, 189 and 190 from its
 phase 3, 191 from leaving out what does nothing, 192 from version 2's step V2, 195 from version 2's design for
-many aggregations, 196 from its step V3, 197 from its steps V4 and V5, 198 from its step V6, and 199 from its step
-V10. 193 and 194 come from the [pipeline syntax](programmable-metrics-pipeline-syntax.md) and are indexed below only.
-The next is 200.
+many aggregations, 196 from its step V3, 197 from its steps V4 and V5, 198 from its step V6, 199 from its step
+V10, and 200 and 201 from its step V7a. 193 and 194 come from the [pipeline syntax](programmable-metrics-pipeline-syntax.md) and are indexed below only.
+The next is 202.
 Stage 7's:
 
 | # | Short title | Theme | Kind | Owner |
@@ -1384,6 +1411,13 @@ After version 2's step V10 (built, not committed):
 | # | Short title | Theme | Kind | Owner |
 |---|---|---|---|---|
 | 199 | Identity by name, compatibility as an analysis: no node namespace, every node reports under its name, the telemetry contract as warnings, any number of aggregations, a renamed state owner is a new lineage | TEL | D | version 2, decided by the owner (2026-10-19: accept the rename cut) |
+
+After version 2's step V7a (built, not committed):
+
+| # | Short title | Theme | Kind | Owner |
+|---|---|---|---|---|
+| 200 | Regions made at installation: a state owner in a sub-region of any slot, created and retired with its generations; cuts, lineages, and telemetry by node; a moved or re-sourced owner is cut; heartbeats on every point | FRM | D | version 2, decided by the owner (2026-10-20: V7a questions 1, 4, 5, 6) |
+| 201 | Time across several sources and chains: the watermark is the minimum over upstream points by clock; derived points, one output clock per owner, closed before their stamp; a boundary flush at a cut | STA | D | version 2, decided by the owner (2026-10-20: V7a questions 2, 3) |
 
 Wording proposed for adoption: amendment 49 ("under the reference interpreter's delivery order"), 51 ("a maximal
 group of `split` and `tee` operators joined directly by edges within one region"), and 52 ("operator parameters,

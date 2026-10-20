@@ -324,7 +324,8 @@ document of a frame on one lane reads as before:
       { "name": "metrics_enrich", "routing": "affinity" }
     ] },
     { "name": "dsd_agg", "lanes": 2, "exits": [{ "name": "metrics_enrich", "routing": "spread" }],
-      "isolation": { "output_point": 6, "output_points": [6, 7], "upstream": [0, 1] } }
+      "regions": [{ "region": "main", "nodes": ["dsd_agg"], "state_owner": "dsd_agg", "output_point": 6,
+                    "output_points": [6, 7], "upstream": [{ "id": 0, "clock": "dsd_in" }, { "id": 1, "clock": "dsd_in" }] }] }
   ],
   "edges": [{ "...": "...", "routing": "keyed" }],
   "segments": [{ "...": "...", "lanes": 2 }]
@@ -337,8 +338,10 @@ document of a frame on one lane reads as before:
 - `routing` (default `one`) is how an admission point, an exit, or an edge reaches the lanes of the slot it feeds:
   `fixed` (lane `i` to lane `i`), `keyed` (by context key through 256 key groups; `key_groups` lists each target lane's
   contiguous range), `affinity` (lane `i` to lane `i mod M`), or `spread` (each buffer to the first lane with room).
-- `output_points` lists the admission point IDs of each state lane's time-driven output, for an isolation slot on
-  several lanes (`output_point` stays lane 0's).
+- `regions` lists, for a slot that runs a state owner, each region in order with the owner, the points upstream of it
+  (`clock` is the node that stamps the point; `derived` marks another owner's output), its output points, and its
+  internal exits to later regions. `output_points` lists the admission point IDs of each state lane's time-driven
+  output for a region on several lanes (`output_point` stays lane 0's).
 
 Per-lane telemetry, each series tagged `component_id` (the slot) and `lane` (0 to 63): `plan_lane_events_total`,
 `plan_lane_batches_total`, `plan_lane_busy_nanos_total`, `plan_lane_stamp_wait_nanos_total`, and
